@@ -1,0 +1,60 @@
+{
+  "contracts": [
+    {
+      "address": "0xa2c91C0C8B77e78Ce06Fd49dd1F021e859AC0AFF",
+      "name": "AlphaAINodeNMT",
+      "class": 1
+    },
+    {
+      "address": "0x80130F4199f50DFdE6D386736295567A41cFA15c",
+      "name": "AlphaAINodeJDE",
+      "class": 128
+    },
+    {
+      "address": "0xff46828DE968bff707713f5a402fd5E155345864",
+      "name": "ReputationBasedAggregator1",
+      "class": 128
+    },
+    {
+      "address": "0x5B0De893F2b411356D19882395C791024C71899f",
+      "name": "NewNode",
+      "class": 128
+    },
+    {
+      "address": "0x76c19ec908132c5ca00CbfD77b2301c0452a4B7F",
+      "name": "New Simple",
+      "class": 128
+    },
+    {
+      "address": "0x02b9B2210581157d78b95460AdD209E7b4eAcF7F",
+      "name": "MultiCIDSimple",
+      "class": 128
+    },
+    {
+      "address": "0x0356c966989F426Ced73b6C7258d0fCcc4426266",
+      "name": "MultiCID-Aggregator",
+      "class": 128
+    },
+    {
+      "address": "0xeD694c3740bDf7d8914fe45b76b8433613b8D374",
+      "name": "NMT-Node-1",
+      "class": 128
+    },
+    {
+      "address": "0xfCBf20B5930cE33E346B482adbec6542048CBbae",
+      "name": "LatestInstallerContract",
+      "class": 128
+    },
+    {
+      "address": "0xE75426Ed0491a8290fC55CAA71ab5e1d95F4BaF6",
+      "name": "SingletonAggregator",
+      "class": 994
+    },
+    {
+      "address": "0x3c600CFf7a4398F30A9912E0e190cb650D98f4b9",
+      "name": "New Aggregator",
+      "class": 128
+    }
+  ],
+  "lastUpdated": "2025-06-17T16:10:45.725Z"
+}

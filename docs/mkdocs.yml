@@ -1,0 +1,52 @@
+site_name: Verdikta Applications Documentation
+site_description: Documentation for all Verdikta Applications
+site_url: https://docs.verdikta.org
+
+nav:
+  - Home: index.md
+  - Applications:
+    - Example Frontend:
+      - Overview: example-frontend/index.md
+      - Getting Started: example-frontend/getting-started.md
+      - User Guide:
+        - Query Definition: example-frontend/query-definition.md
+        - Jury Selection: example-frontend/jury-selection.md
+        - Run Query: example-frontend/run-query.md
+        - Results: example-frontend/results.md
+        - Contract Management: example-frontend/contract-management.md
+      - Technical:
+        - API Integration: example-frontend/api-integration.md
+        - Components: example-frontend/components/index.md
+      - Development: example-frontend/development/index.md
+      - Deployment: example-frontend/deployment.md
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+    - navigation.instant
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - monorepo
+
+# This configuration is designed to work with the monorepo plugin
+# when integrated into the verdikta-docs repository as a git submodule 

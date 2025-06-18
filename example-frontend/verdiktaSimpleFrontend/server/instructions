@@ -1,0 +1,12 @@
+npm init -y
+npm install express cors dotenv
+
+# Install dependencies
+npm install
+
+# Set up environment variables
+cp .env.example .env
+# Edit .env with your specific configuration
+
+# To test:
+# curl -F "file=@test.zip" http://localhost:5000/api/upload

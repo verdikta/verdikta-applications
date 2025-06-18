@@ -1,0 +1,4 @@
+npm install ethers@^6.13.4 axios chart.js react-chartjs-2 @pinata/sdk axios form-data
+
+# if needed:
+cp .env.example .env

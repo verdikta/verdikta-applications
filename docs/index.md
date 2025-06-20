@@ -1,20 +1,29 @@
-# Verdikta Applications Documentation
+# Verdikta Applications
 
-Welcome to the comprehensive documentation for Verdikta Applications.
+This section contains documentation for all Verdikta applications and integrations.
+
+## Available Applications
+
+### Example Frontend
+A complete example frontend application demonstrating Verdikta integration.
+
+- [Getting Started](example-frontend/getting-started.md)
+- [Architecture Overview](example-frontend/architecture.md)
+- [User Guide](example-frontend/index.md)
+
+## Developer Resources
+
+- [API Integration Guide](example-frontend/api-integration.md)
+- [Component Documentation](example-frontend/components/index.md)
+- [Development Setup](example-frontend/development/index.md)
+
+## Future Applications
+
+Additional applications will be documented here as they are developed.
 
 ## Overview
 
 This documentation site covers all applications within the Verdikta Applications suite, providing detailed guides, API references, and development information.
-
-## Applications
-
-### [Example Frontend](example-frontend/index.md)
-
-A comprehensive frontend application demonstrating Verdikta's capabilities, including:
-- Contract management interfaces
-- Jury selection processes
-- Query definition and execution
-- Results visualization
 
 ## Documentation Structure
 

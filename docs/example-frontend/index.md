@@ -1,6 +1,25 @@
 # Example Frontend Application
 
-Welcome to the Example Frontend documentation.
+The Verdikta Example Frontend is a complete web application that demonstrates how to integrate with the Verdikta AI jury dispute resolution system.
+
+## Quick Navigation
+
+### Getting Started
+- [Installation & Setup](getting-started.md)
+- [Architecture Overview](architecture.md)
+
+### User Guide  
+- [Query Definition](query-definition.md)
+- [Jury Selection](jury-selection.md)
+- [Running Queries](run-query.md)
+- [Viewing Results](results.md)
+- [Contract Management](contract-management.md)
+
+### Technical Documentation
+- [API Integration](api-integration.md)
+- [Component Documentation](components/index.md)
+- [Development Guide](development/index.md)
+- [Deployment](deployment.md)
 
 ## Overview
 

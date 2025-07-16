@@ -123,6 +123,7 @@ markdown_extensions:
 # Page tree
 nav:
   - Home: index.md
+  - Comprehensive User Guide: user-guide.md
   - Example Frontend:
     - example-frontend/index.md
     - Getting Started: example-frontend/getting-started.md

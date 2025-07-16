@@ -2,6 +2,10 @@
 
 This section contains documentation for all Verdikta applications and integrations.
 
+## Comprehensive User Guide
+
+- **[Verdikta User Guide](user-guide.md)** - Complete developer and user guide for the Verdikta AI-powered evaluation system, covering concepts, integration, and usage
+
 ## Available Applications
 
 ### Example Frontend

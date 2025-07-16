@@ -50,6 +50,7 @@ A complete React-based web application that provides a user-friendly interface f
 Comprehensive documentation is available in the `docs/` folder, organized for easy navigation and integration with the main Verdikta documentation site.
 
 ### Quick Links
+- **[Verdikta User Guide](docs/user-guide.md)** - Comprehensive developer and user guide for the Verdikta system
 - **[Getting Started Guide](docs/example-frontend/getting-started.md)** - Setup and first evaluation
 - **[User Guide](docs/example-frontend/query-definition.md)** - Complete workflow walkthrough
 - **[API Integration](docs/example-frontend/api-integration.md)** - Technical integration details
@@ -61,7 +62,9 @@ The documentation is built with MkDocs and designed to integrate seamlessly with
 ```
 docs/
 ├── index.md                 # Applications overview
+├── user-guide.md           # Comprehensive Verdikta user guide
 ├── mkdocs.yml              # Main configuration
+├── images/                 # Documentation images
 └── example-frontend/       # AI Jury System docs
     ├── getting-started.md  # Setup and quick start
     ├── query-definition.md # Creating queries

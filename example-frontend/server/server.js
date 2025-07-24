@@ -6,8 +6,28 @@ const fs = require('fs').promises;
 const fetch = require('node-fetch');
 require('dotenv').config();
 
+const { createClient } = require('@verdikta/common');
 const app = express();
-const ipfsClient = require('./services/ipfsClient');
+
+// Initialize verdikta-common client with IPFS configuration
+const config = {
+  ipfs: {
+    gateway: 'https://ipfs.io',
+    pinningService: process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud',
+    pinningKey: process.env.IPFS_PINNING_KEY,
+    timeout: 30000,
+    retryOptions: {
+      retries: 5,
+      factor: 2
+    }
+  },
+  logging: {
+    level: process.env.NODE_ENV === 'development' ? 'debug' : 'info',
+    console: true
+  }
+};
+
+const { ipfsClient, logger } = createClient(config);
 // Import contract routes and manager
 const contractRoutes = require('./routes/contractRoutes');
 const { syncOnShutdown } = require('./utils/contractsManager');
@@ -22,7 +42,7 @@ const CID_REGEX = /^Qm[1-9A-HJ-NP-Za-km-z]{44}|b[A-Za-z2-7]{58}|B[A-Z2-7]{58}|z[
 
 // Error handling middleware
 const errorHandler = (err, req, res, next) => {
-  console.error('Server error:', err);
+  logger.error('Server error:', err);
   res.status(500).json({
     error: 'Internal server error',
     details: process.env.NODE_ENV === 'development' ? err.message : 'An unexpected error occurred'
@@ -43,7 +63,7 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
-    console.log('Received file:', {
+    logger.debug('Received file:', {
       originalname: file.originalname,
       mimetype: file.mimetype,
       size: file.size
@@ -73,9 +93,9 @@ const initializeTmpDirectory = async () => {
     await Promise.all(
       files.map(file => fs.unlink(path.join(tmpDir, file)).catch(console.error))
     );
-    console.log('Temporary directory initialized');
+    logger.info('Temporary directory initialized');
   } catch (error) {
-    console.error('Error initializing tmp directory:', error);
+    logger.error('Error initializing tmp directory:', error);
     throw error;
   }
 };
@@ -111,14 +131,17 @@ app.post('/api/upload', async (req, res) => {
     }
 
     uploadedFile = req.file;
-    console.log('Processing upload:', {
+    logger.info('Processing upload:', {
       originalname: req.file.originalname,
       path: req.file.path,
       size: req.file.size
     });
 
-    const cid = await ipfsClient.uploadToIPFS(req.file.path);
-    console.log('Upload successful:', { cid });
+    // Read file data and upload to IPFS using verdikta-common
+    const fileData = await fs.readFile(req.file.path);
+    const uploadResult = await ipfsClient.uploadToIPFS(fileData, req.file.originalname);
+    const cid = uploadResult.IpfsHash;
+    logger.info('Upload successful:', { cid, filename: req.file.originalname });
 
     res.json({
       success: true,
@@ -127,7 +150,7 @@ app.post('/api/upload', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Upload failed:', error);
+    logger.error('Upload failed:', error);
     res.status(error.message === 'Upload timeout' ? 408 : 500).json({
       error: 'Upload failed',
       details: error.message
@@ -147,168 +170,59 @@ app.get('/api/fetch/:cid', async (req, res) => {
 
   // Validate CID format
   if (!CID_REGEX.test(cid)) {
-    console.error('Invalid CID format:', cid);
+    logger.error('Invalid CID format:', cid);
     return res.status(400).json({
       error: 'Invalid CID format',
       details: 'The provided CID does not match the expected format'
     });
   }
 
-  let currentTry = 0;
-
-  // Add initial delay for IPFS propagation
-  await new Promise(resolve => setTimeout(resolve, INITIAL_PROPAGATION_DELAY));
-
-  // Update the gateway list with more reliable options
-  const IPFS_GATEWAYS = [
-    'https://gateway.pinata.cloud',
-    'https://ipfs.io',
-    'https://dweb.link',
-    'https://cf-ipfs.com',
-    'https://gateway.ipfs.io'
-  ];
-
-  // Update the fetchWithTimeout function
-  const fetchWithTimeout = async (attempt) => {
-    const controller = new AbortController();
-    let timeoutId;
-
-    try {
-      console.log(`Fetching from IPFS (attempt ${attempt + 1}/${MAX_RETRIES}):`, cid);
-      
-      const timeoutMs = IPFS_FETCH_TIMEOUT * (1 + attempt * 0.5);
-      console.log(`Timeout set to ${timeoutMs}ms`);
-
-      // Create timeout promise
-      const timeoutPromise = new Promise((_, reject) => {
-        timeoutId = setTimeout(() => {
-          console.log(`Timeout reached after ${timeoutMs}ms for attempt ${attempt + 1}`);
-          controller.abort();
-          reject(new Error('Timeout'));
-        }, timeoutMs);
-      });
-
-      // Use the ipfsClient service with the isQueryPackage flag when appropriate
-      try {
-        console.log(`Using ipfsClient with isQueryPackage=${isQueryPackage}`);
-        const data = await ipfsClient.fetchFromIPFS(cid, { isQueryPackage });
-        return { 
-          data, 
-          headers: new Map([['content-type', 'application/octet-stream']]),
-          gateway: 'ipfsClient'
-        };
-      } catch (ipfsClientError) {
-        console.log(`ipfsClient failed:`, ipfsClientError.message);
-        // Fall back to gateway method if ipfsClient fails
-      }
-
-      // Try each gateway with DNS error handling
-      for (const baseGateway of IPFS_GATEWAYS) {
-        const gateway = `${baseGateway}/ipfs/${cid}`;
-        try {
-          console.log(`Trying gateway: ${gateway}`);
-          
-          // First check if gateway is responsive
-          try {
-            await fetch(`${baseGateway}/api/v0/version`, {
-              timeout: 5000,
-              headers: {
-                'Accept': '*/*',
-                'User-Agent': 'Verdikta-Server/1.0'
-              }
-            });
-          } catch (pingError) {
-            console.log(`Gateway ${baseGateway} is not responsive:`, pingError.message);
-            continue;
-          }
-
-          // Gateway is responsive, try fetching the content
-          const response = await Promise.race([
-            fetch(gateway, {
-              signal: controller.signal,
-              headers: {
-                'Accept': '*/*',
-                'User-Agent': 'Verdikta-Server/1.0'
-              }
-            }),
-            timeoutPromise
-          ]);
-
-          // Log response status for debugging
-          console.log(`Gateway ${gateway} response status:`, response.status);
-
-          if (response.ok) {
-            const data = await response.buffer();
-            return { data, headers: response.headers, gateway };
-          } else if (response.status === 404) {
-            throw new Error(`CID not found: ${cid}`);
-          }
-          
-          console.log(`Gateway ${gateway} returned status: ${response.status}`);
-        } catch (gatewayError) {
-          if (gatewayError.name === 'AbortError') {
-            throw gatewayError; // Propagate timeout errors
-          }
-          if (gatewayError.message.includes('CID not found')) {
-            throw gatewayError; // Propagate 404 errors
-          }
-          console.log(`Gateway ${gateway} failed:`, gatewayError.message);
-          continue;
-        }
-      }
-
-      throw new Error('All IPFS gateways failed');
-
-    } finally {
-      clearTimeout(timeoutId);
+  try {
+    logger.info('Fetching from IPFS:', { cid, isQueryPackage });
+    
+    // Process CID for query packages if needed (extract first CID for multi-CID strings)
+    let cidToFetch = cid.trim();
+    if (isQueryPackage && cidToFetch.includes(',')) {
+      cidToFetch = cidToFetch.split(',')[0].trim();
+      logger.info('Processing query package CID - using first CID only:', cidToFetch);
     }
-  };
+    
+    // Use verdikta-common IPFSClient which handles retry logic and multiple gateways
+    const data = await ipfsClient.fetchFromIPFS(cidToFetch);
+    
+    logger.info('Successfully fetched from IPFS:', { cid: cidToFetch, size: data.length });
 
-  while (currentTry < MAX_RETRIES) {
-    try {
-      const { data, headers, gateway } = await fetchWithTimeout(currentTry);
-      console.log(`Successfully fetched from gateway: ${gateway}`);
+    res.set({
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': data.length,
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'public, max-age=31536000'
+    });
 
-      res.set({
-        'Content-Type': headers.get('content-type'),
-        'Content-Length': headers.get('content-length'),
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=31536000',
-        'X-IPFS-Gateway': gateway
+    res.send(data);
+
+  } catch (error) {
+    logger.error('Failed to fetch from IPFS:', { cid, error: error.message });
+    
+    // Check for specific error types
+    if (error.message.includes('not found') || error.message.includes('404')) {
+      return res.status(404).json({
+        error: 'CID not found',
+        details: error.message
       });
-
-      res.send(data);
-      return;
-
-    } catch (error) {
-      console.error(`Attempt ${currentTry + 1} failed:`, error);
-      
-      // If CID not found, return 404 immediately
-      if (error.message.includes('CID not found')) {
-        return res.status(404).json({
-          error: 'CID not found',
-          details: error.message
-        });
-      }
-      
-      if (currentTry === MAX_RETRIES - 1) {
-        return res.status(error.name === 'AbortError' ? 504 : 500).json({
-          error: 'Failed to fetch from IPFS',
-          details: error.message,
-          attempt: currentTry + 1
-        });
-      }
-
-      // Exponential backoff with jitter
-      const baseDelay = INITIAL_RETRY_DELAY * Math.pow(2, currentTry);
-      const jitter = Math.random() * 1000;
-      const delay = baseDelay + jitter;
-      
-      console.log(`Waiting ${Math.round(delay)}ms before retry...`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-      
-      currentTry++;
     }
+    
+    if (error.message.includes('timeout') || error.message.includes('timed out')) {
+      return res.status(504).json({
+        error: 'Request timeout',
+        details: error.message
+      });
+    }
+    
+    return res.status(500).json({
+      error: 'Failed to fetch from IPFS',
+      details: error.message
+    });
   }
 });
 
@@ -328,8 +242,8 @@ const startServer = async () => {
     const PORT = process.env.PORT || 5000;
     const HOST = process.env.HOST || '0.0.0.0';
     const server = app.listen(PORT, HOST, () => {
-      console.log(`Server listening on ${HOST}:${PORT}`);
-      console.log('Environment:', {
+      logger.info(`Server listening on ${HOST}:${PORT}`);
+      logger.info('Environment:', {
         NODE_ENV: process.env.NODE_ENV,
         IPFS_PINNING_SERVICE: process.env.IPFS_PINNING_SERVICE ? 'Set' : 'Not set',
         IPFS_PINNING_KEY: process.env.IPFS_PINNING_KEY ? 'Set' : 'Not set'
@@ -338,24 +252,24 @@ const startServer = async () => {
 
     // Handle server shutdown
     const shutdown = async () => {
-      console.log('Shutting down server...');
+      logger.info('Shutting down server...');
       
       // Sync contracts to .env file before shutdown
       try {
         await syncOnShutdown();
-        console.log('Contracts synced to .env file');
+        logger.info('Contracts synced to .env file');
       } catch (error) {
-        console.error('Failed to sync contracts to .env:', error);
+        logger.error('Failed to sync contracts to .env:', error);
       }
       
       server.close(() => {
-        console.log('Server closed');
+        logger.info('Server closed');
         process.exit(0);
       });
 
       // Force close after 30 seconds
       setTimeout(() => {
-        console.error('Could not close connections in time, forcefully shutting down');
+        logger.error('Could not close connections in time, forcefully shutting down');
         process.exit(1);
       }, 30000);
     };
@@ -364,7 +278,7 @@ const startServer = async () => {
     process.on('SIGINT', shutdown);
 
   } catch (error) {
-    console.error('Failed to start server:', error);
+    logger.error('Failed to start server:', error);
     process.exit(1);
   }
 };

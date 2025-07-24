@@ -1,5 +1,5 @@
 // src/pages/Results.js
-import React, { useState } from 'react';
+import React from 'react';
 import { PAGES } from '../App';
 import { Bar } from 'react-chartjs-2';
 import PaginatedJustification from '../components/paginatedJustification';

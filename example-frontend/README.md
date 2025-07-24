@@ -23,7 +23,7 @@ This repository contains:
 | Layer      | Tech                                             |
 |------------|--------------------------------------------------|
 | Front‑end  | React 18 · React Router · Chart.js · Ethers v6    |
-| Back‑end   | Node 20 · Express 4 · Multer · Pinata SDK         |
+| Back‑end   | Node 20 · Express 4 · @verdikta/common            |
 | Blockchain | Base Sepolia test‑net · Chainlink Functions       |
 | Storage    | IPFS                                             |
 
@@ -37,14 +37,16 @@ This repository contains:
 │  ├─ src/
 │  │  ├─ pages/            # Main wizard‑style pages
 │  │  ├─ components/       # Re‑usable presentational comps
+│  │  ├─ services/         # Browser-compatible verdikta-common wrapper
 │  │  └─ utils/            # Pure helpers & blockchain utils
 │  └─ public/
 │
 ├─ server/                 # Express API + utility scripts
 │  ├─ routes/              # REST endpoints (file & contract mgmt)
-│  ├─ services/            # IPFS/Pinata abstraction
 │  ├─ utils/               # JSON persistence, graceful shutdown
 │  └─ tmp/                 # Runtime upload buffer (git‑ignored)
+├─ start.sh                # Combined startup script for both services
+├─ test-startup.sh         # Test script for validation
 └─ README.md               # ← you are here
 ```
 
@@ -99,7 +101,24 @@ Key variables:
 
 ### 4. Run in development mode
 
-Open **two** terminals:
+#### Option A: Quick start (recommended)
+
+Use the combined startup script from the project root:
+
+```bash
+# Start both client and server with one command
+$ ./start.sh
+```
+
+This will:
+- Start the server on `http://localhost:5000` 
+- Start the client on `http://localhost:3000`
+- Provide colored status output
+- Allow graceful shutdown with `Ctrl+C`
+
+#### Option B: Manual start (advanced)
+
+Open **two** terminals for individual control:
 
 ```bash
 # Terminal 1 – start the API
@@ -139,6 +158,8 @@ Each step corresponds to a page in `client/src/pages/*` and local‑storage keep
 |          | `npm start`    | Run API with Node                     |
 
 Small helper shells are included at root of each package: `startClient.sh`, `startServer.sh`, `killold3001.sh`.
+
+**New in this version:** A combined startup script `start.sh` at the project root launches both services simultaneously.
 
 ---
 

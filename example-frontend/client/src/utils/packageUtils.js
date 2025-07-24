@@ -1,5 +1,10 @@
 // src/utils/packageUtils.js
-import archiveService from './archiveService'; // or wherever you keep it
+import { createClient } from '../services/verdiktaClient';
+
+// Initialize browser-compatible verdikta client
+const { archiveService, manifestParser, logger } = createClient({
+  logging: { level: 'info' }
+});
 
 /**
  * Creates a ZIP package (Blob or File) from:
@@ -45,10 +50,9 @@ export async function createQueryPackageArchive(
     ...supportingFiles.map((f) => f.file)
   ];
 
-  // 4) Use your archiveService to create the ZIP
-  // `archiveService.createArchive` is your custom code (or a library wrapper).
-  // Typically, it returns a Blob or ArrayBuffer.
-  console.log('Creating ZIP with manifest:', manifest);
+  // 4) Use verdikta archiveService to create the ZIP
+  // `archiveService.createArchive` creates a ZIP blob with manifest
+  logger.info('Creating ZIP with manifest:', manifest);
   const archiveBlob = await archiveService.createArchive(allPhysicalFiles, manifest);
   // If you need a File instead of a Blob, you can do:
   //   return new File([archiveBlob], 'query_package.zip', { type: 'application/zip' });
@@ -66,7 +70,7 @@ export async function fetchQueryPackageDetails(cid) {
   const serverUrl = process.env.REACT_APP_SERVER_URL || 'http://localhost:5000';
   const url = `${serverUrl}/api/fetch/${cid.trim()}`;
 
-  console.log('Fetching query package from:', url);
+  logger.info('Fetching query package from:', url);
   const response = await fetch(url);
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -74,33 +78,14 @@ export async function fetchQueryPackageDetails(cid) {
   }
 
   const blob = await response.blob();
-  const archiveFile = new File([blob], 'query_package.zip', { type: 'application/zip' });
 
-  // Extract the archive
-  console.log('Extracting archive via archiveService...');
-  const files = await archiveService.extractArchive(archiveFile);
+  // Extract the archive using verdikta client
+  logger.info('Extracting archive via archiveService...');
+  const files = await archiveService.extractArchive(blob);
 
-  // Find manifest.json
-  const manifestFile = files.find((f) => f.name === 'manifest.json');
-  if (!manifestFile) {
-    throw new Error('No manifest.json found in archive');
-  }
-  const manifest = JSON.parse(await manifestFile.text());
+  // Use manifestParser to parse the extracted content
+  const result = await manifestParser.parse(files);
+  logger.info('Parsed query package successfully');
 
-  // Find primary_query.json
-  const primaryFile = files.find((f) => f.name === manifest.primary?.filename);
-  if (!primaryFile) {
-    throw new Error(`Primary file not found: ${manifest.primary?.filename}`);
-  }
-  const primaryData = JSON.parse(await primaryFile.text());
-
-  return {
-    query: primaryData.query || '',
-    outcomes: primaryData.outcomes || [],
-    numOutcomes: manifest.juryParameters?.NUMBER_OF_OUTCOMES || 2,
-    iterations: manifest.juryParameters?.ITERATIONS || 1,
-    juryNodes: manifest.juryParameters?.AI_NODES || [],
-    additionalFiles: manifest.additional || [],
-    supportFiles: manifest.support || []
-  };
+  return result;
 }

@@ -2,7 +2,7 @@
 // src/pages/RunQuery.js
 import React, { useState, useEffect } from 'react';
 // Import ethers along with parseEther from ethers v6 (we no longer import BigNumber)
-import { ethers, parseEther, parseUnits } from 'ethers';
+import { ethers, parseUnits } from 'ethers';
 import { PAGES } from '../App';
 import { fetchWithRetry, tryParseJustification } from '../utils/fetchUtils';
 import { createQueryPackageArchive } from '../utils/packageUtils';
@@ -14,15 +14,15 @@ import {
   // checkContractFunding,
 } from '../utils/contractUtils';
 import { waitForFulfilOrTimeout } from '../utils/timeoutUtils';
+import { ContractDebugger } from '../utils/contractDebugger';
 
 // Import the LINK token ABI (make sure this file exists at src/utils/LINKTokenABI.json)
 import LINK_TOKEN_ABI from '../utils/LINKTokenABI.json';
 
-// Set the LINK token address for your network (example for Sepolia)
-const LINK_TOKEN_ADDRESS = "0x779877A7B0D9E8603169DdbD7836e478b4624789";
+// LINK token address is now retrieved dynamically from contract config
 
 // Default query package CID for example/testing
-const DEFAULT_QUERY_CID = 'QmSnynnZVufbeb9GVNLBjxBJ45FyHgjPYUHTvMK5VmQZcS';
+const DEFAULT_QUERY_CID = 'QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH';
 
 // Helper function to get the first CID from a comma-separated list
 const getFirstCid = (cidString) => {
@@ -68,6 +68,10 @@ async function pollForEvaluationResults(
   setResultCid?.(justificationCid);
   setTransactionStatus?.('Fetching justification from server...');
   try {
+    if (!justificationCid) {
+      // Still in commit stage – keep polling
+      return { status: 'pending' };
+    }
     const response = await fetchWithRetry(justificationCid);
     const justificationText = await tryParseJustification(
       response,
@@ -83,27 +87,112 @@ async function pollForEvaluationResults(
   }
 }
 
-// Check and prompt for LINK approval if needed.
-async function approveLinkSpending(requiredAmount, provider, walletAddress, aggregatorAddress, linkTokenAddress) {
-  try {
-    console.log("Current allowance check skipped - proceeding with approval");
-    
-    // Use the provider's signer directly
-    const signer = await provider.getSigner();
-    
-    // Create contract instance with signer
-    const linkContract = new ethers.Contract(linkTokenAddress, LINK_TOKEN_ABI, signer);
-    
-    console.log("Approving LINK tokens...");
-    const tx = await linkContract.approve(aggregatorAddress, requiredAmount);
-    
-    console.log("Approval transaction sent:", tx.hash);
-    await tx.wait();
-    console.log("Approval confirmed");
-  } catch (error) {
-    console.error("Error in LINK approval:", error);
-    throw new Error(`LINK approval failed: ${error.message}`);
+/**
+ * Make sure `spender` (your aggregator contract) has at least
+ * `requiredExtra` more LINK allowance.
+ *
+ * Because LINK only implements `approve(spender, amount)` (which REPLACES
+ * the allowance), we approve for: currentAllowance + requiredExtra.
+ */
+/*
+async function topUpLinkAllowance({
+  requiredExtra,        // bigint  (fee for *this* request)
+  provider,
+  owner,                // walletAddress (msg.sender)
+  spender,              // contractAddress (aggregator)
+  linkTokenAddress,
+  setTransactionStatus  // optional UI callback
+}) {
+  const signer = await provider.getSigner();
+  const link   = new ethers.Contract(linkTokenAddress, LINK_TOKEN_ABI, signer);
+
+  // How much is already approved?
+  const current = await link.allowance(owner, spender);
+
+  // Add just the missing delta (safer than max-uint approval)
+  const newTotal = current + requiredExtra;
+  console.log(`Approving ${ethers.formatUnits(newTotal, 18)} LINK in total …`);
+  setTransactionStatus?.('Requesting LINK approval…');
+
+  const tx = await link.approve(spender, newTotal);
+  await tx.wait();
+  console.log('LINK approval confirmed');
+}
+*/
+
+/**
+ * Grow or replace LINK allowance according to age of last Approval event.
+ *
+ * requiredExtra – bigint (fee for this new request)
+ */
+async function topUpLinkAllowance({
+  requiredExtra,
+  provider,
+  owner,
+  spender,
+  linkTokenAddress,
+  setTransactionStatus,
+  STALE_SECONDS   = 1800,      // 1/2 hour, after this approval is considered stale
+  SEARCH_WINDOW   = 7_200,     // look back this many blocks seeking last approval (~4 hours on Base Sepolia)
+  PAYMENT_MULTIPLIER = 2,      // a >=1 multiplier to give a margin that helps support simultaneous calls
+  PAYMENT_MIN = parseUnits("5", 17), // minimum to reserve
+  PAYMENT_MAX = parseUnits("2", 18)  // maximum to reserve
+}) {
+  const signer = await provider.getSigner();
+  const link   = new ethers.Contract(linkTokenAddress, LINK_TOKEN_ABI, signer);
+
+  // 1.  Find the age of the last Approval(owner, spender, …) 
+  const filter       = link.filters.Approval(owner, spender);
+  const latestBlock  = await provider.getBlockNumber();
+  const fromBlock    = Math.max(0, latestBlock - SEARCH_WINDOW);
+  const events       = await link.queryFilter(filter, fromBlock, latestBlock);
+
+  let hasHistory = false;
+  let ageSecs    = 0;
+
+  if (events.length > 0) {
+    hasHistory = true;
+    const lastBlock = await provider.getBlock(events[events.length - 1].blockNumber);
+    ageSecs = Math.floor(Date.now() / 1000) - lastBlock.timestamp;
   }
+
+  // 2.  Current allowance 
+  const current = await link.allowance(owner, spender);          // bigint
+
+  // 3.  Decide newTotal 
+  let newTotal;
+  const requiredExtraWithMargin = BigInt(PAYMENT_MULTIPLIER)*requiredExtra;
+  if (!hasHistory) {
+    // First approval over window 
+    newTotal = requiredExtraWithMargin;
+    newTotal<BigInt(PAYMENT_MIN) && (newTotal=BigInt(PAYMENT_MIN));
+    setTransactionStatus?.(`Approving LINK to begin (using ${PAYMENT_MULTIPLIER}× margin with a minimum)…`);
+  } else if (ageSecs > STALE_SECONDS) {
+    // Old approval exists → replace with just this fee
+    newTotal = requiredExtraWithMargin;
+    newTotal<BigInt(PAYMENT_MIN) && (newTotal=BigInt(PAYMENT_MIN));
+    setTransactionStatus?.('Replacing stale LINK allowance…');
+  } else {
+    // Recent approval → add on top
+    newTotal = current + requiredExtraWithMargin;
+    newTotal<BigInt(PAYMENT_MIN) && (newTotal=BigInt(PAYMENT_MIN));
+    if(newTotal>BigInt(PAYMENT_MAX))
+    {
+      newTotal = BigInt(PAYMENT_MAX);
+      setTransactionStatus?.('Topping-up active LINK allowance to maximum…');
+    }
+    else
+    {
+      setTransactionStatus?.('Topping-up active LINK allowance…');
+    }
+  }
+
+  // 4.  Send approve() 
+  console.log( `Allowance ${ethers.formatUnits(current, 18)} → `
+    + `${ethers.formatUnits(newTotal, 18)} LINK`);
+  const tx = await link.approve(spender, newTotal);
+  await tx.wait();
+  console.log('LINK approval confirmed:', tx.hash);
 }
 
 function RunQuery({
@@ -144,7 +233,7 @@ function RunQuery({
   maxFeeBasedScalingFactor,
   selectedContractClass,
 }) {
-  const [activeTooltipId, setActiveTooltipId] = useState(null);
+  // Removed unused tooltip state - functionality can be added back if needed
   const [textAddendum, setTextAddendum] = useState('');
   // Add state to track if we're showing the default CID value
   const [showingDefaultCid, setShowingDefaultCid] = useState(queryPackageCid === '' || queryPackageCid === undefined);
@@ -174,6 +263,39 @@ function RunQuery({
       alert('Please upload a ZIP file');
     }
   };
+
+const debugContractIssues = async () => {
+  try {
+    console.log('🔍 Running contract diagnostics...');
+    const provider = new ethers.BrowserProvider(window.ethereum);
+    const contractDebugger = new ContractDebugger(provider, contractAddress, walletAddress);
+    
+    const report = await contractDebugger.generateDebugReport(
+      ['QmSnynnZVufbeb9GVNLBjxBJ45FyHgjPYUHTvMK5VmQZcS'], // test CID
+      '',
+      500, // alpha
+      parseUnits("0.01", 18), // maxFee
+      parseUnits("0.0001", 18), // estimatedBaseCost
+      10, // maxFeeBasedScalingFactor
+      selectedContractClass
+    );
+    
+    console.log('📋 Full Debug Report:', report);
+    
+    // Show critical issues to user
+    const criticalIssues = report.recommendations.filter(r => r.priority === 'CRITICAL' || r.priority === 'HIGH');
+    if (criticalIssues.length > 0) {
+      const issueText = criticalIssues.map(issue => `• ${issue.issue}: ${issue.solution}`).join('\n');
+      alert(`🚨 Contract Issues Detected:\n\n${issueText}\n\nCheck console for full report.`);
+    } else {
+      alert('✅ No critical issues detected. Check console for full report.');
+    }
+    
+  } catch (error) {
+    console.error('Debug failed:', error);
+    alert(`Debug failed: ${error.message}`);
+  }
+};
 
 const handleRunQuery = async () => {
   if (!isConnected && selectedMethod !== 'config') {
@@ -271,20 +393,82 @@ const handleRunQuery = async () => {
         setCurrentCid?.(cid);
       }
 
-      // 4) Insert the LINK approval step seamlessly.
-      // For example, if the aggregator requires approval for maxFee * (oraclesToPoll + clusterSize)
-    try {
-      // Approve the amount the contract gives as its maximum
-      const requiredApprovalAmount = await contract.maxTotalFee(maxFee);
-       console.log('Max total fee given by contract: ', requiredApprovalAmount.toString());
-      setTransactionStatus?.('Requesting LINK approval...');
-      await approveLinkSpending(requiredApprovalAmount, provider, walletAddress, contractAddress, linkTokenAddress);
-      console.log('Approval amount: ', requiredApprovalAmount.toString());  
-      
-    } catch (error) {
-      console.error("LINK approval error:", error);
-      // Continue even if approval fails - the contract will check if enough allowance exists
-    }
+/*
+// 4) Make sure the contract has *additional* LINK allowance for this call
+try {
+  const singleRequestFee = await contract.maxTotalFee(maxFee);   // bigint
+  console.log('Max total fee given by contract: ', singleRequestFee.toString());
+  setTransactionStatus?.('Requesting LINK approval...');
+  await topUpLinkAllowance({
+    requiredExtra:       singleRequestFee,
+    provider,
+    owner:               walletAddress,
+    spender:             contractAddress,
+    linkTokenAddress,
+    setTransactionStatus
+  });
+  console.log('Approval amount: ', singleRequestFee.toString());  
+  } catch (error) {
+    console.error("LINK approval error:", error);
+    // Continue even if approval fails - the contract will check if enough allowance exists
+  }
+*/
+
+// 4) Handle LINK allowance (time-aware: reset if older than 1 hour)
+/*
+try {
+  const feeForThisRequest = await contract.maxTotalFee(maxFee);     // bigint ≈ 1e18-scale
+  const ageSecs = await secondsSinceLastApproval({
+    provider,
+    owner:   walletAddress,
+    spender: contractAddress,
+    linkTokenAddress
+  });
+
+  const signer = await provider.getSigner();
+  const link   = new ethers.Contract(linkTokenAddress, LINK_TOKEN_ABI, signer);
+
+  if (ageSecs > 3600) {
+    // The last approval is stale → start clean
+    // ONE-STEP replace (atomic)
+    setTransactionStatus?.('Replacing stale LINK allowance…');
+    await (await link.approve(contractAddress, feeForThisRequest)).wait();
+    console.log(`Allowance set to ${ethers.formatUnits(feeForThisRequest, 18)} LINK`);
+  } else {
+    // Approval is recent → just extend by this request’s fee. 
+    await topUpLinkAllowance({
+      requiredExtra:     feeForThisRequest,
+      provider,
+      owner:             walletAddress,
+      spender:           contractAddress,
+      linkTokenAddress,
+      setTransactionStatus
+    });
+  }
+} catch (error) {
+  console.error('LINK approval error:', error);
+  // Continue: contract will revert later if allowance still insufficient.
+}
+*/
+// 4) Make sure the contract has enough LINK allowance
+try {
+  const feeForThisRequest = await contract.maxTotalFee(maxFee);
+  await topUpLinkAllowance({
+    requiredExtra:     feeForThisRequest,
+    provider,
+    owner:             walletAddress,
+    spender:           contractAddress,
+    linkTokenAddress,
+    setTransactionStatus
+  });
+} catch (err) {
+  console.error('LINK approval error:', err);
+  // Bail out early; the main tx will fail without allowance
+  setTransactionStatus(`Error: ${err.message}`);
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  setLoadingResults(false);
+  return;
+}
 
       // 5) Send the transaction using the new aggregator method
 
@@ -292,7 +476,7 @@ const handleRunQuery = async () => {
       const feeData = await provider.getFeeData();
 
       // get maxPriorityFeePerGas and maxFeePerGas with a fallback method for old nodes and implementations
-      const fallbackGasPrice = feeData.gasPrice ? feeData.gasPrice * BigInt(1000) : undefined;
+      const fallbackGasPrice = feeData.gasPrice ? feeData.gasPrice * BigInt(10) : undefined;
       const maxPriorityFeePerGas = feeData.maxPriorityFeePerGas ? feeData.maxPriorityFeePerGas : fallbackGasPrice;
       const maxFeePerGas = feeData.maxFeePerGas ? feeData.maxFeePerGas : fallbackGasPrice;
 
@@ -306,7 +490,7 @@ const handleRunQuery = async () => {
       let adjustedPriorityFee = (maxPriorityFeePerGas * BigInt(priorityFeeMultiplier)) / BigInt(divider) / BigInt(1000);
       let adjustedMaxFee = (maxFeePerGas * BigInt(maxFeeMultiplier)) / BigInt(divider) / BigInt(1000);
 
-      const FLOOR_PRIORITY = parseUnits('1', 'gwei');     // minimum tip
+      const FLOOR_PRIORITY = parseUnits('0.01', 'gwei');     // minimum tip
 
       if (adjustedPriorityFee < FLOOR_PRIORITY) adjustedPriorityFee = FLOOR_PRIORITY;
       if (adjustedMaxFee      < adjustedPriorityFee + FLOOR_PRIORITY /* headroom */) {
@@ -316,6 +500,13 @@ const handleRunQuery = async () => {
       // Parse comma-separated CIDs into an array
       const cidArray = cid.split(',').map(c => c.trim()).filter(c => c.length > 0);
       console.log('Sending CIDs to contract:', cidArray);
+
+      // Random delay to ease resource contention in the events of many simultaneous calls or repeated calls
+      const addressSeed = parseInt(walletAddress.slice(-4), 16);
+      const timeSeed = Math.floor(Date.now() / 600000); // constant over 10-minute windows
+      const combinedSeed = (addressSeed + timeSeed) % 1000;
+      const randomDelay = (combinedSeed % 200) + 10; // 10-210ms delay
+      await new Promise(resolve => setTimeout(resolve, randomDelay));
 
       setTransactionStatus?.('Sending transaction...');
       const tx = await contract.requestAIEvaluationWithApproval(
@@ -359,7 +550,7 @@ setSecondsLeft(300);          // match responseTimeoutSeconds
 
 /* ----- Build fee overrides once, reuse for timeout tx ----- */
 const feeOverrides = {
-  gasLimit: 500_000,          // plentiful; the function is cheap
+  gasLimit: 800_000,          // plentiful; the function is cheap
   maxFeePerGas: adjustedMaxFee,
   maxPriorityFeePerGas: adjustedPriorityFee
 };
@@ -567,6 +758,18 @@ This blockchain operation requires LINK tokens to pay for the AI jury service. P
             'Run Query'
           )}
           </button>
+          
+          {isConnected && (
+            <button
+              className="secondary debug-button"
+              onClick={debugContractIssues}
+              disabled={loadingResults}
+              style={{ marginLeft: '10px', fontSize: '14px' }}
+              title="Debug contract issues"
+            >
+              🔍 Debug Contract
+            </button>
+          )}
         </div>
       </div>
     </div>

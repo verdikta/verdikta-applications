@@ -8,7 +8,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Chart, CategoryScale, LinearScale, BarElement } from 'chart.js';
 import './App.css';
 import { ethers, parseEther } from 'ethers'; // ethers v6 import
-import archiveService from './utils/archiveService';
+import { createClient } from './services/verdiktaClient';
 import { fetchContracts } from './utils/contractManagementService';
 import RunQuery from './pages/RunQuery';
 import JurySelection from './pages/JurySelection';
@@ -17,6 +17,11 @@ import Results from './pages/Results';
 import ContractManagement from './pages/ContractManagement';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
+
+// Initialize browser-compatible verdikta client
+const { archiveService, manifestParser, logger } = createClient({
+  logging: { level: 'info' }
+});
 
 // Register Chart.js components
 Chart.register(CategoryScale, LinearScale, BarElement);
@@ -32,10 +37,10 @@ export const PAGES = {
 
 const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'http://localhost:5000';
 
-// fetchQueryPackageDetails function remains unchanged
+// Simplified fetchQueryPackageDetails using verdikta client
 const fetchQueryPackageDetails = async (cid) => {
   try {
-    console.log('Fetching query package:', cid);
+    logger.info('Fetching query package:', cid);
     const baseUrl = SERVER_URL.endsWith('/') ? SERVER_URL.slice(0, -1) : SERVER_URL;
     const response = await fetch(`${baseUrl}/api/fetch/${cid}?isQueryPackage=true`);
     
@@ -45,45 +50,22 @@ const fetchQueryPackageDetails = async (cid) => {
     }
 
     const blob = await response.blob();
-    console.log('Received blob:', {
+    logger.info('Received blob:', {
       size: blob.size,
       type: blob.type
     });
 
-    const archiveFile = new File([blob], 'query_package.zip', { type: 'application/zip' });
+    // Use archiveService to extract files
+    const files = await archiveService.extractArchive(blob);
+    logger.info('Extracted files:', files.map(f => f.name));
     
-    console.log('Extracting archive...');
-    const files = await archiveService.extractArchive(archiveFile);
-    console.log('Extracted files:', files.map(f => f.name));
-    
-    const manifestFile = files.find(file => file.name === 'manifest.json');
-    if (!manifestFile) {
-      throw new Error('No manifest.json found in archive');
-    }
+    // Use manifestParser to parse the extracted content
+    const result = await manifestParser.parse(files);
+    logger.info('Parsed query package successfully');
 
-    const manifestContent = await manifestFile.text();
-    const manifest = JSON.parse(manifestContent);
-    console.log('Parsed manifest:', manifest);
-
-    const primaryFile = files.find(file => file.name === manifest.primary.filename);
-    if (!primaryFile) {
-      throw new Error('Primary file not found in archive');
-    }
-
-    const primaryContent = await primaryFile.text();
-    const primaryData = JSON.parse(primaryContent);
-    console.log('Parsed primary data:', primaryData);
-
-    return {
-      query: primaryData.query || '',
-      numOutcomes: manifest.juryParameters?.NUMBER_OF_OUTCOMES || 2,
-      iterations: manifest.juryParameters?.ITERATIONS || 1,
-      juryNodes: manifest.juryParameters?.AI_NODES || [],
-      additionalFiles: manifest.additional || [],
-      supportFiles: manifest.support || []
-    };
+    return result;
   } catch (error) {
-    console.error('Error fetching query package details:', error);
+    logger.error('Error fetching query package:', error);
     throw error;
   }
 };

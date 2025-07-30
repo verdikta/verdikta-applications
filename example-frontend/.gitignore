@@ -84,4 +84,4 @@ verdikta-simple-frontend.txt
 
 # Production files that might be generated
 static/
-public/static/ 
+public/static/ server/data/contracts.json

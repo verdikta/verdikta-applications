@@ -167,20 +167,60 @@ app.post('/api/upload', async (req, res) => {
 app.get('/api/fetch/:cid', async (req, res) => {
   const { cid } = req.params;
   const isQueryPackage = req.query.isQueryPackage === 'true';
+  const isMultiCID = cid.includes(',');
 
-  // Validate CID format
-  if (!CID_REGEX.test(cid)) {
-    logger.error('Invalid CID format:', cid);
-    return res.status(400).json({
-      error: 'Invalid CID format',
-      details: 'The provided CID does not match the expected format'
-    });
+  // For multi-CID requests, validate each CID separately
+  if (isMultiCID) {
+    const cidArray = cid.split(',').map(c => c.trim()).filter(c => c);
+    for (const singleCID of cidArray) {
+      if (!CID_REGEX.test(singleCID)) {
+        logger.error('Invalid CID format in multi-CID request:', singleCID);
+        return res.status(400).json({
+          error: 'Invalid CID format',
+          details: `Invalid CID in multi-CID request: ${singleCID}`
+        });
+      }
+    }
+  } else {
+    // Validate single CID format
+    if (!CID_REGEX.test(cid)) {
+      logger.error('Invalid CID format:', cid);
+      return res.status(400).json({
+        error: 'Invalid CID format',
+        details: 'The provided CID does not match the expected format'
+      });
+    }
   }
 
   try {
-    logger.info('Fetching from IPFS:', { cid, isQueryPackage });
+    logger.info('Fetching from IPFS:', { cid, isQueryPackage, isMultiCID });
     
-    // Process CID for query packages if needed (extract first CID for multi-CID strings)
+    // Handle multi-CID requests
+    if (isMultiCID) {
+      const cidArray = cid.split(',').map(c => c.trim()).filter(c => c);
+      logger.info('Processing multi-CID request:', cidArray);
+      
+      // Fetch the first CID (primary result)
+      const primaryCID = cidArray[0];
+      logger.info('Fetching primary CID from multi-CID request:', primaryCID);
+      const data = await ipfsClient.fetchFromIPFS(primaryCID);
+      
+      logger.info('Successfully fetched primary CID from multi-CID request:', { cid: primaryCID, size: data.length });
+
+      res.set({
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': data.length,
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=31536000',
+        'X-Multi-CID': 'true',
+        'X-Primary-CID': primaryCID,
+        'X-All-CIDs': cid
+      });
+
+      return res.send(data);
+    }
+    
+    // Process CID for query packages if needed (extract first CID for single-CID strings)
     let cidToFetch = cid.trim();
     if (isQueryPackage && cidToFetch.includes(',')) {
       cidToFetch = cidToFetch.split(',')[0].trim();

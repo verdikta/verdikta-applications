@@ -29,6 +29,21 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Function to get client port from .env file
+get_client_port() {
+    local env_file="client/.env"
+    if [ -f "$env_file" ]; then
+        local port=$(grep "^PORT=" "$env_file" | cut -d'=' -f2)
+        if [ ! -z "$port" ]; then
+            echo "$port"
+        else
+            echo "3000"  # default fallback
+        fi
+    else
+        echo "3000"  # default fallback
+    fi
+}
+
 # Function to cleanup background processes
 cleanup() {
     print_status "Shutting down services..."
@@ -64,6 +79,9 @@ if [ ! -d "client" ]; then
     print_error "Client directory not found. Please run this script from the example-frontend root directory."
     exit 1
 fi
+
+# Get client port from .env file
+CLIENT_PORT=$(get_client_port)
 
 print_status "Starting Verdikta Example Frontend..."
 print_status "Press Ctrl+C to stop both services"
@@ -108,7 +126,7 @@ print_success "Client started (PID: $CLIENT_PID)"
 echo
 print_success "Both services are running!"
 print_status "Server: http://localhost:5000 (or your configured port)"
-print_status "Client: http://localhost:3000 (or your configured port)"
+print_status "Client: http://localhost:$CLIENT_PORT"
 print_warning "Press Ctrl+C to stop both services"
 echo
 

@@ -50,8 +50,13 @@ const PaginatedJustification = ({
   const [error, setError] = useState(null);
   const [hasLoaded, setHasLoaded] = useState(false);
 
-  // Split CIDs and clean them
-  const cids = resultCid?.split(',').map(cid => cid.trim()).filter(Boolean) || [];
+  // Parse CID string to handle multiple CIDs separated by commas
+  const cids = (() => {
+    if (!resultCid) return [];
+    
+    // Simple split for comma-separated CIDs
+    return resultCid.split(',').map(cid => cid.trim()).filter(Boolean);
+  })();
 
   // Define loadJustification as a useCallback function to include it in the dependencies
   const loadJustification = useCallback(async (cid) => {

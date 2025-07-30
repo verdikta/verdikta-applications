@@ -2,7 +2,7 @@
 // src/pages/RunQuery.js
 import React, { useState, useEffect } from 'react';
 // Import ethers along with parseEther from ethers v6 (we no longer import BigNumber)
-import { ethers, parseUnits } from 'ethers';
+import { ethers, parseEther, parseUnits } from 'ethers';
 import { PAGES } from '../App';
 import { fetchWithRetry, tryParseJustification } from '../utils/fetchUtils';
 import { createQueryPackageArchive } from '../utils/packageUtils';
@@ -19,7 +19,8 @@ import { ContractDebugger } from '../utils/contractDebugger';
 // Import the LINK token ABI (make sure this file exists at src/utils/LINKTokenABI.json)
 import LINK_TOKEN_ABI from '../utils/LINKTokenABI.json';
 
-// LINK token address is now retrieved dynamically from contract config
+// Set the LINK token address for your network (example for Sepolia)
+const LINK_TOKEN_ADDRESS = "0x779877A7B0D9E8603169DdbD7836e478b4624789";
 
 // Default query package CID for example/testing
 const DEFAULT_QUERY_CID = 'QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH';
@@ -29,6 +30,25 @@ const getFirstCid = (cidString) => {
   if (!cidString) return '';
   return cidString.split(',')[0].trim();
 };
+
+/**
+ * Pick the best provider for read‑only calls:
+ * 1 → MetaMask if installed
+ * 2 → any other injected provider
+ * 3 → fallback to public RPC
+ */
+function getReadOnlyProvider() {
+  // 1. look for MetaMask in the multi‑provider array
+  const injected = window.ethereum?.providers?.find(p => p.isMetaMask);
+  if (injected) return new ethers.BrowserProvider(injected);
+
+  // 2. single injected provider (does not work with Brave) 
+  if (window.ethereum && window.ethereum.isBraveWallet === false) 
+    return new ethers.BrowserProvider(window.ethereum);
+
+  // 3. no wallet at all – use public Base Sepolia RPC
+  return new ethers.JsonRpcProvider("https://sepolia.base.org");
+}
 
 // Helper function to poll for evaluation results
 async function pollForEvaluationResults(
@@ -85,40 +105,8 @@ async function pollForEvaluationResults(
     console.error('Justification fetch error:', error);
     setJustification?.(`Error loading justification: ${error.message}`);
   }
+  return { status: 'fulfilled' };
 }
-
-/**
- * Make sure `spender` (your aggregator contract) has at least
- * `requiredExtra` more LINK allowance.
- *
- * Because LINK only implements `approve(spender, amount)` (which REPLACES
- * the allowance), we approve for: currentAllowance + requiredExtra.
- */
-/*
-async function topUpLinkAllowance({
-  requiredExtra,        // bigint  (fee for *this* request)
-  provider,
-  owner,                // walletAddress (msg.sender)
-  spender,              // contractAddress (aggregator)
-  linkTokenAddress,
-  setTransactionStatus  // optional UI callback
-}) {
-  const signer = await provider.getSigner();
-  const link   = new ethers.Contract(linkTokenAddress, LINK_TOKEN_ABI, signer);
-
-  // How much is already approved?
-  const current = await link.allowance(owner, spender);
-
-  // Add just the missing delta (safer than max-uint approval)
-  const newTotal = current + requiredExtra;
-  console.log(`Approving ${ethers.formatUnits(newTotal, 18)} LINK in total …`);
-  setTransactionStatus?.('Requesting LINK approval…');
-
-  const tx = await link.approve(spender, newTotal);
-  await tx.wait();
-  console.log('LINK approval confirmed');
-}
-*/
 
 /**
  * Grow or replace LINK allowance according to age of last Approval event.
@@ -157,7 +145,7 @@ async function topUpLinkAllowance({
   }
 
   // 2.  Current allowance 
-  const current = await link.allowance(owner, spender);          // bigint
+  const current = await link.allowance(owner, spender); 
 
   // 3.  Decide newTotal 
   let newTotal;
@@ -233,7 +221,7 @@ function RunQuery({
   maxFeeBasedScalingFactor,
   selectedContractClass,
 }) {
-  // Removed unused tooltip state - functionality can be added back if needed
+  const [activeTooltipId, setActiveTooltipId] = useState(null);
   const [textAddendum, setTextAddendum] = useState('');
   // Add state to track if we're showing the default CID value
   const [showingDefaultCid, setShowingDefaultCid] = useState(queryPackageCid === '' || queryPackageCid === undefined);
@@ -311,17 +299,19 @@ const handleRunQuery = async () => {
     let provider = new ethers.BrowserProvider(window.ethereum);
     provider = await switchToBaseSepolia(provider);
     const signer = await provider.getSigner();
-    const contract = new ethers.Contract(contractAddress, CONTRACT_ABI, signer);
+    const writeContract = new ethers.Contract(contractAddress, CONTRACT_ABI, signer);
+    const readContract  = new ethers.Contract(
+       contractAddress, CONTRACT_ABI, getReadOnlyProvider());
 
     // 2) Check contract funding
     // setTransactionStatus?.('Checking contract funding...');
     // await checkContractFunding(contract, provider);
-    const config = await contract.getContractConfig();
+    const config = await readContract.getContractConfig();
     const linkTokenAddress = config.linkAddr;
 
-    // ❶ read the on-chain responseTimeoutSeconds so UI stays in sync
+    // Read the on-chain responseTimeoutSeconds so UI stays in sync
     const responseTimeoutSeconds = Number(
-      await contract.responseTimeoutSeconds()
+      await readContract.responseTimeoutSeconds()
     );
 
       // 3) Process query package based on selected method (config, file, or IPFS)
@@ -393,82 +383,25 @@ const handleRunQuery = async () => {
         setCurrentCid?.(cid);
       }
 
-/*
-// 4) Make sure the contract has *additional* LINK allowance for this call
-try {
-  const singleRequestFee = await contract.maxTotalFee(maxFee);   // bigint
-  console.log('Max total fee given by contract: ', singleRequestFee.toString());
-  setTransactionStatus?.('Requesting LINK approval...');
-  await topUpLinkAllowance({
-    requiredExtra:       singleRequestFee,
-    provider,
-    owner:               walletAddress,
-    spender:             contractAddress,
-    linkTokenAddress,
-    setTransactionStatus
-  });
-  console.log('Approval amount: ', singleRequestFee.toString());  
-  } catch (error) {
-    console.error("LINK approval error:", error);
-    // Continue even if approval fails - the contract will check if enough allowance exists
-  }
-*/
-
-// 4) Handle LINK allowance (time-aware: reset if older than 1 hour)
-/*
-try {
-  const feeForThisRequest = await contract.maxTotalFee(maxFee);     // bigint ≈ 1e18-scale
-  const ageSecs = await secondsSinceLastApproval({
-    provider,
-    owner:   walletAddress,
-    spender: contractAddress,
-    linkTokenAddress
-  });
-
-  const signer = await provider.getSigner();
-  const link   = new ethers.Contract(linkTokenAddress, LINK_TOKEN_ABI, signer);
-
-  if (ageSecs > 3600) {
-    // The last approval is stale → start clean
-    // ONE-STEP replace (atomic)
-    setTransactionStatus?.('Replacing stale LINK allowance…');
-    await (await link.approve(contractAddress, feeForThisRequest)).wait();
-    console.log(`Allowance set to ${ethers.formatUnits(feeForThisRequest, 18)} LINK`);
-  } else {
-    // Approval is recent → just extend by this request’s fee. 
-    await topUpLinkAllowance({
-      requiredExtra:     feeForThisRequest,
-      provider,
-      owner:             walletAddress,
-      spender:           contractAddress,
-      linkTokenAddress,
-      setTransactionStatus
-    });
-  }
-} catch (error) {
-  console.error('LINK approval error:', error);
-  // Continue: contract will revert later if allowance still insufficient.
-}
-*/
-// 4) Make sure the contract has enough LINK allowance
-try {
-  const feeForThisRequest = await contract.maxTotalFee(maxFee);
-  await topUpLinkAllowance({
-    requiredExtra:     feeForThisRequest,
-    provider,
-    owner:             walletAddress,
-    spender:           contractAddress,
-    linkTokenAddress,
-    setTransactionStatus
-  });
-} catch (err) {
-  console.error('LINK approval error:', err);
-  // Bail out early; the main tx will fail without allowance
-  setTransactionStatus(`Error: ${err.message}`);
-  await new Promise(resolve => setTimeout(resolve, 2000));
-  setLoadingResults(false);
-  return;
-}
+    // 4) Make sure the contract has enough LINK allowance
+    try {
+      const feeForThisRequest = await readContract.maxTotalFee(maxFee);
+      await topUpLinkAllowance({
+        requiredExtra:     feeForThisRequest,
+        provider,
+        owner:             walletAddress,
+        spender:           contractAddress,
+        linkTokenAddress,
+        setTransactionStatus
+      });
+    } catch (err) {
+      console.error('LINK approval error:', err);
+      // Bail out early; the main tx will fail without allowance
+      setTransactionStatus(`Error: ${err.message}`);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      setLoadingResults(false);
+      return;
+    }
 
       // 5) Send the transaction using the new aggregator method
 
@@ -509,7 +442,7 @@ try {
       await new Promise(resolve => setTimeout(resolve, randomDelay));
 
       setTransactionStatus?.('Sending transaction...');
-      const tx = await contract.requestAIEvaluationWithApproval(
+      const tx = await writeContract.requestAIEvaluationWithApproval(
         cidArray,
 	textAddendum.trim(),
         alpha,
@@ -534,7 +467,7 @@ try {
       const event = receipt.logs
         .map(log => {
           try {
-            return contract.interface.parseLog({ topics: log.topics, data: log.data });
+            return writeContract.interface.parseLog({ topics: log.topics, data: log.data });
           } catch (e) {
             return null;
           }
@@ -550,7 +483,7 @@ setSecondsLeft(300);          // match responseTimeoutSeconds
 
 /* ----- Build fee overrides once, reuse for timeout tx ----- */
 const feeOverrides = {
-  gasLimit: 800_000,          // plentiful; the function is cheap
+  gasLimit: 900_000,          // plentiful; the function is cheap
   maxFeePerGas: adjustedMaxFee,
   maxPriorityFeePerGas: adjustedPriorityFee
 };
@@ -567,7 +500,7 @@ const pollCallbacks = {
 };
 
 const result = await waitForFulfilOrTimeout({
-  contract,
+  contract: readContract,
   requestId,
   pollCallbacks,
   feeOverrides,

@@ -30,9 +30,9 @@ export async function waitForFulfilOrTimeout({
     pollCallbacks.setResultCid,
     pollCallbacks.setResultTimestamp,
     pollCallbacks.setOutcomeLabels
-  ).then(() => {
-    cancelled = true; // mark as done, prevent active timeout
-    return { status: 'fulfilled' };
+  ).then(result => {                       
+    cancelled = true;         // cancel the timeout
+    return result ?? { status: 'fulfilled' };
   });
 
   /* --- B. One-shot timer that fires finalizeEvaluationTimeout() --- */

@@ -225,6 +225,9 @@ function RunQuery({
   const [textAddendum, setTextAddendum] = useState('');
   // Add state to track if we're showing the default CID value
   const [showingDefaultCid, setShowingDefaultCid] = useState(queryPackageCid === '' || queryPackageCid === undefined);
+  // Add state to track errors and enable debug functionality
+  const [hasError, setHasError] = useState(false);
+  const [lastError, setLastError] = useState(null);
 
   // Timer
   const [secondsLeft, setSecondsLeft] = useState(null);   // null = countdown not active
@@ -255,26 +258,41 @@ function RunQuery({
 const debugContractIssues = async () => {
   try {
     console.log('🔍 Running contract diagnostics...');
+    
+    // Show context about the last error if available
+    let errorContext = '';
+    if (lastError) {
+      errorContext = `\n🚨 Last Error Context:\n${lastError.message}\n\n`;
+      console.log('📋 Last Error Details:', lastError);
+    }
+    
     const provider = new ethers.BrowserProvider(window.ethereum);
     const contractDebugger = new ContractDebugger(provider, contractAddress, walletAddress);
     
+    // Get actual parameters from current state
+    const currentCid = selectedMethod === 'ipfs' 
+      ? (showingDefaultCid ? DEFAULT_QUERY_CID : queryPackageCid.trim())
+      : 'QmSnynnZVufbeb9GVNLBjxBJ45FyHgjPYUHTvMK5VmQZcS';
+    
     const report = await contractDebugger.generateDebugReport(
-      ['QmSnynnZVufbeb9GVNLBjxBJ45FyHgjPYUHTvMK5VmQZcS'], // test CID
-      '',
-      500, // alpha
-      parseUnits("0.01", 18), // maxFee
-      parseUnits("0.0001", 18), // estimatedBaseCost
-      10, // maxFeeBasedScalingFactor
-      selectedContractClass
+      [getFirstCid(currentCid)], // Use actual CID from current state
+      textAddendum.trim(),
+      alpha || 500, // Use actual alpha value
+      maxFee || parseUnits("0.01", 18), // Use actual maxFee
+      estimatedBaseCost || parseUnits("0.0001", 18), // Use actual estimatedBaseCost
+      maxFeeBasedScalingFactor || 10, // Use actual scaling factor
+      selectedContractClass || 128
     );
     
     console.log('📋 Full Debug Report:', report);
     
-    // Show critical issues to user
+    // Show critical issues to user with error context
     const criticalIssues = report.recommendations.filter(r => r.priority === 'CRITICAL' || r.priority === 'HIGH');
     if (criticalIssues.length > 0) {
       const issueText = criticalIssues.map(issue => `• ${issue.issue}: ${issue.solution}`).join('\n');
-      alert(`🚨 Contract Issues Detected:\n\n${issueText}\n\nCheck console for full report.`);
+      alert(`🚨 Contract Issues Detected:${errorContext}${issueText}\n\nCheck console for full debug report and error details.`);
+    } else if (lastError) {
+      alert(`🔍 Debug Analysis:${errorContext}✅ No critical contract issues detected.\nThe error may be related to network conditions, gas settings, or transaction timing.\n\nCheck console for full debug report and error details.`);
     } else {
       alert('✅ No critical issues detected. Check console for full report.');
     }
@@ -294,6 +312,9 @@ const handleRunQuery = async () => {
   try {
     setLoadingResults(true);
     setTransactionStatus('Processing...');
+    // Clear any previous errors when starting a new query
+    setHasError(false);
+    setLastError(null);
 
     // 1) Connect and switch to Base Sepolia
     let provider = new ethers.BrowserProvider(window.ethereum);
@@ -396,6 +417,9 @@ const handleRunQuery = async () => {
       });
     } catch (err) {
       console.error('LINK approval error:', err);
+      // Set error state for debug functionality
+      setHasError(true);
+      setLastError(err);
       // Bail out early; the main tx will fail without allowance
       setTransactionStatus(`Error: ${err.message}`);
       await new Promise(resolve => setTimeout(resolve, 2000));
@@ -519,6 +543,10 @@ if (result.status === 'timed-out') {
       setCurrentPage(PAGES.RESULTS);
     } catch (error) {
       console.error('Error running query:', error);
+      // Set error state to enable debug functionality
+      setHasError(true);
+      setLastError(error);
+      
       if (error.message.includes('Insufficient LINK tokens')) {
         const errorMessage = `Contract doesn't have enough LINK tokens to perform this operation.
 
@@ -692,13 +720,13 @@ This blockchain operation requires LINK tokens to pay for the AI jury service. P
           )}
           </button>
           
-          {isConnected && (
+          {isConnected && hasError && (
             <button
               className="secondary debug-button"
               onClick={debugContractIssues}
               disabled={loadingResults}
               style={{ marginLeft: '10px', fontSize: '14px' }}
-              title="Debug contract issues"
+              title="Debug contract issues and analyze the last error"
             >
               🔍 Debug Contract
             </button>

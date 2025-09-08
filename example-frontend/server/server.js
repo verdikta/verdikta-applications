@@ -6,28 +6,19 @@ const fs = require('fs').promises;
 const fetch = require('node-fetch');
 require('dotenv').config();
 
-const { createClient } = require('@verdikta/common');
+const { IPFSClient } = require('@verdikta/common');
+const appLogger = require('./utils/appLogger');
 const app = express();
 
-// Initialize verdikta-common client with IPFS configuration
-const config = {
-  ipfs: {
-    gateway: 'https://ipfs.io',
-    pinningService: process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud',
-    pinningKey: process.env.IPFS_PINNING_KEY,
-    timeout: 30000,
-    retryOptions: {
-      retries: 5,
-      factor: 2
-    }
-  },
-  logging: {
-    level: process.env.NODE_ENV === 'development' ? 'debug' : 'info',
-    console: true
-  }
-};
-
-const { ipfsClient, logger } = createClient(config);
+// Initialize IPFS client with sanitized logger
+const ipfsClient = new IPFSClient({
+  gateway: 'https://ipfs.io',
+  pinningService: process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud',
+  pinningKey: process.env.IPFS_PINNING_KEY,
+  timeout: 30000,
+  retryOptions: { retries: 5, factor: 2 }
+}, appLogger);
+const logger = appLogger;
 // Import contract routes and manager
 const contractRoutes = require('./routes/contractRoutes');
 const { syncOnShutdown } = require('./utils/contractsManager');
@@ -137,10 +128,8 @@ app.post('/api/upload', async (req, res) => {
       size: req.file.size
     });
 
-    // Read file data and upload to IPFS using verdikta-common
-    const fileData = await fs.readFile(req.file.path);
-    const uploadResult = await ipfsClient.uploadToIPFS(fileData, req.file.originalname);
-    const cid = uploadResult.IpfsHash;
+    // Upload to IPFS using verdikta-common (expects a file path)
+    const cid = await ipfsClient.uploadToIPFS(req.file.path);
     logger.info('Upload successful:', { cid, filename: req.file.originalname });
 
     res.json({

@@ -1,4 +1,5 @@
 # Set up required software. Run this only once.
+# After running this, you still must set up .env in server/ and client/
 
 # Update package list
 sudo apt update

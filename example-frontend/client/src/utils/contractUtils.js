@@ -1,6 +1,42 @@
 // src/utils/contractUtils.js
-
 import { ethers } from 'ethers';
+
+/* Network config selected by REACT_APP_NETWORK = 'base' | 'base_sepolia' */
+const NETWORKS = {
+  base: {
+    key: 'base',
+    name: 'Base',
+    chainId: 8453,
+    chainIdHex: '0x2105',
+    rpcUrl: 'https://mainnet.base.org',
+    explorer: 'https://basescan.org',
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+  },
+  base_sepolia: {
+    key: 'base_sepolia',
+    name: 'Base Sepolia',
+    chainId: 84532,
+    chainIdHex: '0x14A34',
+    rpcUrl: 'https://sepolia.base.org',
+    explorer: 'https://sepolia.basescan.org',
+    nativeCurrency: { name: 'Sepolia Ether', symbol: 'ETH', decimals: 18 },
+  },
+};
+
+const NET_KEY = process.env.REACT_APP_NETWORK || 'base_sepolia';
+export const CURRENT_NETWORK = NETWORKS[NET_KEY] || NETWORKS.base_sepolia;
+
+export const RPC_URL = CURRENT_NETWORK.rpcUrl;
+export const EXPLORER_URL = CURRENT_NETWORK.explorer;
+export const TARGET_CHAIN_ID = CURRENT_NETWORK.chainId;
+export const TARGET_CHAIN_ID_HEX = CURRENT_NETWORK.chainIdHex;
+export const CHAIN_PARAMS = {
+  chainId: TARGET_CHAIN_ID_HEX,
+  chainName: CURRENT_NETWORK.name,
+  nativeCurrency: CURRENT_NETWORK.nativeCurrency,
+  rpcUrls: [RPC_URL],
+  blockExplorerUrls: [EXPLORER_URL],
+};
 
 // ------------------
 // Contract Constants
@@ -21,101 +57,71 @@ export const CONTRACT_ABI = [
   'function finalizeEvaluationTimeout(bytes32 aggId) external'
 ];
 
-export const BASE_SEPOLIA_CHAIN_ID = 84532;
-export const BASE_SEPOLIA_PARAMS = {
-  chainId: '0x14A34', // 84532 in hex
-  chainName: 'Base Sepolia',
-  nativeCurrency: {
-    name: 'Ethereum',
-    symbol: 'ETH',
-    decimals: 18
-  },
-  rpcUrls: ['https://sepolia.base.org'],
-  blockExplorerUrls: ['https://sepolia.basescan.org']
-};
-
 // ------------------
 // Helper Functions
 // ------------------
 export async function debugContract(contract) {
-  console.log("Debug contract called with:", {
+  console.log('Debug contract called with:', {
     contractExists: !!contract,
     contractType: typeof contract,
-    contractKeys: contract ? Object.keys(contract) : 'N/A'
+    contractKeys: contract ? Object.keys(contract) : 'N/A',
   });
 
   if (!contract) {
-    console.error("Contract is undefined or null");
+    console.error('Contract is undefined or null');
     return;
   }
 
   try {
     const debugInfo = {
-      target: {
-        exists: !!contract.target,
-        value: contract.target,
-        type: typeof contract.target
-      },
+      target: { exists: !!contract.target, value: contract.target, type: typeof contract.target },
       interface: {
         exists: !!contract.interface,
         type: typeof contract.interface,
-        functions: contract.interface ? 
-          Object.keys(contract.interface.functions || {}) : 
-          'No functions found'
+        functions: contract.interface ? Object.keys(contract.interface.functions || {}) : 'No functions found',
       },
-      provider: {
-        exists: !!contract.provider,
-        type: typeof contract.provider
-      },
-      signer: {
-        exists: !!contract.signer,
-        type: typeof contract.signer
-      }
+      provider: { exists: !!contract.provider, type: typeof contract.provider },
+      signer: { exists: !!contract.signer, type: typeof contract.signer },
     };
-
-    console.log("Contract debug info:", debugInfo);
+    console.log('Contract debug info:', debugInfo);
   } catch (error) {
-    console.error("Error in debugContract:", {
+    console.error('Error in debugContract:', {
       errorMessage: error.message,
       errorType: error.name,
-      errorStack: error.stack
+      errorStack: error.stack,
     });
   }
 }
 
-export async function switchToBaseSepolia(provider) {
-  const network = await provider.getNetwork();
-  console.log("Current network:", network);
+/** Ensure MetaMask is on the selected network (Base or Base Sepolia). */
+export async function ensureCorrectNetwork(provider) {
+  if (typeof window === 'undefined' || !window.ethereum) return provider;
 
-  if (network.chainId.toString() !== BASE_SEPOLIA_CHAIN_ID.toString()) {
-    console.log("Not on Base Sepolia, attempting to switch...");
+  const network = await provider.getNetwork();
+  console.log('Current network:', network);
+
+  if (network.chainId.toString() !== TARGET_CHAIN_ID.toString()) {
+    console.log(`Not on ${CURRENT_NETWORK.name}, attempting to switch...`);
     try {
       await window.ethereum.request({
         method: 'wallet_switchEthereumChain',
-        params: [{ chainId: BASE_SEPOLIA_PARAMS.chainId }]
+        params: [{ chainId: TARGET_CHAIN_ID_HEX }],
       });
     } catch (switchError) {
-      if (switchError.code === 4902) {
-        try {
-          await window.ethereum.request({
-            method: 'wallet_addEthereumChain',
-            params: [BASE_SEPOLIA_PARAMS]
-          });
-        } catch (addError) {
-          throw new Error('Please add Base Sepolia network to MetaMask and try again');
-        }
+      if (switchError && switchError.code === 4902) {
+        await window.ethereum.request({
+          method: 'wallet_addEthereumChain',
+          params: [CHAIN_PARAMS],
+        });
+      } else {
+        throw new Error(`Please switch to ${CURRENT_NETWORK.name} in MetaMask`);
       }
-      throw new Error('Please switch to Base Sepolia network in MetaMask');
     }
 
-    // Wait for network change to complete
     return new Promise((resolve) => {
       const handleNetworkChange = () => {
         window.ethereum.removeListener('chainChanged', handleNetworkChange);
-        setTimeout(async () => {
-          const newProvider = new ethers.BrowserProvider(window.ethereum);
-          resolve(newProvider);
-        }, 1000);
+        setTimeout(() => resolve(new ethers.BrowserProvider(window.ethereum)), 800);
       };
       window.ethereum.on('chainChanged', handleNetworkChange);
     });
@@ -123,104 +129,103 @@ export async function switchToBaseSepolia(provider) {
   return provider;
 }
 
+/** Back-compat alias if other code still calls the old function name. */
+export async function switchToBaseSepolia(provider) {
+  console.warn('switchToBaseSepolia() is deprecated. Using ensureCorrectNetwork() with dynamic network.');
+  return ensureCorrectNetwork(provider);
+}
+
+/** Optional: direct RPC provider if you don’t want to use an injected wallet. */
+export function makeRpcProvider() {
+  return new ethers.JsonRpcProvider(RPC_URL);
+}
+
 export async function checkContractFunding(contract, provider) {
   try {
-    console.log("checkContractFunding called with:", {
+    console.log('checkContractFunding called with:', {
       contractExists: !!contract,
       providerExists: !!provider,
-      contractAddress: contract?.target
+      contractAddress: contract?.target,
     });
 
     if (!contract || !provider) {
       throw new Error(`Invalid parameters: contract=${!!contract}, provider=${!!provider}`);
     }
 
-    // Check network and attempt to switch if needed
     const network = await provider.getNetwork();
-    console.log("Current network:", network);
+    console.log('Current network:', network);
 
-    // Compare chainId as strings to avoid BigInt issues
-    if (network.chainId.toString() !== BASE_SEPOLIA_CHAIN_ID.toString()) {
-      console.log("Not on Base Sepolia, attempting to switch...");
+    if (network.chainId.toString() !== TARGET_CHAIN_ID.toString()) {
+      console.log(`Not on ${CURRENT_NETWORK.name}, attempting to switch...`);
       try {
-        // Try to switch to Base Sepolia
         await window.ethereum.request({
           method: 'wallet_switchEthereumChain',
-          params: [{ chainId: BASE_SEPOLIA_PARAMS.chainId }]
+          params: [{ chainId: TARGET_CHAIN_ID_HEX }],
         });
       } catch (switchError) {
-        // This error code indicates that the chain has not been added to MetaMask
-        if (switchError.code === 4902) {
+        if (switchError && switchError.code === 4902) {
           try {
             await window.ethereum.request({
               method: 'wallet_addEthereumChain',
-              params: [BASE_SEPOLIA_PARAMS]
+              params: [CHAIN_PARAMS],
             });
           } catch (addError) {
-            throw new Error('Please add Base Sepolia network to MetaMask and try again');
+            throw new Error(`Please add ${CURRENT_NETWORK.name} to MetaMask and try again`);
           }
         }
-        throw new Error('Please switch to Base Sepolia network in MetaMask');
+        throw new Error(`Please switch to ${CURRENT_NETWORK.name} in MetaMask`);
       }
-      
-      // Get new provider after network switch
+
       const newProvider = new ethers.BrowserProvider(window.ethereum);
-      // Wait a moment for the network switch to complete
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Create new contract instance with new provider
+      await new Promise((resolve) => setTimeout(resolve, 1000));
       const newContract = new ethers.Contract(contract.target, CONTRACT_ABI, await newProvider.getSigner());
-      
-      // Recursively call with new contract and provider
       return checkContractFunding(newContract, newProvider);
     }
 
-    // Debug contract interface
     await debugContract(contract);
-    
-    // Verify contract code exists at address
+
     const code = await provider.getCode(contract.target);
-    console.log("Contract code at address:", {
+    console.log('Contract code at address:', {
       address: contract.target,
       codeExists: code !== '0x',
-      codeLength: code.length
+      codeLength: code.length,
     });
+    if (code === '0x') throw new Error(`No contract found at address ${contract.target}`);
 
-    if (code === '0x') {
-      throw new Error(`No contract found at address ${contract.target}`);
-    }
-
-    console.log("Calling getContractConfig...");
+    console.log('Calling getContractConfig...');
     const config = await contract.getContractConfig();
-    console.log("Contract config received:", config);
+    console.log('Contract config received:', config);
 
     const linkToken = new ethers.Contract(
       config.linkAddr,
       ['function balanceOf(address) view returns (uint256)'],
       provider
     );
-    
+
     const balance = await linkToken.balanceOf(contract.target);
     const fee = config.currentFee;
-    
-    console.log("Contract LINK balance:", ethers.formatEther(balance));
-    console.log("Required fee:", ethers.formatEther(fee));
-    
+
+    console.log('Contract LINK balance:', ethers.formatEther(balance));
+    console.log('Required fee:', ethers.formatEther(fee));
+
     if (balance < fee) {
-      throw new Error(`Insufficient LINK tokens. Contract needs at least ${ethers.formatEther(fee)} LINK but has ${ethers.formatEther(balance)} LINK`);
+      throw new Error(
+        `Insufficient LINK tokens. Contract needs at least ${ethers.formatEther(fee)} LINK but has ${ethers.formatEther(balance)} LINK`
+      );
     }
-    
+
     return config;
   } catch (error) {
-    console.error("Detailed error in checkContractFunding:", {
+    console.error('Detailed error in checkContractFunding:', {
       message: error.message,
       code: error.code,
       data: error.data,
       name: error.name,
       stack: error.stack,
       contract: contract?.target,
-      provider: provider?.connection?.url
+      provider: provider?.connection?.url,
     });
     throw error;
   }
 }
+

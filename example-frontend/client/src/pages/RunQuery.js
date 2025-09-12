@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 // Import ethers along with parseEther from ethers v6 (we no longer import BigNumber)
 import { ethers, parseEther, parseUnits } from 'ethers';
+import { RPC_URL } from '../utils/contractUtils';
 import { PAGES } from '../App';
 import { fetchWithRetry, tryParseJustification } from '../utils/fetchUtils';
 import { createQueryPackageArchive } from '../utils/packageUtils';
@@ -10,17 +11,14 @@ import { uploadToServer } from '../utils/serverUtils';
 import { getAugmentedQueryText } from '../utils/queryUtils';
 import {
   CONTRACT_ABI,
-  switchToBaseSepolia,
-  // checkContractFunding,
+  ensureCorrectNetwork,
+  CURRENT_NETWORK,
 } from '../utils/contractUtils';
 import { waitForFulfilOrTimeout } from '../utils/timeoutUtils';
 import { ContractDebugger } from '../utils/contractDebugger';
 
 // Import the LINK token ABI (make sure this file exists at src/utils/LINKTokenABI.json)
 import LINK_TOKEN_ABI from '../utils/LINKTokenABI.json';
-
-// Set the LINK token address for your network (example for Sepolia)
-const LINK_TOKEN_ADDRESS = "0x779877A7B0D9E8603169DdbD7836e478b4624789";
 
 // Default query package CID for example/testing
 const DEFAULT_QUERY_CID = 'QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH';
@@ -47,7 +45,8 @@ function getReadOnlyProvider() {
     return new ethers.BrowserProvider(window.ethereum);
 
   // 3. no wallet at all – use public Base Sepolia RPC
-  return new ethers.JsonRpcProvider("https://sepolia.base.org");
+  return new ethers.JsonRpcProvider(RPC_URL);
+
 }
 
 // Helper function to poll for evaluation results
@@ -316,19 +315,34 @@ const handleRunQuery = async () => {
     setHasError(false);
     setLastError(null);
 
-    // 1) Connect and switch to Base Sepolia
+    // 1) Ensure wallet is on the selected network (base or base_sepolia)
     let provider = new ethers.BrowserProvider(window.ethereum);
-    provider = await switchToBaseSepolia(provider);
+    provider = await ensureCorrectNetwork(provider); // respects REACT_APP_NETWORK
+
+   // Quick existence check
+   const roProvider = getReadOnlyProvider(); // uses RPC_URL for selected network
+   // Verify the selected address actually exists on this chain
+   const codeAtAddr = await roProvider.getCode(contractAddress);
+   if (codeAtAddr === '0x') {
+     setTransactionStatus(`Error: No contract at ${contractAddress} on ${CURRENT_NETWORK.name}`);
+     alert(`No contract at ${contractAddress} on ${CURRENT_NETWORK.name}. Did you pick the right address for this network?`);
+     setLoadingResults(false);
+     return;
+   }
+
     const signer = await provider.getSigner();
     const writeContract = new ethers.Contract(contractAddress, CONTRACT_ABI, signer);
     const readContract  = new ethers.Contract(
-       contractAddress, CONTRACT_ABI, getReadOnlyProvider());
+       contractAddress, CONTRACT_ABI, roProvider);
 
     // 2) Check contract funding
     // setTransactionStatus?.('Checking contract funding...');
     // await checkContractFunding(contract, provider);
     const config = await readContract.getContractConfig();
     const linkTokenAddress = config.linkAddr;
+    if ((await roProvider.getCode(linkTokenAddress)) === '0x') {
+      throw new Error(`LINK token not found at ${linkTokenAddress} on ${CURRENT_NETWORK.name}`);
+    }
 
     // Read the on-chain responseTimeoutSeconds so UI stays in sync
     const responseTimeoutSeconds = Number(

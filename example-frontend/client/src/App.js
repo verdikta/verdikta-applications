@@ -272,7 +272,7 @@ function App() {
 
   const renderHeader = () => (
     <header className="app-header">
-      <div className="brand">AI Jury System</div>
+      <div className="brand">Verdikta Playground</div>
       <nav className="main-nav">
         <button 
           className={currentPage === PAGES.DEFINE_QUERY ? 'active' : ''}

@@ -1,35 +1,15 @@
 {
   "contracts": [
     {
-      "address": "0x2E67c4D565C55E31514eDd68E42bFBb50a2C49F1",
-      "name": "AINode1",
+      "address": "0x2f7a02298D4478213057edA5e5bEB07F20c4c054",
+      "name": "Base Aggregator",
       "class": 128
     },
     {
-      "address": "0xa2c91C0C8B77e78Ce06Fd49dd1F021e859AC0AFF",
-      "name": "AlphaAINodeNMT",
+      "address": "0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089",
+      "name": "Base Sepolia Aggregator",
       "class": 128
-    },
-    {
-      "address": "0x80130F4199f50DFdE6D386736295567A41cFA15c",
-      "name": "AlphaAINodeJDE",
-      "class": 128
-    },
-    {
-      "address": "0xffEE731e1a61084B79805c5CF2A65577D40D848F",
-      "name": "AIAggregator1",
-      "class": 128
-    },
-    {
-      "address": "0xff46828DE968bff707713f5a402fd5E155345864",
-      "name": "ReputationBasedAggregator1",
-      "class": 128
-    },
-    {
-      "address": "0x65863e5e0B2c2968dBbD1c95BDC2e0EA598E5e02",
-      "name": "Aggregator-e02",
-      "class": 600
     }
   ],
-  "lastUpdated": "2025-07-23T19:42:53.355Z"
+  "lastUpdated": "2025-09-12T18:44:51.553Z"
 }

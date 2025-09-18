@@ -1,10 +1,10 @@
-# Verdikta Applications
+# Developers Documentation
 
-This section contains documentation for all Verdikta applications and integrations.
+This section contains documentation for developers working with Verdikta - both for **integrating Verdikta** into your applications and **contributing** to the Verdikta project.
 
-## Comprehensive User Guide
+## For Third-Party Developers
 
-- **[Verdikta User Guide](user-guide.md)** - Complete developer and user guide for the Verdikta AI-powered evaluation system, covering concepts, integration, and usage
+- **[Integration Guide](user-guide.md)** - Complete developer guide for integrating the Verdikta AI-powered evaluation system into your applications
 
 ## Available Applications
 
@@ -15,11 +15,18 @@ A complete example frontend application demonstrating Verdikta integration.
 - [Architecture Overview](example-frontend/architecture.md)
 - [User Guide](example-frontend/index.md)
 
-## Developer Resources
+## Integration Resources
 
 - [API Integration Guide](example-frontend/api-integration.md)
 - [Component Documentation](example-frontend/components/index.md)
 - [Development Setup](example-frontend/development/index.md)
+
+## For Contributors
+
+Looking to contribute to Verdikta itself? Check out the **[Contributing Guide](https://github.com/verdikta/verdikta-arbiter/blob/main/docs/CONTRIBUTING.md)** for:
+- [Development setup](https://github.com/verdikta/verdikta-arbiter/blob/main/docs/development/setup.md) and [architecture](https://github.com/verdikta/verdikta-arbiter/blob/main/docs/development/architecture.md)
+- [Contributing guidelines](https://github.com/verdikta/verdikta-arbiter/blob/main/docs/CONTRIBUTING.md)
+- [Technical documentation](https://github.com/verdikta/verdikta-arbiter/blob/main/docs/index.md)
 
 ## Future Applications
 

@@ -126,7 +126,7 @@ markdown_extensions:
 # Page tree
 nav:
   - Home: index.md
-  - Comprehensive User Guide: user-guide.md
+  - Integration Guide: user-guide.md
   - Example Frontend:
     - example-frontend/index.md
     - Getting Started: example-frontend/getting-started.md
@@ -141,4 +141,9 @@ nav:
     - Components:
       - example-frontend/components/index.md
     - Development:
-      - example-frontend/development/index.md 
+      - example-frontend/development/index.md
+  - Contributors:
+    - Contributing Guide: https://github.com/verdikta/verdikta-arbiter/blob/main/docs/CONTRIBUTING.md
+    - Development Guide: https://github.com/verdikta/verdikta-arbiter/blob/main/docs/index.md
+    - Development Setup: https://github.com/verdikta/verdikta-arbiter/blob/main/docs/development/setup.md
+    - Architecture: https://github.com/verdikta/verdikta-arbiter/blob/main/docs/development/architecture.md 

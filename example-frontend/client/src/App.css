@@ -58,6 +58,12 @@ body {
   color: #FFFFFF;
 }
 
+.brand-subtitle {
+  font-size: 0.8rem;
+  opacity: 0.75;
+  margin-top: 2px;
+}
+
 .main-nav button {
   background: none;
   border: none;

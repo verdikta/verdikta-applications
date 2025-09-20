@@ -37,6 +37,13 @@ export const PAGES = {
 
 const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'http://localhost:5000';
 
+// Set network label from .env
+const NETWORK = (process.env.REACT_APP_NETWORK || '').toLowerCase();
+const NETWORK_LABEL =
+  NETWORK === 'base_sepolia' ? 'Base Sepolia' :
+  NETWORK === 'base' ? 'Base' :
+  '';
+
 // Simplified fetchQueryPackageDetails using verdikta client
 const fetchQueryPackageDetails = async (cid) => {
   try {
@@ -272,7 +279,10 @@ function App() {
 
   const renderHeader = () => (
     <header className="app-header">
-      <div className="brand">Verdikta Playground</div>
+      <div className="brand">
+        <div className="brand-title">Verdikta Playground</div>
+        {NETWORK_LABEL && <div className="brand-subtitle">{NETWORK_LABEL}</div>}
+      </div>
       <nav className="main-nav">
         <button 
           className={currentPage === PAGES.DEFINE_QUERY ? 'active' : ''}

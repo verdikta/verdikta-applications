@@ -2,14 +2,9 @@
   "contracts": [
     {
       "address": "0x2f7a02298D4478213057edA5e5bEB07F20c4c054",
-      "name": "Base Aggregator",
-      "class": 128
-    },
-    {
-      "address": "0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089",
-      "name": "Base Sepolia Aggregator",
+      "name": "Aggregator",
       "class": 128
     }
   ],
-  "lastUpdated": "2025-09-12T18:44:51.553Z"
+  "lastUpdated": "2025-09-20T15:14:28.615Z"
 }

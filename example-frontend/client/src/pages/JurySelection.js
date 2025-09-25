@@ -1,6 +1,7 @@
 // src/pages/JurySelection.js
 import React, { useState } from 'react';
 import { PAGES } from '../App';
+import ClassSelector from '../components/ClassSelector';
 
 function JurySelection({
   outcomeLabels,
@@ -9,23 +10,37 @@ function JurySelection({
   iterations,
   setIterations,
   setCurrentPage,
-  setSelectedMethod
+  setSelectedMethod,
+  // Dynamic model props
+  availableModels,
+  classInfo,
+  isLoadingModels,
+  modelError,
+  selectedClassId,
+  onClassSelect,
+  overrideClassInfo
 }) {
   const [activeTooltipId, setActiveTooltipId] = useState(null);
 
-  // Example provider-model mapping
-  const providerModels = {
-    OpenAI: ['gpt-3.5-turbo', 'gpt-4', 'gpt-4o'],
-    Anthropic: ['claude-2.1', 'claude-3-sonnet-20240229', 'claude-3-5-sonnet-20241022'],
-    'Open-source': ['llava', 'llama-3.1', 'llama-3.2', 'phi3']
-  };
+  // Use dynamic models from the selected class, fallback to empty object
+  const providerModels = availableModels || {};
 
   const addJuryNode = () => {
+    // Get first available provider and model
+    const availableProviders = Object.keys(providerModels);
+    if (availableProviders.length === 0) {
+      console.warn('No providers available for selected class');
+      return;
+    }
+    
+    const firstProvider = availableProviders[0];
+    const firstModel = providerModels[firstProvider]?.[0] || '';
+    
     setJuryNodes((prev) => [
       ...prev,
       {
-        provider: 'OpenAI',
-        model: 'gpt-4o',
+        provider: firstProvider,
+        model: firstModel,
         runs: 1,
         weight: 1.0,
         id: Date.now()
@@ -39,8 +54,8 @@ function JurySelection({
         if (node.id === id) {
           const updatedNode = { ...node, [field]: value };
           // If provider changes, default model to the provider's first model
-          if (field === 'provider') {
-            updatedNode.model = providerModels[value][0];
+          if (field === 'provider' && providerModels[value]) {
+            updatedNode.model = providerModels[value][0] || '';
           }
           return updatedNode;
         }
@@ -56,6 +71,15 @@ function JurySelection({
   return (
     <div className="page jury-selection">
       <h2>Jury Selection</h2>
+
+      {/* Class Selector Component */}
+      <ClassSelector
+        selectedClassId={selectedClassId}
+        onClassSelect={onClassSelect}
+        isLoading={isLoadingModels}
+        error={modelError}
+        overrideClassInfo={overrideClassInfo}
+      />
 
       <div className="configuration-summary">
         <p>Query will have {outcomeLabels?.length || 0} possible outcomes:</p>
@@ -170,24 +194,34 @@ function JurySelection({
               <select
                 value={node.provider}
                 onChange={(e) => updateJuryNode(node.id, 'provider', e.target.value)}
+                disabled={Object.keys(providerModels).length === 0}
               >
-                {Object.keys(providerModels).map((provider) => (
-                  <option key={provider} value={provider}>
-                    {provider}
-                  </option>
-                ))}
+                {Object.keys(providerModels).length === 0 ? (
+                  <option value="">No providers available</option>
+                ) : (
+                  Object.keys(providerModels).map((provider) => (
+                    <option key={provider} value={provider}>
+                      {provider}
+                    </option>
+                  ))
+                )}
               </select>
             </div>
             <div>
               <select
                 value={node.model}
                 onChange={(e) => updateJuryNode(node.id, 'model', e.target.value)}
+                disabled={!providerModels[node.provider] || providerModels[node.provider].length === 0}
               >
-                {providerModels[node.provider].map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
+                {!providerModels[node.provider] || providerModels[node.provider].length === 0 ? (
+                  <option value="">No models available</option>
+                ) : (
+                  providerModels[node.provider].map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))
+                )}
               </select>
             </div>
             <div>
@@ -234,8 +268,13 @@ function JurySelection({
           </div>
         ))}
 
-        <button className="add-node" onClick={addJuryNode}>
-          Add Another AI Model
+        <button 
+          className="add-node" 
+          onClick={addJuryNode}
+          disabled={Object.keys(providerModels).length === 0}
+          title={Object.keys(providerModels).length === 0 ? 'No models available for selected class' : ''}
+        >
+          {Object.keys(providerModels).length === 0 ? 'No Models Available' : 'Add Another AI Model'}
         </button>
       </section>
 

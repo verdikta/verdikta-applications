@@ -10,6 +10,7 @@ import './App.css';
 import { ethers, parseEther } from 'ethers'; // ethers v6 import
 import { createClient } from './services/verdiktaClient';
 import { fetchContracts } from './utils/contractManagementService';
+import { modelProviderService } from './services/modelProviderService';
 import RunQuery from './pages/RunQuery';
 import JurySelection from './pages/JurySelection';
 import QueryDefinition from './pages/QueryDefinition';
@@ -100,6 +101,12 @@ function App() {
     id: Date.now()
   }]);
   
+  // Dynamic model selection state
+  const [availableModels, setAvailableModels] = useState({});
+  const [classInfo, setClassInfo] = useState(null);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
+  const [modelError, setModelError] = useState(null);
+  
   // Results state
   const [resultCid, setResultCid] = useState('');
   const [justification, setJustification] = useState(
@@ -126,7 +133,17 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [walletAddress, setWalletAddress] = useState('');
   const [contractAddress, setContractAddress] = useState('');
-  const [selectedContractClass, setSelectedContractClass] = useState(128);
+  
+  // Decoupled class selection - no longer tied to contract
+  const [selectedClassId, setSelectedClassId] = useState(128);
+  const [overrideClassInfo, setOverrideClassInfo] = useState(null);
+  
+  // Handle class selection (including override classes)
+  const handleClassSelect = (classId, overrideInfo = null) => {
+    console.log('🎯 App.js handleClassSelect called with:', classId, overrideInfo);
+    setSelectedClassId(classId);
+    setOverrideClassInfo(overrideInfo);
+  };
   const [transactionStatus, setTransactionStatus] = useState('');
   const [resultTimestamp, setResultTimestamp] = useState('');
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -150,14 +167,14 @@ function App() {
     try {
       // If contracts are passed directly, use them instead of fetching
       if (updatedContracts && Array.isArray(updatedContracts)) {
-        setContractOptions(updatedContracts.map(c => ({ ...c, class: c.class === undefined ? 128 : c.class })));
+        // Remove class coupling - contracts now only store address and name
+        setContractOptions(updatedContracts.map(c => ({ 
+          address: c.address, 
+          name: c.name 
+        })));
         if (updatedContracts.length > 0) {
-          const currentSelected = updatedContracts.find(c => c.address === contractAddress);
-          if (currentSelected) {
-            setSelectedContractClass(currentSelected.class === undefined ? 128 : currentSelected.class);
-          } else if (!contractAddress || contractAddress === "manage"){
+          if (!contractAddress || contractAddress === "manage"){
             setContractAddress(updatedContracts[0].address);
-            setSelectedContractClass(updatedContracts[0].class === undefined ? 128 : updatedContracts[0].class);
           }
         }
         setIsLoadingContracts(false);
@@ -165,41 +182,34 @@ function App() {
       }
       
       const fetchedContracts = await fetchContracts();
-      const contractsWithClass = fetchedContracts.map(c => ({ ...c, class: c.class === undefined ? 128 : c.class }));
-      setContractOptions(contractsWithClass);
+      // Remove class coupling - contracts now only store address and name
+      const contractsWithoutClass = fetchedContracts.map(c => ({ 
+        address: c.address, 
+        name: c.name 
+      }));
+      setContractOptions(contractsWithoutClass);
 
-      if (contractsWithClass.length > 0) {
-        const currentSelected = contractsWithClass.find(c => c.address === contractAddress);
-        if (currentSelected) {
-          setSelectedContractClass(currentSelected.class);
-        } else if (!contractAddress || contractAddress === "manage") {
-          setContractAddress(contractsWithClass[0].address);
-          setSelectedContractClass(contractsWithClass[0].class);
+      if (contractsWithoutClass.length > 0) {
+        if (!contractAddress || contractAddress === "manage") {
+          setContractAddress(contractsWithoutClass[0].address);
         }
       }
     } catch (error) {
       console.error('Failed to load contracts:', error);
       const CONTRACT_ADDRESSES = (process.env.REACT_APP_CONTRACT_ADDRESSES || '').split(',');
       const CONTRACT_NAMES = (process.env.REACT_APP_CONTRACT_NAMES || '').split(',');
-      const CONTRACT_CLASSES = (process.env.REACT_APP_CONTRACT_CLASSES || '').split(',').map(c => parseInt(c.trim(), 10));
       
       const fallbackOptions = CONTRACT_ADDRESSES.map((address, index) => {
-        const cls = (index < CONTRACT_CLASSES.length && !isNaN(CONTRACT_CLASSES[index])) ? CONTRACT_CLASSES[index] : 128;
         return {
           address,
-          name: CONTRACT_NAMES[index] || `Contract ${index + 1}`,
-          class: cls >=0 && cls <= 99999 ? cls : 128
+          name: CONTRACT_NAMES[index] || `Contract ${index + 1}`
         };
       }).filter(c => c.address);
 
       setContractOptions(fallbackOptions);
       if (fallbackOptions.length > 0) {
-        const currentSelected = fallbackOptions.find(c => c.address === contractAddress);
-        if (currentSelected) {
-            setSelectedContractClass(currentSelected.class);
-        } else if (!contractAddress) {
+        if (!contractAddress) {
             setContractAddress(fallbackOptions[0].address);
-            setSelectedContractClass(fallbackOptions[0].class);
         }
       }
       toast.error('Failed to load contracts from server. Using fallback values.');
@@ -213,11 +223,119 @@ function App() {
     loadContracts();
   }, [loadContracts]);
 
+  // Load available models when selected class changes
+  useEffect(() => {
+    const loadModels = async () => {
+      if (!selectedClassId) return;
+      
+      console.log('🔄 Loading models for class:', selectedClassId, 'Override info:', overrideClassInfo);
+      
+      setIsLoadingModels(true);
+      setModelError(null);
+      
+      try {
+        // Use the updated service method that handles overrides
+        const modelData = await modelProviderService.getProviderModels(selectedClassId, overrideClassInfo);
+        
+        console.log('📊 Model data loaded:', modelData);
+        
+        setAvailableModels(modelData.providerModels);
+        setClassInfo(modelData.classInfo);
+        
+        // If this is an empty/error class, show a warning
+        if (modelData.isEmpty) {
+          if (modelData.classInfo.error) {
+            setModelError(modelData.classInfo.error);
+            toast.warning(`Class ${selectedClassId}: ${modelData.classInfo.error}`);
+          } else if (modelData.classInfo.status === 'EMPTY') {
+            setModelError(`Class ${selectedClassId} is empty and has no available models.`);
+            toast.warning(`Class ${selectedClassId} is empty and has no available models.`);
+          }
+        }
+        
+        // Update jury nodes to use available models if current selection is invalid
+        if (!modelData.isEmpty && Object.keys(modelData.providerModels).length > 0) {
+          setJuryNodes(prevNodes => {
+            let updatedNodes = prevNodes.map(node => {
+              const availableProviders = Object.keys(modelData.providerModels);
+              
+              // If current provider is not available, switch to first available
+              if (!availableProviders.includes(node.provider)) {
+                const newProvider = availableProviders[0];
+                const newModel = modelProviderService.getDefaultModel(newProvider, modelData.providerModels);
+                return {
+                  ...node,
+                  provider: newProvider,
+                  model: newModel
+                };
+              }
+              
+              // If current model is not available for the provider, switch to first available model
+              const availableModels = modelData.providerModels[node.provider];
+              if (!availableModels || !availableModels.includes(node.model)) {
+                const newModel = modelProviderService.getDefaultModel(node.provider, modelData.providerModels);
+                return {
+                  ...node,
+                  model: newModel
+                };
+              }
+              
+              return node;
+            });
+
+            // Enforce max panel size limit
+            if (modelData.classInfo.limits?.max_panel_size) {
+              const maxModels = modelData.classInfo.limits.max_panel_size;
+              if (updatedNodes.length > maxModels) {
+                console.warn(`Trimming jury nodes to max limit: ${maxModels}`);
+                updatedNodes = updatedNodes.slice(0, maxModels);
+              }
+            }
+
+            // Enforce max runs limit for each node
+            if (modelData.classInfo.limits?.max_no_counts) {
+              const maxRuns = modelData.classInfo.limits.max_no_counts;
+              updatedNodes = updatedNodes.map(node => ({
+                ...node,
+                runs: Math.min(node.runs, maxRuns)
+              }));
+            }
+
+            return updatedNodes;
+          });
+
+          // Enforce max iterations limit
+          if (modelData.classInfo.limits?.max_iterations) {
+            const maxIterations = modelData.classInfo.limits.max_iterations;
+            setIterations(prev => {
+              if (prev > maxIterations) {
+                console.warn(`Trimming iterations to max limit: ${maxIterations}`);
+                return maxIterations;
+              }
+              return prev;
+            });
+          }
+        }
+        
+      } catch (error) {
+        console.error('Error loading models:', error);
+        setModelError(error.message);
+        setAvailableModels({});
+        setClassInfo({ id: selectedClassId, status: 'ERROR', error: error.message });
+        toast.error(`Failed to load models for class ${selectedClassId}: ${error.message}`);
+      } finally {
+        setIsLoadingModels(false);
+      }
+    };
+
+    loadModels();
+  }, [selectedClassId, overrideClassInfo]);
+
   // Reset dropdown after returning from Contract Management
   useEffect(() => {
     if (currentPage !== PAGES.CONTRACT_MANAGEMENT && contractAddress === "manage" && contractOptions.length > 0) {
       setContractAddress(contractOptions[0].address);
-      setSelectedContractClass(contractOptions[0].class === undefined ? 128 : contractOptions[0].class);
+      // Class selection is now independent of contract selection
     }
     
     // Refresh contracts when returning from Contract Management page
@@ -320,10 +438,7 @@ function App() {
               } else {
                 const selectedAddr = e.target.value;
                 setContractAddress(selectedAddr);
-                const selectedOpt = contractOptions.find(c => c.address === selectedAddr);
-                if (selectedOpt) {
-                  setSelectedContractClass(selectedOpt.class === undefined ? 128 : selectedOpt.class);
-                }
+                // Class selection is now decoupled from contract selection
               }
             }}
             className="contract-select"
@@ -390,6 +505,14 @@ function App() {
       setIterations={setIterations}
       setCurrentPage={setCurrentPage}
       setSelectedMethod={setSelectedMethod}
+      // Dynamic model props
+      availableModels={availableModels}
+      classInfo={classInfo}
+      isLoadingModels={isLoadingModels}
+      modelError={modelError}
+      selectedClassId={selectedClassId}
+      onClassSelect={handleClassSelect}
+      overrideClassInfo={overrideClassInfo}
     />
   );
 
@@ -414,6 +537,12 @@ function App() {
             linkInput={linkInput}
             setLinkInput={setLinkInput}
             setCurrentPage={setCurrentPage}
+            classInfo={classInfo}
+            selectedClassId={selectedClassId}
+            onClassSelect={handleClassSelect}
+            isLoadingModels={isLoadingModels}
+            modelError={modelError}
+            overrideClassInfo={overrideClassInfo}
           />
         )}
         {currentPage === PAGES.JURY_SELECTION && renderJurySelection()}
@@ -454,7 +583,7 @@ function App() {
             maxFee={MAX_FEE}
             estimatedBaseCost={ESTIMATED_BASE_COST}
             maxFeeBasedScalingFactor={MAX_FEE_SCALING_FACTOR}
-            selectedContractClass={selectedContractClass}
+            selectedClassId={selectedClassId}
           />
         )}
         {currentPage === PAGES.RESULTS && (

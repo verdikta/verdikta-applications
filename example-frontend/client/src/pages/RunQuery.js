@@ -14,6 +14,7 @@ import {
   ensureCorrectNetwork,
   CURRENT_NETWORK,
 } from '../utils/contractUtils';
+import { modelProviderService } from '../services/modelProviderService';
 import { waitForFulfilOrTimeout } from '../utils/timeoutUtils';
 import { ContractDebugger } from '../utils/contractDebugger';
 
@@ -218,9 +219,14 @@ function RunQuery({
   maxFee,
   estimatedBaseCost,
   maxFeeBasedScalingFactor,
-  selectedContractClass,
+  selectedClassId,
 }) {
   const [activeTooltipId, setActiveTooltipId] = useState(null);
+  
+  // Debug logging for class ID
+  useEffect(() => {
+    console.log('🏃 RunQuery component - selectedClassId:', selectedClassId);
+  }, [selectedClassId]);
   const [textAddendum, setTextAddendum] = useState('');
   // Add state to track if we're showing the default CID value
   const [showingDefaultCid, setShowingDefaultCid] = useState(queryPackageCid === '' || queryPackageCid === undefined);
@@ -280,7 +286,7 @@ const debugContractIssues = async () => {
       maxFee || parseUnits("0.01", 18), // Use actual maxFee
       estimatedBaseCost || parseUnits("0.0001", 18), // Use actual estimatedBaseCost
       maxFeeBasedScalingFactor || 10, // Use actual scaling factor
-      selectedContractClass || 128
+      selectedClassId || 128
     );
     
     console.log('📋 Full Debug Report:', report);
@@ -360,15 +366,21 @@ const handleRunQuery = async () => {
             primary: { filename: 'primary_query.json' },
             juryParameters: {
               NUMBER_OF_OUTCOMES: outcomeLabels.length,
-              AI_NODES: juryNodes.map((node) => ({
-                AI_PROVIDER: node.provider,
-                AI_MODEL: node.model,
-                NO_COUNTS: node.runs,
-                WEIGHT: node.weight
-              })),
+              AI_NODES: modelProviderService.convertJuryNodesToManifestFormat(juryNodes),
               ITERATIONS: iterations
             }
           };
+          
+          console.log('📋 Manifest AI_NODES created:', manifest.juryParameters.AI_NODES);
+          
+          // Check for potentially unsupported providers and warn user
+          const providers = manifest.juryParameters.AI_NODES.map(node => node.AI_PROVIDER);
+          const uniqueProviders = [...new Set(providers)];
+          if (uniqueProviders.includes('ollama')) {
+            console.warn('⚠️ Using Ollama provider - ensure AI-node has Ollama support configured');
+            setTransactionStatus?.('Warning: Using Ollama models - AI-node must have Ollama configured...');
+          }
+          
           const augmentedQueryText = getAugmentedQueryText(queryText, hyperlinks);
           const queryFileContent = {
             query: augmentedQueryText,
@@ -487,7 +499,7 @@ const handleRunQuery = async () => {
         maxFee,
         estimatedBaseCost,
         maxFeeBasedScalingFactor,
-	selectedContractClass === undefined ? 128 : selectedContractClass,
+	selectedClassId === undefined ? 128 : selectedClassId,
         { 
           gasLimit: 4500000, // high current gas limit
           maxFeePerGas: adjustedMaxFee,

@@ -12,7 +12,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@verdikta/common": "^1.0.2-beta.4",
+    "@verdikta/common": "^1.2.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
@@ -24,6 +24,6 @@
     "winston": "^3.17.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.9"
+    "nodemon": "^3.1.10"
   }
 }

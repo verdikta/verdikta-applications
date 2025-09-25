@@ -6,7 +6,7 @@ const fs = require('fs').promises;
 const fetch = require('node-fetch');
 require('dotenv').config();
 
-const { IPFSClient } = require('@verdikta/common');
+const { IPFSClient, classMap } = require('@verdikta/common');
 const appLogger = require('./utils/appLogger');
 const app = express();
 
@@ -98,6 +98,177 @@ app.use(express.urlencoded({ extended: true }));
 
 // Register contract routes
 app.use('/api/contracts', contractRoutes);
+
+// ClassMap API endpoints
+// Get all available classes
+app.get('/api/classes', (req, res) => {
+  try {
+    const { status, provider } = req.query;
+    const filter = {};
+    if (status) filter.status = status;
+    if (provider) filter.provider = provider;
+    
+    const classes = classMap.listClasses(filter);
+    
+    // Convert BigInt IDs to regular numbers for JSON serialization
+    const serializedClasses = classes.map(cls => ({
+      ...cls,
+      id: Number(cls.id)
+    }));
+    
+    res.json({
+      success: true,
+      classes: serializedClasses
+    });
+  } catch (error) {
+    logger.error('Error fetching classes:', error);
+    res.status(500).json({
+      error: 'Failed to fetch classes',
+      details: error.message
+    });
+  }
+});
+
+// Get specific class information
+app.get('/api/classes/:classId', (req, res) => {
+  try {
+    const classId = parseInt(req.params.classId, 10);
+    
+    if (isNaN(classId)) {
+      return res.status(400).json({
+        error: 'Invalid class ID',
+        details: 'Class ID must be a number'
+      });
+    }
+    
+    const classInfo = classMap.getClass(classId);
+    
+    if (!classInfo) {
+      return res.status(404).json({
+        error: 'Class not found',
+        details: `Class ID ${classId} is not tracked`
+      });
+    }
+    
+    // Convert BigInt ID to regular number for JSON serialization
+    const serializedClass = {
+      ...classInfo,
+      id: Number(classInfo.id)
+    };
+    
+    res.json({
+      success: true,
+      class: serializedClass
+    });
+  } catch (error) {
+    logger.error('Error fetching class:', error);
+    res.status(500).json({
+      error: 'Failed to fetch class',
+      details: error.message
+    });
+  }
+});
+
+// Get models for a specific class
+app.get('/api/classes/:classId/models', (req, res) => {
+  try {
+    const classId = parseInt(req.params.classId, 10);
+    
+    if (isNaN(classId)) {
+      return res.status(400).json({
+        error: 'Invalid class ID',
+        details: 'Class ID must be a number'
+      });
+    }
+    
+    const classInfo = classMap.getClass(classId);
+    
+    if (!classInfo) {
+      return res.status(404).json({
+        error: 'Class not found',
+        details: `Class ID ${classId} is not tracked`
+      });
+    }
+    
+    if (classInfo.status !== 'ACTIVE') {
+      return res.status(400).json({
+        error: 'Class not active',
+        details: `Class ID ${classId} has status: ${classInfo.status}`,
+        status: classInfo.status
+      });
+    }
+    
+    // Group models by provider for easier frontend consumption
+    const modelsByProvider = {};
+    classInfo.models.forEach(model => {
+      if (!modelsByProvider[model.provider]) {
+        modelsByProvider[model.provider] = [];
+      }
+      modelsByProvider[model.provider].push({
+        model: model.model,
+        contextWindow: model.context_window_tokens,
+        supportedFileTypes: model.supported_file_types
+      });
+    });
+    
+    res.json({
+      success: true,
+      classId: Number(classInfo.id),
+      className: classInfo.name,
+      status: classInfo.status,
+      models: classInfo.models,
+      modelsByProvider,
+      limits: classInfo.limits
+    });
+  } catch (error) {
+    logger.error('Error fetching models for class:', error);
+    res.status(500).json({
+      error: 'Failed to fetch models',
+      details: error.message
+    });
+  }
+});
+
+// Validate manifest against class
+app.post('/api/classes/:classId/validate', (req, res) => {
+  try {
+    const classId = parseInt(req.params.classId, 10);
+    const { manifest } = req.body;
+    
+    if (isNaN(classId)) {
+      return res.status(400).json({
+        error: 'Invalid class ID',
+        details: 'Class ID must be a number'
+      });
+    }
+    
+    if (!manifest) {
+      return res.status(400).json({
+        error: 'Missing manifest',
+        details: 'Request body must include manifest object'
+      });
+    }
+    
+    const result = classMap.validateQueryAgainstClass(manifest, classId);
+    
+    // Convert any BigInt values for JSON serialization
+    const serializedResult = {
+      ...result,
+      classId: Number(classId)
+    };
+    
+    res.json({
+      success: true,
+      validation: serializedResult
+    });
+  } catch (error) {
+    logger.error('Error validating manifest:', error);
+    res.status(500).json({
+      error: 'Failed to validate manifest',
+      details: error.message
+    });
+  }
+});
 
 // File upload endpoint with timeout
 app.post('/api/upload', async (req, res) => {

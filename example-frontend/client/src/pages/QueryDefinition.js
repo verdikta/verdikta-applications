@@ -1,6 +1,7 @@
 // src/pages/QueryDefinition.js
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { PAGES } from '../App';
+import ClassSelector from '../components/ClassSelector';
 
 function QueryDefinition({
   queryText,
@@ -17,13 +18,39 @@ function QueryDefinition({
   setHyperlinks,
   linkInput,
   setLinkInput,
-  setCurrentPage
+  setCurrentPage,
+  classInfo,
+  selectedClassId,
+  onClassSelect,
+  isLoadingModels,
+  modelError,
+  overrideClassInfo
 }) {
   const [activeTooltipId, setActiveTooltipId] = useState(null);
+
+  // Enforce max outcomes limit when class info changes
+  useEffect(() => {
+    if (classInfo?.limits?.max_outcomes) {
+      const maxOutcomes = classInfo.limits.max_outcomes;
+      if (outcomeLabels.length > maxOutcomes) {
+        console.warn(`Trimming outcomes to max limit: ${maxOutcomes}`);
+        setOutcomeLabels(prev => prev.slice(0, maxOutcomes));
+      }
+    }
+  }, [classInfo?.limits?.max_outcomes, outcomeLabels.length, setOutcomeLabels]);
 
   return (
     <div className="page query-definition">
       <h2>Enter the Question for the AI Jury</h2>
+
+      {/* Class Selector Component */}
+      <ClassSelector
+        selectedClassId={selectedClassId}
+        onClassSelect={onClassSelect}
+        isLoading={isLoadingModels}
+        error={modelError}
+        overrideClassInfo={overrideClassInfo}
+      />
 
       <section className="query-section">
         <div className="form-group">
@@ -88,14 +115,26 @@ function QueryDefinition({
             ))}
             <button
               className="add-outcome"
-              onClick={() =>
-                setOutcomeLabels((labels) => [
-                  ...labels,
-                  `Outcome ${labels.length + 1}`
-                ])
+              onClick={() => {
+                const maxOutcomes = classInfo?.limits?.max_outcomes || 20;
+                if (outcomeLabels.length < maxOutcomes) {
+                  setOutcomeLabels((labels) => [
+                    ...labels,
+                    `Outcome ${labels.length + 1}`
+                  ]);
+                }
+              }}
+              disabled={outcomeLabels.length >= (classInfo?.limits?.max_outcomes || 20)}
+              title={
+                outcomeLabels.length >= (classInfo?.limits?.max_outcomes || 20) 
+                  ? `Maximum outcomes reached: ${classInfo?.limits?.max_outcomes || 20}` 
+                  : ''
               }
             >
-              + Add Outcome
+              {outcomeLabels.length >= (classInfo?.limits?.max_outcomes || 20)
+                ? `Max Outcomes Reached (${classInfo?.limits?.max_outcomes || 20})`
+                : '+ Add Outcome'
+              }
             </button>
           </div>
         </div>

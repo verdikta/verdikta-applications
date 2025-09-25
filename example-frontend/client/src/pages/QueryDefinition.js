@@ -24,7 +24,8 @@ function QueryDefinition({
   onClassSelect,
   isLoadingModels,
   modelError,
-  overrideClassInfo
+  overrideClassInfo,
+  staticConfigMode = false
 }) {
   const [activeTooltipId, setActiveTooltipId] = useState(null);
 
@@ -43,14 +44,27 @@ function QueryDefinition({
     <div className="page query-definition">
       <h2>Enter the Question for the AI Jury</h2>
 
-      {/* Class Selector Component */}
-      <ClassSelector
-        selectedClassId={selectedClassId}
-        onClassSelect={onClassSelect}
-        isLoading={isLoadingModels}
-        error={modelError}
-        overrideClassInfo={overrideClassInfo}
-      />
+      {/* Class Selector Component - Hidden in static config mode */}
+      {!staticConfigMode && (
+        <ClassSelector
+          selectedClassId={selectedClassId}
+          onClassSelect={onClassSelect}
+          isLoading={isLoadingModels}
+          error={modelError}
+          overrideClassInfo={overrideClassInfo}
+        />
+      )}
+      
+      {/* Show static class info in static config mode */}
+      {staticConfigMode && (
+        <div className="static-config-info">
+          <h3>AI Class Configuration (Static Mode)</h3>
+          <p>Using Class ID: <strong>{selectedClassId}</strong></p>
+          {classInfo && (
+            <p>Class Status: <strong>{classInfo.status}</strong></p>
+          )}
+        </div>
+      )}
 
       <section className="query-section">
         <div className="form-group">

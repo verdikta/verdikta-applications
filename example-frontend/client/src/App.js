@@ -45,6 +45,10 @@ const NETWORK_LABEL =
   NETWORK === 'base' ? 'Base' :
   '';
 
+// Static configuration mode settings
+const STATIC_CONFIG_MODE = process.env.REACT_APP_STATIC_CONFIG_MODE === 'true';
+const STATIC_CLASS_ID = parseInt(process.env.REACT_APP_STATIC_CLASS_ID) || 128;
+
 // Simplified fetchQueryPackageDetails using verdikta client
 const fetchQueryPackageDetails = async (cid) => {
   try {
@@ -135,11 +139,17 @@ function App() {
   const [contractAddress, setContractAddress] = useState('');
   
   // Decoupled class selection - no longer tied to contract
-  const [selectedClassId, setSelectedClassId] = useState(128);
+  // In static config mode, use the static class ID and prevent changes
+  const [selectedClassId, setSelectedClassId] = useState(STATIC_CONFIG_MODE ? STATIC_CLASS_ID : 128);
   const [overrideClassInfo, setOverrideClassInfo] = useState(null);
   
   // Handle class selection (including override classes)
   const handleClassSelect = (classId, overrideInfo = null) => {
+    // In static config mode, ignore class selection changes
+    if (STATIC_CONFIG_MODE) {
+      console.log('🎯 App.js handleClassSelect ignored in static config mode');
+      return;
+    }
     console.log('🎯 App.js handleClassSelect called with:', classId, overrideInfo);
     setSelectedClassId(classId);
     setOverrideClassInfo(overrideInfo);
@@ -455,14 +465,20 @@ function App() {
                     {contract.name}
                   </option>
                 ))}
-                <option disabled style={{ borderTop: '1px solid #444', margin: '0', padding: '0', height: '1px', opacity: '0.5', overflow: 'hidden' }}>
-                  ──────────
-                </option>
-                <option value="manage">Manage Contracts</option>
+                {/* Hide Manage Contracts option in static config mode */}
+                {!STATIC_CONFIG_MODE && (
+                  <>
+                    <option disabled style={{ borderTop: '1px solid #444', margin: '0', padding: '0', height: '1px', opacity: '0.5', overflow: 'hidden' }}>
+                      ──────────
+                    </option>
+                    <option value="manage">Manage Contracts</option>
+                  </>
+                )}
               </>
             )}
           </select>
-          {contractOptions.length === 0 && !isLoadingContracts && (
+          {/* Hide add button in static config mode, but keep refresh button */}
+          {!STATIC_CONFIG_MODE && contractOptions.length === 0 && !isLoadingContracts && (
             <button
               className="small-button"
               onClick={() => setCurrentPage(PAGES.CONTRACT_MANAGEMENT)}
@@ -471,6 +487,7 @@ function App() {
               +
             </button>
           )}
+          {/* Always show refresh button - users should be able to refresh the contract list */}
           <button
             className="small-button refresh-button"
             onClick={loadContracts}
@@ -513,6 +530,7 @@ function App() {
       selectedClassId={selectedClassId}
       onClassSelect={handleClassSelect}
       overrideClassInfo={overrideClassInfo}
+      staticConfigMode={STATIC_CONFIG_MODE}
     />
   );
 
@@ -543,6 +561,7 @@ function App() {
             isLoadingModels={isLoadingModels}
             modelError={modelError}
             overrideClassInfo={overrideClassInfo}
+            staticConfigMode={STATIC_CONFIG_MODE}
           />
         )}
         {currentPage === PAGES.JURY_SELECTION && renderJurySelection()}
@@ -607,7 +626,8 @@ function App() {
             setOutcomeLabels={setOutcomeLabels}
           />
         )}
-        {currentPage === PAGES.CONTRACT_MANAGEMENT && (
+        {/* Hide Contract Management page in static config mode */}
+        {currentPage === PAGES.CONTRACT_MANAGEMENT && !STATIC_CONFIG_MODE && (
           <ContractManagement onContractsUpdated={loadContracts} />
         )}
       </main>

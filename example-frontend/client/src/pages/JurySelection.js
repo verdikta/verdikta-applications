@@ -18,7 +18,8 @@ function JurySelection({
   modelError,
   selectedClassId,
   onClassSelect,
-  overrideClassInfo
+  overrideClassInfo,
+  staticConfigMode = false
 }) {
   const [activeTooltipId, setActiveTooltipId] = useState(null);
 
@@ -72,14 +73,27 @@ function JurySelection({
     <div className="page jury-selection">
       <h2>Jury Selection</h2>
 
-      {/* Class Selector Component */}
-      <ClassSelector
-        selectedClassId={selectedClassId}
-        onClassSelect={onClassSelect}
-        isLoading={isLoadingModels}
-        error={modelError}
-        overrideClassInfo={overrideClassInfo}
-      />
+      {/* Class Selector Component - Hidden in static config mode */}
+      {!staticConfigMode && (
+        <ClassSelector
+          selectedClassId={selectedClassId}
+          onClassSelect={onClassSelect}
+          isLoading={isLoadingModels}
+          error={modelError}
+          overrideClassInfo={overrideClassInfo}
+        />
+      )}
+      
+      {/* Show static class info in static config mode */}
+      {staticConfigMode && (
+        <div className="static-config-info">
+          <h3>AI Class Configuration (Static Mode)</h3>
+          <p>Using Class ID: <strong>{selectedClassId}</strong></p>
+          {classInfo && (
+            <p>Class Status: <strong>{classInfo.status}</strong></p>
+          )}
+        </div>
+      )}
 
       <div className="configuration-summary">
         <p>Query will have {outcomeLabels?.length || 0} possible outcomes:</p>

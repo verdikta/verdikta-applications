@@ -2,6 +2,7 @@
 
 # Verdikta Example Frontend - Combined Startup Script
 # This script starts both the server and client for the example frontend application
+# Usage: ./start.sh [--staticconfig [classID]]
 
 set -e
 
@@ -66,6 +67,30 @@ cleanup() {
     exit 0
 }
 
+# Parse command line arguments
+STATIC_CONFIG_MODE=false
+STATIC_CLASS_ID=128
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --staticconfig)
+            STATIC_CONFIG_MODE=true
+            # Check if next argument is a number (classID)
+            if [[ $# -gt 1 && $2 =~ ^[0-9]+$ ]]; then
+                STATIC_CLASS_ID=$2
+                shift # consume the classID argument
+            fi
+            shift # consume the --staticconfig flag
+            ;;
+        *)
+            print_error "Unknown option: $1"
+            print_status "Usage: $0 [--staticconfig [classID]]"
+            print_status "  --staticconfig [classID]  Enable static configuration mode (default classID: 128)"
+            exit 1
+            ;;
+    esac
+done
+
 # Set up signal handlers for graceful shutdown
 trap cleanup SIGINT SIGTERM
 
@@ -84,6 +109,9 @@ fi
 CLIENT_PORT=$(get_client_port)
 
 print_status "Starting Verdikta Example Frontend..."
+if [ "$STATIC_CONFIG_MODE" = true ]; then
+    print_status "Static configuration mode enabled (Class ID: $STATIC_CLASS_ID)"
+fi
 print_status "Press Ctrl+C to stop both services"
 echo
 
@@ -108,6 +136,9 @@ print_success "Server started (PID: $SERVER_PID)"
 # Start the client in background
 print_status "Starting client..."
 cd client
+# Export environment variables for the React app
+export REACT_APP_STATIC_CONFIG_MODE="$STATIC_CONFIG_MODE"
+export REACT_APP_STATIC_CLASS_ID="$STATIC_CLASS_ID"
 npm start &
 CLIENT_PID=$!
 cd ..

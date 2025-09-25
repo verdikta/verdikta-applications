@@ -1793,3 +1793,28 @@ button.add-node:disabled:hover {
   background-color: #6c757d;
   border-color: #6c757d;
 }
+
+/* Static configuration info styling */
+.static-config-info {
+  background-color: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+
+.static-config-info h3 {
+  margin: 0 0 12px 0;
+  color: #495057;
+  font-size: 1.1em;
+}
+
+.static-config-info p {
+  margin: 8px 0;
+  color: #6c757d;
+}
+
+.static-config-info strong {
+  color: #495057;
+  font-weight: 600;
+}

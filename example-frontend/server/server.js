@@ -434,6 +434,24 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Timeout logging endpoint
+app.post('/api/log-timeout', (req, res) => {
+  try {
+    const { message, timestamp, walletAddress } = req.body;
+    logger.error('CLIENT TIMEOUT DETECTED', {
+      message,
+      timestamp,
+      walletAddress,
+      userAgent: req.get('User-Agent'),
+      ip: req.ip
+    });
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Error logging timeout:', error);
+    res.status(500).json({ error: 'Failed to log timeout' });
+  }
+});
+
 // Initialize server
 const startServer = async () => {
   try {

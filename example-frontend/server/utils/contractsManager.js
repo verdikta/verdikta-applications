@@ -291,18 +291,26 @@ async function updateEnvFile(contracts) {
       }
     }
     
-    // Parse the current variables
-    const envVars = dotenv.parse(envContent || '');
+    // Preserve comments and formatting by updating line by line instead of parsing/rebuilding
+    let newEnvContent = envContent || '';
     
-    // Update or add contract variables
-    envVars.REACT_APP_CONTRACT_ADDRESSES = addresses;
-    envVars.REACT_APP_CONTRACT_NAMES = names;
-    envVars.REACT_APP_CONTRACT_CLASSES = classes;
+    // Update each contract variable, preserving existing format and comments
+    const contractVars = {
+      'REACT_APP_CONTRACT_ADDRESSES': addresses,
+      'REACT_APP_CONTRACT_NAMES': names,
+      'REACT_APP_CONTRACT_CLASSES': classes
+    };
     
-    // Convert back to .env format
-    const newEnvContent = Object.entries(envVars)
-      .map(([key, value]) => `${key}=${value}`)
-      .join('\n');
+    Object.entries(contractVars).forEach(([key, value]) => {
+      const regex = new RegExp(`^${key}=.*$`, 'm');
+      if (regex.test(newEnvContent)) {
+        // Update existing line
+        newEnvContent = newEnvContent.replace(regex, `${key}=${value}`);
+      } else {
+        // Add new line at the end
+        newEnvContent += `\n${key}=${value}`;
+      }
+    });
     
     // Write back to .env file
     await fs.writeFile(envPath, newEnvContent);

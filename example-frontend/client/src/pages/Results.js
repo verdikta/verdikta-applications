@@ -89,9 +89,31 @@ function Results({
     );
   };
 
+  // Check if this is a timeout error condition
+  const isTimeoutError = justification && justification.includes('The oracle did not respond in time');
+
   return (
     <div className="page results">
       <h2>Results</h2>
+
+      {isTimeoutError && (
+        <section className="error-display" style={{ 
+          backgroundColor: '#fee', 
+          border: '2px solid #f88', 
+          borderRadius: '8px', 
+          padding: '20px', 
+          margin: '20px 0',
+          textAlign: 'center'
+        }}>
+          <h3 style={{ color: '#d44', margin: '0 0 10px 0' }}>Query Timeout Error</h3>
+          <p style={{ color: '#d44', fontSize: '16px', margin: '0' }}>
+            {justification}
+          </p>
+          <p style={{ color: '#666', fontSize: '14px', margin: '10px 0 0 0' }}>
+            The query did not complete within the timeout period. No results are available.
+          </p>
+        </section>
+      )}
 
       <section className="configuration-summary">
         <h3>Query Configuration</h3>
@@ -139,7 +161,7 @@ function Results({
         </div>
       </section>
 
-      {resultCid && (
+      {resultCid && !isTimeoutError && (
         <section className="results-display">
           <div className="results-header">
             <div className="cid-display">

@@ -580,7 +580,9 @@ function App() {
             queryPackageCid={queryPackageCid}
             setQueryPackageCid={setQueryPackageCid}
             isConnected={isConnected}
+            setIsConnected={setIsConnected}
             walletAddress={walletAddress}
+            setWalletAddress={setWalletAddress}
             contractAddress={contractAddress}
             transactionStatus={transactionStatus}
             setTransactionStatus={setTransactionStatus}

@@ -14,7 +14,7 @@ export async function waitForFulfilOrTimeout({
   feeOverrides,
   setTransactionStatus,
   responseTimeoutSeconds = 300,         // keep the same default as the contract
-  safetyMarginMs = 15_000               // extra time to ensure we’re past the deadline
+  safetyMarginMs = 2_000                // small safety margin to ensure polling times out first
 }) {
 
   // a flag indicating normal completion and no need for an active timeout transaction to be sent.
@@ -32,6 +32,7 @@ export async function waitForFulfilOrTimeout({
     pollCallbacks.setOutcomeLabels
   ).then(result => {                       
     cancelled = true;         // cancel the timeout
+    console.log('🔄 Polling completed with result:', result);
     return result ?? { status: 'fulfilled' };
   });
 
@@ -41,17 +42,21 @@ export async function waitForFulfilOrTimeout({
     await new Promise(r => setTimeout(r, waitMs));
 
     if (cancelled) {
+      console.log('⏹️ Timeout cancelled - polling completed first');
       return; // Polling finished first — don't actively timeout on chain
     }
 
     try {
+      console.log('⏰ Triggering on-chain timeout after', waitMs, 'ms');
       setTransactionStatus?.('Triggering on-chain timeout…');
       const tx = await contract.finalizeEvaluationTimeout(requestId, feeOverrides);
       await tx.wait();
+      console.log('✅ On-chain timeout successful');
       resolve({ status: 'timed-out' });
     } catch (e) {
       // If the oracle already answered, finalizeEvaluationTimeout will revert
       // with either "complete" or "not timed-out".  Treat that as fulfilled.
+      console.log('❌ On-chain timeout failed (oracle may have answered):', e.message);
       resolve({ status: 'fulfilled' });
     }
   });

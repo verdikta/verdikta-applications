@@ -63,24 +63,30 @@ async function pollForEvaluationResults(
 ) {
   setTransactionStatus?.('Waiting for evaluation results...');
   let attempts = 0;
-  const maxAttempts = 72; // 6 min. Graceful timeout should happen after 5 min.
+  const maxAttempts = 60; // 5 min. Should timeout at exactly 5 minutes (60 * 5s = 300s)
   let foundEvaluation = null;
   while (!foundEvaluation && attempts < maxAttempts) {
     attempts++;
+    console.log(`🔄 Polling attempt ${attempts}/${maxAttempts} (${attempts * 5}s elapsed)`);
     try {
       const result = await contract.getEvaluation(requestId);
       const [likelihoods, justificationCid, exists] = result;
+      console.log(`📊 Poll result - exists: ${exists}, likelihoods: ${likelihoods?.length || 0}, justificationCid: ${justificationCid}`);
       if (exists && likelihoods?.length > 0) {
+        console.log('✅ Found evaluation results!');
         foundEvaluation = result;
         break;
       }
     } catch (err) {
       console.error('Polling error:', err);
     }
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    if (attempts < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
   }
   if (!foundEvaluation) {
-    throw new Error('Evaluation results not received in time');
+    console.log('🕐 Polling timeout reached - returning timed-out status');
+    return { status: 'timed-out' };
   }
   const [likelihoods, justificationCid] = foundEvaluation;
   setOutcomes?.(likelihoods.map(Number));
@@ -197,7 +203,9 @@ function RunQuery({
   queryPackageCid,
   setQueryPackageCid,
   isConnected,
+  setIsConnected,
   walletAddress,
+  setWalletAddress,
   contractAddress,
   transactionStatus,
   setTransactionStatus,
@@ -309,11 +317,14 @@ const debugContractIssues = async () => {
 };
 
 const handleRunQuery = async () => {
-  if (!isConnected && selectedMethod !== 'config') {
-    alert('Please connect your wallet first');
+  console.log('🚀 handleRunQuery called - isConnected:', isConnected, 'walletAddress:', walletAddress);
+  
+  if (!isConnected) {
+    alert('Please connect your wallet first using the "Connect Wallet" button in the header.');
     return;
   }
 
+  console.log('🔄 Proceeding with query execution...');
   try {
     setLoadingResults(true);
     setTransactionStatus('Processing...');
@@ -321,6 +332,7 @@ const handleRunQuery = async () => {
     setHasError(false);
     setLastError(null);
 
+    console.log('🌐 Creating provider and ensuring correct network...');
     // 1) Ensure wallet is on the selected network (base or base_sepolia)
     let provider = new ethers.BrowserProvider(window.ethereum);
     provider = await ensureCorrectNetwork(provider); // respects REACT_APP_NETWORK
@@ -432,6 +444,11 @@ const handleRunQuery = async () => {
 
     // 4) Make sure the contract has enough LINK allowance
     try {
+      console.log('💰 Checking LINK allowance - walletAddress:', walletAddress);
+      if (!walletAddress) {
+        throw new Error('Wallet address is not available for LINK allowance check');
+      }
+      
       const feeForThisRequest = await readContract.maxTotalFee(maxFee);
       await topUpLinkAllowance({
         requiredExtra:     feeForThisRequest,
@@ -485,6 +502,11 @@ const handleRunQuery = async () => {
       console.log('Sending CIDs to contract:', cidArray);
 
       // Random delay to ease resource contention in the events of many simultaneous calls or repeated calls
+      console.log('⏱️ Calculating random delay - walletAddress:', walletAddress);
+      if (!walletAddress) {
+        throw new Error('Wallet address is not available for transaction delay calculation');
+      }
+      
       const addressSeed = parseInt(walletAddress.slice(-4), 16);
       const timeSeed = Math.floor(Date.now() / 600000); // constant over 10-minute windows
       const combinedSeed = (addressSeed + timeSeed) % 1000;
@@ -558,10 +580,40 @@ const result = await waitForFulfilOrTimeout({
   responseTimeoutSeconds
 });
 
+console.log('🔍 Timeout check - result status:', result.status);
 if (result.status === 'timed-out') {
-  // Inform the UI that the request failed
+  console.log('⏰ TIMEOUT DETECTED - handling timeout case');
+  console.error('TIMEOUT ERROR: Query timed out after waiting for oracle response');
+  
+  // Clear all result state to prevent showing stale data
   setJustification?.('⚠️  The oracle did not respond in time. Request marked as FAILED.');
   setOutcomes?.([]);
+  setResultCid?.('');
+  setResultTimestamp?.('');
+  setOutcomeLabels?.([]);
+  
+  // Stay on RunQuery page to show timeout error, don't navigate to Results
+  setTransactionStatus('❌ TIMEOUT ERROR: Query timed out - no response received from the oracle.');
+  
+  // Show multiple forms of user feedback
+  alert('⚠️ Query Timeout\n\nThe oracle did not respond within the timeout period. The request has been marked as FAILED.\n\nPlease check the browser console for detailed logs.');
+  
+  // Also log to server if possible
+  try {
+    fetch('/api/log-timeout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        message: 'Client-side timeout detected',
+        timestamp: new Date().toISOString(),
+        walletAddress: walletAddress
+      })
+    }).catch(e => console.log('Could not log to server:', e.message));
+  } catch (e) {
+    console.log('Could not send timeout log to server:', e.message);
+  }
+  
+  return; // Don't navigate to Results page
 }
 
       // 6) Navigate to the RESULTS page on success
@@ -594,6 +646,26 @@ This blockchain operation requires LINK tokens to pay for the AI jury service. P
   return (
     <div className="page run">
       <h2>Run Query</h2>
+      
+      {/* Timeout Error Display */}
+      {transactionStatus && transactionStatus.includes('TIMEOUT ERROR') && (
+        <div style={{
+          backgroundColor: '#fee',
+          border: '2px solid #f88',
+          borderRadius: '8px',
+          padding: '20px',
+          margin: '20px 0',
+          textAlign: 'center'
+        }}>
+          <h3 style={{ color: '#d44', margin: '0 0 10px 0' }}>⚠️ Query Timeout</h3>
+          <p style={{ color: '#d44', fontSize: '16px', margin: '0' }}>
+            {transactionStatus}
+          </p>
+          <p style={{ color: '#666', fontSize: '14px', margin: '10px 0 0 0' }}>
+            The oracle did not respond within the timeout period. Please try again or contact support if this persists.
+          </p>
+        </div>
+      )}
       <div className="method-selector">
         <h3>Select Query Method</h3>
         <div className="method-options">

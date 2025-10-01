@@ -384,7 +384,9 @@ function App() {
         alert('Please install MetaMask!');
         return;
       }
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      // const provider = new ethers.BrowserProvider(window.ethereum);
+      const ethereum = window.ethereum?.providers?.find(p => p.isMetaMask) ?? window.ethereum;
+      const provider = new ethers.BrowserProvider(ethereum);
       const accounts = await provider.send('eth_requestAccounts', []);
       console.log('Accounts:', accounts);
       const address = accounts[0];

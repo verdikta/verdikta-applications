@@ -334,7 +334,9 @@ const handleRunQuery = async () => {
 
     console.log('🌐 Creating provider and ensuring correct network...');
     // 1) Ensure wallet is on the selected network (base or base_sepolia)
-    let provider = new ethers.BrowserProvider(window.ethereum);
+    // let provider = new ethers.BrowserProvider(window.ethereum);
+    const ethereum = window.ethereum?.providers?.find(p => p.isMetaMask) ?? window.ethereum;
+    let provider = new ethers.BrowserProvider(ethereum);
     provider = await ensureCorrectNetwork(provider); // respects REACT_APP_NETWORK
 
    // Quick existence check

@@ -6,7 +6,7 @@
     "@testing-library/jest-dom": "^5.17.0",
     "@testing-library/react": "^13.4.0",
     "@testing-library/user-event": "^13.5.0",
-    "@verdikta/common": "^1.3.0",
+    "@verdikta/common": "^1.3.1",
     "axios": "^1.7.9",
     "chart.js": "^4.4.7",
     "cors": "^2.8.5",

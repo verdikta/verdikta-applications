@@ -129,8 +129,8 @@ async function topUpLinkAllowance({
   STALE_SECONDS   = 1800,      // 1/2 hour, after this approval is considered stale
   SEARCH_WINDOW   = 7_200,     // look back this many blocks seeking last approval (~4 hours on Base Sepolia)
   PAYMENT_MULTIPLIER = 2,      // a >=1 multiplier to give a margin that helps support simultaneous calls
-  PAYMENT_MIN = parseUnits("5", 17), // minimum to reserve
-  PAYMENT_MAX = parseUnits("2", 18)  // maximum to reserve
+  PAYMENT_MIN = parseUnits("3", 17), // minimum to reserve
+  PAYMENT_MAX = parseUnits("1", 18)  // maximum to reserve
 }) {
   const signer = await provider.getSigner();
   const link   = new ethers.Contract(linkTokenAddress, LINK_TOKEN_ABI, signer);

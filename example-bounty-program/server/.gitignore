@@ -1,0 +1,15 @@
+node_modules
+.env
+npm-debug.log
+yarn-error.log
+*.log
+
+# Temporary files
+tmp/
+data/*.json
+!data/.gitkeep
+
+# Test coverage
+coverage/
+.nyc_output/
+

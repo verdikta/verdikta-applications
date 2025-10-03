@@ -1,0 +1,26 @@
+# Backend API
+
+This directory will contain the Node.js/Express backend for the bounty program.
+
+## Planned Structure
+
+```
+server/
+├── routes/
+│   ├── bountyRoutes.js       # Bounty CRUD endpoints
+│   ├── submissionRoutes.js   # Submission endpoints
+│   └── ipfsRoutes.js         # IPFS upload/fetch
+├── utils/
+│   ├── ipfsClient.js         # IPFS integration
+│   ├── validation.js         # Input validation
+│   └── logger.js             # Logging utility
+├── data/
+│   └── bounties.json         # Local bounty cache (optional)
+├── tmp/                      # Temporary file uploads
+├── server.js                 # Main Express app
+├── package.json
+└── .env.example
+```
+
+Status: 🔴 Not yet implemented
+

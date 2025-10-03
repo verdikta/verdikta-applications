@@ -1,0 +1,19 @@
+# Smart Contracts
+
+This directory will contain the BountyEscrow smart contract and related Solidity code.
+
+## Planned Structure
+
+```
+contracts/
+├── BountyEscrow.sol          # Main bounty escrow contract
+├── interfaces/
+│   └── IVerdiktaAggregator.sol  # Verdikta integration interface
+├── test/
+│   └── BountyEscrow.test.js  # Hardhat/Foundry tests
+└── scripts/
+    └── deploy.js             # Deployment scripts
+```
+
+Status: 🔴 Not yet implemented
+

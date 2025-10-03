@@ -1,0 +1,6 @@
+# Data Directory
+
+This directory can be used for local caching of bounty/submission data (optional).
+
+Files in this directory are git-ignored except for this .gitkeep file.
+

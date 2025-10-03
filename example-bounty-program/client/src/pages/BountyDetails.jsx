@@ -172,3 +172,5 @@ function SubmissionCard({ submission }) {
 
 export default BountyDetails;
 
+
+

@@ -134,6 +134,70 @@ app.get('/api/classes/:classId', (req, res) => {
   }
 });
 
+// Get available models for a specific class
+app.get('/api/classes/:classId/models', (req, res) => {
+  try {
+    const classId = parseInt(req.params.classId, 10);
+    
+    if (isNaN(classId)) {
+      return res.status(400).json({
+        error: 'Invalid class ID',
+        details: 'Class ID must be a number'
+      });
+    }
+    
+    const classInfo = classMap.getClass(classId);
+    
+    if (!classInfo) {
+      return res.status(404).json({
+        error: 'Class not found',
+        details: `Class ID ${classId} is not tracked`
+      });
+    }
+    
+    // Check if class is empty (no models available)
+    if (classInfo.status === 'EMPTY') {
+      return res.json({
+        success: false,
+        status: 'EMPTY',
+        error: 'This class has no available models',
+        classId: Number(classInfo.id),
+        className: classInfo.name
+      });
+    }
+    
+    // Group models by provider
+    const modelsByProvider = {};
+    if (classInfo.models && Array.isArray(classInfo.models)) {
+      classInfo.models.forEach(model => {
+        if (!modelsByProvider[model.provider]) {
+          modelsByProvider[model.provider] = [];
+        }
+        modelsByProvider[model.provider].push(model);
+      });
+    }
+    
+    // Convert BigInt ID to regular number for JSON serialization
+    const response = {
+      success: true,
+      classId: Number(classInfo.id),
+      className: classInfo.name,
+      status: classInfo.status,
+      models: classInfo.models || [],
+      modelsByProvider,
+      limits: classInfo.limits || null
+    };
+    
+    res.json(response);
+  } catch (error) {
+    logger.error('Error fetching models for class:', error);
+    res.status(500).json({
+      error: 'Failed to fetch models',
+      details: error.message
+    });
+  }
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
@@ -205,4 +269,5 @@ const startServer = async () => {
 startServer();
 
 module.exports = app; // For testing
+
 

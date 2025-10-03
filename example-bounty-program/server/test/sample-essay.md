@@ -110,3 +110,5 @@ Solidity is a powerful language for blockchain development. Practice, test thoro
 
 *This post covers the basics of Solidity development for beginners. Continue learning with hands-on practice and building real projects.*
 
+
+

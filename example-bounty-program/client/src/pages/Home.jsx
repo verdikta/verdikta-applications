@@ -176,3 +176,5 @@ function BountyCard({ bounty }) {
 
 export default Home;
 
+
+

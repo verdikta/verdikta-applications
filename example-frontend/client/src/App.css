@@ -174,7 +174,24 @@ body {
 .actions {
   margin-top: 2rem;
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1rem;
+}
+
+/* Validation message styling */
+.validation-message {
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.validation-message.error {
+  background-color: #fff2f0;
+  border: 1px solid #ffccc7;
+  color: #ff4d4f;
 }
 
 .actions button {
@@ -641,6 +658,17 @@ body {
   border-color: var(--color-primary-purple);
   outline: none;
   box-shadow: 0 0 0 2px rgba(94, 55, 244, 0.1);
+}
+
+/* Required field indicator */
+.description-input.required-field {
+  border-color: #ff4d4f;
+  background-color: #fff2f0;
+}
+
+.description-input.required-field:focus {
+  border-color: #ff4d4f;
+  box-shadow: 0 0 0 2px rgba(255, 77, 79, 0.1);
 }
 
 .file-list li,

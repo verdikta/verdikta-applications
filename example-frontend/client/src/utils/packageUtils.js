@@ -1,5 +1,6 @@
 // src/utils/packageUtils.js
 import { createClient } from '../services/verdiktaClient';
+import { getFileMimeType } from './mimeTypeUtils';
 
 // Initialize browser-compatible verdikta client
 const { archiveService, manifestParser, logger } = createClient({
@@ -31,7 +32,7 @@ export async function createQueryPackageArchive(
   // 2) Update manifest with references
   const additionalFiles = supportingFiles.map((f, i) => ({
     name: `supportingFile${i + 1}`,
-    type: f.file.type,
+    type: getFileMimeType(f.file),
     filename: f.file.name,
     description: f.description || ''
   }));

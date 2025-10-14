@@ -1,421 +1,355 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.23;
 
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "./interfaces/IVerdiktaAggregator.sol";
+import {IERC20, IVerdiktaAggregator} from "./Interfaces.sol";
+import "./EvaluationWallet.sol";
 
-/**
- * @title BountyEscrow
- * @notice Escrow contract for AI-evaluated bounties using Verdikta
- * @dev Manages bounty creation, submissions, AI evaluation via Verdikta, and automatic payouts
- * @author Verdikta Team
- */
-contract BountyEscrow is ReentrancyGuard, Ownable {
-    // ============================================================
-    //                      STATE VARIABLES
-    // ============================================================
+/// @title VerdiktaBountyEscrow
+/// @notice Bounty escrow that: (1) locks ETH, (2) prepares a submission wallet,
+///         (3) starts Verdikta after hunter approves LINK to that wallet,
+///         (4) finalizes by reading Verdikta scores and auto-paying if passed.
+contract VerdiktaBountyEscrow {
+    enum BountyStatus { Open, Awarded, Cancelled }
+    enum SubmissionStatus { Prepared, PendingVerdikta, Failed, PassedPaid, PassedUnpaid }
 
-    /// @notice Verdikta Aggregator contract for AI evaluations
-    IVerdiktaAggregator public verdiktaAggregator;
-
-    /// @notice LINK token contract for paying evaluation fees
-    IERC20 public linkToken;
-
-    /// @notice Counter for generating unique bounty IDs
-    uint256 private _bountyIdCounter;
-
-    /// @notice Mapping from bounty ID to Bounty struct
-    mapping(uint256 => Bounty) public bounties;
-
-    /// @notice Mapping from submission ID to Submission struct
-    mapping(bytes32 => Submission) public submissions;
-
-    /// @notice Mapping from bounty ID to array of submission IDs
-    mapping(uint256 => bytes32[]) public bountySubmissions;
-
-    /// @notice Mapping from Verdikta request ID to submission ID
-    mapping(bytes32 => bytes32) public verdiktaRequestToSubmission;
-
-    /// @notice Duration after bounty creation during which cancellation is not allowed (24 hours)
-    uint256 public constant CANCEL_LOCK_DURATION = 24 hours;
-
-    /// @notice Minimum ETH amount for a bounty (prevents dust bounties)
-    uint256 public constant MIN_BOUNTY_AMOUNT = 0.001 ether;
-
-    // ============================================================
-    //                      DATA STRUCTURES
-    // ============================================================
-
-    /// @notice Status of a bounty
-    enum BountyStatus {
-        Open,       // Accepting submissions
-        Evaluating, // Has active evaluation in progress
-        Paid,       // Winner has been paid
-        Cancelled   // Cancelled by creator
-    }
-
-    /// @notice Status of a submission
-    enum SubmissionStatus {
-        Pending,    // Submitted but not yet evaluated
-        Evaluating, // Currently being evaluated by Verdikta
-        Passed,     // Passed evaluation and won bounty
-        Failed,     // Failed evaluation
-        TimedOut    // Evaluation timed out
-    }
-
-    /// @notice Bounty information
     struct Bounty {
-        address creator;           // Address of bounty creator
-        uint256 payoutAmount;      // Amount in Wei to pay winner
-        string rubricCid;          // IPFS CID of evaluation rubric
-        uint64 classId;            // Verdikta class ID for AI models
-        BountyStatus status;       // Current status
-        uint256 createdAt;         // Block timestamp of creation
-        uint256 cancelLockUntil;   // Timestamp until which cancellation is locked
-        bytes32 winningSubmission; // ID of winning submission (if any)
+        address creator;
+        string  rubricCid;          // IPFS CID for rubric JSON
+        uint64  requestedClass;     // Verdikta class ID
+        uint8   threshold;          // 0..100 acceptance threshold
+        uint256 payoutWei;          // ETH locked
+        uint256 createdAt;
+        BountyStatus status;
+        address winner;
+        uint256 submissions;        // count
     }
 
-    /// @notice Submission information
     struct Submission {
-        uint256 bountyId;          // Associated bounty ID
-        address hunter;            // Address of submitter
-        string deliverableCid;     // IPFS CID of deliverable
-        bytes32 verdiktaRequestId; // Verdikta's request ID
-        uint256 submittedAt;       // Block timestamp of submission
-        SubmissionStatus status;   // Current status
-        uint8 score;               // AI evaluation score (0-100)
-        string reportCid;          // IPFS CID of AI report
+        address hunter;
+        string  deliverableCid;
+        address evalWallet;
+        bytes32 verdiktaAggId;      // set once started
+        SubmissionStatus status;
+        uint256 acceptance;         // stored acceptance (0..100)
+        uint256 rejection;          // stored rejection (0..100)
+        string  justificationCids;  // Verdikta result, if any
+        uint256 submittedAt;
+        uint256 finalizedAt;
+        uint256 linkMaxBudget;      // LINK budget computed from maxOracleFee
+        uint256 maxOracleFee;       // echo
+        uint256 alpha;              // echo
+        uint256 estimatedBaseCost;  // echo
+        uint256 maxFeeBasedScaling; // echo
+        string  addendum;           // echo
     }
 
-    // ============================================================
-    //                          EVENTS
-    // ============================================================
+    IERC20 public immutable link;
+    IVerdiktaAggregator public immutable verdikta;
 
+    uint256 public cancelLockSeconds = 1 days;
+
+    Bounty[] public bounties;
+    mapping(uint256 => Submission[]) public subs;
+
+    // ----------------- Events -----------------
     event BountyCreated(
         uint256 indexed bountyId,
         address indexed creator,
-        uint256 payoutAmount,
         string rubricCid,
         uint64 classId,
-        uint256 cancelLockUntil
+        uint8 threshold,
+        uint256 payoutWei
     );
 
-    event SubmissionQueued(
+    event BountyCancelled(uint256 indexed bountyId);
+
+    event SubmissionPrepared(
         uint256 indexed bountyId,
-        bytes32 indexed submissionId,
+        uint256 indexed submissionId,
         address indexed hunter,
+        address evalWallet,
         string deliverableCid,
-        bytes32 verdiktaRequestId
+        uint256 linkMaxBudget
     );
 
-    event EvaluationResult(
+    event WorkSubmitted(
         uint256 indexed bountyId,
-        bytes32 indexed submissionId,
-        bool pass,
-        uint8 score,
-        string reportCid
+        uint256 indexed submissionId,
+        bytes32 verdiktaAggId
     );
 
-    event BountyPaid(
+    event SubmissionFinalized(
         uint256 indexed bountyId,
-        bytes32 indexed submissionId,
-        address indexed winner,
-        uint256 amountWei
+        uint256 indexed submissionId,
+        bool passed,
+        uint256 acceptance,
+        uint256 rejection,
+        string justificationCids
     );
 
-    event BountyCancelled(
-        uint256 indexed bountyId,
-        address indexed creator,
-        uint256 refundedAmount
-    );
+    event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amountWei);
+    event LinkRefunded(uint256 indexed bountyId, uint256 indexed submissionId, uint256 amount);
 
-    event SubmissionRefunded(
-        bytes32 indexed submissionId,
-        address indexed hunter,
-        string reason
-    );
-
-    event VerdiktaAggregatorUpdated(address indexed oldAddress, address indexed newAddress);
-    event LinkTokenUpdated(address indexed oldAddress, address indexed newAddress);
-
-    // ============================================================
-    //                        CONSTRUCTOR
-    // ============================================================
-
-    /**
-     * @notice Initialize the BountyEscrow contract
-     * @param _verdiktaAggregator Address of Verdikta Aggregator contract
-     * @param _linkToken Address of LINK token contract
-     */
-    constructor(address _verdiktaAggregator, address _linkToken) Ownable(msg.sender) {
-        require(_verdiktaAggregator != address(0), "Invalid Verdikta address");
-        require(_linkToken != address(0), "Invalid LINK address");
-        
-        verdiktaAggregator = IVerdiktaAggregator(_verdiktaAggregator);
-        linkToken = IERC20(_linkToken);
+    constructor(IERC20 _link, IVerdiktaAggregator _verdikta) {
+        require(address(_link) != address(0) && address(_verdikta) != address(0), "zero addr");
+        link = _link;
+        verdikta = _verdikta;
     }
 
-    // ============================================================
-    //                    BOUNTY MANAGEMENT
-    // ============================================================
+    // ------------- Bounty lifecycle -------------
 
-    /**
-     * @notice Create a new bounty with ETH escrow
-     * @param rubricCid IPFS CID of the rubric JSON
-     * @param classId Verdikta class ID for evaluation (default: 128)
-     * @return bountyId Unique identifier for the bounty
-     * @dev Requires msg.value >= MIN_BOUNTY_AMOUNT
-     */
     function createBounty(
         string calldata rubricCid,
-        uint64 classId
+        uint64  requestedClass,
+        uint8   threshold
     ) external payable returns (uint256 bountyId) {
-        // TODO: Implement bounty creation logic
-        // 1. Validate inputs (msg.value >= MIN_BOUNTY_AMOUNT, non-empty rubricCid)
-        // 2. Increment _bountyIdCounter
-        // 3. Create Bounty struct with:
-        //    - creator = msg.sender
-        //    - payoutAmount = msg.value
-        //    - rubricCid = rubricCid
-        //    - classId = classId (default to 128 if 0)
-        //    - status = BountyStatus.Open
-        //    - createdAt = block.timestamp
-        //    - cancelLockUntil = block.timestamp + CANCEL_LOCK_DURATION
-        // 4. Store bounty in mapping
-        // 5. Emit BountyCreated event
-        // 6. Return bountyId
-        
-        revert("TODO: Implement createBounty");
+        require(msg.value > 0, "no ETH");
+        require(bytes(rubricCid).length > 0, "empty rubric");
+        require(threshold <= 100, "bad threshold");
+
+        bounties.push(Bounty({
+            creator: msg.sender,
+            rubricCid: rubricCid,
+            requestedClass: requestedClass,
+            threshold: threshold,
+            payoutWei: msg.value,
+            createdAt: block.timestamp,
+            status: BountyStatus.Open,
+            winner: address(0),
+            submissions: 0
+        }));
+
+        bountyId = bounties.length - 1;
+        emit BountyCreated(bountyId, msg.sender, rubricCid, requestedClass, threshold, msg.value);
     }
 
-    /**
-     * @notice Cancel a bounty (only after 24h lockout, no active evaluations)
-     * @param bountyId The bounty to cancel
-     * @dev Only callable by bounty creator
-     * @dev Refunds ETH to creator, marks pending submissions as void
-     */
-    function cancelBounty(uint256 bountyId) external nonReentrant {
-        // TODO: Implement bounty cancellation logic
-        // 1. Validate: bounty exists
-        // 2. Validate: msg.sender == bounty.creator
-        // 3. Validate: block.timestamp > cancelLockUntil
-        // 4. Validate: status == Open (no active evaluations)
-        // 5. Update bounty status to Cancelled
-        // 6. Process pending submissions:
-        //    - Mark unprocessed submissions as void
-        //    - Emit SubmissionRefunded for each
-        // 7. Transfer ETH back to creator
-        // 8. Emit BountyCancelled event
-        
-        revert("TODO: Implement cancelBounty");
+    function cancelBounty(uint256 bountyId) external {
+        Bounty storage b = _mustBounty(bountyId);
+        require(msg.sender == b.creator, "not creator");
+        require(b.status == BountyStatus.Open, "not open");
+        require(block.timestamp >= b.createdAt + cancelLockSeconds, "locked");
+
+        b.status = BountyStatus.Cancelled;
+        uint256 amt = b.payoutWei;
+        b.payoutWei = 0;
+
+        (bool ok,) = payable(b.creator).call{value: amt}("");
+        require(ok, "eth send fail");
+        emit BountyCancelled(bountyId);
     }
 
-    /**
-     * @notice Get bounty details
-     * @param bountyId The bounty to query
-     * @return Bounty struct
-     */
-    function getBounty(uint256 bountyId) external view returns (Bounty memory) {
-        // TODO: Implement bounty getter
-        // 1. Validate bounty exists
-        // 2. Return bounties[bountyId]
-        
-        revert("TODO: Implement getBounty");
-    }
+    // ------------- Submissions & Verdikta -------------
 
-    /**
-     * @notice Get all submission IDs for a bounty
-     * @param bountyId The bounty to query
-     * @return Array of submission IDs
-     */
-    function getBountySubmissions(uint256 bountyId) external view returns (bytes32[] memory) {
-        // TODO: Implement submission list getter
-        // 1. Return bountySubmissions[bountyId]
-        
-        revert("TODO: Implement getBountySubmissions");
-    }
-
-    // ============================================================
-    //                  SUBMISSION & EVALUATION
-    // ============================================================
-
-    /**
-     * @notice Submit work and request Verdikta evaluation
-     * @param bountyId The bounty to submit to
-     * @param deliverableCid IPFS CID of the submission
-     * @return submissionId Unique identifier for this submission
-     * @dev Hunter must have approved LINK spend for evaluation fee
-     */
-    function submitAndEvaluate(
+    /// @notice STEP 1: Prepare a submission. Deploys an EvaluationWallet and records parameters.
+    ///         The wallet address is emitted so the hunter can approve LINK to it.
+    function prepareSubmission(
         uint256 bountyId,
-        string calldata deliverableCid
-    ) external nonReentrant returns (bytes32 submissionId) {
-        // TODO: Implement submission and evaluation request
-        // 1. Validate: bounty exists and status == Open
-        // 2. Validate: deliverableCid is not empty
-        // 3. Generate unique submissionId (keccak256 of bountyId, hunter, timestamp)
-        // 4. Check hunter's LINK approval for this contract
-        // 5. Build evaluation query package:
-        //    - Create array: [rubricCid, deliverableCid]
-        //    - Prepare evaluation query text
-        // 6. Call verdiktaAggregator.requestAIEvaluationWithApproval()
-        //    - Use bounty's classId
-        //    - Use standard evaluation parameters (alpha, maxFee, etc.)
-        // 7. Transfer LINK fee from hunter to this contract
-        // 8. Create Submission struct
-        // 9. Store submission and update mappings
-        // 10. Update bounty status to Evaluating if first submission
-        // 11. Emit SubmissionQueued event
-        // 12. Return submissionId
-        
-        revert("TODO: Implement submitAndEvaluate");
+        string calldata deliverableCid,
+        string calldata addendum,
+        uint256 alpha,
+        uint256 maxOracleFee,
+        uint256 estimatedBaseCost,
+        uint256 maxFeeBasedScaling
+    ) external returns (uint256 submissionId, address evalWallet, uint256 linkMaxBudget) {
+        Bounty storage b = _mustBounty(bountyId);
+        require(b.status == BountyStatus.Open, "bounty closed");
+        require(bytes(deliverableCid).length > 0, "empty deliverable");
+
+        linkMaxBudget = verdikta.maxTotalFee(maxOracleFee);
+        require(linkMaxBudget > 0, "bad budget");
+
+        EvaluationWallet wallet = new EvaluationWallet(address(this), msg.sender, link, verdikta);
+
+        Submission memory s = Submission({
+            hunter: msg.sender,
+            deliverableCid: deliverableCid,
+            evalWallet: address(wallet),
+            verdiktaAggId: bytes32(0),
+            status: SubmissionStatus.Prepared,
+            acceptance: 0,
+            rejection: 0,
+            justificationCids: "",
+            submittedAt: block.timestamp,
+            finalizedAt: 0,
+            linkMaxBudget: linkMaxBudget,
+            maxOracleFee: maxOracleFee,
+            alpha: alpha,
+            estimatedBaseCost: estimatedBaseCost,
+            maxFeeBasedScaling: maxFeeBasedScaling,
+            addendum: addendum
+        });
+
+        subs[bountyId].push(s);
+        submissionId = subs[bountyId].length - 1;
+        b.submissions += 1;
+
+        emit SubmissionPrepared(
+            bountyId,
+            submissionId,
+            msg.sender,
+            address(wallet),
+            deliverableCid,
+            linkMaxBudget
+        );
+
+        return (submissionId, address(wallet), linkMaxBudget);
     }
 
-    /**
-     * @notice Callback from Verdikta with evaluation result
-     * @param verdiktaRequestId The Verdikta request ID
-     * @param likelihoods Score array from Verdikta (outcome probabilities)
-     * @param justificationCid IPFS CID of AI report
-     * @dev Only callable by Verdikta Aggregator
-     */
-    function fulfillEvaluation(
-        bytes32 verdiktaRequestId,
-        uint256[] memory likelihoods,
-        string memory justificationCid
-    ) external nonReentrant {
-        // TODO: Implement evaluation result processing
-        // 1. Validate: msg.sender == address(verdiktaAggregator)
-        // 2. Get submissionId from verdiktaRequestToSubmission mapping
-        // 3. Validate submission exists and status == Evaluating
-        // 4. Parse likelihoods to determine pass/fail:
-        //    - likelihoods[0] = probability of PASS
-        //    - likelihoods[1] = probability of FAIL
-        //    - pass = likelihoods[0] >= 50
-        // 5. Calculate score (0-100 scale)
-        // 6. Update submission:
-        //    - status = Passed or Failed
-        //    - score = calculated score
-        //    - reportCid = justificationCid
-        // 7. If passed:
-        //    - Update bounty status to Paid
-        //    - Set bounty.winningSubmission
-        //    - Transfer ETH to hunter
-        //    - Emit BountyPaid event
-        // 8. If failed:
-        //    - Update bounty status back to Open if no other evaluations pending
-        // 9. Emit EvaluationResult event
-        
-        revert("TODO: Implement fulfillEvaluation");
+    /// @notice STEP 2: After hunter has approved LINK to the EvaluationWallet,
+    ///         start the Verdikta evaluation (pulls LINK into wallet, approves Verdikta, starts).
+    function startPreparedSubmission(uint256 bountyId, uint256 submissionId) external {
+        Bounty storage b = _mustBounty(bountyId);
+        Submission storage s = _mustSubmission(bountyId, submissionId);
+
+        require(s.status == SubmissionStatus.Prepared, "not prepared");
+        require(msg.sender == s.hunter, "only hunter");
+
+        EvaluationWallet wallet = EvaluationWallet(s.evalWallet);
+
+        // Pull LINK from hunter into the wallet (requires ERC-20 approval to the wallet)
+        wallet.pullLinkFromHunter(s.linkMaxBudget);
+
+        // Approve Verdikta and start evaluation (wallet will be msg.sender to Verdikta)
+        wallet.approveVerdikta(s.linkMaxBudget);
+
+        string;
+        cids[0] = s.deliverableCid;
+        cids[1] = b.rubricCid;
+
+        bytes32 aggId = wallet.startEvaluation(
+            cids,
+            s.addendum,
+            s.alpha,
+            s.maxOracleFee,
+            s.estimatedBaseCost,
+            s.maxFeeBasedScaling,
+            b.requestedClass
+        );
+
+        s.verdiktaAggId = aggId;
+        s.status = SubmissionStatus.PendingVerdikta;
+
+        emit WorkSubmitted(bountyId, submissionId, aggId);
     }
 
-    /**
-     * @notice Mark evaluation as timed out (after 5 min) and refund hunter
-     * @param submissionId The submission that timed out
-     * @dev Anyone can call this after timeout period
-     */
-    function markEvaluationTimeout(bytes32 submissionId) external nonReentrant {
-        // TODO: Implement timeout handling
-        // 1. Validate: submission exists
-        // 2. Validate: status == Evaluating
-        // 3. Get timeout duration from Verdikta
-        // 4. Validate: block.timestamp > submission.submittedAt + timeout
-        // 5. Update submission status to TimedOut
-        // 6. Update bounty status back to Open
-        // 7. Call Verdikta's timeout finalization (if needed)
-        // 8. Emit SubmissionRefunded event
-        
-        revert("TODO: Implement markEvaluationTimeout");
+    /// @notice Finalize a submission by reading Verdikta. If accepted and bounty open,
+    ///         pay the hunter and close the bounty. Refund leftover LINK in any case.
+    function finalizeSubmission(uint256 bountyId, uint256 submissionId) external {
+        Bounty storage b = _mustBounty(bountyId);
+        Submission storage s = _mustSubmission(bountyId, submissionId);
+        require(s.status == SubmissionStatus.PendingVerdikta, "not pending");
+
+        (uint256[] memory scores, string memory justCids, bool ok) = verdikta.getEvaluation(s.verdiktaAggId);
+
+        if (!ok) {
+            // If timed out but not finalized on Verdikta, try to finalize there and retry read.
+            try verdikta.finalizeEvaluationTimeout(s.verdiktaAggId) {
+                (scores, justCids, ok) = verdikta.getEvaluation(s.verdiktaAggId);
+            } catch { /* ignore */ }
+        }
+        require(ok, "Verdikta not ready");
+
+        (uint256 acceptance, uint256 rejection) = _interpretScores(scores);
+        s.acceptance = acceptance;
+        s.rejection  = rejection;
+        s.justificationCids = justCids;
+        s.finalizedAt = block.timestamp;
+
+        bool passed = _passed(acceptance, rejection, b.threshold);
+
+        if (!passed) {
+            s.status = SubmissionStatus.Failed;
+            emit SubmissionFinalized(bountyId, submissionId, false, acceptance, rejection, justCids);
+            _refundLeftoverLink(bountyId, submissionId);
+            return;
+        }
+
+        // Passed
+        emit SubmissionFinalized(bountyId, submissionId, true, acceptance, rejection, justCids);
+
+        if (b.status == BountyStatus.Open) {
+            uint256 pay = b.payoutWei;
+            b.payoutWei = 0;
+            b.status = BountyStatus.Awarded;
+            b.winner = s.hunter;
+
+            (bool okPay,) = payable(s.hunter).call{value: pay}("");
+            require(okPay, "eth payout failed");
+            s.status = SubmissionStatus.PassedPaid;
+
+            emit PayoutSent(bountyId, s.hunter, pay);
+        } else {
+            s.status = SubmissionStatus.PassedUnpaid; // someone else already won
+        }
+
+        _refundLeftoverLink(bountyId, submissionId);
     }
 
-    /**
-     * @notice Get submission details
-     * @param submissionId The submission to query
-     * @return Submission struct
-     */
-    function getSubmission(bytes32 submissionId) external view returns (Submission memory) {
-        // TODO: Implement submission getter
-        // 1. Validate submission exists
-        // 2. Return submissions[submissionId]
-        
-        revert("TODO: Implement getSubmission");
+    // ------------- Views -------------
+
+    function bountyCount() external view returns (uint256) { return bounties.length; }
+
+    function getBounty(uint256 bountyId) external view returns (Bounty memory) {
+        return _mustBounty(bountyId);
     }
 
-    // ============================================================
-    //                      ADMIN FUNCTIONS
-    // ============================================================
-
-    /**
-     * @notice Update Verdikta Aggregator address (owner only)
-     * @param _newAggregator New Verdikta Aggregator address
-     */
-    function updateVerdiktaAggregator(address _newAggregator) external onlyOwner {
-        require(_newAggregator != address(0), "Invalid address");
-        address oldAddress = address(verdiktaAggregator);
-        verdiktaAggregator = IVerdiktaAggregator(_newAggregator);
-        emit VerdiktaAggregatorUpdated(oldAddress, _newAggregator);
+    function submissionCount(uint256 bountyId) external view returns (uint256) {
+        return subs[bountyId].length;
     }
 
-    /**
-     * @notice Update LINK token address (owner only)
-     * @param _newLinkToken New LINK token address
-     */
-    function updateLinkToken(address _newLinkToken) external onlyOwner {
-        require(_newLinkToken != address(0), "Invalid address");
-        address oldAddress = address(linkToken);
-        linkToken = IERC20(_newLinkToken);
-        emit LinkTokenUpdated(oldAddress, _newLinkToken);
+    function getSubmission(uint256 bountyId, uint256 submissionId) external view returns (Submission memory) {
+        return _mustSubmission(bountyId, submissionId);
     }
 
-    // ============================================================
-    //                      HELPER FUNCTIONS
-    // ============================================================
+    // ------------- Admin knobs -------------
 
-    /**
-     * @notice Check if a bounty can be cancelled
-     * @param bountyId The bounty to check
-     * @return canCancel Whether the bounty can be cancelled
-     * @return reason Reason why it cannot be cancelled (if applicable)
-     */
-    function canCancelBounty(uint256 bountyId)
-        external
-        view
-        returns (bool canCancel, string memory reason)
-    {
-        // TODO: Implement cancellation eligibility check
-        // 1. Check if bounty exists
-        // 2. Check if caller is creator
-        // 3. Check if cancelLockUntil has passed
-        // 4. Check if status is Open
-        // 5. Return result and reason
-        
-        revert("TODO: Implement canCancelBounty");
+    function setCancelLock(uint256 seconds_) external {
+        require(seconds_ >= 1 hours && seconds_ <= 7 days, "unreasonable");
+        cancelLockSeconds = seconds_;
     }
 
-    /**
-     * @notice Calculate LINK fee for evaluation
-     * @param classId The Verdikta class ID
-     * @return linkFee Amount of LINK tokens required
-     */
-    function calculateEvaluationFee(uint64 classId) external view returns (uint256 linkFee) {
-        // TODO: Implement fee calculation
-        // 1. Call verdiktaAggregator.maxTotalFee() with standard parameters
-        // 2. Return calculated fee
-        
-        revert("TODO: Implement calculateEvaluationFee");
+    // ------------- Internals -------------
+
+    function _refundLeftoverLink(uint256 bountyId, uint256 submissionId) private {
+        Submission storage s = subs[bountyId][submissionId];
+        uint256 before = IERC20(link).balanceOf(s.evalWallet);
+        EvaluationWallet(s.evalWallet).refundLeftoverLink();
+        uint256 afterBal = IERC20(link).balanceOf(s.evalWallet);
+        uint256 delta = before > afterBal ? before - afterBal : 0;
+        emit LinkRefunded(bountyId, submissionId, delta);
     }
 
-    // ============================================================
-    //                      RECEIVE FUNCTION
-    // ============================================================
-
-    /**
-     * @notice Fallback function to reject direct ETH transfers
-     * @dev ETH should only be sent via createBounty()
-     */
-    receive() external payable {
-        revert("Use createBounty() to send ETH");
+    function _mustBounty(uint256 bountyId) internal view returns (Bounty storage) {
+        require(bountyId < bounties.length, "bad bountyId");
+        return bounties[bountyId];
     }
+
+    function _mustSubmission(uint256 bountyId, uint256 submissionId) internal view returns (Submission storage) {
+        require(submissionId < subs[bountyId].length, "bad submissionId");
+        return subs[bountyId][submissionId];
+    }
+
+    /// @dev Interpret Verdikta scores where typically scores[0]=accept, scores[1]=reject, sum ≈100.
+    function _interpretScores(uint256[] memory scores) internal pure returns (uint256 accept, uint256 reject) {
+        if (scores.length == 0) return (0, 0);
+        if (scores.length == 1) {
+            uint256 a = scores[0];
+            if (a > 100) a = 100;
+            // best-effort reject complement if caller expects two numbers
+            uint256 r = 100 > a ? 100 - a : 0;
+            return (a, r);
+        }
+        // take first two; clamp to [0,100]
+        accept = scores[0] > 100 ? 100 : scores[0];
+        reject = scores[1] > 100 ? 100 : scores[1];
+        return (accept, reject);
+    }
+
+    /// @dev Pass rule: acceptance >= threshold AND acceptance >= rejection.
+    function _passed(uint256 acceptance, uint256 rejection, uint256 threshold) internal pure returns (bool) {
+        return (acceptance >= threshold) && (acceptance >= rejection);
+    }
+
+    receive() external payable {}
 }
 

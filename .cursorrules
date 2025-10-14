@@ -1,0 +1,48 @@
+# Verdikta Applications - General Development Rules
+
+## Project Overview
+This is a monorepo containing Verdikta integration examples:
+- `example-bounty-program/` - AI-powered bounty/job system with IPFS integration
+- `example-frontend/` - Reference implementation for Verdikta queries
+- `docs/` - Documentation for the project
+
+## Key Principles
+1. **Always look for existing code** before creating new implementations
+2. **Avoid duplication** - check for similar functionality in the codebase
+3. **Keep files under 200-300 lines** - refactor when exceeding this
+4. **Focus on relevant code** - don't touch unrelated areas
+5. **Test thoroughly** - especially when changing core functionality
+6. **Write clear documentation** - update docs when adding features
+
+## Code Quality
+- Use descriptive variable and function names
+- Write modular and reusable components
+- Implement comprehensive error handling
+- Add input validation for all user inputs
+- Follow existing patterns in the codebase
+
+## Environment Awareness
+Write code that accounts for different environments:
+- `dev` - Development with verbose logging
+- `test` - Testing with mock data
+- `prod` - Production with optimized settings
+
+## Before Making Changes
+1. Understand the existing implementation
+2. Check if similar functionality exists elsewhere
+3. Review related tests
+4. Consider impact on other parts of the system
+5. Update documentation if needed
+
+## When Fixing Bugs
+1. Understand why the test is failing
+2. Only change test logic if thoroughly convinced the test is wrong
+3. Prefer fixing implementation over changing tests
+4. Document the fix in comments if complex
+
+## Documentation Requirements
+- Update README.md for user-facing features
+- Update technical docs for architecture changes
+- Add inline comments for complex logic
+- Create guides for new workflows
+

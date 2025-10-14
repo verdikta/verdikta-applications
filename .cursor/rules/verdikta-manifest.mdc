@@ -1,0 +1,283 @@
+---
+description: Verdikta manifest.json structure and archive generation patterns
+alwaysApply: false
+---
+
+# Verdikta Manifest Specification
+
+## Required Reading
+Official specification: https://docs.verdikta.com/verdikta-common/MANIFEST_SPECIFICATION/
+
+## Archive Structure
+
+### Primary Archive (Evaluation Instructions)
+```
+primary-archive.zip
+├── manifest.json
+└── primary_query.json
+```
+
+**manifest.json:**
+```json
+{
+  "version": "1.0",
+  "name": "Job Title - Evaluation for Payment Release",
+  "primary": {
+    "filename": "primary_query.json"
+  },
+  "juryParameters": {
+    "NUMBER_OF_OUTCOMES": 2,
+    "AI_NODES": [
+      {
+        "AI_MODEL": "gpt-4o",
+        "AI_PROVIDER": "OpenAI",
+        "NO_COUNTS": 1,
+        "WEIGHT": 0.5
+      }
+    ],
+    "ITERATIONS": 1
+  },
+  "additional": [
+    {
+      "name": "gradingRubric",
+      "type": "ipfs/cid",
+      "hash": "QmXXX...",
+      "description": "Evaluation rubric"
+    }
+  ],
+  "bCIDs": {
+    "submittedWork": "QmYYY..."
+  }
+}
+```
+
+**primary_query.json:**
+```json
+{
+  "query": "WORK PRODUCT EVALUATION REQUEST...",
+  "references": ["gradingRubric"],
+  "outcomes": ["DONT_FUND", "FUND"]
+}
+```
+
+### Hunter Archive (Work Submission)
+```
+hunter-archive.zip
+├── manifest.json
+├── primary_query.json
+└── submission/
+    ├── file1.txt
+    ├── file2.pdf
+    └── chart.jpg
+```
+
+**manifest.json:**
+```json
+{
+  "version": "1.0",
+  "name": "submittedWork",
+  "primary": {
+    "filename": "primary_query.json"
+  },
+  "additional": [
+    {
+      "name": "submitted-work-1",
+      "type": "text/plain",
+      "filename": "submission/file1.txt",
+      "description": "Main document with findings"
+    },
+    {
+      "name": "submitted-work-2",
+      "type": "application/pdf",
+      "filename": "submission/file2.pdf",
+      "description": "Supporting research data"
+    },
+    {
+      "name": "submitted-work-3",
+      "type": "image/jpeg",
+      "filename": "submission/chart.jpg",
+      "description": "Data visualization chart"
+    }
+  ]
+}
+```
+
+**primary_query.json:**
+```json
+{
+  "query": "Custom hunter narrative explaining their submission...",
+  "references": ["submitted-work-1", "submitted-work-2", "submitted-work-3"]
+}
+```
+
+## Key Fields
+
+### manifest.json
+
+**Required:**
+- `version` - Always "1.0"
+- `primary` - Reference to primary_query.json
+
+**Optional but Important:**
+- `name` - Human-readable identifier
+- `juryParameters` - AI jury configuration (Primary archive only)
+- `additional` - Array of file references
+- `bCIDs` - References to other archives (Primary archive only)
+
+### additional Array
+
+**Each entry must have:**
+```json
+{
+  "name": "unique-reference-name",
+  "type": "mime/type",
+  "filename": "path/to/file",
+  "description": "Human-readable description"
+}
+```
+
+**Important:**
+- `name` must be unique within the array
+- `name` must be referenced in primary_query.json `references` array
+- `filename` is relative to archive root
+- `description` is REQUIRED per specification (helps AI understand file purpose)
+
+### primary_query.json
+
+**Required:**
+- `query` - The main text/instructions
+
+**Optional:**
+- `references` - Array of file reference names from `additional`
+- `outcomes` - Array of outcome names (for evaluation queries)
+
+## File Organization
+
+### Always Use Subdirectories
+```
+✅ Good:
+submission/file.txt
+submission/docs/report.pdf
+submission/images/chart.jpg
+
+❌ Bad:
+file.txt (no subdirectory)
+```
+
+### Reference Names
+```javascript
+// Single file
+"name": "submitted-work"
+
+// Multiple files
+"name": "submitted-work-1"
+"name": "submitted-work-2"
+"name": "submitted-work-3"
+```
+
+## Archive Creation Pattern
+
+### Using AdmZip
+```javascript
+const AdmZip = require('adm-zip');
+const zip = new AdmZip();
+
+// Add root files
+zip.addLocalFile(path.join(dir, 'manifest.json'));
+zip.addLocalFile(path.join(dir, 'primary_query.json'));
+
+// Add directory
+zip.addLocalFolder(path.join(dir, 'submission'), 'submission');
+
+// Write ZIP
+zip.writeZip(outputPath);
+```
+
+### File Structure Before Zipping
+```
+temp-dir/
+├── manifest.json
+├── primary_query.json
+└── submission/
+    ├── file1.txt
+    └── file2.pdf
+
+→ Creates: archive.zip
+```
+
+## Multi-CID Workflow
+
+1. **Create Rubric** → Upload to IPFS → Get RUBRIC_CID
+2. **Create Primary Archive** (references RUBRIC_CID, has placeholder for hunter)
+3. **Upload Primary** → Get PRIMARY_CID
+4. **Hunter submits work** → Create Hunter Archive → Get HUNTER_CID
+5. **Update Primary Archive** (replace placeholder with HUNTER_CID)
+6. **Upload Updated Primary** → Get UPDATED_PRIMARY_CID
+7. **Evaluate**: Use format `UPDATED_PRIMARY_CID,HUNTER_CID`
+
+## Common Mistakes
+
+❌ **Missing descriptions** in additional array
+```json
+// Wrong
+{ "name": "file1", "type": "text/plain", "filename": "file.txt" }
+
+// Correct
+{ "name": "file1", "type": "text/plain", "filename": "file.txt", 
+  "description": "Main document" }
+```
+
+❌ **Incorrect file paths**
+```json
+// Wrong - no subdirectory
+"filename": "file.txt"
+
+// Correct
+"filename": "submission/file.txt"
+```
+
+❌ **Unreferenced files**
+```json
+// manifest.json
+"additional": [{ "name": "file1", ... }]
+
+// primary_query.json - must reference it
+"references": ["file1"]  // ✅
+"references": []         // ❌ file1 not referenced
+```
+
+❌ **Non-unique names**
+```json
+// Wrong - duplicate names
+{ "name": "file", ... },
+{ "name": "file", ... }
+
+// Correct - unique names
+{ "name": "file-1", ... },
+{ "name": "file-2", ... }
+```
+
+## Testing Archives
+
+### Verify Structure
+```bash
+unzip -l archive.zip
+# Should show:
+# manifest.json
+# primary_query.json
+# submission/file1.txt
+# submission/file2.pdf
+```
+
+### Validate JSON
+```bash
+unzip -p archive.zip manifest.json | jq .
+unzip -p archive.zip primary_query.json | jq .
+```
+
+### Check with Example
+Compare with: `/verdikta-arbiter/external-adapter/test-artifacts/blog-post-test/`
+
+## Reference Implementation
+
+See [archiveGenerator.js](mdc:example-bounty-program/server/utils/archiveGenerator.js) for complete implementation.

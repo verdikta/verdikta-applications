@@ -1,0 +1,339 @@
+---
+description: React component patterns and frontend best practices
+globs: **/client/src/**,**/*.jsx,**/*.js
+---
+
+# Frontend Patterns
+
+## Component Structure
+
+### Standard Component Layout
+```jsx
+import { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { apiService } from '../services/api';
+import './ComponentName.css';
+
+function ComponentName({ walletState }) {
+  // State
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  
+  // Hooks
+  const { id } = useParams();
+  const navigate = useNavigate();
+  
+  // Effects
+  useEffect(() => {
+    loadData();
+  }, [id]);
+  
+  // Handlers
+  const handleAction = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      // ... operation
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  // Render helpers
+  if (loading) return <LoadingState />;
+  if (error) return <ErrorState error={error} />;
+  
+  return (
+    <div className="component-name">
+      {/* Content */}
+    </div>
+  );
+}
+
+export default ComponentName;
+```
+
+## State Management
+
+### Loading States
+Always show loading indicators:
+```jsx
+const [loading, setLoading] = useState(false);
+
+{loading && (
+  <div className="loading-status">
+    <div className="spinner"></div>
+    <p>Processing...</p>
+  </div>
+)}
+```
+
+### Error Handling
+Display user-friendly errors:
+```jsx
+const [error, setError] = useState(null);
+
+{error && (
+  <div className="alert alert-error">
+    <p>❌ {error}</p>
+  </div>
+)}
+```
+
+### Form Validation
+Validate on both change and submit:
+```jsx
+const handleInputChange = (e) => {
+  const value = e.target.value;
+  
+  // Real-time validation
+  if (value.length > MAX_LENGTH) return;
+  
+  setValue(value);
+  setError(null);
+};
+
+const handleSubmit = async (e) => {
+  e.preventDefault();
+  
+  // Pre-submit validation
+  if (!value.trim()) {
+    alert('Field is required');
+    return;
+  }
+  
+  // Submit
+};
+```
+
+## API Integration
+
+### Use API Service Layer
+Never use axios directly in components:
+```jsx
+// ✅ Good
+const result = await apiService.createJob(jobData);
+
+// ❌ Bad
+const result = await axios.post('/api/jobs/create', jobData);
+```
+
+### Handle API Errors
+```jsx
+try {
+  const result = await apiService.operation();
+  // Handle success
+} catch (err) {
+  console.error('Operation failed:', err);
+  setError(err.response?.data?.details || err.message);
+  alert(`❌ Error: ${err.response?.data?.details || err.message}`);
+}
+```
+
+## Form Patterns
+
+### Multiple File Upload
+```jsx
+const [files, setFiles] = useState([]);
+
+const handleFileAdd = (e) => {
+  const selectedFiles = Array.from(e.target.files);
+  
+  // Validate each file
+  const validFiles = selectedFiles.filter(file => {
+    if (file.size > MAX_SIZE) {
+      alert(`File too large: ${file.name}`);
+      return false;
+    }
+    return true;
+  });
+  
+  setFiles(prev => [...prev, ...validFiles.map(file => ({
+    file,
+    description: `Default description for ${file.name}`
+  }))]);
+};
+
+const handleFileRemove = (index) => {
+  setFiles(prev => prev.filter((_, i) => i !== index));
+};
+```
+
+### FormData Construction
+```jsx
+const formData = new FormData();
+
+// Add files
+files.forEach(({ file }) => {
+  formData.append('files', file);
+});
+
+// Add other fields
+formData.append('field1', value1);
+formData.append('field2', value2);
+
+// Add JSON data
+const metadata = { ... };
+formData.append('metadata', JSON.stringify(metadata));
+
+// Submit
+await apiService.submitWithFiles(formData);
+```
+
+## Wallet Integration
+
+### Check Wallet Connection
+Always check before operations:
+```jsx
+if (!walletState.isConnected) {
+  return (
+    <div className="alert alert-warning">
+      <h2>Wallet Not Connected</h2>
+      <p>Please connect your wallet to continue.</p>
+    </div>
+  );
+}
+```
+
+### Use Wallet Address
+```jsx
+const handleSubmit = async () => {
+  if (!walletState.isConnected) {
+    alert('Please connect your wallet first');
+    return;
+  }
+  
+  await apiService.createJob({
+    creator: walletState.address,
+    // ... other fields
+  });
+};
+```
+
+## Word Count Validation
+
+### Real-time Word Counter
+```jsx
+const [text, setText] = useState('');
+const MAX_WORDS = 200;
+
+const getWordCount = () => {
+  return text.trim().split(/\s+/).filter(w => w.length > 0).length;
+};
+
+const handleTextChange = (e) => {
+  const newText = e.target.value;
+  const wordCount = newText.trim().split(/\s+/).filter(w => w.length > 0).length;
+  
+  if (wordCount <= MAX_WORDS) {
+    setText(newText);
+  }
+};
+
+// Display
+<label>
+  Text (Max {MAX_WORDS} words)
+  <span className="word-count">{getWordCount()} / {MAX_WORDS}</span>
+</label>
+<textarea value={text} onChange={handleTextChange} />
+```
+
+## CSS Patterns
+
+### Use BEM-like Naming
+```css
+.component-name { }
+.component-name__element { }
+.component-name--modifier { }
+```
+
+### CSS Variables
+Use existing variables:
+```css
+.element {
+  color: var(--text-primary);
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+}
+```
+
+### Responsive Design
+Always include mobile breakpoints:
+```css
+@media (max-width: 768px) {
+  .desktop-layout {
+    flex-direction: column;
+  }
+}
+```
+
+## Dialog/Modal Patterns
+
+### Overlay with Click-to-Close
+```jsx
+<div className="dialog-overlay" onClick={handleClose}>
+  <div className="dialog" onClick={(e) => e.stopPropagation()}>
+    {/* Dialog content */}
+    <button onClick={handleClose}>Close</button>
+  </div>
+</div>
+```
+
+### CSS for Dialogs
+```css
+.dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.dialog {
+  background-color: var(--bg);
+  border-radius: 0.5rem;
+  padding: 2rem;
+  max-width: 700px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+```
+
+## Navigation
+
+### Programmatic Navigation
+```jsx
+import { useNavigate } from 'react-router-dom';
+
+const navigate = useNavigate();
+
+// After success
+navigate('/path');
+
+// With state
+navigate('/path', { state: { data } });
+
+// Go back
+navigate(-1);
+```
+
+## Best Practices
+
+1. **Always validate user input** before API calls
+2. **Show loading states** for async operations
+3. **Display helpful error messages** to users
+4. **Clean up effects** with return functions
+5. **Use semantic HTML** (button, form, input types)
+6. **Make forms accessible** (labels, placeholders, required)
+7. **Handle edge cases** (empty states, errors, loading)
+8. **Test with different data** (empty, one item, many items)
+9. **Consider mobile users** (responsive design)
+10. **Keep components focused** (single responsibility)

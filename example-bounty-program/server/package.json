@@ -19,6 +19,7 @@
   "license": "MIT",
   "dependencies": {
     "@verdikta/common": "latest",
+    "adm-zip": "^0.5.10",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "ethers": "^6.9.0",

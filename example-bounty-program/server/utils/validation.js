@@ -50,18 +50,16 @@ function isValidFileSize(size) {
 
 /**
  * Validate rubric JSON structure
+ * Note: Threshold is NOT validated here as it's stored separately
+ * for smart contract use, not sent to AI nodes
  * @param {object} rubric - Rubric object to validate
  * @returns {{ valid: boolean, errors: string[] }} - Validation result
  */
 function validateRubric(rubric) {
   const errors = [];
 
-  // Check required fields
-  if (!rubric.threshold || typeof rubric.threshold !== 'number') {
-    errors.push('Missing or invalid threshold (must be number 0-100)');
-  } else if (rubric.threshold < 0 || rubric.threshold > 100) {
-    errors.push('Threshold must be between 0 and 100');
-  }
+  // Note: Threshold is no longer part of the rubric sent to AI nodes
+  // It's stored separately and used by the smart contract for pass/fail decisions
 
   if (!rubric.criteria || !Array.isArray(rubric.criteria)) {
     errors.push('Missing or invalid criteria array');

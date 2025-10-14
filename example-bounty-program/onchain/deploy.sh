@@ -8,7 +8,7 @@ set -euo pipefail
 : "${NETWORK:=base-sepolia}"
 
 if [ ! -f ".env" ]; then
-	  echo "⚠️  .env not found. Copy .env.example and fill in values."; exit 1;
+	  echo ".env not found. Copy .env.example and fill in values."; exit 1;
 fi
 
 echo "Compiling..."

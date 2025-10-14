@@ -4,38 +4,47 @@ import { apiService } from '../services/api';
 import './Home.css';
 
 function Home({ walletState }) {
-  const [bounties, setBounties] = useState([]);
+  const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [filters, setFilters] = useState({
+    status: '',
+    search: '',
+    minPayout: ''
+  });
 
   useEffect(() => {
-    loadBounties();
-  }, []);
+    loadJobs();
+  }, [filters]);
 
-  const loadBounties = async () => {
+  const loadJobs = async () => {
     try {
       setLoading(true);
       setError(null);
 
-      // TODO: This will work once contract integration is complete
-      // For now, show placeholder
-      const response = await apiService.listBounties();
-      setBounties(response.bounties || []);
+      // Build filter params (only include non-empty values)
+      const filterParams = {};
+      if (filters.status) filterParams.status = filters.status;
+      if (filters.search) filterParams.search = filters.search;
+      if (filters.minPayout) filterParams.minPayout = filters.minPayout;
+
+      const response = await apiService.listJobs(filterParams);
+      setJobs(response.jobs || []);
     } catch (err) {
-      console.error('Error loading bounties:', err);
-      
-      // Show friendly message for expected error (no contracts yet)
-      if (err.response?.status === 501) {
-        setError('Contract integration pending. Create your first bounty to test!');
-      } else {
-        setError('Failed to load bounties. ' + err.message);
-      }
-      
-      // Set empty array for now
-      setBounties([]);
+      console.error('Error loading jobs:', err);
+      setError('Failed to load jobs. ' + err.message);
+      setJobs([]);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleFilterChange = (key, value) => {
+    setFilters(prev => ({ ...prev, [key]: value }));
+  };
+
+  const clearFilters = () => {
+    setFilters({ status: '', search: '', minPayout: '' });
   };
 
   return (
@@ -57,42 +66,73 @@ function Home({ walletState }) {
 
       <section className="bounties-section">
         <div className="section-header">
-          <h2>Active Bounties</h2>
+          <h2>Available Jobs</h2>
           <div className="filters">
-            {/* TODO: Add filters for status, category, payout range */}
+            <input
+              type="text"
+              placeholder="Search jobs..."
+              value={filters.search}
+              onChange={(e) => handleFilterChange('search', e.target.value)}
+              className="filter-search"
+            />
+            <select
+              value={filters.status}
+              onChange={(e) => handleFilterChange('status', e.target.value)}
+              className="filter-status"
+            >
+              <option value="">All Status</option>
+              <option value="OPEN">Open</option>
+              <option value="COMPLETED">Completed</option>
+              <option value="CLOSED">Closed</option>
+            </select>
+            <input
+              type="number"
+              placeholder="Min ETH"
+              value={filters.minPayout}
+              onChange={(e) => handleFilterChange('minPayout', e.target.value)}
+              className="filter-payout"
+              step="0.01"
+              min="0"
+            />
+            {(filters.status || filters.search || filters.minPayout) && (
+              <button onClick={clearFilters} className="btn-clear-filters">
+                Clear Filters
+              </button>
+            )}
           </div>
         </div>
 
         {loading && (
           <div className="loading">
             <div className="spinner"></div>
-            <p>Loading bounties...</p>
+            <p>Loading jobs...</p>
           </div>
         )}
 
         {error && (
           <div className="error-message">
             <p>⚠️ {error}</p>
-            <p className="error-hint">
-              The backend API is ready, but bounty listing requires deployed smart contracts.
-            </p>
           </div>
         )}
 
-        {!loading && !error && bounties.length === 0 && (
+        {!loading && !error && jobs.length === 0 && (
           <div className="empty-state">
-            <h3>No bounties yet</h3>
-            <p>Be the first to create a bounty!</p>
+            <h3>No jobs found</h3>
+            <p>
+              {filters.status || filters.search || filters.minPayout
+                ? 'Try adjusting your filters'
+                : 'Be the first to create a job!'}
+            </p>
             <Link to="/create" className="btn btn-primary">
-              Create First Bounty
+              Create Job
             </Link>
           </div>
         )}
 
-        {!loading && bounties.length > 0 && (
+        {!loading && jobs.length > 0 && (
           <div className="bounty-grid">
-            {bounties.map(bounty => (
-              <BountyCard key={bounty.bountyId} bounty={bounty} />
+            {jobs.map(job => (
+              <JobCard key={job.jobId} job={job} />
             ))}
           </div>
         )}
@@ -149,25 +189,60 @@ function Home({ walletState }) {
   );
 }
 
-// Bounty Card Component
-function BountyCard({ bounty }) {
+// Job Card Component
+function JobCard({ job }) {
+  // Calculate time remaining
+  const now = Math.floor(Date.now() / 1000);
+  const timeRemaining = job.submissionCloseTime - now;
+  const hoursRemaining = Math.max(0, Math.floor(timeRemaining / 3600));
+  
+  const isClosingSoon = hoursRemaining > 0 && hoursRemaining < 24;
+  const isClosed = timeRemaining <= 0;
+
   return (
-    <Link to={`/bounty/${bounty.bountyId}`} className="bounty-card">
+    <Link to={`/bounty/${job.jobId}`} className="bounty-card">
       <div className="bounty-header">
-        <h3>{bounty.title || `Bounty #${bounty.bountyId}`}</h3>
-        <span className={`status-badge status-${bounty.status.toLowerCase()}`}>
-          {bounty.status}
+        <h3>{job.title || `Job #${job.jobId}`}</h3>
+        <span className={`status-badge status-${job.status.toLowerCase()}`}>
+          {job.status}
         </span>
       </div>
-      <p className="bounty-description">{bounty.description}</p>
+      {job.workProductType && (
+        <div className="work-type-badge">{job.workProductType}</div>
+      )}
+      <p className="bounty-description">
+        {job.description.length > 150
+          ? job.description.substring(0, 150) + '...'
+          : job.description}
+      </p>
       <div className="bounty-footer">
         <div className="payout">
           <span className="label">Payout:</span>
-          <span className="amount">{bounty.payoutETH} ETH</span>
+          <span className="amount">
+            {job.bountyAmount} ETH
+            {job.bountyAmountUSD > 0 && (
+              <small className="usd-amount"> (${job.bountyAmountUSD})</small>
+            )}
+          </span>
         </div>
         <div className="submissions">
           <span className="label">Submissions:</span>
-          <span className="count">{bounty.submissionCount || 0}</span>
+          <span className="count">{job.submissionCount || 0}</span>
+        </div>
+      </div>
+      <div className="bounty-meta">
+        <div className="threshold">
+          <span className="label">Threshold:</span>
+          <span className="value">{job.threshold}%</span>
+        </div>
+        <div className={`time-remaining ${isClosingSoon ? 'warning' : ''} ${isClosed ? 'closed' : ''}`}>
+          {isClosed ? (
+            <span>Submissions closed</span>
+          ) : isClosingSoon ? (
+            <span>⏰ {hoursRemaining}h remaining</span>
+          ) : (
+            <span>{Math.floor(hoursRemaining / 24)}d {hoursRemaining % 24}h remaining</span>
+          )}
         </div>
       </div>
     </Link>

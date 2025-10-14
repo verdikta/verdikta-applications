@@ -39,7 +39,73 @@ if (config.enableDebug) {
  */
 export const apiService = {
   // ============================================================
-  //                    BOUNTY ENDPOINTS
+  //                    JOB ENDPOINTS (MVP)
+  // ============================================================
+
+  /**
+   * Create a new job with rubric and bounty details
+   */
+  async createJob(jobData) {
+    const response = await api.post('/api/jobs/create', jobData);
+    return response.data;
+  },
+
+  /**
+   * List all jobs with optional filters
+   */
+  async listJobs(filters = {}) {
+    const params = new URLSearchParams(filters).toString();
+    const response = await api.get(`/api/jobs${params ? '?' + params : ''}`);
+    return response.data;
+  },
+
+  /**
+   * Get job details by ID
+   */
+  async getJob(jobId, includeRubric = true) {
+    const params = includeRubric ? '?includeRubric=true' : '';
+    const response = await api.get(`/api/jobs/${jobId}${params}`);
+    return response.data;
+  },
+
+  /**
+   * Get submissions for a job
+   */
+  async getJobSubmissions(jobId) {
+    const response = await api.get(`/api/jobs/${jobId}/submissions`);
+    return response.data;
+  },
+
+  /**
+   * Submit work for a job (legacy single file)
+   */
+  async submitWork(jobId, file, hunterAddress) {
+    const formData = new FormData();
+    formData.append('files', file);
+    formData.append('hunter', hunterAddress);
+
+    const response = await api.post(`/api/jobs/${jobId}/submit`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    });
+    return response.data;
+  },
+
+  /**
+   * Submit work for a job (multiple files with descriptions and narrative)
+   */
+  async submitWorkMultiple(jobId, formData) {
+    const response = await api.post(`/api/jobs/${jobId}/submit`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    });
+    return response.data;
+  },
+
+  // ============================================================
+  //                    BOUNTY ENDPOINTS (Legacy)
   // ============================================================
 
   /**

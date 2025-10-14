@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { apiService } from '../services/api';
 import { modelProviderService } from '../services/modelProviderService';
 import * as rubricStorage from '../services/rubricStorage';
-import { getTemplateOptions, getTemplate, createBlankRubric } from '../data/rubricTemplates';
+import { getTemplateOptions, getTemplate, createBlankRubric, getTemplateThreshold } from '../data/rubricTemplates';
 import ClassSelector from '../components/ClassSelector';
 import CriterionEditor from '../components/CriterionEditor';
 import RubricLibrary from '../components/RubricLibrary';
@@ -28,6 +28,7 @@ function CreateBounty({ walletState }) {
 
   // Rubric state
   const [rubric, setRubric] = useState(createBlankRubric());
+  const [threshold, setThreshold] = useState(80); // Stored separately - used by smart contract
   const [selectedTemplate, setSelectedTemplate] = useState('');
   const [showLibrary, setShowLibrary] = useState(false);
   const [loadedRubricCid, setLoadedRubricCid] = useState(null);
@@ -36,11 +37,28 @@ function CreateBounty({ walletState }) {
   const [formData, setFormData] = useState({
     title: '',
     description: '',
+    workProductType: 'Work Product',
     payoutAmount: '',
+    ethPriceUSD: 0,
+    submissionWindowHours: 24,
     deliverableRequirements: {
       format: ['markdown', 'pdf']
     }
   });
+
+  // Fetch ETH price in USD
+  useEffect(() => {
+    const fetchEthPrice = async () => {
+      try {
+        const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd');
+        const data = await response.json();
+        setFormData(prev => ({ ...prev, ethPriceUSD: data.ethereum.usd }));
+      } catch (err) {
+        console.warn('Failed to fetch ETH price:', err);
+      }
+    };
+    fetchEthPrice();
+  }, []);
 
   // Load models when class changes
   useEffect(() => {
@@ -134,12 +152,15 @@ function CreateBounty({ walletState }) {
 
     if (!templateKey) {
       setRubric(createBlankRubric());
+      setThreshold(80); // Default threshold
       return;
     }
 
     const template = getTemplate(templateKey);
+    const defaultThreshold = getTemplateThreshold(templateKey);
     if (template) {
       setRubric(template);
+      setThreshold(defaultThreshold); // Set threshold separately
       setFormData(prev => ({ ...prev, title: template.title }));
     }
   };
@@ -193,10 +214,12 @@ function CreateBounty({ walletState }) {
   };
 
   // Transform rubric for backend (maps frontend fields to backend expected fields)
+  // Note: Threshold is excluded - it's for smart contract use, not AI evaluation
   const transformRubricForBackend = (rubricData) => {
+    const { threshold: _, ...rubricWithoutThreshold } = rubricData; // Remove threshold if present
     return {
-      ...rubricData,
-      criteria: rubricData.criteria.map(criterion => ({
+      ...rubricWithoutThreshold,
+      criteria: rubricWithoutThreshold.criteria.map(criterion => ({
         id: criterion.id,
         must: criterion.must,
         weight: criterion.weight,
@@ -238,6 +261,7 @@ function CreateBounty({ walletState }) {
       rubricStorage.saveRubric(walletState.address, {
         cid: uploadResult.rubricCid,
         title: rubric.title,
+        threshold: threshold, // Save threshold separately
         rubricJson: rubric
       });
 
@@ -254,8 +278,9 @@ function CreateBounty({ walletState }) {
   };
 
   // Load rubric from library
-  const handleLoadRubric = (rubricJson, cid) => {
+  const handleLoadRubric = (rubricJson, cid, savedThreshold) => {
     setRubric(rubricJson);
+    setThreshold(savedThreshold || 80); // Load saved threshold or default
     setLoadedRubricCid(cid);
     setSelectedTemplate(''); // Clear template selection
   };
@@ -265,6 +290,12 @@ function CreateBounty({ walletState }) {
     
     if (!walletState.isConnected) {
       alert('Please connect your wallet first');
+      return;
+    }
+
+    // Validate required fields
+    if (!formData.title.trim() || !formData.description.trim() || !formData.payoutAmount) {
+      alert('Please fill in all required fields');
       return;
     }
 
@@ -293,12 +324,11 @@ function CreateBounty({ walletState }) {
       // Convert jury nodes to rubric format
       const juryConfig = modelProviderService.convertJuryNodesToRubricFormat(juryNodes);
 
-      // Step 1: Upload rubric to IPFS
+      // Prepare rubric JSON (without threshold - that's for smart contract)
       const rubricJson = {
         version: rubric.version,
         title: rubric.title,
         description: formData.description,
-        threshold: rubric.threshold,
         criteria: rubric.criteria,
         forbidden_content: rubric.forbiddenContent,
         deliverable_requirements: formData.deliverableRequirements,
@@ -309,23 +339,40 @@ function CreateBounty({ walletState }) {
       // Transform for backend (maps instructions → description)
       const rubricForBackend = transformRubricForBackend(rubricJson);
 
-      // Upload to IPFS
-      const uploadResult = await apiService.uploadRubric(rubricForBackend, selectedClassId);
-      
-      console.log('Rubric uploaded to IPFS:', uploadResult.rubricCid);
-      console.log('Jury configuration:', juryConfig);
-      
-      alert(`✅ Rubric uploaded to IPFS!\n\nCID: ${uploadResult.rubricCid}\nClass ID: ${selectedClassId}\nJury Models: ${juryNodes.length}\nCriteria: ${rubric.criteria.length}\n\nNext step: Create bounty on-chain with this CID (requires deployed smart contract)`);
+      // Calculate USD value
+      const bountyAmountUSD = formData.payoutAmount && formData.ethPriceUSD 
+        ? (parseFloat(formData.payoutAmount) * formData.ethPriceUSD).toFixed(2)
+        : 0;
 
-      // TODO: Step 2 - Call smart contract createBounty() with rubricCid and classId
-      // This requires the BountyEscrow contract to be deployed
+      // Create job via API (uploads rubric, creates primary CID, stores in local DB)
+      const jobData = {
+        title: formData.title,
+        description: formData.description,
+        workProductType: formData.workProductType || 'Work Product',
+        creator: walletState.address,
+        bountyAmount: parseFloat(formData.payoutAmount),
+        bountyAmountUSD: parseFloat(bountyAmountUSD),
+        threshold: threshold,
+        rubricJson: rubricForBackend,
+        classId: selectedClassId,
+        juryNodes: juryNodes,
+        iterations: iterations,
+        submissionWindowHours: formData.submissionWindowHours || 24
+      };
+
+      const result = await apiService.createJob(jobData);
       
-      // For now, show success and navigate home
+      console.log('Job created successfully:', result.job);
+      
+      alert(`✅ Job Created Successfully!\n\nJob ID: ${result.job.jobId}\nTitle: ${result.job.title}\nBounty: ${result.job.bountyAmount} ETH (~$${result.job.bountyAmountUSD})\nThreshold: ${result.job.threshold}%\nRubric CID: ${result.job.rubricCid}\nPrimary CID: ${result.job.primaryCid}\n\nHunters can now submit work for this job!`);
+
+      // Navigate to home to see the new job
       navigate('/');
 
     } catch (err) {
-      console.error('Error creating bounty:', err);
+      console.error('Error creating job:', err);
       setError(err.response?.data?.details || err.message);
+      alert(`❌ Failed to create job: ${err.response?.data?.details || err.message}`);
     } finally {
       setLoading(false);
     }
@@ -384,6 +431,25 @@ function CreateBounty({ walletState }) {
           </div>
 
           <div className="form-group">
+            <label htmlFor="workProductType">Work Product Type *</label>
+            <select
+              id="workProductType"
+              value={formData.workProductType}
+              onChange={(e) => setFormData({ ...formData, workProductType: e.target.value })}
+            >
+              <option value="Work Product">General Work Product</option>
+              <option value="Blog Post">Blog Post</option>
+              <option value="Technical Writing">Technical Writing</option>
+              <option value="Code">Source Code</option>
+              <option value="Design">Graphic Design</option>
+              <option value="Video">Video</option>
+              <option value="Data Analysis">Data Analysis</option>
+              <option value="Research">Research</option>
+            </select>
+            <small>Type of work that hunters will submit</small>
+          </div>
+
+          <div className="form-group">
             <label htmlFor="payoutAmount">Payout Amount (ETH) *</label>
             <input
               id="payoutAmount"
@@ -395,7 +461,31 @@ function CreateBounty({ walletState }) {
               placeholder="0.1"
               required
             />
-            <small>Minimum: 0.001 ETH</small>
+            <small>
+              Minimum: 0.001 ETH
+              {formData.payoutAmount && formData.ethPriceUSD > 0 && (
+                <span className="usd-estimate">
+                  {' '}≈ ${(parseFloat(formData.payoutAmount) * formData.ethPriceUSD).toFixed(2)} USD
+                </span>
+              )}
+            </small>
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="submissionWindow">Submission Window (hours) *</label>
+            <input
+              id="submissionWindow"
+              type="number"
+              min="1"
+              max="720"
+              value={formData.submissionWindowHours}
+              onChange={(e) => setFormData({ ...formData, submissionWindowHours: parseInt(e.target.value) || 24 })}
+              placeholder="24"
+              required
+            />
+            <small>
+              How long hunters have to submit work (default: 24 hours, max: 30 days)
+            </small>
           </div>
         </div>
 

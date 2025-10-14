@@ -29,6 +29,11 @@ function QueryDefinition({
 }) {
   const [activeTooltipId, setActiveTooltipId] = useState(null);
 
+  // Validation: Check if all attachments have descriptions
+  const hasFilesWithoutDescriptions = supportingFiles.some(f => !f.description || !f.description.trim());
+  const hasCidsWithoutDescriptions = ipfsCids.some(c => !c.description || !c.description.trim());
+  const hasAttachmentsWithoutDescriptions = hasFilesWithoutDescriptions || hasCidsWithoutDescriptions;
+
   // Enforce max outcomes limit when class info changes
   useEffect(() => {
     if (classInfo?.limits?.max_outcomes) {
@@ -197,7 +202,7 @@ function QueryDefinition({
                     <span className="file-name">{fileObj.file.name}</span>
                     <input
                       type="text"
-                      placeholder="Add description..."
+                      placeholder="Add description... (required)"
                       value={fileObj.description}
                       onChange={(evt) => {
                         const updated = supportingFiles.map((item, i) =>
@@ -207,7 +212,7 @@ function QueryDefinition({
                         );
                         setSupportingFiles(updated);
                       }}
-                      className="description-input"
+                      className={`description-input ${!fileObj.description || !fileObj.description.trim() ? 'required-field' : ''}`}
                     />
                     <button
                       onClick={() =>
@@ -277,7 +282,7 @@ function QueryDefinition({
                     <span className="cid-value">{cidObj.cid}</span>
                     <input
                       type="text"
-                      placeholder="Add description..."
+                      placeholder="Add description... (required)"
                       value={cidObj.description}
                       onChange={(evt) => {
                         const updated = ipfsCids.map((item, i) =>
@@ -287,7 +292,7 @@ function QueryDefinition({
                         );
                         setIpfsCids(updated);
                       }}
-                      className="description-input"
+                      className={`description-input ${!cidObj.description || !cidObj.description.trim() ? 'required-field' : ''}`}
                     />
                     <button
                       onClick={() =>
@@ -395,10 +400,22 @@ function QueryDefinition({
       </section>
 
       <div className="actions">
+        {hasAttachmentsWithoutDescriptions && (
+          <div className="validation-message error">
+            All attachments (files and IPFS CIDs) must have descriptions before proceeding.
+          </div>
+        )}
         <button
           className="primary"
           onClick={() => setCurrentPage(PAGES.JURY_SELECTION)}
-          disabled={!queryText || !queryText.trim()}
+          disabled={!queryText || !queryText.trim() || hasAttachmentsWithoutDescriptions}
+          title={
+            hasAttachmentsWithoutDescriptions 
+              ? 'Please add descriptions to all attachments' 
+              : !queryText || !queryText.trim() 
+              ? 'Please enter a query'
+              : ''
+          }
         >
           Next: Jury Selection
         </button>

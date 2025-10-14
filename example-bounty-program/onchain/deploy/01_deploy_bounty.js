@@ -20,7 +20,7 @@ async function main() {
   let link;
   if (network === "base") {
     link = LINK_BASE_MAINNET;
-  } else if (network === "base-sepolia") {
+  } else if (network === "base_sepolia") {
     link = LINK_BASE_SEPOLIA;
   } else {
     throw new Error(`Unsupported network ${network}. Use base or base-sepolia.`);

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
 
-import {IERC20, IVerdiktaAggregator} from "./Interfaces.sol";
+import {IERC20} from "./interfaces/ILinkToken.sol";
+import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 
 /// @notice One-per-submission wallet that holds the hunter's LINK.
 ///         Verdikta pulls LINK from *this* wallet (msg.sender to Verdikta is this contract).

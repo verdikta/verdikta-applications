@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
 
-import {IERC20, IVerdiktaAggregator} from "./Interfaces.sol";
+import {IERC20} from "./interfaces/ILinkToken.sol";
+import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 import "./EvaluationWallet.sol";
 
 /// @title VerdiktaBountyEscrow
@@ -212,7 +213,7 @@ contract VerdiktaBountyEscrow {
         // Approve Verdikta and start evaluation (wallet will be msg.sender to Verdikta)
         wallet.approveVerdikta(s.linkMaxBudget);
 
-        string;
+        string[] memory cids;
         cids[0] = s.deliverableCid;
         cids[1] = b.rubricCid;
 

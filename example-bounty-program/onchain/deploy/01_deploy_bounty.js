@@ -33,13 +33,13 @@ async function main() {
   console.log(`LINK    : ${link}`);
   console.log(`Verdikta: ${VERDIKTA_AGGREGATOR}`);
 
-  // Deploy VerdiktaBountyEscrow
-  const Escrow = await hre.ethers.getContractFactory("VerdiktaBountyEscrow");
+  // Deploy BountyEscrow
+  const Escrow = await hre.ethers.getContractFactory("BountyEscrow");
   const escrow = await Escrow.deploy(link, VERDIKTA_AGGREGATOR);
   await escrow.waitForDeployment();
 
   const escrowAddr = await escrow.getAddress();
-  console.log(`\n✅ VerdiktaBountyEscrow deployed at: ${escrowAddr}`);
+  console.log(`\n✅ BountyEscrow deployed at: ${escrowAddr}`);
 
   // Save deployment JSON
   saveDeployment(network, chainId, {
@@ -47,14 +47,14 @@ async function main() {
     chainId,
     deployedAt: new Date().toISOString(),
     contracts: {
-      VerdiktaBountyEscrow: escrowAddr,
+      BountyEscrow: escrowAddr,
       LINK: link,
       VerdiktaAggregator: VERDIKTA_AGGREGATOR
     }
   });
 
   // Export ABI for your front end
-  copyAbiToFrontend("VerdiktaBountyEscrow");
+  copyAbiToFrontend("BountyEscrow");
 
   // Optional: verify automatically if API key is present
   if (process.env.BASESCAN_API_KEY) {

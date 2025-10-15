@@ -1,5 +1,7 @@
 // hardhat.config.js
 require("dotenv").config();
+console.log("INFURA_API_KEY loaded:", process.env.INFURA_API_KEY ? "YES" : "NO");
+
 const https = require("https");
 require("@nomicfoundation/hardhat-toolbox");
 require("hardhat-deploy");

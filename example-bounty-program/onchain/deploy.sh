@@ -21,7 +21,7 @@ NETWORK=${NETWORK:-${HARDHAT_NETWORK:-base_sepolia}}
 echo "Compiling..."
 npx hardhat compile
 
-echo "Deploying VerdiktaBountyEscrow to $NETWORK..."
+echo "Deploying BountyEscrow to $NETWORK..."
 npx hardhat run deploy/01_deploy_bounty.js  --network "${NETWORK}"
 
 echo "Done."

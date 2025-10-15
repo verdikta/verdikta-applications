@@ -8,6 +8,8 @@ typechain-types
 # Hardhat files
 cache
 artifacts
+deployments
+frontend
 
 # Test files
 *.log

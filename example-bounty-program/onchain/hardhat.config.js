@@ -1,6 +1,6 @@
 // hardhat.config.js
-require("dotenv").config();
-console.log("INFURA_API_KEY loaded:", process.env.INFURA_API_KEY ? "YES" : "NO");
+require("dotenv").config({ quiet: true });
+// console.log("INFURA_API_KEY loaded:", process.env.INFURA_API_KEY ? "YES" : "NO");
 
 const https = require("https");
 require("@nomicfoundation/hardhat-toolbox");
@@ -65,11 +65,7 @@ module.exports = {
   },
 
   etherscan: {
-    apiKey: {
-      sepolia:      process.env.ETHERSCAN_API_KEY,
-      base_sepolia: process.env.BASESCAN_API_KEY,
-      base:         process.env.BASESCAN_API_KEY,
-    },
+    apiKey: process.env.BASESCAN_API_KEY,
     customChains: [
       {
         network:  "base_sepolia",

@@ -5,11 +5,11 @@ import {IERC20} from "./interfaces/ILinkToken.sol";
 import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 import "./EvaluationWallet.sol";
 
-/// @title VerdiktaBountyEscrow
+/// @title BountyEscrow
 /// @notice Bounty escrow that: (1) locks ETH, (2) prepares a submission wallet,
 ///         (3) starts Verdikta after hunter approves LINK to that wallet,
 ///         (4) finalizes by reading Verdikta scores and auto-paying if passed.
-contract VerdiktaBountyEscrow {
+contract BountyEscrow {
     enum BountyStatus { Open, Awarded, Cancelled }
     enum SubmissionStatus { Prepared, PendingVerdikta, Failed, PassedPaid, PassedUnpaid }
 

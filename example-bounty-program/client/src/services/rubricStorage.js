@@ -38,12 +38,12 @@ export const getSavedRubrics = (walletAddress) => {
 /**
  * Save a new rubric
  * @param {string} walletAddress - Wallet address
- * @param {Object} rubricMetadata - { cid, title, rubricJson }
+ * @param {Object} rubricMetadata - { cid, title, threshold, rubricJson }
  * @returns {boolean} Success
  */
 export const saveRubric = (walletAddress, rubricMetadata) => {
   try {
-    const { cid, title, rubricJson } = rubricMetadata;
+    const { cid, title, threshold, rubricJson } = rubricMetadata;
     
     if (!cid || !title) {
       throw new Error('CID and title are required');
@@ -58,11 +58,11 @@ export const saveRubric = (walletAddress, rubricMetadata) => {
       throw new Error('This rubric is already saved');
     }
     
-    // Add new rubric
+    // Add new rubric (threshold stored separately from rubric JSON)
     const newRubric = {
       cid,
       title,
-      threshold: rubricJson.threshold,
+      threshold: threshold || 80, // Store threshold for smart contract use
       criteriaCount: rubricJson.criteria?.length || 0,
       createdAt: Date.now(),
       usedCount: 0
@@ -72,7 +72,7 @@ export const saveRubric = (walletAddress, rubricMetadata) => {
     
     localStorage.setItem(key, JSON.stringify(updated));
     
-    console.log('✅ Rubric saved to localStorage:', { cid, title });
+    console.log('✅ Rubric saved to localStorage:', { cid, title, threshold });
     
     return true;
   } catch (error) {

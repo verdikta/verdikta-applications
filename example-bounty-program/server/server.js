@@ -10,6 +10,7 @@ const logger = require('./utils/logger');
 const bountyRoutes = require('./routes/bountyRoutes');
 const submissionRoutes = require('./routes/submissionRoutes');
 const ipfsRoutes = require('./routes/ipfsRoutes');
+const jobRoutes = require('./routes/jobRoutes');
 
 const app = express();
 
@@ -61,6 +62,7 @@ app.use((req, res, next) => {
 });
 
 // Routes
+app.use('/api/jobs', jobRoutes); // New job management routes (replaces bounty routes for MVP)
 app.use('/api/bounties', bountyRoutes);
 app.use('/api/submissions', submissionRoutes);
 app.use('/api', ipfsRoutes);

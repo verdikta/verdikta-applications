@@ -49,8 +49,8 @@ function RubricLibrary({ walletAddress, onLoadRubric, onClose }) {
       // Increment usage count
       rubricStorage.incrementUsageCount(walletAddress, rubric.cid);
 
-      // Pass to parent
-      onLoadRubric(rubricJson, rubric.cid);
+      // Pass to parent (include threshold from storage metadata)
+      onLoadRubric(rubricJson, rubric.cid, rubric.threshold);
       
       // Close modal
       onClose();

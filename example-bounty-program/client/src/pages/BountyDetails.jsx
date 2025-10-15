@@ -5,31 +5,36 @@ import './BountyDetails.css';
 
 function BountyDetails({ walletState }) {
   const { bountyId } = useParams();
-  const [bounty, setBounty] = useState(null);
+  const [job, setJob] = useState(null);
   const [rubric, setRubric] = useState(null);
+  const [submissions, setSubmissions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    loadBountyDetails();
+    loadJobDetails();
   }, [bountyId]);
 
-  const loadBountyDetails = async () => {
+  const loadJobDetails = async () => {
     try {
       setLoading(true);
       setError(null);
 
-      // TODO: Load from blockchain once contracts are deployed
-      const response = await apiService.getBounty(bountyId);
-      setBounty(response.bounty);
+      // Load job from API (includes rubric)
+      const response = await apiService.getJob(bountyId, true);
+      setJob(response.job);
+      
+      // Rubric content is already included if available
+      if (response.job?.rubricContent) {
+        setRubric(response.job.rubricContent);
+      }
 
-      // If rubric CID is available, fetch it
-      if (response.bounty?.rubricCid) {
-        const rubricData = await apiService.fetchFromIPFS(response.bounty.rubricCid);
-        setRubric(JSON.parse(rubricData));
+      // Load submissions
+      if (response.job) {
+        setSubmissions(response.job.submissions || []);
       }
     } catch (err) {
-      console.error('Error loading bounty:', err);
+      console.error('Error loading job:', err);
       setError(err.response?.data?.details || err.message);
     } finally {
       setLoading(false);
@@ -51,39 +56,71 @@ function BountyDetails({ walletState }) {
     return (
       <div className="bounty-details">
         <div className="alert alert-error">
-          <h2>⚠️ Bounty Not Found</h2>
+          <h2>⚠️ Job Not Found</h2>
           <p>{error}</p>
-          <p className="hint">This endpoint requires deployed smart contracts.</p>
           <Link to="/" className="btn btn-primary">Back to Home</Link>
         </div>
       </div>
     );
   }
 
+  // Calculate time remaining
+  const now = Math.floor(Date.now() / 1000);
+  const timeRemaining = job ? job.submissionCloseTime - now : 0;
+  const hoursRemaining = Math.max(0, Math.floor(timeRemaining / 3600));
+  const isOpen = job?.status === 'OPEN' && timeRemaining > 0;
+
   return (
     <div className="bounty-details">
       <div className="bounty-header">
         <div className="header-content">
-          <h1>{bounty?.title || `Bounty #${bountyId}`}</h1>
-          <span className={`status-badge status-${bounty?.status?.toLowerCase()}`}>
-            {bounty?.status}
+          <h1>{job?.title || `Job #${bountyId}`}</h1>
+          <span className={`status-badge status-${job?.status?.toLowerCase()}`}>
+            {job?.status}
           </span>
+          {job?.workProductType && (
+            <span className="work-type-badge">{job.workProductType}</span>
+          )}
         </div>
         <div className="bounty-stats">
           <div className="stat">
             <span className="label">Payout</span>
-            <span className="value">{bounty?.payoutETH} ETH</span>
+            <span className="value">
+              {job?.bountyAmount} ETH
+              {job?.bountyAmountUSD > 0 && (
+                <small> (${job.bountyAmountUSD})</small>
+              )}
+            </span>
           </div>
           <div className="stat">
             <span className="label">Submissions</span>
-            <span className="value">{bounty?.submissionCount || 0}</span>
+            <span className="value">{job?.submissionCount || 0}</span>
           </div>
           <div className="stat">
             <span className="label">Threshold</span>
-            <span className="value">{rubric?.threshold || '??'}/100</span>
+            <span className="value">{job?.threshold || '??'}%</span>
+          </div>
+          <div className="stat">
+            <span className="label">Time Remaining</span>
+            <span className="value">
+              {timeRemaining <= 0 ? (
+                'Closed'
+              ) : hoursRemaining < 24 ? (
+                `${hoursRemaining}h`
+              ) : (
+                `${Math.floor(hoursRemaining / 24)}d ${hoursRemaining % 24}h`
+              )}
+            </span>
           </div>
         </div>
       </div>
+
+      {job?.description && (
+        <section className="description-section">
+          <h2>Job Description</h2>
+          <p>{job.description}</p>
+        </section>
+      )}
 
       {rubric && (
         <section className="rubric-section">
@@ -119,7 +156,13 @@ function BountyDetails({ walletState }) {
       <section className="actions-section">
         <h2>Actions</h2>
         <div className="action-buttons">
-          {walletState.isConnected ? (
+          {!isOpen ? (
+            <div className="alert alert-warning">
+              {job?.status === 'COMPLETED' 
+                ? '🎉 This job has been completed and a winner has been paid!'
+                : 'This job is no longer accepting submissions'}
+            </div>
+          ) : walletState.isConnected ? (
             <Link to={`/bounty/${bountyId}/submit`} className="btn btn-primary btn-lg">
               Submit Work
             </Link>
@@ -132,10 +175,10 @@ function BountyDetails({ walletState }) {
       </section>
 
       <section className="submissions-section">
-        <h2>Submissions</h2>
-        {bounty?.submissions?.length > 0 ? (
+        <h2>Submissions ({submissions.length})</h2>
+        {submissions.length > 0 ? (
           <div className="submissions-list">
-            {bounty.submissions.map((submission) => (
+            {submissions.map((submission) => (
               <SubmissionCard key={submission.submissionId} submission={submission} />
             ))}
           </div>

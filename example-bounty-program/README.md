@@ -1,15 +1,23 @@
 # Verdikta AI-Powered Bounty Program
 
-**Status:** 🔴 Planning Phase  
-**Version:** 0.1.0 (MVP)
+**Status:** 🟡 Implementation Phase (Pre-Contract Testing)  
+**Version:** 0.2.0 (MVP)
 
 ## Overview
 
-The Verdikta AI-Powered Bounty Program is a decentralized platform that enables trustless, automated evaluation and payment of work submissions using AI arbiters. Bounty owners lock ETH in escrow with an IPFS-hosted evaluation rubric, hunters submit deliverables, and Verdikta's AI jury automatically grades submissions. The first passing submission wins the bounty—no appeals, no manual review needed.
+The Verdikta AI-Powered Bounty Program is a decentralized platform that enables trustless, automated evaluation and payment of work submissions using AI arbiters. Bounty owners create jobs with ETH payouts and IPFS-hosted evaluation rubrics, hunters submit deliverables, and Verdikta's AI jury automatically grades submissions. The first passing submission wins the bounty—no appeals, no manual review needed.
+
+**Current Status:** The application is fully functional for creating jobs, browsing opportunities, and submitting work. While smart contracts are being developed, the system generates the necessary IPFS archives (Primary CID and Hunter CID) that can be tested with the example-frontend application.
 
 ## Quick Links
 
-- **[📖 Complete Design Document](DESIGN.md)** — Full architecture, specifications, and roadmap
+### 🎯 Essential Documents (Start Here)
+- **[📋 PROJECT-OVERVIEW.md](PROJECT-OVERVIEW.md)** — Architecture, concepts, and data models
+- **[⚙️ CURRENT-STATE.md](CURRENT-STATE.md)** — What's complete, how to get started, contribution guide
+- **[👨‍💻 DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md)** — Quick reference for commands, APIs, and patterns
+
+### 📚 Additional Resources
+- **[📖 DESIGN.md](DESIGN.md)** — Complete technical specification (1400+ lines)
 - **[🏗️ Example Frontend](../example-frontend/)** — Reference implementation showing Verdikta integration patterns
 - **[📚 Verdikta User Guide](../docs/user-guide.md)** — Understanding Verdikta's AI evaluation system
 
@@ -68,23 +76,30 @@ The Verdikta AI-Powered Bounty Program is a decentralized platform that enables 
 - [x] Design document creation
 - [x] Architecture planning
 
-### 🔄 Phase 1: Foundation (Weeks 1-2)
-- [ ] Smart contract development (BountyEscrow)
-- [ ] Backend API setup (Express + IPFS)
-- [ ] Verdikta integration testing
+### ✅ Phase 1: Foundation (Complete)
+- [x] Backend API setup (Express + IPFS)
+- [x] Archive generation utilities
+- [x] Verdikta multi-CID integration
+- [x] Local job storage for testing
 
-### ⏳ Phase 2: Frontend MVP (Weeks 3-4)
-- [ ] React UI components
-- [ ] Create Bounty workflow
-- [ ] Submit Work workflow
-- [ ] Results display
+### ✅ Phase 2: Frontend MVP (Complete)
+- [x] React UI components
+- [x] Create Job workflow with ETH/USD conversion
+- [x] Browse Jobs with search/filter
+- [x] Submit Work workflow
+- [x] CID display for testing
 
-### ⏳ Phase 3: Testing & Refinement (Week 5)
+### 🔄 Phase 3: Smart Contracts (In Progress)
+- [ ] BountyEscrow contract development
+- [ ] Contract deployment to Base Sepolia
+- [ ] Frontend-contract integration
+
+### ⏳ Phase 4: Testing & Refinement (Next)
 - [ ] Contract testing + security audit
-- [ ] E2E testing
-- [ ] Documentation
+- [ ] E2E testing with deployed contracts
+- [ ] Documentation updates
 
-### ⏳ Phase 4: Deployment (Week 6)
+### ⏳ Phase 5: Deployment (Future)
 - [ ] Deploy to Base Sepolia
 - [ ] Public launch
 - [ ] User onboarding
@@ -138,35 +153,52 @@ The Verdikta AI-Powered Bounty Program is a decentralized platform that enables 
 - Test ETH and LINK tokens
 
 ### Current Status
-This project is in the **planning phase**. The design document is complete, and development has not yet started.
+This project is **95% complete** with full job creation, browsing, and submission workflows implemented. The system generates Verdikta-compatible IPFS archives that can be tested with example-frontend while smart contracts are being developed.
 
-**Next Steps:**
-1. Review the [design document](DESIGN.md)
-2. Provide feedback or ask questions
-3. Wait for Phase 1 development to begin
+**What's Working:**
+- ✅ Create jobs with bounty amounts (ETH/USD), thresholds, and custom rubrics
+- ✅ Browse and search available jobs with filters
+- ✅ Submit work and get Primary/Hunter CIDs for testing
+- ✅ Full IPFS integration for rubrics and deliverables
+- ✅ Archive generation matching Verdikta multi-CID format
+- ⏳ Smart contract integration (in progress)
+
+**For Developers & Contributors:**
+1. Read [PROJECT-OVERVIEW.md](PROJECT-OVERVIEW.md) for architecture understanding
+2. Read [CURRENT-STATE.md](CURRENT-STATE.md) for setup and testing instructions
+3. Use [DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md) as a quick reference
+4. Test job creation and submission workflow (no contracts needed!)
+5. Use generated CIDs with example-frontend to test AI evaluation
 
 ### For Developers
 Want to contribute? Check out:
-1. [Design Document](DESIGN.md) — Full specifications
-2. [Example Frontend](../example-frontend/) — Reusable patterns for Verdikta integration
-3. [Development Roadmap](DESIGN.md#development-roadmap) — Upcoming tasks
+1. **[CURRENT-STATE.md](CURRENT-STATE.md)** — Setup guide and what to work on
+2. **[DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md)** — Commands, APIs, patterns, and debugging
+3. **[PROJECT-OVERVIEW.md](PROJECT-OVERVIEW.md)** — Architecture and data models
+4. [Example Frontend](../example-frontend/) — Reusable patterns for Verdikta integration
 
 ## FAQ
 
+**Q: Can I test the system without deploying smart contracts?**  
+A: Yes! The current implementation creates jobs, generates IPFS archives, and provides CIDs that you can test with the example-frontend application to see how AI evaluation works.
+
+**Q: How do I use the generated CIDs for testing?**  
+A: After submitting work, the app displays a Primary CID and Hunter CID. Copy the evaluation format (PRIMARY_CID,HUNTER_CID) and paste it into the example-frontend's "Run Query" page to test AI evaluation.
+
 **Q: How much does it cost to submit work?**  
-A: Hunters pay LINK tokens for each evaluation. The amount depends on the bounty's class ID (complexity level). Class 128 (frontier models like GPT-4, Claude) costs approximately 0.0001-0.001 LINK per evaluation.
+A: Hunters pay LINK tokens for each evaluation (when smart contracts are deployed). The amount depends on the job's class ID. Class 128 (frontier models like GPT-4, Claude) costs approximately 0.0001-0.001 LINK per evaluation.
 
 **Q: What happens if Verdikta times out?**  
-A: If the evaluation doesn't complete within 5 minutes, the hunter can claim a refund of their LINK fee and resubmit.
+A: If the evaluation doesn't complete within 5 minutes, the hunter can claim a refund of their LINK fee and resubmit (once contracts are deployed).
 
-**Q: Can I cancel a bounty after creating it?**  
-A: Yes, but only after a 24-hour lockout period and only if there are no active evaluations in progress. Pending evaluations will be marked as void, and unprocessed submissions will be refunded.
+**Q: Can I cancel a job after creating it?**  
+A: Currently, jobs are stored locally. Once smart contracts are deployed, cancellation will be possible after a 24-hour lockout period if no active evaluations are in progress.
 
 **Q: Are submissions private?**  
-A: No. In the MVP, all submissions are stored on IPFS and can be viewed by anyone with the CID. Encrypted submissions are planned for a future release.
+A: No. All submissions are stored on IPFS and can be viewed by anyone with the CID. Encrypted submissions are planned for a future release.
 
 **Q: Can a hunter submit multiple times?**  
-A: Yes, but they must pay the LINK evaluation fee each time, which discourages spam.
+A: Yes, hunters can submit multiple attempts for the same job (each pays a LINK fee once contracts are deployed).
 
 **Q: What file types are supported?**  
 A: Text (.txt, .md), images (.jpg, .png), documents (.pdf, .docx) up to 20 MB.

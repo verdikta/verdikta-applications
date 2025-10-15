@@ -1,0 +1,137 @@
+---
+description: Architecture and patterns for the example-bounty-program system
+globs: example-bounty-program/**
+---
+
+# Bounty Program Architecture
+
+## Project Structure
+
+### Backend (Server)
+- [server.js](mdc:example-bounty-program/server/server.js) - Main Express server
+- [utils/archiveGenerator.js](mdc:example-bounty-program/server/utils/archiveGenerator.js) - Creates Verdikta-compatible archives
+- [utils/jobStorage.js](mdc:example-bounty-program/server/utils/jobStorage.js) - Local job database (temporary until smart contracts)
+- [routes/jobRoutes.js](mdc:example-bounty-program/server/routes/jobRoutes.js) - Job management API endpoints
+- [data/jobs.json](mdc:example-bounty-program/server/data/jobs.json) - Local job storage
+
+### Frontend (Client)
+- [pages/CreateBounty.jsx](mdc:example-bounty-program/client/src/pages/CreateBounty.jsx) - Job creation UI
+- [pages/Home.jsx](mdc:example-bounty-program/client/src/pages/Home.jsx) - Job browsing/search
+- [pages/BountyDetails.jsx](mdc:example-bounty-program/client/src/pages/BountyDetails.jsx) - Job details view
+- [pages/SubmitWork.jsx](mdc:example-bounty-program/client/src/pages/SubmitWork.jsx) - Work submission UI
+- [services/api.js](mdc:example-bounty-program/client/src/services/api.js) - API service layer
+
+## Key Concepts
+
+### Multi-CID Architecture
+The system generates two types of IPFS archives:
+
+1. **Primary CID Archive**: Contains evaluation instructions
+   - `manifest.json` - Jury config, rubric reference, hunter CID reference
+   - `primary_query.json` - Evaluation instructions and outcomes
+
+2. **Hunter CID Archive**: Contains work submission
+   - `manifest.json` - Work product file references with descriptions
+   - `primary_query.json` - Submission narrative (customizable by hunter)
+   - `submission/` - Directory with actual work product files
+
+### Threshold Separation
+**IMPORTANT**: The threshold is NOT stored in the rubric JSON on IPFS. It is:
+- Stored separately in job records (currently in jobs.json)
+- Will be stored on-chain in smart contracts
+- This allows same rubric to be reused with different thresholds
+
+### Archive Generation Pattern
+```javascript
+// Create Primary archive
+const primaryArchive = await archiveGenerator.createPrimaryCIDArchive({
+  rubricCid,
+  jobTitle,
+  jobDescription,
+  workProductType,
+  classId,
+  juryNodes,
+  iterations,
+  hunterSubmissionCid  // References Hunter archive
+});
+
+// Create Hunter archive
+const hunterArchive = await archiveGenerator.createHunterSubmissionCIDArchive({
+  workProducts: [
+    { path, name, type, description }
+  ],
+  submissionNarrative  // Custom message to evaluators
+});
+```
+
+## API Patterns
+
+### Job Creation Flow
+1. Frontend: User creates job with rubric and bounty details
+2. Backend: Upload rubric to IPFS → get RUBRIC_CID
+3. Backend: Generate Primary archive → upload to IPFS → get PRIMARY_CID
+4. Backend: Store job in local storage with all CIDs and metadata
+5. Frontend: Display success with job ID and CIDs
+
+### Work Submission Flow
+1. Frontend: Hunter uploads files with descriptions and custom narrative
+2. Backend: Create Hunter archive with all files → upload to IPFS → get HUNTER_CID
+3. Backend: Create updated Primary archive referencing HUNTER_CID → upload to IPFS
+4. Backend: Store submission in job record
+5. Frontend: Display CIDs in dialog for testing with example-frontend
+
+## Important Patterns
+
+### Always Generate Complete Archives
+Never generate partial archives. Each archive must have:
+- Valid manifest.json with all required fields
+- Valid primary_query.json
+- All referenced files in correct directory structure
+
+### File Descriptions in Manifest
+Following [Verdikta Manifest Specification](https://docs.verdikta.com/verdikta-common/MANIFEST_SPECIFICATION/):
+```json
+"additional": [
+  {
+    "name": "unique-reference-name",
+    "type": "text/plain",
+    "filename": "submission/file.txt",
+    "description": "Human-readable description for AI context"
+  }
+]
+```
+
+### Submission Narrative (200 Word Limit)
+- Default: Standard thank you message
+- Custom: Hunter can provide context for evaluators
+- Validation: Both frontend and backend enforce 200 word limit
+- Usage: Included in Hunter archive's primary_query.json
+
+## Smart Contract Integration (Future)
+
+When BountyEscrow contracts are deployed, replace:
+- `jobStorage.createJob()` → `contract.createBounty()`
+- `jobStorage.addSubmission()` → `contract.submitAndEvaluate()`
+- Keep archive generation unchanged
+- CID structure remains the same
+
+## Testing Workflow
+
+1. Create job → Get PRIMARY_CID and RUBRIC_CID
+2. Submit work → Get HUNTER_CID and UPDATED_PRIMARY_CID
+3. Test with example-frontend: Use format `UPDATED_PRIMARY_CID,HUNTER_CID`
+4. Verify manifest structure matches blog-post-test example
+
+## Common Pitfalls
+
+❌ Don't include threshold in rubric JSON  
+❌ Don't skip file descriptions in manifest  
+❌ Don't nest files incorrectly (must be in submission/ directory)  
+❌ Don't exceed 200 words in submission narrative  
+❌ Don't allow files over 20MB  
+
+✅ Do validate all inputs on both frontend and backend  
+✅ Do clean up temporary files after uploads  
+✅ Do include descriptive file descriptions  
+✅ Do follow Verdikta manifest specification  
+✅ Do test generated archives before deployment

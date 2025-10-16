@@ -14,7 +14,7 @@ function saveDeployment(network, chainId, data) {
     typeof value === 'bigint' ? value.toString() : value
   , 2);
   fs.writeFileSync(file, jsonData);
-  console.log(`\n📝 Saved deployment to ${file}\n`);
+  console.log(`\nSaved deployment to ${file}\n`);
 }
 
 function copyAbiToFrontend(artifactName, destRel = "frontend/src/abi") {

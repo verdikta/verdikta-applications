@@ -12,6 +12,7 @@ class WalletService {
     this.signer = null;
     this.address = null;
     this.chainId = null;
+    this.listeners = new Set();
   }
 
   /**
@@ -19,6 +20,22 @@ class WalletService {
    */
   isMetaMaskInstalled() {
     return typeof window !== 'undefined' && typeof window.ethereum !== 'undefined';
+  }
+
+  /**
+   * Subscribe to wallet state changes
+   */
+  subscribe(callback) {
+    this.listeners.add(callback);
+    return () => this.listeners.delete(callback);
+  }
+
+  /**
+   * Notify all subscribers of state change
+   */
+  notifyListeners() {
+    const state = this.getState();
+    this.listeners.forEach(callback => callback(state));
   }
 
   /**
@@ -46,15 +63,20 @@ class WalletService {
 
       // Check if on correct network
       if (this.chainId !== currentNetwork.chainId) {
-        await this.switchNetwork();
+        console.warn(`Connected to chain ${this.chainId}, expected ${currentNetwork.chainId}`);
+        // Don't auto-switch here - let the UI handle it
       }
 
       // Set up event listeners
       this.setupEventListeners();
 
+      // Notify subscribers
+      this.notifyListeners();
+
       return {
         address: this.address,
-        chainId: this.chainId
+        chainId: this.chainId,
+        isCorrectNetwork: this.chainId === currentNetwork.chainId
       };
     } catch (error) {
       console.error('Failed to connect wallet:', error);
@@ -70,25 +92,46 @@ class WalletService {
     this.signer = null;
     this.address = null;
     this.chainId = null;
+    this.notifyListeners();
   }
 
   /**
    * Switch to correct network
    */
   async switchNetwork() {
+    if (!this.isMetaMaskInstalled()) {
+      throw new Error('MetaMask is not installed');
+    }
+
     try {
       await window.ethereum.request({
         method: 'wallet_switchEthereumChain',
         params: [{ chainId: currentNetwork.chainIdHex }]
       });
 
-      // Update chainId after switch
-      const network = await this.provider.getNetwork();
-      this.chainId = Number(network.chainId);
+      // Wait a bit for the network to switch
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Update provider and chainId
+      if (this.provider) {
+        const network = await this.provider.getNetwork();
+        this.chainId = Number(network.chainId);
+        
+        // Recreate signer after network switch
+        if (this.address) {
+          this.signer = await this.provider.getSigner();
+        }
+      }
+
+      this.notifyListeners();
+      return true;
     } catch (error) {
       // Network doesn't exist, try to add it
       if (error.code === 4902) {
-        await this.addNetwork();
+        return await this.addNetwork();
+      } else if (error.code === 4001) {
+        // User rejected the request
+        throw new Error('Network switch rejected by user');
       } else {
         throw error;
       }
@@ -111,9 +154,22 @@ class WalletService {
         }]
       });
 
+      // Wait a bit for the network to be added
+      await new Promise(resolve => setTimeout(resolve, 500));
+
       // Update chainId after adding
-      const network = await this.provider.getNetwork();
-      this.chainId = Number(network.chainId);
+      if (this.provider) {
+        const network = await this.provider.getNetwork();
+        this.chainId = Number(network.chainId);
+        
+        // Recreate signer
+        if (this.address) {
+          this.signer = await this.provider.getSigner();
+        }
+      }
+
+      this.notifyListeners();
+      return true;
     } catch (error) {
       console.error('Failed to add network:', error);
       throw error;
@@ -126,21 +182,68 @@ class WalletService {
   setupEventListeners() {
     if (!window.ethereum) return;
 
+    // Remove existing listeners to prevent duplicates (only if they exist)
+    if (this.handleAccountsChanged) {
+      window.ethereum.removeListener('accountsChanged', this.handleAccountsChanged);
+    }
+    if (this.handleChainChanged) {
+      window.ethereum.removeListener('chainChanged', this.handleChainChanged);
+    }
+
     // Account changed
-    window.ethereum.on('accountsChanged', (accounts) => {
+    this.handleAccountsChanged = async (accounts) => {
+      console.log('Accounts changed:', accounts);
+      
       if (accounts.length === 0) {
+        // User disconnected
         this.disconnect();
-        window.location.reload();
-      } else {
+      } else if (accounts[0] !== this.address) {
+        // Account switched
         this.address = accounts[0];
-        window.location.reload();
+        
+        // Update signer
+        if (this.provider) {
+          try {
+            this.signer = await this.provider.getSigner();
+          } catch (error) {
+            console.error('Failed to get signer after account change:', error);
+          }
+        }
+        
+        this.notifyListeners();
       }
-    });
+    };
 
     // Chain changed
-    window.ethereum.on('chainChanged', () => {
-      window.location.reload();
-    });
+    this.handleChainChanged = async (chainIdHex) => {
+      console.log('Chain changed:', chainIdHex);
+      
+      const newChainId = parseInt(chainIdHex, 16);
+      this.chainId = newChainId;
+      
+      // Recreate provider and signer for new network
+      if (window.ethereum && this.address) {
+        try {
+          this.provider = new ethers.BrowserProvider(window.ethereum);
+          this.signer = await this.provider.getSigner();
+        } catch (error) {
+          console.error('Failed to update provider after chain change:', error);
+        }
+      }
+      
+      this.notifyListeners();
+      
+      // Show warning if on wrong network
+      if (newChainId !== currentNetwork.chainId) {
+        console.warn(
+          `Wrong network detected. Connected to chain ${newChainId}, ` +
+          `expected ${currentNetwork.chainId} (${currentNetwork.name})`
+        );
+      }
+    };
+
+    window.ethereum.on('accountsChanged', this.handleAccountsChanged);
+    window.ethereum.on('chainChanged', this.handleChainChanged);
   }
 
   /**
@@ -151,7 +254,9 @@ class WalletService {
       isConnected: !!this.address,
       address: this.address,
       chainId: this.chainId,
-      isCorrectNetwork: this.chainId === currentNetwork.chainId
+      isCorrectNetwork: this.chainId === currentNetwork.chainId,
+      expectedChainId: currentNetwork.chainId,
+      expectedNetwork: currentNetwork.name
     };
   }
 
@@ -176,11 +281,25 @@ class WalletService {
   getSigner() {
     return this.signer;
   }
+
+  /**
+   * Get network name from chain ID
+   */
+  getNetworkName(chainId) {
+    const networks = {
+      1: 'Ethereum Mainnet',
+      5: 'Goerli Testnet',
+      11155111: 'Sepolia Testnet',
+      8453: 'Base Mainnet',
+      84532: 'Base Sepolia',
+      137: 'Polygon Mainnet',
+      80001: 'Mumbai Testnet'
+    };
+    return networks[chainId] || `Chain ${chainId}`;
+  }
 }
 
 // Export singleton instance
 export const walletService = new WalletService();
 export default walletService;
-
-
 

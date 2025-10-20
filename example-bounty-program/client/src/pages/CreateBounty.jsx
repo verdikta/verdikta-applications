@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiService } from '../services/api';
 import { modelProviderService } from '../services/modelProviderService';
+import { walletService } from '../services/wallet';
 import * as rubricStorage from '../services/rubricStorage';
 import { getTemplateOptions, getTemplate, createBlankRubric, getTemplateThreshold } from '../data/rubricTemplates';
 import ClassSelector from '../components/ClassSelector';
@@ -14,6 +15,7 @@ function CreateBounty({ walletState }) {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [isSwitchingNetwork, setIsSwitchingNetwork] = useState(false);
 
   // Class and model selection state
   const [selectedClassId, setSelectedClassId] = useState(128);
@@ -65,10 +67,10 @@ function CreateBounty({ walletState }) {
     const loadModels = async () => {
       setIsLoadingModels(true);
       setModelError(null);
-      
+
       try {
         const { providerModels, classInfo, isEmpty } = await modelProviderService.getProviderModels(selectedClassId);
-        
+
         setAvailableModels(providerModels);
         setClassInfo(classInfo);
 
@@ -76,7 +78,7 @@ function CreateBounty({ walletState }) {
         if (!isEmpty && Object.keys(providerModels).length > 0 && juryNodes.length === 0) {
           const firstProvider = Object.keys(providerModels)[0];
           const firstModel = providerModels[firstProvider][0];
-          
+
           setJuryNodes([{
             provider: firstProvider,
             model: firstModel,
@@ -103,10 +105,10 @@ function CreateBounty({ walletState }) {
       console.warn('No providers available for selected class');
       return;
     }
-    
+
     const firstProvider = availableProviders[0];
     const firstModel = availableModels[firstProvider]?.[0] || '';
-    
+
     setJuryNodes((prev) => [
       ...prev,
       {
@@ -203,12 +205,12 @@ function CreateBounty({ walletState }) {
   const validateWeights = () => {
     const scoredCriteria = rubric.criteria.filter(c => !c.must);
     const totalWeight = scoredCriteria.reduce((sum, c) => sum + (c.weight || 0), 0);
-    
+
     return {
       valid: Math.abs(totalWeight - 1.0) < 0.01,
       totalWeight,
-      message: totalWeight < 0.99 ? `Weights sum to ${totalWeight.toFixed(2)} (should be 1.00)` : 
-               totalWeight > 1.01 ? `Weights sum to ${totalWeight.toFixed(2)} (should be 1.00)` : 
+      message: totalWeight < 0.99 ? `Weights sum to ${totalWeight.toFixed(2)} (should be 1.00)` :
+               totalWeight > 1.01 ? `Weights sum to ${totalWeight.toFixed(2)} (should be 1.00)` :
                'Valid'
     };
   };
@@ -256,7 +258,7 @@ function CreateBounty({ walletState }) {
 
       // Upload to IPFS
       const uploadResult = await apiService.uploadRubric(rubricForBackend, selectedClassId);
-      
+
       // Save to localStorage (keep original format with labels/instructions)
       rubricStorage.saveRubric(walletState.address, {
         cid: uploadResult.rubricCid,
@@ -266,7 +268,7 @@ function CreateBounty({ walletState }) {
       });
 
       alert(`✅ Rubric saved!\n\nTitle: ${rubric.title}\nCID: ${uploadResult.rubricCid}\n\nYou can now reuse this rubric for future bounties.`);
-      
+
       setLoadedRubricCid(uploadResult.rubricCid);
     } catch (err) {
       console.error('Error saving rubric:', err);
@@ -285,9 +287,22 @@ function CreateBounty({ walletState }) {
     setSelectedTemplate(''); // Clear template selection
   };
 
+  // Handle network switch
+  const handleSwitchNetwork = async () => {
+    setIsSwitchingNetwork(true);
+    try {
+      await walletService.switchNetwork();
+    } catch (err) {
+      console.error('Failed to switch network:', err);
+      alert(`Failed to switch network: ${err.message}`);
+    } finally {
+      setIsSwitchingNetwork(false);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
+
     if (!walletState.isConnected) {
       alert('Please connect your wallet first');
       return;
@@ -340,7 +355,7 @@ function CreateBounty({ walletState }) {
       const rubricForBackend = transformRubricForBackend(rubricJson);
 
       // Calculate USD value
-      const bountyAmountUSD = formData.payoutAmount && formData.ethPriceUSD 
+      const bountyAmountUSD = formData.payoutAmount && formData.ethPriceUSD
         ? (parseFloat(formData.payoutAmount) * formData.ethPriceUSD).toFixed(2)
         : 0;
 
@@ -361,9 +376,9 @@ function CreateBounty({ walletState }) {
       };
 
       const result = await apiService.createJob(jobData);
-      
+
       console.log('Job created successfully:', result.job);
-      
+
       alert(`✅ Job Created Successfully!\n\nJob ID: ${result.job.jobId}\nTitle: ${result.job.title}\nBounty: ${result.job.bountyAmount} ETH (~$${result.job.bountyAmountUSD})\nThreshold: ${result.job.threshold}%\nRubric CID: ${result.job.rubricCid}\nPrimary CID: ${result.job.primaryCid}\n\nHunters can now submit work for this job!`);
 
       // Navigate to home to see the new job
@@ -378,12 +393,37 @@ function CreateBounty({ walletState }) {
     }
   };
 
+  // Wallet not connected check
   if (!walletState.isConnected) {
     return (
       <div className="create-bounty">
         <div className="alert alert-warning">
           <h2>Wallet Not Connected</h2>
           <p>Please connect your wallet to create a bounty.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Wrong network check
+  if (!walletState.isCorrectNetwork) {
+    return (
+      <div className="create-bounty">
+        <div className="alert alert-warning">
+          <h2>⚠️ Wrong Network</h2>
+          <p>
+            You're connected to <strong>{walletService.getNetworkName(walletState.chainId)}</strong> (Chain ID: {walletState.chainId})
+          </p>
+          <p>
+            Please switch to <strong>{walletState.expectedNetwork}</strong> (Chain ID: {walletState.expectedChainId}) to create bounties.
+          </p>
+          <button 
+            onClick={handleSwitchNetwork} 
+            className="btn btn-primary"
+            disabled={isSwitchingNetwork}
+          >
+            {isSwitchingNetwork ? 'Switching Network...' : `Switch to ${walletState.expectedNetwork}`}
+          </button>
         </div>
       </div>
     );
@@ -405,7 +445,7 @@ function CreateBounty({ walletState }) {
       <form onSubmit={handleSubmit} className="bounty-form">
         <div className="form-section">
           <h2>Bounty Details</h2>
-          
+
           <div className="form-group">
             <label htmlFor="title">Title *</label>
             <input
@@ -548,15 +588,15 @@ function CreateBounty({ walletState }) {
                 type="range"
                 min="0"
                 max="100"
-                value={rubric.threshold}
-                onChange={(e) => updateRubricField('threshold', parseInt(e.target.value))}
+                value={threshold}
+                onChange={(e) => setThreshold(parseInt(e.target.value))}
               />
               <input
                 type="number"
                 min="0"
                 max="100"
-                value={rubric.threshold}
-                onChange={(e) => updateRubricField('threshold', parseInt(e.target.value))}
+                value={threshold}
+                onChange={(e) => setThreshold(parseInt(e.target.value))}
                 className="threshold-number-input"
               />
               <span className="threshold-percent">%</span>
@@ -632,7 +672,7 @@ function CreateBounty({ walletState }) {
           <p className="section-description">
             Select the AI class and configure which models will evaluate submissions
           </p>
-          
+
           {/* Class Selector */}
           <ClassSelector
             selectedClassId={selectedClassId}
@@ -663,7 +703,7 @@ function CreateBounty({ walletState }) {
           {/* Jury Table */}
           <div className="jury-configuration">
             <h3>Jury Composition</h3>
-            
+
             <div className="jury-table">
               <div className="jury-table-header">
                 <div>Provider</div>
@@ -755,9 +795,9 @@ function CreateBounty({ walletState }) {
                 </div>
               ))}
 
-              <button 
+              <button
                 type="button"
-                className="add-node-btn" 
+                className="add-node-btn"
                 onClick={addJuryNode}
                 disabled={Object.keys(availableModels).length === 0}
                 title={Object.keys(availableModels).length === 0 ? 'No models available for selected class' : 'Add another AI model'}
@@ -827,5 +867,4 @@ function CreateBounty({ walletState }) {
 }
 
 export default CreateBounty;
-
 

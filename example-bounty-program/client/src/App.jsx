@@ -59,8 +59,8 @@ function App() {
           <Routes>
             <Route path="/" element={<Home walletState={walletState} />} />
             <Route path="/create" element={<CreateBounty walletState={walletState} />} />
-            <Route path="/bounty/:id" element={<BountyDetails walletState={walletState} />} />
-            <Route path="/submit/:id" element={<SubmitWork walletState={walletState} />} />
+            <Route path="/bounty/:bountyId" element={<BountyDetails walletState={walletState} />} />
+            <Route path="/bounty/:bountyId/submit" element={<SubmitWork walletState={walletState} />} />
           </Routes>
         </main>
       </div>

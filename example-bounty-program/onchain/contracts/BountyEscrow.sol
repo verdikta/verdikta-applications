@@ -20,6 +20,7 @@ contract BountyEscrow {
         uint8   threshold;          // 0..100 acceptance threshold
         uint256 payoutWei;          // ETH locked
         uint256 createdAt;
+        uint64  submissionDeadline; // Unix timestamp when submissions close
         BountyStatus status;
         address winner;
         uint256 submissions;        // count
@@ -59,7 +60,8 @@ contract BountyEscrow {
         string rubricCid,
         uint64 classId,
         uint8 threshold,
-        uint256 payoutWei
+        uint256 payoutWei,
+        uint64 submissionDeadline
     );
 
     event BountyCancelled(uint256 indexed bountyId);
@@ -102,11 +104,13 @@ contract BountyEscrow {
     function createBounty(
         string calldata rubricCid,
         uint64  requestedClass,
-        uint8   threshold
+        uint8   threshold,
+        uint64  submissionDeadline
     ) external payable returns (uint256 bountyId) {
         require(msg.value > 0, "no ETH");
         require(bytes(rubricCid).length > 0, "empty rubric");
         require(threshold <= 100, "bad threshold");
+        require(submissionDeadline > block.timestamp, "deadline in past");
 
         bounties.push(Bounty({
             creator: msg.sender,
@@ -115,13 +119,14 @@ contract BountyEscrow {
             threshold: threshold,
             payoutWei: msg.value,
             createdAt: block.timestamp,
+            submissionDeadline: submissionDeadline,
             status: BountyStatus.Open,
             winner: address(0),
             submissions: 0
         }));
 
         bountyId = bounties.length - 1;
-        emit BountyCreated(bountyId, msg.sender, rubricCid, requestedClass, threshold, msg.value);
+        emit BountyCreated(bountyId, msg.sender, rubricCid, requestedClass, threshold, msg.value, submissionDeadline);
     }
 
     function cancelBounty(uint256 bountyId) external {
@@ -154,6 +159,7 @@ contract BountyEscrow {
     ) external returns (uint256 submissionId, address evalWallet, uint256 linkMaxBudget) {
         Bounty storage b = _mustBounty(bountyId);
         require(b.status == BountyStatus.Open, "bounty closed");
+        require(block.timestamp < b.submissionDeadline, "deadline passed");
         require(bytes(deliverableCid).length > 0, "empty deliverable");
 
         linkMaxBudget = verdikta.maxTotalFee(maxOracleFee);
@@ -213,7 +219,7 @@ contract BountyEscrow {
         // Approve Verdikta and start evaluation (wallet will be msg.sender to Verdikta)
         wallet.approveVerdikta(s.linkMaxBudget);
 
-        string[] memory cids;
+        string[] memory cids = new string[](2);
         cids[0] = s.deliverableCid;
         cids[1] = b.rubricCid;
 
@@ -300,6 +306,30 @@ contract BountyEscrow {
 
     function getSubmission(uint256 bountyId, uint256 submissionId) external view returns (Submission memory) {
         return _mustSubmission(bountyId, submissionId);
+    }
+
+    /// @notice Get the effective status of a bounty as a string for frontend compatibility
+    /// @dev Returns "OPEN", "CLOSED", "COMPLETED", or "CANCELLED"
+    function getEffectiveBountyStatus(uint256 bountyId) external view returns (string memory) {
+        Bounty storage b = _mustBounty(bountyId);
+        
+        // If deadline passed and still Open, it's effectively "CLOSED"
+        if (b.status == BountyStatus.Open && block.timestamp >= b.submissionDeadline) {
+            return "CLOSED";
+        }
+        
+        // Map enum to strings your frontend expects
+        if (b.status == BountyStatus.Open) return "OPEN";
+        if (b.status == BountyStatus.Awarded) return "COMPLETED";
+        if (b.status == BountyStatus.Cancelled) return "CANCELLED";
+        
+        return "UNKNOWN";
+    }
+
+    /// @notice Check if a bounty is accepting submissions (open and before deadline)
+    function isAcceptingSubmissions(uint256 bountyId) external view returns (bool) {
+        Bounty storage b = _mustBounty(bountyId);
+        return b.status == BountyStatus.Open && block.timestamp < b.submissionDeadline;
     }
 
     // ------------- Admin knobs -------------

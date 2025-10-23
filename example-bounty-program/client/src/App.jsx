@@ -1,11 +1,11 @@
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { useState, useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { walletService } from './services/wallet';
 import Header from './components/Header';
 import Home from './pages/Home';
 import CreateBounty from './pages/CreateBounty';
 import BountyDetails from './pages/BountyDetails';
 import SubmitWork from './pages/SubmitWork';
-import { walletService } from './services/wallet';
 import './App.css';
 
 function App() {
@@ -16,59 +16,43 @@ function App() {
     isCorrectNetwork: false
   });
 
-  // Check for existing wallet connection on mount
+  // Subscribe to wallet state changes
   useEffect(() => {
-    checkWalletConnection();
+    const unsubscribe = walletService.subscribe((newState) => {
+      setWalletState(newState);
+    });
+
+    // Check if already connected on mount
+    const currentState = walletService.getState();
+    if (currentState.isConnected) {
+      setWalletState(currentState);
+    }
+
+    return unsubscribe;
   }, []);
 
-  const checkWalletConnection = async () => {
-    if (walletService.isMetaMaskInstalled()) {
-      try {
-        const accounts = await window.ethereum.request({
-          method: 'eth_accounts'
-        });
-
-        if (accounts.length > 0) {
-          await connectWallet();
-        }
-      } catch (error) {
-        console.error('Error checking wallet connection:', error);
-      }
-    }
-  };
-
-  const connectWallet = async () => {
+  const handleConnect = async () => {
     try {
-      const result = await walletService.connect();
-      setWalletState({
-        isConnected: true,
-        address: result.address,
-        chainId: result.chainId,
-        isCorrectNetwork: walletService.getState().isCorrectNetwork
-      });
+      await walletService.connect();
+      // State will be updated via subscription
     } catch (error) {
       console.error('Failed to connect wallet:', error);
-      alert(error.message);
+      alert(`Failed to connect wallet: ${error.message}`);
     }
   };
 
-  const disconnectWallet = () => {
+  const handleDisconnect = () => {
     walletService.disconnect();
-    setWalletState({
-      isConnected: false,
-      address: null,
-      chainId: null,
-      isCorrectNetwork: false
-    });
+    // State will be updated via subscription
   };
 
   return (
     <Router>
       <div className="app">
-        <Header
+        <Header 
           walletState={walletState}
-          onConnect={connectWallet}
-          onDisconnect={disconnectWallet}
+          onConnect={handleConnect}
+          onDisconnect={handleDisconnect}
         />
         
         <main className="main-content">
@@ -79,13 +63,10 @@ function App() {
             <Route path="/bounty/:bountyId/submit" element={<SubmitWork walletState={walletState} />} />
           </Routes>
         </main>
-
-        <footer className="app-footer">
-          <p>Verdikta AI-Powered Bounty Program • Built with ❤️ on Base</p>
-        </footer>
       </div>
     </Router>
   );
 }
 
 export default App;
+

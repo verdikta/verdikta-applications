@@ -1,10 +1,29 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { walletService } from '../services/wallet';
 import { currentNetwork } from '../config';
 import './Header.css';
 
 function Header({ walletState, onConnect, onDisconnect }) {
-  const { isConnected, address, isCorrectNetwork } = walletState;
+  const { isConnected, address, chainId, isCorrectNetwork } = walletState;
+  const [isSwitching, setIsSwitching] = useState(false);
+
+  const handleSwitchNetwork = async () => {
+    setIsSwitching(true);
+    try {
+      await walletService.switchNetwork();
+    } catch (error) {
+      console.error('Failed to switch network:', error);
+      alert(`Failed to switch network: ${error.message}`);
+    } finally {
+      setIsSwitching(false);
+    }
+  };
+
+  const getCurrentNetworkName = () => {
+    if (!chainId) return 'Unknown';
+    return walletService.getNetworkName(chainId);
+  };
 
   return (
     <header className="header">
@@ -27,14 +46,32 @@ function Header({ walletState, onConnect, onDisconnect }) {
           ) : (
             <div className="wallet-info">
               {!isCorrectNetwork && (
-                <span className="network-warning">
-                  ⚠️ Wrong Network
-                </span>
+                <div className="wrong-network-alert">
+                  <span className="network-warning">
+                    ⚠️ Wrong Network
+                  </span>
+                  <button 
+                    onClick={handleSwitchNetwork}
+                    className="btn btn-warning btn-sm"
+                    disabled={isSwitching}
+                  >
+                    {isSwitching ? 'Switching...' : `Switch to ${currentNetwork.name}`}
+                  </button>
+                </div>
               )}
+              
               <div className="wallet-address">
-                <span className="network-badge">{currentNetwork.name}</span>
-                <span className="address">{walletService.formatAddress(address)}</span>
+                <span 
+                  className={`network-badge ${isCorrectNetwork ? 'correct' : 'incorrect'}`}
+                  title={`Chain ID: ${chainId}`}
+                >
+                  {isCorrectNetwork ? '✓' : '✗'} {getCurrentNetworkName()}
+                </span>
+                <span className="address" title={address}>
+                  {walletService.formatAddress(address)}
+                </span>
               </div>
+              
               <button onClick={onDisconnect} className="btn btn-secondary btn-sm">
                 Disconnect
               </button>
@@ -47,6 +84,4 @@ function Header({ walletState, onConnect, onDisconnect }) {
 }
 
 export default Header;
-
-
 

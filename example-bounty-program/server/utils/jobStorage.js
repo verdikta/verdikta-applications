@@ -17,7 +17,7 @@ async function initStorage() {
   try {
     const dataDir = path.dirname(STORAGE_FILE);
     await fs.mkdir(dataDir, { recursive: true });
-    
+
     try {
       await fs.access(STORAGE_FILE);
     } catch {
@@ -59,7 +59,7 @@ async function writeStorage(data) {
 
 /**
  * Create a new job
- * 
+ *
  * @param {Object} jobData
  * @param {string} jobData.title - Job title
  * @param {string} jobData.description - Job description
@@ -79,7 +79,7 @@ async function writeStorage(data) {
 async function createJob(jobData) {
   try {
     const storage = await readStorage();
-    
+
     const job = {
       jobId: storage.nextId,
       ...jobData,
@@ -89,14 +89,14 @@ async function createJob(jobData) {
       submissions: [],
       winner: null
     };
-    
+
     storage.jobs.push(job);
     storage.nextId += 1;
-    
+
     await writeStorage(storage);
-    
+
     logger.info('Job created', { jobId: job.jobId, title: job.title });
-    
+
     return job;
   } catch (error) {
     logger.error('Error creating job:', error);
@@ -105,17 +105,26 @@ async function createJob(jobData) {
 }
 
 /**
- * Get a job by ID
+ * Get a job by ID with automatic status updates
  */
 async function getJob(jobId) {
   try {
     const storage = await readStorage();
     const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
-    
+
     if (!job) {
       throw new Error(`Job ${jobId} not found`);
     }
-    
+
+    // AUTO-UPDATE: Close expired jobs
+    const now = Math.floor(Date.now() / 1000);
+    if (job.status === 'OPEN' && job.submissionCloseTime && now >= job.submissionCloseTime) {
+      job.status = 'CLOSED';
+      // Persist the change
+      await writeStorage(storage);
+      logger.info('Job auto-closed due to deadline', { jobId: job.jobId });
+    }
+
     return job;
   } catch (error) {
     logger.error('Error getting job:', error);
@@ -124,8 +133,8 @@ async function getJob(jobId) {
 }
 
 /**
- * List all jobs with optional filters
- * 
+ * List all jobs with optional filters and automatic status updates
+ *
  * @param {Object} filters
  * @param {string} filters.status - Filter by status (OPEN, CLOSED, COMPLETED)
  * @param {string} filters.creator - Filter by creator address
@@ -138,32 +147,49 @@ async function listJobs(filters = {}) {
     const storage = await readStorage();
     let jobs = storage.jobs;
     
+    // AUTO-UPDATE: Close all expired jobs
+    const now = Math.floor(Date.now() / 1000);
+    let updated = false;
+    
+    jobs.forEach(job => {
+      if (job.status === 'OPEN' && job.submissionCloseTime && now >= job.submissionCloseTime) {
+        job.status = 'CLOSED';
+        updated = true;
+        logger.info('Job auto-closed due to deadline', { jobId: job.jobId });
+      }
+    });
+    
+    // Persist updates if any jobs were closed
+    if (updated) {
+      await writeStorage(storage);
+    }
+
     // Apply filters
     if (filters.status) {
       jobs = jobs.filter(j => j.status === filters.status);
     }
-    
+
     if (filters.creator) {
-      jobs = jobs.filter(j => 
+      jobs = jobs.filter(j =>
         j.creator.toLowerCase() === filters.creator.toLowerCase()
       );
     }
-    
+
     if (filters.minPayout) {
       jobs = jobs.filter(j => j.bountyAmount >= parseFloat(filters.minPayout));
     }
-    
+
     if (filters.search) {
       const searchLower = filters.search.toLowerCase();
-      jobs = jobs.filter(j => 
+      jobs = jobs.filter(j =>
         j.title.toLowerCase().includes(searchLower) ||
         j.description.toLowerCase().includes(searchLower)
       );
     }
-    
+
     // Sort by creation date (newest first)
     jobs.sort((a, b) => b.createdAt - a.createdAt);
-    
+
     return jobs;
   } catch (error) {
     logger.error('Error listing jobs:', error);
@@ -178,16 +204,16 @@ async function updateJobStatus(jobId, status) {
   try {
     const storage = await readStorage();
     const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
-    
+
     if (!job) {
       throw new Error(`Job ${jobId} not found`);
     }
-    
+
     job.status = status;
     await writeStorage(storage);
-    
+
     logger.info('Job status updated', { jobId, status });
-    
+
     return job;
   } catch (error) {
     logger.error('Error updating job status:', error);
@@ -197,7 +223,7 @@ async function updateJobStatus(jobId, status) {
 
 /**
  * Add a submission to a job
- * 
+ *
  * @param {number} jobId
  * @param {Object} submissionData
  * @param {string} submissionData.hunter - Hunter wallet address
@@ -209,29 +235,41 @@ async function addSubmission(jobId, submissionData) {
   try {
     const storage = await readStorage();
     const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
-    
+
     if (!job) {
       throw new Error(`Job ${jobId} not found`);
     }
-    
+
+    // Check if job is still open and deadline hasn't passed
+    const now = Math.floor(Date.now() / 1000);
+    if (job.status !== 'OPEN') {
+      throw new Error(`Job ${jobId} is not accepting submissions (status: ${job.status})`);
+    }
+    if (job.submissionCloseTime && now >= job.submissionCloseTime) {
+      // Auto-close the job if deadline passed
+      job.status = 'CLOSED';
+      await writeStorage(storage);
+      throw new Error(`Job ${jobId} deadline has passed`);
+    }
+
     const submission = {
       submissionId: job.submissions.length + 1,
       ...submissionData,
       submittedAt: Math.floor(Date.now() / 1000),
       status: 'PENDING_EVALUATION'
     };
-    
+
     job.submissions.push(submission);
     job.submissionCount += 1;
-    
+
     await writeStorage(storage);
-    
-    logger.info('Submission added to job', { 
-      jobId, 
+
+    logger.info('Submission added to job', {
+      jobId,
       submissionId: submission.submissionId,
-      hunter: submissionData.hunter 
+      hunter: submissionData.hunter
     });
-    
+
     return job;
   } catch (error) {
     logger.error('Error adding submission:', error);
@@ -246,35 +284,35 @@ async function updateSubmissionResult(jobId, submissionId, result) {
   try {
     const storage = await readStorage();
     const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
-    
+
     if (!job) {
       throw new Error(`Job ${jobId} not found`);
     }
-    
+
     const submission = job.submissions.find(s => s.submissionId === submissionId);
-    
+
     if (!submission) {
       throw new Error(`Submission ${submissionId} not found`);
     }
-    
+
     submission.result = result;
     submission.status = result.outcome === 'FUND' ? 'PASSED' : 'FAILED';
     submission.evaluatedAt = Math.floor(Date.now() / 1000);
-    
+
     // If this submission passed and no winner yet, mark as winner
     if (result.outcome === 'FUND' && !job.winner) {
       job.winner = submission.hunter;
       job.status = 'COMPLETED';
     }
-    
+
     await writeStorage(storage);
-    
-    logger.info('Submission result updated', { 
-      jobId, 
+
+    logger.info('Submission result updated', {
+      jobId,
       submissionId,
-      outcome: result.outcome 
+      outcome: result.outcome
     });
-    
+
     return job;
   } catch (error) {
     logger.error('Error updating submission result:', error);

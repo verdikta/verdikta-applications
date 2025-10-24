@@ -381,7 +381,13 @@ function CreateBounty({ walletState }) {
         throw new Error(response.error || 'Failed to create job');
       }
 
-      alert(`✅ Job created successfully!\n\nJob ID: ${response.job.jobId}\nRubric CID: ${response.job.rubricCid}\nPrimary CID: ${response.job.primaryCid}`);
+      alert(
+        `✅ Job created successfully!\n\n` +
+        `Job ID: ${response.job.jobId}\n` +
+        `Rubric CID: ${response.job.rubricCid}\n` +
+        `Primary CID: ${response.job.primaryCid}\n\n` +
+        `Note: The page may take a moment to load while the blockchain syncs.`
+      );
 
       // Navigate to job details
       navigate(`/bounty/${response.job.jobId}`);

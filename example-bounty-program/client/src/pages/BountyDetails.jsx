@@ -12,10 +12,11 @@ function BountyDetails({ walletState }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [closingBounty, setClosingBounty] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     loadJobDetails();
-  }, [bountyId]);
+  }, [bountyId, retryCount]);
 
   const loadJobDetails = async () => {
     try {
@@ -37,7 +38,20 @@ function BountyDetails({ walletState }) {
       }
     } catch (err) {
       console.error('Error loading job:', err);
-      setError(err.response?.data?.details || err.message);
+      const errorMessage = err.response?.data?.details || err.message;
+      
+      // If job not found and we haven't retried too many times, retry after delay
+      if (errorMessage.includes('not found') && retryCount < 10) {
+        console.log(`Job not found, retrying... (attempt ${retryCount + 1}/10)`);
+        setTimeout(() => {
+          setRetryCount(prev => prev + 1);
+        }, 3000); // Retry every 3 seconds
+        setError('Waiting for blockchain sync... This may take a moment for newly created bounties.');
+      } else if (retryCount >= 10) {
+        setError('Job not found. The blockchain may still be syncing. Please try refreshing in a moment.');
+      } else {
+        setError(errorMessage);
+      }
     } finally {
       setLoading(false);
     }
@@ -148,19 +162,43 @@ function BountyDetails({ walletState }) {
       <div className="bounty-details">
         <div className="loading">
           <div className="spinner"></div>
-          <p>Loading bounty details...</p>
+          <p>
+            {retryCount > 0 
+              ? `Waiting for blockchain sync... (attempt ${retryCount}/10)` 
+              : 'Loading bounty details...'}
+          </p>
         </div>
       </div>
     );
   }
 
-  if (error) {
+  if (error && retryCount >= 10) {
     return (
       <div className="bounty-details">
         <div className="alert alert-error">
           <h2>⚠️ Job Not Found</h2>
           <p>{error}</p>
-          <Link to="/" className="btn btn-primary">Back to Home</Link>
+          <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
+            <Link to="/" className="btn btn-primary">Back to Home</Link>
+            <button 
+              onClick={() => setRetryCount(0)} 
+              className="btn btn-secondary"
+            >
+              🔄 Try Again
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && retryCount > 0) {
+    return (
+      <div className="bounty-details">
+        <div className="loading">
+          <div className="spinner"></div>
+          <p style={{ marginTop: '1rem' }}>{error}</p>
+          <small>Retrying automatically... ({retryCount}/10)</small>
         </div>
       </div>
     );

@@ -57,6 +57,31 @@ function BountyDetails({ walletState }) {
     }
   };
 
+  // Check if job data is complete (has all required blockchain fields)
+  const isJobDataComplete = (jobData) => {
+    return jobData && 
+           jobData.bountyAmount !== undefined && 
+           jobData.threshold !== undefined && 
+           jobData.submissionCloseTime !== undefined;
+  };
+
+  // Retry if data is incomplete
+  useEffect(() => {
+    if (job && !isJobDataComplete(job) && retryCount < 10) {
+      console.log('Job data incomplete, retrying...', { 
+        hasAmount: job.bountyAmount !== undefined,
+        hasThreshold: job.threshold !== undefined, 
+        hasDeadline: job.submissionCloseTime !== undefined 
+      });
+      
+      const timer = setTimeout(() => {
+        setRetryCount(prev => prev + 1);
+      }, 3000);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [job, retryCount]);
+
   /**
    * Close expired bounty - can be called by anyone after deadline
    */
@@ -172,6 +197,18 @@ function BountyDetails({ walletState }) {
     );
   }
 
+  // Show loading if data is incomplete
+  if (job && !isJobDataComplete(job) && retryCount < 10) {
+    return (
+      <div className="bounty-details">
+        <div className="loading">
+          <div className="spinner"></div>
+          <p>Loading complete job data from blockchain... (attempt {retryCount}/10)</p>
+        </div>
+      </div>
+    );
+  }
+
   if (error && retryCount >= 10) {
     return (
       <div className="bounty-details">
@@ -206,7 +243,7 @@ function BountyDetails({ walletState }) {
 
   // Calculate time remaining
   const now = Math.floor(Date.now() / 1000);
-  const timeRemaining = job ? job.submissionCloseTime - now : 0;
+  const timeRemaining = job?.submissionCloseTime ? job.submissionCloseTime - now : -1;
   const hoursRemaining = Math.max(0, Math.floor(timeRemaining / 3600));
   const isOpen = job?.status === 'OPEN' && timeRemaining > 0;
   const isExpired = job?.status === 'OPEN' && timeRemaining <= 0;
@@ -232,7 +269,7 @@ function BountyDetails({ walletState }) {
           <div className="stat">
             <span className="label">Payout</span>
             <span className="value">
-              {job?.bountyAmount} ETH
+              {job?.bountyAmount ?? '...'} ETH
               {job?.bountyAmountUSD > 0 && (
                 <small> (${job.bountyAmountUSD})</small>
               )}
@@ -240,16 +277,18 @@ function BountyDetails({ walletState }) {
           </div>
           <div className="stat">
             <span className="label">Submissions</span>
-            <span className="value">{job?.submissionCount || 0}</span>
+            <span className="value">{job?.submissionCount ?? 0}</span>
           </div>
           <div className="stat">
             <span className="label">Threshold</span>
-            <span className="value">{job?.threshold || '??'}%</span>
+            <span className="value">{job?.threshold ?? '...'}%</span>
           </div>
           <div className="stat">
             <span className="label">Time Remaining</span>
             <span className="value">
-              {timeRemaining <= 0 ? (
+              {!job?.submissionCloseTime ? (
+                '...'
+              ) : timeRemaining <= 0 ? (
                 'Closed'
               ) : hoursRemaining < 24 ? (
                 `${hoursRemaining}h`

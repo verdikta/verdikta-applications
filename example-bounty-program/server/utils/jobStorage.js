@@ -322,6 +322,8 @@ async function updateSubmissionResult(jobId, submissionId, result) {
 
 module.exports = {
   initStorage,
+  readStorage,
+  writeStorage,
   createJob,
   getJob,
   listJobs,

@@ -12,6 +12,11 @@ const submissionRoutes = require('./routes/submissionRoutes');
 const ipfsRoutes = require('./routes/ipfsRoutes');
 const jobRoutes = require('./routes/jobRoutes');
 
+// ============ ADD THESE IMPORTS ============
+const { initializeContractService } = require('./utils/contractService');
+const { initializeSyncService } = require('./utils/syncService');
+// ===========================================
+
 const app = express();
 
 // Initialize IPFS client
@@ -47,6 +52,53 @@ const initializeTmpDirectory = async () => {
   }
 };
 
+// ============ ADD BLOCKCHAIN SYNC INITIALIZATION ============
+const initializeBlockchainSync = () => {
+  if (process.env.USE_BLOCKCHAIN_SYNC === 'true') {
+    logger.info('🔗 Initializing blockchain sync (read-only)...');
+    
+    try {
+      // Validate required environment variables
+      if (!process.env.RPC_PROVIDER_URL) {
+        throw new Error('RPC_PROVIDER_URL not set in .env');
+      }
+      if (!process.env.BOUNTY_ESCROW_ADDRESS) {
+        throw new Error('BOUNTY_ESCROW_ADDRESS not set in .env');
+      }
+
+      // Initialize contract service for reading blockchain
+      initializeContractService(
+        process.env.RPC_PROVIDER_URL,
+        process.env.BOUNTY_ESCROW_ADDRESS
+      );
+      
+      // Initialize and start sync service
+      const syncIntervalMinutes = parseInt(process.env.SYNC_INTERVAL_MINUTES || '2');
+      const syncService = initializeSyncService(syncIntervalMinutes);
+      syncService.start();
+      
+      logger.info('✅ Blockchain sync enabled', {
+        contractAddress: process.env.BOUNTY_ESCROW_ADDRESS,
+        syncInterval: `${syncIntervalMinutes} minutes`
+      });
+      logger.info('ℹ️  Server is read-only: Users create jobs via MetaMask, server syncs automatically');
+      
+      return syncService;
+      
+    } catch (error) {
+      logger.error('❌ Failed to initialize blockchain sync:', error);
+      logger.warn('⚠️  Continuing with local storage only');
+      return null;
+    }
+    
+  } else {
+    logger.info('📝 Blockchain sync disabled - using local storage only');
+    logger.info('ℹ️  Set USE_BLOCKCHAIN_SYNC=true in .env to enable blockchain integration');
+    return null;
+  }
+};
+// ===========================================================
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -74,15 +126,15 @@ app.get('/api/classes', (req, res) => {
     const filter = {};
     if (status) filter.status = status;
     if (provider) filter.provider = provider;
-    
+
     const classes = classMap.listClasses(filter);
-    
+
     // Convert BigInt IDs to regular numbers for JSON serialization
     const serializedClasses = classes.map(cls => ({
       ...cls,
       id: Number(cls.id)
     }));
-    
+
     res.json({
       success: true,
       classes: serializedClasses
@@ -100,29 +152,29 @@ app.get('/api/classes', (req, res) => {
 app.get('/api/classes/:classId', (req, res) => {
   try {
     const classId = parseInt(req.params.classId, 10);
-    
+
     if (isNaN(classId)) {
       return res.status(400).json({
         error: 'Invalid class ID',
         details: 'Class ID must be a number'
       });
     }
-    
+
     const classInfo = classMap.getClass(classId);
-    
+
     if (!classInfo) {
       return res.status(404).json({
         error: 'Class not found',
         details: `Class ID ${classId} is not tracked`
       });
     }
-    
+
     // Convert BigInt ID to regular number for JSON serialization
     const serializedClass = {
       ...classInfo,
       id: Number(classInfo.id)
     };
-    
+
     res.json({
       success: true,
       class: serializedClass
@@ -140,23 +192,23 @@ app.get('/api/classes/:classId', (req, res) => {
 app.get('/api/classes/:classId/models', (req, res) => {
   try {
     const classId = parseInt(req.params.classId, 10);
-    
+
     if (isNaN(classId)) {
       return res.status(400).json({
         error: 'Invalid class ID',
         details: 'Class ID must be a number'
       });
     }
-    
+
     const classInfo = classMap.getClass(classId);
-    
+
     if (!classInfo) {
       return res.status(404).json({
         error: 'Class not found',
         details: `Class ID ${classId} is not tracked`
       });
     }
-    
+
     // Check if class is empty (no models available)
     if (classInfo.status === 'EMPTY') {
       return res.json({
@@ -167,7 +219,7 @@ app.get('/api/classes/:classId/models', (req, res) => {
         className: classInfo.name
       });
     }
-    
+
     // Group models by provider
     const modelsByProvider = {};
     if (classInfo.models && Array.isArray(classInfo.models)) {
@@ -178,7 +230,7 @@ app.get('/api/classes/:classId/models', (req, res) => {
         modelsByProvider[model.provider].push(model);
       });
     }
-    
+
     // Convert BigInt ID to regular number for JSON serialization
     const response = {
       success: true,
@@ -189,7 +241,7 @@ app.get('/api/classes/:classId/models', (req, res) => {
       modelsByProvider,
       limits: classInfo.limits || null
     };
-    
+
     res.json(response);
   } catch (error) {
     logger.error('Error fetching models for class:', error);
@@ -202,7 +254,7 @@ app.get('/api/classes/:classId/models', (req, res) => {
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ 
+  res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     version: require('./package.json').version
@@ -230,6 +282,10 @@ app.use((req, res) => {
 const startServer = async () => {
   try {
     await initializeTmpDirectory();
+    
+    // ============ INITIALIZE BLOCKCHAIN SYNC ============
+    const syncService = initializeBlockchainSync();
+    // ====================================================
 
     const PORT = process.env.PORT || 5000;
     const HOST = process.env.HOST || '0.0.0.0';
@@ -239,14 +295,25 @@ const startServer = async () => {
         NODE_ENV: process.env.NODE_ENV,
         IPFS_PINNING_SERVICE: process.env.IPFS_PINNING_SERVICE ? 'Set' : 'Not set',
         IPFS_PINNING_KEY: process.env.IPFS_PINNING_KEY ? 'Set' : 'Not set',
-        BOUNTY_ESCROW_ADDRESS: process.env.BOUNTY_ESCROW_ADDRESS
+        BOUNTY_ESCROW_ADDRESS: process.env.BOUNTY_ESCROW_ADDRESS,
+        USE_BLOCKCHAIN_SYNC: process.env.USE_BLOCKCHAIN_SYNC || 'false'
       });
     });
 
-    // Graceful shutdown
+    // ============ UPDATE GRACEFUL SHUTDOWN ============
     const shutdown = async () => {
       logger.info('Shutting down server...');
-      
+
+      // Stop sync service if running
+      if (syncService) {
+        try {
+          logger.info('Stopping blockchain sync service...');
+          syncService.stop();
+        } catch (error) {
+          logger.error('Error stopping sync service:', error);
+        }
+      }
+
       server.close(() => {
         logger.info('Server closed');
         process.exit(0);
@@ -258,6 +325,7 @@ const startServer = async () => {
         process.exit(1);
       }, 30000);
     };
+    // ==================================================
 
     process.on('SIGTERM', shutdown);
     process.on('SIGINT', shutdown);
@@ -271,5 +339,4 @@ const startServer = async () => {
 startServer();
 
 module.exports = app; // For testing
-
 

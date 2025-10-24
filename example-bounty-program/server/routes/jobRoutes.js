@@ -17,7 +17,7 @@ const { validateRubric, isValidFileType, isValidFileSize, MAX_FILE_SIZE } = requ
 /**
  * POST /api/jobs/create
  * Create a new job with rubric and generate Primary CID archive
- * 
+ *
  * Request body:
  * {
  *   title: string,
@@ -106,7 +106,7 @@ router.post('/create', async (req, res) => {
     const rubricBuffer = Buffer.from(JSON.stringify(rubricWithMeta, null, 2), 'utf-8');
     const tmpDir = path.join(__dirname, '../tmp');
     const tmpRubricPath = path.join(tmpDir, `rubric-${Date.now()}.json`);
-    
+
     await fs.mkdir(tmpDir, { recursive: true });
     await fs.writeFile(tmpRubricPath, rubricBuffer);
 
@@ -116,7 +116,7 @@ router.post('/create', async (req, res) => {
       rubricCid = await ipfsClient.uploadToIPFS(tmpRubricPath);
       logger.info('Rubric uploaded to IPFS', { rubricCid });
     } finally {
-      await fs.unlink(tmpRubricPath).catch(err => 
+      await fs.unlink(tmpRubricPath).catch(err =>
         logger.warn('Failed to clean up temp rubric file:', err)
       );
     }
@@ -203,9 +203,10 @@ router.post('/create', async (req, res) => {
  */
 router.get('/', async (req, res) => {
   try {
-    const { status, creator, minPayout, search, limit = 50, offset = 0 } = req.query;
+    // ============ ADD onChainId PARAMETER ============
+    const { status, creator, minPayout, search, onChainId, limit = 50, offset = 0 } = req.query;
 
-    logger.info('Listing jobs', { status, creator, search });
+    logger.info('Listing jobs', { status, creator, search, onChainId });
 
     const filters = {};
     if (status) filters.status = status;
@@ -213,7 +214,14 @@ router.get('/', async (req, res) => {
     if (minPayout) filters.minPayout = minPayout;
     if (search) filters.search = search;
 
-    const allJobs = await jobStorage.listJobs(filters);
+    let allJobs = await jobStorage.listJobs(filters);
+
+    // ============ ADD onChainId FILTERING ============
+    // Filter by onChainId if provided (for finding newly created blockchain jobs)
+    if (onChainId) {
+      allJobs = allJobs.filter(j => j.onChainId === parseInt(onChainId));
+    }
+    // ================================================
 
     // Apply pagination
     const limitNum = parseInt(limit, 10);
@@ -223,6 +231,7 @@ router.get('/', async (req, res) => {
     // Return job summaries (not full details)
     const jobSummaries = paginatedJobs.map(job => ({
       jobId: job.jobId,
+      onChainId: job.onChainId, // ============ ADD THIS ============
       title: job.title,
       description: job.description,
       workProductType: job.workProductType,
@@ -234,7 +243,8 @@ router.get('/', async (req, res) => {
       submissionOpenTime: job.submissionOpenTime,
       submissionCloseTime: job.submissionCloseTime,
       createdAt: job.createdAt,
-      winner: job.winner
+      winner: job.winner,
+      syncedFromBlockchain: job.syncedFromBlockchain || false // ============ ADD THIS ============
     }));
 
     res.json({
@@ -287,7 +297,7 @@ router.get('/:jobId', async (req, res) => {
 
   } catch (error) {
     logger.error('Error getting job:', error);
-    
+
     if (error.message.includes('not found')) {
       res.status(404).json({
         error: 'Job not found',
@@ -355,7 +365,7 @@ router.post('/:jobId/submit', async (req, res) => {
     uploadedFiles = req.files;
     const { jobId } = req.params;
     const { hunter, submissionNarrative } = req.body;
-    
+
     // Parse file descriptions (sent as JSON string)
     let fileDescriptions = {};
     try {
@@ -441,9 +451,9 @@ router.post('/:jobId/submit', async (req, res) => {
     let hunterCid;
     try {
       hunterCid = await ipfsClient.uploadToIPFS(hunterArchive.archivePath);
-      logger.info('Hunter submission uploaded to IPFS', { 
+      logger.info('Hunter submission uploaded to IPFS', {
         hunterCid,
-        fileCount: uploadedFiles.length 
+        fileCount: uploadedFiles.length
       });
     } finally {
       await fs.unlink(hunterArchive.archivePath).catch(err =>
@@ -480,17 +490,17 @@ router.post('/:jobId/submit', async (req, res) => {
       hunterCid,
       updatedPrimaryCid,
       fileCount: uploadedFiles.length,
-      files: uploadedFiles.map(f => ({ 
-        name: f.originalname, 
+      files: uploadedFiles.map(f => ({
+        name: f.originalname,
         size: f.size,
-        description: fileDescriptions[f.originalname] 
+        description: fileDescriptions[f.originalname]
       }))
     });
 
-    logger.info('Submission recorded successfully', { 
-      jobId, 
+    logger.info('Submission recorded successfully', {
+      jobId,
       hunter,
-      fileCount: uploadedFiles.length 
+      fileCount: uploadedFiles.length
     });
 
     // Return CIDs for testing with example-frontend
@@ -521,7 +531,7 @@ router.post('/:jobId/submit', async (req, res) => {
 
   } catch (error) {
     logger.error('Error submitting work:', error);
-    
+
     if (error.message.includes('not found')) {
       res.status(404).json({
         error: 'Job not found',
@@ -565,7 +575,7 @@ router.get('/:jobId/submissions', async (req, res) => {
 
   } catch (error) {
     logger.error('Error getting submissions:', error);
-    
+
     if (error.message.includes('not found')) {
       res.status(404).json({
         error: 'Job not found',
@@ -577,6 +587,74 @@ router.get('/:jobId/submissions', async (req, res) => {
         details: error.message
       });
     }
+  }
+});
+
+// ============================================================
+//          BLOCKCHAIN SYNC MONITORING ENDPOINTS
+// ============================================================
+
+/**
+ * GET /api/jobs/sync/status
+ * Get blockchain sync service status
+ * Returns info about sync state, last sync time, and configuration
+ */
+router.get('/sync/status', (req, res) => {
+  if (process.env.USE_BLOCKCHAIN_SYNC !== 'true') {
+    return res.json({ 
+      enabled: false,
+      message: 'Blockchain sync is disabled. Set USE_BLOCKCHAIN_SYNC=true in .env to enable.'
+    });
+  }
+  
+  try {
+    const { getSyncService } = require('../utils/syncService');
+    const syncService = getSyncService();
+    
+    res.json({
+      enabled: true,
+      status: syncService.getStatus()
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      error: 'Failed to get sync status',
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * POST /api/jobs/sync/now
+ * Trigger immediate blockchain sync
+ * Useful for testing or forcing a sync without waiting for the interval
+ * 
+ * Note: In production, add authentication to this endpoint!
+ */
+router.post('/sync/now', async (req, res) => {
+  if (process.env.USE_BLOCKCHAIN_SYNC !== 'true') {
+    return res.status(400).json({ 
+      error: 'Blockchain sync not enabled',
+      message: 'Set USE_BLOCKCHAIN_SYNC=true in .env to enable sync functionality.'
+    });
+  }
+  
+  try {
+    const { getSyncService } = require('../utils/syncService');
+    const syncService = getSyncService();
+    
+    // Trigger sync (runs asynchronously)
+    syncService.syncNow();
+    
+    res.json({
+      success: true,
+      message: 'Blockchain sync triggered',
+      status: syncService.getStatus()
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      error: 'Failed to trigger sync',
+      details: error.message 
+    });
   }
 });
 

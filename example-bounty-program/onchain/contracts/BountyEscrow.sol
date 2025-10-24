@@ -48,7 +48,9 @@ contract BountyEscrow {
     IERC20 public immutable link;
     IVerdiktaAggregator public immutable verdikta;
 
-    uint256 public cancelLockSeconds = 1 days;
+    /// @notice Period after creation during which creator cannot cancel (anti-spam)
+    /// @dev Typically set to match expected submission window (e.g., 7 days)
+    uint256 public cancelLockSeconds = 7 days;
 
     Bounty[] public bounties;
     mapping(uint256 => Submission[]) public subs;
@@ -129,11 +131,19 @@ contract BountyEscrow {
         emit BountyCreated(bountyId, msg.sender, rubricCid, requestedClass, threshold, msg.value, submissionDeadline);
     }
 
+    /// @notice Creator cancels bounty early (before deadline) if no submissions exist
+    /// @dev Can only be called after cancelLockSeconds passes AND no submissions have been made
+    /// @param bountyId The bounty to cancel
     function cancelBounty(uint256 bountyId) external {
         Bounty storage b = _mustBounty(bountyId);
         require(msg.sender == b.creator, "not creator");
         require(b.status == BountyStatus.Open, "not open");
-        require(block.timestamp >= b.createdAt + cancelLockSeconds, "locked");
+        
+        // Creator must wait for the cancel lock period (anti-spam)
+        require(block.timestamp >= b.createdAt + cancelLockSeconds, "cancel lock period not passed");
+        
+        // Creator can only cancel if NO submissions exist (prevents stealing work)
+        require(b.submissions == 0, "cannot cancel with submissions");
 
         b.status = BountyStatus.Cancelled;
         uint256 amt = b.payoutWei;
@@ -141,6 +151,36 @@ contract BountyEscrow {
 
         (bool ok,) = payable(b.creator).call{value: amt}("");
         require(ok, "eth send fail");
+        emit BountyCancelled(bountyId);
+    }
+
+    /// @notice Close an expired bounty and return funds to creator
+    /// @dev Can be called by ANYONE after submissionDeadline, but only if no active evaluations
+    /// @param bountyId The bounty to close
+    function closeExpiredBounty(uint256 bountyId) external {
+        Bounty storage b = _mustBounty(bountyId);
+        require(b.status == BountyStatus.Open, "not open");
+        
+        // Must wait until the submission deadline has passed
+        require(block.timestamp >= b.submissionDeadline, "deadline not passed");
+        
+        // Check that no submissions are actively being evaluated
+        uint256 subCount = subs[bountyId].length;
+        for (uint256 i = 0; i < subCount; i++) {
+            require(
+                subs[bountyId][i].status != SubmissionStatus.PendingVerdikta,
+                "active submission exists - finalize first"
+            );
+        }
+        
+        // All clear - return funds to creator
+        b.status = BountyStatus.Cancelled;
+        uint256 amt = b.payoutWei;
+        b.payoutWei = 0;
+        
+        (bool ok,) = payable(b.creator).call{value: amt}("");
+        require(ok, "eth send fail");
+        
         emit BountyCancelled(bountyId);
     }
 
@@ -334,8 +374,10 @@ contract BountyEscrow {
 
     // ------------- Admin knobs -------------
 
+    /// @notice Set the cancel lock period (time creator must wait before cancelling)
+    /// @param seconds_ Number of seconds for the lock period
     function setCancelLock(uint256 seconds_) external {
-        require(seconds_ >= 1 hours && seconds_ <= 7 days, "unreasonable");
+        require(seconds_ >= 1 hours && seconds_ <= 90 days, "unreasonable");
         cancelLockSeconds = seconds_;
     }
 

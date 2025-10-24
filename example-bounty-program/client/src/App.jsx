@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { initializeContractService } from './services/contractService';
+import { config } from './config';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { walletService } from './services/wallet';
 import Header from './components/Header';
@@ -9,6 +11,20 @@ import SubmitWork from './pages/SubmitWork';
 import './App.css';
 
 function App() {
+  useEffect(() => {
+    // Initialize contract service
+    if (config.bountyEscrowAddress) {
+      try {
+        initializeContractService(config.bountyEscrowAddress);
+        console.log('Contract service initialized:', config.bountyEscrowAddress);
+      } catch (error) {
+        console.error('Failed to initialize contract service:', error);
+      }
+    } else {
+      console.warn('No contract address configured');
+    }
+  }, []);
+
   const [walletState, setWalletState] = useState({
     isConnected: false,
     address: null,

@@ -42,7 +42,7 @@ function CreateBounty({ walletState }) {
     workProductType: 'Work Product',
     payoutAmount: '',
     ethPriceUSD: 0,
-    submissionWindowHours: 24,
+    submissionWindowHours: 168, // Default to 7 days (7 * 24 = 168 hours)
     deliverableRequirements: {
       format: ['markdown', 'pdf']
     }
@@ -254,52 +254,61 @@ function CreateBounty({ walletState }) {
       setError(null);
 
       // Transform rubric for backend
-      const rubricForBackend = transformRubricForBackend(rubric);
+      const backendRubric = transformRubricForBackend(rubric);
 
-      // Upload to IPFS
-      const uploadResult = await apiService.uploadRubric(rubricForBackend, selectedClassId);
+      // Upload to IPFS via backend API
+      const response = await apiService.uploadRubric(backendRubric, selectedClassId);
 
-      // Save to localStorage (keep original format with labels/instructions)
-      rubricStorage.saveRubric(walletState.address, {
-        cid: uploadResult.rubricCid,
+      if (!response.success) {
+        throw new Error(response.error || 'Failed to upload rubric');
+      }
+
+      const rubricCid = response.rubricCid;
+
+      // Save to localStorage with metadata
+      const rubricMetadata = {
+        cid: rubricCid,
         title: rubric.title,
-        threshold: threshold, // Save threshold separately
-        rubricJson: rubric
-      });
+        description: rubric.description,
+        criteria: rubric.criteria,
+        threshold: threshold,
+        classId: selectedClassId,
+        createdAt: new Date().toISOString(),
+        creator: walletState.address
+      };
 
-      alert(`✅ Rubric saved!\n\nTitle: ${rubric.title}\nCID: ${uploadResult.rubricCid}\n\nYou can now reuse this rubric for future bounties.`);
+      rubricStorage.saveRubric(rubricMetadata);
 
-      setLoadedRubricCid(uploadResult.rubricCid);
+      alert(`✅ Rubric saved successfully!\n\nIPFS CID: ${rubricCid}\n\nYou can now use this rubric to create bounties.`);
+
+      // Optional: navigate to create bounty with this rubric pre-loaded
+      setLoadedRubricCid(rubricCid);
+
     } catch (err) {
       console.error('Error saving rubric:', err);
-      setError(err.response?.data?.details || err.message);
-      alert(`❌ Failed to save rubric: ${err.response?.data?.details || err.message}`);
+      setError(err.message);
+      alert(`Failed to save rubric: ${err.message}`);
     } finally {
       setLoading(false);
     }
   };
 
   // Load rubric from library
-  const handleLoadRubric = (rubricJson, cid, savedThreshold) => {
-    setRubric(rubricJson);
-    setThreshold(savedThreshold || 80); // Load saved threshold or default
-    setLoadedRubricCid(cid);
-    setSelectedTemplate(''); // Clear template selection
+  const handleLoadRubric = (savedRubric) => {
+    setRubric({
+      title: savedRubric.title,
+      description: savedRubric.description,
+      criteria: savedRubric.criteria,
+      forbidden_content: savedRubric.forbidden_content || []
+    });
+    setThreshold(savedRubric.threshold || 80);
+    setSelectedClassId(savedRubric.classId || 128);
+    setLoadedRubricCid(savedRubric.cid);
+    setShowLibrary(false);
+    alert(`Loaded rubric: ${savedRubric.title}`);
   };
 
-  // Handle network switch
-  const handleSwitchNetwork = async () => {
-    setIsSwitchingNetwork(true);
-    try {
-      await walletService.switchNetwork();
-    } catch (err) {
-      console.error('Failed to switch network:', err);
-      alert(`Failed to switch network: ${err.message}`);
-    } finally {
-      setIsSwitchingNetwork(false);
-    }
-  };
-
+  // Submit form (create job via backend API)
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -308,27 +317,35 @@ function CreateBounty({ walletState }) {
       return;
     }
 
-    // Validate required fields
-    if (!formData.title.trim() || !formData.description.trim() || !formData.payoutAmount) {
-      alert('Please fill in all required fields');
+    // Validate form
+    if (!formData.title.trim()) {
+      alert('Please enter a job title');
       return;
     }
 
-    // Validate jury configuration
-    if (juryNodes.length === 0) {
-      alert('Please add at least one AI model to the jury');
+    if (!formData.description.trim()) {
+      alert('Please enter a job description');
       return;
     }
 
-    // Validate rubric
+    if (!formData.payoutAmount || parseFloat(formData.payoutAmount) <= 0) {
+      alert('Please enter a valid payout amount');
+      return;
+    }
+
+    if (!rubric.title.trim()) {
+      alert('Please create or load a rubric');
+      return;
+    }
+
     const validation = validateWeights();
     if (!validation.valid) {
       alert(`Invalid rubric weights: ${validation.message}`);
       return;
     }
 
-    if (!rubric.title.trim()) {
-      alert('Please enter a rubric title');
+    if (juryNodes.length === 0) {
+      alert('Please add at least one jury node');
       return;
     }
 
@@ -336,458 +353,414 @@ function CreateBounty({ walletState }) {
       setLoading(true);
       setError(null);
 
-      // Convert jury nodes to rubric format
-      const juryConfig = modelProviderService.convertJuryNodesToRubricFormat(juryNodes);
+      // Transform rubric for backend
+      const backendRubric = transformRubricForBackend(rubric);
 
-      // Prepare rubric JSON (without threshold - that's for smart contract)
-      const rubricJson = {
-        version: rubric.version,
-        title: rubric.title,
-        description: formData.description,
-        criteria: rubric.criteria,
-        forbidden_content: rubric.forbiddenContent,
-        deliverable_requirements: formData.deliverableRequirements,
-        jury: juryConfig,
-        iterations: iterations
-      };
-
-      // Transform for backend (maps instructions → description)
-      const rubricForBackend = transformRubricForBackend(rubricJson);
-
-      // Calculate USD value
-      const bountyAmountUSD = formData.payoutAmount && formData.ethPriceUSD
-        ? (parseFloat(formData.payoutAmount) * formData.ethPriceUSD).toFixed(2)
-        : 0;
-
-      // Create job via API (uploads rubric, creates primary CID, stores in local DB)
-      const jobData = {
+      // Create job via API
+      const response = await apiService.createJob({
         title: formData.title,
         description: formData.description,
-        workProductType: formData.workProductType || 'Work Product',
+        workProductType: formData.workProductType,
         creator: walletState.address,
         bountyAmount: parseFloat(formData.payoutAmount),
-        bountyAmountUSD: parseFloat(bountyAmountUSD),
+        bountyAmountUSD: parseFloat(formData.payoutAmount) * formData.ethPriceUSD,
         threshold: threshold,
-        rubricJson: rubricForBackend,
+        rubricJson: backendRubric,
         classId: selectedClassId,
-        juryNodes: juryNodes,
-        iterations: iterations,
-        submissionWindowHours: formData.submissionWindowHours || 24
-      };
+        juryNodes: juryNodes.map(node => ({
+          provider: node.provider,
+          model: node.model,
+          runs: node.runs,
+          weight: node.weight
+        })),
+        iterations,
+        submissionWindowHours: parseInt(formData.submissionWindowHours)
+      });
 
-      const result = await apiService.createJob(jobData);
+      if (!response.success) {
+        throw new Error(response.error || 'Failed to create job');
+      }
 
-      console.log('Job created successfully:', result.job);
+      alert(`✅ Job created successfully!\n\nJob ID: ${response.job.jobId}\nRubric CID: ${response.job.rubricCid}\nPrimary CID: ${response.job.primaryCid}`);
 
-      alert(`✅ Job Created Successfully!\n\nJob ID: ${result.job.jobId}\nTitle: ${result.job.title}\nBounty: ${result.job.bountyAmount} ETH (~$${result.job.bountyAmountUSD})\nThreshold: ${result.job.threshold}%\nRubric CID: ${result.job.rubricCid}\nPrimary CID: ${result.job.primaryCid}\n\nHunters can now submit work for this job!`);
-
-      // Navigate to home to see the new job
-      navigate('/');
+      // Navigate to job details
+      navigate(`/bounty/${response.job.jobId}`);
 
     } catch (err) {
       console.error('Error creating job:', err);
-      setError(err.response?.data?.details || err.message);
-      alert(`❌ Failed to create job: ${err.response?.data?.details || err.message}`);
+      setError(err.message);
+      alert(`Failed to create job: ${err.message}`);
     } finally {
       setLoading(false);
     }
   };
 
-  // Wallet not connected check
-  if (!walletState.isConnected) {
-    return (
-      <div className="create-bounty">
-        <div className="alert alert-warning">
-          <h2>Wallet Not Connected</h2>
-          <p>Please connect your wallet to create a bounty.</p>
-        </div>
-      </div>
-    );
-  }
-
-  // Wrong network check
-  if (!walletState.isCorrectNetwork) {
-    return (
-      <div className="create-bounty">
-        <div className="alert alert-warning">
-          <h2>⚠️ Wrong Network</h2>
-          <p>
-            You're connected to <strong>{walletService.getNetworkName(walletState.chainId)}</strong> (Chain ID: {walletState.chainId})
-          </p>
-          <p>
-            Please switch to <strong>{walletState.expectedNetwork}</strong> (Chain ID: {walletState.expectedChainId}) to create bounties.
-          </p>
-          <button 
-            onClick={handleSwitchNetwork} 
-            className="btn btn-primary"
-            disabled={isSwitchingNetwork}
-          >
-            {isSwitchingNetwork ? 'Switching Network...' : `Switch to ${walletState.expectedNetwork}`}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="create-bounty">
-      <div className="create-header">
+      <div className="page-header">
         <h1>Create New Bounty</h1>
-        <p>Define your requirements and lock ETH in escrow</p>
+        <p>Define evaluation criteria and lock ETH in escrow</p>
       </div>
 
       {error && (
         <div className="alert alert-error">
-          <p>❌ {error}</p>
+          <p>{error}</p>
+          <button onClick={() => setError(null)}>Dismiss</button>
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="bounty-form">
-        <div className="form-section">
-          <h2>Bounty Details</h2>
-
-          <div className="form-group">
-            <label htmlFor="title">Title *</label>
-            <input
-              id="title"
-              type="text"
-              value={formData.title}
-              onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-              placeholder="e.g., Technical Blog Post on Solidity"
-              required
-            />
-          </div>
-
-          <div className="form-group">
-            <label htmlFor="description">Description *</label>
-            <textarea
-              id="description"
-              value={formData.description}
-              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              placeholder="Describe what you want in detail..."
-              rows={4}
-              required
-            />
-          </div>
-
-          <div className="form-group">
-            <label htmlFor="workProductType">Work Product Type *</label>
-            <select
-              id="workProductType"
-              value={formData.workProductType}
-              onChange={(e) => setFormData({ ...formData, workProductType: e.target.value })}
-            >
-              <option value="Work Product">General Work Product</option>
-              <option value="Blog Post">Blog Post</option>
-              <option value="Technical Writing">Technical Writing</option>
-              <option value="Code">Source Code</option>
-              <option value="Design">Graphic Design</option>
-              <option value="Video">Video</option>
-              <option value="Data Analysis">Data Analysis</option>
-              <option value="Research">Research</option>
-            </select>
-            <small>Type of work that hunters will submit</small>
-          </div>
-
-          <div className="form-group">
-            <label htmlFor="payoutAmount">Payout Amount (ETH) *</label>
-            <input
-              id="payoutAmount"
-              type="number"
-              step="0.001"
-              min="0.001"
-              value={formData.payoutAmount}
-              onChange={(e) => setFormData({ ...formData, payoutAmount: e.target.value })}
-              placeholder="0.1"
-              required
-            />
-            <small>
-              Minimum: 0.001 ETH
-              {formData.payoutAmount && formData.ethPriceUSD > 0 && (
-                <span className="usd-estimate">
-                  {' '}≈ ${(parseFloat(formData.payoutAmount) * formData.ethPriceUSD).toFixed(2)} USD
-                </span>
-              )}
-            </small>
-          </div>
-
-          <div className="form-group">
-            <label htmlFor="submissionWindow">Submission Window (hours) *</label>
-            <input
-              id="submissionWindow"
-              type="number"
-              min="1"
-              max="720"
-              value={formData.submissionWindowHours}
-              onChange={(e) => setFormData({ ...formData, submissionWindowHours: parseInt(e.target.value) || 24 })}
-              placeholder="24"
-              required
-            />
-            <small>
-              How long hunters have to submit work (default: 24 hours, max: 30 days)
-            </small>
-          </div>
+      <div className="steps-indicator">
+        <div className={`step ${step === 1 ? 'active' : step > 1 ? 'completed' : ''}`}>
+          <span className="step-number">1</span>
+          <span className="step-label">Basic Info</span>
         </div>
+        <div className={`step ${step === 2 ? 'active' : step > 2 ? 'completed' : ''}`}>
+          <span className="step-number">2</span>
+          <span className="step-label">Rubric</span>
+        </div>
+        <div className={`step ${step === 3 ? 'active' : ''}`}>
+          <span className="step-number">3</span>
+          <span className="step-label">AI Jury</span>
+        </div>
+      </div>
 
-        <div className="form-section">
-          <h2>Evaluation Criteria</h2>
-          <p className="section-description">
-            Choose a template or create custom criteria. AI evaluators will use this rubric to judge submissions.
-          </p>
+      <form onSubmit={handleSubmit}>
+        {/* Step 1: Basic Information */}
+        {step === 1 && (
+          <div className="form-step">
+            <h2>Basic Information</h2>
 
-          {/* Template Selector */}
-          <div className="template-selector-group">
             <div className="form-group">
-              <label htmlFor="template">Choose Template</label>
-              <select
-                id="template"
-                value={selectedTemplate}
-                onChange={handleTemplateSelect}
-              >
-                {getTemplateOptions().map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
+              <label htmlFor="title">
+                Job Title <span className="required">*</span>
+              </label>
+              <input
+                type="text"
+                id="title"
+                value={formData.title}
+                onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                placeholder="e.g., Write a technical blog post about React Hooks"
+                required
+              />
             </div>
 
-            <button
-              type="button"
-              className="btn-load-library"
-              onClick={() => setShowLibrary(true)}
-            >
-              📁 Load My Rubrics
-            </button>
-          </div>
-
-          {/* Rubric Title */}
-          <div className="form-group">
-            <label htmlFor="rubricTitle">Rubric Title *</label>
-            <input
-              id="rubricTitle"
-              type="text"
-              value={rubric.title}
-              onChange={(e) => updateRubricField('title', e.target.value)}
-              placeholder="e.g., Blog Post for Verdikta.org"
-              required
-            />
-            {loadedRubricCid && (
-              <small className="rubric-loaded-indicator">
-                ✅ Loaded from IPFS: {loadedRubricCid.slice(0, 8)}...
-              </small>
-            )}
-          </div>
-
-          {/* Threshold */}
-          <div className="form-group">
-            <label htmlFor="threshold">Passing Threshold *</label>
-            <div className="threshold-control">
-              <input
-                id="threshold"
-                type="range"
-                min="0"
-                max="100"
-                value={threshold}
-                onChange={(e) => setThreshold(parseInt(e.target.value))}
+            <div className="form-group">
+              <label htmlFor="description">
+                Job Description <span className="required">*</span>
+              </label>
+              <textarea
+                id="description"
+                value={formData.description}
+                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                placeholder="Describe what you're looking for in detail..."
+                rows={6}
+                required
               />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="workProductType">Work Product Type</label>
+              <input
+                type="text"
+                id="workProductType"
+                value={formData.workProductType}
+                onChange={(e) => setFormData({ ...formData, workProductType: e.target.value })}
+                placeholder="e.g., Blog Post, Code, Design"
+              />
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label htmlFor="payoutAmount">
+                  Payout Amount (ETH) <span className="required">*</span>
+                </label>
+                <input
+                  type="number"
+                  id="payoutAmount"
+                  value={formData.payoutAmount}
+                  onChange={(e) => setFormData({ ...formData, payoutAmount: e.target.value })}
+                  placeholder="0.1"
+                  step="0.001"
+                  min="0"
+                  required
+                />
+                {formData.payoutAmount && formData.ethPriceUSD > 0 && (
+                  <small className="helper-text">
+                    ≈ ${(parseFloat(formData.payoutAmount) * formData.ethPriceUSD).toFixed(2)} USD
+                  </small>
+                )}
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="submissionWindow">
+                  Submission Window (hours) <span className="required">*</span>
+                </label>
+                <input
+                  type="number"
+                  id="submissionWindow"
+                  value={formData.submissionWindowHours}
+                  onChange={(e) => setFormData({ ...formData, submissionWindowHours: e.target.value })}
+                  placeholder="168"
+                  min="1"
+                  required
+                />
+                <small className="helper-text">
+                  {formData.submissionWindowHours && (
+                    <>
+                      {Math.floor(formData.submissionWindowHours / 24)} days, {formData.submissionWindowHours % 24} hours
+                      {' '} (Default: 7 days / 168 hours)
+                    </>
+                  )}
+                </small>
+              </div>
+            </div>
+
+            <div className="form-actions">
+              <button
+                type="button"
+                onClick={() => setStep(2)}
+                className="btn btn-primary"
+              >
+                Next: Create Rubric →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 2: Rubric Definition */}
+        {step === 2 && (
+          <div className="form-step">
+            <h2>Evaluation Rubric</h2>
+
+            <div className="rubric-actions">
+              <button
+                type="button"
+                onClick={() => setShowLibrary(true)}
+                className="btn btn-secondary"
+              >
+                📚 Load from Library
+              </button>
+
+              <div className="form-group inline">
+                <label htmlFor="template">Or start from template:</label>
+                <select
+                  id="template"
+                  value={selectedTemplate}
+                  onChange={handleTemplateSelect}
+                >
+                  <option value="">Blank Rubric</option>
+                  {getTemplateOptions().map(option => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="rubricTitle">
+                Rubric Title <span className="required">*</span>
+              </label>
+              <input
+                type="text"
+                id="rubricTitle"
+                value={rubric.title}
+                onChange={(e) => updateRubricField('title', e.target.value)}
+                placeholder="e.g., Technical Blog Post Quality Rubric"
+                required
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="rubricDescription">
+                Rubric Description
+              </label>
+              <textarea
+                id="rubricDescription"
+                value={rubric.description}
+                onChange={(e) => updateRubricField('description', e.target.value)}
+                placeholder="Describe what this rubric evaluates..."
+                rows={3}
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="threshold">
+                Acceptance Threshold (%) <span className="required">*</span>
+              </label>
               <input
                 type="number"
-                min="0"
-                max="100"
+                id="threshold"
                 value={threshold}
                 onChange={(e) => setThreshold(parseInt(e.target.value))}
-                className="threshold-number-input"
+                min="0"
+                max="100"
+                required
               />
-              <span className="threshold-percent">%</span>
-            </div>
-            <small>Submissions must score above this to win the bounty</small>
-          </div>
-
-          {/* Criteria Editor */}
-          <div className="criteria-editor-section">
-            <div className="criteria-header">
-              <h3>Evaluation Criteria</h3>
-              {(() => {
-                const validation = validateWeights();
-                return (
-                  <div className={`weight-validation ${validation.valid ? 'valid' : 'invalid'}`}>
-                    {validation.valid ? (
-                      <span>✓ Weights: {validation.totalWeight.toFixed(2)}</span>
-                    ) : (
-                      <span>⚠️ {validation.message}</span>
-                    )}
-                  </div>
-                );
-              })()}
+              <small className="helper-text">
+                Minimum score required to pass and claim bounty (0-100)
+              </small>
             </div>
 
-            <div className="criteria-list-editable">
+            <div className="criteria-section">
+              <div className="section-header">
+                <h3>Evaluation Criteria</h3>
+                <button
+                  type="button"
+                  onClick={() => addCriterion(false)}
+                  className="btn btn-sm btn-secondary"
+                >
+                  + Add Weighted Criterion
+                </button>
+                <button
+                  type="button"
+                  onClick={() => addCriterion(true)}
+                  className="btn btn-sm btn-secondary"
+                >
+                  + Add Must-Pass Criterion
+                </button>
+              </div>
+
               {rubric.criteria.map((criterion, index) => (
                 <CriterionEditor
                   key={criterion.id}
                   criterion={criterion}
-                  onChange={(updated) => updateCriterion(index, updated)}
-                  onRemove={() => removeCriterion(index)}
-                  canRemove={rubric.criteria.length > 1}
                   index={index}
+                  onUpdate={(updated) => updateCriterion(index, updated)}
+                  onRemove={() => removeCriterion(index)}
                 />
               ))}
+
+              {rubric.criteria.length === 0 && (
+                <div className="empty-state">
+                  <p>No criteria yet. Add at least one criterion to evaluate submissions.</p>
+                </div>
+              )}
+
+              <div className="weight-validation">
+                {validateWeights().valid ? (
+                  <span className="valid">✓ Weights sum to 1.00</span>
+                ) : (
+                  <span className="invalid">⚠ {validateWeights().message}</span>
+                )}
+              </div>
             </div>
 
-            <div className="add-criterion-buttons">
+            <div className="form-actions">
               <button
                 type="button"
-                className="btn-add-criterion"
-                onClick={() => addCriterion(false)}
+                onClick={() => setStep(1)}
+                className="btn btn-secondary"
               >
-                + Add Scored Criterion
+                ← Back
               </button>
+
               <button
                 type="button"
-                className="btn-add-criterion btn-add-must"
-                onClick={() => addCriterion(true)}
+                onClick={handleSaveRubric}
+                className="btn btn-secondary"
+                disabled={loading}
               >
-                + Add Must-Pass Criterion
+                💾 Save Rubric to Library
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setStep(3)}
+                className="btn btn-primary"
+                disabled={!validateWeights().valid || rubric.criteria.length === 0}
+              >
+                Next: Configure AI Jury →
               </button>
             </div>
           </div>
+        )}
 
-          {/* Save Rubric Button */}
-          <div className="save-rubric-section">
-            <button
-              type="button"
-              className="btn-save-rubric"
-              onClick={handleSaveRubric}
-              disabled={loading}
-            >
-              💾 Save Rubric for Later
-            </button>
-            <small>Save this rubric to reuse it for future bounties</small>
-          </div>
-        </div>
+        {/* Step 3: AI Jury Configuration */}
+        {step === 3 && (
+          <div className="form-step">
+            <h2>AI Jury Configuration</h2>
 
-        <div className="form-section">
-          <h2>AI Jury Configuration</h2>
-          <p className="section-description">
-            Select the AI class and configure which models will evaluate submissions
-          </p>
-
-          {/* Class Selector */}
-          <ClassSelector
-            selectedClassId={selectedClassId}
-            onClassSelect={handleClassSelect}
-            isLoading={isLoadingModels}
-            error={modelError}
-          />
-
-          {/* Iterations Configuration */}
-          <div className="form-group iterations-group">
-            <label htmlFor="iterations">
-              Number of Iterations
-              <span className="tooltip-icon" title="The jury process can be repeated multiple times for more reliable results">ⓘ</span>
-            </label>
-            <div className="numeric-input">
-              <button type="button" onClick={() => setIterations(prev => Math.max(1, prev - 1))}>-</button>
-              <input
-                type="number"
-                id="iterations"
-                value={iterations}
-                onChange={(e) => setIterations(Math.max(1, parseInt(e.target.value) || 1))}
-                min="1"
+            <div className="form-group">
+              <label>Verdikta Class</label>
+              <ClassSelector
+                selectedClassId={selectedClassId}
+                onSelectClass={handleClassSelect}
               />
-              <button type="button" onClick={() => setIterations(prev => prev + 1)}>+</button>
             </div>
-          </div>
 
-          {/* Jury Table */}
-          <div className="jury-configuration">
-            <h3>Jury Composition</h3>
+            {modelError && (
+              <div className="alert alert-error">
+                <p>{modelError}</p>
+              </div>
+            )}
 
-            <div className="jury-table">
-              <div className="jury-table-header">
-                <div>Provider</div>
-                <div>Model</div>
-                <div>Runs</div>
-                <div>Weight</div>
-                <div></div>
+            <div className="jury-section">
+              <div className="section-header">
+                <h3>Jury Nodes</h3>
+                <button
+                  type="button"
+                  onClick={addJuryNode}
+                  className="btn btn-sm btn-secondary"
+                  disabled={isLoadingModels || Object.keys(availableModels).length === 0}
+                >
+                  + Add Jury Node
+                </button>
               </div>
 
               {juryNodes.map((node) => (
                 <div key={node.id} className="jury-node">
-                  <div>
-                    <select
-                      value={node.provider}
-                      onChange={(e) => updateJuryNode(node.id, 'provider', e.target.value)}
-                      disabled={Object.keys(availableModels).length === 0}
-                    >
-                      {Object.keys(availableModels).length === 0 ? (
-                        <option value="">No providers available</option>
-                      ) : (
-                        Object.keys(availableModels).map((provider) => (
-                          <option key={provider} value={provider}>
-                            {provider}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </div>
-                  <div>
-                    <select
-                      value={node.model}
-                      onChange={(e) => updateJuryNode(node.id, 'model', e.target.value)}
-                      disabled={!availableModels[node.provider] || availableModels[node.provider].length === 0}
-                    >
-                      {!availableModels[node.provider] || availableModels[node.provider].length === 0 ? (
-                        <option value="">No models available</option>
-                      ) : (
-                        availableModels[node.provider].map((model) => (
-                          <option key={model} value={model}>
-                            {model}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </div>
-                  <div>
-                    <input
-                      type="number"
-                      value={node.runs}
-                      onChange={(e) =>
-                        updateJuryNode(
-                          node.id,
-                          'runs',
-                          Math.max(1, parseInt(e.target.value) || 1)
-                        )
-                      }
-                      min="1"
-                      className="runs-input"
-                    />
-                  </div>
-                  <div>
-                    <input
-                      type="number"
-                      value={node.weight}
-                      onChange={(e) =>
-                        updateJuryNode(
-                          node.id,
-                          'weight',
-                          Math.min(1, Math.max(0, parseFloat(e.target.value) || 0))
-                        )
-                      }
-                      step="0.1"
-                      min="0"
-                      max="1"
-                      className="weight-input"
-                    />
-                  </div>
-                  <div>
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label>Provider</label>
+                      <select
+                        value={node.provider}
+                        onChange={(e) => updateJuryNode(node.id, 'provider', e.target.value)}
+                      >
+                        {Object.keys(availableModels).map(provider => (
+                          <option key={provider} value={provider}>{provider}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="form-group">
+                      <label>Model</label>
+                      <select
+                        value={node.model}
+                        onChange={(e) => updateJuryNode(node.id, 'model', e.target.value)}
+                      >
+                        {availableModels[node.provider]?.map(model => (
+                          <option key={model} value={model}>{model}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="form-group small">
+                      <label>Runs</label>
+                      <input
+                        type="number"
+                        value={node.runs}
+                        onChange={(e) => updateJuryNode(node.id, 'runs', parseInt(e.target.value))}
+                        min="1"
+                      />
+                    </div>
+
+                    <div className="form-group small">
+                      <label>Weight</label>
+                      <input
+                        type="number"
+                        value={node.weight}
+                        onChange={(e) => updateJuryNode(node.id, 'weight', parseFloat(e.target.value))}
+                        min="0"
+                        step="0.1"
+                      />
+                    </div>
+
                     <button
                       type="button"
-                      className="remove-node"
                       onClick={() => removeJuryNode(node.id)}
-                      disabled={juryNodes.length === 1}
-                      title="Remove this model"
+                      className="btn btn-sm btn-danger"
                     >
                       ×
                     </button>
@@ -795,40 +768,55 @@ function CreateBounty({ walletState }) {
                 </div>
               ))}
 
+              {juryNodes.length === 0 && (
+                <div className="empty-state">
+                  <p>No jury nodes configured. Add at least one to evaluate submissions.</p>
+                </div>
+              )}
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="iterations">Evaluation Iterations</label>
+              <input
+                type="number"
+                id="iterations"
+                value={iterations}
+                onChange={(e) => setIterations(parseInt(e.target.value))}
+                min="1"
+                max="10"
+              />
+              <small className="helper-text">
+                Number of times to run the entire jury evaluation
+              </small>
+            </div>
+
+            <div className="form-actions">
               <button
                 type="button"
-                className="add-node-btn"
-                onClick={addJuryNode}
-                disabled={Object.keys(availableModels).length === 0}
-                title={Object.keys(availableModels).length === 0 ? 'No models available for selected class' : 'Add another AI model'}
+                onClick={() => setStep(2)}
+                className="btn btn-secondary"
               >
-                {Object.keys(availableModels).length === 0 ? 'No Models Available' : '+ Add Another AI Model'}
+                ← Back
+              </button>
+
+              <button
+                type="submit"
+                className="btn btn-primary btn-lg"
+                disabled={loading || juryNodes.length === 0}
+              >
+                {loading ? 'Creating...' : '🚀 Create Bounty'}
               </button>
             </div>
-
-            <div className="jury-summary">
-              <p><strong>Jury Summary:</strong></p>
-              <ul>
-                <li>{juryNodes.length} model{juryNodes.length !== 1 ? 's' : ''} configured</li>
-                <li>{iterations} iteration{iterations !== 1 ? 's' : ''}</li>
-                <li>Total evaluations: {juryNodes.reduce((sum, node) => sum + node.runs, 0) * iterations}</li>
-              </ul>
-            </div>
           </div>
-        </div>
+        )}
 
-        <div className="form-actions">
-          <button
-            type="submit"
-            disabled={loading}
-            className="btn btn-primary btn-lg"
-          >
-            {loading ? 'Creating Bounty...' : 'Create Bounty'}
-          </button>
+        {/* Cancel button (always visible) */}
+        <div className="form-footer">
           <button
             type="button"
             onClick={() => navigate('/')}
-            className="btn btn-secondary"
+            className="btn btn-text"
+            disabled={loading}
           >
             Cancel
           </button>
@@ -847,11 +835,25 @@ function CreateBounty({ walletState }) {
         <ol>
           <li>Define your requirements (rubric)</li>
           <li>Set payout amount in ETH</li>
+          <li>Set submission window (default: 7 days / 168 hours)</li>
           <li>Rubric is uploaded to IPFS (immutable)</li>
           <li>Smart contract locks your ETH in escrow</li>
-          <li>24-hour cancellation lock begins</li>
-          <li>Hunters can now submit work</li>
+          <li>Submission window begins - hunters can submit work</li>
+          <li>After submission window, anyone can close and return funds if no valid submissions</li>
         </ol>
+        
+        <div className="info-box" style={{ marginTop: '1.5rem', padding: '1rem', border: '1px solid #e0e0e0', borderRadius: '8px', backgroundColor: '#f9f9f9' }}>
+          <h4 style={{ marginTop: 0, marginBottom: '0.75rem', color: '#333' }}>⏰ Cancellation Policy</h4>
+          <p style={{ marginBottom: '0.5rem' }}>
+            <strong>Creator Early Cancel:</strong> You can cancel your bounty after the submission window passes IF no submissions have been made. This returns your funds.
+          </p>
+          <p style={{ marginBottom: '0.5rem' }}>
+            <strong>Public Expired Close:</strong> After the submission deadline, anyone can close an expired bounty (with no active evaluations) to return funds to you.
+          </p>
+          <p style={{ marginBottom: 0 }}>
+            <strong>Note:</strong> Once submissions exist, the bounty cannot be cancelled until evaluations are complete.
+          </p>
+        </div>
       </div>
 
       {/* Rubric Library Modal */}

@@ -15,6 +15,8 @@ import { ethers } from 'ethers';
 
 // BountyEscrow ABI - only the functions we need to call
 const BOUNTY_ESCROW_ABI = [
+  "event BountyCreated(uint256 indexed bountyId, address indexed creator, string rubricCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
+
   "function createBounty(string rubricCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline) payable returns (uint256)",
   "function prepareSubmission(uint256 bountyId, string deliverableCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
@@ -75,80 +77,121 @@ class ContractService {
    *
    * @param {Object} params
    * @param {string} params.rubricCid - IPFS CID of the rubric
-   * @param {number} params.classId - Verdikta class ID
-   * @param {number} params.threshold - Passing threshold (0-100)
-   * @param {number} params.bountyAmountEth - Bounty amount in ETH
+   * @param {number|bigint} params.classId - Verdikta class ID (uint64)
+   * @param {number|bigint} params.threshold - Passing threshold (0-100, uint8)
+   * @param {number|string} params.bountyAmountEth - Bounty amount in ETH
    * @param {number} params.submissionWindowHours - Hours until deadline
    * @returns {Promise<Object>} Transaction result with bountyId
    */
+
   async createBounty({ rubricCid, classId, threshold, bountyAmountEth, submissionWindowHours }) {
-    if (!this.contract) {
-      throw new Error('Contract not initialized. Call connect() first.');
-    }
+    if (!this.contract) throw new Error('Contract not initialized. Call connect() first.');
+
+    // Quick UI validations
+    if (!rubricCid || typeof rubricCid !== 'string') throw new Error('Rubric CID is empty');
+    const winHrs = Number(submissionWindowHours);
+    if (!Number.isFinite(winHrs) || winHrs <= 0) throw new Error('Submission window (hours) must be > 0');
+    const thrNum = Number(threshold);
+    if (!Number.isFinite(thrNum) || thrNum < 0 || thrNum > 100) throw new Error('Threshold must be 0..100');
+    const ethStr = String(bountyAmountEth);
+    if (isNaN(Number(ethStr)) || Number(ethStr) <= 0) throw new Error('Payout amount (ETH) must be > 0');
 
     try {
-      console.log('Creating bounty on-chain...', {
+      // Encode exact solidity widths
+      const now = Math.floor(Date.now() / 1000);
+      const submissionDeadline = BigInt(now + Math.trunc(winHrs * 3600)); // uint64
+      const classId64  = BigInt(classId);                                 // uint64
+      const thresh8    = BigInt(thrNum);                                   // uint8
+      const valueWei   = ethers.parseEther(ethStr);
+
+      // Optional clamps
+      const mask64 = (1n << 64n) - 1n;
+      const mask8  = (1n << 8n)  - 1n;
+      if ((classId64 & ~mask64) !== 0n) throw new Error('classId exceeds uint64');
+      if ((thresh8   & ~mask8)  !== 0n) throw new Error('threshold exceeds uint8');
+
+      console.log('🔍 createBounty params', {
         rubricCid,
-        classId,
-        threshold,
-        bountyAmountEth,
-        submissionWindowHours
+        rubricCidLength: rubricCid.length,
+        classId64: classId64.toString(),
+        threshold8: thresh8.toString(),
+        submissionDeadline: submissionDeadline.toString(),
+        deadlineISO: new Date(Number(submissionDeadline) * 1000).toISOString(),
+        valueWei: valueWei.toString(),
+        contract: this.contractAddress
       });
 
-      // Calculate deadline
-      const now = Math.floor(Date.now() / 1000);
-      const submissionDeadline = now + (submissionWindowHours * 3600);
+      // 1) Dry-run (surfaces real revert reasons)
+      try {
+        await this.contract.createBounty.staticCall(
+          rubricCid,
+          classId64,
+          thresh8,
+          submissionDeadline,
+          { value: valueWei }
+        );
+      } catch (e) {
+        const msg = (e?.shortMessage || e?.message || '').toLowerCase();
+        if (msg.includes('no eth'))           throw new Error('Bounty requires ETH value (msg.value > 0)');
+        if (msg.includes('empty rubric'))     throw new Error('Rubric CID is empty');
+        if (msg.includes('bad threshold'))    throw new Error('Threshold must be 0..100');
+        if (msg.includes('deadline in past')) throw new Error('Deadline must be in the future');
+        throw e;
+      }
 
-      // Convert ETH to Wei
-      const bountyAmountWei = ethers.parseEther(bountyAmountEth.toString());
-
-      // Call contract (MetaMask will prompt user to sign)
+      // 2) Send the tx
       const tx = await this.contract.createBounty(
         rubricCid,
-        classId,
-        threshold,
+        classId64,
+        thresh8,
         submissionDeadline,
-        { value: bountyAmountWei }
+        { value: valueWei }
       );
-
       console.log('📤 Transaction sent:', tx.hash);
 
-      // Wait for confirmation
       const receipt = await tx.wait();
       console.log('✅ Transaction confirmed:', receipt.hash);
 
-      // Extract bountyId from BountyCreated event
-      const event = receipt.logs
-        .map(log => {
-          try {
-            return this.contract.interface.parseLog(log);
-          } catch {
-            return null;
+      // 3) Parse bountyId from the event
+      let bountyId = null;
+      for (const log of receipt.logs ?? []) {
+        try {
+          const parsed = this.contract.interface.parseLog(log);
+          if (parsed?.name === 'BountyCreated') {
+            bountyId = Number(parsed.args.bountyId);
+            break;
           }
-        })
-        .find(log => log && log.name === 'BountyCreated');
-
-      const bountyId = event ? Number(event.args.bountyId) : null;
+        } catch {}
+      }
 
       return {
         success: true,
         txHash: receipt.hash,
         blockNumber: receipt.blockNumber,
         bountyId,
-        gasUsed: receipt.gasUsed.toString()
+        gasUsed: receipt.gasUsed?.toString?.() ?? null
       };
 
     } catch (error) {
       console.error('Error creating bounty:', error);
+      if (error.code === 'ACTION_REJECTED') throw new Error('Transaction rejected by user');
 
-      // Handle user rejection
-      if (error.code === 'ACTION_REJECTED') {
-        throw new Error('Transaction rejected by user');
+      const msg = (error?.shortMessage || error?.message || '').toLowerCase();
+      if (msg.includes('missing revert data') || msg.includes('call exception')) {
+        throw new Error(
+          'Transaction simulation failed. Possible causes: ' +
+          '1) wrong network/contract address, ' +
+          '2) invalid inputs (empty CID / deadline in past / threshold out of range), or ' +
+          '3) zero ETH value. Check the debug log above.'
+        );
       }
-
       throw error;
     }
   }
+
+
+
+
 
   /**
    * Creator cancels bounty early (before deadline) if no submissions exist
@@ -308,6 +351,32 @@ class ContractService {
     this.userAddress = null;
   }
 }
+
+// --- helper: derive bountyId from a known tx hash by parsing the event ---
+export async function deriveBountyIdFromTx(txHash, escrowAddress) {
+  if (!window.ethereum) throw new Error('Wallet not available');
+  const provider = new ethers.BrowserProvider(window.ethereum);
+
+  const iface = new ethers.Interface([
+    "event BountyCreated(uint256 indexed bountyId, address indexed creator, string rubricCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)"
+  ]);
+
+  const receipt = await provider.getTransactionReceipt(txHash);
+  if (!receipt?.logs?.length) throw new Error('No logs in receipt');
+
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== escrowAddress.toLowerCase()) continue;
+    try {
+      const parsed = iface.parseLog(log);
+      if (parsed?.name === "BountyCreated") {
+        // bigint -> number (safe for your small ids)
+        return Number(parsed.args.bountyId);
+      }
+    } catch { /* non-matching log */ }
+  }
+  throw new Error('BountyCreated not found in tx logs');
+}
+
 
 // Export singleton instance
 let contractService = null;

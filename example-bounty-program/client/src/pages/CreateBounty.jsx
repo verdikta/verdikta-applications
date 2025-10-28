@@ -308,98 +308,139 @@ function CreateBounty({ walletState }) {
     alert(`Loaded rubric: ${savedRubric.title}`);
   };
 
-  // Submit form (create job via backend API)
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+// Submit form (create bounty on blockchain + backend)
+const handleSubmit = async (e) => {
+  e.preventDefault();
 
-    if (!walletState.isConnected) {
-      alert('Please connect your wallet first');
-      return;
+  if (!walletState.isConnected) {
+    alert('Please connect your wallet first');
+    return;
+  }
+
+  // Validate form
+  if (!formData.title.trim()) {
+    alert('Please enter a job title');
+    return;
+  }
+
+  if (!formData.description.trim()) {
+    alert('Please enter a job description');
+    return;
+  }
+
+  if (!formData.payoutAmount || parseFloat(formData.payoutAmount) <= 0) {
+    alert('Please enter a valid payout amount');
+    return;
+  }
+
+  if (!rubric.title.trim()) {
+    alert('Please create or load a rubric');
+    return;
+  }
+
+  const validation = validateWeights();
+  if (!validation.valid) {
+    alert(`Invalid rubric weights: ${validation.message}`);
+    return;
+  }
+
+  if (juryNodes.length === 0) {
+    alert('Please add at least one jury node');
+    return;
+  }
+
+  try {
+    setLoading(true);
+    setError(null);
+
+    // Transform rubric for backend
+    const backendRubric = transformRubricForBackend(rubric);
+
+    // STEP 1: Create job in backend (to get rubricCid for blockchain)
+    console.log('📤 Step 1: Creating job in backend...');
+    const apiResponse = await apiService.createJob({
+      title: formData.title,
+      description: formData.description,
+      workProductType: formData.workProductType,
+      creator: walletState.address,
+      bountyAmount: parseFloat(formData.payoutAmount),
+      bountyAmountUSD: parseFloat(formData.payoutAmount) * formData.ethPriceUSD,
+      threshold: threshold,
+      rubricJson: backendRubric,
+      classId: selectedClassId,
+      juryNodes: juryNodes.map(node => ({
+        provider: node.provider,
+        model: node.model,
+        runs: node.runs,
+        weight: node.weight
+      })),
+      iterations,
+      submissionWindowHours: parseInt(formData.submissionWindowHours)
+    });
+
+    if (!apiResponse.success) {
+      throw new Error(apiResponse.error || 'Failed to create job in backend');
     }
 
-    // Validate form
-    if (!formData.title.trim()) {
-      alert('Please enter a job title');
-      return;
+    const { job } = apiResponse;
+    console.log('✅ Backend job created:', { jobId: job.jobId, rubricCid: job.rubricCid });
+
+    // STEP 2: Create bounty on blockchain
+    console.log('🔗 Step 2: Creating bounty on blockchain...');
+    const { getContractService } = await import('../services/contractService');
+    const contractService = getContractService();
+    
+    if (!contractService.isConnected()) {
+      await contractService.connect();
     }
 
-    if (!formData.description.trim()) {
-      alert('Please enter a job description');
-      return;
+    const contractResult = await contractService.createBounty({
+      rubricCid: job.rubricCid,
+      classId: selectedClassId,
+      threshold: threshold,
+      bountyAmountEth: parseFloat(formData.payoutAmount),
+      submissionWindowHours: parseInt(formData.submissionWindowHours)
+    });
+
+    console.log('✅ Blockchain bounty created:', contractResult);
+
+    if (!contractResult.success || contractResult.bountyId === null) {
+      throw new Error('Failed to get bountyId from blockchain transaction');
     }
 
-    if (!formData.payoutAmount || parseFloat(formData.payoutAmount) <= 0) {
-      alert('Please enter a valid payout amount');
-      return;
-    }
+    // STEP 3: Update backend with bountyId
+    console.log('🔄 Step 3: Updating backend with bountyId...');
+    await apiService.updateJobBountyId(job.jobId, {
+      bountyId: contractResult.bountyId,
+      txHash: contractResult.txHash,
+      blockNumber: contractResult.blockNumber
+    });
 
-    if (!rubric.title.trim()) {
-      alert('Please create or load a rubric');
-      return;
-    }
+    console.log('✅ All steps complete!');
 
-    const validation = validateWeights();
-    if (!validation.valid) {
-      alert(`Invalid rubric weights: ${validation.message}`);
-      return;
-    }
+    alert(
+      `✅ Bounty created successfully!\n\n` +
+      `Job ID: ${job.jobId}\n` +
+      `On-Chain Bounty ID: ${contractResult.bountyId}\n` +
+      `Transaction: ${contractResult.txHash}\n` +
+      `Block: ${contractResult.blockNumber}\n\n` +
+      `Rubric CID: ${job.rubricCid}\n` +
+      `Primary CID: ${job.primaryCid}\n\n` +
+      `Note: The page may take a moment to load while the blockchain syncs.`
+    );
 
-    if (juryNodes.length === 0) {
-      alert('Please add at least one jury node');
-      return;
-    }
+    // Navigate to job details
+    navigate(`/bounty/${job.jobId}`);
 
-    try {
-      setLoading(true);
-      setError(null);
+  } catch (err) {
+    console.error('❌ Error creating bounty:', err);
+    setError(err.message);
+    alert(`Failed to create bounty: ${err.message}`);
+  } finally {
+    setLoading(false);
+  }
+};
 
-      // Transform rubric for backend
-      const backendRubric = transformRubricForBackend(rubric);
-
-      // Create job via API
-      const response = await apiService.createJob({
-        title: formData.title,
-        description: formData.description,
-        workProductType: formData.workProductType,
-        creator: walletState.address,
-        bountyAmount: parseFloat(formData.payoutAmount),
-        bountyAmountUSD: parseFloat(formData.payoutAmount) * formData.ethPriceUSD,
-        threshold: threshold,
-        rubricJson: backendRubric,
-        classId: selectedClassId,
-        juryNodes: juryNodes.map(node => ({
-          provider: node.provider,
-          model: node.model,
-          runs: node.runs,
-          weight: node.weight
-        })),
-        iterations,
-        submissionWindowHours: parseInt(formData.submissionWindowHours)
-      });
-
-      if (!response.success) {
-        throw new Error(response.error || 'Failed to create job');
-      }
-
-      alert(
-        `✅ Job created successfully!\n\n` +
-        `Job ID: ${response.job.jobId}\n` +
-        `Rubric CID: ${response.job.rubricCid}\n` +
-        `Primary CID: ${response.job.primaryCid}\n\n` +
-        `Note: The page may take a moment to load while the blockchain syncs.`
-      );
-
-      // Navigate to job details
-      navigate(`/bounty/${response.job.jobId}`);
-
-    } catch (err) {
-      console.error('Error creating job:', err);
-      setError(err.message);
-      alert(`Failed to create job: ${err.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   return (
     <div className="create-bounty">

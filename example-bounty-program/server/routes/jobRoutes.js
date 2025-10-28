@@ -590,6 +590,34 @@ router.get('/:jobId/submissions', async (req, res) => {
   }
 });
 
+// Update job with bountyId from blockchain
+router.patch('/jobs/:jobId/bountyId', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { bountyId, txHash, blockNumber } = req.body;
+
+    const storage = await jobStorage.readStorage();
+    const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
+
+    if (!job) {
+      return res.status(404).json({ success: false, error: 'Job not found' });
+    }
+
+    job.bountyId = bountyId;
+    job.txHash = txHash;
+    job.blockNumber = blockNumber;
+
+    await jobStorage.writeStorage(storage);
+
+    logger.info('Job updated with bountyId', { jobId, bountyId });
+
+    res.json({ success: true, job });
+  } catch (error) {
+    logger.error('Error updating job bountyId:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ============================================================
 //          BLOCKCHAIN SYNC MONITORING ENDPOINTS
 // ============================================================

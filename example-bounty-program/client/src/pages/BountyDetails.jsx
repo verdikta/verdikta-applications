@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { apiService } from '../services/api';
-import { getContractService, deriveBountyIdFromTx } from '../services/contractService';
+import { getContractService } from '../services/contractService';
 import { config } from '../config';
-import { ethers } from 'ethers';
 import './BountyDetails.css';
 
 function BountyDetails({ walletState }) {
@@ -80,99 +79,63 @@ function BountyDetails({ walletState }) {
     }
   }, [job, retryCount]);
 
-  // -------- Resolve on-chain bountyId (backend -> tx -> log scan) --------
+  // -------- Resolve on-chain bountyId (backend does it: tx -> state) --------
   useEffect(() => {
+    let cancelled = false;
+
     (async () => {
-      if (!job) return;
+      if (!job || resolvingId) return;
 
       // 1) Backend already has it
       if (job?.bountyId != null) {
-        setResolvedBountyId(Number(job.bountyId));
+        if (!cancelled) {
+          setResolvedBountyId(Number(job.bountyId));
+          setResolveNote('');
+        }
         return;
       }
 
-      if (resolvingId) return;
-
-      // 2) Try via tx hash (if backend stored any variant)
-      const txHash =
-        job?.txHash || job?.creationTxHash || job?.chainTxHash || job?.createTxHash || null;
-
       try {
         setResolvingId(true);
-        if (txHash) {
-          setResolveNote('Resolving on-chain bountyId from transaction…');
-          const id = await deriveBountyIdFromTx(txHash, config.bountyEscrowAddress);
-          setResolvedBountyId(Number(id));
-          console.log('✅ Resolved on-chain bountyId from tx:', { txHash, id });
-          setResolveNote('');
-          setResolvingId(false);
-          return;
-        }
 
-        // 3) No tx hash: scan recent logs by creator (indexed) and confirm rubricCid
-        if (!window.ethereum) {
-          setResolveNote('Waiting for wallet to resolve on-chain id…');
-          setResolvingId(false);
-          return;
-        }
-        if (!job?.creator) {
-          setResolveNote('Missing creator address; cannot resolve on-chain id yet.');
-          setResolvingId(false);
-          return;
-        }
+        // Prepare inputs for backend resolver
+        const txHash =
+          job?.txHash || job?.creationTxHash || job?.chainTxHash || job?.createTxHash || null;
 
-        const provider = new ethers.BrowserProvider(window.ethereum);
+        const payload = {
+          creator: job?.creator,
+          rubricCid: job?.rubricCid,            // may be undefined; backend handles it
+          submissionDeadline: job?.submissionCloseTime,
+          txHash: txHash || undefined,
+          lookback: 300,                        // small, fast search window
+          deadlineToleranceSec: 300             // ±5 minutes
+        };
 
-        // Compute topics for BountyCreated(uint256 indexed bountyId, address indexed creator, string, ...)
-        const topic0 = ethers.id('BountyCreated(uint256,address,string,uint64,uint8,uint256,uint64)');
-        const topicCreator = ethers.zeroPadValue(job.creator, 32);
+        setResolveNote('Resolving from backend…');
 
-        const latest = await provider.getBlockNumber();
-        // Search last ~200k blocks (tune as needed)
-        const fromBlock = latest > 200000 ? latest - 200000 : 0;
-
-        setResolveNote('Scanning chain logs to resolve on-chain id…');
-
-        const logs = await provider.getLogs({
-          address: config.bountyEscrowAddress,
-          fromBlock,
-          toBlock: 'latest',
-          topics: [topic0, topicCreator] // filter by event + creator
-        });
-
-        const iface = new ethers.Interface([
-          'event BountyCreated(uint256 indexed bountyId, address indexed creator, string rubricCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)'
-        ]);
-
-        let found = null;
-        for (const log of logs) {
-          try {
-            const parsed = iface.parseLog(log);
-            // Confirm rubricCid matches (to disambiguate multiple bounties by same creator)
-            if (!job?.rubricCid || parsed?.args?.rubricCid === job.rubricCid) {
-              found = Number(parsed.args.bountyId);
-              break;
-            }
-          } catch {
-            /* ignore non-matching logs */
+        const res = await apiService.resolveBountyId(payload);
+        if (!cancelled) {
+          if (res?.success && res?.bountyId != null) {
+            setResolvedBountyId(Number(res.bountyId));
+            setResolveNote('');
+          } else {
+            setResolveNote('Could not resolve automatically. Please refresh once the backend syncs.');
           }
         }
-
-        if (found != null) {
-          setResolvedBountyId(found);
-          console.log('✅ Resolved on-chain bountyId from logs:', { found, logs: logs.length });
-          setResolveNote('');
-        } else {
-          setResolveNote('Could not resolve on-chain id from logs yet.');
-        }
       } catch (e) {
-        console.warn('On-chain id resolution failed:', e?.message || e);
-        setResolveNote('On-chain id resolution failed. Try refresh in a moment.');
+        console.warn('[Resolver] backend resolve failed:', e?.message || e);
+        if (!cancelled) {
+          setResolveNote('On-chain id resolution failed. Try refresh later.');
+        }
       } finally {
-        setResolvingId(false);
+        if (!cancelled) setResolvingId(false);
       }
     })();
+
+    return () => { cancelled = true; };
   }, [job, resolvingId]);
+
+
 
   const getOnChainBountyId = () => {
     if (job?.bountyId != null && !Number.isNaN(Number(job.bountyId))) {

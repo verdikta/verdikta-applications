@@ -118,6 +118,7 @@ app.use('/api/jobs', jobRoutes); // New job management routes (replaces bounty r
 app.use('/api/bounties', bountyRoutes);
 app.use('/api/submissions', submissionRoutes);
 app.use('/api', ipfsRoutes);
+app.use(require('./routes/resolveBounty'));
 
 // ClassMap API endpoints (reused from example-frontend)
 app.get('/api/classes', (req, res) => {

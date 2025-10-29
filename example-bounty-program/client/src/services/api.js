@@ -44,6 +44,15 @@ export const apiService = {
   // ============================================================
 
   /**
+   * Resolve on-chain bountyId via backend (fast, read-only)
+   */
+  async resolveBountyId(payload) {
+    // payload: { creator, rubricCid?, submissionDeadline, txHash?, lookback?, deadlineToleranceSec? }
+    const response = await api.post('/api/resolve-bounty', payload);
+    return response.data;
+  },
+
+  /**
    * Create a new job with rubric and bounty details
    */
   async createJob(jobData) {

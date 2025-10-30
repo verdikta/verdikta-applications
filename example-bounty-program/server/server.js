@@ -262,6 +262,22 @@ app.get('/health', (req, res) => {
   });
 });
 
+// TEMP DEBUG
+const { ethers } = require('ethers');
+app.get('/api/debug/bountyCount', async (req, res) => {
+  try {
+    const provider = new ethers.JsonRpcProvider(process.env.RPC_PROVIDER_URL);
+    const escrow = new ethers.Contract(process.env.BOUNTY_ESCROW_ADDRESS, [
+      "function bountyCount() view returns (uint256)"
+    ], provider);
+    const n = await escrow.bountyCount();
+    res.json({ success: true, address: process.env.BOUNTY_ESCROW_ADDRESS, bountyCount: Number(n) });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   logger.error('Server error:', err);

@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
-import { config } from '../config';
 import './BountyDetails.css';
 
 function BountyDetails({ walletState }) {
@@ -98,22 +97,36 @@ function BountyDetails({ walletState }) {
       try {
         setResolvingId(true);
 
-        // Prepare inputs for backend resolver
+        // Required inputs
+        const creator = job?.creator;
+        const submissionCloseTime = job?.submissionCloseTime;
         const txHash =
           job?.txHash || job?.creationTxHash || job?.chainTxHash || job?.createTxHash || null;
 
+        // Hard-fail early if we don't have what the backend needs
+        if (!creator || !submissionCloseTime) {
+          console.warn('[Resolver] missing inputs', { creator, submissionCloseTime });
+          if (!cancelled) {
+            setResolveNote('Missing data to resolve on-chain id (creator/deadline).');
+          }
+          return;
+        }
+
         const payload = {
-          creator: job?.creator,
-          rubricCid: job?.rubricCid,            // may be undefined; backend handles it
-          submissionDeadline: job?.submissionCloseTime,
-          txHash: txHash || undefined,
-          lookback: 300,                        // small, fast search window
-          deadlineToleranceSec: 300             // ±5 minutes
+          creator,
+          rubricCid: job?.rubricCid || undefined,
+          submissionCloseTime,                         // seconds or ms; server normalizes
+          txHash: txHash || undefined
         };
 
         setResolveNote('Resolving from backend…');
+        console.log('[DEBUG] Calling resolveJobBountyId', job.jobId, payload);
 
-        const res = await apiService.resolveBountyId(payload);
+        // New route: PATCH /api/jobs/:jobId/bountyId/resolve
+        const res = await apiService.resolveJobBountyId(job.jobId, payload);
+
+        console.log('[DEBUG] resolveJobBountyId response', res);
+
         if (!cancelled) {
           if (res?.success && res?.bountyId != null) {
             setResolvedBountyId(Number(res.bountyId));
@@ -124,6 +137,7 @@ function BountyDetails({ walletState }) {
         }
       } catch (e) {
         console.warn('[Resolver] backend resolve failed:', e?.message || e);
+        if (e?.response?.data) console.warn('[Resolver] server says:', e.response.data);
         if (!cancelled) {
           setResolveNote('On-chain id resolution failed. Try refresh later.');
         }
@@ -134,8 +148,6 @@ function BountyDetails({ walletState }) {
 
     return () => { cancelled = true; };
   }, [job, resolvingId]);
-
-
 
   const getOnChainBountyId = () => {
     if (job?.bountyId != null && !Number.isNaN(Number(job.bountyId))) {
@@ -341,7 +353,7 @@ function BountyDetails({ walletState }) {
                 style={{ width: '100%', fontSize: '1.2rem', padding: '1.25rem', fontWeight: 'bold' }}
                 title={disableActionsForMissingId ? 'Resolving on-chain bountyId…' : undefined}
               >
-                {closingBounty ? '⏳ Processing Transaction... (Check MetaMask)' : '🔒 Close Bounty & Return Funds'}
+                {closingBounty ? '⏳ Processing Transaction... (Check MetaMask)' : '🔒 Close Expired Bounty & Return Funds'}
               </button>
               {closingBounty && (
                 <p style={{ marginTop: '0.5rem', textAlign: 'center', fontSize: '0.9rem', color: '#666' }}>

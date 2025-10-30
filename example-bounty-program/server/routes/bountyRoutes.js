@@ -1,317 +1,108 @@
+// server/routes/resolveBounty.js
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs').promises;
-const logger = require('../utils/logger');
-const { validateRubric, isValidFileType, isValidFileSize, MAX_FILE_SIZE } = require('../utils/validation');
+const { ethers } = require('ethers');
 
-/**
- * POST /api/bounties
- * Upload rubric to IPFS and return CID for bounty creation
- */
-router.post('/', async (req, res) => {
+const ESCROW_ADDRESS = process.env.ESCROW_ADDRESS || process.env.BOUNTY_ESCROW_ADDRESS;
+const RPC_PROVIDER_URL = process.env.RPC_PROVIDER_URL;
+
+const BOUNTY_ABI = [
+  "event BountyCreated(uint256 indexed bountyId, address indexed creator, string rubricCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
+  "function bountyCount() view returns (uint256)",
+  "function getBounty(uint256) view returns (address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256)"
+];
+
+function getProvider() {
+  if (!RPC_PROVIDER_URL) throw new Error('RPC provider not configured');
+  return new ethers.JsonRpcProvider(RPC_PROVIDER_URL);
+}
+
+// NOTE: path is '/resolve-bounty' (no '/api' here)
+router.post('/resolve-bounty', async (req, res) => {
   try {
-    const { rubricJson, classId } = req.body;
+    const {
+      creator,
+      rubricCid,
+      submissionDeadline,
+      txHash,
+      lookback = 300,
+      deadlineToleranceSec = 300
+    } = req.body || {};
 
-    // Validate request body
-    if (!rubricJson) {
-      return res.status(400).json({
-        error: 'Missing rubric',
-        details: 'Request body must include rubricJson object'
-      });
+    if (!ESCROW_ADDRESS) return res.status(500).json({ success: false, error: 'ESCROW_ADDRESS missing' });
+    if (!creator || !submissionDeadline) {
+      return res.status(400).json({ success: false, error: 'creator and submissionDeadline are required' });
     }
 
-    // Validate rubric structure
-    const validation = validateRubric(rubricJson);
-    if (!validation.valid) {
-      return res.status(400).json({
-        error: 'Invalid rubric',
-        details: 'Rubric validation failed',
-        errors: validation.errors
-      });
+    const provider = getProvider();
+    const escrow = new ethers.Contract(ESCROW_ADDRESS, BOUNTY_ABI, provider);
+
+    // 1) try tx-hash fast path
+    if (txHash) {
+      const receipt = await provider.getTransactionReceipt(txHash);
+      if (receipt?.logs?.length) {
+        const iface = new ethers.Interface([BOUNTY_ABI[0]]);
+        for (const log of receipt.logs) {
+          if (log.address.toLowerCase() !== ESCROW_ADDRESS.toLowerCase()) continue;
+          try {
+            const parsed = iface.parseLog(log);
+            if (parsed?.name === 'BountyCreated') {
+              return res.json({ success: true, method: 'tx', bountyId: Number(parsed.args.bountyId) });
+            }
+          } catch {}
+        }
+      }
+      // fall through to state scan
     }
 
-    logger.info('POST /api/bounties called', { 
-      criteriaCount: rubricJson.criteria?.length,
-      threshold: rubricJson.threshold,
-      classId 
-    });
-
-    // Add metadata to rubric
-    const rubricWithMeta = {
-      ...rubricJson,
-      version: rubricJson.version || '1.0',
-      createdAt: new Date().toISOString(),
-      classId: classId || 128
-    };
-
-    // Convert rubric to JSON buffer
-    const rubricBuffer = Buffer.from(JSON.stringify(rubricWithMeta, null, 2), 'utf-8');
-    
-    // Create temporary file for IPFS upload
-    const path = require('path');
-    const fs = require('fs').promises;
-    const tmpDir = path.join(__dirname, '../tmp');
-    const tmpFilePath = path.join(tmpDir, `rubric-${Date.now()}.json`);
-    
-    await fs.writeFile(tmpFilePath, rubricBuffer);
-
-    try {
-      // Upload to IPFS
-      const ipfsClient = req.app.locals.ipfsClient;
-      const rubricCid = await ipfsClient.uploadToIPFS(tmpFilePath);
-      
-      logger.info('Rubric uploaded to IPFS successfully', { 
-        cid: rubricCid,
-        size: rubricBuffer.length 
-      });
-
-      res.json({
-        success: true,
-        rubricCid,
-        size: rubricBuffer.length,
-        criteriaCount: rubricJson.criteria?.length,
-        message: 'Rubric uploaded to IPFS. Use this CID when calling createBounty().'
-      });
-
-    } finally {
-      // Clean up temp file
-      await fs.unlink(tmpFilePath).catch(err => 
-        logger.warn('Failed to clean up temp rubric file:', err)
-      );
+    // 2) state scan (batched & bounded)
+    const total = Number(await escrow.bountyCount());
+    if (!Number.isFinite(total) || total <= 0) {
+      return res.status(404).json({ success: false, error: 'No bounties on chain yet' });
     }
 
-  } catch (error) {
-    logger.error('Error creating bounty metadata:', error);
-    res.status(500).json({
-      error: 'Failed to create bounty metadata',
-      details: error.message
-    });
-  }
-});
+    const start = Math.max(0, total - 1);
+    const stop  = Math.max(0, total - 1 - Math.max(1, Number(lookback)));
+    const wantCreator  = String(creator).toLowerCase();
+    const wantCid      = rubricCid ? String(rubricCid) : '';
+    const wantDeadline = Number(submissionDeadline);
+    const tol          = Math.max(0, Number(deadlineToleranceSec));
 
-/**
- * GET /api/bounties
- * List all bounties (with optional filters)
- */
-router.get('/', async (req, res) => {
-  try {
-    const { status, creator, minPayout, limit = 20, offset = 0 } = req.query;
+    let best = null, bestDelta = Number.POSITIVE_INFINITY;
+    const batchSize = 40;
+    for (let cursor = start; cursor >= stop; ) {
+      const ids = [];
+      for (let k = 0; k < batchSize && cursor >= stop; k++, cursor--) ids.push(cursor);
 
-    // TODO: Implement bounty listing
-    // 1. Query blockchain for all bounties (via ethers.js)
-    // 2. Apply filters (status, creator, minPayout)
-    // 3. Fetch rubric CIDs from IPFS for titles
-    // 4. Apply pagination
-    // 5. Return formatted list
+      const results = await Promise.allSettled(ids.map(async (i) => {
+        const b = await escrow.getBounty(i);
+        const bCreator  = (b[0] || '').toLowerCase();
+        if (bCreator !== wantCreator) return null;
+        const bCid      = b[1] || '';
+        const bDeadline = Number(b[6] || 0);
+        const delta     = Math.abs(bDeadline - wantDeadline);
+        const cidOk      = !wantCid || wantCid === bCid;
+        const deadlineOk = delta <= tol;
+        if ((cidOk && deadlineOk) || (cidOk && delta < bestDelta)) return { id: i, delta };
+        return null;
+      }));
 
-    logger.info('GET /api/bounties called', { status, creator, minPayout, limit, offset });
-    logger.warn('TODO: Implement bounty listing from blockchain');
-
-    res.status(501).json({
-      error: 'Not implemented',
-      message: 'TODO: Implement bounty listing functionality',
-      steps: [
-        '1. Connect to BountyEscrow contract using ethers.js',
-        '2. Query all bounties (may need event filtering or indexing)',
-        '3. Filter by status, creator, minPayout',
-        '4. For each bounty, fetch rubric from IPFS to get title',
-        '5. Apply pagination (limit, offset)',
-        '6. Return formatted results'
-      ]
-    });
-
-  } catch (error) {
-    logger.error('Error listing bounties:', error);
-    res.status(500).json({
-      error: 'Failed to list bounties',
-      details: error.message
-    });
-  }
-});
-
-/**
- * GET /api/bounties/:bountyId
- * Get detailed bounty information including rubric content
- */
-router.get('/:bountyId', async (req, res) => {
-  try {
-    const { bountyId } = req.params;
-
-    // TODO: Implement bounty details fetching
-    // 1. Query blockchain for bounty data
-    // 2. Fetch and parse rubric from IPFS
-    // 3. Get all submissions for this bounty
-    // 4. Return detailed bounty object
-
-    logger.info(`GET /api/bounties/${bountyId} called`);
-    logger.warn('TODO: Implement bounty details fetching');
-
-    res.status(501).json({
-      error: 'Not implemented',
-      message: 'TODO: Implement bounty details fetching',
-      steps: [
-        '1. Connect to BountyEscrow contract',
-        '2. Call contract.getBounty(bountyId)',
-        '3. Fetch rubric JSON from IPFS using rubricCid',
-        '4. Call contract.getBountySubmissions(bountyId)',
-        '5. For each submission, get details',
-        '6. Return complete bounty object with rubric and submissions'
-      ]
-    });
-
-  } catch (error) {
-    logger.error('Error fetching bounty details:', error);
-    res.status(500).json({
-      error: 'Failed to fetch bounty details',
-      details: error.message
-    });
-  }
-});
-
-/**
- * GET /api/bounties/:bountyId/submissions
- * Get all submissions for a bounty
- */
-router.get('/:bountyId/submissions', async (req, res) => {
-  try {
-    const { bountyId } = req.params;
-
-    // TODO: Implement submission listing for bounty
-    // 1. Query blockchain for bounty submissions
-    // 2. Return formatted list
-
-    logger.info(`GET /api/bounties/${bountyId}/submissions called`);
-    logger.warn('TODO: Implement submission listing');
-
-    res.status(501).json({
-      error: 'Not implemented',
-      message: 'TODO: Implement submission listing',
-      steps: [
-        '1. Connect to BountyEscrow contract',
-        '2. Call contract.getBountySubmissions(bountyId)',
-        '3. For each submissionId, call contract.getSubmission()',
-        '4. Return formatted array of submissions'
-      ]
-    });
-
-  } catch (error) {
-    logger.error('Error fetching submissions:', error);
-    res.status(500).json({
-      error: 'Failed to fetch submissions',
-      details: error.message
-    });
-  }
-});
-
-/**
- * POST /api/bounties/:bountyId/submit
- * Upload deliverable to IPFS for submission
- */
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, '../tmp'));
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
-    cb(null, `${uniqueSuffix}-${file.originalname}`);
-  }
-});
-
-const upload = multer({
-  storage,
-  fileFilter: (req, file, cb) => {
-    if (isValidFileType(file.mimetype, file.originalname)) {
-      cb(null, true);
-    } else {
-      cb(new Error(`Invalid file type: ${file.mimetype}. Allowed: txt, md, jpg, png, pdf, docx`));
-    }
-  },
-  limits: {
-    fileSize: MAX_FILE_SIZE,
-    files: 1
-  }
-}).single('file');
-
-router.post('/:bountyId/submit', async (req, res) => {
-  let uploadedFile = null;
-
-  try {
-    // Handle file upload
-    await new Promise((resolve, reject) => {
-      upload(req, res, (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-
-    if (!req.file) {
-      return res.status(400).json({
-        error: 'No file uploaded',
-        details: 'Request must include a file in multipart/form-data format'
-      });
+      for (const r of results) {
+        if (r.status === 'fulfilled' && r.value) {
+          if (r.value.delta < bestDelta) {
+            best = r.value.id;
+            bestDelta = r.value.delta;
+            if (bestDelta === 0) return res.json({ success: true, method: 'state', bountyId: best, delta: bestDelta });
+          }
+        }
+      }
     }
 
-    uploadedFile = req.file;
-    const { bountyId } = req.params;
-
-    // Validate bountyId is a number
-    const bountyIdNum = parseInt(bountyId, 10);
-    if (isNaN(bountyIdNum)) {
-      return res.status(400).json({
-        error: 'Invalid bounty ID',
-        details: 'Bounty ID must be a number'
-      });
-    }
-
-    // Validate file size
-    if (!isValidFileSize(uploadedFile.size)) {
-      return res.status(400).json({
-        error: 'File too large',
-        details: `Maximum file size is ${MAX_FILE_SIZE / 1024 / 1024} MB`
-      });
-    }
-
-    logger.info(`POST /api/bounties/${bountyId}/submit called`, {
-      filename: uploadedFile.originalname,
-      size: uploadedFile.size,
-      mimetype: uploadedFile.mimetype
-    });
-
-    // Upload to IPFS
-    const ipfsClient = req.app.locals.ipfsClient;
-    const deliverableCid = await ipfsClient.uploadToIPFS(uploadedFile.path);
-
-    logger.info('Deliverable uploaded to IPFS successfully', {
-      cid: deliverableCid,
-      size: uploadedFile.size,
-      bountyId
-    });
-
-    res.json({
-      success: true,
-      deliverableCid,
-      size: uploadedFile.size,
-      filename: uploadedFile.originalname,
-      mimetype: uploadedFile.mimetype,
-      message: 'File uploaded to IPFS. Use this CID when calling submitAndEvaluate().'
-    });
-
-  } catch (error) {
-    logger.error('Error uploading deliverable:', error);
-    res.status(500).json({
-      error: 'Failed to upload deliverable',
-      details: error.message
-    });
-  } finally {
-    // Clean up uploaded file
-    if (uploadedFile?.path) {
-      await fs.unlink(uploadedFile.path).catch(err =>
-        logger.warn('Failed to clean up temp file:', err)
-      );
-    }
+    if (best != null) return res.json({ success: true, method: 'state', bountyId: best, delta: bestDelta });
+    return res.status(404).json({ success: false, error: 'No matching bounty found' });
+  } catch (err) {
+    console.error('[resolve-bounty] error:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Internal error' });
   }
 });
 

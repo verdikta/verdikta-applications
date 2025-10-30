@@ -4,6 +4,7 @@
  * This is temporary storage until smart contracts are deployed
  */
 
+const { ethers } = require('ethers');
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -17,22 +18,6 @@ const { validateRubric, isValidFileType, isValidFileSize, MAX_FILE_SIZE } = requ
 /**
  * POST /api/jobs/create
  * Create a new job with rubric and generate Primary CID archive
- *
- * Request body:
- * {
- *   title: string,
- *   description: string,
- *   workProductType: string,
- *   creator: string (wallet address),
- *   bountyAmount: number (ETH),
- *   bountyAmountUSD: number,
- *   threshold: number (0-100),
- *   rubricJson: object,
- *   classId: number,
- *   juryNodes: array,
- *   iterations: number,
- *   submissionWindowHours: number (default 24)
- * }
  */
 router.post('/create', async (req, res) => {
   try {
@@ -203,7 +188,6 @@ router.post('/create', async (req, res) => {
  */
 router.get('/', async (req, res) => {
   try {
-    // ============ ADD onChainId PARAMETER ============
     const { status, creator, minPayout, search, onChainId, limit = 50, offset = 0 } = req.query;
 
     logger.info('Listing jobs', { status, creator, search, onChainId });
@@ -216,22 +200,22 @@ router.get('/', async (req, res) => {
 
     let allJobs = await jobStorage.listJobs(filters);
 
-    // ============ ADD onChainId FILTERING ============
-    // Filter by onChainId if provided (for finding newly created blockchain jobs)
+    // Optional filter by onChainId
     if (onChainId) {
       allJobs = allJobs.filter(j => j.onChainId === parseInt(onChainId));
     }
-    // ================================================
 
     // Apply pagination
     const limitNum = parseInt(limit, 10);
     const offsetNum = parseInt(offset, 10);
     const paginatedJobs = allJobs.slice(offsetNum, offsetNum + limitNum);
 
-    // Return job summaries (not full details)
+    // Summaries
     const jobSummaries = paginatedJobs.map(job => ({
       jobId: job.jobId,
-      onChainId: job.onChainId, // ============ ADD THIS ============
+      onChainId: job.onChainId,              // legacy field if you used it
+      bountyId: job.bountyId ?? null,        // on-chain bounty index (if resolved)
+      onChain: job.onChain ?? null,          // whether we mapped this to chain
       title: job.title,
       description: job.description,
       workProductType: job.workProductType,
@@ -244,7 +228,7 @@ router.get('/', async (req, res) => {
       submissionCloseTime: job.submissionCloseTime,
       createdAt: job.createdAt,
       winner: job.winner,
-      syncedFromBlockchain: job.syncedFromBlockchain || false // ============ ADD THIS ============
+      syncedFromBlockchain: job.syncedFromBlockchain || false
     }));
 
     res.json({
@@ -314,154 +298,87 @@ router.get('/:jobId', async (req, res) => {
 
 /**
  * POST /api/jobs/:jobId/submit
- * Submit work for a job
- * Generates Hunter CID archive and updates Primary CID
+ * Submit work for a job (supports multiple files)
  */
-// Configure multer for file uploads (supports multiple files)
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, '../tmp'));
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
-    cb(null, `${uniqueSuffix}-${file.originalname}`);
-  }
+  destination: (req, file, cb) => cb(null, path.join(__dirname, '../tmp')),
+  filename: (req, file, cb) => cb(null, `${Date.now()}-${Math.round(Math.random()*1e9)}-${file.originalname}`)
 });
 
 const upload = multer({
   storage,
-  fileFilter: (req, file, cb) => {
-    if (isValidFileType(file.mimetype, file.originalname)) {
-      cb(null, true);
-    } else {
-      cb(new Error(`Invalid file type: ${file.mimetype}. Allowed: txt, md, jpg, png, pdf, docx`));
-    }
-  },
-  limits: {
-    fileSize: MAX_FILE_SIZE,
-    files: 10 // Allow up to 10 files
-  }
-}).array('files', 10); // Changed from .single('file') to .array('files', 10)
+  fileFilter: (req, file, cb) => isValidFileType(file.mimetype, file.originalname) ? cb(null, true)
+    : cb(new Error(`Invalid file type: ${file.mimetype}. Allowed: txt, md, jpg, png, pdf, docx`)),
+  limits: { fileSize: MAX_FILE_SIZE, files: 10 }
+}).array('files', 10);
 
 router.post('/:jobId/submit', async (req, res) => {
   let uploadedFiles = [];
-
   try {
-    // Handle file uploads
-    await new Promise((resolve, reject) => {
-      upload(req, res, (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+    await new Promise((resolve, reject) => upload(req, res, (err) => err ? reject(err) : resolve()));
 
     if (!req.files || req.files.length === 0) {
-      return res.status(400).json({
-        error: 'No files uploaded',
-        details: 'Request must include at least one file in multipart/form-data format'
-      });
+      return res.status(400).json({ error: 'No files uploaded', details: 'Provide at least one file' });
     }
-
     uploadedFiles = req.files;
+
     const { jobId } = req.params;
     const { hunter, submissionNarrative } = req.body;
 
-    // Parse file descriptions (sent as JSON string)
-    let fileDescriptions = {};
-    try {
-      if (req.body.fileDescriptions) {
-        fileDescriptions = JSON.parse(req.body.fileDescriptions);
-      }
-    } catch (e) {
-      logger.warn('Failed to parse file descriptions:', e);
-    }
-
     // Validate hunter address
     if (!hunter || !/^0x[a-fA-F0-9]{40}$/.test(hunter)) {
-      return res.status(400).json({
-        error: 'Invalid hunter address',
-        details: 'Hunter must be a valid Ethereum address'
-      });
+      return res.status(400).json({ error: 'Invalid hunter address', details: 'Must be a valid Ethereum address' });
     }
 
-    // Validate submission narrative length (200 words max)
+    // Validate narrative length
     if (submissionNarrative) {
       const wordCount = submissionNarrative.trim().split(/\s+/).length;
       if (wordCount > 200) {
-        return res.status(400).json({
-          error: 'Submission narrative too long',
-          details: `Narrative must be 200 words or less (current: ${wordCount} words)`
-        });
+        return res.status(400).json({ error: 'Submission narrative too long', details: `<= 200 words` });
       }
     }
 
-    // Validate all file sizes
-    for (const file of uploadedFiles) {
-      if (!isValidFileSize(file.size)) {
-        return res.status(400).json({
-          error: 'File too large',
-          details: `File "${file.originalname}" exceeds maximum size of ${MAX_FILE_SIZE / 1024 / 1024} MB`
-        });
-      }
-    }
-
-    logger.info(`Submission for job ${jobId}`, {
-      hunter,
-      fileCount: uploadedFiles.length,
-      files: uploadedFiles.map(f => f.originalname),
-      narrativeLength: submissionNarrative?.length || 0
-    });
-
-    // Get job details
     const job = await jobStorage.getJob(jobId);
 
-    // Check if job is open
+    // Check status and window
     if (job.status !== 'OPEN') {
-      return res.status(400).json({
-        error: 'Job is not open',
-        details: `Job status is ${job.status}. Only OPEN jobs accept submissions.`
-      });
+      return res.status(400).json({ error: 'Job is not open', details: `Status is ${job.status}` });
     }
-
-    // Check if submission window is still open
-    const now = Math.floor(Date.now() / 1000);
+    const now = Math.floor(Date.now()/1000);
     if (now < job.submissionOpenTime || now > job.submissionCloseTime) {
-      return res.status(400).json({
-        error: 'Submission window closed',
-        details: 'This job is no longer accepting submissions.'
-      });
+      return res.status(400).json({ error: 'Submission window closed' });
     }
 
-    // Prepare work products array with descriptions
-    const workProducts = uploadedFiles.map(file => ({
-      path: file.path,
-      name: file.originalname,
-      type: file.mimetype,
-      description: fileDescriptions[file.originalname] || `Work product file: ${file.originalname}`
+    // Prepare work products
+    const fileDescriptions = (() => {
+      try { return req.body.fileDescriptions ? JSON.parse(req.body.fileDescriptions) : {}; }
+      catch { return {}; }
+    })();
+
+    const workProducts = uploadedFiles.map(f => ({
+      path: f.path,
+      name: f.originalname,
+      type: f.mimetype,
+      description: fileDescriptions[f.originalname] || `Work product file: ${f.originalname}`
     }));
 
-    // Step 1: Create Hunter Submission CID archive with multiple files
+    // Create Hunter Submission CID archive
     const hunterArchive = await archiveGenerator.createHunterSubmissionCIDArchive({
       workProducts,
-      submissionNarrative: submissionNarrative || undefined // Use default if not provided
+      submissionNarrative: submissionNarrative || undefined
     });
 
-    // Step 2: Upload Hunter archive to IPFS
+    // Upload hunter archive to IPFS
     const ipfsClient = req.app.locals.ipfsClient;
     let hunterCid;
     try {
       hunterCid = await ipfsClient.uploadToIPFS(hunterArchive.archivePath);
-      logger.info('Hunter submission uploaded to IPFS', {
-        hunterCid,
-        fileCount: uploadedFiles.length
-      });
+      logger.info('Hunter submission uploaded to IPFS', { hunterCid, fileCount: uploadedFiles.length });
     } finally {
-      await fs.unlink(hunterArchive.archivePath).catch(err =>
-        logger.warn('Failed to clean up hunter archive:', err)
-      );
+      await fs.unlink(hunterArchive.archivePath).catch(err => logger.warn('Failed to clean up hunter archive:', err));
     }
 
-    // Step 3: Create updated Primary CID archive with hunter submission CID
+    // Create updated Primary archive
     const updatedPrimaryArchive = await archiveGenerator.createPrimaryCIDArchive({
       rubricCid: job.rubricCid,
       jobTitle: job.title,
@@ -473,18 +390,16 @@ router.post('/:jobId/submit', async (req, res) => {
       hunterSubmissionCid: hunterCid
     });
 
-    // Step 4: Upload updated Primary archive to IPFS
+    // Upload updated Primary archive
     let updatedPrimaryCid;
     try {
       updatedPrimaryCid = await ipfsClient.uploadToIPFS(updatedPrimaryArchive.archivePath);
       logger.info('Updated Primary archive uploaded to IPFS', { updatedPrimaryCid });
     } finally {
-      await fs.unlink(updatedPrimaryArchive.archivePath).catch(err =>
-        logger.warn('Failed to clean up updated primary archive:', err)
-      );
+      await fs.unlink(updatedPrimaryArchive.archivePath).catch(err => logger.warn('Failed to clean up updated primary archive:', err));
     }
 
-    // Step 5: Add submission to job storage
+    // Persist submission
     await jobStorage.addSubmission(jobId, {
       hunter,
       hunterCid,
@@ -497,13 +412,6 @@ router.post('/:jobId/submit', async (req, res) => {
       }))
     });
 
-    logger.info('Submission recorded successfully', {
-      jobId,
-      hunter,
-      fileCount: uploadedFiles.length
-    });
-
-    // Return CIDs for testing with example-frontend
     res.json({
       success: true,
       message: 'Submission recorded successfully!',
@@ -513,104 +421,48 @@ router.post('/:jobId/submit', async (req, res) => {
         updatedPrimaryCid,
         fileCount: uploadedFiles.length,
         files: uploadedFiles.map(f => ({
-          filename: f.originalname,
-          size: f.size,
-          description: fileDescriptions[f.originalname]
+          filename: f.originalname, size: f.size, description: fileDescriptions[f.originalname]
         })),
-        totalSize: uploadedFiles.reduce((sum, f) => sum + f.size, 0)
-      },
-      testingInfo: {
-        message: 'For testing with example-frontend, use these CIDs:',
-        primaryCid: updatedPrimaryCid,
-        hunterCid: hunterCid,
-        evaluationFormat: `${updatedPrimaryCid},${hunterCid}`,
-        threshold: job.threshold,
-        bountyAmount: job.bountyAmount
+        totalSize: uploadedFiles.reduce((s, f) => s + f.size, 0)
       }
     });
 
   } catch (error) {
     logger.error('Error submitting work:', error);
-
     if (error.message.includes('not found')) {
-      res.status(404).json({
-        error: 'Job not found',
-        details: error.message
-      });
+      res.status(404).json({ error: 'Job not found', details: error.message });
     } else {
-      res.status(500).json({
-        error: 'Failed to submit work',
-        details: error.message
-      });
+      res.status(500).json({ error: 'Failed to submit work', details: error.message });
     }
   } finally {
-    // Clean up all uploaded files
-    for (const file of uploadedFiles) {
-      if (file?.path) {
-        await fs.unlink(file.path).catch(err =>
-          logger.warn('Failed to clean up temp file:', err)
-        );
-      }
+    // Clean up temp files
+    for (const f of uploadedFiles) {
+      if (f?.path) await fs.unlink(f.path).catch(err => logger.warn('Failed to clean up temp file:', err));
     }
   }
 });
 
 /**
- * GET /api/jobs/:jobId/submissions
- * Get all submissions for a job
+ * PATCH /api/jobs/:jobId/bountyId
+ * Manually attach the on-chain bountyId (used by the client after tx confirmation)
  */
-router.get('/:jobId/submissions', async (req, res) => {
-  try {
-    const { jobId } = req.params;
-
-    logger.info(`Getting submissions for job ${jobId}`);
-
-    const job = await jobStorage.getJob(jobId);
-
-    res.json({
-      success: true,
-      jobId: parseInt(jobId),
-      submissions: job.submissions || []
-    });
-
-  } catch (error) {
-    logger.error('Error getting submissions:', error);
-
-    if (error.message.includes('not found')) {
-      res.status(404).json({
-        error: 'Job not found',
-        details: error.message
-      });
-    } else {
-      res.status(500).json({
-        error: 'Failed to get submissions',
-        details: error.message
-      });
-    }
-  }
-});
-
-// Update job with bountyId from blockchain
-router.patch('/jobs/:jobId/bountyId', async (req, res) => {
+router.patch('/:jobId/bountyId', async (req, res) => {
   try {
     const { jobId } = req.params;
     const { bountyId, txHash, blockNumber } = req.body;
 
     const storage = await jobStorage.readStorage();
     const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
+    if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
 
-    if (!job) {
-      return res.status(404).json({ success: false, error: 'Job not found' });
-    }
-
-    job.bountyId = bountyId;
-    job.txHash = txHash;
+    job.bountyId   = bountyId;
+    job.txHash     = txHash;
     job.blockNumber = blockNumber;
+    job.onChain    = true;
 
     await jobStorage.writeStorage(storage);
 
     logger.info('Job updated with bountyId', { jobId, bountyId });
-
     res.json({ success: true, job });
   } catch (error) {
     logger.error('Error updating job bountyId:', error);
@@ -618,70 +470,185 @@ router.patch('/jobs/:jobId/bountyId', async (req, res) => {
   }
 });
 
+/**
+ * PATCH /api/jobs/:id/bountyId/resolve
+ * Resolve on-chain bountyId via server-side RPC and persist it
+ */
+const RPC = process.env.RPC_PROVIDER_URL;
+const ESCROW = process.env.BOUNTY_ESCROW_ADDRESS;
+const ABI = [
+  "function bountyCount() view returns (uint256)",
+  "function getBounty(uint256) view returns (address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256)"
+];
+function ro() { return new ethers.JsonRpcProvider(RPC); }
+function escrowRO() { return new ethers.Contract(ESCROW, ABI, ro()); }
+
+// keep these helpers at top of file 
+router.patch('/:id/bountyId/resolve', async (req, res) => {
+  const jobIdParam = req.params.id;
+  try {
+    logger.info('[resolve] hit', { id: jobIdParam, body: req.body });
+
+    const { creator, rubricCid, submissionCloseTime, txHash } = req.body || {};
+    if (!creator || !submissionCloseTime) {
+      return res.status(400).json({ success: false, error: 'creator and submissionCloseTime are required' });
+    }
+
+    // load job from storage
+    const storage = await jobStorage.readStorage();
+    const job = storage.jobs.find(j => j.jobId === parseInt(jobIdParam));
+    if (!job) {
+      return res.status(404).json({ success: false, error: `Job ${jobIdParam} not found` });
+    }
+
+    // normalize deadline to seconds
+    const deadlineSec = Number(submissionCloseTime) > 1e12
+      ? Math.floor(Number(submissionCloseTime) / 1000)
+      : Number(submissionCloseTime);
+
+    // ---- 1) tx-hash fast path (guarded) ----
+    if (txHash) {
+      try {
+        const receipt = await ro().getTransactionReceipt(txHash);
+        if (receipt && Array.isArray(receipt.logs)) {
+          const iface = new ethers.Interface([
+            "event BountyCreated(uint256 indexed bountyId, address indexed creator, string rubricCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)"
+          ]);
+          for (const log of receipt.logs) {
+            if ((log.address || '').toLowerCase() !== (ESCROW || '').toLowerCase()) continue;
+            try {
+              const ev = iface.parseLog(log);
+              const bountyId = Number(ev.args.bountyId);
+              job.bountyId = bountyId;
+              job.onChain = true;
+              job.txHash = job.txHash ?? txHash;
+              await jobStorage.writeStorage(storage);
+              logger.info('[resolve] resolved via tx', { jobId: jobIdParam, bountyId });
+              return res.json({ success: true, method: 'tx', bountyId, job });
+            } catch (parseErr) {
+              // not our event; keep scanning
+            }
+          }
+        }
+      } catch (txErr) {
+        logger.warn('[resolve] txHash path failed', { msg: txErr?.message });
+        // fall through to state scan
+      }
+    }
+
+    // ---- 2) state scan (bounded & tolerant) ----
+    try {
+      const c = escrowRO();
+      const total = Number(await c.bountyCount());
+      if (!(total > 0)) {
+        return res.status(404).json({ success: false, error: 'No bounties on chain yet' });
+      }
+
+      const start = Math.max(0, total - 1);
+      const stop  = Math.max(0, total - 1 - 300); // lookback 300
+      const wantCreator  = String(creator).toLowerCase();
+      const wantCid      = rubricCid ? String(rubricCid) : '';
+      const wantDeadline = deadlineSec;
+
+      let best = null, bestDelta = Number.POSITIVE_INFINITY;
+      for (let i = start; i >= stop; i--) {
+        let b;
+        try { b = await c.getBounty(i); } catch (e) { continue; }
+        const bCreator  = (b[0] || '').toLowerCase();
+        if (bCreator !== wantCreator) continue;
+        const bCid      = b[1] || '';
+        const bDeadline = Number(b[6] || 0);
+        const delta     = Math.abs(bDeadline - wantDeadline);
+        const cidOk      = !wantCid || wantCid === bCid;
+        const deadlineOk = delta <= 300; // ±5 minutes
+        if ((cidOk && deadlineOk) || (cidOk && delta < bestDelta)) {
+          best = i; bestDelta = delta;
+          if (delta === 0) break;
+        }
+      }
+
+      if (best != null) {
+        job.bountyId = best;
+        job.onChain  = true;
+        await jobStorage.writeStorage(storage);
+        logger.info('[resolve] resolved via state', { jobId: jobIdParam, bountyId: best, delta: bestDelta });
+        return res.json({ success: true, method: 'state', bountyId: best, delta: bestDelta, job });
+      }
+
+      job.onChain = false;
+      await jobStorage.writeStorage(storage);
+      return res.status(404).json({ success: false, error: 'No matching on-chain bounty', onChain: false });
+    } catch (scanErr) {
+      logger.error('[resolve] state scan error', { msg: scanErr?.message });
+      return res.status(500).json({ success: false, error: `State scan failed: ${scanErr?.message}` });
+    }
+  } catch (e) {
+    logger.error('[resolve] fatal', { msg: e?.message, stack: e?.stack });
+    return res.status(500).json({ success: false, error: e?.message || 'Internal error' });
+  }
+});
+
+
+
+
+
 // ============================================================
 //          BLOCKCHAIN SYNC MONITORING ENDPOINTS
 // ============================================================
 
 /**
  * GET /api/jobs/sync/status
- * Get blockchain sync service status
- * Returns info about sync state, last sync time, and configuration
  */
 router.get('/sync/status', (req, res) => {
   if (process.env.USE_BLOCKCHAIN_SYNC !== 'true') {
-    return res.json({ 
+    return res.json({
       enabled: false,
       message: 'Blockchain sync is disabled. Set USE_BLOCKCHAIN_SYNC=true in .env to enable.'
     });
   }
-  
+
   try {
     const { getSyncService } = require('../utils/syncService');
     const syncService = getSyncService();
-    
+
     res.json({
       enabled: true,
       status: syncService.getStatus()
     });
   } catch (error) {
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to get sync status',
-      details: error.message 
+      details: error.message
     });
   }
 });
 
 /**
  * POST /api/jobs/sync/now
- * Trigger immediate blockchain sync
- * Useful for testing or forcing a sync without waiting for the interval
- * 
- * Note: In production, add authentication to this endpoint!
  */
 router.post('/sync/now', async (req, res) => {
   if (process.env.USE_BLOCKCHAIN_SYNC !== 'true') {
-    return res.status(400).json({ 
+    return res.status(400).json({
       error: 'Blockchain sync not enabled',
       message: 'Set USE_BLOCKCHAIN_SYNC=true in .env to enable sync functionality.'
     });
   }
-  
+
   try {
     const { getSyncService } = require('../utils/syncService');
     const syncService = getSyncService();
-    
-    // Trigger sync (runs asynchronously)
+
     syncService.syncNow();
-    
+
     res.json({
       success: true,
       message: 'Blockchain sync triggered',
       status: syncService.getStatus()
     });
   } catch (error) {
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to trigger sync',
-      details: error.message 
+      details: error.message
     });
   }
 });

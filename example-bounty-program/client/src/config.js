@@ -5,7 +5,7 @@
 
 export const config = {
   // API Configuration
-  apiUrl: import.meta.env.VITE_API_URL || 'http://localhost:5000',
+  apiUrl: import.meta.env.VITE_API_URL || 'http://localhost:5005',
   apiTimeout: parseInt(import.meta.env.VITE_API_TIMEOUT) || 30000,
 
   // Blockchain Configuration

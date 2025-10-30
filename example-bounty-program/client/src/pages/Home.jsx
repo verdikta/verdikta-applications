@@ -15,6 +15,7 @@ function Home({ walletState }) {
 
   useEffect(() => {
     loadJobs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters]);
 
   const loadJobs = async () => {
@@ -27,6 +28,15 @@ function Home({ walletState }) {
       if (filters.status) filterParams.status = filters.status;
       if (filters.search) filterParams.search = filters.search;
       if (filters.minPayout) filterParams.minPayout = filters.minPayout;
+
+      // Ask backend to hide ended bounties by default
+      // (Ended = CANCELLED, COMPLETED; CLOSED still shows unless user filters it)
+      const statusUpper = String(filters.status).toUpperCase();
+      const viewingEndedExplicitly =
+        statusUpper === 'COMPLETED' || statusUpper === 'CANCELLED';
+      if (!viewingEndedExplicitly) {
+        filterParams.hideEnded = true;
+      }
 
       const response = await apiService.listJobs(filterParams);
       setJobs(response.jobs || []);
@@ -84,6 +94,8 @@ function Home({ walletState }) {
               <option value="OPEN">Open</option>
               <option value="COMPLETED">Completed</option>
               <option value="CLOSED">Closed</option>
+              {/* If you later add a "Cancelled" view, include: */}
+              {/* <option value="CANCELLED">Cancelled</option> */}
             </select>
             <input
               type="number"
@@ -193,9 +205,9 @@ function Home({ walletState }) {
 function JobCard({ job }) {
   // Calculate time remaining
   const now = Math.floor(Date.now() / 1000);
-  const timeRemaining = job.submissionCloseTime - now;
+  const timeRemaining = (job.submissionCloseTime ?? 0) - now;
   const hoursRemaining = Math.max(0, Math.floor(timeRemaining / 3600));
-  
+
   const isClosingSoon = hoursRemaining > 0 && hoursRemaining < 24;
   const isClosed = timeRemaining <= 0;
 
@@ -203,7 +215,7 @@ function JobCard({ job }) {
     <Link to={`/bounty/${job.jobId}`} className="bounty-card">
       <div className="bounty-header">
         <h3>{job.title || `Job #${job.jobId}`}</h3>
-        <span className={`status-badge status-${job.status.toLowerCase()}`}>
+        <span className={`status-badge status-${String(job.status).toLowerCase()}`}>
           {job.status}
         </span>
       </div>
@@ -211,9 +223,9 @@ function JobCard({ job }) {
         <div className="work-type-badge">{job.workProductType}</div>
       )}
       <p className="bounty-description">
-        {job.description.length > 150
-          ? job.description.substring(0, 150) + '...'
-          : job.description}
+        {(job.description || '').length > 150
+          ? (job.description || '').substring(0, 150) + '...'
+          : (job.description || '')}
       </p>
       <div className="bounty-footer">
         <div className="payout">
@@ -250,6 +262,4 @@ function JobCard({ job }) {
 }
 
 export default Home;
-
-
 

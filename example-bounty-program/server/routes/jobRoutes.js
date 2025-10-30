@@ -185,27 +185,70 @@ router.post('/create', async (req, res) => {
 /**
  * GET /api/jobs
  * List all jobs with optional filters
+ * Supports:
+ *   - status=OPEN|CLOSED|COMPLETED|CANCELLED
+ *   - creator=0x...
+ *   - minPayout=number
+ *   - search=free text
+ *   - onChainId=number
+ *   - hideEnded=true      // ← NEW: hides CANCELLED and COMPLETED
+ *   - excludeStatuses=A,B // ← NEW: e.g. excludeStatuses=CANCELLED,COMPLETED
+ *   - limit, offset
  */
 router.get('/', async (req, res) => {
   try {
-    const { status, creator, minPayout, search, onChainId, limit = 50, offset = 0 } = req.query;
+    const {
+      status,
+      creator,
+      minPayout,
+      search,
+      onChainId,
+      hideEnded,
+      excludeStatuses,
+      limit = 50,
+      offset = 0
+    } = req.query;
 
-    logger.info('Listing jobs', { status, creator, search, onChainId });
+    logger.info('Listing jobs', { status, creator, search, onChainId, hideEnded, excludeStatuses });
 
+    // Build base filters supported by jobStorage.listJobs
     const filters = {};
     if (status) filters.status = status;
     if (creator) filters.creator = creator;
     if (minPayout) filters.minPayout = minPayout;
     if (search) filters.search = search;
 
+    // Pull jobs from storage with base filters applied
     let allJobs = await jobStorage.listJobs(filters);
 
-    // Optional filter by onChainId
+    // Filter by onChainId if provided
     if (onChainId) {
-      allJobs = allJobs.filter(j => j.onChainId === parseInt(onChainId));
+      allJobs = allJobs.filter(j => Number(j.onChainId) === Number(onChainId));
     }
 
-    // Apply pagination
+    // NEW: build an exclusion set
+    const excludeSet = new Set();
+
+    // hideEnded=true → exclude CANCELLED & COMPLETED
+    if (String(hideEnded).toLowerCase() === 'true') {
+      excludeSet.add('CANCELLED');
+      excludeSet.add('COMPLETED');
+    }
+
+    // excludeStatuses=A,B → exclude those explicit statuses too
+    if (excludeStatuses) {
+      for (const s of String(excludeStatuses).split(',')) {
+        const v = s.trim().toUpperCase();
+        if (v) excludeSet.add(v);
+      }
+    }
+
+    // Apply exclusion if requested
+    if (excludeSet.size > 0) {
+      allJobs = allJobs.filter(j => !excludeSet.has(String(j.status).toUpperCase()));
+    }
+
+    // Pagination
     const limitNum = parseInt(limit, 10);
     const offsetNum = parseInt(offset, 10);
     const paginatedJobs = allJobs.slice(offsetNum, offsetNum + limitNum);
@@ -213,9 +256,7 @@ router.get('/', async (req, res) => {
     // Summaries
     const jobSummaries = paginatedJobs.map(job => ({
       jobId: job.jobId,
-      onChainId: job.onChainId,              // legacy field if you used it
-      bountyId: job.bountyId ?? null,        // on-chain bounty index (if resolved)
-      onChain: job.onChain ?? null,          // whether we mapped this to chain
+      onChainId: job.onChainId,
       title: job.title,
       description: job.description,
       workProductType: job.workProductType,
@@ -247,6 +288,7 @@ router.get('/', async (req, res) => {
     });
   }
 });
+
 
 /**
  * GET /api/jobs/:jobId

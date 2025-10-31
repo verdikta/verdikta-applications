@@ -1,123 +1,57 @@
+// server/routes/ipfsRoutes.js
 const express = require('express');
 const router = express.Router();
+const fs = require('fs').promises;
+const path = require('path');
 const logger = require('../utils/logger');
-const { isValidCid } = require('../utils/validation');
 
-/**
- * GET /api/fetch/:cid
- * Fetch content from IPFS
- */
-router.get('/fetch/:cid', async (req, res) => {
+// POST /api/rubrics
+// body: { rubric: object, classId?: number }
+router.post('/rubrics', async (req, res) => {
   try {
-    const { cid } = req.params;
-
-    // Validate CID format
-    if (!isValidCid(cid)) {
+    const { rubric, classId } = req.body || {};
+    if (!rubric || typeof rubric !== 'object') {
+      return res.status(400).json({ success: false, error: 'Missing rubric object' });
+    }
+    if (!Array.isArray(rubric.criteria) || rubric.criteria.length < 1) {
       return res.status(400).json({
-        error: 'Invalid CID format',
-        details: 'The provided CID does not match the expected format'
+        success: false,
+        error: 'Rubric validation failed',
+        details: 'Criteria array must have at least one criterion'
       });
     }
 
-    logger.info(`GET /api/fetch/${cid} called`);
+    // write rubric JSON to a temp file
+    const tmpDir = path.join(__dirname, '../tmp');
+    await fs.mkdir(tmpDir, { recursive: true });
+    const tmpFile = path.join(tmpDir, `rubric-${Date.now()}.json`);
+    await fs.writeFile(tmpFile, JSON.stringify(rubric, null, 2));
 
-    // Fetch from IPFS using ipfsClient
     const ipfsClient = req.app.locals.ipfsClient;
-    const data = await ipfsClient.fetchFromIPFS(cid);
-
-    logger.info('Successfully fetched from IPFS', { 
-      cid, 
-      size: data.length 
-    });
-
-    // Try to detect content type
-    let contentType = 'application/octet-stream';
-    let content = data;
-
+    let rubricCid;
     try {
-      // Attempt to parse as JSON
-      const jsonContent = JSON.parse(data.toString('utf-8'));
-      contentType = 'application/json';
-      content = JSON.stringify(jsonContent, null, 2);
-    } catch (e) {
-      // Not JSON, check for other types based on content
-      const dataStr = data.toString('utf-8', 0, Math.min(100, data.length));
-      if (dataStr.startsWith('<!DOCTYPE html') || dataStr.startsWith('<html')) {
-        contentType = 'text/html';
-      } else if (data[0] === 0xFF && data[1] === 0xD8) {
-        contentType = 'image/jpeg';
-      } else if (data[0] === 0x89 && data[1] === 0x50) {
-        contentType = 'image/png';
-      } else if (data[0] === 0x25 && data[1] === 0x50 && data[2] === 0x44 && data[3] === 0x46) {
-        contentType = 'application/pdf';
-      }
+      rubricCid = await ipfsClient.uploadToIPFS(tmpFile);
+      logger.info('Rubric uploaded to IPFS', { rubricCid, classId });
+    } finally {
+      await fs.unlink(tmpFile).catch(() => {});
     }
 
-    // Set response headers
-    res.set({
-      'Content-Type': contentType,
-      'Content-Length': data.length,
-      'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'public, max-age=31536000', // 1 year cache (IPFS content is immutable)
-      'X-Content-CID': cid
-    });
-
-    res.send(content);
-
-  } catch (error) {
-    logger.error('Error fetching from IPFS:', error);
-    
-    if (error.message.includes('not found') || error.message.includes('404')) {
-      return res.status(404).json({
-        error: 'CID not found',
-        details: error.message
-      });
-    }
-    
-    if (error.message.includes('timeout') || error.message.includes('timed out')) {
-      return res.status(504).json({
-        error: 'Request timeout',
-        details: error.message
-      });
-    }
-    
-    return res.status(500).json({
-      error: 'Failed to fetch from IPFS',
-      details: error.message
-    });
+    return res.json({ success: true, rubricCid });
+  } catch (err) {
+    logger.error('Rubric upload failed', { error: err.message });
+    return res.status(500).json({ success: false, error: err.message || 'Internal error' });
   }
 });
 
-/**
- * POST /api/rubrics/validate
- * Validate rubric JSON structure
- */
-router.post('/rubrics/validate', async (req, res) => {
+// GET /api/fetch/:cid  — convenience passthrough (text)
+router.get('/fetch/:cid', async (req, res) => {
   try {
-    const { rubric } = req.body;
-
-    if (!rubric) {
-      return res.status(400).json({
-        error: 'Missing rubric',
-        details: 'Request body must include rubric object'
-      });
-    }
-
-    const { validateRubric } = require('../utils/validation');
-    const result = validateRubric(rubric);
-
-    res.json({
-      valid: result.valid,
-      errors: result.errors,
-      warnings: [] // Can add warnings for non-critical issues
-    });
-
-  } catch (error) {
-    logger.error('Error validating rubric:', error);
-    res.status(500).json({
-      error: 'Failed to validate rubric',
-      details: error.message
-    });
+    const ipfsClient = req.app.locals.ipfsClient;
+    const content = await ipfsClient.fetchFromIPFS(req.params.cid);
+    res.type('text/plain').send(content);
+  } catch (err) {
+    logger.error('Fetch from IPFS failed', { cid: req.params.cid, error: err.message });
+    res.status(500).json({ error: 'Failed to fetch IPFS content', details: err.message });
   }
 });
 

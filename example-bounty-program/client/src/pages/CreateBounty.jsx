@@ -312,52 +312,30 @@ function CreateBounty({ walletState }) {
 const handleSubmit = async (e) => {
   e.preventDefault();
 
-  if (!walletState.isConnected) {
-    alert('Please connect your wallet first');
-    return;
-  }
-
-  // Validate form
-  if (!formData.title.trim()) {
-    alert('Please enter a job title');
-    return;
-  }
-
-  if (!formData.description.trim()) {
-    alert('Please enter a job description');
-    return;
-  }
-
-  if (!formData.payoutAmount || parseFloat(formData.payoutAmount) <= 0) {
-    alert('Please enter a valid payout amount');
-    return;
-  }
-
-  if (!rubric.title.trim()) {
-    alert('Please create or load a rubric');
-    return;
-  }
-
-  const validation = validateWeights();
-  if (!validation.valid) {
-    alert(`Invalid rubric weights: ${validation.message}`);
-    return;
-  }
-
-  if (juryNodes.length === 0) {
-    alert('Please add at least one jury node');
-    return;
-  }
+  if (!walletState.isConnected) return alert('Please connect your wallet first');
+  if (!formData.title.trim())  return alert('Please enter a job title');
+  if (!formData.description.trim()) return alert('Please enter a job description');
+  if (!formData.payoutAmount || parseFloat(formData.payoutAmount) <= 0) return alert('Please enter a valid payout amount');
+  if (!rubric.title.trim()) return alert('Please create or load a rubric');
+  if (!validateWeights().valid) return alert(`Invalid rubric weights: ${validateWeights().message}`);
+  if (juryNodes.length === 0) return alert('Please add at least one jury node');
 
   try {
     setLoading(true);
     setError(null);
 
-    // Transform rubric for backend
+    // 0) Ensure wallet is on the correct chain
+    try {
+      const net = await walletService.getProvider()?.getNetwork();
+      const current = Number(net?.chainId);
+      // If you export currentNetwork.chainId in config, compare here:
+      // if (current !== currentNetwork.chainId) await walletService.switchNetwork();
+    } catch { /* ignore if not available */ }
+
+    // 1) Create job in backend (get rubricCid)
+    console.log('📤 Step 1: Creating job in backend...');
     const backendRubric = transformRubricForBackend(rubric);
 
-    // STEP 1: Create job in backend (to get rubricCid for blockchain)
-    console.log('📤 Step 1: Creating job in backend...');
     const apiResponse = await apiService.createJob({
       title: formData.title,
       description: formData.description,
@@ -365,58 +343,44 @@ const handleSubmit = async (e) => {
       creator: walletState.address,
       bountyAmount: parseFloat(formData.payoutAmount),
       bountyAmountUSD: parseFloat(formData.payoutAmount) * formData.ethPriceUSD,
-      threshold: threshold,
+      threshold,
       rubricJson: backendRubric,
       classId: selectedClassId,
-      juryNodes: juryNodes.map(node => ({
-        provider: node.provider,
-        model: node.model,
-        runs: node.runs,
-        weight: node.weight
-      })),
+      juryNodes: juryNodes.map(n => ({ provider: n.provider, model: n.model, runs: n.runs, weight: n.weight })),
       iterations,
       submissionWindowHours: parseInt(formData.submissionWindowHours)
     });
 
-    if (!apiResponse.success) {
-      throw new Error(apiResponse.error || 'Failed to create job in backend');
-    }
-
+    if (!apiResponse.success) throw new Error(apiResponse.error || 'Backend job create failed');
     const { job } = apiResponse;
     console.log('✅ Backend job created:', { jobId: job.jobId, rubricCid: job.rubricCid });
 
-    // STEP 2: Create bounty on blockchain
-    console.log('🔗 Step 2: Creating bounty on blockchain...');
+    // 2) On-chain create
+    console.log('🔗 Step 2: Creating bounty on-chain...');
     const { getContractService } = await import('../services/contractService');
     const contractService = getContractService();
-    
-    if (!contractService.isConnected()) {
-      await contractService.connect();
-    }
+    if (!contractService.isConnected()) await contractService.connect();
 
     const contractResult = await contractService.createBounty({
       rubricCid: job.rubricCid,
       classId: selectedClassId,
-      threshold: threshold,
+      threshold,
       bountyAmountEth: parseFloat(formData.payoutAmount),
       submissionWindowHours: parseInt(formData.submissionWindowHours)
     });
 
-    console.log('✅ Blockchain bounty created:', contractResult);
-
-    if (!contractResult.success || contractResult.bountyId === null) {
-      throw new Error('Failed to get bountyId from blockchain transaction');
+    if (!contractResult.success || contractResult.bountyId == null) {
+      throw new Error('On-chain create returned no bountyId');
     }
+    console.log('✅ On-chain bounty created:', contractResult);
 
-    // STEP 3: Update backend with bountyId
+    // 3) Persist bountyId to backend
     console.log('🔄 Step 3: Updating backend with bountyId...');
     await apiService.updateJobBountyId(job.jobId, {
       bountyId: contractResult.bountyId,
       txHash: contractResult.txHash,
       blockNumber: contractResult.blockNumber
     });
-
-    console.log('✅ All steps complete!');
 
     alert(
       `✅ Bounty created successfully!\n\n` +
@@ -425,21 +389,23 @@ const handleSubmit = async (e) => {
       `Transaction: ${contractResult.txHash}\n` +
       `Block: ${contractResult.blockNumber}\n\n` +
       `Rubric CID: ${job.rubricCid}\n` +
-      `Primary CID: ${job.primaryCid}\n\n` +
-      `Note: The page may take a moment to load while the blockchain syncs.`
+      `Primary CID: ${job.primaryCid}`
     );
 
-    // Navigate to job details
     navigate(`/bounty/${job.jobId}`);
 
   } catch (err) {
-    console.error('❌ Error creating bounty:', err);
-    setError(err.message);
-    alert(`Failed to create bounty: ${err.message}`);
+    const serverMsg = err?.response?.data?.error || err?.message || 'Unknown error';
+    console.error('❌ Create flow failed:', serverMsg, err?.response?.data);
+    setError(serverMsg);
+    alert(`Failed to create bounty: ${serverMsg}`);
   } finally {
     setLoading(false);
   }
 };
+
+
+
 
 
   return (

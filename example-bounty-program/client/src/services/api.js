@@ -140,10 +140,19 @@ export const apiService = {
   /**
    * Upload rubric to IPFS and get CID
    */
-  async uploadRubric(rubricJson, classId = 128) {
-    const { data } = await api.post('/api/rubrics', { rubric: rubricJson, classId });
+async uploadRubric(rubricJson, classId = 128) {
+  try {
+    const { data } = await api.post(
+      '/api/rubrics',
+      { rubric: rubricJson, classId },
+      { timeout: 90000 } // IPFS pinning can exceed 30s
+    );
     return data;
-  },
+  } catch (e) {
+    const msg = e?.response?.data?.error || e?.message || 'Rubric upload failed';
+    throw new Error(msg);
+  }
+},
 
   /**
    * List all bounties (legacy reads)

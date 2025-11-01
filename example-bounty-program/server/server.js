@@ -5,6 +5,14 @@ const path = require('path');
 const fs = require('fs').promises;
 require('dotenv').config();
 
+// Crash guards so we never drop the socket without a body
+process.on('uncaughtException', (err) => {
+  console.error('[fatal] uncaughtException:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[fatal] unhandledRejection:', reason);
+});
+
 const { IPFSClient, classMap } = require('@verdikta/common');
 const logger = require('./utils/logger');
 const bountyRoutes = require('./routes/bountyRoutes');
@@ -24,7 +32,7 @@ const ipfsClient = new IPFSClient({
   gateway: process.env.IPFS_GATEWAY || 'https://ipfs.io',
   pinningService: process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud',
   pinningKey: process.env.IPFS_PINNING_KEY,
-  timeout: 30000,
+  timeout: 60000,
   retryOptions: { retries: 5, factor: 2 }
 }, logger);
 
@@ -101,7 +109,8 @@ const initializeBlockchainSync = () => {
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.options('*', cors());
+app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Request logging middleware

@@ -14,6 +14,7 @@ function CreateBounty({ walletState }) {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [loadingText, setLoadingText] = useState('');
   const [error, setError] = useState(null);
   const [isSwitchingNetwork, setIsSwitchingNetwork] = useState(false);
 
@@ -167,45 +168,12 @@ function CreateBounty({ walletState }) {
     }
   };
 
-  // Rubric editing functions
-  const updateRubricField = (field, value) => {
-    setRubric(prev => ({ ...prev, [field]: value }));
-  };
+  // Validation helpers
+  const hasAtLeastOneCriterion = () => Array.isArray(rubric.criteria) && rubric.criteria.length > 0;
 
-  const updateCriterion = (index, updatedCriterion) => {
-    setRubric(prev => ({
-      ...prev,
-      criteria: prev.criteria.map((c, i) => i === index ? updatedCriterion : c)
-    }));
-  };
-
-  const addCriterion = (must = false) => {
-    const newCriterion = {
-      id: `criterion_${Date.now()}`,
-      label: '',
-      must: must,
-      weight: must ? 0.0 : 0.20,
-      instructions: ''
-    };
-
-    setRubric(prev => ({
-      ...prev,
-      criteria: [...prev.criteria, newCriterion]
-    }));
-  };
-
-  const removeCriterion = (index) => {
-    setRubric(prev => ({
-      ...prev,
-      criteria: prev.criteria.filter((_, i) => i !== index)
-    }));
-  };
-
-  // Validation
   const validateWeights = () => {
-    const scoredCriteria = rubric.criteria.filter(c => !c.must);
+    const scoredCriteria = (rubric.criteria || []).filter(c => !c.must);
     const totalWeight = scoredCriteria.reduce((sum, c) => sum + (c.weight || 0), 0);
-
     return {
       valid: Math.abs(totalWeight - 1.0) < 0.01,
       totalWeight,
@@ -221,10 +189,10 @@ function CreateBounty({ walletState }) {
     const { threshold: _, ...rubricWithoutThreshold } = rubricData; // Remove threshold if present
     return {
       ...rubricWithoutThreshold,
-      criteria: rubricWithoutThreshold.criteria.map(criterion => ({
+      criteria: (rubricWithoutThreshold.criteria || []).map(criterion => ({
         id: criterion.id,
-        must: criterion.must,
-        weight: criterion.weight,
+        must: !!criterion.must,
+        weight: Number(criterion.weight ?? 0),
         description: criterion.instructions || criterion.label || criterion.description || ''
       }))
     };
@@ -236,13 +204,14 @@ function CreateBounty({ walletState }) {
       alert('Please connect your wallet first');
       return;
     }
-
-    // Validate
     if (!rubric.title.trim()) {
       alert('Please enter a rubric title');
       return;
     }
-
+    if (!hasAtLeastOneCriterion()) {
+      alert('Please add at least one criterion');
+      return;
+    }
     const validation = validateWeights();
     if (!validation.valid) {
       alert(`Invalid weights: ${validation.message}`);
@@ -251,6 +220,7 @@ function CreateBounty({ walletState }) {
 
     try {
       setLoading(true);
+      setLoadingText('Saving rubric to IPFS…');
       setError(null);
 
       // Transform rubric for backend
@@ -259,8 +229,8 @@ function CreateBounty({ walletState }) {
       // Upload to IPFS via backend API
       const response = await apiService.uploadRubric(backendRubric, selectedClassId);
 
-      if (!response.success) {
-        throw new Error(response.error || 'Failed to upload rubric');
+      if (!response?.success) {
+        throw new Error(response?.error || 'Failed to upload rubric');
       }
 
       const rubricCid = response.rubricCid;
@@ -277,19 +247,31 @@ function CreateBounty({ walletState }) {
         creator: walletState.address
       };
 
-      rubricStorage.saveRubric(rubricMetadata);
+ try {
+   // many helper libs expect a wrapper object { rubricMetadata }
+   rubricStorage.saveRubric({ rubricMetadata });
+ } catch (e) {
+   // safety: still persist locally if the helper’s signature differs
+   try {
+     const key = 'verdikta_rubrics';
+     const prev = JSON.parse(localStorage.getItem(key) || '[]');
+     prev.unshift(rubricMetadata);
+     localStorage.setItem(key, JSON.stringify(prev));
+     console.warn('[rubricStorage] saveRubric fallback used:', e?.message || e);
+   } catch (ignored) {}
+ }
+
 
       alert(`✅ Rubric saved successfully!\n\nIPFS CID: ${rubricCid}\n\nYou can now use this rubric to create bounties.`);
-
-      // Optional: navigate to create bounty with this rubric pre-loaded
       setLoadedRubricCid(rubricCid);
-
     } catch (err) {
-      console.error('Error saving rubric:', err);
-      setError(err.message);
-      alert(`Failed to save rubric: ${err.message}`);
+      const serverMsg = err?.response?.data?.error || err?.message || 'Unknown error';
+      console.error('Error saving rubric:', serverMsg, err?.response?.data);
+      setError(serverMsg);
+      alert(`Failed to save rubric: ${serverMsg}`);
     } finally {
       setLoading(false);
+      setLoadingText('');
     }
   };
 
@@ -308,105 +290,102 @@ function CreateBounty({ walletState }) {
     alert(`Loaded rubric: ${savedRubric.title}`);
   };
 
-// Submit form (create bounty on blockchain + backend)
-const handleSubmit = async (e) => {
-  e.preventDefault();
+  // Submit form (create bounty on blockchain + backend)
+  const handleSubmit = async (e) => {
+    e.preventDefault();
 
-  if (!walletState.isConnected) return alert('Please connect your wallet first');
-  if (!formData.title.trim())  return alert('Please enter a job title');
-  if (!formData.description.trim()) return alert('Please enter a job description');
-  if (!formData.payoutAmount || parseFloat(formData.payoutAmount) <= 0) return alert('Please enter a valid payout amount');
-  if (!rubric.title.trim()) return alert('Please create or load a rubric');
-  if (!validateWeights().valid) return alert(`Invalid rubric weights: ${validateWeights().message}`);
-  if (juryNodes.length === 0) return alert('Please add at least one jury node');
+    if (!walletState.isConnected) return alert('Please connect your wallet first');
+    if (!formData.title.trim())  return alert('Please enter a job title');
+    if (!formData.description.trim()) return alert('Please enter a job description');
+    if (!formData.payoutAmount || parseFloat(formData.payoutAmount) <= 0) return alert('Please enter a valid payout amount');
+    if (!rubric.title.trim()) return alert('Please create or load a rubric');
+    if (!hasAtLeastOneCriterion()) return alert('Please add at least one criterion');
+    if (!validateWeights().valid) return alert(`Invalid rubric weights: ${validateWeights().message}`);
+    if (juryNodes.length === 0) return alert('Please add at least one jury node');
 
-  try {
-    setLoading(true);
-    setError(null);
-
-    // 0) Ensure wallet is on the correct chain
     try {
-      const net = await walletService.getProvider()?.getNetwork();
-      const current = Number(net?.chainId);
-      // If you export currentNetwork.chainId in config, compare here:
-      // if (current !== currentNetwork.chainId) await walletService.switchNetwork();
-    } catch { /* ignore if not available */ }
+      setLoading(true);
+      setLoadingText('Creating job on backend…');
+      setError(null);
 
-    // 1) Create job in backend (get rubricCid)
-    console.log('📤 Step 1: Creating job in backend...');
-    const backendRubric = transformRubricForBackend(rubric);
+      // 0) Ensure wallet is on the correct chain (best effort)
+      try {
+        const provider = walletService.getProvider?.();
+        const net = provider && (await provider.getNetwork());
+        const current = Number(net?.chainId);
+        console.log('[Network]', { current });
+      } catch {}
 
-    const apiResponse = await apiService.createJob({
-      title: formData.title,
-      description: formData.description,
-      workProductType: formData.workProductType,
-      creator: walletState.address,
-      bountyAmount: parseFloat(formData.payoutAmount),
-      bountyAmountUSD: parseFloat(formData.payoutAmount) * formData.ethPriceUSD,
-      threshold,
-      rubricJson: backendRubric,
-      classId: selectedClassId,
-      juryNodes: juryNodes.map(n => ({ provider: n.provider, model: n.model, runs: n.runs, weight: n.weight })),
-      iterations,
-      submissionWindowHours: parseInt(formData.submissionWindowHours)
-    });
+      // 1) Create job in backend (get rubricCid)
+      const backendRubric = transformRubricForBackend(rubric);
 
-    if (!apiResponse.success) throw new Error(apiResponse.error || 'Backend job create failed');
-    const { job } = apiResponse;
-    console.log('✅ Backend job created:', { jobId: job.jobId, rubricCid: job.rubricCid });
+      const apiResponse = await apiService.createJob({
+        title: formData.title,
+        description: formData.description,
+        workProductType: formData.workProductType,
+        creator: walletState.address,
+        bountyAmount: parseFloat(formData.payoutAmount),
+        bountyAmountUSD: parseFloat(formData.payoutAmount) * formData.ethPriceUSD,
+        threshold,
+        rubricJson: backendRubric,
+        classId: selectedClassId,
+        juryNodes: juryNodes.map(n => ({ provider: n.provider, model: n.model, runs: n.runs, weight: n.weight })),
+        iterations,
+        submissionWindowHours: parseInt(formData.submissionWindowHours)
+      });
 
-    // 2) On-chain create
-    console.log('🔗 Step 2: Creating bounty on-chain...');
-    const { getContractService } = await import('../services/contractService');
-    const contractService = getContractService();
-    if (!contractService.isConnected()) await contractService.connect();
+      if (!apiResponse?.success) throw new Error(apiResponse?.error || 'Backend job create failed');
+      const { job } = apiResponse;
+      console.log('✅ Backend job created:', { jobId: job.jobId, rubricCid: job.rubricCid });
 
-    const contractResult = await contractService.createBounty({
-      rubricCid: job.rubricCid,
-      classId: selectedClassId,
-      threshold,
-      bountyAmountEth: parseFloat(formData.payoutAmount),
-      submissionWindowHours: parseInt(formData.submissionWindowHours)
-    });
+      // 2) On-chain create
+      setLoadingText('Waiting for wallet / creating on-chain…');
+      const { getContractService } = await import('../services/contractService');
+      const contractService = getContractService();
+      if (!contractService.isConnected()) await contractService.connect();
 
-    if (!contractResult.success || contractResult.bountyId == null) {
-      throw new Error('On-chain create returned no bountyId');
+      const contractResult = await contractService.createBounty({
+        rubricCid: job.rubricCid,
+        classId: selectedClassId,
+        threshold,
+        bountyAmountEth: parseFloat(formData.payoutAmount),
+        submissionWindowHours: parseInt(formData.submissionWindowHours)
+      });
+
+      if (!contractResult?.success || contractResult?.bountyId == null) {
+        throw new Error('On-chain create returned no bountyId');
+      }
+      console.log('✅ On-chain bounty created:', contractResult);
+
+      // 3) Persist bountyId to backend
+      setLoadingText('Finalizing…');
+      await apiService.updateJobBountyId(job.jobId, {
+        bountyId: contractResult.bountyId,
+        txHash: contractResult.txHash,
+        blockNumber: contractResult.blockNumber
+      });
+
+      alert(
+        `✅ Bounty created successfully!\n\n` +
+        `Job ID: ${job.jobId}\n` +
+        `On-Chain Bounty ID: ${contractResult.bountyId}\n` +
+        `Transaction: ${contractResult.txHash}\n` +
+        `Block: ${contractResult.blockNumber}\n\n` +
+        `Rubric CID: ${job.rubricCid}\n` +
+        `Primary CID: ${job.primaryCid}`
+      );
+
+      navigate(`/bounty/${job.jobId}`);
+    } catch (err) {
+      const serverMsg = err?.response?.data?.error || err?.message || 'Unknown error';
+      console.error('❌ Create flow failed:', serverMsg, err?.response?.data);
+      setError(serverMsg);
+      alert(`Failed to create bounty: ${serverMsg}`);
+    } finally {
+      setLoading(false);
+      setLoadingText('');
     }
-    console.log('✅ On-chain bounty created:', contractResult);
-
-    // 3) Persist bountyId to backend
-    console.log('🔄 Step 3: Updating backend with bountyId...');
-    await apiService.updateJobBountyId(job.jobId, {
-      bountyId: contractResult.bountyId,
-      txHash: contractResult.txHash,
-      blockNumber: contractResult.blockNumber
-    });
-
-    alert(
-      `✅ Bounty created successfully!\n\n` +
-      `Job ID: ${job.jobId}\n` +
-      `On-Chain Bounty ID: ${contractResult.bountyId}\n` +
-      `Transaction: ${contractResult.txHash}\n` +
-      `Block: ${contractResult.blockNumber}\n\n` +
-      `Rubric CID: ${job.rubricCid}\n` +
-      `Primary CID: ${job.primaryCid}`
-    );
-
-    navigate(`/bounty/${job.jobId}`);
-
-  } catch (err) {
-    const serverMsg = err?.response?.data?.error || err?.message || 'Unknown error';
-    console.error('❌ Create flow failed:', serverMsg, err?.response?.data);
-    setError(serverMsg);
-    alert(`Failed to create bounty: ${serverMsg}`);
-  } finally {
-    setLoading(false);
-  }
-};
-
-
-
-
+  };
 
   return (
     <div className="create-bounty">
@@ -673,7 +652,7 @@ const handleSubmit = async (e) => {
                 type="button"
                 onClick={handleSaveRubric}
                 className="btn btn-secondary"
-                disabled={loading}
+                disabled={loading || !hasAtLeastOneCriterion() || !validateWeights().valid}
               >
                 💾 Save Rubric to Library
               </button>
@@ -838,7 +817,7 @@ const handleSubmit = async (e) => {
         {loading && (
           <div className="loading-status">
             <div className="spinner"></div>
-            <p>Uploading rubric to IPFS...</p>
+            <p>{loadingText || 'Working…'}</p>
           </div>
         )}
       </form>
@@ -854,7 +833,7 @@ const handleSubmit = async (e) => {
           <li>Submission window begins - hunters can submit work</li>
           <li>After submission window, anyone can close and return funds if no valid submissions</li>
         </ol>
-        
+
         <div className="info-box" style={{ marginTop: '1.5rem', padding: '1rem', border: '1px solid #e0e0e0', borderRadius: '8px', backgroundColor: '#f9f9f9' }}>
           <h4 style={{ marginTop: 0, marginBottom: '0.75rem', color: '#333' }}>⏰ Cancellation Policy</h4>
           <p style={{ marginBottom: '0.5rem' }}>

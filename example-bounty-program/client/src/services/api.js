@@ -6,12 +6,24 @@
 import axios from 'axios';
 import { config } from '../config';
 
+const isDev = import.meta.env.DEV;
+
+/*
 const api = axios.create({
   baseURL:
     (config && (config.apiBaseUrl || config.apiUrl)) ||  // prefer apiBaseUrl, fall back to old apiUrl
     import.meta.env.VITE_API_BASE_URL ||
     import.meta.env.VITE_API_URL ||
     '/',
+  timeout: (config && config.apiTimeout) || 30000,
+  headers: { 'Content-Type': 'application/json' }
+});
+*/
+
+const api = axios.create({
+  baseURL: isDev
+    ? ''                                      // ← relative in dev: Vite proxy will catch /api/*
+    : (config?.apiBaseUrl || config?.apiUrl || '/'),
   timeout: (config && config.apiTimeout) || 30000,
   headers: { 'Content-Type': 'application/json' }
 });

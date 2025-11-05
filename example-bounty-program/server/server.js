@@ -45,7 +45,9 @@ const CID_REGEX = /^Qm[1-9A-HJ-NP-Za-km-z]{44}|b[A-Za-z2-7]{58}|B[A-Z2-7]{58}|z[
 
 // Ensure tmp directory exists
 const initializeTmpDirectory = async () => {
-  const tmpDir = path.join(__dirname, 'tmp');
+  const os = require('os');
+  const tmpDir = process.env.VERDIKTA_TMP_DIR || path.join(os.tmpdir(), 'verdikta');
+
   try {
     await fs.mkdir(tmpDir, { recursive: true });
     // Clean any leftover files

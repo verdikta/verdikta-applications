@@ -49,13 +49,58 @@ function CreateBounty({ walletState }) {
     }
   });
 
+  // ---------- helpers ----------
+  const messageFromAxios = (err) => {
+    const d = err?.response?.data;
+    if (d && (d.error || d.details)) return [d.error, d.details].filter(Boolean).join(' – ');
+    return err?.message || 'Unknown error';
+  };
+
+  const hasAtLeastOneCriterion = () =>
+    Array.isArray(rubric.criteria) && rubric.criteria.length > 0;
+
+  const validateWeights = () => {
+    const scoredCriteria = (rubric.criteria || []).filter((c) => !c.must);
+    const totalWeight = scoredCriteria.reduce((sum, c) => sum + (Number(c.weight) || 0), 0);
+    return {
+      valid: Math.abs(totalWeight - 1.0) < 0.01,
+      totalWeight,
+      message:
+        totalWeight < 0.99
+          ? `Weights sum to ${totalWeight.toFixed(2)} (should be 1.00)`
+          : totalWeight > 1.01
+          ? `Weights sum to ${totalWeight.toFixed(2)} (should be 1.00)`
+          : 'Valid',
+    };
+  };
+
+  const transformRubricForBackend = (rubricData) => {
+    const { threshold: _omit, ...rubricWithoutThreshold } = rubricData;
+    return {
+      ...rubricWithoutThreshold,
+      criteria: (rubricWithoutThreshold.criteria || []).map((criterion) => ({
+        id: criterion.id,
+        must: !!criterion.must,
+        weight: Number(criterion.weight ?? 0),
+        description:
+          criterion.instructions ||
+          criterion.label ||
+          criterion.description ||
+          '',
+      })),
+    };
+  };
+
+  // ---------- effects ----------
   // Fetch ETH price in USD
   useEffect(() => {
     const fetchEthPrice = async () => {
       try {
-        const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd');
+        const response = await fetch(
+          'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd'
+        );
         const data = await response.json();
-        setFormData(prev => ({ ...prev, ethPriceUSD: data.ethereum.usd }));
+        setFormData((prev) => ({ ...prev, ethPriceUSD: data?.ethereum?.usd || 0 }));
       } catch (err) {
         console.warn('Failed to fetch ETH price:', err);
       }
@@ -68,9 +113,9 @@ function CreateBounty({ walletState }) {
     const loadModels = async () => {
       setIsLoadingModels(true);
       setModelError(null);
-
       try {
-        const { providerModels, classInfo, isEmpty } = await modelProviderService.getProviderModels(selectedClassId);
+        const { providerModels, classInfo, isEmpty } =
+          await modelProviderService.getProviderModels(selectedClassId);
 
         setAvailableModels(providerModels);
         setClassInfo(classInfo);
@@ -79,14 +124,15 @@ function CreateBounty({ walletState }) {
         if (!isEmpty && Object.keys(providerModels).length > 0 && juryNodes.length === 0) {
           const firstProvider = Object.keys(providerModels)[0];
           const firstModel = providerModels[firstProvider][0];
-
-          setJuryNodes([{
-            provider: firstProvider,
-            model: firstModel,
-            runs: 1,
-            weight: 1.0,
-            id: Date.now()
-          }]);
+          setJuryNodes([
+            {
+              provider: firstProvider,
+              model: firstModel,
+              runs: 1,
+              weight: 1.0,
+              id: Date.now(),
+            },
+          ]);
         }
       } catch (err) {
         console.error('Error loading models:', err);
@@ -97,17 +143,17 @@ function CreateBounty({ walletState }) {
     };
 
     loadModels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedClassId]);
 
-  // Jury node management
+  // ---------- jury node management ----------
   const addJuryNode = () => {
-    const availableProviders = Object.keys(availableModels);
-    if (availableProviders.length === 0) {
+    const providers = Object.keys(availableModels);
+    if (providers.length === 0) {
       console.warn('No providers available for selected class');
       return;
     }
-
-    const firstProvider = availableProviders[0];
+    const firstProvider = providers[0];
     const firstModel = availableModels[firstProvider]?.[0] || '';
 
     setJuryNodes((prev) => [
@@ -117,8 +163,8 @@ function CreateBounty({ walletState }) {
         model: firstModel,
         runs: 1,
         weight: 1.0,
-        id: Date.now()
-      }
+        id: Date.now(),
+      },
     ]);
   };
 
@@ -126,12 +172,11 @@ function CreateBounty({ walletState }) {
     setJuryNodes((prev) =>
       prev.map((node) => {
         if (node.id === id) {
-          const updatedNode = { ...node, [field]: value };
-          // If provider changes, default model to the provider's first model
+          const updated = { ...node, [field]: value };
           if (field === 'provider' && availableModels[value]) {
-            updatedNode.model = availableModels[value][0] || '';
+            updated.model = availableModels[value][0] || '';
           }
-          return updatedNode;
+          return updated;
         }
         return node;
       })
@@ -142,13 +187,13 @@ function CreateBounty({ walletState }) {
     setJuryNodes((prev) => prev.filter((node) => node.id !== id));
   };
 
-  // Handle class selection
+  // ---------- class selection ----------
   const handleClassSelect = (classId) => {
     setSelectedClassId(classId);
     setJuryNodes([]); // Clear jury nodes when class changes
   };
 
-  // Template handling
+  // ---------- templates ----------
   const handleTemplateSelect = (e) => {
     const templateKey = e.target.value;
     setSelectedTemplate(templateKey);
@@ -163,70 +208,52 @@ function CreateBounty({ walletState }) {
     const defaultThreshold = getTemplateThreshold(templateKey);
     if (template) {
       setRubric(template);
-      setThreshold(defaultThreshold); // Set threshold separately
-      setFormData(prev => ({ ...prev, title: template.title }));
+      setThreshold(defaultThreshold);
+      setFormData((prev) => ({ ...prev, title: template.title }));
     }
   };
 
-  // Validation helpers
-  const hasAtLeastOneCriterion = () => Array.isArray(rubric.criteria) && rubric.criteria.length > 0;
-
-  const validateWeights = () => {
-    const scoredCriteria = (rubric.criteria || []).filter(c => !c.must);
-    const totalWeight = scoredCriteria.reduce((sum, c) => sum + (c.weight || 0), 0);
-    return {
-      valid: Math.abs(totalWeight - 1.0) < 0.01,
-      totalWeight,
-      message: totalWeight < 0.99 ? `Weights sum to ${totalWeight.toFixed(2)} (should be 1.00)` :
-               totalWeight > 1.01 ? `Weights sum to ${totalWeight.toFixed(2)} (should be 1.00)` :
-               'Valid'
+  // ---------- rubric criteria helpers ----------
+  const addCriterion = (must = false) => {
+    const newCriterion = {
+      id: `criterion_${Date.now()}`,
+      label: '',
+      must: !!must,
+      weight: must ? 0.0 : 0.2,
+      instructions: '',
     };
+    setRubric((prev) => ({ ...prev, criteria: [...(prev.criteria || []), newCriterion] }));
   };
 
-  // Transform rubric for backend (maps frontend fields to backend expected fields)
-  // Note: Threshold is excluded - it's for smart contract use, not AI evaluation
-  const transformRubricForBackend = (rubricData) => {
-    const { threshold: _, ...rubricWithoutThreshold } = rubricData; // Remove threshold if present
-    return {
-      ...rubricWithoutThreshold,
-      criteria: (rubricWithoutThreshold.criteria || []).map(criterion => ({
-        id: criterion.id,
-        must: !!criterion.must,
-        weight: Number(criterion.weight ?? 0),
-        description: criterion.instructions || criterion.label || criterion.description || ''
-      }))
-    };
+  const updateCriterion = (index, updatedCriterion) => {
+    setRubric((prev) => ({
+      ...prev,
+      criteria: (prev.criteria || []).map((c, i) => (i === index ? updatedCriterion : c)),
+    }));
   };
 
-  // Save rubric to localStorage + IPFS
+  const removeCriterion = (index) => {
+    setRubric((prev) => ({
+      ...prev,
+      criteria: (prev.criteria || []).filter((_, i) => i !== index),
+    }));
+  };
+
+  // ---------- save rubric ----------
   const handleSaveRubric = async () => {
-    if (!walletState.isConnected) {
-      alert('Please connect your wallet first');
-      return;
-    }
-    if (!rubric.title.trim()) {
-      alert('Please enter a rubric title');
-      return;
-    }
-    if (!hasAtLeastOneCriterion()) {
-      alert('Please add at least one criterion');
-      return;
-    }
+    if (!walletState.isConnected) return alert('Please connect your wallet first');
+    if (!rubric.title.trim()) return alert('Please enter a rubric title');
+    if (!hasAtLeastOneCriterion()) return alert('Please add at least one criterion');
+
     const validation = validateWeights();
-    if (!validation.valid) {
-      alert(`Invalid weights: ${validation.message}`);
-      return;
-    }
+    if (!validation.valid) return alert(`Invalid weights: ${validation.message}`);
 
     try {
       setLoading(true);
       setLoadingText('Saving rubric to IPFS…');
       setError(null);
 
-      // Transform rubric for backend
       const backendRubric = transformRubricForBackend(rubric);
-
-      // Upload to IPFS via backend API
       const response = await apiService.uploadRubric(backendRubric, selectedClassId);
 
       if (!response?.success) {
@@ -234,54 +261,54 @@ function CreateBounty({ walletState }) {
       }
 
       const rubricCid = response.rubricCid;
+      if (!rubricCid) throw new Error('Upload returned no rubricCid');
 
-      // Save to localStorage with metadata
       const rubricMetadata = {
         cid: rubricCid,
-        title: rubric.title,
-        description: rubric.description,
-        criteria: rubric.criteria,
-        threshold: threshold,
+        title: rubric.title || '(untitled rubric)',
+        description: rubric.description || '',
+        criteria: rubric.criteria || [],
+        threshold: Number.isFinite(threshold) ? threshold : 80,
         classId: selectedClassId,
         createdAt: new Date().toISOString(),
-        creator: walletState.address
+        creator: walletState.address || '0x0000000000000000000000000000000000000000',
       };
 
- try {
-   // many helper libs expect a wrapper object { rubricMetadata }
-   rubricStorage.saveRubric({ rubricMetadata });
- } catch (e) {
-   // safety: still persist locally if the helper’s signature differs
-   try {
-     const key = 'verdikta_rubrics';
-     const prev = JSON.parse(localStorage.getItem(key) || '[]');
-     prev.unshift(rubricMetadata);
-     localStorage.setItem(key, JSON.stringify(prev));
-     console.warn('[rubricStorage] saveRubric fallback used:', e?.message || e);
-   } catch (ignored) {}
- }
+      try {
+        // Preferred: util handles per-wallet keying and de-dup
+        rubricStorage.saveRubric(rubricMetadata);
+      } catch (e) {
+        // Fallback (never block UX on local storage)
+        console.warn('[rubricStorage] saveRubric failed; using fallback:', e?.message || e);
+        try {
+          const key = 'verdikta_rubrics_fallback';
+          const prev = JSON.parse(localStorage.getItem(key) || '[]');
+          localStorage.setItem(key, JSON.stringify([rubricMetadata, ...prev].slice(0, 100)));
+        } catch {}
+      }
 
-
-      alert(`✅ Rubric saved successfully!\n\nIPFS CID: ${rubricCid}\n\nYou can now use this rubric to create bounties.`);
+      alert(
+        `✅ Rubric saved successfully!\n\nIPFS CID: ${rubricCid}\n\nYou can now use this rubric to create bounties.`
+      );
       setLoadedRubricCid(rubricCid);
     } catch (err) {
-      const serverMsg = err?.response?.data?.error || err?.message || 'Unknown error';
-      console.error('Error saving rubric:', serverMsg, err?.response?.data);
-      setError(serverMsg);
-      alert(`Failed to save rubric: ${serverMsg}`);
+      const msg = messageFromAxios(err);
+      console.error('Error saving rubric:', msg, err?.response?.data);
+      setError(msg);
+      alert(`Failed to save rubric: ${msg}`);
     } finally {
       setLoading(false);
       setLoadingText('');
     }
   };
 
-  // Load rubric from library
+  // ---------- load rubric from library ----------
   const handleLoadRubric = (savedRubric) => {
     setRubric({
       title: savedRubric.title,
       description: savedRubric.description,
       criteria: savedRubric.criteria,
-      forbidden_content: savedRubric.forbidden_content || []
+      forbidden_content: savedRubric.forbidden_content || [],
     });
     setThreshold(savedRubric.threshold || 80);
     setSelectedClassId(savedRubric.classId || 128);
@@ -290,17 +317,20 @@ function CreateBounty({ walletState }) {
     alert(`Loaded rubric: ${savedRubric.title}`);
   };
 
-  // Submit form (create bounty on blockchain + backend)
+  // ---------- submit (create bounty) ----------
   const handleSubmit = async (e) => {
     e.preventDefault();
 
     if (!walletState.isConnected) return alert('Please connect your wallet first');
-    if (!formData.title.trim())  return alert('Please enter a job title');
+    if (!formData.title.trim()) return alert('Please enter a job title');
     if (!formData.description.trim()) return alert('Please enter a job description');
-    if (!formData.payoutAmount || parseFloat(formData.payoutAmount) <= 0) return alert('Please enter a valid payout amount');
+    if (!formData.payoutAmount || parseFloat(formData.payoutAmount) <= 0)
+      return alert('Please enter a valid payout amount');
     if (!rubric.title.trim()) return alert('Please create or load a rubric');
     if (!hasAtLeastOneCriterion()) return alert('Please add at least one criterion');
-    if (!validateWeights().valid) return alert(`Invalid rubric weights: ${validateWeights().message}`);
+
+    const validation = validateWeights();
+    if (!validation.valid) return alert(`Invalid rubric weights: ${validation.message}`);
     if (juryNodes.length === 0) return alert('Please add at least one jury node');
 
     try {
@@ -308,15 +338,14 @@ function CreateBounty({ walletState }) {
       setLoadingText('Creating job on backend…');
       setError(null);
 
-      // 0) Ensure wallet is on the correct chain (best effort)
+      // best-effort network info
       try {
         const provider = walletService.getProvider?.();
         const net = provider && (await provider.getNetwork());
-        const current = Number(net?.chainId);
-        console.log('[Network]', { current });
+        console.log('[Network]', { chainId: Number(net?.chainId) });
       } catch {}
 
-      // 1) Create job in backend (get rubricCid)
+      // 1) Create job in backend
       const backendRubric = transformRubricForBackend(rubric);
 
       const apiResponse = await apiService.createJob({
@@ -325,16 +354,24 @@ function CreateBounty({ walletState }) {
         workProductType: formData.workProductType,
         creator: walletState.address,
         bountyAmount: parseFloat(formData.payoutAmount),
-        bountyAmountUSD: parseFloat(formData.payoutAmount) * formData.ethPriceUSD,
+        bountyAmountUSD: parseFloat(formData.payoutAmount) * (formData.ethPriceUSD || 0),
         threshold,
-        rubricJson: backendRubric,
+        ...(loadedRubricCid ? { rubricCid: loadedRubricCid } : { rubricJson: backendRubric }),
         classId: selectedClassId,
-        juryNodes: juryNodes.map(n => ({ provider: n.provider, model: n.model, runs: n.runs, weight: n.weight })),
+        juryNodes: juryNodes.map((n) => ({
+          provider: n.provider,
+          model: n.model,
+          runs: n.runs,
+          weight: n.weight,
+        })),
         iterations,
-        submissionWindowHours: parseInt(formData.submissionWindowHours)
+        submissionWindowHours: parseInt(formData.submissionWindowHours, 10),
       });
 
-      if (!apiResponse?.success) throw new Error(apiResponse?.error || 'Backend job create failed');
+      if (!apiResponse?.success) {
+        throw new Error(apiResponse?.error || 'Backend job create failed');
+      }
+
       const { job } = apiResponse;
       console.log('✅ Backend job created:', { jobId: job.jobId, rubricCid: job.rubricCid });
 
@@ -349,7 +386,7 @@ function CreateBounty({ walletState }) {
         classId: selectedClassId,
         threshold,
         bountyAmountEth: parseFloat(formData.payoutAmount),
-        submissionWindowHours: parseInt(formData.submissionWindowHours)
+        submissionWindowHours: parseInt(formData.submissionWindowHours, 10),
       });
 
       if (!contractResult?.success || contractResult?.bountyId == null) {
@@ -362,25 +399,25 @@ function CreateBounty({ walletState }) {
       await apiService.updateJobBountyId(job.jobId, {
         bountyId: contractResult.bountyId,
         txHash: contractResult.txHash,
-        blockNumber: contractResult.blockNumber
+        blockNumber: contractResult.blockNumber,
       });
 
       alert(
         `✅ Bounty created successfully!\n\n` +
-        `Job ID: ${job.jobId}\n` +
-        `On-Chain Bounty ID: ${contractResult.bountyId}\n` +
-        `Transaction: ${contractResult.txHash}\n` +
-        `Block: ${contractResult.blockNumber}\n\n` +
-        `Rubric CID: ${job.rubricCid}\n` +
-        `Primary CID: ${job.primaryCid}`
+          `Job ID: ${job.jobId}\n` +
+          `On-Chain Bounty ID: ${contractResult.bountyId}\n` +
+          `Transaction: ${contractResult.txHash}\n` +
+          `Block: ${contractResult.blockNumber}\n\n` +
+          `Rubric CID: ${job.rubricCid}\n` +
+          `Primary CID: ${job.primaryCid}`
       );
 
       navigate(`/bounty/${job.jobId}`);
     } catch (err) {
-      const serverMsg = err?.response?.data?.error || err?.message || 'Unknown error';
-      console.error('❌ Create flow failed:', serverMsg, err?.response?.data);
-      setError(serverMsg);
-      alert(`Failed to create bounty: ${serverMsg}`);
+      const msg = messageFromAxios(err);
+      console.error('❌ Create flow failed:', msg, err?.response?.data);
+      setError(msg);
+      alert(`Failed to create bounty: ${msg}`);
     } finally {
       setLoading(false);
       setLoadingText('');
@@ -430,7 +467,7 @@ function CreateBounty({ walletState }) {
                 type="text"
                 id="title"
                 value={formData.title}
-                onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                onChange={(e) => setFormData((prev) => ({ ...prev, title: e.target.value }))}
                 placeholder="e.g., Write a technical blog post about React Hooks"
                 required
               />
@@ -443,7 +480,7 @@ function CreateBounty({ walletState }) {
               <textarea
                 id="description"
                 value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                onChange={(e) => setFormData((prev) => ({ ...prev, description: e.target.value }))}
                 placeholder="Describe what you're looking for in detail..."
                 rows={6}
                 required
@@ -456,7 +493,7 @@ function CreateBounty({ walletState }) {
                 type="text"
                 id="workProductType"
                 value={formData.workProductType}
-                onChange={(e) => setFormData({ ...formData, workProductType: e.target.value })}
+                onChange={(e) => setFormData((prev) => ({ ...prev, workProductType: e.target.value }))}
                 placeholder="e.g., Blog Post, Code, Design"
               />
             </div>
@@ -470,7 +507,7 @@ function CreateBounty({ walletState }) {
                   type="number"
                   id="payoutAmount"
                   value={formData.payoutAmount}
-                  onChange={(e) => setFormData({ ...formData, payoutAmount: e.target.value })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, payoutAmount: e.target.value }))}
                   placeholder="0.1"
                   step="0.001"
                   min="0"
@@ -478,7 +515,7 @@ function CreateBounty({ walletState }) {
                 />
                 {formData.payoutAmount && formData.ethPriceUSD > 0 && (
                   <small className="helper-text">
-                    ≈ ${(parseFloat(formData.payoutAmount) * formData.ethPriceUSD).toFixed(2)} USD
+                    ≈ ${(parseFloat(formData.payoutAmount) * (formData.ethPriceUSD || 0)).toFixed(2)} USD
                   </small>
                 )}
               </div>
@@ -491,7 +528,9 @@ function CreateBounty({ walletState }) {
                   type="number"
                   id="submissionWindow"
                   value={formData.submissionWindowHours}
-                  onChange={(e) => setFormData({ ...formData, submissionWindowHours: e.target.value })}
+                  onChange={(e) =>
+                    setFormData((prev) => ({ ...prev, submissionWindowHours: e.target.value }))
+                  }
                   placeholder="168"
                   min="1"
                   required
@@ -499,8 +538,8 @@ function CreateBounty({ walletState }) {
                 <small className="helper-text">
                   {formData.submissionWindowHours && (
                     <>
-                      {Math.floor(formData.submissionWindowHours / 24)} days, {formData.submissionWindowHours % 24} hours
-                      {' '} (Default: 7 days / 168 hours)
+                      {Math.floor(formData.submissionWindowHours / 24)} days,{' '}
+                      {formData.submissionWindowHours % 24} hours (Default: 7 days / 168 hours)
                     </>
                   )}
                 </small>
@@ -508,11 +547,7 @@ function CreateBounty({ walletState }) {
             </div>
 
             <div className="form-actions">
-              <button
-                type="button"
-                onClick={() => setStep(2)}
-                className="btn btn-primary"
-              >
+              <button type="button" onClick={() => setStep(2)} className="btn btn-primary">
                 Next: Create Rubric →
               </button>
             </div>
@@ -535,13 +570,9 @@ function CreateBounty({ walletState }) {
 
               <div className="form-group inline">
                 <label htmlFor="template">Or start from template:</label>
-                <select
-                  id="template"
-                  value={selectedTemplate}
-                  onChange={handleTemplateSelect}
-                >
+                <select id="template" value={selectedTemplate} onChange={handleTemplateSelect}>
                   <option value="">Blank Rubric</option>
-                  {getTemplateOptions().map(option => (
+                  {getTemplateOptions().map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -558,20 +589,18 @@ function CreateBounty({ walletState }) {
                 type="text"
                 id="rubricTitle"
                 value={rubric.title}
-                onChange={(e) => updateRubricField('title', e.target.value)}
+                onChange={(e) => setRubric((prev) => ({ ...prev, title: e.target.value }))}
                 placeholder="e.g., Technical Blog Post Quality Rubric"
                 required
               />
             </div>
 
             <div className="form-group">
-              <label htmlFor="rubricDescription">
-                Rubric Description
-              </label>
+              <label htmlFor="rubricDescription">Rubric Description</label>
               <textarea
                 id="rubricDescription"
                 value={rubric.description}
-                onChange={(e) => updateRubricField('description', e.target.value)}
+                onChange={(e) => setRubric((prev) => ({ ...prev, description: e.target.value }))}
                 placeholder="Describe what this rubric evaluates..."
                 rows={3}
               />
@@ -585,36 +614,26 @@ function CreateBounty({ walletState }) {
                 type="number"
                 id="threshold"
                 value={threshold}
-                onChange={(e) => setThreshold(parseInt(e.target.value))}
+                onChange={(e) => setThreshold(parseInt(e.target.value, 10) || 0)}
                 min="0"
                 max="100"
                 required
               />
-              <small className="helper-text">
-                Minimum score required to pass and claim bounty (0-100)
-              </small>
+              <small className="helper-text">Minimum score required to pass and claim bounty (0–100)</small>
             </div>
 
             <div className="criteria-section">
               <div className="section-header">
                 <h3>Evaluation Criteria</h3>
-                <button
-                  type="button"
-                  onClick={() => addCriterion(false)}
-                  className="btn btn-sm btn-secondary"
-                >
+                <button type="button" onClick={() => addCriterion(false)} className="btn btn-sm btn-secondary">
                   + Add Weighted Criterion
                 </button>
-                <button
-                  type="button"
-                  onClick={() => addCriterion(true)}
-                  className="btn btn-sm btn-secondary"
-                >
+                <button type="button" onClick={() => addCriterion(true)} className="btn btn-sm btn-secondary">
                   + Add Must-Pass Criterion
                 </button>
               </div>
 
-              {rubric.criteria.map((criterion, index) => (
+              {(rubric.criteria || []).map((criterion, index) => (
                 <CriterionEditor
                   key={criterion.id}
                   criterion={criterion}
@@ -624,7 +643,7 @@ function CreateBounty({ walletState }) {
                 />
               ))}
 
-              {rubric.criteria.length === 0 && (
+              {(rubric.criteria || []).length === 0 && (
                 <div className="empty-state">
                   <p>No criteria yet. Add at least one criterion to evaluate submissions.</p>
                 </div>
@@ -640,11 +659,7 @@ function CreateBounty({ walletState }) {
             </div>
 
             <div className="form-actions">
-              <button
-                type="button"
-                onClick={() => setStep(1)}
-                className="btn btn-secondary"
-              >
+              <button type="button" onClick={() => setStep(1)} className="btn btn-secondary">
                 ← Back
               </button>
 
@@ -661,7 +676,7 @@ function CreateBounty({ walletState }) {
                 type="button"
                 onClick={() => setStep(3)}
                 className="btn btn-primary"
-                disabled={!validateWeights().valid || rubric.criteria.length === 0}
+                disabled={!validateWeights().valid || (rubric.criteria || []).length === 0}
               >
                 Next: Configure AI Jury →
               </button>
@@ -676,10 +691,7 @@ function CreateBounty({ walletState }) {
 
             <div className="form-group">
               <label>Verdikta Class</label>
-              <ClassSelector
-                selectedClassId={selectedClassId}
-                onSelectClass={handleClassSelect}
-              />
+              <ClassSelector selectedClassId={selectedClassId} onSelectClass={handleClassSelect} />
             </div>
 
             {modelError && (
@@ -710,8 +722,10 @@ function CreateBounty({ walletState }) {
                         value={node.provider}
                         onChange={(e) => updateJuryNode(node.id, 'provider', e.target.value)}
                       >
-                        {Object.keys(availableModels).map(provider => (
-                          <option key={provider} value={provider}>{provider}</option>
+                        {Object.keys(availableModels).map((provider) => (
+                          <option key={provider} value={provider}>
+                            {provider}
+                          </option>
                         ))}
                       </select>
                     </div>
@@ -722,8 +736,10 @@ function CreateBounty({ walletState }) {
                         value={node.model}
                         onChange={(e) => updateJuryNode(node.id, 'model', e.target.value)}
                       >
-                        {availableModels[node.provider]?.map(model => (
-                          <option key={model} value={model}>{model}</option>
+                        {availableModels[node.provider]?.map((model) => (
+                          <option key={model} value={model}>
+                            {model}
+                          </option>
                         ))}
                       </select>
                     </div>
@@ -733,7 +749,7 @@ function CreateBounty({ walletState }) {
                       <input
                         type="number"
                         value={node.runs}
-                        onChange={(e) => updateJuryNode(node.id, 'runs', parseInt(e.target.value))}
+                        onChange={(e) => updateJuryNode(node.id, 'runs', parseInt(e.target.value, 10) || 1)}
                         min="1"
                       />
                     </div>
@@ -743,7 +759,9 @@ function CreateBounty({ walletState }) {
                       <input
                         type="number"
                         value={node.weight}
-                        onChange={(e) => updateJuryNode(node.id, 'weight', parseFloat(e.target.value))}
+                        onChange={(e) =>
+                          updateJuryNode(node.id, 'weight', parseFloat(e.target.value) || 0)
+                        }
                         min="0"
                         step="0.1"
                       />
@@ -773,29 +791,19 @@ function CreateBounty({ walletState }) {
                 type="number"
                 id="iterations"
                 value={iterations}
-                onChange={(e) => setIterations(parseInt(e.target.value))}
+                onChange={(e) => setIterations(parseInt(e.target.value, 10) || 1)}
                 min="1"
                 max="10"
               />
-              <small className="helper-text">
-                Number of times to run the entire jury evaluation
-              </small>
+              <small className="helper-text">Number of times to run the entire jury evaluation</small>
             </div>
 
             <div className="form-actions">
-              <button
-                type="button"
-                onClick={() => setStep(2)}
-                className="btn btn-secondary"
-              >
+              <button type="button" onClick={() => setStep(2)} className="btn btn-secondary">
                 ← Back
               </button>
 
-              <button
-                type="submit"
-                className="btn btn-primary btn-lg"
-                disabled={loading || juryNodes.length === 0}
-              >
+              <button type="submit" className="btn btn-primary btn-lg" disabled={loading || juryNodes.length === 0}>
                 {loading ? 'Creating...' : '🚀 Create Bounty'}
               </button>
             </div>
@@ -804,12 +812,7 @@ function CreateBounty({ walletState }) {
 
         {/* Cancel button (always visible) */}
         <div className="form-footer">
-          <button
-            type="button"
-            onClick={() => navigate('/')}
-            className="btn btn-text"
-            disabled={loading}
-          >
+          <button type="button" onClick={() => navigate('/')} className="btn btn-text" disabled={loading}>
             Cancel
           </button>
         </div>
@@ -834,16 +837,28 @@ function CreateBounty({ walletState }) {
           <li>After submission window, anyone can close and return funds if no valid submissions</li>
         </ol>
 
-        <div className="info-box" style={{ marginTop: '1.5rem', padding: '1rem', border: '1px solid #e0e0e0', borderRadius: '8px', backgroundColor: '#f9f9f9' }}>
+        <div
+          className="info-box"
+          style={{
+            marginTop: '1.5rem',
+            padding: '1rem',
+            border: '1px solid #e0e0e0',
+            borderRadius: '8px',
+            backgroundColor: '#f9f9f9',
+          }}
+        >
           <h4 style={{ marginTop: 0, marginBottom: '0.75rem', color: '#333' }}>⏰ Cancellation Policy</h4>
           <p style={{ marginBottom: '0.5rem' }}>
-            <strong>Creator Early Cancel:</strong> You can cancel your bounty after the submission window passes IF no submissions have been made. This returns your funds.
+            <strong>Creator Early Cancel:</strong> You can cancel your bounty after the submission window passes IF no
+            submissions have been made. This returns your funds.
           </p>
           <p style={{ marginBottom: '0.5rem' }}>
-            <strong>Public Expired Close:</strong> After the submission deadline, anyone can close an expired bounty (with no active evaluations) to return funds to you.
+            <strong>Public Expired Close:</strong> After the submission deadline, anyone can close an expired bounty
+            (with no active evaluations) to return funds to you.
           </p>
           <p style={{ marginBottom: 0 }}>
-            <strong>Note:</strong> Once submissions exist, the bounty cannot be cancelled until evaluations are complete.
+            <strong>Note:</strong> Once submissions exist, the bounty cannot be cancelled until evaluations are
+            complete.
           </p>
         </div>
       </div>

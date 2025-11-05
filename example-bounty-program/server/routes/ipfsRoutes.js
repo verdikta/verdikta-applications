@@ -1,63 +1,106 @@
 const express = require('express');
 const path = require('path');
+const os = require('os');
 const fs = require('fs').promises;
 const logger = require('../utils/logger');
-const { validateRubric } = require('../utils/validation');
 
 const router = express.Router();
-const TMP_DIR = path.join(__dirname, '..', 'tmp');
 
-// robust boolean reader: true if "1|true|yes|on" (case/space-insensitive)
-function readBool(v) {
-  if (v == null) return false;
-  return /^(1|true|yes|on)$/i.test(String(v).trim());
-}
+// -------------------- CONFIG --------------------
+function readBool(v) { return /^(1|true|yes|on)$/i.test(String(v || '').trim()); }
+const TMP_BASE = process.env.VERDIKTA_TMP_DIR || path.join(os.tmpdir(), 'verdikta');
 
-// evaluate once at module load; we’ll also allow a per-request override (?dev=1)
-const DEV_ENV = readBool(process.env.DEV_FAKE_RUBRIC_CID);
+const PIN_TIMEOUT_MS = Number(process.env.PIN_TIMEOUT_MS || 20000);
+const PINATA_BASE = (process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud').replace(/\/+$/,'');
+const PINATA_RAW = process.env.IPFS_PINNING_KEY || '';
+// Accept JWT with or without "Bearer "
+const PINATA_AUTH = PINATA_RAW.startsWith('Bearer ') ? PINATA_RAW : (PINATA_RAW ? `Bearer ${PINATA_RAW}` : '');
 
+const DEV_ENV_FAKE = readBool(process.env.DEV_FAKE_RUBRIC_CID);
+
+// -------------------- UTILS --------------------
 async function ensureTmp() {
-  try { await fs.mkdir(TMP_DIR, { recursive: true }); return { ok: true }; }
-  catch (e) { return { ok: false, error: `Failed to create tmp dir: ${e.message}` }; }
+  await fs.mkdir(TMP_BASE, { recursive: true });
 }
 
-function stringifyErr(e) {
-  if (!e) return 'Unknown error';
-  if (e.response?.data) { try { return JSON.stringify(e.response.data); } catch {} return String(e.response.data); }
-  if (e.data)           { try { return JSON.stringify(e.data); } catch {} return String(e.data); }
-  return e.message || String(e);
+function withTimeout(promise, ms, label = 'operation') {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    )
+  ]);
 }
 
-// POST /api/rubrics -> save rubric JSON to IPFS (or return dev CID)
+function normalizeProviderError(err) {
+  const out = { message: err?.message || String(err) };
+  if (err?.response) {
+    out.providerStatus = err.response.status;
+    try {
+      out.providerBody = typeof err.response.data === 'string'
+        ? err.response.data
+        : JSON.stringify(err.response.data);
+    } catch {
+      out.providerBody = String(err.response.data);
+    }
+  } else if (err?.status) {
+    out.providerStatus = err.status;
+  }
+  if (err?.stack) out.stack = err.stack.split('\n')[0];
+  return out;
+}
+
+/** Pin JSON content at Pinata (no multipart). Returns IpfsHash string. */
+async function pinJsonToPinata(contentObj, name = 'verdikta-json') {
+  if (!PINATA_AUTH) throw new Error('IPFS_PINNING_KEY not set');
+  const url = `${PINATA_BASE}/pinning/pinJSONToIPFS`;
+  const body = {
+    pinataContent: contentObj,
+    pinataMetadata: { name }
+  };
+
+  const r = await withTimeout(
+    fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': PINATA_AUTH,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    }),
+    PIN_TIMEOUT_MS,
+    'Pinata pinJSONToIPFS'
+  );
+
+  const text = await r.text();
+  if (!r.ok) {
+    let parsed;
+    try { parsed = JSON.parse(text); } catch {}
+    const err = new Error(`Pinata returned ${r.status}`);
+    err.status = r.status;
+    err.response = { status: r.status, data: parsed ?? text };
+    throw err;
+  }
+  const parsed = JSON.parse(text);
+  if (!parsed?.IpfsHash) throw new Error('Pinata response missing IpfsHash');
+  return parsed.IpfsHash;
+}
+
+// -------------------- RUBRICS: pin JSON --------------------
 router.post('/rubrics', async (req, res) => {
-  const devQuery = readBool(req.query.dev); // ?dev=1 forces bypass
-  const devBypass = devQuery || DEV_ENV;
-
-  logger.info('[rubrics] POST', {
-    devQuery, DEV_ENV, devBypass,
-    envRaw: process.env.DEV_FAKE_RUBRIC_CID || null
-  });
-
+  const t0 = Date.now();
   try {
+    await ensureTmp();
+
     const { rubric, classId } = req.body || {};
     if (!rubric || typeof rubric !== 'object') {
       return res.status(400).json({ success: false, error: 'rubric body is required' });
     }
-    const v = validateRubric(rubric);
-    if (!v.valid) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid rubric',
-        details: 'Rubric validation failed',
-        errors: v.errors || []
-      });
+    if (!Array.isArray(rubric.criteria) || rubric.criteria.length < 1) {
+      return res.status(400).json({ success: false, error: 'Invalid rubric: criteria required' });
     }
 
-    const tmpOk = await ensureTmp();
-    if (!tmpOk.ok) {
-      return res.status(500).json({ success: false, error: tmpOk.error });
-    }
-
+    // Enrich with metadata
     const rubricWithMeta = {
       ...rubric,
       version: rubric.version || '1.0',
@@ -65,73 +108,114 @@ router.post('/rubrics', async (req, res) => {
       createdAt: new Date().toISOString(),
     };
 
-    const tmpFile = path.join(TMP_DIR, `rubric-${Date.now()}.json`);
-    try {
-      await fs.writeFile(tmpFile, JSON.stringify(rubricWithMeta, null, 2), 'utf8');
-    } catch (e) {
-      return res.status(500).json({ success: false, error: `Failed to write temporary rubric file: ${e.message}` });
-    }
-
-    // dev bypass
+    // Dev bypass (query OR env)
+    const devBypass = readBool(req.query?.dev) || DEV_ENV_FAKE;
     if (devBypass) {
-      const fake = `dev-${path.basename(tmpFile)}`;
-      logger.warn('[rubrics] DEV bypass active; returning fake CID', { fake });
-      return res.json({ success: true, rubricCid: fake });
+      // Write once to OS temp to make debugging easy; return a fake CID
+      const tmpPath = path.join(
+        TMP_BASE,
+        `rubric-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+      );
+      try {
+        await fs.writeFile(tmpPath, JSON.stringify(rubricWithMeta, null, 2), 'utf8');
+      } catch (e) {
+        logger.warn('[rubrics] dev write failed (continuing)', { msg: e.message });
+      }
+      const cid = `dev-${path.basename(tmpPath)}`;
+      logger.warn('[rubrics] DEV bypass active — returning fake CID', { cid, durMs: Date.now() - t0 });
+      return res.json({ success: true, rubricCid: cid });
     }
 
-    // real IPFS upload
-    const ipfs = req.app.locals.ipfsClient;
-    if (!ipfs || typeof ipfs.uploadToIPFS !== 'function') {
-      return res.status(500).json({ success: false, error: 'IPFS client not initialized on server' });
-    }
+    // Pin for real
+    const cid = await pinJsonToPinata(rubricWithMeta, `rubric-${rubric.title || 'untitled'}`);
+    logger.info('[rubrics] pinned JSON rubric', { cid, durMs: Date.now() - t0 });
+    return res.json({ success: true, rubricCid: cid });
 
-    let rubricCid;
-    try {
-      logger.info('[rubrics] uploading to IPFS', { bytes: JSON.stringify(rubricWithMeta).length });
-      rubricCid = await ipfs.uploadToIPFS(tmpFile);
-    } catch (e) {
-      const msg = stringifyErr(e);
-      logger.error('[rubrics] IPFS upload failed', { msg });
-      return res.status(500).json({ success: false, error: `IPFS upload failed: ${msg}` });
-    } finally {
-      fs.unlink(tmpFile).catch(() => {});
-    }
-
-    logger.info('[rubrics] success', { rubricCid });
-    return res.json({ success: true, rubricCid });
-  } catch (err) {
-    logger.error('[rubrics] unhandled error', { error: err.message, stack: err.stack });
-    return res.status(500).json({ success: false, error: err.message || 'Internal error' });
+  } catch (e) {
+    const details = normalizeProviderError(e);
+    logger.error('[rubrics] failed', { ...details });
+    // 502 to indicate upstream/pinning failure
+    return res.status(502).json({ success: false, error: 'IPFS JSON pin failed', details });
   }
 });
 
-// GET /api/fetch/:cid -> fetch as text (convenience)
+// -------------------- FETCH VIA IPFS CLIENT --------------------
 router.get('/fetch/:cid', async (req, res) => {
   try {
     const ipfs = req.app.locals.ipfsClient;
     if (!ipfs) return res.status(500).send('IPFS client not initialized');
 
-    const data = await ipfs.fetchFromIPFS(req.params.cid);
+    const data = await withTimeout(ipfs.fetchFromIPFS(req.params.cid), PIN_TIMEOUT_MS, 'IPFS fetch');
     res.set('Content-Type', 'text/plain; charset=utf-8');
     return res.send(data);
   } catch (err) {
-    const msg = stringifyErr(err);
-    logger.error('[fetch] failed', { cid: req.params.cid, msg });
-    return res.status(500).json({ error: `Fetch failed: ${msg}` });
+    const details = normalizeProviderError(err);
+    logger.error('[fetch] failed', { cid: req.params.cid, ...details });
+    return res.status(502).json({ error: 'Fetch failed', details });
   }
 });
 
-// Diagnostics
+// -------------------- DIAGNOSTICS --------------------
 router.get('/diagnostics/ipfs', async (req, res) => {
   const ipfs = req.app.locals.ipfsClient;
-  const tmpOk = await ensureTmp();
-  return res.json({
+  try { await ensureTmp(); } catch {}
+  res.json({
     ipfsClient: !!ipfs,
     hasUploadFn: !!(ipfs && typeof ipfs.uploadToIPFS === 'function'),
-    tmpDirOk: tmpOk.ok,
-    tmpError: tmpOk.error || null,
-    devEnv: DEV_ENV
+    tmpDirOk: true,
+    gateway: process.env.IPFS_GATEWAY || null,
+    pinService: process.env.IPFS_PINNING_SERVICE || null,
+    keyPresent: !!PINATA_AUTH,
+    devEnv: DEV_ENV_FAKE || false
   });
+});
+
+// Auth probe
+router.get('/diagnostics/ipfs/auth', async (req, res) => {
+  try {
+    if (!PINATA_AUTH) {
+      return res.status(400).json({ success: false, error: 'IPFS_PINNING_KEY not set' });
+    }
+    const url = `${PINATA_BASE}/data/testAuthentication`;
+    const r = await withTimeout(
+      fetch(url, { headers: { Authorization: PINATA_AUTH } }),
+      PIN_TIMEOUT_MS,
+      'Pinata auth'
+    );
+    const body = await r.text();
+    return res.status(r.status).json({ success: r.ok, status: r.status, body });
+  } catch (e) {
+    const details = normalizeProviderError(e);
+    logger.error('[ipfs auth probe] failed', { ...details });
+    return res.status(502).json({ success: false, error: 'Auth probe failed', details });
+  }
+});
+
+// JSON pin probe (mirrors /rubrics path)
+router.post('/diagnostics/ipfs/pin', async (req, res) => {
+  try {
+    // Respect dev bypass here too if set via query/env, to test both paths
+    const devBypass = readBool(req.query?.dev) || DEV_ENV_FAKE;
+    if (devBypass) {
+      const tmpPath = path.join(
+        TMP_BASE,
+        `probe-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+      );
+      try {
+        await fs.writeFile(tmpPath, JSON.stringify({ probe: true, t: Date.now() }, null, 2), 'utf8');
+      } catch (e) {
+        logger.warn('[ipfs pin probe] dev write failed', { msg: e.message });
+      }
+      return res.json({ success: true, cid: `dev-${path.basename(tmpPath)}` });
+    }
+
+    const cid = await pinJsonToPinata({ probe: true, t: Date.now() }, 'verdikta-probe');
+    return res.json({ success: true, cid });
+  } catch (e) {
+    const details = normalizeProviderError(e);
+    logger.error('[ipfs pin probe] failed', { ...details });
+    return res.status(502).json({ success: false, error: 'Pin probe failed', details });
+  }
 });
 
 module.exports = router;

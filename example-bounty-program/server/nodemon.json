@@ -1,0 +1,16 @@
+{
+  "watch": ["routes", "utils", "server.js"],
+  "ignore": [
+    "tmp/*",
+    "tmp/**",
+    "*.zip",
+    "*.tar",
+    "*.gz",
+    "storage.json",
+    "logs/*",
+    "/var/tmp/verdikta/*"
+  ],
+  "ext": "js,json",
+  "exec": "node server.js"
+}
+

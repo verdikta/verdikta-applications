@@ -29,11 +29,15 @@ const { initializeSyncService } = require('./utils/syncService');
 const app = express();
 
 // Initialize IPFS client
+const rawPinKey = process.env.IPFS_PINNING_KEY || '';
+// IPFSClient wants the bare JWT; strip any leading "Bearer " just in case
+const pinningKeyForClient = rawPinKey.replace(/^Bearer\s+/i, '');
+
 const ipfsClient = new IPFSClient({
   gateway: process.env.IPFS_GATEWAY || 'https://ipfs.io',
   pinningService: process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud',
-  pinningKey: process.env.IPFS_PINNING_KEY,
-  timeout: 60000,
+  pinningKey: pinningKeyForClient,   // bare JWT only
+  timeout: 30000,
   retryOptions: { retries: 5, factor: 2 }
 }, logger);
 

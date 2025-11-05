@@ -13,37 +13,85 @@ const fs = require('fs').promises;
 const logger = require('../utils/logger');
 const jobStorage = require('../utils/jobStorage');
 const archiveGenerator = require('../utils/archiveGenerator');
-const { validateRubric, isValidFileType, isValidFileSize, MAX_FILE_SIZE } = require('../utils/validation');
+const { validateRubric, isValidFileType, MAX_FILE_SIZE } = require('../utils/validation');
 
-// ---------- helpers / config ----------
+/* ======================
+   Helpers / configuration
+   ====================== */
 
 function readBool(v) { return /^(1|true|yes|on)$/i.test(String(v || '').trim()); }
 const DEV_ENV_FAKE = readBool(process.env.DEV_FAKE_RUBRIC_CID);
 
-// Very permissive IPFS CID check (supports Qm..., bafy..., z..., etc.)
-const CID_REGEX = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[A-Za-z2-7]{58}|B[A-Z2-7]{58}|z[1-9A-HJ-NP-Za-km-z]{48}|F[0-9A-F]{50}|bafy[0-9A-Za-z]{50,})$/i;
+// Loose IPFS CID check; we still try a HEAD fetch later when possible.
+const CID_REGEX =
+  /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|bafy[0-9A-Za-z]{50,}|z[1-9A-HJ-NP-Za-km-z]{46,}|ba[ef]y[0-9A-Za-z]{50,}|b[A-Za-z2-7]{58,}|B[A-Z2-7]{58,}|F[0-9A-F]{50,})$/i;
 
-// Unified temp base OUTSIDE project tree
+// One temp base OUTSIDE the project tree
 const TMP_BASE = process.env.VERDIKTA_TMP_DIR || path.join(os.tmpdir(), 'verdikta');
-
 async function ensureTmpBase() {
   await fs.mkdir(TMP_BASE, { recursive: true });
 }
 
+function safeJson(obj) {
+  try { return JSON.stringify(obj); } catch { return String(obj); }
+}
 function stringifyErr(e) {
   if (!e) return 'Unknown error';
-  if (e.response?.data) { try { return JSON.stringify(e.response.data); } catch {} return String(e.response.data); }
-  if (e.data)           { try { return JSON.stringify(e.data); } catch {} return String(e.data); }
+  if (e.response?.data) {
+    try { return JSON.stringify(e.response.data); } catch {}
+    return String(e.response.data);
+  }
+  if (e.data) {
+    try { return JSON.stringify(e.data); } catch {}
+    return String(e.data);
+  }
   return e.message || String(e);
 }
 
-// ---------- CREATE JOB ----------
+// Direct, minimal JSON‑pin helper (Pinata). Expects RAW JWT in env; we add "Bearer ".
+const PIN_TIMEOUT_MS = Number(process.env.PIN_TIMEOUT_MS || 20000);
+function withTimeout(p, ms, label='operation') {
+  return Promise.race([
+    p,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms))
+  ]);
+}
+async function pinJsonToPinata(contentObj, name = 'verdikta-json') {
+  const PINATA_BASE = (process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud').replace(/\/+$/,'');
+  const jwt = process.env.IPFS_PINNING_KEY || '';
+  if (!jwt) throw new Error('IPFS_PINNING_KEY not set');
+  const authHeader = jwt.toLowerCase().startsWith('bearer ') ? jwt : `Bearer ${jwt}`;
+
+  const url = `${PINATA_BASE}/pinning/pinJSONToIPFS`;
+  const res = await withTimeout(fetch(url, {
+    method: 'POST',
+    headers: { 'Authorization': authHeader, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pinataContent: contentObj, pinataMetadata: { name } })
+  }), PIN_TIMEOUT_MS, 'Pinata pinJSONToIPFS');
+
+  const text = await res.text();
+  if (!res.ok) {
+    let data; try { data = JSON.parse(text); } catch { data = text; }
+    const err = new Error(`Pinata returned ${res.status}`);
+    err.status = res.status;
+    err.response = { status: res.status, data };
+    throw err;
+  }
+  const parsed = JSON.parse(text);
+  if (!parsed?.IpfsHash) throw new Error('Pinata response missing IpfsHash');
+  return parsed.IpfsHash;
+}
+
+/* ==============
+   CREATE A JOB
+   ============== */
 
 /**
  * POST /api/jobs/create
  * Accepts EITHER:
  *  - rubricJson: object (server pins & returns real rubricCid), OR
  *  - rubricCid:  string (already pinned)
+ * Uses ipfsClient.uploadToIPFS for the Primary archive.
  */
 router.post('/create', async (req, res) => {
   const keys = Object.keys(req.body || {});
@@ -60,7 +108,7 @@ router.post('/create', async (req, res) => {
       bountyAmount,
       bountyAmountUSD,
       threshold,
-      rubricJson,              // optional (server pins)
+      rubricJson,              // optional (server pins json)
       rubricCid: rubricCidIn,  // optional (already pinned)
       classId = 128,
       juryNodes = [],
@@ -68,38 +116,37 @@ router.post('/create', async (req, res) => {
       submissionWindowHours = 24
     } = req.body || {};
 
-    // ---- Required fields (common) ----
-    if (!title || !description || !creator || bountyAmount == null || threshold == null) {
-      return res.status(400).json({
-        error: 'Missing required fields',
-        details: 'Required: title, description, creator, bountyAmount, threshold, and either rubricJson or rubricCid'
-      });
+    // ---- Validate commons ----
+    if (!title || !description || !creator) {
+      return res.status(400).json({ error: 'Missing required fields', details: 'title, description, creator required' });
     }
-
     if (!/^0x[a-fA-F0-9]{40}$/.test(creator)) {
-      return res.status(400).json({ error: 'Invalid creator address', details: 'Creator must be a valid Ethereum address' });
+      return res.status(400).json({ error: 'Invalid creator address', details: 'Must be a valid Ethereum address' });
     }
-
+    if (!Number.isFinite(Number(bountyAmount)) || Number(bountyAmount) <= 0) {
+      return res.status(400).json({ error: 'Invalid bountyAmount', details: 'Must be a positive number' });
+    }
+    if (!Number.isFinite(Number(threshold)) || Number(threshold) < 0 || Number(threshold) > 100) {
+      return res.status(400).json({ error: 'Invalid threshold', details: 'Threshold must be between 0 and 100' });
+    }
     if (!Array.isArray(juryNodes) || juryNodes.length === 0) {
       return res.status(400).json({ error: 'Invalid jury configuration', details: 'At least one jury node is required' });
     }
-
-    // ---- Rubric source must be provided ----
     if (!rubricJson && !rubricCidIn) {
       return res.status(400).json({ error: 'Missing rubric', details: 'Provide rubricJson or rubricCid' });
     }
 
-    // ---- Resolve rubricCid (pin when JSON provided) ----
-    let rubricCid = null;
+    // ---- Resolve rubricCid ----
+    let rubricCid;
 
     if (rubricJson) {
-      // Validate rubric JSON structure
+      // Validate rubric JSON
       const validation = validateRubric(rubricJson);
       if (!validation.valid) {
         return res.status(400).json({ error: 'Invalid rubric', details: 'Rubric validation failed', errors: validation.errors });
       }
 
-      // Write to tmp & pin
+      // Enrich and pin as JSON (no temp file needed)
       const rubricWithMeta = {
         ...rubricJson,
         version: rubricJson.version || '1.0',
@@ -107,44 +154,30 @@ router.post('/create', async (req, res) => {
         classId
       };
 
-      const tmpRubricPath = path.join(
-        TMP_BASE,
-        `rubric-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
-      );
-      await fs.writeFile(tmpRubricPath, JSON.stringify(rubricWithMeta, null, 2), 'utf8');
-
       try {
         const devQuery = readBool(req.query?.dev);
         const devBypass = devQuery || DEV_ENV_FAKE;
-
         if (devBypass) {
-          rubricCid = `dev-${path.basename(tmpRubricPath)}`;
-          logger.warn('[jobs/create] DEV bypass active — returning fake rubric CID', { rubricCid });
+          rubricCid = `dev-rubric-${Date.now()}.json`;
+          logger.warn('[jobs/create] DEV bypass — fake rubricCid', { rubricCid });
         } else {
-          const ipfsClient = req.app.locals.ipfsClient;
-          if (!ipfsClient || typeof ipfsClient.uploadToIPFS !== 'function') {
-            throw new Error('IPFS client not initialized on server');
-          }
-          rubricCid = await ipfsClient.uploadToIPFS(tmpRubricPath);
-          logger.info('[jobs/create] rubric pinned to IPFS', { rubricCid });
+          rubricCid = await pinJsonToPinata(rubricWithMeta, `rubric-${rubricWithMeta.title || 'untitled'}`);
+          logger.info('[jobs/create] rubric pinned (JSON)', { rubricCid });
         }
       } catch (err) {
         const msg = stringifyErr(err);
-        logger.error('[jobs/create] rubric upload failed', { msg });
+        logger.error('[jobs/create] rubric JSON pin failed', { msg });
         return res.status(500).json({ success: false, error: `Rubric upload failed: ${msg}` });
-      } finally {
-        await fs.unlink(tmpRubricPath).catch(e =>
-          logger.warn('[jobs/create] failed to clean tmp rubric file', { msg: e.message })
-        );
       }
+
     } else {
-      // rubricCid provided directly
+      // rubricCid provided
       if (typeof rubricCidIn !== 'string' || !CID_REGEX.test(rubricCidIn)) {
         return res.status(400).json({ error: 'Invalid rubricCid', details: 'Provide a valid IPFS CID' });
       }
       rubricCid = rubricCidIn;
 
-      // Optional light HEAD check; non-fatal
+      // Optional: non-fatal HEAD check if your IPFS client supports it
       try {
         const ipfsClient = req.app.locals.ipfsClient;
         if (ipfsClient?.headFromIPFS && typeof ipfsClient.headFromIPFS === 'function') {
@@ -156,27 +189,32 @@ router.post('/create', async (req, res) => {
     }
 
     // ---- Create Primary archive ----
-    const primaryArchive = await archiveGenerator.createPrimaryCIDArchive({
-      rubricCid,
-      jobTitle: title,
-      jobDescription: description,
-      workProductType,
-      classId,
-      juryNodes,
-      iterations,
-      // If your archiveGenerator supports it, pass tmpDir: TMP_BASE
-      // tmpDir: TMP_BASE
-    });
+    let primaryArchive;
+    try {
+      primaryArchive = await archiveGenerator.createPrimaryCIDArchive({
+        rubricCid,
+        jobTitle: title,
+        jobDescription: description,
+        workProductType,
+        classId,
+        juryNodes,
+        iterations
+        // you can also pass tmpDir: TMP_BASE if your helper supports it
+      });
+    } catch (e) {
+      logger.error('[jobs/create] primary archive creation failed', { msg: e.message });
+      return res.status(500).json({ success: false, error: `Primary archive build failed: ${e.message}` });
+    }
 
-    // ---- Pin Primary archive ----
-    let primaryCid = null;
+    // ---- Pin Primary archive (file) ----
+    let primaryCid;
     try {
       const devQuery = readBool(req.query?.dev);
       const devBypass = devQuery || DEV_ENV_FAKE;
 
       if (devBypass) {
         primaryCid = `dev-${path.basename(primaryArchive.archivePath)}`;
-        logger.warn('[jobs/create] DEV bypass active — returning fake primary CID', { primaryCid });
+        logger.warn('[jobs/create] DEV bypass — fake primaryCid', { primaryCid });
       } else {
         const ipfsClient = req.app.locals.ipfsClient;
         if (!ipfsClient || typeof ipfsClient.uploadToIPFS !== 'function') {
@@ -190,12 +228,14 @@ router.post('/create', async (req, res) => {
       logger.error('[jobs/create] primary archive upload failed', { msg });
       return res.status(500).json({ success: false, error: `Primary archive upload failed: ${msg}` });
     } finally {
-      await fs.unlink(primaryArchive.archivePath).catch(e =>
-        logger.warn('[jobs/create] failed to clean primary archive', { msg: e.message })
-      );
+      if (primaryArchive?.archivePath) {
+        await fs.unlink(primaryArchive.archivePath).catch(e =>
+          logger.warn('[jobs/create] failed to clean primary archive', { msg: e.message })
+        );
+      }
     }
 
-    // ---- Time window ----
+    // ---- Times ----
     const now = Math.floor(Date.now() / 1000);
     const submissionOpenTime = now;
     const submissionCloseTime = now + (Number(submissionWindowHours) * 3600);
@@ -240,12 +280,15 @@ router.post('/create', async (req, res) => {
     });
 
   } catch (error) {
-    logger.error('[jobs/create] fatal', { msg: error.message, stack: error.stack });
+    logger.error('[jobs/create] fatal', { msg: error.message, stack: error.stack?.split('\n')[0] });
     return res.status(500).json({ error: 'Failed to create job', details: error.message });
   }
 });
 
-// ---------- LIST JOBS (unchanged apart from logs) ----------
+/* ==============
+   LIST JOBS
+   ============== */
+
 router.get('/', async (req, res) => {
   try {
     const {
@@ -317,7 +360,10 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ---------- GET JOB DETAILS ----------
+/* =================
+   GET JOB DETAILS
+   ================= */
+
 router.get('/:jobId', async (req, res) => {
   try {
     const { jobId } = req.params;
@@ -352,14 +398,18 @@ router.get('/:jobId', async (req, res) => {
   }
 });
 
-// ---------- SUBMIT WORK (unchanged) ----------
+/* ==============
+   SUBMIT WORK
+   ============== */
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, TMP_BASE),
   filename: (req, file, cb) => cb(null, `${Date.now()}-${Math.round(Math.random()*1e9)}-${file.originalname}`)
 });
 const upload = multer({
   storage,
-  fileFilter: (req, file, cb) => isValidFileType(file.mimetype, file.originalname) ? cb(null, true)
+  fileFilter: (req, file, cb) => isValidFileType(file.mimetype, file.originalname)
+    ? cb(null, true)
     : cb(new Error(`Invalid file type: ${file.mimetype}. Allowed: txt, md, jpg, png, pdf, docx`)),
   limits: { fileSize: MAX_FILE_SIZE, files: 10 }
 }).array('files', 10);
@@ -420,7 +470,9 @@ router.post('/:jobId/submit', async (req, res) => {
       hunterCid = await ipfsClient.uploadToIPFS(hunterArchive.archivePath);
       logger.info('[jobs/submit] hunter submission pinned', { hunterCid, fileCount: uploadedFiles.length });
     } finally {
-      await fs.unlink(hunterArchive.archivePath).catch(err => logger.warn('[jobs/submit] failed to clean hunter archive', { msg: err.message }));
+      await fs.unlink(hunterArchive.archivePath).catch(err =>
+        logger.warn('[jobs/submit] failed to clean hunter archive', { msg: err.message })
+      );
     }
 
     const updatedPrimaryArchive = await archiveGenerator.createPrimaryCIDArchive({
@@ -439,7 +491,9 @@ router.post('/:jobId/submit', async (req, res) => {
       updatedPrimaryCid = await ipfsClient.uploadToIPFS(updatedPrimaryArchive.archivePath);
       logger.info('[jobs/submit] updated primary pinned', { updatedPrimaryCid });
     } finally {
-      await fs.unlink(updatedPrimaryArchive.archivePath).catch(err => logger.warn('[jobs/submit] failed to clean updated primary archive', { msg: err.message }));
+      await fs.unlink(updatedPrimaryArchive.archivePath).catch(err =>
+        logger.warn('[jobs/submit] failed to clean updated primary archive', { msg: err.message })
+      );
     }
 
     await jobStorage.addSubmission(jobId, {
@@ -471,12 +525,17 @@ router.post('/:jobId/submit', async (req, res) => {
     return res.status(500).json({ error: 'Failed to submit work', details: error.message });
   } finally {
     for (const f of uploadedFiles) {
-      if (f?.path) await fs.unlink(f.path).catch(err => logger.warn('[jobs/submit] failed to clean tmp file', { msg: err.message }));
+      if (f?.path) await fs.unlink(f.path).catch(err =>
+        logger.warn('[jobs/submit] failed to clean tmp file', { msg: err.message })
+      );
     }
   }
 });
 
-// ---------- BOUNTY ID PATCH & RESOLVE (unchanged) ----------
+/* ===============================
+   PATCH bountyId + resolve helper
+   =============================== */
+
 router.patch('/:jobId/bountyId', async (req, res) => {
   try {
     const { jobId } = req.params;
@@ -486,10 +545,10 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
     if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
 
-    job.bountyId   = bountyId;
-    job.txHash     = txHash;
+    job.bountyId    = bountyId;
+    job.txHash      = txHash;
     job.blockNumber = blockNumber;
-    job.onChain    = true;
+    job.onChain     = true;
 
     await jobStorage.writeStorage(storage);
 
@@ -501,7 +560,7 @@ router.patch('/:jobId/bountyId', async (req, res) => {
   }
 });
 
-// Resolve endpoint left as in your working version…
+// Resolve endpoint (unchanged logic from your working version)
 const RPC = process.env.RPC_PROVIDER_URL;
 const ESCROW = process.env.BOUNTY_ESCROW_ADDRESS;
 const ABI = [
@@ -596,7 +655,10 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
   }
 });
 
-// ---------- SYNC STATUS (unchanged) ----------
+/* =======================
+   SYNC STATUS (unchanged)
+   ======================= */
+
 router.get('/sync/status', (req, res) => {
   if (process.env.USE_BLOCKCHAIN_SYNC !== 'true') {
     return res.json({ enabled: false, message: 'Blockchain sync is disabled. Set USE_BLOCKCHAIN_SYNC=true in .env to enable.' });

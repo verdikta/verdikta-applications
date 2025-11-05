@@ -3,6 +3,7 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
+const os = require('os');
 require('dotenv').config();
 
 // Crash guards so we never drop the socket without a body
@@ -44,18 +45,13 @@ const UPLOAD_TIMEOUT = 60000; // 60 seconds
 const CID_REGEX = /^Qm[1-9A-HJ-NP-Za-km-z]{44}|b[A-Za-z2-7]{58}|B[A-Z2-7]{58}|z[1-9A-HJ-NP-Za-km-z]{48}|F[0-9A-F]{50}$/i;
 
 // Ensure tmp directory exists
+const TMP_BASE = process.env.VERDIKTA_TMP_DIR || path.join(os.tmpdir(), 'verdikta');
 const initializeTmpDirectory = async () => {
-  const os = require('os');
-  const tmpDir = process.env.VERDIKTA_TMP_DIR || path.join(os.tmpdir(), 'verdikta');
-
   try {
-    await fs.mkdir(tmpDir, { recursive: true });
-    // Clean any leftover files
-    const files = await fs.readdir(tmpDir);
-    await Promise.all(
-      files.map(file => fs.unlink(path.join(tmpDir, file)).catch(console.error))
-    );
-    logger.info('Temporary directory initialized');
+    await fs.mkdir(TMP_BASE, { recursive: true });
+    // Expose to routes/utilities if they want to use the same temp base
+    app.locals.tmpBase = TMP_BASE;
+    logger.info('Temporary directory ready', { TMP_BASE });
   } catch (error) {
     logger.error('Error initializing tmp directory:', error);
     throw error;
@@ -287,6 +283,33 @@ app.get('/api/debug/bountyCount', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+
+// --- Temp-directory diagnostics (place ABOVE error handlers and 404) ---
+app.get('/api/diagnostics/tmp', (req, res) => {
+  try {
+    // Prefer the value set during initialization, then env, then OS tmp
+    const os = require('os');
+    const fs = require('fs');
+    const baseFromLocals = app.locals?.tmpBase || null;
+    const baseFromEnv = process.env.VERDIKTA_TMP_DIR || null;
+    const fallback = require('path').join(os.tmpdir(), 'verdikta');
+    const tmpBase = baseFromLocals || baseFromEnv || fallback;
+
+    let exists = false;
+    try { exists = fs.existsSync(tmpBase); } catch {}
+
+    res.json({
+      tmpBase,
+      exists,
+      // helpful breadcrumbs so you know which source populated it
+      resolvedFrom: baseFromLocals ? 'app.locals.tmpBase' : (baseFromEnv ? 'VERDIKTA_TMP_DIR' : 'os.tmpdir()')
+    });
+  } catch (e) {
+    // Even diagnostics should never crash the request
+    res.status(500).json({ error: 'tmp diagnostics failed', details: e?.message || String(e) });
+  }
+});
+
 
 
 // Error handling middleware

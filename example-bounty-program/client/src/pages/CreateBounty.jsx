@@ -41,9 +41,9 @@ function CreateBounty({ walletState }) {
     title: '',
     description: '',
     workProductType: 'Work Product',
-    payoutAmount: '',
+    payoutAmount: '0.001',
     ethPriceUSD: 0,
-    submissionWindowHours: 168, // Default to 7 days (7 * 24 = 168 hours)
+    submissionWindowHours: 1, // Default, for development, to 1 hour.
     deliverableRequirements: {
       format: ['markdown', 'pdf']
     }

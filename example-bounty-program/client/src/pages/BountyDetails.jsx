@@ -298,7 +298,8 @@ function BountyDetails({ walletState }) {
   const timeRemaining = job?.submissionCloseTime ? job.submissionCloseTime - now : -1;
   const hoursRemaining = Math.max(0, Math.floor(timeRemaining / 3600));
   const isOpen = job?.status === 'OPEN' && timeRemaining > 0;
-  const isExpired = job?.status === 'CLOSED' || (job?.status === 'OPEN' && timeRemaining <= 0);
+  // const isExpired = job?.status === 'CLOSED' || (job?.status === 'OPEN' && timeRemaining <= 0);
+  const expiredButOpen = job?.status === 'OPEN' && timeRemaining <= 0;
 
   // terminal closed (already refunded/cancelled or completed)
   const terminalClosed =

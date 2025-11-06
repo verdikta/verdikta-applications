@@ -300,6 +300,10 @@ function BountyDetails({ walletState }) {
   const isOpen = job?.status === 'OPEN' && timeRemaining > 0;
   const isExpired = job?.status === 'CLOSED' || (job?.status === 'OPEN' && timeRemaining <= 0);
 
+  // terminal closed (already refunded/cancelled or completed)
+  const terminalClosed =
+    job?.status === 'CLOSED' || job?.status === 'COMPLETED' || job?.status === 'CANCELLED';
+
   const isCreator = walletState.isConnected &&
                     job?.creator?.toLowerCase() === walletState.address?.toLowerCase();
 
@@ -318,13 +322,13 @@ function BountyDetails({ walletState }) {
     submissionCloseTime: job?.submissionCloseTime,
     timeRemaining,
     isOpen,
-    isExpired,
+    expiredButOpen,
     hasActiveSubmissions,
   });
 
   return (
     <div className="bounty-details">
-      {isExpired && job && (
+      {expiredButOpen && job && (
         <div style={{ backgroundColor: '#fff3cd', border: '3px solid #ffc107', padding: '1.5rem', borderRadius: '8px', marginBottom: '2rem', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
           <h2 style={{ margin: '0 0 1rem 0', color: '#856404' }}>⏰ Expired Bounty - Action Required</h2>
           <p style={{ marginBottom: '1rem', fontSize: '1.1rem' }}>
@@ -374,7 +378,7 @@ function BountyDetails({ walletState }) {
         <div className="header-content">
           <h1>{job?.title || `Job #${bountyId}`}</h1>
           <span className={`status-badge status-${job?.status?.toLowerCase()}`}>{job?.status}</span>
-          {isExpired && (
+          {expiredButOpen && (
             <span className="status-badge" style={{ backgroundColor: '#dc3545', color: 'white', fontWeight: 'bold', animation: 'pulse 2s infinite' }}>
               ⏰ EXPIRED
             </span>
@@ -462,7 +466,7 @@ function BountyDetails({ walletState }) {
             <div className="alert alert-warning">This bounty has been cancelled and funds have been returned to the creator.</div>
           )}
 
-          {isExpired && (
+          {expiredButOpen && (
             <div className="expired-bounty-section" style={{ backgroundColor: '#fff3cd', border: '2px solid #ffc107', padding: '1.5rem', borderRadius: '8px', marginTop: '1rem' }}>
               <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
                 ⏰ <strong>This bounty has expired</strong> (deadline passed).
@@ -481,7 +485,7 @@ function BountyDetails({ walletState }) {
                 <>
                   <button
                     onClick={handleCloseExpiredBounty}
-                    disabled={closingBounty || disableActionsForMissingId}
+                    disabled={closingBounty || disableActionsForMissingId || terminalClosed}
                     className="btn btn-warning btn-lg"
                     style={{ width: '100%', fontSize: '1.1rem', padding: '1rem' }}
                     title={disableActionsForMissingId ? 'Resolving on-chain bountyId…' : undefined}

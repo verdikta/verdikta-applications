@@ -18,36 +18,42 @@ function Home({ walletState }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters]);
 
-  const loadJobs = async () => {
-    try {
-      setLoading(true);
-      setError(null);
+const loadJobs = async () => {
+  try {
+    setLoading(true);
+    setError(null);
 
-      // Build filter params (only include non-empty values)
-      const filterParams = {};
-      if (filters.status) filterParams.status = filters.status;
-      if (filters.search) filterParams.search = filters.search;
-      if (filters.minPayout) filterParams.minPayout = filters.minPayout;
+    const filterParams = {};
+    if (filters.status) filterParams.status = filters.status;
+    if (filters.search) filterParams.search = filters.search;
+    if (filters.minPayout) filterParams.minPayout = filters.minPayout;
 
-      // Ask backend to hide ended bounties by default
-      // (Ended = CANCELLED, COMPLETED; CLOSED still shows unless user filters it)
-      const statusUpper = String(filters.status).toUpperCase();
-      const viewingEndedExplicitly =
-        statusUpper === 'COMPLETED' || statusUpper === 'CANCELLED';
-      if (!viewingEndedExplicitly) {
-        filterParams.hideEnded = true;
-      }
+    // If the user didn't explicitly choose a terminal status,
+    // ask the backend to exclude all terminal states, including CLOSED.
+    const statusUpper = String(filters.status).toUpperCase();
+    const viewingTerminal =
+      statusUpper === 'COMPLETED' || statusUpper === 'CANCELLED' || statusUpper === 'CLOSED';
 
-      const response = await apiService.listJobs(filterParams);
-      setJobs(response.jobs || []);
-    } catch (err) {
-      console.error('Error loading jobs:', err);
-      setError('Failed to load jobs. ' + err.message);
-      setJobs([]);
-    } finally {
-      setLoading(false);
+    if (!viewingTerminal && !filters.status) {
+      // Prefer explicit excludeStatuses over hideEnded
+      filterParams.excludeStatuses = 'CANCELLED,COMPLETED,CLOSED';
+    } else if (!viewingTerminal && filters.status === 'OPEN') {
+      // If they picked OPEN, it’s redundant but harmless to still exclude terminals
+      filterParams.excludeStatuses = 'CANCELLED,COMPLETED,CLOSED';
     }
-  };
+    // else: if they picked CLOSED/COMPLETED/CANCELLED, don't exclude anything — they want to see them.
+
+    const response = await apiService.listJobs(filterParams);
+    setJobs(response.jobs || []);
+  } catch (err) {
+    console.error('Error loading jobs:', err);
+    setError('Failed to load jobs. ' + err.message);
+    setJobs([]);
+  } finally {
+    setLoading(false);
+  }
+};
+
 
   const handleFilterChange = (key, value) => {
     setFilters(prev => ({ ...prev, [key]: value }));

@@ -3,7 +3,16 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
+const os = require('os');
 require('dotenv').config();
+
+// Crash guards so we never drop the socket without a body
+process.on('uncaughtException', (err) => {
+  console.error('[fatal] uncaughtException:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[fatal] unhandledRejection:', reason);
+});
 
 const { IPFSClient, classMap } = require('@verdikta/common');
 const logger = require('./utils/logger');
@@ -20,10 +29,14 @@ const { initializeSyncService } = require('./utils/syncService');
 const app = express();
 
 // Initialize IPFS client
+const rawPinKey = process.env.IPFS_PINNING_KEY || '';
+// IPFSClient wants the bare JWT; strip any leading "Bearer " just in case
+const pinningKeyForClient = rawPinKey.replace(/^Bearer\s+/i, '');
+
 const ipfsClient = new IPFSClient({
   gateway: process.env.IPFS_GATEWAY || 'https://ipfs.io',
   pinningService: process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud',
-  pinningKey: process.env.IPFS_PINNING_KEY,
+  pinningKey: pinningKeyForClient,   // bare JWT only
   timeout: 30000,
   retryOptions: { retries: 5, factor: 2 }
 }, logger);
@@ -36,16 +49,13 @@ const UPLOAD_TIMEOUT = 60000; // 60 seconds
 const CID_REGEX = /^Qm[1-9A-HJ-NP-Za-km-z]{44}|b[A-Za-z2-7]{58}|B[A-Z2-7]{58}|z[1-9A-HJ-NP-Za-km-z]{48}|F[0-9A-F]{50}$/i;
 
 // Ensure tmp directory exists
+const TMP_BASE = process.env.VERDIKTA_TMP_DIR || path.join(os.tmpdir(), 'verdikta');
 const initializeTmpDirectory = async () => {
-  const tmpDir = path.join(__dirname, 'tmp');
   try {
-    await fs.mkdir(tmpDir, { recursive: true });
-    // Clean any leftover files
-    const files = await fs.readdir(tmpDir);
-    await Promise.all(
-      files.map(file => fs.unlink(path.join(tmpDir, file)).catch(console.error))
-    );
-    logger.info('Temporary directory initialized');
+    await fs.mkdir(TMP_BASE, { recursive: true });
+    // Expose to routes/utilities if they want to use the same temp base
+    app.locals.tmpBase = TMP_BASE;
+    logger.info('Temporary directory ready', { TMP_BASE });
   } catch (error) {
     logger.error('Error initializing tmp directory:', error);
     throw error;
@@ -101,7 +111,8 @@ const initializeBlockchainSync = () => {
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.options('*', cors());
+app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Request logging middleware
@@ -118,6 +129,7 @@ app.use('/api/jobs', jobRoutes); // New job management routes (replaces bounty r
 app.use('/api/bounties', bountyRoutes);
 app.use('/api/submissions', submissionRoutes);
 app.use('/api', ipfsRoutes);
+app.use(require('./routes/resolveBounty'));
 
 // ClassMap API endpoints (reused from example-frontend)
 app.get('/api/classes', (req, res) => {
@@ -260,6 +272,49 @@ app.get('/health', (req, res) => {
     version: require('./package.json').version
   });
 });
+
+// TEMP DEBUG
+const { ethers } = require('ethers');
+app.get('/api/debug/bountyCount', async (req, res) => {
+  try {
+    const provider = new ethers.JsonRpcProvider(process.env.RPC_PROVIDER_URL);
+    const escrow = new ethers.Contract(process.env.BOUNTY_ESCROW_ADDRESS, [
+      "function bountyCount() view returns (uint256)"
+    ], provider);
+    const n = await escrow.bountyCount();
+    res.json({ success: true, address: process.env.BOUNTY_ESCROW_ADDRESS, bountyCount: Number(n) });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// --- Temp-directory diagnostics (place ABOVE error handlers and 404) ---
+app.get('/api/diagnostics/tmp', (req, res) => {
+  try {
+    // Prefer the value set during initialization, then env, then OS tmp
+    const os = require('os');
+    const fs = require('fs');
+    const baseFromLocals = app.locals?.tmpBase || null;
+    const baseFromEnv = process.env.VERDIKTA_TMP_DIR || null;
+    const fallback = require('path').join(os.tmpdir(), 'verdikta');
+    const tmpBase = baseFromLocals || baseFromEnv || fallback;
+
+    let exists = false;
+    try { exists = fs.existsSync(tmpBase); } catch {}
+
+    res.json({
+      tmpBase,
+      exists,
+      // helpful breadcrumbs so you know which source populated it
+      resolvedFrom: baseFromLocals ? 'app.locals.tmpBase' : (baseFromEnv ? 'VERDIKTA_TMP_DIR' : 'os.tmpdir()')
+    });
+  } catch (e) {
+    // Even diagnostics should never crash the request
+    res.status(500).json({ error: 'tmp diagnostics failed', details: e?.message || String(e) });
+  }
+});
+
+
 
 // Error handling middleware
 app.use((err, req, res, next) => {

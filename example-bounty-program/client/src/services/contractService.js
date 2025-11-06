@@ -378,6 +378,70 @@ export async function deriveBountyIdFromTx(txHash, escrowAddress) {
 }
 
 
+/**
+ * Resolve on-chain bountyId by reading contract state (no log scan).
+ * Looser match: creator + deadline within tolerance, prefer matching CID.
+ */
+export async function resolveBountyIdByStateLoose({
+  escrowAddress,
+  creator,
+  rubricCid,
+  submissionDeadline,
+  deadlineToleranceSec = 300, // ±5 minutes default
+  lookback = 1000
+}) {
+  if (!window.ethereum) throw new Error("Wallet not available");
+  const provider = new ethers.BrowserProvider(window.ethereum);
+
+  const abi = [
+    "function bountyCount() view returns (uint256)",
+    "function getBounty(uint256) view returns (address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256)"
+  ];
+
+  const c = new ethers.Contract(escrowAddress, abi, provider);
+  const total = Number(await c.bountyCount());
+  if (total === 0) throw new Error("No bounties on chain yet");
+
+  const start = Math.max(0, total - 1);
+  const stop  = Math.max(0, total - 1 - Math.max(1, lookback));
+
+  const wantCreator  = (creator || "").toLowerCase();
+  const wantCid      = rubricCid || "";
+  const wantDeadline = Number(submissionDeadline || 0);
+
+  let best = null;
+  let bestDelta = Number.POSITIVE_INFINITY;
+
+  for (let i = start; i >= stop; i--) {
+    const b = await c.getBounty(i);
+    const bCreator  = (b[0] || "").toLowerCase();
+    if (bCreator !== wantCreator) continue;
+
+    const bCid      = b[1] || "";
+    const bDeadline = Number(b[6] || 0);
+    const delta     = Math.abs(bDeadline - wantDeadline);
+
+    const cidOk      = !wantCid || wantCid === bCid;
+    const deadlineOk = delta <= deadlineToleranceSec;
+
+    // Choose the "best" match: exact CID + in-tolerance deadline beats others;
+    // otherwise pick the closest delta we’ve seen so far.
+    if ((cidOk && deadlineOk) || (cidOk && delta < bestDelta)) {
+      best = i;
+      bestDelta = delta;
+      if (cidOk && delta === 0) break; // perfect match — stop early
+    }
+  }
+
+  if (best != null) return best;
+  throw new Error("No matching bounty found with loose state match");
+}
+
+// Keep a strict alias for older callers (optional)
+export async function resolveBountyIdByState(args) {
+  return resolveBountyIdByStateLoose(args);
+}
+
 // Export singleton instance
 let contractService = null;
 

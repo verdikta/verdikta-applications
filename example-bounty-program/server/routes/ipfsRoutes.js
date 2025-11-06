@@ -1,123 +1,176 @@
 const express = require('express');
-const router = express.Router();
+const path = require('path');
+const os = require('os');
+const fs = require('fs').promises;
 const logger = require('../utils/logger');
-const { isValidCid } = require('../utils/validation');
 
-/**
- * GET /api/fetch/:cid
- * Fetch content from IPFS
- */
-router.get('/fetch/:cid', async (req, res) => {
-  try {
-    const { cid } = req.params;
+const router = express.Router();
+const TMP_DIR = path.join(__dirname, '..', 'tmp');
 
-    // Validate CID format
-    if (!isValidCid(cid)) {
-      return res.status(400).json({
-        error: 'Invalid CID format',
-        details: 'The provided CID does not match the expected format'
-      });
-    }
+async function ensureTmp() {
+  await fs.mkdir(TMP_DIR, { recursive: true });
+}
 
-    logger.info(`GET /api/fetch/${cid} called`);
+const PIN_TIMEOUT_MS = Number(process.env.PIN_TIMEOUT_MS || 20000);
+const PINATA_BASE = (process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud').replace(/\/+$/,'');
+// Expect RAW JWT in env (no "Bearer ")
+const PINATA_JWT = process.env.IPFS_PINNING_KEY || '';
+const PINATA_AUTH_HEADER = PINATA_JWT
+  ? (PINATA_JWT.toLowerCase().startsWith('bearer ') ? PINATA_JWT : `Bearer ${PINATA_JWT}`)
+  : '';
 
-    // Fetch from IPFS using ipfsClient
-    const ipfsClient = req.app.locals.ipfsClient;
-    const data = await ipfsClient.fetchFromIPFS(cid);
+function withTimeout(promise, ms, label = 'operation') {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    )
+  ]);
+}
 
-    logger.info('Successfully fetched from IPFS', { 
-      cid, 
-      size: data.length 
-    });
-
-    // Try to detect content type
-    let contentType = 'application/octet-stream';
-    let content = data;
-
+function normalizeProviderError(err) {
+  const out = { message: err?.message || String(err) };
+  if (err?.response) {
+    out.providerStatus = err.response.status;
     try {
-      // Attempt to parse as JSON
-      const jsonContent = JSON.parse(data.toString('utf-8'));
-      contentType = 'application/json';
-      content = JSON.stringify(jsonContent, null, 2);
-    } catch (e) {
-      // Not JSON, check for other types based on content
-      const dataStr = data.toString('utf-8', 0, Math.min(100, data.length));
-      if (dataStr.startsWith('<!DOCTYPE html') || dataStr.startsWith('<html')) {
-        contentType = 'text/html';
-      } else if (data[0] === 0xFF && data[1] === 0xD8) {
-        contentType = 'image/jpeg';
-      } else if (data[0] === 0x89 && data[1] === 0x50) {
-        contentType = 'image/png';
-      } else if (data[0] === 0x25 && data[1] === 0x50 && data[2] === 0x44 && data[3] === 0x46) {
-        contentType = 'application/pdf';
-      }
+      out.providerBody = typeof err.response.data === 'string'
+        ? err.response.data
+        : JSON.stringify(err.response.data);
+    } catch {
+      out.providerBody = String(err.response.data);
+    }
+  } else if (err?.status) {
+    out.providerStatus = err.status;
+  }
+  if (err?.stack) out.stack = err.stack.split('\n')[0];
+  return out;
+}
+
+/** Pin JSON content at Pinata (no multipart). Returns IpfsHash string. */
+async function pinJsonToPinata(contentObj, name = 'verdikta-json') {
+  if (!PINATA_AUTH_HEADER) throw new Error('IPFS_PINNING_KEY not set');
+  const url = `${PINATA_BASE}/pinning/pinJSONToIPFS`;
+  const body = {
+    pinataContent: contentObj,
+    pinataMetadata: { name }
+  };
+  const r = await withTimeout(
+    fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': PINATA_AUTH_HEADER,   // <- we add "Bearer " here
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    }),
+    PIN_TIMEOUT_MS,
+    'Pinata pinJSONToIPFS'
+  );
+  const text = await r.text();
+  if (!r.ok) {
+    let parsed;
+    try { parsed = JSON.parse(text); } catch {}
+    const err = new Error(`Pinata returned ${r.status}`);
+    err.status = r.status;
+    err.response = { status: r.status, data: parsed ?? text };
+    throw err;
+  }
+  const parsed = JSON.parse(text);
+  if (!parsed?.IpfsHash) throw new Error('Pinata response missing IpfsHash');
+  return parsed.IpfsHash;
+}
+
+// -------------------- RUBRICS: pin JSON (no file streaming) --------------------
+router.post('/rubrics', async (req, res) => {
+  const t0 = Date.now();
+  try {
+    const { rubric, classId } = req.body || {};
+    if (!rubric || typeof rubric !== 'object') {
+      return res.status(400).json({ success: false, error: 'rubric body is required' });
+    }
+    if (!Array.isArray(rubric.criteria) || rubric.criteria.length < 1) {
+      return res.status(400).json({ success: false, error: 'Invalid rubric: criteria required' });
     }
 
-    // Set response headers
-    res.set({
-      'Content-Type': contentType,
-      'Content-Length': data.length,
-      'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'public, max-age=31536000', // 1 year cache (IPFS content is immutable)
-      'X-Content-CID': cid
-    });
+    // Enrich and pin as JSON (faster, safer)
+    const rubricWithMeta = {
+      ...rubric,
+      version: rubric.version || '1.0',
+      classId: classId ?? 128,
+      createdAt: new Date().toISOString(),
+    };
 
-    res.send(content);
+    const cid = await pinJsonToPinata(rubricWithMeta, `rubric-${rubric.title || 'untitled'}`);
+    logger.info('[rubrics] pinned JSON rubric', { cid, durMs: Date.now() - t0 });
 
-  } catch (error) {
-    logger.error('Error fetching from IPFS:', error);
-    
-    if (error.message.includes('not found') || error.message.includes('404')) {
-      return res.status(404).json({
-        error: 'CID not found',
-        details: error.message
-      });
-    }
-    
-    if (error.message.includes('timeout') || error.message.includes('timed out')) {
-      return res.status(504).json({
-        error: 'Request timeout',
-        details: error.message
-      });
-    }
-    
-    return res.status(500).json({
-      error: 'Failed to fetch from IPFS',
-      details: error.message
-    });
+    return res.json({ success: true, rubricCid: cid });
+  } catch (e) {
+    const details = normalizeProviderError(e);
+    logger.error('[rubrics] failed', { ...details });
+    return res.status(502).json({ success: false, error: 'IPFS JSON pin failed', details });
   }
 });
 
-/**
- * POST /api/rubrics/validate
- * Validate rubric JSON structure
- */
-router.post('/rubrics/validate', async (req, res) => {
+// -------------------- FETCH VIA IPFS CLIENT (unchanged) --------------------
+router.get('/fetch/:cid', async (req, res) => {
   try {
-    const { rubric } = req.body;
+    const ipfs = req.app.locals.ipfsClient;
+    if (!ipfs) return res.status(500).send('IPFS client not initialized');
 
-    if (!rubric) {
-      return res.status(400).json({
-        error: 'Missing rubric',
-        details: 'Request body must include rubric object'
-      });
+    const data = await withTimeout(ipfs.fetchFromIPFS(req.params.cid), PIN_TIMEOUT_MS, 'IPFS fetch');
+    res.set('Content-Type', 'text/plain; charset=utf-8');
+    return res.send(data);
+  } catch (err) {
+    const details = normalizeProviderError(err);
+    logger.error('[fetch] failed', { cid: req.params.cid, ...details });
+    return res.status(502).json({ error: 'Fetch failed', details });
+  }
+});
+
+// -------------------- DIAGNOSTICS --------------------
+router.get('/diagnostics/ipfs', async (req, res) => {
+  const ipfs = req.app.locals.ipfsClient;
+  try { await ensureTmp(); } catch {}
+  res.json({
+    ipfsClient: !!ipfs,
+    hasUploadFn: !!(ipfs && typeof ipfs.uploadToIPFS === 'function'),
+    tmpDirOk: true,
+    gateway: process.env.IPFS_GATEWAY || null,
+    pinService: process.env.IPFS_PINNING_SERVICE || null,
+    keyPresent: !!PINATA_JWT
+  });
+});
+
+// Auth probe
+router.get('/diagnostics/ipfs/auth', async (req, res) => {
+  try {
+    if (!PINATA_AUTH_HEADER) {
+      return res.status(400).json({ success: false, error: 'IPFS_PINNING_KEY not set' });
     }
+    const url = `${PINATA_BASE}/data/testAuthentication`;
+    const r = await withTimeout(
+      fetch(url, { headers: { Authorization: PINATA_AUTH_HEADER } }),
+      PIN_TIMEOUT_MS,
+      'Pinata auth'
+    );
+    const body = await r.text();
+    return res.status(r.status).json({ success: r.ok, status: r.status, body });
+  } catch (e) {
+    const details = normalizeProviderError(e);
+    logger.error('[ipfs auth probe] failed', { ...details });
+    return res.status(502).json({ success: false, error: 'Auth probe failed', details });
+  }
+});
 
-    const { validateRubric } = require('../utils/validation');
-    const result = validateRubric(rubric);
-
-    res.json({
-      valid: result.valid,
-      errors: result.errors,
-      warnings: [] // Can add warnings for non-critical issues
-    });
-
-  } catch (error) {
-    logger.error('Error validating rubric:', error);
-    res.status(500).json({
-      error: 'Failed to validate rubric',
-      details: error.message
-    });
+// JSON pin probe
+router.post('/diagnostics/ipfs/pin', async (req, res) => {
+  try {
+    const cid = await pinJsonToPinata({ probe: true, t: Date.now() }, 'verdikta-probe');
+    return res.json({ success: true, cid });
+  } catch (e) {
+    const details = normalizeProviderError(e);
+    logger.error('[ipfs pin probe] failed', { ...details });
+    return res.status(502).json({ success: false, error: 'Pin probe failed', details });
   }
 });
 

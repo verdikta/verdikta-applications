@@ -6,26 +6,41 @@
 import axios from 'axios';
 import { config } from '../config';
 
+const isDev = import.meta.env.DEV;
+
+/*
 const api = axios.create({
   baseURL:
     (config && (config.apiBaseUrl || config.apiUrl)) ||  // prefer apiBaseUrl, fall back to old apiUrl
     import.meta.env.VITE_API_BASE_URL ||
-    import.meta.env.VITE_API_URL ||                          
+    import.meta.env.VITE_API_URL ||
     '/',
   timeout: (config && config.apiTimeout) || 30000,
   headers: { 'Content-Type': 'application/json' }
 });
+*/
+
+const api = axios.create({
+  baseURL: isDev
+    ? ''                                      // ← relative in dev: Vite proxy will catch /api/*
+    : (config?.apiBaseUrl || config?.apiUrl || '/'),
+  timeout: (config && config.apiTimeout) || 30000,
+  headers: { 'Content-Type': 'application/json' }
+});
+
+// Optional: small runtime hint
+try { console.log('[API] baseURL =', api.defaults.baseURL); } catch {}
 
 // Request interceptor for logging (debug mode)
 if (config && config.enableDebug) {
   api.interceptors.request.use(request => {
-    console.log('🌐 API Request:', request.method.toUpperCase(), request.url);
+    console.log('🌐 API Request:', request.method?.toUpperCase?.(), request.baseURL + request.url);
     return request;
   });
 
   api.interceptors.response.use(
     response => {
-      console.log('✅ API Response:', response.status, response.config.url);
+      console.log('✅ API Response:', response.status, response.config?.url);
       return response;
     },
     error => {
@@ -44,10 +59,21 @@ export const apiService = {
   // ============================================================
 
   /**
+   * Resolve and persist on-chain bountyId for a job (server-side RPC)
+   * Server route: PATCH /api/jobs/:jobId/bountyId/resolve
+   * payload: { creator, rubricCid?, submissionCloseTime, txHash? }
+   */
+  async resolveJobBountyId(jobId, payload) {
+    const { data } = await api.patch(`/api/jobs/${jobId}/bountyId/resolve`, payload);
+    return data;
+  },
+
+  /**
    * Create a new job with rubric and bounty details
+   * Server route: POST /api/jobs/create
    */
   async createJob(jobData) {
-    const response = await api.post('/api/jobs', jobData);
+    const response = await api.post('/api/jobs/create', jobData);
     return response.data;
   },
 
@@ -86,9 +112,7 @@ export const apiService = {
     formData.append('hunter', hunterAddress);
 
     const response = await api.post(`/api/jobs/${jobId}/submit`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data'
-      }
+      headers: { 'Content-Type': 'multipart/form-data' }
     });
     return response.data;
   },
@@ -98,11 +122,27 @@ export const apiService = {
    */
   async submitWorkMultiple(jobId, formData) {
     const response = await api.post(`/api/jobs/${jobId}/submit`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data'
-      }
+      headers: { 'Content-Type': 'multipart/form-data' }
     });
     return response.data;
+  },
+
+  /**
+   * Manually persist on-chain bountyId (used after createBounty tx confirms)
+   * Server route: PATCH /api/jobs/:jobId/bountyId
+   */
+  updateJobBountyId: async (jobId, data) => {
+    try {
+      const r = await api.patch(`/api/jobs/${jobId}/bountyId`, data);
+      return r.data;
+    } catch (e) {
+      // Fallback if you also support generic PATCH /api/jobs/:id
+      if (e.response?.status === 404) {
+        const r2 = await api.patch(`/api/jobs/${jobId}`, data);
+        return r2.data;
+      }
+      throw e;
+    }
   },
 
   // ============================================================
@@ -113,12 +153,21 @@ export const apiService = {
    * Upload rubric to IPFS and get CID
    */
 async uploadRubric(rubricJson, classId = 128) {
-  const { data } = await api.post('/api/rubrics', { rubric: rubricJson, classId });
-  return data;
+  try {
+    const { data } = await api.post(
+      '/api/rubrics',
+      { rubric: rubricJson, classId },
+      { timeout: 90000 } // IPFS pinning can exceed 30s
+    );
+    return data;
+  } catch (e) {
+    const msg = e?.response?.data?.error || e?.message || 'Rubric upload failed';
+    throw new Error(msg);
+  }
 },
 
   /**
-   * List all bounties (TODO: Requires contract integration)
+   * List all bounties (legacy reads)
    */
   async listBounties(filters = {}) {
     const params = new URLSearchParams(filters).toString();
@@ -127,7 +176,7 @@ async uploadRubric(rubricJson, classId = 128) {
   },
 
   /**
-   * Get bounty details by ID (TODO: Requires contract integration)
+   * Get bounty details by ID (legacy reads)
    */
   async getBounty(bountyId) {
     const response = await api.get(`/api/bounties/${bountyId}`);
@@ -135,52 +184,32 @@ async uploadRubric(rubricJson, classId = 128) {
   },
 
   /**
-   * Get submissions for a bounty (TODO: Requires contract integration)
+   * Get submissions for a bounty (legacy reads)
    */
   async getBountySubmissions(bountyId) {
     const response = await api.get(`/api/bounties/${bountyId}/submissions`);
     return response.data;
   },
 
-  /**
-   * Update ID
-   */
-updateJobBountyId: async (jobId, data) => {
-  // Prefer the more explicit route if your backend provides it:
-  try {
-    const r = await api.patch(`/api/jobs/${jobId}/bountyId`, data);
-    return r.data;
-  } catch (e) {
-    // Fallback to a generic PATCH if your backend expects the full job payload at /api/jobs/:id
-    if (e.response?.status === 404) {
-      const r2 = await api.patch(`/api/jobs/${jobId}`, data);
-      return r2.data;
-    }
-    throw e;
-  }
-},
-
   // ============================================================
   //                  SUBMISSION ENDPOINTS
   // ============================================================
 
   /**
-   * Upload deliverable file to IPFS
+   * Upload deliverable file to IPFS (legacy path)
    */
   async uploadDeliverable(bountyId, file) {
     const formData = new FormData();
     formData.append('file', file);
 
     const response = await api.post(`/api/bounties/${bountyId}/submit`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data'
-      }
+      headers: { 'Content-Type': 'multipart/form-data' }
     });
     return response.data;
   },
 
   /**
-   * Get submission details (TODO: Requires contract integration)
+   * Get submission details (legacy path)
    */
   async getSubmission(submissionId) {
     const response = await api.get(`/api/submissions/${submissionId}`);
@@ -195,9 +224,7 @@ updateJobBountyId: async (jobId, data) => {
    * Fetch content from IPFS via backend
    */
   async fetchFromIPFS(cid) {
-    const response = await api.get(`/api/fetch/${cid}`, {
-      responseType: 'text' // Get as text, let caller parse
-    });
+    const response = await api.get(`/api/fetch/${cid}`, { responseType: 'text' });
     return response.data;
   },
 
@@ -240,6 +267,4 @@ updateJobBountyId: async (jobId, data) => {
 };
 
 export default apiService;
-
-
 

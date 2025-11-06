@@ -1,133 +1,199 @@
 /**
  * LocalStorage service for managing user's saved rubrics
- * Storage key format: `rubrics_{walletAddress}`
+ * Supports both legacy and new call signatures.
+ *
+ * Storage keys:
+ *   Per-wallet:  verdikta_bounty_rubrics_<lowercased_wallet>
+ *   Global:      verdikta_bounty_rubrics_global  (fallback when wallet is unknown)
  */
 
 const STORAGE_PREFIX = 'verdikta_bounty_rubrics_';
+const GLOBAL_KEY = 'verdikta_bounty_rubrics_global';
 
-/**
- * Get storage key for a wallet address
- */
-const getStorageKey = (walletAddress) => {
-  if (!walletAddress) throw new Error('Wallet address required');
-  return `${STORAGE_PREFIX}${walletAddress.toLowerCase()}`;
+// ---------- internal helpers ----------
+
+const isStorageAvailable = () => {
+  try {
+    const test = '__storage_test__';
+    localStorage.setItem(test, test);
+    localStorage.removeItem(test);
+    return true;
+  } catch {
+    return false;
+  }
 };
 
-/**
- * Get all saved rubrics for a wallet
- * @param {string} walletAddress - Wallet address
- * @returns {Array} Array of saved rubric metadata
- */
-export const getSavedRubrics = (walletAddress) => {
+// 0x... (40 hex) check (case-insensitive)
+const isEthAddress = (s) => typeof s === 'string' && /^0x[a-fA-F0-9]{40}$/.test(s);
+
+// Normalize to a storage key; fall back to GLOBAL_KEY if wallet is absent/invalid.
+const getStorageKey = (walletAddress) => {
+  if (isEthAddress(walletAddress)) return `${STORAGE_PREFIX}${walletAddress.toLowerCase()}`;
+  return GLOBAL_KEY;
+};
+
+// Parse timestamps safely to a number
+const toTimestamp = (v) => {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string') {
+    const t = Date.parse(v);
+    return Number.isFinite(t) ? t : Date.now();
+  }
+  return Date.now();
+};
+
+// Normalize a saved rubric entry (for sorting + display)
+const normalizeEntry = (e) => {
+  if (!e || typeof e !== 'object') return null;
+  // Keep legacy fields, add fallbacks
+  const createdAt = toTimestamp(e.createdAt);
+  const criteria = Array.isArray(e.criteria) ? e.criteria : [];
+  return {
+    cid: e.cid,
+    title: e.title || '(untitled rubric)',
+    description: e.description || '',
+    threshold: Number.isFinite(e.threshold) ? e.threshold : 80,
+    criteriaCount: Number.isFinite(e.criteriaCount) ? e.criteriaCount : criteria.length,
+    criteria,                     // keep full criteria if present (helps library)
+    classId: Number.isFinite(e.classId) ? e.classId : undefined,
+    createdAt,
+    usedCount: Number.isFinite(e.usedCount) ? e.usedCount : 0,
+    lastUsed: e.lastUsed ? toTimestamp(e.lastUsed) : undefined,
+  };
+};
+
+// Read array for a wallet/global; returns [] on any read/parse issue
+const readList = (walletAddress) => {
+  if (!isStorageAvailable()) return [];
   try {
     const key = getStorageKey(walletAddress);
-    const data = localStorage.getItem(key);
-    
-    if (!data) return [];
-    
-    const rubrics = JSON.parse(data);
-    
-    // Sort by createdAt (newest first)
-    return rubrics.sort((a, b) => b.createdAt - a.createdAt);
-  } catch (error) {
-    console.error('Error loading saved rubrics:', error);
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .map(normalizeEntry)
+      .filter(Boolean)
+      .sort((a, b) => b.createdAt - a.createdAt);
+  } catch (e) {
+    console.error('[rubricStorage] readList failed:', e);
     return [];
   }
 };
 
+// Write array for a wallet/global
+const writeList = (walletAddress, list) => {
+  if (!isStorageAvailable()) throw new Error('LocalStorage not available');
+  const key = getStorageKey(walletAddress);
+  localStorage.setItem(key, JSON.stringify(list));
+};
+
+// ---------- public API ----------
+
 /**
- * Save a new rubric
- * @param {string} walletAddress - Wallet address
- * @param {Object} rubricMetadata - { cid, title, threshold, rubricJson }
- * @returns {boolean} Success
+ * Get all saved rubrics for a wallet (or global if wallet is missing/invalid)
+ * @param {string} walletAddress
+ * @returns {Array} normalized rubric entries (newest first)
  */
-export const saveRubric = (walletAddress, rubricMetadata) => {
-  try {
-    const { cid, title, threshold, rubricJson } = rubricMetadata;
-    
-    if (!cid || !title) {
-      throw new Error('CID and title are required');
-    }
-    
-    const key = getStorageKey(walletAddress);
-    const existing = getSavedRubrics(walletAddress);
-    
-    // Check for duplicate CID
-    const duplicate = existing.find(r => r.cid === cid);
-    if (duplicate) {
-      throw new Error('This rubric is already saved');
-    }
-    
-    // Add new rubric (threshold stored separately from rubric JSON)
-    const newRubric = {
-      cid,
-      title,
-      threshold: threshold || 80, // Store threshold for smart contract use
-      criteriaCount: rubricJson.criteria?.length || 0,
-      createdAt: Date.now(),
-      usedCount: 0
-    };
-    
-    const updated = [newRubric, ...existing];
-    
-    localStorage.setItem(key, JSON.stringify(updated));
-    
-    console.log('✅ Rubric saved to localStorage:', { cid, title, threshold });
-    
-    return true;
-  } catch (error) {
-    console.error('Error saving rubric:', error);
-    throw error;
+export const getSavedRubrics = (walletAddress) => readList(walletAddress);
+
+/**
+ * Save a rubric.
+ *
+ * Accepted signatures:
+ *  - saveRubric(walletAddress, rubricMetadata)
+ *  - saveRubric(rubricMetadata) // wallet inferred from rubricMetadata.creator
+ *
+ * rubricMetadata expected fields:
+ *  - cid (required)
+ *  - title (required)
+ *  - description? (string)
+ *  - criteria? (array)
+ *  - threshold? (number)
+ *  - classId? (number)
+ *  - createdAt? (string | number)
+ *  - creator? (0x-address; used to pick per-wallet key if first arg missing)
+ *
+ * Throws on validation or storage failure.
+ * Returns true on success.
+ */
+export const saveRubric = (...args) => {
+  let walletAddress = null;
+  let meta = null;
+
+  if (args.length === 2 && typeof args[0] === 'string' && typeof args[1] === 'object') {
+    // Legacy: (walletAddress, meta)
+    walletAddress = args[0];
+    meta = args[1];
+  } else if (args.length === 1 && typeof args[0] === 'object') {
+    // New: (meta), wallet inferred from meta.creator
+    meta = args[0];
+    walletAddress = meta?.creator || null;
+  } else {
+    throw new Error('Invalid saveRubric arguments');
   }
+
+  if (!meta || typeof meta !== 'object') throw new Error('rubricMetadata is required');
+  const { cid, title } = meta;
+  if (!cid || !title) throw new Error('CID and title are required');
+
+  // Build normalized entry to store
+  const criteria = Array.isArray(meta.criteria) ? meta.criteria : (meta.rubricJson?.criteria || []);
+  const entry = normalizeEntry({
+    cid,
+    title,
+    description: meta.description || '',
+    threshold: Number.isFinite(meta.threshold) ? meta.threshold : 80,
+    criteria,
+    criteriaCount: criteria.length,
+    classId: Number.isFinite(meta.classId) ? meta.classId : undefined,
+    createdAt: meta.createdAt || Date.now(),
+    usedCount: Number.isFinite(meta.usedCount) ? meta.usedCount : 0,
+    lastUsed: meta.lastUsed || undefined,
+  });
+
+  // Persist
+  const list = readList(walletAddress);
+  if (list.some((r) => r.cid === entry.cid)) {
+    // Avoid duplicates; treat as success (idempotent)
+    return true;
+  }
+  const updated = [entry, ...list].slice(0, 200); // cap to avoid unbounded growth
+  writeList(walletAddress, updated);
+  console.log('✅ [rubricStorage] Saved:', { key: getStorageKey(walletAddress), cid: entry.cid, title: entry.title });
+  return true;
 };
 
 /**
- * Delete a saved rubric by CID
- * @param {string} walletAddress - Wallet address
- * @param {string} cid - Rubric CID to delete
- * @returns {boolean} Success
+ * Delete a saved rubric by CID (wallet-specific if provided; otherwise global)
+ * @param {string} walletAddress
+ * @param {string} cid
+ * @returns {boolean}
  */
 export const deleteRubric = (walletAddress, cid) => {
-  try {
-    const key = getStorageKey(walletAddress);
-    const existing = getSavedRubrics(walletAddress);
-    
-    const filtered = existing.filter(r => r.cid !== cid);
-    
-    if (filtered.length === existing.length) {
-      throw new Error('Rubric not found');
-    }
-    
-    localStorage.setItem(key, JSON.stringify(filtered));
-    
-    console.log('🗑️ Rubric deleted:', cid);
-    
-    return true;
-  } catch (error) {
-    console.error('Error deleting rubric:', error);
-    throw error;
-  }
+  if (!cid) throw new Error('CID required');
+  const list = readList(walletAddress);
+  const filtered = list.filter((r) => r.cid !== cid);
+  if (filtered.length === list.length) throw new Error('Rubric not found');
+  writeList(walletAddress, filtered);
+  console.log('🗑️ [rubricStorage] Deleted:', { key: getStorageKey(walletAddress), cid });
+  return true;
 };
 
 /**
- * Increment usage count for a rubric
- * @param {string} walletAddress - Wallet address
- * @param {string} cid - Rubric CID
+ * Increment usage count for a rubric (wallet-specific if provided; otherwise global)
+ * @param {string} walletAddress
+ * @param {string} cid
  */
 export const incrementUsageCount = (walletAddress, cid) => {
   try {
-    const key = getStorageKey(walletAddress);
-    const existing = getSavedRubrics(walletAddress);
-    
-    const updated = existing.map(r => 
-      r.cid === cid 
-        ? { ...r, usedCount: (r.usedCount || 0) + 1, lastUsed: Date.now() }
-        : r
+    const list = readList(walletAddress);
+    const updated = list.map((r) =>
+      r.cid === cid ? { ...r, usedCount: (r.usedCount || 0) + 1, lastUsed: Date.now() } : r
     );
-    
-    localStorage.setItem(key, JSON.stringify(updated));
-  } catch (error) {
-    console.error('Error updating usage count:', error);
+    writeList(walletAddress, updated);
+  } catch (e) {
+    console.error('[rubricStorage] incrementUsageCount failed:', e);
   }
 };
 
@@ -135,31 +201,22 @@ export const incrementUsageCount = (walletAddress, cid) => {
  * Check if storage is available
  * @returns {boolean}
  */
-export const isStorageAvailable = () => {
-  try {
-    const test = '__storage_test__';
-    localStorage.setItem(test, test);
-    localStorage.removeItem(test);
-    return true;
-  } catch (e) {
-    return false;
-  }
-};
+export { isStorageAvailable };
 
 /**
- * Get storage usage stats
- * @param {string} walletAddress - Wallet address
- * @returns {Object} Stats
+ * Get storage usage stats (wallet-specific if provided; otherwise global)
+ * @param {string} walletAddress
+ * @returns {Object}
  */
 export const getStorageStats = (walletAddress) => {
-  const rubrics = getSavedRubrics(walletAddress);
-  
+  const rubrics = readList(walletAddress);
+  const mostUsed = [...rubrics].sort((a, b) => (b.usedCount || 0) - (a.usedCount || 0))[0];
   return {
     totalRubrics: rubrics.length,
     totalUsage: rubrics.reduce((sum, r) => sum + (r.usedCount || 0), 0),
-    mostUsed: rubrics.sort((a, b) => (b.usedCount || 0) - (a.usedCount || 0))[0],
-    newest: rubrics[0],
-    storageAvailable: isStorageAvailable()
+    mostUsed: mostUsed || null,
+    newest: rubrics[0] || null,
+    storageAvailable: isStorageAvailable(),
   };
 };
 
@@ -169,6 +226,6 @@ export default {
   deleteRubric,
   incrementUsageCount,
   isStorageAvailable,
-  getStorageStats
+  getStorageStats,
 };
 

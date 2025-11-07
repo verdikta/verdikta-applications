@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiService } from '../services/api';
+import { getContractService } from '../services/contractService';
 import './SubmitWork.css';
 
 function SubmitWork({ walletState }) {
@@ -14,6 +15,7 @@ function SubmitWork({ walletState }) {
     'Thank you for giving me the opportunity to submit this work. You can find it below in the references section.'
   );
   const [loading, setLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState('');
   const [error, setError] = useState(null);
   const [submissionResult, setSubmissionResult] = useState(null);
   const [showCIDDialog, setShowCIDDialog] = useState(false);
@@ -115,40 +117,97 @@ function SubmitWork({ walletState }) {
       setLoading(true);
       setError(null);
 
-      // Prepare form data
+      // STEP 1: Upload to IPFS
+      setLoadingMessage('Uploading files to IPFS...');
+      
       const formData = new FormData();
-
-      // Add files
       files.forEach(({ file }) => {
         formData.append('files', file);
       });
-
-      // Add hunter address
       formData.append('hunter', walletState.address);
-
-      // Add submission narrative
       formData.append('submissionNarrative', submissionNarrative);
-
-      // Add file descriptions as JSON
+      
       const fileDescriptions = {};
       files.forEach(({ file, description }) => {
         fileDescriptions[file.name] = description;
       });
       formData.append('fileDescriptions', JSON.stringify(fileDescriptions));
 
-      // Submit work via API
       const response = await apiService.submitWorkMultiple(bountyId, formData);
-      setSubmissionResult(response);
-      setShowCIDDialog(true);
+      console.log('✅ IPFS upload complete:', response);
 
-      console.log('Submission result:', response);
+      // Get the updated Primary CID
+      const { updatedPrimaryCid } = response.submission;
+
+      // STEP 2: Connect to contract service
+      setLoadingMessage('Connecting to smart contract...');
+      const contractService = getContractService();
+      if (!contractService.isConnected()) {
+        await contractService.connect();
+      }
+
+      // STEP 3: Prepare submission on-chain (deploys EvaluationWallet)
+      setLoadingMessage('Preparing submission on blockchain...');
+      const { submissionId, evalWallet, linkMaxBudget } = await contractService.prepareSubmission(
+        bountyId,
+        updatedPrimaryCid,  // deliverableCid
+        submissionNarrative || "",  // addendum
+        75,  // alpha (reputation weight, 0-100)
+        "50000000000000000",  // maxOracleFee (0.05 LINK)
+        "30000000000000000",  // estimatedBaseCost
+        "20000000000000000"   // maxFeeBasedScaling
+      );
+
+      console.log('✅ Submission prepared:', {
+        submissionId,
+        evalWallet,
+        linkMaxBudget
+      });
+
+      // STEP 4: Approve LINK tokens to the EvaluationWallet
+      setLoadingMessage('Approving LINK tokens...');
+      await contractService.approveLink(evalWallet, linkMaxBudget);
+      console.log('✅ LINK approved');
+
+      // STEP 5: Start the Verdikta evaluation
+      setLoadingMessage('Starting AI evaluation...');
+      const evalResult = await contractService.startPreparedSubmission(bountyId, submissionId);
+      console.log('✅ Evaluation started:', evalResult);
+
+      // Show success with blockchain data
+      setSubmissionResult({
+        ...response,
+        blockchainData: {
+          submissionId,
+          evalWallet,
+          linkMaxBudget,
+          txHash: evalResult.txHash,
+          blockNumber: evalResult.blockNumber
+        }
+      });
+      setShowCIDDialog(true);
 
     } catch (err) {
       console.error('Error submitting work:', err);
-      setError(err.response?.data?.details || err.message);
-      alert(`❌ Error: ${err.response?.data?.details || err.message}`);
+      
+      // Better error messages for common issues
+      let errorMessage = err.message || 'Failed to submit work';
+      
+      if (errorMessage.includes('insufficient funds') || errorMessage.includes('LINK')) {
+        errorMessage = '💰 Insufficient LINK tokens. Get testnet LINK from: https://faucets.chain.link/base-sepolia';
+      } else if (errorMessage.includes('user rejected') || errorMessage.includes('User denied')) {
+        errorMessage = '🚫 Transaction cancelled by user';
+      } else if (errorMessage.includes('deadline passed')) {
+        errorMessage = '⏰ Submission deadline has passed';
+      } else if (errorMessage.includes('not open')) {
+        errorMessage = '🔒 Bounty is not accepting submissions';
+      }
+
+      setError(errorMessage);
+      alert(`❌ Error: ${errorMessage}`);
     } finally {
       setLoading(false);
+      setLoadingMessage('');
     }
   };
 
@@ -220,8 +279,8 @@ function SubmitWork({ walletState }) {
               <strong>Deadline was:</strong> {new Date(job.submissionCloseTime * 1000).toLocaleString()}
             </p>
           )}
-          <button 
-            onClick={() => navigate(`/bounty/${bountyId}`)} 
+          <button
+            onClick={() => navigate(`/bounty/${bountyId}`)}
             className="btn btn-primary"
             style={{ marginTop: '1rem' }}
           >
@@ -252,7 +311,7 @@ function SubmitWork({ walletState }) {
 
       {error && (
         <div className="alert alert-error">
-          <p>❌ {error}</p>
+          <p>{error}</p>
         </div>
       )}
 
@@ -346,12 +405,13 @@ function SubmitWork({ walletState }) {
             disabled={loading || files.length === 0}
             className="btn btn-primary btn-lg"
           >
-            {loading ? 'Uploading...' : `Submit ${files.length} File${files.length !== 1 ? 's' : ''}`}
+            {loading ? 'Processing...' : `Submit ${files.length} File${files.length !== 1 ? 's' : ''}`}
           </button>
           <button
             type="button"
             onClick={() => navigate(`/bounty/${bountyId}`)}
             className="btn btn-secondary"
+            disabled={loading}
           >
             Cancel
           </button>
@@ -360,7 +420,10 @@ function SubmitWork({ walletState }) {
         {loading && (
           <div className="loading-status">
             <div className="spinner"></div>
-            <p>Creating archives and uploading to IPFS...</p>
+            <p>{loadingMessage || 'Processing submission...'}</p>
+            <small style={{ marginTop: '0.5rem', display: 'block', color: '#666' }}>
+              This involves multiple blockchain transactions. Please approve each one in MetaMask.
+            </small>
           </div>
         )}
       </form>
@@ -370,11 +433,25 @@ function SubmitWork({ walletState }) {
         <ol>
           <li>Your files are uploaded to IPFS (permanent storage)</li>
           <li>Hunter Submission CID is generated with your work and narrative</li>
-          <li>Each file's description is included in the manifest for AI context</li>
           <li>Primary CID is updated to reference your submission</li>
-          <li><strong>For testing:</strong> CIDs are displayed for use with example-frontend</li>
-          <li><strong>With smart contracts:</strong> You'll pay LINK fee and get AI evaluation automatically</li>
+          <li>Smart contract creates an EvaluationWallet for your submission</li>
+          <li>You approve LINK tokens to pay for AI evaluation (~0.1 LINK)</li>
+          <li>Evaluation starts automatically via Verdikta oracle network</li>
+          <li>Results are written back on-chain within 1-5 minutes</li>
+          <li>If you pass, bounty is awarded automatically! 🎉</li>
         </ol>
+
+        <h3>💰 Required Tokens</h3>
+        <p>
+          Each submission requires:
+        </p>
+        <ul>
+          <li><strong>ETH</strong> for gas fees (~0.005 ETH on Base Sepolia)</li>
+          <li><strong>LINK</strong> for AI evaluation (~0.1 LINK)</li>
+        </ul>
+        <p>
+          Get testnet tokens: <a href="https://faucets.chain.link/base-sepolia" target="_blank" rel="noopener noreferrer">Base Sepolia Faucet</a>
+        </p>
 
         <h3>💬 About Your Submission Narrative</h3>
         <p>
@@ -391,27 +468,54 @@ function SubmitWork({ walletState }) {
 
         <h3>⚠️ Important Notes</h3>
         <ul>
-          <li>Each submission requires a LINK token fee (when contracts deployed)</li>
+          <li>You'll need to approve 3 transactions in MetaMask</li>
           <li>Evaluation is final (no appeals in MVP)</li>
-          <li>First passing submission wins</li>
+          <li>First passing submission wins the bounty</li>
           <li>Your submission becomes public once uploaded</li>
-          <li>File descriptions are visible to AI evaluators</li>
+          <li>Make sure you have enough LINK and ETH before submitting</li>
         </ul>
       </div>
 
-      {/* CID Display Dialog for Testing */}
+      {/* Success Dialog with Blockchain Info */}
       {showCIDDialog && submissionResult && (
         <div className="cid-dialog-overlay" onClick={handleCloseCIDDialog}>
           <div className="cid-dialog" onClick={(e) => e.stopPropagation()}>
-            <h2>✅ Submission Successful!</h2>
+            <h2>✅ Submission Complete!</h2>
             <p className="dialog-intro">
-              Your work has been submitted ({submissionResult.submission.fileCount} file{submissionResult.submission.fileCount !== 1 ? 's' : ''}).
-              Use these CIDs to test with the example-frontend:
+              Your work has been submitted and AI evaluation is in progress!
             </p>
+
+            {submissionResult.blockchainData && (
+              <div className="cid-section blockchain-info">
+                <h3>🔗 Blockchain Status</h3>
+                <div className="blockchain-details">
+                  <p>
+                    <strong>Submission ID:</strong> {submissionResult.blockchainData.submissionId}
+                  </p>
+                  <p>
+                    <strong>Evaluation Wallet:</strong>
+                    <code className="inline-code">{submissionResult.blockchainData.evalWallet}</code>
+                  </p>
+                  <p>
+                    <strong>Transaction:</strong>
+                    <a 
+                      href={`https://sepolia.basescan.org/tx/${submissionResult.blockchainData.txHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      View on BaseScan ↗
+                    </a>
+                  </p>
+                  <p className="success-note">
+                    ✅ Oracles are now evaluating your submission...
+                  </p>
+                </div>
+              </div>
+            )}
 
             {submissionResult.submission.files && submissionResult.submission.files.length > 0 && (
               <div className="cid-section">
-                <h3>Submitted Files</h3>
+                <h3>📄 Submitted Files</h3>
                 {submissionResult.submission.files.map((file, index) => (
                   <div key={index} className="submitted-file-info">
                     <strong>{file.filename}</strong> ({(file.size / 1024).toFixed(2)} KB)
@@ -425,70 +529,46 @@ function SubmitWork({ walletState }) {
             )}
 
             <div className="cid-section">
-              <h3>Hunter Submission CID</h3>
-              <div className="cid-value">
-                <code>{submissionResult.submission.hunterCid}</code>
-                <button
-                  onClick={() => navigator.clipboard.writeText(submissionResult.submission.hunterCid)}
-                  className="btn-copy"
-                  title="Copy to clipboard"
-                >
-                  📋
-                </button>
-              </div>
-              <p className="cid-note">
-                Contains your files, descriptions, and submission narrative
-              </p>
-            </div>
-
-            <div className="cid-section">
-              <h3>Updated Primary CID</h3>
-              <div className="cid-value">
-                <code>{submissionResult.submission.updatedPrimaryCid}</code>
-                <button
-                  onClick={() => navigator.clipboard.writeText(submissionResult.submission.updatedPrimaryCid)}
-                  className="btn-copy"
-                  title="Copy to clipboard"
-                >
-                  📋
-                </button>
-              </div>
-              <p className="cid-note">
-                References the rubric and your hunter submission
-              </p>
-            </div>
-
-            {submissionResult.testingInfo && (
-              <div className="cid-section">
-                <h3>For Testing (example-frontend)</h3>
-                <div className="testing-info">
-                  <p><strong>Evaluation Format:</strong></p>
-                  <div className="cid-value">
-                    <code>{submissionResult.testingInfo.evaluationFormat}</code>
-                    <button
-                      onClick={() => navigator.clipboard.writeText(submissionResult.testingInfo.evaluationFormat)}
-                      className="btn-copy"
-                      title="Copy to clipboard"
-                    >
-                      📋
-                    </button>
-                  </div>
-                  <p className="help-text">
-                    Use this in example-frontend's "Run Query" page to test AI evaluation
-                  </p>
-                </div>
-                <div className="testing-details">
-                  <p><strong>Threshold:</strong> {submissionResult.testingInfo.threshold}%</p>
-                  <p><strong>Bounty Amount:</strong> {submissionResult.testingInfo.bountyAmount} ETH</p>
+              <h3>📦 IPFS CIDs</h3>
+              <div className="cid-group">
+                <label>Hunter Submission CID:</label>
+                <div className="cid-value">
+                  <code>{submissionResult.submission.hunterCid}</code>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(submissionResult.submission.hunterCid)}
+                    className="btn-copy"
+                    title="Copy to clipboard"
+                  >
+                    📋
+                  </button>
                 </div>
               </div>
-            )}
+              <div className="cid-group">
+                <label>Updated Primary CID:</label>
+                <div className="cid-value">
+                  <code>{submissionResult.submission.updatedPrimaryCid}</code>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(submissionResult.submission.updatedPrimaryCid)}
+                    className="btn-copy"
+                    title="Copy to clipboard"
+                  >
+                    📋
+                  </button>
+                </div>
+              </div>
+            </div>
 
             <div className="dialog-actions">
               <button onClick={handleCloseCIDDialog} className="btn btn-primary">
-                Back to Job Details
+                Back to Bounty Details
               </button>
             </div>
+
+            <p className="dialog-footer">
+              <small>
+                💡 Check back in a few minutes to see your evaluation results!
+              </small>
+            </p>
           </div>
         </div>
       )}

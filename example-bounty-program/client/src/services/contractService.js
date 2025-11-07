@@ -19,9 +19,13 @@
 
 import { ethers } from 'ethers';
 
+// Base Sepolia LINK token address
+const LINK_ADDRESS = "0xE4aB69C077896252FAFBD49EFD26B5D171A32410";
+
 // BountyEscrow ABI - only the functions we need to call
 const BOUNTY_ESCROW_ABI = [
   "event BountyCreated(uint256 indexed bountyId, address indexed creator, string rubricCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
+  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string deliverableCid, uint256 linkMaxBudget)",
 
   "function createBounty(string rubricCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline) payable returns (uint256)",
   "function prepareSubmission(uint256 bountyId, string deliverableCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
@@ -196,9 +200,195 @@ class ContractService {
   }
 
   /**
+   * STEP 1: Prepare a submission (deploys EvaluationWallet)
+   * 
+   * @param {number} bountyId - The bounty ID
+   * @param {string} deliverableCid - IPFS CID of the updated Primary archive
+   * @param {string} addendum - Additional context for AI evaluators
+   * @param {number} alpha - Reputation weight (0-100, default 75)
+   * @param {string} maxOracleFee - Max fee per oracle in wei (e.g. "50000000000000000" = 0.05 LINK)
+   * @param {string} estimatedBaseCost - Estimated base cost in wei
+   * @param {string} maxFeeBasedScaling - Max fee-based scaling in wei
+   * @returns {Promise<Object>} { submissionId, evalWallet, linkMaxBudget }
+   */
+  async prepareSubmission(bountyId, deliverableCid, addendum = "", alpha = 75, 
+                          maxOracleFee = "50000000000000000",
+                          estimatedBaseCost = "30000000000000000", 
+                          maxFeeBasedScaling = "20000000000000000") {
+    if (!this.contract) {
+      throw new Error('Contract not initialized. Call connect() first.');
+    }
+
+    try {
+      console.log('🔍 Preparing submission...', {
+        bountyId,
+        deliverableCid,
+        addendum: addendum.substring(0, 50) + '...',
+        alpha,
+        maxOracleFee
+      });
+
+      const tx = await this.contract.prepareSubmission(
+        bountyId,
+        deliverableCid,
+        addendum,
+        alpha,
+        maxOracleFee,
+        estimatedBaseCost,
+        maxFeeBasedScaling
+      );
+
+      console.log('📤 Transaction sent:', tx.hash);
+      const receipt = await tx.wait();
+      console.log('✅ Submission prepared:', receipt.hash);
+
+      // Parse SubmissionPrepared event to get submissionId, evalWallet, linkMaxBudget
+      let result = null;
+      for (const log of receipt.logs ?? []) {
+        try {
+          const parsed = this.contract.interface.parseLog(log);
+          if (parsed?.name === 'SubmissionPrepared') {
+            result = {
+              submissionId: Number(parsed.args.submissionId),
+              evalWallet: parsed.args.evalWallet,
+              linkMaxBudget: parsed.args.linkMaxBudget.toString(),
+              txHash: receipt.hash
+            };
+            break;
+          }
+        } catch {}
+      }
+
+      if (!result) {
+        throw new Error('Could not parse SubmissionPrepared event from transaction');
+      }
+
+      return result;
+
+    } catch (error) {
+      console.error('Error preparing submission:', error);
+
+      if (error.code === 'ACTION_REJECTED') {
+        throw new Error('Transaction rejected by user');
+      }
+
+      const msg = (error?.message || '').toLowerCase();
+      if (msg.includes('not open')) {
+        throw new Error('Bounty is not open for submissions');
+      }
+      if (msg.includes('deadline passed')) {
+        throw new Error('Submission deadline has passed');
+      }
+      if (msg.includes('empty deliverable')) {
+        throw new Error('Deliverable CID cannot be empty');
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * STEP 2: Approve LINK tokens to the EvaluationWallet
+   * 
+   * @param {string} evalWallet - Address of the EvaluationWallet
+   * @param {string} linkAmount - Amount of LINK in wei to approve
+   * @returns {Promise<Object>} Transaction result
+   */
+  async approveLink(evalWallet, linkAmount) {
+    if (!this.provider) {
+      throw new Error('Provider not initialized. Call connect() first.');
+    }
+
+    const LINK_ABI = [
+      "function approve(address spender, uint256 amount) returns (bool)"
+    ];
+
+    try {
+      console.log('🔍 Approving LINK...', {
+        evalWallet,
+        linkAmount,
+        linkAddress: LINK_ADDRESS
+      });
+
+      const linkContract = new ethers.Contract(LINK_ADDRESS, LINK_ABI, this.signer);
+      const tx = await linkContract.approve(evalWallet, linkAmount);
+
+      console.log('📤 LINK approval transaction sent:', tx.hash);
+      const receipt = await tx.wait();
+      console.log('✅ LINK approved:', receipt.hash);
+
+      return {
+        success: true,
+        txHash: receipt.hash,
+        blockNumber: receipt.blockNumber,
+        gasUsed: receipt.gasUsed.toString()
+      };
+
+    } catch (error) {
+      console.error('Error approving LINK:', error);
+
+      if (error.code === 'ACTION_REJECTED') {
+        throw new Error('LINK approval rejected by user');
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * STEP 3: Start the prepared submission (triggers Verdikta evaluation)
+   * 
+   * @param {number} bountyId - The bounty ID
+   * @param {number} submissionId - The submission ID from prepareSubmission
+   * @returns {Promise<Object>} Transaction result
+   */
+  async startPreparedSubmission(bountyId, submissionId) {
+    if (!this.contract) {
+      throw new Error('Contract not initialized. Call connect() first.');
+    }
+
+    try {
+      console.log('🔍 Starting submission evaluation...', {
+        bountyId,
+        submissionId
+      });
+
+      const tx = await this.contract.startPreparedSubmission(bountyId, submissionId);
+
+      console.log('📤 Transaction sent:', tx.hash);
+      const receipt = await tx.wait();
+      console.log('✅ Evaluation started:', receipt.hash);
+
+      return {
+        success: true,
+        txHash: receipt.hash,
+        blockNumber: receipt.blockNumber,
+        gasUsed: receipt.gasUsed.toString()
+      };
+
+    } catch (error) {
+      console.error('Error starting submission:', error);
+
+      if (error.code === 'ACTION_REJECTED') {
+        throw new Error('Transaction rejected by user');
+      }
+
+      const msg = (error?.message || '').toLowerCase();
+      if (msg.includes('not prepared')) {
+        throw new Error('Submission not in Prepared state');
+      }
+      if (msg.includes('link transfer failed')) {
+        throw new Error('Failed to transfer LINK. Ensure you have approved sufficient LINK to the EvaluationWallet.');
+      }
+
+      throw error;
+    }
+  }
+
+  /**
    * Close an expired bounty and return funds to creator
    * Can be called by ANYONE after submission deadline passes
-   * 
+   *
    * Requirements:
    * - Bounty status must be Open (shows as EXPIRED in frontend)
    * - Deadline must have passed
@@ -237,7 +427,7 @@ class ContractService {
 
       // Parse contract revert reasons
       const msg = (error?.message || '').toLowerCase();
-      
+
       if (msg.includes('not open')) {
         throw new Error('Bounty is not open - it may already be closed or awarded');
       }

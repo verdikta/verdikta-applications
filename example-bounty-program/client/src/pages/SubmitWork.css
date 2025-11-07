@@ -314,5 +314,107 @@
   }
 }
 
+/* Blockchain info section in success dialog */
+.blockchain-info {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
 
+.blockchain-info h3 {
+  color: white;
+  margin-top: 0;
+}
 
+.blockchain-details p {
+  margin: 0.5rem 0;
+  font-size: 0.95rem;
+}
+
+.blockchain-details strong {
+  display: inline-block;
+  min-width: 140px;
+}
+
+.inline-code {
+  background: rgba(255, 255, 255, 0.2);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
+.blockchain-details a {
+  color: #ffd700;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.blockchain-details a:hover {
+  text-decoration: underline;
+}
+
+.success-note {
+  margin-top: 1rem !important;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.3);
+  font-weight: 500;
+}
+
+/* CID groups for better organization */
+.cid-group {
+  margin-bottom: 1rem;
+}
+
+.cid-group label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+  font-size: 0.9rem;
+  color: #555;
+}
+
+/* Loading message helper text */
+.loading-status small {
+  margin-top: 0.5rem;
+  display: block;
+  color: #666;
+  font-size: 0.85rem;
+}
+
+/* Dialog footer note */
+.dialog-footer {
+  text-align: center;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #e0e0e0;
+}
+
+.dialog-footer small {
+  color: #666;
+  font-size: 0.9rem;
+}
+
+/* Submitted file info styling */
+.submitted-file-info {
+  padding: 0.5rem;
+  background: #f8f9fa;
+  border-radius: 4px;
+  margin-bottom: 0.5rem;
+}
+
+.file-desc-small {
+  margin: 0.25rem 0 0 0;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.total-size {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #dee2e6;
+  font-size: 0.9rem;
+}

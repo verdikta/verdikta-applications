@@ -24,24 +24,20 @@ const loadJobs = async () => {
     setError(null);
 
     const filterParams = {};
-    if (filters.status) filterParams.status = filters.status;
+    // carry through optional filters
     if (filters.search) filterParams.search = filters.search;
     if (filters.minPayout) filterParams.minPayout = filters.minPayout;
 
-    // If the user didn't explicitly choose a terminal status,
-    // ask the backend to exclude all terminal states, including CLOSED.
-    const statusUpper = String(filters.status).toUpperCase();
-    const viewingTerminal =
-      statusUpper === 'COMPLETED' || statusUpper === 'CANCELLED' || statusUpper === 'CLOSED';
+    // normalize status from the dropdown (user selection)
+    const statusUpper = String(filters.status || '').toUpperCase();
 
-    if (!viewingTerminal && !filters.status) {
-      // Prefer explicit excludeStatuses over hideEnded
-      filterParams.excludeStatuses = 'CANCELLED,COMPLETED,CLOSED';
-    } else if (!viewingTerminal && filters.status === 'OPEN') {
-      // If they picked OPEN, it’s redundant but harmless to still exclude terminals
-      filterParams.excludeStatuses = 'CANCELLED,COMPLETED,CLOSED';
+    if (['OPEN', 'CLOSED', 'COMPLETED', 'CANCELLED'].includes(statusUpper)) {
+      // user chose a specific status -> ask backend for exactly that
+      filterParams.status = statusUpper;
+    } else {
+      // default view -> show everything EXCEPT CANCELLED
+      filterParams.excludeStatuses = 'CANCELLED';
     }
-    // else: if they picked CLOSED/COMPLETED/CANCELLED, don't exclude anything — they want to see them.
 
     const response = await apiService.listJobs(filterParams);
     setJobs(response.jobs || []);
@@ -53,6 +49,8 @@ const loadJobs = async () => {
     setLoading(false);
   }
 };
+
+
 
 
   const handleFilterChange = (key, value) => {

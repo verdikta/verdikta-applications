@@ -298,7 +298,7 @@ router.get('/', async (req, res) => {
     logger.info('[jobs/list] filters', { status, creator, search, onChainId, hideEnded, excludeStatuses });
 
     const filters = {};
-    if (status) filters.status = status;
+    if (status) filters.status = String(status).toUpperCase();
     if (creator) filters.creator = creator;
     if (minPayout) filters.minPayout = minPayout;
     if (search) filters.search = search;

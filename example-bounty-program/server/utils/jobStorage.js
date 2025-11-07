@@ -146,6 +146,14 @@ async function listJobs(filters = {}) {
   try {
     const storage = await readStorage();
     let jobs = storage.jobs;
+
+    // One-time normalization: ensure all job.status values are UPPERCASE
+    let normalized = false;
+    for (const j of jobs) {
+      const uc = String(j.status).toUpperCase();
+      if (j.status !== uc) { j.status = uc; normalized = true; }
+    }
+    if (normalized) await writeStorage(storage);
     
     // AUTO-UPDATE: Close all expired jobs
     const now = Math.floor(Date.now() / 1000);
@@ -166,7 +174,8 @@ async function listJobs(filters = {}) {
 
     // Apply filters
     if (filters.status) {
-      jobs = jobs.filter(j => j.status === filters.status);
+      const want = String(filters.status).toUpperCase();
+      jobs = jobs.filter(j => String(j.status).toUpperCase() === want);
     }
 
     if (filters.creator) {
@@ -209,7 +218,7 @@ async function updateJobStatus(jobId, status) {
       throw new Error(`Job ${jobId} not found`);
     }
 
-    job.status = status;
+    job.status = String(status).toUpperCase();
     await writeStorage(storage);
 
     logger.info('Job status updated', { jobId, status });

@@ -81,9 +81,8 @@ export const apiService = {
    * List all jobs with optional filters
    */
   async listJobs(filters = {}) {
-    const params = new URLSearchParams(filters).toString();
-    const response = await api.get(`/api/jobs${params ? '?' + params : ''}`);
-    return response.data;
+    const { data } = await api.get('/api/jobs', { params: filters }); 
+    return data;
   },
 
   /**

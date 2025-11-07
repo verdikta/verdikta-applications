@@ -458,29 +458,31 @@ function SubmitWork({ walletState }) {
               </p>
             </div>
 
-            <div className="cid-section">
-              <h3>For Testing (example-frontend)</h3>
-              <div className="testing-info">
-                <p><strong>Evaluation Format:</strong></p>
-                <div className="cid-value">
-                  <code>{submissionResult.testingInfo.evaluationFormat}</code>
-                  <button
-                    onClick={() => navigator.clipboard.writeText(submissionResult.testingInfo.evaluationFormat)}
-                    className="btn-copy"
-                    title="Copy to clipboard"
-                  >
-                    📋
-                  </button>
+            {submissionResult.testingInfo && (
+              <div className="cid-section">
+                <h3>For Testing (example-frontend)</h3>
+                <div className="testing-info">
+                  <p><strong>Evaluation Format:</strong></p>
+                  <div className="cid-value">
+                    <code>{submissionResult.testingInfo.evaluationFormat}</code>
+                    <button
+                      onClick={() => navigator.clipboard.writeText(submissionResult.testingInfo.evaluationFormat)}
+                      className="btn-copy"
+                      title="Copy to clipboard"
+                    >
+                      📋
+                    </button>
+                  </div>
+                  <p className="help-text">
+                    Use this in example-frontend's "Run Query" page to test AI evaluation
+                  </p>
                 </div>
-                <p className="help-text">
-                  Use this in example-frontend's "Run Query" page to test AI evaluation
-                </p>
+                <div className="testing-details">
+                  <p><strong>Threshold:</strong> {submissionResult.testingInfo.threshold}%</p>
+                  <p><strong>Bounty Amount:</strong> {submissionResult.testingInfo.bountyAmount} ETH</p>
+                </div>
               </div>
-              <div className="testing-details">
-                <p><strong>Threshold:</strong> {submissionResult.testingInfo.threshold}%</p>
-                <p><strong>Bounty Amount:</strong> {submissionResult.testingInfo.bountyAmount} ETH</p>
-              </div>
-            </div>
+            )}
 
             <div className="dialog-actions">
               <button onClick={handleCloseCIDDialog} className="btn btn-primary">

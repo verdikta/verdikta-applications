@@ -385,6 +385,7 @@ router.get('/:jobId', async (req, res) => {
       success: true,
       job: {
         ...job,
+        syncedFromBlockchain: job.syncedFromBlockchain || false,
         rubricContent: rubricContent ? JSON.parse(rubricContent) : null
       }
     });

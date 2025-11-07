@@ -9,6 +9,12 @@
  * - Reading from blockchain is slow (200-500ms per request)
  * - Backend syncs blockchain → local storage every 2 minutes
  * - Frontend reads from fast cached API (<10ms)
+ *
+ * Bounty Status System:
+ * - OPEN: Active, accepting submissions
+ * - EXPIRED: Deadline passed, awaiting closeExpiredBounty()
+ * - AWARDED: Winner paid
+ * - CLOSED: Funds returned to creator
  */
 
 import { ethers } from 'ethers';
@@ -21,9 +27,9 @@ const BOUNTY_ESCROW_ABI = [
   "function prepareSubmission(uint256 bountyId, string deliverableCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
-  "function cancelBounty(uint256 bountyId)",
-  "function closeExpiredBounty(uint256 bountyId)"
+  "function closeExpiredBounty(uint256 bountyId)",
   // NOTE: No read functions! Frontend reads from backend API for cached data
+  // NOTE: No cancelBounty - only closeExpiredBounty after deadline passes
 ];
 
 class ContractService {
@@ -189,62 +195,14 @@ class ContractService {
     }
   }
 
-
-
-
-
-  /**
-   * Creator cancels bounty early (before deadline) if no submissions exist
-   *
-   * @param {number} bountyId - The bounty to cancel
-   * @returns {Promise<Object>} Transaction result
-   */
-  async cancelBounty(bountyId) {
-    if (!this.contract) {
-      throw new Error('Contract not initialized. Call connect() first.');
-    }
-
-    try {
-      console.log('Cancelling bounty...', { bountyId });
-
-      const tx = await this.contract.cancelBounty(bountyId);
-      console.log('📤 Transaction sent:', tx.hash);
-
-      const receipt = await tx.wait();
-      console.log('✅ Bounty cancelled:', receipt.hash);
-
-      return {
-        success: true,
-        txHash: receipt.hash,
-        blockNumber: receipt.blockNumber,
-        gasUsed: receipt.gasUsed.toString()
-      };
-
-    } catch (error) {
-      console.error('Error cancelling bounty:', error);
-
-      if (error.code === 'ACTION_REJECTED') {
-        throw new Error('Transaction rejected by user');
-      }
-
-      // Parse contract revert reasons
-      if (error.message.includes('not creator')) {
-        throw new Error('Only the bounty creator can cancel');
-      }
-      if (error.message.includes('cancel lock period not passed')) {
-        throw new Error('Cannot cancel yet - lock period not passed');
-      }
-      if (error.message.includes('cannot cancel with submissions')) {
-        throw new Error('Cannot cancel - submissions exist');
-      }
-
-      throw error;
-    }
-  }
-
   /**
    * Close an expired bounty and return funds to creator
    * Can be called by ANYONE after submission deadline passes
+   * 
+   * Requirements:
+   * - Bounty status must be Open (shows as EXPIRED in frontend)
+   * - Deadline must have passed
+   * - No active evaluations (PendingVerdikta submissions)
    *
    * @param {number} bountyId - The bounty to close
    * @returns {Promise<Object>} Transaction result
@@ -278,10 +236,15 @@ class ContractService {
       }
 
       // Parse contract revert reasons
-      if (error.message.includes('deadline not passed')) {
-        throw new Error('Cannot close yet - deadline not passed');
+      const msg = (error?.message || '').toLowerCase();
+      
+      if (msg.includes('not open')) {
+        throw new Error('Bounty is not open - it may already be closed or awarded');
       }
-      if (error.message.includes('active submission exists')) {
+      if (msg.includes('deadline not passed')) {
+        throw new Error('Cannot close yet - deadline has not passed');
+      }
+      if (msg.includes('active evaluation')) {
         throw new Error('Cannot close - active evaluations in progress. Finalize them first.');
       }
 
@@ -425,7 +388,7 @@ export async function resolveBountyIdByStateLoose({
     const deadlineOk = delta <= deadlineToleranceSec;
 
     // Choose the "best" match: exact CID + in-tolerance deadline beats others;
-    // otherwise pick the closest delta we’ve seen so far.
+    // otherwise pick the closest delta we've seen so far.
     if ((cidOk && deadlineOk) || (cidOk && delta < bestDelta)) {
       best = i;
       bestDelta = delta;

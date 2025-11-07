@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiService } from '../services/api';
 import './SubmitWork.css';
@@ -6,7 +6,9 @@ import './SubmitWork.css';
 function SubmitWork({ walletState }) {
   const { bountyId } = useParams();
   const navigate = useNavigate();
-  
+
+  const [job, setJob] = useState(null);
+  const [loadingJob, setLoadingJob] = useState(true);
   const [files, setFiles] = useState([]);
   const [submissionNarrative, setSubmissionNarrative] = useState(
     'Thank you for giving me the opportunity to submit this work. You can find it below in the references section.'
@@ -16,14 +18,32 @@ function SubmitWork({ walletState }) {
   const [submissionResult, setSubmissionResult] = useState(null);
   const [showCIDDialog, setShowCIDDialog] = useState(false);
 
+  // Load job details to check if submission is allowed
+  useEffect(() => {
+    loadJobDetails();
+  }, [bountyId]);
+
+  const loadJobDetails = async () => {
+    try {
+      setLoadingJob(true);
+      const response = await apiService.getJob(bountyId, true);
+      setJob(response.job);
+    } catch (err) {
+      console.error('Error loading job:', err);
+      setError('Failed to load job details. Please try again.');
+    } finally {
+      setLoadingJob(false);
+    }
+  };
+
   const handleFileAdd = (e) => {
     const selectedFiles = Array.from(e.target.files);
-    
+
     if (selectedFiles.length === 0) return;
 
     const allowedTypes = ['.txt', '.md', '.jpg', '.jpeg', '.png', '.pdf', '.docx'];
     const validFiles = [];
-    
+
     for (const file of selectedFiles) {
       // Validate file size (20 MB)
       if (file.size > 20 * 1024 * 1024) {
@@ -54,7 +74,7 @@ function SubmitWork({ walletState }) {
   };
 
   const handleDescriptionChange = (index, description) => {
-    setFiles(prev => prev.map((item, i) => 
+    setFiles(prev => prev.map((item, i) =>
       i === index ? { ...item, description } : item
     ));
   };
@@ -62,7 +82,7 @@ function SubmitWork({ walletState }) {
   const handleNarrativeChange = (e) => {
     const text = e.target.value;
     const wordCount = text.trim().split(/\s+/).filter(w => w.length > 0).length;
-    
+
     if (wordCount <= 200) {
       setSubmissionNarrative(text);
     }
@@ -85,24 +105,30 @@ function SubmitWork({ walletState }) {
       return;
     }
 
+    // Double-check status before submission
+    if (job?.status !== 'OPEN') {
+      alert('This bounty is no longer accepting submissions');
+      return;
+    }
+
     try {
       setLoading(true);
       setError(null);
 
       // Prepare form data
       const formData = new FormData();
-      
+
       // Add files
       files.forEach(({ file }) => {
         formData.append('files', file);
       });
-      
+
       // Add hunter address
       formData.append('hunter', walletState.address);
-      
+
       // Add submission narrative
       formData.append('submissionNarrative', submissionNarrative);
-      
+
       // Add file descriptions as JSON
       const fileDescriptions = {};
       files.forEach(({ file, description }) => {
@@ -131,12 +157,76 @@ function SubmitWork({ walletState }) {
     navigate(`/bounty/${bountyId}`);
   };
 
+  // Loading state while checking job status
+  if (loadingJob) {
+    return (
+      <div className="submit-work">
+        <div className="loading">
+          <div className="spinner"></div>
+          <p>Loading bounty details...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Wallet not connected
   if (!walletState.isConnected) {
     return (
       <div className="submit-work">
         <div className="alert alert-warning">
           <h2>Wallet Not Connected</h2>
           <p>Please connect your wallet to submit work.</p>
+          <button onClick={() => navigate(`/bounty/${bountyId}`)} className="btn btn-secondary">
+            Back to Bounty
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Check bounty status - only allow submission if OPEN
+  if (job && job.status !== 'OPEN') {
+    let message = '';
+    let statusEmoji = '';
+
+    switch (job.status) {
+      case 'EXPIRED':
+        statusEmoji = '⏰';
+        message = 'This bounty has expired. The submission deadline has passed.';
+        break;
+      case 'AWARDED':
+        statusEmoji = '🎉';
+        message = 'This bounty has been completed. A winner has already been selected and paid.';
+        break;
+      case 'CLOSED':
+        statusEmoji = '🔒';
+        message = 'This bounty has been closed and is no longer accepting submissions.';
+        break;
+      default:
+        statusEmoji = '⚠️';
+        message = 'This bounty is not currently accepting submissions.';
+    }
+
+    return (
+      <div className="submit-work">
+        <div className="alert alert-warning">
+          <h2>{statusEmoji} Cannot Submit Work</h2>
+          <p>{message}</p>
+          <p style={{ marginTop: '1rem' }}>
+            <strong>Bounty Status:</strong> {job.status}
+          </p>
+          {job.submissionCloseTime && (
+            <p>
+              <strong>Deadline was:</strong> {new Date(job.submissionCloseTime * 1000).toLocaleString()}
+            </p>
+          )}
+          <button 
+            onClick={() => navigate(`/bounty/${bountyId}`)} 
+            className="btn btn-primary"
+            style={{ marginTop: '1rem' }}
+          >
+            Back to Bounty Details
+          </button>
         </div>
       </div>
     );
@@ -147,6 +237,17 @@ function SubmitWork({ walletState }) {
       <div className="submit-header">
         <h1>Submit Your Work</h1>
         <p>Upload your deliverable for AI evaluation</p>
+        {job && (
+          <div className="bounty-info">
+            <span className="status-badge status-open">OPEN</span>
+            <span className="bounty-amount">{job.bountyAmount} ETH</span>
+            {job.submissionCloseTime && (
+              <span className="deadline-info">
+                Deadline: {new Date(job.submissionCloseTime * 1000).toLocaleString()}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {error && (
@@ -180,7 +281,7 @@ function SubmitWork({ walletState }) {
 
         <div className="form-section">
           <h2>Upload Files</h2>
-          
+
           <div className="form-group">
             <label htmlFor="files">Add Files *</label>
             <input
@@ -277,14 +378,14 @@ function SubmitWork({ walletState }) {
 
         <h3>💬 About Your Submission Narrative</h3>
         <p>
-          The narrative you provide is included in the primary_query.json file sent to the AI evaluators. 
-          Use it to explain any nuances, context, or special considerations about your work. This helps the 
+          The narrative you provide is included in the primary_query.json file sent to the AI evaluators.
+          Use it to explain any nuances, context, or special considerations about your work. This helps the
           AI better understand and evaluate your submission according to the rubric.
         </p>
 
         <h3>📁 Multiple Files Support</h3>
         <p>
-          You can submit up to 10 files. Each file should have a clear description that helps the AI 
+          You can submit up to 10 files. Each file should have a clear description that helps the AI
           understand its purpose. All files are referenced in the manifest according to the <a href="https://docs.verdikta.com/verdikta-common/MANIFEST_SPECIFICATION/" target="_blank" rel="noopener noreferrer">Verdikta Manifest Specification</a>.
         </p>
 
@@ -304,7 +405,7 @@ function SubmitWork({ walletState }) {
           <div className="cid-dialog" onClick={(e) => e.stopPropagation()}>
             <h2>✅ Submission Successful!</h2>
             <p className="dialog-intro">
-              Your work has been submitted ({submissionResult.submission.fileCount} file{submissionResult.submission.fileCount !== 1 ? 's' : ''}). 
+              Your work has been submitted ({submissionResult.submission.fileCount} file{submissionResult.submission.fileCount !== 1 ? 's' : ''}).
               Use these CIDs to test with the example-frontend:
             </p>
 
@@ -327,7 +428,7 @@ function SubmitWork({ walletState }) {
               <h3>Hunter Submission CID</h3>
               <div className="cid-value">
                 <code>{submissionResult.submission.hunterCid}</code>
-                <button 
+                <button
                   onClick={() => navigator.clipboard.writeText(submissionResult.submission.hunterCid)}
                   className="btn-copy"
                   title="Copy to clipboard"
@@ -344,7 +445,7 @@ function SubmitWork({ walletState }) {
               <h3>Updated Primary CID</h3>
               <div className="cid-value">
                 <code>{submissionResult.submission.updatedPrimaryCid}</code>
-                <button 
+                <button
                   onClick={() => navigator.clipboard.writeText(submissionResult.submission.updatedPrimaryCid)}
                   className="btn-copy"
                   title="Copy to clipboard"
@@ -363,7 +464,7 @@ function SubmitWork({ walletState }) {
                 <p><strong>Evaluation Format:</strong></p>
                 <div className="cid-value">
                   <code>{submissionResult.testingInfo.evaluationFormat}</code>
-                  <button 
+                  <button
                     onClick={() => navigator.clipboard.writeText(submissionResult.testingInfo.evaluationFormat)}
                     className="btn-copy"
                     title="Copy to clipboard"
@@ -394,6 +495,4 @@ function SubmitWork({ walletState }) {
 }
 
 export default SubmitWork;
-
-
 

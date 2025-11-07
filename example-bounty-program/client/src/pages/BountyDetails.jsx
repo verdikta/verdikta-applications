@@ -115,16 +115,14 @@ function BountyDetails({ walletState }) {
         const payload = {
           creator,
           rubricCid: job?.rubricCid || undefined,
-          submissionCloseTime,                         // seconds or ms; server normalizes
+          submissionCloseTime,
           txHash: txHash || undefined
         };
 
         setResolveNote('Resolving from backend…');
         console.log('[DEBUG] Calling resolveJobBountyId', job.jobId, payload);
 
-        // New route: PATCH /api/jobs/:jobId/bountyId/resolve
         const res = await apiService.resolveJobBountyId(job.jobId, payload);
-
         console.log('[DEBUG] resolveJobBountyId response', res);
 
         if (!cancelled) {
@@ -204,46 +202,6 @@ function BountyDetails({ walletState }) {
     }
   };
 
-  const handleCancelBounty = async () => {
-    if (!walletState.isConnected) {
-      alert('Please connect your wallet first');
-      return;
-    }
-    const onChainId = getOnChainBountyId();
-    if (onChainId == null) {
-      alert('Unable to determine the on-chain bounty ID yet. Please wait for sync or refresh.');
-      return;
-    }
-    const confirmed = window.confirm(
-      'Cancel this bounty and get your funds back?\n\nThis only works if:\n• You are the creator\n• Cancel lock period has passed\n• No submissions exist'
-    );
-    if (!confirmed) return;
-
-    try {
-      setClosingBounty(true);
-      setError(null);
-
-      const contractService = getContractService();
-      if (!contractService.isConnected()) await contractService.connect();
-
-      console.log('📤 cancelBounty using on-chain id:', onChainId);
-      const result = await contractService.cancelBounty(onChainId);
-
-      alert(
-        '✅ Bounty cancelled successfully!\n\n' +
-        `Transaction: ${result.txHash}\n\n` +
-        'Your funds have been returned.'
-      );
-      await loadJobDetails();
-    } catch (err) {
-      console.error('Error cancelling bounty:', err);
-      setError(err.message || 'Failed to cancel bounty');
-      alert(`❌ Failed to cancel bounty: ${err.message}`);
-    } finally {
-      setClosingBounty(false);
-    }
-  };
-
   // -------- Derived UI state --------
   if (loading) {
     return (
@@ -294,21 +252,22 @@ function BountyDetails({ walletState }) {
     );
   }
 
+  // Status-based UI logic (using four statuses: OPEN, EXPIRED, AWARDED, CLOSED)
+  const status = job?.status || 'UNKNOWN';
   const now = Math.floor(Date.now() / 1000);
   const timeRemaining = job?.submissionCloseTime ? job.submissionCloseTime - now : -1;
   const hoursRemaining = Math.max(0, Math.floor(timeRemaining / 3600));
-  const isOpen = job?.status === 'OPEN' && timeRemaining > 0;
-  // const isExpired = job?.status === 'CLOSED' || (job?.status === 'OPEN' && timeRemaining <= 0);
-  const expiredButOpen = job?.status === 'OPEN' && timeRemaining <= 0;
 
-  // terminal closed (already refunded/cancelled or completed)
-  const terminalClosed =
-    job?.status === 'CLOSED' || job?.status === 'COMPLETED' || job?.status === 'CANCELLED';
+  // Determine what actions are available
+  const isOpen = status === 'OPEN';
+  const isExpired = status === 'EXPIRED';
+  const isAwarded = status === 'AWARDED';
+  const isClosed = status === 'CLOSED';
 
-  const isCreator = walletState.isConnected &&
-                    job?.creator?.toLowerCase() === walletState.address?.toLowerCase();
-
-  const hasActiveSubmissions = submissions.some(s => s.status === 'PendingVerdikta');
+  // Check for active evaluations
+  const hasActiveSubmissions = submissions.some(s =>
+    s.status === 'PendingVerdikta' || s.status === 'PENDING_EVALUATION'
+  );
 
   const onChainIdForButtons = getOnChainBountyId();
   const disableActionsForMissingId = onChainIdForButtons == null;
@@ -317,24 +276,26 @@ function BountyDetails({ walletState }) {
     urlParam_jobId: bountyId,
     backend_onChain_bountyId: job?.bountyId,
     resolvedBountyId,
-    resolvingId,
-    resolveNote,
-    status: job?.status,
-    submissionCloseTime: job?.submissionCloseTime,
-    timeRemaining,
+    status,
     isOpen,
-    expiredButOpen,
+    isExpired,
+    isAwarded,
+    isClosed,
     hasActiveSubmissions,
+    timeRemaining,
   });
 
   return (
     <div className="bounty-details">
-      {expiredButOpen && job && (
+      {/* EXPIRED Status Banner */}
+      {isExpired && (
         <div style={{ backgroundColor: '#fff3cd', border: '3px solid #ffc107', padding: '1.5rem', borderRadius: '8px', marginBottom: '2rem', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
           <h2 style={{ margin: '0 0 1rem 0', color: '#856404' }}>⏰ Expired Bounty - Action Required</h2>
           <p style={{ marginBottom: '1rem', fontSize: '1.1rem' }}>
             This bounty expired on {new Date((job.submissionCloseTime || 0) * 1000).toLocaleString()}.
-            {!hasActiveSubmissions && (<strong> The escrow of {job.bountyAmount ?? '...'} ETH can now be returned to the creator.</strong>)}
+            {!hasActiveSubmissions && (
+              <strong> The escrow of {job.bountyAmount ?? '...'} ETH can now be returned to the creator.</strong>
+            )}
           </p>
 
           {resolveNote && (
@@ -348,7 +309,9 @@ function BountyDetails({ walletState }) {
               <strong>Connect your wallet</strong> to close this bounty and return funds to the creator.
             </div>
           ) : hasActiveSubmissions ? (
-            <div className="alert alert-warning">Active evaluations are in progress. Finalize them before closing.</div>
+            <div className="alert alert-warning">
+              Active evaluations are in progress. Finalize them before closing.
+            </div>
           ) : (
             <>
               <button
@@ -366,8 +329,8 @@ function BountyDetails({ walletState }) {
                 </p>
               )}
               {disableActionsForMissingId && !closingBounty && (
-                <p style={{ marginTop: 8, color: '#666' }}>
-                  We’re resolving the on-chain bounty ID so this action can proceed.
+                <p style={{ marginTop: 8, color: '#666', fontSize: '0.9rem' }}>
+                  Resolving on-chain bounty ID...
                 </p>
               )}
             </>
@@ -378,12 +341,7 @@ function BountyDetails({ walletState }) {
       <div className="bounty-header">
         <div className="header-content">
           <h1>{job?.title || `Job #${bountyId}`}</h1>
-          <span className={`status-badge status-${job?.status?.toLowerCase()}`}>{job?.status}</span>
-          {expiredButOpen && (
-            <span className="status-badge" style={{ backgroundColor: '#dc3545', color: 'white', fontWeight: 'bold', animation: 'pulse 2s infinite' }}>
-              ⏰ EXPIRED
-            </span>
-          )}
+          <span className={`status-badge status-${status.toLowerCase()}`}>{status}</span>
           {job?.workProductType && <span className="work-type-badge">{job.workProductType}</span>}
         </div>
         <div className="bounty-stats">
@@ -406,7 +364,7 @@ function BountyDetails({ walletState }) {
             <span className="label">Time Remaining</span>
             <span className="value">
               {!job?.submissionCloseTime ? '...' :
-                timeRemaining <= 0 ? 'Closed' :
+                isExpired || isClosed || isAwarded ? 'Ended' :
                 hoursRemaining < 24 ? `${hoursRemaining}h` :
                 `${Math.floor(hoursRemaining / 24)}d ${hoursRemaining % 24}h`}
             </span>
@@ -449,6 +407,7 @@ function BountyDetails({ walletState }) {
       <section className="actions-section">
         <h2>Actions</h2>
         <div className="action-buttons">
+          {/* OPEN: Show submit button */}
           {isOpen && walletState.isConnected && (
             <Link to={`/bounty/${bountyId}/submit`} className="btn btn-primary btn-lg">
               Submit Work
@@ -459,18 +418,25 @@ function BountyDetails({ walletState }) {
             <div className="alert alert-info">Connect your wallet to submit work</div>
           )}
 
-          {job?.status === 'COMPLETED' && (
-            <div className="alert alert-success">🎉 This job has been completed and a winner has been paid!</div>
+          {/* AWARDED: Show completion message */}
+          {isAwarded && (
+            <div className="alert alert-success">
+              🎉 This bounty has been completed and the winner has been paid {job?.bountyAmount ?? '...'} ETH!
+            </div>
           )}
 
-          {job?.status === 'CANCELLED' && (
-            <div className="alert alert-warning">This bounty has been cancelled and funds have been returned to the creator.</div>
+          {/* CLOSED: Show closed message */}
+          {isClosed && (
+            <div className="alert alert-info">
+              This bounty has been closed and {job?.bountyAmount ?? '...'} ETH has been returned to the creator.
+            </div>
           )}
 
-          {expiredButOpen && (
+          {/* EXPIRED: Show close action */}
+          {isExpired && (
             <div className="expired-bounty-section" style={{ backgroundColor: '#fff3cd', border: '2px solid #ffc107', padding: '1.5rem', borderRadius: '8px', marginTop: '1rem' }}>
               <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
-                ⏰ <strong>This bounty has expired</strong> (deadline passed).
+                ⏰ <strong>This bounty has expired</strong> (deadline: {new Date((job.submissionCloseTime || 0) * 1000).toLocaleDateString()}).
                 {hasActiveSubmissions ? (
                   <div style={{ marginTop: '0.5rem' }}>Active evaluations must be finalized before closing.</div>
                 ) : (
@@ -481,12 +447,14 @@ function BountyDetails({ walletState }) {
               </div>
 
               {!walletState.isConnected ? (
-                <div className="alert alert-info">Connect your wallet to close this expired bounty and return funds to the creator.</div>
+                <div className="alert alert-info">
+                  Connect your wallet to close this expired bounty and return funds to the creator.
+                </div>
               ) : !hasActiveSubmissions ? (
                 <>
                   <button
                     onClick={handleCloseExpiredBounty}
-                    disabled={closingBounty || disableActionsForMissingId || terminalClosed}
+                    disabled={closingBounty || disableActionsForMissingId}
                     className="btn btn-warning btn-lg"
                     style={{ width: '100%', fontSize: '1.1rem', padding: '1rem' }}
                     title={disableActionsForMissingId ? 'Resolving on-chain bountyId…' : undefined}
@@ -495,27 +463,13 @@ function BountyDetails({ walletState }) {
                   </button>
                   {disableActionsForMissingId && (
                     <small style={{ display: 'block', marginTop: 8, color: '#666' }}>
-                      Unable to determine on-chain bounty ID yet. If this job was just created, wait for sync or refresh.
+                      Resolving on-chain bounty ID. If this job was just created, wait a moment or refresh.
                     </small>
                   )}
                 </>
               ) : (
                 <div className="alert alert-info">Waiting for active submissions to be finalized...</div>
               )}
-            </div>
-          )}
-
-          {isCreator && isOpen && job?.submissionCount === 0 && (
-            <div className="creator-cancel-section">
-              <button
-                onClick={handleCancelBounty}
-                disabled={closingBounty || disableActionsForMissingId}
-                className="btn btn-secondary"
-                title={disableActionsForMissingId ? 'Resolving on-chain bountyId…' : undefined}
-              >
-                {closingBounty ? 'Cancelling...' : 'Cancel Bounty (Creator Only)'}
-              </button>
-              <small className="help-text">Only available if cancel lock period has passed and no submissions exist</small>
             </div>
           )}
         </div>

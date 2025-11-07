@@ -214,5 +214,55 @@
   }
 }
 
+/* Add these status badge styles to your Home.css */
+
+/* Status Badges - Four Status System */
+.status-badge {
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  display: inline-block;
+}
+
+.status-badge.status-open {
+  background-color: #10b981;
+  color: white;
+}
+
+.status-badge.status-expired {
+  background-color: #fbbf24;
+  color: #78350f;
+}
+
+.status-badge.status-awarded {
+  background-color: #3b82f6;
+  color: white;
+}
+
+.status-badge.status-closed {
+  background-color: #6b7280;
+  color: white;
+}
+
+.status-badge.status-unknown {
+  background-color: #e5e7eb;
+  color: #374151;
+}
+
+/* Time Remaining States */
+.time-remaining.warning {
+  color: #f59e0b;
+  font-weight: 600;
+}
+
+.time-remaining.closed {
+  color: #6b7280;
+  font-style: italic;
+}
+
+
 
 

@@ -6,12 +6,13 @@
 const { ethers } = require('ethers');
 const logger = require('./logger');
 
-// BountyEscrow ABI (add only the functions we need)
+// BountyEscrow ABI (functions we need to read from the contract)
 const BOUNTY_ESCROW_ABI = [
   "function bountyCount() view returns (uint256)",
   "function getBounty(uint256 bountyId) view returns (tuple(address creator, string rubricCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions))",
   "function getEffectiveBountyStatus(uint256 bountyId) view returns (string)",
   "function isAcceptingSubmissions(uint256 bountyId) view returns (bool)",
+  "function canBeClosed(uint256 bountyId) view returns (bool)",
   "function submissionCount(uint256 bountyId) view returns (uint256)",
   "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string deliverableCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))"
 ];
@@ -38,16 +39,19 @@ class ContractService {
 
   /**
    * Get a single bounty from contract and map to API format
+   * Status will be one of: OPEN, EXPIRED, AWARDED, CLOSED
    */
   async getBounty(bountyId) {
     try {
       const bounty = await this.contract.getBounty(bountyId);
       const effectiveStatus = await this.contract.getEffectiveBountyStatus(bountyId);
       const isAccepting = await this.contract.isAcceptingSubmissions(bountyId);
+      const canClose = await this.contract.canBeClosed(bountyId);
 
       // Map contract data to API format
       return {
         jobId: Number(bountyId),
+        bountyId: Number(bountyId), // Include both for compatibility
         creator: bounty.creator,
         rubricCid: bounty.rubricCid,
         classId: Number(bounty.requestedClass),
@@ -56,10 +60,12 @@ class ContractService {
         bountyAmountWei: bounty.payoutWei.toString(),
         createdAt: Number(bounty.createdAt),
         submissionCloseTime: Number(bounty.submissionDeadline),
-        status: effectiveStatus, // Uses the computed status from contract
+        status: effectiveStatus, // OPEN, EXPIRED, AWARDED, or CLOSED
         winner: bounty.winner === ethers.ZeroAddress ? null : bounty.winner,
         submissionCount: Number(bounty.submissions),
         isAcceptingSubmissions: isAccepting,
+        canBeClosed: canClose, // New field: can closeExpiredBounty() be called?
+        syncedFromBlockchain: true, // Mark as fresh on-chain data
         // These fields would come from off-chain storage or IPFS
         title: `Bounty #${bountyId}`,
         description: 'Fetched from blockchain',
@@ -112,10 +118,10 @@ class ContractService {
       for (let i = 0; i < submissionCount; i++) {
         try {
           const sub = await this.contract.getSubmission(bountyId, i);
-          
+
           // Map submission status enum to string
           const statusMap = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'];
-          
+
           submissions.push({
             submissionId: i,
             hunter: sub.hunter,
@@ -140,6 +146,45 @@ class ContractService {
     } catch (error) {
       logger.error(`Error getting submissions for bounty ${bountyId}:`, error);
       throw error;
+    }
+  }
+
+  /**
+   * Check if a bounty can be closed right now
+   * Returns true if: status is EXPIRED and no active evaluations
+   */
+  async canBeClosed(bountyId) {
+    try {
+      return await this.contract.canBeClosed(bountyId);
+    } catch (error) {
+      logger.error(`Error checking if bounty ${bountyId} can be closed:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Check if a bounty is accepting new submissions
+   * Returns true only if: status is OPEN (before deadline)
+   */
+  async isAcceptingSubmissions(bountyId) {
+    try {
+      return await this.contract.isAcceptingSubmissions(bountyId);
+    } catch (error) {
+      logger.error(`Error checking if bounty ${bountyId} is accepting submissions:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Get the effective status string from contract
+   * Returns: "OPEN", "EXPIRED", "AWARDED", or "CLOSED"
+   */
+  async getEffectiveStatus(bountyId) {
+    try {
+      return await this.contract.getEffectiveBountyStatus(bountyId);
+    } catch (error) {
+      logger.error(`Error getting effective status for bounty ${bountyId}:`, error);
+      return 'UNKNOWN';
     }
   }
 }

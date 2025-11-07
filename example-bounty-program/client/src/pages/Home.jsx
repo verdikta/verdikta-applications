@@ -18,40 +18,38 @@ function Home({ walletState }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters]);
 
-const loadJobs = async () => {
-  try {
-    setLoading(true);
-    setError(null);
+  const loadJobs = async () => {
+    try {
+      setLoading(true);
+      setError(null);
 
-    const filterParams = {};
-    // carry through optional filters
-    if (filters.search) filterParams.search = filters.search;
-    if (filters.minPayout) filterParams.minPayout = filters.minPayout;
+      const filterParams = {};
+      // carry through optional filters
+      if (filters.search) filterParams.search = filters.search;
+      if (filters.minPayout) filterParams.minPayout = filters.minPayout;
 
-    // normalize status from the dropdown (user selection)
-    const statusUpper = String(filters.status || '').toUpperCase();
+      // normalize status from the dropdown (user selection)
+      const statusUpper = String(filters.status || '').toUpperCase();
 
-    if (['OPEN', 'CLOSED', 'COMPLETED', 'CANCELLED'].includes(statusUpper)) {
-      // user chose a specific status -> ask backend for exactly that
-      filterParams.status = statusUpper;
-    } else {
-      // default view -> show everything EXCEPT CANCELLED
-      filterParams.excludeStatuses = 'CANCELLED';
+      if (['OPEN', 'EXPIRED', 'AWARDED', 'CLOSED'].includes(statusUpper)) {
+        // user chose a specific status -> ask backend for exactly that
+        filterParams.status = statusUpper;
+      } else {
+        // default view -> show everything EXCEPT CLOSED (already finalized)
+        // Show OPEN, EXPIRED, and AWARDED by default
+        filterParams.excludeStatuses = 'CLOSED';
+      }
+
+      const response = await apiService.listJobs(filterParams);
+      setJobs(response.jobs || []);
+    } catch (err) {
+      console.error('Error loading jobs:', err);
+      setError('Failed to load jobs. ' + err.message);
+      setJobs([]);
+    } finally {
+      setLoading(false);
     }
-
-    const response = await apiService.listJobs(filterParams);
-    setJobs(response.jobs || []);
-  } catch (err) {
-    console.error('Error loading jobs:', err);
-    setError('Failed to load jobs. ' + err.message);
-    setJobs([]);
-  } finally {
-    setLoading(false);
-  }
-};
-
-
-
+  };
 
   const handleFilterChange = (key, value) => {
     setFilters(prev => ({ ...prev, [key]: value }));
@@ -94,12 +92,11 @@ const loadJobs = async () => {
               onChange={(e) => handleFilterChange('status', e.target.value)}
               className="filter-status"
             >
-              <option value="">All Status</option>
+              <option value="">All Active</option>
               <option value="OPEN">Open</option>
-              <option value="COMPLETED">Completed</option>
+              <option value="EXPIRED">Expired</option>
+              <option value="AWARDED">Awarded</option>
               <option value="CLOSED">Closed</option>
-              {/* If you later add a "Cancelled" view, include: */}
-              {/* <option value="CANCELLED">Cancelled</option> */}
             </select>
             <input
               type="number"
@@ -212,15 +209,20 @@ function JobCard({ job }) {
   const timeRemaining = (job.submissionCloseTime ?? 0) - now;
   const hoursRemaining = Math.max(0, Math.floor(timeRemaining / 3600));
 
-  const isClosingSoon = hoursRemaining > 0 && hoursRemaining < 24;
-  const isClosed = timeRemaining <= 0;
+  const status = job.status || 'UNKNOWN';
+  const isOpen = status === 'OPEN';
+  const isExpired = status === 'EXPIRED';
+  const isAwarded = status === 'AWARDED';
+  const isClosed = status === 'CLOSED';
+
+  const isClosingSoon = isOpen && hoursRemaining > 0 && hoursRemaining < 24;
 
   return (
     <Link to={`/bounty/${job.jobId}`} className="bounty-card">
       <div className="bounty-header">
         <h3>{job.title || `Job #${job.jobId}`}</h3>
-        <span className={`status-badge status-${String(job.status).toLowerCase()}`}>
-          {job.status}
+        <span className={`status-badge status-${status.toLowerCase()}`}>
+          {status}
         </span>
       </div>
       {job.workProductType && (
@@ -251,13 +253,21 @@ function JobCard({ job }) {
           <span className="label">Threshold:</span>
           <span className="value">{job.threshold}%</span>
         </div>
-        <div className={`time-remaining ${isClosingSoon ? 'warning' : ''} ${isClosed ? 'closed' : ''}`}>
-          {isClosed ? (
-            <span>Submissions closed</span>
+        <div className={`time-remaining ${isClosingSoon ? 'warning' : ''} ${(isExpired || isClosed) ? 'closed' : ''}`}>
+          {isAwarded ? (
+            <span>🎉 Winner paid</span>
+          ) : isClosed ? (
+            <span>🔒 Closed</span>
+          ) : isExpired ? (
+            <span>⏰ Expired - needs closing</span>
+          ) : isOpen && hoursRemaining === 0 ? (
+            <span>Closing soon</span>
           ) : isClosingSoon ? (
             <span>⏰ {hoursRemaining}h remaining</span>
-          ) : (
+          ) : isOpen ? (
             <span>{Math.floor(hoursRemaining / 24)}d {hoursRemaining % 24}h remaining</span>
+          ) : (
+            <span>{status}</span>
           )}
         </div>
       </div>

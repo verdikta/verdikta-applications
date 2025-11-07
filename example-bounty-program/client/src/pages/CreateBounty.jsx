@@ -833,8 +833,9 @@ function CreateBounty({ walletState }) {
           <li>Set submission window (default: 7 days / 168 hours)</li>
           <li>Rubric is uploaded to IPFS (immutable)</li>
           <li>Smart contract locks your ETH in escrow</li>
-          <li>Submission window begins - hunters can submit work</li>
-          <li>After submission window, anyone can close and return funds if no valid submissions</li>
+          <li>Bounty status becomes OPEN - hunters can submit work before deadline</li>
+          <li>After deadline passes, bounty becomes EXPIRED if no winner yet</li>
+          <li>Anyone can close an EXPIRED bounty (if no active evaluations) to return funds to creator</li>
         </ol>
 
         <div
@@ -847,18 +848,40 @@ function CreateBounty({ walletState }) {
             backgroundColor: '#f9f9f9',
           }}
         >
-          <h4 style={{ marginTop: 0, marginBottom: '0.75rem', color: '#333' }}>⏰ Cancellation Policy</h4>
+          <h4 style={{ marginTop: 0, marginBottom: '0.75rem', color: '#333' }}>⏰ Bounty Lifecycle</h4>
           <p style={{ marginBottom: '0.5rem' }}>
-            <strong>Creator Early Cancel:</strong> You can cancel your bounty after the submission window passes IF no
-            submissions have been made. This returns your funds.
+            <strong>OPEN:</strong> Bounty is active and accepting submissions before the deadline.
           </p>
           <p style={{ marginBottom: '0.5rem' }}>
-            <strong>Public Expired Close:</strong> After the submission deadline, anyone can close an expired bounty
-            (with no active evaluations) to return funds to you.
+            <strong>EXPIRED:</strong> Deadline has passed. Anyone can call <code>closeExpiredBounty()</code> to return funds to you (if no active evaluations are in progress).
+          </p>
+          <p style={{ marginBottom: '0.5rem' }}>
+            <strong>AWARDED:</strong> A submission passed the threshold and the winner has been paid.
           </p>
           <p style={{ marginBottom: 0 }}>
-            <strong>Note:</strong> Once submissions exist, the bounty cannot be cancelled until evaluations are
-            complete.
+            <strong>CLOSED:</strong> Bounty expired without a winner, and funds have been returned to you.
+          </p>
+        </div>
+
+        <div
+          className="info-box"
+          style={{
+            marginTop: '1rem',
+            padding: '1rem',
+            border: '1px solid #fbbf24',
+            borderRadius: '8px',
+            backgroundColor: '#fffbeb',
+          }}
+        >
+          <h4 style={{ marginTop: 0, marginBottom: '0.75rem', color: '#92400e' }}>⚠️ Important Notes</h4>
+          <p style={{ marginBottom: '0.5rem' }}>
+            <strong>No Cancellation:</strong> Once created, you cannot cancel your bounty early. Funds remain in escrow until either a winner is selected OR the deadline passes with no winner.
+          </p>
+          <p style={{ marginBottom: '0.5rem' }}>
+            <strong>Active Evaluations:</strong> If submissions are being evaluated when the deadline passes, the bounty cannot be closed until those evaluations complete.
+          </p>
+          <p style={{ marginBottom: 0 }}>
+            <strong>First Winner Takes All:</strong> The first submission that passes the threshold automatically wins. Plan your deadline and threshold accordingly.
           </p>
         </div>
       </div>

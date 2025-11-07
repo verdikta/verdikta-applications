@@ -6,12 +6,23 @@ import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 import "./EvaluationWallet.sol";
 
 /// @title BountyEscrow
-/// @notice Bounty escrow that: (1) locks ETH, (2) prepares a submission wallet,
-///         (3) starts Verdikta after hunter approves LINK to that wallet,
-///         (4) finalizes by reading Verdikta scores and auto-paying if passed.
+/// @notice Bounty escrow with four effective states: OPEN, EXPIRED, AWARDED, CLOSED
+/// @dev No cancellation - creator can only reclaim funds after deadline via closeExpiredBounty
 contract BountyEscrow {
-    enum BountyStatus { Open, Awarded, Cancelled }
-    enum SubmissionStatus { Prepared, PendingVerdikta, Failed, PassedPaid, PassedUnpaid }
+    /// @notice On-chain storage states (3 values for gas efficiency)
+    enum BountyStatus { 
+        Open,    // 0: Active (maps to OPEN or EXPIRED based on deadline)
+        Awarded, // 1: Winner has been paid
+        Closed   // 2: Deadline passed, funds returned to creator
+    }
+    
+    enum SubmissionStatus { 
+        Prepared,         // Wallet created, awaiting LINK and start
+        PendingVerdikta,  // Evaluation in progress
+        Failed,           // Did not meet threshold
+        PassedPaid,       // Met threshold and was paid
+        PassedUnpaid      // Met threshold but someone else already won
+    }
 
     struct Bounty {
         address creator;
@@ -48,10 +59,6 @@ contract BountyEscrow {
     IERC20 public immutable link;
     IVerdiktaAggregator public immutable verdikta;
 
-    /// @notice Period after creation during which creator cannot cancel (anti-spam)
-    /// @dev Typically set to match expected submission window (e.g., 7 days)
-    uint256 public cancelLockSeconds = 7 days;
-
     Bounty[] public bounties;
     mapping(uint256 => Submission[]) public subs;
 
@@ -66,7 +73,11 @@ contract BountyEscrow {
         uint64 submissionDeadline
     );
 
-    event BountyCancelled(uint256 indexed bountyId);
+    event BountyClosed(
+        uint256 indexed bountyId,
+        address indexed creator,
+        uint256 amountReturned
+    );
 
     event SubmissionPrepared(
         uint256 indexed bountyId,
@@ -92,8 +103,17 @@ contract BountyEscrow {
         string justificationCids
     );
 
-    event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amountWei);
-    event LinkRefunded(uint256 indexed bountyId, uint256 indexed submissionId, uint256 amount);
+    event PayoutSent(
+        uint256 indexed bountyId, 
+        address indexed winner, 
+        uint256 amountWei
+    );
+    
+    event LinkRefunded(
+        uint256 indexed bountyId, 
+        uint256 indexed submissionId, 
+        uint256 amount
+    );
 
     constructor(IERC20 _link, IVerdiktaAggregator _verdikta) {
         require(address(_link) != address(0) && address(_verdikta) != address(0), "zero addr");
@@ -103,6 +123,7 @@ contract BountyEscrow {
 
     // ------------- Bounty lifecycle -------------
 
+    /// @notice Create a new bounty with ETH escrow
     function createBounty(
         string calldata rubricCid,
         uint64  requestedClass,
@@ -128,40 +149,24 @@ contract BountyEscrow {
         }));
 
         bountyId = bounties.length - 1;
-        emit BountyCreated(bountyId, msg.sender, rubricCid, requestedClass, threshold, msg.value, submissionDeadline);
-    }
-
-    /// @notice Creator cancels bounty early (before deadline) if no submissions exist
-    /// @dev Can only be called after cancelLockSeconds passes AND no submissions have been made
-    /// @param bountyId The bounty to cancel
-    function cancelBounty(uint256 bountyId) external {
-        Bounty storage b = _mustBounty(bountyId);
-        require(msg.sender == b.creator, "not creator");
-        require(b.status == BountyStatus.Open, "not open");
-        
-        // Creator must wait for the cancel lock period (anti-spam)
-        require(block.timestamp >= b.createdAt + cancelLockSeconds, "cancel lock period not passed");
-        
-        // Creator can only cancel if NO submissions exist (prevents stealing work)
-        require(b.submissions == 0, "cannot cancel with submissions");
-
-        b.status = BountyStatus.Cancelled;
-        uint256 amt = b.payoutWei;
-        b.payoutWei = 0;
-
-        (bool ok,) = payable(b.creator).call{value: amt}("");
-        require(ok, "eth send fail");
-        emit BountyCancelled(bountyId);
+        emit BountyCreated(
+            bountyId, 
+            msg.sender, 
+            rubricCid, 
+            requestedClass, 
+            threshold, 
+            msg.value, 
+            submissionDeadline
+        );
     }
 
     /// @notice Close an expired bounty and return funds to creator
-    /// @dev Can be called by ANYONE after submissionDeadline, but only if no active evaluations
+    /// @dev Can be called by ANYONE after submissionDeadline passes
+    /// @dev Requires no active evaluations (PendingVerdikta submissions)
     /// @param bountyId The bounty to close
     function closeExpiredBounty(uint256 bountyId) external {
         Bounty storage b = _mustBounty(bountyId);
         require(b.status == BountyStatus.Open, "not open");
-        
-        // Must wait until the submission deadline has passed
         require(block.timestamp >= b.submissionDeadline, "deadline not passed");
         
         // Check that no submissions are actively being evaluated
@@ -169,25 +174,26 @@ contract BountyEscrow {
         for (uint256 i = 0; i < subCount; i++) {
             require(
                 subs[bountyId][i].status != SubmissionStatus.PendingVerdikta,
-                "active submission exists - finalize first"
+                "active evaluation - finalize first"
             );
         }
         
         // All clear - return funds to creator
-        b.status = BountyStatus.Cancelled;
+        b.status = BountyStatus.Closed;
         uint256 amt = b.payoutWei;
         b.payoutWei = 0;
         
         (bool ok,) = payable(b.creator).call{value: amt}("");
         require(ok, "eth send fail");
         
-        emit BountyCancelled(bountyId);
+        emit BountyClosed(bountyId, b.creator, amt);
     }
 
     // ------------- Submissions & Verdikta -------------
 
     /// @notice STEP 1: Prepare a submission. Deploys an EvaluationWallet and records parameters.
-    ///         The wallet address is emitted so the hunter can approve LINK to it.
+    /// @dev The wallet address is emitted so the hunter can approve LINK to it.
+    /// @dev Can only be called before the submission deadline
     function prepareSubmission(
         uint256 bountyId,
         string calldata deliverableCid,
@@ -198,14 +204,19 @@ contract BountyEscrow {
         uint256 maxFeeBasedScaling
     ) external returns (uint256 submissionId, address evalWallet, uint256 linkMaxBudget) {
         Bounty storage b = _mustBounty(bountyId);
-        require(b.status == BountyStatus.Open, "bounty closed");
+        require(b.status == BountyStatus.Open, "bounty not open");
         require(block.timestamp < b.submissionDeadline, "deadline passed");
         require(bytes(deliverableCid).length > 0, "empty deliverable");
 
         linkMaxBudget = verdikta.maxTotalFee(maxOracleFee);
         require(linkMaxBudget > 0, "bad budget");
 
-        EvaluationWallet wallet = new EvaluationWallet(address(this), msg.sender, link, verdikta);
+        EvaluationWallet wallet = new EvaluationWallet(
+            address(this), 
+            msg.sender, 
+            link, 
+            verdikta
+        );
 
         Submission memory s = Submission({
             hunter: msg.sender,
@@ -244,19 +255,21 @@ contract BountyEscrow {
 
     /// @notice STEP 2: After hunter has approved LINK to the EvaluationWallet,
     ///         start the Verdikta evaluation (pulls LINK into wallet, approves Verdikta, starts).
+    /// @dev Can be called after deadline as long as submission was prepared before deadline
     function startPreparedSubmission(uint256 bountyId, uint256 submissionId) external {
         Bounty storage b = _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);
 
         require(s.status == SubmissionStatus.Prepared, "not prepared");
         require(msg.sender == s.hunter, "only hunter");
+        require(s.submittedAt < b.submissionDeadline, "submitted too late");
 
         EvaluationWallet wallet = EvaluationWallet(s.evalWallet);
 
-        // Pull LINK from hunter into the wallet (requires ERC-20 approval to the wallet)
+        // Pull LINK from hunter into the wallet
         wallet.pullLinkFromHunter(s.linkMaxBudget);
 
-        // Approve Verdikta and start evaluation (wallet will be msg.sender to Verdikta)
+        // Approve Verdikta and start evaluation
         wallet.approveVerdikta(s.linkMaxBudget);
 
         string[] memory cids = new string[](2);
@@ -279,17 +292,19 @@ contract BountyEscrow {
         emit WorkSubmitted(bountyId, submissionId, aggId);
     }
 
-    /// @notice Finalize a submission by reading Verdikta. If accepted and bounty open,
-    ///         pay the hunter and close the bounty. Refund leftover LINK in any case.
+    /// @notice Finalize a submission by reading Verdikta results
+    /// @dev If accepted and bounty still open, pay the hunter and mark bounty as Awarded
+    /// @dev Can be called even after deadline (for submissions made before deadline)
     function finalizeSubmission(uint256 bountyId, uint256 submissionId) external {
         Bounty storage b = _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);
         require(s.status == SubmissionStatus.PendingVerdikta, "not pending");
 
-        (uint256[] memory scores, string memory justCids, bool ok) = verdikta.getEvaluation(s.verdiktaAggId);
+        (uint256[] memory scores, string memory justCids, bool ok) = 
+            verdikta.getEvaluation(s.verdiktaAggId);
 
         if (!ok) {
-            // If timed out but not finalized on Verdikta, try to finalize there and retry read.
+            // If timed out but not finalized on Verdikta, try to finalize there
             try verdikta.finalizeEvaluationTimeout(s.verdiktaAggId) {
                 (scores, justCids, ok) = verdikta.getEvaluation(s.verdiktaAggId);
             } catch { /* ignore */ }
@@ -311,9 +326,10 @@ contract BountyEscrow {
             return;
         }
 
-        // Passed
+        // Passed evaluation
         emit SubmissionFinalized(bountyId, submissionId, true, acceptance, rejection, justCids);
 
+        // Pay if bounty is still Open (first winner takes all)
         if (b.status == BountyStatus.Open) {
             uint256 pay = b.payoutWei;
             b.payoutWei = 0;
@@ -326,7 +342,8 @@ contract BountyEscrow {
 
             emit PayoutSent(bountyId, s.hunter, pay);
         } else {
-            s.status = SubmissionStatus.PassedUnpaid; // someone else already won
+            // Bounty already awarded or closed
+            s.status = SubmissionStatus.PassedUnpaid;
         }
 
         _refundLeftoverLink(bountyId, submissionId);
@@ -334,7 +351,9 @@ contract BountyEscrow {
 
     // ------------- Views -------------
 
-    function bountyCount() external view returns (uint256) { return bounties.length; }
+    function bountyCount() external view returns (uint256) { 
+        return bounties.length; 
+    }
 
     function getBounty(uint256 bountyId) external view returns (Bounty memory) {
         return _mustBounty(bountyId);
@@ -344,41 +363,58 @@ contract BountyEscrow {
         return subs[bountyId].length;
     }
 
-    function getSubmission(uint256 bountyId, uint256 submissionId) external view returns (Submission memory) {
+    function getSubmission(uint256 bountyId, uint256 submissionId) 
+        external view returns (Submission memory) 
+    {
         return _mustSubmission(bountyId, submissionId);
     }
 
-    /// @notice Get the effective status of a bounty as a string for frontend compatibility
-    /// @dev Returns "OPEN", "CLOSED", "COMPLETED", or "CANCELLED"
-    function getEffectiveBountyStatus(uint256 bountyId) external view returns (string memory) {
+    /// @notice Get the effective status of a bounty for frontend display
+    /// @dev Returns: "OPEN", "EXPIRED", "AWARDED", or "CLOSED"
+    /// @return status One of four status strings
+    function getEffectiveBountyStatus(uint256 bountyId) 
+        external view returns (string memory) 
+    {
         Bounty storage b = _mustBounty(bountyId);
         
-        // If deadline passed and still Open, it's effectively "CLOSED"
-        if (b.status == BountyStatus.Open && block.timestamp >= b.submissionDeadline) {
-            return "CLOSED";
+        // Terminal states first
+        if (b.status == BountyStatus.Awarded) return "AWARDED";
+        if (b.status == BountyStatus.Closed) return "CLOSED";
+        
+        // Open enum, but check if deadline passed
+        if (b.status == BountyStatus.Open) {
+            if (block.timestamp >= b.submissionDeadline) {
+                return "EXPIRED"; // Deadline passed, awaiting closeExpiredBounty
+            }
+            return "OPEN"; // Active, accepting submissions
         }
         
-        // Map enum to strings your frontend expects
-        if (b.status == BountyStatus.Open) return "OPEN";
-        if (b.status == BountyStatus.Awarded) return "COMPLETED";
-        if (b.status == BountyStatus.Cancelled) return "CANCELLED";
-        
-        return "UNKNOWN";
+        return "UNKNOWN"; // Should never happen
     }
 
-    /// @notice Check if a bounty is accepting submissions (open and before deadline)
+    /// @notice Check if a bounty is accepting NEW submissions
+    /// @dev Returns true only if Open status AND before deadline
     function isAcceptingSubmissions(uint256 bountyId) external view returns (bool) {
         Bounty storage b = _mustBounty(bountyId);
         return b.status == BountyStatus.Open && block.timestamp < b.submissionDeadline;
     }
 
-    // ------------- Admin knobs -------------
-
-    /// @notice Set the cancel lock period (time creator must wait before cancelling)
-    /// @param seconds_ Number of seconds for the lock period
-    function setCancelLock(uint256 seconds_) external {
-        require(seconds_ >= 1 hours && seconds_ <= 90 days, "unreasonable");
-        cancelLockSeconds = seconds_;
+    /// @notice Check if a bounty can be closed (deadline passed, no active evals)
+    function canBeClosed(uint256 bountyId) external view returns (bool) {
+        Bounty storage b = _mustBounty(bountyId);
+        
+        if (b.status != BountyStatus.Open) return false;
+        if (block.timestamp < b.submissionDeadline) return false;
+        
+        // Check for active evaluations
+        uint256 subCount = subs[bountyId].length;
+        for (uint256 i = 0; i < subCount; i++) {
+            if (subs[bountyId][i].status == SubmissionStatus.PendingVerdikta) {
+                return false;
+            }
+        }
+        
+        return true;
     }
 
     // ------------- Internals -------------
@@ -397,29 +433,34 @@ contract BountyEscrow {
         return bounties[bountyId];
     }
 
-    function _mustSubmission(uint256 bountyId, uint256 submissionId) internal view returns (Submission storage) {
+    function _mustSubmission(uint256 bountyId, uint256 submissionId) 
+        internal view returns (Submission storage) 
+    {
         require(submissionId < subs[bountyId].length, "bad submissionId");
         return subs[bountyId][submissionId];
     }
 
-    /// @dev Interpret Verdikta scores where typically scores[0]=accept, scores[1]=reject, sum ≈100.
-    function _interpretScores(uint256[] memory scores) internal pure returns (uint256 accept, uint256 reject) {
+    /// @dev Interpret Verdikta scores: scores[0]=accept, scores[1]=reject
+    function _interpretScores(uint256[] memory scores) 
+        internal pure returns (uint256 accept, uint256 reject) 
+    {
         if (scores.length == 0) return (0, 0);
         if (scores.length == 1) {
             uint256 a = scores[0];
             if (a > 100) a = 100;
-            // best-effort reject complement if caller expects two numbers
             uint256 r = 100 > a ? 100 - a : 0;
             return (a, r);
         }
-        // take first two; clamp to [0,100]
+        // Take first two; clamp to [0,100]
         accept = scores[0] > 100 ? 100 : scores[0];
         reject = scores[1] > 100 ? 100 : scores[1];
         return (accept, reject);
     }
 
-    /// @dev Pass rule: acceptance >= threshold AND acceptance >= rejection.
-    function _passed(uint256 acceptance, uint256 rejection, uint256 threshold) internal pure returns (bool) {
+    /// @dev Pass rule: acceptance >= threshold AND acceptance >= rejection
+    function _passed(uint256 acceptance, uint256 rejection, uint256 threshold) 
+        internal pure returns (bool) 
+    {
         return (acceptance >= threshold) && (acceptance >= rejection);
     }
 

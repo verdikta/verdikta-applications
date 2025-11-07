@@ -443,6 +443,79 @@ class ContractService {
   }
 
   /**
+   * Get the on-chain status of a bounty
+   * Returns: "Open", "Awarded", or "Closed"
+   * 
+   * @param {number} bountyId - The bounty ID to check
+   * @returns {Promise<string>} The bounty status
+   */
+  async getBountyStatus(bountyId) {
+    if (!this.provider) {
+      throw new Error('Provider not initialized. Call connect() first.');
+    }
+
+    try {
+      // Simple array return - access by index
+      const viewAbi = [
+        "function getBounty(uint256) view returns (address, string, uint64, uint8, uint256, uint256, uint64, uint8, address, uint256)"
+      ];
+
+      const contract = new ethers.Contract(
+        this.contractAddress,
+        viewAbi,
+        this.provider
+      );
+
+      const bounty = await contract.getBounty(bountyId);
+      
+      // bounty is returned as an array:
+      // [0] creator
+      // [1] rubricCid  
+      // [2] classId
+      // [3] threshold
+      // [4] payoutWei
+      // [5] submissions
+      // [6] submissionDeadline
+      // [7] status (0=Open, 1=Awarded, 2=Closed)
+      // [8] winner
+      // [9] cancelLockUntil
+      
+      const statusCode = Number(bounty[7]);
+      
+      const statusMap = {
+        0: 'Open',
+        1: 'Awarded',
+        2: 'Closed'
+      };
+
+      console.log('Bounty #' + bountyId + ' details:', {
+        creator: bounty[0],
+        rubricCid: bounty[1],
+        classId: bounty[2].toString(),
+        threshold: Number(bounty[3]),
+        payoutWei: bounty[4].toString(),
+        submissions: bounty[5].toString(),
+        deadline: new Date(Number(bounty[6]) * 1000).toISOString(),
+        status: statusMap[statusCode],
+        statusCode
+      });
+
+      return statusMap[statusCode] || 'Unknown';
+
+    } catch (error) {
+      console.error('Error getting bounty status:', error);
+      
+      // If the error is "bad bountyId", make it clear
+      const msg = (error?.message || '').toLowerCase();
+      if (msg.includes('bad bountyid') || msg.includes('invalid bounty')) {
+        throw new Error(`Bounty #${bountyId} does not exist on-chain`);
+      }
+      
+      throw error;
+    }
+  }
+
+  /**
    * Check if user is connected
    */
   isConnected() {

@@ -117,6 +117,34 @@ function SubmitWork({ walletState }) {
       setLoading(true);
       setError(null);
 
+      // Get contract service once at the start
+      const contractService = getContractService();
+
+      // CRITICAL: Verify on-chain status before proceeding
+      setLoadingMessage('Verifying bounty status on blockchain...');
+      if (!contractService.isConnected()) {
+        await contractService.connect();
+      }
+
+      // Check if bounty is actually open on-chain
+      try {
+        const onChainStatus = await contractService.getBountyStatus(bountyId);
+        console.log('On-chain bounty status:', onChainStatus);
+        
+        if (onChainStatus !== 'Open') {
+          throw new Error(
+            `This bounty is ${onChainStatus.toLowerCase()} on-chain and cannot accept submissions. ` +
+            `The backend may be out of sync. Please refresh and try again.`
+          );
+        }
+      } catch (statusError) {
+        console.error('Error checking on-chain status:', statusError);
+        throw new Error(
+          'Could not verify bounty status on blockchain. ' + 
+          (statusError.message || 'Please ensure you are on the correct network.')
+        );
+      }
+
       // STEP 1: Upload to IPFS
       setLoadingMessage('Uploading files to IPFS...');
       
@@ -139,14 +167,7 @@ function SubmitWork({ walletState }) {
       // Get the updated Primary CID
       const { updatedPrimaryCid } = response.submission;
 
-      // STEP 2: Connect to contract service
-      setLoadingMessage('Connecting to smart contract...');
-      const contractService = getContractService();
-      if (!contractService.isConnected()) {
-        await contractService.connect();
-      }
-
-      // STEP 3: Prepare submission on-chain (deploys EvaluationWallet)
+      // STEP 2: Prepare submission on-chain (deploys EvaluationWallet)
       setLoadingMessage('Preparing submission on blockchain...');
       const { submissionId, evalWallet, linkMaxBudget } = await contractService.prepareSubmission(
         bountyId,
@@ -164,12 +185,12 @@ function SubmitWork({ walletState }) {
         linkMaxBudget
       });
 
-      // STEP 4: Approve LINK tokens to the EvaluationWallet
+      // STEP 3: Approve LINK tokens to the EvaluationWallet
       setLoadingMessage('Approving LINK tokens...');
       await contractService.approveLink(evalWallet, linkMaxBudget);
       console.log('✅ LINK approved');
 
-      // STEP 5: Start the Verdikta evaluation
+      // STEP 4: Start the Verdikta evaluation
       setLoadingMessage('Starting AI evaluation...');
       const evalResult = await contractService.startPreparedSubmission(bountyId, submissionId);
       console.log('✅ Evaluation started:', evalResult);

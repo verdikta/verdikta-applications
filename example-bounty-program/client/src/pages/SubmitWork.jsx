@@ -131,7 +131,7 @@ function SubmitWork({ walletState }) {
         const onChainStatus = await contractService.getBountyStatus(bountyId);
         console.log('On-chain bounty status:', onChainStatus);
         
-        if (onChainStatus !== 'Open') {
+        if (onChainStatus !== 'OPEN') {
           throw new Error(
             `This bounty is ${onChainStatus.toLowerCase()} on-chain and cannot accept submissions. ` +
             `The backend may be out of sync. Please refresh and try again.`

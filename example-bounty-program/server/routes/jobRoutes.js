@@ -546,20 +546,21 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
     if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
 
-    job.bountyId    = bountyId;
+    job.onChainId   = bountyId;  // ← Changed from job.bountyId
     job.txHash      = txHash;
     job.blockNumber = blockNumber;
     job.onChain     = true;
 
     await jobStorage.writeStorage(storage);
 
-    logger.info('[jobs/bountyId] updated', { jobId, bountyId });
+    logger.info('[jobs/bountyId] updated', { jobId, onChainId: bountyId });
     return res.json({ success: true, job });
   } catch (error) {
     logger.error('[jobs/bountyId] error', { msg: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });
+
 
 // Resolve endpoint (unchanged logic from your working version)
 const RPC = process.env.RPC_PROVIDER_URL;
@@ -570,6 +571,7 @@ const ABI = [
 ];
 function ro() { return new ethers.JsonRpcProvider(RPC); }
 function escrowRO() { return new ethers.Contract(ESCROW, ABI, ro()); }
+
 
 router.patch('/:id/bountyId/resolve', async (req, res) => {
   const jobIdParam = req.params.id;
@@ -601,9 +603,11 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
             try {
               const ev = iface.parseLog(log);
               const bountyId = Number(ev.args.bountyId);
-              job.bountyId = bountyId; job.onChain = true; job.txHash = job.txHash ?? txHash;
+              job.onChainId = bountyId;  // ← Changed from job.bountyId
+              job.onChain = true;
+              job.txHash = job.txHash ?? txHash;
               await jobStorage.writeStorage(storage);
-              logger.info('[resolve] via tx', { jobId: jobIdParam, bountyId });
+              logger.info('[resolve] via tx', { jobId: jobIdParam, onChainId: bountyId });
               return res.json({ success: true, method: 'tx', bountyId, job });
             } catch {}
           }
@@ -638,9 +642,10 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
       }
 
       if (best != null) {
-        job.bountyId = best; job.onChain = true;
+        job.onChainId = best;  // ← Changed from job.bountyId
+        job.onChain = true;
         await jobStorage.writeStorage(storage);
-        logger.info('[resolve] via state', { jobId: jobIdParam, bountyId: best, delta: bestDelta });
+        logger.info('[resolve] via state', { jobId: jobIdParam, onChainId: best, delta: bestDelta });
         return res.json({ success: true, method: 'state', bountyId: best, delta: bestDelta, job });
       }
 
@@ -655,6 +660,7 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
     return res.status(500).json({ success: false, error: e?.message || 'Internal error' });
   }
 });
+
 
 /* =======================
    SYNC STATUS (unchanged)

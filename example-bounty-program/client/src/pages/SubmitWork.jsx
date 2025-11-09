@@ -25,11 +25,24 @@ function SubmitWork({ walletState }) {
     loadJobDetails();
   }, [bountyId, walletState.isConnected]);
 
+  // Helper to get the on-chain bounty ID
+  const getOnChainId = (job) => {
+    if (job.onChainId !== undefined && job.onChainId !== null) {
+      return job.onChainId;
+    }
+    // Fallback for old data that might still have bountyId
+    if (job.bountyId !== undefined && job.bountyId !== null) {
+      return job.bountyId;
+    }
+    // Last resort: try parsing from URL
+    return parseInt(bountyId);
+  };
+
   const loadJobDetails = async () => {
     try {
       setLoadingJob(true);
       const response = await apiService.getJob(bountyId, true);
-      
+
       // Verify on-chain status if wallet is connected
       if (walletState.isConnected) {
         try {
@@ -37,9 +50,10 @@ function SubmitWork({ walletState }) {
           if (!contractService.isConnected()) {
             await contractService.connect();
           }
-          
-          const onChainStatus = await contractService.getBountyStatus(bountyId);
-          
+
+          const onChainId = getOnChainId(response.job);
+          const onChainStatus = await contractService.getBountyStatus(onChainId);
+
           // If mismatch, use on-chain as source of truth
           if (onChainStatus !== response.job.status) {
             console.warn('⚠️ Backend out of sync!', {
@@ -48,14 +62,14 @@ function SubmitWork({ walletState }) {
             });
             response.job.status = onChainStatus;
           }
-          
+
           console.log('✅ Bounty status verified:', onChainStatus);
         } catch (statusErr) {
           console.error('Could not verify on-chain status:', statusErr);
           // Continue with backend data if on-chain check fails
         }
       }
-      
+
       setJob(response.job);
     } catch (err) {
       console.error('Error loading job:', err);
@@ -147,6 +161,9 @@ function SubmitWork({ walletState }) {
       // Get contract service once at the start
       const contractService = getContractService();
 
+      // Get the on-chain ID for all contract calls
+      const onChainId = getOnChainId(job);
+
       // CRITICAL: Verify on-chain status before proceeding
       setLoadingMessage('Verifying bounty status on blockchain...');
       if (!contractService.isConnected()) {
@@ -155,13 +172,13 @@ function SubmitWork({ walletState }) {
 
       // Check if bounty is actually open on-chain
       try {
-        const onChainStatus = await contractService.getBountyStatus(bountyId);
+        const onChainStatus = await contractService.getBountyStatus(onChainId);
         console.log('On-chain bounty status:', onChainStatus);
 
         if (onChainStatus !== 'OPEN') {
           // Update the UI state to reflect reality
           setJob(prev => ({ ...prev, status: onChainStatus }));
-          
+
           throw new Error(
             `This bounty is ${onChainStatus.toLowerCase()} on-chain and cannot accept submissions. ` +
             `The backend was out of sync. Please try refreshing the page.`
@@ -200,7 +217,7 @@ function SubmitWork({ walletState }) {
       // STEP 2: Prepare submission on-chain (deploys EvaluationWallet)
       setLoadingMessage('Preparing submission on blockchain...');
       const { submissionId, evalWallet, linkMaxBudget } = await contractService.prepareSubmission(
-        bountyId,
+        onChainId,  // Use on-chain ID, not URL parameter
         updatedPrimaryCid,  // deliverableCid
         submissionNarrative || "",  // addendum
         75,  // alpha (reputation weight, 0-100)
@@ -222,7 +239,7 @@ function SubmitWork({ walletState }) {
 
       // STEP 4: Start the Verdikta evaluation
       setLoadingMessage('Starting AI evaluation...');
-      const evalResult = await contractService.startPreparedSubmission(bountyId, submissionId);
+      const evalResult = await contractService.startPreparedSubmission(onChainId, submissionId);
       console.log('✅ Evaluation started:', evalResult);
 
       // Show success with blockchain data

@@ -79,8 +79,7 @@ class SyncService {
 
       for (const bounty of onChainBounties) {
         const existingJob = storage.jobs.find(j =>
-          j.onChainId === bounty.jobId ||
-          j.jobId === bounty.jobId
+          j.onChainId === bounty.jobId 
         );
 
         if (!existingJob) {

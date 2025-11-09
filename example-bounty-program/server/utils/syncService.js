@@ -68,18 +68,18 @@ class SyncService {
 
       const contractService = getContractService();
       const storage = await jobStorage.readStorage();
-      
+
       // Get all jobs from blockchain
       const onChainBounties = await contractService.listBounties();
-      
+
       // Track changes
       let added = 0;
       let updated = 0;
       let unchanged = 0;
 
       for (const bounty of onChainBounties) {
-        const existingJob = storage.jobs.find(j => 
-          j.onChainId === bounty.jobId || 
+        const existingJob = storage.jobs.find(j =>
+          j.onChainId === bounty.jobId ||
           j.jobId === bounty.jobId
         );
 
@@ -106,7 +106,7 @@ class SyncService {
 
       this.lastSyncTime = new Date();
       this.syncErrors = 0;
-      
+
       const duration = Date.now() - startTime;
       logger.info('✅ Blockchain sync completed', {
         duration: `${duration}ms`,
@@ -155,7 +155,7 @@ class SyncService {
       juryNodes: [], // Not stored on-chain
       submissionOpenTime: bounty.createdAt,
       submissionCloseTime: bounty.submissionCloseTime,
-      status: bounty.status,
+      status: bounty.status, // Use effective status: OPEN, EXPIRED, AWARDED, or CLOSED
       createdAt: bounty.createdAt,
       submissionCount: bounty.submissionCount,
       submissions: [], // Will be synced separately if needed
@@ -170,22 +170,26 @@ class SyncService {
 
   /**
    * Update existing job with blockchain data
+   * CRITICAL: Always use blockchain as source of truth for status
    */
   async updateJobFromBlockchain(existingJob, bounty, storage) {
-    logger.info('🔄 Updating job from blockchain', { 
+    logger.info('🔄 Updating job from blockchain', {
       jobId: existingJob.jobId,
-      onChainId: bounty.jobId 
+      onChainId: bounty.jobId,
+      oldStatus: existingJob.status,
+      newStatus: bounty.status
     });
 
-    // Update fields that can change on-chain
+    // CRITICAL: Update ALL mutable fields from blockchain
+    // The contract's getEffectiveBountyStatus() returns: OPEN, EXPIRED, AWARDED, or CLOSED
     existingJob.status = bounty.status;
     existingJob.submissionCount = bounty.submissionCount;
     existingJob.winner = bounty.winner;
     existingJob.lastSyncedAt = Math.floor(Date.now() / 1000);
 
-    // If job was cancelled or completed on-chain, reflect that
-    if (bounty.status === 'CANCELLED' || bounty.status === 'COMPLETED') {
-      existingJob.status = bounty.status;
+    // Also update deadline-related fields that might have been missing
+    if (bounty.submissionCloseTime) {
+      existingJob.submissionCloseTime = bounty.submissionCloseTime;
     }
   }
 
@@ -193,11 +197,22 @@ class SyncService {
    * Check if a job needs updating from blockchain
    */
   needsUpdate(localJob, chainJob) {
-    return (
-      localJob.status !== chainJob.status ||
-      localJob.submissionCount !== chainJob.submissionCount ||
-      localJob.winner !== chainJob.winner
-    );
+    // Always update if status changed (this catches OPEN → EXPIRED → CLOSED transitions)
+    if (localJob.status !== chainJob.status) {
+      return true;
+    }
+    
+    // Update if submission count changed
+    if (localJob.submissionCount !== chainJob.submissionCount) {
+      return true;
+    }
+    
+    // Update if winner changed
+    if (localJob.winner !== chainJob.winner) {
+      return true;
+    }
+    
+    return false;
   }
 
   /**

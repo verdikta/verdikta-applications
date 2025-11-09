@@ -1,7 +1,7 @@
 /**
  * Job Storage Utility
- * Temporary local storage for jobs/bounties until smart contracts are deployed
- * This will be replaced by blockchain queries once BountyEscrow is deployed
+ * Local storage for jobs/bounties synced from blockchain
+ * Blockchain is the source of truth for all status changes
  */
 
 const fs = require('fs').promises;
@@ -59,22 +59,6 @@ async function writeStorage(data) {
 
 /**
  * Create a new job
- *
- * @param {Object} jobData
- * @param {string} jobData.title - Job title
- * @param {string} jobData.description - Job description
- * @param {string} jobData.workProductType - Type of work (e.g., "Blog Post")
- * @param {string} jobData.creator - Wallet address of creator
- * @param {number} jobData.bountyAmount - Bounty amount in ETH
- * @param {number} jobData.bountyAmountUSD - Bounty amount in USD (for display)
- * @param {number} jobData.threshold - Passing threshold (0-100)
- * @param {string} jobData.rubricCid - IPFS CID of the rubric
- * @param {string} jobData.primaryCid - IPFS CID of the primary archive
- * @param {number} jobData.classId - Verdikta class ID
- * @param {Array} jobData.juryNodes - AI jury configuration
- * @param {number} jobData.submissionOpenTime - Unix timestamp when submissions open
- * @param {number} jobData.submissionCloseTime - Unix timestamp when submissions close
- * @returns {Promise<Object>} - Created job object
  */
 async function createJob(jobData) {
   try {
@@ -105,7 +89,8 @@ async function createJob(jobData) {
 }
 
 /**
- * Get a job by ID with automatic status updates
+ * Get a job by ID
+ * NOTE: Status is synced from blockchain - no auto-updates here
  */
 async function getJob(jobId) {
   try {
@@ -116,15 +101,6 @@ async function getJob(jobId) {
       throw new Error(`Job ${jobId} not found`);
     }
 
-    // AUTO-UPDATE: Close expired jobs
-    const now = Math.floor(Date.now() / 1000);
-    if (job.status === 'OPEN' && job.submissionCloseTime && now >= job.submissionCloseTime) {
-      job.status = 'CLOSED';
-      // Persist the change
-      await writeStorage(storage);
-      logger.info('Job auto-closed due to deadline', { jobId: job.jobId });
-    }
-
     return job;
   } catch (error) {
     logger.error('Error getting job:', error);
@@ -133,14 +109,8 @@ async function getJob(jobId) {
 }
 
 /**
- * List all jobs with optional filters and automatic status updates
- *
- * @param {Object} filters
- * @param {string} filters.status - Filter by status (OPEN, CLOSED, COMPLETED)
- * @param {string} filters.creator - Filter by creator address
- * @param {number} filters.minPayout - Minimum payout in ETH
- * @param {string} filters.search - Search in title/description
- * @returns {Promise<Array>} - Array of jobs
+ * List all jobs with optional filters
+ * NOTE: Status is synced from blockchain - no auto-updates here
  */
 async function listJobs(filters = {}) {
   try {
@@ -151,25 +121,14 @@ async function listJobs(filters = {}) {
     let normalized = false;
     for (const j of jobs) {
       const uc = String(j.status).toUpperCase();
-      if (j.status !== uc) { j.status = uc; normalized = true; }
-    }
-    if (normalized) await writeStorage(storage);
-    
-    // AUTO-UPDATE: Close all expired jobs
-    const now = Math.floor(Date.now() / 1000);
-    let updated = false;
-    
-    jobs.forEach(job => {
-      if (job.status === 'OPEN' && job.submissionCloseTime && now >= job.submissionCloseTime) {
-        job.status = 'CLOSED';
-        updated = true;
-        logger.info('Job auto-closed due to deadline', { jobId: job.jobId });
+      if (j.status !== uc) {
+        j.status = uc;
+        normalized = true;
       }
-    });
-    
-    // Persist updates if any jobs were closed
-    if (updated) {
+    }
+    if (normalized) {
       await writeStorage(storage);
+      logger.info('Normalized job statuses to UPPERCASE');
     }
 
     // Apply filters
@@ -232,13 +191,6 @@ async function updateJobStatus(jobId, status) {
 
 /**
  * Add a submission to a job
- *
- * @param {number} jobId
- * @param {Object} submissionData
- * @param {string} submissionData.hunter - Hunter wallet address
- * @param {string} submissionData.hunterCid - IPFS CID of hunter submission
- * @param {string} submissionData.updatedPrimaryCid - Updated primary CID with hunter submission
- * @returns {Promise<Object>} - Updated job
  */
 async function addSubmission(jobId, submissionData) {
   try {
@@ -249,16 +201,10 @@ async function addSubmission(jobId, submissionData) {
       throw new Error(`Job ${jobId} not found`);
     }
 
-    // Check if job is still open and deadline hasn't passed
-    const now = Math.floor(Date.now() / 1000);
+    // Check if job is still open
+    // NOTE: We check cached status, but frontend also verifies on-chain before submitting
     if (job.status !== 'OPEN') {
       throw new Error(`Job ${jobId} is not accepting submissions (status: ${job.status})`);
-    }
-    if (job.submissionCloseTime && now >= job.submissionCloseTime) {
-      // Auto-close the job if deadline passed
-      job.status = 'CLOSED';
-      await writeStorage(storage);
-      throw new Error(`Job ${jobId} deadline has passed`);
     }
 
     const submission = {
@@ -311,7 +257,7 @@ async function updateSubmissionResult(jobId, submissionId, result) {
     // If this submission passed and no winner yet, mark as winner
     if (result.outcome === 'FUND' && !job.winner) {
       job.winner = submission.hunter;
-      job.status = 'COMPLETED';
+      job.status = 'AWARDED'; // Use AWARDED not COMPLETED
     }
 
     await writeStorage(storage);

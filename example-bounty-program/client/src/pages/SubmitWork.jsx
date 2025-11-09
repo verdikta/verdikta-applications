@@ -23,12 +23,39 @@ function SubmitWork({ walletState }) {
   // Load job details to check if submission is allowed
   useEffect(() => {
     loadJobDetails();
-  }, [bountyId]);
+  }, [bountyId, walletState.isConnected]);
 
   const loadJobDetails = async () => {
     try {
       setLoadingJob(true);
       const response = await apiService.getJob(bountyId, true);
+      
+      // Verify on-chain status if wallet is connected
+      if (walletState.isConnected) {
+        try {
+          const contractService = getContractService();
+          if (!contractService.isConnected()) {
+            await contractService.connect();
+          }
+          
+          const onChainStatus = await contractService.getBountyStatus(bountyId);
+          
+          // If mismatch, use on-chain as source of truth
+          if (onChainStatus !== response.job.status) {
+            console.warn('⚠️ Backend out of sync!', {
+              backend: response.job.status,
+              onChain: onChainStatus
+            });
+            response.job.status = onChainStatus;
+          }
+          
+          console.log('✅ Bounty status verified:', onChainStatus);
+        } catch (statusErr) {
+          console.error('Could not verify on-chain status:', statusErr);
+          // Continue with backend data if on-chain check fails
+        }
+      }
+      
       setJob(response.job);
     } catch (err) {
       console.error('Error loading job:', err);
@@ -130,31 +157,34 @@ function SubmitWork({ walletState }) {
       try {
         const onChainStatus = await contractService.getBountyStatus(bountyId);
         console.log('On-chain bounty status:', onChainStatus);
-        
+
         if (onChainStatus !== 'OPEN') {
+          // Update the UI state to reflect reality
+          setJob(prev => ({ ...prev, status: onChainStatus }));
+          
           throw new Error(
             `This bounty is ${onChainStatus.toLowerCase()} on-chain and cannot accept submissions. ` +
-            `The backend may be out of sync. Please refresh and try again.`
+            `The backend was out of sync. Please try refreshing the page.`
           );
         }
       } catch (statusError) {
         console.error('Error checking on-chain status:', statusError);
         throw new Error(
-          'Could not verify bounty status on blockchain. ' + 
+          'Could not verify bounty status on blockchain. ' +
           (statusError.message || 'Please ensure you are on the correct network.')
         );
       }
 
       // STEP 1: Upload to IPFS
       setLoadingMessage('Uploading files to IPFS...');
-      
+
       const formData = new FormData();
       files.forEach(({ file }) => {
         formData.append('files', file);
       });
       formData.append('hunter', walletState.address);
       formData.append('submissionNarrative', submissionNarrative);
-      
+
       const fileDescriptions = {};
       files.forEach(({ file, description }) => {
         fileDescriptions[file.name] = description;
@@ -210,10 +240,10 @@ function SubmitWork({ walletState }) {
 
     } catch (err) {
       console.error('Error submitting work:', err);
-      
+
       // Better error messages for common issues
       let errorMessage = err.message || 'Failed to submit work';
-      
+
       if (errorMessage.includes('insufficient funds') || errorMessage.includes('LINK')) {
         errorMessage = '💰 Insufficient LINK tokens. Get testnet LINK from: https://faucets.chain.link/base-sepolia';
       } else if (errorMessage.includes('user rejected') || errorMessage.includes('User denied')) {
@@ -518,8 +548,8 @@ function SubmitWork({ walletState }) {
                     <code className="inline-code">{submissionResult.blockchainData.evalWallet}</code>
                   </p>
                   <p>
-                    <strong>Transaction:</strong>
-                    <a 
+                    <strong>Transaction:</strong>{' '}
+                   <a 
                       href={`https://sepolia.basescan.org/tx/${submissionResult.blockchainData.txHash}`}
                       target="_blank"
                       rel="noopener noreferrer"

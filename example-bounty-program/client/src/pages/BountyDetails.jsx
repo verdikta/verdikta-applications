@@ -85,10 +85,10 @@ function BountyDetails({ walletState }) {
     (async () => {
       if (!job || resolvingId) return;
 
-      // 1) Backend already has it
-      if (job?.bountyId != null) {
+      // 1) Backend already has it (check BOTH bountyId and onChainId)
+      if (job?.bountyId != null || job?.onChainId != null) {
         if (!cancelled) {
-          setResolvedBountyId(Number(job.bountyId));
+          setResolvedBountyId(Number(job?.onChainId ?? job?.bountyId));
           setResolveNote('');
         }
         return;
@@ -145,12 +145,18 @@ function BountyDetails({ walletState }) {
     })();
 
     return () => { cancelled = true; };
-  }, [job, resolvingId]);
+  }, [job]);
 
   const getOnChainBountyId = () => {
+    // First check onChainId (new standard)
+    if (job?.onChainId != null && !Number.isNaN(Number(job.onChainId))) {
+      return Number(job.onChainId);
+    }
+    // Then check bountyId (legacy field)
     if (job?.bountyId != null && !Number.isNaN(Number(job.bountyId))) {
       return Number(job.bountyId);
     }
+    // Finally check resolved ID
     if (resolvedBountyId != null && !Number.isNaN(Number(resolvedBountyId))) {
       return Number(resolvedBountyId);
     }
@@ -275,6 +281,7 @@ function BountyDetails({ walletState }) {
   console.log('🔍 Bounty Status Check:', {
     urlParam_jobId: bountyId,
     backend_onChain_bountyId: job?.bountyId,
+    backend_onChainId: job?.onChainId,
     resolvedBountyId,
     status,
     isOpen,

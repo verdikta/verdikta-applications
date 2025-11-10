@@ -15,6 +15,7 @@ function BountyDetails({ walletState }) {
   const [error, setError] = useState(null);
   const [closingBounty, setClosingBounty] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
+  const [finalizingSubmissions, setFinalizingSubmissions] = useState(new Set());
 
   // Resolution state for on-chain bountyId
   const [resolvedBountyId, setResolvedBountyId] = useState(null);
@@ -164,6 +165,57 @@ function BountyDetails({ walletState }) {
   };
 
   // -------- Actions --------
+  const handleFinalizeSubmission = async (submissionId) => {
+    if (!walletState.isConnected) {
+      alert('Please connect your wallet first');
+      return;
+    }
+
+    const onChainId = getOnChainBountyId();
+    if (onChainId == null) {
+      alert('Unable to determine the on-chain bounty ID yet. Please wait for sync or refresh.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Finalize submission #${submissionId}?\n\n` +
+      'This will mark the submission as timed-out/failed if the oracle evaluation is not ready.\n\n' +
+      'This action requires a blockchain transaction that you must sign.'
+    );
+    if (!confirmed) return;
+
+    try {
+      setFinalizingSubmissions(prev => new Set(prev).add(submissionId));
+      setError(null);
+
+      const contractService = getContractService();
+      if (!contractService.isConnected()) await contractService.connect();
+
+      console.log('📤 Finalizing submission:', { bountyId: onChainId, submissionId });
+      const result = await contractService.finalizeSubmission(onChainId, submissionId);
+
+      alert(
+        `✅ Submission #${submissionId} finalized!\n\n` +
+        `Transaction: ${result.txHash}\n` +
+        `Block: ${result.blockNumber}\n\n` +
+        'The submission status has been updated. Refresh to see the changes.'
+      );
+
+      setRetryCount(0);
+      await loadJobDetails();
+    } catch (err) {
+      console.error('❌ Error finalizing submission:', err);
+      setError(err.message || 'Failed to finalize submission');
+      alert(`❌ Failed to finalize submission #${submissionId}:\n\n${err.message}`);
+    } finally {
+      setFinalizingSubmissions(prev => {
+        const next = new Set(prev);
+        next.delete(submissionId);
+        return next;
+      });
+    }
+  };
+
   const handleCloseExpiredBounty = async () => {
     if (!walletState.isConnected) {
       alert('Please connect your wallet first');
@@ -275,6 +327,11 @@ function BountyDetails({ walletState }) {
     s.status === 'PendingVerdikta' || s.status === 'PENDING_EVALUATION'
   );
 
+  // Get list of pending submissions
+  const pendingSubmissions = submissions.filter(s =>
+    s.status === 'PendingVerdikta' || s.status === 'PENDING_EVALUATION'
+  );
+
   const onChainIdForButtons = getOnChainBountyId();
   const disableActionsForMissingId = onChainIdForButtons == null;
 
@@ -311,13 +368,43 @@ function BountyDetails({ walletState }) {
             </div>
           )}
 
+          {/* Show pending submissions with finalize buttons */}
+          {hasActiveSubmissions && walletState.isConnected && (
+            <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
+              <h4 style={{ margin: '0 0 0.75rem 0' }}>⚠️ Stuck Evaluations</h4>
+              <p style={{ marginBottom: '0.75rem' }}>
+                The following submissions are stuck in evaluation. Finalize them to close the bounty:
+              </p>
+              {pendingSubmissions.map(s => (
+                <div key={s.submissionId} style={{ marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <button
+                    onClick={() => handleFinalizeSubmission(s.submissionId)}
+                    disabled={finalizingSubmissions.has(s.submissionId) || disableActionsForMissingId}
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.9rem', padding: '0.5rem 1rem' }}
+                  >
+                    {finalizingSubmissions.has(s.submissionId) 
+                      ? '⏳ Finalizing...' 
+                      : `Finalize Submission #${s.submissionId}`}
+                  </button>
+                  <span style={{ fontSize: '0.85rem', color: '#666' }}>
+                    by {s.hunter?.substring(0, 10)}...
+                  </span>
+                </div>
+              ))}
+              <p style={{ marginTop: '0.75rem', fontSize: '0.85rem', color: '#666' }}>
+                💡 These submissions will be marked as failed/timed-out, allowing you to close the bounty.
+              </p>
+            </div>
+          )}
+
           {!walletState.isConnected ? (
             <div className="alert alert-info">
-              <strong>Connect your wallet</strong> to close this bounty and return funds to the creator.
+              <strong>Connect your wallet</strong> to finalize submissions and close this bounty.
             </div>
           ) : hasActiveSubmissions ? (
-            <div className="alert alert-warning">
-              Active evaluations are in progress. Finalize them before closing.
+            <div className="alert alert-info" style={{ marginTop: '0.75rem' }}>
+              Finalize all pending submissions above before closing the bounty.
             </div>
           ) : (
             <>
@@ -439,7 +526,7 @@ function BountyDetails({ walletState }) {
             </div>
           )}
 
-          {/* EXPIRED: Show close action */}
+          {/* EXPIRED: Show close action with finalize buttons */}
           {isExpired && (
             <div className="expired-bounty-section" style={{ backgroundColor: '#fff3cd', border: '2px solid #ffc107', padding: '1.5rem', borderRadius: '8px', marginTop: '1rem' }}>
               <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
@@ -457,7 +544,33 @@ function BountyDetails({ walletState }) {
                 <div className="alert alert-info">
                   Connect your wallet to close this expired bounty and return funds to the creator.
                 </div>
-              ) : !hasActiveSubmissions ? (
+              ) : hasActiveSubmissions ? (
+                <>
+                  <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
+                    <h4 style={{ margin: '0 0 0.75rem 0' }}>⚠️ Stuck Evaluations</h4>
+                    <p style={{ marginBottom: '0.75rem' }}>
+                      Finalize these submissions to close the bounty:
+                    </p>
+                    {pendingSubmissions.map(s => (
+                      <div key={s.submissionId} style={{ marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <button
+                          onClick={() => handleFinalizeSubmission(s.submissionId)}
+                          disabled={finalizingSubmissions.has(s.submissionId) || disableActionsForMissingId}
+                          className="btn btn-secondary"
+                          style={{ fontSize: '0.9rem', padding: '0.5rem 1rem' }}
+                        >
+                          {finalizingSubmissions.has(s.submissionId) 
+                            ? '⏳ Finalizing...' 
+                            : `Finalize Submission #${s.submissionId}`}
+                        </button>
+                        <span style={{ fontSize: '0.85rem', color: '#666' }}>
+                          by {s.hunter?.substring(0, 10)}...
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
                 <>
                   <button
                     onClick={handleCloseExpiredBounty}
@@ -474,8 +587,6 @@ function BountyDetails({ walletState }) {
                     </small>
                   )}
                 </>
-              ) : (
-                <div className="alert alert-info">Waiting for active submissions to be finalized...</div>
               )}
             </div>
           )}

@@ -288,10 +288,10 @@ class ContractService {
   }
 
   /**
-   * STEP 2: Approve LINK tokens to the BountyEscrow contract
-   * (NOT the EvaluationWallet - the contract does the transfer)
+   * STEP 2: Approve LINK tokens to the EvaluationWallet
+   * The EvaluationWallet needs approval because it calls transferFrom() on hunter's LINK
    *
-   * @param {string} evalWallet - Address of the EvaluationWallet (unused, kept for API compat)
+   * @param {string} evalWallet - Address of the EvaluationWallet to approve
    * @param {string} linkAmount - Amount of LINK in wei to approve
    * @returns {Promise<Object>} Transaction result
    */
@@ -305,14 +305,13 @@ class ContractService {
     ];
 
     try {
-      console.log('🔍 Approving LINK to BountyEscrow...', {
-        spender: this.contractAddress,
+      console.log('🔍 Approving LINK to EvaluationWallet...', {
+        spender: evalWallet,
         linkAmount,
         linkAddress: LINK_ADDRESS
       });
 
       const linkContract = new ethers.Contract(LINK_ADDRESS, LINK_ABI, this.signer);
-      // const tx = await linkContract.approve(this.contractAddress, linkAmount);
       const tx = await linkContract.approve(evalWallet, linkAmount);
 
       console.log('📤 LINK approval transaction sent:', tx.hash);
@@ -380,7 +379,57 @@ class ContractService {
         throw new Error('Submission not in Prepared state');
       }
       if (msg.includes('link transfer failed')) {
-        throw new Error('Failed to transfer LINK. Ensure you have approved sufficient LINK to the BountyEscrow contract.');
+        throw new Error('Failed to transfer LINK. Ensure you have approved sufficient LINK to the EvaluationWallet.');
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Finalize a timed-out or completed submission
+   * This reads results from Verdikta and updates submission status
+   * If evaluation timed out, it will attempt to finalize on Verdikta first
+   *
+   * @param {number} bountyId - The bounty ID
+   * @param {number} submissionId - The submission ID to finalize
+   * @returns {Promise<Object>} Transaction result
+   */
+  async finalizeSubmission(bountyId, submissionId) {
+    if (!this.contract) {
+      throw new Error('Contract not initialized. Call connect() first.');
+    }
+
+    try {
+      console.log('🔍 Finalizing submission...', { bountyId, submissionId });
+
+      const tx = await this.contract.finalizeSubmission(bountyId, submissionId);
+      console.log('📤 Transaction sent:', tx.hash);
+
+      const receipt = await tx.wait();
+      console.log('✅ Submission finalized:', receipt.hash);
+
+      return {
+        success: true,
+        txHash: receipt.hash,
+        blockNumber: receipt.blockNumber,
+        gasUsed: receipt.gasUsed.toString()
+      };
+
+    } catch (error) {
+      console.error('Error finalizing submission:', error);
+
+      if (error.code === 'ACTION_REJECTED') {
+        throw new Error('Transaction rejected by user');
+      }
+
+      const msg = (error?.message || '').toLowerCase();
+
+      if (msg.includes('not pending')) {
+        throw new Error('Submission is not in PendingVerdikta state');
+      }
+      if (msg.includes('verdikta not ready')) {
+        throw new Error('Verdikta evaluation not ready yet - wait longer or oracle may have failed');
       }
 
       throw error;
@@ -444,47 +493,90 @@ class ContractService {
     }
   }
 
-/**
- * Get the effective status of a bounty (OPEN, EXPIRED, AWARDED, or CLOSED)
- *
- * @param {number} bountyId - The bounty ID to check
- * @returns {Promise<string>} The bounty status
- */
-async getBountyStatus(bountyId) {
-  if (!this.provider) {
-    throw new Error('Provider not initialized. Call connect() first.');
-  }
-
-  try {
-    const viewAbi = [
-      "function getEffectiveBountyStatus(uint256) view returns (string)"
-    ];
-
-    const contract = new ethers.Contract(
-      this.contractAddress,
-      viewAbi,
-      this.provider
-    );
-
-    const status = await contract.getEffectiveBountyStatus(bountyId);
-
-    console.log(`Bounty #${bountyId} effective status:`, status);
-
-    return status; // Returns: "OPEN", "EXPIRED", "AWARDED", or "CLOSED"
-
-  } catch (error) {
-    console.error('Error getting bounty status:', error);
-
-    const msg = (error?.message || '').toLowerCase();
-    if (msg.includes('bad bountyid')) {
-      throw new Error(`Bounty #${bountyId} does not exist on-chain`);
+  /**
+   * Get the effective status of a bounty (OPEN, EXPIRED, AWARDED, or CLOSED)
+   *
+   * @param {number} bountyId - The bounty ID to check
+   * @returns {Promise<string>} The bounty status
+   */
+  async getBountyStatus(bountyId) {
+    if (!this.provider) {
+      throw new Error('Provider not initialized. Call connect() first.');
     }
 
-    throw error;
+    try {
+      const viewAbi = [
+        "function getEffectiveBountyStatus(uint256) view returns (string)"
+      ];
+
+      const contract = new ethers.Contract(
+        this.contractAddress,
+        viewAbi,
+        this.provider
+      );
+
+      const status = await contract.getEffectiveBountyStatus(bountyId);
+
+      console.log(`Bounty #${bountyId} effective status:`, status);
+
+      return status; // Returns: "OPEN", "EXPIRED", "AWARDED", or "CLOSED"
+
+    } catch (error) {
+      console.error('Error getting bounty status:', error);
+
+      const msg = (error?.message || '').toLowerCase();
+      if (msg.includes('bad bountyid')) {
+        throw new Error(`Bounty #${bountyId} does not exist on-chain`);
+      }
+
+      throw error;
+    }
   }
-}
 
+  /**
+   * Get submission details from contract
+   * 
+   * @param {number} bountyId - The bounty ID
+   * @param {number} submissionId - The submission ID
+   * @returns {Promise<Object>} Submission details including status
+   */
+  async getSubmission(bountyId, submissionId) {
+    if (!this.provider) {
+      throw new Error('Provider not initialized. Call connect() first.');
+    }
 
+    try {
+      const viewAbi = [
+        "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string deliverableCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))"
+      ];
+
+      const contract = new ethers.Contract(
+        this.contractAddress,
+        viewAbi,
+        this.provider
+      );
+
+      const sub = await contract.getSubmission(bountyId, submissionId);
+      
+      // Status enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
+      const statusMap = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'];
+
+      return {
+        hunter: sub.hunter,
+        deliverableCid: sub.deliverableCid,
+        evalWallet: sub.evalWallet,
+        status: statusMap[sub.status] || 'UNKNOWN',
+        statusCode: sub.status,
+        submittedAt: Number(sub.submittedAt),
+        acceptance: Number(sub.acceptance),
+        rejection: Number(sub.rejection)
+      };
+
+    } catch (error) {
+      console.error('Error getting submission:', error);
+      throw error;
+    }
+  }
 
   /**
    * Check if user is connected

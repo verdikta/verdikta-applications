@@ -201,7 +201,7 @@ class ContractService {
 
   /**
    * STEP 1: Prepare a submission (deploys EvaluationWallet)
-   * 
+   *
    * @param {number} bountyId - The bounty ID
    * @param {string} deliverableCid - IPFS CID of the updated Primary archive
    * @param {string} addendum - Additional context for AI evaluators
@@ -211,9 +211,9 @@ class ContractService {
    * @param {string} maxFeeBasedScaling - Max fee-based scaling in wei
    * @returns {Promise<Object>} { submissionId, evalWallet, linkMaxBudget }
    */
-  async prepareSubmission(bountyId, deliverableCid, addendum = "", alpha = 75, 
+  async prepareSubmission(bountyId, deliverableCid, addendum = "", alpha = 75,
                           maxOracleFee = "50000000000000000",
-                          estimatedBaseCost = "30000000000000000", 
+                          estimatedBaseCost = "30000000000000000",
                           maxFeeBasedScaling = "20000000000000000") {
     if (!this.contract) {
       throw new Error('Contract not initialized. Call connect() first.');
@@ -288,9 +288,10 @@ class ContractService {
   }
 
   /**
-   * STEP 2: Approve LINK tokens to the EvaluationWallet
-   * 
-   * @param {string} evalWallet - Address of the EvaluationWallet
+   * STEP 2: Approve LINK tokens to the BountyEscrow contract
+   * (NOT the EvaluationWallet - the contract does the transfer)
+   *
+   * @param {string} evalWallet - Address of the EvaluationWallet (unused, kept for API compat)
    * @param {string} linkAmount - Amount of LINK in wei to approve
    * @returns {Promise<Object>} Transaction result
    */
@@ -304,13 +305,14 @@ class ContractService {
     ];
 
     try {
-      console.log('🔍 Approving LINK...', {
-        evalWallet,
+      console.log('🔍 Approving LINK to BountyEscrow...', {
+        spender: this.contractAddress,
         linkAmount,
         linkAddress: LINK_ADDRESS
       });
 
       const linkContract = new ethers.Contract(LINK_ADDRESS, LINK_ABI, this.signer);
+      // const tx = await linkContract.approve(this.contractAddress, linkAmount);
       const tx = await linkContract.approve(evalWallet, linkAmount);
 
       console.log('📤 LINK approval transaction sent:', tx.hash);
@@ -337,7 +339,7 @@ class ContractService {
 
   /**
    * STEP 3: Start the prepared submission (triggers Verdikta evaluation)
-   * 
+   *
    * @param {number} bountyId - The bounty ID
    * @param {number} submissionId - The submission ID from prepareSubmission
    * @returns {Promise<Object>} Transaction result
@@ -378,7 +380,7 @@ class ContractService {
         throw new Error('Submission not in Prepared state');
       }
       if (msg.includes('link transfer failed')) {
-        throw new Error('Failed to transfer LINK. Ensure you have approved sufficient LINK to the EvaluationWallet.');
+        throw new Error('Failed to transfer LINK. Ensure you have approved sufficient LINK to the BountyEscrow contract.');
       }
 
       throw error;
@@ -444,7 +446,7 @@ class ContractService {
 
 /**
  * Get the effective status of a bounty (OPEN, EXPIRED, AWARDED, or CLOSED)
- * 
+ *
  * @param {number} bountyId - The bounty ID to check
  * @returns {Promise<string>} The bounty status
  */
@@ -465,19 +467,19 @@ async getBountyStatus(bountyId) {
     );
 
     const status = await contract.getEffectiveBountyStatus(bountyId);
-    
+
     console.log(`Bounty #${bountyId} effective status:`, status);
-    
+
     return status; // Returns: "OPEN", "EXPIRED", "AWARDED", or "CLOSED"
 
   } catch (error) {
     console.error('Error getting bounty status:', error);
-    
+
     const msg = (error?.message || '').toLowerCase();
     if (msg.includes('bad bountyid')) {
       throw new Error(`Bounty #${bountyId} does not exist on-chain`);
     }
-    
+
     throw error;
   }
 }

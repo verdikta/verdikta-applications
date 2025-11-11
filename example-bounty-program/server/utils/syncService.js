@@ -79,7 +79,7 @@ class SyncService {
 
       for (const bounty of onChainBounties) {
         const existingJob = storage.jobs.find(j =>
-          j.onChainId === bounty.jobId 
+          j.onChainId === bounty.jobId
         );
 
         if (!existingJob) {
@@ -133,10 +133,88 @@ class SyncService {
   }
 
   /**
+   * Sync submissions for a bounty from blockchain
+   * Merges on-chain status with existing backend data
+   */
+  async syncSubmissions(bountyId, submissionCount, existingSubmissions = []) {
+    const contractService = getContractService();
+    const submissions = [];
+
+    try {
+      // Fetch all submissions from blockchain
+      const onChainSubmissions = await contractService.getSubmissions(bountyId);
+      
+      for (const sub of onChainSubmissions) {
+        // Find existing submission data (has hunterCid, files, etc)
+        const existing = existingSubmissions.find(s => s.submissionId === sub.submissionId);
+        
+        // Map contract status to backend status
+        let backendStatus;
+        switch (sub.status) {
+          case 'Prepared':
+            backendStatus = 'PREPARED';
+            break;
+          case 'PendingVerdikta':
+            backendStatus = 'PENDING_EVALUATION';
+            break;
+          case 'Failed':
+            backendStatus = 'REJECTED';
+            break;
+          case 'PassedPaid':
+            backendStatus = 'APPROVED';
+            break;
+          case 'PassedUnpaid':
+            backendStatus = 'APPROVED_UNPAID';
+            break;
+          default:
+            backendStatus = 'UNKNOWN';
+        }
+
+        // Merge: Keep backend fields, update status from blockchain
+        submissions.push({
+          ...(existing || {}), // Preserve hunterCid, files, updatedPrimaryCid, etc
+          submissionId: sub.submissionId,
+          hunter: sub.hunter,
+          deliverableCid: sub.deliverableCid,
+          evalWallet: sub.evalWallet,
+          verdiktaAggId: sub.verdiktaAggId,
+          status: backendStatus, // UPDATE the main status field
+          onChainStatus: sub.status, // Keep for reference
+          acceptance: sub.acceptance,
+          rejection: sub.rejection,
+          justificationCids: sub.justificationCids,
+          submittedAt: sub.submittedAt,
+          finalizedAt: sub.finalizedAt,
+          score: sub.acceptance > 0 ? sub.acceptance : null
+        });
+      }
+
+      logger.info('✅ Synced submission statuses', { 
+        bountyId, 
+        count: submissions.length,
+        statuses: submissions.map(s => `#${s.submissionId}:${s.status}`)
+      });
+      return submissions;
+
+    } catch (error) {
+      logger.error('Error syncing submissions', {
+        bountyId,
+        error: error.message
+      });
+      return existingSubmissions; // Return existing on error
+    }
+  }
+
+  /**
    * Add a new job from blockchain to local storage
    */
   async addJobFromBlockchain(bounty, storage) {
     logger.info('📥 Adding job from blockchain', { jobId: bounty.jobId });
+
+    // Sync submissions if any exist
+    const submissions = bounty.submissionCount > 0
+      ? await this.syncSubmissions(bounty.jobId, bounty.submissionCount, [])
+      : [];
 
     const job = {
       jobId: storage.nextId,
@@ -157,7 +235,7 @@ class SyncService {
       status: bounty.status, // Use effective status: OPEN, EXPIRED, AWARDED, or CLOSED
       createdAt: bounty.createdAt,
       submissionCount: bounty.submissionCount,
-      submissions: [], // Will be synced separately if needed
+      submissions: submissions, // Now properly synced from blockchain
       winner: bounty.winner,
       syncedFromBlockchain: true,
       lastSyncedAt: Math.floor(Date.now() / 1000)
@@ -176,7 +254,9 @@ class SyncService {
       jobId: existingJob.jobId,
       onChainId: bounty.jobId,
       oldStatus: existingJob.status,
-      newStatus: bounty.status
+      newStatus: bounty.status,
+      oldSubmissionCount: existingJob.submissionCount,
+      newSubmissionCount: bounty.submissionCount
     });
 
     // CRITICAL: Update ALL mutable fields from blockchain
@@ -185,6 +265,23 @@ class SyncService {
     existingJob.submissionCount = bounty.submissionCount;
     existingJob.winner = bounty.winner;
     existingJob.lastSyncedAt = Math.floor(Date.now() / 1000);
+
+    // CRITICAL: Sync submission statuses from blockchain
+    if (bounty.submissionCount > 0) {
+      const onChainSubmissions = await this.syncSubmissions(
+        bounty.jobId, 
+        bounty.submissionCount,
+        existingJob.submissions || [] // Pass existing submissions to merge
+      );
+      
+      // Merge with existing submissions, preferring blockchain data
+      existingJob.submissions = onChainSubmissions;
+      
+      logger.info('📝 Updated submission statuses', {
+        jobId: existingJob.jobId,
+        submissionCount: onChainSubmissions.length
+      });
+    }
 
     // Also update deadline-related fields that might have been missing
     if (bounty.submissionCloseTime) {
@@ -196,21 +293,48 @@ class SyncService {
    * Check if a job needs updating from blockchain
    */
   needsUpdate(localJob, chainJob) {
-    // Always update if status changed (this catches OPEN → EXPIRED → CLOSED transitions)
+    // Always update if status changed
     if (localJob.status !== chainJob.status) {
+      logger.info('Status changed', {
+        jobId: localJob.jobId,
+        old: localJob.status,
+        new: chainJob.status
+      });
       return true;
     }
-    
+
     // Update if submission count changed
     if (localJob.submissionCount !== chainJob.submissionCount) {
+      logger.info('Submission count changed', {
+        jobId: localJob.jobId,
+        old: localJob.submissionCount,
+        new: chainJob.submissionCount
+      });
       return true;
     }
-    
+
     // Update if winner changed
     if (localJob.winner !== chainJob.winner) {
+      logger.info('Winner changed', { jobId: localJob.jobId });
       return true;
     }
-    
+
+    // CRITICAL: Force update if submissions have wrong status
+    // Check if any submission has onChainStatus="Prepared" but status="PENDING_EVALUATION"
+    if (chainJob.submissionCount > 0 && localJob.submissions && localJob.submissions.length > 0) {
+      const hasWrongStatus = localJob.submissions.some(
+        sub => sub.onChainStatus === 'Prepared' && sub.status === 'PENDING_EVALUATION'
+      );
+
+      if (hasWrongStatus) {
+        logger.info('✅ Forcing submission status correction', { 
+          jobId: localJob.jobId,
+          reason: 'Found Prepared submissions marked as PENDING_EVALUATION'
+        });
+        return true;
+      }
+    }
+
     return false;
   }
 

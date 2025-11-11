@@ -31,6 +31,7 @@ const BOUNTY_ESCROW_ABI = [
   "function prepareSubmission(uint256 bountyId, string deliverableCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
+  "function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)",
   "function closeExpiredBounty(uint256 bountyId)",
   // NOTE: No read functions! Frontend reads from backend API for cached data
   // NOTE: No cancelBounty - only closeExpiredBounty after deadline passes
@@ -437,6 +438,55 @@ class ContractService {
   }
 
   /**
+   * Force-fail a submission that's been stuck in evaluation for >20 minutes
+   * Useful when Verdikta oracle fails or evaluation never starts
+   *
+   * @param {number} bountyId - The bounty ID
+   * @param {number} submissionId - The submission ID to fail
+   * @returns {Promise<Object>} Transaction result
+   */
+  async failTimedOutSubmission(bountyId, submissionId) {
+    if (!this.contract) {
+      throw new Error('Contract not initialized. Call connect() first.');
+    }
+
+    try {
+      console.log('⏱️ Failing timed-out submission...', { bountyId, submissionId });
+
+      const tx = await this.contract.failTimedOutSubmission(bountyId, submissionId);
+      console.log('📤 Transaction sent:', tx.hash);
+
+      const receipt = await tx.wait();
+      console.log('✅ Submission failed:', receipt.hash);
+
+      return {
+        success: true,
+        txHash: receipt.hash,
+        blockNumber: receipt.blockNumber,
+        gasUsed: receipt.gasUsed.toString()
+      };
+
+    } catch (error) {
+      console.error('Error failing timed-out submission:', error);
+
+      if (error.code === 'ACTION_REJECTED') {
+        throw new Error('Transaction rejected by user');
+      }
+
+      const msg = (error?.message || '').toLowerCase();
+
+      if (msg.includes('not pending')) {
+        throw new Error('Submission is not in PendingVerdikta state');
+      }
+      if (msg.includes('timeout not reached')) {
+        throw new Error('Must wait 20 minutes before force-failing submission');
+      }
+
+      throw error;
+    }
+  }
+
+  /**
    * Close an expired bounty and return funds to creator
    * Can be called by ANYONE after submission deadline passes
    *
@@ -565,6 +615,7 @@ class ContractService {
         hunter: sub.hunter,
         deliverableCid: sub.deliverableCid,
         evalWallet: sub.evalWallet,
+        verdiktaAggId: sub.verdiktaAggId,
         status: statusMap[sub.status] || 'UNKNOWN',
         statusCode: sub.status,
         submittedAt: Number(sub.submittedAt),

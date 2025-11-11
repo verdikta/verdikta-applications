@@ -349,6 +349,33 @@ contract BountyEscrow {
         _refundLeftoverLink(bountyId, submissionId);
     }
 
+    /// @notice Force-fail a submission that's been stuck in PendingVerdikta too long
+    /// @dev Can be called by anyone after 20 minutes timeout
+    /// @dev Useful for submissions where Verdikta evaluation never started or oracle failed
+    function failTimedOutSubmission(uint256 bountyId, uint256 submissionId) external {
+        _mustBounty(bountyId);
+        Submission storage s = _mustSubmission(bountyId, submissionId);
+        
+        require(s.status == SubmissionStatus.PendingVerdikta, "not pending");
+        require(block.timestamp >= s.submittedAt + 20 minutes, "timeout not reached");
+        
+        // Mark as failed
+        s.status = SubmissionStatus.Failed;
+        s.finalizedAt = block.timestamp;
+        
+        emit SubmissionFinalized(
+            bountyId, 
+            submissionId, 
+            false,  // passed = false
+            0,      // acceptance
+            0,      // rejection
+            "TIMED_OUT"
+        );
+        
+        // Refund any LINK left in the wallet
+        _refundLeftoverLink(bountyId, submissionId);
+    }
+
     // ------------- Views -------------
 
     function bountyCount() external view returns (uint256) { 

@@ -289,54 +289,44 @@ class SyncService {
     }
   }
 
-  /**
-   * Check if a job needs updating from blockchain
-   */
-  needsUpdate(localJob, chainJob) {
-    // Always update if status changed
-    if (localJob.status !== chainJob.status) {
-      logger.info('Status changed', {
-        jobId: localJob.jobId,
-        old: localJob.status,
-        new: chainJob.status
-      });
-      return true;
-    }
-
-    // Update if submission count changed
-    if (localJob.submissionCount !== chainJob.submissionCount) {
-      logger.info('Submission count changed', {
-        jobId: localJob.jobId,
-        old: localJob.submissionCount,
-        new: chainJob.submissionCount
-      });
-      return true;
-    }
-
-    // Update if winner changed
-    if (localJob.winner !== chainJob.winner) {
-      logger.info('Winner changed', { jobId: localJob.jobId });
-      return true;
-    }
-
-    // CRITICAL: Force update if submissions have wrong status
-    // Check if any submission has onChainStatus="Prepared" but status="PENDING_EVALUATION"
-    if (chainJob.submissionCount > 0 && localJob.submissions && localJob.submissions.length > 0) {
-      const hasWrongStatus = localJob.submissions.some(
-        sub => sub.onChainStatus === 'Prepared' && sub.status === 'PENDING_EVALUATION'
-      );
-
-      if (hasWrongStatus) {
-        logger.info('✅ Forcing submission status correction', { 
-          jobId: localJob.jobId,
-          reason: 'Found Prepared submissions marked as PENDING_EVALUATION'
-        });
-        return true;
-      }
-    }
-
-    return false;
+needsUpdate(localJob, chainJob) {
+  // Always update if status changed
+  if (localJob.status !== chainJob.status) {
+    logger.info('Status changed', {
+      jobId: localJob.jobId,
+      old: localJob.status,
+      new: chainJob.status
+    });
+    return true;
   }
+
+  // Update if submission count changed
+  if (localJob.submissionCount !== chainJob.submissionCount) {
+    logger.info('Submission count changed', {
+      jobId: localJob.jobId,
+      old: localJob.submissionCount,
+      new: chainJob.submissionCount
+    });
+    return true;
+  }
+
+  // Update if winner changed
+  if (localJob.winner !== chainJob.winner) {
+    logger.info('Winner changed', { jobId: localJob.jobId });
+    return true;
+  }
+
+  // CRITICAL: Always sync EXPIRED bounties with submissions
+  // Submissions may have timed out or been finalized
+  if (chainJob.status === 'EXPIRED' && chainJob.submissionCount > 0) {
+    logger.info('✅ Force syncing EXPIRED bounty with submissions', { 
+      jobId: localJob.jobId 
+    });
+    return true;
+  }
+
+  return false;
+}
 
   /**
    * Get sync status

@@ -16,6 +16,7 @@ function BountyDetails({ walletState }) {
   const [closingBounty, setClosingBounty] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const [finalizingSubmissions, setFinalizingSubmissions] = useState(new Set());
+  const [failingSubmissions, setFailingSubmissions] = useState(new Set());
 
   // Resolution state for on-chain bountyId
   const [resolvedBountyId, setResolvedBountyId] = useState(null);
@@ -164,6 +165,13 @@ function BountyDetails({ walletState }) {
     return null;
   };
 
+  // Helper function to calculate submission age in minutes
+  const getSubmissionAge = (submittedAt) => {
+    const now = Math.floor(Date.now() / 1000);
+    const ageMinutes = (now - submittedAt) / 60;
+    return ageMinutes;
+  };
+
   // -------- Actions --------
   const handleFinalizeSubmission = async (submissionId) => {
     if (!walletState.isConnected) {
@@ -179,7 +187,7 @@ function BountyDetails({ walletState }) {
 
     const confirmed = window.confirm(
       `Finalize submission #${submissionId}?\n\n` +
-      'This will mark the submission as timed-out/failed if the oracle evaluation is not ready.\n\n' +
+      'This will read the Verdikta evaluation results and update the submission status.\n\n' +
       'This action requires a blockchain transaction that you must sign.'
     );
     if (!confirmed) return;
@@ -209,6 +217,61 @@ function BountyDetails({ walletState }) {
       alert(`❌ Failed to finalize submission #${submissionId}:\n\n${err.message}`);
     } finally {
       setFinalizingSubmissions(prev => {
+        const next = new Set(prev);
+        next.delete(submissionId);
+        return next;
+      });
+    }
+  };
+
+  const handleFailTimedOutSubmission = async (submissionId) => {
+    if (!walletState.isConnected) {
+      alert('Please connect your wallet first');
+      return;
+    }
+
+    const onChainId = getOnChainBountyId();
+    if (onChainId == null) {
+      alert('Unable to determine the on-chain bounty ID yet. Please wait for sync or refresh.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Force-fail submission #${submissionId}?\n\n` +
+      'This submission has been stuck in evaluation for over 20 minutes.\n' +
+      'This action will:\n' +
+      '• Mark the submission as Failed (timeout)\n' +
+      '• Refund LINK tokens to the submitter\n' +
+      '• Allow the bounty to be closed\n\n' +
+      'This requires a blockchain transaction that you must sign.'
+    );
+    if (!confirmed) return;
+
+    try {
+      setFailingSubmissions(prev => new Set(prev).add(submissionId));
+      setError(null);
+
+      const contractService = getContractService();
+      if (!contractService.isConnected()) await contractService.connect();
+
+      console.log('⏱️ Failing timed-out submission:', { bountyId: onChainId, submissionId });
+      const result = await contractService.failTimedOutSubmission(onChainId, submissionId);
+
+      alert(
+        `✅ Submission #${submissionId} marked as Failed (timeout)!\n\n` +
+        `Transaction: ${result.txHash}\n` +
+        `Block: ${result.blockNumber}\n\n` +
+        'LINK tokens have been refunded. Refresh to see the changes.'
+      );
+
+      setRetryCount(0);
+      await loadJobDetails();
+    } catch (err) {
+      console.error('❌ Error failing timed-out submission:', err);
+      setError(err.message || 'Failed to mark submission as timed-out');
+      alert(`❌ Failed to timeout submission #${submissionId}:\n\n${err.message}`);
+    } finally {
+      setFailingSubmissions(prev => {
         const next = new Set(prev);
         next.delete(submissionId);
         return next;
@@ -368,32 +431,48 @@ function BountyDetails({ walletState }) {
             </div>
           )}
 
-          {/* Show pending submissions with finalize buttons */}
+          {/* Show pending submissions with finalize/timeout buttons */}
           {hasActiveSubmissions && walletState.isConnected && (
             <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
               <h4 style={{ margin: '0 0 0.75rem 0' }}>⚠️ Stuck Evaluations</h4>
               <p style={{ marginBottom: '0.75rem' }}>
-                The following submissions are stuck in evaluation. Finalize them to close the bounty:
+                The following submissions are stuck in evaluation:
               </p>
-              {pendingSubmissions.map(s => (
-                <div key={s.submissionId} style={{ marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <button
-                    onClick={() => handleFinalizeSubmission(s.submissionId)}
-                    disabled={finalizingSubmissions.has(s.submissionId) || disableActionsForMissingId}
-                    className="btn btn-secondary"
-                    style={{ fontSize: '0.9rem', padding: '0.5rem 1rem' }}
-                  >
-                    {finalizingSubmissions.has(s.submissionId) 
-                      ? '⏳ Finalizing...' 
-                      : `Finalize Submission #${s.submissionId}`}
-                  </button>
-                  <span style={{ fontSize: '0.85rem', color: '#666' }}>
-                    by {s.hunter?.substring(0, 10)}...
-                  </span>
-                </div>
-              ))}
+              {pendingSubmissions.map(s => {
+                const ageMinutes = getSubmissionAge(s.submittedAt);
+                const canTimeout = ageMinutes > 20;
+                const isFailing = failingSubmissions.has(s.submissionId);
+                
+                return (
+                  <div key={s.submissionId} style={{ marginBottom: '1rem', padding: '0.75rem', backgroundColor: '#fff', border: '1px solid #ddd', borderRadius: '4px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                      <span style={{ fontSize: '0.9rem', color: '#666' }}>
+                        Submission #{s.submissionId} by {s.hunter?.substring(0, 10)}...
+                      </span>
+                      <span style={{ fontSize: '0.85rem', color: '#888', marginLeft: 'auto' }}>
+                        {Math.floor(ageMinutes)} min elapsed
+                      </span>
+                    </div>
+                    
+                    {canTimeout ? (
+                      <button
+                        onClick={() => handleFailTimedOutSubmission(s.submissionId)}
+                        disabled={isFailing || disableActionsForMissingId}
+                        className="btn btn-warning"
+                        style={{ fontSize: '0.9rem', padding: '0.5rem 1rem', width: '100%' }}
+                      >
+                        {isFailing ? '⏳ Marking as Failed...' : `⏱️ Fail Timed-Out Submission (${Math.floor(ageMinutes)} min)`}
+                      </button>
+                    ) : (
+                      <div style={{ fontSize: '0.85rem', color: '#666' }}>
+                        ⏳ Evaluating... (timeout in {Math.ceil(20 - ageMinutes)} min)
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
               <p style={{ marginTop: '0.75rem', fontSize: '0.85rem', color: '#666' }}>
-                💡 These submissions will be marked as failed/timed-out, allowing you to close the bounty.
+                💡 Submissions stuck &gt;20 minutes can be marked as failed, allowing you to close the bounty.
               </p>
             </div>
           )}
@@ -526,7 +605,7 @@ function BountyDetails({ walletState }) {
             </div>
           )}
 
-          {/* EXPIRED: Show close action with finalize buttons */}
+          {/* EXPIRED: Show close action with finalize/timeout buttons */}
           {isExpired && (
             <div className="expired-bounty-section" style={{ backgroundColor: '#fff3cd', border: '2px solid #ffc107', padding: '1.5rem', borderRadius: '8px', marginTop: '1rem' }}>
               <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
@@ -549,25 +628,41 @@ function BountyDetails({ walletState }) {
                   <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
                     <h4 style={{ margin: '0 0 0.75rem 0' }}>⚠️ Stuck Evaluations</h4>
                     <p style={{ marginBottom: '0.75rem' }}>
-                      Finalize these submissions to close the bounty:
+                      Handle these submissions to close the bounty:
                     </p>
-                    {pendingSubmissions.map(s => (
-                      <div key={s.submissionId} style={{ marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <button
-                          onClick={() => handleFinalizeSubmission(s.submissionId)}
-                          disabled={finalizingSubmissions.has(s.submissionId) || disableActionsForMissingId}
-                          className="btn btn-secondary"
-                          style={{ fontSize: '0.9rem', padding: '0.5rem 1rem' }}
-                        >
-                          {finalizingSubmissions.has(s.submissionId) 
-                            ? '⏳ Finalizing...' 
-                            : `Finalize Submission #${s.submissionId}`}
-                        </button>
-                        <span style={{ fontSize: '0.85rem', color: '#666' }}>
-                          by {s.hunter?.substring(0, 10)}...
-                        </span>
-                      </div>
-                    ))}
+                    {pendingSubmissions.map(s => {
+                      const ageMinutes = getSubmissionAge(s.submittedAt);
+                      const canTimeout = ageMinutes > 20;
+                      const isFailing = failingSubmissions.has(s.submissionId);
+                      
+                      return (
+                        <div key={s.submissionId} style={{ marginBottom: '1rem', padding: '0.75rem', backgroundColor: '#fff', border: '1px solid #ddd', borderRadius: '4px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                            <span style={{ fontSize: '0.9rem', color: '#666' }}>
+                              Submission #{s.submissionId} by {s.hunter?.substring(0, 10)}...
+                            </span>
+                            <span style={{ fontSize: '0.85rem', color: '#888', marginLeft: 'auto' }}>
+                              {Math.floor(ageMinutes)} min elapsed
+                            </span>
+                          </div>
+                          
+                          {canTimeout ? (
+                            <button
+                              onClick={() => handleFailTimedOutSubmission(s.submissionId)}
+                              disabled={isFailing || disableActionsForMissingId}
+                              className="btn btn-warning"
+                              style={{ fontSize: '0.9rem', padding: '0.5rem 1rem', width: '100%' }}
+                            >
+                              {isFailing ? '⏳ Marking as Failed...' : `⏱️ Fail Timed-Out Submission`}
+                            </button>
+                          ) : (
+                            <div style={{ fontSize: '0.85rem', color: '#666' }}>
+                              ⏳ Evaluating... (timeout available in {Math.ceil(20 - ageMinutes)} min)
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </>
               ) : (
@@ -598,7 +693,16 @@ function BountyDetails({ walletState }) {
         {submissions.length > 0 ? (
           <div className="submissions-list">
             {submissions.map((submission) => (
-              <SubmissionCard key={submission.submissionId} submission={submission} />
+              <SubmissionCard 
+                key={submission.submissionId} 
+                submission={submission}
+                walletState={walletState}
+                onChainBountyId={onChainIdForButtons}
+                onFailTimeout={handleFailTimedOutSubmission}
+                isFailing={failingSubmissions.has(submission.submissionId)}
+                disableActions={disableActionsForMissingId}
+                getSubmissionAge={getSubmissionAge}
+              />
             ))}
           </div>
         ) : (
@@ -611,7 +715,11 @@ function BountyDetails({ walletState }) {
   );
 }
 
-function SubmissionCard({ submission }) {
+function SubmissionCard({ submission, walletState, onChainBountyId, onFailTimeout, isFailing, disableActions, getSubmissionAge }) {
+  const isPending = submission.status === 'PENDING_EVALUATION' || submission.status === 'PendingVerdikta';
+  const ageMinutes = isPending ? getSubmissionAge(submission.submittedAt) : 0;
+  const canTimeout = ageMinutes > 20;
+
   return (
     <div className="submission-card">
       <div className="submission-header">
@@ -622,6 +730,26 @@ function SubmissionCard({ submission }) {
       <div className="submission-meta">
         <span>Submitted: {new Date(submission.submittedAt * 1000).toLocaleString()}</span>
       </div>
+      
+      {/* Show timeout button for stuck submissions */}
+      {isPending && walletState.isConnected && (
+        <div style={{ marginTop: '0.75rem' }}>
+          {canTimeout ? (
+            <button
+              onClick={() => onFailTimeout(submission.submissionId)}
+              disabled={isFailing || disableActions}
+              className="btn btn-warning btn-sm"
+              style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', width: '100%' }}
+            >
+              {isFailing ? '⏳ Marking as Failed...' : `⏱️ Fail Timed-Out (${Math.floor(ageMinutes)} min)`}
+            </button>
+          ) : (
+            <div style={{ fontSize: '0.8rem', color: '#888', textAlign: 'center' }}>
+              ⏳ Evaluating... ({Math.floor(ageMinutes)} min, timeout in {Math.ceil(20 - ageMinutes)} min)
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

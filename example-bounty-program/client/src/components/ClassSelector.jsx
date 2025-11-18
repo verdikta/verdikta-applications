@@ -1,26 +1,26 @@
-// Class selection component with card-based UI
+// src/components/ClassSelector.jsx
 import { useState, useEffect } from 'react';
 import { classMapService } from '../services/classMapService';
 import './ClassSelector.css';
 
-function ClassSelector({ 
-  selectedClassId, 
-  onClassSelect, 
+function ClassSelector({
+  selectedClassId,
+  onClassSelect,
   isLoading: externalLoading,
   error: externalError
 }) {
   const [classes, setClasses] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [manualClassId, setManualClassId] = useState('');
 
   // Load available classes on component mount
   useEffect(() => {
     const loadClasses = async () => {
       setIsLoading(true);
       setError(null);
-      
+
       try {
-        // Get all classes
         const allClasses = await classMapService.getClasses();
         setClasses(allClasses);
       } catch (err) {
@@ -34,10 +34,19 @@ function ClassSelector({
     loadClasses();
   }, []);
 
-  // Handle class selection
+  // Handle class selection from cards
   const handleClassSelect = (classId) => {
     if (onClassSelect) {
       onClassSelect(classId);
+    }
+  };
+
+  // Handle manual class ID selection
+  const handleManualSelect = () => {
+    const classId = parseInt(manualClassId, 10);
+    if (!isNaN(classId) && classId > 0) {
+      onClassSelect(classId);
+      setManualClassId('');
     }
   };
 
@@ -66,7 +75,7 @@ function ClassSelector({
         <h3>🎯 Select AI Class</h3>
         <div className="error-state">
           <p>❌ Failed to load classes: {error || externalError}</p>
-          <button 
+          <button
             className="retry-button"
             onClick={() => window.location.reload()}
           >
@@ -83,6 +92,42 @@ function ClassSelector({
         <h3>🎯 Select AI Class</h3>
         <div className="current-selection">
           Currently Selected: <strong>Class {selectedClassId}</strong>
+        </div>
+      </div>
+
+      {/* Manual Class ID Entry */}
+      <div className="manual-entry-section">
+        <div className="manual-entry-form">
+          <label htmlFor="manual-class-id">Or enter custom class ID:</label>
+          <div className="manual-entry-inputs">
+            <input
+              type="number"
+              id="manual-class-id"
+              value={manualClassId}
+              onChange={(e) => setManualClassId(e.target.value)}
+              onKeyPress={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleManualSelect();
+                }
+              }}
+              placeholder="e.g., 3030"
+              min="1"
+              className="manual-class-input"
+            />
+            <button 
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handleManualSelect();
+              }}
+              className="btn btn-sm btn-secondary"
+              disabled={!manualClassId || isNaN(parseInt(manualClassId, 10))}
+            >
+              Use Class
+            </button>
+          </div>
         </div>
       </div>
 
@@ -106,10 +151,9 @@ function ClassCard({ classData, isSelected, onSelect }) {
   const [detailedInfo, setDetailedInfo] = useState(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
 
-  // Load detailed class information on hover/focus for better UX
   const loadDetails = async () => {
     if (detailedInfo || loadingDetails || classData.status !== 'ACTIVE') return;
-    
+
     setLoadingDetails(true);
     try {
       const details = await classMapService.getClass(classData.id);
@@ -121,26 +165,23 @@ function ClassCard({ classData, isSelected, onSelect }) {
     }
   };
 
-  // Get card CSS classes
   const getCardClasses = () => {
     const baseClass = 'class-card';
     const classes = [baseClass];
-    
+
     if (isSelected) classes.push('selected');
     if (classData.status === 'EMPTY') classes.push('empty');
     if (classData.status === 'DEPRECATED') classes.push('deprecated');
     if (classData.status !== 'ACTIVE') classes.push('disabled');
-    
+
     return classes.join(' ');
   };
 
-  // Handle click
   const handleClick = () => {
-    if (classData.status === 'EMPTY') return; // Don't allow selection of empty classes
+    if (classData.status === 'EMPTY') return;
     onSelect();
   };
 
-  // Get display stats
   const getDisplayStats = () => {
     if (classData.status === 'EMPTY') {
       return {
@@ -151,7 +192,6 @@ function ClassCard({ classData, isSelected, onSelect }) {
       };
     }
 
-    // Use detailed info if available
     if (detailedInfo && detailedInfo.limits) {
       return {
         models: detailedInfo.models?.length || 0,
@@ -172,7 +212,7 @@ function ClassCard({ classData, isSelected, onSelect }) {
   const stats = getDisplayStats();
 
   return (
-    <div 
+    <div
       className={getCardClasses()}
       onClick={handleClick}
       onMouseEnter={loadDetails}
@@ -182,14 +222,13 @@ function ClassCard({ classData, isSelected, onSelect }) {
       aria-pressed={isSelected}
       aria-disabled={classData.status === 'EMPTY'}
       title={
-        classData.status === 'EMPTY' 
+        classData.status === 'EMPTY'
           ? 'This class has no available models'
           : classData.status === 'DEPRECATED'
             ? 'This class is deprecated but still functional'
             : `Select ${classData.name}`
       }
     >
-      {/* Card Header */}
       <div className="card-header">
         <div className="class-id">Class {classData.id}</div>
         <div className={`status-badge ${classData.status.toLowerCase()}`}>
@@ -197,12 +236,10 @@ function ClassCard({ classData, isSelected, onSelect }) {
         </div>
       </div>
 
-      {/* Card Content */}
       <div className="card-content">
         <div className="class-name">{classData.name}</div>
       </div>
 
-      {/* Card Stats */}
       <div className="card-stats">
         <div className="stat">
           <span className="stat-label">Models:</span>
@@ -222,14 +259,12 @@ function ClassCard({ classData, isSelected, onSelect }) {
         </div>
       </div>
 
-      {/* Selection Indicator */}
       {isSelected && (
         <div className="selection-indicator">
           ✓ SELECTED
         </div>
       )}
 
-      {/* Loading Overlay for Details */}
       {loadingDetails && (
         <div className="loading-overlay">
           <div className="loading-spinner"></div>
@@ -240,5 +275,4 @@ function ClassCard({ classData, isSelected, onSelect }) {
 }
 
 export default ClassSelector;
-
 

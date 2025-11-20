@@ -190,7 +190,7 @@ function CreateBounty({ walletState }) {
   // ---------- class selection ----------
   const handleClassSelect = (classId) => {
     setSelectedClassId(classId);
-    setJuryNodes([]); // Clear jury nodes when class changes
+    // setJuryNodes([]); // Clear jury nodes when class changes
   };
 
   // ---------- templates ----------
@@ -691,7 +691,7 @@ function CreateBounty({ walletState }) {
 
             <div className="form-group">
               <label>Verdikta Class</label>
-              <ClassSelector selectedClassId={selectedClassId} onSelectClass={handleClassSelect} />
+              <ClassSelector selectedClassId={selectedClassId} onClassSelect={handleClassSelect} />
             </div>
 
             {modelError && (

@@ -34,10 +34,14 @@ function ClassSelector({
     loadClasses();
   }, []);
 
+  // Check if selected class is in the list of available classes
+  const isCustomClass = selectedClassId && !classes.some(cls => cls.id === selectedClassId);
+
   // Handle class selection from cards
   const handleClassSelect = (classId) => {
     if (onClassSelect) {
       onClassSelect(classId);
+      setManualClassId(''); // Clear manual input when selecting from cards
     }
   };
 
@@ -46,7 +50,7 @@ function ClassSelector({
     const classId = parseInt(manualClassId, 10);
     if (!isNaN(classId) && classId > 0) {
       onClassSelect(classId);
-      setManualClassId('');
+      // Don't clear manual input - keep it visible for feedback
     }
   };
 
@@ -90,15 +94,16 @@ function ClassSelector({
     <div className="class-selector">
       <div className="class-selector-header">
         <h3>🎯 Select AI Class</h3>
-        <div className="current-selection">
+        <div className={`current-selection ${isCustomClass ? 'custom' : ''}`}>
           Currently Selected: <strong>Class {selectedClassId}</strong>
+          {isCustomClass && <span className="custom-badge">Custom</span>}
         </div>
       </div>
 
       {/* Manual Class ID Entry */}
-      <div className="manual-entry-section">
+      <div className={`manual-entry-section ${isCustomClass ? 'active' : ''}`}>
         <div className="manual-entry-form">
-          <label htmlFor="manual-class-id">Or enter custom class ID:</label>
+          <label htmlFor="manual-class-id">Enter custom class ID:</label>
           <div className="manual-entry-inputs">
             <input
               type="number"
@@ -111,9 +116,9 @@ function ClassSelector({
                   handleManualSelect();
                 }
               }}
-              placeholder="e.g., 3030"
+              placeholder="e.g., 717, 3030"
               min="1"
-              className="manual-class-input"
+              className={`manual-class-input ${isCustomClass && parseInt(manualClassId, 10) === selectedClassId ? 'selected' : ''}`}
             />
             <button 
               type="button"
@@ -128,6 +133,11 @@ function ClassSelector({
               Use Class
             </button>
           </div>
+          {isCustomClass && (
+            <small className="helper-text success">
+              ✓ Using custom class {selectedClassId}
+            </small>
+          )}
         </div>
       </div>
 
@@ -137,7 +147,7 @@ function ClassSelector({
           <ClassCard
             key={cls.id}
             classData={cls}
-            isSelected={selectedClassId === cls.id}
+            isSelected={selectedClassId === cls.id && !isCustomClass}
             onSelect={() => handleClassSelect(cls.id)}
           />
         ))}

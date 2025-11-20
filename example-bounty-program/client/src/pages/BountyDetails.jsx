@@ -442,7 +442,7 @@ function BountyDetails({ walletState }) {
                 const ageMinutes = getSubmissionAge(s.submittedAt);
                 const canTimeout = ageMinutes > 20;
                 const isFailing = failingSubmissions.has(s.submissionId);
-                
+
                 return (
                   <div key={s.submissionId} style={{ marginBottom: '1rem', padding: '0.75rem', backgroundColor: '#fff', border: '1px solid #ddd', borderRadius: '4px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
@@ -453,7 +453,7 @@ function BountyDetails({ walletState }) {
                         {Math.floor(ageMinutes)} min elapsed
                       </span>
                     </div>
-                    
+
                     {canTimeout ? (
                       <button
                         onClick={() => handleFailTimedOutSubmission(s.submissionId)}
@@ -532,6 +532,10 @@ function BountyDetails({ walletState }) {
           <div className="stat">
             <span className="label">Threshold</span>
             <span className="value">{job?.threshold ?? '...'}%</span>
+          </div>
+          <div className="stat">
+            <span className="label">Class</span>
+            <span className="value">{job?.classId ?? '...'}</span>
           </div>
           <div className="stat">
             <span className="label">Time Remaining</span>
@@ -634,7 +638,7 @@ function BountyDetails({ walletState }) {
                       const ageMinutes = getSubmissionAge(s.submittedAt);
                       const canTimeout = ageMinutes > 20;
                       const isFailing = failingSubmissions.has(s.submissionId);
-                      
+
                       return (
                         <div key={s.submissionId} style={{ marginBottom: '1rem', padding: '0.75rem', backgroundColor: '#fff', border: '1px solid #ddd', borderRadius: '4px' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
@@ -645,7 +649,7 @@ function BountyDetails({ walletState }) {
                               {Math.floor(ageMinutes)} min elapsed
                             </span>
                           </div>
-                          
+
                           {canTimeout ? (
                             <button
                               onClick={() => handleFailTimedOutSubmission(s.submissionId)}
@@ -693,8 +697,8 @@ function BountyDetails({ walletState }) {
         {submissions.length > 0 ? (
           <div className="submissions-list">
             {submissions.map((submission) => (
-              <SubmissionCard 
-                key={submission.submissionId} 
+              <SubmissionCard
+                key={submission.submissionId}
                 submission={submission}
                 walletState={walletState}
                 onChainBountyId={onChainIdForButtons}
@@ -730,7 +734,7 @@ function SubmissionCard({ submission, walletState, onChainBountyId, onFailTimeou
       <div className="submission-meta">
         <span>Submitted: {new Date(submission.submittedAt * 1000).toLocaleString()}</span>
       </div>
-      
+
       {/* Show timeout button for stuck submissions */}
       {isPending && walletState.isConnected && (
         <div style={{ marginTop: '0.75rem' }}>

@@ -110,6 +110,12 @@ function CreateBounty({ walletState }) {
 
   // Load models when class changes
   useEffect(() => {
+    // Don't reload models if jury nodes are already configured - keep existing configuration
+    if (juryNodes.length > 0) {
+      console.log('Skipping model reload - keeping existing jury configuration');
+      return;
+    }
+
     const loadModels = async () => {
       setIsLoadingModels(true);
       setModelError(null);
@@ -190,7 +196,7 @@ function CreateBounty({ walletState }) {
   // ---------- class selection ----------
   const handleClassSelect = (classId) => {
     setSelectedClassId(classId);
-    // setJuryNodes([]); // Clear jury nodes when class changes
+    // Don't clear jury nodes - keep the configuration
   };
 
   // ---------- templates ----------

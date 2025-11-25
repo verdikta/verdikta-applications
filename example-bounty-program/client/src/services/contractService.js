@@ -25,10 +25,11 @@ const LINK_ADDRESS = "0xE4aB69C077896252FAFBD49EFD26B5D171A32410";
 // BountyEscrow ABI - only the functions we need to call
 const BOUNTY_ESCROW_ABI = [
   "event BountyCreated(uint256 indexed bountyId, address indexed creator, string rubricCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
-  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string deliverableCid, uint256 linkMaxBudget)",
+  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)",
 
   "function createBounty(string rubricCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline) payable returns (uint256)",
-  "function prepareSubmission(uint256 bountyId, string deliverableCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
+  // prepareSubmission takes evaluationCid (evaluation package) and hunterCid (work product)
+  "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
   "function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)",
@@ -204,7 +205,8 @@ class ContractService {
    * STEP 1: Prepare a submission (deploys EvaluationWallet)
    *
    * @param {number} bountyId - The bounty ID
-   * @param {string} deliverableCid - IPFS CID of the updated Primary archive
+   * @param {string} evaluationCid - IPFS CID of the evaluation package (contains jury config, rubric ref, instructions)
+   * @param {string} hunterCid - IPFS CID of the hunter's work product archive (bCID)
    * @param {string} addendum - Additional context for AI evaluators
    * @param {number} alpha - Reputation weight (0-100, default 75)
    * @param {string} maxOracleFee - Max fee per oracle in wei (e.g. "50000000000000000" = 0.05 LINK)
@@ -212,7 +214,7 @@ class ContractService {
    * @param {string} maxFeeBasedScaling - Max fee-based scaling in wei
    * @returns {Promise<Object>} { submissionId, evalWallet, linkMaxBudget }
    */
-  async prepareSubmission(bountyId, deliverableCid, addendum = "", alpha = 75,
+  async prepareSubmission(bountyId, evaluationCid, hunterCid, addendum = "", alpha = 75,
                           maxOracleFee = "50000000000000000",
                           estimatedBaseCost = "30000000000000000",
                           maxFeeBasedScaling = "20000000000000000") {
@@ -223,7 +225,8 @@ class ContractService {
     try {
       console.log('🔍 Preparing submission...', {
         bountyId,
-        deliverableCid,
+        evaluationCid,
+        hunterCid,
         addendum: addendum.substring(0, 50) + '...',
         alpha,
         maxOracleFee
@@ -231,7 +234,8 @@ class ContractService {
 
       const tx = await this.contract.prepareSubmission(
         bountyId,
-        deliverableCid,
+        evaluationCid,
+        hunterCid,
         addendum,
         alpha,
         maxOracleFee,
@@ -597,7 +601,7 @@ class ContractService {
 
     try {
       const viewAbi = [
-        "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string deliverableCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))"
+        "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))"
       ];
 
       const contract = new ethers.Contract(
@@ -613,7 +617,8 @@ class ContractService {
 
       return {
         hunter: sub.hunter,
-        deliverableCid: sub.deliverableCid,
+        evaluationCid: sub.evaluationCid,
+        hunterCid: sub.hunterCid,
         evalWallet: sub.evalWallet,
         verdiktaAggId: sub.verdiktaAggId,
         status: statusMap[sub.status] || 'UNKNOWN',

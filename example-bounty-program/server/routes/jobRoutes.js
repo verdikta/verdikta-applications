@@ -476,6 +476,9 @@ router.post('/:jobId/submit', async (req, res) => {
       );
     }
 
+    // Create the evaluation archive (Primary CID)
+    // Note: The hunterCid is NOT embedded in the archive - it's passed separately to Verdikta
+    // The bCIDs field contains only a description of what the hunter CID represents
     const updatedPrimaryArchive = await archiveGenerator.createPrimaryCIDArchive({
       rubricCid: job.rubricCid,
       jobTitle: job.title,
@@ -483,8 +486,7 @@ router.post('/:jobId/submit', async (req, res) => {
       workProductType: job.workProductType,
       classId: job.classId,
       juryNodes: job.juryNodes,
-      iterations: job.iterations,
-      hunterSubmissionCid: hunterCid
+      iterations: job.iterations
     });
 
     let updatedPrimaryCid;

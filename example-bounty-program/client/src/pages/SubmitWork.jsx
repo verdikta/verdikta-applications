@@ -211,14 +211,17 @@ function SubmitWork({ walletState }) {
       const response = await apiService.submitWorkMultiple(bountyId, formData);
       console.log('✅ IPFS upload complete:', response);
 
-      // Get the updated Primary CID
-      const { updatedPrimaryCid } = response.submission;
+      // Get the CIDs from the response:
+      // - updatedPrimaryCid: Evaluation package (contains jury config, rubric reference, instructions)
+      // - hunterCid: Hunter's work product archive (bCID containing the actual submission)
+      const { updatedPrimaryCid: evaluationCid, hunterCid } = response.submission;
 
       // STEP 2: Prepare submission on-chain (deploys EvaluationWallet)
       setLoadingMessage('Preparing submission on blockchain...');
       const { submissionId, evalWallet, linkMaxBudget } = await contractService.prepareSubmission(
-        onChainId,  // Use on-chain ID, not URL parameter
-        updatedPrimaryCid,  // deliverableCid
+        onChainId,           // Use on-chain ID, not URL parameter
+        evaluationCid,       // Evaluation package CID
+        hunterCid,           // Hunter's work product archive (bCID)
         submissionNarrative || "",  // addendum
         75,  // alpha (reputation weight, 0-100)
         "50000000000000000",  // maxOracleFee (0.05 LINK)

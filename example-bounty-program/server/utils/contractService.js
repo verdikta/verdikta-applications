@@ -14,7 +14,7 @@ const BOUNTY_ESCROW_ABI = [
   "function isAcceptingSubmissions(uint256 bountyId) view returns (bool)",
   "function canBeClosed(uint256 bountyId) view returns (bool)",
   "function submissionCount(uint256 bountyId) view returns (uint256)",
-  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string deliverableCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))"
+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))"
 ];
 
 class ContractService {
@@ -125,7 +125,8 @@ class ContractService {
           submissions.push({
             submissionId: i,
             hunter: sub.hunter,
-            deliverableCid: sub.deliverableCid,
+            evaluationCid: sub.evaluationCid,
+            hunterCid: sub.hunterCid,
             evalWallet: sub.evalWallet,
             verdiktaAggId: sub.verdiktaAggId,
             status: statusMap[sub.status] || 'UNKNOWN',

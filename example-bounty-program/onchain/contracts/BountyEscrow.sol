@@ -39,7 +39,8 @@ contract BountyEscrow {
 
     struct Submission {
         address hunter;
-        string  deliverableCid;
+        string  evaluationCid;      // Evaluation package CID (contains jury config, rubric ref, instructions)
+        string  hunterCid;          // Hunter's work product archive CID (bCID)
         address evalWallet;
         bytes32 verdiktaAggId;      // set once started
         SubmissionStatus status;
@@ -84,7 +85,7 @@ contract BountyEscrow {
         uint256 indexed submissionId,
         address indexed hunter,
         address evalWallet,
-        string deliverableCid,
+        string evaluationCid,
         uint256 linkMaxBudget
     );
 
@@ -194,9 +195,18 @@ contract BountyEscrow {
     /// @notice STEP 1: Prepare a submission. Deploys an EvaluationWallet and records parameters.
     /// @dev The wallet address is emitted so the hunter can approve LINK to it.
     /// @dev Can only be called before the submission deadline
+    /// @param bountyId The bounty to submit to
+    /// @param evaluationCid The evaluation package CID (contains jury config, rubric reference, instructions)
+    /// @param hunterCid The hunter's work product archive CID (bCID containing the actual submission)
+    /// @param addendum Optional text addendum for the evaluation
+    /// @param alpha Reputation weight (0-100)
+    /// @param maxOracleFee Maximum fee per oracle
+    /// @param estimatedBaseCost Estimated base cost
+    /// @param maxFeeBasedScaling Maximum fee-based scaling
     function prepareSubmission(
         uint256 bountyId,
-        string calldata deliverableCid,
+        string calldata evaluationCid,
+        string calldata hunterCid,
         string calldata addendum,
         uint256 alpha,
         uint256 maxOracleFee,
@@ -206,7 +216,8 @@ contract BountyEscrow {
         Bounty storage b = _mustBounty(bountyId);
         require(b.status == BountyStatus.Open, "bounty not open");
         require(block.timestamp < b.submissionDeadline, "deadline passed");
-        require(bytes(deliverableCid).length > 0, "empty deliverable");
+        require(bytes(evaluationCid).length > 0, "empty evaluationCid");
+        require(bytes(hunterCid).length > 0, "empty hunterCid");
 
         linkMaxBudget = verdikta.maxTotalFee(maxOracleFee);
         require(linkMaxBudget > 0, "bad budget");
@@ -220,7 +231,8 @@ contract BountyEscrow {
 
         Submission memory s = Submission({
             hunter: msg.sender,
-            deliverableCid: deliverableCid,
+            evaluationCid: evaluationCid,
+            hunterCid: hunterCid,
             evalWallet: address(wallet),
             verdiktaAggId: bytes32(0),
             status: SubmissionStatus.Prepared,
@@ -246,7 +258,7 @@ contract BountyEscrow {
             submissionId,
             msg.sender,
             address(wallet),
-            deliverableCid,
+            evaluationCid,
             linkMaxBudget
         );
 
@@ -272,9 +284,13 @@ contract BountyEscrow {
         // Approve Verdikta and start evaluation
         wallet.approveVerdikta(s.linkMaxBudget);
 
+        // CID array for Verdikta:
+        // cids[0] = Evaluation package (contains jury config, rubric reference via 'additional', instructions)
+        // cids[1] = Hunter's work product (bCID containing the actual submission to evaluate)
+        // Note: The rubric is referenced inside the evaluation package manifest, not passed separately
         string[] memory cids = new string[](2);
-        cids[0] = s.deliverableCid;
-        cids[1] = b.rubricCid;
+        cids[0] = s.evaluationCid;
+        cids[1] = s.hunterCid;
 
         bytes32 aggId = wallet.startEvaluation(
             cids,

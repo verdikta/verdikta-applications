@@ -9,9 +9,15 @@ const AdmZip = require('adm-zip');
 const logger = require('./logger');
 
 /**
- * Create Primary CID archive structure
+ * Create Evaluation CID archive structure (also known as "Primary CID")
  * This archive contains: manifest.json + primary_query.json
- * The manifest references the rubric CID and will later include the hunter submission CID
+ * 
+ * The manifest references:
+ * - The rubric CID (via `additional` array with type: "ipfs/cid")
+ * - A description of the expected bCID (hunter's work) via `bCIDs` field
+ * 
+ * IMPORTANT: The `bCIDs` field contains DESCRIPTIONS of expected bCIDs, not the CIDs themselves.
+ * The actual hunter CID is passed separately to the Verdikta contract as a second parameter.
  * 
  * @param {Object} options
  * @param {string} options.rubricCid - IPFS CID of the rubric
@@ -23,7 +29,7 @@ const logger = require('./logger');
  * @param {number} options.iterations - Number of iterations (default: 1)
  * @returns {Promise<{archivePath: string, manifest: Object, primaryQuery: Object}>}
  */
-async function createPrimaryCIDArchive(options) {
+async function createEvaluationCIDArchive(options) {
   const {
     rubricCid,
     jobTitle,
@@ -31,21 +37,23 @@ async function createPrimaryCIDArchive(options) {
     workProductType = 'Work Product',
     classId = 128,
     juryNodes = [],
-    iterations = 1,
-    hunterSubmissionCid = 'PLACEHOLDER_HUNTER_CID' // Will be replaced when hunter submits
+    iterations = 1
   } = options;
 
   try {
-    logger.info('Creating Primary CID archive', { rubricCid, jobTitle });
+    logger.info('Creating Evaluation CID archive', { rubricCid, jobTitle });
 
     // Create temporary directory for archive files
     const tmpDir = path.join(__dirname, '../tmp');
-    const archiveName = `primary-${Date.now()}`;
+    const archiveName = `evaluation-${Date.now()}`;
     const archiveDir = path.join(tmpDir, archiveName);
     
     await fs.mkdir(archiveDir, { recursive: true });
 
     // Create manifest.json
+    // NOTE: bCIDs contains DESCRIPTIONS of what each bCID represents.
+    // The actual bCID values (e.g., hunter's work archive CID) are passed 
+    // separately to the Verdikta contract as additional CIDs in the array.
     const manifest = {
       version: '1.0',
       name: `${jobTitle} - Evaluation for Payment Release`,
@@ -67,11 +75,13 @@ async function createPrimaryCIDArchive(options) {
           name: 'gradingRubric',
           type: 'ipfs/cid',
           hash: rubricCid,
-          description: 'Evaluation rubric with criteria and requirements'
+          description: `${workProductType} grading rubric with evaluation criteria`
         }
       ],
+      // bCIDs: Descriptions of expected bCID archives that will be passed separately
+      // The external adapter uses these descriptions to understand what each bCID contains
       bCIDs: {
-        submittedWork: hunterSubmissionCid
+        submittedWork: 'The work submitted by a hunter.'
       }
     };
 
@@ -126,7 +136,7 @@ The submitted work product will be provided in the next section.`,
     const archivePath = path.join(tmpDir, `${archiveName}.zip`);
     zip.writeZip(archivePath);
 
-    logger.info('Primary CID archive created successfully', { archivePath });
+    logger.info('Evaluation CID archive created successfully', { archivePath });
 
     // Clean up temporary directory (but keep the ZIP)
     await fs.rm(archiveDir, { recursive: true, force: true });
@@ -138,10 +148,13 @@ The submitted work product will be provided in the next section.`,
     };
 
   } catch (error) {
-    logger.error('Error creating Primary CID archive:', error);
-    throw new Error(`Failed to create Primary CID archive: ${error.message}`);
+    logger.error('Error creating Evaluation CID archive:', error);
+    throw new Error(`Failed to create Evaluation CID archive: ${error.message}`);
   }
 }
+
+// Backward compatibility alias
+const createPrimaryCIDArchive = createEvaluationCIDArchive;
 
 /**
  * Create Hunter Submission CID archive structure
@@ -256,8 +269,11 @@ async function createHunterSubmissionCIDArchive(options) {
 }
 
 /**
- * Update Primary CID archive with hunter submission CID
- * Replaces PLACEHOLDER_HUNTER_CID with actual hunter submission CID
+ * @deprecated This function is no longer needed.
+ * The bCIDs field now contains descriptions, not CID values.
+ * The actual hunter CID is passed separately to the Verdikta contract.
+ * 
+ * This function is kept for backward compatibility but should not be used.
  * 
  * @param {string} primaryArchivePath - Path to the primary archive ZIP
  * @param {string} hunterSubmissionCid - IPFS CID of hunter submission
@@ -306,7 +322,8 @@ async function updatePrimaryArchiveWithHunterCID(primaryArchivePath, hunterSubmi
 }
 
 module.exports = {
-  createPrimaryCIDArchive,
+  createEvaluationCIDArchive,
+  createPrimaryCIDArchive,  // Backward compatibility alias
   createHunterSubmissionCIDArchive,
   updatePrimaryArchiveWithHunterCID
 };

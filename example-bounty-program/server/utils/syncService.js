@@ -175,7 +175,8 @@ class SyncService {
           ...(existing || {}), // Preserve hunterCid, files, updatedPrimaryCid, etc
           submissionId: sub.submissionId,
           hunter: sub.hunter,
-          deliverableCid: sub.deliverableCid,
+          evaluationCid: sub.evaluationCid,
+          hunterCid: sub.hunterCid,
           evalWallet: sub.evalWallet,
           verdiktaAggId: sub.verdiktaAggId,
           status: backendStatus, // UPDATE the main status field

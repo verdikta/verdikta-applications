@@ -1,8 +1,9 @@
 // scripts/audit_balances.js
 // Checks status on all jobs, with balances
 // Run this way:
-// ESCROW=0xa33C506f89A2D58C79F64C454464DeAEFd0e28c3 \
-// hardhat > npx hardhat run --network base_sepolia scripts/audit-balances.js
+// ESCROW=0xa33C506f89A2D58C79F64C454464DeAEFd0e28c3 npx hardhat run --network base_sepolia scripts/audit-balances.js
+//
+
 const hre = require("hardhat");
 
 async function main() {

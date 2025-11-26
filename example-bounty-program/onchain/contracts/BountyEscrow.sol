@@ -26,7 +26,7 @@ contract BountyEscrow {
 
     struct Bounty {
         address creator;
-        string  rubricCid;          // IPFS CID for rubric JSON
+        string  evaluationCid;      // IPFS CID for evaluation package (contains jury config, rubric ref, instructions)
         uint64  requestedClass;     // Verdikta class ID
         uint8   threshold;          // 0..100 acceptance threshold
         uint256 payoutWei;          // ETH locked
@@ -39,7 +39,7 @@ contract BountyEscrow {
 
     struct Submission {
         address hunter;
-        string  evaluationCid;      // Evaluation package CID (contains jury config, rubric ref, instructions)
+        string  evaluationCid;      // Evaluation package CID (must match bounty's evaluationCid)
         string  hunterCid;          // Hunter's work product archive CID (bCID)
         address evalWallet;
         bytes32 verdiktaAggId;      // set once started
@@ -67,7 +67,7 @@ contract BountyEscrow {
     event BountyCreated(
         uint256 indexed bountyId,
         address indexed creator,
-        string rubricCid,
+        string evaluationCid,
         uint64 classId,
         uint8 threshold,
         uint256 payoutWei,
@@ -126,19 +126,19 @@ contract BountyEscrow {
 
     /// @notice Create a new bounty with ETH escrow
     function createBounty(
-        string calldata rubricCid,
+        string calldata evaluationCid,
         uint64  requestedClass,
         uint8   threshold,
         uint64  submissionDeadline
     ) external payable returns (uint256 bountyId) {
         require(msg.value > 0, "no ETH");
-        require(bytes(rubricCid).length > 0, "empty rubric");
+        require(bytes(evaluationCid).length > 0, "empty evaluationCid");
         require(threshold <= 100, "bad threshold");
         require(submissionDeadline > block.timestamp, "deadline in past");
 
         bounties.push(Bounty({
             creator: msg.sender,
-            rubricCid: rubricCid,
+            evaluationCid: evaluationCid,
             requestedClass: requestedClass,
             threshold: threshold,
             payoutWei: msg.value,
@@ -153,7 +153,7 @@ contract BountyEscrow {
         emit BountyCreated(
             bountyId, 
             msg.sender, 
-            rubricCid, 
+            evaluationCid, 
             requestedClass, 
             threshold, 
             msg.value, 
@@ -196,7 +196,7 @@ contract BountyEscrow {
     /// @dev The wallet address is emitted so the hunter can approve LINK to it.
     /// @dev Can only be called before the submission deadline
     /// @param bountyId The bounty to submit to
-    /// @param evaluationCid The evaluation package CID (contains jury config, rubric reference, instructions)
+    /// @param evaluationCid The evaluation package CID (must match the bounty's stored evaluationCid)
     /// @param hunterCid The hunter's work product archive CID (bCID containing the actual submission)
     /// @param addendum Optional text addendum for the evaluation
     /// @param alpha Reputation weight (0-100)
@@ -218,6 +218,12 @@ contract BountyEscrow {
         require(block.timestamp < b.submissionDeadline, "deadline passed");
         require(bytes(evaluationCid).length > 0, "empty evaluationCid");
         require(bytes(hunterCid).length > 0, "empty hunterCid");
+        
+        // Verify evaluationCid matches the bounty's stored evaluationCid
+        require(
+            keccak256(bytes(evaluationCid)) == keccak256(bytes(b.evaluationCid)),
+            "evaluationCid mismatch"
+        );
 
         linkMaxBudget = verdikta.maxTotalFee(maxOracleFee);
         require(linkMaxBudget > 0, "bad budget");

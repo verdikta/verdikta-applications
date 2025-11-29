@@ -207,8 +207,10 @@ async function addSubmission(jobId, submissionData) {
       throw new Error(`Job ${jobId} is not accepting submissions (status: ${job.status})`);
     }
 
+    // Use 0-based indexing to match on-chain submission IDs
+    // The contract uses 0-based array indices for submissions
     const submission = {
-      submissionId: job.submissions.length + 1,
+      submissionId: job.submissions.length,  // 0-based to match contract
       ...submissionData,
       submittedAt: Math.floor(Date.now() / 1000),
       status: 'PENDING_EVALUATION'

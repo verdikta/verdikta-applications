@@ -211,37 +211,52 @@ function SubmitWork({ walletState }) {
       const response = await apiService.submitWorkMultiple(bountyId, formData);
       console.log('✅ IPFS upload complete:', response);
 
-      // Get the CIDs from the response:
-      // - updatedPrimaryCid: Evaluation package (contains jury config, rubric reference, instructions)
+      // Get the hunterCid from the response:
       // - hunterCid: Hunter's work product archive (bCID containing the actual submission)
-      const { updatedPrimaryCid: evaluationCid, hunterCid } = response.submission;
+      const { hunterCid } = response.submission;
+      
+      // Get the evaluationCid from the job data:
+      // - evaluationCid: The evaluation package CID (contains jury config, rubric reference, instructions)
+      // - This was set when the bounty was created and stored on-chain
+      const evaluationCid = job.primaryCid;
+      if (!evaluationCid) {
+        throw new Error('Evaluation CID not found in job data. The bounty may not have been properly created.');
+      }
 
       // STEP 2: Prepare submission on-chain (deploys EvaluationWallet)
+      // Pass both CIDs: evaluationCid (must match bounty's stored CID) and hunterCid (work product)
       setLoadingMessage('Preparing submission on blockchain...');
       const { submissionId, evalWallet, linkMaxBudget } = await contractService.prepareSubmission(
         onChainId,           // Use on-chain ID, not URL parameter
-        evaluationCid,       // Evaluation package CID
-        hunterCid,           // Hunter's work product archive (bCID)
+        evaluationCid,       // Evaluation package CID (must match bounty's stored evaluationCid)
+        hunterCid,           // Hunter's work product CID
         submissionNarrative || "",  // addendum
         75,  // alpha (reputation weight, 0-100)
-        "50000000000000000",  // maxOracleFee (0.05 LINK)
-        "30000000000000000",  // estimatedBaseCost
-        "20000000000000000"   // maxFeeBasedScaling
+        "200000000000000000",  // maxOracleFee (0.2 LINK) - increased for oracle availability
+        "100000000000000000",  // estimatedBaseCost (0.1 LINK)
+        "100000000000000000"   // maxFeeBasedScaling (0.1 LINK)
       );
 
       console.log('✅ Submission prepared:', {
         submissionId,
         evalWallet,
-        linkMaxBudget
+        linkMaxBudget,
+        linkMaxBudgetFormatted: `${Number(linkMaxBudget) / 1e18} LINK`
       });
 
       // STEP 3: Approve LINK tokens to the EvaluationWallet
-      setLoadingMessage('Approving LINK tokens...');
-      await contractService.approveLink(evalWallet, linkMaxBudget);
-      console.log('✅ LINK approved');
+      setLoadingMessage(`Approving ${(Number(linkMaxBudget) / 1e18).toFixed(4)} LINK tokens...`);
+      console.log('🔄 Approving LINK to EvaluationWallet:', evalWallet, 'amount:', linkMaxBudget);
+      const approvalResult = await contractService.approveLink(evalWallet, linkMaxBudget);
+      console.log('✅ LINK approved:', approvalResult);
+
+      // Small delay to ensure approval is processed
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
       // STEP 4: Start the Verdikta evaluation
+      // hunterCid was already stored in prepareSubmission, no need to pass again
       setLoadingMessage('Starting AI evaluation...');
+      console.log('🔄 Starting evaluation for bountyId:', onChainId, 'submissionId:', submissionId);
       const evalResult = await contractService.startPreparedSubmission(onChainId, submissionId);
       console.log('✅ Evaluation started:', evalResult);
 
@@ -504,10 +519,9 @@ function SubmitWork({ walletState }) {
         <ol>
           <li>Your files are uploaded to IPFS (permanent storage)</li>
           <li>Hunter Submission CID is generated with your work and narrative</li>
-          <li>Primary CID is updated to reference your submission</li>
           <li>Smart contract creates an EvaluationWallet for your submission</li>
           <li>You approve LINK tokens to pay for AI evaluation (~0.1 LINK)</li>
-          <li>Evaluation starts automatically via Verdikta oracle network</li>
+          <li>Evaluation starts with your Hunter CID + the bounty's evaluation package</li>
           <li>Results are written back on-chain within 1-5 minutes</li>
           <li>If you pass, bounty is awarded automatically! 🎉</li>
         </ol>
@@ -600,7 +614,7 @@ function SubmitWork({ walletState }) {
             )}
 
             <div className="cid-section">
-              <h3>📦 IPFS CIDs</h3>
+              <h3>📦 IPFS CID</h3>
               <div className="cid-group">
                 <label>Hunter Submission CID:</label>
                 <div className="cid-value">
@@ -613,19 +627,9 @@ function SubmitWork({ walletState }) {
                     📋
                   </button>
                 </div>
-              </div>
-              <div className="cid-group">
-                <label>Updated Primary CID:</label>
-                <div className="cid-value">
-                  <code>{submissionResult.submission.updatedPrimaryCid}</code>
-                  <button
-                    onClick={() => navigator.clipboard.writeText(submissionResult.submission.updatedPrimaryCid)}
-                    className="btn-copy"
-                    title="Copy to clipboard"
-                  >
-                    📋
-                  </button>
-                </div>
+                <small style={{ display: 'block', marginTop: '0.5rem', color: '#666' }}>
+                  The evaluation package CID is stored in the bounty on-chain.
+                </small>
               </div>
             </div>
 

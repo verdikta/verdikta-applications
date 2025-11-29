@@ -6,6 +6,11 @@ const fs = require('fs').promises;
 const os = require('os');
 require('dotenv').config();
 
+// Alias RPC_URL to RPC_PROVIDER_URL for backwards compatibility
+if (!process.env.RPC_PROVIDER_URL && process.env.RPC_URL) {
+  process.env.RPC_PROVIDER_URL = process.env.RPC_URL;
+}
+
 // Crash guards so we never drop the socket without a body
 process.on('uncaughtException', (err) => {
   console.error('[fatal] uncaughtException:', err);

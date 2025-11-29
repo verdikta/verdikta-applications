@@ -16,7 +16,7 @@ export default defineConfig({
     proxy: {
       // 👇 forward any /api/* request to your backend (no CORS, no preflight)
       '/api': {
-        target: 'http://134.199.203.20:5005',
+        target: 'http://localhost:5005',
         changeOrigin: true,
         secure: false,
         // by default Vite preserves the /api prefix; no rewrite needed

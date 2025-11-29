@@ -103,6 +103,15 @@ export const apiService = {
   },
 
   /**
+   * Refresh a submission's status from the blockchain
+   * Used after finalization to get the latest on-chain status
+   */
+  async refreshSubmission(jobId, submissionId) {
+    const response = await api.post(`/api/jobs/${jobId}/submissions/${submissionId}/refresh`);
+    return response.data;
+  },
+
+  /**
    * Submit work for a job (legacy single file)
    */
   async submitWork(jobId, file, hunterAddress) {

@@ -24,12 +24,16 @@ const LINK_ADDRESS = "0xE4aB69C077896252FAFBD49EFD26B5D171A32410";
 
 // BountyEscrow ABI - only the functions we need to call
 const BOUNTY_ESCROW_ABI = [
-  "event BountyCreated(uint256 indexed bountyId, address indexed creator, string rubricCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
+  // Events
+  "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
   "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)",
 
-  "function createBounty(string rubricCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline) payable returns (uint256)",
-  // prepareSubmission takes evaluationCid (evaluation package) and hunterCid (work product)
+  // Functions
+  // createBounty takes evaluationCid (the evaluation package CID)
+  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline) payable returns (uint256)",
+  // prepareSubmission takes both CIDs - evaluationCid must match bounty's, hunterCid is the work product
   "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
+  // startPreparedSubmission takes no CID params - reads from stored submission
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
   "function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)",
@@ -88,7 +92,7 @@ class ContractService {
    * Create a bounty on-chain via MetaMask
    *
    * @param {Object} params
-   * @param {string} params.rubricCid - IPFS CID of the rubric
+   * @param {string} params.evaluationCid - IPFS CID of the evaluation package (contains jury config, rubric ref, instructions)
    * @param {number|bigint} params.classId - Verdikta class ID (uint64)
    * @param {number|bigint} params.threshold - Passing threshold (0-100, uint8)
    * @param {number|string} params.bountyAmountEth - Bounty amount in ETH
@@ -96,11 +100,11 @@ class ContractService {
    * @returns {Promise<Object>} Transaction result with bountyId
    */
 
-  async createBounty({ rubricCid, classId, threshold, bountyAmountEth, submissionWindowHours }) {
+  async createBounty({ evaluationCid, classId, threshold, bountyAmountEth, submissionWindowHours }) {
     if (!this.contract) throw new Error('Contract not initialized. Call connect() first.');
 
     // Quick UI validations
-    if (!rubricCid || typeof rubricCid !== 'string') throw new Error('Rubric CID is empty');
+    if (!evaluationCid || typeof evaluationCid !== 'string') throw new Error('Evaluation CID is empty');
     const winHrs = Number(submissionWindowHours);
     if (!Number.isFinite(winHrs) || winHrs <= 0) throw new Error('Submission window (hours) must be > 0');
     const thrNum = Number(threshold);
@@ -123,8 +127,8 @@ class ContractService {
       if ((thresh8   & ~mask8)  !== 0n) throw new Error('threshold exceeds uint8');
 
       console.log('🔍 createBounty params', {
-        rubricCid,
-        rubricCidLength: rubricCid.length,
+        evaluationCid,
+        evaluationCidLength: evaluationCid.length,
         classId64: classId64.toString(),
         threshold8: thresh8.toString(),
         submissionDeadline: submissionDeadline.toString(),
@@ -136,7 +140,7 @@ class ContractService {
       // 1) Dry-run (surfaces real revert reasons)
       try {
         await this.contract.createBounty.staticCall(
-          rubricCid,
+          evaluationCid,
           classId64,
           thresh8,
           submissionDeadline,
@@ -144,16 +148,16 @@ class ContractService {
         );
       } catch (e) {
         const msg = (e?.shortMessage || e?.message || '').toLowerCase();
-        if (msg.includes('no eth'))           throw new Error('Bounty requires ETH value (msg.value > 0)');
-        if (msg.includes('empty rubric'))     throw new Error('Rubric CID is empty');
-        if (msg.includes('bad threshold'))    throw new Error('Threshold must be 0..100');
-        if (msg.includes('deadline in past')) throw new Error('Deadline must be in the future');
+        if (msg.includes('no eth'))             throw new Error('Bounty requires ETH value (msg.value > 0)');
+        if (msg.includes('empty evaluationcid')) throw new Error('Evaluation CID is empty');
+        if (msg.includes('bad threshold'))      throw new Error('Threshold must be 0..100');
+        if (msg.includes('deadline in past'))   throw new Error('Deadline must be in the future');
         throw e;
       }
 
       // 2) Send the tx
       const tx = await this.contract.createBounty(
-        rubricCid,
+        evaluationCid,
         classId64,
         thresh8,
         submissionDeadline,
@@ -203,10 +207,10 @@ class ContractService {
 
   /**
    * STEP 1: Prepare a submission (deploys EvaluationWallet)
+   * Note: The evaluationCid comes from the Bounty struct (set at bounty creation)
+   * Note: The hunterCid is passed to startPreparedSubmission (not stored in contract)
    *
    * @param {number} bountyId - The bounty ID
-   * @param {string} evaluationCid - IPFS CID of the evaluation package (contains jury config, rubric ref, instructions)
-   * @param {string} hunterCid - IPFS CID of the hunter's work product archive (bCID)
    * @param {string} addendum - Additional context for AI evaluators
    * @param {number} alpha - Reputation weight (0-100, default 75)
    * @param {string} maxOracleFee - Max fee per oracle in wei (e.g. "50000000000000000" = 0.05 LINK)
@@ -225,9 +229,9 @@ class ContractService {
     try {
       console.log('🔍 Preparing submission...', {
         bountyId,
-        evaluationCid,
-        hunterCid,
-        addendum: addendum.substring(0, 50) + '...',
+        evaluationCid: evaluationCid?.substring(0, 20) + '...',
+        hunterCid: hunterCid?.substring(0, 20) + '...',
+        addendum: addendum ? addendum.substring(0, 50) + '...' : '(none)',
         alpha,
         maxOracleFee
       });
@@ -283,9 +287,6 @@ class ContractService {
       }
       if (msg.includes('deadline passed')) {
         throw new Error('Submission deadline has passed');
-      }
-      if (msg.includes('empty deliverable')) {
-        throw new Error('Deliverable CID cannot be empty');
       }
 
       throw error;
@@ -346,6 +347,7 @@ class ContractService {
    *
    * @param {number} bountyId - The bounty ID
    * @param {number} submissionId - The submission ID from prepareSubmission
+   * @param {string} hunterCid - IPFS CID of the hunter's work product archive (bCID) - passed through to Verdikta
    * @returns {Promise<Object>} Transaction result
    */
   async startPreparedSubmission(bountyId, submissionId) {
@@ -589,6 +591,8 @@ class ContractService {
 
   /**
    * Get submission details from contract
+   * Note: evaluationCid is in the Bounty struct, not Submission
+   * Note: hunterCid is passed to startPreparedSubmission, not stored
    * 
    * @param {number} bountyId - The bounty ID
    * @param {number} submissionId - The submission ID
@@ -601,7 +605,7 @@ class ContractService {
 
     try {
       const viewAbi = [
-        "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))"
+        "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))"
       ];
 
       const contract = new ethers.Contract(
@@ -617,8 +621,6 @@ class ContractService {
 
       return {
         hunter: sub.hunter,
-        evaluationCid: sub.evaluationCid,
-        hunterCid: sub.hunterCid,
         evalWallet: sub.evalWallet,
         verdiktaAggId: sub.verdiktaAggId,
         status: statusMap[sub.status] || 'UNKNOWN',
@@ -703,7 +705,7 @@ export async function deriveBountyIdFromTx(txHash, escrowAddress) {
   const provider = new ethers.BrowserProvider(window.ethereum);
 
   const iface = new ethers.Interface([
-    "event BountyCreated(uint256 indexed bountyId, address indexed creator, string rubricCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)"
+    "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)"
   ]);
 
   const receipt = await provider.getTransactionReceipt(txHash);
@@ -730,7 +732,7 @@ export async function deriveBountyIdFromTx(txHash, escrowAddress) {
 export async function resolveBountyIdByStateLoose({
   escrowAddress,
   creator,
-  rubricCid,
+  evaluationCid,  // Renamed from rubricCid - now stores the evaluation package CID
   submissionDeadline,
   deadlineToleranceSec = 300, // ±5 minutes default
   lookback = 1000
@@ -751,7 +753,7 @@ export async function resolveBountyIdByStateLoose({
   const stop  = Math.max(0, total - 1 - Math.max(1, lookback));
 
   const wantCreator  = (creator || "").toLowerCase();
-  const wantCid      = rubricCid || "";
+  const wantCid      = evaluationCid || "";
   const wantDeadline = Number(submissionDeadline || 0);
 
   let best = null;
@@ -762,7 +764,7 @@ export async function resolveBountyIdByStateLoose({
     const bCreator  = (b[0] || "").toLowerCase();
     if (bCreator !== wantCreator) continue;
 
-    const bCid      = b[1] || "";
+    const bCid      = b[1] || "";  // evaluationCid in Bounty struct
     const bDeadline = Number(b[6] || 0);
     const delta     = Math.abs(bDeadline - wantDeadline);
 

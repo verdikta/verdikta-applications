@@ -7,9 +7,10 @@ const { ethers } = require('ethers');
 const logger = require('./logger');
 
 // BountyEscrow ABI (functions we need to read from the contract)
+// Note: Submission struct now includes evaluationCid and hunterCid
 const BOUNTY_ESCROW_ABI = [
   "function bountyCount() view returns (uint256)",
-  "function getBounty(uint256 bountyId) view returns (tuple(address creator, string rubricCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions))",
+  "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions))",
   "function getEffectiveBountyStatus(uint256 bountyId) view returns (string)",
   "function isAcceptingSubmissions(uint256 bountyId) view returns (bool)",
   "function canBeClosed(uint256 bountyId) view returns (bool)",
@@ -49,11 +50,12 @@ class ContractService {
       const canClose = await this.contract.canBeClosed(bountyId);
 
       // Map contract data to API format
+      // Note: evaluationCid is now the evaluation package (was rubricCid)
       return {
         jobId: Number(bountyId),
         bountyId: Number(bountyId), // Include both for compatibility
         creator: bounty.creator,
-        rubricCid: bounty.rubricCid,
+        evaluationCid: bounty.evaluationCid, // Renamed from rubricCid - now the evaluation package
         classId: Number(bounty.requestedClass),
         threshold: Number(bounty.threshold),
         bountyAmount: ethers.formatEther(bounty.payoutWei),

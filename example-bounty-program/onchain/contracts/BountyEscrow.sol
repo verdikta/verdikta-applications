@@ -489,20 +489,33 @@ contract BountyEscrow {
         return subs[bountyId][submissionId];
     }
 
-    /// @dev Interpret Verdikta scores: scores[0]=accept, scores[1]=reject
+    /// @dev Interpret Verdikta scores: scores[0]=reject (DONT_FUND), scores[1]=accept (FUND)
+    /// @dev Verdikta returns scores that sum to 1,000,000 (e.g., [120000, 880000] = 12% reject, 88% accept)
+    /// @dev We normalize to 0-100 by dividing by 10,000 to match threshold scale
     function _interpretScores(uint256[] memory scores) 
         internal pure returns (uint256 accept, uint256 reject) 
     {
         if (scores.length == 0) return (0, 0);
+        
         if (scores.length == 1) {
-            uint256 a = scores[0];
+            // Single score: normalize and compute complement
+            uint256 a = scores[0] / 10000; // Convert from 0-1000000 to 0-100
             if (a > 100) a = 100;
-            uint256 r = 100 > a ? 100 - a : 0;
+            uint256 r = 100 - a;
             return (a, r);
         }
-        // Take first two; clamp to [0,100]
-        accept = scores[0] > 100 ? 100 : scores[0];
-        reject = scores[1] > 100 ? 100 : scores[1];
+        
+        // Two scores from Verdikta: [DONT_FUND, FUND]
+        // scores[0] = DONT_FUND (rejection score)
+        // scores[1] = FUND (acceptance score)
+        // Normalize from 0-1000000 to 0-100
+        reject = scores[0] / 10000;
+        accept = scores[1] / 10000;
+        
+        // Clamp to [0,100] just in case
+        if (accept > 100) accept = 100;
+        if (reject > 100) reject = 100;
+        
         return (accept, reject);
     }
 

@@ -41,6 +41,33 @@
   color: #374151;
 }
 
+/* Submission-specific status badges */
+.status-badge.status-approved,
+.status-badge.status-accepted,
+.status-badge.status-passedpaid {
+  background-color: #10b981;
+  color: white;
+}
+
+.status-badge.status-rejected,
+.status-badge.status-failed {
+  background-color: #ef4444;
+  color: white;
+}
+
+.status-badge.status-pending,
+.status-badge.status-pending_evaluation,
+.status-badge.status-pendingverdikta {
+  background-color: #f59e0b;
+  color: white;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.status-badge.status-prepared {
+  background-color: #8b5cf6;
+  color: white;
+}
+
 /* Work Type Badge */
 .work-type-badge {
   background-color: var(--bg-secondary);

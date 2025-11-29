@@ -1,8 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
 import './BountyDetails.css';
+
+// Polling configuration
+const POLL_INTERVAL_MS = 3000; // Poll every 3 seconds
+const POLL_MAX_ATTEMPTS = 120; // Max 120 attempts = 6 minutes (to accommodate Verdikta evaluation time)
+const PENDING_STATUSES = ['PENDING_EVALUATION', 'PendingVerdikta', 'Prepared'];
 
 function BountyDetails({ walletState }) {
   // URL param = backend jobId, NOT the on-chain id
@@ -17,20 +22,16 @@ function BountyDetails({ walletState }) {
   const [retryCount, setRetryCount] = useState(0);
   const [finalizingSubmissions, setFinalizingSubmissions] = useState(new Set());
   const [failingSubmissions, setFailingSubmissions] = useState(new Set());
+  // Polling state for submissions waiting for status update
+  const [pollingSubmissions, setPollingSubmissions] = useState(new Map()); // submissionId -> { attempts, status }
+  const pollingIntervalRef = useRef(null);
 
   // Resolution state for on-chain bountyId
   const [resolvedBountyId, setResolvedBountyId] = useState(null);
   const [resolvingId, setResolvingId] = useState(false);
   const [resolveNote, setResolveNote] = useState('');
 
-  useEffect(() => {
-    loadJobDetails();
-    setResolvedBountyId(null);
-    setResolvingId(false);
-    setResolveNote('');
-  }, [bountyId, retryCount]);
-
-  const loadJobDetails = async () => {
+  const loadJobDetails = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -60,13 +61,206 @@ function BountyDetails({ walletState }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [bountyId, retryCount]);
+
+  useEffect(() => {
+    loadJobDetails();
+    setResolvedBountyId(null);
+    setResolvingId(false);
+    setResolveNote('');
+  }, [bountyId, retryCount, loadJobDetails]);
 
   const isJobDataComplete = (jobData) =>
     jobData &&
     jobData.bountyAmount !== undefined &&
     jobData.threshold !== undefined &&
     jobData.submissionCloseTime !== undefined;
+
+  /**
+   * Poll for submission status changes after finalization
+   * Continues polling until status changes from pending or max attempts reached
+   * 
+   * IMPORTANT: Pass jobId explicitly to avoid closure issues with stale state
+   */
+  const pollSubmissionStatus = useCallback(async (jobId, submissionId, onStatusChange) => {
+    console.log(`🔄 Starting to poll submission #${submissionId} status for job ${jobId}...`);
+    
+    if (!jobId) {
+      console.error('❌ pollSubmissionStatus called without jobId!');
+      return;
+    }
+    
+    let attempts = 0;
+    let lastStatus = null;
+    
+    const poll = async () => {
+      attempts++;
+      console.log(`📊 Poll attempt ${attempts}/${POLL_MAX_ATTEMPTS} for job ${jobId}, submission #${submissionId}`);
+      
+      // Update polling state with current attempt count
+      setPollingSubmissions(prev => {
+        const next = new Map(prev);
+        next.set(submissionId, { attempts, maxAttempts: POLL_MAX_ATTEMPTS, status: 'polling' });
+        return next;
+      });
+      
+      try {
+        // Call the refresh endpoint to get latest status from blockchain
+        console.log(`🔍 Calling refreshSubmission(${jobId}, ${submissionId})...`);
+        const result = await apiService.refreshSubmission(jobId, submissionId);
+        console.log(`✅ Poll result for submission #${submissionId}:`, result);
+        
+        const newStatus = result.submission?.status;
+        console.log(`📋 Status: ${lastStatus} -> ${newStatus}`);
+        lastStatus = newStatus;
+        
+        // Check if status has changed from pending
+        // Note: Contract status enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
+        // Backend maps these to: PENDING_EVALUATION, REJECTED, ACCEPTED, ACCEPTED
+        if (newStatus && !PENDING_STATUSES.includes(newStatus)) {
+          console.log(`🎉 Submission #${submissionId} status changed to: ${newStatus}`);
+          console.log(`📊 Score: ${result.submission?.acceptance}%, Rejection: ${result.submission?.rejection}%`);
+          
+          // Update the submission in local state immediately
+          setSubmissions(prevSubs => 
+            prevSubs.map(s => 
+              s.submissionId === submissionId 
+                ? { ...s, ...result.submission }
+                : s
+            )
+          );
+          
+          // Clear polling state for this submission
+          setPollingSubmissions(prev => {
+            const next = new Map(prev);
+            next.delete(submissionId);
+            return next;
+          });
+          
+          // Notify callback
+          if (onStatusChange) {
+            onStatusChange(result.submission);
+          }
+          
+          return true; // Done polling
+        }
+        
+        // Still pending - continue polling if we haven't exceeded max attempts
+        if (attempts >= POLL_MAX_ATTEMPTS) {
+          console.log(`⏰ Max polling attempts reached for submission #${submissionId}`);
+          setPollingSubmissions(prev => {
+            const next = new Map(prev);
+            next.set(submissionId, { attempts, maxAttempts: POLL_MAX_ATTEMPTS, status: 'timeout' });
+            return next;
+          });
+          return true; // Stop polling (timeout)
+        }
+        
+        // Schedule next poll
+        return new Promise(resolve => {
+          setTimeout(async () => {
+            const done = await poll();
+            resolve(done);
+          }, POLL_INTERVAL_MS);
+        });
+        
+      } catch (err) {
+        console.error(`❌ Poll error for submission #${submissionId}:`, err);
+        console.error('Error details:', {
+          message: err.message,
+          response: err.response?.data,
+          status: err.response?.status
+        });
+        
+        // On error, continue polling (blockchain might be slow)
+        if (attempts >= POLL_MAX_ATTEMPTS) {
+          setPollingSubmissions(prev => {
+            const next = new Map(prev);
+            next.set(submissionId, { attempts, maxAttempts: POLL_MAX_ATTEMPTS, status: 'error', error: err.message });
+            return next;
+          });
+          return true; // Stop polling
+        }
+        
+        // Continue polling
+        return new Promise(resolve => {
+          setTimeout(async () => {
+            const done = await poll();
+            resolve(done);
+          }, POLL_INTERVAL_MS);
+        });
+      }
+    };
+    
+    // Start polling
+    await poll();
+  }, []); // No dependencies - jobId is passed explicitly
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+      }
+    };
+  }, []);
+
+  // Auto-refresh: periodically check for status updates when there are pending submissions
+  // This handles the case where evaluations complete without user interaction
+  useEffect(() => {
+    // Capture jobId to avoid closure issues
+    const currentJobId = job?.jobId;
+    
+    const pendingSubmissionIds = submissions
+      .filter(s => PENDING_STATUSES.includes(s.status))
+      .map(s => s.submissionId);
+    
+    // Only auto-poll if there are pending submissions AND we're not already actively polling them
+    const unpolliedPendingSubs = pendingSubmissionIds.filter(id => !pollingSubmissions.has(id));
+    
+    if (unpolliedPendingSubs.length === 0 || !currentJobId) {
+      return;
+    }
+
+    console.log(`📊 Auto-refresh: Found ${unpolliedPendingSubs.length} pending submissions to monitor for job ${currentJobId}`);
+
+    // Set up a background refresh interval (less aggressive than active polling)
+    const autoRefreshInterval = setInterval(async () => {
+      console.log(`🔄 Auto-refresh: Checking for status updates (job ${currentJobId})...`);
+      
+      let hasUpdates = false;
+      
+      for (const subId of unpolliedPendingSubs) {
+        // Skip if we're now actively polling this submission
+        if (pollingSubmissions.has(subId)) continue;
+        
+        try {
+          console.log(`🔍 Auto-refresh: Checking submission #${subId}...`);
+          const result = await apiService.refreshSubmission(currentJobId, subId);
+          const newStatus = result.submission?.status;
+          
+          console.log(`📋 Auto-refresh: Submission #${subId} status: ${newStatus}`);
+          
+          if (newStatus && !PENDING_STATUSES.includes(newStatus)) {
+            console.log(`🎉 Auto-refresh: Submission #${subId} status changed to ${newStatus}!`);
+            hasUpdates = true;
+          }
+        } catch (err) {
+          console.log(`⚠️ Auto-refresh error for submission #${subId}:`, err.message);
+        }
+      }
+      
+      // If any status changed, reload the full job details
+      if (hasUpdates) {
+        console.log('✅ Auto-refresh: Status changes detected, reloading job details...');
+        loadJobDetails();
+      }
+    }, 10000); // Check every 10 seconds for better responsiveness
+
+    return () => {
+      clearInterval(autoRefreshInterval);
+    };
+  }, [submissions, job?.jobId, pollingSubmissions, loadJobDetails]);
 
   useEffect(() => {
     if (job && !isJobDataComplete(job) && retryCount < 10) {
@@ -201,26 +395,82 @@ function BountyDetails({ walletState }) {
 
       console.log('📤 Finalizing submission:', { bountyId: onChainId, submissionId });
       const result = await contractService.finalizeSubmission(onChainId, submissionId);
-
-      alert(
-        `✅ Submission #${submissionId} finalized!\n\n` +
-        `Transaction: ${result.txHash}\n` +
-        `Block: ${result.blockNumber}\n\n` +
-        'The submission status has been updated. Refresh to see the changes.'
-      );
-
-      setRetryCount(0);
-      await loadJobDetails();
-    } catch (err) {
-      console.error('❌ Error finalizing submission:', err);
-      setError(err.message || 'Failed to finalize submission');
-      alert(`❌ Failed to finalize submission #${submissionId}:\n\n${err.message}`);
-    } finally {
+      
+      console.log('✅ Finalization transaction confirmed:', result.txHash);
+      console.log('📋 TX Receipt:', {
+        txHash: result.txHash,
+        blockNumber: result.blockNumber,
+        gasUsed: result.gasUsed
+      });
+      
+      // Wait a moment for the blockchain state to propagate
+      console.log('⏳ Waiting for blockchain state to propagate...');
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Clear finalizing state - we'll now switch to polling state
       setFinalizingSubmissions(prev => {
         const next = new Set(prev);
         next.delete(submissionId);
         return next;
       });
+
+      // Start polling for status update
+      // IMPORTANT: Capture jobId before polling to avoid closure issues
+      const currentJobId = job.jobId;
+      console.log(`🔄 Starting to poll for status update (jobId: ${currentJobId}, submissionId: ${submissionId})...`);
+      setPollingSubmissions(prev => {
+        const next = new Map(prev);
+        next.set(submissionId, { attempts: 0, maxAttempts: POLL_MAX_ATTEMPTS, status: 'starting' });
+        return next;
+      });
+      
+      // Poll until status changes or timeout
+      // Pass jobId explicitly to avoid stale closure issues
+      await pollSubmissionStatus(currentJobId, submissionId, (updatedSubmission) => {
+        // Status changed successfully!
+        const statusDisplay = updatedSubmission.status === 'APPROVED' ? '✅ APPROVED' :
+                             updatedSubmission.status === 'REJECTED' ? '❌ REJECTED' :
+                             updatedSubmission.status;
+        
+        alert(
+          `🎉 Submission #${submissionId} Finalized!\n\n` +
+          `Status: ${statusDisplay}\n` +
+          `Score: ${updatedSubmission.acceptance?.toFixed(1) || 'N/A'}%\n` +
+          `Transaction: ${result.txHash}\n\n` +
+          'The page has been updated with the results.'
+        );
+        
+        // Refresh full job details to ensure everything is in sync
+        loadJobDetails();
+      });
+      
+      // Check if polling timed out
+      const pollState = pollingSubmissions.get(submissionId);
+      if (pollState?.status === 'timeout') {
+        alert(
+          `⏳ Submission #${submissionId} was finalized on-chain but status sync timed out.\n\n` +
+          `Transaction: ${result.txHash}\n\n` +
+          'The blockchain may be slow. Please refresh the page in a moment to see the updated status.'
+        );
+      }
+
+    } catch (err) {
+      console.error('❌ Error finalizing submission:', err);
+      setError(err.message || 'Failed to finalize submission');
+      
+      // Clear all states on error
+      setFinalizingSubmissions(prev => {
+        const next = new Set(prev);
+        next.delete(submissionId);
+        return next;
+      });
+      setPollingSubmissions(prev => {
+        const next = new Map(prev);
+        next.delete(submissionId);
+        return next;
+      });
+      
+      alert(`❌ Failed to finalize submission #${submissionId}:\n\n${err.message}`);
     }
   };
 
@@ -703,7 +953,11 @@ function BountyDetails({ walletState }) {
                 walletState={walletState}
                 onChainBountyId={onChainIdForButtons}
                 onFailTimeout={handleFailTimedOutSubmission}
+                onFinalize={handleFinalizeSubmission}
                 isFailing={failingSubmissions.has(submission.submissionId)}
+                isFinalizing={finalizingSubmissions.has(submission.submissionId)}
+                isPolling={pollingSubmissions.has(submission.submissionId)}
+                pollingState={pollingSubmissions.get(submission.submissionId)}
                 disableActions={disableActionsForMissingId}
                 getSubmissionAge={getSubmissionAge}
               />
@@ -719,25 +973,109 @@ function BountyDetails({ walletState }) {
   );
 }
 
-function SubmissionCard({ submission, walletState, onChainBountyId, onFailTimeout, isFailing, disableActions, getSubmissionAge }) {
+function SubmissionCard({ submission, walletState, onChainBountyId, onFailTimeout, onFinalize, isFailing, isFinalizing, isPolling, pollingState, disableActions, getSubmissionAge }) {
   const isPending = submission.status === 'PENDING_EVALUATION' || submission.status === 'PendingVerdikta';
+  const isApproved = submission.status === 'APPROVED' || submission.status === 'ACCEPTED' || submission.status === 'PassedPaid';
+  const isRejected = submission.status === 'REJECTED' || submission.status === 'Failed';
   const ageMinutes = isPending ? getSubmissionAge(submission.submittedAt) : 0;
   const canTimeout = ageMinutes > 20;
+  // Always allow finalization for pending submissions - the contract will reject if not ready
+  const canFinalize = isPending && !isPolling;
+  
+  // Debug logging
+  console.log('SubmissionCard debug:', {
+    submissionId: submission.submissionId,
+    status: submission.status,
+    isPending,
+    isPolling,
+    pollingState,
+    submittedAt: submission.submittedAt,
+    ageMinutes,
+    canFinalize,
+    canTimeout,
+    walletConnected: walletState?.isConnected
+  });
+
+  // Determine status display
+  const getStatusBadgeClass = () => {
+    if (isApproved) return 'status-approved';
+    if (isRejected) return 'status-rejected';
+    if (isPending) return 'status-pending';
+    return `status-${submission.status?.toLowerCase()}`;
+  };
 
   return (
     <div className="submission-card">
       <div className="submission-header">
         <span className="hunter">{submission.hunter?.substring(0, 10)}...</span>
-        <span className={`status-badge status-${submission.status?.toLowerCase()}`}>{submission.status}</span>
+        <span className={`status-badge ${getStatusBadgeClass()}`}>
+          {isApproved ? '✅ APPROVED' : isRejected ? '❌ REJECTED' : submission.status}
+        </span>
       </div>
-      {submission.score && <div className="score">Score: {submission.score}/100</div>}
+      
+      {/* Show score for finalized submissions */}
+      {(submission.score != null || submission.acceptance != null) && (
+        <div className="score" style={{ 
+          color: isApproved ? '#28a745' : isRejected ? '#dc3545' : '#666',
+          fontWeight: 'bold'
+        }}>
+          Score: {(submission.score ?? submission.acceptance)?.toFixed(1) ?? 'N/A'}%
+        </div>
+      )}
+      
       <div className="submission-meta">
         <span>Submitted: {new Date(submission.submittedAt * 1000).toLocaleString()}</span>
       </div>
 
-      {/* Show timeout button for stuck submissions */}
-      {isPending && walletState.isConnected && (
-        <div style={{ marginTop: '0.75rem' }}>
+      {/* Polling indicator - show when waiting for status update */}
+      {isPolling && pollingState && (
+        <div style={{ 
+          marginTop: '0.75rem', 
+          padding: '0.75rem', 
+          backgroundColor: '#e3f2fd', 
+          border: '1px solid #90caf9',
+          borderRadius: '4px',
+          textAlign: 'center'
+        }}>
+          <div className="spinner" style={{ 
+            margin: '0 auto 0.5rem', 
+            width: '20px', 
+            height: '20px',
+            border: '2px solid #90caf9',
+            borderTop: '2px solid #1976d2',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite'
+          }} />
+          <div style={{ fontSize: '0.9rem', color: '#1565c0', fontWeight: 'bold' }}>
+            🔄 Checking for results...
+          </div>
+          <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>
+            Attempt {pollingState.attempts}/{pollingState.maxAttempts}
+          </div>
+          {pollingState.status === 'timeout' && (
+            <div style={{ fontSize: '0.8rem', color: '#f57c00', marginTop: '0.25rem' }}>
+              ⏰ Timed out - please refresh the page
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Show finalize/timeout buttons for pending submissions (when not polling) */}
+      {isPending && walletState.isConnected && !isPolling && (
+        <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          {/* Finalize button */}
+          {canFinalize && (
+            <button
+              onClick={() => onFinalize(submission.submissionId)}
+              disabled={isFinalizing || disableActions}
+              className="btn btn-primary btn-sm"
+              style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', width: '100%' }}
+            >
+              {isFinalizing ? '⏳ Processing transaction...' : `✅ Finalize Submission (check results)`}
+            </button>
+          )}
+          
+          {/* Timeout button - available after 20 minutes */}
           {canTimeout ? (
             <button
               onClick={() => onFailTimeout(submission.submissionId)}
@@ -752,6 +1090,22 @@ function SubmissionCard({ submission, walletState, onChainBountyId, onFailTimeou
               ⏳ Evaluating... ({Math.floor(ageMinutes)} min, timeout in {Math.ceil(20 - ageMinutes)} min)
             </div>
           )}
+        </div>
+      )}
+
+      {/* Success message for approved submissions */}
+      {isApproved && (
+        <div style={{ 
+          marginTop: '0.75rem', 
+          padding: '0.5rem', 
+          backgroundColor: '#e8f5e9', 
+          border: '1px solid #81c784',
+          borderRadius: '4px',
+          textAlign: 'center',
+          fontSize: '0.85rem',
+          color: '#2e7d32'
+        }}>
+          🎉 This submission passed the evaluation threshold!
         </div>
       )}
     </div>

@@ -149,34 +149,43 @@ class SyncService {
         const existing = existingSubmissions.find(s => s.submissionId === sub.submissionId);
         
         // Map contract status to backend status
+        // Contract enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
+        // sub.status from contract can be either string name or numeric index
         let backendStatus;
-        switch (sub.status) {
-          case 'Prepared':
+        const statusNum = typeof sub.status === 'number' ? sub.status : 
+                         sub.status === 'Prepared' ? 0 :
+                         sub.status === 'PendingVerdikta' ? 1 :
+                         sub.status === 'Failed' ? 2 :
+                         sub.status === 'PassedPaid' ? 3 :
+                         sub.status === 'PassedUnpaid' ? 4 : -1;
+        
+        switch (statusNum) {
+          case 0: // Prepared
             backendStatus = 'PREPARED';
             break;
-          case 'PendingVerdikta':
+          case 1: // PendingVerdikta
             backendStatus = 'PENDING_EVALUATION';
             break;
-          case 'Failed':
+          case 2: // Failed
             backendStatus = 'REJECTED';
             break;
-          case 'PassedPaid':
+          case 3: // PassedPaid
             backendStatus = 'APPROVED';
             break;
-          case 'PassedUnpaid':
-            backendStatus = 'APPROVED_UNPAID';
+          case 4: // PassedUnpaid
+            backendStatus = 'APPROVED';  // Also APPROVED, just didn't get paid
             break;
           default:
             backendStatus = 'UNKNOWN';
         }
 
-        // Merge: Keep backend fields, update status from blockchain
+        // Merge: Keep backend fields (files, etc), update status and CIDs from blockchain
         submissions.push({
-          ...(existing || {}), // Preserve hunterCid, files, updatedPrimaryCid, etc
+          ...(existing || {}), // Preserve files from backend storage
           submissionId: sub.submissionId,
           hunter: sub.hunter,
-          evaluationCid: sub.evaluationCid,
-          hunterCid: sub.hunterCid,
+          evaluationCid: sub.evaluationCid, // Now stored in Submission struct
+          hunterCid: sub.hunterCid,         // Now stored in Submission struct
           evalWallet: sub.evalWallet,
           verdiktaAggId: sub.verdiktaAggId,
           status: backendStatus, // UPDATE the main status field
@@ -217,6 +226,7 @@ class SyncService {
       ? await this.syncSubmissions(bounty.jobId, bounty.submissionCount, [])
       : [];
 
+    // Note: evaluationCid in contract is the full evaluation package (was rubricCid)
     const job = {
       jobId: storage.nextId,
       onChainId: bounty.jobId, // Track the on-chain ID
@@ -227,8 +237,8 @@ class SyncService {
       bountyAmount: parseFloat(bounty.bountyAmount),
       bountyAmountUSD: 0, // Would need price oracle
       threshold: bounty.threshold,
-      rubricCid: bounty.rubricCid,
-      primaryCid: bounty.rubricCid, // May need to fetch/generate
+      evaluationCid: bounty.evaluationCid, // The full evaluation package CID
+      primaryCid: bounty.evaluationCid, // Same as evaluationCid for compatibility
       classId: bounty.classId,
       juryNodes: [], // Not stored on-chain
       submissionOpenTime: bounty.createdAt,

@@ -476,33 +476,14 @@ router.post('/:jobId/submit', async (req, res) => {
       );
     }
 
-    // Create the evaluation archive (Primary CID)
-    // Note: The hunterCid is NOT embedded in the archive - it's passed separately to Verdikta
-    // The bCIDs field contains only a description of what the hunter CID represents
-    const updatedPrimaryArchive = await archiveGenerator.createPrimaryCIDArchive({
-      rubricCid: job.rubricCid,
-      jobTitle: job.title,
-      jobDescription: job.description,
-      workProductType: job.workProductType,
-      classId: job.classId,
-      juryNodes: job.juryNodes,
-      iterations: job.iterations
-    });
-
-    let updatedPrimaryCid;
-    try {
-      updatedPrimaryCid = await ipfsClient.uploadToIPFS(updatedPrimaryArchive.archivePath);
-      logger.info('[jobs/submit] updated primary pinned', { updatedPrimaryCid });
-    } finally {
-      await fs.unlink(updatedPrimaryArchive.archivePath).catch(err =>
-        logger.warn('[jobs/submit] failed to clean updated primary archive', { msg: err.message })
-      );
-    }
+    // Note: We no longer create an "updated primary" archive at submission time.
+    // The evaluation package (primaryCid) was created at bounty creation and is stored in the contract.
+    // The hunterCid is passed to startPreparedSubmission() and sent to Verdikta along with
+    // the bounty's evaluationCid (which the contract retrieves from storage).
 
     await jobStorage.addSubmission(jobId, {
       hunter,
       hunterCid,
-      updatedPrimaryCid,
       fileCount: uploadedFiles.length,
       files: uploadedFiles.map(f => ({ name: f.originalname, size: f.size, description: fileDescriptions[f.originalname] }))
     });
@@ -513,7 +494,7 @@ router.post('/:jobId/submit', async (req, res) => {
       submission: {
         hunter,
         hunterCid,
-        updatedPrimaryCid,
+        // Note: evaluationCid is stored in the bounty on-chain (job.primaryCid)
         fileCount: uploadedFiles.length,
         files: uploadedFiles.map(f => ({ filename: f.originalname, size: f.size, description: fileDescriptions[f.originalname] })),
         totalSize: uploadedFiles.reduce((s, f) => s + f.size, 0)
@@ -692,6 +673,188 @@ router.post('/sync/now', async (req, res) => {
     return res.json({ success: true, message: 'Blockchain sync triggered', status: syncService.getStatus() });
   } catch (error) {
     return res.status(500).json({ error: 'Failed to trigger sync', details: error.message });
+  }
+});
+
+/* =======================
+   REFRESH SUBMISSION FROM BLOCKCHAIN
+   - Works even without full sync enabled
+   - Reads single submission status from chain and updates local storage
+   ======================= */
+
+router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
+  const { jobId, submissionId } = req.params;
+  const RPC_URL = process.env.RPC_PROVIDER_URL;
+  const ESCROW_ADDR = process.env.BOUNTY_ESCROW_ADDRESS;
+  
+  logger.info('[refresh] Request received', { jobId, submissionId, RPC_URL: RPC_URL ? 'set' : 'NOT SET', ESCROW_ADDR });
+  
+  if (!RPC_URL || !ESCROW_ADDR) {
+    return res.status(500).json({ 
+      error: 'Blockchain not configured', 
+      details: 'RPC_PROVIDER_URL and BOUNTY_ESCROW_ADDRESS must be set in .env' 
+    });
+  }
+  
+  try {
+    // Get the job to find the on-chain bountyId
+    const job = await jobStorage.getJob(jobId);
+    if (!job) {
+      logger.error('[refresh] Job not found', { jobId });
+      return res.status(404).json({ error: 'Job not found', details: `No job with ID ${jobId}` });
+    }
+    
+    logger.info('[refresh] Found job', { 
+      jobId, 
+      onChainId: job.onChainId,
+      title: job.title,
+      submissionsCount: job.submissions?.length || 0
+    });
+    
+    // Use onChainId as the standard field name, with fallbacks
+    let onChainId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+    
+    // If still not found, try to find from submission data
+    if (onChainId == null && job.submissions?.length > 0) {
+      // Check if any submission has the bountyId from when it was created
+      const firstSub = job.submissions[0];
+      if (firstSub.onChainBountyId != null) {
+        onChainId = firstSub.onChainBountyId;
+        logger.info('[refresh] Found onChainId from submission', { jobId, onChainId });
+      }
+    }
+    
+    if (onChainId == null) {
+      logger.error('[refresh] No onChainId found', { 
+        jobId, 
+        hasOnChainId: job.onChainId,
+        hasOnChainBountyId: job.onChainBountyId,
+        hasBountyId: job.bountyId
+      });
+      return res.status(400).json({ 
+        error: 'No on-chain bounty ID', 
+        details: 'This job has not been registered on-chain yet. Please check that the bounty was created on-chain.'
+      });
+    }
+    
+    logger.info('[refresh] Using on-chain bounty ID', { jobId, onChainId });
+    
+    const subId = parseInt(submissionId, 10);
+    
+    // Read submission from blockchain
+    const provider = new ethers.JsonRpcProvider(RPC_URL);
+    const contract = new ethers.Contract(ESCROW_ADDR, [
+      "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))"
+    ], provider);
+    
+    const sub = await contract.getSubmission(onChainId, subId);
+    
+    // Debug: log raw struct fields
+    logger.info('[refresh] Raw submission data from chain', {
+      jobId,
+      onChainId,
+      submissionId: subId,
+      hunter: sub.hunter,
+      status: sub.status?.toString?.() ?? sub.status,
+      acceptance: sub.acceptance?.toString?.() ?? sub.acceptance,
+      rejection: sub.rejection?.toString?.() ?? sub.rejection,
+      evaluationCid: sub.evaluationCid,
+      hunterCid: sub.hunterCid
+    });
+    
+    // Map status enum to string (ethers v6 returns BigInt for enums)
+    // Contract enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
+    // Frontend expects: PENDING_EVALUATION (still pending), APPROVED/REJECTED (final states)
+    const statusMap = {
+      0: 'Prepared',
+      1: 'PENDING_EVALUATION',  // PendingVerdikta
+      2: 'REJECTED',            // Failed
+      3: 'APPROVED',            // PassedPaid (winner!)
+      4: 'APPROVED'             // PassedUnpaid (passed but someone else won)
+    };
+    const statusIndex = Number(sub.status);
+    const chainStatus = statusMap[statusIndex] || 'UNKNOWN';
+    
+    logger.info('[refresh] Status mapping', {
+      rawStatus: sub.status?.toString?.() ?? sub.status,
+      statusIndex,
+      chainStatus
+    });
+    
+    // Scores are ALREADY normalized by the contract (divided by 10000)
+    // The contract stores acceptance/rejection as 0-100, NOT 0-1000000
+    const acceptScore = Number(sub.acceptance);
+    const rejectScore = Number(sub.rejection);
+    
+    logger.info('[refresh] Parsed submission from chain', {
+      jobId,
+      onChainId,
+      submissionId: subId,
+      statusIndex,
+      chainStatus,
+      acceptScore,
+      rejectScore
+    });
+    
+    // Update local storage
+    const localSubmission = job.submissions?.find(s => s.submissionId === subId);
+    if (localSubmission) {
+      localSubmission.status = chainStatus;
+      localSubmission.score = acceptScore;
+      localSubmission.acceptance = acceptScore;
+      localSubmission.rejection = rejectScore;
+      localSubmission.evaluationCid = sub.evaluationCid;
+      localSubmission.hunterCid = sub.hunterCid;
+      localSubmission.justificationCids = sub.justificationCids;
+      localSubmission.finalizedAt = Number(sub.finalizedAt);
+      
+      jobStorage.updateJob(jobId, { submissions: job.submissions });
+      
+      logger.info('[refresh] Updated local submission', { 
+        jobId, 
+        submissionId: subId, 
+        newStatus: chainStatus,
+        score: acceptScore
+      });
+    } else {
+      logger.warn('[refresh] Submission not found in local storage', {
+        jobId,
+        submissionId: subId,
+        existingSubmissionIds: job.submissions?.map(s => s.submissionId) || []
+      });
+    }
+    
+    return res.json({
+      success: true,
+      submission: {
+        submissionId: subId,
+        status: chainStatus,
+        acceptance: acceptScore,
+        rejection: rejectScore,
+        evaluationCid: sub.evaluationCid,
+        hunterCid: sub.hunterCid,
+        justificationCids: sub.justificationCids,
+        finalizedAt: Number(sub.finalizedAt),
+        hunter: sub.hunter
+      }
+    });
+    
+  } catch (error) {
+    logger.error('[refresh] Error reading submission from blockchain', { 
+      jobId, 
+      submissionId, 
+      error: error.message,
+      stack: error.stack,
+      RPC_URL: RPC_URL ? 'set' : 'NOT SET',
+      ESCROW_ADDR
+    });
+    return res.status(500).json({ 
+      error: 'Failed to refresh submission', 
+      details: error.message,
+      hint: error.message.includes('bad bountyId') ? 'Bounty ID may not exist on this contract' :
+            error.message.includes('bad submissionId') ? 'Submission ID may not exist for this bounty' :
+            'Check server logs for details'
+    });
   }
 });
 

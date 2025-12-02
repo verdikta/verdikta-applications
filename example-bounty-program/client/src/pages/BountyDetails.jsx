@@ -9,8 +9,8 @@ import './BountyDetails.css';
 // ============================================================================
 
 const CONFIG = {
-  // How often to check for status updates (10s)
-  AUTO_REFRESH_INTERVAL_MS: 10000,
+  // How often to check for status updates (15 seconds as requested)
+  AUTO_REFRESH_INTERVAL_MS: 15000,
   
   // Polling after blockchain actions
   ACTION_POLL_INTERVAL_MS: 3000,
@@ -24,8 +24,11 @@ const CONFIG = {
   INITIAL_LOAD_MAX_RETRIES: 10,
   INITIAL_LOAD_RETRY_DELAY_MS: 3000,
   
-  // Timeout threshold for submissions (in minutes)
-  SUBMISSION_TIMEOUT_MINUTES: 20,
+  // Timeout threshold for submissions (in minutes) - CHANGED TO 6 MINUTES
+  SUBMISSION_TIMEOUT_MINUTES: 6,
+  
+  // How often to update the live timer display (1 second)
+  TIMER_UPDATE_INTERVAL_MS: 1000,
 };
 
 const PENDING_STATUSES = ['PENDING_EVALUATION', 'PendingVerdikta', 'Prepared'];
@@ -60,11 +63,15 @@ function BountyDetails({ walletState }) {
   const [resolvingId, setResolvingId] = useState(false);
   const [resolveNote, setResolveNote] = useState('');
 
+  // Live timer state - updates every second to show real-time elapsed time
+  const [currentTime, setCurrentTime] = useState(() => Math.floor(Date.now() / 1000));
+
   // Refs to avoid stale closures
   const jobRef = useRef(null);
   const submissionsRef = useRef([]);
   const pollingSubmissionsRef = useRef(new Map());
   const autoRefreshIntervalRef = useRef(null);
+  const timerIntervalRef = useRef(null);
   const isMountedRef = useRef(true);
 
   // Keep refs in sync with state
@@ -79,6 +86,37 @@ function BountyDetails({ walletState }) {
   useEffect(() => {
     pollingSubmissionsRef.current = pollingSubmissions;
   }, [pollingSubmissions]);
+
+  // ============================================================================
+  // LIVE TIMER - Updates every second for real-time display
+  // ============================================================================
+
+  useEffect(() => {
+    // Check if there are any pending submissions that need the timer
+    const hasPendingSubmissions = submissions.some(s => PENDING_STATUSES.includes(s.status));
+    
+    // Clear any existing timer
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
+    }
+
+    // Only run timer if there are pending submissions
+    if (hasPendingSubmissions) {
+      timerIntervalRef.current = setInterval(() => {
+        if (isMountedRef.current) {
+          setCurrentTime(Math.floor(Date.now() / 1000));
+        }
+      }, CONFIG.TIMER_UPDATE_INTERVAL_MS);
+    }
+
+    return () => {
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+      }
+    };
+  }, [submissions]);
 
   // ============================================================================
   // DATA LOADING
@@ -246,6 +284,9 @@ function BountyDetails({ walletState }) {
       if (autoRefreshIntervalRef.current) {
         clearInterval(autoRefreshIntervalRef.current);
       }
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+      }
     };
   }, []);
 
@@ -335,10 +376,10 @@ function BountyDetails({ walletState }) {
     return null;
   };
 
-  const getSubmissionAge = (submittedAt) => {
-    const now = Math.floor(Date.now() / 1000);
-    return (now - submittedAt) / 60;
-  };
+  // Use currentTime state for live updates instead of Date.now()
+  const getSubmissionAge = useCallback((submittedAt) => {
+    return (currentTime - submittedAt) / 60;
+  }, [currentTime]);
 
   // ============================================================================
   // POLLING HELPERS
@@ -560,7 +601,7 @@ function BountyDetails({ walletState }) {
 
     const confirmed = window.confirm(
       `Force-fail submission #${submissionId}?\n\n` +
-      'This submission has been stuck in evaluation for over 20 minutes.\n' +
+      `This submission has been stuck in evaluation for over ${CONFIG.SUBMISSION_TIMEOUT_MINUTES} minutes.\n` +
       'This action will:\n' +
       '• Mark the submission as Failed (timeout)\n' +
       '• Refund LINK tokens to the submitter\n' +
@@ -836,6 +877,7 @@ function BountyDetails({ walletState }) {
               failingSubmissions={failingSubmissions}
               pollingSubmissions={pollingSubmissions}
               disableActions={disableActionsForMissingId}
+              timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
             />
           )}
 
@@ -985,6 +1027,7 @@ function BountyDetails({ walletState }) {
               finalizingSubmissions={finalizingSubmissions}
               failingSubmissions={failingSubmissions}
               pollingSubmissions={pollingSubmissions}
+              timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
             />
           )}
         </div>
@@ -1008,6 +1051,7 @@ function BountyDetails({ walletState }) {
                 pollingState={pollingSubmissions.get(submission.submissionId)}
                 disableActions={disableActionsForMissingId}
                 getSubmissionAge={getSubmissionAge}
+                timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
               />
             ))}
           </div>
@@ -1033,7 +1077,8 @@ function PendingSubmissionsPanel({
   finalizingSubmissions,
   failingSubmissions,
   pollingSubmissions,
-  disableActions
+  disableActions,
+  timeoutMinutes
 }) {
   return (
     <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
@@ -1043,7 +1088,7 @@ function PendingSubmissionsPanel({
       </p>
       {pendingSubmissions.map(s => {
         const ageMinutes = getSubmissionAge(s.submittedAt);
-        const canTimeout = ageMinutes > CONFIG.SUBMISSION_TIMEOUT_MINUTES;
+        const canTimeout = ageMinutes > timeoutMinutes;
         const isFailing = failingSubmissions.has(s.submissionId);
         const isFinalizing = finalizingSubmissions.has(s.submissionId);
         const isPolling = pollingSubmissions.has(s.submissionId);
@@ -1062,7 +1107,7 @@ function PendingSubmissionsPanel({
                 Submission #{s.submissionId} by {s.hunter?.substring(0, 10)}...
               </span>
               <span style={{ fontSize: '0.85rem', color: '#888', marginLeft: 'auto' }}>
-                {Math.floor(ageMinutes)} min elapsed
+                {ageMinutes.toFixed(1)} min elapsed
               </span>
             </div>
 
@@ -1103,14 +1148,14 @@ function PendingSubmissionsPanel({
 
             {!canTimeout && (
               <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.5rem' }}>
-                ⏳ Timeout in {Math.ceil(CONFIG.SUBMISSION_TIMEOUT_MINUTES - ageMinutes)} min
+                ⏳ Timeout in {(timeoutMinutes - ageMinutes).toFixed(1)} min
               </div>
             )}
           </div>
         );
       })}
       <p style={{ marginTop: '0.75rem', fontSize: '0.85rem', color: '#666' }}>
-        💡 Submissions stuck &gt;{CONFIG.SUBMISSION_TIMEOUT_MINUTES} minutes can be force-failed.
+        💡 Submissions stuck &gt;{timeoutMinutes} minutes can be force-failed.
       </p>
     </div>
   );
@@ -1130,7 +1175,8 @@ function ExpiredBountyActions({
   onFailTimeout,
   finalizingSubmissions,
   failingSubmissions,
-  pollingSubmissions
+  pollingSubmissions,
+  timeoutMinutes
 }) {
   return (
     <div className="expired-bounty-section" style={{ 
@@ -1165,6 +1211,7 @@ function ExpiredBountyActions({
           failingSubmissions={failingSubmissions}
           pollingSubmissions={pollingSubmissions}
           disableActions={disableActions}
+          timeoutMinutes={timeoutMinutes}
         />
       ) : (
         <>
@@ -1200,13 +1247,14 @@ function SubmissionCard({
   isPolling, 
   pollingState, 
   disableActions, 
-  getSubmissionAge 
+  getSubmissionAge,
+  timeoutMinutes
 }) {
   const isPending = submission.status === 'PENDING_EVALUATION' || submission.status === 'PendingVerdikta';
   const isApproved = submission.status === 'APPROVED' || submission.status === 'ACCEPTED' || submission.status === 'PassedPaid';
   const isRejected = submission.status === 'REJECTED' || submission.status === 'Failed';
   const ageMinutes = isPending ? getSubmissionAge(submission.submittedAt) : 0;
-  const canTimeout = ageMinutes > CONFIG.SUBMISSION_TIMEOUT_MINUTES;
+  const canTimeout = ageMinutes > timeoutMinutes;
   const canFinalize = isPending && !isPolling;
 
   const getStatusBadgeClass = () => {
@@ -1292,11 +1340,11 @@ function SubmissionCard({
               className="btn btn-warning btn-sm"
               style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', width: '100%' }}
             >
-              {isFailing ? '⏳ Marking as Failed...' : `⏱️ Fail Timed-Out (${Math.floor(ageMinutes)} min)`}
+              {isFailing ? '⏳ Marking as Failed...' : `⏱️ Fail Timed-Out (${ageMinutes.toFixed(1)} min)`}
             </button>
           ) : (
             <div style={{ fontSize: '0.8rem', color: '#888', textAlign: 'center' }}>
-              ⏳ Evaluating... ({Math.floor(ageMinutes)} min, timeout in {Math.ceil(CONFIG.SUBMISSION_TIMEOUT_MINUTES - ageMinutes)} min)
+              ⏳ Evaluating... ({ageMinutes.toFixed(1)} min, timeout in {(timeoutMinutes - ageMinutes).toFixed(1)} min)
             </div>
           )}
         </div>

@@ -80,6 +80,7 @@ function CreateBounty({ walletState }) {
       ...rubricWithoutThreshold,
       criteria: (rubricWithoutThreshold.criteria || []).map((criterion) => ({
         id: criterion.id,
+        label: criterion.label || criterion.id.replace(/_/g, ' '), // Preserve label for display
         must: !!criterion.must,
         weight: Number(criterion.weight ?? 0),
         description:
@@ -646,8 +647,9 @@ function CreateBounty({ walletState }) {
                   key={criterion.id}
                   criterion={criterion}
                   index={index}
-                  onUpdate={(updated) => updateCriterion(index, updated)}
+                  onChange={(updated) => updateCriterion(index, updated)}
                   onRemove={() => removeCriterion(index)}
+                  canRemove={(rubric.criteria || []).length > 1}
                 />
               ))}
 

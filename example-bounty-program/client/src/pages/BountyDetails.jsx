@@ -968,7 +968,7 @@ function BountyDetails({ walletState }) {
             {rubric.criteria?.map((criterion, index) => (
               <div key={index} className="criterion-card">
                 <div className="criterion-header">
-                  <h3>{criterion.id.replace(/_/g, ' ')}</h3>
+                  <h3>{criterion.label || criterion.id.replace(/_/g, ' ')}</h3>
                   {criterion.must && <span className="badge badge-must">MUST PASS</span>}
                   {!criterion.must && <span className="weight-badge">Weight: {criterion.weight}</span>}
                 </div>

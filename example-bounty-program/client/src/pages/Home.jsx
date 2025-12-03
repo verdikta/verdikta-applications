@@ -1,7 +1,18 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { apiService } from '../services/api';
 import './Home.css';
+
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
+const CONFIG = {
+  // How often to refresh jobs list when there are pending submissions (15 seconds)
+  AUTO_REFRESH_INTERVAL_MS: 15000,
+};
+
+const PENDING_STATUSES = ['PENDING_EVALUATION', 'PendingVerdikta', 'Prepared'];
 
 function Home({ walletState }) {
   const [jobs, setJobs] = useState([]);
@@ -13,43 +24,107 @@ function Home({ walletState }) {
     minPayout: ''
   });
 
-  useEffect(() => {
-    loadJobs();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters]);
+  // Refs for auto-refresh
+  const autoRefreshIntervalRef = useRef(null);
+  const isMountedRef = useRef(true);
 
-  const loadJobs = async () => {
+  const loadJobs = useCallback(async (silent = false) => {
+    if (!isMountedRef.current) return;
+    
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       setError(null);
 
       const filterParams = {};
-      // carry through optional filters
       if (filters.search) filterParams.search = filters.search;
       if (filters.minPayout) filterParams.minPayout = filters.minPayout;
 
-      // normalize status from the dropdown (user selection)
       const statusUpper = String(filters.status || '').toUpperCase();
 
       if (['OPEN', 'EXPIRED', 'AWARDED', 'CLOSED'].includes(statusUpper)) {
-        // user chose a specific status -> ask backend for exactly that
         filterParams.status = statusUpper;
       } else {
-        // default view -> show everything EXCEPT CLOSED (already finalized)
-        // Show OPEN, EXPIRED, and AWARDED by default
         filterParams.excludeStatuses = 'CLOSED';
       }
 
       const response = await apiService.listJobs(filterParams);
-      setJobs(response.jobs || []);
+      
+      if (isMountedRef.current) {
+        setJobs(response.jobs || []);
+      }
     } catch (err) {
-      console.error('Error loading jobs:', err);
-      setError('Failed to load jobs. ' + err.message);
-      setJobs([]);
+      if (isMountedRef.current) {
+        console.error('Error loading jobs:', err);
+        setError('Failed to load jobs. ' + err.message);
+        setJobs([]);
+      }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current && !silent) setLoading(false);
     }
-  };
+  }, [filters]);
+
+  // Initial load and filter changes
+  useEffect(() => {
+    isMountedRef.current = true;
+    loadJobs();
+    
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, [loadJobs]);
+
+  // ============================================================================
+  // AUTO-REFRESH - Poll for updates when there are pending evaluations
+  // ============================================================================
+
+  useEffect(() => {
+    // Clear any existing interval
+    if (autoRefreshIntervalRef.current) {
+      clearInterval(autoRefreshIntervalRef.current);
+      autoRefreshIntervalRef.current = null;
+    }
+
+    // Only auto-refresh if we have jobs loaded
+    if (jobs.length === 0) return;
+
+    // Check if any jobs have pending submissions or are in states that might change
+    const shouldAutoRefresh = jobs.some(job => 
+      job.status === 'OPEN' || 
+      job.status === 'EXPIRED' ||
+      job.submissions?.some(s => PENDING_STATUSES.includes(s.status))
+    );
+
+    if (!shouldAutoRefresh) {
+      console.log('📊 Home: No jobs needing auto-refresh');
+      return;
+    }
+
+    console.log(`📊 Home: Starting auto-refresh every ${CONFIG.AUTO_REFRESH_INTERVAL_MS / 1000}s`);
+
+    autoRefreshIntervalRef.current = setInterval(() => {
+      if (isMountedRef.current) {
+        console.log('🔄 Home: Auto-refreshing jobs list...');
+        loadJobs(true); // silent refresh
+      }
+    }, CONFIG.AUTO_REFRESH_INTERVAL_MS);
+
+    return () => {
+      if (autoRefreshIntervalRef.current) {
+        clearInterval(autoRefreshIntervalRef.current);
+        autoRefreshIntervalRef.current = null;
+      }
+    };
+  }, [jobs, loadJobs]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+      if (autoRefreshIntervalRef.current) {
+        clearInterval(autoRefreshIntervalRef.current);
+      }
+    };
+  }, []);
 
   const handleFilterChange = (key, value) => {
     setFilters(prev => ({ ...prev, [key]: value }));
@@ -217,6 +292,11 @@ function JobCard({ job }) {
 
   const isClosingSoon = isOpen && hoursRemaining > 0 && hoursRemaining < 24;
 
+  // Check if any submissions are pending evaluation
+  const hasPendingEvaluation = job.submissions?.some(s => 
+    ['PENDING_EVALUATION', 'PendingVerdikta', 'Prepared'].includes(s.status)
+  );
+
   return (
     <Link to={`/bounty/${job.jobId}`} className="bounty-card">
       <div className="bounty-header">
@@ -246,6 +326,11 @@ function JobCard({ job }) {
         <div className="submissions">
           <span className="label">Submissions:</span>
           <span className="count">{job.submissionCount || 0}</span>
+          {hasPendingEvaluation && (
+            <span className="pending-indicator" title="Evaluation in progress">
+              🔄
+            </span>
+          )}
         </div>
       </div>
       <div className="bounty-meta">
@@ -276,4 +361,3 @@ function JobCard({ job }) {
 }
 
 export default Home;
-

@@ -9,22 +9,23 @@ import './BountyDetails.css';
 // ============================================================================
 
 const CONFIG = {
-  // How often to check for status updates (15 seconds as requested)
+  // How often to check for status updates (15 seconds)
   AUTO_REFRESH_INTERVAL_MS: 15000,
   
-  // Polling after blockchain actions
+  // Polling after blockchain actions (for backend sync)
   ACTION_POLL_INTERVAL_MS: 3000,
   ACTION_POLL_MAX_ATTEMPTS: 20, // 20 * 3s = 60 seconds max
   
-  // Polling for submission status changes
+  // Polling for submission status changes after finalization
+  // Reduced: 40 attempts * 3s = 2 minutes (if not done by then, auto-refresh takes over)
   SUBMISSION_POLL_INTERVAL_MS: 3000,
-  SUBMISSION_POLL_MAX_ATTEMPTS: 120, // 120 * 3s = 6 minutes
+  SUBMISSION_POLL_MAX_ATTEMPTS: 40,
   
   // Initial load retries
   INITIAL_LOAD_MAX_RETRIES: 10,
   INITIAL_LOAD_RETRY_DELAY_MS: 3000,
   
-  // Timeout threshold for submissions (in minutes) - CHANGED TO 6 MINUTES
+  // Timeout threshold for submissions (in minutes) - for force-fail
   SUBMISSION_TIMEOUT_MINUTES: 6,
   
   // How often to update the live timer display (1 second)
@@ -56,6 +57,7 @@ function BountyDetails({ walletState }) {
   const [failingSubmissions, setFailingSubmissions] = useState(new Set());
   
   // Polling state for submissions waiting for status update
+  // Stores: { attempts, maxAttempts }
   const [pollingSubmissions, setPollingSubmissions] = useState(new Map());
   
   // Resolution state for on-chain bountyId
@@ -232,13 +234,18 @@ function BountyDetails({ walletState }) {
       
       // Get current pending submissions (use ref to avoid stale closure)
       const currentSubs = submissionsRef.current;
-      const pendingSubs = currentSubs.filter(s => 
-        PENDING_STATUSES.includes(s.status) && 
-        !pollingSubmissionsRef.current.has(s.submissionId)
-      );
+      
+      // Only skip submissions that are ACTIVELY being polled (in pollingSubmissions map)
+      // If polling timed out, we remove from the map, so auto-refresh will check them
+      const pendingSubs = currentSubs.filter(s => {
+        if (!PENDING_STATUSES.includes(s.status)) return false;
+        // Skip if actively polling
+        if (pollingSubmissionsRef.current.has(s.submissionId)) return false;
+        return true;
+      });
 
       if (pendingSubs.length === 0) {
-        console.log('📊 Auto-refresh: No pending submissions to check');
+        console.log('📊 Auto-refresh: No pending submissions to check (some may be actively polling)');
         return;
       }
 
@@ -415,63 +422,71 @@ function BountyDetails({ walletState }) {
   };
 
   /**
-   * Poll for submission status change
+   * Poll for submission status change after finalization
+   * Returns: { success: boolean, submission?: object, reason?: string }
+   * 
+   * FIX: On timeout, we REMOVE from pollingSubmissions so auto-refresh can take over
    */
   const pollSubmissionStatus = useCallback(async (jobId, submissionId, onStatusChange) => {
     if (!jobId) {
       console.error('❌ pollSubmissionStatus called without jobId!');
-      return;
+      return { success: false, reason: 'no_job_id' };
     }
 
     // Guard against duplicate polling
     if (pollingSubmissionsRef.current.has(submissionId)) {
       console.log(`⚠️ Already polling submission #${submissionId}`);
-      return;
+      return { success: false, reason: 'already_polling' };
     }
 
     console.log(`🔄 Starting to poll submission #${submissionId} for job ${jobId}...`);
 
+    // Set initial polling state
     setPollingSubmissions(prev => {
       const next = new Map(prev);
-      next.set(submissionId, { attempts: 0, maxAttempts: CONFIG.SUBMISSION_POLL_MAX_ATTEMPTS, status: 'polling' });
+      next.set(submissionId, { attempts: 0, maxAttempts: CONFIG.SUBMISSION_POLL_MAX_ATTEMPTS });
       return next;
     });
 
+    let foundResult = null;
+
     const success = await pollForCondition(
       async (attempt) => {
-        // Update polling state
+        // Update polling state with current attempt
         setPollingSubmissions(prev => {
           const next = new Map(prev);
-          next.set(submissionId, { 
-            attempts: attempt, 
-            maxAttempts: CONFIG.SUBMISSION_POLL_MAX_ATTEMPTS, 
-            status: 'polling' 
-          });
+          next.set(submissionId, { attempts: attempt, maxAttempts: CONFIG.SUBMISSION_POLL_MAX_ATTEMPTS });
           return next;
         });
 
-        const result = await apiService.refreshSubmission(jobId, submissionId);
-        const newStatus = result.submission?.status;
+        try {
+          const result = await apiService.refreshSubmission(jobId, submissionId);
+          const newStatus = result.submission?.status;
 
-        if (newStatus && !PENDING_STATUSES.includes(newStatus)) {
-          console.log(`🎉 Submission #${submissionId} status changed to: ${newStatus}`);
-          
-          // Update submission in local state
-          setSubmissions(prevSubs =>
-            prevSubs.map(s =>
-              s.submissionId === submissionId ? { ...s, ...result.submission } : s
-            )
-          );
+          console.log(`📊 Poll attempt ${attempt}: status = ${newStatus}`);
 
-          // Clear polling state
-          setPollingSubmissions(prev => {
-            const next = new Map(prev);
-            next.delete(submissionId);
-            return next;
-          });
+          if (newStatus && !PENDING_STATUSES.includes(newStatus)) {
+            console.log(`🎉 Submission #${submissionId} status changed to: ${newStatus}`);
+            foundResult = result.submission;
+            
+            // Update submission in local state immediately
+            setSubmissions(prevSubs =>
+              prevSubs.map(s =>
+                s.submissionId === submissionId ? { ...s, ...result.submission } : s
+              )
+            );
 
-          if (onStatusChange) onStatusChange(result.submission);
-          return true;
+            // Clear polling state on success
+            setPollingSubmissions(prev => {
+              const next = new Map(prev);
+              next.delete(submissionId);
+              return next;
+            });
+
+            return true;
+          }
+        } catch (err) {
+          console.log(`⚠️ Poll attempt ${attempt} error:`, err.message);
         }
 
         return false;
@@ -482,18 +497,27 @@ function BountyDetails({ walletState }) {
       }
     );
 
-    if (!success && isMountedRef.current) {
-      console.log(`⏰ Polling timed out for submission #${submissionId}`);
+    if (success && foundResult) {
+      // Call the success callback
+      if (onStatusChange) {
+        onStatusChange(foundResult);
+      }
+      return { success: true, submission: foundResult };
+    }
+
+    // Timed out - FIX: REMOVE from pollingSubmissions so auto-refresh can take over
+    if (isMountedRef.current) {
+      console.log(`⏰ Polling timed out for submission #${submissionId} - auto-refresh will continue monitoring`);
+      
+      // Clear the polling state - this allows auto-refresh to pick it up
       setPollingSubmissions(prev => {
         const next = new Map(prev);
-        next.set(submissionId, { 
-          attempts: CONFIG.SUBMISSION_POLL_MAX_ATTEMPTS, 
-          maxAttempts: CONFIG.SUBMISSION_POLL_MAX_ATTEMPTS, 
-          status: 'timeout' 
-        });
+        next.delete(submissionId);
         return next;
       });
     }
+
+    return { success: false, reason: 'timeout' };
   }, []);
 
   // ============================================================================
@@ -519,6 +543,8 @@ function BountyDetails({ walletState }) {
     );
     if (!confirmed) return;
 
+    let txHash = null;
+
     try {
       setFinalizingSubmissions(prev => new Set(prev).add(submissionId));
       setError(null);
@@ -528,8 +554,9 @@ function BountyDetails({ walletState }) {
 
       console.log('📤 Finalizing submission:', { bountyId: onChainId, submissionId });
       const result = await contractService.finalizeSubmission(onChainId, submissionId);
+      txHash = result.txHash;
 
-      console.log('✅ Finalization transaction confirmed:', result.txHash);
+      console.log('✅ Finalization transaction confirmed:', txHash);
 
       // Clear finalizing state
       setFinalizingSubmissions(prev => {
@@ -542,30 +569,36 @@ function BountyDetails({ walletState }) {
       const currentJobId = jobRef.current?.jobId || job?.jobId;
       console.log(`🔄 Starting to poll for status update (jobId: ${currentJobId}, submissionId: ${submissionId})...`);
 
-      await pollSubmissionStatus(currentJobId, submissionId, (updatedSubmission) => {
+      const pollResult = await pollSubmissionStatus(currentJobId, submissionId, (updatedSubmission) => {
         const statusDisplay = updatedSubmission.status === 'APPROVED' ? '✅ APPROVED' :
                              updatedSubmission.status === 'REJECTED' ? '❌ REJECTED' :
+                             updatedSubmission.status === 'PassedPaid' ? '✅ PASSED & PAID' :
+                             updatedSubmission.status === 'Failed' ? '❌ FAILED' :
                              updatedSubmission.status;
 
         alert(
           `🎉 Submission #${submissionId} Finalized!\n\n` +
           `Status: ${statusDisplay}\n` +
           `Score: ${updatedSubmission.acceptance?.toFixed(1) || 'N/A'}%\n` +
-          `Transaction: ${result.txHash}\n\n` +
+          `Transaction: ${txHash}\n\n` +
           'The page has been updated with the results.'
         );
 
+        // Reload the full job details
         loadJobDetails(true);
       });
 
-      // Check if polling timed out
-      const pollState = pollingSubmissionsRef.current.get(submissionId);
-      if (pollState?.status === 'timeout') {
+      // If polling timed out, show a different message
+      if (!pollResult.success && pollResult.reason === 'timeout') {
         alert(
-          `⏳ Submission #${submissionId} was finalized on-chain but status sync timed out.\n\n` +
-          `Transaction: ${result.txHash}\n\n` +
-          'The blockchain may be slow. Please refresh the page in a moment to see the updated status.'
+          `✅ Transaction confirmed!\n\n` +
+          `Transaction: ${txHash}\n\n` +
+          'The status is still syncing. The page will auto-refresh every 15 seconds.\n' +
+          'You can also manually refresh if needed.'
         );
+        
+        // Still reload to make sure we have latest data
+        loadJobDetails(true);
       }
 
     } catch (err) {
@@ -577,6 +610,8 @@ function BountyDetails({ walletState }) {
         next.delete(submissionId);
         return next;
       });
+      
+      // Clear any polling state on error
       setPollingSubmissions(prev => {
         const next = new Map(prev);
         next.delete(submissionId);
@@ -1082,9 +1117,9 @@ function PendingSubmissionsPanel({
 }) {
   return (
     <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
-      <h4 style={{ margin: '0 0 0.75rem 0' }}>⚠️ Stuck Evaluations</h4>
+      <h4 style={{ margin: '0 0 0.75rem 0' }}>⚠️ Pending Evaluations</h4>
       <p style={{ marginBottom: '0.75rem' }}>
-        The following submissions are stuck in evaluation:
+        The following submissions are being evaluated:
       </p>
       {pendingSubmissions.map(s => {
         const ageMinutes = getSubmissionAge(s.submittedAt);
@@ -1148,14 +1183,14 @@ function PendingSubmissionsPanel({
 
             {!canTimeout && (
               <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.5rem' }}>
-                ⏳ Timeout in {(timeoutMinutes - ageMinutes).toFixed(1)} min
+                ⏳ Force-fail available in {(timeoutMinutes - ageMinutes).toFixed(1)} min
               </div>
             )}
           </div>
         );
       })}
       <p style={{ marginTop: '0.75rem', fontSize: '0.85rem', color: '#666' }}>
-        💡 Submissions stuck &gt;{timeoutMinutes} minutes can be force-failed.
+        💡 Auto-refreshing every 15 seconds. Submissions stuck &gt;{timeoutMinutes} minutes can be force-failed.
       </p>
     </div>
   );
@@ -1311,11 +1346,6 @@ function SubmissionCard({
           <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>
             Attempt {pollingState.attempts}/{pollingState.maxAttempts}
           </div>
-          {pollingState.status === 'timeout' && (
-            <div style={{ fontSize: '0.8rem', color: '#f57c00', marginTop: '0.25rem' }}>
-              ⏰ Timed out - please refresh the page
-            </div>
-          )}
         </div>
       )}
 
@@ -1344,7 +1374,7 @@ function SubmissionCard({
             </button>
           ) : (
             <div style={{ fontSize: '0.8rem', color: '#888', textAlign: 'center' }}>
-              ⏳ Evaluating... ({ageMinutes.toFixed(1)} min, timeout in {(timeoutMinutes - ageMinutes).toFixed(1)} min)
+              ⏳ Evaluating... ({ageMinutes.toFixed(1)} min, force-fail in {(timeoutMinutes - ageMinutes).toFixed(1)} min)
             </div>
           )}
         </div>

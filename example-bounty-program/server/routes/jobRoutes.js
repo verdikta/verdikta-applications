@@ -285,6 +285,134 @@ router.post('/create', async (req, res) => {
   }
 });
 
+/* =======================
+   SYNC STATUS - MUST BE BEFORE /:jobId routes!
+   ======================= */
+
+router.get('/sync/status', (req, res) => {
+  if (process.env.USE_BLOCKCHAIN_SYNC !== 'true') {
+    return res.json({ enabled: false, message: 'Blockchain sync is disabled. Set USE_BLOCKCHAIN_SYNC=true in .env to enable.' });
+  }
+  try {
+    const { getSyncService } = require('../utils/syncService');
+    const syncService = getSyncService();
+    return res.json({ enabled: true, status: syncService.getStatus() });
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to get sync status', details: error.message });
+  }
+});
+
+router.post('/sync/now', async (req, res) => {
+  if (process.env.USE_BLOCKCHAIN_SYNC !== 'true') {
+    return res.status(400).json({ error: 'Blockchain sync not enabled', message: 'Set USE_BLOCKCHAIN_SYNC=true in .env to enable sync functionality.' });
+  }
+  try {
+    const { getSyncService } = require('../utils/syncService');
+    const syncService = getSyncService();
+    syncService.syncNow();
+    return res.json({ success: true, message: 'Blockchain sync triggered', status: syncService.getStatus() });
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to trigger sync', details: error.message });
+  }
+});
+
+/* =======================
+   ADMIN ROUTES - MUST BE BEFORE /:jobId routes!
+   ======================= */
+
+router.get('/admin/diagnostics', async (req, res) => {
+  try {
+    const diagnostics = await jobStorage.getDiagnostics();
+    return res.json({ success: true, diagnostics });
+  } catch (error) {
+    logger.error('[admin/diagnostics] error', { msg: error.message });
+    return res.status(500).json({ error: 'Failed to get diagnostics', details: error.message });
+  }
+});
+
+router.get('/admin/orphans', async (req, res) => {
+  try {
+    const orphans = await jobStorage.findOrphanedJobs();
+    return res.json({ 
+      success: true, 
+      count: orphans.length,
+      orphans: orphans.map(j => ({
+        jobId: j.jobId,
+        onChainId: j.onChainId,
+        title: j.title,
+        status: j.status,
+        contractAddress: j.contractAddress,
+        creator: j.creator,
+        createdAt: j.createdAt
+      }))
+    });
+  } catch (error) {
+    logger.error('[admin/orphans] error', { msg: error.message });
+    return res.status(500).json({ error: 'Failed to find orphaned jobs', details: error.message });
+  }
+});
+
+router.post('/admin/orphans/mark', async (req, res) => {
+  try {
+    const result = await jobStorage.markOrphanedJobs();
+    return res.json({ 
+      success: true, 
+      message: `Marked ${result.marked} jobs as orphaned`,
+      ...result
+    });
+  } catch (error) {
+    logger.error('[admin/orphans/mark] error', { msg: error.message });
+    return res.status(500).json({ error: 'Failed to mark orphaned jobs', details: error.message });
+  }
+});
+
+router.delete('/admin/orphans', async (req, res) => {
+  try {
+    // Require confirmation query param to prevent accidental deletion
+    if (req.query.confirm !== 'yes') {
+      return res.status(400).json({ 
+        error: 'Confirmation required', 
+        details: 'Add ?confirm=yes to confirm deletion of orphaned jobs'
+      });
+    }
+    
+    const result = await jobStorage.deleteOrphanedJobs();
+    return res.json({ 
+      success: true, 
+      message: `Deleted ${result.deleted} orphaned jobs`,
+      ...result
+    });
+  } catch (error) {
+    logger.error('[admin/orphans] delete error', { msg: error.message });
+    return res.status(500).json({ error: 'Failed to delete orphaned jobs', details: error.message });
+  }
+});
+
+router.patch('/admin/:jobId/status', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { status } = req.body;
+    
+    if (!status) {
+      return res.status(400).json({ error: 'Status is required' });
+    }
+    
+    const validStatuses = ['OPEN', 'EXPIRED', 'AWARDED', 'CLOSED', 'ORPHANED', 'CANCELLED'];
+    if (!validStatuses.includes(status.toUpperCase())) {
+      return res.status(400).json({ 
+        error: 'Invalid status', 
+        details: `Valid statuses: ${validStatuses.join(', ')}`
+      });
+    }
+    
+    const job = await jobStorage.updateJobStatus(jobId, status);
+    return res.json({ success: true, job });
+  } catch (error) {
+    logger.error('[admin/status] error', { msg: error.message });
+    return res.status(500).json({ error: 'Failed to update job status', details: error.message });
+  }
+});
+
 /* ==============
    LIST JOBS
    ============== */
@@ -293,11 +421,14 @@ router.get('/', async (req, res) => {
   try {
     const {
       status, creator, minPayout, search, onChainId,
-      hideEnded, excludeStatuses, limit = 50, offset = 0
+      hideEnded, excludeStatuses, includeOrphans, limit = 50, offset = 0
     } = req.query;
-    logger.info('[jobs/list] filters', { status, creator, search, onChainId, hideEnded, excludeStatuses });
+    logger.info('[jobs/list] filters', { status, creator, search, onChainId, hideEnded, excludeStatuses, includeOrphans });
 
-    const filters = {};
+    const filters = {
+      // By default, don't show orphaned jobs
+      includeOrphans: String(includeOrphans).toLowerCase() === 'true'
+    };
     if (status) filters.status = String(status).toUpperCase();
     if (creator) filters.creator = creator;
     if (minPayout) filters.minPayout = minPayout;
@@ -313,6 +444,10 @@ router.get('/', async (req, res) => {
     if (String(hideEnded).toLowerCase() === 'true') {
       excludeSet.add('CANCELLED');
       excludeSet.add('COMPLETED');
+    }
+    // Always exclude ORPHANED unless explicitly requested
+    if (!filters.includeOrphans) {
+      excludeSet.add('ORPHANED');
     }
     if (excludeStatuses) {
       for (const s of String(excludeStatuses).split(',')) {
@@ -343,7 +478,8 @@ router.get('/', async (req, res) => {
       submissionCloseTime: job.submissionCloseTime,
       createdAt: job.createdAt,
       winner: job.winner,
-      syncedFromBlockchain: job.syncedFromBlockchain || false
+      syncedFromBlockchain: job.syncedFromBlockchain || false,
+      contractAddress: job.contractAddress // Include for debugging
     }));
 
     return res.json({
@@ -533,10 +669,16 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     job.txHash      = txHash;
     job.blockNumber = blockNumber;
     job.onChain     = true;
+    
+    // Track which contract this job was created on
+    const currentContract = jobStorage.getCurrentContractAddress();
+    if (currentContract && !job.contractAddress) {
+      job.contractAddress = currentContract;
+    }
 
     await jobStorage.writeStorage(storage);
 
-    logger.info('[jobs/bountyId] updated', { jobId, onChainId: bountyId });
+    logger.info('[jobs/bountyId] updated', { jobId, onChainId: bountyId, contractAddress: job.contractAddress });
     return res.json({ success: true, job });
   } catch (error) {
     logger.error('[jobs/bountyId] error', { msg: error.message });
@@ -589,6 +731,9 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
               job.onChainId = bountyId;  // ← Changed from job.bountyId
               job.onChain = true;
               job.txHash = job.txHash ?? txHash;
+              // Track contract address
+              const currentContract = jobStorage.getCurrentContractAddress();
+              if (currentContract) job.contractAddress = currentContract;
               await jobStorage.writeStorage(storage);
               logger.info('[resolve] via tx', { jobId: jobIdParam, onChainId: bountyId });
               return res.json({ success: true, method: 'tx', bountyId, job });
@@ -627,6 +772,9 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
       if (best != null) {
         job.onChainId = best;  // ← Changed from job.bountyId
         job.onChain = true;
+        // Track contract address
+        const currentContract = jobStorage.getCurrentContractAddress();
+        if (currentContract) job.contractAddress = currentContract;
         await jobStorage.writeStorage(storage);
         logger.info('[resolve] via state', { jobId: jobIdParam, onChainId: best, delta: bestDelta });
         return res.json({ success: true, method: 'state', bountyId: best, delta: bestDelta, job });
@@ -644,37 +792,6 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
   }
 });
 
-
-/* =======================
-   SYNC STATUS (unchanged)
-   ======================= */
-
-router.get('/sync/status', (req, res) => {
-  if (process.env.USE_BLOCKCHAIN_SYNC !== 'true') {
-    return res.json({ enabled: false, message: 'Blockchain sync is disabled. Set USE_BLOCKCHAIN_SYNC=true in .env to enable.' });
-  }
-  try {
-    const { getSyncService } = require('../utils/syncService');
-    const syncService = getSyncService();
-    return res.json({ enabled: true, status: syncService.getStatus() });
-  } catch (error) {
-    return res.status(500).json({ error: 'Failed to get sync status', details: error.message });
-  }
-});
-
-router.post('/sync/now', async (req, res) => {
-  if (process.env.USE_BLOCKCHAIN_SYNC !== 'true') {
-    return res.status(400).json({ error: 'Blockchain sync not enabled', message: 'Set USE_BLOCKCHAIN_SYNC=true in .env to enable sync functionality.' });
-  }
-  try {
-    const { getSyncService } = require('../utils/syncService');
-    const syncService = getSyncService();
-    syncService.syncNow();
-    return res.json({ success: true, message: 'Blockchain sync triggered', status: syncService.getStatus() });
-  } catch (error) {
-    return res.status(500).json({ error: 'Failed to trigger sync', details: error.message });
-  }
-});
 
 /* =======================
    REFRESH SUBMISSION FROM BLOCKCHAIN

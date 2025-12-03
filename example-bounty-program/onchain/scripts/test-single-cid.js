@@ -10,13 +10,16 @@ const AGGREGATOR = "0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089"; // Base Sepolia
 const LINK_TOKEN = "0xE4aB69C077896252FAFBD49EFD26B5D171A32410"; // Base Sepolia
 
 // Test with just your deliverable CID
-const CIDS     = ["QmeY9cjdQJ1yvT5pcVmXfFwNwehEnLm12qpQZA2UiTmQ1D","QmXmMr5pTMRwb6nKeuF8UGwsmsDXXxfyMBfARzLyUzMSy2"];
+const CIDS     = ["QmRLB6LYe6VER6UQDoX7wt4LmKATHbGA81ny5vgRMbfrtX","QmXv5UDj9Sj7KBdet5375sEUFptKPsdjp345v1ztRUq4Tj"];
+// const CIDS     = ["QmeY9cjdQJ1yvT5pcVmXfFwNwehEnLm12qpQZA2UiTmQ1D","QmXmMr5pTMRwb6nKeuF8UGwsmsDXXxfyMBfARzLyUzMSy2"];
 // const CIDS     = ["QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH","QmZDcGhsupB8xF4B2Soe2ugo43ALYuXuSn6GbSx6cGtTiL"];
 // const CIDS = ["QmS6DqMsodYgwKa2eFmUA5gxeKiYsv9FaiFANTrGMQgQgs"];
 // const CIDS = ["QmS6DqMsodYgwKa2eFmUA5gxeKiYsv9FaiFANTrGMQgQgs","QmVjqNc4SxJWdmVPPrpDgaNFK8SUZ1LkxePetz91PvK4qF"];
+// const ADDENDUM = "Thank you for giving me the opportunity to submit this work. You can find it below in the references section."; // Empty - no addendum
 const ADDENDUM = "Just noise."; // Empty - no addendum
 
-const JOB_CLASS = 3030;
+const JOB_CLASS = 717;
+// const JOB_CLASS = 3030;
 // const JOB_CLASS = 128;
 // const JOB_CLASS = 2020;
 const MAX_ORACLE_FEE = ethers.parseUnits("0.01", 18);

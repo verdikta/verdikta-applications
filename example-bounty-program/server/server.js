@@ -88,13 +88,13 @@ const initializeBlockchainSync = () => {
       );
       
       // Initialize and start sync service
-      const syncIntervalMinutes = parseInt(process.env.SYNC_INTERVAL_MINUTES || '2');
-      const syncService = initializeSyncService(syncIntervalMinutes);
+      const syncIntervalSeconds = parseInt(process.env.SYNC_INTERVAL_SECONDS || '20');
+      const syncService = initializeSyncService(syncIntervalSeconds / 60);
       syncService.start();
       
       logger.info('✅ Blockchain sync enabled', {
         contractAddress: process.env.BOUNTY_ESCROW_ADDRESS,
-        syncInterval: `${syncIntervalMinutes} minutes`
+        syncInterval: `${syncIntervalSeconds} seconds`
       });
       logger.info('ℹ️  Server is read-only: Users create jobs via MetaMask, server syncs automatically');
       

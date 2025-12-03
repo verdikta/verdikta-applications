@@ -72,7 +72,7 @@ class SyncService {
 
       // Get all jobs from blockchain
       const onChainBounties = await contractService.listBounties();
-      
+
       // Build a set of on-chain IDs for orphan detection
       const onChainIds = new Set(onChainBounties.map(b => b.jobId));
 
@@ -81,20 +81,42 @@ class SyncService {
       let updated = 0;
       let unchanged = 0;
       let orphaned = 0;
+      let linked = 0;
 
       // First pass: Update/add jobs from blockchain
       for (const bounty of onChainBounties) {
         // Find existing job by onChainId (primary) or legacy bountyId field
         const existingJob = storage.jobs.find(j =>
-          j.onChainId === bounty.jobId || 
+          j.onChainId === bounty.jobId ||
           j.bountyId === bounty.jobId ||  // Legacy fallback
           (j.onChainBountyId === bounty.jobId)  // Another legacy name
         );
 
         if (!existingJob) {
-          // New job from blockchain - add it
-          await this.addJobFromBlockchain(bounty, storage, currentContract);
-          added++;
+          // Check for recently created jobs without onChainId that might be waiting to be linked
+          // This handles the race condition between frontend create and sync
+          const pendingJob = storage.jobs.find(j => 
+            j.onChainId == null && 
+            j.bountyId == null &&
+            j.creator?.toLowerCase() === bounty.creator?.toLowerCase() &&
+            // Match by submission deadline (within 60 seconds tolerance)
+            Math.abs((j.submissionCloseTime || 0) - bounty.submissionCloseTime) < 60
+          );
+          
+          if (pendingJob) {
+            // Link existing job instead of creating duplicate
+            logger.info('🔗 Linking pending job to on-chain bounty', {
+              jobId: pendingJob.jobId,
+              onChainId: bounty.jobId,
+              title: pendingJob.title
+            });
+            await this.updateJobFromBlockchain(pendingJob, bounty, storage, currentContract);
+            linked++;
+          } else {
+            // Truly new job from blockchain (created by another frontend or directly) - add it
+            await this.addJobFromBlockchain(bounty, storage, currentContract);
+            added++;
+          }
         } else {
           // Job exists - check if we need to update it
           const needsUpdate = this.needsUpdate(existingJob, bounty);
@@ -111,11 +133,11 @@ class SyncService {
       for (const job of storage.jobs) {
         // Skip jobs that are already marked as orphaned or closed
         if (job.status === 'ORPHANED' || job.status === 'CLOSED') continue;
-        
+
         // Skip jobs without an onChainId (never went on-chain)
         const chainId = job.onChainId ?? job.bountyId ?? job.onChainBountyId;
         if (chainId == null) continue;
-        
+
         // Skip jobs from different contracts
         const jobContract = (job.contractAddress || '').toLowerCase();
         if (jobContract && jobContract !== currentContract) {
@@ -125,14 +147,14 @@ class SyncService {
             job.orphanedAt = Math.floor(Date.now() / 1000);
             job.orphanReason = 'different_contract';
             orphaned++;
-            logger.info('Marked job as orphaned (different contract)', { 
-              jobId: job.jobId, 
-              onChainId: chainId 
+            logger.info('Marked job as orphaned (different contract)', {
+              jobId: job.jobId,
+              onChainId: chainId
             });
           }
           continue;
         }
-        
+
         // Check if this job's on-chain ID exists on current contract
         if (!onChainIds.has(chainId)) {
           // Job references an on-chain ID that doesn't exist!
@@ -140,8 +162,8 @@ class SyncService {
           job.orphanedAt = Math.floor(Date.now() / 1000);
           job.orphanReason = 'not_found_on_chain';
           orphaned++;
-          logger.warn('Marked job as orphaned (not found on chain)', { 
-            jobId: job.jobId, 
+          logger.warn('Marked job as orphaned (not found on chain)', {
+            jobId: job.jobId,
             onChainId: chainId,
             contractAddress: currentContract
           });
@@ -149,7 +171,7 @@ class SyncService {
       }
 
       // Persist changes if any
-      if (added > 0 || updated > 0 || orphaned > 0) {
+      if (added > 0 || updated > 0 || orphaned > 0 || linked > 0) {
         await jobStorage.writeStorage(storage);
       }
 
@@ -160,6 +182,7 @@ class SyncService {
       logger.info('✅ Blockchain sync completed', {
         duration: `${duration}ms`,
         added,
+        linked,
         updated,
         unchanged,
         orphaned,
@@ -194,22 +217,22 @@ class SyncService {
     try {
       // Fetch all submissions from blockchain
       const onChainSubmissions = await contractService.getSubmissions(bountyId);
-      
+
       for (const sub of onChainSubmissions) {
         // Find existing submission data (has hunterCid, files, etc)
         const existing = existingSubmissions.find(s => s.submissionId === sub.submissionId);
-        
+
         // Map contract status to backend status
         // Contract enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
         // sub.status from contract can be either string name or numeric index
         let backendStatus;
-        const statusNum = typeof sub.status === 'number' ? sub.status : 
+        const statusNum = typeof sub.status === 'number' ? sub.status :
                          sub.status === 'Prepared' ? 0 :
                          sub.status === 'PendingVerdikta' ? 1 :
                          sub.status === 'Failed' ? 2 :
                          sub.status === 'PassedPaid' ? 3 :
                          sub.status === 'PassedUnpaid' ? 4 : -1;
-        
+
         switch (statusNum) {
           case 0: // Prepared
             backendStatus = 'PREPARED';
@@ -250,8 +273,8 @@ class SyncService {
         });
       }
 
-      logger.info('✅ Synced submission statuses', { 
-        bountyId, 
+      logger.info('✅ Synced submission statuses', {
+        bountyId,
         count: submissions.length,
         statuses: submissions.map(s => `#${s.submissionId}:${s.status}`)
       });
@@ -268,6 +291,7 @@ class SyncService {
 
   /**
    * Add a new job from blockchain to local storage
+   * Only called for jobs that were truly created outside our frontend (e.g., directly via contract)
    */
   async addJobFromBlockchain(bounty, storage, currentContract) {
     logger.info('📥 Adding job from blockchain', { jobId: bounty.jobId });
@@ -329,32 +353,32 @@ class SyncService {
     existingJob.submissionCount = bounty.submissionCount;
     existingJob.winner = bounty.winner;
     existingJob.lastSyncedAt = Math.floor(Date.now() / 1000);
-    
-    // Ensure onChainId is set (handles legacy jobs)
+
+    // Ensure onChainId is set (handles legacy jobs and newly linked jobs)
     if (existingJob.onChainId == null) {
       existingJob.onChainId = bounty.jobId;
     }
-    
+
     // Set contract address if not already set (migration for legacy jobs)
     if (!existingJob.contractAddress && currentContract) {
       existingJob.contractAddress = currentContract;
-      logger.info('Migrated legacy job to current contract', { 
-        jobId: existingJob.jobId, 
-        contractAddress: currentContract 
+      logger.info('Migrated legacy job to current contract', {
+        jobId: existingJob.jobId,
+        contractAddress: currentContract
       });
     }
 
     // CRITICAL: Sync submission statuses from blockchain
     if (bounty.submissionCount > 0) {
       const onChainSubmissions = await this.syncSubmissions(
-        bounty.jobId, 
+        bounty.jobId,
         bounty.submissionCount,
         existingJob.submissions || [] // Pass existing submissions to merge
       );
-      
+
       // Merge with existing submissions, preferring blockchain data
       existingJob.submissions = onChainSubmissions;
-      
+
       logger.info('📝 Updated submission statuses', {
         jobId: existingJob.jobId,
         submissionCount: onChainSubmissions.length
@@ -397,12 +421,12 @@ class SyncService {
     // CRITICAL: Always sync EXPIRED bounties with submissions
     // Submissions may have timed out or been finalized
     if (chainJob.status === 'EXPIRED' && chainJob.submissionCount > 0) {
-      logger.info('✅ Force syncing EXPIRED bounty with submissions', { 
-        jobId: localJob.jobId 
+      logger.info('✅ Force syncing EXPIRED bounty with submissions', {
+        jobId: localJob.jobId
       });
       return true;
     }
-    
+
     // Update if job is missing contractAddress (needs migration)
     if (!localJob.contractAddress) {
       logger.info('Job needs contract address migration', { jobId: localJob.jobId });

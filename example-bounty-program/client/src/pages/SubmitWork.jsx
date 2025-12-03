@@ -1,8 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { ethers } from 'ethers';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
 import './SubmitWork.css';
+
+// LINK token address on Base Sepolia
+const LINK_ADDRESS = "0xE4aB69C077896252FAFBD49EFD26B5D171A32410";
 
 function SubmitWork({ walletState }) {
   const { bountyId } = useParams();
@@ -135,6 +139,56 @@ function SubmitWork({ walletState }) {
     return submissionNarrative.trim().split(/\s+/).filter(w => w.length > 0).length;
   };
 
+  /**
+   * Verify LINK allowance is visible on-chain before proceeding.
+   * This handles RPC propagation delays that can cause "insufficient allowance" errors.
+   * 
+   * @param {object} provider - ethers provider
+   * @param {string} ownerAddress - Address that approved (hunter)
+   * @param {string} spenderAddress - Address that was approved (evalWallet)
+   * @param {string|bigint} requiredAmount - Minimum allowance required
+   * @param {number} maxAttempts - Maximum polling attempts (default 15)
+   * @param {number} intervalMs - Milliseconds between attempts (default 1000)
+   * @returns {Promise<boolean>} - True if allowance verified, false if timed out
+   */
+  const verifyAllowanceOnChain = async (
+    provider, 
+    ownerAddress, 
+    spenderAddress, 
+    requiredAmount,
+    maxAttempts = 15,
+    intervalMs = 1000
+  ) => {
+    const linkContract = new ethers.Contract(
+      LINK_ADDRESS,
+      ["function allowance(address,address) view returns (uint256)"],
+      provider
+    );
+
+    const requiredBigInt = BigInt(requiredAmount);
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const currentAllowance = await linkContract.allowance(ownerAddress, spenderAddress);
+        console.log(`🔍 Allowance check ${attempt}/${maxAttempts}: ${ethers.formatUnits(currentAllowance, 18)} LINK (need ${ethers.formatUnits(requiredBigInt, 18)})`);
+        
+        if (BigInt(currentAllowance) >= requiredBigInt) {
+          console.log('✅ Allowance verified on-chain');
+          return true;
+        }
+      } catch (err) {
+        console.warn(`⚠️ Allowance check ${attempt} failed:`, err.message);
+      }
+
+      // Wait before next attempt (except on last attempt)
+      if (attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, intervalMs));
+      }
+    }
+
+    return false;
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -250,8 +304,26 @@ function SubmitWork({ walletState }) {
       const approvalResult = await contractService.approveLink(evalWallet, linkMaxBudget);
       console.log('✅ LINK approved:', approvalResult);
 
-      // Small delay to ensure approval is processed
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // STEP 3.5: CRITICAL - Verify allowance is visible on-chain before proceeding
+      // This handles RPC propagation delays that can cause "insufficient allowance" errors
+      setLoadingMessage('Verifying LINK approval on-chain...');
+      
+      const allowanceVerified = await verifyAllowanceOnChain(
+        contractService.provider,
+        walletState.address,
+        evalWallet,
+        linkMaxBudget,
+        15,   // maxAttempts (15 seconds max)
+        1000  // intervalMs (check every 1 second)
+      );
+
+      if (!allowanceVerified) {
+        throw new Error(
+          'LINK approval was submitted but not detected on-chain after 15 seconds. ' +
+          'This may be due to network congestion. Please wait a moment and try again, ' +
+          'or check your transaction on BaseScan.'
+        );
+      }
 
       // STEP 4: Start the Verdikta evaluation
       // hunterCid was already stored in prepareSubmission, no need to pass again
@@ -287,6 +359,8 @@ function SubmitWork({ walletState }) {
         errorMessage = '⏰ Submission deadline has passed';
       } else if (errorMessage.includes('not open')) {
         errorMessage = '🔒 Bounty is not accepting submissions';
+      } else if (errorMessage.includes('insufficient allowance')) {
+        errorMessage = '⚠️ LINK approval issue. The approval transaction succeeded but the state was not visible on-chain in time. Please try again.';
       }
 
       setError(errorMessage);
@@ -520,7 +594,8 @@ function SubmitWork({ walletState }) {
           <li>Your files are uploaded to IPFS (permanent storage)</li>
           <li>Hunter Submission CID is generated with your work and narrative</li>
           <li>Smart contract creates an EvaluationWallet for your submission</li>
-          <li>You approve LINK tokens to pay for AI evaluation (~0.1 LINK)</li>
+          <li>You approve LINK tokens to pay for AI evaluation (~0.6 LINK)</li>
+          <li>Approval is verified on-chain before proceeding</li>
           <li>Evaluation starts with your Hunter CID + the bounty's evaluation package</li>
           <li>Results are written back on-chain within 1-5 minutes</li>
           <li>If you pass, bounty is awarded automatically! 🎉</li>
@@ -532,7 +607,7 @@ function SubmitWork({ walletState }) {
         </p>
         <ul>
           <li><strong>ETH</strong> for gas fees (~0.005 ETH on Base Sepolia)</li>
-          <li><strong>LINK</strong> for AI evaluation (~0.1 LINK)</li>
+          <li><strong>LINK</strong> for AI evaluation (~0.6 LINK)</li>
         </ul>
         <p>
           Get testnet tokens: <a href="https://faucets.chain.link/base-sepolia" target="_blank" rel="noopener noreferrer">Base Sepolia Faucet</a>

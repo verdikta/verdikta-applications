@@ -279,10 +279,14 @@ function Home({ walletState }) {
 
 // Job Card Component
 function JobCard({ job }) {
-  // Calculate time remaining
+  // Calculate time remaining with better granularity
   const now = Math.floor(Date.now() / 1000);
   const timeRemaining = (job.submissionCloseTime ?? 0) - now;
-  const hoursRemaining = Math.max(0, Math.floor(timeRemaining / 3600));
+  const totalMinutesRemaining = Math.max(0, Math.floor(timeRemaining / 60));
+  const hoursRemaining = Math.floor(totalMinutesRemaining / 60);
+  const minutesRemaining = totalMinutesRemaining % 60;
+  const daysRemaining = Math.floor(hoursRemaining / 24);
+  const hoursInDay = hoursRemaining % 24;
 
   const status = job.status || 'UNKNOWN';
   const isOpen = status === 'OPEN';
@@ -290,12 +294,46 @@ function JobCard({ job }) {
   const isAwarded = status === 'AWARDED';
   const isClosed = status === 'CLOSED';
 
-  const isClosingSoon = isOpen && hoursRemaining > 0 && hoursRemaining < 24;
+  // Less than 24 hours = closing soon (show warning style)
+  const isClosingSoon = isOpen && timeRemaining > 0 && hoursRemaining < 24;
+  // Less than 1 hour = critical (show minutes)
+  const isCritical = isOpen && timeRemaining > 0 && hoursRemaining < 1;
 
   // Check if any submissions are pending evaluation
   const hasPendingEvaluation = job.submissions?.some(s => 
     ['PENDING_EVALUATION', 'PendingVerdikta', 'Prepared'].includes(s.status)
   );
+
+  // Format the time remaining string
+  const getTimeRemainingString = () => {
+    if (!isOpen) return null;
+    
+    if (timeRemaining <= 0) {
+      return <span>⏰ Closing soon</span>;
+    }
+    
+    if (isCritical) {
+      // Less than 1 hour - show minutes only
+      if (minutesRemaining <= 1) {
+        return <span>⏰ &lt;1m remaining</span>;
+      }
+      return <span>⏰ {minutesRemaining}m remaining</span>;
+    }
+    
+    if (isClosingSoon) {
+      // Less than 24 hours - show hours and minutes
+      if (minutesRemaining > 0) {
+        return <span>⏰ {hoursRemaining}h {minutesRemaining}m remaining</span>;
+      }
+      return <span>⏰ {hoursRemaining}h remaining</span>;
+    }
+    
+    // More than 24 hours - show days and hours
+    if (hoursInDay > 0) {
+      return <span>{daysRemaining}d {hoursInDay}h remaining</span>;
+    }
+    return <span>{daysRemaining}d remaining</span>;
+  };
 
   return (
     <Link to={`/bounty/${job.jobId}`} className="bounty-card">
@@ -338,21 +376,15 @@ function JobCard({ job }) {
           <span className="label">Threshold:</span>
           <span className="value">{job.threshold}%</span>
         </div>
-        <div className={`time-remaining ${isClosingSoon ? 'warning' : ''} ${(isExpired || isClosed) ? 'closed' : ''}`}>
+        <div className={`time-remaining ${isClosingSoon ? 'warning' : ''} ${isCritical ? 'critical' : ''} ${(isExpired || isClosed) ? 'closed' : ''}`}>
           {isAwarded ? (
             <span>🎉 Winner paid</span>
           ) : isClosed ? (
             <span>🔒 Closed</span>
           ) : isExpired ? (
             <span>⏰ Expired - needs closing</span>
-          ) : isOpen && hoursRemaining === 0 ? (
-            <span>Closing soon</span>
-          ) : isClosingSoon ? (
-            <span>⏰ {hoursRemaining}h remaining</span>
-          ) : isOpen ? (
-            <span>{Math.floor(hoursRemaining / 24)}d {hoursRemaining % 24}h remaining</span>
           ) : (
-            <span>{status}</span>
+            getTimeRemainingString()
           )}
         </div>
       </div>
@@ -361,3 +393,4 @@ function JobCard({ job }) {
 }
 
 export default Home;
+

@@ -12,6 +12,6 @@ data/*.json
 # Test coverage
 coverage/
 .nyc_output/
-
+servercodebase.txt
 
 

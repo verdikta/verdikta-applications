@@ -40,7 +40,7 @@ contract BountyEscrow {
     struct Submission {
         address hunter;
         string  evaluationCid;      // Evaluation package CID (must match bounty's evaluationCid)
-        string  hunterCid;          // Hunter's work product archive CID (bCID)
+        string  hunterCid;          // Hunter's work product archive CID (bCID containing the actual submission)
         address evalWallet;
         bytes32 verdiktaAggId;      // set once started
         SubmissionStatus status;
@@ -339,7 +339,7 @@ contract BountyEscrow {
         s.justificationCids = justCids;
         s.finalizedAt = block.timestamp;
 
-        bool passed = _passed(acceptance, rejection, b.threshold);
+        bool passed = _passed(acceptance, b.threshold);
 
         if (!passed) {
             s.status = SubmissionStatus.Failed;
@@ -495,15 +495,7 @@ contract BountyEscrow {
     function _interpretScores(uint256[] memory scores) 
         internal pure returns (uint256 accept, uint256 reject) 
     {
-        if (scores.length == 0) return (0, 0);
-        
-        if (scores.length == 1) {
-            // Single score: normalize and compute complement
-            uint256 a = scores[0] / 10000; // Convert from 0-1000000 to 0-100
-            if (a > 100) a = 100;
-            uint256 r = 100 - a;
-            return (a, r);
-        }
+        require(scores.length == 2, "expected 2 scores from Verdikta");
         
         // Two scores from Verdikta: [DONT_FUND, FUND]
         // scores[0] = DONT_FUND (rejection score)
@@ -519,11 +511,11 @@ contract BountyEscrow {
         return (accept, reject);
     }
 
-    /// @dev Pass rule: acceptance >= threshold AND acceptance >= rejection
-    function _passed(uint256 acceptance, uint256 rejection, uint256 threshold) 
+    /// @dev Pass rule: acceptance must meet or exceed threshold
+    function _passed(uint256 acceptance, uint256 threshold) 
         internal pure returns (bool) 
     {
-        return (acceptance >= threshold) && (acceptance >= rejection);
+        return acceptance >= threshold;
     }
 
     receive() external payable {}

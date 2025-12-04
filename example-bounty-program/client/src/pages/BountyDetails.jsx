@@ -11,25 +11,28 @@ import './BountyDetails.css';
 const CONFIG = {
   // How often to check for status updates (15 seconds)
   AUTO_REFRESH_INTERVAL_MS: 15000,
-  
+
   // Polling after blockchain actions (for backend sync)
   ACTION_POLL_INTERVAL_MS: 3000,
   ACTION_POLL_MAX_ATTEMPTS: 20, // 20 * 3s = 60 seconds max
-  
+
   // Polling for submission status changes after finalization
   // Reduced: 40 attempts * 3s = 2 minutes (if not done by then, auto-refresh takes over)
   SUBMISSION_POLL_INTERVAL_MS: 3000,
   SUBMISSION_POLL_MAX_ATTEMPTS: 40,
-  
+
   // Initial load retries
   INITIAL_LOAD_MAX_RETRIES: 10,
   INITIAL_LOAD_RETRY_DELAY_MS: 3000,
-  
+
   // Timeout threshold for submissions (in minutes) - for force-fail
   SUBMISSION_TIMEOUT_MINUTES: 6,
-  
+
   // How often to update the live timer display (1 second)
   TIMER_UPDATE_INTERVAL_MS: 1000,
+
+  // How often to check if Verdikta evaluation is ready (15 seconds)
+  EVALUATION_CHECK_INTERVAL_MS: 15000,
 };
 
 const PENDING_STATUSES = ['PENDING_EVALUATION', 'PendingVerdikta', 'Prepared'];
@@ -55,11 +58,15 @@ function BountyDetails({ walletState }) {
   const [closingMessage, setClosingMessage] = useState('');
   const [finalizingSubmissions, setFinalizingSubmissions] = useState(new Set());
   const [failingSubmissions, setFailingSubmissions] = useState(new Set());
-  
+
   // Polling state for submissions waiting for status update
   // Stores: { attempts, maxAttempts }
   const [pollingSubmissions, setPollingSubmissions] = useState(new Map());
-  
+
+  // NEW: Evaluation results ready state
+  // Map of submissionId -> { ready: boolean, scores: { rejection, acceptance }, justificationCids: [] }
+  const [evaluationResults, setEvaluationResults] = useState(new Map());
+
   // Resolution state for on-chain bountyId
   const [resolvedBountyId, setResolvedBountyId] = useState(null);
   const [resolvingId, setResolvingId] = useState(false);
@@ -74,6 +81,7 @@ function BountyDetails({ walletState }) {
   const pollingSubmissionsRef = useRef(new Map());
   const autoRefreshIntervalRef = useRef(null);
   const timerIntervalRef = useRef(null);
+  const evaluationCheckIntervalRef = useRef(null);
   const isMountedRef = useRef(true);
 
   // Keep refs in sync with state
@@ -96,7 +104,7 @@ function BountyDetails({ walletState }) {
   useEffect(() => {
     // Check if there are any pending submissions that need the timer
     const hasPendingSubmissions = submissions.some(s => PENDING_STATUSES.includes(s.status));
-    
+
     // Clear any existing timer
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
@@ -121,20 +129,128 @@ function BountyDetails({ walletState }) {
   }, [submissions]);
 
   // ============================================================================
+  // HELPER: Get on-chain ID from current state
+  // ============================================================================
+
+  const getOnChainBountyId = useCallback(() => {
+    if (job?.onChainId != null && !Number.isNaN(Number(job.onChainId))) {
+      return Number(job.onChainId);
+    }
+    if (job?.bountyId != null && !Number.isNaN(Number(job.bountyId))) {
+      return Number(job.bountyId);
+    }
+    if (resolvedBountyId != null && !Number.isNaN(Number(resolvedBountyId))) {
+      return Number(resolvedBountyId);
+    }
+    return null;
+  }, [job?.onChainId, job?.bountyId, resolvedBountyId]);
+
+  // ============================================================================
+  // EVALUATION READINESS POLLING (NEW)
+  // Checks VerdiktaAggregator directly to see if results are ready
+  // ============================================================================
+
+  useEffect(() => {
+    // Clear any existing interval
+    if (evaluationCheckIntervalRef.current) {
+      clearInterval(evaluationCheckIntervalRef.current);
+      evaluationCheckIntervalRef.current = null;
+    }
+
+    const onChainId = getOnChainBountyId();
+    if (onChainId == null) {
+      return; // Can't check without on-chain ID
+    }
+
+    // Get pending submissions that aren't already being actively polled after finalization
+    const pendingSubs = submissions.filter(s => 
+      PENDING_STATUSES.includes(s.status) && 
+      !pollingSubmissions.has(s.submissionId)
+    );
+
+    if (pendingSubs.length === 0) {
+      console.log('📊 No pending submissions to check for evaluation readiness');
+      return;
+    }
+
+    console.log(`🔍 Starting evaluation readiness checks for ${pendingSubs.length} submissions`);
+
+    // Check if evaluations are ready for pending submissions
+    const checkEvaluationReadiness = async (subsToCheck) => {
+      if (!isMountedRef.current) return;
+
+      try {
+        const contractService = getContractService();
+        
+        for (const sub of subsToCheck) {
+          if (!isMountedRef.current) break;
+
+          try {
+            console.log(`🔍 Checking evaluation readiness for submission #${sub.submissionId}...`);
+            const result = await contractService.checkEvaluationReady(onChainId, sub.submissionId);
+            
+            if (result.ready) {
+              console.log(`✅ Evaluation READY for submission #${sub.submissionId}:`, result.scores);
+              setEvaluationResults(prev => {
+                const next = new Map(prev);
+                next.set(sub.submissionId, result);
+                return next;
+              });
+            } else {
+              console.log(`⏳ Evaluation not ready yet for submission #${sub.submissionId}`);
+            }
+          } catch (err) {
+            // Don't spam console for expected "not ready" errors
+            if (!err.message?.includes('not ready') && !err.message?.includes('no evaluation')) {
+              console.log(`⚠️ Error checking evaluation for #${sub.submissionId}:`, err.message);
+            }
+          }
+        }
+      } catch (err) {
+        console.log('⚠️ Error in checkEvaluationReadiness:', err.message);
+      }
+    };
+
+    // Check immediately on mount/change
+    checkEvaluationReadiness(pendingSubs);
+
+    // Then check periodically
+    evaluationCheckIntervalRef.current = setInterval(() => {
+      if (!isMountedRef.current) return;
+
+      const currentSubs = submissionsRef.current.filter(s => 
+        PENDING_STATUSES.includes(s.status) && 
+        !pollingSubmissionsRef.current.has(s.submissionId)
+      );
+
+      if (currentSubs.length > 0) {
+        checkEvaluationReadiness(currentSubs);
+      }
+    }, CONFIG.EVALUATION_CHECK_INTERVAL_MS);
+
+    return () => {
+      if (evaluationCheckIntervalRef.current) {
+        clearInterval(evaluationCheckIntervalRef.current);
+        evaluationCheckIntervalRef.current = null;
+      }
+    };
+  }, [submissions, getOnChainBountyId, pollingSubmissions]);
+
+  // ============================================================================
   // DATA LOADING
   // ============================================================================
 
   const loadJobDetails = useCallback(async (silent = false) => {
     if (!isMountedRef.current) return null;
-    
+
     try {
       if (!silent) setLoading(true);
       setError(null);
 
       const response = await apiService.getJob(bountyId, true);
-      
+
       if (!isMountedRef.current) return null;
-      
+
       setJob(response.job);
       jobRef.current = response.job;
 
@@ -145,11 +261,11 @@ function BountyDetails({ walletState }) {
         setSubmissions(response.job.submissions || []);
         submissionsRef.current = response.job.submissions || [];
       }
-      
+
       return response.job;
     } catch (err) {
       if (!isMountedRef.current) return null;
-      
+
       console.error('Error loading job:', err);
       const errorMessage = err.response?.data?.details || err.message;
 
@@ -177,6 +293,7 @@ function BountyDetails({ walletState }) {
     setResolvedBountyId(null);
     setResolvingId(false);
     setResolveNote('');
+    setEvaluationResults(new Map()); // Clear evaluation results on bounty change
 
     return () => {
       isMountedRef.current = false;
@@ -221,7 +338,7 @@ function BountyDetails({ walletState }) {
 
     // Check if there are pending submissions that need monitoring
     const hasPendingSubmissions = submissions.some(s => PENDING_STATUSES.includes(s.status));
-    
+
     if (!hasPendingSubmissions) {
       console.log('📊 No pending submissions to monitor');
       return;
@@ -231,10 +348,10 @@ function BountyDetails({ walletState }) {
 
     autoRefreshIntervalRef.current = setInterval(async () => {
       if (!isMountedRef.current) return;
-      
+
       // Get current pending submissions (use ref to avoid stale closure)
       const currentSubs = submissionsRef.current;
-      
+
       // Only skip submissions that are ACTIVELY being polled (in pollingSubmissions map)
       // If polling timed out, we remove from the map, so auto-refresh will check them
       const pendingSubs = currentSubs.filter(s => {
@@ -255,7 +372,7 @@ function BountyDetails({ walletState }) {
 
       for (const sub of pendingSubs) {
         if (!isMountedRef.current) break;
-        
+
         try {
           const result = await apiService.refreshSubmission(currentJobId, sub.submissionId);
           const newStatus = result.submission?.status;
@@ -293,6 +410,9 @@ function BountyDetails({ walletState }) {
       }
       if (timerIntervalRef.current) {
         clearInterval(timerIntervalRef.current);
+      }
+      if (evaluationCheckIntervalRef.current) {
+        clearInterval(evaluationCheckIntervalRef.current);
       }
     };
   }, []);
@@ -370,19 +490,6 @@ function BountyDetails({ walletState }) {
   // HELPERS
   // ============================================================================
 
-  const getOnChainBountyId = () => {
-    if (job?.onChainId != null && !Number.isNaN(Number(job.onChainId))) {
-      return Number(job.onChainId);
-    }
-    if (job?.bountyId != null && !Number.isNaN(Number(job.bountyId))) {
-      return Number(job.bountyId);
-    }
-    if (resolvedBountyId != null && !Number.isNaN(Number(resolvedBountyId))) {
-      return Number(resolvedBountyId);
-    }
-    return null;
-  };
-
   // Use currentTime state for live updates instead of Date.now()
   const getSubmissionAge = useCallback((submittedAt) => {
     return (currentTime - submittedAt) / 60;
@@ -405,11 +512,11 @@ function BountyDetails({ walletState }) {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (!isMountedRef.current) return false;
-      
+
       await new Promise(resolve => setTimeout(resolve, intervalMs));
-      
+
       if (onProgress) onProgress(attempt, maxAttempts);
-      
+
       try {
         const result = await checkFn(attempt);
         if (result) return true;
@@ -417,14 +524,14 @@ function BountyDetails({ walletState }) {
         console.log(`Poll attempt ${attempt}/${maxAttempts} error:`, err.message);
       }
     }
-    
+
     return false;
   };
 
   /**
    * Poll for submission status change after finalization
    * Returns: { success: boolean, submission?: object, reason?: string }
-   * 
+   *
    * FIX: On timeout, we REMOVE from pollingSubmissions so auto-refresh can take over
    */
   const pollSubmissionStatus = useCallback(async (jobId, submissionId, onStatusChange) => {
@@ -468,7 +575,7 @@ function BountyDetails({ walletState }) {
           if (newStatus && !PENDING_STATUSES.includes(newStatus)) {
             console.log(`🎉 Submission #${submissionId} status changed to: ${newStatus}`);
             foundResult = result.submission;
-            
+
             // Update submission in local state immediately
             setSubmissions(prevSubs =>
               prevSubs.map(s =>
@@ -478,6 +585,13 @@ function BountyDetails({ walletState }) {
 
             // Clear polling state on success
             setPollingSubmissions(prev => {
+              const next = new Map(prev);
+              next.delete(submissionId);
+              return next;
+            });
+
+            // Clear evaluation results since we now have final status
+            setEvaluationResults(prev => {
               const next = new Map(prev);
               next.delete(submissionId);
               return next;
@@ -508,7 +622,7 @@ function BountyDetails({ walletState }) {
     // Timed out - FIX: REMOVE from pollingSubmissions so auto-refresh can take over
     if (isMountedRef.current) {
       console.log(`⏰ Polling timed out for submission #${submissionId} - auto-refresh will continue monitoring`);
-      
+
       // Clear the polling state - this allows auto-refresh to pick it up
       setPollingSubmissions(prev => {
         const next = new Map(prev);
@@ -536,9 +650,15 @@ function BountyDetails({ walletState }) {
       return;
     }
 
+    const evalResult = evaluationResults.get(submissionId);
+    const scorePreview = evalResult?.ready 
+      ? `\nScore Preview: ${evalResult.scores.acceptance.toFixed(1)}% acceptance`
+      : '';
+
     const confirmed = window.confirm(
       `Finalize submission #${submissionId}?\n\n` +
-      'This will read the Verdikta evaluation results and update the submission status.\n\n' +
+      'This will read the Verdikta evaluation results and update the submission status.' +
+      scorePreview + '\n\n' +
       'This action requires a blockchain transaction that you must sign.'
     );
     if (!confirmed) return;
@@ -596,7 +716,7 @@ function BountyDetails({ walletState }) {
           'The status is still syncing. The page will auto-refresh every 15 seconds.\n' +
           'You can also manually refresh if needed.'
         );
-        
+
         // Still reload to make sure we have latest data
         loadJobDetails(true);
       }
@@ -610,7 +730,7 @@ function BountyDetails({ walletState }) {
         next.delete(submissionId);
         return next;
       });
-      
+
       // Clear any polling state on error
       setPollingSubmissions(prev => {
         const next = new Map(prev);
@@ -695,13 +815,13 @@ function BountyDetails({ walletState }) {
       alert('Please connect your wallet first');
       return;
     }
-    
+
     const onChainId = getOnChainBountyId();
     if (onChainId == null) {
       alert('Unable to determine the on-chain bounty ID yet. Please wait for sync or refresh.');
       return;
     }
-    
+
     const confirmed = window.confirm(
       'Close this expired bounty and return funds to the creator?\n\n' +
       'This will trigger a blockchain transaction that you must sign.'
@@ -729,7 +849,7 @@ function BountyDetails({ walletState }) {
       await pollForCondition(
         async (attempt) => {
           setClosingMessage(`Syncing... (${attempt * 3}s)`);
-          
+
           const response = await apiService.getJob(currentJobId, false);
           if (response.job?.status === 'CLOSED') {
             synced = true;
@@ -783,8 +903,8 @@ function BountyDetails({ walletState }) {
         <div className="loading">
           <div className="spinner"></div>
           <p>
-            {retryCount > 0 
-              ? `Waiting for blockchain sync... (attempt ${retryCount}/${CONFIG.INITIAL_LOAD_MAX_RETRIES})` 
+            {retryCount > 0
+              ? `Waiting for blockchain sync... (attempt ${retryCount}/${CONFIG.INITIAL_LOAD_MAX_RETRIES})`
               : 'Loading bounty details...'}
           </p>
         </div>
@@ -877,13 +997,13 @@ function BountyDetails({ walletState }) {
     <div className="bounty-details">
       {/* EXPIRED Status Banner */}
       {isExpired && (
-        <div style={{ 
-          backgroundColor: '#fff3cd', 
-          border: '3px solid #ffc107', 
-          padding: '1.5rem', 
-          borderRadius: '8px', 
-          marginBottom: '2rem', 
-          boxShadow: '0 4px 6px rgba(0,0,0,0.1)' 
+        <div style={{
+          backgroundColor: '#fff3cd',
+          border: '3px solid #ffc107',
+          padding: '1.5rem',
+          borderRadius: '8px',
+          marginBottom: '2rem',
+          boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
         }}>
           <h2 style={{ margin: '0 0 1rem 0', color: '#856404' }}>
             ⏰ Expired Bounty - Action Required
@@ -911,6 +1031,7 @@ function BountyDetails({ walletState }) {
               finalizingSubmissions={finalizingSubmissions}
               failingSubmissions={failingSubmissions}
               pollingSubmissions={pollingSubmissions}
+              evaluationResults={evaluationResults}
               disableActions={disableActionsForMissingId}
               timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
             />
@@ -933,8 +1054,8 @@ function BountyDetails({ walletState }) {
                 style={{ width: '100%', fontSize: '1.2rem', padding: '1.25rem', fontWeight: 'bold' }}
                 title={disableActionsForMissingId ? 'Resolving on-chain bountyId…' : undefined}
               >
-                {closingBounty 
-                  ? `⏳ ${closingMessage || 'Processing...'}` 
+                {closingBounty
+                  ? `⏳ ${closingMessage || 'Processing...'}`
                   : '🔒 Close Expired Bounty & Return Funds'}
               </button>
               {disableActionsForMissingId && !closingBounty && (
@@ -1062,6 +1183,7 @@ function BountyDetails({ walletState }) {
               finalizingSubmissions={finalizingSubmissions}
               failingSubmissions={failingSubmissions}
               pollingSubmissions={pollingSubmissions}
+              evaluationResults={evaluationResults}
               timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
             />
           )}
@@ -1084,6 +1206,7 @@ function BountyDetails({ walletState }) {
                 isFinalizing={finalizingSubmissions.has(submission.submissionId)}
                 isPolling={pollingSubmissions.has(submission.submissionId)}
                 pollingState={pollingSubmissions.get(submission.submissionId)}
+                evaluationResult={evaluationResults.get(submission.submissionId)}
                 disableActions={disableActionsForMissingId}
                 getSubmissionAge={getSubmissionAge}
                 timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
@@ -1112,6 +1235,7 @@ function PendingSubmissionsPanel({
   finalizingSubmissions,
   failingSubmissions,
   pollingSubmissions,
+  evaluationResults,
   disableActions,
   timeoutMinutes
 }) {
@@ -1128,14 +1252,15 @@ function PendingSubmissionsPanel({
         const isFinalizing = finalizingSubmissions.has(s.submissionId);
         const isPolling = pollingSubmissions.has(s.submissionId);
         const pollState = pollingSubmissions.get(s.submissionId);
+        const evalResult = evaluationResults?.get(s.submissionId);
 
         return (
-          <div key={s.submissionId} style={{ 
-            marginBottom: '1rem', 
-            padding: '0.75rem', 
-            backgroundColor: '#fff', 
-            border: '1px solid #ddd', 
-            borderRadius: '4px' 
+          <div key={s.submissionId} style={{
+            marginBottom: '1rem',
+            padding: '0.75rem',
+            backgroundColor: evalResult?.ready ? '#e8f5e9' : '#fff',
+            border: evalResult?.ready ? '2px solid #4caf50' : '1px solid #ddd',
+            borderRadius: '4px'
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
               <span style={{ fontSize: '0.9rem', color: '#666' }}>
@@ -1146,11 +1271,25 @@ function PendingSubmissionsPanel({
               </span>
             </div>
 
+            {/* Evaluation ready indicator */}
+            {evalResult?.ready && (
+              <div style={{
+                marginBottom: '0.5rem',
+                padding: '0.5rem',
+                backgroundColor: '#c8e6c9',
+                borderRadius: '4px',
+                fontSize: '0.85rem',
+                color: '#2e7d32'
+              }}>
+                ✅ <strong>AI Evaluation Complete!</strong> Score: {evalResult.scores.acceptance.toFixed(1)}% ({evalResult.scores.rejection.toFixed(1)}% rejection)
+              </div>
+            )}
+
             {isPolling && pollState && (
-              <div style={{ 
-                marginBottom: '0.5rem', 
-                padding: '0.5rem', 
-                backgroundColor: '#e3f2fd', 
+              <div style={{
+                marginBottom: '0.5rem',
+                padding: '0.5rem',
+                backgroundColor: '#e3f2fd',
                 borderRadius: '4px',
                 fontSize: '0.85rem',
                 color: '#1565c0'
@@ -1163,10 +1302,14 @@ function PendingSubmissionsPanel({
               <button
                 onClick={() => onFinalize(s.submissionId)}
                 disabled={isFinalizing || isPolling || disableActions}
-                className="btn btn-primary btn-sm"
-                style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem' }}
+                className={evalResult?.ready ? "btn btn-success btn-sm" : "btn btn-primary btn-sm"}
+                style={{ 
+                  fontSize: '0.85rem', 
+                  padding: '0.4rem 0.8rem',
+                  fontWeight: evalResult?.ready ? 'bold' : 'normal'
+                }}
               >
-                {isFinalizing ? '⏳ Finalizing...' : '✅ Finalize'}
+                {isFinalizing ? '⏳ Finalizing...' : evalResult?.ready ? '🎉 Claim Results & Update Status' : '✅ Finalize'}
               </button>
 
               {canTimeout && (
@@ -1181,7 +1324,7 @@ function PendingSubmissionsPanel({
               )}
             </div>
 
-            {!canTimeout && (
+            {!canTimeout && !evalResult?.ready && (
               <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.5rem' }}>
                 ⏳ Force-fail available in {(timeoutMinutes - ageMinutes).toFixed(1)} min
               </div>
@@ -1190,7 +1333,7 @@ function PendingSubmissionsPanel({
         );
       })}
       <p style={{ marginTop: '0.75rem', fontSize: '0.85rem', color: '#666' }}>
-        💡 Auto-refreshing every 15 seconds. Submissions stuck &gt;{timeoutMinutes} minutes can be force-failed.
+        💡 Auto-checking every 15 seconds. Submissions stuck &gt;{timeoutMinutes} minutes can be force-failed.
       </p>
     </div>
   );
@@ -1211,15 +1354,16 @@ function ExpiredBountyActions({
   finalizingSubmissions,
   failingSubmissions,
   pollingSubmissions,
+  evaluationResults,
   timeoutMinutes
 }) {
   return (
-    <div className="expired-bounty-section" style={{ 
-      backgroundColor: '#fff3cd', 
-      border: '2px solid #ffc107', 
-      padding: '1.5rem', 
-      borderRadius: '8px', 
-      marginTop: '1rem' 
+    <div className="expired-bounty-section" style={{
+      backgroundColor: '#fff3cd',
+      border: '2px solid #ffc107',
+      padding: '1.5rem',
+      borderRadius: '8px',
+      marginTop: '1rem'
     }}>
       <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
         ⏰ <strong>This bounty has expired</strong> (deadline: {new Date((job.submissionCloseTime || 0) * 1000).toLocaleDateString()}).
@@ -1245,6 +1389,7 @@ function ExpiredBountyActions({
           finalizingSubmissions={finalizingSubmissions}
           failingSubmissions={failingSubmissions}
           pollingSubmissions={pollingSubmissions}
+          evaluationResults={evaluationResults}
           disableActions={disableActions}
           timeoutMinutes={timeoutMinutes}
         />
@@ -1257,8 +1402,8 @@ function ExpiredBountyActions({
             style={{ width: '100%', fontSize: '1.1rem', padding: '1rem' }}
             title={disableActions ? 'Resolving on-chain bountyId…' : undefined}
           >
-            {closingBounty 
-              ? `⏳ ${closingMessage || 'Processing...'}` 
+            {closingBounty
+              ? `⏳ ${closingMessage || 'Processing...'}`
               : '🔒 Close Expired Bounty & Return Funds to Creator'}
           </button>
           {disableActions && (
@@ -1272,16 +1417,17 @@ function ExpiredBountyActions({
   );
 }
 
-function SubmissionCard({ 
-  submission, 
-  walletState, 
-  onFailTimeout, 
-  onFinalize, 
-  isFailing, 
-  isFinalizing, 
-  isPolling, 
-  pollingState, 
-  disableActions, 
+function SubmissionCard({
+  submission,
+  walletState,
+  onFailTimeout,
+  onFinalize,
+  isFailing,
+  isFinalizing,
+  isPolling,
+  pollingState,
+  evaluationResult,
+  disableActions,
   getSubmissionAge,
   timeoutMinutes
 }) {
@@ -1291,6 +1437,7 @@ function SubmissionCard({
   const ageMinutes = isPending ? getSubmissionAge(submission.submittedAt) : 0;
   const canTimeout = ageMinutes > timeoutMinutes;
   const canFinalize = isPending && !isPolling;
+  const hasEvalReady = evaluationResult?.ready;
 
   const getStatusBadgeClass = () => {
     if (isApproved) return 'status-approved';
@@ -1300,7 +1447,10 @@ function SubmissionCard({
   };
 
   return (
-    <div className="submission-card">
+    <div className="submission-card" style={{
+      border: hasEvalReady ? '2px solid #4caf50' : undefined,
+      backgroundColor: hasEvalReady ? '#f1f8e9' : undefined
+    }}>
       <div className="submission-header">
         <span className="hunter">{submission.hunter?.substring(0, 10)}...</span>
         <span className={`status-badge ${getStatusBadgeClass()}`}>
@@ -1320,6 +1470,44 @@ function SubmissionCard({
       <div className="submission-meta">
         <span>Submitted: {new Date(submission.submittedAt * 1000).toLocaleString()}</span>
       </div>
+
+      {/* NEW: Evaluation ready indicator */}
+      {hasEvalReady && (
+        <div style={{
+          marginTop: '0.75rem',
+          padding: '0.75rem',
+          backgroundColor: '#c8e6c9',
+          border: '1px solid #81c784',
+          borderRadius: '4px',
+          textAlign: 'center'
+        }}>
+          <div style={{ fontSize: '1rem', color: '#2e7d32', fontWeight: 'bold', marginBottom: '0.25rem' }}>
+            ✅ AI Evaluation Complete!
+          </div>
+          <div style={{ fontSize: '0.9rem', color: '#388e3c' }}>
+            Score: {evaluationResult.scores.acceptance.toFixed(1)}% ({evaluationResult.scores.rejection.toFixed(1)}% rejection)
+          </div>
+        </div>
+      )}
+
+      {/* Waiting for evaluation indicator */}
+      {isPending && !hasEvalReady && !isPolling && (
+        <div style={{
+          marginTop: '0.75rem',
+          padding: '0.75rem',
+          backgroundColor: '#fff3e0',
+          border: '1px solid #ffcc80',
+          borderRadius: '4px',
+          textAlign: 'center'
+        }}>
+          <div style={{ fontSize: '0.9rem', color: '#e65100', fontWeight: 'bold' }}>
+            ⏳ Waiting for AI evaluation...
+          </div>
+          <div style={{ fontSize: '0.8rem', color: '#888', marginTop: '0.25rem' }}>
+            {ageMinutes.toFixed(1)} min elapsed • Checking every 15s
+          </div>
+        </div>
+      )}
 
       {/* Polling indicator */}
       {isPolling && pollingState && (
@@ -1356,10 +1544,19 @@ function SubmissionCard({
             <button
               onClick={() => onFinalize(submission.submissionId)}
               disabled={isFinalizing || disableActions}
-              className="btn btn-primary btn-sm"
-              style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', width: '100%' }}
+              className={hasEvalReady ? "btn btn-success" : "btn btn-primary btn-sm"}
+              style={{ 
+                fontSize: hasEvalReady ? '1rem' : '0.85rem', 
+                padding: hasEvalReady ? '0.75rem 1rem' : '0.4rem 0.8rem', 
+                width: '100%',
+                fontWeight: hasEvalReady ? 'bold' : 'normal'
+              }}
             >
-              {isFinalizing ? '⏳ Processing transaction...' : '✅ Finalize Submission (check results)'}
+              {isFinalizing 
+                ? '⏳ Processing transaction...' 
+                : hasEvalReady 
+                  ? '🎉 Claim Results & Update Status' 
+                  : '✅ Finalize Submission (check results)'}
             </button>
           )}
 
@@ -1372,9 +1569,9 @@ function SubmissionCard({
             >
               {isFailing ? '⏳ Marking as Failed...' : `⏱️ Fail Timed-Out (${ageMinutes.toFixed(1)} min)`}
             </button>
-          ) : (
+          ) : !hasEvalReady && (
             <div style={{ fontSize: '0.8rem', color: '#888', textAlign: 'center' }}>
-              ⏳ Evaluating... ({ageMinutes.toFixed(1)} min, force-fail in {(timeoutMinutes - ageMinutes).toFixed(1)} min)
+              Force-fail in {(timeoutMinutes - ageMinutes).toFixed(1)} min
             </div>
           )}
         </div>

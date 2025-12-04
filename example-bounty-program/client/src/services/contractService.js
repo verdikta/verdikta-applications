@@ -697,6 +697,89 @@ class ContractService {
     this.contract = null;
     this.userAddress = null;
   }
+
+/**
+ * Check if Verdikta evaluation results are ready for a submission
+ * This is a FREE view call - no gas needed
+ * 
+ * @param {number} bountyId - The bounty ID
+ * @param {number} submissionId - The submission ID
+ * @returns {Promise<Object>} { ready: boolean, scores?: [rejection, acceptance], justificationCids?: string }
+ */
+async checkEvaluationReady(bountyId, submissionId) {
+  if (!this.provider) {
+    throw new Error('Provider not initialized. Call connect() first.');
+  }
+
+  try {
+    // Step 1: Get the VerdiktaAggregator address from BountyEscrow
+    const escrowAbi = [
+      "function verdikta() view returns (address)",
+      "function getSubmission(uint256,uint256) view returns (tuple(address,string,string,address,bytes32,uint8,uint256,uint256,string,uint256,uint256,uint256,uint256,uint256,uint256,uint256,string))"
+    ];
+    
+    const escrowContract = new ethers.Contract(
+      this.contractAddress,
+      escrowAbi,
+      this.provider
+    );
+
+    // Step 2: Get the submission to find verdiktaAggId
+    const sub = await escrowContract.getSubmission(bountyId, submissionId);
+    const verdiktaAggId = sub[4]; // bytes32 verdiktaAggId
+    const status = Number(sub[5]); // uint8 status
+    
+    // If not in PendingVerdikta (status 1), no need to check
+    if (status !== 1) {
+      return { 
+        ready: false, 
+        reason: status === 0 ? 'not_started' : 'already_finalized',
+        status 
+      };
+    }
+
+    // Check if verdiktaAggId is set (not zero)
+    if (verdiktaAggId === '0x0000000000000000000000000000000000000000000000000000000000000000') {
+      return { ready: false, reason: 'no_agg_id' };
+    }
+
+    // Step 3: Get VerdiktaAggregator address
+    const verdiktaAddress = await escrowContract.verdikta();
+
+    // Step 4: Call getEvaluation on VerdiktaAggregator
+    const verdiktaAbi = [
+      "function getEvaluation(bytes32) view returns (uint256[], string, bool)"
+    ];
+    
+    const verdiktaContract = new ethers.Contract(
+      verdiktaAddress,
+      verdiktaAbi,
+      this.provider
+    );
+
+    const [scores, justCids, ok] = await verdiktaContract.getEvaluation(verdiktaAggId);
+
+    if (ok && scores.length >= 2) {
+      // Results are ready! Convert scores from raw (0-1000000) to percentages
+      const rejection = Number(scores[0]) / 10000;  // DONT_FUND %
+      const acceptance = Number(scores[1]) / 10000; // FUND %
+      
+      return {
+        ready: true,
+        scores: { rejection, acceptance },
+        justificationCids: justCids,
+        verdiktaAggId
+      };
+    }
+
+    return { ready: false, reason: 'pending' };
+
+  } catch (error) {
+    console.error('Error checking evaluation status:', error);
+    return { ready: false, reason: 'error', error: error.message };
+  }
+}
+
 }
 
 // --- helper: derive bountyId from a known tx hash by parsing the event ---

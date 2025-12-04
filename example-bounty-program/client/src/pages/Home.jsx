@@ -44,7 +44,8 @@ function Home({ walletState }) {
       if (['OPEN', 'EXPIRED', 'AWARDED', 'CLOSED'].includes(statusUpper)) {
         filterParams.status = statusUpper;
       } else {
-        filterParams.excludeStatuses = 'CLOSED';
+        // "All Active" excludes completed bounties (both CLOSED and AWARDED)
+        filterParams.excludeStatuses = 'CLOSED,AWARDED';
       }
 
       const response = await apiService.listJobs(filterParams);

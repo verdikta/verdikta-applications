@@ -35,7 +35,7 @@ const CONFIG = {
   EVALUATION_CHECK_INTERVAL_MS: 15000,
 };
 
-const PENDING_STATUSES = ['PENDING_EVALUATION', 'PendingVerdikta', 'Prepared'];
+const PENDING_STATUSES = ['PENDING_EVALUATION', 'PendingVerdikta', 'Prepared', 'PREPARED'];
 
 // ============================================================================
 // MAIN COMPONENT
@@ -965,11 +965,11 @@ function BountyDetails({ walletState }) {
   const isClosed = status === 'CLOSED';
 
   const hasActiveSubmissions = submissions.some(s =>
-    s.status === 'PendingVerdikta' || s.status === 'PENDING_EVALUATION'
+    PENDING_STATUSES.includes(s.status)
   );
 
   const pendingSubmissions = submissions.filter(s =>
-    s.status === 'PendingVerdikta' || s.status === 'PENDING_EVALUATION'
+    PENDING_STATUSES.includes(s.status)
   );
 
   const onChainIdForButtons = getOnChainBountyId();
@@ -1431,13 +1431,21 @@ function SubmissionCard({
   getSubmissionAge,
   timeoutMinutes
 }) {
-  const isPending = submission.status === 'PENDING_EVALUATION' || submission.status === 'PendingVerdikta';
+  const isPending = PENDING_STATUSES.includes(submission.status);
   const isApproved = submission.status === 'APPROVED' || submission.status === 'ACCEPTED' || submission.status === 'PassedPaid';
   const isRejected = submission.status === 'REJECTED' || submission.status === 'Failed';
-  const ageMinutes = isPending ? getSubmissionAge(submission.submittedAt) : 0;
+  const ageMinutes = isPending && submission.submittedAt ? getSubmissionAge(submission.submittedAt) : 0;
   const canTimeout = ageMinutes > timeoutMinutes;
   const canFinalize = isPending && !isPolling;
   const hasEvalReady = evaluationResult?.ready;
+
+  // Helper to get display status for pending submissions
+  const getStatusDisplay = () => {
+    if (isApproved) return '✅ APPROVED';
+    if (isRejected) return '❌ REJECTED';
+    if (isPending) return '⏳ EVALUATING';
+    return submission.status;
+  };
 
   const getStatusBadgeClass = () => {
     if (isApproved) return 'status-approved';
@@ -1454,7 +1462,7 @@ function SubmissionCard({
       <div className="submission-header">
         <span className="hunter">{submission.hunter?.substring(0, 10)}...</span>
         <span className={`status-badge ${getStatusBadgeClass()}`}>
-          {isApproved ? '✅ APPROVED' : isRejected ? '❌ REJECTED' : submission.status}
+          {getStatusDisplay()}
         </span>
       </div>
 
@@ -1468,7 +1476,7 @@ function SubmissionCard({
       )}
 
       <div className="submission-meta">
-        <span>Submitted: {new Date(submission.submittedAt * 1000).toLocaleString()}</span>
+        <span>Submitted: {submission.submittedAt ? new Date(submission.submittedAt * 1000).toLocaleString() : 'Just now'}</span>
       </div>
 
       {/* NEW: Evaluation ready indicator */}

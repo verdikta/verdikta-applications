@@ -182,12 +182,23 @@ function BountyDetails({ walletState }) {
       try {
         const contractService = getContractService();
         
+        // Note: checkEvaluationReady uses getReadOnlyProvider() which doesn't require wallet connection
+        // It just needs window.ethereum to be present (MetaMask installed)
+        
         for (const sub of subsToCheck) {
           if (!isMountedRef.current) break;
 
           try {
-            console.log(`🔍 Checking evaluation readiness for submission #${sub.submissionId}...`);
-            const result = await contractService.checkEvaluationReady(onChainId, sub.submissionId);
+            console.log(`🔍 Checking evaluation readiness for submission:`, {
+              submissionId: sub.submissionId,
+              onChainSubmissionId: sub.onChainSubmissionId,
+              status: sub.status,
+              bountyId: onChainId
+            });
+            
+            // Use onChainSubmissionId if available, otherwise fall back to submissionId
+            const chainSubmissionId = sub.onChainSubmissionId ?? sub.submissionId;
+            const result = await contractService.checkEvaluationReady(onChainId, chainSubmissionId);
             
             if (result.ready) {
               console.log(`✅ Evaluation READY for submission #${sub.submissionId}:`, result.scores);
@@ -197,7 +208,7 @@ function BountyDetails({ walletState }) {
                 return next;
               });
             } else {
-              console.log(`⏳ Evaluation not ready yet for submission #${sub.submissionId}`);
+              console.log(`⏳ Evaluation not ready for submission #${sub.submissionId}`, result.error ? `(${result.error})` : '');
             }
           } catch (err) {
             // Don't spam console for expected "not ready" errors

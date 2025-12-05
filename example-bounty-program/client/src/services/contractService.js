@@ -1,5 +1,5 @@
 /**
- * Frontend Contract Service 
+ * Frontend Contract Service (OPTIMIZED)
  * Handles WRITE-ONLY smart contract interactions via MetaMask
  *
  * PERFORMANCE OPTIMIZATIONS:
@@ -36,7 +36,8 @@ const BOUNTY_ESCROW_ABI = [
   "function getEffectiveBountyStatus(uint256) view returns (string)",
   "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))",
   "function bountyCount() view returns (uint256)",
-  "function getBounty(uint256) view returns (address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256)"
+  "function getBounty(uint256) view returns (address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256)",
+  "function verdikta() view returns (address)"
 ];
 
 // LINK token ABI (minimal)
@@ -651,6 +652,100 @@ class ContractService {
         throw error;
       }
     });
+  }
+
+  /**
+   * Check if Verdikta evaluation results are ready for a submission
+   * Polls the VerdiktaAggregator contract directly
+   * Returns: { ready: boolean, scores?: { acceptance, rejection }, justificationCids?: string[] }
+   */
+  async checkEvaluationReady(bountyId, submissionId) {
+    const provider = this.getReadOnlyProvider();
+    if (!provider) {
+      console.warn('⚠️ checkEvaluationReady: No provider - is MetaMask installed?');
+      return { ready: false, error: 'No provider available' };
+    }
+
+    console.log(`🔍 checkEvaluationReady called: bountyId=${bountyId}, submissionId=${submissionId}`);
+
+    try {
+      // Get submission to retrieve verdiktaAggId and status
+      const contract = new ethers.Contract(
+        this.contractAddress,
+        BOUNTY_ESCROW_ABI,
+        provider
+      );
+
+      console.log(`📡 Fetching on-chain submission data...`);
+      const sub = await contract.getSubmission(bountyId, submissionId);
+      const statusCode = Number(sub.status);
+      console.log(`📊 On-chain submission status: ${statusCode}, verdiktaAggId: ${sub.verdiktaAggId}`);
+      
+      // Status codes: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
+      // Only check if status is PendingVerdikta (1) or Prepared (0)
+      if (statusCode !== 0 && statusCode !== 1) {
+        console.log(`⏭️ Submission #${submissionId} status is ${statusCode}, not pending`);
+        return { ready: false };
+      }
+
+      const aggIdBytes = sub.verdiktaAggId;
+      
+      // Check if aggId is zero (not yet assigned)
+      if (aggIdBytes === '0x0000000000000000000000000000000000000000000000000000000000000000') {
+        console.log(`⏳ Submission #${submissionId} has no verdiktaAggId yet`);
+        return { ready: false };
+      }
+
+      // Convert bytes32 to uint256 for the aggregator call
+      const aggIdBigInt = BigInt(aggIdBytes);
+      console.log(`🔢 aggIdBigInt: ${aggIdBigInt}`);
+      
+      // Get VerdiktaAggregator address from BountyEscrow
+      const verdiktaAddr = await contract.verdikta();
+      console.log(`🔍 VerdiktaAggregator address: ${verdiktaAddr}`);
+
+      // VerdiktaAggregator ABI for getEvaluation
+      const verdiktaAbi = [
+        'function getEvaluation(uint256 aggId) view returns (uint256[] memory scores, string[] memory justificationCids, bool ok)'
+      ];
+      
+      const verdikta = new ethers.Contract(verdiktaAddr, verdiktaAbi, provider);
+      
+      // Call getEvaluation
+      console.log(`📡 Calling getEvaluation(${aggIdBigInt})...`);
+      const [scores, justCids, ok] = await verdikta.getEvaluation(aggIdBigInt);
+      
+      console.log(`🔍 Evaluation result: ok=${ok}, scores=[${scores?.join(', ')}]`);
+
+      if (!ok || !scores || scores.length < 2) {
+        console.log(`⏳ Evaluation not complete yet (ok=${ok}, scores=${scores?.length || 0})`);
+        return { ready: false };
+      }
+
+      // Scores are in format: [rejection, acceptance] with 6 decimal precision (0-1000000)
+      const rejectionScore = Number(scores[0]) / 10000; // Convert to percentage
+      const acceptanceScore = Number(scores[1]) / 10000;
+
+      console.log(`✅ Evaluation ready: acceptance=${acceptanceScore.toFixed(1)}%, rejection=${rejectionScore.toFixed(1)}%`);
+
+      return {
+        ready: true,
+        scores: {
+          rejection: rejectionScore,
+          acceptance: acceptanceScore
+        },
+        justificationCids: justCids || []
+      };
+
+    } catch (error) {
+      // Log more details about the error
+      console.error(`❌ checkEvaluationReady error for bounty ${bountyId}, submission ${submissionId}:`, {
+        message: error.message,
+        code: error.code,
+        reason: error.reason
+      });
+      return { ready: false, error: error.message };
+    }
   }
 
   // ==========================================================================

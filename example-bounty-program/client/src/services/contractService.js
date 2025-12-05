@@ -1,20 +1,16 @@
 /**
- * Frontend Contract Service
+ * Frontend Contract Service 
  * Handles WRITE-ONLY smart contract interactions via MetaMask
+ *
+ * PERFORMANCE OPTIMIZATIONS:
+ * - Singleton provider/signer instances (avoid repeated MetaMask connections)
+ * - Cached contract instances
+ * - Debounced RPC calls
+ * - Reduced polling frequency
+ * - Connection state management
  *
  * IMPORTANT: This service is for USER TRANSACTIONS ONLY (writing to blockchain)
  * For READING job data, use apiService.getJob() which reads from backend cache
- *
- * Why?
- * - Reading from blockchain is slow (200-500ms per request)
- * - Backend syncs blockchain → local storage every 2 minutes
- * - Frontend reads from fast cached API (<10ms)
- *
- * Bounty Status System:
- * - OPEN: Active, accepting submissions
- * - EXPIRED: Deadline passed, awaiting closeExpiredBounty()
- * - AWARDED: Winner paid
- * - CLOSED: Funds returned to creator
  */
 
 import { ethers } from 'ethers';
@@ -28,33 +24,154 @@ const BOUNTY_ESCROW_ABI = [
   "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
   "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)",
 
-  // Functions
-  // createBounty takes evaluationCid (the evaluation package CID)
+  // Write Functions
   "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline) payable returns (uint256)",
-  // prepareSubmission takes both CIDs - evaluationCid must match bounty's, hunterCid is the work product
   "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
-  // startPreparedSubmission takes no CID params - reads from stored submission
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
   "function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)",
   "function closeExpiredBounty(uint256 bountyId)",
-  // NOTE: No read functions! Frontend reads from backend API for cached data
-  // NOTE: No cancelBounty - only closeExpiredBounty after deadline passes
+  
+  // View Functions (used sparingly)
+  "function getEffectiveBountyStatus(uint256) view returns (string)",
+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))",
+  "function bountyCount() view returns (uint256)",
+  "function getBounty(uint256) view returns (address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256)"
 ];
+
+// LINK token ABI (minimal)
+const LINK_ABI = [
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function balanceOf(address account) view returns (uint256)"
+];
+
+// ============================================================================
+// PERFORMANCE: Debounce utility
+// ============================================================================
+
+const pendingCalls = new Map();
+
+/**
+ * Debounce identical RPC calls within a time window
+ * Prevents hammering MetaMask with duplicate requests
+ */
+function debounceRpcCall(key, fn, windowMs = 500) {
+  const now = Date.now();
+  const pending = pendingCalls.get(key);
+  
+  if (pending && (now - pending.timestamp) < windowMs) {
+    // Return cached promise if within debounce window
+    return pending.promise;
+  }
+  
+  const promise = fn();
+  pendingCalls.set(key, { promise, timestamp: now });
+  
+  // Clean up after resolution
+  promise.finally(() => {
+    setTimeout(() => {
+      const current = pendingCalls.get(key);
+      if (current && current.promise === promise) {
+        pendingCalls.delete(key);
+      }
+    }, windowMs);
+  });
+  
+  return promise;
+}
+
+// ============================================================================
+// CONTRACT SERVICE CLASS
+// ============================================================================
 
 class ContractService {
   constructor(contractAddress) {
     this.contractAddress = contractAddress;
+    
+    // Singleton instances - created once, reused
     this.provider = null;
     this.signer = null;
     this.contract = null;
     this.userAddress = null;
+    
+    // Cached contract instances
+    this._linkContract = null;
+    this._readOnlyProvider = null;
+    
+    // Connection state
+    this._connecting = false;
+    this._connectionPromise = null;
+    
+    // Cache for expensive reads
+    this._statusCache = new Map();
+    this._statusCacheTTL = 5000; // 5 seconds
+  }
+
+  // ==========================================================================
+  // PROVIDER MANAGEMENT (OPTIMIZED)
+  // ==========================================================================
+
+  /**
+   * Get a read-only provider (doesn't prompt MetaMask)
+   * Used for view calls that don't need signing
+   */
+  getReadOnlyProvider() {
+    if (!this._readOnlyProvider && window.ethereum) {
+      this._readOnlyProvider = new ethers.BrowserProvider(window.ethereum);
+    }
+    return this._readOnlyProvider;
+  }
+
+  /**
+   * Get cached LINK contract instance
+   */
+  getLinkContract(signerOrProvider) {
+    // For write operations, create with signer
+    if (signerOrProvider) {
+      return new ethers.Contract(LINK_ADDRESS, LINK_ABI, signerOrProvider);
+    }
+    
+    // For read operations, use cached instance
+    if (!this._linkContract) {
+      const provider = this.getReadOnlyProvider();
+      if (provider) {
+        this._linkContract = new ethers.Contract(LINK_ADDRESS, LINK_ABI, provider);
+      }
+    }
+    return this._linkContract;
   }
 
   /**
    * Connect to MetaMask and initialize contract
+   * OPTIMIZED: Prevents duplicate connection attempts
    */
   async connect() {
+    // Return existing connection if already connected
+    if (this.contract && this.userAddress) {
+      return {
+        address: this.userAddress,
+        chainId: (await this.provider.getNetwork()).chainId
+      };
+    }
+
+    // Prevent duplicate concurrent connection attempts
+    if (this._connecting && this._connectionPromise) {
+      return this._connectionPromise;
+    }
+
+    this._connecting = true;
+    this._connectionPromise = this._doConnect();
+    
+    try {
+      return await this._connectionPromise;
+    } finally {
+      this._connecting = false;
+      this._connectionPromise = null;
+    }
+  }
+
+  async _doConnect() {
     if (!window.ethereum) {
       throw new Error('MetaMask not installed. Please install MetaMask to continue.');
     }
@@ -63,17 +180,20 @@ class ContractService {
       // Request account access
       await window.ethereum.request({ method: 'eth_requestAccounts' });
 
-      // Create provider and signer
+      // Create provider and signer (ONCE)
       this.provider = new ethers.BrowserProvider(window.ethereum);
       this.signer = await this.provider.getSigner();
       this.userAddress = await this.signer.getAddress();
 
-      // Initialize contract
+      // Initialize main contract
       this.contract = new ethers.Contract(
         this.contractAddress,
         BOUNTY_ESCROW_ABI,
         this.signer
       );
+
+      // Update read-only provider reference
+      this._readOnlyProvider = this.provider;
 
       console.log('✅ Connected to MetaMask:', this.userAddress);
 
@@ -88,18 +208,13 @@ class ContractService {
     }
   }
 
+  // ==========================================================================
+  // WRITE OPERATIONS
+  // ==========================================================================
+
   /**
    * Create a bounty on-chain via MetaMask
-   *
-   * @param {Object} params
-   * @param {string} params.evaluationCid - IPFS CID of the evaluation package (contains jury config, rubric ref, instructions)
-   * @param {number|bigint} params.classId - Verdikta class ID (uint64)
-   * @param {number|bigint} params.threshold - Passing threshold (0-100, uint8)
-   * @param {number|string} params.bountyAmountEth - Bounty amount in ETH
-   * @param {number} params.submissionWindowHours - Hours until deadline
-   * @returns {Promise<Object>} Transaction result with bountyId
    */
-
   async createBounty({ evaluationCid, classId, threshold, bountyAmountEth, submissionWindowHours }) {
     if (!this.contract) throw new Error('Contract not initialized. Call connect() first.');
 
@@ -115,29 +230,26 @@ class ContractService {
     try {
       // Encode exact solidity widths
       const now = Math.floor(Date.now() / 1000);
-      const submissionDeadline = BigInt(now + Math.trunc(winHrs * 3600)); // uint64
-      const classId64  = BigInt(classId);                                 // uint64
-      const thresh8    = BigInt(thrNum);                                   // uint8
-      const valueWei   = ethers.parseEther(ethStr);
+      const submissionDeadline = BigInt(now + Math.trunc(winHrs * 3600));
+      const classId64 = BigInt(classId);
+      const thresh8 = BigInt(thrNum);
+      const valueWei = ethers.parseEther(ethStr);
 
-      // Optional clamps
+      // Validate ranges
       const mask64 = (1n << 64n) - 1n;
-      const mask8  = (1n << 8n)  - 1n;
+      const mask8 = (1n << 8n) - 1n;
       if ((classId64 & ~mask64) !== 0n) throw new Error('classId exceeds uint64');
-      if ((thresh8   & ~mask8)  !== 0n) throw new Error('threshold exceeds uint8');
+      if ((thresh8 & ~mask8) !== 0n) throw new Error('threshold exceeds uint8');
 
       console.log('🔍 createBounty params', {
-        evaluationCid,
-        evaluationCidLength: evaluationCid.length,
+        evaluationCid: evaluationCid.substring(0, 20) + '...',
         classId64: classId64.toString(),
         threshold8: thresh8.toString(),
         submissionDeadline: submissionDeadline.toString(),
-        deadlineISO: new Date(Number(submissionDeadline) * 1000).toISOString(),
-        valueWei: valueWei.toString(),
-        contract: this.contractAddress
+        valueWei: valueWei.toString()
       });
 
-      // 1) Dry-run (surfaces real revert reasons)
+      // Dry-run to surface revert reasons
       try {
         await this.contract.createBounty.staticCall(
           evaluationCid,
@@ -148,14 +260,14 @@ class ContractService {
         );
       } catch (e) {
         const msg = (e?.shortMessage || e?.message || '').toLowerCase();
-        if (msg.includes('no eth'))             throw new Error('Bounty requires ETH value (msg.value > 0)');
+        if (msg.includes('no eth')) throw new Error('Bounty requires ETH value (msg.value > 0)');
         if (msg.includes('empty evaluationcid')) throw new Error('Evaluation CID is empty');
-        if (msg.includes('bad threshold'))      throw new Error('Threshold must be 0..100');
-        if (msg.includes('deadline in past'))   throw new Error('Deadline must be in the future');
+        if (msg.includes('bad threshold')) throw new Error('Threshold must be 0..100');
+        if (msg.includes('deadline in past')) throw new Error('Deadline must be in the future');
         throw e;
       }
 
-      // 2) Send the tx
+      // Send the tx
       const tx = await this.contract.createBounty(
         evaluationCid,
         classId64,
@@ -168,7 +280,7 @@ class ContractService {
       const receipt = await tx.wait();
       console.log('✅ Transaction confirmed:', receipt.hash);
 
-      // 3) Parse bountyId from the event
+      // Parse bountyId from event
       let bountyId = null;
       for (const log of receipt.logs ?? []) {
         try {
@@ -191,32 +303,12 @@ class ContractService {
     } catch (error) {
       console.error('Error creating bounty:', error);
       if (error.code === 'ACTION_REJECTED') throw new Error('Transaction rejected by user');
-
-      const msg = (error?.shortMessage || error?.message || '').toLowerCase();
-      if (msg.includes('missing revert data') || msg.includes('call exception')) {
-        throw new Error(
-          'Transaction simulation failed. Possible causes: ' +
-          '1) wrong network/contract address, ' +
-          '2) invalid inputs (empty CID / deadline in past / threshold out of range), or ' +
-          '3) zero ETH value. Check the debug log above.'
-        );
-      }
       throw error;
     }
   }
 
   /**
    * STEP 1: Prepare a submission (deploys EvaluationWallet)
-   * Note: The evaluationCid comes from the Bounty struct (set at bounty creation)
-   * Note: The hunterCid is passed to startPreparedSubmission (not stored in contract)
-   *
-   * @param {number} bountyId - The bounty ID
-   * @param {string} addendum - Additional context for AI evaluators
-   * @param {number} alpha - Reputation weight (0-100, default 75)
-   * @param {string} maxOracleFee - Max fee per oracle in wei (e.g. "50000000000000000" = 0.05 LINK)
-   * @param {string} estimatedBaseCost - Estimated base cost in wei
-   * @param {string} maxFeeBasedScaling - Max fee-based scaling in wei
-   * @returns {Promise<Object>} { submissionId, evalWallet, linkMaxBudget }
    */
   async prepareSubmission(bountyId, evaluationCid, hunterCid, addendum = "", alpha = 75,
                           maxOracleFee = "50000000000000000",
@@ -230,10 +322,7 @@ class ContractService {
       console.log('🔍 Preparing submission...', {
         bountyId,
         evaluationCid: evaluationCid?.substring(0, 20) + '...',
-        hunterCid: hunterCid?.substring(0, 20) + '...',
-        addendum: addendum ? addendum.substring(0, 50) + '...' : '(none)',
-        alpha,
-        maxOracleFee
+        hunterCid: hunterCid?.substring(0, 20) + '...'
       });
 
       const tx = await this.contract.prepareSubmission(
@@ -251,7 +340,7 @@ class ContractService {
       const receipt = await tx.wait();
       console.log('✅ Submission prepared:', receipt.hash);
 
-      // Parse SubmissionPrepared event to get submissionId, evalWallet, linkMaxBudget
+      // Parse SubmissionPrepared event
       let result = null;
       for (const log of receipt.logs ?? []) {
         try {
@@ -276,48 +365,29 @@ class ContractService {
 
     } catch (error) {
       console.error('Error preparing submission:', error);
-
       if (error.code === 'ACTION_REJECTED') {
         throw new Error('Transaction rejected by user');
       }
-
-      const msg = (error?.message || '').toLowerCase();
-      if (msg.includes('not open')) {
-        throw new Error('Bounty is not open for submissions');
-      }
-      if (msg.includes('deadline passed')) {
-        throw new Error('Submission deadline has passed');
-      }
-
       throw error;
     }
   }
 
   /**
    * STEP 2: Approve LINK tokens to the EvaluationWallet
-   * The EvaluationWallet needs approval because it calls transferFrom() on hunter's LINK
-   *
-   * @param {string} evalWallet - Address of the EvaluationWallet to approve
-   * @param {string} linkAmount - Amount of LINK in wei to approve
-   * @returns {Promise<Object>} Transaction result
    */
   async approveLink(evalWallet, linkAmount) {
-    if (!this.provider) {
-      throw new Error('Provider not initialized. Call connect() first.');
+    if (!this.signer) {
+      throw new Error('Signer not initialized. Call connect() first.');
     }
-
-    const LINK_ABI = [
-      "function approve(address spender, uint256 amount) returns (bool)"
-    ];
 
     try {
       console.log('🔍 Approving LINK to EvaluationWallet...', {
         spender: evalWallet,
-        linkAmount,
-        linkAddress: LINK_ADDRESS
+        linkAmount: ethers.formatUnits(linkAmount, 18) + ' LINK'
       });
 
-      const linkContract = new ethers.Contract(LINK_ADDRESS, LINK_ABI, this.signer);
+      // Use signer for write operation
+      const linkContract = this.getLinkContract(this.signer);
       const tx = await linkContract.approve(evalWallet, linkAmount);
 
       console.log('📤 LINK approval transaction sent:', tx.hash);
@@ -333,22 +403,15 @@ class ContractService {
 
     } catch (error) {
       console.error('Error approving LINK:', error);
-
       if (error.code === 'ACTION_REJECTED') {
         throw new Error('LINK approval rejected by user');
       }
-
       throw error;
     }
   }
 
   /**
    * STEP 3: Start the prepared submission (triggers Verdikta evaluation)
-   *
-   * @param {number} bountyId - The bounty ID
-   * @param {number} submissionId - The submission ID from prepareSubmission
-   * @param {string} hunterCid - IPFS CID of the hunter's work product archive (bCID) - passed through to Verdikta
-   * @returns {Promise<Object>} Transaction result
    */
   async startPreparedSubmission(bountyId, submissionId) {
     if (!this.contract) {
@@ -356,14 +419,11 @@ class ContractService {
     }
 
     try {
-      console.log('🔍 Starting submission evaluation...', {
-        bountyId,
-        submissionId
-      });
+      console.log('🔍 Starting submission evaluation...', { bountyId, submissionId });
 
       const tx = await this.contract.startPreparedSubmission(bountyId, submissionId);
-
       console.log('📤 Transaction sent:', tx.hash);
+
       const receipt = await tx.wait();
       console.log('✅ Evaluation started:', receipt.hash);
 
@@ -376,31 +436,15 @@ class ContractService {
 
     } catch (error) {
       console.error('Error starting submission:', error);
-
       if (error.code === 'ACTION_REJECTED') {
         throw new Error('Transaction rejected by user');
       }
-
-      const msg = (error?.message || '').toLowerCase();
-      if (msg.includes('not prepared')) {
-        throw new Error('Submission not in Prepared state');
-      }
-      if (msg.includes('link transfer failed')) {
-        throw new Error('Failed to transfer LINK. Ensure you have approved sufficient LINK to the EvaluationWallet.');
-      }
-
       throw error;
     }
   }
 
   /**
-   * Finalize a timed-out or completed submission
-   * This reads results from Verdikta and updates submission status
-   * If evaluation timed out, it will attempt to finalize on Verdikta first
-   *
-   * @param {number} bountyId - The bounty ID
-   * @param {number} submissionId - The submission ID to finalize
-   * @returns {Promise<Object>} Transaction result
+   * Finalize a submission - reads results from Verdikta
    */
   async finalizeSubmission(bountyId, submissionId) {
     if (!this.contract) {
@@ -416,6 +460,9 @@ class ContractService {
       const receipt = await tx.wait();
       console.log('✅ Submission finalized:', receipt.hash);
 
+      // Invalidate status cache
+      this._statusCache.delete(`${bountyId}`);
+
       return {
         success: true,
         txHash: receipt.hash,
@@ -425,31 +472,15 @@ class ContractService {
 
     } catch (error) {
       console.error('Error finalizing submission:', error);
-
       if (error.code === 'ACTION_REJECTED') {
         throw new Error('Transaction rejected by user');
       }
-
-      const msg = (error?.message || '').toLowerCase();
-
-      if (msg.includes('not pending')) {
-        throw new Error('Submission is not in PendingVerdikta state');
-      }
-      if (msg.includes('verdikta not ready')) {
-        throw new Error('Verdikta evaluation not ready yet - wait longer or oracle may have failed');
-      }
-
       throw error;
     }
   }
 
   /**
-   * Force-fail a submission that's been stuck in evaluation for >20 minutes
-   * Useful when Verdikta oracle fails or evaluation never starts
-   *
-   * @param {number} bountyId - The bounty ID
-   * @param {number} submissionId - The submission ID to fail
-   * @returns {Promise<Object>} Transaction result
+   * Force-fail a timed-out submission
    */
   async failTimedOutSubmission(bountyId, submissionId) {
     if (!this.contract) {
@@ -465,6 +496,9 @@ class ContractService {
       const receipt = await tx.wait();
       console.log('✅ Submission failed:', receipt.hash);
 
+      // Invalidate status cache
+      this._statusCache.delete(`${bountyId}`);
+
       return {
         success: true,
         txHash: receipt.hash,
@@ -474,35 +508,15 @@ class ContractService {
 
     } catch (error) {
       console.error('Error failing timed-out submission:', error);
-
       if (error.code === 'ACTION_REJECTED') {
         throw new Error('Transaction rejected by user');
       }
-
-      const msg = (error?.message || '').toLowerCase();
-
-      if (msg.includes('not pending')) {
-        throw new Error('Submission is not in PendingVerdikta state');
-      }
-      if (msg.includes('timeout not reached')) {
-        throw new Error('Must wait 20 minutes before force-failing submission');
-      }
-
       throw error;
     }
   }
 
   /**
    * Close an expired bounty and return funds to creator
-   * Can be called by ANYONE after submission deadline passes
-   *
-   * Requirements:
-   * - Bounty status must be Open (shows as EXPIRED in frontend)
-   * - Deadline must have passed
-   * - No active evaluations (PendingVerdikta submissions)
-   *
-   * @param {number} bountyId - The bounty to close
-   * @returns {Promise<Object>} Transaction result
    */
   async closeExpiredBounty(bountyId) {
     if (!this.contract) {
@@ -518,6 +532,9 @@ class ContractService {
       const receipt = await tx.wait();
       console.log('✅ Expired bounty closed:', receipt.hash);
 
+      // Invalidate status cache
+      this._statusCache.delete(`${bountyId}`);
+
       return {
         success: true,
         txHash: receipt.hash,
@@ -527,14 +544,11 @@ class ContractService {
 
     } catch (error) {
       console.error('Error closing expired bounty:', error);
-
       if (error.code === 'ACTION_REJECTED') {
         throw new Error('Transaction rejected by user');
       }
 
-      // Parse contract revert reasons
       const msg = (error?.message || '').toLowerCase();
-
       if (msg.includes('not open')) {
         throw new Error('Bounty is not open - it may already be closed or awarded');
       }
@@ -549,113 +563,177 @@ class ContractService {
     }
   }
 
+  // ==========================================================================
+  // READ OPERATIONS (OPTIMIZED with caching)
+  // ==========================================================================
+
   /**
-   * Get the effective status of a bounty (OPEN, EXPIRED, AWARDED, or CLOSED)
-   *
-   * @param {number} bountyId - The bounty ID to check
-   * @returns {Promise<string>} The bounty status
+   * Get the effective status of a bounty (CACHED)
+   * Uses debouncing and short-term cache to avoid hammering MetaMask
    */
   async getBountyStatus(bountyId) {
-    if (!this.provider) {
-      throw new Error('Provider not initialized. Call connect() first.');
+    const cacheKey = `${bountyId}`;
+    const cached = this._statusCache.get(cacheKey);
+    
+    // Return cached value if still valid
+    if (cached && (Date.now() - cached.timestamp) < this._statusCacheTTL) {
+      console.log(`📋 Bounty #${bountyId} status (cached):`, cached.status);
+      return cached.status;
     }
 
-    try {
-      const viewAbi = [
-        "function getEffectiveBountyStatus(uint256) view returns (string)"
-      ];
-
-      const contract = new ethers.Contract(
-        this.contractAddress,
-        viewAbi,
-        this.provider
-      );
-
-      const status = await contract.getEffectiveBountyStatus(bountyId);
-
-      console.log(`Bounty #${bountyId} effective status:`, status);
-
-      return status; // Returns: "OPEN", "EXPIRED", "AWARDED", or "CLOSED"
-
-    } catch (error) {
-      console.error('Error getting bounty status:', error);
-
-      const msg = (error?.message || '').toLowerCase();
-      if (msg.includes('bad bountyid')) {
-        throw new Error(`Bounty #${bountyId} does not exist on-chain`);
+    // Debounce identical requests
+    return debounceRpcCall(`status-${bountyId}`, async () => {
+      const provider = this.getReadOnlyProvider();
+      if (!provider) {
+        throw new Error('Provider not initialized. Call connect() first.');
       }
 
-      throw error;
-    }
+      try {
+        const contract = new ethers.Contract(
+          this.contractAddress,
+          ["function getEffectiveBountyStatus(uint256) view returns (string)"],
+          provider
+        );
+
+        const status = await contract.getEffectiveBountyStatus(bountyId);
+        console.log(`Bounty #${bountyId} effective status:`, status);
+
+        // Cache the result
+        this._statusCache.set(cacheKey, { status, timestamp: Date.now() });
+
+        return status;
+
+      } catch (error) {
+        console.error('Error getting bounty status:', error);
+        const msg = (error?.message || '').toLowerCase();
+        if (msg.includes('bad bountyid')) {
+          throw new Error(`Bounty #${bountyId} does not exist on-chain`);
+        }
+        throw error;
+      }
+    });
   }
 
   /**
-   * Get submission details from contract
-   * Note: evaluationCid is in the Bounty struct, not Submission
-   * Note: hunterCid is passed to startPreparedSubmission, not stored
-   * 
-   * @param {number} bountyId - The bounty ID
-   * @param {number} submissionId - The submission ID
-   * @returns {Promise<Object>} Submission details including status
+   * Get submission details (debounced)
    */
   async getSubmission(bountyId, submissionId) {
-    if (!this.provider) {
-      throw new Error('Provider not initialized. Call connect() first.');
+    return debounceRpcCall(`submission-${bountyId}-${submissionId}`, async () => {
+      const provider = this.getReadOnlyProvider();
+      if (!provider) {
+        throw new Error('Provider not initialized. Call connect() first.');
+      }
+
+      try {
+        const contract = new ethers.Contract(
+          this.contractAddress,
+          BOUNTY_ESCROW_ABI,
+          provider
+        );
+
+        const sub = await contract.getSubmission(bountyId, submissionId);
+        
+        const statusMap = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'];
+
+        return {
+          hunter: sub.hunter,
+          evalWallet: sub.evalWallet,
+          verdiktaAggId: sub.verdiktaAggId,
+          status: statusMap[sub.status] || 'UNKNOWN',
+          statusCode: sub.status,
+          submittedAt: Number(sub.submittedAt),
+          acceptance: Number(sub.acceptance),
+          rejection: Number(sub.rejection)
+        };
+
+      } catch (error) {
+        console.error('Error getting submission:', error);
+        throw error;
+      }
+    });
+  }
+
+  // ==========================================================================
+  // ALLOWANCE VERIFICATION (OPTIMIZED)
+  // ==========================================================================
+
+  /**
+   * Verify LINK allowance is visible on-chain before proceeding
+   * OPTIMIZED: Uses cached LINK contract, exponential backoff
+   */
+  async verifyAllowanceOnChain(ownerAddress, spenderAddress, requiredAmount, maxAttempts = 12, initialIntervalMs = 500) {
+    const linkContract = this.getLinkContract();
+    if (!linkContract) {
+      throw new Error('Could not initialize LINK contract');
     }
 
-    try {
-      const viewAbi = [
-        "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))"
-      ];
+    const requiredBigInt = BigInt(requiredAmount);
+    let intervalMs = initialIntervalMs;
 
-      const contract = new ethers.Contract(
-        this.contractAddress,
-        viewAbi,
-        this.provider
-      );
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const currentAllowance = await linkContract.allowance(ownerAddress, spenderAddress);
+        console.log(`🔍 Allowance check ${attempt}/${maxAttempts}: ${ethers.formatUnits(currentAllowance, 18)} LINK`);
+        
+        if (BigInt(currentAllowance) >= requiredBigInt) {
+          console.log('✅ Allowance verified on-chain');
+          return true;
+        }
+      } catch (err) {
+        console.warn(`⚠️ Allowance check ${attempt} failed:`, err.message);
+      }
 
-      const sub = await contract.getSubmission(bountyId, submissionId);
-      
-      // Status enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
-      const statusMap = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'];
-
-      return {
-        hunter: sub.hunter,
-        evalWallet: sub.evalWallet,
-        verdiktaAggId: sub.verdiktaAggId,
-        status: statusMap[sub.status] || 'UNKNOWN',
-        statusCode: sub.status,
-        submittedAt: Number(sub.submittedAt),
-        acceptance: Number(sub.acceptance),
-        rejection: Number(sub.rejection)
-      };
-
-    } catch (error) {
-      console.error('Error getting submission:', error);
-      throw error;
+      // Exponential backoff: 500ms, 750ms, 1125ms, 1687ms, etc.
+      if (attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, intervalMs));
+        intervalMs = Math.min(intervalMs * 1.5, 3000); // Cap at 3 seconds
+      }
     }
+
+    return false;
   }
 
   /**
-   * Check if user is connected
+   * Check LINK balance (debounced)
    */
+  async getLinkBalance(address) {
+    return debounceRpcCall(`link-balance-${address}`, async () => {
+      const linkContract = this.getLinkContract();
+      if (!linkContract) {
+        throw new Error('Could not initialize LINK contract');
+      }
+
+      const balance = await linkContract.balanceOf(address);
+      return {
+        raw: balance.toString(),
+        formatted: ethers.formatUnits(balance, 18)
+      };
+    });
+  }
+
+  // ==========================================================================
+  // CONNECTION STATE
+  // ==========================================================================
+
   isConnected() {
     return this.contract !== null && this.userAddress !== null;
   }
 
-  /**
-   * Get current user address
-   */
   getAddress() {
     return this.userAddress;
   }
 
-  /**
-   * Get network info
-   */
   async getNetwork() {
     if (!this.provider) return null;
     return await this.provider.getNetwork();
+  }
+
+  /**
+   * Clear all caches (useful after transactions)
+   */
+  clearCache() {
+    this._statusCache.clear();
+    pendingCalls.clear();
   }
 
   /**
@@ -664,6 +742,9 @@ class ContractService {
   onAccountChange(callback) {
     if (window.ethereum) {
       window.ethereum.on('accountsChanged', async (accounts) => {
+        // Clear caches on account change
+        this.clearCache();
+        
         if (accounts.length > 0) {
           await this.connect();
           callback(accounts[0]);
@@ -681,112 +762,50 @@ class ContractService {
   onNetworkChange(callback) {
     if (window.ethereum) {
       window.ethereum.on('chainChanged', (chainId) => {
+        // Clear caches on network change
+        this.clearCache();
         callback(chainId);
-        // Recommend page reload on network change
         window.location.reload();
       });
     }
   }
 
   /**
-   * Disconnect
+   * Disconnect and clear all state
    */
   disconnect() {
     this.provider = null;
     this.signer = null;
     this.contract = null;
     this.userAddress = null;
+    this._linkContract = null;
+    this._readOnlyProvider = null;
+    this.clearCache();
   }
+}
+
+// ============================================================================
+// HELPER FUNCTIONS (OPTIMIZED - use singleton provider)
+// ============================================================================
 
 /**
- * Check if Verdikta evaluation results are ready for a submission
- * This is a FREE view call - no gas needed
- * 
- * @param {number} bountyId - The bounty ID
- * @param {number} submissionId - The submission ID
- * @returns {Promise<Object>} { ready: boolean, scores?: [rejection, acceptance], justificationCids?: string }
+ * Get or create a shared BrowserProvider instance
  */
-async checkEvaluationReady(bountyId, submissionId) {
-  if (!this.provider) {
-    throw new Error('Provider not initialized. Call connect() first.');
+let sharedProvider = null;
+function getSharedProvider() {
+  if (!sharedProvider && window.ethereum) {
+    sharedProvider = new ethers.BrowserProvider(window.ethereum);
   }
-
-  try {
-    // Step 1: Get the VerdiktaAggregator address from BountyEscrow
-    const escrowAbi = [
-      "function verdikta() view returns (address)",
-      "function getSubmission(uint256,uint256) view returns (tuple(address,string,string,address,bytes32,uint8,uint256,uint256,string,uint256,uint256,uint256,uint256,uint256,uint256,uint256,string))"
-    ];
-    
-    const escrowContract = new ethers.Contract(
-      this.contractAddress,
-      escrowAbi,
-      this.provider
-    );
-
-    // Step 2: Get the submission to find verdiktaAggId
-    const sub = await escrowContract.getSubmission(bountyId, submissionId);
-    const verdiktaAggId = sub[4]; // bytes32 verdiktaAggId
-    const status = Number(sub[5]); // uint8 status
-    
-    // If not in PendingVerdikta (status 1), no need to check
-    if (status !== 1) {
-      return { 
-        ready: false, 
-        reason: status === 0 ? 'not_started' : 'already_finalized',
-        status 
-      };
-    }
-
-    // Check if verdiktaAggId is set (not zero)
-    if (verdiktaAggId === '0x0000000000000000000000000000000000000000000000000000000000000000') {
-      return { ready: false, reason: 'no_agg_id' };
-    }
-
-    // Step 3: Get VerdiktaAggregator address
-    const verdiktaAddress = await escrowContract.verdikta();
-
-    // Step 4: Call getEvaluation on VerdiktaAggregator
-    const verdiktaAbi = [
-      "function getEvaluation(bytes32) view returns (uint256[], string, bool)"
-    ];
-    
-    const verdiktaContract = new ethers.Contract(
-      verdiktaAddress,
-      verdiktaAbi,
-      this.provider
-    );
-
-    const [scores, justCids, ok] = await verdiktaContract.getEvaluation(verdiktaAggId);
-
-    if (ok && scores.length >= 2) {
-      // Results are ready! Convert scores from raw (0-1000000) to percentages
-      const rejection = Number(scores[0]) / 10000;  // DONT_FUND %
-      const acceptance = Number(scores[1]) / 10000; // FUND %
-      
-      return {
-        ready: true,
-        scores: { rejection, acceptance },
-        justificationCids: justCids,
-        verdiktaAggId
-      };
-    }
-
-    return { ready: false, reason: 'pending' };
-
-  } catch (error) {
-    console.error('Error checking evaluation status:', error);
-    return { ready: false, reason: 'error', error: error.message };
-  }
+  return sharedProvider;
 }
 
-}
-
-// --- helper: derive bountyId from a known tx hash by parsing the event ---
+/**
+ * Derive bountyId from a known tx hash by parsing the event
+ */
 export async function deriveBountyIdFromTx(txHash, escrowAddress) {
   if (!window.ethereum) throw new Error('Wallet not available');
-  const provider = new ethers.BrowserProvider(window.ethereum);
-
+  
+  const provider = getSharedProvider();
   const iface = new ethers.Interface([
     "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)"
   ]);
@@ -799,7 +818,6 @@ export async function deriveBountyIdFromTx(txHash, escrowAddress) {
     try {
       const parsed = iface.parseLog(log);
       if (parsed?.name === "BountyCreated") {
-        // bigint -> number (safe for your small ids)
         return Number(parsed.args.bountyId);
       }
     } catch { /* non-matching log */ }
@@ -807,22 +825,21 @@ export async function deriveBountyIdFromTx(txHash, escrowAddress) {
   throw new Error('BountyCreated not found in tx logs');
 }
 
-
 /**
- * Resolve on-chain bountyId by reading contract state (no log scan).
- * Looser match: creator + deadline within tolerance, prefer matching CID.
+ * Resolve on-chain bountyId by reading contract state
+ * OPTIMIZED: Uses shared provider
  */
 export async function resolveBountyIdByStateLoose({
   escrowAddress,
   creator,
-  evaluationCid,  // Renamed from rubricCid - now stores the evaluation package CID
+  evaluationCid,
   submissionDeadline,
-  deadlineToleranceSec = 300, // ±5 minutes default
+  deadlineToleranceSec = 300,
   lookback = 1000
 }) {
   if (!window.ethereum) throw new Error("Wallet not available");
-  const provider = new ethers.BrowserProvider(window.ethereum);
-
+  
+  const provider = getSharedProvider();
   const abi = [
     "function bountyCount() view returns (uint256)",
     "function getBounty(uint256) view returns (address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256)"
@@ -833,10 +850,10 @@ export async function resolveBountyIdByStateLoose({
   if (total === 0) throw new Error("No bounties on chain yet");
 
   const start = Math.max(0, total - 1);
-  const stop  = Math.max(0, total - 1 - Math.max(1, lookback));
+  const stop = Math.max(0, total - 1 - Math.max(1, lookback));
 
-  const wantCreator  = (creator || "").toLowerCase();
-  const wantCid      = evaluationCid || "";
+  const wantCreator = (creator || "").toLowerCase();
+  const wantCid = evaluationCid || "";
   const wantDeadline = Number(submissionDeadline || 0);
 
   let best = null;
@@ -844,22 +861,20 @@ export async function resolveBountyIdByStateLoose({
 
   for (let i = start; i >= stop; i--) {
     const b = await c.getBounty(i);
-    const bCreator  = (b[0] || "").toLowerCase();
+    const bCreator = (b[0] || "").toLowerCase();
     if (bCreator !== wantCreator) continue;
 
-    const bCid      = b[1] || "";  // evaluationCid in Bounty struct
+    const bCid = b[1] || "";
     const bDeadline = Number(b[6] || 0);
-    const delta     = Math.abs(bDeadline - wantDeadline);
+    const delta = Math.abs(bDeadline - wantDeadline);
 
-    const cidOk      = !wantCid || wantCid === bCid;
+    const cidOk = !wantCid || wantCid === bCid;
     const deadlineOk = delta <= deadlineToleranceSec;
 
-    // Choose the "best" match: exact CID + in-tolerance deadline beats others;
-    // otherwise pick the closest delta we've seen so far.
     if ((cidOk && deadlineOk) || (cidOk && delta < bestDelta)) {
       best = i;
       bestDelta = delta;
-      if (cidOk && delta === 0) break; // perfect match — stop early
+      if (cidOk && delta === 0) break;
     }
   }
 
@@ -867,12 +882,14 @@ export async function resolveBountyIdByStateLoose({
   throw new Error("No matching bounty found with loose state match");
 }
 
-// Keep a strict alias for older callers (optional)
 export async function resolveBountyIdByState(args) {
   return resolveBountyIdByStateLoose(args);
 }
 
-// Export singleton instance
+// ============================================================================
+// SINGLETON EXPORT
+// ============================================================================
+
 let contractService = null;
 
 export function initializeContractService(contractAddress) {

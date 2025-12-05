@@ -37,6 +37,13 @@ const CONFIG = {
 
 const PENDING_STATUSES = ['PENDING_EVALUATION', 'PendingVerdikta', 'Prepared', 'PREPARED'];
 
+// Helper to check if a status is pending (case-insensitive)
+const isPendingStatus = (status) => {
+  if (!status) return false;
+  const upperStatus = status.toUpperCase();
+  return PENDING_STATUSES.some(s => s.toUpperCase() === upperStatus);
+};
+
 // ============================================================================
 // MAIN COMPONENT
 // ============================================================================
@@ -103,7 +110,7 @@ function BountyDetails({ walletState }) {
 
   useEffect(() => {
     // Check if there are any pending submissions that need the timer
-    const hasPendingSubmissions = submissions.some(s => PENDING_STATUSES.includes(s.status));
+    const hasPendingSubmissions = submissions.some(s => isPendingStatus(s.status));
 
     // Clear any existing timer
     if (timerIntervalRef.current) {
@@ -159,21 +166,30 @@ function BountyDetails({ walletState }) {
 
     const onChainId = getOnChainBountyId();
     if (onChainId == null) {
+      console.log('📊 No on-chain bounty ID available for evaluation checks');
       return; // Can't check without on-chain ID
     }
 
     // Get pending submissions that aren't already being actively polled after finalization
     const pendingSubs = submissions.filter(s => 
-      PENDING_STATUSES.includes(s.status) && 
+      isPendingStatus(s.status) && 
       !pollingSubmissions.has(s.submissionId)
     );
+
+    console.log('📊 Evaluation polling status:', {
+      onChainBountyId: onChainId,
+      totalSubmissions: submissions.length,
+      pendingSubmissions: pendingSubs.length,
+      allStatuses: submissions.map(s => ({ id: s.submissionId, status: s.status, isPending: isPendingStatus(s.status) }))
+    });
 
     if (pendingSubs.length === 0) {
       console.log('📊 No pending submissions to check for evaluation readiness');
       return;
     }
 
-    console.log(`🔍 Starting evaluation readiness checks for ${pendingSubs.length} submissions`);
+    console.log(`🔍 Starting evaluation readiness checks for ${pendingSubs.length} submissions:`, 
+      pendingSubs.map(s => ({ id: s.submissionId, onChainId: s.onChainSubmissionId, status: s.status })));
 
     // Check if evaluations are ready for pending submissions
     const checkEvaluationReadiness = async (subsToCheck) => {
@@ -189,15 +205,16 @@ function BountyDetails({ walletState }) {
           if (!isMountedRef.current) break;
 
           try {
-            console.log(`🔍 Checking evaluation readiness for submission:`, {
-              submissionId: sub.submissionId,
-              onChainSubmissionId: sub.onChainSubmissionId,
+            // Use onChainSubmissionId if available, otherwise fall back to submissionId
+            const chainSubmissionId = sub.onChainSubmissionId ?? sub.submissionId;
+            
+            console.log(`🔍 Checking evaluation readiness:`, {
+              backendSubmissionId: sub.submissionId,
+              onChainSubmissionId: chainSubmissionId,
               status: sub.status,
               bountyId: onChainId
             });
             
-            // Use onChainSubmissionId if available, otherwise fall back to submissionId
-            const chainSubmissionId = sub.onChainSubmissionId ?? sub.submissionId;
             const result = await contractService.checkEvaluationReady(onChainId, chainSubmissionId);
             
             if (result.ready) {
@@ -230,9 +247,11 @@ function BountyDetails({ walletState }) {
       if (!isMountedRef.current) return;
 
       const currentSubs = submissionsRef.current.filter(s => 
-        PENDING_STATUSES.includes(s.status) && 
+        isPendingStatus(s.status) && 
         !pollingSubmissionsRef.current.has(s.submissionId)
       );
+
+      console.log(`⏰ Periodic evaluation check: ${currentSubs.length} pending submissions`);
 
       if (currentSubs.length > 0) {
         checkEvaluationReadiness(currentSubs);
@@ -269,8 +288,15 @@ function BountyDetails({ walletState }) {
         setRubric(response.job.rubricContent);
       }
       if (response.job) {
-        setSubmissions(response.job.submissions || []);
-        submissionsRef.current = response.job.submissions || [];
+        const subs = response.job.submissions || [];
+        console.log('📋 Loaded submissions:', subs.map(s => ({
+          id: s.submissionId,
+          onChainId: s.onChainSubmissionId,
+          status: s.status,
+          isPending: isPendingStatus(s.status)
+        })));
+        setSubmissions(subs);
+        submissionsRef.current = subs;
       }
 
       return response.job;
@@ -348,7 +374,7 @@ function BountyDetails({ walletState }) {
     if (!currentJobId) return;
 
     // Check if there are pending submissions that need monitoring
-    const hasPendingSubmissions = submissions.some(s => PENDING_STATUSES.includes(s.status));
+    const hasPendingSubmissions = submissions.some(s => isPendingStatus(s.status));
 
     if (!hasPendingSubmissions) {
       console.log('📊 No pending submissions to monitor');
@@ -366,7 +392,7 @@ function BountyDetails({ walletState }) {
       // Only skip submissions that are ACTIVELY being polled (in pollingSubmissions map)
       // If polling timed out, we remove from the map, so auto-refresh will check them
       const pendingSubs = currentSubs.filter(s => {
-        if (!PENDING_STATUSES.includes(s.status)) return false;
+        if (!isPendingStatus(s.status)) return false;
         // Skip if actively polling
         if (pollingSubmissionsRef.current.has(s.submissionId)) return false;
         return true;
@@ -388,7 +414,7 @@ function BountyDetails({ walletState }) {
           const result = await apiService.refreshSubmission(currentJobId, sub.submissionId);
           const newStatus = result.submission?.status;
 
-          if (newStatus && !PENDING_STATUSES.includes(newStatus)) {
+          if (newStatus && !isPendingStatus(newStatus)) {
             console.log(`🎉 Auto-refresh: Submission #${sub.submissionId} status changed to ${newStatus}!`);
             hasUpdates = true;
           }
@@ -583,7 +609,7 @@ function BountyDetails({ walletState }) {
 
           console.log(`📊 Poll attempt ${attempt}: status = ${newStatus}`);
 
-          if (newStatus && !PENDING_STATUSES.includes(newStatus)) {
+          if (newStatus && !isPendingStatus(newStatus)) {
             console.log(`🎉 Submission #${submissionId} status changed to: ${newStatus}`);
             foundResult = result.submission;
 
@@ -794,7 +820,7 @@ function BountyDetails({ walletState }) {
         async () => {
           const response = await apiService.getJob(currentJobId, false);
           const sub = response.job?.submissions?.find(s => s.submissionId === submissionId);
-          return sub && !PENDING_STATUSES.includes(sub.status);
+          return sub && !isPendingStatus(sub.status);
         },
         { maxAttempts: 10 }
       );
@@ -976,11 +1002,11 @@ function BountyDetails({ walletState }) {
   const isClosed = status === 'CLOSED';
 
   const hasActiveSubmissions = submissions.some(s =>
-    PENDING_STATUSES.includes(s.status)
+    isPendingStatus(s.status)
   );
 
   const pendingSubmissions = submissions.filter(s =>
-    PENDING_STATUSES.includes(s.status)
+    isPendingStatus(s.status)
   );
 
   const onChainIdForButtons = getOnChainBountyId();
@@ -1442,7 +1468,7 @@ function SubmissionCard({
   getSubmissionAge,
   timeoutMinutes
 }) {
-  const isPending = PENDING_STATUSES.includes(submission.status);
+  const isPending = isPendingStatus(submission.status);
   const isApproved = submission.status === 'APPROVED' || submission.status === 'ACCEPTED' || submission.status === 'PassedPaid';
   const isRejected = submission.status === 'REJECTED' || submission.status === 'Failed';
   const ageMinutes = isPending && submission.submittedAt ? getSubmissionAge(submission.submittedAt) : 0;

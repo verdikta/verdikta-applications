@@ -660,48 +660,103 @@ class ContractService {
    * Returns: { ready: boolean, scores?: { acceptance, rejection }, justificationCids?: string[] }
    */
   async checkEvaluationReady(bountyId, submissionId) {
-    const provider = this.getReadOnlyProvider();
+    // Try to get a provider - prefer MetaMask but fall back to public RPC
+    let provider = this.getReadOnlyProvider();
+    
     if (!provider) {
-      console.warn('⚠️ checkEvaluationReady: No provider - is MetaMask installed?');
-      return { ready: false, error: 'No provider available' };
+      console.log('⚠️ No MetaMask provider, trying public RPC...');
+      try {
+        provider = new ethers.JsonRpcProvider('https://sepolia.base.org');
+      } catch (e) {
+        console.warn('⚠️ checkEvaluationReady: Could not create provider');
+        return { ready: false, error: 'No provider available' };
+      }
     }
 
     console.log(`🔍 checkEvaluationReady called: bountyId=${bountyId}, submissionId=${submissionId}`);
 
     try {
-      // Get submission to retrieve verdiktaAggId and status
-      const contract = new ethers.Contract(
-        this.contractAddress,
-        BOUNTY_ESCROW_ABI,
-        provider
-      );
-
-      console.log(`📡 Fetching on-chain submission data...`);
-      const sub = await contract.getSubmission(bountyId, submissionId);
-      const statusCode = Number(sub.status);
-      console.log(`📊 On-chain submission status: ${statusCode}, verdiktaAggId: ${sub.verdiktaAggId}`);
+      // Use raw eth_call to avoid ABI decoding issues
+      // Function selector for getSubmission(uint256,uint256) = 0x8f6dd6e3 (first 4 bytes of keccak256)
+      const functionSelector = ethers.id('getSubmission(uint256,uint256)').slice(0, 10);
+      const encodedBountyId = ethers.zeroPadValue(ethers.toBeHex(bountyId), 32);
+      const encodedSubmissionId = ethers.zeroPadValue(ethers.toBeHex(submissionId), 32);
+      const calldata = functionSelector + encodedBountyId.slice(2) + encodedSubmissionId.slice(2);
+      
+      console.log(`📡 Fetching submission via raw eth_call...`);
+      
+      const rawResult = await provider.call({
+        to: this.contractAddress,
+        data: calldata
+      });
+      
+      console.log(`📊 Raw result: ${rawResult.slice(0, 200)}... (${rawResult.length} chars)`);
+      
+      if (rawResult.length < 322) { // Need enough data for offset + hunter + evalWallet + verdiktaAggId + status
+        console.log('⚠️ Response too short');
+        return { ready: false, error: 'Invalid response length' };
+      }
+      
+      // Parse the response manually
+      // For dynamic tuples (structs with strings), the encoding is:
+      // [0-32 bytes]: offset pointer (0x20 = 32, points to start of actual data)
+      // [32+ bytes]: actual struct data
+      // 
+      // We need to skip the first 64 hex chars (32 bytes) which is the offset pointer
+      const dataWithoutPrefix = rawResult.slice(2); // Remove "0x"
+      const actualData = dataWithoutPrefix.slice(64); // Skip 32-byte offset pointer
+      
+      // Now parse the struct fields (each 32 bytes = 64 hex chars):
+      // [0]: hunter (address, in last 20 bytes of 32-byte slot)
+      // [1]: evalWallet (address) - but might be offset if struct changed
+      // [2]: verdiktaAggId (bytes32)
+      // [3]: status (uint8, padded to 32 bytes)
+      
+      const hunterHex = actualData.slice(0, 64);
+      const evalWalletHex = actualData.slice(64, 128);
+      const verdiktaAggIdHex = actualData.slice(128, 192);
+      const statusHex = actualData.slice(192, 256);
+      
+      const hunter = '0x' + hunterHex.slice(24); // Last 20 bytes
+      const evalWallet = '0x' + evalWalletHex.slice(24);
+      const verdiktaAggId = '0x' + verdiktaAggIdHex;
+      const statusCode = parseInt(statusHex, 16);
+      
+      console.log(`📊 Parsed struct fields:`, {
+        hunter,
+        evalWallet,
+        verdiktaAggId,
+        statusCode,
+        rawHunter: hunterHex,
+        rawEvalWallet: evalWalletHex,
+        rawVerdiktaAggId: verdiktaAggIdHex,
+        rawStatus: statusHex
+      });
       
       // Status codes: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
-      // Only check if status is PendingVerdikta (1) or Prepared (0)
       if (statusCode !== 0 && statusCode !== 1) {
         console.log(`⏭️ Submission #${submissionId} status is ${statusCode}, not pending`);
         return { ready: false };
       }
 
-      const aggIdBytes = sub.verdiktaAggId;
-      
       // Check if aggId is zero (not yet assigned)
-      if (aggIdBytes === '0x0000000000000000000000000000000000000000000000000000000000000000') {
+      const zeroBytes32 = '0x0000000000000000000000000000000000000000000000000000000000000000';
+      if (!verdiktaAggId || verdiktaAggId === zeroBytes32) {
         console.log(`⏳ Submission #${submissionId} has no verdiktaAggId yet`);
         return { ready: false };
       }
 
       // Convert bytes32 to uint256 for the aggregator call
-      const aggIdBigInt = BigInt(aggIdBytes);
+      const aggIdBigInt = BigInt(verdiktaAggId);
       console.log(`🔢 aggIdBigInt: ${aggIdBigInt}`);
       
-      // Get VerdiktaAggregator address from BountyEscrow
-      const verdiktaAddr = await contract.verdikta();
+      // Get VerdiktaAggregator address
+      const verdiktaSelector = ethers.id('verdikta()').slice(0, 10);
+      const verdiktaResult = await provider.call({
+        to: this.contractAddress,
+        data: verdiktaSelector
+      });
+      const verdiktaAddr = '0x' + verdiktaResult.slice(26); // Extract address from padded response
       console.log(`🔍 VerdiktaAggregator address: ${verdiktaAddr}`);
 
       // VerdiktaAggregator ABI for getEvaluation
@@ -987,14 +1042,19 @@ export async function resolveBountyIdByState(args) {
 
 let contractService = null;
 
+// Default contract address (BountyEscrow on Base Sepolia)
+const DEFAULT_CONTRACT_ADDRESS = '0xd930Ef3CF8AC870E3F14f83090Bf39dB744BCED4';
+
 export function initializeContractService(contractAddress) {
   contractService = new ContractService(contractAddress);
   return contractService;
 }
 
 export function getContractService() {
+  // Auto-initialize with default address if not already initialized
   if (!contractService) {
-    throw new Error('Contract service not initialized');
+    console.warn('⚠️ Contract service was not initialized, auto-initializing with default address');
+    contractService = new ContractService(DEFAULT_CONTRACT_ADDRESS);
   }
   return contractService;
 }

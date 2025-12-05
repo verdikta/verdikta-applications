@@ -143,7 +143,7 @@ function SubmitWork({ walletState }) {
    * Verify LINK allowance is visible on-chain before proceeding.
    * This handles RPC propagation delays that can cause "insufficient allowance" errors.
    * 
-   * @param {object} provider - ethers provider
+   * @param {object} provider - ethers provider (unused, we create fresh one)
    * @param {string} ownerAddress - Address that approved (hunter)
    * @param {string} spenderAddress - Address that was approved (evalWallet)
    * @param {string|bigint} requiredAmount - Minimum allowance required
@@ -152,32 +152,67 @@ function SubmitWork({ walletState }) {
    * @returns {Promise<boolean>} - True if allowance verified, false if timed out
    */
   const verifyAllowanceOnChain = async (
-    provider, 
+    _provider, // Unused - we try multiple sources
     ownerAddress, 
     spenderAddress, 
     requiredAmount,
     maxAttempts = 15,
     intervalMs = 1000
   ) => {
-    const linkContract = new ethers.Contract(
-      LINK_ADDRESS,
-      ["function allowance(address,address) view returns (uint256)"],
-      provider
-    );
-
     const requiredBigInt = BigInt(requiredAmount);
+    
+    console.log('🔍 Starting allowance verification:', {
+      owner: ownerAddress,
+      spender: spenderAddress,
+      required: ethers.formatUnits(requiredBigInt, 18) + ' LINK',
+      linkContract: LINK_ADDRESS
+    });
+
+    // Try public RPC first (avoids MetaMask caching), fall back to MetaMask
+    const BASE_SEPOLIA_RPC = 'https://sepolia.base.org';
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      // Try both providers on each attempt
+      const providers = [];
+      
+      // Try public RPC first
       try {
-        const currentAllowance = await linkContract.allowance(ownerAddress, spenderAddress);
-        console.log(`🔍 Allowance check ${attempt}/${maxAttempts}: ${ethers.formatUnits(currentAllowance, 18)} LINK (need ${ethers.formatUnits(requiredBigInt, 18)})`);
-        
-        if (BigInt(currentAllowance) >= requiredBigInt) {
-          console.log('✅ Allowance verified on-chain');
-          return true;
+        providers.push(new ethers.JsonRpcProvider(BASE_SEPOLIA_RPC));
+      } catch (e) {
+        console.log('Could not create public RPC provider');
+      }
+      
+      // Also try MetaMask
+      if (window.ethereum) {
+        try {
+          providers.push(new ethers.BrowserProvider(window.ethereum));
+        } catch (e) {
+          console.log('Could not create MetaMask provider');
         }
-      } catch (err) {
-        console.warn(`⚠️ Allowance check ${attempt} failed:`, err.message);
+      }
+
+      for (const provider of providers) {
+        try {
+          const linkContract = new ethers.Contract(
+            LINK_ADDRESS,
+            ["function allowance(address,address) view returns (uint256)"],
+            provider
+          );
+
+          const currentAllowance = await linkContract.allowance(ownerAddress, spenderAddress);
+          console.log(`🔍 Allowance check ${attempt}/${maxAttempts}: ${ethers.formatUnits(currentAllowance, 18)} LINK (need ${ethers.formatUnits(requiredBigInt, 18)})`);
+          
+          if (BigInt(currentAllowance) >= requiredBigInt) {
+            console.log('✅ Allowance verified on-chain');
+            return true;
+          }
+          
+          // If we got a response but allowance is 0, break inner loop and wait before retry
+          break;
+        } catch (err) {
+          console.warn(`⚠️ Allowance check ${attempt} failed with provider:`, err.message);
+          // Try next provider
+        }
       }
 
       // Wait before next attempt (except on last attempt)
@@ -318,11 +353,9 @@ function SubmitWork({ walletState }) {
       );
 
       if (!allowanceVerified) {
-        throw new Error(
-          'LINK approval was submitted but not detected on-chain after 15 seconds. ' +
-          'This may be due to network congestion. Please wait a moment and try again, ' +
-          'or check your transaction on BaseScan.'
-        );
+        console.warn('⚠️ Allowance verification timed out - proceeding anyway (contract will revert if insufficient)');
+        // Don't throw - just proceed. The contract will revert if allowance is actually insufficient.
+        // This handles cases where RPC caching causes false negatives.
       }
 
       // STEP 4: Start the Verdikta evaluation
@@ -350,18 +383,28 @@ function SubmitWork({ walletState }) {
 
       // Better error messages for common issues
       let errorMessage = err.message || 'Failed to submit work';
+      const originalError = errorMessage; // Keep original for logging
 
-      if (errorMessage.includes('insufficient funds') || errorMessage.includes('LINK')) {
+      if (errorMessage.includes('insufficient funds for gas') || 
+          errorMessage.toLowerCase().includes('insufficient link balance')) {
         errorMessage = '💰 Insufficient LINK tokens. Get testnet LINK from: https://faucets.chain.link/base-sepolia';
-      } else if (errorMessage.includes('user rejected') || errorMessage.includes('User denied')) {
+      } else if (errorMessage.includes('user rejected') || errorMessage.includes('User denied') || 
+                 errorMessage.includes('ACTION_REJECTED')) {
         errorMessage = '🚫 Transaction cancelled by user';
+      } else if (errorMessage.includes('LINK approval rejected')) {
+        errorMessage = '🚫 LINK approval was cancelled';
       } else if (errorMessage.includes('deadline passed')) {
         errorMessage = '⏰ Submission deadline has passed';
       } else if (errorMessage.includes('not open')) {
         errorMessage = '🔒 Bounty is not accepting submissions';
       } else if (errorMessage.includes('insufficient allowance')) {
         errorMessage = '⚠️ LINK approval issue. The approval transaction succeeded but the state was not visible on-chain in time. Please try again.';
+      } else if (errorMessage.includes('Could not initialize LINK contract')) {
+        errorMessage = '⚠️ Could not connect to LINK token contract. Please ensure MetaMask is connected to Base Sepolia.';
       }
+
+      // Log original error for debugging
+      console.error('Original error:', originalError);
 
       setError(errorMessage);
       alert(`❌ Error: ${errorMessage}`);

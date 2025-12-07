@@ -578,7 +578,6 @@ class ContractService {
     
     // Return cached value if still valid
     if (cached && (Date.now() - cached.timestamp) < this._statusCacheTTL) {
-      console.log(`📋 Bounty #${bountyId} status (cached):`, cached.status);
       return cached.status;
     }
 
@@ -597,7 +596,6 @@ class ContractService {
         );
 
         const status = await contract.getEffectiveBountyStatus(bountyId);
-        console.log(`Bounty #${bountyId} effective status:`, status);
 
         // Cache the result
         this._statusCache.set(cacheKey, { status, timestamp: Date.now() });
@@ -673,8 +671,6 @@ class ContractService {
       }
     }
 
-    console.log(`🔍 checkEvaluationReady called: bountyId=${bountyId}, submissionId=${submissionId}`);
-
     try {
       // Use the CORRECT 17-field Submission struct ABI (matches actual BountyEscrow.sol)
       const submissionAbi = [
@@ -682,54 +678,30 @@ class ContractService {
       ];
 
       const tempContract = new ethers.Contract(this.contractAddress, submissionAbi, provider);
-
-      console.log(`📡 Fetching submission via ethers contract call...`);
-
       const submission = await tempContract.getSubmission(bountyId, submissionId);
 
-      // Extract fields - indices match the 17-field struct:
-      // 0: hunter, 1: evaluationCid, 2: hunterCid, 3: evalWallet, 4: verdiktaAggId, 
-      // 5: status, 6: acceptance, 7: rejection, 8: justificationCids, ...
-      const hunter = submission.hunter || submission[0];
-      const evalWallet = submission.evalWallet || submission[3];
+      // Extract fields - indices match the 17-field struct
       const verdiktaAggId = submission.verdiktaAggId || submission[4];
       const statusCode = Number(submission.status ?? submission[5]);
-      const acceptance = submission.acceptance || submission[6];
-      const rejection = submission.rejection || submission[7];
-
-      console.log(`📊 Parsed submission:`, {
-        hunter,
-        evalWallet: evalWallet?.slice?.(0, 10) + '...',
-        verdiktaAggId: typeof verdiktaAggId === 'string' ? verdiktaAggId?.slice(0, 18) + '...' : verdiktaAggId,
-        statusCode,
-        acceptance: acceptance?.toString?.(),
-        rejection: rejection?.toString?.()
-      });
 
       // Status codes: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
       if (statusCode !== 0 && statusCode !== 1) {
-        console.log(`⏭️ Submission #${submissionId} status is ${statusCode}, not pending`);
         return { ready: false };
       }
 
       // Check if aggId is zero (not yet assigned)
       const zeroBytes32 = '0x0000000000000000000000000000000000000000000000000000000000000000';
       if (!verdiktaAggId || verdiktaAggId === zeroBytes32) {
-        console.log(`⏳ Submission #${submissionId} has no verdiktaAggId yet`);
         return { ready: false };
       }
 
-      // Keep the bytes32 as-is for the aggregator call (don't convert to BigInt)
-      console.log(`🔢 verdiktaAggId (bytes32): ${verdiktaAggId}`);
-      
       // Get VerdiktaAggregator address
       const verdiktaSelector = ethers.id('verdikta()').slice(0, 10);
       const verdiktaResult = await provider.call({
         to: this.contractAddress,
         data: verdiktaSelector
       });
-      const verdiktaAddr = '0x' + verdiktaResult.slice(26); // Extract address from padded response
-      console.log(`🔍 VerdiktaAggregator address: ${verdiktaAddr}`);
+      const verdiktaAddr = '0x' + verdiktaResult.slice(26);
 
       // VerdiktaAggregator ABI for getEvaluation - use bytes32 (not uint256!)
       // The function selector for getEvaluation(bytes32) is different from getEvaluation(uint256)
@@ -749,33 +721,23 @@ class ContractService {
       
       const verdikta = new ethers.Contract(verdiktaAddr, verdiktaAbi, readProvider);
       
-      // Call getEvaluation with the bytes32 aggId directly
-      console.log(`📡 Calling getEvaluation(${verdiktaAggId})...`);
-      
       let scores, justCids, ok;
       try {
         [scores, justCids, ok] = await verdikta.getEvaluation(verdiktaAggId);
       } catch (evalError) {
         // CALL_EXCEPTION is expected when evaluation data doesn't exist yet
-        // (oracles haven't responded, or aggregator doesn't have this aggId)
         if (evalError.code === 'CALL_EXCEPTION') {
-          console.log(`⏳ VerdiktaAggregator: No evaluation data yet for aggId (oracles may not have responded)`);
-          console.log(`   Error details: ${evalError.message}`);
           return { ready: false };
         }
-        // Re-throw unexpected errors
         throw evalError;
       }
-      
-      console.log(`🔍 Evaluation result: ok=${ok}, scores=[${scores?.join(', ')}]`);
 
       if (!ok || !scores || scores.length < 2) {
-        console.log(`⏳ Evaluation not complete yet (ok=${ok}, scores=${scores?.length || 0})`);
         return { ready: false };
       }
 
       // Scores are in format: [rejection, acceptance] with 6 decimal precision (0-1000000)
-      const rejectionScore = Number(scores[0]) / 10000; // Convert to percentage
+      const rejectionScore = Number(scores[0]) / 10000;
       const acceptanceScore = Number(scores[1]) / 10000;
 
       console.log(`✅ Evaluation ready: acceptance=${acceptanceScore.toFixed(1)}%, rejection=${rejectionScore.toFixed(1)}%`);
@@ -820,14 +782,13 @@ class ContractService {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const currentAllowance = await linkContract.allowance(ownerAddress, spenderAddress);
-        console.log(`🔍 Allowance check ${attempt}/${maxAttempts}: ${ethers.formatUnits(currentAllowance, 18)} LINK`);
         
         if (BigInt(currentAllowance) >= requiredBigInt) {
           console.log('✅ Allowance verified on-chain');
           return true;
         }
       } catch (err) {
-        console.warn(`⚠️ Allowance check ${attempt} failed:`, err.message);
+        // Silently retry
       }
 
       // Exponential backoff: 500ms, 750ms, 1125ms, 1687ms, etc.

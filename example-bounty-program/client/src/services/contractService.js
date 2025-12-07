@@ -719,9 +719,8 @@ class ContractService {
         return { ready: false };
       }
 
-      // Convert bytes32 to uint256 for the aggregator call
-      const aggIdBigInt = BigInt(verdiktaAggId);
-      console.log(`🔢 aggIdBigInt: ${aggIdBigInt}`);
+      // Keep the bytes32 as-is for the aggregator call (don't convert to BigInt)
+      console.log(`🔢 verdiktaAggId (bytes32): ${verdiktaAggId}`);
       
       // Get VerdiktaAggregator address
       const verdiktaSelector = ethers.id('verdikta()').slice(0, 10);
@@ -732,16 +731,41 @@ class ContractService {
       const verdiktaAddr = '0x' + verdiktaResult.slice(26); // Extract address from padded response
       console.log(`🔍 VerdiktaAggregator address: ${verdiktaAddr}`);
 
-      // VerdiktaAggregator ABI for getEvaluation
+      // VerdiktaAggregator ABI for getEvaluation - use bytes32 (not uint256!)
+      // The function selector for getEvaluation(bytes32) is different from getEvaluation(uint256)
+      // Return type is: (uint256[] memory, string memory, bool) - note string not string[]
       const verdiktaAbi = [
-        'function getEvaluation(uint256 aggId) view returns (uint256[] memory scores, string[] memory justificationCids, bool ok)'
+        'function getEvaluation(bytes32 aggId) view returns (uint256[] memory scores, string justificationCids, bool ok)'
       ];
       
-      const verdikta = new ethers.Contract(verdiktaAddr, verdiktaAbi, provider);
+      // Use a public RPC provider for more reliable read calls (avoids MetaMask caching/throttling issues)
+      let readProvider;
+      try {
+        readProvider = new ethers.JsonRpcProvider('https://sepolia.base.org');
+      } catch (e) {
+        console.log('⚠️ Public RPC failed, falling back to MetaMask provider');
+        readProvider = provider;
+      }
       
-      // Call getEvaluation
-      console.log(`📡 Calling getEvaluation(${aggIdBigInt})...`);
-      const [scores, justCids, ok] = await verdikta.getEvaluation(aggIdBigInt);
+      const verdikta = new ethers.Contract(verdiktaAddr, verdiktaAbi, readProvider);
+      
+      // Call getEvaluation with the bytes32 aggId directly
+      console.log(`📡 Calling getEvaluation(${verdiktaAggId})...`);
+      
+      let scores, justCids, ok;
+      try {
+        [scores, justCids, ok] = await verdikta.getEvaluation(verdiktaAggId);
+      } catch (evalError) {
+        // CALL_EXCEPTION is expected when evaluation data doesn't exist yet
+        // (oracles haven't responded, or aggregator doesn't have this aggId)
+        if (evalError.code === 'CALL_EXCEPTION') {
+          console.log(`⏳ VerdiktaAggregator: No evaluation data yet for aggId (oracles may not have responded)`);
+          console.log(`   Error details: ${evalError.message}`);
+          return { ready: false };
+        }
+        // Re-throw unexpected errors
+        throw evalError;
+      }
       
       console.log(`🔍 Evaluation result: ok=${ok}, scores=[${scores?.join(', ')}]`);
 

@@ -166,7 +166,6 @@ function BountyDetails({ walletState }) {
 
     const onChainId = getOnChainBountyId();
     if (onChainId == null) {
-      console.log('📊 No on-chain bounty ID available for evaluation checks');
       return; // Can't check without on-chain ID
     }
 
@@ -176,20 +175,9 @@ function BountyDetails({ walletState }) {
       !pollingSubmissions.has(s.submissionId)
     );
 
-    console.log('📊 Evaluation polling status:', {
-      onChainBountyId: onChainId,
-      totalSubmissions: submissions.length,
-      pendingSubmissions: pendingSubs.length,
-      allStatuses: submissions.map(s => ({ id: s.submissionId, status: s.status, isPending: isPendingStatus(s.status) }))
-    });
-
     if (pendingSubs.length === 0) {
-      console.log('📊 No pending submissions to check for evaluation readiness');
       return;
     }
-
-    console.log(`🔍 Starting evaluation readiness checks for ${pendingSubs.length} submissions:`, 
-      pendingSubs.map(s => ({ id: s.submissionId, onChainId: s.onChainSubmissionId, status: s.status })));
 
     // Check if evaluations are ready for pending submissions
     const checkEvaluationReadiness = async (subsToCheck) => {
@@ -207,14 +195,6 @@ function BountyDetails({ walletState }) {
           try {
             // Use onChainSubmissionId if available, otherwise fall back to submissionId
             const chainSubmissionId = sub.onChainSubmissionId ?? sub.submissionId;
-            
-            console.log(`🔍 Checking evaluation readiness:`, {
-              backendSubmissionId: sub.submissionId,
-              onChainSubmissionId: chainSubmissionId,
-              status: sub.status,
-              bountyId: onChainId
-            });
-            
             const result = await contractService.checkEvaluationReady(onChainId, chainSubmissionId);
             
             if (result.ready) {
@@ -224,18 +204,16 @@ function BountyDetails({ walletState }) {
                 next.set(sub.submissionId, result);
                 return next;
               });
-            } else {
-              console.log(`⏳ Evaluation not ready for submission #${sub.submissionId}`, result.error ? `(${result.error})` : '');
             }
           } catch (err) {
             // Don't spam console for expected "not ready" errors
             if (!err.message?.includes('not ready') && !err.message?.includes('no evaluation')) {
-              console.log(`⚠️ Error checking evaluation for #${sub.submissionId}:`, err.message);
+              console.warn(`⚠️ Error checking evaluation for #${sub.submissionId}:`, err.message);
             }
           }
         }
       } catch (err) {
-        console.log('⚠️ Error in checkEvaluationReadiness:', err.message);
+        console.warn('⚠️ Error in checkEvaluationReadiness:', err.message);
       }
     };
 
@@ -250,8 +228,6 @@ function BountyDetails({ walletState }) {
         isPendingStatus(s.status) && 
         !pollingSubmissionsRef.current.has(s.submissionId)
       );
-
-      console.log(`⏰ Periodic evaluation check: ${currentSubs.length} pending submissions`);
 
       if (currentSubs.length > 0) {
         checkEvaluationReadiness(currentSubs);
@@ -289,12 +265,6 @@ function BountyDetails({ walletState }) {
       }
       if (response.job) {
         const subs = response.job.submissions || [];
-        console.log('📋 Loaded submissions:', subs.map(s => ({
-          id: s.submissionId,
-          onChainId: s.onChainSubmissionId,
-          status: s.status,
-          isPending: isPendingStatus(s.status)
-        })));
         setSubmissions(subs);
         submissionsRef.current = subs;
       }
@@ -347,11 +317,6 @@ function BountyDetails({ walletState }) {
   // Retry if job data incomplete
   useEffect(() => {
     if (job && !isJobDataComplete(job) && retryCount < CONFIG.INITIAL_LOAD_MAX_RETRIES) {
-      console.log('Job data incomplete, retrying...', {
-        hasAmount: job.bountyAmount !== undefined,
-        hasThreshold: job.threshold !== undefined,
-        hasDeadline: job.submissionCloseTime !== undefined
-      });
       const timer = setTimeout(() => {
         if (isMountedRef.current) setRetryCount(prev => prev + 1);
       }, CONFIG.INITIAL_LOAD_RETRY_DELAY_MS);
@@ -377,11 +342,8 @@ function BountyDetails({ walletState }) {
     const hasPendingSubmissions = submissions.some(s => isPendingStatus(s.status));
 
     if (!hasPendingSubmissions) {
-      console.log('📊 No pending submissions to monitor');
       return;
     }
-
-    console.log(`📊 Starting auto-refresh every ${CONFIG.AUTO_REFRESH_INTERVAL_MS / 1000}s for job ${currentJobId}`);
 
     autoRefreshIntervalRef.current = setInterval(async () => {
       if (!isMountedRef.current) return;
@@ -399,11 +361,8 @@ function BountyDetails({ walletState }) {
       });
 
       if (pendingSubs.length === 0) {
-        console.log('📊 Auto-refresh: No pending submissions to check (some may be actively polling)');
         return;
       }
-
-      console.log(`🔄 Auto-refresh: Checking ${pendingSubs.length} pending submissions...`);
 
       let hasUpdates = false;
 
@@ -415,17 +374,16 @@ function BountyDetails({ walletState }) {
           const newStatus = result.submission?.status;
 
           if (newStatus && !isPendingStatus(newStatus)) {
-            console.log(`🎉 Auto-refresh: Submission #${sub.submissionId} status changed to ${newStatus}!`);
+            console.log(`🎉 Submission #${sub.submissionId} status changed to ${newStatus}!`);
             hasUpdates = true;
           }
         } catch (err) {
-          console.log(`⚠️ Auto-refresh error for submission #${sub.submissionId}:`, err.message);
+          // Silently ignore auto-refresh errors
         }
       }
 
       // Reload if any status changed
       if (hasUpdates && isMountedRef.current) {
-        console.log('✅ Auto-refresh: Status changes detected, reloading...');
         loadJobDetails(true);
       }
     }, CONFIG.AUTO_REFRESH_INTERVAL_MS);
@@ -496,10 +454,7 @@ function BountyDetails({ walletState }) {
         };
 
         setResolveNote('Resolving from backend…');
-        console.log('[DEBUG] Calling resolveJobBountyId', job.jobId, payload);
-
         const res = await apiService.resolveJobBountyId(job.jobId, payload);
-        console.log('[DEBUG] resolveJobBountyId response', res);
 
         if (!cancelled) {
           if (res?.success && res?.bountyId != null) {
@@ -579,11 +534,8 @@ function BountyDetails({ walletState }) {
 
     // Guard against duplicate polling
     if (pollingSubmissionsRef.current.has(submissionId)) {
-      console.log(`⚠️ Already polling submission #${submissionId}`);
       return { success: false, reason: 'already_polling' };
     }
-
-    console.log(`🔄 Starting to poll submission #${submissionId} for job ${jobId}...`);
 
     // Set initial polling state
     setPollingSubmissions(prev => {
@@ -606,8 +558,6 @@ function BountyDetails({ walletState }) {
         try {
           const result = await apiService.refreshSubmission(jobId, submissionId);
           const newStatus = result.submission?.status;
-
-          console.log(`📊 Poll attempt ${attempt}: status = ${newStatus}`);
 
           if (newStatus && !isPendingStatus(newStatus)) {
             console.log(`🎉 Submission #${submissionId} status changed to: ${newStatus}`);
@@ -637,7 +587,7 @@ function BountyDetails({ walletState }) {
             return true;
           }
         } catch (err) {
-          console.log(`⚠️ Poll attempt ${attempt} error:`, err.message);
+          // Silently ignore polling errors
         }
 
         return false;
@@ -1012,19 +962,6 @@ function BountyDetails({ walletState }) {
   const onChainIdForButtons = getOnChainBountyId();
   const disableActionsForMissingId = onChainIdForButtons == null;
 
-  console.log('🔍 Bounty Status Check:', {
-    urlParam_jobId: bountyId,
-    backend_bountyId: job?.bountyId,
-    backend_onChainId: job?.onChainId,
-    resolvedBountyId,
-    status,
-    isOpen,
-    isExpired,
-    isAwarded,
-    isClosed,
-    hasActiveSubmissions,
-    timeRemaining,
-  });
 
   // ============================================================================
   // RENDER

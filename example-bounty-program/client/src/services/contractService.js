@@ -34,7 +34,7 @@ const BOUNTY_ESCROW_ABI = [
   
   // View Functions (used sparingly)
   "function getEffectiveBountyStatus(uint256) view returns (string)",
-  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))",
+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))",
   "function bountyCount() view returns (uint256)",
   "function getBounty(uint256) view returns (address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256)",
   "function verdikta() view returns (address)"
@@ -676,63 +676,36 @@ class ContractService {
     console.log(`🔍 checkEvaluationReady called: bountyId=${bountyId}, submissionId=${submissionId}`);
 
     try {
-      // Use raw eth_call to avoid ABI decoding issues
-      // Function selector for getSubmission(uint256,uint256) = 0x8f6dd6e3 (first 4 bytes of keccak256)
-      const functionSelector = ethers.id('getSubmission(uint256,uint256)').slice(0, 10);
-      const encodedBountyId = ethers.zeroPadValue(ethers.toBeHex(bountyId), 32);
-      const encodedSubmissionId = ethers.zeroPadValue(ethers.toBeHex(submissionId), 32);
-      const calldata = functionSelector + encodedBountyId.slice(2) + encodedSubmissionId.slice(2);
-      
-      console.log(`📡 Fetching submission via raw eth_call...`);
-      
-      const rawResult = await provider.call({
-        to: this.contractAddress,
-        data: calldata
-      });
-      
-      console.log(`📊 Raw result: ${rawResult.slice(0, 200)}... (${rawResult.length} chars)`);
-      
-      if (rawResult.length < 322) { // Need enough data for offset + hunter + evalWallet + verdiktaAggId + status
-        console.log('⚠️ Response too short');
-        return { ready: false, error: 'Invalid response length' };
-      }
-      
-      // Parse the response manually
-      // For dynamic tuples (structs with strings), the encoding is:
-      // [0-32 bytes]: offset pointer (0x20 = 32, points to start of actual data)
-      // [32+ bytes]: actual struct data
-      // 
-      // We need to skip the first 64 hex chars (32 bytes) which is the offset pointer
-      const dataWithoutPrefix = rawResult.slice(2); // Remove "0x"
-      const actualData = dataWithoutPrefix.slice(64); // Skip 32-byte offset pointer
-      
-      // Now parse the struct fields (each 32 bytes = 64 hex chars):
-      // [0]: hunter (address, in last 20 bytes of 32-byte slot)
-      // [1]: evalWallet (address) - but might be offset if struct changed
-      // [2]: verdiktaAggId (bytes32)
-      // [3]: status (uint8, padded to 32 bytes)
-      
-      const hunterHex = actualData.slice(0, 64);
-      const evalWalletHex = actualData.slice(64, 128);
-      const verdiktaAggIdHex = actualData.slice(128, 192);
-      const statusHex = actualData.slice(192, 256);
-      
-      const hunter = '0x' + hunterHex.slice(24); // Last 20 bytes
-      const evalWallet = '0x' + evalWalletHex.slice(24);
-      const verdiktaAggId = '0x' + verdiktaAggIdHex;
-      const statusCode = parseInt(statusHex, 16);
-      
-      console.log(`📊 Parsed struct fields:`, {
+      // Use the CORRECT 17-field Submission struct ABI (matches actual BountyEscrow.sol)
+      const submissionAbi = [
+        'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))'
+      ];
+
+      const tempContract = new ethers.Contract(this.contractAddress, submissionAbi, provider);
+
+      console.log(`📡 Fetching submission via ethers contract call...`);
+
+      const submission = await tempContract.getSubmission(bountyId, submissionId);
+
+      // Extract fields - indices match the 17-field struct:
+      // 0: hunter, 1: evaluationCid, 2: hunterCid, 3: evalWallet, 4: verdiktaAggId, 
+      // 5: status, 6: acceptance, 7: rejection, 8: justificationCids, ...
+      const hunter = submission.hunter || submission[0];
+      const evalWallet = submission.evalWallet || submission[3];
+      const verdiktaAggId = submission.verdiktaAggId || submission[4];
+      const statusCode = Number(submission.status ?? submission[5]);
+      const acceptance = submission.acceptance || submission[6];
+      const rejection = submission.rejection || submission[7];
+
+      console.log(`📊 Parsed submission:`, {
         hunter,
-        evalWallet,
-        verdiktaAggId,
+        evalWallet: evalWallet?.slice?.(0, 10) + '...',
+        verdiktaAggId: typeof verdiktaAggId === 'string' ? verdiktaAggId?.slice(0, 18) + '...' : verdiktaAggId,
         statusCode,
-        rawHunter: hunterHex,
-        rawEvalWallet: evalWalletHex,
-        rawVerdiktaAggId: verdiktaAggIdHex,
-        rawStatus: statusHex
+        acceptance: acceptance?.toString?.(),
+        rejection: rejection?.toString?.()
       });
-      
+
       // Status codes: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
       if (statusCode !== 0 && statusCode !== 1) {
         console.log(`⏭️ Submission #${submissionId} status is ${statusCode}, not pending`);

@@ -1392,6 +1392,7 @@ function BountyDetails({ walletState }) {
               evaluationResults={evaluationResults}
               disableActions={disableActionsForMissingId}
               timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
+              job={job}
             />
           )}
 
@@ -1568,6 +1569,7 @@ function BountyDetails({ walletState }) {
                 disableActions={disableActionsForMissingId}
                 getSubmissionAge={getSubmissionAge}
                 timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
+                threshold={job?.threshold ?? 80}
               />
             ))}
           </div>
@@ -1790,7 +1792,8 @@ function PendingSubmissionsPanel({
   pollingSubmissions,
   evaluationResults,
   disableActions,
-  timeoutMinutes
+  timeoutMinutes,
+  job
 }) {
   return (
     <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
@@ -1825,18 +1828,23 @@ function PendingSubmissionsPanel({
             </div>
 
             {/* Evaluation ready indicator */}
-            {evalResult?.ready && (
-              <div style={{
-                marginBottom: '0.5rem',
-                padding: '0.5rem',
-                backgroundColor: '#c8e6c9',
-                borderRadius: '4px',
-                fontSize: '0.85rem',
-                color: '#2e7d32'
-              }}>
-                ✅ <strong>AI Evaluation Complete!</strong> Score: {evalResult.scores.acceptance.toFixed(1)}% ({evalResult.scores.rejection.toFixed(1)}% rejection)
-              </div>
-            )}
+            {evalResult?.ready && (() => {
+              const score = evalResult.scores.acceptance;
+              const threshold = job?.threshold ?? 80;
+              const passed = score >= threshold;
+              return (
+                <div style={{
+                  marginBottom: '0.5rem',
+                  padding: '0.5rem',
+                  backgroundColor: passed ? '#c8e6c9' : '#fff3e0',
+                  borderRadius: '4px',
+                  fontSize: '0.85rem',
+                  color: passed ? '#2e7d32' : '#b57c00'
+                }}>
+                  {passed ? '✅' : '⚠️'} <strong>AI Evaluation Complete!</strong> Score: {score.toFixed(1)}% ({threshold}% required)
+                </div>
+              );
+            })()}
 
             {isPolling && pollState && (
               <div style={{
@@ -1945,6 +1953,7 @@ function ExpiredBountyActions({
           evaluationResults={evaluationResults}
           disableActions={disableActions}
           timeoutMinutes={timeoutMinutes}
+          job={job}
         />
       ) : (
         <>
@@ -1982,7 +1991,8 @@ function SubmissionCard({
   evaluationResult,
   disableActions,
   getSubmissionAge,
-  timeoutMinutes
+  timeoutMinutes,
+  threshold
 }) {
   const isPending = isPendingStatus(submission.status);
   const isApproved = submission.status === 'APPROVED' || submission.status === 'ACCEPTED' || submission.status === 'PassedPaid';
@@ -2033,23 +2043,27 @@ function SubmissionCard({
       </div>
 
       {/* NEW: Evaluation ready indicator */}
-      {hasEvalReady && (
-        <div style={{
-          marginTop: '0.75rem',
-          padding: '0.75rem',
-          backgroundColor: '#c8e6c9',
-          border: '1px solid #81c784',
-          borderRadius: '4px',
-          textAlign: 'center'
-        }}>
-          <div style={{ fontSize: '1rem', color: '#2e7d32', fontWeight: 'bold', marginBottom: '0.25rem' }}>
-            ✅ AI Evaluation Complete!
+      {hasEvalReady && (() => {
+        const score = evaluationResult.scores.acceptance;
+        const passed = score >= threshold;
+        return (
+          <div style={{
+            marginTop: '0.75rem',
+            padding: '0.75rem',
+            backgroundColor: passed ? '#c8e6c9' : '#fff3e0',
+            border: `1px solid ${passed ? '#81c784' : '#ffcc80'}`,
+            borderRadius: '4px',
+            textAlign: 'center'
+          }}>
+            <div style={{ fontSize: '1rem', color: passed ? '#2e7d32' : '#b57c00', fontWeight: 'bold', marginBottom: '0.25rem' }}>
+              {passed ? '✅' : '⚠️'} AI Evaluation Complete!
+            </div>
+            <div style={{ fontSize: '0.9rem', color: passed ? '#388e3c' : '#c68200' }}>
+              Score: {score.toFixed(1)}% ({threshold}% required)
+            </div>
           </div>
-          <div style={{ fontSize: '0.9rem', color: '#388e3c' }}>
-            Score: {evaluationResult.scores.acceptance.toFixed(1)}% ({evaluationResult.scores.rejection.toFixed(1)}% rejection)
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Waiting for evaluation indicator */}
       {isPending && !hasEvalReady && !isPolling && (

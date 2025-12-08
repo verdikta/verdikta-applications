@@ -38,7 +38,8 @@ function RubricLibrary({ walletAddress, onLoadRubric, onClose }) {
       setLoadingCid(rubric.cid);
       setError(null);
 
-      // Fetch full rubric from IPFS
+      // Fetch full rubric from IPFS - this is the SOURCE OF TRUTH
+      // IPFS content contains: title, criteria, threshold, classId, etc.
       const rubricData = await apiService.fetchFromIPFS(rubric.cid);
       
       // Parse if string
@@ -46,11 +47,28 @@ function RubricLibrary({ walletAddress, onLoadRubric, onClose }) {
         ? JSON.parse(rubricData) 
         : rubricData;
 
-      // Increment usage count
+      console.log('📥 Fetched rubric from IPFS:', {
+        cid: rubric.cid,
+        title: rubricJson.title,
+        threshold: rubricJson.threshold,
+        classId: rubricJson.classId,
+        criteriaCount: rubricJson.criteria?.length
+      });
+
+      // Increment usage count in cache
       rubricStorage.incrementUsageCount(walletAddress, rubric.cid);
 
-      // Pass to parent (include threshold from storage metadata)
-      onLoadRubric(rubricJson, rubric.cid, rubric.threshold);
+      // Pass IPFS content to parent (source of truth)
+      // Add cid for reference, but threshold/classId come from IPFS content
+      // For backwards compatibility with old rubrics that don't have threshold/classId,
+      // fall back to cached localStorage values
+      onLoadRubric({
+        ...rubricJson,
+        cid: rubric.cid,
+        // Use IPFS values if present, fall back to cache for old rubrics
+        threshold: rubricJson.threshold ?? rubric.threshold,
+        classId: rubricJson.classId ?? rubric.classId,
+      });
       
       // Close modal
       onClose();

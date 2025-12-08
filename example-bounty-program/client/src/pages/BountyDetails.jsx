@@ -374,20 +374,28 @@ function BountyDetails({ walletState }) {
     }
   }, [bountyId, retryCount, resolvedBountyId]);
 
-  // Initial load
+  // Initial load - only runs on mount and when bountyId/retryCount changes
+  // Note: We intentionally do NOT include loadJobDetails in deps to avoid
+  // resetting state when loadJobDetails reference changes
   useEffect(() => {
     isMountedRef.current = true;
     loadJobDetails();
-    setResolvedBountyId(null);
-    setResolvingId(false);
-    setResolveNote('');
-    setEvaluationResults(new Map()); // Clear evaluation results on bounty change
-    setStatusOverride(null);
+    
+    // Only reset on actual bountyId change (initial mount or navigation)
+    // Don't reset when just retrying
+    if (retryCount === 0) {
+      setResolvedBountyId(null);
+      setResolvingId(false);
+      setResolveNote('');
+      setEvaluationResults(new Map());
+      setStatusOverride(null);
+    }
 
     return () => {
       isMountedRef.current = false;
     };
-  }, [bountyId, retryCount, loadJobDetails]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bountyId, retryCount]);
 
   // Check if job data is complete
   const isJobDataComplete = (jobData) =>

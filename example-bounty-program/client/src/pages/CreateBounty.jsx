@@ -4,7 +4,7 @@ import { apiService } from '../services/api';
 import { modelProviderService } from '../services/modelProviderService';
 import { walletService } from '../services/wallet';
 import * as rubricStorage from '../services/rubricStorage';
-import { getTemplateOptions, getTemplate, createBlankRubric, getTemplateThreshold } from '../data/rubricTemplates';
+import { getTemplateOptions, getTemplate, createBlankRubric, RUBRIC_DEFAULTS } from '../data/rubricTemplates';
 import ClassSelector from '../components/ClassSelector';
 import CriterionEditor from '../components/CriterionEditor';
 import RubricLibrary from '../components/RubricLibrary';
@@ -19,7 +19,7 @@ function CreateBounty({ walletState }) {
   const [isSwitchingNetwork, setIsSwitchingNetwork] = useState(false);
 
   // Class and model selection state
-  const [selectedClassId, setSelectedClassId] = useState(128);
+  const [selectedClassId, setSelectedClassId] = useState(RUBRIC_DEFAULTS.classId);
   const [availableModels, setAvailableModels] = useState({});
   const [classInfo, setClassInfo] = useState(null);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
@@ -29,9 +29,14 @@ function CreateBounty({ walletState }) {
   const [juryNodes, setJuryNodes] = useState([]);
   const [iterations, setIterations] = useState(1);
 
-  // Rubric state
-  const [rubric, setRubric] = useState(createBlankRubric());
-  const [threshold, setThreshold] = useState(80); // Stored separately - used by smart contract
+  // Rubric state - threshold kept separate for form binding, but merged when saving
+  const [rubric, setRubric] = useState(() => {
+    const blank = createBlankRubric();
+    // Don't duplicate threshold/classId in rubric state - we track them separately
+    const { threshold: _t, classId: _c, ...rest } = blank;
+    return rest;
+  });
+  const [threshold, setThreshold] = useState(RUBRIC_DEFAULTS.threshold);
   const [selectedTemplate, setSelectedTemplate] = useState('');
   const [showLibrary, setShowLibrary] = useState(false);
   const [loadedRubricCid, setLoadedRubricCid] = useState(null);
@@ -74,13 +79,20 @@ function CreateBounty({ walletState }) {
     };
   };
 
-  const transformRubricForBackend = (rubricData) => {
-    const { threshold: _omit, ...rubricWithoutThreshold } = rubricData;
+  /**
+   * Transform rubric for backend/IPFS upload
+   * Includes threshold and classId as part of the rubric (source of truth)
+   */
+  const buildRubricForUpload = () => {
     return {
-      ...rubricWithoutThreshold,
-      criteria: (rubricWithoutThreshold.criteria || []).map((criterion) => ({
+      version: rubric.version || RUBRIC_DEFAULTS.version,
+      title: rubric.title,
+      description: rubric.description || '',
+      threshold: threshold,           // Include threshold in IPFS
+      classId: selectedClassId,       // Include classId in IPFS
+      criteria: (rubric.criteria || []).map((criterion) => ({
         id: criterion.id,
-        label: criterion.label || criterion.id.replace(/_/g, ' '), // Preserve label for display
+        label: criterion.label || criterion.id.replace(/_/g, ' '),
         must: !!criterion.must,
         weight: Number(criterion.weight ?? 0),
         description:
@@ -89,6 +101,7 @@ function CreateBounty({ walletState }) {
           criterion.description ||
           '',
       })),
+      forbiddenContent: rubric.forbiddenContent || rubric.forbidden_content || [],
     };
   };
 
@@ -206,17 +219,35 @@ function CreateBounty({ walletState }) {
     setSelectedTemplate(templateKey);
 
     if (!templateKey) {
-      setRubric(createBlankRubric());
-      setThreshold(80); // Default threshold
+      // Reset to blank
+      const blank = createBlankRubric();
+      setRubric({
+        version: blank.version,
+        title: blank.title,
+        description: '',
+        criteria: blank.criteria,
+        forbiddenContent: blank.forbiddenContent,
+      });
+      setThreshold(RUBRIC_DEFAULTS.threshold);
+      setSelectedClassId(RUBRIC_DEFAULTS.classId);
+      setLoadedRubricCid(null);
       return;
     }
 
     const template = getTemplate(templateKey);
-    const defaultThreshold = getTemplateThreshold(templateKey);
     if (template) {
-      setRubric(template);
-      setThreshold(defaultThreshold);
+      // Load all values from template (threshold and classId are in the template now)
+      setRubric({
+        version: template.version,
+        title: template.title,
+        description: template.description || '',
+        criteria: template.criteria,
+        forbiddenContent: template.forbiddenContent || template.forbidden_content || [],
+      });
+      setThreshold(template.threshold ?? RUBRIC_DEFAULTS.threshold);
+      setSelectedClassId(template.classId ?? RUBRIC_DEFAULTS.classId);
       setFormData((prev) => ({ ...prev, title: template.title }));
+      setLoadedRubricCid(null);
     }
   };
 
@@ -246,7 +277,7 @@ function CreateBounty({ walletState }) {
     }));
   };
 
-  // ---------- save rubric ----------
+  // ---------- save rubric to IPFS + cache in localStorage ----------
   const handleSaveRubric = async () => {
     if (!walletState.isConnected) return alert('Please connect your wallet first');
     if (!rubric.title.trim()) return alert('Please enter a rubric title');
@@ -260,8 +291,17 @@ function CreateBounty({ walletState }) {
       setLoadingText('Saving rubric to IPFS…');
       setError(null);
 
-      const backendRubric = transformRubricForBackend(rubric);
-      const response = await apiService.uploadRubric(backendRubric, selectedClassId);
+      // Build complete rubric with threshold and classId for IPFS (source of truth)
+      const rubricForUpload = buildRubricForUpload();
+      
+      console.log('📤 Uploading rubric to IPFS:', {
+        title: rubricForUpload.title,
+        threshold: rubricForUpload.threshold,
+        classId: rubricForUpload.classId,
+        criteriaCount: rubricForUpload.criteria.length
+      });
+
+      const response = await apiService.uploadRubric(rubricForUpload, selectedClassId);
 
       if (!response?.success) {
         throw new Error(response?.error || 'Failed to upload rubric');
@@ -270,32 +310,32 @@ function CreateBounty({ walletState }) {
       const rubricCid = response.rubricCid;
       if (!rubricCid) throw new Error('Upload returned no rubricCid');
 
-      const rubricMetadata = {
+      // Cache in localStorage for fast library display
+      // The IPFS content is the source of truth; this is just an index
+      const cacheEntry = {
         cid: rubricCid,
-        title: rubric.title || '(untitled rubric)',
-        description: rubric.description || '',
-        criteria: rubric.criteria || [],
-        threshold: Number.isFinite(threshold) ? threshold : 80,
-        classId: selectedClassId,
-        createdAt: new Date().toISOString(),
-        creator: walletState.address || '0x0000000000000000000000000000000000000000',
+        title: rubricForUpload.title,
+        description: rubricForUpload.description,
+        threshold: rubricForUpload.threshold,
+        classId: rubricForUpload.classId,
+        criteriaCount: rubricForUpload.criteria.length,
+        createdAt: Date.now(),
+        creator: walletState.address,
       };
 
       try {
-        // Preferred: util handles per-wallet keying and de-dup
-        rubricStorage.saveRubric(rubricMetadata);
+        rubricStorage.saveRubric(walletState.address, cacheEntry);
       } catch (e) {
-        // Fallback (never block UX on local storage)
-        console.warn('[rubricStorage] saveRubric failed; using fallback:', e?.message || e);
-        try {
-          const key = 'verdikta_rubrics_fallback';
-          const prev = JSON.parse(localStorage.getItem(key) || '[]');
-          localStorage.setItem(key, JSON.stringify([rubricMetadata, ...prev].slice(0, 100)));
-        } catch {}
+        // Don't block on localStorage failure - IPFS upload succeeded
+        console.warn('[rubricStorage] Cache failed:', e?.message || e);
       }
 
       alert(
-        `✅ Rubric saved successfully!\n\nIPFS CID: ${rubricCid}\n\nYou can now use this rubric to create bounties.`
+        `✅ Rubric saved successfully!\n\n` +
+        `IPFS CID: ${rubricCid}\n` +
+        `Threshold: ${rubricForUpload.threshold}%\n` +
+        `Class: ${rubricForUpload.classId}\n\n` +
+        `You can now use this rubric to create bounties.`
       );
       setLoadedRubricCid(rubricCid);
     } catch (err) {
@@ -309,19 +349,34 @@ function CreateBounty({ walletState }) {
     }
   };
 
-  // ---------- load rubric from library ----------
-  const handleLoadRubric = (savedRubric) => {
-    setRubric({
-      title: savedRubric.title,
-      description: savedRubric.description,
-      criteria: savedRubric.criteria,
-      forbidden_content: savedRubric.forbidden_content || [],
+  // ---------- load rubric from library (IPFS is source of truth) ----------
+  const handleLoadRubric = (loadedRubric) => {
+    // loadedRubric comes from RubricLibrary, which fetched from IPFS
+    // IPFS content is the source of truth for threshold and classId
+    
+    console.log('📥 Loading rubric from library:', {
+      title: loadedRubric.title,
+      threshold: loadedRubric.threshold,
+      classId: loadedRubric.classId,
+      cid: loadedRubric.cid
     });
-    setThreshold(savedRubric.threshold || 80);
-    setSelectedClassId(savedRubric.classId || 128);
-    setLoadedRubricCid(savedRubric.cid);
+
+    setRubric({
+      version: loadedRubric.version || RUBRIC_DEFAULTS.version,
+      title: loadedRubric.title,
+      description: loadedRubric.description || '',
+      criteria: loadedRubric.criteria || [],
+      forbiddenContent: loadedRubric.forbiddenContent || loadedRubric.forbidden_content || [],
+    });
+    
+    // Read threshold and classId from IPFS content (source of truth)
+    // Fall back to defaults if not present (for old rubrics)
+    setThreshold(loadedRubric.threshold ?? RUBRIC_DEFAULTS.threshold);
+    setSelectedClassId(loadedRubric.classId ?? RUBRIC_DEFAULTS.classId);
+    setLoadedRubricCid(loadedRubric.cid);
     setShowLibrary(false);
-    alert(`Loaded rubric: ${savedRubric.title}`);
+    
+    alert(`Loaded rubric: ${loadedRubric.title}\nThreshold: ${loadedRubric.threshold ?? RUBRIC_DEFAULTS.threshold}%`);
   };
 
   // ---------- submit (create bounty) ----------
@@ -353,7 +408,8 @@ function CreateBounty({ walletState }) {
       } catch {}
 
       // 1) Create job in backend
-      const backendRubric = transformRubricForBackend(rubric);
+      // Build rubric with threshold/classId included
+      const rubricForBackend = buildRubricForUpload();
 
       const apiResponse = await apiService.createJob({
         title: formData.title,
@@ -363,7 +419,7 @@ function CreateBounty({ walletState }) {
         bountyAmount: parseFloat(formData.payoutAmount),
         bountyAmountUSD: parseFloat(formData.payoutAmount) * (formData.ethPriceUSD || 0),
         threshold,
-        ...(loadedRubricCid ? { rubricCid: loadedRubricCid } : { rubricJson: backendRubric }),
+        ...(loadedRubricCid ? { rubricCid: loadedRubricCid } : { rubricJson: rubricForBackend }),
         classId: selectedClassId,
         juryNodes: juryNodes.map((n) => ({
           provider: n.provider,
@@ -628,7 +684,10 @@ function CreateBounty({ walletState }) {
                 max="100"
                 required
               />
-              <small className="helper-text">Minimum score required to pass and claim bounty (0–100)</small>
+              <small className="helper-text">
+                Minimum score required to pass and claim bounty (0–100).
+                This is stored as part of the rubric on IPFS.
+              </small>
             </div>
 
             <div className="criteria-section">
@@ -838,10 +897,10 @@ function CreateBounty({ walletState }) {
       <div className="help-section">
         <h3>💡 How Bounty Creation Works</h3>
         <ol>
-          <li>Define your requirements (rubric)</li>
+          <li>Define your requirements (rubric with threshold)</li>
           <li>Set payout amount in ETH</li>
           <li>Set submission window (default: 7 days / 168 hours)</li>
-          <li>Rubric is uploaded to IPFS (immutable)</li>
+          <li>Rubric (including threshold) is uploaded to IPFS (immutable)</li>
           <li>Smart contract locks your ETH in escrow</li>
           <li>Bounty status becomes OPEN - hunters can submit work before deadline</li>
           <li>After deadline passes, bounty becomes EXPIRED if no winner yet</li>

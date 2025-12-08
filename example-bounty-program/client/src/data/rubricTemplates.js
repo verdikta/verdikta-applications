@@ -2,14 +2,17 @@
  * Predefined Rubric Templates
  * Based on rubric-1 schema
  * 
- * Note: Threshold is stored separately as it's used by smart contract
- * for fund/no-fund decisions, not by AI nodes for evaluation.
+ * Threshold is included in the rubric itself because it's part of the
+ * evaluation specification - "what score is required to pass" is as much
+ * part of the rubric as the criteria themselves.
  */
 
 export const rubricTemplates = {
   blogPost: {
     version: "rubric-1",
     title: "Blog Post for Verdikta.org",
+    threshold: 82,
+    classId: 128,
     criteria: [
       {
         id: "safety_and_rights",
@@ -71,6 +74,8 @@ export const rubricTemplates = {
   codeReview: {
     version: "rubric-1",
     title: "Code Review & Quality Assessment",
+    threshold: 75,
+    classId: 128,
     criteria: [
       {
         id: "safety",
@@ -125,6 +130,8 @@ export const rubricTemplates = {
   technicalWriting: {
     version: "rubric-1",
     title: "Technical Documentation",
+    threshold: 80,
+    classId: 128,
     criteria: [
       {
         id: "plagiarism",
@@ -179,6 +186,8 @@ export const rubricTemplates = {
   designWork: {
     version: "rubric-1",
     title: "Design Work Assessment",
+    threshold: 78,
+    classId: 128,
     criteria: [
       {
         id: "originality",
@@ -233,6 +242,8 @@ export const rubricTemplates = {
   videoContent: {
     version: "rubric-1",
     title: "Video Content Production",
+    threshold: 75,
+    classId: 128,
     criteria: [
       {
         id: "content_safety",
@@ -287,6 +298,8 @@ export const rubricTemplates = {
   general: {
     version: "rubric-1",
     title: "General Work Submission",
+    threshold: 80,
+    classId: 128,
     criteria: [
       {
         id: "prohibited",
@@ -326,17 +339,12 @@ export const rubricTemplates = {
 };
 
 /**
- * Default threshold values for each template
- * These are used by the smart contract for pass/fail decisions
+ * Default values for new rubrics
  */
-export const templateThresholds = {
-  blogPost: 82,
-  codeReview: 75,
-  technicalWriting: 80,
-  designWork: 78,
-  videoContent: 75,
-  general: 80,
-  default: 80
+export const RUBRIC_DEFAULTS = {
+  threshold: 80,
+  classId: 128,
+  version: "rubric-1"
 };
 
 /**
@@ -356,27 +364,42 @@ export const getTemplateOptions = () => {
 
 /**
  * Get a template by key
+ * @param {string} key - Template key
+ * @returns {Object|null} Complete template including threshold and classId
  */
 export const getTemplate = (key) => {
   return rubricTemplates[key] || null;
 };
 
 /**
- * Get the default threshold for a template
+ * Get the threshold for a template (reads directly from template)
  * @param {string} templateKey - Template key
- * @returns {number} - Default threshold value
+ * @returns {number} Threshold value
  */
 export const getTemplateThreshold = (templateKey) => {
-  return templateThresholds[templateKey] || templateThresholds.default;
+  const template = rubricTemplates[templateKey];
+  return template?.threshold ?? RUBRIC_DEFAULTS.threshold;
 };
 
 /**
- * Create a blank rubric structure (without threshold)
+ * Get the classId for a template
+ * @param {string} templateKey - Template key
+ * @returns {number} Class ID
+ */
+export const getTemplateClassId = (templateKey) => {
+  const template = rubricTemplates[templateKey];
+  return template?.classId ?? RUBRIC_DEFAULTS.classId;
+};
+
+/**
+ * Create a blank rubric structure (with defaults)
  */
 export const createBlankRubric = () => {
   return {
-    version: "rubric-1",
+    version: RUBRIC_DEFAULTS.version,
     title: "",
+    threshold: RUBRIC_DEFAULTS.threshold,
+    classId: RUBRIC_DEFAULTS.classId,
     criteria: [
       {
         id: "quality",

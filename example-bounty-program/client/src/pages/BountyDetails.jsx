@@ -492,20 +492,40 @@ function BountyDetails({ walletState }) {
   }, []);
 
   // ============================================================================
-  // BOUNTY ID RESOLUTION
+  // BOUNTY ID RESOLUTION (with direct on-chain fallback)
   // ============================================================================
+
+  // Use a ref to track if resolution has been attempted (prevents loops)
+  const resolutionAttemptedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      if (!job || resolvingId) return;
+      if (!job) return;
 
       // Backend already has it (check BOTH bountyId and onChainId)
       if (job?.bountyId != null || job?.onChainId != null) {
         if (!cancelled) {
           setResolvedBountyId(Number(job?.onChainId ?? job?.bountyId));
           setResolveNote('');
+          setResolvingId(false);
+        }
+        return;
+      }
+
+      // Only attempt resolution once per job
+      if (resolutionAttemptedRef.current) {
+        return;
+      }
+      resolutionAttemptedRef.current = true;
+
+      const creator = job?.creator;
+      const submissionCloseTime = job?.submissionCloseTime;
+
+      if (!creator || !submissionCloseTime) {
+        if (!cancelled) {
+          setResolveNote('Missing data to resolve on-chain id (creator/deadline).');
         }
         return;
       }
@@ -513,17 +533,10 @@ function BountyDetails({ walletState }) {
       try {
         setResolvingId(true);
 
-        const creator = job?.creator;
-        const submissionCloseTime = job?.submissionCloseTime;
+        // =====================================================================
+        // STEP 1: Try backend resolution first (with 5-second timeout)
+        // =====================================================================
         const txHash = job?.txHash || job?.creationTxHash || job?.chainTxHash || job?.createTxHash || null;
-
-        if (!creator || !submissionCloseTime) {
-          if (!cancelled) {
-            setResolveNote('Missing data to resolve on-chain id (creator/deadline).');
-          }
-          return;
-        }
-
         const payload = {
           creator,
           rubricCid: job?.rubricCid || undefined,
@@ -531,20 +544,201 @@ function BountyDetails({ walletState }) {
           txHash: txHash || undefined
         };
 
-        setResolveNote('Resolving from backend…');
-        const res = await apiService.resolveJobBountyId(job.jobId, payload);
-
-        if (!cancelled) {
+        setResolveNote('Trying backend resolution…');
+        console.log('[Resolver] Calling backend with:', { jobId: job.jobId, payload });
+        
+        try {
+          // Use direct fetch instead of apiService (more reliable)
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 5000);
+          
+          const response = await fetch(`/api/jobs/${job.jobId}/bountyId/resolve`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: controller.signal
+          });
+          
+          clearTimeout(timeoutId);
+          
+          const res = await response.json();
+          console.log('[Resolver] Backend response:', res);
+          
           if (res?.success && res?.bountyId != null) {
-            setResolvedBountyId(Number(res.bountyId));
-            setResolveNote('');
-          } else {
-            setResolveNote('Could not resolve automatically. Please refresh once the backend syncs.');
+            if (!cancelled) {
+              setResolvedBountyId(Number(res.bountyId));
+              setResolveNote(`✅ Backend resolved: bountyId ${res.bountyId}`);
+              setTimeout(() => { if (!cancelled) setResolveNote(''); }, 3000);
+            }
+            return;
+          }
+          
+          // Backend returned but no bountyId - log why
+          console.log('[Resolver] Backend returned no bountyId:', res?.error || 'unknown reason');
+          if (!cancelled) {
+            setResolveNote(`Backend: ${res?.error || 'No matching bounty found'}`);
+          }
+        } catch (backendErr) {
+          // Backend failed or timed out, continue to on-chain fallback
+          const errMsg = backendErr.name === 'AbortError' ? 'Timeout after 5s' : backendErr.message;
+          console.log('[Resolver] Backend failed:', errMsg);
+          if (!cancelled) {
+            setResolveNote(`Backend failed: ${errMsg.slice(0, 40)}...`);
+          }
+          // Brief pause to show the error before moving on
+          await new Promise(r => setTimeout(r, 1000));
+        }
+
+        // =====================================================================
+        // STEP 2: Direct on-chain resolution (query contract directly)
+        // =====================================================================
+        if (!cancelled) {
+          setResolveNote('Trying direct on-chain scan…');
+        }
+
+        try {
+          const contractService = getContractService();
+          console.log('[Resolver] ContractService:', contractService);
+          console.log('[Resolver] Contract address:', contractService?.contractAddress || contractService?.contract?.target);
+          
+          // Get the contract - might be contractService.contract or contractService itself
+          const contract = contractService?.contract || contractService;
+          
+          if (!contract) {
+            throw new Error('No contract available - is wallet connected?');
+          }
+
+          // Try to get bounty count
+          let bountyCount = 0;
+          try {
+            if (typeof contract.bountyCount === 'function') {
+              bountyCount = Number(await contract.bountyCount());
+            } else if (typeof contractService.getBountyCount === 'function') {
+              bountyCount = await contractService.getBountyCount();
+            }
+            console.log('[Resolver] Total bounties on chain:', bountyCount);
+          } catch (err) {
+            console.log('[Resolver] Could not get bounty count:', err.message);
+            // Try scanning anyway with default range
+            bountyCount = 20;
+          }
+
+          if (bountyCount === 0) {
+            if (!cancelled) {
+              setResolveNote('No bounties found on-chain. Enter ID manually below.');
+            }
+            return;
+          }
+
+          // First, try the jobId as the bountyId (they often match)
+          const jobIdAsNumber = parseInt(job.jobId, 10);
+          if (!isNaN(jobIdAsNumber) && jobIdAsNumber < bountyCount) {
+            try {
+              if (!cancelled) {
+                setResolveNote(`Checking if jobId ${jobIdAsNumber} = bountyId...`);
+              }
+              
+              let bountyInfo;
+              if (typeof contract.getBounty === 'function') {
+                const raw = await contract.getBounty(jobIdAsNumber);
+                // Parse tuple: (creator, evaluationCid, requestedClass, threshold, payoutWei, createdAt, submissionDeadline, status, winner, submissions)
+                bountyInfo = {
+                  creator: raw[0],
+                  submissionCloseTime: Number(raw[6])
+                };
+              } else if (typeof contractService.getBounty === 'function') {
+                bountyInfo = await contractService.getBounty(jobIdAsNumber);
+              }
+              
+              console.log('[Resolver] Bounty info for ID', jobIdAsNumber, ':', bountyInfo);
+              
+              if (bountyInfo?.creator?.toLowerCase() === creator.toLowerCase()) {
+                // Check deadline with some tolerance (5 minutes)
+                const deadlineDiff = Math.abs(Number(bountyInfo.submissionCloseTime) - submissionCloseTime);
+                console.log('[Resolver] Creator matches! Deadline diff:', deadlineDiff, 'seconds');
+                
+                if (deadlineDiff < 300) {
+                  if (!cancelled) {
+                    setResolvedBountyId(jobIdAsNumber);
+                    setResolveNote(`✅ Found: bountyId = ${jobIdAsNumber}`);
+                    setTimeout(() => { if (!cancelled) setResolveNote(''); }, 3000);
+                  }
+                  return;
+                }
+              }
+            } catch (err) {
+              console.log(`[Resolver] jobId ${jobIdAsNumber} check failed:`, err.message);
+            }
+          }
+
+          // Scan from most recent backwards (more likely to find recent bounties faster)
+          let foundId = null;
+          const scanStart = Math.min(bountyCount - 1, 50); // Don't scan more than 50
+          
+          for (let testId = scanStart; testId >= 0 && !foundId && !cancelled; testId--) {
+            try {
+              if (!cancelled && testId % 3 === 0) { // Update every 3 IDs
+                setResolveNote(`Scanning... ID ${testId}/${scanStart}`);
+              }
+              
+              let bountyInfo;
+              if (typeof contract.getBounty === 'function') {
+                const raw = await contract.getBounty(testId);
+                bountyInfo = {
+                  creator: raw[0],
+                  submissionCloseTime: Number(raw[6])
+                };
+              } else if (typeof contractService.getBounty === 'function') {
+                bountyInfo = await contractService.getBounty(testId);
+              } else {
+                console.log('[Resolver] No getBounty method available');
+                break;
+              }
+              
+              if (bountyInfo?.creator?.toLowerCase() === creator.toLowerCase()) {
+                const deadlineDiff = Math.abs(Number(bountyInfo.submissionCloseTime) - submissionCloseTime);
+                if (deadlineDiff < 300) { // 5 minute tolerance
+                  foundId = testId;
+                  console.log('[Resolver] Found match at ID', testId);
+                  break;
+                }
+              }
+            } catch (err) {
+              // This ID might not exist or other error
+              if (err.message?.includes('revert') || err.message?.includes('out of bounds')) {
+                console.log('[Resolver] Reached end of bounties at ID', testId);
+                break;
+              }
+            }
+          }
+
+          if (foundId !== null && !cancelled) {
+            setResolvedBountyId(foundId);
+            setResolveNote(`✅ Found on-chain: bountyId ${foundId}`);
+            setTimeout(() => {
+              if (!cancelled) setResolveNote('');
+            }, 3000);
+            return;
+          }
+
+          // No matching bounty found
+          if (!cancelled) {
+            setResolveNote(
+              `Scanned ${Math.min(bountyCount, 50)} bounties - no match. Enter ID manually below.`
+            );
+          }
+
+        } catch (chainErr) {
+          console.log('[Resolver] On-chain scan error:', chainErr);
+          if (!cancelled) {
+            setResolveNote(`Scan error: ${chainErr.message?.slice(0, 50)}. Enter ID manually.`);
           }
         }
+
       } catch (e) {
+        console.log('Resolution failed:', e.message);
         if (!cancelled) {
-          setResolveNote('On-chain id resolution failed. Try refresh later.');
+          setResolveNote(`Resolution failed. Use Ctrl+Shift+D for manual override.`);
         }
       } finally {
         if (!cancelled) setResolvingId(false);
@@ -552,7 +746,37 @@ function BountyDetails({ walletState }) {
     })();
 
     return () => { cancelled = true; };
-  }, [job, resolvingId]);
+  }, [job?.jobId, retryCount]); // Re-run when jobId or retryCount changes
+
+  // Reset resolution state when job changes (but not on retry)
+  useEffect(() => {
+    resolutionAttemptedRef.current = false;
+    setResolvedBountyId(null);
+    setResolveNote('');
+  }, [job?.jobId]);
+
+  // ============================================================================
+  // MANUAL BOUNTY ID OVERRIDE (for debugging stuck bounties)
+  // ============================================================================
+
+  const handleManualBountyIdSet = useCallback((manualId) => {
+    const parsed = parseInt(manualId, 10);
+    if (!isNaN(parsed) && parsed >= 0) {
+      setResolvedBountyId(parsed);
+      setResolveNote(`Manually set to bountyId ${parsed}`);
+      setTimeout(() => setResolveNote(''), 2000);
+    }
+  }, []);
+
+  // Retry resolution manually
+  const handleRetryResolution = useCallback(() => {
+    resolutionAttemptedRef.current = false;
+    setResolvedBountyId(null);
+    setResolveNote('Retrying resolution...');
+    setResolvingId(false);
+    // Increment retryCount to trigger the effect
+    setRetryCount(prev => prev + 1);
+  }, []);
 
   // ============================================================================
   // HELPERS
@@ -1049,6 +1273,10 @@ function BountyDetails({ walletState }) {
           submissions={submissions}
           walletState={walletState}
           onRefresh={() => loadJobDetails()}
+          onManualIdSet={handleManualBountyIdSet}
+          onRetryResolution={handleRetryResolution}
+          resolveNote={resolveNote}
+          resolvingId={resolvingId}
         />
       )}
 
@@ -1070,6 +1298,47 @@ function BountyDetails({ walletState }) {
             className="btn btn-sm"
           >
             🔄 Refresh
+          </button>
+        </div>
+      )}
+
+      {/* RESOLUTION STATUS (shown when trying to resolve bountyId) */}
+      {resolveNote && !effectivelyExpired && (
+        <div style={{
+          backgroundColor: '#e3f2fd',
+          border: '2px solid #2196f3',
+          padding: '0.75rem 1rem',
+          borderRadius: '6px',
+          marginBottom: '1rem',
+          fontSize: '0.9rem',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.75rem'
+        }}>
+          <div className="spinner" style={{
+            width: '16px',
+            height: '16px',
+            border: '2px solid #90caf9',
+            borderTop: '2px solid #1976d2',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite',
+            flexShrink: 0
+          }} />
+          <span>📡 {resolveNote}</span>
+          <button 
+            onClick={() => setShowDiagnostics(true)}
+            style={{ 
+              marginLeft: 'auto', 
+              fontSize: '0.8rem',
+              padding: '0.25rem 0.5rem',
+              backgroundColor: '#1976d2',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer'
+            }}
+          >
+            Open Diagnostics
           </button>
         </div>
       )}
@@ -1319,9 +1588,14 @@ function DiagnosticPanel({
   deadlinePassed,
   submissions,
   walletState,
-  onRefresh
+  onRefresh,
+  onManualIdSet,
+  onRetryResolution,
+  resolveNote,
+  resolvingId
 }) {
   const now = Math.floor(Date.now() / 1000);
+  const [manualIdInput, setManualIdInput] = useState('');
   
   return (
     <div style={{
@@ -1350,9 +1624,12 @@ function DiagnosticPanel({
         
         <div>
           <div style={{ color: '#aaa', marginBottom: '0.25rem' }}>Status:</div>
-          <div>Backend status: <span style={{ color: '#ffeb3b' }}>{job?.status || 'unknown'}</span></div>
+          <div>Current status: <span style={{ color: '#ffeb3b' }}>{job?.status || 'unknown'}</span></div>
           {statusOverride && (
-            <div>On-chain status: <span style={{ color: '#ff9800', fontWeight: 'bold' }}>{statusOverride.onChainStatus}</span></div>
+            <>
+              <div>Original backend: <span style={{ color: '#888' }}>{statusOverride.backendStatus}</span></div>
+              <div>Override reason: <span style={{ color: '#ff9800', fontSize: '0.8rem' }}>{statusOverride.reason}</span></div>
+            </>
           )}
           <div>Deadline: <span style={{ color: deadlinePassed ? '#f44336' : '#4caf50' }}>
             {job?.submissionCloseTime ? new Date(job.submissionCloseTime * 1000).toLocaleString() : 'unknown'}
@@ -1361,24 +1638,133 @@ function DiagnosticPanel({
           <div>Now: {new Date(now * 1000).toLocaleString()}</div>
         </div>
       </div>
+
+      {/* Resolution status */}
+      {resolveNote && (
+        <div style={{ 
+          marginTop: '0.75rem', 
+          padding: '0.5rem', 
+          backgroundColor: '#2d2d44', 
+          borderRadius: '4px',
+          color: '#ffcc80'
+        }}>
+          📡 {resolveNote}
+        </div>
+      )}
+
+      {/* Manual ID input - shown when onChainId is missing */}
+      {onChainId == null && onManualIdSet && (
+        <div style={{ 
+          marginTop: '0.75rem', 
+          padding: '0.75rem', 
+          backgroundColor: '#2d2d44', 
+          borderRadius: '4px',
+          border: '1px solid #ff9800'
+        }}>
+          <div style={{ color: '#ff9800', marginBottom: '0.5rem', fontWeight: 'bold' }}>
+            ⚠️ Manual Override (use if you know the on-chain bountyId)
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <input
+              type="number"
+              min="0"
+              placeholder="Enter on-chain bountyId"
+              value={manualIdInput}
+              onChange={(e) => setManualIdInput(e.target.value)}
+              style={{
+                flex: 1,
+                padding: '0.4rem',
+                borderRadius: '4px',
+                border: '1px solid #555',
+                backgroundColor: '#1a1a2e',
+                color: '#e0e0e0',
+                fontFamily: 'monospace'
+              }}
+            />
+            <button
+              onClick={() => {
+                if (manualIdInput) {
+                  onManualIdSet(manualIdInput);
+                  setManualIdInput('');
+                }
+              }}
+              style={{
+                padding: '0.4rem 0.75rem',
+                backgroundColor: '#ff9800',
+                color: '#000',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontWeight: 'bold'
+              }}
+            >
+              Set ID
+            </button>
+          </div>
+          
+          {/* Search help - show creator and deadline for BaseScan lookup */}
+          <div style={{ marginTop: '0.75rem', padding: '0.5rem', backgroundColor: '#1a1a2e', borderRadius: '4px' }}>
+            <div style={{ fontSize: '0.75rem', color: '#888', marginBottom: '0.25rem' }}>
+              🔍 To find your bountyId on BaseScan:
+            </div>
+            <div style={{ fontSize: '0.75rem', color: '#aaa' }}>
+              Creator: <span style={{ color: '#4fc3f7', fontFamily: 'monospace' }}>{job?.creator || 'unknown'}</span>
+            </div>
+            <div style={{ fontSize: '0.75rem', color: '#aaa' }}>
+              Deadline (unix): <span style={{ color: '#4fc3f7', fontFamily: 'monospace' }}>{job?.submissionCloseTime || 'unknown'}</span>
+            </div>
+            <div style={{ fontSize: '0.75rem', color: '#888', marginTop: '0.5rem' }}>
+              Search for BountyCreated events on the contract where creator matches your address
+            </div>
+          </div>
+        </div>
+      )}
       
       <div style={{ marginTop: '0.75rem' }}>
         <div style={{ color: '#aaa', marginBottom: '0.25rem' }}>Submissions ({submissions.length}):</div>
-        {submissions.map(s => (
-          <div key={s.submissionId} style={{ marginLeft: '0.5rem' }}>
-            #{s.submissionId}: {s.status} 
-            {s.submittedAt && ` (${((now - s.submittedAt) / 60).toFixed(1)}min ago)`}
-          </div>
-        ))}
+        {submissions.length === 0 ? (
+          <div style={{ marginLeft: '0.5rem', color: '#888' }}>No submissions</div>
+        ) : (
+          submissions.map(s => (
+            <div key={s.submissionId} style={{ marginLeft: '0.5rem' }}>
+              #{s.submissionId}: {s.status} 
+              {s.submittedAt && ` (${((now - s.submittedAt) / 60).toFixed(1)}min ago)`}
+            </div>
+          ))
+        )}
       </div>
       
-      <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem' }}>
+      <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
         <button onClick={onRefresh} style={{ fontSize: '0.8rem', padding: '0.25rem 0.5rem' }}>
           🔄 Refresh Data
         </button>
+        {onChainId == null && onRetryResolution && (
+          <button 
+            onClick={onRetryResolution} 
+            disabled={resolvingId}
+            style={{ 
+              fontSize: '0.8rem', 
+              padding: '0.25rem 0.5rem',
+              backgroundColor: resolvingId ? '#555' : '#ff9800',
+              color: resolvingId ? '#888' : '#000',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: resolvingId ? 'not-allowed' : 'pointer'
+            }}
+          >
+            {resolvingId ? '⏳ Resolving...' : '🔍 Retry Resolution'}
+          </button>
+        )}
         <span style={{ color: '#888', fontSize: '0.75rem', alignSelf: 'center' }}>
           Wallet: {walletState.isConnected ? `${walletState.address?.slice(0,8)}...` : 'Not connected'}
         </span>
+      </div>
+
+      {/* Quick info about the job for debugging */}
+      <div style={{ marginTop: '0.75rem', fontSize: '0.75rem', color: '#666' }}>
+        Creator: {job?.creator || 'unknown'} | 
+        Rubric CID: {job?.rubricCid?.slice(0,12) || 'none'}... |
+        txHash: {job?.txHash?.slice(0,12) || job?.creationTxHash?.slice(0,12) || 'none'}...
       </div>
     </div>
   );

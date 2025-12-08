@@ -44,6 +44,14 @@ const isPendingStatus = (status) => {
   return PENDING_STATUSES.some(s => s.toUpperCase() === upperStatus);
 };
 
+// Map on-chain status codes to readable strings
+const ON_CHAIN_STATUS_MAP = {
+  0: 'OPEN',
+  1: 'EXPIRED',
+  2: 'AWARDED',
+  3: 'CLOSED'
+};
+
 // ============================================================================
 // MAIN COMPONENT
 // ============================================================================
@@ -82,6 +90,13 @@ function BountyDetails({ walletState }) {
   // Live timer state - updates every second to show real-time elapsed time
   const [currentTime, setCurrentTime] = useState(() => Math.floor(Date.now() / 1000));
 
+  // NEW: Status override tracking (when on-chain differs from backend)
+  const [statusOverride, setStatusOverride] = useState(null);
+  // Format: { onChainStatus: string, backendStatus: string, reason: string }
+
+  // NEW: Diagnostic panel toggle (Ctrl+Shift+D to toggle)
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+
   // Refs to avoid stale closures
   const jobRef = useRef(null);
   const submissionsRef = useRef([]);
@@ -103,6 +118,21 @@ function BountyDetails({ walletState }) {
   useEffect(() => {
     pollingSubmissionsRef.current = pollingSubmissions;
   }, [pollingSubmissions]);
+
+  // ============================================================================
+  // DIAGNOSTIC PANEL TOGGLE (Ctrl+Shift+D)
+  // ============================================================================
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+        e.preventDefault();
+        setShowDiagnostics(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // ============================================================================
   // LIVE TIMER - Updates every second for real-time display
@@ -198,7 +228,6 @@ function BountyDetails({ walletState }) {
             const result = await contractService.checkEvaluationReady(onChainId, chainSubmissionId);
             
             if (result.ready) {
-              console.log(`✅ Evaluation READY for submission #${sub.submissionId}:`, result.scores);
               setEvaluationResults(prev => {
                 const next = new Map(prev);
                 next.set(sub.submissionId, result);
@@ -207,13 +236,10 @@ function BountyDetails({ walletState }) {
             }
           } catch (err) {
             // Don't spam console for expected "not ready" errors
-            if (!err.message?.includes('not ready') && !err.message?.includes('no evaluation')) {
-              console.warn(`⚠️ Error checking evaluation for #${sub.submissionId}:`, err.message);
-            }
           }
         }
       } catch (err) {
-        console.warn('⚠️ Error in checkEvaluationReadiness:', err.message);
+        // Silently ignore
       }
     };
 
@@ -243,7 +269,7 @@ function BountyDetails({ walletState }) {
   }, [submissions, getOnChainBountyId, pollingSubmissions]);
 
   // ============================================================================
-  // DATA LOADING
+  // DATA LOADING (with on-chain status verification)
   // ============================================================================
 
   const loadJobDetails = useCallback(async (silent = false) => {
@@ -257,8 +283,62 @@ function BountyDetails({ walletState }) {
 
       if (!isMountedRef.current) return null;
 
-      setJob(response.job);
-      jobRef.current = response.job;
+      let finalJob = response.job;
+
+      // Store backend status before any override
+      const backendStatus = finalJob?.status;
+
+      // ========================================================================
+      // ON-CHAIN STATUS VERIFICATION
+      // Check if on-chain status differs from backend and override if needed
+      // ========================================================================
+      if (finalJob) {
+        const onChainId = finalJob.onChainId ?? finalJob.bountyId ?? resolvedBountyId;
+        
+        if (onChainId != null) {
+          try {
+            const contractService = getContractService();
+            const onChainStatusCode = await contractService.getBountyStatus(Number(onChainId));
+            const onChainStatus = ON_CHAIN_STATUS_MAP[onChainStatusCode] || `UNKNOWN(${onChainStatusCode})`;
+
+            if (onChainStatus !== backendStatus) {
+              // Status mismatch - override with on-chain truth
+              finalJob = { ...finalJob, status: onChainStatus };
+              setStatusOverride({
+                onChainStatus,
+                backendStatus,
+                reason: 'On-chain status differs from backend'
+              });
+            } else {
+              setStatusOverride(null);
+            }
+          } catch (err) {
+            // Can't verify on-chain - proceed with backend status
+            // This is expected if wallet not connected or RPC issues
+          }
+        }
+
+        // ========================================================================
+        // DEADLINE-PASSED DETECTION
+        // Even if backend says OPEN, check if deadline has passed
+        // ========================================================================
+        if (finalJob.status === 'OPEN' && finalJob.submissionCloseTime) {
+          const now = Math.floor(Date.now() / 1000);
+          if (now > finalJob.submissionCloseTime) {
+            // Deadline passed but backend still shows OPEN - treat as EXPIRED
+            finalJob = { ...finalJob, status: 'EXPIRED' };
+            setStatusOverride(prev => ({
+              ...prev,
+              onChainStatus: 'EXPIRED',
+              backendStatus: backendStatus,
+              reason: 'Deadline has passed (backend not synced)'
+            }));
+          }
+        }
+      }
+
+      setJob(finalJob);
+      jobRef.current = finalJob;
 
       if (response.job?.rubricContent) {
         setRubric(response.job.rubricContent);
@@ -269,7 +349,7 @@ function BountyDetails({ walletState }) {
         submissionsRef.current = subs;
       }
 
-      return response.job;
+      return finalJob;
     } catch (err) {
       if (!isMountedRef.current) return null;
 
@@ -277,7 +357,6 @@ function BountyDetails({ walletState }) {
       const errorMessage = err.response?.data?.details || err.message;
 
       if (errorMessage.includes('not found') && retryCount < CONFIG.INITIAL_LOAD_MAX_RETRIES) {
-        console.log(`Job not found, retrying... (attempt ${retryCount + 1}/${CONFIG.INITIAL_LOAD_MAX_RETRIES})`);
         setTimeout(() => {
           if (isMountedRef.current) setRetryCount(prev => prev + 1);
         }, CONFIG.INITIAL_LOAD_RETRY_DELAY_MS);
@@ -291,7 +370,7 @@ function BountyDetails({ walletState }) {
     } finally {
       if (isMountedRef.current && !silent) setLoading(false);
     }
-  }, [bountyId, retryCount]);
+  }, [bountyId, retryCount, resolvedBountyId]);
 
   // Initial load
   useEffect(() => {
@@ -301,6 +380,7 @@ function BountyDetails({ walletState }) {
     setResolvingId(false);
     setResolveNote('');
     setEvaluationResults(new Map()); // Clear evaluation results on bounty change
+    setStatusOverride(null);
 
     return () => {
       isMountedRef.current = false;
@@ -374,7 +454,6 @@ function BountyDetails({ walletState }) {
           const newStatus = result.submission?.status;
 
           if (newStatus && !isPendingStatus(newStatus)) {
-            console.log(`🎉 Submission #${sub.submissionId} status changed to ${newStatus}!`);
             hasUpdates = true;
           }
         } catch (err) {
@@ -439,7 +518,6 @@ function BountyDetails({ walletState }) {
         const txHash = job?.txHash || job?.creationTxHash || job?.chainTxHash || job?.createTxHash || null;
 
         if (!creator || !submissionCloseTime) {
-          console.warn('[Resolver] missing inputs', { creator, submissionCloseTime });
           if (!cancelled) {
             setResolveNote('Missing data to resolve on-chain id (creator/deadline).');
           }
@@ -465,8 +543,6 @@ function BountyDetails({ walletState }) {
           }
         }
       } catch (e) {
-        console.warn('[Resolver] backend resolve failed:', e?.message || e);
-        if (e?.response?.data) console.warn('[Resolver] server says:', e.response.data);
         if (!cancelled) {
           setResolveNote('On-chain id resolution failed. Try refresh later.');
         }
@@ -513,7 +589,7 @@ function BountyDetails({ walletState }) {
         const result = await checkFn(attempt);
         if (result) return true;
       } catch (err) {
-        console.log(`Poll attempt ${attempt}/${maxAttempts} error:`, err.message);
+        // Continue polling
       }
     }
 
@@ -560,7 +636,6 @@ function BountyDetails({ walletState }) {
           const newStatus = result.submission?.status;
 
           if (newStatus && !isPendingStatus(newStatus)) {
-            console.log(`🎉 Submission #${submissionId} status changed to: ${newStatus}`);
             foundResult = result.submission;
 
             // Update submission in local state immediately
@@ -608,8 +683,6 @@ function BountyDetails({ walletState }) {
 
     // Timed out - FIX: REMOVE from pollingSubmissions so auto-refresh can take over
     if (isMountedRef.current) {
-      console.log(`⏰ Polling timed out for submission #${submissionId} - auto-refresh will continue monitoring`);
-
       // Clear the polling state - this allows auto-refresh to pick it up
       setPollingSubmissions(prev => {
         const next = new Map(prev);
@@ -659,11 +732,8 @@ function BountyDetails({ walletState }) {
       const contractService = getContractService();
       if (!contractService.isConnected()) await contractService.connect();
 
-      console.log('📤 Finalizing submission:', { bountyId: onChainId, submissionId });
       const result = await contractService.finalizeSubmission(onChainId, submissionId);
       txHash = result.txHash;
-
-      console.log('✅ Finalization transaction confirmed:', txHash);
 
       // Clear finalizing state
       setFinalizingSubmissions(prev => {
@@ -674,7 +744,6 @@ function BountyDetails({ walletState }) {
 
       // Start polling for status update
       const currentJobId = jobRef.current?.jobId || job?.jobId;
-      console.log(`🔄 Starting to poll for status update (jobId: ${currentJobId}, submissionId: ${submissionId})...`);
 
       const pollResult = await pollSubmissionStatus(currentJobId, submissionId, (updatedSubmission) => {
         const statusDisplay = updatedSubmission.status === 'APPROVED' ? '✅ APPROVED' :
@@ -759,10 +828,7 @@ function BountyDetails({ walletState }) {
       const contractService = getContractService();
       if (!contractService.isConnected()) await contractService.connect();
 
-      console.log('⏱️ Failing timed-out submission:', { bountyId: onChainId, submissionId });
       const result = await contractService.failTimedOutSubmission(onChainId, submissionId);
-
-      console.log('✅ Submission failed, waiting for backend sync...');
 
       // Poll for backend to sync
       const currentJobId = jobRef.current?.jobId || job?.jobId;
@@ -823,10 +889,8 @@ function BountyDetails({ walletState }) {
       const contractService = getContractService();
       if (!contractService.isConnected()) await contractService.connect();
 
-      console.log('📤 closeExpiredBounty using on-chain id:', onChainId);
       const result = await contractService.closeExpiredBounty(onChainId);
 
-      console.log('✅ Transaction confirmed:', result.txHash);
       setClosingMessage('Transaction confirmed! Waiting for backend to sync...');
 
       // Poll for backend to sync (up to 60 seconds with 3s intervals)
@@ -945,11 +1009,15 @@ function BountyDetails({ walletState }) {
   const now = Math.floor(Date.now() / 1000);
   const timeRemaining = job?.submissionCloseTime ? job.submissionCloseTime - now : -1;
   const hoursRemaining = Math.max(0, Math.floor(timeRemaining / 3600));
+  const deadlinePassed = job?.submissionCloseTime && now > job.submissionCloseTime;
 
   const isOpen = status === 'OPEN';
   const isExpired = status === 'EXPIRED';
   const isAwarded = status === 'AWARDED';
   const isClosed = status === 'CLOSED';
+
+  // NEW: Treat as expired if deadline passed, even if backend says OPEN
+  const effectivelyExpired = isExpired || (isOpen && deadlinePassed);
 
   const hasActiveSubmissions = submissions.some(s =>
     isPendingStatus(s.status)
@@ -969,8 +1037,45 @@ function BountyDetails({ walletState }) {
 
   return (
     <div className="bounty-details">
-      {/* EXPIRED Status Banner */}
-      {isExpired && (
+      {/* DIAGNOSTIC PANEL (Ctrl+Shift+D to toggle) */}
+      {showDiagnostics && (
+        <DiagnosticPanel
+          job={job}
+          bountyId={bountyId}
+          resolvedBountyId={resolvedBountyId}
+          onChainId={onChainIdForButtons}
+          statusOverride={statusOverride}
+          deadlinePassed={deadlinePassed}
+          submissions={submissions}
+          walletState={walletState}
+          onRefresh={() => loadJobDetails()}
+        />
+      )}
+
+      {/* STATUS OVERRIDE WARNING */}
+      {statusOverride && (
+        <div style={{
+          backgroundColor: '#fff3e0',
+          border: '2px solid #ff9800',
+          padding: '0.75rem 1rem',
+          borderRadius: '6px',
+          marginBottom: '1rem',
+          fontSize: '0.9rem'
+        }}>
+          ⚠️ <strong>Status Override:</strong> Backend shows "{statusOverride.backendStatus}" but {statusOverride.reason}. 
+          Using on-chain status: <strong>{statusOverride.onChainStatus}</strong>
+          <button 
+            onClick={() => loadJobDetails()} 
+            style={{ marginLeft: '1rem', fontSize: '0.85rem' }}
+            className="btn btn-sm"
+          >
+            🔄 Refresh
+          </button>
+        </div>
+      )}
+
+      {/* EXPIRED Status Banner (also shown when effectively expired) */}
+      {effectivelyExpired && (
         <div style={{
           backgroundColor: '#fff3cd',
           border: '3px solid #ffc107',
@@ -1073,7 +1178,7 @@ function BountyDetails({ walletState }) {
             <span className="label">Time Remaining</span>
             <span className="value">
               {!job?.submissionCloseTime ? '...' :
-                isExpired || isClosed || isAwarded ? 'Ended' :
+                effectivelyExpired || isClosed || isAwarded ? 'Ended' :
                 hoursRemaining < 24 ? `${hoursRemaining}h` :
                 `${Math.floor(hoursRemaining / 24)}d ${hoursRemaining % 24}h`}
             </span>
@@ -1119,13 +1224,13 @@ function BountyDetails({ walletState }) {
       <section className="actions-section">
         <h2>Actions</h2>
         <div className="action-buttons">
-          {isOpen && walletState.isConnected && (
+          {isOpen && !deadlinePassed && walletState.isConnected && (
             <Link to={`/bounty/${bountyId}/submit`} className="btn btn-primary btn-lg">
               Submit Work
             </Link>
           )}
 
-          {isOpen && !walletState.isConnected && (
+          {isOpen && !deadlinePassed && !walletState.isConnected && (
             <div className="alert alert-info">Connect your wallet to submit work</div>
           )}
 
@@ -1141,7 +1246,7 @@ function BountyDetails({ walletState }) {
             </div>
           )}
 
-          {isExpired && (
+          {effectivelyExpired && !isExpired && (
             <ExpiredBountyActions
               job={job}
               walletState={walletState}
@@ -1200,6 +1305,84 @@ function BountyDetails({ walletState }) {
 // ============================================================================
 // SUB-COMPONENTS
 // ============================================================================
+
+/**
+ * DiagnosticPanel - Shows backend vs on-chain status comparison
+ * Toggle with Ctrl+Shift+D
+ */
+function DiagnosticPanel({ 
+  job, 
+  bountyId, 
+  resolvedBountyId, 
+  onChainId, 
+  statusOverride, 
+  deadlinePassed,
+  submissions,
+  walletState,
+  onRefresh
+}) {
+  const now = Math.floor(Date.now() / 1000);
+  
+  return (
+    <div style={{
+      backgroundColor: '#1a1a2e',
+      color: '#e0e0e0',
+      padding: '1rem',
+      borderRadius: '8px',
+      marginBottom: '1.5rem',
+      fontFamily: 'monospace',
+      fontSize: '0.85rem'
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+        <h3 style={{ margin: 0, color: '#4fc3f7' }}>🔧 Diagnostic Panel</h3>
+        <span style={{ color: '#888', fontSize: '0.75rem' }}>Ctrl+Shift+D to toggle</span>
+      </div>
+      
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+        <div>
+          <div style={{ color: '#aaa', marginBottom: '0.25rem' }}>IDs:</div>
+          <div>Backend jobId: <span style={{ color: '#4caf50' }}>{bountyId}</span></div>
+          <div>job.bountyId: <span style={{ color: job?.bountyId != null ? '#4caf50' : '#f44336' }}>{job?.bountyId ?? 'null'}</span></div>
+          <div>job.onChainId: <span style={{ color: job?.onChainId != null ? '#4caf50' : '#f44336' }}>{job?.onChainId ?? 'null'}</span></div>
+          <div>resolvedBountyId: <span style={{ color: resolvedBountyId != null ? '#4caf50' : '#888' }}>{resolvedBountyId ?? 'null'}</span></div>
+          <div>Effective onChainId: <span style={{ color: onChainId != null ? '#4caf50' : '#f44336', fontWeight: 'bold' }}>{onChainId ?? 'MISSING'}</span></div>
+        </div>
+        
+        <div>
+          <div style={{ color: '#aaa', marginBottom: '0.25rem' }}>Status:</div>
+          <div>Backend status: <span style={{ color: '#ffeb3b' }}>{job?.status || 'unknown'}</span></div>
+          {statusOverride && (
+            <div>On-chain status: <span style={{ color: '#ff9800', fontWeight: 'bold' }}>{statusOverride.onChainStatus}</span></div>
+          )}
+          <div>Deadline: <span style={{ color: deadlinePassed ? '#f44336' : '#4caf50' }}>
+            {job?.submissionCloseTime ? new Date(job.submissionCloseTime * 1000).toLocaleString() : 'unknown'}
+            {deadlinePassed && ' (PASSED)'}
+          </span></div>
+          <div>Now: {new Date(now * 1000).toLocaleString()}</div>
+        </div>
+      </div>
+      
+      <div style={{ marginTop: '0.75rem' }}>
+        <div style={{ color: '#aaa', marginBottom: '0.25rem' }}>Submissions ({submissions.length}):</div>
+        {submissions.map(s => (
+          <div key={s.submissionId} style={{ marginLeft: '0.5rem' }}>
+            #{s.submissionId}: {s.status} 
+            {s.submittedAt && ` (${((now - s.submittedAt) / 60).toFixed(1)}min ago)`}
+          </div>
+        ))}
+      </div>
+      
+      <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem' }}>
+        <button onClick={onRefresh} style={{ fontSize: '0.8rem', padding: '0.25rem 0.5rem' }}>
+          🔄 Refresh Data
+        </button>
+        <span style={{ color: '#888', fontSize: '0.75rem', alignSelf: 'center' }}>
+          Wallet: {walletState.isConnected ? `${walletState.address?.slice(0,8)}...` : 'Not connected'}
+        </span>
+      </div>
+    </div>
+  );
+}
 
 function PendingSubmissionsPanel({
   pendingSubmissions,

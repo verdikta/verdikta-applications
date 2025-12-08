@@ -26,7 +26,8 @@ const CONFIG = {
   INITIAL_LOAD_RETRY_DELAY_MS: 3000,
 
   // Timeout threshold for submissions (in minutes) - for force-fail
-  SUBMISSION_TIMEOUT_MINUTES: 6,
+  // NOTE: Must match contract's 20 minute requirement in failTimedOutSubmission()
+  SUBMISSION_TIMEOUT_MINUTES: 20,
 
   // How often to update the live timer display (1 second)
   TIMER_UPDATE_INTERVAL_MS: 1000,
@@ -298,8 +299,8 @@ function BountyDetails({ walletState }) {
         if (onChainId != null) {
           try {
             const contractService = getContractService();
-            const onChainStatusCode = await contractService.getBountyStatus(Number(onChainId));
-            const onChainStatus = ON_CHAIN_STATUS_MAP[onChainStatusCode] || `UNKNOWN(${onChainStatusCode})`;
+            // getBountyStatus() returns a string: "OPEN", "EXPIRED", "AWARDED", or "CLOSED"
+            const onChainStatus = await contractService.getBountyStatus(Number(onChainId));
 
             if (onChainStatus !== backendStatus) {
               // Status mismatch - override with on-chain truth
@@ -315,6 +316,7 @@ function BountyDetails({ walletState }) {
           } catch (err) {
             // Can't verify on-chain - proceed with backend status
             // This is expected if wallet not connected or RPC issues
+            console.log('[Status] Could not verify on-chain status:', err.message);
           }
         }
 
@@ -1236,11 +1238,11 @@ function BountyDetails({ walletState }) {
   const deadlinePassed = job?.submissionCloseTime && now > job.submissionCloseTime;
 
   const isOpen = status === 'OPEN';
-  const isExpired = status === 'EXPIRED';
+  const isExpired = status === 'EXPIRED' || status?.includes?.('EXPIRED');
   const isAwarded = status === 'AWARDED';
   const isClosed = status === 'CLOSED';
 
-  // NEW: Treat as expired if deadline passed, even if backend says OPEN
+  // Treat as expired if: status is EXPIRED, OR deadline passed (even if backend says OPEN)
   const effectivelyExpired = isExpired || (isOpen && deadlinePassed);
 
   const hasActiveSubmissions = submissions.some(s =>
@@ -2091,7 +2093,9 @@ function SubmissionCard({
       {/* Action buttons for pending submissions */}
       {isPending && walletState.isConnected && !isPolling && (
         <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-          {canFinalize && (
+          
+          {/* Show Finalize ONLY if evaluation is ready OR timeout not yet available */}
+          {canFinalize && (hasEvalReady || !canTimeout) && (
             <button
               onClick={() => onFinalize(submission.submissionId)}
               disabled={isFinalizing || disableActions}
@@ -2111,18 +2115,43 @@ function SubmissionCard({
             </button>
           )}
 
-          {canTimeout ? (
-            <button
-              onClick={() => onFailTimeout(submission.submissionId)}
-              disabled={isFailing || disableActions}
-              className="btn btn-warning btn-sm"
-              style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', width: '100%' }}
-            >
-              {isFailing ? '⏳ Marking as Failed...' : `⏱️ Fail Timed-Out (${ageMinutes.toFixed(1)} min)`}
-            </button>
-          ) : !hasEvalReady && (
+          {/* Show timeout button when eligible - this is the PRIMARY action for stuck submissions */}
+          {canTimeout && (
+            <>
+              {!hasEvalReady && (
+                <div style={{ 
+                  fontSize: '0.8rem', 
+                  color: '#e65100', 
+                  textAlign: 'center',
+                  padding: '0.5rem',
+                  backgroundColor: '#fff3e0',
+                  borderRadius: '4px',
+                  marginBottom: '0.25rem'
+                }}>
+                  ⚠️ Oracle hasn't responded after {ageMinutes.toFixed(0)} min. 
+                  Use the button below to mark as failed and refund LINK.
+                </div>
+              )}
+              <button
+                onClick={() => onFailTimeout(submission.submissionId)}
+                disabled={isFailing || disableActions}
+                className="btn btn-warning"
+                style={{ 
+                  fontSize: hasEvalReady ? '0.85rem' : '1rem', 
+                  padding: hasEvalReady ? '0.4rem 0.8rem' : '0.75rem 1rem', 
+                  width: '100%',
+                  fontWeight: hasEvalReady ? 'normal' : 'bold'
+                }}
+              >
+                {isFailing ? '⏳ Marking as Failed...' : `⏱️ Fail Timed-Out Submission (${ageMinutes.toFixed(0)} min stuck)`}
+              </button>
+            </>
+          )}
+          
+          {/* Show countdown only if timeout not yet available and eval not ready */}
+          {!canTimeout && !hasEvalReady && (
             <div style={{ fontSize: '0.8rem', color: '#888', textAlign: 'center' }}>
-              Force-fail in {(timeoutMinutes - ageMinutes).toFixed(1)} min
+              Force-fail available in {(timeoutMinutes - ageMinutes).toFixed(1)} min
             </div>
           )}
         </div>

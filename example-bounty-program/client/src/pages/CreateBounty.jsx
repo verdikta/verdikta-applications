@@ -604,7 +604,7 @@ function CreateBounty({ walletState }) {
                   {formData.submissionWindowHours && (
                     <>
                       {Math.floor(formData.submissionWindowHours / 24)} days,{' '}
-                      {formData.submissionWindowHours % 24} hours (Default: 7 days / 168 hours)
+                      {formData.submissionWindowHours % 24} hours 
                     </>
                   )}
                 </small>
@@ -899,8 +899,8 @@ function CreateBounty({ walletState }) {
         <ol>
           <li>Define your requirements (rubric with threshold)</li>
           <li>Set payout amount in ETH</li>
-          <li>Set submission window (default: 7 days / 168 hours)</li>
-          <li>Rubric (including threshold) is uploaded to IPFS (immutable)</li>
+          <li>Set submission window (example: 7 days / 168 hours)</li>
+          <li>Rubric (including threshold for selection) is uploaded to IPFS (immutable)</li>
           <li>Smart contract locks your ETH in escrow</li>
           <li>Bounty status becomes OPEN - hunters can submit work before deadline</li>
           <li>After deadline passes, bounty becomes EXPIRED if no winner yet</li>

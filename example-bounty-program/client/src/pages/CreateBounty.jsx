@@ -897,14 +897,14 @@ function CreateBounty({ walletState }) {
       <div className="help-section">
         <h3>💡 How Bounty Creation Works</h3>
         <ol>
-          <li>Define your requirements (rubric with threshold)</li>
-          <li>Set payout amount in ETH</li>
-          <li>Set submission window (example: 7 days / 168 hours)</li>
-          <li>Rubric (including threshold for selection) is uploaded to IPFS (immutable)</li>
-          <li>Smart contract locks your ETH in escrow</li>
-          <li>Bounty status becomes OPEN - hunters can submit work before deadline</li>
-          <li>After deadline passes, bounty becomes EXPIRED if no winner yet</li>
-          <li>Anyone can close an EXPIRED bounty (if no active evaluations) to return funds to creator</li>
+          <li>Define your requirements (rubric with threshold).</li>
+          <li>Set payout amount in ETH.</li>
+          <li>Set submission window (example: 7 days / 168 hours).</li>
+          <li>Rubric (including threshold for selection) is uploaded to IPFS (immutable).</li>
+          <li>Smart contract locks your ETH in escrow.</li>
+          <li>Bounty status becomes OPEN - hunters can submit work before deadline.</li>
+          <li>After deadline passes, bounty becomes EXPIRED if no winner yet.</li>
+          <li>Anyone can close an EXPIRED bounty (if no active evaluations) to return funds to creator.</li>
         </ol>
 
         <div

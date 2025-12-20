@@ -27,7 +27,7 @@ const CONFIG = {
 
   // Timeout threshold for submissions (in minutes) - for force-fail
   // NOTE: Must match contract's 20 minute requirement in failTimedOutSubmission()
-  SUBMISSION_TIMEOUT_MINUTES: 20,
+  SUBMISSION_TIMEOUT_MINUTES: 10,
 
   // How often to update the live timer display (1 second)
   TIMER_UPDATE_INTERVAL_MS: 1000,

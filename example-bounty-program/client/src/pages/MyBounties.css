@@ -1,0 +1,451 @@
+/* My Bounties Page Styles */
+
+.my-bounties {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.page-header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.page-header h1 {
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
+}
+
+.page-header p {
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+}
+
+.header-meta {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.header-meta .wallet-address {
+  background: var(--bg-secondary);
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+
+/* Controls Bar */
+.controls-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.checkbox-label input {
+  cursor: pointer;
+}
+
+/* Loading Container */
+.loading-container {
+  text-align: center;
+  padding: 3rem;
+}
+
+.loading-container .spinner {
+  margin: 0 auto 1rem;
+}
+
+/* Empty State */
+.empty-state {
+  text-align: center;
+  padding: 3rem;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+}
+
+.empty-state h3 {
+  margin-bottom: 0.5rem;
+}
+
+.empty-state p {
+  color: var(--text-secondary);
+  margin-bottom: 1.5rem;
+}
+
+/* Bounties List */
+.bounties-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* Bounty Card */
+.bounty-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.bounty-header {
+  padding: 1rem 1.25rem;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.bounty-header:hover {
+  background-color: var(--bg-secondary);
+}
+
+.bounty-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.bounty-title-row h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.bounty-meta {
+  display: flex;
+  gap: 1.5rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  align-items: center;
+}
+
+.meta-item strong {
+  color: var(--text);
+}
+
+.expand-icon {
+  margin-left: auto;
+  color: var(--text-secondary);
+}
+
+/* Status Badges */
+.status-badge {
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-open {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.status-expired {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-awarded {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.status-closed {
+  background: #f3f4f6;
+  color: #374151;
+}
+
+/* Submissions Section */
+.submissions-section {
+  border-top: 1px solid var(--border);
+  padding: 1rem 1.25rem;
+  background: var(--bg-secondary);
+}
+
+.no-submissions {
+  color: var(--text-secondary);
+  font-style: italic;
+  text-align: center;
+  padding: 1rem;
+}
+
+/* Submissions List */
+.submissions-list {
+  overflow-x: auto;
+}
+
+.submissions-header {
+  display: grid;
+  grid-template-columns: 1fr 1fr 0.75fr 1fr 1fr 0.5fr;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.submission-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 0.75fr 1fr 1fr 0.5fr;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  font-size: 0.875rem;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.submission-row:last-child {
+  border-bottom: none;
+}
+
+.submission-row:hover {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.hunter-address {
+  font-family: 'Courier New', monospace;
+  font-size: 0.8rem;
+}
+
+/* Submission Status */
+.sub-status {
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.sub-status-approved {
+  color: #059669;
+}
+
+.sub-status-rejected {
+  color: #dc2626;
+}
+
+.sub-status-pending {
+  color: #d97706;
+}
+
+.score {
+  font-weight: 600;
+}
+
+/* Archive Status Badges */
+.archive-status {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.archive-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+
+.archive-verified {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.archive-repinned {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.archive-retrieved {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+
+.archive-pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.archive-failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.archive-expired {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.days-left {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}
+
+.submitted-date {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+/* Action Cell */
+.action-cell {
+  text-align: center;
+}
+
+.download-btn {
+  padding: 0.35rem 0.6rem !important;
+  font-size: 0.9rem !important;
+  min-width: 36px;
+}
+
+.expired-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.no-content {
+  color: var(--text-secondary);
+}
+
+/* Bounty Actions */
+.bounty-actions {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+/* Download Modal */
+.download-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.download-modal {
+  background: var(--bg);
+  border-radius: 12px;
+  padding: 2rem;
+  max-width: 500px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.download-modal h3 {
+  margin-bottom: 1rem;
+}
+
+.download-links {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 1.5rem 0;
+}
+
+.download-links .btn {
+  text-align: center;
+}
+
+.download-warning {
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  padding: 1rem;
+  margin: 1rem 0;
+}
+
+.download-warning p {
+  margin: 0.25rem 0;
+  font-size: 0.9rem;
+  color: #92400e;
+}
+
+.download-info {
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 1rem;
+  margin: 1rem 0;
+  font-size: 0.875rem;
+}
+
+.download-info p {
+  margin: 0.25rem 0;
+}
+
+.download-info code {
+  font-size: 0.75rem;
+  word-break: break-all;
+}
+
+/* Info Section */
+.info-section {
+  margin-top: 2rem;
+  padding: 1.5rem;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+}
+
+.info-section h4 {
+  margin-bottom: 0.75rem;
+}
+
+.info-section ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.info-section li {
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.info-section li strong {
+  color: var(--text);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .bounty-meta {
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+
+  .submissions-header,
+  .submission-row {
+    grid-template-columns: 1fr 1fr 0.5fr;
+    font-size: 0.8rem;
+  }
+
+  .submissions-header span:nth-child(4),
+  .submissions-header span:nth-child(5),
+  .submission-row .archive-status,
+  .submission-row .submitted-date {
+    display: none;
+  }
+
+  .controls-bar {
+    flex-direction: column;
+    gap: 0.75rem;
+    align-items: stretch;
+  }
+}
+

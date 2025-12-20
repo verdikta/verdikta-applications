@@ -35,6 +35,9 @@ function Header({ walletState, onConnect, onDisconnect }) {
           <nav className="nav">
             <Link to="/" className="nav-link">Browse</Link>
             <Link to="/create" className="nav-link">Create Bounty</Link>
+	    {isConnected && (
+               <Link to="/my-bounties" className="nav-link">My Bounties</Link>
+            )}
           </nav>
         </div>
 

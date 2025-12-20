@@ -271,7 +271,92 @@ async uploadRubric(rubricJson, classId = 128) {
   async healthCheck() {
     const response = await api.get('/health');
     return response.data;
+  },
+
+  // ============================================================
+  //                  POSTER (BOUNTY CREATOR) ENDPOINTS
+  // ============================================================
+
+  /**
+   * Get all bounties created by an address with submission summaries
+   * @param {string} address - Creator's wallet address
+   * @param {object} options - Query options
+   * @param {boolean} options.includeExpired - Include expired archives (default: false)
+   */
+  async getPosterBounties(address, options = {}) {
+    const params = new URLSearchParams();
+    if (options.includeExpired) params.append('includeExpired', 'true');
+    const queryString = params.toString();
+    const response = await api.get(`/api/poster/${address}/bounties${queryString ? '?' + queryString : ''}`);
+    return response.data;
+  },
+
+  /**
+   * Get all submissions across all bounties for a poster (flat list)
+   * @param {string} address - Creator's wallet address
+   * @param {object} options - Query options
+   */
+  async getPosterSubmissions(address, options = {}) {
+    const params = new URLSearchParams();
+    if (options.status) params.append('status', options.status);
+    if (options.archiveStatus) params.append('archiveStatus', options.archiveStatus);
+    if (options.includeExpired) params.append('includeExpired', 'true');
+    if (options.limit) params.append('limit', options.limit);
+    if (options.offset) params.append('offset', options.offset);
+    const queryString = params.toString();
+    const response = await api.get(`/api/poster/${address}/submissions${queryString ? '?' + queryString : ''}`);
+    return response.data;
+  },
+
+  /**
+   * Get submissions for a specific job (poster view)
+   * @param {string|number} jobId - The job ID
+   * @param {string} posterAddress - Creator's wallet address (for verification)
+   * @param {object} options - Query options
+   */
+  async getPosterJobSubmissions(jobId, posterAddress, options = {}) {
+    const params = new URLSearchParams();
+    if (posterAddress) params.append('posterAddress', posterAddress);
+    if (options.includeExpired) params.append('includeExpired', 'true');
+    const queryString = params.toString();
+    const response = await api.get(`/api/poster/jobs/${jobId}/submissions${queryString ? '?' + queryString : ''}`);
+    return response.data;
+  },
+
+  /**
+   * Get download URLs for a submission (marks as retrieved, starts 7-day countdown)
+   * @param {string|number} jobId - The job ID
+   * @param {string|number} submissionId - The submission ID
+   * @param {string} posterAddress - Creator's wallet address (required)
+   */
+  async getSubmissionDownload(jobId, submissionId, posterAddress) {
+    if (!posterAddress) {
+      throw new Error('posterAddress is required to download submissions');
+    }
+    const response = await api.get(
+      `/api/poster/jobs/${jobId}/submissions/${submissionId}/download?posterAddress=${posterAddress}`
+    );
+    return response.data;
+  },
+
+  /**
+   * Get archive status for a submission (without triggering retrieval)
+   * @param {string|number} jobId - The job ID
+   * @param {string|number} submissionId - The submission ID
+   */
+  async getSubmissionArchiveStatus(jobId, submissionId) {
+    const response = await api.get(`/api/poster/jobs/${jobId}/submissions/${submissionId}/status`);
+    return response.data;
+  },
+
+  /**
+   * Get archival service status (diagnostic)
+   */
+  async getArchivalStatus() {
+    const response = await api.get('/api/archival/status');
+    return response.data;
   }
+
 };
 
 export default apiService;

@@ -9,6 +9,7 @@ import CreateBounty from './pages/CreateBounty';
 import BountyDetails from './pages/BountyDetails';
 import SubmitWork from './pages/SubmitWork';
 import './App.css';
+import MyBounties from './pages/MyBounties';
 
 function App() {
   useEffect(() => {
@@ -77,6 +78,7 @@ function App() {
             <Route path="/create" element={<CreateBounty walletState={walletState} />} />
             <Route path="/bounty/:bountyId" element={<BountyDetails walletState={walletState} />} />
             <Route path="/bounty/:bountyId/submit" element={<SubmitWork walletState={walletState} />} />
+	    <Route path="/my-bounties" element={<MyBounties walletState={walletState} />} />
           </Routes>
         </main>
       </div>

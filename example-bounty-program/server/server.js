@@ -25,11 +25,11 @@ const bountyRoutes = require('./routes/bountyRoutes');
 const submissionRoutes = require('./routes/submissionRoutes');
 const ipfsRoutes = require('./routes/ipfsRoutes');
 const jobRoutes = require('./routes/jobRoutes');
-
-// ============ ADD THESE IMPORTS ============
 const { initializeContractService } = require('./utils/contractService');
 const { initializeSyncService } = require('./utils/syncService');
-// ===========================================
+
+const { initializeArchivalService } = require('./utils/archivalService');
+const posterRoutes = require('./routes/posterRoutes');
 
 const app = express();
 
@@ -48,6 +48,10 @@ const ipfsClient = new IPFSClient({
 
 // Make ipfsClient available to routes
 app.locals.ipfsClient = ipfsClient;
+
+// Initialize archival service (after ipfsClient is created)
+const archivalService = initializeArchivalService(ipfsClient);
+app.locals.archivalService = archivalService;
 
 // Constants
 const UPLOAD_TIMEOUT = 60000; // 60 seconds
@@ -135,6 +139,7 @@ app.use('/api/bounties', bountyRoutes);
 app.use('/api/submissions', submissionRoutes);
 app.use('/api', ipfsRoutes);
 app.use(require('./routes/resolveBounty'));
+app.use('/api/poster', posterRoutes);
 
 // ClassMap API endpoints (reused from example-frontend)
 app.get('/api/classes', (req, res) => {

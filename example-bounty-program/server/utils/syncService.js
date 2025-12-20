@@ -189,6 +189,22 @@ class SyncService {
         total: onChainBounties.length
       });
 
+      // Trigger archival processing after sync completes
+      try {
+        const { getArchivalService } = require('./archivalService');
+        const archivalService = getArchivalService();
+        
+        // Run archival asynchronously - don't block sync completion
+        archivalService.processSubmissions().catch(archivalError => {
+          logger.warn('[sync] Archival processing error', { error: archivalError.message });
+        });
+        
+        logger.debug('[sync] Archival processing triggered');
+      } catch (archivalError) {
+        // Archival service might not be initialized yet
+        logger.debug('[sync] Archival service not available', { error: archivalError.message });
+      }
+
     } catch (error) {
       this.syncErrors++;
       logger.error('❌ Blockchain sync failed', {
@@ -253,9 +269,9 @@ class SyncService {
             backendStatus = 'UNKNOWN';
         }
 
-        // Merge: Keep backend fields (files, etc), update status and CIDs from blockchain
+        // Merge: Keep backend fields (files, archive status, etc), update status and CIDs from blockchain
         submissions.push({
-          ...(existing || {}), // Preserve files from backend storage
+          ...(existing || {}), // Preserve files and archive metadata from backend storage
           submissionId: sub.submissionId,
           hunter: sub.hunter,
           evaluationCid: sub.evaluationCid, // Now stored in Submission struct

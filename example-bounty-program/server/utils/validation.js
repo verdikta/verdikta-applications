@@ -133,11 +133,66 @@ function isValidAddress(address) {
   return /^0x[a-fA-F0-9]{40}$/.test(address);
 }
 
+/**
+ * Validate jury configuration
+ * @param {Array} juryNodes - Array of jury node configurations
+ * @returns {{ valid: boolean, errors: string[] }} - Validation result
+ */
+function validateJuryNodes(juryNodes) {
+  const errors = [];
+
+  if (!Array.isArray(juryNodes)) {
+    errors.push('Jury nodes must be an array');
+    return { valid: false, errors };
+  }
+
+  if (juryNodes.length === 0) {
+    errors.push('At least one jury node is required');
+    return { valid: false, errors };
+  }
+
+  // Validate each jury node
+  let totalWeight = 0;
+
+  juryNodes.forEach((node, index) => {
+    if (!node.provider || typeof node.provider !== 'string') {
+      errors.push(`Jury node ${index}: Missing or invalid provider`);
+    }
+
+    if (!node.model || typeof node.model !== 'string') {
+      errors.push(`Jury node ${index}: Missing or invalid model`);
+    }
+
+    if (typeof node.runs !== 'number' || node.runs < 1) {
+      errors.push(`Jury node ${index}: Runs must be a number >= 1`);
+    }
+
+    if (typeof node.weight !== 'number') {
+      errors.push(`Jury node ${index}: Missing or invalid weight (must be number)`);
+    } else if (node.weight < 0 || node.weight > 1) {
+      errors.push(`Jury node ${index}: Weight must be between 0 and 1`);
+    } else {
+      totalWeight += node.weight;
+    }
+  });
+
+  // Check that weights sum to approximately 1.0 (allow small floating point errors)
+  if (Math.abs(totalWeight - 1.0) > 0.01) {
+    errors.push(`Total weight of jury nodes must sum to 1.0 (current: ${totalWeight.toFixed(2)})`);
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors
+  };
+}
+
 module.exports = {
   isValidCid,
   isValidFileType,
   isValidFileSize,
   validateRubric,
+  validateJuryNodes,
   isValidAddress,
   MAX_FILE_SIZE,
   ALLOWED_FILE_TYPES,

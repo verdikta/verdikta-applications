@@ -90,17 +90,17 @@ The Verdikta AI-Powered Bounty Program is a decentralized platform that enables 
 - [x] CID display for testing
 
 ### 🔄 Phase 3: Smart Contracts (In Progress)
-- [ ] BountyEscrow contract development
-- [ ] Contract deployment to Base Sepolia
-- [ ] Frontend-contract integration
+- [x] BountyEscrow contract development
+- [x] Contract deployment to Base Sepolia
+- [x] Frontend-contract integration
 
 ### ⏳ Phase 4: Testing & Refinement (Next)
-- [ ] Contract testing + security audit
-- [ ] E2E testing with deployed contracts
-- [ ] Documentation updates
+- [p] Contract testing + security audit
+- [p] E2E testing with deployed contracts
+- [p] Documentation updates
 
 ### ⏳ Phase 5: Deployment (Future)
-- [ ] Deploy to Base Sepolia
+- [p] Deploy to Base Sepolia
 - [ ] Public launch
 - [ ] User onboarding
 
@@ -151,6 +151,22 @@ The Verdikta AI-Powered Bounty Program is a decentralized platform that enables 
 - MetaMask wallet
 - Base Sepolia testnet access
 - Test ETH and LINK tokens
+
+### Keeping AI Models Up-to-Date
+
+The application uses the `@verdikta/common` library to access the latest AI class definitions and supported models. To ensure you have access to the newest AI classes and models:
+
+```bash
+cd example-bounty-program/server
+npm update @verdikta/common
+```
+
+**When to update:**
+- When a new AI class is announced (e.g., Class 131)
+- When new models are added to existing classes
+- Periodically (monthly recommended) to stay current
+
+After updating, restart your server to see the new classes in the AI Jury Configuration UI.
 
 ### Current Status
 This project is **95% complete** with full job creation, browsing, and submission workflows implemented. The system generates Verdikta-compatible IPFS archives that can be tested with example-frontend while smart contracts are being developed.

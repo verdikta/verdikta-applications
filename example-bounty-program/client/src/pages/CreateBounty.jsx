@@ -79,6 +79,20 @@ function CreateBounty({ walletState }) {
     };
   };
 
+  const validateJuryWeights = () => {
+    const totalWeight = juryNodes.reduce((sum, node) => sum + (Number(node.weight) || 0), 0);
+    return {
+      valid: Math.abs(totalWeight - 1.0) < 0.01,
+      totalWeight,
+      message:
+        totalWeight < 0.99
+          ? `Jury weights sum to ${totalWeight.toFixed(2)} (should be 1.00)`
+          : totalWeight > 1.01
+          ? `Jury weights sum to ${totalWeight.toFixed(2)} (should be 1.00)`
+          : 'Valid',
+    };
+  };
+
   /**
    * Transform rubric for backend/IPFS upload
    * Includes threshold and classId as part of the rubric (source of truth)
@@ -124,12 +138,6 @@ function CreateBounty({ walletState }) {
 
   // Load models when class changes
   useEffect(() => {
-    // Don't reload models if jury nodes are already configured - keep existing configuration
-    if (juryNodes.length > 0) {
-      console.log('Skipping model reload - keeping existing jury configuration');
-      return;
-    }
-
     const loadModels = async () => {
       setIsLoadingModels(true);
       setModelError(null);
@@ -140,8 +148,27 @@ function CreateBounty({ walletState }) {
         setAvailableModels(providerModels);
         setClassInfo(classInfo);
 
-        // Initialize with one jury node if we have models
-        if (!isEmpty && Object.keys(providerModels).length > 0 && juryNodes.length === 0) {
+        // If we have jury nodes, update them with models from the new class
+        if (juryNodes.length > 0 && !isEmpty && Object.keys(providerModels).length > 0) {
+          // Update existing jury nodes to use models from the new class
+          const updatedNodes = juryNodes.map(node => {
+            const providers = Object.keys(providerModels);
+            // Try to keep the same provider if it exists in the new class
+            const providerExists = providers.includes(node.provider);
+            const newProvider = providerExists ? node.provider : providers[0];
+            const newModel = providerModels[newProvider]?.[0] || '';
+            
+            return {
+              ...node,
+              provider: newProvider,
+              model: newModel
+            };
+          });
+          setJuryNodes(updatedNodes);
+          console.log('Updated jury nodes with models from new class');
+        } 
+        // Initialize with one jury node if we have models and no nodes exist yet
+        else if (!isEmpty && Object.keys(providerModels).length > 0 && juryNodes.length === 0) {
           const firstProvider = Object.keys(providerModels)[0];
           const firstModel = providerModels[firstProvider][0];
           setJuryNodes([
@@ -394,6 +421,9 @@ function CreateBounty({ walletState }) {
     const validation = validateWeights();
     if (!validation.valid) return alert(`Invalid rubric weights: ${validation.message}`);
     if (juryNodes.length === 0) return alert('Please add at least one jury node');
+    
+    const juryValidation = validateJuryWeights();
+    if (!juryValidation.valid) return alert(`Invalid jury weights: ${juryValidation.message}`);
 
     try {
       setLoading(true);

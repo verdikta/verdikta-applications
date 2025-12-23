@@ -13,7 +13,7 @@ const fs = require('fs').promises;
 const logger = require('../utils/logger');
 const jobStorage = require('../utils/jobStorage');
 const archiveGenerator = require('../utils/archiveGenerator');
-const { validateRubric, isValidFileType, MAX_FILE_SIZE } = require('../utils/validation');
+const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE } = require('../utils/validation');
 
 /* ======================
    Helpers / configuration
@@ -129,8 +129,14 @@ router.post('/create', async (req, res) => {
     if (!Number.isFinite(Number(threshold)) || Number(threshold) < 0 || Number(threshold) > 100) {
       return res.status(400).json({ error: 'Invalid threshold', details: 'Threshold must be between 0 and 100' });
     }
-    if (!Array.isArray(juryNodes) || juryNodes.length === 0) {
-      return res.status(400).json({ error: 'Invalid jury configuration', details: 'At least one jury node is required' });
+    // Validate jury configuration
+    const juryValidation = validateJuryNodes(juryNodes);
+    if (!juryValidation.valid) {
+      return res.status(400).json({ 
+        error: 'Invalid jury configuration', 
+        details: 'Jury validation failed', 
+        errors: juryValidation.errors 
+      });
     }
     if (!rubricJson && !rubricCidIn) {
       return res.status(400).json({ error: 'Missing rubric', details: 'Provide rubricJson or rubricCid' });

@@ -10,7 +10,8 @@ export class ModelProviderService {
       'openai': 'OpenAI',
       'anthropic': 'Anthropic',
       'ollama': 'Open-source (Ollama)',
-      'hyperbolic': 'Hyperbolic API'
+      'hyperbolic': 'Hyperbolic API',
+      'xai': 'xAI'
     };
     
     // Reverse mapping for converting display names back to API names

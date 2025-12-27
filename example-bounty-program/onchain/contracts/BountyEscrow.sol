@@ -379,7 +379,7 @@ contract BountyEscrow {
         Submission storage s = _mustSubmission(bountyId, submissionId);
         
         require(s.status == SubmissionStatus.PendingVerdikta, "not pending");
-        require(block.timestamp >= s.submittedAt + 20 minutes, "timeout not reached");
+        require(block.timestamp >= s.submittedAt + 10 minutes, "timeout not reached");
         
         // Mark as failed
         s.status = SubmissionStatus.Failed;

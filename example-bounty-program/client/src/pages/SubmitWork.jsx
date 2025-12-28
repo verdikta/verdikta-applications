@@ -320,10 +320,10 @@ function SubmitWork({ walletState }) {
         evaluationCid,       // Evaluation package CID (must match bounty's stored evaluationCid)
         hunterCid,           // Hunter's work product CID
         submissionNarrative || "",  // addendum
-        75,  // alpha (reputation weight, 0-100)
-        "200000000000000000",  // maxOracleFee (0.2 LINK) - increased for oracle availability
-        "100000000000000000",  // estimatedBaseCost (0.1 LINK)
-        "100000000000000000"   // maxFeeBasedScaling (0.1 LINK)
+        500,                  // alpha (reputation weight, 0-1000)
+        "3000000000000000",   // maxOracleFee (0.003 LINK) - more than the currently charged 0.002 LINK
+        "1000000000000000",   // estimatedBaseCost (Cheapest Arbiter, 0.001 LINK)
+        "3"                   // maxFeeBasedScaling (Relative weight, min vs. max, 3)
       );
 
       console.log('✅ Submission prepared:', {
@@ -637,7 +637,7 @@ function SubmitWork({ walletState }) {
           <li>Your files are uploaded to IPFS (permanent storage)</li>
           <li>Hunter Submission CID is generated with your work and narrative</li>
           <li>Smart contract creates an EvaluationWallet for your submission</li>
-          <li>You approve LINK tokens to pay for AI evaluation (~0.6 LINK)</li>
+          <li>You approve LINK tokens to pay for AI evaluation (~0.04 LINK)</li>
           <li>Approval is verified on-chain before proceeding</li>
           <li>Evaluation starts with your Hunter CID + the bounty's evaluation package</li>
           <li>Results are written back on-chain within 1-5 minutes</li>
@@ -650,7 +650,7 @@ function SubmitWork({ walletState }) {
         </p>
         <ul>
           <li><strong>ETH</strong> for gas fees (~0.005 ETH on Base Sepolia)</li>
-          <li><strong>LINK</strong> for AI evaluation (~0.6 LINK)</li>
+          <li><strong>LINK</strong> for AI evaluation (~0.04 LINK)</li>
         </ul>
         <p>
           Get testnet tokens: <a href="https://faucets.chain.link/base-sepolia" target="_blank" rel="noopener noreferrer">Base Sepolia Faucet</a>

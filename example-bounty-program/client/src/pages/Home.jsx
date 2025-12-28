@@ -1,6 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { apiService } from '../services/api';
+import {
+  BountyStatus,
+  getBountyStatusLabel,
+  getBountyBadgeProps,
+  getBountyStatusIcon,
+  isSubmissionPending,
+  hasAnyPendingSubmissions,
+  getSubmissionStatusDescription,
+} from '../utils/statusDisplay';
 import './Home.css';
 
 // ============================================================================
@@ -11,8 +20,6 @@ const CONFIG = {
   // How often to refresh jobs list when there are pending submissions (15 seconds)
   AUTO_REFRESH_INTERVAL_MS: 15000,
 };
-
-const PENDING_STATUSES = ['PENDING_EVALUATION', 'PendingVerdikta', 'Prepared'];
 
 function Home({ walletState }) {
   const [jobs, setJobs] = useState([]);
@@ -89,10 +96,10 @@ function Home({ walletState }) {
     if (jobs.length === 0) return;
 
     // Check if any jobs have pending submissions or are in states that might change
-    const shouldAutoRefresh = jobs.some(job => 
-      job.status === 'OPEN' || 
-      job.status === 'EXPIRED' ||
-      job.submissions?.some(s => PENDING_STATUSES.includes(s.status))
+    const shouldAutoRefresh = jobs.some(job =>
+      job.status === BountyStatus.OPEN ||
+      job.status === BountyStatus.EXPIRED ||
+      hasAnyPendingSubmissions(job.submissions)
     );
 
     if (!shouldAutoRefresh) {
@@ -290,10 +297,10 @@ function JobCard({ job }) {
   const hoursInDay = hoursRemaining % 24;
 
   const status = job.status || 'UNKNOWN';
-  const isOpen = status === 'OPEN';
-  const isExpired = status === 'EXPIRED';
-  const isAwarded = status === 'AWARDED';
-  const isClosed = status === 'CLOSED';
+  const isOpen = status === BountyStatus.OPEN;
+  const isExpired = status === BountyStatus.EXPIRED;
+  const isAwarded = status === BountyStatus.AWARDED;
+  const isClosed = status === BountyStatus.CLOSED;
 
   // Less than 24 hours = closing soon (show warning style)
   const isClosingSoon = isOpen && timeRemaining > 0 && hoursRemaining < 24;
@@ -301,9 +308,7 @@ function JobCard({ job }) {
   const isCritical = isOpen && timeRemaining > 0 && hoursRemaining < 1;
 
   // Check if any submissions are pending evaluation
-  const hasPendingEvaluation = job.submissions?.some(s => 
-    ['PENDING_EVALUATION', 'PendingVerdikta', 'Prepared'].includes(s.status)
-  );
+  const hasPendingEvaluation = hasAnyPendingSubmissions(job.submissions);
 
   // Format the time remaining string
   const getTimeRemainingString = () => {
@@ -340,8 +345,8 @@ function JobCard({ job }) {
     <Link to={`/bounty/${job.jobId}`} className="bounty-card">
       <div className="bounty-header">
         <h3>{job.title || `Job #${job.jobId}`}</h3>
-        <span className={`status-badge status-${status.toLowerCase()}`}>
-          {status}
+        <span {...getBountyBadgeProps(status)}>
+          {getBountyStatusLabel(status)}
         </span>
       </div>
       {job.workProductType && (
@@ -366,7 +371,11 @@ function JobCard({ job }) {
           <span className="label">Submissions:</span>
           <span className="count">{job.submissionCount || 0}</span>
           {hasPendingEvaluation && (
-            <span className="pending-indicator" title="Evaluation in progress">
+            <span
+              className="pending-indicator"
+              title={getSubmissionStatusDescription('PendingVerdikta')}
+              aria-label="Evaluation in progress"
+            >
               🔄
             </span>
           )}
@@ -379,11 +388,11 @@ function JobCard({ job }) {
         </div>
         <div className={`time-remaining ${isClosingSoon ? 'warning' : ''} ${isCritical ? 'critical' : ''} ${(isExpired || isClosed) ? 'closed' : ''}`}>
           {isAwarded ? (
-            <span>🎉 Winner paid</span>
+            <span>{getBountyStatusIcon(BountyStatus.AWARDED)} Winner paid</span>
           ) : isClosed ? (
-            <span>🔒 Closed</span>
+            <span>{getBountyStatusIcon(BountyStatus.CLOSED)} Closed</span>
           ) : isExpired ? (
-            <span>⏰ Expired - needs closing</span>
+            <span>{getBountyStatusIcon(BountyStatus.EXPIRED)} Expired - needs closing</span>
           ) : (
             getTimeRemainingString()
           )}

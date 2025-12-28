@@ -3,6 +3,14 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ethers } from 'ethers';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
+import {
+  BountyStatus,
+  getBountyStatusLabel,
+  getBountyStatusDescription,
+  getBountyStatusIcon,
+  getBountyBadgeProps,
+  isBountyOpen,
+} from '../utils/statusDisplay';
 import './SubmitWork.css';
 
 // LINK token address on Base Sepolia
@@ -238,7 +246,7 @@ function SubmitWork({ walletState }) {
     }
 
     // Double-check status before submission
-    if (job?.status !== 'OPEN') {
+    if (!isBountyOpen(job?.status)) {
       alert('This bounty is no longer accepting submissions');
       return;
     }
@@ -264,12 +272,12 @@ function SubmitWork({ walletState }) {
         const onChainStatus = await contractService.getBountyStatus(onChainId);
         console.log('On-chain bounty status:', onChainStatus);
 
-        if (onChainStatus !== 'OPEN') {
+        if (!isBountyOpen(onChainStatus)) {
           // Update the UI state to reflect reality
           setJob(prev => ({ ...prev, status: onChainStatus }));
 
           throw new Error(
-            `This bounty is ${onChainStatus.toLowerCase()} on-chain and cannot accept submissions. ` +
+            `This bounty is ${getBountyStatusLabel(onChainStatus).toLowerCase()} on-chain and cannot accept submissions. ` +
             `The backend was out of sync. Please try refreshing the page.`
           );
         }
@@ -447,35 +455,17 @@ function SubmitWork({ walletState }) {
   }
 
   // Check bounty status - only allow submission if OPEN
-  if (job && job.status !== 'OPEN') {
-    let message = '';
-    let statusEmoji = '';
-
-    switch (job.status) {
-      case 'EXPIRED':
-        statusEmoji = '⏰';
-        message = 'This bounty has expired. The submission deadline has passed.';
-        break;
-      case 'AWARDED':
-        statusEmoji = '🎉';
-        message = 'This bounty has been completed. A winner has already been selected and paid.';
-        break;
-      case 'CLOSED':
-        statusEmoji = '🔒';
-        message = 'This bounty has been closed and is no longer accepting submissions.';
-        break;
-      default:
-        statusEmoji = '⚠️';
-        message = 'This bounty is not currently accepting submissions.';
-    }
+  if (job && !isBountyOpen(job.status)) {
+    const statusIcon = getBountyStatusIcon(job.status) || '⚠️';
+    const statusDescription = getBountyStatusDescription(job.status);
 
     return (
       <div className="submit-work">
         <div className="alert alert-warning">
-          <h2>{statusEmoji} Cannot Submit Work</h2>
-          <p>{message}</p>
+          <h2>{statusIcon} Cannot Submit Work</h2>
+          <p>{statusDescription}</p>
           <p style={{ marginTop: '1rem' }}>
-            <strong>Bounty Status:</strong> {job.status}
+            <strong>Bounty Status:</strong> {getBountyStatusLabel(job.status)}
           </p>
           {job.submissionCloseTime && (
             <p>
@@ -501,7 +491,7 @@ function SubmitWork({ walletState }) {
         <p>Upload your deliverable for AI evaluation</p>
         {job && (
           <div className="bounty-info">
-            <span className="status-badge status-open">OPEN</span>
+            <span {...getBountyBadgeProps(job.status)}>{getBountyStatusLabel(job.status)}</span>
             <span className="bounty-amount">{job.bountyAmount} ETH</span>
             {job.submissionCloseTime && (
               <span className="deadline-info">

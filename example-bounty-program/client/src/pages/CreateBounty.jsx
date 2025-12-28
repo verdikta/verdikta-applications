@@ -145,11 +145,17 @@ function CreateBounty({ walletState }) {
         const { providerModels, classInfo, isEmpty } =
           await modelProviderService.getProviderModels(selectedClassId);
 
-        setAvailableModels(providerModels);
         setClassInfo(classInfo);
 
+        // Only update availableModels if we got models back
+        // This preserves the dropdown options when switching to a custom class with no models
+        const hasModels = !isEmpty && Object.keys(providerModels).length > 0;
+        if (hasModels) {
+          setAvailableModels(providerModels);
+        }
+
         // If we have jury nodes, update them with models from the new class
-        if (juryNodes.length > 0 && !isEmpty && Object.keys(providerModels).length > 0) {
+        if (juryNodes.length > 0 && hasModels) {
           // Update existing jury nodes to use models from the new class
           const updatedNodes = juryNodes.map(node => {
             const providers = Object.keys(providerModels);
@@ -168,7 +174,7 @@ function CreateBounty({ walletState }) {
           console.log('Updated jury nodes with models from new class');
         } 
         // Initialize with one jury node if we have models and no nodes exist yet
-        else if (!isEmpty && Object.keys(providerModels).length > 0 && juryNodes.length === 0) {
+        else if (hasModels && juryNodes.length === 0) {
           const firstProvider = Object.keys(providerModels)[0];
           const firstModel = providerModels[firstProvider][0];
           setJuryNodes([

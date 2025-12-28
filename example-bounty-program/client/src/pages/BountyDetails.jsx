@@ -2,6 +2,18 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
+import {
+  BountyStatus,
+  ON_CHAIN_STATUS_MAP,
+  getBountyStatusLabel,
+  getBountyBadgeProps,
+  getBountyStatusDescription,
+  isBountyOpen,
+  isSubmissionPending,
+  getSubmissionStatusDisplay,
+  getSubmissionBadgeProps,
+  hasAnyPendingSubmissions,
+} from '../utils/statusDisplay';
 import './BountyDetails.css';
 
 // ============================================================================
@@ -36,22 +48,8 @@ const CONFIG = {
   EVALUATION_CHECK_INTERVAL_MS: 15000,
 };
 
-const PENDING_STATUSES = ['PENDING_EVALUATION', 'PendingVerdikta', 'Prepared', 'PREPARED'];
-
-// Helper to check if a status is pending (case-insensitive)
-const isPendingStatus = (status) => {
-  if (!status) return false;
-  const upperStatus = status.toUpperCase();
-  return PENDING_STATUSES.some(s => s.toUpperCase() === upperStatus);
-};
-
-// Map on-chain status codes to readable strings
-const ON_CHAIN_STATUS_MAP = {
-  0: 'OPEN',
-  1: 'EXPIRED',
-  2: 'AWARDED',
-  3: 'CLOSED'
-};
+// Alias for backwards compatibility with existing code
+const isPendingStatus = isSubmissionPending;
 
 // ============================================================================
 // MAIN COMPONENT
@@ -1431,7 +1429,7 @@ function BountyDetails({ walletState }) {
       <div className="bounty-header">
         <div className="header-content">
           <h1>{job?.title || `Job #${bountyId}`}</h1>
-          <span className={`status-badge status-${status.toLowerCase()}`}>{status}</span>
+          <span {...getBountyBadgeProps(status)}>{getBountyStatusLabel(status)}</span>
           {job?.workProductType && <span className="work-type-badge">{job.workProductType}</span>}
         </div>
         <div className="bounty-stats">
@@ -2002,21 +2000,6 @@ function SubmissionCard({
   const canFinalize = isPending && !isPolling;
   const hasEvalReady = evaluationResult?.ready;
 
-  // Helper to get display status for pending submissions
-  const getStatusDisplay = () => {
-    if (isApproved) return '✅ APPROVED';
-    if (isRejected) return '❌ REJECTED';
-    if (isPending) return '⏳ EVALUATING';
-    return submission.status;
-  };
-
-  const getStatusBadgeClass = () => {
-    if (isApproved) return 'status-approved';
-    if (isRejected) return 'status-rejected';
-    if (isPending) return 'status-pending';
-    return `status-${submission.status?.toLowerCase()}`;
-  };
-
   return (
     <div className="submission-card" style={{
       border: hasEvalReady ? '2px solid #4caf50' : undefined,
@@ -2024,8 +2007,8 @@ function SubmissionCard({
     }}>
       <div className="submission-header">
         <span className="hunter">{submission.hunter?.substring(0, 10)}...</span>
-        <span className={`status-badge ${getStatusBadgeClass()}`}>
-          {getStatusDisplay()}
+        <span {...getSubmissionBadgeProps(submission.status)}>
+          {getSubmissionStatusDisplay(submission.status)}
         </span>
       </div>
 

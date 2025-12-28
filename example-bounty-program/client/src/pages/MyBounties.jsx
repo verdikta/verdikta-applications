@@ -6,6 +6,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { apiService } from '../services/api';
+import {
+  getBountyStatusLabel,
+  getBountyBadgeProps,
+  getSubmissionStatusDisplay,
+  getSubmissionStatusBadgeClass,
+  getArchiveStatusInfo,
+} from '../utils/statusDisplay';
 import './MyBounties.css';
 
 function MyBounties({ walletState }) {
@@ -88,52 +95,18 @@ function MyBounties({ walletState }) {
     });
   };
 
-  // Get status badge class
-  const getStatusClass = (status) => {
-    switch (status?.toUpperCase()) {
-      case 'OPEN': return 'status-open';
-      case 'EXPIRED': return 'status-expired';
-      case 'AWARDED': return 'status-awarded';
-      case 'CLOSED': return 'status-closed';
-      default: return 'status-unknown';
-    }
-  };
-
-  // Get submission status badge class
-  const getSubmissionStatusClass = (status) => {
-    switch (status?.toUpperCase()) {
-      case 'APPROVED':
-      case 'PASSEDPAID':
-        return 'sub-status-approved';
-      case 'REJECTED':
-      case 'FAILED':
-        return 'sub-status-rejected';
-      case 'PENDING_EVALUATION':
-      case 'PREPARED':
-        return 'sub-status-pending';
-      default:
-        return 'sub-status-unknown';
-    }
-  };
-
-  // Get archive status badge
+  // Get archive status badge using centralized utility
   const getArchiveStatusBadge = (submission) => {
     if (submission.isExpired) {
-      return <span className="archive-badge archive-expired">⚠️ Expired</span>;
+      const info = getArchiveStatusInfo('expired');
+      return <span className={`archive-badge ${info.badgeClass}`} title={info.description}>{info.icon} {info.label}</span>;
     }
     if (submission.retrievedByPoster) {
-      return <span className="archive-badge archive-retrieved">✓ Retrieved</span>;
+      const info = getArchiveStatusInfo('retrieved');
+      return <span className={`archive-badge ${info.badgeClass}`} title={info.description}>{info.icon} {info.label}</span>;
     }
-    switch (submission.archiveStatus) {
-      case 'verified':
-        return <span className="archive-badge archive-verified">✓ Archived</span>;
-      case 'repinned':
-        return <span className="archive-badge archive-repinned">↻ Re-pinned</span>;
-      case 'failed':
-        return <span className="archive-badge archive-failed">✗ Failed</span>;
-      default:
-        return <span className="archive-badge archive-pending">⏳ Pending</span>;
-    }
+    const info = getArchiveStatusInfo(submission.archiveStatus);
+    return <span className={`archive-badge ${info.badgeClass}`} title={info.description}>{info.icon} {info.label}</span>;
   };
 
   // Not connected state
@@ -265,8 +238,8 @@ function MyBounties({ walletState }) {
               >
                 <div className="bounty-title-row">
                   <h3>{bounty.title}</h3>
-                  <span className={`status-badge ${getStatusClass(bounty.status)}`}>
-                    {bounty.status}
+                  <span {...getBountyBadgeProps(bounty.status)}>
+                    {getBountyStatusLabel(bounty.status)}
                   </span>
                 </div>
                 <div className="bounty-meta">
@@ -305,10 +278,8 @@ function MyBounties({ walletState }) {
                           <span className="hunter-address" title={sub.hunter}>
                             {sub.hunter?.slice(0, 6)}...{sub.hunter?.slice(-4)}
                           </span>
-                          <span className={`sub-status ${getSubmissionStatusClass(sub.status)}`}>
-                            {sub.status === 'APPROVED' || sub.status === 'PassedPaid' ? '✅' : 
-                             sub.status === 'REJECTED' || sub.status === 'Failed' ? '❌' : '⏳'}
-                            {' '}{sub.status}
+                          <span className={`sub-status ${getSubmissionStatusBadgeClass(sub.status)}`}>
+                            {getSubmissionStatusDisplay(sub.status)}
                           </span>
                           <span className="score">
                             {sub.score != null ? `${sub.score.toFixed(1)}%` : '—'}

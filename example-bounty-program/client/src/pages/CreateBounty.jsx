@@ -535,11 +535,11 @@ function CreateBounty({ walletState }) {
 
       <div className="steps-indicator">
         <div className={`step ${step === 1 ? 'active' : step > 1 ? 'completed' : ''}`}>
-          <span className="step-number">1</span>
+          <span className="step-number">{step > 1 ? '✓' : '1'}</span>
           <span className="step-label">Basic Info</span>
         </div>
         <div className={`step ${step === 2 ? 'active' : step > 2 ? 'completed' : ''}`}>
-          <span className="step-number">2</span>
+          <span className="step-number">{step > 2 ? '✓' : '2'}</span>
           <span className="step-label">Rubric</span>
         </div>
         <div className={`step ${step === 3 ? 'active' : ''}`}>

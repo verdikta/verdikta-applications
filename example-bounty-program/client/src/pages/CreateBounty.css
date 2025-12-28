@@ -3,6 +3,104 @@
   margin: 0 auto;
 }
 
+/* Step Indicator */
+.steps-indicator {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 2rem;
+  padding: 1.5rem 0;
+}
+
+.steps-indicator .step {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  position: relative;
+}
+
+.steps-indicator .step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  right: -2rem;
+  top: 1.5rem; /* 0.5rem padding + 1rem (half of 2rem circle) */
+  transform: translateY(-50%);
+  width: 3rem;
+  height: 2px;
+  background-color: var(--border, #e0e0e0);
+}
+
+.steps-indicator .step.completed:not(:last-child)::after {
+  background-color: var(--success, #10b981);
+}
+
+.steps-indicator .step .step-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  background-color: var(--bg-secondary, #f5f5f5);
+  border: 2px solid var(--border, #e0e0e0);
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--text-secondary, #666);
+  transition: all 0.2s ease;
+}
+
+.steps-indicator .step.active .step-number {
+  background-color: var(--primary-color, #2563eb);
+  border-color: var(--primary-color, #2563eb);
+  color: white;
+}
+
+.steps-indicator .step.completed .step-number {
+  background-color: var(--success, #10b981);
+  border-color: var(--success, #10b981);
+  color: white;
+}
+
+.steps-indicator .step .step-label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary, #666);
+  transition: color 0.2s ease;
+}
+
+.steps-indicator .step.active .step-label {
+  color: var(--primary-color, #2563eb);
+  font-weight: 600;
+}
+
+.steps-indicator .step.completed .step-label {
+  color: var(--success, #10b981);
+}
+
+@media (max-width: 768px) {
+  .steps-indicator {
+    gap: 1.5rem;
+  }
+
+  .steps-indicator .step {
+    flex-direction: column;
+    padding: 0.25rem;
+    gap: 0.25rem;
+  }
+
+  .steps-indicator .step:not(:last-child)::after {
+    right: -1.25rem;
+    top: 1.25rem; /* 0.25rem padding + 1rem (half of circle) */
+    width: 1rem;
+  }
+
+  .steps-indicator .step .step-label {
+    font-size: 0.75rem;
+    text-align: center;
+  }
+}
+
 .create-header {
   text-align: center;
   margin-bottom: 3rem;

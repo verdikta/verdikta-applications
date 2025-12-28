@@ -540,15 +540,33 @@ function CreateBounty({ walletState }) {
       )}
 
       <div className="steps-indicator">
-        <div className={`step ${step === 1 ? 'active' : step > 1 ? 'completed' : ''}`}>
+        <div
+          className={`step clickable ${step === 1 ? 'active' : step > 1 ? 'completed' : ''}`}
+          onClick={() => setStep(1)}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === 'Enter' && setStep(1)}
+        >
           <span className="step-number">{step > 1 ? '✓' : '1'}</span>
           <span className="step-label">Basic Info</span>
         </div>
-        <div className={`step ${step === 2 ? 'active' : step > 2 ? 'completed' : ''}`}>
+        <div
+          className={`step clickable ${step === 2 ? 'active' : step > 2 ? 'completed' : ''}`}
+          onClick={() => setStep(2)}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === 'Enter' && setStep(2)}
+        >
           <span className="step-number">{step > 2 ? '✓' : '2'}</span>
           <span className="step-label">Rubric</span>
         </div>
-        <div className={`step ${step === 3 ? 'active' : ''}`}>
+        <div
+          className={`step clickable ${step === 3 ? 'active' : ''}`}
+          onClick={() => setStep(3)}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === 'Enter' && setStep(3)}
+        >
           <span className="step-number">3</span>
           <span className="step-label">AI Jury</span>
         </div>

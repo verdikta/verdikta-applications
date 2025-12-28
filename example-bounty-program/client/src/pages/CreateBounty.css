@@ -47,7 +47,7 @@
   font-weight: 600;
   font-size: 0.875rem;
   color: var(--text-secondary, #666);
-  transition: all 0.2s ease;
+  transition: all 0.2s ease, transform 0.2s ease;
 }
 
 .steps-indicator .step.active .step-number {
@@ -67,6 +67,19 @@
   font-weight: 500;
   color: var(--text-secondary, #666);
   transition: color 0.2s ease;
+}
+
+.steps-indicator .step.clickable {
+  cursor: pointer;
+}
+
+.steps-indicator .step.clickable:hover .step-number {
+  transform: scale(1.1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.steps-indicator .step.clickable:hover .step-label {
+  color: var(--primary-color, #2563eb);
 }
 
 .steps-indicator .step.active .step-label {

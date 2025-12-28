@@ -275,16 +275,16 @@ function MyBounties({ walletState }) {
                       </div>
                       {bounty.submissions.map((sub) => (
                         <div key={sub.submissionId} className="submission-row">
-                          <span className="hunter-address" title={sub.hunter}>
+                          <span className="hunter-address" data-label="Hunter" title={sub.hunter}>
                             {sub.hunter?.slice(0, 6)}...{sub.hunter?.slice(-4)}
                           </span>
-                          <span className={`sub-status ${getSubmissionStatusBadgeClass(sub.status)}`}>
+                          <span className={`sub-status ${getSubmissionStatusBadgeClass(sub.status)}`} data-label="Status">
                             {getSubmissionStatusDisplay(sub.status)}
                           </span>
-                          <span className="score">
+                          <span className="score" data-label="Score">
                             {sub.score != null ? `${sub.score.toFixed(1)}%` : '—'}
                           </span>
-                          <span className="archive-status">
+                          <span className="archive-status" data-label="Archive">
                             {getArchiveStatusBadge(sub)}
                             {sub.daysUntilExpiry != null && !sub.isExpired && (
                               <span className="days-left">
@@ -292,7 +292,7 @@ function MyBounties({ walletState }) {
                               </span>
                             )}
                           </span>
-                          <span className="submitted-date">
+                          <span className="submitted-date" data-label="Submitted">
                             {formatDate(sub.submittedAt)}
                           </span>
                           <span className="action-cell">
@@ -303,10 +303,10 @@ function MyBounties({ walletState }) {
                                 className="btn btn-sm btn-primary download-btn"
                                 title={sub.retrievedByPoster ? 'Download again (already retrieved)' : 'Download submission'}
                               >
-                                {downloadingSubmission === `${bounty.jobId}-${sub.submissionId}` 
-                                  ? '...' 
-                                  : sub.retrievedByPoster 
-                                    ? '↓' 
+                                {downloadingSubmission === `${bounty.jobId}-${sub.submissionId}`
+                                  ? '...'
+                                  : sub.retrievedByPoster
+                                    ? '↓'
                                     : '📥'}
                               </button>
                             ) : sub.isExpired ? (

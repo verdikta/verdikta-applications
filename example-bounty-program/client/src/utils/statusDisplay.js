@@ -94,7 +94,7 @@ const SUBMISSION_STATUS_CONFIG = {
   // Pending states - all map to the same user-facing display
   pending: {
     label: 'Evaluating',
-    description: 'Your submission is being evaluated by the AI jury. This typically takes 1-2 minutes.',
+    description: 'Your submission is being evaluated by the AI jury. This typically takes 2-4 minutes.',
     badgeClass: 'status-pending',
     icon: '⏳',
   },

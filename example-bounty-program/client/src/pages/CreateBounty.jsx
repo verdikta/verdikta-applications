@@ -739,18 +739,46 @@ function CreateBounty({ walletState }) {
                 required
               />
               <small className="helper-text">
-                Minimum score required to pass and claim bounty (0–100).
-                This is stored as part of the rubric on IPFS.
+                The minimum weighted score a submission must achieve to win the bounty.
+                For example, a 70% threshold means the submission's weighted criteria scores
+                must average at least 70% (and all must-pass criteria must pass).
               </small>
             </div>
 
             <div className="criteria-section">
+              <div className="criteria-explanation">
+                <h4>Understanding Criteria Types</h4>
+                <div className="criteria-types">
+                  <div className="criteria-type">
+                    <strong>Weighted Criteria</strong>
+                    <p>Scored from 0-100% and contribute to the final score based on their weight. Example: "Writing Quality" with 0.4 weight contributes 40% to the total score.</p>
+                  </div>
+                  <div className="criteria-type">
+                    <strong>Must-Pass Criteria</strong>
+                    <p>Binary pass/fail checks. If any must-pass criterion fails, the entire submission fails regardless of other scores. Example: "No plagiarism" or "Includes required sections".</p>
+                  </div>
+                </div>
+                <p className="weight-note">
+                  <strong>Note:</strong> Weighted criteria weights must sum to 1.0 (100%). Must-pass criteria have no weight.
+                </p>
+              </div>
+
               <div className="section-header">
                 <h3>Evaluation Criteria</h3>
-                <button type="button" onClick={() => addCriterion(false)} className="btn btn-sm btn-secondary">
+                <button
+                  type="button"
+                  onClick={() => addCriterion(false)}
+                  className="btn btn-sm btn-secondary"
+                  title="Add a criterion that contributes to the weighted score"
+                >
                   + Add Weighted Criterion
                 </button>
-                <button type="button" onClick={() => addCriterion(true)} className="btn btn-sm btn-secondary">
+                <button
+                  type="button"
+                  onClick={() => addCriterion(true)}
+                  className="btn btn-sm btn-secondary"
+                  title="Add a pass/fail criterion that must be satisfied"
+                >
                   + Add Must-Pass Criterion
                 </button>
               </div>
@@ -812,8 +840,21 @@ function CreateBounty({ walletState }) {
           <div className="form-step">
             <h2>AI Jury Configuration</h2>
 
+            <div className="jury-explanation">
+              <h4>How the AI Jury Works</h4>
+              <p>
+                Your submission will be evaluated by a panel of AI models. Each jury node represents
+                one AI model that will score the submission against your rubric. The final score is
+                a weighted average of all jury node scores.
+              </p>
+            </div>
+
             <div className="form-group">
               <label>Verdikta Class</label>
+              <small className="helper-text" style={{ display: 'block', marginBottom: '0.5rem' }}>
+                Classes define which AI models are available and their configuration limits.
+                Different classes have different models optimized for various evaluation types.
+              </small>
               <ClassSelector selectedClassId={selectedClassId} onClassSelect={handleClassSelect} />
             </div>
 
@@ -831,9 +872,22 @@ function CreateBounty({ walletState }) {
                   onClick={addJuryNode}
                   className="btn btn-sm btn-secondary"
                   disabled={isLoadingModels || Object.keys(availableModels).length === 0}
+                  title="Add another AI model to the evaluation panel"
                 >
                   + Add Jury Node
                 </button>
+              </div>
+
+              <div className="jury-fields-explanation">
+                <div className="field-hint">
+                  <strong>Provider/Model:</strong> The AI service and specific model to use for evaluation.
+                </div>
+                <div className="field-hint">
+                  <strong>Runs:</strong> How many times this model evaluates the submission. Multiple runs are averaged for more consistent scoring.
+                </div>
+                <div className="field-hint">
+                  <strong>Weight:</strong> This node's influence on the final score. All jury node weights should sum to 1.0.
+                </div>
               </div>
 
               {juryNodes.map((node) => (
@@ -844,6 +898,7 @@ function CreateBounty({ walletState }) {
                       <select
                         value={node.provider}
                         onChange={(e) => updateJuryNode(node.id, 'provider', e.target.value)}
+                        title="AI service provider (e.g., Anthropic, OpenAI)"
                       >
                         {Object.keys(availableModels).map((provider) => (
                           <option key={provider} value={provider}>
@@ -858,6 +913,7 @@ function CreateBounty({ walletState }) {
                       <select
                         value={node.model}
                         onChange={(e) => updateJuryNode(node.id, 'model', e.target.value)}
+                        title="Specific AI model to use for evaluation"
                       >
                         {availableModels[node.provider]?.map((model) => (
                           <option key={model} value={model}>
@@ -868,17 +924,18 @@ function CreateBounty({ walletState }) {
                     </div>
 
                     <div className="form-group small">
-                      <label>Runs</label>
+                      <label title="Number of evaluation runs for this model">Runs</label>
                       <input
                         type="number"
                         value={node.runs}
                         onChange={(e) => updateJuryNode(node.id, 'runs', parseInt(e.target.value, 10) || 1)}
                         min="1"
+                        title="More runs = more consistent but slower evaluation"
                       />
                     </div>
 
                     <div className="form-group small">
-                      <label>Weight</label>
+                      <label title="This node's contribution to the final score (0-1)">Weight</label>
                       <input
                         type="number"
                         value={node.weight}
@@ -887,6 +944,7 @@ function CreateBounty({ walletState }) {
                         }
                         min="0"
                         step="0.1"
+                        title="All weights should sum to 1.0"
                       />
                     </div>
 
@@ -894,6 +952,7 @@ function CreateBounty({ walletState }) {
                       type="button"
                       onClick={() => removeJuryNode(node.id)}
                       className="btn btn-sm btn-danger"
+                      title="Remove this jury node"
                     >
                       ×
                     </button>
@@ -904,6 +963,16 @@ function CreateBounty({ walletState }) {
               {juryNodes.length === 0 && (
                 <div className="empty-state">
                   <p>No jury nodes configured. Add at least one to evaluate submissions.</p>
+                </div>
+              )}
+
+              {juryNodes.length > 0 && (
+                <div className="weight-validation">
+                  {validateJuryWeights().valid ? (
+                    <span className="valid">✓ Jury weights sum to 1.00</span>
+                  ) : (
+                    <span className="invalid">⚠ {validateJuryWeights().message}</span>
+                  )}
                 </div>
               )}
             </div>
@@ -917,8 +986,13 @@ function CreateBounty({ walletState }) {
                 onChange={(e) => setIterations(parseInt(e.target.value, 10) || 1)}
                 min="1"
                 max="10"
+                title="Number of complete jury evaluation cycles"
               />
-              <small className="helper-text">Number of times to run the entire jury evaluation</small>
+              <small className="helper-text">
+                How many times the entire jury panel evaluates the submission.
+                Multiple iterations improve quality but increase evaluation time and cost.
+                For many cases, 1 iteration is sufficient.
+              </small>
             </div>
 
             <div className="form-actions">

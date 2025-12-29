@@ -86,11 +86,17 @@ class SyncService {
       // First pass: Update/add jobs from blockchain
       for (const bounty of onChainBounties) {
         // Find existing job by onChainId (primary) or legacy bountyId field
-        const existingJob = storage.jobs.find(j =>
-          j.onChainId === bounty.jobId ||
-          j.bountyId === bounty.jobId ||  // Legacy fallback
-          (j.onChainBountyId === bounty.jobId)  // Another legacy name
-        );
+        // IMPORTANT: Also verify contractAddress matches to avoid cross-contract collisions
+        const existingJob = storage.jobs.find(j => {
+          const matchesId = j.onChainId === bounty.jobId ||
+                           j.bountyId === bounty.jobId ||  // Legacy fallback
+                           j.onChainBountyId === bounty.jobId;  // Another legacy name
+          if (!matchesId) return false;
+
+          // Verify this job belongs to the current contract (or has no contract set)
+          const jobContract = (j.contractAddress || '').toLowerCase();
+          return !jobContract || jobContract === currentContract;
+        });
 
         if (!existingJob) {
           // Check for recently created jobs without onChainId that might be waiting to be linked

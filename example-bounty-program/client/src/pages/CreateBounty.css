@@ -93,19 +93,29 @@
 
 @media (max-width: 768px) {
   .steps-indicator {
-    gap: 1.5rem;
+    gap: 1rem;
   }
 
   .steps-indicator .step {
     flex-direction: column;
-    padding: 0.25rem;
+    padding: 0.5rem;
     gap: 0.25rem;
+    min-width: 44px;
+  }
+
+  /* Ensure step circles meet 44px touch target */
+  .steps-indicator .step .step-number {
+    width: 2.5rem;
+    height: 2.5rem;
+    min-width: 44px;
+    min-height: 44px;
+    font-size: 1rem;
   }
 
   .steps-indicator .step:not(:last-child)::after {
-    right: -1.25rem;
-    top: 1.25rem; /* 0.25rem padding + 1rem (half of circle) */
-    width: 1rem;
+    right: -0.75rem;
+    top: 1.75rem; /* 0.5rem padding + 1.25rem (half of 2.5rem circle) */
+    width: 0.5rem;
   }
 
   .steps-indicator .step .step-label {
@@ -434,6 +444,15 @@
 
   .form-actions button {
     width: 100%;
+    min-height: 44px;
+  }
+
+  /* Numeric input buttons - 44px touch targets */
+  .numeric-input button {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
   }
 
   .jury-table-header,
@@ -447,9 +466,16 @@
   }
 
   .jury-node select,
-  .jury-node input,
+  .jury-node input {
+    width: 100%;
+    min-height: 44px;
+    font-size: 16px; /* Prevents iOS zoom */
+  }
+
+  /* Remove node button - 44px touch target */
   .remove-node {
     width: 100%;
+    min-height: 44px;
   }
 
   .jury-node > div:before {
@@ -458,6 +484,11 @@
     font-weight: 600;
     margin-bottom: 0.25rem;
     font-size: 0.875rem;
+  }
+
+  /* Add node button - 44px touch target */
+  .add-node-btn {
+    min-height: 44px;
   }
 }
 
@@ -672,6 +703,7 @@
 
   .btn-load-library {
     width: 100%;
+    min-height: 44px;
   }
 
   .threshold-control {
@@ -679,12 +711,35 @@
     align-items: stretch;
   }
 
+  /* Larger slider thumb for mobile touch */
+  .threshold-control input[type="range"]::-webkit-slider-thumb {
+    width: 28px;
+    height: 28px;
+  }
+
+  .threshold-control input[type="range"]::-moz-range-thumb {
+    width: 28px;
+    height: 28px;
+  }
+
   .threshold-number-input {
     width: 100% !important;
+    min-height: 44px !important;
   }
 
   .add-criterion-buttons {
     flex-direction: column;
+  }
+
+  /* Add criterion buttons - 44px touch targets */
+  .btn-add-criterion {
+    min-height: 44px;
+  }
+
+  /* Save rubric button - 44px touch target */
+  .btn-save-rubric {
+    min-height: 44px;
+    width: 100%;
   }
 }
 

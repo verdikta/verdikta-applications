@@ -209,8 +209,29 @@
     font-size: 1rem;
   }
 
+  /* Hero buttons - 44px touch targets */
+  .hero-actions .btn {
+    min-height: 44px;
+    width: 100%;
+  }
+
+  .hero-actions {
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
   .bounty-grid {
     grid-template-columns: 1fr;
+  }
+
+  /* Bounty cards - adequate touch area */
+  .bounty-card {
+    padding: 1.25rem;
+  }
+
+  /* Section header buttons */
+  .section-header .btn {
+    min-height: 44px;
   }
 }
 

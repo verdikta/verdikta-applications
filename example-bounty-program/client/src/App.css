@@ -179,3 +179,79 @@ body {
   background-color: #fee2e2;
   color: #991b1b;
 }
+
+/* =============================================================================
+   MOBILE TOUCH TARGETS
+   WCAG 2.1 recommends minimum 44x44px touch targets for accessibility
+   ============================================================================= */
+
+@media (max-width: 768px) {
+  /* Buttons - ensure minimum touch target */
+  .btn {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .btn-sm {
+    min-height: 44px;
+    padding: 0.5rem 1rem;
+  }
+
+  /* Form inputs - ensure minimum touch target */
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="number"],
+  input[type="url"],
+  input[type="tel"],
+  input[type="date"],
+  input[type="datetime-local"],
+  select,
+  textarea {
+    min-height: 44px;
+    font-size: 16px; /* Prevents iOS zoom on focus */
+  }
+
+  /* Checkboxes - larger touch area via padding on label */
+  input[type="checkbox"],
+  input[type="radio"] {
+    width: 20px;
+    height: 20px;
+    min-width: 20px;
+    min-height: 20px;
+  }
+
+  /* Checkbox/radio labels - ensure adequate touch area */
+  label:has(input[type="checkbox"]),
+  label:has(input[type="radio"]),
+  .checkbox-label {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    padding: 0.5rem 0;
+  }
+
+  /* Links in navigation contexts - adequate touch target */
+  nav a,
+  .nav a,
+  .nav-link {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+  }
+
+  /* Icon-only buttons need explicit sizing */
+  button:not(.btn),
+  [role="button"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Smaller text inputs in compact layouts */
+  .compact-input {
+    min-height: 44px;
+  }
+}

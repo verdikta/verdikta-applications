@@ -291,10 +291,41 @@
 
   .form-actions button {
     width: 100%;
+    min-height: 44px;
+  }
+
+  /* Remove file button - 44px touch target */
+  .btn-remove {
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Copy button - 44px touch target */
+  .btn-copy {
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* File description inputs */
+  .file-description input {
+    min-height: 44px;
+    font-size: 16px; /* Prevents iOS zoom */
   }
 
   .cid-dialog {
     padding: 1.5rem;
+  }
+
+  /* Dialog buttons - 44px touch targets */
+  .dialog-actions .btn {
+    min-height: 44px;
+    width: 100%;
   }
 
   .cid-value code {

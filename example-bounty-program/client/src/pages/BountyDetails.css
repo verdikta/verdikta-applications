@@ -402,6 +402,21 @@
   .action-buttons {
     flex-direction: column;
   }
+
+  /* Action buttons - 44px touch targets */
+  .action-buttons .btn {
+    min-height: 44px;
+    width: 100%;
+  }
+
+  /* Sections padding */
+  .bounty-header,
+  .description-section,
+  .rubric-section,
+  .actions-section,
+  .submissions-section {
+    padding: 1.25rem;
+  }
 }
 
 @media (max-width: 480px) {

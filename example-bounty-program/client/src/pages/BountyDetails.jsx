@@ -1251,12 +1251,23 @@ function BountyDetails({ walletState }) {
   // Treat as expired if: status is EXPIRED, OR deadline passed (even if backend says OPEN)
   const effectivelyExpired = isExpired || (isOpen && deadlinePassed);
 
+  // For expired bounties, only PendingVerdikta blocks closing (Prepared can never start)
+  // For open bounties, both Prepared and PendingVerdikta are considered active
+  const isActivelyPending = (status) => {
+    const s = status?.toString?.() || '';
+    if (effectivelyExpired) {
+      // Only actively-evaluating submissions block closing an expired bounty
+      return s === 'PendingVerdikta' || s === 'PENDING_EVALUATION';
+    }
+    return isPendingStatus(status);
+  };
+
   const hasActiveSubmissions = submissions.some(s =>
-    isPendingStatus(s.status)
+    isActivelyPending(s.status)
   );
 
   const pendingSubmissions = submissions.filter(s =>
-    isPendingStatus(s.status)
+    isActivelyPending(s.status)
   );
 
   const onChainIdForButtons = getOnChainBountyId();

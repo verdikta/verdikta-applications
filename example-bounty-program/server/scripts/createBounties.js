@@ -36,8 +36,16 @@ const { ethers } = require('ethers');
 // CONFIGURATION
 // =============================================================================
 
+// Build API URL from HOST/PORT if API_URL not set (0.0.0.0 means use localhost for requests)
+const buildApiUrl = () => {
+  if (process.env.API_URL) return process.env.API_URL;
+  const host = process.env.HOST === '0.0.0.0' ? 'localhost' : (process.env.HOST || 'localhost');
+  const port = process.env.PORT || '5005';
+  return `http://${host}:${port}`;
+};
+
 const CONFIG = {
-  apiUrl: process.env.API_URL || 'http://localhost:5005',
+  apiUrl: buildApiUrl(),
   rpcUrl: process.env.RPC_URL || 'https://sepolia.base.org',
   contractAddress: process.env.BOUNTY_ESCROW_ADDRESS,
   privateKey: process.env.PRIVATE_KEY,

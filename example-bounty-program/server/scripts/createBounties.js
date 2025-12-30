@@ -7,7 +7,7 @@
  *
  * Usage:
  *   node scripts/createBounties.js --count 5
- *   node scripts/createBounties.js --count 3 --amount 0.01 --hours 48
+ *   node scripts/createBounties.js --count 3 --amount 0.001 --hours 2
  *   node scripts/createBounties.js --count 2 --template writing
  *   node scripts/createBounties.js --count 1 --dry-run
  *
@@ -18,7 +18,18 @@
  *   API_URL - Backend API URL (defaults to http://localhost:5005)
  */
 
-require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+const path = require('path');
+const fs = require('fs');
+
+// Load main .env first
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+
+// Load secrets file if it exists (relative path: ../../../../secrets/.env.secrets)
+// This resolves to the 'secrets' folder at the verdikta root level
+const secretsPath = path.join(__dirname, '..', '..', '..', '..', 'secrets', '.env.secrets');
+if (fs.existsSync(secretsPath)) {
+  require('dotenv').config({ path: secretsPath, override: true });
+}
 const { ethers } = require('ethers');
 
 // =============================================================================

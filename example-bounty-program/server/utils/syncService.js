@@ -7,6 +7,96 @@
 const logger = require('./logger');
 const jobStorage = require('./jobStorage');
 const { getContractService } = require('./contractService');
+const AdmZip = require('adm-zip');
+
+// IPFS gateway for fetching evaluation packages
+const IPFS_GATEWAY = process.env.IPFS_GATEWAY || 'https://ipfs.io';
+const PINATA_GATEWAY = process.env.PINATA_GATEWAY || 'https://gateway.pinata.cloud';
+
+/**
+ * Fetch and parse metadata from an evaluation CID (ZIP archive)
+ * Extracts title and description from manifest.json and primary_query.json
+ */
+async function fetchEvaluationMetadata(evaluationCid) {
+  if (!evaluationCid || evaluationCid.startsWith('dev-')) {
+    return null; // Skip dev/fake CIDs
+  }
+
+  const gateways = [PINATA_GATEWAY, IPFS_GATEWAY];
+
+  for (const gateway of gateways) {
+    try {
+      const url = `${gateway}/ipfs/${evaluationCid}`;
+      const response = await fetch(url, {
+        timeout: 15000,
+        headers: { 'Accept': 'application/octet-stream, application/zip, */*' }
+      });
+
+      if (!response.ok) continue;
+
+      const buffer = await response.arrayBuffer();
+      const zip = new AdmZip(Buffer.from(buffer));
+
+      let title = null;
+      let description = null;
+      let workProductType = null;
+
+      // Parse manifest.json for title
+      const manifestEntry = zip.getEntry('manifest.json');
+      if (manifestEntry) {
+        try {
+          const manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
+          // Title is in format: "Job Title - Evaluation for Payment Release"
+          if (manifest.name) {
+            title = manifest.name.replace(/ - Evaluation for Payment Release$/, '');
+          }
+        } catch (e) {
+          logger.debug('Failed to parse manifest.json', { cid: evaluationCid, error: e.message });
+        }
+      }
+
+      // Parse primary_query.json for description
+      const queryEntry = zip.getEntry('primary_query.json');
+      if (queryEntry) {
+        try {
+          const query = JSON.parse(queryEntry.getData().toString('utf8'));
+          if (query.query) {
+            // Extract description from query text
+            const descMatch = query.query.match(/Task Description:\s*(.+?)(?:\n\n|===|$)/s);
+            if (descMatch) {
+              description = descMatch[1].trim();
+            }
+            // Extract work product type
+            const typeMatch = query.query.match(/Work Product Type:\s*(.+?)(?:\n|$)/);
+            if (typeMatch) {
+              workProductType = typeMatch[1].trim();
+            }
+            // Extract title if not found in manifest
+            if (!title) {
+              const titleMatch = query.query.match(/Task Title:\s*(.+?)(?:\n|$)/);
+              if (titleMatch) {
+                title = titleMatch[1].trim();
+              }
+            }
+          }
+        } catch (e) {
+          logger.debug('Failed to parse primary_query.json', { cid: evaluationCid, error: e.message });
+        }
+      }
+
+      if (title || description) {
+        logger.debug('Fetched evaluation metadata', { cid: evaluationCid, title, hasDescription: !!description });
+        return { title, description, workProductType };
+      }
+
+    } catch (error) {
+      logger.debug('Failed to fetch from gateway', { gateway, cid: evaluationCid, error: error.message });
+      continue;
+    }
+  }
+
+  return null; // Could not fetch metadata
+}
 
 class SyncService {
   constructor(intervalMinutes = 2) {
@@ -316,20 +406,44 @@ class SyncService {
    * Only called for jobs that were truly created outside our frontend (e.g., directly via contract)
    */
   async addJobFromBlockchain(bounty, storage, currentContract) {
-    logger.info('📥 Adding job from blockchain', { jobId: bounty.jobId });
+    logger.info('📥 Adding job from blockchain', { jobId: bounty.jobId, evaluationCid: bounty.evaluationCid });
 
     // Sync submissions if any exist
     const submissions = bounty.submissionCount > 0
       ? await this.syncSubmissions(bounty.jobId, bounty.submissionCount, [])
       : [];
 
+    // Try to fetch real title/description from the evaluation package on IPFS
+    let title = bounty.title || `Bounty #${bounty.jobId}`;
+    let description = bounty.description || 'Fetched from blockchain';
+    let workProductType = bounty.workProductType || 'Work Product';
+
+    try {
+      const metadata = await fetchEvaluationMetadata(bounty.evaluationCid);
+      if (metadata) {
+        if (metadata.title) title = metadata.title;
+        if (metadata.description) description = metadata.description;
+        if (metadata.workProductType) workProductType = metadata.workProductType;
+        logger.info('📋 Fetched bounty metadata from IPFS', {
+          jobId: bounty.jobId,
+          title,
+          hasDescription: !!metadata.description
+        });
+      }
+    } catch (error) {
+      logger.warn('Failed to fetch evaluation metadata, using defaults', {
+        jobId: bounty.jobId,
+        error: error.message
+      });
+    }
+
     // Note: evaluationCid in contract is the full evaluation package (was rubricCid)
     const job = {
       jobId: storage.nextId,
       onChainId: bounty.jobId, // Track the on-chain ID
-      title: bounty.title || `On-Chain Bounty #${bounty.jobId}`,
-      description: bounty.description || 'Created via smart contract',
-      workProductType: bounty.workProductType || 'On-Chain Work',
+      title,
+      description,
+      workProductType,
       creator: bounty.creator,
       bountyAmount: parseFloat(bounty.bountyAmount),
       bountyAmountUSD: 0, // Would need price oracle

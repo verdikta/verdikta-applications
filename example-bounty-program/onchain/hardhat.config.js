@@ -1,5 +1,9 @@
 // hardhat.config.js
-require("dotenv").config({ quiet: true });
+const path = require("path");
+require("dotenv").config({
+  path: path.join(__dirname, "../../../secrets/.env.secrets"),
+  quiet: true
+});
 // console.log("INFURA_API_KEY loaded:", process.env.INFURA_API_KEY ? "YES" : "NO");
 
 const https = require("https");

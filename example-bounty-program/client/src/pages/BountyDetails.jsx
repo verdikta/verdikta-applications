@@ -10,6 +10,7 @@ import {
   getBountyStatusDescription,
   isBountyOpen,
   isSubmissionPending,
+  isSubmissionOnChain,
   getSubmissionStatusDisplay,
   getSubmissionBadgeProps,
   hasAnyPendingSubmissions,
@@ -72,6 +73,7 @@ function BountyDetails({ walletState }) {
   const [closingMessage, setClosingMessage] = useState('');
   const [finalizingSubmissions, setFinalizingSubmissions] = useState(new Set());
   const [failingSubmissions, setFailingSubmissions] = useState(new Set());
+  const [cancelingSubmissions, setCancelingSubmissions] = useState(new Set());
 
   // Polling state for submissions waiting for status update
   // Stores: { attempts, maxAttempts }
@@ -198,9 +200,10 @@ function BountyDetails({ walletState }) {
       return; // Can't check without on-chain ID
     }
 
-    // Get pending submissions that aren't already being actively polled after finalization
-    const pendingSubs = submissions.filter(s => 
-      isPendingStatus(s.status) && 
+    // Get on-chain submissions that aren't already being actively polled after finalization
+    // Skip "Prepared" submissions - they don't exist on-chain yet
+    const pendingSubs = submissions.filter(s =>
+      isSubmissionOnChain(s.status) &&
       !pollingSubmissions.has(s.submissionId)
     );
 
@@ -249,8 +252,9 @@ function BountyDetails({ walletState }) {
     evaluationCheckIntervalRef.current = setInterval(() => {
       if (!isMountedRef.current) return;
 
-      const currentSubs = submissionsRef.current.filter(s => 
-        isPendingStatus(s.status) && 
+      // Only check on-chain submissions (not Prepared)
+      const currentSubs = submissionsRef.current.filter(s =>
+        isSubmissionOnChain(s.status) &&
         !pollingSubmissionsRef.current.has(s.submissionId)
       );
 
@@ -439,10 +443,10 @@ function BountyDetails({ walletState }) {
       // Get current pending submissions (use ref to avoid stale closure)
       const currentSubs = submissionsRef.current;
 
-      // Only skip submissions that are ACTIVELY being polled (in pollingSubmissions map)
-      // If polling timed out, we remove from the map, so auto-refresh will check them
+      // Only refresh on-chain submissions (PendingVerdikta), not Prepared ones
+      // Prepared submissions don't exist on-chain yet, so blockchain refresh will fail
       const pendingSubs = currentSubs.filter(s => {
-        if (!isPendingStatus(s.status)) return false;
+        if (!isSubmissionOnChain(s.status)) return false;
         // Skip if actively polling
         if (pollingSubmissionsRef.current.has(s.submissionId)) return false;
         return true;
@@ -1095,6 +1099,38 @@ function BountyDetails({ walletState }) {
     }
   };
 
+  const handleCancelSubmission = async (submissionId) => {
+    const confirmed = window.confirm(
+      `Cancel submission #${submissionId}?\n\n` +
+      'This will remove the submission from the system.\n' +
+      'Only Prepared (not started) submissions can be cancelled.'
+    );
+    if (!confirmed) return;
+
+    try {
+      setCancelingSubmissions(prev => new Set(prev).add(submissionId));
+      setError(null);
+
+      const currentJobId = jobRef.current?.jobId || job?.jobId;
+      await apiService.cancelSubmission(currentJobId, submissionId);
+
+      alert(`Submission #${submissionId} has been cancelled.`);
+
+      setRetryCount(0);
+      await loadJobDetails();
+    } catch (err) {
+      console.error('Error cancelling submission:', err);
+      setError(err.message || 'Failed to cancel submission');
+      alert(`Failed to cancel submission:\n\n${err.message}`);
+    } finally {
+      setCancelingSubmissions(prev => {
+        const next = new Set(prev);
+        next.delete(submissionId);
+        return next;
+      });
+    }
+  };
+
   const handleCloseExpiredBounty = async () => {
     if (!walletState.isConnected) {
       alert('Please connect your wallet first');
@@ -1395,8 +1431,10 @@ function BountyDetails({ walletState }) {
               getSubmissionAge={getSubmissionAge}
               onFinalize={handleFinalizeSubmission}
               onFailTimeout={handleFailTimedOutSubmission}
+              onCancel={handleCancelSubmission}
               finalizingSubmissions={finalizingSubmissions}
               failingSubmissions={failingSubmissions}
+              cancelingSubmissions={cancelingSubmissions}
               pollingSubmissions={pollingSubmissions}
               evaluationResults={evaluationResults}
               disableActions={disableActionsForMissingId}
@@ -1548,8 +1586,10 @@ function BountyDetails({ walletState }) {
               onClose={handleCloseExpiredBounty}
               onFinalize={handleFinalizeSubmission}
               onFailTimeout={handleFailTimedOutSubmission}
+              onCancel={handleCancelSubmission}
               finalizingSubmissions={finalizingSubmissions}
               failingSubmissions={failingSubmissions}
+              cancelingSubmissions={cancelingSubmissions}
               pollingSubmissions={pollingSubmissions}
               evaluationResults={evaluationResults}
               timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
@@ -1570,8 +1610,10 @@ function BountyDetails({ walletState }) {
                 walletState={walletState}
                 onFailTimeout={handleFailTimedOutSubmission}
                 onFinalize={handleFinalizeSubmission}
+                onCancel={handleCancelSubmission}
                 isFailing={failingSubmissions.has(submission.submissionId)}
                 isFinalizing={finalizingSubmissions.has(submission.submissionId)}
+                isCanceling={cancelingSubmissions.has(submission.submissionId)}
                 isPolling={pollingSubmissions.has(submission.submissionId)}
                 pollingState={pollingSubmissions.get(submission.submissionId)}
                 evaluationResult={evaluationResults.get(submission.submissionId)}
@@ -1796,8 +1838,10 @@ function PendingSubmissionsPanel({
   getSubmissionAge,
   onFinalize,
   onFailTimeout,
+  onCancel,
   finalizingSubmissions,
   failingSubmissions,
+  cancelingSubmissions,
   pollingSubmissions,
   evaluationResults,
   disableActions,
@@ -1812,7 +1856,10 @@ function PendingSubmissionsPanel({
       </p>
       {pendingSubmissions.map(s => {
         const ageMinutes = getSubmissionAge(s.submittedAt);
-        const canTimeout = ageMinutes > timeoutMinutes;
+        const isOnChain = isSubmissionOnChain(s.status);
+        const isPrepared = s.status === 'Prepared' || s.status === 'PREPARED';
+        // Only allow timeout for on-chain submissions (not Prepared)
+        const canTimeout = isOnChain && ageMinutes > timeoutMinutes;
         const isFailing = failingSubmissions.has(s.submissionId);
         const isFinalizing = finalizingSubmissions.has(s.submissionId);
         const isPolling = pollingSubmissions.has(s.submissionId);
@@ -1868,19 +1915,39 @@ function PendingSubmissionsPanel({
               </div>
             )}
 
-            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-              <button
-                onClick={() => onFinalize(s.submissionId)}
-                disabled={isFinalizing || isPolling || disableActions}
-                className={evalResult?.ready ? "btn btn-success btn-sm" : "btn btn-primary btn-sm"}
-                style={{ 
-                  fontSize: '0.85rem', 
-                  padding: '0.4rem 0.8rem',
-                  fontWeight: evalResult?.ready ? 'bold' : 'normal'
-                }}
-              >
-                {isFinalizing ? '⏳ Finalizing...' : evalResult?.ready ? '🎉 Claim Results & Update Status' : '✅ Finalize'}
-              </button>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+              {/* Show message and cancel button for Prepared submissions */}
+              {isPrepared && (
+                <>
+                  <div style={{ fontSize: '0.85rem', color: '#e65100', padding: '0.4rem' }}>
+                    📋 Not started on-chain yet
+                  </div>
+                  <button
+                    onClick={() => onCancel(s.submissionId)}
+                    disabled={cancelingSubmissions?.has(s.submissionId) || disableActions}
+                    className="btn btn-outline-danger btn-sm"
+                    style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }}
+                  >
+                    {cancelingSubmissions?.has(s.submissionId) ? '⏳...' : '❌ Cancel'}
+                  </button>
+                </>
+              )}
+
+              {/* Only show Finalize button for on-chain submissions */}
+              {isOnChain && (
+                <button
+                  onClick={() => onFinalize(s.submissionId)}
+                  disabled={isFinalizing || isPolling || disableActions}
+                  className={evalResult?.ready ? "btn btn-success btn-sm" : "btn btn-primary btn-sm"}
+                  style={{
+                    fontSize: '0.85rem',
+                    padding: '0.4rem 0.8rem',
+                    fontWeight: evalResult?.ready ? 'bold' : 'normal'
+                  }}
+                >
+                  {isFinalizing ? '⏳ Finalizing...' : evalResult?.ready ? '🎉 Claim Results & Update Status' : '✅ Finalize'}
+                </button>
+              )}
 
               {canTimeout && (
                 <button
@@ -1921,8 +1988,10 @@ function ExpiredBountyActions({
   onClose,
   onFinalize,
   onFailTimeout,
+  onCancel,
   finalizingSubmissions,
   failingSubmissions,
+  cancelingSubmissions,
   pollingSubmissions,
   evaluationResults,
   timeoutMinutes
@@ -1956,8 +2025,10 @@ function ExpiredBountyActions({
           getSubmissionAge={getSubmissionAge}
           onFinalize={onFinalize}
           onFailTimeout={onFailTimeout}
+          onCancel={onCancel}
           finalizingSubmissions={finalizingSubmissions}
           failingSubmissions={failingSubmissions}
+          cancelingSubmissions={cancelingSubmissions}
           pollingSubmissions={pollingSubmissions}
           evaluationResults={evaluationResults}
           disableActions={disableActions}
@@ -1993,8 +2064,10 @@ function SubmissionCard({
   walletState,
   onFailTimeout,
   onFinalize,
+  onCancel,
   isFailing,
   isFinalizing,
+  isCanceling,
   isPolling,
   pollingState,
   evaluationResult,
@@ -2004,11 +2077,15 @@ function SubmissionCard({
   threshold
 }) {
   const isPending = isPendingStatus(submission.status);
+  const isOnChain = isSubmissionOnChain(submission.status);
+  const isPrepared = submission.status === 'Prepared' || submission.status === 'PREPARED';
   const isApproved = submission.status === 'APPROVED' || submission.status === 'ACCEPTED' || submission.status === 'PassedPaid';
   const isRejected = submission.status === 'REJECTED' || submission.status === 'Failed';
   const ageMinutes = isPending && submission.submittedAt ? getSubmissionAge(submission.submittedAt) : 0;
-  const canTimeout = ageMinutes > timeoutMinutes;
-  const canFinalize = isPending && !isPolling;
+  // Only allow timeout for submissions that are actually on-chain (not Prepared)
+  const canTimeout = isOnChain && ageMinutes > timeoutMinutes;
+  // Only allow finalize for on-chain submissions (not Prepared)
+  const canFinalize = isOnChain && !isPolling;
   const hasEvalReady = evaluationResult?.ready;
 
   return (
@@ -2106,11 +2183,38 @@ function SubmissionCard({
         </div>
       )}
 
+      {/* Message for Prepared submissions - not on-chain yet */}
+      {isPrepared && (
+        <div style={{
+          marginTop: '0.75rem',
+          padding: '0.75rem',
+          backgroundColor: '#fff3e0',
+          border: '1px solid #ffcc80',
+          borderRadius: '4px',
+          textAlign: 'center'
+        }}>
+          <div style={{ fontSize: '0.9rem', color: '#e65100', fontWeight: 'bold', marginBottom: '0.25rem' }}>
+            📋 Submission Prepared (Not Started)
+          </div>
+          <div style={{ fontSize: '0.85rem', color: '#bf360c', marginBottom: '0.5rem' }}>
+            This submission has not been started on-chain yet.
+          </div>
+          <button
+            onClick={() => onCancel(submission.submissionId)}
+            disabled={isCanceling || disableActions}
+            className="btn btn-outline-danger btn-sm"
+            style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem' }}
+          >
+            {isCanceling ? '⏳ Cancelling...' : '❌ Cancel Submission'}
+          </button>
+        </div>
+      )}
+
       {/* Action buttons for pending submissions */}
       {isPending && walletState.isConnected && !isPolling && (
         <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-          
-          {/* Show Finalize ONLY if evaluation is ready OR timeout not yet available */}
+
+          {/* Show Finalize ONLY if on-chain and (evaluation is ready OR timeout not yet available) */}
           {canFinalize && (hasEvalReady || !canTimeout) && (
             <button
               onClick={() => onFinalize(submission.submissionId)}

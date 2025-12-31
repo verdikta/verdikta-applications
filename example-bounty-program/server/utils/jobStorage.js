@@ -271,7 +271,9 @@ async function addSubmission(jobId, submissionData) {
       submissionId: job.submissions.length,  // 0-based to match contract
       ...submissionData,
       submittedAt: Math.floor(Date.now() / 1000),
-      status: 'PENDING_EVALUATION'
+      // Start as "Prepared" - not on-chain yet. Status changes to "PendingVerdikta"
+      // when startPreparedSubmission() is called on-chain
+      status: 'Prepared'
     };
 
     job.submissions.push(submission);
@@ -288,6 +290,45 @@ async function addSubmission(jobId, submissionData) {
     return job;
   } catch (error) {
     logger.error('Error adding submission:', error);
+    throw error;
+  }
+}
+
+/**
+ * Cancel/remove a submission (only for Prepared status)
+ */
+async function cancelSubmission(jobId, submissionId) {
+  try {
+    const storage = await readStorage();
+    const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
+
+    if (!job) {
+      throw new Error(`Job ${jobId} not found`);
+    }
+
+    const subIndex = job.submissions.findIndex(s => s.submissionId === parseInt(submissionId));
+    if (subIndex === -1) {
+      throw new Error(`Submission ${submissionId} not found`);
+    }
+
+    const submission = job.submissions[subIndex];
+
+    // Only allow canceling Prepared submissions (not on-chain yet)
+    if (submission.status !== 'Prepared' && submission.status !== 'PREPARED') {
+      throw new Error(`Cannot cancel submission with status ${submission.status}. Only Prepared submissions can be cancelled.`);
+    }
+
+    // Remove the submission
+    job.submissions.splice(subIndex, 1);
+    job.submissionCount = Math.max(0, (job.submissionCount || 1) - 1);
+
+    await writeStorage(storage);
+
+    logger.info('Submission cancelled', { jobId, submissionId });
+
+    return job;
+  } catch (error) {
+    logger.error('Error cancelling submission:', error);
     throw error;
   }
 }
@@ -548,6 +589,7 @@ module.exports = {
   listJobs,
   updateJobStatus,
   addSubmission,
+  cancelSubmission,
   updateSubmissionResult,
   // New orphan management functions
   findOrphanedJobs,

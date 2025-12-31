@@ -237,6 +237,19 @@ export function isSubmissionPending(status) {
 }
 
 /**
+ * Check if submission is actually on-chain (started, not just prepared).
+ * "Prepared" submissions only exist in the backend, not on the blockchain.
+ * Only "PendingVerdikta" submissions can be timed out or have evaluations checked.
+ */
+export function isSubmissionOnChain(status) {
+  if (!status) return false;
+  const s = status.toString();
+  return s === SubmissionStatus.PENDING_VERDIKTA ||
+         s === SubmissionStatus.PENDING_EVALUATION ||
+         s === 'PENDING_EVALUATION';
+}
+
+/**
  * Check if submission status is successful
  */
 export function isSubmissionSuccess(status) {

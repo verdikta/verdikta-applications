@@ -800,6 +800,39 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
 
 
 /* =======================
+   CANCEL SUBMISSION
+   - Only works for Prepared (not on-chain) submissions
+   - Removes the submission from local storage
+   ======================= */
+
+router.delete('/:jobId/submissions/:submissionId', async (req, res) => {
+  const { jobId, submissionId } = req.params;
+
+  logger.info('[cancel] Request received', { jobId, submissionId });
+
+  try {
+    const job = await jobStorage.cancelSubmission(jobId, submissionId);
+
+    return res.json({
+      success: true,
+      message: 'Submission cancelled',
+      job
+    });
+  } catch (error) {
+    logger.error('[cancel] Error', { jobId, submissionId, error: error.message });
+
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    if (error.message.includes('Cannot cancel')) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.status(500).json({ error: 'Failed to cancel submission', details: error.message });
+  }
+});
+
+
+/* =======================
    REFRESH SUBMISSION FROM BLOCKCHAIN
    - Works even without full sync enabled
    - Reads single submission status from chain and updates local storage

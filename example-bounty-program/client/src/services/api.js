@@ -112,6 +112,14 @@ export const apiService = {
   },
 
   /**
+   * Cancel a Prepared submission (not yet on-chain)
+   */
+  async cancelSubmission(jobId, submissionId) {
+    const response = await api.delete(`/api/jobs/${jobId}/submissions/${submissionId}`);
+    return response.data;
+  },
+
+  /**
    * Submit work for a job (legacy single file)
    */
   async submitWork(jobId, file, hunterAddress) {

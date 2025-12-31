@@ -271,9 +271,18 @@ async function submitWork(jobId, content, hunter, dryRun) {
 // BLOCKCHAIN INTERACTION
 // =============================================================================
 
+const LINK_ADDRESS = '0xE4aB69C077896252FAFBD49EFD26B5D171A32410'; // Base Sepolia LINK
+
+const LINK_ABI = [
+  'function approve(address spender, uint256 amount) returns (bool)',
+  'function allowance(address owner, address spender) view returns (uint256)',
+  'function balanceOf(address account) view returns (uint256)',
+];
+
 const BOUNTY_ESCROW_ABI = [
-  'function prepareSubmission(uint256 bountyId, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256)',
+  'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)',
   'function startPreparedSubmission(uint256 bountyId, uint256 submissionId)',
+  'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)',
 ];
 
 async function getWallet() {
@@ -282,6 +291,78 @@ async function getWallet() {
   }
   const provider = new ethers.JsonRpcProvider(CONFIG.rpcUrl);
   return new ethers.Wallet(CONFIG.privateKey, provider);
+}
+
+async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid) {
+  const contract = new ethers.Contract(CONFIG.contractAddress, BOUNTY_ESCROW_ABI, wallet);
+  const linkToken = new ethers.Contract(LINK_ADDRESS, LINK_ABI, wallet);
+
+  // Check LINK balance first
+  const linkBalance = await linkToken.balanceOf(wallet.address);
+  console.log(`    LINK balance: ${ethers.formatEther(linkBalance)} LINK`);
+
+  // Step 1: Prepare submission on-chain
+  console.log('    Preparing submission on-chain...');
+  const prepareTx = await contract.prepareSubmission(
+    bountyId,
+    evaluationCid,
+    hunterCid,
+    '',                        // addendum
+    500,                       // alpha (reputation weight)
+    '3000000000000000',        // maxOracleFee (0.003 LINK)
+    '1000000000000000',        // estimatedBaseCost (0.001 LINK)
+    '3'                        // maxFeeBasedScaling
+  );
+
+  const prepareReceipt = await prepareTx.wait();
+  console.log(`    Prepare tx: ${prepareReceipt.hash}`);
+
+  // Parse the SubmissionPrepared event to get submissionId, evalWallet, linkMaxBudget
+  let submissionId, evalWallet, linkMaxBudget;
+  for (const log of prepareReceipt.logs) {
+    try {
+      const parsed = contract.interface.parseLog(log);
+      if (parsed?.name === 'SubmissionPrepared') {
+        submissionId = parsed.args[1];
+        evalWallet = parsed.args[3];
+        linkMaxBudget = parsed.args[5];
+        break;
+      }
+    } catch (e) {
+      // Not our event
+    }
+  }
+
+  if (submissionId == null) {
+    throw new Error('Failed to parse SubmissionPrepared event');
+  }
+
+  console.log(`    Submission ID: ${submissionId}, EvalWallet: ${evalWallet}`);
+  console.log(`    LINK budget: ${ethers.formatEther(linkMaxBudget)} LINK`);
+
+  // Check if we have enough LINK
+  if (linkBalance < linkMaxBudget) {
+    throw new Error(`Insufficient LINK balance. Need ${ethers.formatEther(linkMaxBudget)} LINK, have ${ethers.formatEther(linkBalance)} LINK`);
+  }
+
+  // Step 2: Approve LINK tokens to the EvaluationWallet
+  console.log('    Approving LINK tokens...');
+  const approveTx = await linkToken.approve(evalWallet, linkMaxBudget);
+  await approveTx.wait();
+  console.log(`    Approval tx: ${approveTx.hash}`);
+
+  // Step 3: Start the prepared submission (triggers Verdikta evaluation)
+  console.log('    Starting evaluation...');
+  const startTx = await contract.startPreparedSubmission(bountyId, submissionId);
+  const startReceipt = await startTx.wait();
+  console.log(`    Start tx: ${startReceipt.hash}`);
+
+  return {
+    submissionId: submissionId.toString(),
+    evalWallet,
+    txHash: startReceipt.hash,
+    blockNumber: startReceipt.blockNumber,
+  };
 }
 
 // =============================================================================
@@ -306,10 +387,10 @@ async function main() {
     process.exit(1);
   }
 
-  // Get wallet address
-  let hunterAddress;
+  // Get wallet
+  let wallet, hunterAddress;
   try {
-    const wallet = await getWallet();
+    wallet = await getWallet();
     hunterAddress = wallet.address;
     console.log(`Hunter wallet: ${hunterAddress}\n`);
   } catch (e) {
@@ -368,15 +449,39 @@ async function main() {
       const content = await generateContent(details, rubric);
       console.log(`  Generated ${content.length} characters`);
 
-      // Submit the work
-      console.log('  Submitting work...');
+      // Submit the work to backend
+      console.log('  Submitting work to backend...');
       const result = await submitWork(bounty.jobId, content, hunterAddress, options.dryRun);
 
       if (result.success) {
-        console.log(`  ✅ ${options.dryRun ? 'Would submit' : 'Submitted'} successfully!`);
-        if (result.submission?.hunterCid) {
-          console.log(`  Hunter CID: ${result.submission.hunterCid}`);
+        const hunterCid = result.submission?.hunterCid;
+        console.log(`  Backend submission successful!`);
+        if (hunterCid) {
+          console.log(`  Hunter CID: ${hunterCid}`);
         }
+
+        // Now start on-chain if not dry run
+        if (!options.dryRun && hunterCid) {
+          console.log('  Starting on-chain submission...');
+          const evaluationCid = details.primaryCid;
+          if (!evaluationCid) {
+            throw new Error('No evaluation CID found for this bounty');
+          }
+
+          const chainResult = await startSubmissionOnChain(
+            wallet,
+            bounty.onChainId,
+            evaluationCid,
+            hunterCid
+          );
+
+          console.log(`  ✅ Evaluation started on-chain!`);
+          console.log(`  On-chain submission ID: ${chainResult.submissionId}`);
+          console.log(`  Transaction: ${chainResult.txHash}`);
+        } else if (options.dryRun) {
+          console.log(`  ✅ [DRY RUN] Would start evaluation on-chain`);
+        }
+
         submitted++;
       }
     } catch (error) {
@@ -393,8 +498,8 @@ async function main() {
   console.log(`Failed:    ${failed}`);
 
   if (!options.dryRun && submitted > 0) {
-    console.log('\nNote: Submissions are in PREPARED state.');
-    console.log('Use the web UI to start the evaluation (requires LINK tokens).');
+    console.log('\nSubmissions are now being evaluated by Verdikta.');
+    console.log('Check the web UI to see results when ready.');
   }
 }
 

@@ -180,6 +180,7 @@ function parseArgs() {
     amount: 0.001,
     hours: 24,
     template: 'writing',
+    classId: 131,
     dryRun: false,
     help: false,
   };
@@ -201,6 +202,10 @@ function parseArgs() {
       case '--template':
       case '-t':
         options.template = args[++i] || 'writing';
+        break;
+      case '--class':
+      case '-c':
+        options.classId = parseInt(args[++i]) || 131;
         break;
       case '--dry-run':
       case '-d':
@@ -227,6 +232,7 @@ Options:
   --amount, -a <eth>       Bounty amount in ETH (default: 0.001)
   --hours, -h <hours>      Submission window in hours (default: 24)
   --template, -t <name>    Template to use: writing, code, design, research (default: writing)
+  --class, -c <id>         Verdikta class ID (default: 131)
   --dry-run, -d            Simulate without creating bounties
   --help                   Show this help message
 
@@ -244,14 +250,14 @@ Examples:
 `);
 }
 
-function generateBountyData(template, index) {
+function generateBountyData(template, index, classId) {
   const tmpl = TEMPLATES[template] || TEMPLATES.writing;
   const descIndex = index % tmpl.descriptions.length;
 
   const rubric = {
     ...tmpl.rubric,
     threshold: tmpl.threshold,
-    classId: tmpl.classId,
+    classId: classId,
   };
 
   return {
@@ -259,7 +265,7 @@ function generateBountyData(template, index) {
     description: tmpl.descriptions[descIndex],
     workProductType: tmpl.workProductType,
     threshold: tmpl.threshold,
-    classId: tmpl.classId,
+    classId: classId,
     rubricJson: rubric,
     juryNodes: DEFAULT_JURY,
   };
@@ -396,6 +402,7 @@ async function main() {
   console.log(`Amount:    ${options.amount} ETH each`);
   console.log(`Window:    ${options.hours} hours`);
   console.log(`Template:  ${options.template}`);
+  console.log(`Class ID:  ${options.classId}`);
   console.log(`Dry Run:   ${options.dryRun ? 'Yes' : 'No'}`);
   console.log('='.repeat(60));
 
@@ -427,7 +434,7 @@ async function main() {
     console.log(`[${i + 1}/${options.count}] Creating bounty...`);
 
     try {
-      const bountyData = generateBountyData(options.template, i);
+      const bountyData = generateBountyData(options.template, i, options.classId);
       console.log(`  Title: ${bountyData.title}`);
 
       if (options.dryRun) {

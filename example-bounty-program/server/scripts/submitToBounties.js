@@ -478,6 +478,21 @@ async function main() {
           console.log(`  ✅ Evaluation started on-chain!`);
           console.log(`  On-chain submission ID: ${chainResult.submissionId}`);
           console.log(`  Transaction: ${chainResult.txHash}`);
+
+          // Sync backend with on-chain status
+          console.log('  Syncing backend status...');
+          try {
+            const refreshResponse = await fetch(
+              `${CONFIG.apiUrl}/api/jobs/${bounty.jobId}/submissions/${chainResult.submissionId}/refresh`,
+              { method: 'POST' }
+            );
+            if (refreshResponse.ok) {
+              const refreshData = await refreshResponse.json();
+              console.log(`  Backend synced: ${refreshData.submission?.status}`);
+            }
+          } catch (e) {
+            console.log(`  Warning: Could not sync backend: ${e.message}`);
+          }
         } else if (options.dryRun) {
           console.log(`  ✅ [DRY RUN] Would start evaluation on-chain`);
         }

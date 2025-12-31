@@ -1502,6 +1502,10 @@ function BountyDetails({ walletState }) {
             <span className="value">{job?.classId ?? '...'}</span>
           </div>
           <div className="stat">
+            <span className="label">Bounty #</span>
+            <span className="value">{getOnChainBountyId() ?? '...'}</span>
+          </div>
+          <div className="stat">
             <span className="label">Time Remaining</span>
             <span className="value">
               {!job?.submissionCloseTime ? '...' :

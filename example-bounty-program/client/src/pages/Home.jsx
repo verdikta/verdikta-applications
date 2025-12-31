@@ -382,6 +382,10 @@ function JobCard({ job }) {
         </div>
       </div>
       <div className="bounty-meta">
+        <div className="bounty-id">
+          <span className="label">Bounty #</span>
+          <span className="value">{job.onChainId ?? job.bountyId ?? '...'}</span>
+        </div>
         <div className="threshold">
           <span className="label">Threshold:</span>
           <span className="value">{job.threshold}%</span>

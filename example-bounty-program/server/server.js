@@ -5,6 +5,9 @@ const path = require('path');
 const fs = require('fs').promises;
 const os = require('os');
 require('dotenv').config();
+// Load secrets from shared secrets file (overrides local .env)
+const secretsPath = path.join(__dirname, '../../../secrets/.env.secrets');
+require('dotenv').config({ path: secretsPath, override: true });
 
 // Alias RPC_URL to RPC_PROVIDER_URL for backwards compatibility
 if (!process.env.RPC_PROVIDER_URL && process.env.RPC_URL) {

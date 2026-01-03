@@ -2115,6 +2115,31 @@ function SubmissionCard({
 
       <div className="submission-meta">
         <span>Submitted: {submission.submittedAt ? new Date(submission.submittedAt * 1000).toLocaleString() : 'Just now'}</span>
+        {submission.verdiktaAggId && submission.verdiktaAggId !== '0x0000000000000000000000000000000000000000000000000000000000000000' && (
+          <div style={{ marginTop: '0.25rem', fontSize: '0.8rem', fontFamily: 'monospace' }}>
+            <span style={{ color: '#666' }}>Verdikta ID: </span>
+            <span style={{ color: '#1976d2' }}>{submission.verdiktaAggId.slice(0, 18)}...</span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                navigator.clipboard.writeText(submission.verdiktaAggId);
+                alert('Verdikta Agg ID copied to clipboard!');
+              }}
+              style={{
+                marginLeft: '0.5rem',
+                padding: '0.1rem 0.3rem',
+                fontSize: '0.7rem',
+                cursor: 'pointer',
+                backgroundColor: '#e3f2fd',
+                border: '1px solid #90caf9',
+                borderRadius: '3px'
+              }}
+              title="Copy full Verdikta Agg ID"
+            >
+              📋
+            </button>
+          </div>
+        )}
       </div>
 
       {/* NEW: Evaluation ready indicator */}

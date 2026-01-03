@@ -963,6 +963,7 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       localSubmission.hunterCid = sub.hunterCid;
       localSubmission.justificationCids = sub.justificationCids;
       localSubmission.finalizedAt = Number(sub.finalizedAt);
+      localSubmission.verdiktaAggId = sub.verdiktaAggId;
       
       jobStorage.updateJob(jobId, { submissions: job.submissions });
       
@@ -991,7 +992,8 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
         hunterCid: sub.hunterCid,
         justificationCids: sub.justificationCids,
         finalizedAt: Number(sub.finalizedAt),
-        hunter: sub.hunter
+        hunter: sub.hunter,
+        verdiktaAggId: sub.verdiktaAggId
       }
     });
     

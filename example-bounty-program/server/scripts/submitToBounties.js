@@ -10,7 +10,7 @@
  *   node scripts/submitToBounties.js --count 3 --bounty-id 5
  *   node scripts/submitToBounties.js --count 1 --dry-run
  *
- * Environment Variables Required:
+ * Environment Variables Required (in .env or .env.secret):
  *   ANTHROPIC_API_KEY - API key for Claude AI
  *   PRIVATE_KEY - Private key for signing transactions (without 0x prefix)
  *   BOUNTY_ESCROW_ADDRESS - Contract address

@@ -74,6 +74,7 @@ function BountyDetails({ walletState }) {
   const [finalizingSubmissions, setFinalizingSubmissions] = useState(new Set());
   const [failingSubmissions, setFailingSubmissions] = useState(new Set());
   const [cancelingSubmissions, setCancelingSubmissions] = useState(new Set());
+  const [refreshingSubmissions, setRefreshingSubmissions] = useState(new Set());
 
   // Polling state for submissions waiting for status update
   // Stores: { attempts, maxAttempts }
@@ -1131,6 +1132,41 @@ function BountyDetails({ walletState }) {
     }
   };
 
+  const handleRefreshSubmission = async (submissionId) => {
+    try {
+      setRefreshingSubmissions(prev => new Set(prev).add(submissionId));
+      setError(null);
+
+      const currentJobId = jobRef.current?.jobId || job?.jobId;
+      const result = await apiService.refreshSubmission(currentJobId, submissionId);
+
+      if (result.success) {
+        // Update the submission in state
+        setSubmissions(prev =>
+          prev.map(s =>
+            s.submissionId === submissionId ? { ...s, ...result.submission } : s
+          )
+        );
+
+        if (result.submission.status !== 'Prepared' && result.submission.status !== 'PREPARED') {
+          alert(`✅ Submission status updated to: ${result.submission.status}`);
+        } else {
+          alert('ℹ️ Submission is still in Prepared state on-chain.\n\nThe evaluation may not have been started. Try submitting again or contact support.');
+        }
+      }
+    } catch (err) {
+      console.error('Error refreshing submission:', err);
+      setError(err.message || 'Failed to refresh submission');
+      alert(`Failed to refresh submission:\n\n${err.message}`);
+    } finally {
+      setRefreshingSubmissions(prev => {
+        const next = new Set(prev);
+        next.delete(submissionId);
+        return next;
+      });
+    }
+  };
+
   const handleCloseExpiredBounty = async () => {
     if (!walletState.isConnected) {
       alert('Please connect your wallet first');
@@ -1611,13 +1647,16 @@ function BountyDetails({ walletState }) {
               <SubmissionCard
                 key={submission.submissionId}
                 submission={submission}
+                jobId={bountyId}
                 walletState={walletState}
                 onFailTimeout={handleFailTimedOutSubmission}
                 onFinalize={handleFinalizeSubmission}
                 onCancel={handleCancelSubmission}
+                onRefresh={handleRefreshSubmission}
                 isFailing={failingSubmissions.has(submission.submissionId)}
                 isFinalizing={finalizingSubmissions.has(submission.submissionId)}
                 isCanceling={cancelingSubmissions.has(submission.submissionId)}
+                isRefreshing={refreshingSubmissions.has(submission.submissionId)}
                 isPolling={pollingSubmissions.has(submission.submissionId)}
                 pollingState={pollingSubmissions.get(submission.submissionId)}
                 evaluationResult={evaluationResults.get(submission.submissionId)}
@@ -2065,13 +2104,16 @@ function ExpiredBountyActions({
 
 function SubmissionCard({
   submission,
+  jobId,
   walletState,
   onFailTimeout,
   onFinalize,
   onCancel,
+  onRefresh,
   isFailing,
   isFinalizing,
   isCanceling,
+  isRefreshing,
   isPolling,
   pollingState,
   evaluationResult,
@@ -2104,6 +2146,11 @@ function SubmissionCard({
         </span>
       </div>
 
+      {/* IDs for debugging/manual operations */}
+      <div style={{ fontSize: '0.75rem', color: '#888', fontFamily: 'monospace', marginTop: '0.25rem' }}>
+        Job: {jobId} | Submission: {submission.submissionId ?? submission.onChainSubmissionId ?? 'N/A'}
+      </div>
+
       {(submission.score != null || submission.acceptance != null) && (
         <div className="score" style={{
           color: isApproved ? '#28a745' : isRejected ? '#dc3545' : '#666',
@@ -2117,13 +2164,32 @@ function SubmissionCard({
         <span>Submitted: {submission.submittedAt ? new Date(submission.submittedAt * 1000).toLocaleString() : 'Just now'}</span>
         {submission.verdiktaAggId && submission.verdiktaAggId !== '0x0000000000000000000000000000000000000000000000000000000000000000' && (
           <div style={{ marginTop: '0.25rem', fontSize: '0.8rem', fontFamily: 'monospace' }}>
-            <span style={{ color: '#666' }}>Verdikta ID: </span>
+            <span style={{ color: '#666' }}>Verdikta Agg ID: </span>
             <span style={{ color: '#1976d2' }}>{submission.verdiktaAggId.slice(0, 18)}...</span>
             <button
-              onClick={(e) => {
+              onClick={async (e) => {
                 e.stopPropagation();
-                navigator.clipboard.writeText(submission.verdiktaAggId);
-                alert('Verdikta Agg ID copied to clipboard!');
+                const btn = e.currentTarget;
+                const originalText = btn.textContent;
+                try {
+                  await navigator.clipboard.writeText(submission.verdiktaAggId);
+                } catch (err) {
+                  // Fallback for non-secure contexts
+                  const textArea = document.createElement('textarea');
+                  textArea.value = submission.verdiktaAggId;
+                  textArea.style.position = 'fixed';
+                  textArea.style.left = '-9999px';
+                  document.body.appendChild(textArea);
+                  textArea.select();
+                  document.execCommand('copy');
+                  document.body.removeChild(textArea);
+                }
+                btn.textContent = '✓';
+                btn.style.backgroundColor = '#c8e6c9';
+                setTimeout(() => {
+                  btn.textContent = originalText;
+                  btn.style.backgroundColor = '#e3f2fd';
+                }, 1500);
               }}
               style={{
                 marginLeft: '0.5rem',
@@ -2228,14 +2294,24 @@ function SubmissionCard({
           <div style={{ fontSize: '0.85rem', color: '#bf360c', marginBottom: '0.5rem' }}>
             This submission has not been started on-chain yet.
           </div>
-          <button
-            onClick={() => onCancel(submission.submissionId)}
-            disabled={isCanceling || disableActions}
-            className="btn btn-outline-danger btn-sm"
-            style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem' }}
-          >
-            {isCanceling ? '⏳ Cancelling...' : '❌ Cancel Submission'}
-          </button>
+          <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+            <button
+              onClick={() => onRefresh(submission.submissionId)}
+              disabled={isRefreshing || disableActions}
+              className="btn btn-outline-primary btn-sm"
+              style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem' }}
+            >
+              {isRefreshing ? '⏳ Checking...' : '🔄 Refresh Status'}
+            </button>
+            <button
+              onClick={() => onCancel(submission.submissionId)}
+              disabled={isCanceling || disableActions}
+              className="btn btn-outline-danger btn-sm"
+              style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem' }}
+            >
+              {isCanceling ? '⏳ Cancelling...' : '❌ Cancel Submission'}
+            </button>
+          </div>
         </div>
       )}
 

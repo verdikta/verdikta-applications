@@ -373,6 +373,17 @@ function SubmitWork({ walletState }) {
       const evalResult = await contractService.startPreparedSubmission(onChainId, submissionId);
       console.log('✅ Evaluation started:', evalResult);
 
+      // STEP 5: Sync backend status from blockchain
+      // This updates the backend from "Prepared" to "PENDING_EVALUATION"
+      setLoadingMessage('Syncing submission status...');
+      try {
+        const refreshResult = await apiService.refreshSubmission(bountyId, submissionId);
+        console.log('✅ Backend synced:', refreshResult);
+      } catch (syncErr) {
+        // Non-fatal - the auto-refresh will eventually sync it
+        console.warn('⚠️ Backend sync failed (will auto-sync later):', syncErr.message);
+      }
+
       // Show success with blockchain data
       setSubmissionResult({
         ...response,

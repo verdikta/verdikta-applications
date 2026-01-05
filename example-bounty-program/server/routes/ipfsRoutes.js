@@ -11,7 +11,7 @@ async function ensureTmp() {
   await fs.mkdir(TMP_DIR, { recursive: true });
 }
 
-const PIN_TIMEOUT_MS = Number(process.env.PIN_TIMEOUT_MS || 20000);
+const PIN_TIMEOUT_MS = Number(process.env.PIN_TIMEOUT_MS || 60000); // Increased to 60s for large justifications
 const PINATA_BASE = (process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud').replace(/\/+$/,'');
 // Expect RAW JWT in env (no "Bearer ")
 const PINATA_JWT = process.env.IPFS_PINNING_KEY || '';

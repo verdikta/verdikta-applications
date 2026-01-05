@@ -15,6 +15,7 @@ import {
   getSubmissionBadgeProps,
   hasAnyPendingSubmissions,
 } from '../utils/statusDisplay';
+import JustificationDisplay from '../components/JustificationDisplay';
 import './BountyDetails.css';
 
 // ============================================================================
@@ -2397,6 +2398,62 @@ function SubmissionCard({
           🎉 This submission passed the evaluation threshold!
         </div>
       )}
+
+      {/* Justification Display - Show for finalized submissions with justification CIDs */}
+      {(() => {
+        // Validate and normalize justification CIDs for finalized submissions
+        const hasValidCids = !isPending && submission.justificationCids && (
+          Array.isArray(submission.justificationCids) 
+            ? submission.justificationCids.length > 0
+            : typeof submission.justificationCids === 'string'
+        );
+        
+        if (hasValidCids) {
+          console.log('[SubmissionCard] Rendering justification for finalized submission:', {
+            submissionId: submission.submissionId,
+            justificationCids: submission.justificationCids,
+            isArray: Array.isArray(submission.justificationCids)
+          });
+          
+          return (
+            <JustificationDisplay
+              justificationCids={submission.justificationCids}
+              passed={isApproved}
+              score={submission.score ?? submission.acceptance}
+              threshold={threshold}
+            />
+          );
+        }
+        return null;
+      })()}
+
+      {/* Justification Display - Show for pending submissions with evaluation ready */}
+      {(() => {
+        // Validate and normalize justification CIDs for pending evaluations
+        const hasValidCids = isPending && hasEvalReady && evaluationResult.justificationCids && (
+          Array.isArray(evaluationResult.justificationCids)
+            ? evaluationResult.justificationCids.length > 0
+            : typeof evaluationResult.justificationCids === 'string'
+        );
+        
+        if (hasValidCids) {
+          console.log('[SubmissionCard] Rendering justification for pending evaluation:', {
+            submissionId: submission.submissionId,
+            justificationCids: evaluationResult.justificationCids,
+            isArray: Array.isArray(evaluationResult.justificationCids)
+          });
+          
+          return (
+            <JustificationDisplay
+              justificationCids={evaluationResult.justificationCids}
+              passed={evaluationResult.scores.acceptance >= threshold}
+              score={evaluationResult.scores.acceptance}
+              threshold={threshold}
+            />
+          );
+        }
+        return null;
+      })()}
     </div>
   );
 }

@@ -59,13 +59,15 @@ const PaginatedJustification = ({
   })();
 
   // Define loadJustification as a useCallback function to include it in the dependencies
-  const loadJustification = useCallback(async (cid) => {
+  const loadJustification = useCallback(async (cid, index) => {
     setLoading(true);
     setError(null);
     try {
-      console.log('Fetching justification for CID:', cid);
+      console.log(`[PaginatedJustification] Fetching justification ${index + 1} for CID:`, cid);
+      const startTime = Date.now();
       const response = await fetchWithRetry(cid);
-      console.log('Received response for CID:', cid);
+      const fetchDuration = Date.now() - startTime;
+      console.log(`[PaginatedJustification] Received response for CID ${cid} in ${fetchDuration}ms`);
       
       const justificationText = await tryParseJustification(
         response,
@@ -74,12 +76,13 @@ const PaginatedJustification = ({
         onUpdateTimestamp,
         setOutcomeLabels
       );
-      console.log('Parsed justification:', justificationText?.substring(0, 100) + '...');
+      console.log(`[PaginatedJustification] Parsed justification ${index + 1}:`, justificationText?.substring(0, 100) + '...');
       return justificationText;
     } catch (error) {
-      console.error('Error loading justification:', error);
-      setError(error.message);
-      return `Error loading justification: ${error.message}`;
+      console.error(`[PaginatedJustification] Error loading justification ${index + 1} for CID ${cid}:`, error);
+      const errorMsg = `Failed to fetch CID ${cid}: ${error.message}`;
+      setError(errorMsg);
+      return errorMsg;
     }
   }, [onUpdateOutcomes, onUpdateTimestamp, setOutcomeLabels]);
 
@@ -112,29 +115,31 @@ const PaginatedJustification = ({
 
     // Load justifications if we have CIDs
     if (cids.length > 0) {
-      Promise.all(cids.map(loadJustification))
+      console.log(`[PaginatedJustification] Loading ${cids.length} justification(s)`);
+      Promise.all(cids.map((cid, index) => loadJustification(cid, index)))
         .then(results => {
-          console.log('Loaded justifications:', results.length);
+          console.log(`[PaginatedJustification] Loaded ${results.length} justifications`);
           const validResults = results.filter(Boolean);
           setJustifications(validResults);
           setLoading(false);
           setHasLoaded(true);
           
           // Call onFetchComplete with the first valid result
-          const validResult = validResults.find(r => !r.startsWith('Error'));
+          const validResult = validResults.find(r => !r.startsWith('Error') && !r.startsWith('Failed to fetch'));
           if (onFetchComplete && validResult) {
-            console.log('Calling onFetchComplete with result');
+            console.log('[PaginatedJustification] Calling onFetchComplete with result');
             onFetchComplete(validResult);
           }
         })
         .catch(error => {
-          console.error('Error in Promise.all:', error);
+          console.error('[PaginatedJustification] Error in Promise.all:', error);
           setError(error.message);
           setLoading(false);
           setHasLoaded(true);
         });
     }
-  }, [resultCid, initialText, cids, hasLoaded, loadJustification, onFetchComplete]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resultCid, initialText, hasLoaded, loadJustification, onFetchComplete]);
 
   // If no CIDs and no justifications, show appropriate message
   if (cids.length === 0 && justifications.length === 0) {

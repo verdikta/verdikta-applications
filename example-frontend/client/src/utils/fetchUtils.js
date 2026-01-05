@@ -12,6 +12,8 @@ const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'http://localhost:5000';
  * @returns {Promise<Response>} The fetch Response object.
  */
 const fetchWithRetry = async (cid, retriesOrOptions = 3, delay = 2000) => {
+  console.log('[fetchWithRetry] Called with CID:', cid);
+  
   if (!cid) {
     throw new Error('CID is required for fetching data');
   }
@@ -19,16 +21,21 @@ const fetchWithRetry = async (cid, retriesOrOptions = 3, delay = 2000) => {
   // Handle the case where the second parameter is an options object
   let retries = 3;
   let options = {};
+  let timeout = 60000; // 60 second timeout for IPFS fetches
   
   if (typeof retriesOrOptions === 'object') {
     options = retriesOrOptions;
     retries = options.retries || 3;
+    timeout = options.timeout || 60000;
   } else {
     retries = retriesOrOptions;
   }
 
   const baseUrl = SERVER_URL.endsWith('/') ? SERVER_URL.slice(0, -1) : SERVER_URL;
   let url = `${baseUrl}/api/fetch/${cid.trim()}`;
+  
+  console.log('[fetchWithRetry] Server URL:', SERVER_URL);
+  console.log('[fetchWithRetry] Full URL:', url);
   
   // Add query parameters if we have options
   if (options.isQueryPackage) {
@@ -37,25 +44,52 @@ const fetchWithRetry = async (cid, retriesOrOptions = 3, delay = 2000) => {
 
   for (let i = 0; i < retries; i++) {
     try {
-      console.log(`Fetching from server route: ${url} (attempt ${i + 1}/${retries})`);
-      const response = await fetch(url, { 
-        mode: 'cors',
-        headers: {
-          'Accept': 'application/json, text/plain, */*'
+      console.log(`[fetchWithRetry] Fetching from server route: ${url} (attempt ${i + 1}/${retries}, timeout: ${timeout}ms)`);
+      
+      // Create an AbortController for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        console.error(`[fetchWithRetry] Request timeout after ${timeout}ms`);
+        controller.abort();
+      }, timeout);
+      
+      try {
+        const fetchStart = Date.now();
+        const response = await fetch(url, { 
+          mode: 'cors',
+          headers: {
+            'Accept': 'application/json, text/plain, */*'
+          },
+          signal: controller.signal
+        });
+        
+        const fetchDuration = Date.now() - fetchStart;
+        clearTimeout(timeoutId);
+        
+        console.log(`[fetchWithRetry] Received response in ${fetchDuration}ms, status: ${response.status}, ok: ${response.ok}`);
+        
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => 'No error details available');
+          throw new Error(`HTTP error! status: ${response.status}, details: ${errorText}`);
         }
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => 'No error details available');
-        throw new Error(`HTTP error! status: ${response.status}, details: ${errorText}`);
+        
+        console.log('[fetchWithRetry] Fetch successful, returning response');
+        return response;
+      } catch (fetchErr) {
+        clearTimeout(timeoutId);
+        if (fetchErr.name === 'AbortError') {
+          throw new Error(`Request timeout after ${timeout}ms`);
+        }
+        throw fetchErr;
       }
-      
-      return response;
     } catch (err) {
-      console.error(`Fetch attempt ${i + 1} failed:`, err.message);
+      console.error(`[fetchWithRetry] Fetch attempt ${i + 1} failed:`, err.message, err);
       if (i === retries - 1) {
-        throw new Error(`Failed to fetch CID ${cid}: ${err.message}`);
+        const finalError = new Error(`Failed to fetch CID ${cid}: ${err.message}`);
+        console.error('[fetchWithRetry] All retry attempts exhausted, throwing error:', finalError);
+        throw finalError;
       }
+      console.log(`[fetchWithRetry] Retrying in ${delay}ms...`);
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }

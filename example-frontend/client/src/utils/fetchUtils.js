@@ -98,6 +98,7 @@ const fetchWithRetry = async (cid, retriesOrOptions = 3, delay = 2000) => {
 
 /**
  * Parse the justification response from the server
+ * Returns an object with justification text and optional enhanced data
  */
 const tryParseJustification = async (response, cid, setOutcomes, setResultTimestamp, setOutcomeLabels) => {
   if (!response) {
@@ -119,7 +120,14 @@ const tryParseJustification = async (response, cid, setOutcomes, setResultTimest
       data = JSON.parse(rawText);
     } catch (parseError) {
       console.error('Failed to parse response as JSON:', parseError);
-      return rawText; // Return raw text if JSON parsing fails
+      // Return raw text wrapped in result object (backward compatibility)
+      return {
+        text: rawText,
+        metadata: null,
+        modelResults: null,
+        warnings: null,
+        error: null
+      };
     }
 
     console.log('Parsed JSON data:', data);
@@ -140,8 +148,14 @@ const tryParseJustification = async (response, cid, setOutcomes, setResultTimest
       setResultTimestamp?.(data.timestamp);
     }
 
-    // Return the justification text
-    return data.justification || JSON.stringify(data, null, 2);
+    // Return justification text with enhanced data
+    return {
+      text: data.justification || JSON.stringify(data, null, 2),
+      metadata: data.metadata || null,
+      modelResults: data.model_results || null,
+      warnings: data.warnings || null,
+      error: data.error || null
+    };
   } catch (parseError) {
     console.error('Error parsing justification:', parseError);
     throw new Error(`Failed to parse justification for CID ${cid}: ${parseError.message}`);

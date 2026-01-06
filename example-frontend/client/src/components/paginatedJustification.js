@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { fetchWithRetry, tryParseJustification } from '../utils/fetchUtils';
+import ModelStatusGrid from './ModelStatusGrid';
+import WarningsList from './WarningsList';
 
 // Simple arrow components to avoid external dependency
 const ChevronLeft = () => (
@@ -49,6 +51,11 @@ const PaginatedJustification = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [hasLoaded, setHasLoaded] = useState(false);
+  
+  // Enhanced error reporting data
+  const [metadata, setMetadata] = useState([]);
+  const [modelResults, setModelResults] = useState([]);
+  const [warnings, setWarnings] = useState([]);
 
   // Parse CID string to handle multiple CIDs separated by commas
   const cids = (() => {
@@ -69,20 +76,32 @@ const PaginatedJustification = ({
       const fetchDuration = Date.now() - startTime;
       console.log(`[PaginatedJustification] Received response for CID ${cid} in ${fetchDuration}ms`);
       
-      const justificationText = await tryParseJustification(
+      const justificationData = await tryParseJustification(
         response,
         cid,
         onUpdateOutcomes,
         onUpdateTimestamp,
         setOutcomeLabels
       );
-      console.log(`[PaginatedJustification] Parsed justification ${index + 1}:`, justificationText?.substring(0, 100) + '...');
-      return justificationText;
+      
+      // Handle both old (string) and new (object) formats
+      const result = typeof justificationData === 'string' 
+        ? { text: justificationData, metadata: null, modelResults: null, warnings: null, error: null }
+        : justificationData;
+      
+      console.log(`[PaginatedJustification] Parsed justification ${index + 1}:`, result.text?.substring(0, 100) + '...');
+      return result;
     } catch (error) {
       console.error(`[PaginatedJustification] Error loading justification ${index + 1} for CID ${cid}:`, error);
       const errorMsg = `Failed to fetch CID ${cid}: ${error.message}`;
       setError(errorMsg);
-      return errorMsg;
+      return {
+        text: errorMsg,
+        metadata: null,
+        modelResults: null,
+        warnings: null,
+        error: error.message
+      };
     }
   }, [onUpdateOutcomes, onUpdateTimestamp, setOutcomeLabels]);
 
@@ -120,13 +139,23 @@ const PaginatedJustification = ({
         .then(results => {
           console.log(`[PaginatedJustification] Loaded ${results.length} justifications`);
           const validResults = results.filter(Boolean);
-          setJustifications(validResults);
+          
+          // Separate text and enhanced data
+          setJustifications(validResults.map(r => typeof r === 'string' ? r : r.text));
+          setMetadata(validResults.map(r => typeof r === 'object' ? r.metadata : null));
+          setModelResults(validResults.map(r => typeof r === 'object' ? r.modelResults : null));
+          setWarnings(validResults.map(r => typeof r === 'object' ? r.warnings : null));
+          
           setLoading(false);
           setHasLoaded(true);
           
-          // Call onFetchComplete with the first valid result
-          const validResult = validResults.find(r => !r.startsWith('Error') && !r.startsWith('Failed to fetch'));
-          if (onFetchComplete && validResult) {
+          // Call onFetchComplete with the first valid result (text only for backward compatibility)
+          const firstText = validResults[0];
+          const validResult = typeof firstText === 'string' 
+            ? firstText 
+            : firstText?.text;
+          
+          if (onFetchComplete && validResult && !validResult.startsWith('Error') && !validResult.startsWith('Failed to fetch')) {
             console.log('[PaginatedJustification] Calling onFetchComplete with result');
             onFetchComplete(validResult);
           }
@@ -147,6 +176,9 @@ const PaginatedJustification = ({
   }
 
   const currentJustification = justifications[currentPage] || '';
+  const currentMetadata = metadata[currentPage] || null;
+  const currentModelResults = modelResults[currentPage] || null;
+  const currentWarnings = warnings[currentPage] || null;
 
   return (
     <div className="w-full space-y-4">
@@ -179,11 +211,27 @@ const PaginatedJustification = ({
         </div>
       )}
 
-      {/* Current CID display */}
-      {cids[currentPage] && (
-        <div className="text-sm text-gray-500 mb-4">
-          Current CID: {cids[currentPage]}
-        </div>
+      {/* Current CID display with metadata badge */}
+      <div className="flex items-center justify-between text-sm text-gray-500 mb-4">
+        <span>Current CID: {cids[currentPage]}</span>
+        {currentMetadata && (
+          <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-semibold">
+            {currentMetadata.models_successful}/{currentMetadata.models_requested} models
+            {currentMetadata.total_duration_ms && (
+              <span className="opacity-70"> • {(currentMetadata.total_duration_ms / 1000).toFixed(1)}s</span>
+            )}
+          </span>
+        )}
+      </div>
+
+      {/* Model Status Grid */}
+      {currentModelResults && currentModelResults.length > 0 && (
+        <ModelStatusGrid modelResults={currentModelResults} />
+      )}
+
+      {/* Warnings List */}
+      {currentWarnings && currentWarnings.length > 0 && (
+        <WarningsList warnings={currentWarnings} />
       )}
 
       {/* Justification content */}

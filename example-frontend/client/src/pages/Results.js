@@ -28,13 +28,19 @@ function Results({
     try {
       console.log('Loading results for CID:', cid);
       const response = await fetchWithRetry(cid);
-      const justificationText = await tryParseJustification(
+      const justificationData = await tryParseJustification(
         response,
         cid,
         setOutcomes,
         setResultTimestamp,
         setOutcomeLabels
       );
+      
+      // Handle both old (string) and new (object) formats
+      const justificationText = typeof justificationData === 'string' 
+        ? justificationData 
+        : justificationData?.text || '';
+      
       setJustification(justificationText);
     } catch (error) {
       console.error('Error loading results:', error);
@@ -90,7 +96,7 @@ function Results({
   };
 
   // Check if this is a timeout error condition
-  const isTimeoutError = justification && justification.includes('The oracle did not respond in time');
+  const isTimeoutError = justification && typeof justification === 'string' && justification.includes('The oracle did not respond in time');
 
   return (
     <div className="page results">

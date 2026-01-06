@@ -141,6 +141,23 @@
   color: #888;
 }
 
+.metadata-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.625rem;
+  background-color: rgba(0, 0, 0, 0.06);
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #555;
+  margin-left: 0.5rem;
+}
+
+.metadata-badge .duration {
+  opacity: 0.7;
+}
+
 .verdict {
   padding: 0.5rem 1rem;
   border-radius: 6px;

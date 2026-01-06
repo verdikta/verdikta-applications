@@ -1,0 +1,246 @@
+/* ============================================================================
+   Warnings List Styles
+   ============================================================================ */
+
+.warnings-list {
+  margin: 1rem 0;
+  border-radius: 6px;
+  background-color: #fff9e6;
+  border: 1px solid #ffd54f;
+  overflow: hidden;
+}
+
+/* ============================================================================
+   Toggle Button
+   ============================================================================ */
+
+.warnings-toggle {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #b57c00;
+  transition: background-color 0.2s ease;
+}
+
+.warnings-toggle:hover {
+  background-color: rgba(0, 0, 0, 0.03);
+}
+
+.toggle-icon {
+  font-size: 0.75rem;
+  min-width: 12px;
+}
+
+.toggle-text {
+  flex: 1;
+  text-align: left;
+}
+
+.severity-badges {
+  display: flex;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+
+.badge {
+  padding: 0.1875rem 0.5rem;
+  border-radius: 12px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.badge-error {
+  background-color: #ffcdd2;
+  color: #c62828;
+}
+
+.badge-warning {
+  background-color: #ffe0b2;
+  color: #e65100;
+}
+
+.badge-info {
+  background-color: #bbdefb;
+  color: #1565c0;
+}
+
+/* ============================================================================
+   Warnings Content
+   ============================================================================ */
+
+.warnings-content {
+  padding: 1rem;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  animation: slideDown 0.25s ease;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 1000px;
+  }
+}
+
+/* ============================================================================
+   Warning Groups
+   ============================================================================ */
+
+.warning-group {
+  margin-bottom: 1rem;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.warning-group:last-child {
+  margin-bottom: 0;
+}
+
+.severity-info {
+  background-color: #e3f2fd;
+  border: 1px solid #90caf9;
+}
+
+.severity-warning {
+  background-color: #fff3e0;
+  border: 1px solid #ffb74d;
+}
+
+.severity-error {
+  background-color: #ffebee;
+  border: 1px solid #ef5350;
+}
+
+.group-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 0.875rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.severity-info .group-header {
+  background-color: #bbdefb;
+  color: #0d47a1;
+}
+
+.severity-warning .group-header {
+  background-color: #ffe0b2;
+  color: #e65100;
+}
+
+.severity-error .group-header {
+  background-color: #ffcdd2;
+  color: #b71c1c;
+}
+
+.severity-icon {
+  font-size: 1rem;
+}
+
+.severity-label {
+  flex: 1;
+}
+
+.group-count {
+  opacity: 0.7;
+  font-size: 0.75rem;
+}
+
+/* ============================================================================
+   Warning Items
+   ============================================================================ */
+
+.warning-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.warning-item {
+  padding: 0.75rem 0.875rem;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.warning-item:first-child {
+  border-top: none;
+}
+
+.warning-message {
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: #333;
+  margin-bottom: 0.25rem;
+}
+
+.warning-model {
+  font-size: 0.75rem;
+  color: #666;
+  font-family: 'Courier New', monospace;
+}
+
+/* ============================================================================
+   Warning Details (Expandable)
+   ============================================================================ */
+
+.warning-details {
+  margin-top: 0.5rem;
+  cursor: pointer;
+}
+
+.warning-details summary {
+  font-size: 0.75rem;
+  color: #1976d2;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  padding: 0.25rem 0;
+}
+
+.warning-details summary:hover {
+  color: #1565c0;
+  text-decoration: underline;
+}
+
+.warning-details pre {
+  margin: 0.5rem 0 0 0;
+  padding: 0.625rem;
+  background-color: #f5f5f5;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+/* ============================================================================
+   Responsive Design
+   ============================================================================ */
+
+@media (max-width: 480px) {
+  .severity-badges {
+    width: 100%;
+    justify-content: flex-start;
+    margin-top: 0.375rem;
+  }
+
+  .warnings-toggle {
+    flex-wrap: wrap;
+  }
+}
+

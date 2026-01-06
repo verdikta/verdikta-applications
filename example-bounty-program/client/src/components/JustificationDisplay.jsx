@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import ModelStatusGrid from './ModelStatusGrid';
+import WarningsList from './WarningsList';
 import './JustificationDisplay.css';
 
 /**
@@ -24,6 +26,11 @@ function JustificationDisplay({ justificationCids, passed, score, threshold, jur
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [hasLoaded, setHasLoaded] = useState(false);
+  
+  // Enhanced error reporting data
+  const [metadata, setMetadata] = useState([]);
+  const [modelResults, setModelResults] = useState([]);
+  const [warnings, setWarnings] = useState([]);
 
   // Normalize justificationCids to always be an array
   // The blockchain stores justificationCids as a comma-separated string, not an array
@@ -90,19 +97,44 @@ function JustificationDisplay({ justificationCids, passed, score, threshold, jur
               // Try to parse as JSON first (new format)
               try {
                 const data = JSON.parse(text);
-                return data.justification || JSON.stringify(data, null, 2);
+                
+                // Return an object with both justification text and enhanced data
+                return {
+                  text: data.justification || JSON.stringify(data, null, 2),
+                  metadata: data.metadata || null,
+                  modelResults: data.model_results || null,
+                  warnings: data.warnings || null,
+                  error: data.error || null
+                };
               } catch {
-                // Return as plain text if not JSON
-                return text;
+                // Return as plain text if not JSON (backward compatibility)
+                return {
+                  text: text,
+                  metadata: null,
+                  modelResults: null,
+                  warnings: null,
+                  error: null
+                };
               }
             } catch (err) {
               console.error(`[JustificationDisplay] Error fetching CID ${cid}:`, err);
-              return `Error loading justification: ${err.message}`;
+              return {
+                text: `Error loading justification: ${err.message}`,
+                metadata: null,
+                modelResults: null,
+                warnings: null,
+                error: err.message
+              };
             }
           })
         );
 
-        setJustifications(results.filter(Boolean));
+        // Separate text and enhanced data
+        const validResults = results.filter(Boolean);
+        setJustifications(validResults.map(r => typeof r === 'string' ? r : r.text));
+        setMetadata(validResults.map(r => typeof r === 'object' ? r.metadata : null));
+        setModelResults(validResults.map(r => typeof r === 'object' ? r.modelResults : null));
+        setWarnings(validResults.map(r => typeof r === 'object' ? r.warnings : null));
         setHasLoaded(true);
       } catch (err) {
         console.error('[JustificationDisplay] Error loading justifications:', err);
@@ -124,14 +156,25 @@ function JustificationDisplay({ justificationCids, passed, score, threshold, jur
   const currentJustification = justifications[currentPage] || '';
   const hasMultiple = normalizedCids.length > 1;
   
+  // Get enhanced data for current page
+  const currentMetadata = metadata[currentPage] || null;
+  const currentModelResults = modelResults[currentPage] || null;
+  const currentWarnings = warnings[currentPage] || null;
+  
   // Calculate the actual number of AI models from jury configuration
+  // Prefer metadata if available (more accurate), fall back to jury config
   const totalAIModels = (() => {
+    // Use metadata if available (from enhanced reporting)
+    if (currentMetadata?.models_requested) {
+      return currentMetadata.models_requested;
+    }
+    
+    // Fall back to jury configuration
     if (!juryNodes || !Array.isArray(juryNodes) || juryNodes.length === 0) {
       return null; // Unknown
     }
     
     // Sum up the runs (NO_COUNTS) for each node to get total model invocations
-    // Or just count unique models if you want unique model count
     return juryNodes.reduce((total, node) => {
       // Each node can have multiple runs, count each run as a separate model evaluation
       return total + (node.runs || node.NO_COUNTS || 1);
@@ -167,6 +210,15 @@ function JustificationDisplay({ justificationCids, passed, score, threshold, jur
               <div className="threshold-label">
                 (Threshold: {threshold}%)
               </div>
+              {/* Model success rate badge */}
+              {currentMetadata && (
+                <div className="metadata-badge">
+                  {currentMetadata.models_successful}/{currentMetadata.models_requested} models
+                  {currentMetadata.total_duration_ms && (
+                    <span className="duration"> • {(currentMetadata.total_duration_ms / 1000).toFixed(1)}s</span>
+                  )}
+                </div>
+              )}
             </div>
             <div className={`verdict ${passed ? 'passed' : 'failed'}`}>
               {passed ? '✅ PASSED' : '⚠️ DID NOT MEET THRESHOLD'}
@@ -208,6 +260,16 @@ function JustificationDisplay({ justificationCids, passed, score, threshold, jur
               {normalizedCids[currentPage]}
             </a>
           </div>
+
+          {/* Model Status Grid - Show before justification text */}
+          {currentModelResults && currentModelResults.length > 0 && (
+            <ModelStatusGrid modelResults={currentModelResults} />
+          )}
+
+          {/* Warnings - Show before justification text */}
+          {currentWarnings && currentWarnings.length > 0 && (
+            <WarningsList warnings={currentWarnings} />
+          )}
 
           {/* Justification Text */}
           <div className="justification-body">

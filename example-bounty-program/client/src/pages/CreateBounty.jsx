@@ -142,7 +142,7 @@ function CreateBounty({ walletState }) {
       setIsLoadingModels(true);
       setModelError(null);
       try {
-        const { providerModels, classInfo, isEmpty } =
+        const { providerModels, classInfo, isEmpty, isCustom } =
           await modelProviderService.getProviderModels(selectedClassId);
 
         setClassInfo(classInfo);
@@ -152,6 +152,15 @@ function CreateBounty({ walletState }) {
         const hasModels = !isEmpty && Object.keys(providerModels).length > 0;
         if (hasModels) {
           setAvailableModels(providerModels);
+        }
+
+        // For custom classes, preserve the existing jury configuration
+        // The assumption is that models from the previously selected standard class
+        // are supported by the custom class
+        if (isCustom) {
+          console.log(`[CreateBounty] Using custom class ${selectedClassId} - preserving existing jury configuration`);
+          // Don't update jury nodes - keep the configuration from the previous standard class
+          return;
         }
 
         // If we have jury nodes, update them with models from the new class
@@ -171,7 +180,7 @@ function CreateBounty({ walletState }) {
             };
           });
           setJuryNodes(updatedNodes);
-          console.log('Updated jury nodes with models from new class');
+          console.log('[CreateBounty] Updated jury nodes with models from new class');
         } 
         // Initialize with one jury node if we have models and no nodes exist yet
         else if (hasModels && juryNodes.length === 0) {
@@ -186,9 +195,10 @@ function CreateBounty({ walletState }) {
               id: Date.now(),
             },
           ]);
+          console.log('[CreateBounty] Initialized first jury node');
         }
       } catch (err) {
-        console.error('Error loading models:', err);
+        console.error('[CreateBounty] Error loading models:', err);
         setModelError(err.message);
       } finally {
         setIsLoadingModels(false);

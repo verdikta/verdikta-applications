@@ -88,15 +88,16 @@ export class ClassMapService {
 
       if (!data.success) {
         // Handle specific error cases
-        if (data.status === 'EMPTY') {
+        if (data.status === 'EMPTY' || response.status === 404 || data.error?.toLowerCase().includes('not found')) {
+          // Custom class IDs (not in the class map) are expected - don't treat as an error
           return {
             classId,
-            className: `Class ${classId}`,
-            status: 'EMPTY',
+            className: `Custom Class ${classId}`,
+            status: 'CUSTOM',
             models: [],
             modelsByProvider: {},
             limits: null,
-            error: data.error
+            error: null // Not an error - just a custom/unlisted class
           };
         }
         throw new Error(data.error || `Failed to fetch models for class ${classId}`);
@@ -105,7 +106,11 @@ export class ClassMapService {
       this._setCache(cacheKey, data);
       return data;
     } catch (error) {
-      console.error(`Error fetching models for class ${classId}:`, error);
+      // Only log errors for actual failures, not custom class lookups
+      if (!error.message?.toLowerCase().includes('not found') && error.name !== 'TypeError') {
+        console.error(`Error fetching models for class ${classId}:`, error);
+      }
+      // Re-throw for proper error handling upstream
       throw error;
     }
   }

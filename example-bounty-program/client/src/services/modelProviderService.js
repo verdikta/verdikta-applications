@@ -48,7 +48,9 @@ export class ModelProviderService {
         modelData = await classMapService.getAvailableModels(classId);
       }
       
-      if (modelData.error || (modelData.status !== 'ACTIVE' && modelData.status !== 'OVERRIDE')) {
+      // Accept ACTIVE, OVERRIDE, and CUSTOM statuses
+      // CUSTOM means a custom class ID not in the class map - this is expected behavior
+      if (modelData.error || (modelData.status !== 'ACTIVE' && modelData.status !== 'OVERRIDE' && modelData.status !== 'CUSTOM')) {
         return {
           providerModels: {},
           classInfo: {
@@ -57,7 +59,23 @@ export class ModelProviderService {
             status: modelData.status || 'UNKNOWN',
             error: modelData.error
           },
-          isEmpty: true
+          isEmpty: true,
+          isCustom: modelData.status === 'CUSTOM'
+        };
+      }
+      
+      // For custom classes with no models, return empty but valid response
+      if (modelData.status === 'CUSTOM') {
+        return {
+          providerModels: {},
+          classInfo: {
+            id: classId,
+            name: modelData.className || `Custom Class ${classId}`,
+            status: 'CUSTOM',
+            limits: null
+          },
+          isEmpty: true,
+          isCustom: true
         };
       }
 
@@ -81,7 +99,10 @@ export class ModelProviderService {
         isEmpty: false
       };
     } catch (error) {
-      console.error(`Error getting provider models for class ${classId}:`, error);
+      // Don't log errors for custom class lookups
+      if (!error.message?.includes?.('not found')) {
+        console.error(`Error getting provider models for class ${classId}:`, error);
+      }
       return {
         providerModels: {},
         classInfo: {
@@ -90,7 +111,8 @@ export class ModelProviderService {
           status: 'ERROR',
           error: error.message
         },
-        isEmpty: true
+        isEmpty: true,
+        isCustom: false
       };
     }
   }

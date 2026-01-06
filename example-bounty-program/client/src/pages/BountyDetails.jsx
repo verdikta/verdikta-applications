@@ -1665,6 +1665,7 @@ function BountyDetails({ walletState }) {
                 getSubmissionAge={getSubmissionAge}
                 timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
                 threshold={job?.threshold ?? 80}
+                juryNodes={job?.juryNodes}
               />
             ))}
           </div>
@@ -2121,7 +2122,8 @@ function SubmissionCard({
   disableActions,
   getSubmissionAge,
   timeoutMinutes,
-  threshold
+  threshold,
+  juryNodes
 }) {
   const isPending = isPendingStatus(submission.status);
   const isOnChain = isSubmissionOnChain(submission.status);
@@ -2409,18 +2411,13 @@ function SubmissionCard({
         );
         
         if (hasValidCids) {
-          console.log('[SubmissionCard] Rendering justification for finalized submission:', {
-            submissionId: submission.submissionId,
-            justificationCids: submission.justificationCids,
-            isArray: Array.isArray(submission.justificationCids)
-          });
-          
           return (
             <JustificationDisplay
               justificationCids={submission.justificationCids}
               passed={isApproved}
               score={submission.score ?? submission.acceptance}
               threshold={threshold}
+              juryNodes={juryNodes}
             />
           );
         }
@@ -2437,18 +2434,13 @@ function SubmissionCard({
         );
         
         if (hasValidCids) {
-          console.log('[SubmissionCard] Rendering justification for pending evaluation:', {
-            submissionId: submission.submissionId,
-            justificationCids: evaluationResult.justificationCids,
-            isArray: Array.isArray(evaluationResult.justificationCids)
-          });
-          
           return (
             <JustificationDisplay
               justificationCids={evaluationResult.justificationCids}
               passed={evaluationResult.scores.acceptance >= threshold}
               score={evaluationResult.scores.acceptance}
               threshold={threshold}
+              juryNodes={juryNodes}
             />
           );
         }

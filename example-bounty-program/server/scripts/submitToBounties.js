@@ -121,6 +121,31 @@ async function fetchBountyDetails(jobId) {
   return data.job;
 }
 
+/**
+ * Check if a bounty is still winnable (no passing submissions yet)
+ */
+function isBountyWinnable(bounty) {
+  if (!bounty.submissions || bounty.submissions.length === 0) {
+    return true; // No submissions = winnable
+  }
+
+  // Check if any submission has already passed
+  const passingStatuses = ['PassedPaid', 'PassedUnpaid', 'APPROVED', 'ACCEPTED'];
+  const hasPassing = bounty.submissions.some(s => passingStatuses.includes(s.status));
+
+  if (hasPassing) {
+    return false; // Someone already won
+  }
+
+  // Also skip if there's a pending evaluation that might pass
+  const pendingStatuses = ['PendingVerdikta', 'PENDING_EVALUATION', 'Pending'];
+  const hasPending = bounty.submissions.some(s => pendingStatuses.includes(s.status));
+
+  // If there are pending evaluations, we might still want to submit
+  // but log a warning - for now, allow submission
+  return true;
+}
+
 async function fetchFromIPFS(cid) {
   const gateways = [
     process.env.PINATA_GATEWAY || 'https://gateway.pinata.cloud',
@@ -422,16 +447,42 @@ async function main() {
   // Process bounties
   let submitted = 0;
   let failed = 0;
+  let skipped = 0;
+  let bountyIndex = 0;
 
-  for (let i = 0; i < Math.min(options.count, targetBounties.length); i++) {
+  for (let i = 0; i < targetBounties.length && submitted < options.count; i++) {
     const bounty = targetBounties[i];
-    console.log(`\n[${i + 1}/${options.count}] Processing: ${bounty.title}`);
+    bountyIndex++;
+    console.log(`\n[${bountyIndex}] Checking: ${bounty.title}`);
     console.log(`  Job ID: ${bounty.jobId}, On-chain ID: ${bounty.onChainId}`);
 
     try {
       // Fetch full bounty details including rubric
       console.log('  Fetching bounty details...');
       const details = await fetchBountyDetails(bounty.jobId);
+
+      // Check if bounty is still winnable
+      if (!isBountyWinnable(details)) {
+        const passingSubmission = details.submissions?.find(s =>
+          ['PassedPaid', 'PassedUnpaid', 'APPROVED', 'ACCEPTED'].includes(s.status)
+        );
+        console.log(`  ⏭️  Skipping - already has a passing submission`);
+        if (passingSubmission) {
+          console.log(`     Winner: ${passingSubmission.hunter?.slice(0, 10)}... (Score: ${passingSubmission.acceptance || passingSubmission.score || 'N/A'}%)`);
+        }
+        skipped++;
+        continue;
+      }
+
+      // Check for pending evaluations (warn but continue)
+      const pendingCount = details.submissions?.filter(s =>
+        ['PendingVerdikta', 'PENDING_EVALUATION', 'Pending'].includes(s.status)
+      ).length || 0;
+      if (pendingCount > 0) {
+        console.log(`  ⚠️  Warning: ${pendingCount} pending evaluation(s) in progress`);
+      }
+
+      console.log(`  ✓ Bounty is winnable, proceeding with submission...`);
 
       // Get rubric if available
       let rubric = details.rubricContent;
@@ -510,6 +561,7 @@ async function main() {
   console.log('SUMMARY');
   console.log('============================================================');
   console.log(`Submitted: ${submitted}`);
+  console.log(`Skipped:   ${skipped} (already have winners)`);
   console.log(`Failed:    ${failed}`);
 
   if (!options.dryRun && submitted > 0) {

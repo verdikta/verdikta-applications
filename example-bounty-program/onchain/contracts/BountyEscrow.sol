@@ -274,6 +274,7 @@ contract BountyEscrow {
     /// @notice STEP 2: After hunter has approved LINK to the EvaluationWallet,
     ///         start the Verdikta evaluation (pulls LINK into wallet, approves Verdikta, starts).
     /// @dev Can be called after deadline as long as submission was prepared before deadline
+    /// @dev Reverts if any existing submission has already passed evaluation (first-to-pass wins)
     function startPreparedSubmission(uint256 bountyId, uint256 submissionId) external {
         Bounty storage b = _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);
@@ -281,6 +282,10 @@ contract BountyEscrow {
         require(s.status == SubmissionStatus.Prepared, "not prepared");
         require(msg.sender == s.hunter, "only hunter");
         require(s.submittedAt < b.submissionDeadline, "submitted too late");
+
+        // Check if any existing submission has already passed on Verdikta
+        // This prevents wasting LINK when someone else already won
+        _requireNoPassingSubmission(bountyId, b.threshold);
 
         EvaluationWallet wallet = EvaluationWallet(s.evalWallet);
 
@@ -351,18 +356,27 @@ contract BountyEscrow {
         // Passed evaluation
         emit SubmissionFinalized(bountyId, submissionId, true, acceptance, rejection, justCids);
 
-        // Pay if bounty is still Open (first winner takes all)
+        // Pay if bounty is still Open AND no other submission already passed
+        // This ensures "first to complete evaluation wins" not "first to finalize wins"
         if (b.status == BountyStatus.Open) {
-            uint256 pay = b.payoutWei;
-            b.payoutWei = 0;
-            b.status = BountyStatus.Awarded;
-            b.winner = s.hunter;
+            // Check if another submission already passed (on Verdikta, even if not finalized)
+            bool anotherAlreadyPassed = _hasOtherPassingSubmission(bountyId, submissionId, b.threshold);
 
-            (bool okPay,) = payable(s.hunter).call{value: pay}("");
-            require(okPay, "eth payout failed");
-            s.status = SubmissionStatus.PassedPaid;
+            if (!anotherAlreadyPassed) {
+                uint256 pay = b.payoutWei;
+                b.payoutWei = 0;
+                b.status = BountyStatus.Awarded;
+                b.winner = s.hunter;
 
-            emit PayoutSent(bountyId, s.hunter, pay);
+                (bool okPay,) = payable(s.hunter).call{value: pay}("");
+                require(okPay, "eth payout failed");
+                s.status = SubmissionStatus.PassedPaid;
+
+                emit PayoutSent(bountyId, s.hunter, pay);
+            } else {
+                // Another submission completed first with passing score
+                s.status = SubmissionStatus.PassedUnpaid;
+            }
         } else {
             // Bounty already awarded or closed
             s.status = SubmissionStatus.PassedUnpaid;
@@ -467,6 +481,75 @@ contract BountyEscrow {
     }
 
     // ------------- Internals -------------
+
+    /// @dev Check that no existing submission has already passed evaluation on Verdikta
+    /// @dev This queries Verdikta directly since scores aren't stored until finalization
+    function _requireNoPassingSubmission(uint256 bountyId, uint256 threshold) internal view {
+        uint256 subCount = subs[bountyId].length;
+
+        for (uint256 i = 0; i < subCount; i++) {
+            Submission storage existing = subs[bountyId][i];
+
+            // Skip non-pending submissions (already finalized or just prepared)
+            if (existing.status != SubmissionStatus.PendingVerdikta) {
+                continue;
+            }
+
+            // Query Verdikta for this submission's evaluation result
+            (uint256[] memory scores, , bool ok) = verdikta.getEvaluation(existing.verdiktaAggId);
+
+            // If evaluation is complete, check if it passed
+            if (ok && scores.length == 2) {
+                uint256 acceptance = scores[1] / 10000; // Normalize to 0-100
+                if (acceptance > 100) acceptance = 100;
+
+                if (acceptance >= threshold) {
+                    revert("another submission already passed - finalize it first");
+                }
+            }
+        }
+    }
+
+    /// @dev Check if any OTHER submission (not the current one) has already passed on Verdikta
+    /// @dev Used at finalization to ensure "first to complete evaluation wins"
+    function _hasOtherPassingSubmission(
+        uint256 bountyId,
+        uint256 currentSubmissionId,
+        uint256 threshold
+    ) internal view returns (bool) {
+        uint256 subCount = subs[bountyId].length;
+
+        for (uint256 i = 0; i < subCount; i++) {
+            // Skip the current submission we're finalizing
+            if (i == currentSubmissionId) {
+                continue;
+            }
+
+            Submission storage other = subs[bountyId][i];
+
+            // Check if already finalized as passed
+            if (other.status == SubmissionStatus.PassedPaid ||
+                other.status == SubmissionStatus.PassedUnpaid) {
+                return true;
+            }
+
+            // Check if pending but already completed with passing score on Verdikta
+            if (other.status == SubmissionStatus.PendingVerdikta) {
+                (uint256[] memory scores, , bool ok) = verdikta.getEvaluation(other.verdiktaAggId);
+
+                if (ok && scores.length == 2) {
+                    uint256 acceptance = scores[1] / 10000; // Normalize to 0-100
+                    if (acceptance > 100) acceptance = 100;
+
+                    if (acceptance >= threshold) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
 
     function _refundLeftoverLink(uint256 bountyId, uint256 submissionId) private {
         Submission storage s = subs[bountyId][submissionId];

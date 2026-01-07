@@ -307,8 +307,20 @@ const LINK_ABI = [
 const BOUNTY_ESCROW_ABI = [
   'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)',
   'function startPreparedSubmission(uint256 bountyId, uint256 submissionId)',
+  'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint256 reward, uint256 threshold, uint8 status, uint256 submissionCloseTime, uint256 submissionCount, address winner))',
+  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))',
   'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)',
 ];
+
+// On-chain submission status codes
+const ON_CHAIN_STATUS = {
+  0: 'None',
+  1: 'Prepared',
+  2: 'PendingVerdikta',
+  3: 'Failed',
+  4: 'PassedUnpaid',
+  5: 'PassedPaid',
+};
 
 async function getWallet() {
   if (!CONFIG.privateKey) {
@@ -316,6 +328,47 @@ async function getWallet() {
   }
   const provider = new ethers.JsonRpcProvider(CONFIG.rpcUrl);
   return new ethers.Wallet(CONFIG.privateKey, provider);
+}
+
+/**
+ * Check on-chain if any submission has already passed (status 4 or 5)
+ * Returns { hasWinner, winnerInfo } where winnerInfo contains details if found
+ */
+async function checkOnChainWinner(provider, onChainBountyId) {
+  const contract = new ethers.Contract(CONFIG.contractAddress, BOUNTY_ESCROW_ABI, provider);
+
+  try {
+    const bounty = await contract.getBounty(onChainBountyId);
+    const submissionCount = Number(bounty.submissionCount);
+
+    if (submissionCount === 0) {
+      return { hasWinner: false };
+    }
+
+    // Check each submission for passing status
+    for (let i = 0; i < submissionCount; i++) {
+      const sub = await contract.getSubmission(onChainBountyId, i);
+      const status = Number(sub.status);
+
+      // Status 4 = PassedUnpaid, 5 = PassedPaid
+      if (status === 4 || status === 5) {
+        return {
+          hasWinner: true,
+          winnerInfo: {
+            submissionId: i,
+            hunter: sub.hunter,
+            status: ON_CHAIN_STATUS[status],
+            acceptance: Number(sub.acceptance) / 100, // Convert from basis points if needed
+          }
+        };
+      }
+    }
+
+    return { hasWinner: false, submissionCount };
+  } catch (error) {
+    console.log(`  Warning: Could not check on-chain status: ${error.message}`);
+    return { hasWinner: false, error: error.message };
+  }
 }
 
 async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid) {
@@ -457,16 +510,27 @@ async function main() {
     console.log(`  Job ID: ${bounty.jobId}, On-chain ID: ${bounty.onChainId}`);
 
     try {
+      // First, check on-chain status directly (most reliable)
+      console.log('  Checking on-chain status...');
+      const onChainCheck = await checkOnChainWinner(wallet.provider, bounty.onChainId);
+
+      if (onChainCheck.hasWinner) {
+        console.log(`  ⏭️  Skipping - already has a winner ON-CHAIN`);
+        console.log(`     Winner: ${onChainCheck.winnerInfo.hunter?.slice(0, 10)}... (Status: ${onChainCheck.winnerInfo.status}, Score: ${onChainCheck.winnerInfo.acceptance}%)`);
+        skipped++;
+        continue;
+      }
+
       // Fetch full bounty details including rubric
       console.log('  Fetching bounty details...');
       const details = await fetchBountyDetails(bounty.jobId);
 
-      // Check if bounty is still winnable
+      // Double-check with backend data (in case on-chain check failed)
       if (!isBountyWinnable(details)) {
         const passingSubmission = details.submissions?.find(s =>
           ['PassedPaid', 'PassedUnpaid', 'APPROVED', 'ACCEPTED'].includes(s.status)
         );
-        console.log(`  ⏭️  Skipping - already has a passing submission`);
+        console.log(`  ⏭️  Skipping - already has a passing submission (backend)`);
         if (passingSubmission) {
           console.log(`     Winner: ${passingSubmission.hunter?.slice(0, 10)}... (Score: ${passingSubmission.acceptance || passingSubmission.score || 'N/A'}%)`);
         }
@@ -474,12 +538,9 @@ async function main() {
         continue;
       }
 
-      // Check for pending evaluations (warn but continue)
-      const pendingCount = details.submissions?.filter(s =>
-        ['PendingVerdikta', 'PENDING_EVALUATION', 'Pending'].includes(s.status)
-      ).length || 0;
-      if (pendingCount > 0) {
-        console.log(`  ⚠️  Warning: ${pendingCount} pending evaluation(s) in progress`);
+      // Log submission count from on-chain
+      if (onChainCheck.submissionCount > 0) {
+        console.log(`  ℹ️  ${onChainCheck.submissionCount} existing submission(s) on-chain (none passed yet)`);
       }
 
       console.log(`  ✓ Bounty is winnable, proceeding with submission...`);

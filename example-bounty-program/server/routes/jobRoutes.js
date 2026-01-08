@@ -671,7 +671,7 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
     if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
 
-    job.onChainId   = bountyId;  // ← Changed from job.bountyId
+    job.onChainId   = Number(bountyId);  // Ensure it's a number, not string
     job.txHash      = txHash;
     job.blockNumber = blockNumber;
     job.onChain     = true;

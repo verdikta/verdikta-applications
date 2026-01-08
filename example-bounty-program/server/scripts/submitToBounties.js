@@ -72,6 +72,22 @@ const CONFIG = {
  * @param {string} options.label - Label for logging (default: 'operation')
  * @returns {Promise<any>} - Result of the function
  */
+// Errors that should not be retried (definitive failures, not transient)
+const NON_RETRYABLE_ERRORS = [
+  'another submission already passed',
+  'bounty not open',
+  'deadline passed',
+  'not prepared',
+  'only hunter',
+];
+
+function isRetryableError(error) {
+  const msg = (error.message || '').toLowerCase();
+  const reason = (error.reason || '').toLowerCase();
+  const combined = msg + ' ' + reason;
+  return !NON_RETRYABLE_ERRORS.some(pattern => combined.includes(pattern));
+}
+
 async function withRetry(fn, { maxRetries = 3, baseDelayMs = 2000, label = 'operation' } = {}) {
   let lastError;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -79,6 +95,12 @@ async function withRetry(fn, { maxRetries = 3, baseDelayMs = 2000, label = 'oper
       return await fn();
     } catch (error) {
       lastError = error;
+
+      // Don't retry on definitive failures
+      if (!isRetryableError(error)) {
+        throw error;
+      }
+
       if (attempt < maxRetries) {
         const delay = baseDelayMs * Math.pow(2, attempt - 1);
         console.log(`    ⚠ ${label} failed (attempt ${attempt}/${maxRetries}): ${error.message}`);
@@ -167,8 +189,11 @@ function isBountyWinnable(bounty) {
   const threshold = bounty.threshold || 80;
 
   // Check if any submission has already passed (finalized)
+  // Check both backend status and on-chain status
   const passingStatuses = ['PassedPaid', 'PassedUnpaid', 'APPROVED', 'ACCEPTED'];
-  const passedSubmission = bounty.submissions.find(s => passingStatuses.includes(s.status));
+  const passedSubmission = bounty.submissions.find(s =>
+    passingStatuses.includes(s.status) || passingStatuses.includes(s.onChainStatus)
+  );
 
   if (passedSubmission) {
     return { winnable: false, reason: 'finalized winner', submission: passedSubmission };
@@ -184,14 +209,10 @@ function isBountyWinnable(bounty) {
     return { winnable: false, reason: 'passing score (not finalized)', submission: passingScoreSubmission };
   }
 
-  // Check for pending evaluations - these might have winning scores waiting to be claimed
-  // Verdikta results aren't in BountyEscrow until finalizeSubmission is called
-  const pendingStatuses = ['PendingVerdikta', 'PENDING_EVALUATION', 'Pending'];
-  const pendingSubmission = bounty.submissions.find(s => pendingStatuses.includes(s.status));
-
-  if (pendingSubmission) {
-    return { winnable: false, reason: 'pending evaluation (may have unclaimed winning score)', submission: pendingSubmission };
-  }
+  // Note: We allow submissions even when there are pending evaluations.
+  // The on-chain contract's _requireNoPassingSubmission check will query Verdikta
+  // directly and revert if another submission has already passed.
+  // This lets multiple hunters race fairly - only the first to pass wins.
 
   return { winnable: true };
 }
@@ -347,6 +368,11 @@ async function submitWork(jobId, content, hunter, dryRun) {
 // =============================================================================
 
 const LINK_ADDRESS = '0xE4aB69C077896252FAFBD49EFD26B5D171A32410'; // Base Sepolia LINK
+const VERDIKTA_ADDRESS = '0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089'; // Base Sepolia Verdikta
+
+const VERDIKTA_ABI = [
+  'function getEvaluation(bytes32 requestId) view returns (uint256[] likelihoods, string justificationCID, bool exists)',
+];
 
 const LINK_ABI = [
   'function approve(address spender, uint256 amount) returns (bool)',
@@ -382,10 +408,12 @@ async function getWallet() {
 
 /**
  * Check on-chain if any submission has already passed (status 4 or 5)
+ * Also checks Verdikta for pending submissions that have passing scores
  * Returns { hasWinner, winnerInfo } where winnerInfo contains details if found
  */
-async function checkOnChainWinner(provider, onChainBountyId) {
+async function checkOnChainWinner(provider, onChainBountyId, threshold) {
   const contract = new ethers.Contract(CONFIG.contractAddress, BOUNTY_ESCROW_ABI, provider);
+  const verdikta = new ethers.Contract(VERDIKTA_ADDRESS, VERDIKTA_ABI, provider);
 
   // Helper to add timeout to promises
   const withTimeout = (promise, ms, label) => {
@@ -421,17 +449,46 @@ async function checkOnChainWinner(provider, onChainBountyId) {
         const status = Number(sub.status);
         checkedCount++;
 
-        // Status 4 = PassedUnpaid, 5 = PassedPaid
-        if (status === 4 || status === 5) {
+        // Status 3 = PassedPaid, 4 = PassedUnpaid (check both naming conventions)
+        if (status === 3 || status === 4) {
           return {
             hasWinner: true,
             winnerInfo: {
               submissionId: i,
               hunter: sub.hunter,
-              status: ON_CHAIN_STATUS[status],
-              acceptance: Number(sub.acceptance) / 100, // Convert from basis points if needed
+              status: ON_CHAIN_STATUS[status] || `Status ${status}`,
+              acceptance: Number(sub.acceptance),
             }
           };
+        }
+
+        // Status 1 = PendingVerdikta - check if Verdikta already has a passing score
+        if (status === 1 && sub.verdiktaAggId && sub.verdiktaAggId !== '0x0000000000000000000000000000000000000000000000000000000000000000') {
+          try {
+            const [scores, , exists] = await withTimeout(
+              verdikta.getEvaluation(sub.verdiktaAggId),
+              10000,
+              `getEvaluation(${i})`
+            );
+
+            if (exists && scores && scores.length >= 2) {
+              // scores[1] is the acceptance score, normalize from 0-1000000 to 0-100
+              const acceptance = Number(scores[1]) / 10000;
+              if (acceptance >= threshold) {
+                return {
+                  hasWinner: true,
+                  winnerInfo: {
+                    submissionId: i,
+                    hunter: sub.hunter,
+                    status: 'PendingVerdikta (passed, awaiting finalization)',
+                    acceptance: acceptance,
+                  }
+                };
+              }
+            }
+          } catch (verdiktaError) {
+            // Verdikta query failed, continue checking other submissions
+          }
         }
       } catch (subError) {
         // Submission might have been cancelled, doesn't exist, or timed out
@@ -605,6 +662,17 @@ async function main() {
         if (sub) {
           console.log(`     Submission #${sub.submissionId}: ${sub.hunter?.slice(0, 10)}... (Score: ${score ?? 'N/A'}%, Status: ${sub.status})`);
         }
+        skipped++;
+        continue;
+      }
+
+      // Double-check on-chain status (backend might be out of sync with Verdikta)
+      console.log('  Checking on-chain status...');
+      const onChainCheck = await checkOnChainWinner(wallet.provider, bounty.onChainId, details.threshold || 70);
+      if (onChainCheck.hasWinner) {
+        const info = onChainCheck.winnerInfo;
+        console.log(`  ⏭️  Skipping - on-chain winner detected`);
+        console.log(`     Submission #${info.submissionId}: ${info.hunter?.slice(0, 10)}... (Score: ${info.acceptance}%, Status: ${info.status})`);
         skipped++;
         continue;
       }

@@ -390,13 +390,13 @@ const BOUNTY_ESCROW_ABI = [
 ];
 
 // On-chain submission status codes
+// Must match the SubmissionStatus enum in BountyEscrow.sol
 const ON_CHAIN_STATUS = {
-  0: 'None',
-  1: 'Prepared',
-  2: 'PendingVerdikta',
-  3: 'Failed',
+  0: 'Prepared',
+  1: 'PendingVerdikta',
+  2: 'Failed',
+  3: 'PassedPaid',
   4: 'PassedUnpaid',
-  5: 'PassedPaid',
 };
 
 async function getWallet() {
@@ -516,7 +516,7 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
   const linkBalance = await linkToken.balanceOf(wallet.address);
   console.log(`    LINK balance: ${ethers.formatEther(linkBalance)} LINK`);
 
-  // Step 1: Prepare submission on-chain
+  // Step 1: Prepare submission on-chain (only do this ONCE, not on retry)
   console.log('    Preparing submission on-chain...');
   const prepareTx = await contract.prepareSubmission(
     bountyId,
@@ -563,14 +563,43 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
   // Step 2: Approve LINK tokens to the EvaluationWallet
   console.log('    Approving LINK tokens...');
   const approveTx = await linkToken.approve(evalWallet, linkMaxBudget);
-  await approveTx.wait();
+  const approveReceipt = await approveTx.wait();
   console.log(`    Approval tx: ${approveTx.hash}`);
 
-  // Step 3: Start the prepared submission (triggers Verdikta evaluation)
+  // Wait a moment for the approval to be indexed by the RPC
+  await new Promise(resolve => setTimeout(resolve, 2000));
+
+  // Verify allowance before proceeding
+  const allowance = await linkToken.allowance(wallet.address, evalWallet);
+  if (allowance < linkMaxBudget) {
+    throw new Error(`Allowance not set correctly. Expected ${ethers.formatEther(linkMaxBudget)}, got ${ethers.formatEther(allowance)}`);
+  }
+
+  // Step 3: Start the prepared submission with retry logic for transient failures
   console.log('    Starting evaluation...');
-  const startTx = await contract.startPreparedSubmission(bountyId, submissionId);
-  const startReceipt = await startTx.wait();
-  console.log(`    Start tx: ${startReceipt.hash}`);
+  let startReceipt;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const startTx = await contract.startPreparedSubmission(bountyId, submissionId);
+      startReceipt = await startTx.wait();
+      console.log(`    Start tx: ${startReceipt.hash}`);
+      break;
+    } catch (error) {
+      // Check for non-retryable errors
+      const msg = (error.message || '').toLowerCase();
+      const reason = (error.reason || '').toLowerCase();
+      if (msg.includes('another submission already passed') || reason.includes('another submission already passed')) {
+        throw error; // Don't retry
+      }
+      if (attempt < 3) {
+        console.log(`    ⚠ Start failed (attempt ${attempt}/3): ${error.reason || error.message}`);
+        console.log(`    Waiting 3s before retry...`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      } else {
+        throw error;
+      }
+    }
+  }
 
   return {
     submissionId: submissionId.toString(),
@@ -715,10 +744,9 @@ async function main() {
             throw new Error('No evaluation CID found for this bounty');
           }
 
-          const chainResult = await withRetry(
-            () => startSubmissionOnChain(wallet, bounty.onChainId, evaluationCid, hunterCid),
-            { maxRetries: 3, baseDelayMs: 3000, label: 'On-chain submission' }
-          );
+          // Call directly - startSubmissionOnChain has internal retry logic for startPreparedSubmission
+          // Do NOT wrap in withRetry, as that would re-run prepareSubmission creating orphans
+          const chainResult = await startSubmissionOnChain(wallet, bounty.onChainId, evaluationCid, hunterCid);
 
           console.log(`  ✅ Evaluation started on-chain!`);
           console.log(`  On-chain submission ID: ${chainResult.submissionId}`);

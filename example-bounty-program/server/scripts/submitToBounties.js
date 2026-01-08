@@ -60,6 +60,37 @@ const CONFIG = {
 };
 
 // =============================================================================
+// RETRY HELPER
+// =============================================================================
+
+/**
+ * Retry a function with exponential backoff
+ * @param {Function} fn - Async function to retry
+ * @param {Object} options - Retry options
+ * @param {number} options.maxRetries - Maximum number of retries (default: 3)
+ * @param {number} options.baseDelayMs - Base delay in milliseconds (default: 2000)
+ * @param {string} options.label - Label for logging (default: 'operation')
+ * @returns {Promise<any>} - Result of the function
+ */
+async function withRetry(fn, { maxRetries = 3, baseDelayMs = 2000, label = 'operation' } = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxRetries) {
+        const delay = baseDelayMs * Math.pow(2, attempt - 1);
+        console.log(`    ⚠ ${label} failed (attempt ${attempt}/${maxRetries}): ${error.message}`);
+        console.log(`    Retrying in ${delay / 1000}s...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  throw lastError;
+}
+
+// =============================================================================
 // CLI ARGUMENT PARSING
 // =============================================================================
 
@@ -615,11 +646,9 @@ async function main() {
             throw new Error('No evaluation CID found for this bounty');
           }
 
-          const chainResult = await startSubmissionOnChain(
-            wallet,
-            bounty.onChainId,
-            evaluationCid,
-            hunterCid
+          const chainResult = await withRetry(
+            () => startSubmissionOnChain(wallet, bounty.onChainId, evaluationCid, hunterCid),
+            { maxRetries: 3, baseDelayMs: 3000, label: 'On-chain submission' }
           );
 
           console.log(`  ✅ Evaluation started on-chain!`);

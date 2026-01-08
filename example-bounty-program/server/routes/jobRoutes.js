@@ -941,7 +941,21 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
     // The contract stores acceptance/rejection as 0-100, NOT 0-1000000
     const acceptScore = Number(sub.acceptance);
     const rejectScore = Number(sub.rejection);
-    
+
+    // Detect timeout vs actual evaluation failure
+    // Timeout signature: REJECTED status with zero scores and empty justificationCids
+    // This happens when Verdikta oracles don't respond (insufficient commits)
+    let failureReason = null;
+    if (statusIndex === 2) { // Failed/REJECTED
+      const hasZeroScores = acceptScore === 0 && rejectScore === 0;
+      const hasNoJustification = !sub.justificationCids || sub.justificationCids === '';
+      if (hasZeroScores && hasNoJustification) {
+        failureReason = 'ORACLE_TIMEOUT';
+      } else {
+        failureReason = 'EVALUATION_FAILED';
+      }
+    }
+
     logger.info('[refresh] Parsed submission from chain', {
       jobId,
       onChainId,
@@ -949,7 +963,8 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       statusIndex,
       chainStatus,
       acceptScore,
-      rejectScore
+      rejectScore,
+      failureReason
     });
     
     // Update local storage
@@ -964,7 +979,8 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       localSubmission.justificationCids = sub.justificationCids;
       localSubmission.finalizedAt = Number(sub.finalizedAt);
       localSubmission.verdiktaAggId = sub.verdiktaAggId;
-      
+      localSubmission.failureReason = failureReason;
+
       jobStorage.updateJob(jobId, { submissions: job.submissions });
       
       logger.info('[refresh] Updated local submission', { 
@@ -993,7 +1009,8 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
         justificationCids: sub.justificationCids,
         finalizedAt: Number(sub.finalizedAt),
         hunter: sub.hunter,
-        verdiktaAggId: sub.verdiktaAggId
+        verdiktaAggId: sub.verdiktaAggId,
+        failureReason  // null, 'ORACLE_TIMEOUT', or 'EVALUATION_FAILED'
       }
     });
     

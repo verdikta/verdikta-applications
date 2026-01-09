@@ -144,6 +144,10 @@ function parseArgs() {
       case '-d':
         options.dryRun = true;
         break;
+      case '--model':
+      case '-m':
+        options.model = args[++i];
+        break;
       case '--help':
       case '-h':
         console.log(`
@@ -155,8 +159,14 @@ Usage:
 Options:
   --count, -c <n>       Number of submissions to make (default: 1)
   --bounty-id, -b <id>  Target specific bounty by on-chain ID
+  --model, -m <model>   AI model to use (default: claude-sonnet-4-20250514)
+                        Try: claude-opus-4-20250514 for higher quality
   --dry-run, -d         Show what would be submitted without actually submitting
   --help, -h            Show this help message
+
+Examples:
+  node scripts/submitToBounties.js --count 1
+  node scripts/submitToBounties.js --bounty-id 17 --model claude-opus-4-20250514
         `);
         process.exit(0);
     }
@@ -380,11 +390,12 @@ async function fetchPastFeedback(bounty, provider) {
 // AI CONTENT GENERATION
 // =============================================================================
 
-async function generateContent(bounty, rubric, pastFeedback = []) {
+async function generateContent(bounty, rubric, pastFeedback = [], modelOverride = null) {
   if (!CONFIG.anthropicApiKey) {
     throw new Error('ANTHROPIC_API_KEY not set in environment');
   }
 
+  const model = modelOverride || CONFIG.aiModel;
   const prompt = buildPrompt(bounty, rubric, pastFeedback);
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -395,7 +406,7 @@ async function generateContent(bounty, rubric, pastFeedback = []) {
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: CONFIG.aiModel,
+      model: model,
       max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }],
     }),
@@ -431,62 +442,22 @@ function buildPrompt(bounty, rubric, pastFeedback = []) {
     }
   }
 
-  // Build focused feedback section using two key submissions:
-  // 1) The highest-scoring submission (best reference)
-  // 2) The most recent submission (for iterative improvement)
+  // Build focused feedback - simple and direct
   let feedbackText = '';
   if (pastFeedback.length > 0) {
     const threshold = pastFeedback[0].threshold || 80;
+    const bestSubmission = [...pastFeedback].sort((a, b) => b.score - a.score)[0];
 
-    // Sort to find best and most recent
-    const sortedByScore = [...pastFeedback].sort((a, b) => b.score - a.score);
-    const sortedByRecency = [...pastFeedback].sort((a, b) => b.submissionId - a.submissionId);
+    feedbackText = '\n\nPREVIOUS ATTEMPT SCORED: ' + bestSubmission.score.toFixed(0) + '% (need ' + threshold + '% to pass)\n\n';
 
-    const bestSubmission = sortedByScore[0];
-    const mostRecentSubmission = sortedByRecency[0];
-
-    // Check if they're the same submission
-    const isSameSubmission = bestSubmission.submissionId === mostRecentSubmission.submissionId;
-
-    feedbackText = '\n\nPREVIOUS ATTEMPTS - LEARN FROM THESE:\n';
-    feedbackText += `Target score: ${threshold}% to pass.\n`;
-
-    // Always show the best submission first
-    feedbackText += `\n=== BEST SCORING ATTEMPT (${bestSubmission.score.toFixed(1)}%) ===\n`;
-    if (bestSubmission.workProduct) {
-      feedbackText += `--- SUBMISSION CONTENT ---\n`;
-      feedbackText += bestSubmission.workProduct;
-      feedbackText += `\n--- END SUBMISSION ---\n`;
-    }
-    feedbackText += `\n--- EVALUATOR FEEDBACK ---\n`;
-    feedbackText += bestSubmission.justification || '(No feedback available)';
-    feedbackText += `\n--- END FEEDBACK ---\n`;
-
-    // If there's a different most recent submission, show it too
-    if (!isSameSubmission) {
-      feedbackText += `\n=== MOST RECENT ATTEMPT (${mostRecentSubmission.score.toFixed(1)}%) ===\n`;
-      if (mostRecentSubmission.workProduct) {
-        feedbackText += `--- SUBMISSION CONTENT ---\n`;
-        feedbackText += mostRecentSubmission.workProduct;
-        feedbackText += `\n--- END SUBMISSION ---\n`;
-      }
-      feedbackText += `\n--- EVALUATOR FEEDBACK ---\n`;
-      feedbackText += mostRecentSubmission.justification || '(No feedback available)';
-      feedbackText += `\n--- END FEEDBACK ---\n`;
+    // Extract the key criticism from the feedback
+    if (bestSubmission.justification) {
+      feedbackText += 'EVALUATOR FEEDBACK:\n';
+      feedbackText += bestSubmission.justification;
+      feedbackText += '\n\n';
     }
 
-    // Instructions based on whether we've passed yet
-    const bestGap = threshold - bestSubmission.score;
-    if (bestGap > 0) {
-      feedbackText += `\nINSTRUCTIONS: The best attempt scored ${bestSubmission.score.toFixed(1)}%, which is ${bestGap.toFixed(1)}% below the ${threshold}% threshold.\n`;
-      feedbackText += `Analyze what worked well and what was criticized. Create an IMPROVED submission that:\n`;
-      feedbackText += `- Addresses ALL weaknesses mentioned in the feedback\n`;
-      feedbackText += `- Keeps the strengths that earned points\n`;
-      feedbackText += `- Goes beyond what was attempted before\n`;
-      feedbackText += `Do NOT copy previous submissions - create original, higher-quality content.\n`;
-    } else {
-      feedbackText += `\nINSTRUCTIONS: A previous submission passed! Create content of similar quality with original content.\n`;
-    }
+    feedbackText += 'YOUR TASK: Create a submission that fixes the issues mentioned above and scores ' + threshold + '%+.\n\n';
   }
 
   return `You are completing a bounty task. Generate high-quality content that meets ALL the requirements.
@@ -821,12 +792,14 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
 async function main() {
   const options = parseArgs();
 
+  const activeModel = options.model || CONFIG.aiModel;
+
   console.log('============================================================');
   console.log('AI-Powered Bounty Submission Script');
   console.log('============================================================');
   console.log(`Target:    ${options.bountyId ? `Bounty #${options.bountyId}` : 'Any open bounty'}`);
   console.log(`Count:     ${options.count}`);
-  console.log(`AI Model:  ${CONFIG.aiModel}`);
+  console.log(`AI Model:  ${activeModel}`);
   console.log(`Dry Run:   ${options.dryRun ? 'Yes' : 'No'}`);
   console.log('============================================================\n');
 
@@ -945,7 +918,7 @@ async function main() {
       if (pastFeedback.length > 0) {
         console.log('  → Using past feedback to improve submission quality');
       }
-      const content = await generateContent(details, rubric, pastFeedback);
+      const content = await generateContent(details, rubric, pastFeedback, activeModel);
       console.log(`  Generated ${content.length} characters`);
 
       // Submit the work to backend

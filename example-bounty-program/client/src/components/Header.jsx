@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { Target, Wallet, LogOut, AlertTriangle, Check, X } from 'lucide-react';
 import { walletService } from '../services/wallet';
 import { currentNetwork } from '../config';
 import './Header.css';
@@ -30,7 +31,8 @@ function Header({ walletState, onConnect, onDisconnect }) {
       <div className="header-container">
         <div className="header-left">
           <Link to="/" className="logo">
-            <h1>🎯 Verdikta Bounties</h1>
+            <Target size={28} className="logo-icon" />
+            <h1>Verdikta Bounties</h1>
           </Link>
           <nav className="nav">
             <Link to="/" className="nav-link">Browse</Link>
@@ -43,7 +45,8 @@ function Header({ walletState, onConnect, onDisconnect }) {
 
         <div className="header-right">
           {!isConnected ? (
-            <button onClick={onConnect} className="btn btn-primary">
+            <button onClick={onConnect} className="btn btn-primary btn-with-icon">
+              <Wallet size={18} />
               Connect Wallet
             </button>
           ) : (
@@ -51,9 +54,10 @@ function Header({ walletState, onConnect, onDisconnect }) {
               {!isCorrectNetwork && (
                 <div className="wrong-network-alert">
                   <span className="network-warning">
-                    ⚠️ Wrong Network
+                    <AlertTriangle size={16} />
+                    Wrong Network
                   </span>
-                  <button 
+                  <button
                     onClick={handleSwitchNetwork}
                     className="btn btn-warning btn-sm"
                     disabled={isSwitching}
@@ -64,18 +68,20 @@ function Header({ walletState, onConnect, onDisconnect }) {
               )}
               
               <div className="wallet-address">
-                <span 
+                <span
                   className={`network-badge ${isCorrectNetwork ? 'correct' : 'incorrect'}`}
                   title={`Chain ID: ${chainId}`}
                 >
-                  {isCorrectNetwork ? '✓' : '✗'} {getCurrentNetworkName()}
+                  {isCorrectNetwork ? <Check size={14} /> : <X size={14} />}
+                  {getCurrentNetworkName()}
                 </span>
                 <span className="address" title={address}>
                   {walletService.formatAddress(address)}
                 </span>
               </div>
-              
-              <button onClick={onDisconnect} className="btn btn-secondary btn-sm">
+
+              <button onClick={onDisconnect} className="btn btn-secondary btn-sm btn-with-icon">
+                <LogOut size={16} />
                 Disconnect
               </button>
             </div>

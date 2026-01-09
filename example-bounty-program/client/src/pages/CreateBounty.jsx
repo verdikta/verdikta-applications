@@ -1,5 +1,17 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import {
+  PlusCircle,
+  Check,
+  AlertTriangle,
+  Library,
+  Save,
+  Rocket,
+  Lightbulb,
+  Clock,
+  ChevronRight,
+  X,
+} from 'lucide-react';
 import { apiService } from '../services/api';
 import { modelProviderService } from '../services/modelProviderService';
 import { walletService } from '../services/wallet';
@@ -538,7 +550,7 @@ function CreateBounty({ walletState }) {
   return (
     <div className="create-bounty">
       <div className="page-header">
-        <h1>Create New Bounty</h1>
+        <h1><PlusCircle size={28} className="inline-icon" /> Create New Bounty</h1>
         <p>Define evaluation criteria and lock ETH in escrow</p>
       </div>
 
@@ -557,7 +569,7 @@ function CreateBounty({ walletState }) {
           tabIndex={0}
           onKeyDown={(e) => e.key === 'Enter' && setStep(1)}
         >
-          <span className="step-number">{step > 1 ? '✓' : '1'}</span>
+          <span className="step-number">{step > 1 ? <Check size={16} /> : '1'}</span>
           <span className="step-label">Basic Info</span>
         </div>
         <div
@@ -567,7 +579,7 @@ function CreateBounty({ walletState }) {
           tabIndex={0}
           onKeyDown={(e) => e.key === 'Enter' && setStep(2)}
         >
-          <span className="step-number">{step > 2 ? '✓' : '2'}</span>
+          <span className="step-number">{step > 2 ? <Check size={16} /> : '2'}</span>
           <span className="step-label">Rubric</span>
         </div>
         <div
@@ -692,9 +704,9 @@ function CreateBounty({ walletState }) {
               <button
                 type="button"
                 onClick={() => setShowLibrary(true)}
-                className="btn btn-secondary"
+                className="btn btn-secondary btn-with-icon"
               >
-                📚 Load from Library
+                <Library size={16} /> Load from Library
               </button>
 
               <div className="form-group inline">
@@ -812,9 +824,9 @@ function CreateBounty({ walletState }) {
 
               <div className="weight-validation">
                 {validateWeights().valid ? (
-                  <span className="valid">✓ Weights sum to 1.00</span>
+                  <span className="valid"><Check size={14} className="inline-icon" /> Weights sum to 1.00</span>
                 ) : (
-                  <span className="invalid">⚠ {validateWeights().message}</span>
+                  <span className="invalid"><AlertTriangle size={14} className="inline-icon" /> {validateWeights().message}</span>
                 )}
               </div>
             </div>
@@ -827,10 +839,10 @@ function CreateBounty({ walletState }) {
               <button
                 type="button"
                 onClick={handleSaveRubric}
-                className="btn btn-secondary"
+                className="btn btn-secondary btn-with-icon"
                 disabled={loading || !hasAtLeastOneCriterion() || !validateWeights().valid}
               >
-                💾 Save Rubric to Library
+                <Save size={16} /> Save Rubric to Library
               </button>
 
               <button
@@ -979,9 +991,9 @@ function CreateBounty({ walletState }) {
               {juryNodes.length > 0 && (
                 <div className="weight-validation">
                   {validateJuryWeights().valid ? (
-                    <span className="valid">✓ Jury weights sum to 1.00</span>
+                    <span className="valid"><Check size={14} className="inline-icon" /> Jury weights sum to 1.00</span>
                   ) : (
-                    <span className="invalid">⚠ {validateJuryWeights().message}</span>
+                    <span className="invalid"><AlertTriangle size={14} className="inline-icon" /> {validateJuryWeights().message}</span>
                   )}
                 </div>
               )}
@@ -1010,8 +1022,8 @@ function CreateBounty({ walletState }) {
                 ← Back
               </button>
 
-              <button type="submit" className="btn btn-primary btn-lg" disabled={loading || juryNodes.length === 0}>
-                {loading ? 'Creating...' : '🚀 Create Bounty'}
+              <button type="submit" className="btn btn-primary btn-lg btn-with-icon" disabled={loading || juryNodes.length === 0}>
+                {loading ? 'Creating...' : <><Rocket size={18} /> Create Bounty</>}
               </button>
             </div>
           </div>
@@ -1033,7 +1045,7 @@ function CreateBounty({ walletState }) {
       </form>
 
       <div className="help-section">
-        <h3>💡 How Bounty Creation Works</h3>
+        <h3><Lightbulb size={20} className="inline-icon" /> How Bounty Creation Works</h3>
         <ol>
           <li>Define your requirements (rubric with threshold).</li>
           <li>Set payout amount in ETH.</li>
@@ -1055,7 +1067,7 @@ function CreateBounty({ walletState }) {
             backgroundColor: '#f9f9f9',
           }}
         >
-          <h4 style={{ marginTop: 0, marginBottom: '0.75rem', color: '#333' }}>⏰ Bounty Lifecycle</h4>
+          <h4 style={{ marginTop: 0, marginBottom: '0.75rem', color: '#333' }}><Clock size={18} className="inline-icon" /> Bounty Lifecycle</h4>
           <p style={{ marginBottom: '0.5rem' }}>
             <strong>OPEN:</strong> Bounty is active and accepting submissions before the deadline.
           </p>
@@ -1080,7 +1092,7 @@ function CreateBounty({ walletState }) {
             backgroundColor: '#fffbeb',
           }}
         >
-          <h4 style={{ marginTop: 0, marginBottom: '0.75rem', color: '#92400e' }}>⚠️ Important Notes</h4>
+          <h4 style={{ marginTop: 0, marginBottom: '0.75rem', color: '#92400e' }}><AlertTriangle size={18} className="inline-icon" /> Important Notes</h4>
           <p style={{ marginBottom: '0.5rem' }}>
             <strong>No Cancellation:</strong> Once created, you cannot cancel your bounty early. Funds remain in escrow until either a winner is selected OR the deadline passes with no winner.
           </p>

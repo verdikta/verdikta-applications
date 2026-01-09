@@ -1,6 +1,21 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ethers } from 'ethers';
+import {
+  Upload,
+  Lightbulb,
+  Coins,
+  MessageSquare,
+  FolderOpen,
+  AlertTriangle,
+  CheckCircle,
+  Link2,
+  FileText,
+  Package,
+  Copy,
+  X,
+  Send,
+} from 'lucide-react';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
 import {
@@ -498,7 +513,7 @@ function SubmitWork({ walletState }) {
   return (
     <div className="submit-work">
       <div className="submit-header">
-        <h1>Submit Your Work</h1>
+        <h1><Upload size={28} className="inline-icon" /> Submit Your Work</h1>
         <p>Upload your deliverable for AI evaluation</p>
         {job && (
           <div className="bounty-info">
@@ -609,7 +624,7 @@ function SubmitWork({ walletState }) {
             disabled={loading || files.length === 0}
             className="btn btn-primary btn-lg"
           >
-            {loading ? 'Processing...' : `Submit ${files.length} File${files.length !== 1 ? 's' : ''}`}
+            {loading ? 'Processing...' : <><Send size={18} className="inline-icon" /> Submit {files.length} File{files.length !== 1 ? 's' : ''}</>}
           </button>
           <button
             type="button"
@@ -633,7 +648,7 @@ function SubmitWork({ walletState }) {
       </form>
 
       <div className="help-section">
-        <h3>💡 What Happens Next?</h3>
+        <h3><Lightbulb size={18} className="inline-icon" /> What Happens Next?</h3>
         <ol>
           <li>Your files are uploaded to IPFS (permanent storage)</li>
           <li>Hunter Submission CID is generated with your work and narrative</li>
@@ -645,7 +660,7 @@ function SubmitWork({ walletState }) {
           <li>If you pass, bounty is awarded automatically! 🎉</li>
         </ol>
 
-        <h3>💰 Required Tokens</h3>
+        <h3><Coins size={18} className="inline-icon" /> Required Tokens</h3>
         <p>
           Each submission requires:
         </p>
@@ -657,20 +672,20 @@ function SubmitWork({ walletState }) {
           Get testnet tokens: <a href="https://faucets.chain.link/base-sepolia" target="_blank" rel="noopener noreferrer">Base Sepolia Faucet</a>
         </p>
 
-        <h3>💬 About Your Submission Narrative</h3>
+        <h3><MessageSquare size={18} className="inline-icon" /> About Your Submission Narrative</h3>
         <p>
           The narrative you provide is included in the primary_query.json file sent to the AI evaluators.
           Use it to explain any nuances, context, or special considerations about your work. This helps the
           AI better understand and evaluate your submission according to the rubric.
         </p>
 
-        <h3>📁 Multiple Files Support</h3>
+        <h3><FolderOpen size={18} className="inline-icon" /> Multiple Files Support</h3>
         <p>
           You can submit up to 10 files. Each file should have a clear description that helps the AI
           understand its purpose. All files are referenced in the manifest according to the <a href="https://docs.verdikta.com/verdikta-common/MANIFEST_SPECIFICATION/" target="_blank" rel="noopener noreferrer">Verdikta Manifest Specification</a>.
         </p>
 
-        <h3>⚠️ Important Notes</h3>
+        <h3><AlertTriangle size={18} className="inline-icon" /> Important Notes</h3>
         <ul>
           <li>You'll need to approve 3 transactions in MetaMask</li>
           <li>Evaluation is final (no appeals in MVP)</li>
@@ -684,14 +699,14 @@ function SubmitWork({ walletState }) {
       {showCIDDialog && submissionResult && (
         <div className="cid-dialog-overlay" onClick={handleCloseCIDDialog}>
           <div className="cid-dialog" onClick={(e) => e.stopPropagation()}>
-            <h2>✅ Submission Complete!</h2>
+            <h2><CheckCircle size={24} className="inline-icon" /> Submission Complete!</h2>
             <p className="dialog-intro">
               Your work has been submitted and AI evaluation is in progress!
             </p>
 
             {submissionResult.blockchainData && (
               <div className="cid-section blockchain-info">
-                <h3>🔗 Blockchain Status</h3>
+                <h3><Link2 size={18} className="inline-icon" /> Blockchain Status</h3>
                 <div className="blockchain-details">
                   <p>
                     <strong>Submission ID:</strong> {submissionResult.blockchainData.submissionId}
@@ -711,7 +726,7 @@ function SubmitWork({ walletState }) {
                     </a>
                   </p>
                   <p className="success-note">
-                    ✅ Oracles are now evaluating your submission...
+                    <CheckCircle size={14} className="inline-icon" /> Oracles are now evaluating your submission...
                   </p>
                 </div>
               </div>
@@ -719,7 +734,7 @@ function SubmitWork({ walletState }) {
 
             {submissionResult.submission.files && submissionResult.submission.files.length > 0 && (
               <div className="cid-section">
-                <h3>📄 Submitted Files</h3>
+                <h3><FileText size={18} className="inline-icon" /> Submitted Files</h3>
                 {submissionResult.submission.files.map((file, index) => (
                   <div key={index} className="submitted-file-info">
                     <strong>{file.filename}</strong> ({(file.size / 1024).toFixed(2)} KB)
@@ -733,7 +748,7 @@ function SubmitWork({ walletState }) {
             )}
 
             <div className="cid-section">
-              <h3>📦 IPFS CID</h3>
+              <h3><Package size={18} className="inline-icon" /> IPFS CID</h3>
               <div className="cid-group">
                 <label>Hunter Submission CID:</label>
                 <div className="cid-value">
@@ -743,7 +758,7 @@ function SubmitWork({ walletState }) {
                     className="btn-copy"
                     title="Copy to clipboard"
                   >
-                    📋
+                    <Copy size={14} />
                   </button>
                 </div>
                 <small style={{ display: 'block', marginTop: '0.5rem', color: '#666' }}>
@@ -760,7 +775,7 @@ function SubmitWork({ walletState }) {
 
             <p className="dialog-footer">
               <small>
-                💡 Check back in a few minutes to see your evaluation results!
+                <Lightbulb size={14} className="inline-icon" /> Check back in a few minutes to see your evaluation results!
               </small>
             </p>
           </div>

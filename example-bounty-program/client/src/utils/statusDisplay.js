@@ -3,6 +3,19 @@
  * Single source of truth for all status labels, descriptions, and styling
  */
 
+// Icon name constants - components will map these to Lucide icons
+export const IconName = {
+  CLOCK: 'clock',
+  PARTY: 'party',
+  LOCK: 'lock',
+  HOURGLASS: 'hourglass',
+  CHECK: 'check',
+  X: 'x',
+  HELP: 'help',
+  ALERT: 'alert',
+  REFRESH: 'refresh',
+};
+
 // =============================================================================
 // BOUNTY STATUS
 // =============================================================================
@@ -33,19 +46,19 @@ const BOUNTY_STATUS_CONFIG = {
     label: 'Expired',
     description: 'The submission deadline has passed. No new submissions accepted.',
     badgeClass: 'status-expired',
-    icon: '⏰',
+    icon: IconName.CLOCK,
   },
   [BountyStatus.AWARDED]: {
     label: 'Awarded',
     description: 'A submission passed the evaluation threshold and the winner has been paid.',
     badgeClass: 'status-awarded',
-    icon: '🎉',
+    icon: IconName.PARTY,
   },
   [BountyStatus.CLOSED]: {
     label: 'Closed',
     description: 'This bounty has been closed without a winner. Funds returned to creator.',
     badgeClass: 'status-closed',
-    icon: '🔒',
+    icon: IconName.LOCK,
   },
 };
 
@@ -96,28 +109,28 @@ const SUBMISSION_STATUS_CONFIG = {
     label: 'Evaluating',
     description: 'Your submission is being evaluated by the AI jury. This typically takes 2-4 minutes.',
     badgeClass: 'status-pending',
-    icon: '⏳',
+    icon: IconName.HOURGLASS,
   },
   // Success states
   success: {
     label: 'Approved',
     description: 'Your submission passed the evaluation threshold and met all requirements.',
     badgeClass: 'status-approved',
-    icon: '✅',
+    icon: IconName.CHECK,
   },
   // Failure states
   failure: {
     label: 'Rejected',
     description: 'Your submission did not meet the evaluation threshold or failed a must-pass criterion.',
     badgeClass: 'status-rejected',
-    icon: '❌',
+    icon: IconName.X,
   },
   // Unknown/other
   unknown: {
     label: 'Unknown',
     description: 'Status information unavailable.',
     badgeClass: 'status-unknown',
-    icon: '❓',
+    icon: IconName.HELP,
   },
 };
 
@@ -289,37 +302,37 @@ const ARCHIVE_STATUS_CONFIG = {
     label: 'Expired',
     description: 'Archive period has expired. Files may no longer be available.',
     badgeClass: 'archive-expired',
-    icon: '⚠️',
+    icon: IconName.ALERT,
   },
   [ArchiveStatus.RETRIEVED]: {
     label: 'Retrieved',
     description: 'Files have been successfully retrieved from archive.',
     badgeClass: 'archive-retrieved',
-    icon: '✓',
+    icon: IconName.CHECK,
   },
   [ArchiveStatus.VERIFIED]: {
     label: 'Archived',
     description: 'Files are archived and available for download.',
     badgeClass: 'archive-verified',
-    icon: '✓',
+    icon: IconName.CHECK,
   },
   [ArchiveStatus.REPINNED]: {
     label: 'Re-pinned',
     description: 'Files have been re-pinned to extend availability.',
     badgeClass: 'archive-repinned',
-    icon: '↻',
+    icon: IconName.REFRESH,
   },
   [ArchiveStatus.FAILED]: {
     label: 'Failed',
     description: 'Failed to archive or retrieve files.',
     badgeClass: 'archive-failed',
-    icon: '✗',
+    icon: IconName.X,
   },
   [ArchiveStatus.PENDING]: {
     label: 'Pending',
     description: 'Archive operation is in progress.',
     badgeClass: 'archive-pending',
-    icon: '⏳',
+    icon: IconName.HOURGLASS,
   },
 };
 

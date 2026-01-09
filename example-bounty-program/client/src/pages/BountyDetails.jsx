@@ -1,5 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
+import {
+  RefreshCw,
+  AlertTriangle,
+  Clock,
+  Lock,
+  Check,
+  X,
+  FileText,
+  Send,
+  Hourglass,
+  Trophy,
+  Search,
+  Loader2,
+  Ban,
+} from 'lucide-react';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
 import {
@@ -1308,11 +1323,13 @@ function BountyDetails({ walletState }) {
     return (
       <div className="bounty-details">
         <div className="alert alert-error">
-          <h2>⚠️ Job Not Found</h2>
+          <h2><AlertTriangle size={24} className="inline-icon" /> Job Not Found</h2>
           <p>{error}</p>
           <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
             <Link to="/" className="btn btn-primary">Back to Home</Link>
-            <button onClick={() => setRetryCount(0)} className="btn btn-secondary">🔄 Try Again</button>
+            <button onClick={() => setRetryCount(0)} className="btn btn-secondary btn-with-icon">
+              <RefreshCw size={16} /> Try Again
+            </button>
           </div>
         </div>
       </div>
@@ -1407,14 +1424,14 @@ function BountyDetails({ walletState }) {
           marginBottom: '1rem',
           fontSize: '0.9rem'
         }}>
-          ⚠️ <strong>Status Override:</strong> Backend shows "{statusOverride.backendStatus}" but {statusOverride.reason}. 
+          <AlertTriangle size={16} className="inline-icon" /> <strong>Status Override:</strong> Backend shows "{statusOverride.backendStatus}" but {statusOverride.reason}.
           Using on-chain status: <strong>{statusOverride.onChainStatus}</strong>
-          <button 
-            onClick={() => loadJobDetails()} 
+          <button
+            onClick={() => loadJobDetails()}
             style={{ marginLeft: '1rem', fontSize: '0.85rem' }}
-            className="btn btn-sm"
+            className="btn btn-sm btn-with-icon"
           >
-            🔄 Refresh
+            <RefreshCw size={14} /> Refresh
           </button>
         </div>
       )}
@@ -1470,8 +1487,8 @@ function BountyDetails({ walletState }) {
           marginBottom: '2rem',
           boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
         }}>
-          <h2 style={{ margin: '0 0 1rem 0', color: '#856404' }}>
-            ⏰ Expired Bounty - Action Required
+          <h2 style={{ margin: '0 0 1rem 0', color: '#856404', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Clock size={28} /> Expired Bounty - Action Required
           </h2>
           <p style={{ marginBottom: '1rem', fontSize: '1.1rem' }}>
             This bounty expired on {new Date((job.submissionCloseTime || 0) * 1000).toLocaleString()}.
@@ -1523,8 +1540,8 @@ function BountyDetails({ walletState }) {
                 title={disableActionsForMissingId ? 'Resolving on-chain bountyId…' : undefined}
               >
                 {closingBounty
-                  ? `⏳ ${closingMessage || 'Processing...'}`
-                  : '🔒 Close Expired Bounty & Return Funds'}
+                  ? <><Loader2 size={20} className="spin" /> {closingMessage || 'Processing...'}</>
+                  : <><Lock size={20} /> Close Expired Bounty & Return Funds</>}
               </button>
               {disableActionsForMissingId && !closingBounty && (
                 <p style={{ marginTop: 8, color: '#666', fontSize: '0.9rem' }}>
@@ -1606,7 +1623,7 @@ function BountyDetails({ walletState }) {
           </div>
           {rubric.forbidden_content && rubric.forbidden_content.length > 0 && (
             <div className="forbidden-content">
-              <h3>⚠️ Forbidden Content</h3>
+              <h3><Ban size={18} className="inline-icon" /> Forbidden Content</h3>
               <ul>{rubric.forbidden_content.map((item, index) => (<li key={index}>{item}</li>))}</ul>
             </div>
           )}
@@ -1618,8 +1635,8 @@ function BountyDetails({ walletState }) {
         <h2>Actions</h2>
         <div className="action-buttons">
           {isOpen && !deadlinePassed && walletState.isConnected && (
-            <Link to={`/bounty/${bountyId}/submit`} className="btn btn-primary btn-lg">
-              Submit Work
+            <Link to={`/bounty/${bountyId}/submit`} className="btn btn-primary btn-lg btn-with-icon">
+              <Send size={20} /> Submit Work
             </Link>
           )}
 
@@ -1629,7 +1646,7 @@ function BountyDetails({ walletState }) {
 
           {isAwarded && (
             <div className="alert alert-success">
-              🎉 This bounty has been completed and the winner has been paid {job?.bountyAmount ?? '...'} ETH!
+              <Trophy size={20} className="inline-icon" /> This bounty has been completed and the winner has been paid {job?.bountyAmount ?? '...'} ETH!
             </div>
           )}
 
@@ -1868,24 +1885,27 @@ function DiagnosticPanel({
       </div>
       
       <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-        <button onClick={onRefresh} style={{ fontSize: '0.8rem', padding: '0.25rem 0.5rem' }}>
-          🔄 Refresh Data
+        <button onClick={onRefresh} style={{ fontSize: '0.8rem', padding: '0.25rem 0.5rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+          <RefreshCw size={12} /> Refresh Data
         </button>
         {onChainId == null && onRetryResolution && (
-          <button 
-            onClick={onRetryResolution} 
+          <button
+            onClick={onRetryResolution}
             disabled={resolvingId}
-            style={{ 
-              fontSize: '0.8rem', 
+            style={{
+              fontSize: '0.8rem',
               padding: '0.25rem 0.5rem',
               backgroundColor: resolvingId ? '#555' : '#ff9800',
               color: resolvingId ? '#888' : '#000',
               border: 'none',
               borderRadius: '4px',
-              cursor: resolvingId ? 'not-allowed' : 'pointer'
+              cursor: resolvingId ? 'not-allowed' : 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.25rem'
             }}
           >
-            {resolvingId ? '⏳ Resolving...' : '🔍 Retry Resolution'}
+            {resolvingId ? <><Loader2 size={12} className="spin" /> Resolving...</> : <><Search size={12} /> Retry Resolution</>}
           </button>
         )}
         <span style={{ color: '#888', fontSize: '0.75rem', alignSelf: 'center' }}>
@@ -1920,7 +1940,7 @@ function PendingSubmissionsPanel({
 }) {
   return (
     <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
-      <h4 style={{ margin: '0 0 0.75rem 0' }}>⚠️ Pending Evaluations</h4>
+      <h4 style={{ margin: '0 0 0.75rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Hourglass size={18} /> Pending Evaluations</h4>
       <p style={{ marginBottom: '0.75rem' }}>
         The following submissions are being evaluated:
       </p>
@@ -1974,7 +1994,7 @@ function PendingSubmissionsPanel({
                   fontSize: '0.85rem',
                   color: passed ? '#2e7d32' : '#b57c00'
                 }}>
-                  {passed ? '✅' : '❌'} <strong>AI Evaluation Complete — {passed ? 'Accepted' : 'Not Accepted'}</strong> Score: {score.toFixed(1)}% ({threshold}% required)
+                  {passed ? <Check size={16} className="inline-icon" /> : <X size={16} className="inline-icon" />} <strong>AI Evaluation Complete — {passed ? 'Accepted' : 'Not Accepted'}</strong> Score: {score.toFixed(1)}% ({threshold}% required)
                 </div>
               );
             })()}
@@ -1986,9 +2006,12 @@ function PendingSubmissionsPanel({
                 backgroundColor: '#e3f2fd',
                 borderRadius: '4px',
                 fontSize: '0.85rem',
-                color: '#1565c0'
+                color: '#1565c0',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
               }}>
-                🔄 Checking results... ({pollState.attempts}/{pollState.maxAttempts})
+                <RefreshCw size={14} className="spin" /> Checking results... ({pollState.attempts}/{pollState.maxAttempts})
               </div>
             )}
 
@@ -1996,16 +2019,16 @@ function PendingSubmissionsPanel({
               {/* Show message and cancel button for Prepared submissions */}
               {isPrepared && (
                 <>
-                  <div style={{ fontSize: '0.85rem', color: '#e65100', padding: '0.4rem' }}>
-                    📋 Not started on-chain yet
+                  <div style={{ fontSize: '0.85rem', color: '#e65100', padding: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                    <FileText size={14} /> Not started on-chain yet
                   </div>
                   <button
                     onClick={() => onCancel(s.submissionId)}
                     disabled={cancelingSubmissions?.has(s.submissionId) || disableActions}
                     className="btn btn-outline-danger btn-sm"
-                    style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }}
+                    style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
                   >
-                    {cancelingSubmissions?.has(s.submissionId) ? '⏳...' : '❌ Cancel'}
+                    {cancelingSubmissions?.has(s.submissionId) ? <><Loader2 size={12} className="spin" /></> : <><X size={12} /> Cancel</>}
                   </button>
                 </>
               )}
@@ -2019,16 +2042,19 @@ function PendingSubmissionsPanel({
                   style={{
                     fontSize: '0.85rem',
                     padding: '0.4rem 0.8rem',
-                    fontWeight: evalResult?.ready ? 'bold' : 'normal'
+                    fontWeight: evalResult?.ready ? 'bold' : 'normal',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.25rem'
                   }}
                 >
                   {isFinalizing
-                    ? '⏳ Finalizing...'
+                    ? <><Loader2 size={14} className="spin" /> Finalizing...</>
                     : evalResult?.ready
                       ? (evalResult.scores.acceptance >= (job?.threshold ?? 80)
-                          ? '🎉 Claim Bounty & Update Status'
-                          : 'Finalize & Update Status')
-                      : '✅ Finalize'}
+                          ? <><Trophy size={14} /> Claim Bounty & Update Status</>
+                          : <><Check size={14} /> Finalize & Update Status</>)
+                      : <><Check size={14} /> Finalize</>}
                 </button>
               )}
 

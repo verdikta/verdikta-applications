@@ -1,5 +1,18 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import {
+  Plus,
+  HelpCircle,
+  AlertTriangle,
+  Bot,
+  Zap,
+  Lock,
+  BarChart3,
+  Clock,
+  RefreshCw,
+  Trophy,
+  Search,
+} from 'lucide-react';
 import { apiService } from '../services/api';
 import {
   BountyStatus,
@@ -10,6 +23,7 @@ import {
   hasAnyPendingSubmissions,
   getSubmissionStatusDescription,
 } from '../utils/statusDisplay';
+import { StatusIcon } from '../components/StatusIcon';
 import './Home.css';
 
 // ============================================================================
@@ -150,10 +164,12 @@ function Home({ walletState }) {
           Create bounties, submit work, get evaluated by AI, earn ETH automatically
         </p>
         <div className="hero-actions">
-          <Link to="/create" className="btn btn-primary btn-lg">
+          <Link to="/create" className="btn btn-primary btn-lg btn-with-icon">
+            <Plus size={20} />
             Create Bounty
           </Link>
-          <a href="#how-it-works" className="btn btn-secondary btn-lg">
+          <a href="#how-it-works" className="btn btn-secondary btn-lg btn-with-icon">
+            <HelpCircle size={20} />
             How It Works
           </a>
         </div>
@@ -207,19 +223,21 @@ function Home({ walletState }) {
 
         {error && (
           <div className="error-message">
-            <p>⚠️ {error}</p>
+            <p><AlertTriangle size={16} className="inline-icon" /> {error}</p>
           </div>
         )}
 
         {!loading && !error && jobs.length === 0 && (
           <div className="empty-state">
+            <Search size={48} className="empty-icon" />
             <h3>No jobs found</h3>
             <p>
               {filters.status || filters.search || filters.minPayout
                 ? 'Try adjusting your filters'
                 : 'Be the first to create a job!'}
             </p>
-            <Link to="/create" className="btn btn-primary">
+            <Link to="/create" className="btn btn-primary btn-with-icon">
+              <Plus size={18} />
               Create Job
             </Link>
           </div>
@@ -264,19 +282,23 @@ function Home({ walletState }) {
         <h2>Why Use Verdikta Bounties?</h2>
         <div className="feature-grid">
           <div className="feature">
-            <h3>🤖 AI-Powered</h3>
+            <div className="feature-icon"><Bot size={32} /></div>
+            <h3>AI-Powered</h3>
             <p>Multiple AI models evaluate submissions for fairness and accuracy</p>
           </div>
           <div className="feature">
-            <h3>⚡ Automatic</h3>
+            <div className="feature-icon"><Zap size={32} /></div>
+            <h3>Automatic</h3>
             <p>No manual review needed - payments happen automatically</p>
           </div>
           <div className="feature">
-            <h3>🔒 Trustless</h3>
+            <div className="feature-icon"><Lock size={32} /></div>
+            <h3>Trustless</h3>
             <p>ETH locked in smart contract escrow until winner is determined</p>
           </div>
           <div className="feature">
-            <h3>📊 Transparent</h3>
+            <div className="feature-icon"><BarChart3 size={32} /></div>
+            <h3>Transparent</h3>
             <p>All evaluations and scores are publicly verifiable</p>
           </div>
         </div>
@@ -313,27 +335,27 @@ function JobCard({ job }) {
   // Format the time remaining string
   const getTimeRemainingString = () => {
     if (!isOpen) return null;
-    
+
     if (timeRemaining <= 0) {
-      return <span>⏰ Closing soon</span>;
+      return <span><Clock size={14} className="inline-icon" /> Closing soon</span>;
     }
-    
+
     if (isCritical) {
       // Less than 1 hour - show minutes only
       if (minutesRemaining <= 1) {
-        return <span>⏰ &lt;1m remaining</span>;
+        return <span><Clock size={14} className="inline-icon" /> &lt;1m remaining</span>;
       }
-      return <span>⏰ {minutesRemaining}m remaining</span>;
+      return <span><Clock size={14} className="inline-icon" /> {minutesRemaining}m remaining</span>;
     }
-    
+
     if (isClosingSoon) {
       // Less than 24 hours - show hours and minutes
       if (minutesRemaining > 0) {
-        return <span>⏰ {hoursRemaining}h {minutesRemaining}m remaining</span>;
+        return <span><Clock size={14} className="inline-icon" /> {hoursRemaining}h {minutesRemaining}m remaining</span>;
       }
-      return <span>⏰ {hoursRemaining}h remaining</span>;
+      return <span><Clock size={14} className="inline-icon" /> {hoursRemaining}h remaining</span>;
     }
-    
+
     // More than 24 hours - show days and hours
     if (hoursInDay > 0) {
       return <span>{daysRemaining}d {hoursInDay}h remaining</span>;
@@ -376,7 +398,7 @@ function JobCard({ job }) {
               title={getSubmissionStatusDescription('PendingVerdikta')}
               aria-label="Evaluation in progress"
             >
-              🔄
+              <RefreshCw size={14} className="spin" />
             </span>
           )}
         </div>
@@ -392,11 +414,11 @@ function JobCard({ job }) {
         </div>
         <div className={`time-remaining ${isClosingSoon ? 'warning' : ''} ${isCritical ? 'critical' : ''} ${(isExpired || isClosed) ? 'closed' : ''}`}>
           {isAwarded ? (
-            <span>{getBountyStatusIcon(BountyStatus.AWARDED)} Winner paid</span>
+            <span><Trophy size={14} className="inline-icon" /> Winner paid</span>
           ) : isClosed ? (
-            <span>{getBountyStatusIcon(BountyStatus.CLOSED)} Closed</span>
+            <span><Lock size={14} className="inline-icon" /> Closed</span>
           ) : isExpired ? (
-            <span>{getBountyStatusIcon(BountyStatus.EXPIRED)} Expired - needs closing</span>
+            <span><Clock size={14} className="inline-icon" /> Expired - needs closing</span>
           ) : (
             getTimeRemainingString()
           )}

@@ -56,6 +56,13 @@
   cursor: pointer;
 }
 
+/* Button with icon */
+.btn-with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 /* Loading Container */
 .loading-container {
   text-align: center;
@@ -187,7 +194,7 @@
 
 .submissions-header {
   display: grid;
-  grid-template-columns: 1fr 1fr 0.75fr 1fr 1fr 0.5fr;
+  grid-template-columns: 100px 110px 60px 90px 130px 50px;
   gap: 0.75rem;
   padding: 0.5rem 0.75rem;
   font-size: 0.75rem;
@@ -199,7 +206,7 @@
 
 .submission-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 0.75fr 1fr 1fr 0.5fr;
+  grid-template-columns: 100px 110px 60px 90px 130px 50px;
   gap: 0.75rem;
   padding: 0.75rem;
   font-size: 0.875rem;
@@ -224,18 +231,46 @@
 .sub-status {
   font-size: 0.8rem;
   font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
 }
 
-.sub-status-approved {
+.sub-status.status-approved {
   color: #059669;
 }
 
-.sub-status-rejected {
+.sub-status.status-rejected {
   color: #dc2626;
 }
 
-.sub-status-pending {
+.sub-status.status-pending {
   color: #d97706;
+}
+
+.sub-status.status-unknown {
+  color: #6b7280;
+}
+
+/* Inline icon utility */
+.inline-icon {
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+/* Spin animation for loading icons */
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .score {
@@ -250,11 +285,14 @@
 }
 
 .archive-badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
   padding: 0.15rem 0.5rem;
   border-radius: 4px;
   font-size: 0.7rem;
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .archive-verified {

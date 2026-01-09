@@ -5,13 +5,28 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import {
+  Package,
+  RefreshCw,
+  Download,
+  AlertTriangle,
+  FileText,
+  ChevronDown,
+  ChevronRight,
+  Check,
+  X,
+  Hourglass,
+  HelpCircle,
+} from 'lucide-react';
 import { apiService } from '../services/api';
 import {
   getBountyStatusLabel,
   getBountyBadgeProps,
-  getSubmissionStatusDisplay,
+  getSubmissionStatusLabel,
   getSubmissionStatusBadgeClass,
+  getSubmissionStatusIcon,
   getArchiveStatusInfo,
+  IconName,
 } from '../utils/statusDisplay';
 import './MyBounties.css';
 
@@ -32,6 +47,35 @@ function copyToClipboard(text) {
     document.body.removeChild(textArea);
   }
   alert('Copied to clipboard');
+}
+
+/**
+ * Truncate an Ethereum address for display.
+ */
+function truncateAddress(address) {
+  if (!address) return '';
+  return `${address.slice(0, 8)}...`;
+}
+
+/**
+ * Map IconName constants to Lucide icon components.
+ */
+const ICON_MAP = {
+  [IconName.CHECK]: Check,
+  [IconName.X]: X,
+  [IconName.HOURGLASS]: Hourglass,
+  [IconName.HELP]: HelpCircle,
+  [IconName.ALERT]: AlertTriangle,
+  [IconName.REFRESH]: RefreshCw,
+};
+
+/**
+ * Render a status icon from an IconName constant.
+ */
+function StatusIconComponent({ iconName, size = 12, className = '' }) {
+  const IconComponent = ICON_MAP[iconName];
+  if (!IconComponent) return null;
+  return <IconComponent size={size} className={className} />;
 }
 
 function MyBounties({ walletState }) {
@@ -116,16 +160,19 @@ function MyBounties({ walletState }) {
 
   // Get archive status badge using centralized utility
   const getArchiveStatusBadge = (submission) => {
+    let info;
     if (submission.isExpired) {
-      const info = getArchiveStatusInfo('expired');
-      return <span className={`archive-badge ${info.badgeClass}`} title={info.description}>{info.icon} {info.label}</span>;
+      info = getArchiveStatusInfo('expired');
+    } else if (submission.retrievedByPoster) {
+      info = getArchiveStatusInfo('retrieved');
+    } else {
+      info = getArchiveStatusInfo(submission.archiveStatus);
     }
-    if (submission.retrievedByPoster) {
-      const info = getArchiveStatusInfo('retrieved');
-      return <span className={`archive-badge ${info.badgeClass}`} title={info.description}>{info.icon} {info.label}</span>;
-    }
-    const info = getArchiveStatusInfo(submission.archiveStatus);
-    return <span className={`archive-badge ${info.badgeClass}`} title={info.description}>{info.icon} {info.label}</span>;
+    return (
+      <span className={`archive-badge ${info.badgeClass}`} title={info.description}>
+        <StatusIconComponent iconName={info.icon} size={12} className="inline-icon" /> {info.label}
+      </span>
+    );
   };
 
   // Not connected state
@@ -133,7 +180,7 @@ function MyBounties({ walletState }) {
     return (
       <div className="my-bounties">
         <div className="page-header">
-          <h1>📦 My Bounties</h1>
+          <h1><Package size={28} className="inline-icon" /> My Bounties</h1>
           <p>View and download submissions to bounties you've created</p>
         </div>
         <div className="alert alert-warning">
@@ -149,7 +196,7 @@ function MyBounties({ walletState }) {
     return (
       <div className="my-bounties">
         <div className="page-header">
-          <h1>📦 My Bounties</h1>
+          <h1><Package size={28} className="inline-icon" /> My Bounties</h1>
           <p>View and download submissions to bounties you've created</p>
         </div>
         <div className="loading-container">
@@ -163,7 +210,7 @@ function MyBounties({ walletState }) {
   return (
     <div className="my-bounties">
       <div className="page-header">
-        <h1>📦 My Bounties</h1>
+        <h1><Package size={28} className="inline-icon" /> My Bounties</h1>
         <p>View and download submissions to bounties you've created</p>
         <div className="header-meta">
           <span className="wallet-label">Connected as: </span>
@@ -190,8 +237,8 @@ function MyBounties({ walletState }) {
           />
           Show expired archives
         </label>
-        <button onClick={loadBounties} className="btn btn-sm btn-secondary">
-          🔄 Refresh
+        <button onClick={loadBounties} className="btn btn-sm btn-secondary btn-with-icon">
+          <RefreshCw size={14} /> Refresh
         </button>
       </div>
 
@@ -199,7 +246,7 @@ function MyBounties({ walletState }) {
       {downloadResult && (
         <div className="download-modal-overlay" onClick={() => setDownloadResult(null)}>
           <div className="download-modal" onClick={(e) => e.stopPropagation()}>
-            <h3>📥 Download Started</h3>
+            <h3><Download size={20} className="inline-icon" /> Download Started</h3>
             <p>The submission archive should begin downloading. If it doesn't, use the links below:</p>
             
             <div className="download-links">
@@ -222,7 +269,7 @@ function MyBounties({ walletState }) {
             </div>
 
             <div className="download-warning">
-              <p>⚠️ <strong>Important:</strong> This archive will expire in {downloadResult.submission?.daysUntilExpiry || 7} days.</p>
+              <p><AlertTriangle size={16} className="inline-icon" /> <strong>Important:</strong> This archive will expire in {downloadResult.submission?.daysUntilExpiry || 7} days.</p>
               <p>Please save the file locally for permanent access.</p>
             </div>
 
@@ -315,14 +362,15 @@ function MyBounties({ walletState }) {
                           <span
                             className="hunter-address"
                             data-label="Submitter"
-                            title="Click to copy address"
+                            title={`${sub.hunter} — Click to copy`}
                             style={{ cursor: 'pointer' }}
                             onClick={() => copyToClipboard(sub.hunter)}
                           >
-                            {sub.hunter}
+                            {truncateAddress(sub.hunter)}
                           </span>
                           <span className={`sub-status ${getSubmissionStatusBadgeClass(sub.status)}`} data-label="Status">
-                            {getSubmissionStatusDisplay(sub.status)}
+                            <StatusIconComponent iconName={getSubmissionStatusIcon(sub.status)} size={12} className="inline-icon" />
+                            {' '}{getSubmissionStatusLabel(sub.status)}
                           </span>
                           <span className="score" data-label="Score">
                             {sub.score != null ? `${sub.score.toFixed(1)}%` : '—'}
@@ -347,10 +395,8 @@ function MyBounties({ walletState }) {
                                 title={sub.retrievedByPoster ? 'Download again (already retrieved)' : 'Download submission'}
                               >
                                 {downloadingSubmission === `${bounty.jobId}-${sub.submissionId}`
-                                  ? '...'
-                                  : sub.retrievedByPoster
-                                    ? '↓'
-                                    : '📥'}
+                                  ? <RefreshCw size={14} className="spin" />
+                                  : <Download size={14} />}
                               </button>
                             ) : sub.isExpired ? (
                               <span className="expired-label">Expired</span>
@@ -377,7 +423,7 @@ function MyBounties({ walletState }) {
 
       {/* Info Section */}
       <div className="info-section">
-        <h4>📋 About Submission Archives</h4>
+        <h4><FileText size={18} className="inline-icon" /> About Submission Archives</h4>
         <ul>
           <li><strong>30 days:</strong> Submissions are archived for 30 days after your bounty closes.</li>
           <li><strong>7 days after download:</strong> Once you download a submission, it remains available for 7 more days.</li>

@@ -346,9 +346,10 @@ class SyncService {
                          sub.status === 'PassedUnpaid' ? 4 : -1;
 
         switch (statusNum) {
-          case 0: // Prepared
-            backendStatus = 'PREPARED';
-            break;
+          case 0: // Prepared - skip syncing incomplete submissions
+            // Prepared submissions are incomplete (user abandoned mid-flow)
+            // Don't import them as they pollute the UI and can't be acted upon
+            continue;
           case 1: // PendingVerdikta
             backendStatus = 'PENDING_EVALUATION';
             break;

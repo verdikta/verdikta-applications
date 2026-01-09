@@ -33,17 +33,20 @@ function App() {
     isCorrectNetwork: false
   });
 
-  // Subscribe to wallet state changes
+  // Subscribe to wallet state changes and try to reconnect on mount
   useEffect(() => {
     const unsubscribe = walletService.subscribe((newState) => {
       setWalletState(newState);
     });
 
-    // Check if already connected on mount
-    const currentState = walletService.getState();
-    if (currentState.isConnected) {
-      setWalletState(currentState);
-    }
+    // Try to silently reconnect if user was previously connected
+    walletService.tryReconnect().then((result) => {
+      if (result) {
+        console.log('Wallet auto-reconnected on page load');
+      }
+    }).catch((err) => {
+      console.warn('Auto-reconnect failed:', err);
+    });
 
     return unsubscribe;
   }, []);

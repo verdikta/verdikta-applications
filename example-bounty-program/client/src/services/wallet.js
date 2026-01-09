@@ -6,6 +6,8 @@
 import { ethers } from 'ethers';
 import { currentNetwork } from '../config';
 
+const STORAGE_KEY = 'wallet_was_connected';
+
 class WalletService {
   constructor() {
     this.provider = null;
@@ -13,6 +15,59 @@ class WalletService {
     this.address = null;
     this.chainId = null;
     this.listeners = new Set();
+  }
+
+  /**
+   * Try to silently reconnect if user was previously connected.
+   * Uses eth_accounts (no prompt) instead of eth_requestAccounts.
+   * Call this on app initialization.
+   */
+  async tryReconnect() {
+    if (!this.isMetaMaskInstalled()) {
+      return null;
+    }
+
+    // Check if user previously connected
+    const wasConnected = localStorage.getItem(STORAGE_KEY) === 'true';
+    if (!wasConnected) {
+      return null;
+    }
+
+    try {
+      // eth_accounts returns accounts if already authorized (no prompt)
+      const accounts = await window.ethereum.request({
+        method: 'eth_accounts'
+      });
+
+      if (accounts.length === 0) {
+        // User revoked access or never authorized
+        localStorage.removeItem(STORAGE_KEY);
+        return null;
+      }
+
+      // User is still authorized - reconnect silently
+      this.provider = new ethers.BrowserProvider(window.ethereum);
+      this.signer = await this.provider.getSigner();
+      this.address = accounts[0];
+
+      const network = await this.provider.getNetwork();
+      this.chainId = Number(network.chainId);
+
+      this.setupEventListeners();
+      this.notifyListeners();
+
+      console.log('✅ Wallet auto-reconnected:', this.address);
+
+      return {
+        address: this.address,
+        chainId: this.chainId,
+        isCorrectNetwork: this.chainId === currentNetwork.chainId
+      };
+    } catch (error) {
+      console.warn('Auto-reconnect failed:', error.message);
+      localStorage.removeItem(STORAGE_KEY);
+      return null;
+    }
   }
 
   /**
@@ -70,6 +125,9 @@ class WalletService {
       // Set up event listeners
       this.setupEventListeners();
 
+      // Remember that user connected (for auto-reconnect after refresh)
+      localStorage.setItem(STORAGE_KEY, 'true');
+
       // Notify subscribers
       this.notifyListeners();
 
@@ -92,6 +150,10 @@ class WalletService {
     this.signer = null;
     this.address = null;
     this.chainId = null;
+
+    // Clear auto-reconnect flag
+    localStorage.removeItem(STORAGE_KEY);
+
     this.notifyListeners();
   }
 

@@ -5,6 +5,11 @@
  * Fetches open bounties, uses AI to generate content matching the rubric,
  * and submits the work. Useful for testing the full bounty workflow.
  *
+ * LEARNING FEATURE: The script automatically fetches feedback from past
+ * submissions (via their justification CIDs from IPFS) and uses that feedback
+ * to help the AI generate better submissions. Each subsequent submission
+ * should score higher as it learns from previous evaluator feedback.
+ *
  * Usage:
  *   node scripts/submitToBounties.js --count 1
  *   node scripts/submitToBounties.js --count 3 --bounty-id 5
@@ -18,6 +23,7 @@
  * Optional:
  *   AI_MODEL - Claude model to use (default: claude-sonnet-4-20250514)
  *   API_URL / HOST+PORT - Backend API URL
+ *   PINATA_GATEWAY - Pinata gateway URL for faster IPFS fetches
  */
 
 const path = require('path');
@@ -218,14 +224,27 @@ function isBountyWinnable(bounty) {
 }
 
 async function fetchFromIPFS(cid) {
+  const pinataGateway = process.env.PINATA_GATEWAY || 'https://gateway.pinata.cloud';
+  const pinataKey = process.env.IPFS_PINNING_KEY || process.env.PINATA_JWT;
+
   const gateways = [
-    process.env.PINATA_GATEWAY || 'https://gateway.pinata.cloud',
-    CONFIG.ipfsGateway,
+    { url: pinataGateway, useAuth: true },
+    { url: CONFIG.ipfsGateway, useAuth: false },
+    { url: 'https://ipfs.io', useAuth: false },
   ];
 
-  for (const gateway of gateways) {
+  for (const { url: gateway, useAuth } of gateways) {
     try {
-      const response = await fetch(`${gateway}/ipfs/${cid}`, { timeout: 15000 });
+      const headers = {};
+      // Add Pinata authentication if available and this is a Pinata gateway
+      if (useAuth && pinataKey && gateway.includes('pinata')) {
+        headers['Authorization'] = `Bearer ${pinataKey}`;
+      }
+
+      const response = await fetch(`${gateway}/ipfs/${cid}`, {
+        headers,
+        signal: AbortSignal.timeout(15000)
+      });
       if (response.ok) {
         const contentType = response.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
@@ -240,16 +259,78 @@ async function fetchFromIPFS(cid) {
   throw new Error(`Failed to fetch CID ${cid} from IPFS`);
 }
 
+/**
+ * Fetch past submission feedback (justifications) for a bounty
+ * Returns an array of { score, threshold, passed, justification } objects
+ */
+async function fetchPastFeedback(bounty) {
+  if (!bounty.submissions || bounty.submissions.length === 0) {
+    return [];
+  }
+
+  const threshold = bounty.threshold || 80;
+  const feedback = [];
+
+  for (const sub of bounty.submissions) {
+    // Skip submissions without justification CIDs
+    if (!sub.justificationCids || sub.justificationCids === '') {
+      continue;
+    }
+
+    // Parse justification CIDs (can be comma-separated)
+    const cids = sub.justificationCids.split(',')
+      .map(cid => cid.trim())
+      .filter(cid => cid.length > 0 && cid !== '0');
+
+    if (cids.length === 0) continue;
+
+    // Get the score
+    const score = sub.acceptance ?? sub.score ?? null;
+    if (score === null) continue;
+
+    const passed = score >= threshold;
+
+    // Fetch justification content from the first CID
+    try {
+      console.log(`    Fetching feedback from CID: ${cids[0].substring(0, 20)}...`);
+      const content = await fetchFromIPFS(cids[0]);
+
+      // Extract justification text
+      let justificationText = '';
+      if (typeof content === 'object' && content.justification) {
+        justificationText = content.justification;
+      } else if (typeof content === 'string') {
+        justificationText = content;
+      }
+
+      if (justificationText) {
+        feedback.push({
+          submissionId: sub.submissionId,
+          score,
+          threshold,
+          passed,
+          justification: justificationText,
+          status: sub.status,
+        });
+      }
+    } catch (e) {
+      console.log(`    Warning: Could not fetch feedback for submission ${sub.submissionId}: ${e.message}`);
+    }
+  }
+
+  return feedback;
+}
+
 // =============================================================================
 // AI CONTENT GENERATION
 // =============================================================================
 
-async function generateContent(bounty, rubric) {
+async function generateContent(bounty, rubric, pastFeedback = []) {
   if (!CONFIG.anthropicApiKey) {
     throw new Error('ANTHROPIC_API_KEY not set in environment');
   }
 
-  const prompt = buildPrompt(bounty, rubric);
+  const prompt = buildPrompt(bounty, rubric, pastFeedback);
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -274,7 +355,7 @@ async function generateContent(bounty, rubric) {
   return data.content[0].text;
 }
 
-function buildPrompt(bounty, rubric) {
+function buildPrompt(bounty, rubric, pastFeedback = []) {
   let rubricText = '';
 
   if (rubric) {
@@ -295,6 +376,37 @@ function buildPrompt(bounty, rubric) {
     }
   }
 
+  // Build feedback section from past submissions
+  let feedbackText = '';
+  if (pastFeedback.length > 0) {
+    feedbackText = '\n\n' + '='.repeat(60) + '\n';
+    feedbackText += 'LEARNING FROM PAST SUBMISSIONS\n';
+    feedbackText += '='.repeat(60) + '\n\n';
+    feedbackText += `There have been ${pastFeedback.length} previous submission(s) to this bounty.\n`;
+    feedbackText += `The passing threshold is ${pastFeedback[0]?.threshold || 80}%.\n\n`;
+    feedbackText += 'Study the AI evaluator feedback below carefully to understand what was missing or could be improved:\n\n';
+
+    // Sort by score (lowest first) so we learn from worst mistakes first
+    const sortedFeedback = [...pastFeedback].sort((a, b) => a.score - b.score);
+
+    for (let i = 0; i < sortedFeedback.length; i++) {
+      const fb = sortedFeedback[i];
+      feedbackText += `-`.repeat(50) + '\n';
+      feedbackText += `PAST SUBMISSION #${fb.submissionId} - Score: ${fb.score.toFixed(1)}% (${fb.passed ? 'PASSED' : 'FAILED'})\n`;
+      feedbackText += `-`.repeat(50) + '\n';
+      feedbackText += `AI EVALUATOR FEEDBACK:\n${fb.justification}\n\n`;
+    }
+
+    feedbackText += '='.repeat(60) + '\n';
+    feedbackText += 'USE THIS FEEDBACK TO CREATE A BETTER SUBMISSION\n';
+    feedbackText += '='.repeat(60) + '\n\n';
+    feedbackText += 'Based on the feedback above:\n';
+    feedbackText += '- Address ALL criticisms and missing elements mentioned\n';
+    feedbackText += '- Strengthen areas that received low scores\n';
+    feedbackText += '- Ensure you meet ALL must-pass criteria\n';
+    feedbackText += '- Be more thorough and detailed than previous submissions\n';
+  }
+
   return `You are completing a bounty task. Generate high-quality content that meets ALL the requirements.
 
 TASK TITLE: ${bounty.title}
@@ -304,6 +416,7 @@ ${bounty.description}
 
 WORK PRODUCT TYPE: ${bounty.workProductType || 'Written Content'}
 ${rubricText}
+${feedbackText}
 
 IMPORTANT INSTRUCTIONS:
 1. Your response should be the ACTUAL CONTENT only - no meta-commentary
@@ -311,6 +424,7 @@ IMPORTANT INSTRUCTIONS:
 3. Avoid any forbidden content
 4. Be thorough and professional
 5. The content should be ready to submit as-is
+${pastFeedback.length > 0 ? '6. CRITICAL: Learn from the past submission feedback above and create a significantly improved submission' : ''}
 
 Generate the content now:`;
 }
@@ -720,9 +834,27 @@ async function main() {
         }
       }
 
-      // Generate content using AI
+      // Fetch past feedback from previous submissions to learn from
+      let pastFeedback = [];
+      if (details.submissions && details.submissions.length > 0) {
+        console.log(`  Fetching feedback from ${details.submissions.length} past submission(s)...`);
+        pastFeedback = await fetchPastFeedback(details);
+        if (pastFeedback.length > 0) {
+          console.log(`  ✓ Found ${pastFeedback.length} submission(s) with AI feedback to learn from`);
+          pastFeedback.forEach(fb => {
+            console.log(`    - Submission #${fb.submissionId}: ${fb.score.toFixed(1)}% (${fb.passed ? 'PASSED' : 'FAILED'})`);
+          });
+        } else {
+          console.log(`  No past feedback available (submissions may still be pending)`);
+        }
+      }
+
+      // Generate content using AI (with past feedback if available)
       console.log('  Generating content with AI...');
-      const content = await generateContent(details, rubric);
+      if (pastFeedback.length > 0) {
+        console.log('  → Using past feedback to improve submission quality');
+      }
+      const content = await generateContent(details, rubric, pastFeedback);
       console.log(`  Generated ${content.length} characters`);
 
       // Submit the work to backend

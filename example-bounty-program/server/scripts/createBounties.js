@@ -8,6 +8,7 @@
  * Usage:
  *   node scripts/createBounties.js --count 5
  *   node scripts/createBounties.js --count 1 --class 128 --amount 0.001 --hours 1
+ *   node scripts/createBounties.js --count 1 --template research --class 128 --amount 0.001 --hours 1
  *   node scripts/createBounties.js --count 3 --amount 0.001 --hours 2
  *   node scripts/createBounties.js --count 2 --template writing
  *   node scripts/createBounties.js --count 1 --dry-run

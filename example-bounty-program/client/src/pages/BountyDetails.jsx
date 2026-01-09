@@ -1974,7 +1974,7 @@ function PendingSubmissionsPanel({
                   fontSize: '0.85rem',
                   color: passed ? '#2e7d32' : '#b57c00'
                 }}>
-                  {passed ? '✅' : '⚠️'} <strong>AI Evaluation Complete!</strong> Score: {score.toFixed(1)}% ({threshold}% required)
+                  {passed ? '✅' : '❌'} <strong>AI Evaluation Complete — {passed ? 'Accepted' : 'Not Accepted'}</strong> Score: {score.toFixed(1)}% ({threshold}% required)
                 </div>
               );
             })()}
@@ -2022,7 +2022,13 @@ function PendingSubmissionsPanel({
                     fontWeight: evalResult?.ready ? 'bold' : 'normal'
                   }}
                 >
-                  {isFinalizing ? '⏳ Finalizing...' : evalResult?.ready ? '🎉 Claim Results & Update Status' : '✅ Finalize'}
+                  {isFinalizing
+                    ? '⏳ Finalizing...'
+                    : evalResult?.ready
+                      ? (evalResult.scores.acceptance >= (job?.threshold ?? 80)
+                          ? '🎉 Claim Bounty & Update Status'
+                          : 'Finalize & Update Status')
+                      : '✅ Finalize'}
                 </button>
               )}
 
@@ -2266,7 +2272,7 @@ function SubmissionCard({
             textAlign: 'center'
           }}>
             <div style={{ fontSize: '1rem', color: passed ? '#2e7d32' : '#b57c00', fontWeight: 'bold', marginBottom: '0.25rem' }}>
-              {passed ? '✅' : '⚠️'} AI Evaluation Complete!
+              {passed ? '✅' : '❌'} AI Evaluation Complete — {passed ? 'Accepted' : 'Not Accepted'}
             </div>
             <div style={{ fontSize: '0.9rem', color: passed ? '#388e3c' : '#c68200' }}>
               Score: {score.toFixed(1)}% ({threshold}% required)
@@ -2376,10 +2382,12 @@ function SubmissionCard({
                 fontWeight: hasEvalReady ? 'bold' : 'normal'
               }}
             >
-              {isFinalizing 
-                ? '⏳ Processing transaction...' 
-                : hasEvalReady 
-                  ? '🎉 Claim Results & Update Status' 
+              {isFinalizing
+                ? '⏳ Processing transaction...'
+                : hasEvalReady
+                  ? (evaluationResult.scores.acceptance >= threshold
+                      ? '🎉 Claim Bounty & Update Status'
+                      : 'Finalize & Update Status')
                   : '✅ Finalize Submission (check results)'}
             </button>
           )}

@@ -340,12 +340,31 @@ async function fetchPastFeedback(bounty, provider) {
       }
 
       if (justificationText) {
+        // Also fetch the work product content if available
+        let workProduct = null;
+        if (sub.hunterCid) {
+          try {
+            console.log(`    Submission #${subId}: Fetching work product...`);
+            const wpContent = await fetchFromIPFS(sub.hunterCid);
+            // Work product might be JSON with files array or plain text
+            if (typeof wpContent === 'object' && wpContent.files) {
+              // If it's a structured submission, extract the content
+              workProduct = JSON.stringify(wpContent, null, 2);
+            } else if (typeof wpContent === 'string') {
+              workProduct = wpContent;
+            }
+          } catch (wpErr) {
+            console.log(`    Submission #${subId}: Could not fetch work product: ${wpErr.message}`);
+          }
+        }
+
         feedback.push({
           submissionId: subId,
           score,
           threshold,
           passed,
           justification: justificationText,
+          workProduct,
           status: sub.status,
         });
       }
@@ -412,35 +431,42 @@ function buildPrompt(bounty, rubric, pastFeedback = []) {
     }
   }
 
-  // Build feedback section from past submissions
+  // Build focused feedback section - only use the BEST scoring submission
+  // to avoid confusion from multiple conflicting feedbacks
   let feedbackText = '';
   if (pastFeedback.length > 0) {
-    feedbackText = '\n\n' + '='.repeat(60) + '\n';
-    feedbackText += 'LEARNING FROM PAST SUBMISSIONS\n';
-    feedbackText += '='.repeat(60) + '\n\n';
-    feedbackText += `There have been ${pastFeedback.length} previous submission(s) to this bounty.\n`;
-    feedbackText += `The passing threshold is ${pastFeedback[0]?.threshold || 80}%.\n\n`;
-    feedbackText += 'Study the AI evaluator feedback below carefully to understand what was missing or could be improved:\n\n';
+    // Use the highest-scoring submission as the reference
+    const bestSubmission = [...pastFeedback].sort((a, b) => b.score - a.score)[0];
+    const threshold = bestSubmission.threshold || 80;
+    const gap = threshold - bestSubmission.score;
 
-    // Sort by score (lowest first) so we learn from worst mistakes first
-    const sortedFeedback = [...pastFeedback].sort((a, b) => a.score - b.score);
+    feedbackText = '\n\nPREVIOUS ATTEMPT FEEDBACK:\n';
+    feedbackText += `A previous submission scored ${bestSubmission.score.toFixed(1)}% (needs ${threshold}% to pass).\n`;
 
-    for (let i = 0; i < sortedFeedback.length; i++) {
-      const fb = sortedFeedback[i];
-      feedbackText += `-`.repeat(50) + '\n';
-      feedbackText += `PAST SUBMISSION #${fb.submissionId} - Score: ${fb.score.toFixed(1)}% (${fb.passed ? 'PASSED' : 'FAILED'})\n`;
-      feedbackText += `-`.repeat(50) + '\n';
-      feedbackText += `AI EVALUATOR FEEDBACK:\n${fb.justification}\n\n`;
+    if (gap > 0) {
+      // Include the previous work product so the AI can see what was submitted
+      if (bestSubmission.workProduct) {
+        feedbackText += `\nThe previous submission that was evaluated:\n`;
+        feedbackText += `--- START OF PREVIOUS SUBMISSION ---\n`;
+        feedbackText += bestSubmission.workProduct;
+        feedbackText += `\n--- END OF PREVIOUS SUBMISSION ---\n`;
+      }
+
+      feedbackText += `\nThe evaluator's feedback on that submission:\n`;
+      feedbackText += bestSubmission.justification || '';
+      feedbackText += `\n\nYour task: Create an IMPROVED submission that addresses the weaknesses identified above while maintaining the strengths. Do not simply copy the previous submission - create original content that scores higher.\n`;
+    } else {
+      // Previous submission passed - use it as a reference
+      if (bestSubmission.workProduct) {
+        feedbackText += `\nHere is an example of a passing submission for reference:\n`;
+        feedbackText += `--- START OF EXAMPLE ---\n`;
+        feedbackText += bestSubmission.workProduct;
+        feedbackText += `\n--- END OF EXAMPLE ---\n`;
+        feedbackText += `\nCreate a submission of similar quality and thoroughness, but with original content.\n`;
+      } else {
+        feedbackText += `This submission passed! Use similar quality and approach.\n`;
+      }
     }
-
-    feedbackText += '='.repeat(60) + '\n';
-    feedbackText += 'USE THIS FEEDBACK TO CREATE A BETTER SUBMISSION\n';
-    feedbackText += '='.repeat(60) + '\n\n';
-    feedbackText += 'Based on the feedback above:\n';
-    feedbackText += '- Address ALL criticisms and missing elements mentioned\n';
-    feedbackText += '- Strengthen areas that received low scores\n';
-    feedbackText += '- Ensure you meet ALL must-pass criteria\n';
-    feedbackText += '- Be more thorough and detailed than previous submissions\n';
   }
 
   return `You are completing a bounty task. Generate high-quality content that meets ALL the requirements.
@@ -454,13 +480,12 @@ WORK PRODUCT TYPE: ${bounty.workProductType || 'Written Content'}
 ${rubricText}
 ${feedbackText}
 
-IMPORTANT INSTRUCTIONS:
-1. Your response should be the ACTUAL CONTENT only - no meta-commentary
-2. Make sure to address ALL grading criteria thoroughly
+INSTRUCTIONS:
+1. Your response should be the ACTUAL CONTENT only - no meta-commentary or explanations
+2. Address ALL grading criteria thoroughly, especially any marked "MUST PASS"
 3. Avoid any forbidden content
-4. Be thorough and professional
+4. Be thorough, professional, and comprehensive
 5. The content should be ready to submit as-is
-${pastFeedback.length > 0 ? '6. CRITICAL: Learn from the past submission feedback above and create a significantly improved submission' : ''}
 
 Generate the content now:`;
 }

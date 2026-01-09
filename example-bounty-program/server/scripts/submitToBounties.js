@@ -884,16 +884,35 @@ async function main() {
           console.log(`  On-chain submission ID: ${chainResult.submissionId}`);
           console.log(`  Transaction: ${chainResult.txHash}`);
 
-          // Sync backend with on-chain status
+          // Sync backend with on-chain status (with retry until status changes from Prepared)
           console.log('  Syncing backend status...');
           try {
-            const refreshResponse = await fetch(
-              `${CONFIG.apiUrl}/api/jobs/${bounty.jobId}/submissions/${chainResult.submissionId}/refresh`,
-              { method: 'POST' }
-            );
-            if (refreshResponse.ok) {
-              const refreshData = await refreshResponse.json();
-              console.log(`  Backend synced: ${refreshData.submission?.status}`);
+            let syncedStatus = 'Prepared';
+            for (let syncAttempt = 1; syncAttempt <= 5; syncAttempt++) {
+              // Wait a bit for the RPC to reflect the state change
+              if (syncAttempt > 1) {
+                console.log(`    Waiting for RPC to update (attempt ${syncAttempt}/5)...`);
+              }
+              await new Promise(resolve => setTimeout(resolve, syncAttempt === 1 ? 2000 : 3000));
+
+              const refreshResponse = await fetch(
+                `${CONFIG.apiUrl}/api/jobs/${bounty.jobId}/submissions/${chainResult.submissionId}/refresh`,
+                { method: 'POST' }
+              );
+              if (refreshResponse.ok) {
+                const refreshData = await refreshResponse.json();
+                syncedStatus = refreshData.submission?.status || 'Unknown';
+
+                // If status is no longer Prepared, we're done
+                if (syncedStatus !== 'Prepared' && syncedStatus !== 'PREPARED') {
+                  console.log(`  Backend synced: ${syncedStatus}`);
+                  break;
+                }
+              }
+
+              if (syncAttempt === 5) {
+                console.log(`  Backend synced: ${syncedStatus} (RPC may be slow, status will update automatically)`);
+              }
             }
           } catch (e) {
             console.log(`  Warning: Could not sync backend: ${e.message}`);

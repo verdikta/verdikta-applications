@@ -431,41 +431,61 @@ function buildPrompt(bounty, rubric, pastFeedback = []) {
     }
   }
 
-  // Build focused feedback section - only use the BEST scoring submission
-  // to avoid confusion from multiple conflicting feedbacks
+  // Build focused feedback section using two key submissions:
+  // 1) The highest-scoring submission (best reference)
+  // 2) The most recent submission (for iterative improvement)
   let feedbackText = '';
   if (pastFeedback.length > 0) {
-    // Use the highest-scoring submission as the reference
-    const bestSubmission = [...pastFeedback].sort((a, b) => b.score - a.score)[0];
-    const threshold = bestSubmission.threshold || 80;
-    const gap = threshold - bestSubmission.score;
+    const threshold = pastFeedback[0].threshold || 80;
 
-    feedbackText = '\n\nPREVIOUS ATTEMPT FEEDBACK:\n';
-    feedbackText += `A previous submission scored ${bestSubmission.score.toFixed(1)}% (needs ${threshold}% to pass).\n`;
+    // Sort to find best and most recent
+    const sortedByScore = [...pastFeedback].sort((a, b) => b.score - a.score);
+    const sortedByRecency = [...pastFeedback].sort((a, b) => b.submissionId - a.submissionId);
 
-    if (gap > 0) {
-      // Include the previous work product so the AI can see what was submitted
-      if (bestSubmission.workProduct) {
-        feedbackText += `\nThe previous submission that was evaluated:\n`;
-        feedbackText += `--- START OF PREVIOUS SUBMISSION ---\n`;
-        feedbackText += bestSubmission.workProduct;
-        feedbackText += `\n--- END OF PREVIOUS SUBMISSION ---\n`;
+    const bestSubmission = sortedByScore[0];
+    const mostRecentSubmission = sortedByRecency[0];
+
+    // Check if they're the same submission
+    const isSameSubmission = bestSubmission.submissionId === mostRecentSubmission.submissionId;
+
+    feedbackText = '\n\nPREVIOUS ATTEMPTS - LEARN FROM THESE:\n';
+    feedbackText += `Target score: ${threshold}% to pass.\n`;
+
+    // Always show the best submission first
+    feedbackText += `\n=== BEST SCORING ATTEMPT (${bestSubmission.score.toFixed(1)}%) ===\n`;
+    if (bestSubmission.workProduct) {
+      feedbackText += `--- SUBMISSION CONTENT ---\n`;
+      feedbackText += bestSubmission.workProduct;
+      feedbackText += `\n--- END SUBMISSION ---\n`;
+    }
+    feedbackText += `\n--- EVALUATOR FEEDBACK ---\n`;
+    feedbackText += bestSubmission.justification || '(No feedback available)';
+    feedbackText += `\n--- END FEEDBACK ---\n`;
+
+    // If there's a different most recent submission, show it too
+    if (!isSameSubmission) {
+      feedbackText += `\n=== MOST RECENT ATTEMPT (${mostRecentSubmission.score.toFixed(1)}%) ===\n`;
+      if (mostRecentSubmission.workProduct) {
+        feedbackText += `--- SUBMISSION CONTENT ---\n`;
+        feedbackText += mostRecentSubmission.workProduct;
+        feedbackText += `\n--- END SUBMISSION ---\n`;
       }
+      feedbackText += `\n--- EVALUATOR FEEDBACK ---\n`;
+      feedbackText += mostRecentSubmission.justification || '(No feedback available)';
+      feedbackText += `\n--- END FEEDBACK ---\n`;
+    }
 
-      feedbackText += `\nThe evaluator's feedback on that submission:\n`;
-      feedbackText += bestSubmission.justification || '';
-      feedbackText += `\n\nYour task: Create an IMPROVED submission that addresses the weaknesses identified above while maintaining the strengths. Do not simply copy the previous submission - create original content that scores higher.\n`;
+    // Instructions based on whether we've passed yet
+    const bestGap = threshold - bestSubmission.score;
+    if (bestGap > 0) {
+      feedbackText += `\nINSTRUCTIONS: The best attempt scored ${bestSubmission.score.toFixed(1)}%, which is ${bestGap.toFixed(1)}% below the ${threshold}% threshold.\n`;
+      feedbackText += `Analyze what worked well and what was criticized. Create an IMPROVED submission that:\n`;
+      feedbackText += `- Addresses ALL weaknesses mentioned in the feedback\n`;
+      feedbackText += `- Keeps the strengths that earned points\n`;
+      feedbackText += `- Goes beyond what was attempted before\n`;
+      feedbackText += `Do NOT copy previous submissions - create original, higher-quality content.\n`;
     } else {
-      // Previous submission passed - use it as a reference
-      if (bestSubmission.workProduct) {
-        feedbackText += `\nHere is an example of a passing submission for reference:\n`;
-        feedbackText += `--- START OF EXAMPLE ---\n`;
-        feedbackText += bestSubmission.workProduct;
-        feedbackText += `\n--- END OF EXAMPLE ---\n`;
-        feedbackText += `\nCreate a submission of similar quality and thoroughness, but with original content.\n`;
-      } else {
-        feedbackText += `This submission passed! Use similar quality and approach.\n`;
-      }
+      feedbackText += `\nINSTRUCTIONS: A previous submission passed! Create content of similar quality with original content.\n`;
     }
   }
 
@@ -741,13 +761,23 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
   const approveReceipt = await approveTx.wait();
   console.log(`    Approval tx: ${approveTx.hash}`);
 
-  // Wait a moment for the approval to be indexed by the RPC
-  await new Promise(resolve => setTimeout(resolve, 2000));
+  // Wait for the approval to be indexed by the RPC (with retry)
+  console.log('    Waiting for approval to be indexed...');
+  let allowance = 0n;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, attempt === 1 ? 2000 : 3000));
+    allowance = await linkToken.allowance(wallet.address, evalWallet);
+    if (allowance >= linkMaxBudget) {
+      break;
+    }
+    if (attempt < 5) {
+      console.log(`    Allowance not yet indexed (attempt ${attempt}/5), waiting...`);
+    }
+  }
 
   // Verify allowance before proceeding
-  const allowance = await linkToken.allowance(wallet.address, evalWallet);
   if (allowance < linkMaxBudget) {
-    throw new Error(`Allowance not set correctly. Expected ${ethers.formatEther(linkMaxBudget)}, got ${ethers.formatEther(allowance)}`);
+    throw new Error(`Allowance not set correctly after 5 attempts. Expected ${ethers.formatEther(linkMaxBudget)}, got ${ethers.formatEther(allowance)}. Try running again.`);
   }
 
   // Step 3: Start the prepared submission with retry logic for transient failures
@@ -946,33 +976,35 @@ async function main() {
           console.log(`  Transaction: ${chainResult.txHash}`);
 
           // Sync backend with on-chain status (with retry until status changes from Prepared)
+          // The RPC can be very slow to index state changes, so we wait longer
           console.log('  Syncing backend status...');
           try {
-            let syncedStatus = 'Prepared';
-            for (let syncAttempt = 1; syncAttempt <= 5; syncAttempt++) {
-              // Wait a bit for the RPC to reflect the state change
-              if (syncAttempt > 1) {
-                console.log(`    Waiting for RPC to update (attempt ${syncAttempt}/5)...`);
-              }
-              await new Promise(resolve => setTimeout(resolve, syncAttempt === 1 ? 2000 : 3000));
+            // Initial wait - give the RPC time to index the transaction
+            console.log('    Waiting 5s for RPC to index transaction...');
+            await new Promise(resolve => setTimeout(resolve, 5000));
 
+            let syncedStatus = 'Prepared';
+            for (let syncAttempt = 1; syncAttempt <= 8; syncAttempt++) {
               const refreshResponse = await fetch(
                 `${CONFIG.apiUrl}/api/jobs/${bounty.jobId}/submissions/${chainResult.submissionId}/refresh`,
                 { method: 'POST' }
               );
               if (refreshResponse.ok) {
                 const refreshData = await refreshResponse.json();
-                syncedStatus = refreshData.submission?.status || 'Unknown';
+                syncedStatus = refreshData.submission?.status || refreshData.submission?.onChainStatus || 'Unknown';
 
                 // If status is no longer Prepared, we're done
-                if (syncedStatus !== 'Prepared' && syncedStatus !== 'PREPARED') {
+                if (syncedStatus !== 'Prepared' && syncedStatus !== 'PREPARED' && syncedStatus !== 'Submission Prepared (Not Started)') {
                   console.log(`  Backend synced: ${syncedStatus}`);
                   break;
                 }
               }
 
-              if (syncAttempt === 5) {
-                console.log(`  Backend synced: ${syncedStatus} (RPC may be slow, status will update automatically)`);
+              if (syncAttempt < 8) {
+                console.log(`    Status still Prepared (attempt ${syncAttempt}/8), waiting 4s...`);
+                await new Promise(resolve => setTimeout(resolve, 4000));
+              } else {
+                console.log(`  Backend status: ${syncedStatus} (RPC slow - will update on next refresh)`);
               }
             }
           } catch (e) {

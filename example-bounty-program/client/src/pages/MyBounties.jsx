@@ -15,6 +15,25 @@ import {
 } from '../utils/statusDisplay';
 import './MyBounties.css';
 
+/**
+ * Copy text to clipboard with fallback for HTTP (non-secure) contexts.
+ */
+function copyToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text);
+  } else {
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-9999px';
+    document.body.appendChild(textArea);
+    textArea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textArea);
+  }
+  alert('Copied to clipboard');
+}
+
 function MyBounties({ walletState }) {
   const [bounties, setBounties] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -208,8 +227,26 @@ function MyBounties({ walletState }) {
             </div>
 
             <div className="download-info">
-              <p><strong>Hunter:</strong> {downloadResult.submission?.hunter}</p>
-              <p><strong>CID:</strong> <code>{downloadResult.submission?.hunterCid}</code></p>
+              <p>
+                <strong>Submitter:</strong>{' '}
+                <span
+                  style={{ cursor: 'pointer' }}
+                  title="Click to copy address"
+                  onClick={() => copyToClipboard(downloadResult.submission?.hunter)}
+                >
+                  {downloadResult.submission?.hunter}
+                </span>
+              </p>
+              <p>
+                <strong>CID:</strong>{' '}
+                <code
+                  style={{ cursor: 'pointer' }}
+                  title="Click to copy CID"
+                  onClick={() => copyToClipboard(downloadResult.submission?.hunterCid)}
+                >
+                  {downloadResult.submission?.hunterCid}
+                </code>
+              </p>
             </div>
 
             <button onClick={() => setDownloadResult(null)} className="btn btn-secondary">
@@ -266,7 +303,7 @@ function MyBounties({ walletState }) {
                   ) : (
                     <div className="submissions-list">
                       <div className="submissions-header">
-                        <span>Hunter</span>
+                        <span>Submitter</span>
                         <span>Status</span>
                         <span>Score</span>
                         <span>Archive</span>
@@ -275,8 +312,14 @@ function MyBounties({ walletState }) {
                       </div>
                       {bounty.submissions.map((sub) => (
                         <div key={sub.submissionId} className="submission-row">
-                          <span className="hunter-address" data-label="Hunter" title={sub.hunter}>
-                            {sub.hunter?.slice(0, 6)}...{sub.hunter?.slice(-4)}
+                          <span
+                            className="hunter-address"
+                            data-label="Submitter"
+                            title="Click to copy address"
+                            style={{ cursor: 'pointer' }}
+                            onClick={() => copyToClipboard(sub.hunter)}
+                          >
+                            {sub.hunter}
                           </span>
                           <span className={`sub-status ${getSubmissionStatusBadgeClass(sub.status)}`} data-label="Status">
                             {getSubmissionStatusDisplay(sub.status)}

@@ -54,6 +54,31 @@ const CONFIG = {
 const isPendingStatus = isSubmissionPending;
 
 // ============================================================================
+// UTILITIES
+// ============================================================================
+
+/**
+ * Copy text to clipboard with fallback for HTTP (non-secure) contexts.
+ * navigator.clipboard requires HTTPS, so we fall back to execCommand.
+ */
+function copyToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text);
+  } else {
+    // Fallback for HTTP
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-9999px';
+    document.body.appendChild(textArea);
+    textArea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textArea);
+  }
+  alert('Copied to clipboard');
+}
+
+// ============================================================================
 // MAIN COMPONENT
 // ============================================================================
 
@@ -1921,7 +1946,14 @@ function PendingSubmissionsPanel({
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
               <span style={{ fontSize: '0.9rem', color: '#666' }}>
-                Submission #{s.submissionId} by {s.hunter?.substring(0, 10)}...
+                Submission #{s.submissionId} by{' '}
+                <span
+                  style={{ cursor: 'pointer', textDecoration: 'underline dotted' }}
+                  title={`${s.hunter} (click to copy)`}
+                  onClick={() => copyToClipboard(s.hunter)}
+                >
+                  {s.hunter?.substring(0, 10)}...
+                </span>
               </span>
               <span style={{ fontSize: '0.85rem', color: '#888', marginLeft: 'auto' }}>
                 {ageMinutes.toFixed(1)} min elapsed
@@ -2143,7 +2175,16 @@ function SubmissionCard({
       backgroundColor: hasEvalReady ? '#f1f8e9' : undefined
     }}>
       <div className="submission-header">
-        <span className="hunter">{submission.hunter?.substring(0, 10)}...</span>
+        <span className="hunter">
+          Submitter:{' '}
+          <span
+            style={{ cursor: 'pointer' }}
+            title="Click to copy address"
+            onClick={() => copyToClipboard(submission.hunter)}
+          >
+            {submission.hunter}
+          </span>
+        </span>
         <span {...getSubmissionBadgeProps(submission.status)}>
           {getSubmissionStatusDisplay(submission.status)}
         </span>

@@ -2191,9 +2191,28 @@ function SubmissionCard({
             {submission.hunter}
           </span>
         </span>
-        <span {...getSubmissionBadgeProps(submission.status)}>
-          {getSubmissionStatusDisplay(submission.status)}
-        </span>
+        {hasEvalReady ? (
+          <span
+            style={{
+              padding: '0.25rem 0.5rem',
+              borderRadius: '4px',
+              fontSize: '0.85rem',
+              fontWeight: 'normal',
+              backgroundColor: evaluationResult.scores.acceptance >= threshold ? '#c8e6c9' : '#ffcdd2',
+              color: evaluationResult.scores.acceptance >= threshold ? '#2e7d32' : '#c62828',
+              cursor: 'default'
+            }}
+          >
+            {evaluationResult.scores.acceptance >= threshold ? '✅ Accepted' : '❌ Not Accepted'}
+          </span>
+        ) : (
+          <span
+            {...getSubmissionBadgeProps(submission.status)}
+            style={{ cursor: 'default' }}
+          >
+            {getSubmissionStatusDisplay(submission.status)}
+          </span>
+        )}
       </div>
 
       {/* IDs for debugging/manual operations */}

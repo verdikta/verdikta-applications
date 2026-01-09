@@ -11,6 +11,7 @@
  *   node scripts/createBounties.js --count 1 --template research --class 128 --amount 0.001 --hours 1
  *   node scripts/createBounties.js --count 3 --amount 0.001 --hours 2
  *   node scripts/createBounties.js --count 2 --template writing
+ *   node scripts/createBounties.js --count 1 --threshold 50 --hours 1
  *   node scripts/createBounties.js --count 1 --dry-run
  *
  * Environment Variables Required:
@@ -183,6 +184,7 @@ function parseArgs() {
     hours: 24,
     template: 'writing',
     classId: 131,
+    threshold: null,  // null means use template default
     dryRun: false,
     help: false,
   };
@@ -208,6 +210,13 @@ function parseArgs() {
       case '--class':
       case '-c':
         options.classId = parseInt(args[++i]) || 131;
+        break;
+      case '--threshold':
+        options.threshold = parseInt(args[++i]);
+        if (isNaN(options.threshold) || options.threshold < 0 || options.threshold > 100) {
+          console.error('Error: --threshold must be a number between 0 and 100');
+          process.exit(1);
+        }
         break;
       case '--dry-run':
       case '-d':
@@ -235,6 +244,7 @@ Options:
   --hours, -h <hours>      Submission window in hours (default: 24)
   --template, -t <name>    Template to use: writing, code, design, research (default: writing)
   --class, -c <id>         Verdikta class ID (default: 131)
+  --threshold <percent>    Passing threshold 0-100 (default: from template)
   --dry-run, -d            Simulate without creating bounties
   --help                   Show this help message
 
@@ -248,17 +258,19 @@ Examples:
   node scripts/createBounties.js --count 5
   node scripts/createBounties.js --count 3 --amount 0.01 --hours 48
   node scripts/createBounties.js --count 2 --template code
+  node scripts/createBounties.js --count 1 --threshold 50 --hours 1
   node scripts/createBounties.js --count 1 --dry-run
 `);
 }
 
-function generateBountyData(template, index, classId) {
+function generateBountyData(template, index, classId, thresholdOverride = null) {
   const tmpl = TEMPLATES[template] || TEMPLATES.writing;
   const descIndex = index % tmpl.descriptions.length;
+  const threshold = thresholdOverride !== null ? thresholdOverride : tmpl.threshold;
 
   const rubric = {
     ...tmpl.rubric,
-    threshold: tmpl.threshold,
+    threshold: threshold,
     classId: classId,
   };
 
@@ -266,7 +278,7 @@ function generateBountyData(template, index, classId) {
     title: `${tmpl.titlePrefix} #${index + 1}`,
     description: tmpl.descriptions[descIndex],
     workProductType: tmpl.workProductType,
-    threshold: tmpl.threshold,
+    threshold: threshold,
     classId: classId,
     rubricJson: rubric,
     juryNodes: DEFAULT_JURY,
@@ -397,6 +409,10 @@ async function main() {
     process.exit(1);
   }
 
+  // Determine effective threshold for display
+  const templateThreshold = TEMPLATES[options.template]?.threshold || 70;
+  const effectiveThreshold = options.threshold !== null ? options.threshold : templateThreshold;
+
   console.log('='.repeat(60));
   console.log('Bulk Bounty Creation Script');
   console.log('='.repeat(60));
@@ -405,6 +421,7 @@ async function main() {
   console.log(`Window:    ${options.hours} hours`);
   console.log(`Template:  ${options.template}`);
   console.log(`Class ID:  ${options.classId}`);
+  console.log(`Threshold: ${effectiveThreshold}%${options.threshold !== null ? ' (override)' : ' (from template)'}`);
   console.log(`Dry Run:   ${options.dryRun ? 'Yes' : 'No'}`);
   console.log('='.repeat(60));
 
@@ -436,7 +453,7 @@ async function main() {
     console.log(`[${i + 1}/${options.count}] Creating bounty...`);
 
     try {
-      const bountyData = generateBountyData(options.template, i, options.classId);
+      const bountyData = generateBountyData(options.template, i, options.classId, options.threshold);
       console.log(`  Title: ${bountyData.title}`);
 
       if (options.dryRun) {

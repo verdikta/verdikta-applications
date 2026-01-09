@@ -260,10 +260,12 @@ async function fetchFromIPFS(cid) {
 }
 
 /**
- * Fetch past submission feedback (justifications) for a bounty
+ * Fetch past submission feedback (justifications) for a bounty.
+ * Queries Verdikta directly for pending submissions that have completed evaluation
+ * but haven't been finalized yet.
  * Returns an array of { score, threshold, passed, justification } objects
  */
-async function fetchPastFeedback(bounty) {
+async function fetchPastFeedback(bounty, provider) {
   if (!bounty.submissions || bounty.submissions.length === 0) {
     return [];
   }
@@ -271,28 +273,62 @@ async function fetchPastFeedback(bounty) {
   const threshold = bounty.threshold || 80;
   const feedback = [];
 
+  // Verdikta contract for querying evaluation results directly
+  const verdikta = new ethers.Contract(VERDIKTA_ADDRESS, VERDIKTA_ABI, provider);
+
   for (const sub of bounty.submissions) {
-    // Skip submissions without justification CIDs
-    if (!sub.justificationCids || sub.justificationCids === '') {
+    const subId = sub.submissionId ?? sub.onChainSubmissionId ?? '?';
+
+    // First, check if we have justificationCids from finalized submission
+    let justificationCids = sub.justificationCids || '';
+    let score = sub.acceptance ?? sub.score ?? null;
+
+    // If no justification yet but we have a verdiktaAggId, query Verdikta directly
+    if ((!justificationCids || justificationCids === '') && sub.verdiktaAggId &&
+        sub.verdiktaAggId !== '0x0000000000000000000000000000000000000000000000000000000000000000') {
+      try {
+        console.log(`    Submission #${subId}: Checking Verdikta for pending evaluation...`);
+        const [scores, justCid, exists] = await verdikta.getEvaluation(sub.verdiktaAggId);
+
+        if (exists && justCid && justCid.length > 0) {
+          justificationCids = justCid;
+          // scores[1] is acceptance, normalize from 0-1000000 to 0-100
+          score = Number(scores[1]) / 10000;
+          console.log(`    Submission #${subId}: Found! Score: ${score.toFixed(1)}%`);
+        } else {
+          console.log(`    Submission #${subId}: Evaluation not ready yet`);
+          continue;
+        }
+      } catch (e) {
+        console.log(`    Submission #${subId}: Could not query Verdikta: ${e.message}`);
+        continue;
+      }
+    }
+
+    // Skip if still no justification
+    if (!justificationCids || justificationCids === '') {
+      console.log(`    Submission #${subId}: No justification available (status: ${sub.status})`);
       continue;
     }
 
     // Parse justification CIDs (can be comma-separated)
-    const cids = sub.justificationCids.split(',')
+    const cids = justificationCids.split(',')
       .map(cid => cid.trim())
       .filter(cid => cid.length > 0 && cid !== '0');
 
     if (cids.length === 0) continue;
 
-    // Get the score
-    const score = sub.acceptance ?? sub.score ?? null;
-    if (score === null) continue;
+    // Skip if no score
+    if (score === null) {
+      console.log(`    Submission #${subId}: No score available`);
+      continue;
+    }
 
     const passed = score >= threshold;
 
     // Fetch justification content from the first CID
     try {
-      console.log(`    Fetching feedback from CID: ${cids[0].substring(0, 20)}...`);
+      console.log(`    Submission #${subId}: Fetching justification from IPFS...`);
       const content = await fetchFromIPFS(cids[0]);
 
       // Extract justification text
@@ -305,7 +341,7 @@ async function fetchPastFeedback(bounty) {
 
       if (justificationText) {
         feedback.push({
-          submissionId: sub.submissionId,
+          submissionId: subId,
           score,
           threshold,
           passed,
@@ -314,7 +350,7 @@ async function fetchPastFeedback(bounty) {
         });
       }
     } catch (e) {
-      console.log(`    Warning: Could not fetch feedback for submission ${sub.submissionId}: ${e.message}`);
+      console.log(`    Submission #${subId}: Could not fetch from IPFS: ${e.message}`);
     }
   }
 
@@ -838,14 +874,14 @@ async function main() {
       let pastFeedback = [];
       if (details.submissions && details.submissions.length > 0) {
         console.log(`  Fetching feedback from ${details.submissions.length} past submission(s)...`);
-        pastFeedback = await fetchPastFeedback(details);
+        pastFeedback = await fetchPastFeedback(details, wallet.provider);
         if (pastFeedback.length > 0) {
           console.log(`  ✓ Found ${pastFeedback.length} submission(s) with AI feedback to learn from`);
           pastFeedback.forEach(fb => {
             console.log(`    - Submission #${fb.submissionId}: ${fb.score.toFixed(1)}% (${fb.passed ? 'PASSED' : 'FAILED'})`);
           });
         } else {
-          console.log(`  No past feedback available (submissions may still be pending)`);
+          console.log(`  No past feedback available (evaluations may still be in progress)`);
         }
       }
 

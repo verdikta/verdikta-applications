@@ -2032,7 +2032,7 @@ function PendingSubmissionsPanel({
                 </button>
               )}
 
-              {canTimeout && (
+              {canTimeout && !evalResult?.ready && (
                 <button
                   onClick={() => onFailTimeout(s.submissionId)}
                   disabled={isFailing || disableActions}
@@ -2392,32 +2392,30 @@ function SubmissionCard({
             </button>
           )}
 
-          {/* Show timeout button when eligible - this is the PRIMARY action for stuck submissions */}
-          {canTimeout && (
+          {/* Show timeout button when eligible - but NOT if evaluation is ready */}
+          {canTimeout && !hasEvalReady && (
             <>
-              {!hasEvalReady && (
-                <div style={{ 
-                  fontSize: '0.8rem', 
-                  color: '#e65100', 
-                  textAlign: 'center',
-                  padding: '0.5rem',
-                  backgroundColor: '#fff3e0',
-                  borderRadius: '4px',
-                  marginBottom: '0.25rem'
-                }}>
-                  ⚠️ Oracle hasn't responded after {ageMinutes.toFixed(0)} min. 
-                  Use the button below to mark as failed and refund LINK.
-                </div>
-              )}
+              <div style={{
+                fontSize: '0.8rem',
+                color: '#e65100',
+                textAlign: 'center',
+                padding: '0.5rem',
+                backgroundColor: '#fff3e0',
+                borderRadius: '4px',
+                marginBottom: '0.25rem'
+              }}>
+                ⚠️ Oracle hasn't responded after {ageMinutes.toFixed(0)} min.
+                Use the button below to mark as failed and refund LINK.
+              </div>
               <button
                 onClick={() => onFailTimeout(submission.submissionId)}
                 disabled={isFailing || disableActions}
                 className="btn btn-warning"
-                style={{ 
-                  fontSize: hasEvalReady ? '0.85rem' : '1rem', 
-                  padding: hasEvalReady ? '0.4rem 0.8rem' : '0.75rem 1rem', 
+                style={{
+                  fontSize: '1rem',
+                  padding: '0.75rem 1rem',
                   width: '100%',
-                  fontWeight: hasEvalReady ? 'normal' : 'bold'
+                  fontWeight: 'bold'
                 }}
               >
                 {isFailing ? '⏳ Marking as Failed...' : `⏱️ Fail Timed-Out Submission (${ageMinutes.toFixed(0)} min stuck)`}

@@ -253,6 +253,10 @@
   color: #6b7280;
 }
 
+.sub-status.status-timeout {
+  color: #9ca3af;
+}
+
 /* Inline icon utility */
 .inline-icon {
   vertical-align: middle;

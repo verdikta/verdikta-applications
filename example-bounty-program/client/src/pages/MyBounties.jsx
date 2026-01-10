@@ -17,6 +17,7 @@ import {
   X,
   Hourglass,
   HelpCircle,
+  Clock,
 } from 'lucide-react';
 import { apiService } from '../services/api';
 import {
@@ -26,6 +27,8 @@ import {
   getSubmissionStatusBadgeClass,
   getSubmissionStatusIcon,
   getArchiveStatusInfo,
+  isSubmissionPending,
+  BountyStatus,
   IconName,
 } from '../utils/statusDisplay';
 import './MyBounties.css';
@@ -76,6 +79,31 @@ function StatusIconComponent({ iconName, size = 12, className = '' }) {
   const IconComponent = ICON_MAP[iconName];
   if (!IconComponent) return null;
   return <IconComponent size={size} className={className} />;
+}
+
+/**
+ * Get submission status display info, accounting for timed-out evaluations.
+ * If the bounty is no longer open and the submission is still pending, it timed out.
+ */
+function getEffectiveSubmissionStatus(submissionStatus, bountyStatus) {
+  const isPending = isSubmissionPending(submissionStatus);
+  const bountyOpen = bountyStatus === BountyStatus.OPEN;
+
+  if (isPending && !bountyOpen) {
+    // Submission was pending but bounty closed - evaluation timed out
+    return {
+      label: 'Timed Out',
+      icon: Clock,
+      badgeClass: 'status-timeout',
+    };
+  }
+
+  // Normal status
+  return {
+    label: getSubmissionStatusLabel(submissionStatus),
+    iconName: getSubmissionStatusIcon(submissionStatus),
+    badgeClass: getSubmissionStatusBadgeClass(submissionStatus),
+  };
 }
 
 function MyBounties({ walletState }) {
@@ -334,7 +362,9 @@ function MyBounties({ walletState }) {
                     <strong>{bounty.archivedSubmissionCount}</strong> submission{bounty.archivedSubmissionCount !== 1 ? 's' : ''}
                   </span>
                   <span className="meta-item">
-                    Closes: {formatDate(bounty.submissionCloseTime)}
+                    {bounty.submissionCloseTime && bounty.submissionCloseTime * 1000 < Date.now()
+                      ? 'Closed:'
+                      : 'Closes:'} {formatDate(bounty.submissionCloseTime)}
                   </span>
                   <span className="expand-icon">
                     {expandedBounty === bounty.jobId ? '▼' : '▶'}
@@ -368,10 +398,17 @@ function MyBounties({ walletState }) {
                           >
                             {truncateAddress(sub.hunter)}
                           </span>
-                          <span className={`sub-status ${getSubmissionStatusBadgeClass(sub.status)}`} data-label="Status">
-                            <StatusIconComponent iconName={getSubmissionStatusIcon(sub.status)} size={12} className="inline-icon" />
-                            {' '}{getSubmissionStatusLabel(sub.status)}
-                          </span>
+                          {(() => {
+                            const effectiveStatus = getEffectiveSubmissionStatus(sub.status, bounty.status);
+                            return (
+                              <span className={`sub-status ${effectiveStatus.badgeClass}`} data-label="Status">
+                                {effectiveStatus.icon
+                                  ? <effectiveStatus.icon size={12} className="inline-icon" />
+                                  : <StatusIconComponent iconName={effectiveStatus.iconName} size={12} className="inline-icon" />}
+                                {' '}{effectiveStatus.label}
+                              </span>
+                            );
+                          })()}
                           <span className="score" data-label="Score">
                             {sub.score != null ? `${sub.score.toFixed(1)}%` : '—'}
                           </span>

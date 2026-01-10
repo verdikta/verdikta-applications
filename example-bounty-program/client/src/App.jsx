@@ -3,15 +3,18 @@ import { initializeContractService } from './services/contractService';
 import { config } from './config';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { walletService } from './services/wallet';
+import { ToastProvider, useToast } from './components/Toast';
 import Header from './components/Header';
 import Home from './pages/Home';
 import CreateBounty from './pages/CreateBounty';
 import BountyDetails from './pages/BountyDetails';
 import SubmitWork from './pages/SubmitWork';
-import './App.css';
 import MyBounties from './pages/MyBounties';
+import './App.css';
 
-function App() {
+function AppContent() {
+  const toast = useToast();
+
   useEffect(() => {
     // Initialize contract service
     if (config.bountyEscrowAddress) {
@@ -57,7 +60,7 @@ function App() {
       // State will be updated via subscription
     } catch (error) {
       console.error('Failed to connect wallet:', error);
-      alert(`Failed to connect wallet: ${error.message}`);
+      toast.error(`Failed to connect wallet: ${error.message}`);
     }
   };
 
@@ -67,25 +70,33 @@ function App() {
   };
 
   return (
-    <Router>
-      <div className="app">
-        <Header 
-          walletState={walletState}
-          onConnect={handleConnect}
-          onDisconnect={handleDisconnect}
-        />
-        
-        <main className="main-content">
-          <Routes>
-            <Route path="/" element={<Home walletState={walletState} />} />
-            <Route path="/create" element={<CreateBounty walletState={walletState} />} />
-            <Route path="/bounty/:bountyId" element={<BountyDetails walletState={walletState} />} />
-            <Route path="/bounty/:bountyId/submit" element={<SubmitWork walletState={walletState} />} />
-	    <Route path="/my-bounties" element={<MyBounties walletState={walletState} />} />
-          </Routes>
-        </main>
-      </div>
-    </Router>
+    <div className="app">
+      <Header
+        walletState={walletState}
+        onConnect={handleConnect}
+        onDisconnect={handleDisconnect}
+      />
+
+      <main className="main-content">
+        <Routes>
+          <Route path="/" element={<Home walletState={walletState} />} />
+          <Route path="/create" element={<CreateBounty walletState={walletState} />} />
+          <Route path="/bounty/:bountyId" element={<BountyDetails walletState={walletState} />} />
+          <Route path="/bounty/:bountyId/submit" element={<SubmitWork walletState={walletState} />} />
+          <Route path="/my-bounties" element={<MyBounties walletState={walletState} />} />
+        </Routes>
+      </main>
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <ToastProvider>
+      <Router>
+        <AppContent />
+      </Router>
+    </ToastProvider>
   );
 }
 

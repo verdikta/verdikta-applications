@@ -225,6 +225,12 @@
 .hunter-address {
   font-family: 'Courier New', monospace;
   font-size: 0.8rem;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.hunter-address:hover {
+  color: var(--primary);
 }
 
 /* Submission Status */

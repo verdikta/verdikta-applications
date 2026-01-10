@@ -16,6 +16,7 @@ import {
   X,
   Send,
 } from 'lucide-react';
+import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
 import {
@@ -32,6 +33,7 @@ import './SubmitWork.css';
 const LINK_ADDRESS = "0xE4aB69C077896252FAFBD49EFD26B5D171A32410";
 
 function SubmitWork({ walletState }) {
+  const toast = useToast();
   const { bountyId } = useParams();
   const navigate = useNavigate();
 
@@ -117,14 +119,14 @@ function SubmitWork({ walletState }) {
     for (const file of selectedFiles) {
       // Validate file size (20 MB)
       if (file.size > 20 * 1024 * 1024) {
-        alert(`File "${file.name}" is too large. Maximum size is 20 MB.`);
+        toast.error(`File "${file.name}" is too large. Maximum size is 20 MB.`);
         continue;
       }
 
       // Validate file type
       const extension = '.' + file.name.split('.').pop().toLowerCase();
       if (!allowedTypes.includes(extension)) {
-        alert(`Invalid file type for "${file.name}". Allowed: ${allowedTypes.join(', ')}`);
+        toast.error(`Invalid file type for "${file.name}". Allowed: ${allowedTypes.join(', ')}`);
         continue;
       }
 
@@ -251,18 +253,18 @@ function SubmitWork({ walletState }) {
     e.preventDefault();
 
     if (files.length === 0) {
-      alert('Please select at least one file');
+      toast.warning('Please select at least one file');
       return;
     }
 
     if (!walletState.isConnected) {
-      alert('Please connect your wallet first');
+      toast.warning('Please connect your wallet first');
       return;
     }
 
     // Double-check status before submission
     if (!isBountyOpen(job?.status)) {
-      alert('This bounty is no longer accepting submissions');
+      toast.warning('This bounty is no longer accepting submissions');
       return;
     }
 
@@ -441,7 +443,7 @@ function SubmitWork({ walletState }) {
       console.error('Original error:', originalError);
 
       setError(errorMessage);
-      alert(`❌ Error: ${errorMessage}`);
+      toast.error(errorMessage);
     } finally {
       setLoading(false);
       setLoadingMessage('');

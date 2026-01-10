@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Target, Wallet, LogOut, AlertTriangle, Check, X } from 'lucide-react';
+import { useToast } from './Toast';
 import { walletService } from '../services/wallet';
 import { currentNetwork } from '../config';
 import './Header.css';
 
 function Header({ walletState, onConnect, onDisconnect }) {
+  const toast = useToast();
   const { isConnected, address, chainId, isCorrectNetwork } = walletState;
   const [isSwitching, setIsSwitching] = useState(false);
 
@@ -15,7 +17,7 @@ function Header({ walletState, onConnect, onDisconnect }) {
       await walletService.switchNetwork();
     } catch (error) {
       console.error('Failed to switch network:', error);
-      alert(`Failed to switch network: ${error.message}`);
+      toast.error(`Failed to switch network: ${error.message}`);
     } finally {
       setIsSwitching(false);
     }

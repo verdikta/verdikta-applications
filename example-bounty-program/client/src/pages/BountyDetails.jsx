@@ -15,6 +15,7 @@ import {
   Loader2,
   Ban,
 } from 'lucide-react';
+import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
 import {
@@ -76,7 +77,7 @@ const isPendingStatus = isSubmissionPending;
  * Copy text to clipboard with fallback for HTTP (non-secure) contexts.
  * navigator.clipboard requires HTTPS, so we fall back to execCommand.
  */
-function copyToClipboard(text) {
+function copyToClipboard(text, toast) {
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(text);
   } else {
@@ -90,7 +91,7 @@ function copyToClipboard(text) {
     document.execCommand('copy');
     document.body.removeChild(textArea);
   }
-  alert('Copied to clipboard');
+  toast.success('Copied to clipboard');
 }
 
 // ============================================================================
@@ -98,6 +99,7 @@ function copyToClipboard(text) {
 // ============================================================================
 
 function BountyDetails({ walletState }) {
+  const toast = useToast();
   // URL param = backend jobId, NOT the on-chain id
   const { bountyId } = useParams();
 
@@ -978,13 +980,13 @@ function BountyDetails({ walletState }) {
 
   const handleFinalizeSubmission = async (submissionId) => {
     if (!walletState.isConnected) {
-      alert('Please connect your wallet first');
+      toast.warning('Please connect your wallet first');
       return;
     }
 
     const onChainId = getOnChainBountyId();
     if (onChainId == null) {
-      alert('Unable to determine the on-chain bounty ID yet. Please wait for sync or refresh.');
+      toast.warning('Unable to determine the on-chain bounty ID yet. Please wait for sync or refresh.');
       return;
     }
 
@@ -1030,13 +1032,7 @@ function BountyDetails({ walletState }) {
                              updatedSubmission.status === 'Failed' ? '❌ FAILED' :
                              updatedSubmission.status;
 
-        alert(
-          `🎉 Submission #${submissionId} Finalized!\n\n` +
-          `Status: ${statusDisplay}\n` +
-          `Score: ${updatedSubmission.acceptance?.toFixed(1) || 'N/A'}%\n` +
-          `Transaction: ${txHash}\n\n` +
-          'The page has been updated with the results.'
-        );
+        toast.success(`Submission #${submissionId} finalized! Status: ${statusDisplay}, Score: ${updatedSubmission.acceptance?.toFixed(1) || 'N/A'}%`);
 
         // Reload the full job details
         loadJobDetails(true);
@@ -1044,12 +1040,7 @@ function BountyDetails({ walletState }) {
 
       // If polling timed out, show a different message
       if (!pollResult.success && pollResult.reason === 'timeout') {
-        alert(
-          `✅ Transaction confirmed!\n\n` +
-          `Transaction: ${txHash}\n\n` +
-          'The status is still syncing. The page will auto-refresh every 15 seconds.\n' +
-          'You can also manually refresh if needed.'
-        );
+        toast.info('Transaction confirmed! Status is syncing. The page will auto-refresh.');
 
         // Still reload to make sure we have latest data
         loadJobDetails(true);
@@ -1072,19 +1063,19 @@ function BountyDetails({ walletState }) {
         return next;
       });
 
-      alert(`❌ Failed to finalize submission #${submissionId}:\n\n${err.message}`);
+      toast.error(`Failed to finalize submission #${submissionId}: ${err.message}`);
     }
   };
 
   const handleFailTimedOutSubmission = async (submissionId) => {
     if (!walletState.isConnected) {
-      alert('Please connect your wallet first');
+      toast.warning('Please connect your wallet first');
       return;
     }
 
     const onChainId = getOnChainBountyId();
     if (onChainId == null) {
-      alert('Unable to determine the on-chain bounty ID yet. Please wait for sync or refresh.');
+      toast.warning('Unable to determine the on-chain bounty ID yet. Please wait for sync or refresh.');
       return;
     }
 
@@ -1119,19 +1110,14 @@ function BountyDetails({ walletState }) {
         { maxAttempts: 10 }
       );
 
-      alert(
-        `✅ Submission #${submissionId} marked as Failed (timeout)!\n\n` +
-        `Transaction: ${result.txHash}\n` +
-        `Block: ${result.blockNumber}\n\n` +
-        'LINK tokens have been refunded.'
-      );
+      toast.success(`Submission #${submissionId} marked as failed (timeout). LINK tokens refunded.`);
 
       setRetryCount(0);
       await loadJobDetails();
     } catch (err) {
       console.error('❌ Error failing timed-out submission:', err);
       setError(err.message || 'Failed to mark submission as timed-out');
-      alert(`❌ Failed to timeout submission #${submissionId}:\n\n${err.message}`);
+      toast.error(`Failed to timeout submission #${submissionId}: ${err.message}`);
     } finally {
       setFailingSubmissions(prev => {
         const next = new Set(prev);
@@ -1156,14 +1142,14 @@ function BountyDetails({ walletState }) {
       const currentJobId = jobRef.current?.jobId || job?.jobId;
       await apiService.cancelSubmission(currentJobId, submissionId);
 
-      alert(`Submission #${submissionId} has been cancelled.`);
+      toast.success(`Submission #${submissionId} has been cancelled.`);
 
       setRetryCount(0);
       await loadJobDetails();
     } catch (err) {
       console.error('Error cancelling submission:', err);
       setError(err.message || 'Failed to cancel submission');
-      alert(`Failed to cancel submission:\n\n${err.message}`);
+      toast.error(`Failed to cancel submission: ${err.message}`);
     } finally {
       setCancelingSubmissions(prev => {
         const next = new Set(prev);
@@ -1190,15 +1176,15 @@ function BountyDetails({ walletState }) {
         );
 
         if (result.submission.status !== 'Prepared' && result.submission.status !== 'PREPARED') {
-          alert(`✅ Submission status updated to: ${result.submission.status}`);
+          toast.success(`Submission status updated to: ${result.submission.status}`);
         } else {
-          alert('ℹ️ Submission is still in Prepared state on-chain.\n\nThe evaluation may not have been started. Try submitting again or contact support.');
+          toast.warning('Submission is still in Prepared state. The evaluation may not have started.');
         }
       }
     } catch (err) {
       console.error('Error refreshing submission:', err);
       setError(err.message || 'Failed to refresh submission');
-      alert(`Failed to refresh submission:\n\n${err.message}`);
+      toast.error(`Failed to refresh submission: ${err.message}`);
     } finally {
       setRefreshingSubmissions(prev => {
         const next = new Set(prev);
@@ -1210,13 +1196,13 @@ function BountyDetails({ walletState }) {
 
   const handleCloseExpiredBounty = async () => {
     if (!walletState.isConnected) {
-      alert('Please connect your wallet first');
+      toast.warning('Please connect your wallet first');
       return;
     }
 
     const onChainId = getOnChainBountyId();
     if (onChainId == null) {
-      alert('Unable to determine the on-chain bounty ID yet. Please wait for sync or refresh.');
+      toast.warning('Unable to determine the on-chain bounty ID yet. Please wait for sync or refresh.');
       return;
     }
 
@@ -1260,20 +1246,9 @@ function BountyDetails({ walletState }) {
       );
 
       if (synced) {
-        alert(
-          '✅ Expired bounty closed successfully!\n\n' +
-          `Transaction: ${result.txHash}\n` +
-          `Block: ${result.blockNumber}\n\n` +
-          `${job?.bountyAmount ?? '...'} ETH has been returned to the creator.`
-        );
+        toast.success(`Bounty closed! ${job?.bountyAmount ?? '...'} ETH returned to creator.`);
       } else {
-        alert(
-          '✅ Transaction confirmed!\n\n' +
-          `Transaction: ${result.txHash}\n` +
-          `Block: ${result.blockNumber}\n\n` +
-          'The backend is still syncing. The status will update shortly.\n' +
-          'Please refresh the page in a moment.'
-        );
+        toast.info('Transaction confirmed! Status is syncing and will update shortly.');
       }
 
       setRetryCount(0);
@@ -1281,7 +1256,7 @@ function BountyDetails({ walletState }) {
     } catch (err) {
       console.error('❌ Error closing bounty:', err);
       setError(err.message || 'Failed to close bounty');
-      alert(`❌ Failed to close bounty:\n\n${err.message}`);
+      toast.error(`Failed to close bounty: ${err.message}`);
     } finally {
       setClosingBounty(false);
       setClosingMessage('');
@@ -1519,6 +1494,7 @@ function BountyDetails({ walletState }) {
               disableActions={disableActionsForMissingId}
               timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
               job={job}
+              toast={toast}
             />
           )}
 
@@ -1676,6 +1652,7 @@ function BountyDetails({ walletState }) {
               pollingSubmissions={pollingSubmissions}
               evaluationResults={evaluationResults}
               timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
+              toast={toast}
             />
           )}
         </div>
@@ -1936,7 +1913,8 @@ function PendingSubmissionsPanel({
   evaluationResults,
   disableActions,
   timeoutMinutes,
-  job
+  job,
+  toast
 }) {
   return (
     <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
@@ -1970,7 +1948,7 @@ function PendingSubmissionsPanel({
                 <span
                   style={{ cursor: 'pointer', textDecoration: 'underline dotted' }}
                   title={`${s.hunter} (click to copy)`}
-                  onClick={() => copyToClipboard(s.hunter)}
+                  onClick={() => copyToClipboard(s.hunter, toast)}
                 >
                   {s.hunter?.substring(0, 10)}...
                 </span>
@@ -2103,7 +2081,8 @@ function ExpiredBountyActions({
   cancelingSubmissions,
   pollingSubmissions,
   evaluationResults,
-  timeoutMinutes
+  timeoutMinutes,
+  toast
 }) {
   return (
     <div className="expired-bounty-section" style={{
@@ -2143,6 +2122,7 @@ function ExpiredBountyActions({
           disableActions={disableActions}
           timeoutMinutes={timeoutMinutes}
           job={job}
+          toast={toast}
         />
       ) : (
         <>
@@ -2212,7 +2192,7 @@ function SubmissionCard({
           <span
             style={{ cursor: 'pointer' }}
             title="Click to copy address"
-            onClick={() => copyToClipboard(submission.hunter)}
+            onClick={() => copyToClipboard(submission.hunter, toast)}
           >
             {submission.hunter}
           </span>

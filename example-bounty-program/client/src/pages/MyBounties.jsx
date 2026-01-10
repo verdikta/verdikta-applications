@@ -19,6 +19,7 @@ import {
   HelpCircle,
   Clock,
 } from 'lucide-react';
+import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
 import {
   getBountyStatusLabel,
@@ -36,7 +37,7 @@ import './MyBounties.css';
 /**
  * Copy text to clipboard with fallback for HTTP (non-secure) contexts.
  */
-function copyToClipboard(text) {
+function copyToClipboard(text, toast) {
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(text);
   } else {
@@ -49,7 +50,7 @@ function copyToClipboard(text) {
     document.execCommand('copy');
     document.body.removeChild(textArea);
   }
-  alert('Copied to clipboard');
+  toast.success('Copied to clipboard');
 }
 
 /**
@@ -107,6 +108,7 @@ function getEffectiveSubmissionStatus(submissionStatus, bountyStatus) {
 }
 
 function MyBounties({ walletState }) {
+  const toast = useToast();
   const [bounties, setBounties] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -168,7 +170,7 @@ function MyBounties({ walletState }) {
       loadBounties();
     } catch (err) {
       console.error('Download failed:', err);
-      alert(`Download failed: ${err.message}`);
+      toast.error(`Download failed: ${err.message}`);
     } finally {
       setDownloadingSubmission(null);
     }
@@ -307,7 +309,7 @@ function MyBounties({ walletState }) {
                 <span
                   style={{ cursor: 'pointer' }}
                   title="Click to copy address"
-                  onClick={() => copyToClipboard(downloadResult.submission?.hunter)}
+                  onClick={() => copyToClipboard(downloadResult.submission?.hunter, toast)}
                 >
                   {downloadResult.submission?.hunter}
                 </span>
@@ -317,7 +319,7 @@ function MyBounties({ walletState }) {
                 <code
                   style={{ cursor: 'pointer' }}
                   title="Click to copy CID"
-                  onClick={() => copyToClipboard(downloadResult.submission?.hunterCid)}
+                  onClick={() => copyToClipboard(downloadResult.submission?.hunterCid, toast)}
                 >
                   {downloadResult.submission?.hunterCid}
                 </code>
@@ -394,7 +396,7 @@ function MyBounties({ walletState }) {
                             data-label="Submitter"
                             title={`${sub.hunter} — Click to copy`}
                             style={{ cursor: 'pointer' }}
-                            onClick={() => copyToClipboard(sub.hunter)}
+                            onClick={() => copyToClipboard(sub.hunter, toast)}
                           >
                             {truncateAddress(sub.hunter)}
                           </span>

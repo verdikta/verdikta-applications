@@ -12,6 +12,7 @@ import {
   ChevronRight,
   X,
 } from 'lucide-react';
+import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
 import { modelProviderService } from '../services/modelProviderService';
 import { walletService } from '../services/wallet';
@@ -23,6 +24,7 @@ import RubricLibrary from '../components/RubricLibrary';
 import './CreateBounty.css';
 
 function CreateBounty({ walletState }) {
+  const toast = useToast();
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -334,12 +336,12 @@ function CreateBounty({ walletState }) {
 
   // ---------- save rubric to IPFS + cache in localStorage ----------
   const handleSaveRubric = async () => {
-    if (!walletState.isConnected) return alert('Please connect your wallet first');
-    if (!rubric.title.trim()) return alert('Please enter a rubric title');
-    if (!hasAtLeastOneCriterion()) return alert('Please add at least one criterion');
+    if (!walletState.isConnected) { toast.warning('Please connect your wallet first'); return; }
+    if (!rubric.title.trim()) { toast.warning('Please enter a rubric title'); return; }
+    if (!hasAtLeastOneCriterion()) { toast.warning('Please add at least one criterion'); return; }
 
     const validation = validateWeights();
-    if (!validation.valid) return alert(`Invalid weights: ${validation.message}`);
+    if (!validation.valid) { toast.warning(`Invalid weights: ${validation.message}`); return; }
 
     try {
       setLoading(true);
@@ -385,19 +387,13 @@ function CreateBounty({ walletState }) {
         console.warn('[rubricStorage] Cache failed:', e?.message || e);
       }
 
-      alert(
-        `✅ Rubric saved successfully!\n\n` +
-        `IPFS CID: ${rubricCid}\n` +
-        `Threshold: ${rubricForUpload.threshold}%\n` +
-        `Class: ${rubricForUpload.classId}\n\n` +
-        `You can now use this rubric to create bounties.`
-      );
+      toast.success(`Rubric saved! CID: ${rubricCid.substring(0, 12)}...`);
       setLoadedRubricCid(rubricCid);
     } catch (err) {
       const msg = messageFromAxios(err);
       console.error('Error saving rubric:', msg, err?.response?.data);
       setError(msg);
-      alert(`Failed to save rubric: ${msg}`);
+      toast.error(`Failed to save rubric: ${msg}`);
     } finally {
       setLoading(false);
       setLoadingText('');
@@ -431,27 +427,28 @@ function CreateBounty({ walletState }) {
     setLoadedRubricCid(loadedRubric.cid);
     setShowLibrary(false);
     
-    alert(`Loaded rubric: ${loadedRubric.title}\nThreshold: ${loadedRubric.threshold ?? RUBRIC_DEFAULTS.threshold}%`);
+    toast.success(`Loaded rubric: ${loadedRubric.title} (Threshold: ${loadedRubric.threshold ?? RUBRIC_DEFAULTS.threshold}%)`);
   };
 
   // ---------- submit (create bounty) ----------
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!walletState.isConnected) return alert('Please connect your wallet first');
-    if (!formData.title.trim()) return alert('Please enter a job title');
-    if (!formData.description.trim()) return alert('Please enter a job description');
-    if (!formData.payoutAmount || parseFloat(formData.payoutAmount) <= 0)
-      return alert('Please enter a valid payout amount');
-    if (!rubric.title.trim()) return alert('Please create or load a rubric');
-    if (!hasAtLeastOneCriterion()) return alert('Please add at least one criterion');
+    if (!walletState.isConnected) { toast.warning('Please connect your wallet first'); return; }
+    if (!formData.title.trim()) { toast.warning('Please enter a job title'); return; }
+    if (!formData.description.trim()) { toast.warning('Please enter a job description'); return; }
+    if (!formData.payoutAmount || parseFloat(formData.payoutAmount) <= 0) {
+      toast.warning('Please enter a valid payout amount'); return;
+    }
+    if (!rubric.title.trim()) { toast.warning('Please create or load a rubric'); return; }
+    if (!hasAtLeastOneCriterion()) { toast.warning('Please add at least one criterion'); return; }
 
     const validation = validateWeights();
-    if (!validation.valid) return alert(`Invalid rubric weights: ${validation.message}`);
-    if (juryNodes.length === 0) return alert('Please add at least one jury node');
-    
+    if (!validation.valid) { toast.warning(`Invalid rubric weights: ${validation.message}`); return; }
+    if (juryNodes.length === 0) { toast.warning('Please add at least one jury node'); return; }
+
     const juryValidation = validateJuryWeights();
-    if (!juryValidation.valid) return alert(`Invalid jury weights: ${juryValidation.message}`);
+    if (!juryValidation.valid) { toast.warning(`Invalid jury weights: ${juryValidation.message}`); return; }
 
     try {
       setLoading(true);
@@ -525,22 +522,14 @@ function CreateBounty({ walletState }) {
         blockNumber: contractResult.blockNumber,
       });
 
-      alert(
-        `✅ Bounty created successfully!\n\n` +
-          `Job ID: ${job.jobId}\n` +
-          `On-Chain Bounty ID: ${contractResult.bountyId}\n` +
-          `Transaction: ${contractResult.txHash}\n` +
-          `Block: ${contractResult.blockNumber}\n\n` +
-          `Rubric CID: ${job.rubricCid}\n` +
-          `Primary CID: ${job.primaryCid}`
-      );
+      toast.success(`Bounty created! Job ID: ${job.jobId}, On-Chain ID: ${contractResult.bountyId}`);
 
       navigate(`/bounty/${job.jobId}`);
     } catch (err) {
       const msg = messageFromAxios(err);
       console.error('❌ Create flow failed:', msg, err?.response?.data);
       setError(msg);
-      alert(`Failed to create bounty: ${msg}`);
+      toast.error(`Failed to create bounty: ${msg}`);
     } finally {
       setLoading(false);
       setLoadingText('');

@@ -142,6 +142,7 @@
   padding: 2rem;
   border-radius: 0.5rem;
   border: 1px solid var(--border);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06);
   margin-bottom: 2rem;
 }
 
@@ -155,6 +156,7 @@
   padding: 2rem;
   border-radius: 0.5rem;
   border: 1px solid var(--border);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06);
   margin-bottom: 2rem;
 }
 
@@ -244,6 +246,7 @@
   padding: 2rem;
   border-radius: 0.5rem;
   border: 1px solid var(--border);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06);
   margin-bottom: 2rem;
 }
 

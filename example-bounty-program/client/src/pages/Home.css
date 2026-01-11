@@ -1,20 +1,20 @@
 .hero {
   text-align: center;
-  padding: 4rem 1rem;
+  padding: 2.5rem 1rem;
   background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
   color: white;
   border-radius: 1rem;
-  margin-bottom: 3rem;
+  margin-bottom: 2rem;
 }
 
 .hero h1 {
-  font-size: 3rem;
-  margin-bottom: 1rem;
+  font-size: 2.25rem;
+  margin-bottom: 0.5rem;
 }
 
 .hero-subtitle {
-  font-size: 1.25rem;
-  margin-bottom: 2rem;
+  font-size: 1.125rem;
+  margin-bottom: 1.25rem;
   opacity: 0.9;
 }
 
@@ -203,8 +203,12 @@
 }
 
 @media (max-width: 768px) {
+  .hero {
+    padding: 2rem 1rem;
+  }
+
   .hero h1 {
-    font-size: 2rem;
+    font-size: 1.75rem;
   }
 
   .hero-subtitle {

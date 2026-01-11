@@ -6,13 +6,51 @@
 }
 
 :root {
-  /* Colors */
-  --primary: #2563eb;
-  --primary-dark: #1d4ed8;
+  /* Colors - Primary (Indigo) */
+  --primary-50: #eef2ff;
+  --primary-100: #e0e7ff;
+  --primary-200: #c7d2fe;
+  --primary-300: #a5b4fc;
+  --primary-400: #818cf8;
+  --primary: #667eea;
+  --primary-600: #5a67d8;
+  --primary-dark: #4c51bf;
+  --primary-800: #3730a3;
+  --primary-900: #312e81;
+
+  /* Colors - Accent (Purple) - for gradients */
+  --accent: #764ba2;
+  --accent-light: #9f7aea;
+  --accent-dark: #5b3a7d;
+
+  /* Colors - Neutral */
   --secondary: #64748b;
+  --gray-50: #f8fafc;
+  --gray-100: #f1f5f9;
+  --gray-200: #e2e8f0;
+  --gray-300: #cbd5e1;
+  --gray-400: #94a3b8;
+  --gray-500: #64748b;
+  --gray-600: #475569;
+  --gray-700: #334155;
+  --gray-800: #1e293b;
+  --gray-900: #0f172a;
+
+  /* Colors - Semantic */
   --success: #10b981;
+  --success-light: #d1fae5;
+  --success-dark: #059669;
   --danger: #ef4444;
+  --danger-light: #fee2e2;
+  --danger-dark: #dc2626;
   --warning: #f59e0b;
+  --warning-light: #fef3c7;
+  --warning-dark: #d97706;
+  --info: #3b82f6;
+  --info-light: #dbeafe;
+  --info-dark: #2563eb;
+
+  /* Background & Text */
   --bg: #ffffff;
   --bg-secondary: #f8fafc;
   --text: #1e293b;
@@ -121,7 +159,7 @@ body {
 }
 
 .btn-secondary:hover:not(:disabled) {
-  background-color: #475569;
+  background-color: var(--gray-600);
 }
 
 .btn-lg {

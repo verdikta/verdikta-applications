@@ -1,7 +1,7 @@
 .hero {
   text-align: center;
   padding: 4rem 1rem;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
   color: white;
   border-radius: 1rem;
   margin-bottom: 3rem;
@@ -54,10 +54,10 @@
 }
 
 .error-message {
-  background-color: #fef3c7;
+  background-color: var(--warning-light);
   padding: 2rem;
   border-radius: 0.5rem;
-  border: 1px solid #fde68a;
+  border: 1px solid var(--warning);
 }
 
 .error-hint {
@@ -87,7 +87,7 @@
 .bounty-card:hover {
   box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1), 0 4px 8px rgba(0, 0, 0, 0.06);
   transform: translateY(-2px);
-  border-color: var(--primary-light, #90caf9);
+  border-color: var(--primary-300);
 }
 
 .bounty-header {
@@ -251,38 +251,38 @@
 }
 
 .status-badge.status-open {
-  background-color: #10b981;
+  background-color: var(--success);
   color: white;
 }
 
 .status-badge.status-expired {
-  background-color: #fbbf24;
-  color: #78350f;
+  background-color: var(--warning);
+  color: var(--gray-800);
 }
 
 .status-badge.status-awarded {
-  background-color: #3b82f6;
+  background-color: var(--primary);
   color: white;
 }
 
 .status-badge.status-closed {
-  background-color: #6b7280;
+  background-color: var(--gray-500);
   color: white;
 }
 
 .status-badge.status-unknown {
-  background-color: #e5e7eb;
-  color: #374151;
+  background-color: var(--gray-200);
+  color: var(--gray-700);
 }
 
 /* Time Remaining States */
 .time-remaining.warning {
-  color: #f59e0b;
+  color: var(--warning);
   font-weight: 600;
 }
 
 .time-remaining.closed {
-  color: #6b7280;
+  color: var(--gray-500);
   font-style: italic;
 }
 
@@ -302,7 +302,7 @@
   width: 64px;
   height: 64px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
   color: white;
   display: flex;
   align-items: center;

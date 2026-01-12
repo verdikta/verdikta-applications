@@ -107,6 +107,44 @@ function RubricLibrary({ walletAddress, onLoadRubric, onClose }) {
     return cid.length > 12 ? `${cid.slice(0, 6)}...${cid.slice(-6)}` : cid;
   };
 
+  const handleExport = () => {
+    const data = JSON.stringify(savedRubrics, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `rubrics-${walletAddress?.slice(0, 8) || 'export'}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImport = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const imported = JSON.parse(evt.target.result);
+        if (!Array.isArray(imported)) throw new Error('Invalid format');
+        let added = 0;
+        for (const rubric of imported) {
+          if (rubric.cid && rubric.title) {
+            try {
+              rubricStorage.saveRubric(walletAddress, rubric);
+              added++;
+            } catch { /* skip duplicates */ }
+          }
+        }
+        loadSavedRubrics();
+        alert(`Imported ${added} rubric(s)`);
+      } catch (err) {
+        setError(`Import failed: ${err.message}`);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
   return (
     <div className="rubric-library-overlay" onClick={onClose}>
       <div className="rubric-library-modal" onClick={(e) => e.stopPropagation()}>
@@ -199,9 +237,18 @@ function RubricLibrary({ walletAddress, onLoadRubric, onClose }) {
           <p className="storage-info">
             {savedRubrics.length} rubric{savedRubrics.length !== 1 ? 's' : ''} saved locally
           </p>
-          <button className="btn-secondary" onClick={onClose}>
-            Close
-          </button>
+          <div className="footer-actions">
+            <button className="btn-secondary btn-sm" onClick={handleExport} disabled={savedRubrics.length === 0}>
+              Export
+            </button>
+            <label className="btn-secondary btn-sm import-label">
+              Import
+              <input type="file" accept=".json" onChange={handleImport} hidden />
+            </label>
+            <button className="btn-secondary" onClick={onClose}>
+              Close
+            </button>
+          </div>
         </div>
       </div>
     </div>

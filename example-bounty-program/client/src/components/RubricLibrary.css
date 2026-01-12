@@ -254,6 +254,27 @@
   border-color: #ccc;
 }
 
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-sm {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+}
+
+.footer-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.import-label {
+  display: inline-block;
+  cursor: pointer;
+}
+
 /* Alert */
 .alert {
   padding: 1rem;

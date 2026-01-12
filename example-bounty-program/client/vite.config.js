@@ -8,7 +8,8 @@ export default defineConfig({
     host: true,                 // listen on all interfaces (VPS-friendly)
     port: 5173,
     allowedHosts: [
-      'playground.verdikta.org',   // keep if you use this
+      'bounties.verdikta.org',
+      'playground.verdikta.org',
       'localhost',
       '127.0.0.1',
       '134.199.203.20'

@@ -100,6 +100,23 @@ function ClassSelector({
         </div>
       </div>
 
+      {/* Selected Class Description */}
+      {selectedClassId && !isCustomClass && (() => {
+        const selectedClass = classes.find(cls => cls.id === selectedClassId);
+        if (selectedClass?.description) {
+          return (
+            <div className="class-description-banner">
+              <div className="description-icon">ℹ️</div>
+              <div className="description-content">
+                <div className="description-label">About {selectedClass.name}:</div>
+                <div className="description-text">{selectedClass.description}</div>
+              </div>
+            </div>
+          );
+        }
+        return null;
+      })()}
+
       {/* Manual Class ID Entry */}
       <div className={`manual-entry-section ${isCustomClass ? 'active' : ''}`}>
         <div className="manual-entry-form">

@@ -38,6 +38,7 @@ function CreateBounty({ walletState }) {
   const [classInfo, setClassInfo] = useState(null);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [modelError, setModelError] = useState(null);
+  const [rawModels, setRawModels] = useState([]); // Store full model data for details display
 
   // Jury configuration state
   const [juryNodes, setJuryNodes] = useState([]);
@@ -156,10 +157,15 @@ function CreateBounty({ walletState }) {
       setIsLoadingModels(true);
       setModelError(null);
       try {
-        const { providerModels, classInfo, isEmpty, isCustom } =
+        const { providerModels, classInfo, isEmpty, isCustom, rawModels: modelDetails } =
           await modelProviderService.getProviderModels(selectedClassId);
 
         setClassInfo(classInfo);
+        
+        // Store raw model data for displaying details
+        if (modelDetails && Array.isArray(modelDetails)) {
+          setRawModels(modelDetails);
+        }
 
         // Only update availableModels if we got models back
         // This preserves the dropdown options when switching to a custom class with no models
@@ -262,6 +268,57 @@ function CreateBounty({ walletState }) {
 
   const removeJuryNode = (id) => {
     setJuryNodes((prev) => prev.filter((node) => node.id !== id));
+  };
+
+  // ---------- model details helpers ----------
+  /**
+   * Get detailed information for a specific model
+   */
+  const getModelDetails = (provider, modelName) => {
+    if (!rawModels || rawModels.length === 0) return null;
+
+    // Convert display provider name back to API name
+    const apiProvider = modelProviderService.getApiProviderName(provider);
+    
+    const model = rawModels.find(m => 
+      m.provider === apiProvider && m.model === modelName
+    );
+
+    return model || null;
+  };
+
+  /**
+   * Format supported file types into user-friendly categories
+   */
+  const formatSupportedFileTypes = (fileTypes) => {
+    if (!fileTypes || fileTypes.length === 0) {
+      return ['Text files'];
+    }
+
+    const categories = new Set();
+    
+    fileTypes.forEach(type => {
+      if (type.includes('text/') || type.includes('rtf') || type.includes('word') || type.includes('document')) {
+        categories.add('📄 Text & Documents');
+      }
+      if (type.includes('pdf')) {
+        categories.add('📑 PDF');
+      }
+      if (type.includes('image/')) {
+        categories.add('🖼️ Images');
+      }
+      if (type.includes('audio/')) {
+        categories.add('🔊 Audio');
+      }
+      if (type.includes('video/')) {
+        categories.add('🎥 Video');
+      }
+      if (type.includes('json') || type.includes('csv') || type.includes('xml')) {
+        categories.add('📊 Data Files');
+      }
+    });
+
+    return Array.from(categories);
   };
 
   // ---------- class selection ----------
@@ -968,6 +1025,38 @@ function CreateBounty({ walletState }) {
                       ×
                     </button>
                   </div>
+
+                  {/* Inline Model Details */}
+                  {(() => {
+                    const modelDetails = getModelDetails(node.provider, node.model);
+                    if (!modelDetails) return null;
+
+                    const supportedTypes = formatSupportedFileTypes(modelDetails.supported_file_types);
+                    const contextWindow = modelDetails.context_window_tokens;
+
+                    return (
+                      <div className="model-info-inline">
+                        <div className="model-info-item">
+                          <span className="info-icon">💾</span>
+                          <span className="info-label">Context:</span>
+                          <span className="info-value">
+                            {contextWindow >= 1000000 
+                              ? `${(contextWindow / 1000000).toFixed(1)}M tokens`
+                              : contextWindow >= 1000
+                              ? `${(contextWindow / 1000).toFixed(0)}K tokens`
+                              : `${contextWindow} tokens`}
+                          </span>
+                        </div>
+                        <div className="model-info-item">
+                          <span className="info-icon">📎</span>
+                          <span className="info-label">Supports:</span>
+                          <span className="info-value">
+                            {supportedTypes.join(', ')}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               ))}
 

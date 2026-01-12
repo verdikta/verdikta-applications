@@ -154,11 +154,16 @@ app.get('/api/classes', (req, res) => {
 
     const classes = classMap.listClasses(filter);
 
-    // Convert BigInt IDs to regular numbers for JSON serialization
-    const serializedClasses = classes.map(cls => ({
-      ...cls,
-      id: Number(cls.id)
-    }));
+    // Convert BigInt IDs and fetch full class details including description
+    const serializedClasses = classes.map(cls => {
+      const fullClass = classMap.getClass(Number(cls.id));
+      return {
+        id: Number(cls.id),
+        status: cls.status,
+        name: cls.name,
+        description: fullClass?.description || '' // Get description from full class object
+      };
+    });
 
     res.json({
       success: true,
@@ -197,7 +202,8 @@ app.get('/api/classes/:classId', (req, res) => {
     // Convert BigInt ID to regular number for JSON serialization
     const serializedClass = {
       ...classInfo,
-      id: Number(classInfo.id)
+      id: Number(classInfo.id),
+      description: classInfo.description || '' // Include description field
     };
 
     res.json({
@@ -261,6 +267,7 @@ app.get('/api/classes/:classId/models', (req, res) => {
       success: true,
       classId: Number(classInfo.id),
       className: classInfo.name,
+      description: classInfo.description || '', // Include description field
       status: classInfo.status,
       models: classInfo.models || [],
       modelsByProvider,

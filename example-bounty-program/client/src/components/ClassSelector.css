@@ -268,6 +268,42 @@
   }
 }
 
+/* Class Description Banner */
+.class-description-banner {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  margin: 1rem 0;
+  padding: 1rem;
+  background: linear-gradient(135deg, #e3f2fd 0%, #f0f8ff 100%);
+  border-left: 4px solid #2196f3;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.description-icon {
+  font-size: 1.5rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.description-content {
+  flex: 1;
+}
+
+.description-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #1976d2;
+  margin-bottom: 0.25rem;
+}
+
+.description-text {
+  font-size: 0.95rem;
+  color: #333;
+  line-height: 1.5;
+}
+
 .manual-entry-section {
   margin: 1rem 0;
   padding: 1rem;

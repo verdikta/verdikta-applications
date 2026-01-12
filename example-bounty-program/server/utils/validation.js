@@ -10,10 +10,46 @@ const ALLOWED_FILE_TYPES = [
   'image/jpeg',
   'image/png',
   'application/pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document' // .docx
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+  // Code/text file MIME types
+  'text/x-python',
+  'text/javascript',
+  'application/javascript',
+  'application/json',
+  'text/html',
+  'text/css',
+  'application/xml',
+  'text/xml',
+  'application/x-sh',
+  'application/sql',
+  'text/x-c',
+  'text/x-c++',
+  'text/x-java',
+  'text/x-go',
+  'text/x-rust',
+  'text/x-ruby',
+  'text/x-php',
+  'text/csv',
+  'application/octet-stream' // Many code files use this generic type
 ];
 
-const ALLOWED_EXTENSIONS = ['.txt', '.md', '.jpg', '.jpeg', '.png', '.pdf', '.docx'];
+const ALLOWED_EXTENSIONS = [
+  // Documents
+  '.txt', '.md', '.pdf', '.docx',
+  // Images
+  '.jpg', '.jpeg', '.png',
+  // Programming languages
+  '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.cpp', '.h', '.hpp',
+  '.cs', '.rb', '.go', '.rs', '.php', '.swift', '.kt', '.sol', '.r', '.m',
+  // Web
+  '.html', '.css', '.scss', '.sass',
+  // Data/Config
+  '.json', '.xml', '.yaml', '.yml', '.toml', '.csv',
+  // Shell
+  '.sh', '.bat', '.ps1',
+  // Other
+  '.sql'
+];
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB
 

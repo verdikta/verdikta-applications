@@ -113,7 +113,23 @@ function SubmitWork({ walletState }) {
 
     if (selectedFiles.length === 0) return;
 
-    const allowedTypes = ['.txt', '.md', '.jpg', '.jpeg', '.png', '.pdf', '.docx'];
+    const allowedTypes = [
+      // Documents
+      '.txt', '.md', '.pdf', '.docx',
+      // Images
+      '.jpg', '.jpeg', '.png',
+      // Programming languages
+      '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.cpp', '.h', '.hpp',
+      '.cs', '.rb', '.go', '.rs', '.php', '.swift', '.kt', '.sol', '.r', '.m',
+      // Web
+      '.html', '.css', '.scss', '.sass',
+      // Data/Config
+      '.json', '.xml', '.yaml', '.yml', '.toml', '.csv',
+      // Shell
+      '.sh', '.bat', '.ps1',
+      // Other
+      '.sql'
+    ];
     const validFiles = [];
 
     for (const file of selectedFiles) {
@@ -568,11 +584,11 @@ function SubmitWork({ walletState }) {
               id="files"
               type="file"
               onChange={handleFileAdd}
-              accept=".txt,.md,.jpg,.jpeg,.png,.pdf,.docx"
+              accept=".txt,.md,.pdf,.docx,.jpg,.jpeg,.png,.py,.js,.ts,.jsx,.tsx,.java,.c,.cpp,.h,.hpp,.cs,.rb,.go,.rs,.php,.swift,.kt,.sol,.r,.m,.html,.css,.scss,.sass,.json,.xml,.yaml,.yml,.toml,.csv,.sh,.bat,.ps1,.sql"
               multiple
             />
             <small>
-              Allowed formats: .txt, .md, .jpg, .png, .pdf, .docx<br />
+              Allowed formats: Code files (.py, .sol, .cpp, .js, .ts, .java, .c, .h, .go, .rs, etc.), documents (.txt, .md, .pdf, .docx), images (.jpg, .png), and data files (.json, .xml, .yaml, .csv)<br />
               Maximum size per file: 20 MB | You can add up to 10 files
             </small>
           </div>

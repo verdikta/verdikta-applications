@@ -2226,14 +2226,24 @@ function SubmissionCard({
         Job: {jobId} | Submission: {submission.submissionId ?? submission.onChainSubmissionId ?? 'N/A'}
       </div>
 
-      {(submission.score != null || submission.acceptance != null) && (
-        <div className="score" style={{
-          color: isApproved ? '#28a745' : isRejected ? '#dc3545' : '#666',
-          fontWeight: 'bold'
-        }}>
-          Score: {(submission.score ?? submission.acceptance)?.toFixed(1) ?? 'N/A'}%
-        </div>
-      )}
+      {(() => {
+        // Prioritize evaluation result score over stored submission score
+        const displayScore = hasEvalReady 
+          ? evaluationResult.scores.acceptance 
+          : (submission.score ?? submission.acceptance);
+        
+        // Only show if we have a valid score
+        if (displayScore == null) return null;
+        
+        return (
+          <div className="score" style={{
+            color: isApproved ? '#28a745' : isRejected ? '#dc3545' : '#666',
+            fontWeight: 'bold'
+          }}>
+            Score: {displayScore.toFixed(1)}%
+          </div>
+        );
+      })()}
 
       <div className="submission-meta">
         <span>Submitted: {submission.submittedAt ? new Date(submission.submittedAt * 1000).toLocaleString() : 'Just now'}</span>

@@ -23,7 +23,7 @@ const upload = multer({
     if (isValidFileType(file.mimetype, file.originalname)) {
       cb(null, true);
     } else {
-      cb(new Error(`Invalid file type: ${file.mimetype}. Allowed: txt, md, jpg, png, pdf, docx`));
+      cb(new Error(`Invalid file type: ${file.mimetype} for file ${file.originalname}. Allowed: code files (.py, .sol, .cpp, .js, etc.), documents (.txt, .md, .pdf, .docx), images (.jpg, .png), and data files (.json, .xml, .yaml, .csv)`));
     }
   },
   limits: {

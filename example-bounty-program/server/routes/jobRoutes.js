@@ -553,7 +553,7 @@ const upload = multer({
   storage,
   fileFilter: (req, file, cb) => isValidFileType(file.mimetype, file.originalname)
     ? cb(null, true)
-    : cb(new Error(`Invalid file type: ${file.mimetype}. Allowed: txt, md, jpg, png, pdf, docx`)),
+    : cb(new Error(`Invalid file type: ${file.mimetype} for file ${file.originalname}. Allowed: code files (.py, .sol, .cpp, .js, etc.), documents (.txt, .md, .pdf, .docx), images (.jpg, .png), and data files (.json, .xml, .yaml, .csv)`)),
   limits: { fileSize: MAX_FILE_SIZE, files: 10 }
 }).array('files', 10);
 

@@ -4,7 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
 const os = require('os');
-require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 // Load secrets from shared secrets file (overrides local .env)
 const secretsPath = path.join(__dirname, '../../../secrets/.env.secrets');
 require('dotenv').config({ path: secretsPath, override: true });

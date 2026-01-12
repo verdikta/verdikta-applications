@@ -5,6 +5,7 @@
   color: white;
   border-radius: 1rem;
   margin-bottom: 2rem;
+  animation: fade-in 0.4s ease-out;
 }
 
 .hero h1 {
@@ -27,6 +28,7 @@
 
 .bounties-section {
   margin-bottom: 4rem;
+  animation: fade-in-up 0.5s ease-out;
 }
 
 .section-header {
@@ -72,6 +74,20 @@
   gap: 1.5rem;
 }
 
+/* Staggered fade-in for bounty cards */
+.bounty-grid > * {
+  opacity: 0;
+  animation: fade-in 0.3s ease-out forwards;
+}
+
+.bounty-grid > *:nth-child(1) { animation-delay: 0.05s; }
+.bounty-grid > *:nth-child(2) { animation-delay: 0.1s; }
+.bounty-grid > *:nth-child(3) { animation-delay: 0.15s; }
+.bounty-grid > *:nth-child(4) { animation-delay: 0.2s; }
+.bounty-grid > *:nth-child(5) { animation-delay: 0.25s; }
+.bounty-grid > *:nth-child(6) { animation-delay: 0.3s; }
+.bounty-grid > *:nth-child(n+7) { animation-delay: 0.35s; }
+
 .bounty-card {
   background-color: var(--bg);
   padding: 1.5rem;
@@ -88,6 +104,11 @@
   box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1), 0 4px 8px rgba(0, 0, 0, 0.06);
   transform: translateY(-2px);
   border-color: var(--primary-300);
+}
+
+.bounty-card:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
 }
 
 .bounty-header {
@@ -175,6 +196,7 @@
   background-color: var(--bg);
   padding: 3rem 2rem;
   border-radius: 1rem;
+  animation: fade-in-up 0.5s ease-out;
 }
 
 .features h2 {

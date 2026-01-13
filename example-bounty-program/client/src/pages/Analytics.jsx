@@ -161,9 +161,14 @@ function Analytics() {
     );
   }
 
+  // Format class label: "128 (Core)" if shortName available, otherwise just "128"
+  const formatClassLabel = (cls) => {
+    return cls.shortName ? `${cls.classId} (${cls.shortName})` : String(cls.classId);
+  };
+
   // Prepare chart data for arbiter availability
   const arbiterChartData = data?.arbiters?.byClass ? {
-    labels: Object.values(data.arbiters.byClass).map(c => c.className || `Class ${c.classId}`),
+    labels: Object.values(data.arbiters.byClass).map(formatClassLabel),
     datasets: [
       {
         label: 'Active',
@@ -295,10 +300,7 @@ function Analytics() {
                     {Object.values(data.arbiters.byClass).map((cls) => (
                       <tr key={cls.classId}>
                         <td>
-                          <strong>{cls.className}</strong>
-                          {cls.classDescription && (
-                            <span className="class-desc">{cls.classDescription}</span>
-                          )}
+                          <strong>{formatClassLabel(cls)}</strong>
                         </td>
                         <td className="text-success">{cls.active ?? '-'}</td>
                         <td className="text-danger">{cls.blocked ?? '-'}</td>

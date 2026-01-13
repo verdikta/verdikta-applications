@@ -235,7 +235,8 @@ async function getArbiterAnalytics() {
       enrichedByClass[classId] = {
         ...data,
         className: classInfo?.name || `Class ${classId}`,
-        classDescription: classInfo?.description || ''
+        classDescription: classInfo?.description || '',
+        shortName: classInfo?.shortName || null
       };
     }
 

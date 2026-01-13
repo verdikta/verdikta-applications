@@ -50,6 +50,7 @@ ChartJS.register(
 // Chart color palette
 const COLORS = {
   active: '#22c55e',
+  new: '#8b5cf6',
   unresponsive: '#f59e0b',
   blocked: '#ef4444',
   inactive: '#6b7280',
@@ -66,7 +67,8 @@ const COLORS = {
 
 // Arbiter status descriptions for tooltips
 const ARBITER_STATUS_DESCRIPTIONS = {
-  Active: 'Registered, responding normally, and available for selection',
+  Active: 'Registered, responding normally, available for selection, and called three or more times',
+  New: 'Arbiters that have been called fewer than three times',
   Unresponsive: 'Registered but showing signs of poor availability: timeliness score <= -60, or 60%+ declining trend in recent scores, or rapid score decline (40+ points in last 3 updates)',
   Blocked: 'Temporarily locked due to severe performance issues (timeliness or quality score below threshold)',
   Inactive: 'Not currently registered or has been deactivated in the contract'
@@ -183,6 +185,11 @@ function Analytics() {
         label: 'Active',
         data: Object.values(data.arbiters.byClass).map(c => c.active ?? 0),
         backgroundColor: COLORS.active
+      },
+      {
+        label: 'New',
+        data: Object.values(data.arbiters.byClass).map(c => c.new ?? 0),
+        backgroundColor: COLORS.new
       },
       {
         label: 'Unresponsive',
@@ -326,6 +333,10 @@ function Analytics() {
                     <span className="legend-color" style={{ backgroundColor: COLORS.active }}></span>
                     Active
                   </span>
+                  <span className="legend-item" title={ARBITER_STATUS_DESCRIPTIONS.New}>
+                    <span className="legend-color" style={{ backgroundColor: COLORS.new }}></span>
+                    New
+                  </span>
                   <span className="legend-item" title={ARBITER_STATUS_DESCRIPTIONS.Unresponsive}>
                     <span className="legend-color" style={{ backgroundColor: COLORS.unresponsive }}></span>
                     Unresponsive
@@ -347,6 +358,7 @@ function Analytics() {
                     <tr>
                       <th>Class</th>
                       <th title={ARBITER_STATUS_DESCRIPTIONS.Active} className="tooltip-header">Active</th>
+                      <th title={ARBITER_STATUS_DESCRIPTIONS.New} className="tooltip-header">New</th>
                       <th title={ARBITER_STATUS_DESCRIPTIONS.Unresponsive} className="tooltip-header">Unresponsive</th>
                       <th title={ARBITER_STATUS_DESCRIPTIONS.Blocked} className="tooltip-header">Blocked</th>
                       <th>Total</th>
@@ -361,6 +373,7 @@ function Analytics() {
                           <strong>{formatClassLabel(cls)}</strong>
                         </td>
                         <td className="text-success">{cls.active ?? '-'}</td>
+                        <td className="text-purple">{cls.new ?? '-'}</td>
                         <td className="text-warning">{cls.unresponsive ?? '-'}</td>
                         <td className="text-danger">{cls.blocked ?? '-'}</td>
                         <td>{cls.total ?? '-'}</td>

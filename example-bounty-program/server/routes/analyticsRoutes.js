@@ -269,6 +269,7 @@ function getClassOnlyAnalytics() {
       status: cls.status,
       // No oracle data available
       active: null,
+      new: null,
       blocked: null,
       total: null,
       avgQualityScore: null,

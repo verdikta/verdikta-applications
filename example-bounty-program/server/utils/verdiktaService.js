@@ -334,6 +334,7 @@ class VerdiktaService {
             byClass[classId] = {
               classId,
               active: 0,
+              new: 0,
               blocked: 0,
               inactive: 0,
               unresponsive: 0,
@@ -348,12 +349,17 @@ class VerdiktaService {
 
           byClass[classId].total++;
 
+          // Determine arbiter status - "new" if called fewer than 3 times
+          const isNew = oracle.callCount < 3;
+
           if (!oracle.isActive) {
             byClass[classId].inactive++;
           } else if (isBlocked) {
             byClass[classId].blocked++;
           } else if (responsiveness.isUnresponsive) {
             byClass[classId].unresponsive++;
+          } else if (isNew) {
+            byClass[classId].new++;
           } else {
             byClass[classId].active++;
           }

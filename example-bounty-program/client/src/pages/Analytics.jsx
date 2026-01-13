@@ -275,10 +275,21 @@ function Analytics() {
 
   const chartOptions = {
     responsive: true,
-    maintainAspectRatio: false,
+    maintainAspectRatio: true,
     plugins: {
       legend: {
         position: 'bottom'
+      }
+    }
+  };
+
+  // Submission chart uses custom legend with tooltips, so disable built-in legend
+  const submissionChartOptions = {
+    responsive: true,
+    maintainAspectRatio: true,
+    plugins: {
+      legend: {
+        display: false
       }
     }
   };
@@ -509,7 +520,7 @@ function Analytics() {
           </div>
           {submissionChartData && (
             <div className="chart-container chart-doughnut">
-              <Doughnut data={submissionChartData} options={chartOptions} />
+              <Doughnut data={submissionChartData} options={submissionChartOptions} />
               <div className="custom-legend">
                 <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.ApprovedPaid}>
                   <span className="legend-color" style={{ backgroundColor: COLORS.approvedPaid }}></span>

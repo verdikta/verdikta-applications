@@ -9,6 +9,7 @@ const logger = require('../utils/logger');
 const jobStorage = require('../utils/jobStorage');
 const { analyticsCache } = require('../utils/analyticsCacheService');
 const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
+const { getContractService } = require('../utils/contractService');
 const { classMap } = require('@verdikta/common');
 
 /**
@@ -331,15 +332,27 @@ async function getSubmissionAnalytics() {
     const jobList = jobs.jobs || jobs;
 
     let totalSubmissions = 0;
-    let passed = 0;
-    let failed = 0;
-    let pending = 0;
+    let approvedPaid = 0;
+    let approvedUnpaid = 0;
+    let rejected = 0;
+    let rejectedUnclosed = 0;
+    let evaluating = 0;
     let prepared = 0;
     let timeout = 0;
+    let unknown = 0;
     let scores = [];
+    const statusCounts = {}; // Track all status values for debugging
+    const evaluatingSamples = []; // Sample of submissions counted as evaluating for debugging
 
     for (const job of jobList) {
       if (!job.submissions) continue;
+
+      // Get the bounty's pass threshold for comparison
+      const passThreshold = job.passThreshold || job.threshold || 90;
+
+      // Check if the bounty is expired or closed - no further evaluations can happen
+      const bountyStatus = (job.status || '').toUpperCase();
+      const bountyExpiredOrClosed = bountyStatus === 'EXPIRED' || bountyStatus === 'CLOSED';
 
       for (const sub of job.submissions) {
         totalSubmissions++;
@@ -347,28 +360,138 @@ async function getSubmissionAnalytics() {
         // Normalize status to handle different naming conventions
         const status = (sub.status || '').toLowerCase();
 
-        if (status === 'passed' || status === 'passedpaid' || status === 'passedunpaid' || status === 'approved') {
-          passed++;
-          // Collect scores for averaging
-          if (sub.result?.score != null) {
-            scores.push(sub.result.score);
-          } else if (sub.result?.acceptance != null) {
-            scores.push(sub.result.acceptance);
-          }
+        // Track all statuses for debugging
+        statusCounts[status] = (statusCounts[status] || 0) + 1;
+
+        // Check if submission has evaluation results
+        // Results can be in sub.result (from updateSubmissionResult) or directly on sub (from sync)
+        const hasResult = (sub.result && (sub.result.score != null || sub.result.acceptance != null)) ||
+                          sub.acceptance > 0 || sub.rejection > 0 || sub.score != null;
+        const score = sub.result?.score ?? sub.result?.acceptance ?? sub.acceptance ?? sub.score;
+        const didPass = hasResult && score != null && score >= passThreshold;
+
+        if (status === 'passedpaid') {
+          approvedPaid++;
+          if (hasResult) scores.push(score);
+        } else if (status === 'passed' || status === 'passedunpaid' || status === 'approved' || status === 'accepted') {
+          approvedUnpaid++;
+          if (hasResult) scores.push(score);
         } else if (status === 'failed' || status === 'rejected') {
-          failed++;
+          rejected++;
         } else if (status === 'pending' || status === 'pendingverdikta' || status === 'pending_evaluation') {
-          pending++;
+          // Check if evaluation is actually complete but status wasn't updated
+          if (hasResult) {
+            if (didPass) {
+              approvedUnpaid++; // Approved but unclosed
+              scores.push(score);
+            } else {
+              rejectedUnclosed++; // Rejected but unclosed
+            }
+          } else {
+            // Check Verdikta Aggregator for evaluation result
+            // Need on-chain bountyId and submissionId to query the contract
+            let evalResult = null;
+            // Use onChainId (primary), then legacy field names
+            const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+            const onChainSubmissionId = sub.onChainSubmissionId ?? sub.submissionId;
+
+            if (onChainBountyId != null && onChainSubmissionId != null) {
+              try {
+                const contractService = getContractService();
+                evalResult = await contractService.checkEvaluationReady(onChainBountyId, onChainSubmissionId);
+                if (evalResult?.ready) {
+                  logger.info('Evaluation result found', {
+                    bountyId: onChainBountyId,
+                    submissionId: onChainSubmissionId,
+                    acceptance: evalResult.scores.acceptance,
+                    threshold: passThreshold
+                  });
+                }
+              } catch (err) {
+                // Contract service might not be available
+                logger.warn('Could not check evaluation ready', {
+                  bountyId: onChainBountyId,
+                  submissionId: onChainSubmissionId,
+                  msg: err.message
+                });
+              }
+            } else {
+              logger.debug('Missing on-chain IDs for submission', {
+                jobId: job.jobId,
+                submissionId: sub.submissionId,
+                onChainBountyId,
+                onChainSubmissionId
+              });
+            }
+
+            if (evalResult?.ready) {
+              // Evaluation is complete but submission wasn't updated
+              const evalScore = evalResult.scores.acceptance;
+              const evalPassed = evalScore >= passThreshold;
+              if (evalPassed) {
+                approvedUnpaid++;
+                scores.push(evalScore);
+              } else {
+                rejectedUnclosed++;
+              }
+            } else if (bountyExpiredOrClosed) {
+              // Bounty is expired/closed and no evaluation results exist
+              // This submission timed out without getting results
+              timeout++;
+              // Log why this went to timeout instead of rejectedUnclosed
+              if (evaluatingSamples.length < 5) {
+                evaluatingSamples.push({
+                  category: 'timeout',
+                  jobId: job.jobId,
+                  jobTitle: job.title,
+                  submissionId: sub.submissionId,
+                  onChainBountyId,
+                  onChainSubmissionId,
+                  status: sub.status,
+                  bountyStatus: job.status,
+                  evalResultReason: evalResult?.reason || evalResult?.error || 'no_result'
+                });
+              }
+            } else {
+              evaluating++; // Truly still waiting for evaluation
+              // Capture sample for debugging (first 5)
+              if (evaluatingSamples.length < 5) {
+                evaluatingSamples.push({
+                  jobId: job.jobId,
+                  jobTitle: job.title,
+                  submissionId: sub.submissionId,
+                  onChainBountyId,
+                  onChainSubmissionId,
+                  status: sub.status,
+                  onChainStatus: sub.onChainStatus,
+                  bountyStatus: job.status,
+                  hasResultObj: !!sub.result,
+                  resultKeys: sub.result ? Object.keys(sub.result) : [],
+                  acceptance: sub.acceptance,
+                  rejection: sub.rejection,
+                  score: sub.score,
+                  verdiktaAggId: sub.verdiktaAggId
+                });
+              }
+            }
+          }
         } else if (status === 'prepared') {
           prepared++;
         } else if (status === 'timeout') {
           timeout++;
+        } else {
+          unknown++;
         }
       }
     }
 
-    const evaluated = passed + failed;
-    const passRate = evaluated > 0 ? Math.round((passed / evaluated) * 100) : null;
+    // Log status breakdown for debugging
+    logger.info('Submission status breakdown', { statusCounts });
+
+    const totalApproved = approvedPaid + approvedUnpaid;
+    const totalRejected = rejected + rejectedUnclosed;
+    const evaluated = totalApproved + totalRejected;
+    const passRate = evaluated > 0 ? Math.round((totalApproved / evaluated) * 100) : null;
     const avgScore = scores.length > 0
       ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
       : null;
@@ -376,12 +499,17 @@ async function getSubmissionAnalytics() {
     return {
       total: totalSubmissions,
       byOutcome: {
-        passed,
-        failed,
-        pending,
+        approvedPaid,
+        approvedUnpaid,
+        rejected,
+        rejectedUnclosed,
+        evaluating,
         prepared,
-        timeout
+        timeout,
+        unknown
       },
+      statusBreakdown: statusCounts, // Raw status counts for debugging
+      evaluatingSamples, // Sample of submissions counted as evaluating for debugging
       passRate,
       avgScore,
       timestamp: Date.now()

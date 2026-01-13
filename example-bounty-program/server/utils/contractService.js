@@ -15,7 +15,13 @@ const BOUNTY_ESCROW_ABI = [
   "function isAcceptingSubmissions(uint256 bountyId) view returns (bool)",
   "function canBeClosed(uint256 bountyId) view returns (bool)",
   "function submissionCount(uint256 bountyId) view returns (uint256)",
-  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))"
+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))",
+  "function verdikta() view returns (address)"
+];
+
+// Verdikta Aggregator ABI (for checking evaluation results)
+const VERDIKTA_AGGREGATOR_ABI = [
+  "function getEvaluation(bytes32 aggId) view returns (uint256[] memory scores, string justificationCids, bool ok)"
 ];
 
 class ContractService {
@@ -23,6 +29,89 @@ class ContractService {
     this.provider = new ethers.JsonRpcProvider(providerUrl);
     this.contract = new ethers.Contract(contractAddress, BOUNTY_ESCROW_ABI, this.provider);
     this.contractAddress = contractAddress;
+    this.verdiktaAggregator = null; // Lazy-loaded
+    this.verdiktaAggregatorAddress = null;
+  }
+
+  /**
+   * Get the Verdikta Aggregator contract instance (lazy-loaded)
+   */
+  async getVerdiktaAggregator() {
+    if (!this.verdiktaAggregator) {
+      try {
+        this.verdiktaAggregatorAddress = await this.contract.verdikta();
+        this.verdiktaAggregator = new ethers.Contract(
+          this.verdiktaAggregatorAddress,
+          VERDIKTA_AGGREGATOR_ABI,
+          this.provider
+        );
+        logger.info('Verdikta Aggregator loaded', { address: this.verdiktaAggregatorAddress });
+      } catch (error) {
+        logger.error('Failed to get Verdikta Aggregator address', { msg: error.message });
+        throw error;
+      }
+    }
+    return this.verdiktaAggregator;
+  }
+
+  /**
+   * Check if evaluation results are ready for a submission
+   * Queries the Verdikta Aggregator contract directly
+   * @param bountyId - The bounty ID
+   * @param submissionId - The submission ID
+   * @returns { ready: boolean, scores?: { acceptance, rejection }, justificationCids?: string }
+   */
+  async checkEvaluationReady(bountyId, submissionId) {
+    try {
+      // First, get the submission from contract to get verdiktaAggId
+      const sub = await this.contract.getSubmission(bountyId, submissionId);
+      const verdiktaAggId = sub.verdiktaAggId;
+
+      // Skip if no aggId or it's zero
+      if (!verdiktaAggId || verdiktaAggId === ethers.ZeroHash) {
+        logger.debug('checkEvaluationReady: No verdiktaAggId', { bountyId, submissionId });
+        return { ready: false, reason: 'no_agg_id' };
+      }
+
+      const aggregator = await this.getVerdiktaAggregator();
+      const [scores, justCids, ok] = await aggregator.getEvaluation(verdiktaAggId);
+
+      if (!ok) {
+        logger.debug('checkEvaluationReady: Aggregator returned ok=false', { bountyId, submissionId, verdiktaAggId });
+        return { ready: false, reason: 'not_ok' };
+      }
+
+      if (!scores || scores.length < 2) {
+        logger.debug('checkEvaluationReady: Invalid scores', { bountyId, submissionId, scores });
+        return { ready: false, reason: 'invalid_scores' };
+      }
+
+      // scores[0] = rejection likelihood, scores[1] = acceptance likelihood
+      // Scores are in 6 decimal precision (0-1000000), divide by 10000 to get percentages
+      const acceptance = Number(scores[1]) / 10000;
+      const rejection = Number(scores[0]) / 10000;
+
+      logger.info('checkEvaluationReady: Found result', {
+        bountyId,
+        submissionId,
+        acceptance: acceptance.toFixed(1),
+        rejection: rejection.toFixed(1)
+      });
+
+      return {
+        ready: true,
+        scores: { rejection, acceptance },
+        justificationCids: justCids || ''
+      };
+    } catch (error) {
+      // CALL_EXCEPTION is expected when evaluation data doesn't exist yet
+      if (error.code === 'CALL_EXCEPTION') {
+        logger.debug('checkEvaluationReady: CALL_EXCEPTION', { bountyId, submissionId });
+        return { ready: false, reason: 'call_exception' };
+      }
+      logger.warn('Error checking evaluation ready', { bountyId, submissionId, msg: error.message, code: error.code });
+      return { ready: false, error: error.message };
+    }
   }
 
   /**

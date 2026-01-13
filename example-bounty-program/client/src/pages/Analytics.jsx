@@ -59,10 +59,14 @@ const COLORS = {
   awarded: '#3b82f6',
   closed: '#6b7280',
   orphaned: '#a855f7',
-  passed: '#22c55e',
-  failed: '#ef4444',
-  pending: '#f59e0b',
-  prepared: '#3b82f6'
+  approvedPaid: '#22c55e',
+  approvedUnpaid: '#86efac',
+  rejected: '#ef4444',
+  rejectedUnclosed: '#fca5a5',
+  evaluating: '#f59e0b',
+  prepared: '#3b82f6',
+  timeout: '#6b7280',
+  unknown: '#a855f7'
 };
 
 // Arbiter status descriptions for tooltips
@@ -72,6 +76,18 @@ const ARBITER_STATUS_DESCRIPTIONS = {
   Unresponsive: 'Registered but showing signs of poor availability: timeliness score <= -60, or 60%+ declining trend in recent scores, or rapid score decline (40+ points in last 3 updates)',
   Blocked: 'Temporarily locked due to severe performance issues (timeliness or quality score below threshold)',
   Inactive: 'Not currently registered or has been deactivated in the contract'
+};
+
+// Submission status descriptions for tooltips
+const SUBMISSION_STATUS_DESCRIPTIONS = {
+  ApprovedPaid: 'Submission passed evaluation and payment has been completed',
+  ApprovedUnpaid: 'Submission passed evaluation but payment is pending',
+  Rejected: 'Submission did not meet the evaluation threshold and has been closed',
+  RejectedUnclosed: 'Submission did not meet the evaluation threshold but bounty has not been closed',
+  Evaluating: 'Submission is on-chain and waiting for AI jury evaluation',
+  Prepared: 'Submission is ready but not yet submitted to the blockchain',
+  Timeout: 'Evaluation timed out before receiving enough arbiter responses',
+  Unknown: 'Submission has an unrecognized status'
 };
 
 function Analytics() {
@@ -232,19 +248,27 @@ function Analytics() {
 
   // Prepare chart data for submission outcomes
   const submissionChartData = data?.submissions?.byOutcome ? {
-    labels: ['Passed', 'Failed', 'Pending', 'Prepared'],
+    labels: ['Approved (Paid)', 'Approved (Unpaid)', 'Rejected', 'Rejected (Unclosed)', 'Evaluating', 'Prepared', 'Timeout', 'Unknown'],
     datasets: [{
       data: [
-        data.submissions.byOutcome.passed || 0,
-        data.submissions.byOutcome.failed || 0,
-        data.submissions.byOutcome.pending || 0,
-        data.submissions.byOutcome.prepared || 0
+        data.submissions.byOutcome.approvedPaid || 0,
+        data.submissions.byOutcome.approvedUnpaid || 0,
+        data.submissions.byOutcome.rejected || 0,
+        data.submissions.byOutcome.rejectedUnclosed || 0,
+        data.submissions.byOutcome.evaluating || 0,
+        data.submissions.byOutcome.prepared || 0,
+        data.submissions.byOutcome.timeout || 0,
+        data.submissions.byOutcome.unknown || 0
       ],
       backgroundColor: [
-        COLORS.passed,
-        COLORS.failed,
-        COLORS.pending,
-        COLORS.prepared
+        COLORS.approvedPaid,
+        COLORS.approvedUnpaid,
+        COLORS.rejected,
+        COLORS.rejectedUnclosed,
+        COLORS.evaluating,
+        COLORS.prepared,
+        COLORS.timeout,
+        COLORS.unknown
       ]
     }]
   } : null;
@@ -443,20 +467,30 @@ function Analytics() {
               <div className="stat-value">{data?.submissions?.total ?? 0}</div>
               <div className="stat-label">Total Submissions</div>
             </div>
-            <div className="stat-card success">
+            <div className="stat-card success" title={SUBMISSION_STATUS_DESCRIPTIONS.ApprovedPaid}>
               <div className="stat-icon"><CheckCircle size={24} /></div>
-              <div className="stat-value">{data?.submissions?.byOutcome?.passed ?? 0}</div>
-              <div className="stat-label">Passed</div>
+              <div className="stat-value">{data?.submissions?.byOutcome?.approvedPaid ?? 0}</div>
+              <div className="stat-label">Approved (Paid)</div>
             </div>
-            <div className="stat-card danger">
+            <div className="stat-card" style={{ borderColor: COLORS.approvedUnpaid }} title={SUBMISSION_STATUS_DESCRIPTIONS.ApprovedUnpaid}>
+              <div className="stat-icon" style={{ color: COLORS.approvedUnpaid }}><CheckCircle size={24} /></div>
+              <div className="stat-value">{data?.submissions?.byOutcome?.approvedUnpaid ?? 0}</div>
+              <div className="stat-label">Approved (Unpaid)</div>
+            </div>
+            <div className="stat-card danger" title={SUBMISSION_STATUS_DESCRIPTIONS.Rejected}>
               <div className="stat-icon"><XCircle size={24} /></div>
-              <div className="stat-value">{data?.submissions?.byOutcome?.failed ?? 0}</div>
-              <div className="stat-label">Failed</div>
+              <div className="stat-value">{data?.submissions?.byOutcome?.rejected ?? 0}</div>
+              <div className="stat-label">Rejected</div>
             </div>
-            <div className="stat-card warning">
+            <div className="stat-card" style={{ borderColor: COLORS.rejectedUnclosed }} title={SUBMISSION_STATUS_DESCRIPTIONS.RejectedUnclosed}>
+              <div className="stat-icon" style={{ color: COLORS.rejectedUnclosed }}><XCircle size={24} /></div>
+              <div className="stat-value">{data?.submissions?.byOutcome?.rejectedUnclosed ?? 0}</div>
+              <div className="stat-label">Rejected (Unclosed)</div>
+            </div>
+            <div className="stat-card warning" title={SUBMISSION_STATUS_DESCRIPTIONS.Evaluating}>
               <div className="stat-icon"><Hourglass size={24} /></div>
-              <div className="stat-value">{data?.submissions?.byOutcome?.pending ?? 0}</div>
-              <div className="stat-label">Pending</div>
+              <div className="stat-value">{data?.submissions?.byOutcome?.evaluating ?? 0}</div>
+              <div className="stat-label">Evaluating</div>
             </div>
           </div>
           <div className="metrics-row">
@@ -476,6 +510,40 @@ function Analytics() {
           {submissionChartData && (
             <div className="chart-container chart-doughnut">
               <Doughnut data={submissionChartData} options={chartOptions} />
+              <div className="custom-legend">
+                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.ApprovedPaid}>
+                  <span className="legend-color" style={{ backgroundColor: COLORS.approvedPaid }}></span>
+                  Approved (Paid)
+                </span>
+                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.ApprovedUnpaid}>
+                  <span className="legend-color" style={{ backgroundColor: COLORS.approvedUnpaid }}></span>
+                  Approved (Unpaid)
+                </span>
+                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.Rejected}>
+                  <span className="legend-color" style={{ backgroundColor: COLORS.rejected }}></span>
+                  Rejected
+                </span>
+                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.RejectedUnclosed}>
+                  <span className="legend-color" style={{ backgroundColor: COLORS.rejectedUnclosed }}></span>
+                  Rejected (Unclosed)
+                </span>
+                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.Evaluating}>
+                  <span className="legend-color" style={{ backgroundColor: COLORS.evaluating }}></span>
+                  Evaluating
+                </span>
+                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.Prepared}>
+                  <span className="legend-color" style={{ backgroundColor: COLORS.prepared }}></span>
+                  Prepared
+                </span>
+                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.Timeout}>
+                  <span className="legend-color" style={{ backgroundColor: COLORS.timeout }}></span>
+                  Timeout
+                </span>
+                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.Unknown}>
+                  <span className="legend-color" style={{ backgroundColor: COLORS.unknown }}></span>
+                  Unknown
+                </span>
+              </div>
             </div>
           )}
         </div>

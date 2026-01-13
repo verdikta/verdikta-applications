@@ -4,8 +4,8 @@
  */
 
 export const config = {
-  // API Configuration
-  apiUrl: import.meta.env.VITE_API_URL || 'http://localhost:5005',
+  // API Configuration - use relative URL so requests go through Nginx proxy
+  apiUrl: import.meta.env.VITE_API_URL || '',
   apiTimeout: parseInt(import.meta.env.VITE_API_TIMEOUT) || 30000,
 
   // Blockchain Configuration

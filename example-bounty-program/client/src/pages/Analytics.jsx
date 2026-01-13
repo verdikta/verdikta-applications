@@ -507,7 +507,7 @@ function Analytics() {
                 {data?.system?.sync ? (
                   <>
                     <p>Status: {data.system.sync.isSyncing ? 'Syncing...' : 'Idle'}</p>
-                    <p>Interval: {data.system.sync.intervalMinutes}m</p>
+                    <p>Interval: {data.system.sync.intervalMinutes.toFixed(2)}m</p>
                     {data.system.sync.lastSync && (
                       <p>Last: {new Date(data.system.sync.lastSync).toLocaleTimeString()}</p>
                     )}

@@ -506,19 +506,25 @@ class SyncService {
     }
 
     // CRITICAL: Sync submission statuses from blockchain
-    if (bounty.submissionCount > 0) {
+    if (bounty.submissionCount > 0 || (existingJob.submissions && existingJob.submissions.length > 0)) {
       const onChainSubmissions = await this.syncSubmissions(
         bounty.jobId,
         bounty.submissionCount,
         existingJob.submissions || [] // Pass existing submissions to merge
       );
 
-      // Merge with existing submissions, preferring blockchain data
-      existingJob.submissions = onChainSubmissions;
+      // Preserve local "Prepared" submissions that aren't on-chain yet
+      const localPreparedSubmissions = (existingJob.submissions || []).filter(
+        s => s.status === 'Prepared' && !onChainSubmissions.some(ocs => ocs.submissionId === s.submissionId)
+      );
+
+      // Merge: on-chain submissions + local Prepared submissions
+      existingJob.submissions = [...onChainSubmissions, ...localPreparedSubmissions];
 
       logger.info('📝 Updated submission statuses', {
         jobId: existingJob.jobId,
-        submissionCount: onChainSubmissions.length
+        onChainCount: onChainSubmissions.length,
+        localPreparedCount: localPreparedSubmissions.length
       });
     }
 

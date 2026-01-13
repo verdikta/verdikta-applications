@@ -27,9 +27,11 @@ import {
   isBountyOpen,
   isSubmissionPending,
   isSubmissionOnChain,
-  getSubmissionStatusDisplay,
+  getSubmissionStatusLabel,
+  getSubmissionStatusIcon,
   getSubmissionBadgeProps,
   hasAnyPendingSubmissions,
+  IconName,
 } from '../utils/statusDisplay';
 import JustificationDisplay from '../components/JustificationDisplay';
 import './BountyDetails.css';
@@ -2214,9 +2216,12 @@ function SubmissionCard({
         ) : (
           <span
             {...getSubmissionBadgeProps(submission.status)}
-            style={{ cursor: 'default' }}
+            style={{ cursor: 'default', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
           >
-            {getSubmissionStatusDisplay(submission.status)}
+            {getSubmissionStatusIcon(submission.status) === IconName.HOURGLASS && <Hourglass size={14} />}
+            {getSubmissionStatusIcon(submission.status) === IconName.CHECK && <Check size={14} />}
+            {getSubmissionStatusIcon(submission.status) === IconName.X && <X size={14} />}
+            {getSubmissionStatusLabel(submission.status)}
           </span>
         )}
       </div>
@@ -2227,14 +2232,17 @@ function SubmissionCard({
       </div>
 
       {(() => {
+        // Don't show score for pending submissions
+        if (isPending) return null;
+
         // Prioritize evaluation result score over stored submission score
-        const displayScore = hasEvalReady 
-          ? evaluationResult.scores.acceptance 
+        const displayScore = hasEvalReady
+          ? evaluationResult.scores.acceptance
           : (submission.score ?? submission.acceptance);
-        
+
         // Only show if we have a valid score
         if (displayScore == null) return null;
-        
+
         return (
           <div className="score" style={{
             color: isApproved ? '#28a745' : isRejected ? '#dc3545' : '#666',

@@ -25,7 +25,10 @@ const KEEPER_ABI = [
   "function getRegisteredOraclesCount() view returns (uint256)",
   "function registeredOracles(uint256 index) view returns (address oracle, bytes32 jobId)",
   "function getOracleInfo(address _oracle, bytes32 _jobId) view returns (bool isActive, int256 qualityScore, int256 timelinessScore, uint256 callCount, bytes32 jobId, uint256 fee, uint256 stakeAmount, uint256 lockedUntil, bool blocked)",
-  "function getOracleClasses(uint256 index) view returns (uint64[])"
+  "function getOracleClasses(uint256 index) view returns (uint64[])",
+  "function getRecentScores(address _oracle, bytes32 _jobId) view returns (tuple(int256 qualityScore, int256 timelinessScore)[])",
+  "function mildThreshold() view returns (int256)",
+  "function severeThreshold() view returns (int256)"
 ];
 
 class VerdiktaService {
@@ -153,6 +156,96 @@ class VerdiktaService {
   }
 
   /**
+   * Get recent score history for an oracle
+   */
+  async getRecentScores(oracleAddress, jobId) {
+    try {
+      const keeper = await this.getReputationKeeper();
+      const scores = await keeper.getRecentScores(oracleAddress, jobId);
+      return scores.map(s => ({
+        qualityScore: Number(s.qualityScore),
+        timelinessScore: Number(s.timelinessScore)
+      }));
+    } catch (error) {
+      logger.warn('Failed to get recent scores', { oracle: oracleAddress, msg: error.message });
+      return [];
+    }
+  }
+
+  /**
+   * Get reputation thresholds from the keeper contract
+   */
+  async getThresholds() {
+    try {
+      const keeper = await this.getReputationKeeper();
+      const [mildThreshold, severeThreshold] = await Promise.all([
+        keeper.mildThreshold(),
+        keeper.severeThreshold()
+      ]);
+      return {
+        mildThreshold: Number(mildThreshold),
+        severeThreshold: Number(severeThreshold)
+      };
+    } catch (error) {
+      logger.warn('Failed to get thresholds, using defaults', { msg: error.message });
+      return { mildThreshold: -300, severeThreshold: -900 };
+    }
+  }
+
+  /**
+   * Analyze recent scores to determine if an oracle is unresponsive
+   * An oracle is considered unresponsive if:
+   * 1. Current timeliness score is significantly negative
+   * 2. Recent timeliness scores show declining trend
+   * 3. Most recent scores show rapid decline (missing responses)
+   */
+  analyzeResponsiveness(recentScores, currentTimelinessScore, thresholds) {
+    // Check 1: Current timeliness is significantly negative (below -60, i.e. 3+ missed responses)
+    // Each missed response gives -20, so -60 means at least 3 failures
+    if (currentTimelinessScore <= -60) {
+      return {
+        isUnresponsive: true,
+        reason: 'low_timeliness'
+      };
+    }
+
+    // If we have recent scores, analyze the trend
+    if (recentScores && recentScores.length >= 2) {
+      // Check 2: Count total declines in recent history (not just consecutive)
+      let declineCount = 0;
+      for (let i = 1; i < recentScores.length; i++) {
+        if (recentScores[i].timelinessScore < recentScores[i - 1].timelinessScore) {
+          declineCount++;
+        }
+      }
+
+      // If more than half of recent changes are declines, likely unresponsive
+      const declineRatio = declineCount / (recentScores.length - 1);
+      if (declineRatio >= 0.6 && currentTimelinessScore < 0) {
+        return {
+          isUnresponsive: true,
+          reason: 'declining_timeliness'
+        };
+      }
+
+      // Check 3: Rapid recent decline - look at last 3 scores
+      if (recentScores.length >= 3) {
+        const last3 = recentScores.slice(-3);
+        const recentDrop = last3[0].timelinessScore - last3[last3.length - 1].timelinessScore;
+        // If dropped by 40+ points in last 3 updates (2+ missed responses recently)
+        if (recentDrop >= 40) {
+          return {
+            isUnresponsive: true,
+            reason: 'rapid_decline'
+          };
+        }
+      }
+    }
+
+    return { isUnresponsive: false, reason: null };
+  }
+
+  /**
    * Get all oracles with their info (batched for efficiency)
    */
   async getAllOracles() {
@@ -174,10 +267,13 @@ class VerdiktaService {
 
         const batchResults = await Promise.all(batchPromises);
 
-        // Get detailed info for each oracle
+        // Get detailed info and recent scores for each oracle
         const infoPromises = batchResults.map(o =>
-          this.getOracleInfo(o.oracle, o.jobId)
-            .then(info => ({ ...o, ...info }))
+          Promise.all([
+            this.getOracleInfo(o.oracle, o.jobId),
+            this.getRecentScores(o.oracle, o.jobId)
+          ])
+            .then(([info, recentScores]) => ({ ...o, ...info, recentScores }))
             .catch(err => {
               logger.warn('Failed to get oracle info', { oracle: o.oracle, msg: err.message });
               return { ...o, error: err.message };
@@ -200,7 +296,10 @@ class VerdiktaService {
    */
   async getArbiterAvailabilityByClass() {
     try {
-      const oracles = await this.getAllOracles();
+      const [oracles, thresholds] = await Promise.all([
+        this.getAllOracles(),
+        this.getThresholds()
+      ]);
       const byClass = {};
       const now = Math.floor(Date.now() / 1000);
 
@@ -210,6 +309,26 @@ class VerdiktaService {
         // Determine if oracle is currently blocked
         const isBlocked = oracle.blocked && oracle.lockedUntil > now;
 
+        // Analyze responsiveness based on recent scores
+        const responsiveness = this.analyzeResponsiveness(
+          oracle.recentScores,
+          oracle.timelinessScore,
+          thresholds
+        );
+
+        // Debug logging for 5050 class
+        if (oracle.classes.includes(5050)) {
+          logger.info('5050 class oracle analysis', {
+            oracle: oracle.oracle.slice(0, 10) + '...',
+            isActive: oracle.isActive,
+            isBlocked,
+            timelinessScore: oracle.timelinessScore,
+            recentScoresCount: oracle.recentScores?.length || 0,
+            recentScores: oracle.recentScores?.slice(-5).map(s => s.timelinessScore),
+            responsiveness
+          });
+        }
+
         for (const classId of oracle.classes) {
           if (!byClass[classId]) {
             byClass[classId] = {
@@ -217,6 +336,7 @@ class VerdiktaService {
               active: 0,
               blocked: 0,
               inactive: 0,
+              unresponsive: 0,
               total: 0,
               avgQualityScore: 0,
               avgTimelinessScore: 0,
@@ -232,6 +352,8 @@ class VerdiktaService {
             byClass[classId].inactive++;
           } else if (isBlocked) {
             byClass[classId].blocked++;
+          } else if (responsiveness.isUnresponsive) {
+            byClass[classId].unresponsive++;
           } else {
             byClass[classId].active++;
           }

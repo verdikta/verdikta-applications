@@ -451,3 +451,50 @@
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* Tooltip header styling */
+.tooltip-header {
+  cursor: help;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+
+/* Custom chart legend with tooltip support */
+.custom-legend {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+  margin-top: 1rem;
+  margin-bottom: 3rem;
+  padding: 0.5rem;
+}
+
+/* Stats table spacing */
+.stats-table {
+  margin-top: 2.5rem;
+}
+
+.custom-legend .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  cursor: help;
+}
+
+.custom-legend .legend-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+/* Stats table title */
+.stats-table .table-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 0.75rem 0;
+  color: var(--text-primary);
+}

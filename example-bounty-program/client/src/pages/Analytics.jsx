@@ -50,6 +50,7 @@ ChartJS.register(
 // Chart color palette
 const COLORS = {
   active: '#22c55e',
+  unresponsive: '#f59e0b',
   blocked: '#ef4444',
   inactive: '#6b7280',
   open: '#22c55e',
@@ -61,6 +62,14 @@ const COLORS = {
   failed: '#ef4444',
   pending: '#f59e0b',
   prepared: '#3b82f6'
+};
+
+// Arbiter status descriptions for tooltips
+const ARBITER_STATUS_DESCRIPTIONS = {
+  Active: 'Registered, responding normally, and available for selection',
+  Unresponsive: 'Registered but showing signs of poor availability: timeliness score <= -60, or 60%+ declining trend in recent scores, or rapid score decline (40+ points in last 3 updates)',
+  Blocked: 'Temporarily locked due to severe performance issues (timeliness or quality score below threshold)',
+  Inactive: 'Not currently registered or has been deactivated in the contract'
 };
 
 function Analytics() {
@@ -176,6 +185,11 @@ function Analytics() {
         backgroundColor: COLORS.active
       },
       {
+        label: 'Unresponsive',
+        data: Object.values(data.arbiters.byClass).map(c => c.unresponsive ?? 0),
+        backgroundColor: COLORS.unresponsive
+      },
+      {
         label: 'Blocked',
         data: Object.values(data.arbiters.byClass).map(c => c.blocked ?? 0),
         backgroundColor: COLORS.blocked
@@ -238,6 +252,30 @@ function Analytics() {
     }
   };
 
+  const arbiterChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      x: { stacked: true },
+      y: { stacked: true, beginAtZero: true }
+    },
+    plugins: {
+      legend: {
+        display: false // Using custom legend for tooltip support
+      },
+      tooltip: {
+        callbacks: {
+          afterLabel: (context) => {
+            const status = context.dataset.label;
+            return ARBITER_STATUS_DESCRIPTIONS[status]
+              ? `\n${ARBITER_STATUS_DESCRIPTIONS[status]}`
+              : '';
+          }
+        }
+      }
+    }
+  };
+
   const barChartOptions = {
     ...chartOptions,
     scales: {
@@ -282,15 +320,35 @@ function Analytics() {
           {arbiterChartData && Object.keys(data.arbiters.byClass).length > 0 ? (
             <>
               <div className="chart-container chart-bar">
-                <Bar data={arbiterChartData} options={barChartOptions} />
+                <Bar data={arbiterChartData} options={arbiterChartOptions} />
+                <div className="custom-legend">
+                  <span className="legend-item" title={ARBITER_STATUS_DESCRIPTIONS.Active}>
+                    <span className="legend-color" style={{ backgroundColor: COLORS.active }}></span>
+                    Active
+                  </span>
+                  <span className="legend-item" title={ARBITER_STATUS_DESCRIPTIONS.Unresponsive}>
+                    <span className="legend-color" style={{ backgroundColor: COLORS.unresponsive }}></span>
+                    Unresponsive
+                  </span>
+                  <span className="legend-item" title={ARBITER_STATUS_DESCRIPTIONS.Blocked}>
+                    <span className="legend-color" style={{ backgroundColor: COLORS.blocked }}></span>
+                    Blocked
+                  </span>
+                  <span className="legend-item" title={ARBITER_STATUS_DESCRIPTIONS.Inactive}>
+                    <span className="legend-color" style={{ backgroundColor: COLORS.inactive }}></span>
+                    Inactive
+                  </span>
+                </div>
               </div>
               <div className="stats-table">
+                <h3 className="table-title">Availability by Class</h3>
                 <table>
                   <thead>
                     <tr>
                       <th>Class</th>
-                      <th>Active</th>
-                      <th>Blocked</th>
+                      <th title={ARBITER_STATUS_DESCRIPTIONS.Active} className="tooltip-header">Active</th>
+                      <th title={ARBITER_STATUS_DESCRIPTIONS.Unresponsive} className="tooltip-header">Unresponsive</th>
+                      <th title={ARBITER_STATUS_DESCRIPTIONS.Blocked} className="tooltip-header">Blocked</th>
                       <th>Total</th>
                       <th>Avg Quality</th>
                       <th>Avg Timeliness</th>
@@ -303,6 +361,7 @@ function Analytics() {
                           <strong>{formatClassLabel(cls)}</strong>
                         </td>
                         <td className="text-success">{cls.active ?? '-'}</td>
+                        <td className="text-warning">{cls.unresponsive ?? '-'}</td>
                         <td className="text-danger">{cls.blocked ?? '-'}</td>
                         <td>{cls.total ?? '-'}</td>
                         <td>{cls.avgQualityScore ?? '-'}</td>

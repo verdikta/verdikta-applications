@@ -363,6 +363,58 @@ async uploadRubric(rubricJson, classId = 128) {
   async getArchivalStatus() {
     const response = await api.get('/api/archival/status');
     return response.data;
+  },
+
+  // ============================================================
+  //                  ANALYTICS ENDPOINTS
+  // ============================================================
+
+  /**
+   * Get combined analytics overview (cached server-side)
+   */
+  async getAnalyticsOverview() {
+    const response = await api.get('/api/analytics/overview');
+    return response.data;
+  },
+
+  /**
+   * Get arbiter availability per class
+   */
+  async getArbiterAnalytics() {
+    const response = await api.get('/api/analytics/arbiters');
+    return response.data;
+  },
+
+  /**
+   * Get bounty statistics
+   */
+  async getBountyAnalytics() {
+    const response = await api.get('/api/analytics/bounties');
+    return response.data;
+  },
+
+  /**
+   * Get submission statistics
+   */
+  async getSubmissionAnalytics() {
+    const response = await api.get('/api/analytics/submissions');
+    return response.data;
+  },
+
+  /**
+   * Get system health information
+   */
+  async getSystemHealth() {
+    const response = await api.get('/api/analytics/system');
+    return response.data;
+  },
+
+  /**
+   * Force refresh analytics cache
+   */
+  async refreshAnalytics() {
+    const response = await api.post('/api/analytics/refresh');
+    return response.data;
   }
 
 };

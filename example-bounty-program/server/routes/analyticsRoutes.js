@@ -1,0 +1,447 @@
+/**
+ * Analytics Routes
+ * Provides analytics data for the bounty program dashboard
+ */
+
+const express = require('express');
+const router = express.Router();
+const logger = require('../utils/logger');
+const jobStorage = require('../utils/jobStorage');
+const { analyticsCache } = require('../utils/analyticsCacheService');
+const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
+const { classMap } = require('@verdikta/common');
+
+/**
+ * GET /api/analytics/overview
+ * Returns combined analytics overview (cached)
+ */
+router.get('/overview', async (req, res) => {
+  try {
+    const cacheKey = 'analytics_overview';
+    const cached = analyticsCache.get(cacheKey);
+
+    if (cached) {
+      return res.json({
+        success: true,
+        data: cached.data,
+        cached: true,
+        cachedAt: cached.timestamp,
+        ageMs: cached.ageMs
+      });
+    }
+
+    // Gather all analytics data
+    const [arbiterData, bountyData, submissionData, systemData] = await Promise.all([
+      getArbiterAnalytics(),
+      getBountyAnalytics(),
+      getSubmissionAnalytics(),
+      getSystemHealth()
+    ]);
+
+    const result = {
+      arbiters: arbiterData,
+      bounties: bountyData,
+      submissions: submissionData,
+      system: systemData,
+      generatedAt: Date.now()
+    };
+
+    analyticsCache.set(cacheKey, result);
+
+    return res.json({
+      success: true,
+      data: result,
+      cached: false
+    });
+  } catch (error) {
+    logger.error('[analytics/overview] error', { msg: error.message });
+    return res.status(500).json({
+      error: 'Failed to get analytics overview',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/analytics/arbiters
+ * Returns arbiter availability per class
+ */
+router.get('/arbiters', async (req, res) => {
+  try {
+    const cacheKey = 'analytics_arbiters';
+    const cached = analyticsCache.get(cacheKey);
+
+    if (cached) {
+      return res.json({
+        success: true,
+        data: cached.data,
+        cached: true,
+        cachedAt: cached.timestamp
+      });
+    }
+
+    const data = await getArbiterAnalytics();
+    analyticsCache.set(cacheKey, data);
+
+    return res.json({
+      success: true,
+      data,
+      cached: false
+    });
+  } catch (error) {
+    logger.error('[analytics/arbiters] error', { msg: error.message });
+    return res.status(500).json({
+      error: 'Failed to get arbiter analytics',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/analytics/bounties
+ * Returns bounty statistics
+ */
+router.get('/bounties', async (req, res) => {
+  try {
+    const cacheKey = 'analytics_bounties';
+    const cached = analyticsCache.get(cacheKey);
+
+    if (cached) {
+      return res.json({
+        success: true,
+        data: cached.data,
+        cached: true,
+        cachedAt: cached.timestamp
+      });
+    }
+
+    const data = await getBountyAnalytics();
+    analyticsCache.set(cacheKey, data);
+
+    return res.json({
+      success: true,
+      data,
+      cached: false
+    });
+  } catch (error) {
+    logger.error('[analytics/bounties] error', { msg: error.message });
+    return res.status(500).json({
+      error: 'Failed to get bounty analytics',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/analytics/submissions
+ * Returns submission statistics
+ */
+router.get('/submissions', async (req, res) => {
+  try {
+    const cacheKey = 'analytics_submissions';
+    const cached = analyticsCache.get(cacheKey);
+
+    if (cached) {
+      return res.json({
+        success: true,
+        data: cached.data,
+        cached: true,
+        cachedAt: cached.timestamp
+      });
+    }
+
+    const data = await getSubmissionAnalytics();
+    analyticsCache.set(cacheKey, data);
+
+    return res.json({
+      success: true,
+      data,
+      cached: false
+    });
+  } catch (error) {
+    logger.error('[analytics/submissions] error', { msg: error.message });
+    return res.status(500).json({
+      error: 'Failed to get submission analytics',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/analytics/system
+ * Returns system health and configuration
+ */
+router.get('/system', async (req, res) => {
+  try {
+    const data = await getSystemHealth();
+    return res.json({
+      success: true,
+      data
+    });
+  } catch (error) {
+    logger.error('[analytics/system] error', { msg: error.message });
+    return res.status(500).json({
+      error: 'Failed to get system health',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/analytics/refresh
+ * Invalidates cache and forces a refresh
+ */
+router.post('/refresh', async (req, res) => {
+  try {
+    analyticsCache.clear();
+    logger.info('Analytics cache manually cleared');
+
+    return res.json({
+      success: true,
+      message: 'Cache cleared successfully'
+    });
+  } catch (error) {
+    logger.error('[analytics/refresh] error', { msg: error.message });
+    return res.status(500).json({
+      error: 'Failed to refresh analytics',
+      details: error.message
+    });
+  }
+});
+
+// ============================================================
+// Analytics Data Fetching Functions
+// ============================================================
+
+/**
+ * Get arbiter/oracle analytics from ReputationKeeper contract
+ */
+async function getArbiterAnalytics() {
+  const verdiktaService = getVerdiktaService();
+
+  // If Verdikta service is not configured, return class data from classMap only
+  if (!verdiktaService) {
+    logger.info('Verdikta service not available, returning class-only data');
+    return getClassOnlyAnalytics();
+  }
+
+  try {
+    const arbiterData = await verdiktaService.getArbiterAvailabilityByClass();
+
+    // Enrich with class names from classMap
+    const enrichedByClass = {};
+    for (const [classId, data] of Object.entries(arbiterData.byClass)) {
+      const classInfo = classMap.getClass(Number(classId));
+      enrichedByClass[classId] = {
+        ...data,
+        className: classInfo?.name || `Class ${classId}`,
+        classDescription: classInfo?.description || ''
+      };
+    }
+
+    return {
+      byClass: enrichedByClass,
+      totalOracles: arbiterData.totalOracles,
+      verdiktaConnected: true,
+      timestamp: arbiterData.timestamp
+    };
+  } catch (error) {
+    logger.error('Failed to get arbiter analytics from contract', { msg: error.message });
+    // Fall back to class-only data
+    return getClassOnlyAnalytics();
+  }
+}
+
+/**
+ * Get class information without oracle data (fallback when Verdikta not available)
+ */
+function getClassOnlyAnalytics() {
+  const classes = classMap.listClasses({});
+  const byClass = {};
+
+  for (const cls of classes) {
+    const fullClass = classMap.getClass(Number(cls.id));
+    byClass[cls.id] = {
+      classId: Number(cls.id),
+      className: cls.name || `Class ${cls.id}`,
+      classDescription: fullClass?.description || '',
+      status: cls.status,
+      // No oracle data available
+      active: null,
+      blocked: null,
+      total: null,
+      avgQualityScore: null,
+      avgTimelinessScore: null
+    };
+  }
+
+  return {
+    byClass,
+    totalOracles: null,
+    verdiktaConnected: false,
+    message: 'Verdikta aggregator not configured - showing class information only',
+    timestamp: Date.now()
+  };
+}
+
+/**
+ * Get bounty statistics from job storage
+ */
+async function getBountyAnalytics() {
+  try {
+    const diagnostics = await jobStorage.getDiagnostics();
+    const jobs = await jobStorage.listJobs({});
+
+    // Calculate total ETH
+    let totalETH = 0;
+    let totalWithAmount = 0;
+
+    for (const job of jobs.jobs || jobs) {
+      const amount = parseFloat(job.bountyAmount) || 0;
+      totalETH += amount;
+      if (amount > 0) totalWithAmount++;
+    }
+
+    const avgBountyAmount = totalWithAmount > 0 ? totalETH / totalWithAmount : 0;
+
+    return {
+      byStatus: diagnostics.byStatus || {},
+      totalBounties: diagnostics.totalJobs || 0,
+      totalETH: Math.round(totalETH * 10000) / 10000,
+      avgBountyAmount: Math.round(avgBountyAmount * 10000) / 10000,
+      currentContract: diagnostics.currentContract,
+      orphanedCount: diagnostics.orphanedCount || 0,
+      legacyCount: diagnostics.legacyCount || 0,
+      timestamp: Date.now()
+    };
+  } catch (error) {
+    logger.error('Failed to get bounty analytics', { msg: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Get submission statistics from job storage
+ */
+async function getSubmissionAnalytics() {
+  try {
+    const jobs = await jobStorage.listJobs({});
+    const jobList = jobs.jobs || jobs;
+
+    let totalSubmissions = 0;
+    let passed = 0;
+    let failed = 0;
+    let pending = 0;
+    let prepared = 0;
+    let timeout = 0;
+    let scores = [];
+
+    for (const job of jobList) {
+      if (!job.submissions) continue;
+
+      for (const sub of job.submissions) {
+        totalSubmissions++;
+
+        // Normalize status to handle different naming conventions
+        const status = (sub.status || '').toLowerCase();
+
+        if (status === 'passed' || status === 'passedpaid' || status === 'passedunpaid' || status === 'approved') {
+          passed++;
+          // Collect scores for averaging
+          if (sub.result?.score != null) {
+            scores.push(sub.result.score);
+          } else if (sub.result?.acceptance != null) {
+            scores.push(sub.result.acceptance);
+          }
+        } else if (status === 'failed' || status === 'rejected') {
+          failed++;
+        } else if (status === 'pending' || status === 'pendingverdikta' || status === 'pending_evaluation') {
+          pending++;
+        } else if (status === 'prepared') {
+          prepared++;
+        } else if (status === 'timeout') {
+          timeout++;
+        }
+      }
+    }
+
+    const evaluated = passed + failed;
+    const passRate = evaluated > 0 ? Math.round((passed / evaluated) * 100) : null;
+    const avgScore = scores.length > 0
+      ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
+      : null;
+
+    return {
+      total: totalSubmissions,
+      byOutcome: {
+        passed,
+        failed,
+        pending,
+        prepared,
+        timeout
+      },
+      passRate,
+      avgScore,
+      timestamp: Date.now()
+    };
+  } catch (error) {
+    logger.error('Failed to get submission analytics', { msg: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Get system health information
+ */
+async function getSystemHealth() {
+  const verdiktaService = getVerdiktaService();
+
+  let aggregatorConfig = null;
+  let verdiktaHealth = null;
+
+  if (verdiktaService) {
+    try {
+      verdiktaHealth = await verdiktaService.healthCheck();
+      if (verdiktaHealth.healthy) {
+        aggregatorConfig = verdiktaHealth.config;
+      }
+    } catch (error) {
+      logger.warn('Failed to get Verdikta health', { msg: error.message });
+      verdiktaHealth = { healthy: false, error: error.message };
+    }
+  }
+
+  // Get sync service status if available
+  let syncStatus = null;
+  try {
+    const { getSyncService } = require('../utils/syncService');
+    const syncService = getSyncService();
+    if (syncService) {
+      syncStatus = syncService.getStatus();
+    }
+  } catch {
+    // Sync service not available
+  }
+
+  return {
+    verdikta: {
+      configured: isVerdiktaServiceAvailable(),
+      healthy: verdiktaHealth?.healthy || false,
+      aggregatorAddress: verdiktaHealth?.aggregatorAddress || null,
+      keeperAddress: verdiktaHealth?.keeperAddress || null,
+      error: verdiktaHealth?.error || null
+    },
+    aggregatorConfig,
+    sync: syncStatus ? {
+      enabled: syncStatus.enabled,
+      isSyncing: syncStatus.isSyncing,
+      lastSync: syncStatus.lastSyncTime,
+      intervalMinutes: syncStatus.intervalMinutes,
+      consecutiveErrors: syncStatus.consecutiveErrors || 0
+    } : null,
+    bountyContract: process.env.BOUNTY_ESCROW_ADDRESS || null,
+    timestamp: Date.now()
+  };
+}
+
+module.exports = router;

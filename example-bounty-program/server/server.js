@@ -33,6 +33,8 @@ const { initializeSyncService } = require('./utils/syncService');
 
 const { initializeArchivalService } = require('./utils/archivalService');
 const posterRoutes = require('./routes/posterRoutes');
+const analyticsRoutes = require('./routes/analyticsRoutes');
+const { initializeVerdiktaService } = require('./utils/verdiktaService');
 
 const app = express();
 
@@ -93,7 +95,20 @@ const initializeBlockchainSync = () => {
         process.env.RPC_PROVIDER_URL,
         process.env.BOUNTY_ESCROW_ADDRESS
       );
-      
+
+      // Initialize Verdikta service for analytics (optional - requires VERDIKTA_AGGREGATOR_ADDRESS)
+      if (process.env.VERDIKTA_AGGREGATOR_ADDRESS) {
+        initializeVerdiktaService(
+          process.env.RPC_PROVIDER_URL,
+          process.env.VERDIKTA_AGGREGATOR_ADDRESS
+        );
+        logger.info('✅ Verdikta analytics service initialized', {
+          aggregatorAddress: process.env.VERDIKTA_AGGREGATOR_ADDRESS
+        });
+      } else {
+        logger.info('ℹ️  Verdikta analytics disabled - VERDIKTA_AGGREGATOR_ADDRESS not set');
+      }
+
       // Initialize and start sync service
       const syncIntervalSeconds = parseInt(process.env.SYNC_INTERVAL_SECONDS || '20');
       const syncService = initializeSyncService(syncIntervalSeconds / 60);
@@ -143,6 +158,7 @@ app.use('/api/submissions', submissionRoutes);
 app.use('/api', ipfsRoutes);
 app.use(require('./routes/resolveBounty'));
 app.use('/api/poster', posterRoutes);
+app.use('/api/analytics', analyticsRoutes); // Analytics dashboard endpoints
 
 // ClassMap API endpoints (reused from example-frontend)
 app.get('/api/classes', (req, res) => {

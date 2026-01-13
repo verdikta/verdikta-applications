@@ -10,6 +10,7 @@ import CreateBounty from './pages/CreateBounty';
 import BountyDetails from './pages/BountyDetails';
 import SubmitWork from './pages/SubmitWork';
 import MyBounties from './pages/MyBounties';
+import Analytics from './pages/Analytics';
 import './App.css';
 
 function AppContent() {
@@ -84,6 +85,7 @@ function AppContent() {
           <Route path="/bounty/:bountyId" element={<BountyDetails walletState={walletState} />} />
           <Route path="/bounty/:bountyId/submit" element={<SubmitWork walletState={walletState} />} />
           <Route path="/my-bounties" element={<MyBounties walletState={walletState} />} />
+          <Route path="/analytics" element={<Analytics />} />
         </Routes>
       </main>
     </div>

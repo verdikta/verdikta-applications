@@ -386,8 +386,9 @@ class VerdiktaService {
             cls.timelinessScores.reduce((a, b) => a + b, 0) / cls.timelinessScores.length
           );
         }
-        // Convert operator Set to count
+        // Convert operator Set to count and list
         cls.operators = cls.operatorAddresses.size;
+        cls.operatorList = Array.from(cls.operatorAddresses);
         // Remove raw data from output
         delete cls.qualityScores;
         delete cls.timelinessScores;

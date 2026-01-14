@@ -359,6 +359,8 @@ async function getSubmissionAnalytics() {
 
         // Normalize status to handle different naming conventions
         const status = (sub.status || '').toLowerCase();
+        // Also check onChainStatus for more accurate paid/unpaid distinction
+        const onChainStatus = (sub.onChainStatus || '').toLowerCase();
 
         // Track all statuses for debugging
         statusCounts[status] = (statusCounts[status] || 0) + 1;
@@ -370,10 +372,11 @@ async function getSubmissionAnalytics() {
         const score = sub.result?.score ?? sub.result?.acceptance ?? sub.acceptance ?? sub.score;
         const didPass = hasResult && score != null && score >= passThreshold;
 
-        if (status === 'passedpaid') {
+        // Check for PassedPaid - either from status directly or from onChainStatus
+        if (status === 'passedpaid' || onChainStatus === 'passedpaid') {
           approvedPaid++;
           if (hasResult) scores.push(score);
-        } else if (status === 'passed' || status === 'passedunpaid' || status === 'approved' || status === 'accepted') {
+        } else if (status === 'passed' || status === 'passedunpaid' || status === 'approved' || status === 'accepted' || onChainStatus === 'passedunpaid') {
           approvedUnpaid++;
           if (hasResult) scores.push(score);
         } else if (status === 'failed' || status === 'rejected') {

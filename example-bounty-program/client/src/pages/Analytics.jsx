@@ -77,6 +77,15 @@ const ARBITER_STATUS_DESCRIPTIONS = {
   Inactive: 'Not currently registered or has been deactivated in the contract'
 };
 
+// Bounty status descriptions for tooltips
+const BOUNTY_STATUS_DESCRIPTIONS = {
+  Open: 'Bounty is active and accepting submissions',
+  Expired: 'Bounty deadline has passed without being awarded',
+  Awarded: 'Bounty has been awarded to a winning submission',
+  Closed: 'Bounty has been closed by the creator',
+  Orphaned: 'Bounty has no associated work products or submissions'
+};
+
 // Submission status descriptions for tooltips
 const SUBMISSION_STATUS_DESCRIPTIONS = {
   ApprovedPaid: 'Submission passed evaluation and payment has been completed',
@@ -279,6 +288,17 @@ function Analytics() {
     }
   };
 
+  // Bounty chart uses custom legend with tooltips, so disable built-in legend
+  const bountyChartOptions = {
+    responsive: true,
+    maintainAspectRatio: true,
+    plugins: {
+      legend: {
+        display: false
+      }
+    }
+  };
+
   // Submission chart uses custom legend with tooltips, so disable built-in legend
   const submissionChartOptions = {
     responsive: true,
@@ -453,22 +473,22 @@ function Analytics() {
         <h2><Coins size={20} className="inline-icon" /> Bounty Statistics</h2>
         <div className="section-content">
           <div className="stat-grid">
-            <div className="stat-card">
+            <div className="stat-card" title="Total number of bounties created in the system">
               <div className="stat-icon"><FileText size={24} /></div>
               <div className="stat-value">{data?.bounties?.totalBounties ?? 0}</div>
               <div className="stat-label">Total Bounties</div>
             </div>
-            <div className="stat-card">
+            <div className="stat-card" title="Total ETH value across all bounties">
               <div className="stat-icon"><Coins size={24} /></div>
               <div className="stat-value">{data?.bounties?.totalETH ?? 0} ETH</div>
               <div className="stat-label">Total Value</div>
             </div>
-            <div className="stat-card">
+            <div className="stat-card" title="Average ETH value per bounty">
               <div className="stat-icon"><TrendingUp size={24} /></div>
               <div className="stat-value">{data?.bounties?.avgBountyAmount ?? 0} ETH</div>
               <div className="stat-label">Avg Bounty</div>
             </div>
-            <div className="stat-card warning">
+            <div className="stat-card warning" title={BOUNTY_STATUS_DESCRIPTIONS.Orphaned}>
               <div className="stat-icon"><AlertTriangle size={24} /></div>
               <div className="stat-value">{data?.bounties?.orphanedCount ?? 0}</div>
               <div className="stat-label">Orphaned</div>
@@ -476,7 +496,29 @@ function Analytics() {
           </div>
           {bountyChartData && (
             <div className="chart-container chart-doughnut">
-              <Doughnut data={bountyChartData} options={chartOptions} />
+              <Doughnut data={bountyChartData} options={bountyChartOptions} />
+              <div className="custom-legend">
+                <span className="legend-item" title={BOUNTY_STATUS_DESCRIPTIONS.Open}>
+                  <span className="legend-color" style={{ backgroundColor: COLORS.open }}></span>
+                  Open
+                </span>
+                <span className="legend-item" title={BOUNTY_STATUS_DESCRIPTIONS.Expired}>
+                  <span className="legend-color" style={{ backgroundColor: COLORS.expired }}></span>
+                  Expired
+                </span>
+                <span className="legend-item" title={BOUNTY_STATUS_DESCRIPTIONS.Awarded}>
+                  <span className="legend-color" style={{ backgroundColor: COLORS.awarded }}></span>
+                  Awarded
+                </span>
+                <span className="legend-item" title={BOUNTY_STATUS_DESCRIPTIONS.Closed}>
+                  <span className="legend-color" style={{ backgroundColor: COLORS.closed }}></span>
+                  Closed
+                </span>
+                <span className="legend-item" title={BOUNTY_STATUS_DESCRIPTIONS.Orphaned}>
+                  <span className="legend-color" style={{ backgroundColor: COLORS.orphaned }}></span>
+                  Orphaned
+                </span>
+              </div>
             </div>
           )}
         </div>

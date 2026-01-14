@@ -1208,20 +1208,52 @@ function BountyDetails({ walletState }) {
       return;
     }
 
-    const confirmed = window.confirm(
-      'Close this expired bounty and return funds to the creator?\n\n' +
-      'This will trigger a blockchain transaction that you must sign.'
-    );
+    // Check for pending submissions that need to be finalized first
+    const pendingToFinalize = submissions.filter(s => {
+      const status = (s.status || s.onChainStatus || '').toLowerCase();
+      return status === 'pendingverdikta' || status === 'pending_evaluation';
+    });
+
+    let confirmMessage = 'Close this expired bounty and return funds to the creator?\n\n';
+    if (pendingToFinalize.length > 0) {
+      confirmMessage += `This will first finalize ${pendingToFinalize.length} pending submission(s), then close the bounty.\n`;
+      confirmMessage += `You will need to sign ${pendingToFinalize.length + 1} transaction(s).\n\n`;
+    }
+    confirmMessage += 'This action requires blockchain transaction(s) that you must sign.';
+
+    const confirmed = window.confirm(confirmMessage);
     if (!confirmed) return;
 
     try {
       setClosingBounty(true);
-      setClosingMessage('Sending transaction...');
       setError(null);
 
       const contractService = getContractService();
       if (!contractService.isConnected()) await contractService.connect();
 
+      // First, finalize any pending submissions
+      if (pendingToFinalize.length > 0) {
+        for (let i = 0; i < pendingToFinalize.length; i++) {
+          const sub = pendingToFinalize[i];
+          const subId = sub.onChainSubmissionId ?? sub.submissionId;
+          setClosingMessage(`Finalizing submission ${i + 1}/${pendingToFinalize.length} (#${subId})...`);
+
+          try {
+            await contractService.finalizeSubmission(onChainId, subId);
+            toast.info(`Finalized submission #${subId}`);
+          } catch (err) {
+            // If finalization fails, warn but continue trying others
+            console.warn(`Failed to finalize submission #${subId}:`, err.message);
+            toast.warning(`Could not finalize submission #${subId}: ${err.message}`);
+          }
+        }
+
+        // Brief pause to let blockchain state settle
+        setClosingMessage('Preparing to close bounty...');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+
+      setClosingMessage('Closing bounty...');
       const result = await contractService.closeExpiredBounty(onChainId);
 
       setClosingMessage('Transaction confirmed! Waiting for backend to sync...');
@@ -1504,12 +1536,13 @@ function BountyDetails({ walletState }) {
             <div className="alert alert-info">
               <strong>Connect your wallet</strong> to finalize submissions and close this bounty.
             </div>
-          ) : hasActiveSubmissions ? (
-            <div className="alert alert-info" style={{ marginTop: '0.75rem' }}>
-              Finalize all pending submissions above before closing the bounty.
-            </div>
           ) : (
             <>
+              {hasActiveSubmissions && (
+                <div className="alert alert-info" style={{ marginBottom: '0.75rem' }}>
+                  {pendingSubmissions.length} pending submission(s) will be auto-finalized when you close the bounty.
+                </div>
+              )}
               <button
                 onClick={handleCloseExpiredBounty}
                 disabled={closingBounty || disableActionsForMissingId}
@@ -2109,25 +2142,31 @@ function ExpiredBountyActions({
         <div className="alert alert-info">
           Connect your wallet to close this expired bounty and return funds to the creator.
         </div>
-      ) : hasActiveSubmissions ? (
-        <PendingSubmissionsPanel
-          pendingSubmissions={pendingSubmissions}
-          getSubmissionAge={getSubmissionAge}
-          onFinalize={onFinalize}
-          onFailTimeout={onFailTimeout}
-          onCancel={onCancel}
-          finalizingSubmissions={finalizingSubmissions}
-          failingSubmissions={failingSubmissions}
-          cancelingSubmissions={cancelingSubmissions}
-          pollingSubmissions={pollingSubmissions}
-          evaluationResults={evaluationResults}
-          disableActions={disableActions}
-          timeoutMinutes={timeoutMinutes}
-          job={job}
-          toast={toast}
-        />
       ) : (
         <>
+          {hasActiveSubmissions && (
+            <>
+              <PendingSubmissionsPanel
+                pendingSubmissions={pendingSubmissions}
+                getSubmissionAge={getSubmissionAge}
+                onFinalize={onFinalize}
+                onFailTimeout={onFailTimeout}
+                onCancel={onCancel}
+                finalizingSubmissions={finalizingSubmissions}
+                failingSubmissions={failingSubmissions}
+                cancelingSubmissions={cancelingSubmissions}
+                pollingSubmissions={pollingSubmissions}
+                evaluationResults={evaluationResults}
+                disableActions={disableActions}
+                timeoutMinutes={timeoutMinutes}
+                job={job}
+                toast={toast}
+              />
+              <div className="alert alert-info" style={{ marginTop: '0.75rem', marginBottom: '0.75rem' }}>
+                {pendingSubmissions.length} pending submission(s) will be auto-finalized when you close the bounty.
+              </div>
+            </>
+          )}
           <button
             onClick={onClose}
             disabled={closingBounty || disableActions}

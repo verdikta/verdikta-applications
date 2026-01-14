@@ -405,6 +405,7 @@ function Analytics() {
                   <thead>
                     <tr>
                       <th>Class</th>
+                      <th title="Number of unique Chainlink operator contracts for this class">Operators</th>
                       <th title={ARBITER_STATUS_DESCRIPTIONS.Active} className="tooltip-header">Active</th>
                       <th title={ARBITER_STATUS_DESCRIPTIONS.New} className="tooltip-header">New</th>
                       <th title={ARBITER_STATUS_DESCRIPTIONS.Unresponsive} className="tooltip-header">Unresponsive</th>
@@ -420,6 +421,7 @@ function Analytics() {
                         <td>
                           <strong>{formatClassLabel(cls)}</strong>
                         </td>
+                        <td>{cls.operators ?? '-'}</td>
                         <td className="text-success">{cls.active ?? '-'}</td>
                         <td className="text-purple">{cls.new ?? '-'}</td>
                         <td className="text-warning">{cls.unresponsive ?? '-'}</td>

@@ -343,11 +343,16 @@ class VerdiktaService {
               avgTimelinessScore: 0,
               totalCallCount: 0,
               qualityScores: [],
-              timelinessScores: []
+              timelinessScores: [],
+              operatorAddresses: new Set()
             };
           }
 
           byClass[classId].total++;
+          // Track unique operator contract addresses
+          if (oracle.oracle) {
+            byClass[classId].operatorAddresses.add(oracle.oracle.toLowerCase());
+          }
 
           // Determine arbiter status - "new" if called fewer than 3 times
           const isNew = oracle.callCount < 3;
@@ -370,7 +375,7 @@ class VerdiktaService {
         }
       }
 
-      // Calculate averages
+      // Calculate averages and finalize data
       for (const classId of Object.keys(byClass)) {
         const cls = byClass[classId];
         if (cls.qualityScores.length > 0) {
@@ -381,9 +386,12 @@ class VerdiktaService {
             cls.timelinessScores.reduce((a, b) => a + b, 0) / cls.timelinessScores.length
           );
         }
-        // Remove raw scores from output
+        // Convert operator Set to count
+        cls.operators = cls.operatorAddresses.size;
+        // Remove raw data from output
         delete cls.qualityScores;
         delete cls.timelinessScores;
+        delete cls.operatorAddresses;
       }
 
       return {

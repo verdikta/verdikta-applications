@@ -298,8 +298,21 @@ function Analytics() {
     responsive: true,
     maintainAspectRatio: false,
     scales: {
-      x: { stacked: true },
-      y: { stacked: true, beginAtZero: true }
+      x: {
+        stacked: true,
+        title: {
+          display: true,
+          text: 'Class'
+        }
+      },
+      y: {
+        stacked: true,
+        beginAtZero: true,
+        title: {
+          display: true,
+          text: 'Arbiter Count'
+        }
+      }
     },
     plugins: {
       legend: {

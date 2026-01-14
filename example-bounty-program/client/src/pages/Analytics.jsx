@@ -425,10 +425,10 @@ function Analytics() {
                           title={cls.operatorList?.length > 0 ? cls.operatorList.join('\n') : 'No operators'}
                           style={{ cursor: cls.operatorList?.length > 0 ? 'help' : 'default' }}
                         >{cls.operators ?? '-'}</td>
-                        <td className="text-success">{cls.active ?? '-'}</td>
-                        <td className="text-purple">{cls.new ?? '-'}</td>
-                        <td className="text-warning">{cls.unresponsive ?? '-'}</td>
-                        <td className="text-danger">{cls.blocked ?? '-'}</td>
+                        <td style={{ color: COLORS.active, fontWeight: 600 }}>{cls.active ?? '-'}</td>
+                        <td style={{ color: COLORS.new, fontWeight: 600 }}>{cls.new ?? '-'}</td>
+                        <td style={{ color: COLORS.unresponsive, fontWeight: 600 }}>{cls.unresponsive ?? '-'}</td>
+                        <td style={{ color: COLORS.blocked, fontWeight: 600 }}>{cls.blocked ?? '-'}</td>
                         <td>{cls.total ?? '-'}</td>
                         <td>{cls.avgQualityScore ?? '-'}</td>
                         <td>{cls.avgTimelinessScore ?? '-'}</td>

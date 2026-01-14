@@ -62,7 +62,6 @@ const COLORS = {
   approvedPaid: '#22c55e',
   approvedUnpaid: '#86efac',
   rejected: '#ef4444',
-  rejectedUnclosed: '#fca5a5',
   evaluating: '#f59e0b',
   prepared: '#3b82f6',
   timeout: '#6b7280',
@@ -82,8 +81,7 @@ const ARBITER_STATUS_DESCRIPTIONS = {
 const SUBMISSION_STATUS_DESCRIPTIONS = {
   ApprovedPaid: 'Submission passed evaluation and payment has been completed',
   ApprovedUnpaid: 'Submission passed evaluation but payment is pending',
-  Rejected: 'Submission did not meet the evaluation threshold and has been closed',
-  RejectedUnclosed: 'Submission did not meet the evaluation threshold but bounty has not been closed',
+  Rejected: 'Submission did not meet the evaluation threshold',
   Evaluating: 'Submission is on-chain and waiting for AI jury evaluation',
   Prepared: 'Submission is ready but not yet submitted to the blockchain',
   Timeout: 'Evaluation timed out before receiving enough arbiter responses',
@@ -248,13 +246,12 @@ function Analytics() {
 
   // Prepare chart data for submission outcomes
   const submissionChartData = data?.submissions?.byOutcome ? {
-    labels: ['Approved (Paid)', 'Approved (Unpaid)', 'Rejected', 'Rejected (Unclosed)', 'Evaluating', 'Prepared', 'Timeout', 'Unknown'],
+    labels: ['Approved (Paid)', 'Approved (Unpaid)', 'Rejected', 'Evaluating', 'Prepared', 'Timeout', 'Unknown'],
     datasets: [{
       data: [
         data.submissions.byOutcome.approvedPaid || 0,
         data.submissions.byOutcome.approvedUnpaid || 0,
         data.submissions.byOutcome.rejected || 0,
-        data.submissions.byOutcome.rejectedUnclosed || 0,
         data.submissions.byOutcome.evaluating || 0,
         data.submissions.byOutcome.prepared || 0,
         data.submissions.byOutcome.timeout || 0,
@@ -264,7 +261,6 @@ function Analytics() {
         COLORS.approvedPaid,
         COLORS.approvedUnpaid,
         COLORS.rejected,
-        COLORS.rejectedUnclosed,
         COLORS.evaluating,
         COLORS.prepared,
         COLORS.timeout,
@@ -511,11 +507,6 @@ function Analytics() {
               <div className="stat-value">{data?.submissions?.byOutcome?.rejected ?? 0}</div>
               <div className="stat-label">Rejected</div>
             </div>
-            <div className="stat-card" style={{ borderColor: COLORS.rejectedUnclosed }} title={SUBMISSION_STATUS_DESCRIPTIONS.RejectedUnclosed}>
-              <div className="stat-icon" style={{ color: COLORS.rejectedUnclosed }}><XCircle size={24} /></div>
-              <div className="stat-value">{data?.submissions?.byOutcome?.rejectedUnclosed ?? 0}</div>
-              <div className="stat-label">Rejected (Unclosed)</div>
-            </div>
             <div className="stat-card warning" title={SUBMISSION_STATUS_DESCRIPTIONS.Evaluating}>
               <div className="stat-icon"><Hourglass size={24} /></div>
               <div className="stat-value">{data?.submissions?.byOutcome?.evaluating ?? 0}</div>
@@ -551,10 +542,6 @@ function Analytics() {
                 <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.Rejected}>
                   <span className="legend-color" style={{ backgroundColor: COLORS.rejected }}></span>
                   Rejected
-                </span>
-                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.RejectedUnclosed}>
-                  <span className="legend-color" style={{ backgroundColor: COLORS.rejectedUnclosed }}></span>
-                  Rejected (Unclosed)
                 </span>
                 <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.Evaluating}>
                   <span className="legend-color" style={{ backgroundColor: COLORS.evaluating }}></span>

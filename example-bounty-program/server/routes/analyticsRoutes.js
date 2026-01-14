@@ -335,7 +335,6 @@ async function getSubmissionAnalytics() {
     let approvedPaid = 0;
     let approvedUnpaid = 0;
     let rejected = 0;
-    let rejectedUnclosed = 0;
     let evaluating = 0;
     let prepared = 0;
     let timeout = 0;
@@ -388,7 +387,7 @@ async function getSubmissionAnalytics() {
               approvedUnpaid++; // Approved but unclosed
               scores.push(score);
             } else {
-              rejectedUnclosed++; // Rejected but unclosed
+              rejected++;
             }
           } else {
             // Check Verdikta Aggregator for evaluation result
@@ -435,13 +434,13 @@ async function getSubmissionAnalytics() {
                 approvedUnpaid++;
                 scores.push(evalScore);
               } else {
-                rejectedUnclosed++;
+                rejected++;
               }
             } else if (bountyExpiredOrClosed) {
               // Bounty is expired/closed and no evaluation results exist
               // This submission timed out without getting results
               timeout++;
-              // Log why this went to timeout instead of rejectedUnclosed
+              // Log why this went to timeout instead of rejected
               if (evaluatingSamples.length < 5) {
                 evaluatingSamples.push({
                   category: 'timeout',
@@ -492,7 +491,7 @@ async function getSubmissionAnalytics() {
     logger.info('Submission status breakdown', { statusCounts });
 
     const totalApproved = approvedPaid + approvedUnpaid;
-    const totalRejected = rejected + rejectedUnclosed;
+    const totalRejected = rejected;
     const evaluated = totalApproved + totalRejected;
     const passRate = evaluated > 0 ? Math.round((totalApproved / evaluated) * 100) : null;
     const avgScore = scores.length > 0
@@ -505,7 +504,6 @@ async function getSubmissionAnalytics() {
         approvedPaid,
         approvedUnpaid,
         rejected,
-        rejectedUnclosed,
         evaluating,
         prepared,
         timeout,

@@ -190,16 +190,31 @@ router.get('/system', async (req, res) => {
 
 /**
  * POST /api/analytics/refresh
- * Invalidates cache and forces a refresh
+ * Invalidates cache and triggers blockchain sync for fresh data
  */
 router.post('/refresh', async (req, res) => {
   try {
+    // Clear analytics cache
     analyticsCache.clear();
     logger.info('Analytics cache manually cleared');
 
+    // Trigger blockchain sync to get latest submission statuses
+    let syncTriggered = false;
+    try {
+      const { getSyncService } = require('../utils/syncService');
+      const syncService = getSyncService();
+      if (syncService) {
+        await syncService.syncNow();
+        syncTriggered = true;
+        logger.info('Blockchain sync triggered via analytics refresh');
+      }
+    } catch (syncErr) {
+      logger.warn('Could not trigger blockchain sync', { msg: syncErr.message });
+    }
+
     return res.json({
       success: true,
-      message: 'Cache cleared successfully'
+      message: syncTriggered ? 'Cache cleared and blockchain sync triggered' : 'Cache cleared (sync not available)'
     });
   } catch (error) {
     logger.error('[analytics/refresh] error', { msg: error.message });

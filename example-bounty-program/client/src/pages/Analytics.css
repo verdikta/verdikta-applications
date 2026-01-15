@@ -338,6 +338,29 @@
   font-style: italic;
 }
 
+/* Contract Addresses */
+.contract-addresses {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.contract-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.contract-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.contract-row .address {
+  margin-top: 0;
+}
+
 /* Config Grid */
 .config-grid {
   display: grid;

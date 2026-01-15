@@ -575,6 +575,8 @@ async function getSystemHealth() {
       healthy: verdiktaHealth?.healthy || false,
       aggregatorAddress: verdiktaHealth?.aggregatorAddress || null,
       keeperAddress: verdiktaHealth?.keeperAddress || null,
+      linkTokenAddress: verdiktaHealth?.linkTokenAddress || null,
+      wvdkaAddress: verdiktaHealth?.wvdkaAddress || null,
       error: verdiktaHealth?.error || null
     },
     aggregatorConfig,

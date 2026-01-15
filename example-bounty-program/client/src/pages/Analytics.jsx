@@ -612,22 +612,48 @@ function Analytics() {
         <h2><Server size={20} className="inline-icon" /> System Health</h2>
         <div className="section-content">
           <div className="health-grid">
-            {/* Verdikta Connection */}
-            <div className="health-card">
+            {/* Contract Addresses */}
+            <div className="health-card wide">
               <div className="health-header">
                 <span className={`health-status ${data?.system?.verdikta?.healthy ? 'healthy' : 'unhealthy'}`}>
                   {data?.system?.verdikta?.healthy ? <CheckCircle size={16} /> : <XCircle size={16} />}
                 </span>
-                <span className="health-title">Verdikta Aggregator</span>
+                <span className="health-title">Contract Addresses</span>
               </div>
               <div className="health-details">
                 {data?.system?.verdikta?.configured ? (
-                  <>
-                    <p>Connected: {data.system.verdikta.healthy ? 'Yes' : 'No'}</p>
+                  <div className="contract-addresses">
                     {data.system.verdikta.aggregatorAddress && (
-                      <code className="address">{data.system.verdikta.aggregatorAddress}</code>
+                      <div className="contract-row">
+                        <span className="contract-label">Aggregator:</span>
+                        <code className="address">{data.system.verdikta.aggregatorAddress}</code>
+                      </div>
                     )}
-                  </>
+                    {data.system.verdikta.keeperAddress && (
+                      <div className="contract-row">
+                        <span className="contract-label">Reputation Keeper:</span>
+                        <code className="address">{data.system.verdikta.keeperAddress}</code>
+                      </div>
+                    )}
+                    {data.system.bountyContract && (
+                      <div className="contract-row">
+                        <span className="contract-label">Bounty Escrow:</span>
+                        <code className="address">{data.system.bountyContract}</code>
+                      </div>
+                    )}
+                    {data.system.verdikta.linkTokenAddress && (
+                      <div className="contract-row">
+                        <span className="contract-label">LINK Token:</span>
+                        <code className="address">{data.system.verdikta.linkTokenAddress}</code>
+                      </div>
+                    )}
+                    {data.system.verdikta.wvdkaAddress && (
+                      <div className="contract-row">
+                        <span className="contract-label">wVDKA Token:</span>
+                        <code className="address">{data.system.verdikta.wvdkaAddress}</code>
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <p className="text-muted">Not configured</p>
                 )}

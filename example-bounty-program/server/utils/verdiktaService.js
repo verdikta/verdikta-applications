@@ -16,7 +16,8 @@ const AGGREGATOR_ABI = [
   "function clusterSize() view returns (uint256)",
   "function bonusMultiplier() view returns (uint256)",
   "function responseTimeoutSeconds() view returns (uint256)",
-  "function maxOracleFee() view returns (uint256)"
+  "function maxOracleFee() view returns (uint256)",
+  "function getContractConfig() view returns (address oracleAddr, address linkAddr, bytes32 jobId, uint256 fee)"
 ];
 
 // ReputationKeeper ABI (functions needed for oracle data)
@@ -28,7 +29,8 @@ const KEEPER_ABI = [
   "function getOracleClasses(uint256 index) view returns (uint64[])",
   "function getRecentScores(address _oracle, bytes32 _jobId) view returns (tuple(int256 qualityScore, int256 timelinessScore)[])",
   "function mildThreshold() view returns (int256)",
-  "function severeThreshold() view returns (int256)"
+  "function severeThreshold() view returns (int256)",
+  "function verdiktaToken() view returns (address)"
 ];
 
 class VerdiktaService {
@@ -414,10 +416,30 @@ class VerdiktaService {
       const keeperAddress = await this.aggregator.reputationKeeper();
       const config = await this.getAggregatorConfig();
 
+      // Get LINK token address from aggregator's getContractConfig
+      let linkTokenAddress = null;
+      try {
+        const contractConfig = await this.aggregator.getContractConfig();
+        linkTokenAddress = contractConfig.linkAddr;
+      } catch (err) {
+        logger.debug('Could not get LINK token address', { msg: err.message });
+      }
+
+      // Get wVDKA token address from ReputationKeeper
+      let wvdkaAddress = null;
+      try {
+        const keeper = await this.getReputationKeeper();
+        wvdkaAddress = await keeper.verdiktaToken();
+      } catch (err) {
+        logger.debug('Could not get wVDKA token address', { msg: err.message });
+      }
+
       return {
         healthy: true,
         aggregatorAddress: this.aggregatorAddress,
         keeperAddress,
+        linkTokenAddress,
+        wvdkaAddress,
         config
       };
     } catch (error) {

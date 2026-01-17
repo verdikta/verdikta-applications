@@ -126,6 +126,7 @@
   justify-content: space-between;
   align-items: center;
   margin-bottom: 0.5rem;
+  gap: 1rem;
 }
 
 .bounty-title-row h3 {

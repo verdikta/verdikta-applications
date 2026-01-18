@@ -9,6 +9,7 @@ export default defineConfig({
     port: 5173,
     allowedHosts: [
       'bounties.verdikta.org',
+      'bounties-testnet.verdikta.org',
       'playground.verdikta.org',
       'localhost',
       '127.0.0.1',

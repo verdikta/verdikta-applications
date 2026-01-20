@@ -46,9 +46,12 @@ export const config = {
     return import.meta.env.VITE_LINK_TOKEN_ADDRESS || network.linkTokenAddress;
   },
 
-  // BountyEscrow address (must be set in .env file)
+  // BountyEscrow address (selected based on network)
   get bountyEscrowAddress() {
-    return import.meta.env.VITE_BOUNTY_ESCROW_ADDRESS || '';
+    if (this.network === 'base') {
+      return import.meta.env.VITE_BOUNTY_ESCROW_ADDRESS_BASE || '';
+    }
+    return import.meta.env.VITE_BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA || '';
   }
 };
 

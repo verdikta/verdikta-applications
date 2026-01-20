@@ -26,6 +26,12 @@ const networks = {
 const networkKey = process.env.NETWORK || 'base-sepolia';
 const networkDefaults = networks[networkKey] || networks['base-sepolia'];
 
+// Select BountyEscrow address based on network
+const bountyEscrowAddresses = {
+  'base-sepolia': process.env.BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA || '',
+  'base': process.env.BOUNTY_ESCROW_ADDRESS_BASE || '',
+};
+
 // Export configuration with env overrides
 const config = {
   // Network info
@@ -38,8 +44,8 @@ const config = {
   explorer: networkDefaults.explorer,
 
   // Contract addresses
-  // BOUNTY_ESCROW_ADDRESS must be set in .env file
-  bountyEscrowAddress: process.env.BOUNTY_ESCROW_ADDRESS || '',
+  // BountyEscrow address selected based on NETWORK
+  bountyEscrowAddress: bountyEscrowAddresses[networkKey] || '',
   // Verdikta aggregator from network config, with env override
   verdiktaAggregatorAddress: process.env.VERDIKTA_AGGREGATOR_ADDRESS || networkDefaults.verdiktaAggregatorAddress,
 

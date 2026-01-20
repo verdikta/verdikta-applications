@@ -26,6 +26,12 @@ const networks = {
 const networkKey = import.meta.env.VITE_NETWORK || 'base-sepolia';
 const networkDefaults = networks[networkKey] || networks['base-sepolia'];
 
+// ---- Select BountyEscrow address based on network ----
+const bountyEscrowAddresses = {
+  'base-sepolia': import.meta.env.VITE_BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA || '',
+  'base': import.meta.env.VITE_BOUNTY_ESCROW_ADDRESS_BASE || '',
+};
+
 // ---- Network your dapp should use (matches your walletService expectations) ----
 export const currentNetwork = {
   ...networkDefaults,
@@ -37,8 +43,8 @@ export const currentNetwork = {
 
 // ---- App-wide config pulled from Vite env vars ----
 export const config = {
-  // BountyEscrow address (must be set in .env file)
-  bountyEscrowAddress: import.meta.env.VITE_BOUNTY_ESCROW_ADDRESS || '',
+  // BountyEscrow address (selected based on VITE_NETWORK)
+  bountyEscrowAddress: bountyEscrowAddresses[networkKey] || '',
 
   // API base URL: supports either name so you don't have to rename your existing var
   apiBaseUrl:

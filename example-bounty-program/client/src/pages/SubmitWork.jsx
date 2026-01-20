@@ -19,6 +19,7 @@ import {
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
+import { config, currentNetwork } from '../config';
 import {
   BountyStatus,
   getBountyStatusLabel,
@@ -29,8 +30,8 @@ import {
 } from '../utils/statusDisplay';
 import './SubmitWork.css';
 
-// LINK token address on Base Sepolia
-const LINK_ADDRESS = "0xE4aB69C077896252FAFBD49EFD26B5D171A32410";
+// LINK token address from config (supports both Base Sepolia and Base Mainnet)
+const LINK_ADDRESS = config.linkTokenAddress;
 
 function SubmitWork({ walletState }) {
   const toast = useToast();
@@ -210,15 +211,15 @@ function SubmitWork({ walletState }) {
     });
 
     // Try public RPC first (avoids MetaMask caching), fall back to MetaMask
-    const BASE_SEPOLIA_RPC = 'https://sepolia.base.org';
+    const PUBLIC_RPC = currentNetwork.rpcUrl;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       // Try both providers on each attempt
       const providers = [];
-      
+
       // Try public RPC first
       try {
-        providers.push(new ethers.JsonRpcProvider(BASE_SEPOLIA_RPC));
+        providers.push(new ethers.JsonRpcProvider(PUBLIC_RPC));
       } catch (e) {
         console.log('Could not create public RPC provider');
       }

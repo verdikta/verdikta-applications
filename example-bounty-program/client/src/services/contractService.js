@@ -14,9 +14,10 @@
  */
 
 import { ethers } from 'ethers';
+import { config, currentNetwork } from '../config';
 
-// Base Sepolia LINK token address
-const LINK_ADDRESS = "0xE4aB69C077896252FAFBD49EFD26B5D171A32410";
+// LINK token address from config (supports both Base Sepolia and Base Mainnet)
+const LINK_ADDRESS = config.linkTokenAddress;
 
 // BountyEscrow ABI - only the functions we need to call
 const BOUNTY_ESCROW_ABI = [
@@ -664,7 +665,7 @@ class ContractService {
     if (!provider) {
       console.log('⚠️ No MetaMask provider, trying public RPC...');
       try {
-        provider = new ethers.JsonRpcProvider('https://sepolia.base.org');
+        provider = new ethers.JsonRpcProvider(currentNetwork.rpcUrl);
       } catch (e) {
         console.warn('⚠️ checkEvaluationReady: Could not create provider');
         return { ready: false, error: 'No provider available' };
@@ -713,7 +714,7 @@ class ContractService {
       // Use a public RPC provider for more reliable read calls (avoids MetaMask caching/throttling issues)
       let readProvider;
       try {
-        readProvider = new ethers.JsonRpcProvider('https://sepolia.base.org');
+        readProvider = new ethers.JsonRpcProvider(currentNetwork.rpcUrl);
       } catch (e) {
         console.log('⚠️ Public RPC failed, falling back to MetaMask provider');
         readProvider = provider;

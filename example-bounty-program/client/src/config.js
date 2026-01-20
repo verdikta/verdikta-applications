@@ -29,7 +29,8 @@ export const config = {
       chainIdHex: '0x14A34',
       rpcUrl: 'https://sepolia.base.org',
       explorer: 'https://sepolia.basescan.org',
-      currency: { name: 'Ether', symbol: 'ETH', decimals: 18 }
+      currency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+      linkTokenAddress: '0xE4aB69C077896252FAFBD49EFD26B5D171A32410'
     },
     'base': {
       name: 'Base',
@@ -37,13 +38,25 @@ export const config = {
       chainIdHex: '0x2105',
       rpcUrl: 'https://mainnet.base.org',
       explorer: 'https://basescan.org',
-      currency: { name: 'Ether', symbol: 'ETH', decimals: 18 }
+      currency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+      linkTokenAddress: '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196'
     }
+  },
+
+  // LINK token address (from current network)
+  get linkTokenAddress() {
+    const network = this.networks[this.network] || this.networks['base-sepolia'];
+    return import.meta.env.VITE_LINK_TOKEN_ADDRESS || network.linkTokenAddress;
   }
 };
 
 // Get current network config
-export const currentNetwork = config.networks[config.network] || config.networks['base-sepolia'];
+export const currentNetwork = {
+  ...(config.networks[config.network] || config.networks['base-sepolia']),
+  // Allow env override for LINK token address
+  linkTokenAddress: import.meta.env.VITE_LINK_TOKEN_ADDRESS ||
+    (config.networks[config.network] || config.networks['base-sepolia']).linkTokenAddress
+};
 
 // Log configuration in debug mode
 if (config.enableDebug) {

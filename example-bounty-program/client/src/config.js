@@ -11,9 +11,6 @@ export const config = {
   // Blockchain Configuration
   network: import.meta.env.VITE_NETWORK || 'base-sepolia',
   chainId: parseInt(import.meta.env.VITE_CHAIN_ID) || 84532,
-  
-  // Contract Addresses
-  bountyEscrowAddress: import.meta.env.VITE_BOUNTY_ESCROW_ADDRESS,
 
   // IPFS Configuration
   ipfsGateway: import.meta.env.VITE_IPFS_GATEWAY || 'https://ipfs.io',
@@ -47,15 +44,20 @@ export const config = {
   get linkTokenAddress() {
     const network = this.networks[this.network] || this.networks['base-sepolia'];
     return import.meta.env.VITE_LINK_TOKEN_ADDRESS || network.linkTokenAddress;
+  },
+
+  // BountyEscrow address (must be set in .env file)
+  get bountyEscrowAddress() {
+    return import.meta.env.VITE_BOUNTY_ESCROW_ADDRESS || '';
   }
 };
 
 // Get current network config
+const networkConfig = config.networks[config.network] || config.networks['base-sepolia'];
 export const currentNetwork = {
-  ...(config.networks[config.network] || config.networks['base-sepolia']),
+  ...networkConfig,
   // Allow env override for LINK token address
-  linkTokenAddress: import.meta.env.VITE_LINK_TOKEN_ADDRESS ||
-    (config.networks[config.network] || config.networks['base-sepolia']).linkTokenAddress
+  linkTokenAddress: import.meta.env.VITE_LINK_TOKEN_ADDRESS || networkConfig.linkTokenAddress
 };
 
 // Log configuration in debug mode

@@ -37,7 +37,7 @@ export const currentNetwork = {
 
 // ---- App-wide config pulled from Vite env vars ----
 export const config = {
-  // Your deployed BountyEscrow address (already in your .env)
+  // BountyEscrow address (must be set in .env file)
   bountyEscrowAddress: import.meta.env.VITE_BOUNTY_ESCROW_ADDRESS || '',
 
   // API base URL: supports either name so you don't have to rename your existing var

@@ -9,10 +9,8 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 const secretsPath = path.join(__dirname, '../../../secrets/.env.secrets');
 require('dotenv').config({ path: secretsPath, override: true });
 
-// Alias RPC_URL to RPC_PROVIDER_URL for backwards compatibility
-if (!process.env.RPC_PROVIDER_URL && process.env.RPC_URL) {
-  process.env.RPC_PROVIDER_URL = process.env.RPC_URL;
-}
+// Load configuration (must be after dotenv)
+const { config } = require('./config');
 
 // Crash guards so we never drop the socket without a body
 process.on('uncaughtException', (err) => {
@@ -39,13 +37,12 @@ const { initializeVerdiktaService } = require('./utils/verdiktaService');
 const app = express();
 
 // Initialize IPFS client
-const rawPinKey = process.env.IPFS_PINNING_KEY || '';
 // IPFSClient wants the bare JWT; strip any leading "Bearer " just in case
-const pinningKeyForClient = rawPinKey.replace(/^Bearer\s+/i, '');
+const pinningKeyForClient = config.ipfsPinningKey.replace(/^Bearer\s+/i, '');
 
 const ipfsClient = new IPFSClient({
-  gateway: process.env.IPFS_GATEWAY || 'https://ipfs.io',
-  pinningService: process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud',
+  gateway: config.ipfsGateway,
+  pinningService: config.ipfsPinningService,
   pinningKey: pinningKeyForClient,   // bare JWT only
   timeout: 30000,
   retryOptions: { retries: 5, factor: 2 }
@@ -63,7 +60,7 @@ const UPLOAD_TIMEOUT = 60000; // 60 seconds
 const CID_REGEX = /^Qm[1-9A-HJ-NP-Za-km-z]{44}|b[A-Za-z2-7]{58}|B[A-Z2-7]{58}|z[1-9A-HJ-NP-Za-km-z]{48}|F[0-9A-F]{50}$/i;
 
 // Ensure tmp directory exists
-const TMP_BASE = process.env.VERDIKTA_TMP_DIR || path.join(os.tmpdir(), 'verdikta');
+const TMP_BASE = config.tmpDir || path.join(os.tmpdir(), 'verdikta');
 const initializeTmpDirectory = async () => {
   try {
     await fs.mkdir(TMP_BASE, { recursive: true });
@@ -78,56 +75,60 @@ const initializeTmpDirectory = async () => {
 
 // ============ ADD BLOCKCHAIN SYNC INITIALIZATION ============
 const initializeBlockchainSync = () => {
-  if (process.env.USE_BLOCKCHAIN_SYNC === 'true') {
-    logger.info('🔗 Initializing blockchain sync (read-only)...');
-    
+  if (config.useBlockchainSync) {
+    logger.info('🔗 Initializing blockchain sync (read-only)...', {
+      network: config.network,
+      networkName: config.networkName
+    });
+
     try {
-      // Validate required environment variables
-      if (!process.env.RPC_PROVIDER_URL) {
-        throw new Error('RPC_PROVIDER_URL not set in .env');
+      // Validate required configuration
+      if (!config.rpcUrl) {
+        throw new Error('RPC_URL not set - check NETWORK or RPC_URL in .env');
       }
-      if (!process.env.BOUNTY_ESCROW_ADDRESS) {
+      if (!config.bountyEscrowAddress) {
         throw new Error('BOUNTY_ESCROW_ADDRESS not set in .env');
       }
 
       // Initialize contract service for reading blockchain
       initializeContractService(
-        process.env.RPC_PROVIDER_URL,
-        process.env.BOUNTY_ESCROW_ADDRESS
+        config.rpcUrl,
+        config.bountyEscrowAddress
       );
 
-      // Initialize Verdikta service for analytics (optional - requires VERDIKTA_AGGREGATOR_ADDRESS)
-      if (process.env.VERDIKTA_AGGREGATOR_ADDRESS) {
+      // Initialize Verdikta service for analytics
+      if (config.verdiktaAggregatorAddress) {
         initializeVerdiktaService(
-          process.env.RPC_PROVIDER_URL,
-          process.env.VERDIKTA_AGGREGATOR_ADDRESS
+          config.rpcUrl,
+          config.verdiktaAggregatorAddress
         );
         logger.info('✅ Verdikta analytics service initialized', {
-          aggregatorAddress: process.env.VERDIKTA_AGGREGATOR_ADDRESS
+          aggregatorAddress: config.verdiktaAggregatorAddress
         });
       } else {
-        logger.info('ℹ️  Verdikta analytics disabled - VERDIKTA_AGGREGATOR_ADDRESS not set');
+        logger.info('ℹ️  Verdikta analytics disabled - no aggregator address configured');
       }
 
       // Initialize and start sync service
-      const syncIntervalSeconds = parseInt(process.env.SYNC_INTERVAL_SECONDS || '20');
-      const syncService = initializeSyncService(syncIntervalSeconds / 60);
+      const syncService = initializeSyncService(config.syncIntervalSeconds / 60);
       syncService.start();
-      
+
       logger.info('✅ Blockchain sync enabled', {
-        contractAddress: process.env.BOUNTY_ESCROW_ADDRESS,
-        syncInterval: `${syncIntervalSeconds} seconds`
+        network: config.networkName,
+        chainId: config.chainId,
+        contractAddress: config.bountyEscrowAddress,
+        syncInterval: `${config.syncIntervalSeconds} seconds`
       });
       logger.info('ℹ️  Server is read-only: Users create jobs via MetaMask, server syncs automatically');
-      
+
       return syncService;
-      
+
     } catch (error) {
       logger.error('❌ Failed to initialize blockchain sync:', error);
       logger.warn('⚠️  Continuing with local storage only');
       return null;
     }
-    
+
   } else {
     logger.info('📝 Blockchain sync disabled - using local storage only');
     logger.info('ℹ️  Set USE_BLOCKCHAIN_SYNC=true in .env to enable blockchain integration');
@@ -378,16 +379,16 @@ const startServer = async () => {
     const syncService = initializeBlockchainSync();
     // ====================================================
 
-    const PORT = process.env.PORT || 5000;
-    const HOST = process.env.HOST || '0.0.0.0';
-    const server = app.listen(PORT, HOST, () => {
-      logger.info(`🚀 Bounty API server listening on ${HOST}:${PORT}`);
-      logger.info('Environment:', {
-        NODE_ENV: process.env.NODE_ENV,
-        IPFS_PINNING_SERVICE: process.env.IPFS_PINNING_SERVICE ? 'Set' : 'Not set',
-        IPFS_PINNING_KEY: process.env.IPFS_PINNING_KEY ? 'Set' : 'Not set',
-        BOUNTY_ESCROW_ADDRESS: process.env.BOUNTY_ESCROW_ADDRESS,
-        USE_BLOCKCHAIN_SYNC: process.env.USE_BLOCKCHAIN_SYNC || 'false'
+    const server = app.listen(config.port, config.host, () => {
+      logger.info(`🚀 Bounty API server listening on ${config.host}:${config.port}`);
+      logger.info('Configuration:', {
+        network: config.networkName,
+        chainId: config.chainId,
+        nodeEnv: config.nodeEnv,
+        ipfsPinningService: config.ipfsPinningService ? 'Set' : 'Not set',
+        ipfsPinningKey: config.ipfsPinningKey ? 'Set' : 'Not set',
+        bountyEscrowAddress: config.bountyEscrowAddress,
+        useBlockchainSync: config.useBlockchainSync
       });
     });
 

@@ -380,7 +380,7 @@ function Analytics() {
 
       {/* Arbiter Availability Section */}
       <section className="analytics-section">
-        <h2 title="Six non-blocked arbiters must be available, and four must respond when queried."><Users size={20} className="inline-icon" /> Arbiter Availability</h2>
+        <h2 title="Six non-blocked arbiter queries will be made, with duplicate selection if necessary, and four must respond."><Users size={20} className="inline-icon" /> Arbiter Availability</h2>
         {!data?.arbiters?.verdiktaConnected && (
           <div className="info-banner">
             <AlertTriangle size={16} />

@@ -7,6 +7,7 @@ const express = require('express');
 const router = express.Router();
 const logger = require('../utils/logger');
 const jobStorage = require('../utils/jobStorage');
+const { config } = require('../config');
 const { analyticsCache } = require('../utils/analyticsCacheService');
 const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
 const { getContractService } = require('../utils/contractService');
@@ -587,7 +588,7 @@ async function getSystemHealth() {
       intervalMinutes: syncStatus.intervalMinutes,
       consecutiveErrors: syncStatus.consecutiveErrors || 0
     } : null,
-    bountyContract: process.env.BOUNTY_ESCROW_ADDRESS || null,
+    bountyContract: config.bountyEscrowAddress || null,
     timestamp: Date.now()
   };
 }

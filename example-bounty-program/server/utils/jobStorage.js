@@ -179,12 +179,10 @@ async function listJobs(filters = {}) {
     
     if (currentContractOnly && currentContract && !includeOrphans) {
       jobs = jobs.filter(j => {
-        // Include jobs that:
-        // 1. Match current contract address
-        // 2. Have no contract address set (legacy jobs - need migration)
-        // 3. Are not marked as orphaned
+        // Only include jobs that explicitly match current contract address
+        // Jobs without a contractAddress are legacy and should not be shown
         const jobContract = (j.contractAddress || '').toLowerCase();
-        const matchesContract = !jobContract || jobContract === currentContract;
+        const matchesContract = jobContract === currentContract;
         const notOrphaned = j.status !== 'ORPHANED';
         return matchesContract && notOrphaned;
       });

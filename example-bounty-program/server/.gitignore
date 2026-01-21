@@ -8,6 +8,7 @@ yarn-error.log
 tmp/
 data/*.json
 !data/.gitkeep
+data/jobs.json.backup
 
 # Test coverage
 coverage/

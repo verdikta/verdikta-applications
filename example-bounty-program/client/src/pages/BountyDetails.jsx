@@ -18,6 +18,7 @@ import {
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
+import { config, currentNetwork } from '../config';
 import {
   BountyStatus,
   ON_CHAIN_STATUS_MAP,
@@ -333,6 +334,19 @@ function BountyDetails({ walletState }) {
       if (!isMountedRef.current) return null;
 
       let finalJob = response.job;
+
+      // Check if bounty belongs to the current network
+      const jobContract = (finalJob?.contractAddress || '').toLowerCase();
+      const currentContract = (config.bountyEscrowAddress || '').toLowerCase();
+      if (jobContract && currentContract && jobContract !== currentContract) {
+        setError(
+          `This bounty was created on a different network. ` +
+          `You are currently connected to ${currentNetwork.name}. ` +
+          `Please switch to the correct network to interact with this bounty.`
+        );
+        setLoading(false);
+        return null;
+      }
 
       // Store backend status before any override
       const backendStatus = finalJob?.status;

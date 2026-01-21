@@ -12,6 +12,7 @@ const os = require('os');
 const fs = require('fs').promises;
 const logger = require('../utils/logger');
 const jobStorage = require('../utils/jobStorage');
+const { config } = require('../config');
 const archiveGenerator = require('../utils/archiveGenerator');
 const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE } = require('../utils/validation');
 
@@ -694,14 +695,12 @@ router.patch('/:jobId/bountyId', async (req, res) => {
 
 
 // Resolve endpoint (unchanged logic from your working version)
-const RPC = process.env.RPC_PROVIDER_URL;
-const ESCROW = process.env.BOUNTY_ESCROW_ADDRESS;
-const ABI = [
+const RESOLVE_ABI = [
   "function bountyCount() view returns (uint256)",
   "function getBounty(uint256) view returns (address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256)"
 ];
-function ro() { return new ethers.JsonRpcProvider(RPC); }
-function escrowRO() { return new ethers.Contract(ESCROW, ABI, ro()); }
+function ro() { return new ethers.JsonRpcProvider(config.rpcUrl); }
+function escrowRO() { return new ethers.Contract(config.bountyEscrowAddress, RESOLVE_ABI, ro()); }
 
 
 router.patch('/:id/bountyId/resolve', async (req, res) => {
@@ -840,15 +839,15 @@ router.delete('/:jobId/submissions/:submissionId', async (req, res) => {
 
 router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
   const { jobId, submissionId } = req.params;
-  const RPC_URL = process.env.RPC_PROVIDER_URL;
-  const ESCROW_ADDR = process.env.BOUNTY_ESCROW_ADDRESS;
-  
+  const RPC_URL = config.rpcUrl;
+  const ESCROW_ADDR = config.bountyEscrowAddress;
+
   logger.info('[refresh] Request received', { jobId, submissionId, RPC_URL: RPC_URL ? 'set' : 'NOT SET', ESCROW_ADDR });
-  
+
   if (!RPC_URL || !ESCROW_ADDR) {
-    return res.status(500).json({ 
-      error: 'Blockchain not configured', 
-      details: 'RPC_PROVIDER_URL and BOUNTY_ESCROW_ADDRESS must be set in .env' 
+    return res.status(500).json({
+      error: 'Blockchain not configured',
+      details: 'RPC URL and BountyEscrow address must be configured'
     });
   }
   

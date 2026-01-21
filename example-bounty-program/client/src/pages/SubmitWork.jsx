@@ -73,6 +73,19 @@ function SubmitWork({ walletState }) {
       setLoadingJob(true);
       const response = await apiService.getJob(bountyId, true);
 
+      // Check if bounty belongs to the current network
+      const jobContract = (response.job.contractAddress || '').toLowerCase();
+      const currentContract = (config.bountyEscrowAddress || '').toLowerCase();
+      if (jobContract && currentContract && jobContract !== currentContract) {
+        setError(
+          `This bounty was created on a different network. ` +
+          `You are currently connected to ${currentNetwork.name}. ` +
+          `Please switch to the correct network to interact with this bounty.`
+        );
+        setLoadingJob(false);
+        return;
+      }
+
       // Verify on-chain status if wallet is connected
       if (walletState.isConnected) {
         try {

@@ -1,27 +1,10 @@
-import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Target, Wallet, LogOut, AlertTriangle, Check, X } from 'lucide-react';
-import { useToast } from './Toast';
+import { Target, Wallet, LogOut, Check } from 'lucide-react';
 import { walletService } from '../services/wallet';
-import { currentNetwork } from '../config';
 import './Header.css';
 
 function Header({ walletState, onConnect, onDisconnect }) {
-  const toast = useToast();
-  const { isConnected, address, chainId, isCorrectNetwork } = walletState;
-  const [isSwitching, setIsSwitching] = useState(false);
-
-  const handleSwitchNetwork = async () => {
-    setIsSwitching(true);
-    try {
-      await walletService.switchNetwork();
-    } catch (error) {
-      console.error('Failed to switch network:', error);
-      toast.error(`Failed to switch network: ${error.message}`);
-    } finally {
-      setIsSwitching(false);
-    }
-  };
+  const { isConnected, address, chainId } = walletState;
 
   const getCurrentNetworkName = () => {
     if (!chainId) return 'Unknown';
@@ -54,28 +37,9 @@ function Header({ walletState, onConnect, onDisconnect }) {
             </button>
           ) : (
             <div className="wallet-info">
-              {!isCorrectNetwork && (
-                <div className="wrong-network-alert">
-                  <span className="network-warning">
-                    <AlertTriangle size={16} />
-                    Wrong Network
-                  </span>
-                  <button
-                    onClick={handleSwitchNetwork}
-                    className="btn btn-warning btn-sm"
-                    disabled={isSwitching}
-                  >
-                    {isSwitching ? 'Switching...' : `Switch to ${currentNetwork.name}`}
-                  </button>
-                </div>
-              )}
-              
               <div className="wallet-address">
-                <span
-                  className={`network-badge ${isCorrectNetwork ? 'correct' : 'incorrect'}`}
-                  title={`Chain ID: ${chainId}`}
-                >
-                  {isCorrectNetwork ? <Check size={14} /> : <X size={14} />}
+                <span className="network-badge correct" title={`Chain ID: ${chainId}`}>
+                  <Check size={14} />
                   {getCurrentNetworkName()}
                 </span>
                 <span className="address" title={address}>

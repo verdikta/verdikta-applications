@@ -53,6 +53,16 @@ class WalletService {
       const network = await this.provider.getNetwork();
       this.chainId = Number(network.chainId);
 
+      // Don't auto-reconnect if on wrong network
+      if (this.chainId !== currentNetwork.chainId) {
+        console.warn(`Auto-reconnect skipped: wallet on chain ${this.chainId}, expected ${currentNetwork.chainId}`);
+        this.provider = null;
+        this.signer = null;
+        this.address = null;
+        this.chainId = null;
+        return null;
+      }
+
       this.setupEventListeners();
       this.notifyListeners();
 
@@ -61,7 +71,7 @@ class WalletService {
       return {
         address: this.address,
         chainId: this.chainId,
-        isCorrectNetwork: this.chainId === currentNetwork.chainId
+        isCorrectNetwork: true
       };
     } catch (error) {
       console.warn('Auto-reconnect failed:', error.message);
@@ -116,10 +126,30 @@ class WalletService {
       const network = await this.provider.getNetwork();
       this.chainId = Number(network.chainId);
 
-      // Check if on correct network
+      // Check if on correct network - prompt to switch if wrong
       if (this.chainId !== currentNetwork.chainId) {
-        console.warn(`Connected to chain ${this.chainId}, expected ${currentNetwork.chainId}`);
-        // Don't auto-switch here - let the UI handle it
+        console.warn(`Connected to chain ${this.chainId}, expected ${currentNetwork.chainId}. Prompting switch.`);
+        try {
+          await this.switchNetwork();
+          // Wait for MetaMask to fully process the switch
+          await new Promise(resolve => setTimeout(resolve, 500));
+          // Recreate provider and signer for new network
+          this.provider = new ethers.BrowserProvider(window.ethereum);
+          this.signer = await this.provider.getSigner();
+          // Verify we're now on the correct network
+          const updatedNetwork = await this.provider.getNetwork();
+          this.chainId = Number(updatedNetwork.chainId);
+          if (this.chainId !== currentNetwork.chainId) {
+            throw new Error('Network switch did not complete');
+          }
+        } catch (switchError) {
+          // User rejected or switch failed - clean up
+          this.provider = null;
+          this.signer = null;
+          this.address = null;
+          this.chainId = null;
+          throw new Error(`Please switch to ${currentNetwork.name} to connect.`);
+        }
       }
 
       // Set up event listeners
@@ -293,15 +323,17 @@ class WalletService {
         }
       }
       
-      this.notifyListeners();
-      
-      // Show warning if on wrong network
+      // Auto-disconnect if on wrong network
       if (newChainId !== currentNetwork.chainId) {
         console.warn(
           `Wrong network detected. Connected to chain ${newChainId}, ` +
-          `expected ${currentNetwork.chainId} (${currentNetwork.name})`
+          `expected ${currentNetwork.chainId} (${currentNetwork.name}). Disconnecting.`
         );
+        this.disconnect();
+        return;
       }
+
+      this.notifyListeners();
     };
 
     window.ethereum.on('accountsChanged', this.handleAccountsChanged);

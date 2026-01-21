@@ -26,6 +26,20 @@ const networks = {
 const networkKey = process.env.NETWORK || 'base-sepolia';
 const networkDefaults = networks[networkKey] || networks['base-sepolia'];
 
+// Build RPC URL - prefer explicit RPC_URL, then Infura if key available, then public RPC
+function getRpcUrl() {
+  if (process.env.RPC_URL) return process.env.RPC_URL;
+  if (process.env.RPC_PROVIDER_URL) return process.env.RPC_PROVIDER_URL;
+
+  // Use Infura if API key is available
+  if (process.env.INFURA_API_KEY) {
+    const infuraNetwork = networkKey === 'base' ? 'base-mainnet' : 'base-sepolia';
+    return `https://${infuraNetwork}.infura.io/v3/${process.env.INFURA_API_KEY}`;
+  }
+
+  return networkDefaults.rpcUrl;
+}
+
 // Select BountyEscrow address based on network
 const bountyEscrowAddresses = {
   'base-sepolia': process.env.BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA || '',
@@ -40,14 +54,14 @@ const config = {
 
   // Chain configuration (from network, with env override)
   chainId: parseInt(process.env.CHAIN_ID) || networkDefaults.chainId,
-  rpcUrl: process.env.RPC_URL || process.env.RPC_PROVIDER_URL || networkDefaults.rpcUrl,
+  rpcUrl: getRpcUrl(),
   explorer: networkDefaults.explorer,
 
   // Contract addresses
   // BountyEscrow address selected based on NETWORK
   bountyEscrowAddress: bountyEscrowAddresses[networkKey] || '',
-  // Verdikta aggregator from network config, with env override
-  verdiktaAggregatorAddress: process.env.VERDIKTA_AGGREGATOR_ADDRESS || networkDefaults.verdiktaAggregatorAddress,
+  // Verdikta aggregator from network config (determined by NETWORK)
+  verdiktaAggregatorAddress: networkDefaults.verdiktaAggregatorAddress,
 
   // Server settings
   port: parseInt(process.env.PORT) || 5005,

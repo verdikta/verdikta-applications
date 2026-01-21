@@ -2,15 +2,16 @@
 const express = require('express');
 const router = express.Router();
 const { ethers } = require('ethers');
+const { config } = require('../config');
 
-const ESCROW_ADDRESS = process.env.ESCROW_ADDRESS || process.env.BOUNTY_ESCROW_ADDRESS;
-const RPC_PROVIDER_URL = process.env.RPC_PROVIDER_URL;
+const ESCROW_ADDRESS = config.bountyEscrowAddress;
+const RPC_PROVIDER_URL = config.rpcUrl;
 
 if (!ESCROW_ADDRESS) {
-  console.warn('[resolve-bounty] ESCROW_ADDRESS/BOUNTY_ESCROW_ADDRESS not set');
+  console.warn('[resolve-bounty] BOUNTY_ESCROW_ADDRESS not set in config');
 }
 if (!RPC_PROVIDER_URL) {
-  console.warn('[resolve-bounty] RPC_PROVIDER_URL not set');
+  console.warn('[resolve-bounty] RPC_URL not set in config');
 }
 
 const BOUNTY_ABI = [

@@ -7,12 +7,13 @@
 const fs = require('fs').promises;
 const path = require('path');
 const logger = require('./logger');
+const { config } = require('../config');
 
 const STORAGE_FILE = path.join(__dirname, '../data/jobs.json');
 
-// Get current contract address from environment
+// Get current contract address from config (based on NETWORK env var)
 function getCurrentContractAddress() {
-  return (process.env.BOUNTY_ESCROW_ADDRESS || '').toLowerCase();
+  return (config.bountyEscrowAddress || '').toLowerCase();
 }
 
 /**

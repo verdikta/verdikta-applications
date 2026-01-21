@@ -21,7 +21,7 @@ export const config = {
   // Network Details
   networks: {
     'base-sepolia': {
-      name: 'Base Sepolia',
+      name: 'Base Sepolia Testnet',
       chainId: 84532,
       chainIdHex: '0x14A34',
       rpcUrl: 'https://sepolia.base.org',
@@ -30,7 +30,7 @@ export const config = {
       linkTokenAddress: '0xE4aB69C077896252FAFBD49EFD26B5D171A32410'
     },
     'base': {
-      name: 'Base',
+      name: 'Base Mainnet',
       chainId: 8453,
       chainIdHex: '0x2105',
       rpcUrl: 'https://mainnet.base.org',

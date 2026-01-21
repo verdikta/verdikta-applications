@@ -35,9 +35,22 @@
   color: var(--primary);
 }
 
+.logo-text {
+  display: flex;
+  flex-direction: column;
+}
+
 .logo h1 {
   font-size: 1.5rem;
   font-weight: 700;
+  line-height: 1.2;
+}
+
+.network-label {
+  font-size: 0.75rem;
+  color: var(--primary);
+  font-weight: 500;
+  padding-left: 0.25em;
 }
 
 .btn-with-icon {

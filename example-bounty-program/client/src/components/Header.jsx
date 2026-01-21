@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Target, Wallet, LogOut, Check } from 'lucide-react';
 import { walletService } from '../services/wallet';
+import { currentNetwork } from '../config';
 import './Header.css';
 
 function Header({ walletState, onConnect, onDisconnect }) {
@@ -17,7 +18,10 @@ function Header({ walletState, onConnect, onDisconnect }) {
         <div className="header-left">
           <Link to="/" className="logo">
             <Target size={28} className="logo-icon" />
-            <h1>Verdikta Bounties</h1>
+            <div className="logo-text">
+              <h1>Verdikta Bounties</h1>
+              <span className="network-label">{currentNetwork.name}</span>
+            </div>
           </Link>
           <nav className="nav">
             <Link to="/" className="nav-link">Browse</Link>

@@ -7,6 +7,7 @@
  *
  * Usage:
  *   node scripts/claimResults.js
+ *   node scripts/claimResults.js --passed-only
  *   node scripts/claimResults.js --dry-run
  *   node scripts/claimResults.js --bounty-id 2
  *
@@ -84,6 +85,7 @@ function parseArgs() {
   const options = {
     dryRun: false,
     bountyId: null,
+    passedOnly: false,
     help: false,
   };
 
@@ -96,6 +98,10 @@ function parseArgs() {
       case '--bounty-id':
       case '-b':
         options.bountyId = parseInt(args[++i]);
+        break;
+      case '--passed-only':
+      case '-p':
+        options.passedOnly = true;
         break;
       case '--help':
       case '-h':
@@ -120,12 +126,14 @@ Usage:
 Options:
   --dry-run, -d          Show what would be finalized without executing
   --bounty-id, -b <id>   Only process a specific bounty (on-chain ID)
+  --passed-only, -p      Only finalize submissions that passed (saves gas)
   --help, -h             Show this help message
 
 Examples:
   node scripts/claimResults.js
   node scripts/claimResults.js --dry-run
   node scripts/claimResults.js --bounty-id 2
+  node scripts/claimResults.js --passed-only
 `);
 }
 
@@ -270,8 +278,9 @@ async function main() {
   console.log('============================================================');
   console.log('Claim Results Script');
   console.log('============================================================');
-  console.log(`Target:    ${options.bountyId !== null ? `Bounty #${options.bountyId}` : 'All bounties'}`);
-  console.log(`Dry Run:   ${options.dryRun ? 'Yes' : 'No'}`);
+  console.log(`Target:      ${options.bountyId !== null ? `Bounty #${options.bountyId}` : 'All bounties'}`);
+  console.log(`Passed Only: ${options.passedOnly ? 'Yes' : 'No'}`);
+  console.log(`Dry Run:     ${options.dryRun ? 'Yes' : 'No'}`);
   console.log('============================================================\n');
 
   // Validate configuration
@@ -297,7 +306,16 @@ async function main() {
 
   // Find pending submissions with completed evaluations
   console.log('Finding submissions ready for finalization...\n');
-  const pending = await findPendingSubmissions(contract, verdikta, options.bountyId);
+  let pending = await findPendingSubmissions(contract, verdikta, options.bountyId);
+
+  // Filter to passed only if requested
+  if (options.passedOnly) {
+    const beforeCount = pending.length;
+    pending = pending.filter(sub => sub.passed);
+    if (beforeCount > pending.length) {
+      console.log(`Filtered: ${beforeCount - pending.length} failed submission(s) skipped (--passed-only)\n`);
+    }
+  }
 
   if (pending.length === 0) {
     console.log('No submissions found that are ready for finalization.');

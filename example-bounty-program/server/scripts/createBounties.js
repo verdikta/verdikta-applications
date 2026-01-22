@@ -9,6 +9,7 @@
  *   node scripts/createBounties.js --count 5
  *   node scripts/createBounties.js --count 1 --class 128 --amount 0.001 --hours 1
  *   node scripts/createBounties.js --count 1 --template research --class 128 --amount 0.001 --threshold 90 --hours 1
+ *   node scripts/createBounties.js --count 3 --template research --class 128 --amount 0.001 --threshold 70 --hours 1
  *   node scripts/createBounties.js --count 3 --amount 0.001 --hours 2
  *   node scripts/createBounties.js --count 2 --template writing
  *   node scripts/createBounties.js --count 1 --threshold 50 --hours 1
@@ -35,6 +36,9 @@ if (fs.existsSync(secretsPath)) {
 }
 const { ethers } = require('ethers');
 
+// Use server config for network-aware settings
+const { config: serverConfig } = require('../config');
+
 // =============================================================================
 // CONFIGURATION
 // =============================================================================
@@ -43,16 +47,18 @@ const { ethers } = require('ethers');
 const buildApiUrl = () => {
   if (process.env.API_URL) return process.env.API_URL;
   const host = process.env.HOST === '0.0.0.0' ? 'localhost' : (process.env.HOST || 'localhost');
-  const port = process.env.PORT || '5005';
+  // Use network-specific ports: base=5005, base-sepolia=5006
+  const port = serverConfig.network === 'base' ? 5005 : 5006;
   return `http://${host}:${port}`;
 };
 
 const CONFIG = {
   apiUrl: buildApiUrl(),
-  rpcUrl: process.env.RPC_URL || 'https://sepolia.base.org',
-  contractAddress: process.env.BOUNTY_ESCROW_ADDRESS,
+  rpcUrl: serverConfig.rpcUrl,
+  contractAddress: serverConfig.bountyEscrowAddress,
   privateKey: process.env.PRIVATE_KEY,
-  chainId: parseInt(process.env.CHAIN_ID || '84532'),
+  chainId: serverConfig.chainId,
+  network: serverConfig.network,
 };
 
 const BOUNTY_ESCROW_ABI = [
@@ -397,7 +403,9 @@ async function main() {
       process.exit(1);
     }
     if (!CONFIG.contractAddress) {
-      console.error('Error: BOUNTY_ESCROW_ADDRESS environment variable is required');
+      console.error(`Error: No contract address configured for network "${CONFIG.network}"`);
+      console.error('Set BOUNTY_ESCROW_ADDRESS_BASE or BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA in .env');
+      console.error('And run with: NETWORK=base-sepolia node scripts/createBounties.js ...');
       process.exit(1);
     }
   }

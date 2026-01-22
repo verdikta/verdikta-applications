@@ -15,10 +15,11 @@
  *   node scripts/submitToBounties.js --count 3 --bounty-id 5
  *   node scripts/submitToBounties.js --count 1 --dry-run
  *
- * Environment Variables Required (in .env or .env.secret):
+ * Environment Variables Required (in .env or .env.secrets):
  *   ANTHROPIC_API_KEY - API key for Claude AI
  *   PRIVATE_KEY - Private key for signing transactions (without 0x prefix)
- *   BOUNTY_ESCROW_ADDRESS - Contract address
+ *   NETWORK - Network to use (base or base-sepolia)
+ *   BOUNTY_ESCROW_ADDRESS_BASE / BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA - Contract addresses
  *
  * Optional:
  *   AI_MODEL - Claude model to use (default: claude-sonnet-4-20250514)
@@ -43,6 +44,9 @@ if (fs.existsSync(secretsPath)) {
 
 const { ethers } = require('ethers');
 
+// Use server config for network-aware settings
+const { config: serverConfig } = require('../config');
+
 // =============================================================================
 // CONFIGURATION
 // =============================================================================
@@ -50,19 +54,21 @@ const { ethers } = require('ethers');
 const buildApiUrl = () => {
   if (process.env.API_URL) return process.env.API_URL;
   const host = process.env.HOST === '0.0.0.0' ? 'localhost' : (process.env.HOST || 'localhost');
-  const port = process.env.PORT || '5005';
+  // Use network-specific ports: base=5005, base-sepolia=5006
+  const port = serverConfig.network === 'base' ? 5005 : 5006;
   return `http://${host}:${port}`;
 };
 
 const CONFIG = {
   apiUrl: buildApiUrl(),
-  rpcUrl: process.env.RPC_PROVIDER_URL || process.env.RPC_URL || 'https://sepolia.base.org',
-  contractAddress: process.env.BOUNTY_ESCROW_ADDRESS,
+  rpcUrl: serverConfig.rpcUrl,
+  contractAddress: serverConfig.bountyEscrowAddress,
   privateKey: process.env.PRIVATE_KEY,
-  chainId: parseInt(process.env.CHAIN_ID || '84532'),
+  chainId: serverConfig.chainId,
+  network: serverConfig.network,
   anthropicApiKey: process.env.ANTHROPIC_API_KEY,
   aiModel: process.env.AI_MODEL || 'claude-sonnet-4-20250514',
-  ipfsGateway: process.env.IPFS_GATEWAY || 'https://ipfs.io',
+  ipfsGateway: serverConfig.ipfsGateway || 'https://ipfs.io',
 };
 
 // =============================================================================

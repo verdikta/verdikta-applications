@@ -4,12 +4,22 @@ This directory contains Nginx configuration files for the bounty program applica
 
 ## Files
 
-- `bounties.verdikta.org` - Production bounty program
-- `bounties-testnet.verdikta.org` - Testnet bounty program
+- `bounties.verdikta.org` - Production bounty program (Base Mainnet)
+- `bounties-testnet.verdikta.org` - Testnet bounty program (Base Sepolia)
 
-Both configurations proxy to the same backend services:
-- Frontend (Vite): `localhost:5173`
-- Backend API: `localhost:5005`
+## Architecture
+
+Each domain routes to its own client and server instances:
+
+```
+bounties.verdikta.org (Mainnet)
+├── Client: localhost:5173 (VITE_NETWORK=base)
+└── API:    localhost:5005 (NETWORK=base)
+
+bounties-testnet.verdikta.org (Testnet)
+├── Client: localhost:5174 (VITE_NETWORK=base-sepolia)
+└── API:    localhost:5006 (NETWORK=base-sepolia)
+```
 
 ## Deployment
 
@@ -42,6 +52,24 @@ Both configurations proxy to the same backend services:
    ```
 
    Certbot will automatically modify the configuration files to add HTTPS support and HTTP-to-HTTPS redirects.
+
+## Starting Services
+
+Use the parameterized scripts to start/stop services:
+
+```bash
+# Start both networks (default)
+./server/startServer.sh
+./client/startClient.sh
+
+# Start specific network
+./server/startServer.sh base
+./client/startClient.sh base-sepolia
+
+# Stop all
+./server/stopServer.sh
+./client/stopClient.sh
+```
 
 ## Notes
 

@@ -12,8 +12,8 @@
  *
  * Environment Variables Required:
  *   PRIVATE_KEY - Private key for signing transactions
- *   RPC_URL - RPC endpoint
- *   BOUNTY_ESCROW_ADDRESS - Contract address
+ *   NETWORK - Network to use (base or base-sepolia)
+ *   BOUNTY_ESCROW_ADDRESS_BASE / BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA - Contract addresses
  */
 
 const path = require('path');
@@ -31,6 +31,9 @@ if (fs.existsSync(secretsPath)) {
 
 const { ethers } = require('ethers');
 
+// Use server config for network-aware settings
+const { config: serverConfig } = require('../config');
+
 // =============================================================================
 // CONFIGURATION
 // =============================================================================
@@ -38,15 +41,17 @@ const { ethers } = require('ethers');
 const buildApiUrl = () => {
   if (process.env.API_URL) return process.env.API_URL;
   const host = process.env.HOST === '0.0.0.0' ? 'localhost' : (process.env.HOST || 'localhost');
-  const port = process.env.PORT || '5005';
+  // Use network-specific ports: base=5005, base-sepolia=5006
+  const port = serverConfig.network === 'base' ? 5005 : 5006;
   return `http://${host}:${port}`;
 };
 
 const CONFIG = {
   apiUrl: buildApiUrl(),
-  rpcUrl: process.env.RPC_URL || process.env.RPC_PROVIDER_URL || 'https://sepolia.base.org',
-  contractAddress: process.env.BOUNTY_ESCROW_ADDRESS,
+  rpcUrl: serverConfig.rpcUrl,
+  contractAddress: serverConfig.bountyEscrowAddress,
   privateKey: process.env.PRIVATE_KEY,
+  network: serverConfig.network,
 };
 
 // =============================================================================
@@ -275,7 +280,8 @@ async function main() {
     process.exit(1);
   }
   if (!CONFIG.contractAddress) {
-    console.error('Error: BOUNTY_ESCROW_ADDRESS not set');
+    console.error(`Error: No contract address configured for network "${CONFIG.network}"`);
+    console.error('Set BOUNTY_ESCROW_ADDRESS_BASE or BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA in .env');
     process.exit(1);
   }
 

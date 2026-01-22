@@ -2,13 +2,17 @@
  * LocalStorage service for managing user's saved rubrics
  * Supports both legacy and new call signatures.
  *
- * Storage keys:
- *   Per-wallet:  verdikta_bounty_rubrics_<lowercased_wallet>
- *   Global:      verdikta_bounty_rubrics_global  (fallback when wallet is unknown)
+ * Storage keys (network-aware to support multi-network deployments):
+ *   Per-wallet:  verdikta_bounty_rubrics_<network>_<lowercased_wallet>
+ *   Global:      verdikta_bounty_rubrics_<network>_global  (fallback when wallet is unknown)
  */
 
-const STORAGE_PREFIX = 'verdikta_bounty_rubrics_';
-const GLOBAL_KEY = 'verdikta_bounty_rubrics_global';
+import { config } from '../config';
+
+// Network-aware storage keys to prevent cross-network data contamination
+const NETWORK = config.network || 'base-sepolia';
+const STORAGE_PREFIX = `verdikta_bounty_rubrics_${NETWORK}_`;
+const GLOBAL_KEY = `verdikta_bounty_rubrics_${NETWORK}_global`;
 
 // ---------- internal helpers ----------
 

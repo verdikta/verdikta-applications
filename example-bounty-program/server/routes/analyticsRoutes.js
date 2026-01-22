@@ -305,17 +305,25 @@ function getClassOnlyAnalytics() {
 
 /**
  * Get bounty statistics from job storage
+ * Only counts jobs from the current contract
  */
 async function getBountyAnalytics() {
   try {
-    const diagnostics = await jobStorage.getDiagnostics();
+    // listJobs({}) filters by current contract by default
     const jobs = await jobStorage.listJobs({});
+    const jobList = jobs.jobs || jobs;
 
-    // Calculate total ETH
+    // Calculate totals from filtered jobs only
     let totalETH = 0;
     let totalWithAmount = 0;
+    const byStatus = {};
 
-    for (const job of jobs.jobs || jobs) {
+    for (const job of jobList) {
+      // Count by status
+      const status = job.status || 'UNKNOWN';
+      byStatus[status] = (byStatus[status] || 0) + 1;
+
+      // Sum ETH
       const amount = parseFloat(job.bountyAmount) || 0;
       totalETH += amount;
       if (amount > 0) totalWithAmount++;
@@ -324,13 +332,13 @@ async function getBountyAnalytics() {
     const avgBountyAmount = totalWithAmount > 0 ? totalETH / totalWithAmount : 0;
 
     return {
-      byStatus: diagnostics.byStatus || {},
-      totalBounties: diagnostics.totalJobs || 0,
+      byStatus,
+      totalBounties: jobList.length,
       totalETH: Math.round(totalETH * 10000) / 10000,
       avgBountyAmount: Math.round(avgBountyAmount * 10000) / 10000,
-      currentContract: diagnostics.currentContract,
-      orphanedCount: diagnostics.orphanedCount || 0,
-      legacyCount: diagnostics.legacyCount || 0,
+      currentContract: config.bountyEscrowAddress,
+      orphanedCount: 0, // Not relevant when filtering by current contract
+      legacyCount: 0,
       timestamp: Date.now()
     };
   } catch (error) {

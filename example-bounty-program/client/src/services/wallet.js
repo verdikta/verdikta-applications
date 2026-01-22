@@ -4,9 +4,11 @@
  */
 
 import { ethers } from 'ethers';
-import { currentNetwork } from '../config';
+import { config, currentNetwork } from '../config';
 
-const STORAGE_KEY = 'wallet_was_connected';
+// Network-aware storage key to support multi-network deployments
+const NETWORK = config.network || 'base-sepolia';
+const STORAGE_KEY = `wallet_was_connected_${NETWORK}`;
 
 class WalletService {
   constructor() {

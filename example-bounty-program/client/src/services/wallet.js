@@ -131,17 +131,35 @@ class WalletService {
         console.warn(`Connected to chain ${this.chainId}, expected ${currentNetwork.chainId}. Prompting switch.`);
         try {
           await this.switchNetwork();
-          // Wait for MetaMask to fully process the switch
-          await new Promise(resolve => setTimeout(resolve, 500));
-          // Recreate provider and signer for new network
-          this.provider = new ethers.BrowserProvider(window.ethereum);
-          this.signer = await this.provider.getSigner();
-          // Verify we're now on the correct network
-          const updatedNetwork = await this.provider.getNetwork();
-          this.chainId = Number(updatedNetwork.chainId);
-          if (this.chainId !== currentNetwork.chainId) {
-            throw new Error('Network switch did not complete');
+
+          // Give MetaMask time to process the switch before polling
+          await new Promise(resolve => setTimeout(resolve, 1000));
+
+          // Poll for network switch to complete (up to 6 seconds total)
+          let switched = false;
+          for (let i = 0; i < 12; i++) {
+            try {
+              // Recreate provider to get fresh network state
+              this.provider = new ethers.BrowserProvider(window.ethereum);
+              const updatedNetwork = await this.provider.getNetwork();
+              this.chainId = Number(updatedNetwork.chainId);
+              if (this.chainId === currentNetwork.chainId) {
+                switched = true;
+                break;
+              }
+            } catch (e) {
+              // Provider might not be ready yet, keep trying
+              console.log(`Network check failed, retrying... attempt ${i + 1}/12`);
+            }
+            await new Promise(resolve => setTimeout(resolve, 500));
           }
+
+          if (!switched) {
+            throw new Error('Network switch timed out');
+          }
+
+          // Recreate signer on the correct network
+          this.signer = await this.provider.getSigner();
         } catch (switchError) {
           // User rejected or switch failed - clean up
           this.provider = null;
@@ -189,6 +207,7 @@ class WalletService {
 
   /**
    * Switch to correct network
+   * Note: This only requests the switch. Caller should poll for completion.
    */
   async switchNetwork() {
     if (!this.isMetaMaskInstalled()) {
@@ -200,22 +219,7 @@ class WalletService {
         method: 'wallet_switchEthereumChain',
         params: [{ chainId: currentNetwork.chainIdHex }]
       });
-
-      // Wait a bit for the network to switch
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // Update provider and chainId
-      if (this.provider) {
-        const network = await this.provider.getNetwork();
-        this.chainId = Number(network.chainId);
-        
-        // Recreate signer after network switch
-        if (this.address) {
-          this.signer = await this.provider.getSigner();
-        }
-      }
-
-      this.notifyListeners();
+      // Don't update state here - let caller poll for the switch to complete
       return true;
     } catch (error) {
       // Network doesn't exist, try to add it
@@ -245,22 +249,7 @@ class WalletService {
           blockExplorerUrls: [currentNetwork.explorer]
         }]
       });
-
-      // Wait a bit for the network to be added
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // Update chainId after adding
-      if (this.provider) {
-        const network = await this.provider.getNetwork();
-        this.chainId = Number(network.chainId);
-        
-        // Recreate signer
-        if (this.address) {
-          this.signer = await this.provider.getSigner();
-        }
-      }
-
-      this.notifyListeners();
+      // Don't update state here - let caller poll for the switch to complete
       return true;
     } catch (error) {
       console.error('Failed to add network:', error);

@@ -6,9 +6,12 @@ yarn-error.log
 
 # Temporary files
 tmp/
+
+# Data files (network-specific directories)
+data/base/
+data/base-sepolia/
 data/*.json
-!data/.gitkeep
-data/jobs.json.backup
+data/*.backup
 
 # Test coverage
 coverage/

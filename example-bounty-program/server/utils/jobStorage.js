@@ -2,6 +2,10 @@
  * Job Storage Utility
  * Local storage for jobs/bounties synced from blockchain
  * Blockchain is the source of truth for all status changes
+ *
+ * Storage is network-specific to support multi-network deployments:
+ *   server/data/base/jobs.json        (mainnet)
+ *   server/data/base-sepolia/jobs.json (testnet)
  */
 
 const fs = require('fs').promises;
@@ -9,7 +13,10 @@ const path = require('path');
 const logger = require('./logger');
 const { config } = require('../config');
 
-const STORAGE_FILE = path.join(__dirname, '../data/jobs.json');
+// Network-specific storage directory
+const NETWORK = config.network || 'base-sepolia';
+const STORAGE_DIR = path.join(__dirname, `../data/${NETWORK}`);
+const STORAGE_FILE = path.join(STORAGE_DIR, 'jobs.json');
 
 // Get current contract address from config (based on NETWORK env var)
 function getCurrentContractAddress() {
@@ -26,10 +33,11 @@ async function initStorage() {
 
     try {
       await fs.access(STORAGE_FILE);
+      logger.info(`Using job storage: ${STORAGE_FILE}`);
     } catch {
       // File doesn't exist, create it
       await fs.writeFile(STORAGE_FILE, JSON.stringify({ jobs: [], nextId: 1 }, null, 2));
-      logger.info('Initialized job storage file');
+      logger.info(`Initialized job storage file: ${STORAGE_FILE}`);
     }
   } catch (error) {
     logger.error('Error initializing storage:', error);

@@ -346,10 +346,11 @@ class SyncService {
                          sub.status === 'PassedUnpaid' ? 4 : -1;
 
         switch (statusNum) {
-          case 0: // Prepared - skip syncing incomplete submissions
-            // Prepared submissions are incomplete (user abandoned mid-flow)
-            // Don't import them as they pollute the UI and can't be acted upon
-            continue;
+          case 0: // Prepared - on-chain but evaluation not yet started
+            // Keep the submission - it exists on-chain and may have local data
+            // Use existing status if available, otherwise mark as pending
+            backendStatus = existing?.status || 'PENDING_EVALUATION';
+            break;
           case 1: // PendingVerdikta
             backendStatus = 'PENDING_EVALUATION';
             break;
@@ -551,6 +552,17 @@ class SyncService {
         jobId: localJob.jobId,
         old: localJob.submissionCount,
         new: chainJob.submissionCount
+      });
+      return true;
+    }
+
+    // Update if local submissions array is missing data (recovery from previous sync bug)
+    const localSubmissionsLength = (localJob.submissions || []).length;
+    if (chainJob.submissionCount > 0 && localSubmissionsLength < chainJob.submissionCount) {
+      logger.info('Submissions array incomplete - forcing sync', {
+        jobId: localJob.jobId,
+        localSubmissions: localSubmissionsLength,
+        chainSubmissionCount: chainJob.submissionCount
       });
       return true;
     }

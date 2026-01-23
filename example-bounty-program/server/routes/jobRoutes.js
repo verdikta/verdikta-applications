@@ -893,9 +893,25 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
     }
     
     logger.info('[refresh] Using on-chain bounty ID', { jobId, onChainId });
-    
+
     const subId = parseInt(submissionId, 10);
-    
+
+    // Check if this submission was ever started on-chain
+    const localSubmission = job.submissions?.find(s => s.submissionId === subId);
+    if (localSubmission) {
+      const isPreparedOnly = (localSubmission.status === 'Prepared' || localSubmission.status === 'PREPARED')
+                             && !localSubmission.evalWallet
+                             && !localSubmission.verdiktaAggId;
+      if (isPreparedOnly) {
+        logger.info('[refresh] Submission never started on-chain', { jobId, submissionId: subId });
+        return res.status(400).json({
+          error: 'Submission not on-chain',
+          details: 'This submission was prepared but never started on-chain. It may be orphaned from a failed transaction.',
+          submission: localSubmission
+        });
+      }
+    }
+
     // Read submission from blockchain
     const provider = new ethers.JsonRpcProvider(RPC_URL);
     const contract = new ethers.Contract(ESCROW_ADDR, [
@@ -966,8 +982,7 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       failureReason
     });
     
-    // Update local storage
-    const localSubmission = job.submissions?.find(s => s.submissionId === subId);
+    // Update local storage (reuse localSubmission from earlier check)
     if (localSubmission) {
       localSubmission.status = chainStatus;
       localSubmission.score = acceptScore;

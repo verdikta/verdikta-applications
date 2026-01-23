@@ -2177,27 +2177,9 @@ function ExpiredBountyActions({
       ) : (
         <>
           {hasActiveSubmissions && (
-            <>
-              <PendingSubmissionsPanel
-                pendingSubmissions={pendingSubmissions}
-                getSubmissionAge={getSubmissionAge}
-                onFinalize={onFinalize}
-                onFailTimeout={onFailTimeout}
-                onCancel={onCancel}
-                finalizingSubmissions={finalizingSubmissions}
-                failingSubmissions={failingSubmissions}
-                cancelingSubmissions={cancelingSubmissions}
-                pollingSubmissions={pollingSubmissions}
-                evaluationResults={evaluationResults}
-                disableActions={disableActions}
-                timeoutMinutes={timeoutMinutes}
-                job={job}
-                toast={toast}
-              />
-              <div className="alert alert-info" style={{ marginTop: '0.75rem', marginBottom: '0.75rem' }}>
-                {pendingSubmissions.length} pending submission(s) will be auto-finalized when you close the bounty.
-              </div>
-            </>
+            <div className="alert alert-info" style={{ marginBottom: '0.75rem' }}>
+              {pendingSubmissions.length} pending submission(s) will be auto-finalized when you close the bounty.
+            </div>
           )}
           <button
             onClick={onClose}

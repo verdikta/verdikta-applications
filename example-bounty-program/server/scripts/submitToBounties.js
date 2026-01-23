@@ -203,7 +203,7 @@ async function fetchBountyDetails(jobId) {
  * Check if a bounty is still winnable (no passing submissions yet)
  * Returns: { winnable: boolean, reason?: string, submission?: object }
  */
-function isBountyWinnable(bounty) {
+function isBountyWinnable(bounty, hunterAddress = null) {
   if (!bounty.submissions || bounty.submissions.length === 0) {
     return { winnable: true };
   }
@@ -231,9 +231,18 @@ function isBountyWinnable(bounty) {
     return { winnable: false, reason: 'passing score (not finalized)', submission: passingScoreSubmission };
   }
 
-  // Note: We allow submissions even when there are pending evaluations.
-  // The on-chain contract's _requireNoPassingSubmission check will query Verdikta
-  // directly and revert if another submission has already passed.
+  // Check if this hunter already has a pending submission (avoid duplicates)
+  if (hunterAddress) {
+    const pendingStatuses = ['Prepared', 'PREPARED', 'PendingVerdikta', 'PENDING_EVALUATION'];
+    const hunterPendingSubmission = bounty.submissions.find(s =>
+      s.hunter?.toLowerCase() === hunterAddress.toLowerCase() &&
+      (pendingStatuses.includes(s.status) || pendingStatuses.includes(s.onChainStatus))
+    );
+
+    if (hunterPendingSubmission) {
+      return { winnable: false, reason: 'you already have a pending submission', submission: hunterPendingSubmission };
+    }
+  }
   // This lets multiple hunters race fairly - only the first to pass wins.
 
   return { winnable: true };
@@ -880,7 +889,7 @@ async function main() {
       const details = await fetchBountyDetails(bounty.jobId);
 
       // Check if bounty is still winnable based on backend data
-      const winnableCheck = isBountyWinnable(details);
+      const winnableCheck = isBountyWinnable(details, hunterAddress);
 
       if (!winnableCheck.winnable) {
         const sub = winnableCheck.submission;

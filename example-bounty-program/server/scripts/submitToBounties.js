@@ -539,8 +539,21 @@ async function submitWork(jobId, content, hunter, dryRun) {
 // BLOCKCHAIN INTERACTION
 // =============================================================================
 
-const LINK_ADDRESS = '0xE4aB69C077896252FAFBD49EFD26B5D171A32410'; // Base Sepolia LINK
-const VERDIKTA_ADDRESS = '0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089'; // Base Sepolia Verdikta
+// Network-specific addresses
+const NETWORK_ADDRESSES = {
+  'base-sepolia': {
+    link: '0xE4aB69C077896252FAFBD49EFD26B5D171A32410',
+    verdikta: '0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089',
+  },
+  'base': {
+    link: '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196',
+    verdikta: '0x2f7a02298D4478213057edA5e5bEB07F20c4c054',
+  },
+};
+
+const networkAddrs = NETWORK_ADDRESSES[serverConfig.network] || NETWORK_ADDRESSES['base-sepolia'];
+const LINK_ADDRESS = networkAddrs.link;
+const VERDIKTA_ADDRESS = networkAddrs.verdikta;
 
 const VERDIKTA_ABI = [
   'function getEvaluation(bytes32 requestId) view returns (uint256[] likelihoods, string justificationCID, bool exists)',

@@ -1503,75 +1503,93 @@ function BountyDetails({ walletState }) {
       {/* EXPIRED Status Banner (also shown when effectively expired) */}
       {effectivelyExpired && (
         <div style={{
-          backgroundColor: '#fff3cd',
-          border: '3px solid #ffc107',
+          backgroundColor: job?.onChain === false ? '#f8d7da' : '#fff3cd',
+          border: `3px solid ${job?.onChain === false ? '#f5c6cb' : '#ffc107'}`,
           padding: '1.5rem',
           borderRadius: '8px',
           marginBottom: '2rem',
           boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
         }}>
-          <h2 style={{ margin: '0 0 1rem 0', color: '#856404', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Clock size={28} /> Expired Bounty - Action Required
-          </h2>
-          <p style={{ marginBottom: '1rem', fontSize: '1.1rem' }}>
-            This bounty expired on {new Date((job.submissionCloseTime || 0) * 1000).toLocaleString()}.
-            {!hasActiveSubmissions && (
-              <strong> The escrow of {job.bountyAmount ?? '...'} ETH can now be returned to the creator.</strong>
-            )}
-          </p>
-
-          {resolveNote && (
-            <div className="alert alert-info" style={{ marginBottom: '0.75rem' }}>
-              {resolveNote}
-            </div>
-          )}
-
-          {/* Pending submissions section */}
-          {hasActiveSubmissions && walletState.isConnected && (
-            <PendingSubmissionsPanel
-              pendingSubmissions={pendingSubmissions}
-              getSubmissionAge={getSubmissionAge}
-              onFinalize={handleFinalizeSubmission}
-              onFailTimeout={handleFailTimedOutSubmission}
-              onCancel={handleCancelSubmission}
-              finalizingSubmissions={finalizingSubmissions}
-              failingSubmissions={failingSubmissions}
-              cancelingSubmissions={cancelingSubmissions}
-              pollingSubmissions={pollingSubmissions}
-              evaluationResults={evaluationResults}
-              disableActions={disableActionsForMissingId}
-              timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
-              job={job}
-              toast={toast}
-            />
-          )}
-
-          {!walletState.isConnected ? (
-            <div className="alert alert-info">
-              <strong>Connect your wallet</strong> to finalize submissions and close this bounty.
-            </div>
+          {/* Show different content for jobs that never went on-chain */}
+          {job?.onChain === false ? (
+            <>
+              <h2 style={{ margin: '0 0 1rem 0', color: '#721c24', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Clock size={28} /> Bounty Never Deployed
+              </h2>
+              <p style={{ marginBottom: '1rem', fontSize: '1.1rem', color: '#721c24' }}>
+                This bounty was created but <strong>never deployed on-chain</strong>.
+                The blockchain transaction may have failed or was never submitted.
+              </p>
+              <p style={{ marginBottom: '0', fontSize: '1rem', color: '#856404' }}>
+                No escrow exists to reclaim. This job will be automatically archived.
+              </p>
+            </>
           ) : (
             <>
-              {hasActiveSubmissions && (
+              <h2 style={{ margin: '0 0 1rem 0', color: '#856404', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Clock size={28} /> Expired Bounty - Action Required
+              </h2>
+              <p style={{ marginBottom: '1rem', fontSize: '1.1rem' }}>
+                This bounty expired on {new Date((job.submissionCloseTime || 0) * 1000).toLocaleString()}.
+                {!hasActiveSubmissions && (
+                  <strong> The escrow of {job.bountyAmount ?? '...'} ETH can now be returned to the creator.</strong>
+                )}
+              </p>
+
+              {resolveNote && (
                 <div className="alert alert-info" style={{ marginBottom: '0.75rem' }}>
-                  {pendingSubmissions.length} pending submission(s) will be auto-finalized when you close the bounty.
+                  {resolveNote}
                 </div>
               )}
-              <button
-                onClick={handleCloseExpiredBounty}
-                disabled={closingBounty || disableActionsForMissingId}
-                className="btn btn-warning btn-lg"
-                style={{ width: '100%', fontSize: '1.2rem', padding: '1.25rem', fontWeight: 'bold' }}
-                title={disableActionsForMissingId ? 'Resolving on-chain bountyId…' : undefined}
-              >
-                {closingBounty
-                  ? <><Loader2 size={20} className="spin" /> {closingMessage || 'Processing...'}</>
-                  : <><Lock size={20} /> Close Expired Bounty & Return Funds</>}
-              </button>
-              {disableActionsForMissingId && !closingBounty && (
-                <p style={{ marginTop: 8, color: '#666', fontSize: '0.9rem' }}>
-                  Resolving on-chain bounty ID...
-                </p>
+
+              {/* Pending submissions section */}
+              {hasActiveSubmissions && walletState.isConnected && (
+                <PendingSubmissionsPanel
+                  pendingSubmissions={pendingSubmissions}
+                  getSubmissionAge={getSubmissionAge}
+                  onFinalize={handleFinalizeSubmission}
+                  onFailTimeout={handleFailTimedOutSubmission}
+                  onCancel={handleCancelSubmission}
+                  finalizingSubmissions={finalizingSubmissions}
+                  failingSubmissions={failingSubmissions}
+                  cancelingSubmissions={cancelingSubmissions}
+                  pollingSubmissions={pollingSubmissions}
+                  evaluationResults={evaluationResults}
+                  disableActions={disableActionsForMissingId}
+                  timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
+                  job={job}
+                  toast={toast}
+                />
+              )}
+
+              {!walletState.isConnected ? (
+                <div className="alert alert-info">
+                  <strong>Connect your wallet</strong> to finalize submissions and close this bounty.
+                </div>
+              ) : (
+                <>
+                  {hasActiveSubmissions && (
+                    <div className="alert alert-info" style={{ marginBottom: '0.75rem' }}>
+                      {pendingSubmissions.length} pending submission(s) will be auto-finalized when you close the bounty.
+                    </div>
+                  )}
+                  <button
+                    onClick={handleCloseExpiredBounty}
+                    disabled={closingBounty || disableActionsForMissingId}
+                    className="btn btn-warning btn-lg"
+                    style={{ width: '100%', fontSize: '1.2rem', padding: '1.25rem', fontWeight: 'bold' }}
+                    title={disableActionsForMissingId ? 'Resolving on-chain bountyId…' : undefined}
+                  >
+                    {closingBounty
+                      ? <><Loader2 size={20} className="spin" /> {closingMessage || 'Processing...'}</>
+                      : <><Lock size={20} /> Close Expired Bounty & Return Funds</>}
+                  </button>
+                  {disableActionsForMissingId && !closingBounty && (
+                    <p style={{ marginTop: 8, color: '#666', fontSize: '0.9rem' }}>
+                      Resolving on-chain bounty ID...
+                    </p>
+                  )}
+                </>
               )}
             </>
           )}
@@ -1681,7 +1699,7 @@ function BountyDetails({ walletState }) {
             </div>
           )}
 
-          {effectivelyExpired && !isExpired && (
+          {effectivelyExpired && !isExpired && job?.onChain !== false && (
             <ExpiredBountyActions
               job={job}
               walletState={walletState}

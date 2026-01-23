@@ -266,6 +266,30 @@ class SyncService {
         }
       }
 
+      // Third pass: Check for jobs that never went on-chain and have expired deadlines
+      const now = Math.floor(Date.now() / 1000);
+      for (const job of storage.jobs) {
+        // Skip jobs that are already terminal states
+        if (job.status === 'ORPHANED' || job.status === 'CLOSED' ||
+            job.status === 'AWARDED' || job.status === 'EXPIRED') continue;
+
+        // Only check jobs that never went on-chain
+        if (job.onChain !== false) continue;
+
+        // Check if deadline has passed
+        if (job.submissionCloseTime && now > job.submissionCloseTime) {
+          job.status = 'ORPHANED';
+          job.orphanedAt = now;
+          job.orphanReason = 'never_deployed';
+          orphaned++;
+          logger.warn('Marked job as orphaned (never deployed on-chain, deadline passed)', {
+            jobId: job.jobId,
+            title: job.title,
+            deadline: new Date(job.submissionCloseTime * 1000).toISOString()
+          });
+        }
+      }
+
       // Persist changes if any
       if (added > 0 || updated > 0 || orphaned > 0 || linked > 0) {
         await jobStorage.writeStorage(storage);

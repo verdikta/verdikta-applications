@@ -14,7 +14,7 @@ const NETWORKS = {
   },
   base_sepolia: {
     key: 'base_sepolia',
-    name: 'Base Sepolia',
+    name: 'Base Sepolia Testnet',
     chainId: 84532,
     chainIdHex: '0x14A34',
     rpcUrl: 'https://sepolia.base.org',

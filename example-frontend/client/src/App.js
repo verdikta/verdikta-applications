@@ -41,7 +41,7 @@ const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'http://localhost:5000';
 // Set network label from .env
 const NETWORK = (process.env.REACT_APP_NETWORK || '').toLowerCase();
 const NETWORK_LABEL =
-  NETWORK === 'base_sepolia' ? 'Base Sepolia' :
+  NETWORK === 'base_sepolia' ? 'Base Sepolia Testnet' :
   NETWORK === 'base' ? 'Base Mainnet' :
   '';
 

@@ -5,7 +5,7 @@ import { ethers } from 'ethers';
 const NETWORKS = {
   base: {
     key: 'base',
-    name: 'Base',
+    name: 'Base Mainnet',
     chainId: 8453,
     chainIdHex: '0x2105',
     rpcUrl: 'https://mainnet.base.org',

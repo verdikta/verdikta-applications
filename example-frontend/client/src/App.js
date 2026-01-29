@@ -42,7 +42,7 @@ const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'http://localhost:5000';
 const NETWORK = (process.env.REACT_APP_NETWORK || '').toLowerCase();
 const NETWORK_LABEL =
   NETWORK === 'base_sepolia' ? 'Base Sepolia' :
-  NETWORK === 'base' ? 'Base' :
+  NETWORK === 'base' ? 'Base Mainnet' :
   '';
 
 // Static configuration mode settings

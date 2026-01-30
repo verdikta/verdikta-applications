@@ -108,7 +108,7 @@ function ClassSelector({
             <div className="class-description-banner">
               <div className="description-icon">ℹ️</div>
               <div className="description-content">
-                <div className="description-label">About {selectedClass.name}:</div>
+                <div className="description-label">About {selectedClass.name} (Class {selectedClass.id}):</div>
                 <div className="description-text">{selectedClass.description}</div>
               </div>
             </div>

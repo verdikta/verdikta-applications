@@ -56,16 +56,17 @@ function SubmitWork({ walletState }) {
   }, [bountyId, walletState.isConnected]);
 
   // Helper to get the on-chain bounty ID
+  // Returns null if not available (don't fall back to URL param as that's the database ID)
   const getOnChainId = (job) => {
     if (job.onChainId !== undefined && job.onChainId !== null) {
       return job.onChainId;
     }
-    // Fallback for old data that might still have bountyId
+    // Fallback for old data that might still have bountyId field
     if (job.bountyId !== undefined && job.bountyId !== null) {
       return job.bountyId;
     }
-    // Last resort: try parsing from URL
-    return parseInt(bountyId);
+    // Don't use URL parameter as fallback - it's the database ID, not the on-chain ID
+    return null;
   };
 
   const loadJobDetails = async () => {
@@ -88,28 +89,34 @@ function SubmitWork({ walletState }) {
 
       // Verify on-chain status if wallet is connected
       if (walletState.isConnected) {
-        try {
-          const contractService = getContractService();
-          if (!contractService.isConnected()) {
-            await contractService.connect();
+        const onChainId = getOnChainId(response.job);
+
+        if (onChainId === null) {
+          console.warn('⚠️ On-chain ID not yet available - bounty may still be syncing');
+          // Continue loading but submission will be blocked until onChainId is available
+        } else {
+          try {
+            const contractService = getContractService();
+            if (!contractService.isConnected()) {
+              await contractService.connect();
+            }
+
+            const onChainStatus = await contractService.getBountyStatus(onChainId);
+
+            // If mismatch, use on-chain as source of truth
+            if (onChainStatus !== response.job.status) {
+              console.warn('⚠️ Backend out of sync!', {
+                backend: response.job.status,
+                onChain: onChainStatus
+              });
+              response.job.status = onChainStatus;
+            }
+
+            console.log('✅ Bounty status verified:', onChainStatus);
+          } catch (statusErr) {
+            console.error('Could not verify on-chain status:', statusErr);
+            // Continue with backend data if on-chain check fails
           }
-
-          const onChainId = getOnChainId(response.job);
-          const onChainStatus = await contractService.getBountyStatus(onChainId);
-
-          // If mismatch, use on-chain as source of truth
-          if (onChainStatus !== response.job.status) {
-            console.warn('⚠️ Backend out of sync!', {
-              backend: response.job.status,
-              onChain: onChainStatus
-            });
-            response.job.status = onChainStatus;
-          }
-
-          console.log('✅ Bounty status verified:', onChainStatus);
-        } catch (statusErr) {
-          console.error('Could not verify on-chain status:', statusErr);
-          // Continue with backend data if on-chain check fails
         }
       }
 
@@ -307,6 +314,14 @@ function SubmitWork({ walletState }) {
 
       // Get the on-chain ID for all contract calls
       const onChainId = getOnChainId(job);
+
+      // Check if we have a valid on-chain ID
+      if (onChainId === null) {
+        throw new Error(
+          'This bounty is still syncing with the blockchain. ' +
+          'Please wait a moment and refresh the page, then try again.'
+        );
+      }
 
       // CRITICAL: Verify on-chain status before proceeding
       setLoadingMessage('Verifying bounty status on blockchain...');

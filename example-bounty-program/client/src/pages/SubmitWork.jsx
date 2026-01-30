@@ -403,6 +403,24 @@ function SubmitWork({ walletState }) {
         linkMaxBudgetFormatted: `${Number(linkMaxBudget) / 1e18} LINK`
       });
 
+      // STEP 2.5: Confirm submission in backend (now that we have the on-chain submissionId)
+      // This creates the backend record with the correct ID, preventing orphaned submissions
+      setLoadingMessage('Confirming submission...');
+      try {
+        await apiService.confirmSubmission(bountyId, {
+          submissionId,
+          hunter: walletState.address,
+          hunterCid,
+          evalWallet,
+          fileCount: files.length,
+          files: files.map(f => ({ name: f.file.name, size: f.file.size, description: f.description }))
+        });
+        console.log('✅ Backend submission confirmed');
+      } catch (confirmErr) {
+        // Non-fatal if it's just a duplicate (idempotent endpoint)
+        console.warn('⚠️ Confirm submission warning:', confirmErr.message);
+      }
+
       // STEP 3: Approve LINK tokens to the EvaluationWallet
       setLoadingMessage(`Approving ${(Number(linkMaxBudget) / 1e18).toFixed(4)} LINK tokens...`);
       console.log('🔄 Approving LINK to EvaluationWallet:', evalWallet, 'amount:', linkMaxBudget);

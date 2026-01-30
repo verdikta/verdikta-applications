@@ -120,6 +120,15 @@ export const apiService = {
   },
 
   /**
+   * Confirm a submission after on-chain prepareSubmission succeeds.
+   * This creates the backend submission record with the correct on-chain submissionId.
+   */
+  async confirmSubmission(jobId, data) {
+    const response = await api.post(`/api/jobs/${jobId}/submissions/confirm`, data);
+    return response.data;
+  },
+
+  /**
    * Submit work for a job (legacy single file)
    */
   async submitWork(jobId, file, hunterAddress) {

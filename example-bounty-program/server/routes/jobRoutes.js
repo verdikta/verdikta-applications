@@ -624,16 +624,14 @@ router.post('/:jobId/submit', async (req, res) => {
     // The hunterCid is passed to startPreparedSubmission() and sent to Verdikta along with
     // the bounty's evaluationCid (which the contract retrieves from storage).
 
-    await jobStorage.addSubmission(jobId, {
-      hunter,
-      hunterCid,
-      fileCount: uploadedFiles.length,
-      files: uploadedFiles.map(f => ({ name: f.originalname, size: f.size, description: fileDescriptions[f.originalname] }))
-    });
+    // NOTE: We do NOT create the submission record here anymore.
+    // The submission record is created by POST /api/jobs/:jobId/submissions/confirm
+    // AFTER the on-chain prepareSubmission transaction succeeds.
+    // This prevents orphaned "Prepared" submissions when on-chain tx fails.
 
     return res.json({
       success: true,
-      message: 'Submission recorded successfully!',
+      message: 'Files uploaded to IPFS successfully! Call /submissions/confirm after on-chain prepareSubmission succeeds.',
       submission: {
         hunter,
         hunterCid,
@@ -656,6 +654,69 @@ router.post('/:jobId/submit', async (req, res) => {
         logger.warn('[jobs/submit] failed to clean tmp file', { msg: err.message })
       );
     }
+  }
+});
+
+/* ==========================================
+   CONFIRM SUBMISSION (after on-chain success)
+   ========================================== */
+
+/**
+ * Create the backend submission record AFTER on-chain prepareSubmission succeeds.
+ * This prevents orphaned "Prepared" submissions when on-chain tx fails.
+ */
+router.post('/:jobId/submissions/confirm', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { submissionId, hunter, hunterCid, evalWallet, fileCount, files } = req.body;
+
+    if (submissionId === undefined || submissionId === null) {
+      return res.status(400).json({ error: 'Missing submissionId', details: 'submissionId from on-chain event is required' });
+    }
+    if (!hunter || !/^0x[a-fA-F0-9]{40}$/.test(hunter)) {
+      return res.status(400).json({ error: 'Invalid hunter address' });
+    }
+    if (!hunterCid) {
+      return res.status(400).json({ error: 'Missing hunterCid' });
+    }
+
+    const storage = await jobStorage.readStorage();
+    const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    // Check if submission with this ID already exists
+    const existingSubmission = job.submissions.find(s => s.submissionId === Number(submissionId));
+    if (existingSubmission) {
+      // Already confirmed - return success (idempotent)
+      logger.info('[submissions/confirm] Submission already exists', { jobId, submissionId });
+      return res.json({ success: true, submission: existingSubmission, alreadyExists: true });
+    }
+
+    // Create the submission record with the on-chain submissionId
+    const submission = {
+      submissionId: Number(submissionId),
+      hunter,
+      hunterCid,
+      evalWallet: evalWallet || null,
+      fileCount: fileCount || 0,
+      files: files || [],
+      submittedAt: Math.floor(Date.now() / 1000),
+      status: 'Prepared'  // Will be updated to PendingVerdikta after startPreparedSubmission
+    };
+
+    job.submissions.push(submission);
+    job.submissionCount = job.submissions.length;
+
+    await jobStorage.writeStorage(storage);
+
+    logger.info('[submissions/confirm] Submission confirmed', { jobId, submissionId, hunter });
+    return res.json({ success: true, submission });
+
+  } catch (error) {
+    logger.error('[submissions/confirm] error', { msg: error.message });
+    return res.status(500).json({ error: 'Failed to confirm submission', details: error.message });
   }
 });
 

@@ -17,6 +17,8 @@ import JurySelection from './pages/JurySelection';
 import QueryDefinition from './pages/QueryDefinition';
 import Results from './pages/Results';
 import ContractManagement from './pages/ContractManagement';
+import Administration from './pages/Administration';
+import { useAdmin } from './hooks/useAdmin';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 
@@ -34,7 +36,8 @@ export const PAGES = {
   JURY_SELECTION: 'JURY_SELECTION',
   RUN: 'RUN',
   RESULTS: 'RESULTS',
-  CONTRACT_MANAGEMENT: 'CONTRACT_MANAGEMENT'
+  CONTRACT_MANAGEMENT: 'CONTRACT_MANAGEMENT',
+  ADMINISTRATION: 'ADMINISTRATION'
 };
 
 const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'http://localhost:5000';
@@ -150,6 +153,9 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [walletAddress, setWalletAddress] = useState('');
   const [contractAddress, setContractAddress] = useState('');
+
+  // Check if connected wallet is an admin
+  const { isAdmin } = useAdmin(walletAddress);
   
   // Decoupled class selection - no longer tied to contract
   // In static config mode, use the static class ID and prevent changes
@@ -505,30 +511,38 @@ function App() {
         </div>
       </div>
       <nav className="main-nav">
-        <button 
+        <button
           className={currentPage === PAGES.DEFINE_QUERY ? 'active' : ''}
           onClick={() => setCurrentPage(PAGES.DEFINE_QUERY)}
         >
           Define Query
         </button>
-        <button 
+        <button
           className={currentPage === PAGES.JURY_SELECTION ? 'active' : ''}
           onClick={() => setCurrentPage(PAGES.JURY_SELECTION)}
         >
           Jury Selection
         </button>
-        <button 
+        <button
           className={currentPage === PAGES.RUN ? 'active' : ''}
           onClick={() => setCurrentPage(PAGES.RUN)}
         >
           Run
         </button>
-        <button 
+        <button
           className={currentPage === PAGES.RESULTS ? 'active' : ''}
           onClick={() => setCurrentPage(PAGES.RESULTS)}
         >
           Results
         </button>
+        {isAdmin && (
+          <button
+            className={currentPage === PAGES.ADMINISTRATION ? 'active' : ''}
+            onClick={() => setCurrentPage(PAGES.ADMINISTRATION)}
+          >
+            Admin
+          </button>
+        )}
       </nav>
       <div className="contract-wallet-section">
         <div className="contract-selector">
@@ -724,7 +738,14 @@ function App() {
         )}
         {/* Hide Contract Management page in static config mode */}
         {currentPage === PAGES.CONTRACT_MANAGEMENT && !STATIC_CONFIG_MODE && (
-          <ContractManagement onContractsUpdated={loadContracts} />
+          <ContractManagement onContractsUpdated={loadContracts} walletAddress={walletAddress} />
+        )}
+        {/* Administration page - only accessible to admins */}
+        {currentPage === PAGES.ADMINISTRATION && isAdmin && (
+          <Administration
+            walletAddress={walletAddress}
+            onNavigateToContractManagement={() => setCurrentPage(PAGES.CONTRACT_MANAGEMENT)}
+          />
         )}
       </main>
       <ToastContainer position="bottom-right" />

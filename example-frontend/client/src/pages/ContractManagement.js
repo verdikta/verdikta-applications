@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'react-toastify';
+import { signAndSend } from '../utils/signatureUtils';
 import '../App.css';
 
 // Define the server URL, matching what we have in contractManagementService.js
 const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'http://localhost:5001';
 
-const ContractManagement = ({ onContractsUpdated }) => {
+const ContractManagement = ({ onContractsUpdated, walletAddress }) => {
   const [contracts, setContracts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -59,26 +60,23 @@ const ContractManagement = ({ onContractsUpdated }) => {
     }
 
     try {
-      const response = await fetch(`${SERVER_URL}/api/contracts`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(newContract),
-      });
+      await signAndSend(
+        'Add Contract',
+        `${SERVER_URL}/api/contracts`,
+        'POST',
+        newContract
+      );
 
-      const data = await response.json();
-
-      if (data.success) {
-        toast.success('Contract added successfully');
-        setNewContract({ address: '', name: '', network: currentNetwork });
-        await fetchContracts();
-      } else {
-        toast.error(data.error || 'Failed to add contract');
-      }
+      toast.success('Contract added successfully');
+      setNewContract({ address: '', name: '', network: currentNetwork });
+      await fetchContracts();
     } catch (err) {
       console.error('Error adding contract:', err);
-      toast.error('Failed to connect to server');
+      if (err.message === 'Signature request was rejected') {
+        toast.info('Signature request cancelled');
+      } else {
+        toast.error(err.message || 'Failed to add contract');
+      }
     }
   };
 
@@ -86,23 +84,24 @@ const ContractManagement = ({ onContractsUpdated }) => {
     if (!window.confirm('Are you sure you want to delete this contract?')) {
       return;
     }
-    
+
     try {
-      const response = await fetch(`${SERVER_URL}/api/contracts/${address}`, {
-        method: 'DELETE',
-      });
-      
-      const data = await response.json();
-      
-      if (data.success) {
-        toast.success('Contract removed successfully');
-        await fetchContracts();
-      } else {
-        toast.error(data.error || 'Failed to remove contract');
-      }
+      await signAndSend(
+        'Delete Contract',
+        `${SERVER_URL}/api/contracts/${address}`,
+        'DELETE',
+        {}
+      );
+
+      toast.success('Contract removed successfully');
+      await fetchContracts();
     } catch (err) {
       console.error('Error deleting contract:', err);
-      toast.error('Failed to connect to server');
+      if (err.message === 'Signature request was rejected') {
+        toast.info('Signature request cancelled');
+      } else {
+        toast.error(err.message || 'Failed to remove contract');
+      }
     }
   };
 
@@ -122,17 +121,17 @@ const ContractManagement = ({ onContractsUpdated }) => {
 
   const handleEditSubmit = async (e) => {
     e.preventDefault();
-    
+
     if (!editForm.name.trim()) {
       toast.error('Name is required');
       return;
     }
-    
+
     try {
       // Find the contract index
       const updatedContracts = [...contracts];
       const index = updatedContracts.findIndex(c => c.address === isEditing);
-      
+
       if (index !== -1) {
         // Update name and network, preserve other fields like class
         updatedContracts[index] = {
@@ -140,28 +139,25 @@ const ContractManagement = ({ onContractsUpdated }) => {
           name: editForm.name,
           network: editForm.network
         };
-        
-        const response = await fetch(`${SERVER_URL}/api/contracts`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ contracts: updatedContracts }),
-        });
-        
-        const data = await response.json();
-        
-        if (data.success) {
-          toast.success('Contract updated successfully');
-          setIsEditing(null);
-          await fetchContracts();
-        } else {
-          toast.error(data.error || 'Failed to update contract');
-        }
+
+        await signAndSend(
+          'Update Contract',
+          `${SERVER_URL}/api/contracts`,
+          'PUT',
+          { contracts: updatedContracts }
+        );
+
+        toast.success('Contract updated successfully');
+        setIsEditing(null);
+        await fetchContracts();
       }
     } catch (err) {
       console.error('Error updating contract:', err);
-      toast.error('Failed to connect to server');
+      if (err.message === 'Signature request was rejected') {
+        toast.info('Signature request cancelled');
+      } else {
+        toast.error(err.message || 'Failed to update contract');
+      }
     }
   };
 

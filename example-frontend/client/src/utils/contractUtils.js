@@ -23,9 +23,22 @@ const NETWORKS = {
   },
 };
 
-const NET_KEY = process.env.REACT_APP_NETWORK || 'base_sepolia';
-export const CURRENT_NETWORK = NETWORKS[NET_KEY] || NETWORKS.base_sepolia;
+// Default network from env (used as fallback)
+const DEFAULT_NET_KEY = process.env.REACT_APP_NETWORK || 'base_sepolia';
 
+/**
+ * Get network configuration by key
+ * @param {string} networkKey - 'base' or 'base_sepolia'
+ * @returns {Object} Network configuration object
+ */
+export function getNetworkConfig(networkKey) {
+  return NETWORKS[networkKey] || NETWORKS[DEFAULT_NET_KEY] || NETWORKS.base_sepolia;
+}
+
+// Export default network for backward compatibility
+export const CURRENT_NETWORK = getNetworkConfig(DEFAULT_NET_KEY);
+
+// These exports are deprecated - use getNetworkConfig() instead for dynamic network support
 export const RPC_URL = CURRENT_NETWORK.rpcUrl;
 export const EXPLORER_URL = CURRENT_NETWORK.explorer;
 export const TARGET_CHAIN_ID = CURRENT_NETWORK.chainId;
@@ -93,28 +106,41 @@ export async function debugContract(contract) {
   }
 }
 
-/** Ensure MetaMask is on the selected network (Base or Base Sepolia). */
-export async function ensureCorrectNetwork(provider) {
+/**
+ * Ensure MetaMask is on the selected network (Base or Base Sepolia).
+ * @param {Object} provider - Ethers provider
+ * @param {string} networkKey - Network key ('base' or 'base_sepolia')
+ * @returns {Promise<Object>} Updated provider
+ */
+export async function ensureCorrectNetwork(provider, networkKey = DEFAULT_NET_KEY) {
   if (typeof window === 'undefined' || !window.ethereum) return provider;
 
+  const targetNetwork = getNetworkConfig(networkKey);
   const network = await provider.getNetwork();
   console.log('Current network:', network);
+  console.log('Target network:', targetNetwork.name);
 
-  if (network.chainId.toString() !== TARGET_CHAIN_ID.toString()) {
-    console.log(`Not on ${CURRENT_NETWORK.name}, attempting to switch...`);
+  if (network.chainId.toString() !== targetNetwork.chainId.toString()) {
+    console.log(`Not on ${targetNetwork.name}, attempting to switch...`);
     try {
       await window.ethereum.request({
         method: 'wallet_switchEthereumChain',
-        params: [{ chainId: TARGET_CHAIN_ID_HEX }],
+        params: [{ chainId: targetNetwork.chainIdHex }],
       });
     } catch (switchError) {
       if (switchError && switchError.code === 4902) {
         await window.ethereum.request({
           method: 'wallet_addEthereumChain',
-          params: [CHAIN_PARAMS],
+          params: [{
+            chainId: targetNetwork.chainIdHex,
+            chainName: targetNetwork.name,
+            nativeCurrency: targetNetwork.nativeCurrency,
+            rpcUrls: [targetNetwork.rpcUrl],
+            blockExplorerUrls: [targetNetwork.explorer],
+          }],
         });
       } else {
-        throw new Error(`Please switch to ${CURRENT_NETWORK.name} in MetaMask`);
+        throw new Error(`Please switch to ${targetNetwork.name} in MetaMask`);
       }
     }
 
@@ -135,51 +161,65 @@ export async function switchToBaseSepolia(provider) {
   return ensureCorrectNetwork(provider);
 }
 
-/** Optional: direct RPC provider if you don’t want to use an injected wallet. */
-export function makeRpcProvider() {
-  return new ethers.JsonRpcProvider(RPC_URL);
+/**
+ * Optional: direct RPC provider if you don't want to use an injected wallet.
+ * @param {string} networkKey - Network key ('base' or 'base_sepolia')
+ * @returns {Object} JSON-RPC provider
+ */
+export function makeRpcProvider(networkKey = DEFAULT_NET_KEY) {
+  const network = getNetworkConfig(networkKey);
+  return new ethers.JsonRpcProvider(network.rpcUrl);
 }
 
-export async function checkContractFunding(contract, provider) {
+export async function checkContractFunding(contract, provider, networkKey = DEFAULT_NET_KEY) {
   try {
     console.log('checkContractFunding called with:', {
       contractExists: !!contract,
       providerExists: !!provider,
       contractAddress: contract?.target,
+      networkKey,
     });
 
     if (!contract || !provider) {
       throw new Error(`Invalid parameters: contract=${!!contract}, provider=${!!provider}`);
     }
 
+    const targetNetwork = getNetworkConfig(networkKey);
     const network = await provider.getNetwork();
     console.log('Current network:', network);
+    console.log('Target network:', targetNetwork.name);
 
-    if (network.chainId.toString() !== TARGET_CHAIN_ID.toString()) {
-      console.log(`Not on ${CURRENT_NETWORK.name}, attempting to switch...`);
+    if (network.chainId.toString() !== targetNetwork.chainId.toString()) {
+      console.log(`Not on ${targetNetwork.name}, attempting to switch...`);
       try {
         await window.ethereum.request({
           method: 'wallet_switchEthereumChain',
-          params: [{ chainId: TARGET_CHAIN_ID_HEX }],
+          params: [{ chainId: targetNetwork.chainIdHex }],
         });
       } catch (switchError) {
         if (switchError && switchError.code === 4902) {
           try {
             await window.ethereum.request({
               method: 'wallet_addEthereumChain',
-              params: [CHAIN_PARAMS],
+              params: [{
+                chainId: targetNetwork.chainIdHex,
+                chainName: targetNetwork.name,
+                nativeCurrency: targetNetwork.nativeCurrency,
+                rpcUrls: [targetNetwork.rpcUrl],
+                blockExplorerUrls: [targetNetwork.explorer],
+              }],
             });
           } catch (addError) {
-            throw new Error(`Please add ${CURRENT_NETWORK.name} to MetaMask and try again`);
+            throw new Error(`Please add ${targetNetwork.name} to MetaMask and try again`);
           }
         }
-        throw new Error(`Please switch to ${CURRENT_NETWORK.name} in MetaMask`);
+        throw new Error(`Please switch to ${targetNetwork.name} in MetaMask`);
       }
 
       const newProvider = new ethers.BrowserProvider(window.ethereum);
       await new Promise((resolve) => setTimeout(resolve, 1000));
       const newContract = new ethers.Contract(contract.target, CONTRACT_ABI, await newProvider.getSigner());
-      return checkContractFunding(newContract, newProvider);
+      return checkContractFunding(newContract, newProvider, networkKey);
     }
 
     await debugContract(contract);

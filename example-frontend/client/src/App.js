@@ -11,6 +11,7 @@ import { ethers, parseEther } from 'ethers'; // ethers v6 import
 import { createClient } from './services/verdiktaClient';
 import { fetchContracts } from './utils/contractManagementService';
 import { modelProviderService } from './services/modelProviderService';
+import { getNetworkConfig } from './utils/contractUtils';
 import RunQuery from './pages/RunQuery';
 import JurySelection from './pages/JurySelection';
 import QueryDefinition from './pages/QueryDefinition';
@@ -38,12 +39,15 @@ export const PAGES = {
 
 const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'http://localhost:5000';
 
-// Set network label from .env
-const NETWORK = (process.env.REACT_APP_NETWORK || '').toLowerCase();
-const NETWORK_LABEL =
-  NETWORK === 'base_sepolia' ? 'Base Sepolia Testnet' :
-  NETWORK === 'base' ? 'Base Mainnet' :
-  '';
+// Default network from .env (used as fallback)
+const DEFAULT_NETWORK = (process.env.REACT_APP_NETWORK || 'base_sepolia').toLowerCase();
+
+// Helper function to get network label
+const getNetworkLabel = (network) => {
+  return network === 'base_sepolia' ? 'Base Sepolia Testnet' :
+         network === 'base' ? 'Base Mainnet' :
+         '';
+};
 
 // Static configuration mode settings
 const STATIC_CONFIG_MODE = process.env.REACT_APP_STATIC_CONFIG_MODE === 'true';
@@ -83,6 +87,15 @@ const fetchQueryPackageDetails = async (cid) => {
 };
 
 function App() {
+  // Network selection state - initialize from localStorage or default
+  const [selectedNetwork, setSelectedNetwork] = useState(() => {
+    const savedNetwork = localStorage.getItem('selectedNetwork');
+    return savedNetwork || DEFAULT_NETWORK;
+  });
+
+  // Derived network label
+  const NETWORK_LABEL = getNetworkLabel(selectedNetwork);
+
   // Navigation state
   const [currentPage, setCurrentPage] = useState(PAGES.DEFINE_QUERY);
   
@@ -171,6 +184,56 @@ function App() {
   const ESTIMATED_BASE_COST = MAX_FEE * BigInt(BASE_FEE_PCT) / 100n; // Using native BigInt arithmetic
   const MAX_FEE_SCALING_FACTOR = 10;
 
+  // Handle network change
+  const handleNetworkChange = async (newNetwork) => {
+    console.log('Switching network to:', newNetwork);
+    setSelectedNetwork(newNetwork);
+    localStorage.setItem('selectedNetwork', newNetwork);
+    toast.info(`Switched to ${getNetworkLabel(newNetwork)}`);
+
+    // If wallet is connected, prompt MetaMask to switch networks
+    if (isConnected && window.ethereum) {
+      try {
+        const targetNetwork = getNetworkConfig(newNetwork);
+
+        await window.ethereum.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: targetNetwork.chainIdHex }],
+        });
+        console.log('MetaMask network switched successfully');
+      } catch (switchError) {
+        // Error code 4902 means the chain hasn't been added to MetaMask yet
+        if (switchError.code === 4902) {
+          try {
+            const targetNetwork = getNetworkConfig(newNetwork);
+
+            await window.ethereum.request({
+              method: 'wallet_addEthereumChain',
+              params: [{
+                chainId: targetNetwork.chainIdHex,
+                chainName: targetNetwork.name,
+                nativeCurrency: targetNetwork.nativeCurrency,
+                rpcUrls: [targetNetwork.rpcUrl],
+                blockExplorerUrls: [targetNetwork.explorer],
+              }],
+            });
+            console.log('Network added to MetaMask and switched');
+          } catch (addError) {
+            console.error('Failed to add network to MetaMask:', addError);
+            toast.warning('Please manually switch your wallet network to ' + getNetworkLabel(newNetwork));
+          }
+        } else if (switchError.code === 4001) {
+          // User rejected the request
+          console.log('User rejected network switch');
+          toast.info('Network changed in app. Please switch your wallet manually if needed.');
+        } else {
+          console.error('Failed to switch MetaMask network:', switchError);
+          toast.warning('Please manually switch your wallet network to ' + getNetworkLabel(newNetwork));
+        }
+      }
+    }
+  };
+
   // Function to load contracts - wrapping in useCallback to prevent infinite re-renders
   const loadContracts = useCallback(async (updatedContracts) => {
     setIsLoadingContracts(true);
@@ -184,12 +247,11 @@ function App() {
         allContracts = await fetchContracts();
       }
 
-      // Filter contracts by current network
-      const currentNetworkLower = NETWORK.toLowerCase();
+      // Filter contracts by selected network
       const filteredContracts = allContracts.filter(c => {
-        // If contract has no network field, default to current network for backward compatibility
-        const contractNetwork = c.network || currentNetworkLower;
-        return contractNetwork === currentNetworkLower;
+        // If contract has no network field, default to selected network for backward compatibility
+        const contractNetwork = c.network || selectedNetwork;
+        return contractNetwork === selectedNetwork;
       });
 
       // Map to contract options (address and name only for dropdown)
@@ -217,7 +279,7 @@ function App() {
         return {
           address,
           name: CONTRACT_NAMES[index] || `Contract ${index + 1}`,
-          network: NETWORK.toLowerCase()
+          network: selectedNetwork
         };
       }).filter(c => c.address);
 
@@ -231,7 +293,7 @@ function App() {
     } finally {
       setIsLoadingContracts(false);
     }
-  }, [contractAddress]);
+  }, [contractAddress, selectedNetwork]);
 
   // Load contracts from API on mount
   useEffect(() => {
@@ -416,7 +478,30 @@ function App() {
     <header className="app-header">
       <div className="brand">
         <div className="brand-title">Verdikta Playground</div>
-        {NETWORK_LABEL && <div className="brand-subtitle">{NETWORK_LABEL}</div>}
+        <div className="brand-subtitle">
+          <select
+            value={selectedNetwork}
+            onChange={(e) => handleNetworkChange(e.target.value)}
+            className="network-selector"
+            style={{
+              backgroundColor: 'transparent',
+              border: '1px solid rgba(255, 255, 255, 0.3)',
+              borderRadius: '4px',
+              padding: '4px 8px',
+              fontSize: '13px',
+              color: '#fff',
+              cursor: 'pointer',
+              outline: 'none'
+            }}
+          >
+            <option value="base" style={{ backgroundColor: '#1a1a1a', color: '#fff' }}>
+              Base Mainnet
+            </option>
+            <option value="base_sepolia" style={{ backgroundColor: '#1a1a1a', color: '#fff' }}>
+              Base Sepolia Testnet
+            </option>
+          </select>
+        </div>
       </div>
       <nav className="main-nav">
         <button 
@@ -612,6 +697,7 @@ function App() {
             estimatedBaseCost={ESTIMATED_BASE_COST}
             maxFeeBasedScalingFactor={MAX_FEE_SCALING_FACTOR}
             selectedClassId={selectedClassId}
+            selectedNetwork={selectedNetwork}
           />
         )}
         {currentPage === PAGES.RESULTS && (

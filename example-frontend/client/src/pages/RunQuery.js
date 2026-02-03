@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 // Import ethers along with parseEther from ethers v6 (we no longer import BigNumber)
 import { ethers, parseEther, parseUnits } from 'ethers';
-import { RPC_URL } from '../utils/contractUtils';
+import { getNetworkConfig } from '../utils/contractUtils';
 import { PAGES } from '../App';
 import { fetchWithRetry, tryParseJustification } from '../utils/fetchUtils';
 import { createQueryPackageArchive } from '../utils/packageUtils';
@@ -36,7 +36,7 @@ const getFirstCid = (cidString) => {
  * 2 → any other injected provider
  * 3 → fallback to public RPC
  */
-function getReadOnlyProvider() {
+function getReadOnlyProvider(networkKey = 'base_sepolia') {
   // 1. look for MetaMask in the multi‑provider array
   const injected = window.ethereum?.providers?.find(p => p.isMetaMask);
   if (injected) return new ethers.BrowserProvider(injected);
@@ -45,8 +45,9 @@ function getReadOnlyProvider() {
   if (window.ethereum && window.ethereum.isBraveWallet === false) 
     return new ethers.BrowserProvider(window.ethereum);
 
-  // 3. no wallet at all – use public Base Sepolia RPC
-  return new ethers.JsonRpcProvider(RPC_URL);
+  // 3. no wallet at all – use public RPC for selected network
+  const networkConfig = getNetworkConfig(networkKey);
+  return new ethers.JsonRpcProvider(networkConfig.rpcUrl);
 
 }
 
@@ -228,13 +229,15 @@ function RunQuery({
   estimatedBaseCost,
   maxFeeBasedScalingFactor,
   selectedClassId,
+  selectedNetwork,
 }) {
   const [activeTooltipId, setActiveTooltipId] = useState(null);
-  
-  // Debug logging for class ID
+
+  // Debug logging for class ID and network
   useEffect(() => {
     console.log('🏃 RunQuery component - selectedClassId:', selectedClassId);
-  }, [selectedClassId]);
+    console.log('🌐 RunQuery component - selectedNetwork:', selectedNetwork);
+  }, [selectedClassId, selectedNetwork]);
   const [textAddendum, setTextAddendum] = useState('');
   // Add state to track if we're showing the default CID value
   const [showingDefaultCid, setShowingDefaultCid] = useState(queryPackageCid === '' || queryPackageCid === undefined);
@@ -333,14 +336,25 @@ const handleRunQuery = async () => {
     setLastError(null);
 
     console.log('🌐 Creating provider and ensuring correct network...');
+    console.log('📍 Selected network:', selectedNetwork);
+
+    // Fallback to default if selectedNetwork is undefined
+    const networkToUse = selectedNetwork || 'base_sepolia';
+    console.log('📍 Using network:', networkToUse);
+
     // 1) Ensure wallet is on the selected network (base or base_sepolia)
-    // let provider = new ethers.BrowserProvider(window.ethereum);
     const ethereum = window.ethereum?.providers?.find(p => p.isMetaMask) ?? window.ethereum;
+    if (!ethereum) {
+      throw new Error('No Ethereum wallet detected. Please install MetaMask.');
+    }
+
     let provider = new ethers.BrowserProvider(ethereum);
-    provider = await ensureCorrectNetwork(provider); // respects REACT_APP_NETWORK
+    console.log('🔄 Calling ensureCorrectNetwork...');
+    provider = await ensureCorrectNetwork(provider, networkToUse);
+    console.log('✅ Network check complete');
 
    // Quick existence check
-   const roProvider = getReadOnlyProvider(); // uses RPC_URL for selected network
+   const roProvider = getReadOnlyProvider(networkToUse); // uses selected network RPC
    // Verify the selected address actually exists on this chain
    const codeAtAddr = await roProvider.getCode(contractAddress);
    if (codeAtAddr === '0x') {

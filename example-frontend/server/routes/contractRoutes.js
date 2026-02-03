@@ -1,10 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const { loadContracts, saveContracts, isValidEthereumAddress, isValidNetwork } = require('../utils/contractsManager');
+const { requireAdmin, requireAdminWithSignature } = require('../middleware/adminAuth');
 
 /**
  * GET /api/contracts
- * Returns the list of contracts
+ * Returns the list of contracts (public - no auth required)
  */
 router.get('/', async (req, res) => {
   try {
@@ -25,10 +26,10 @@ router.get('/', async (req, res) => {
 
 /**
  * PUT /api/contracts
- * Updates the list of contracts
+ * Updates the list of contracts (requires admin with signature)
  * Requires an array of contract objects in request body
  */
-router.put('/', async (req, res) => {
+router.put('/', requireAdminWithSignature, async (req, res) => {
   try {
     const { contracts } = req.body;
     
@@ -104,9 +105,9 @@ router.put('/', async (req, res) => {
 
 /**
  * POST /api/contracts
- * Adds a new contract to the list
+ * Adds a new contract to the list (requires admin with signature)
  */
-router.post('/', async (req, res) => {
+router.post('/', requireAdminWithSignature, async (req, res) => {
   try {
     const { address, name, class: contractClassInput, network: networkInput } = req.body;
 
@@ -181,9 +182,9 @@ router.post('/', async (req, res) => {
 
 /**
  * DELETE /api/contracts/:address
- * Removes a contract from the list
+ * Removes a contract from the list (requires admin with signature)
  */
-router.delete('/:address', async (req, res) => {
+router.delete('/:address', requireAdminWithSignature, async (req, res) => {
   try {
     const { address } = req.params;
     

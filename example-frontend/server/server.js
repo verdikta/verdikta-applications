@@ -23,6 +23,9 @@ const logger = appLogger;
 const contractRoutes = require('./routes/contractRoutes');
 const { syncOnShutdown } = require('./utils/contractsManager');
 
+// Import admin routes
+const adminRoutes = require('./routes/adminRoutes');
+
 // Constants
 const UPLOAD_TIMEOUT = 60000; // 60 seconds
 const IPFS_FETCH_TIMEOUT = 45000; // 45 seconds base timeout
@@ -98,6 +101,9 @@ app.use(express.urlencoded({ extended: true }));
 
 // Register contract routes
 app.use('/api/contracts', contractRoutes);
+
+// Register admin routes
+app.use('/api/admins', adminRoutes);
 
 // ClassMap API endpoints
 // Get all available classes

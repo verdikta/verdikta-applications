@@ -244,6 +244,7 @@ function App() {
       if (updatedContracts && Array.isArray(updatedContracts)) {
         allContracts = updatedContracts;
       } else {
+        // Fetch contracts (public endpoint, no auth needed)
         allContracts = await fetchContracts();
       }
 

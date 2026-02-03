@@ -6,11 +6,17 @@ const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'http://localhost:5001';
 
 /**
  * Fetches the list of contracts from the server
+ * @param {string} walletAddress - Admin wallet address for authentication
  * @returns {Promise<Array>} Array of contract objects
  */
-export const fetchContracts = async () => {
+export const fetchContracts = async (walletAddress = null) => {
   try {
-    const response = await fetch(`${SERVER_URL}/api/contracts`);
+    const headers = {};
+    if (walletAddress) {
+      headers['x-wallet-address'] = walletAddress;
+    }
+
+    const response = await fetch(`${SERVER_URL}/api/contracts`, { headers });
     if (!response.ok) {
       throw new Error(`Failed to fetch contracts: ${response.statusText}`);
     }

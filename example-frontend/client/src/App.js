@@ -175,44 +175,49 @@ function App() {
   const loadContracts = useCallback(async (updatedContracts) => {
     setIsLoadingContracts(true);
     try {
+      let allContracts = [];
+
       // If contracts are passed directly, use them instead of fetching
       if (updatedContracts && Array.isArray(updatedContracts)) {
-        // Remove class coupling - contracts now only store address and name
-        setContractOptions(updatedContracts.map(c => ({ 
-          address: c.address, 
-          name: c.name 
-        })));
-        if (updatedContracts.length > 0) {
-          if (!contractAddress || contractAddress === "manage"){
-            setContractAddress(updatedContracts[0].address);
-          }
-        }
-        setIsLoadingContracts(false);
-        return;
+        allContracts = updatedContracts;
+      } else {
+        allContracts = await fetchContracts();
       }
-      
-      const fetchedContracts = await fetchContracts();
-      // Remove class coupling - contracts now only store address and name
-      const contractsWithoutClass = fetchedContracts.map(c => ({ 
-        address: c.address, 
-        name: c.name 
-      }));
-      setContractOptions(contractsWithoutClass);
 
-      if (contractsWithoutClass.length > 0) {
+      // Filter contracts by current network
+      const currentNetworkLower = NETWORK.toLowerCase();
+      const filteredContracts = allContracts.filter(c => {
+        // If contract has no network field, default to current network for backward compatibility
+        const contractNetwork = c.network || currentNetworkLower;
+        return contractNetwork === currentNetworkLower;
+      });
+
+      // Map to contract options (address and name only for dropdown)
+      const contractOptions = filteredContracts.map(c => ({
+        address: c.address,
+        name: c.name,
+        network: c.network
+      }));
+
+      setContractOptions(contractOptions);
+
+      if (contractOptions.length > 0) {
         if (!contractAddress || contractAddress === "manage") {
-          setContractAddress(contractsWithoutClass[0].address);
+          setContractAddress(contractOptions[0].address);
         }
+      } else {
+        console.warn(`No contracts found for network: ${currentNetworkLower}`);
       }
     } catch (error) {
       console.error('Failed to load contracts:', error);
       const CONTRACT_ADDRESSES = (process.env.REACT_APP_CONTRACT_ADDRESSES || '').split(',');
       const CONTRACT_NAMES = (process.env.REACT_APP_CONTRACT_NAMES || '').split(',');
-      
+
       const fallbackOptions = CONTRACT_ADDRESSES.map((address, index) => {
         return {
           address,
-          name: CONTRACT_NAMES[index] || `Contract ${index + 1}`
+          name: CONTRACT_NAMES[index] || `Contract ${index + 1}`,
+          network: NETWORK.toLowerCase()
         };
       }).filter(c => c.address);
 

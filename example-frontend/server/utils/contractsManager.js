@@ -21,11 +21,14 @@ async function importContractsFromEnv() {
       console.log('Found .env file for importing contracts');
     } catch (error) {
       console.log('No .env file found for import, using default contract');
+      // Get default network from env or fall back to base_sepolia
+      const defaultNetwork = process.env.REACT_APP_NETWORK || 'base_sepolia';
       return [
         {
           address: "0x2E67c4D565C55E31514eDd68E42bFBb50a2C49F1",
           name: "Default Contract",
-          class: 128
+          class: 128,
+          network: defaultNetwork
         }
       ];
     }
@@ -35,6 +38,8 @@ async function importContractsFromEnv() {
     const addresses = envVars.REACT_APP_CONTRACT_ADDRESSES ? envVars.REACT_APP_CONTRACT_ADDRESSES.split(',') : [];
     const names = envVars.REACT_APP_CONTRACT_NAMES ? envVars.REACT_APP_CONTRACT_NAMES.split(',') : [];
     const classes = envVars.REACT_APP_CONTRACT_CLASSES ? envVars.REACT_APP_CONTRACT_CLASSES.split(',').map(c => parseInt(c.trim(), 10)) : [];
+    // Get the current network from .env, default to base_sepolia for backward compatibility
+    const currentNetwork = envVars.REACT_APP_NETWORK || 'base_sepolia';
 
     if (addresses.length === 0) {
       console.log('No contract addresses found in .env, using default contract');
@@ -42,30 +47,35 @@ async function importContractsFromEnv() {
         {
           address: "0x2E67c4D565C55E31514eDd68E42bFBb50a2C49F1",
           name: "Default Contract",
-          class: 128
+          class: 128,
+          network: currentNetwork
         }
       ];
     }
 
     // Create contract objects from the addresses, names, and classes
+    // Default network to current REACT_APP_NETWORK for backward compatibility
     const contracts = addresses.map((address, index) => {
       const contractClass = (index < classes.length && !isNaN(classes[index])) ? classes[index] : 128;
       return {
         address: address.trim(),
         name: index < names.length ? names[index].trim() : `Contract ${address.slice(0, 6)}`,
-        class: contractClass >= 0 && contractClass <= 99999 ? contractClass : 128
+        class: contractClass >= 0 && contractClass <= 99999 ? contractClass : 128,
+        network: currentNetwork
       };
     });
 
-    console.log(`Imported ${contracts.length} contracts from .env file`);
+    console.log(`Imported ${contracts.length} contracts from .env file with network: ${currentNetwork}`);
     return contracts;
   } catch (error) {
     console.error('Error importing contracts from .env:', error);
+    const defaultNetwork = process.env.REACT_APP_NETWORK || 'base_sepolia';
     return [
       {
         address: "0x2E67c4D565C55E31514eDd68E42bFBb50a2C49F1",
         name: "Default Contract",
-        class: 128
+        class: 128,
+        network: defaultNetwork
       }
     ];
   }
@@ -81,6 +91,16 @@ function isValidEthereumAddress(address) {
   // This checks for 0x prefix followed by 40 hex characters
   const ethereumAddressRegex = /^0x[a-fA-F0-9]{40}$/;
   return ethereumAddressRegex.test(address);
+}
+
+/**
+ * Validates a network value
+ * @param {string} network - The network to validate
+ * @returns {boolean} True if network is valid
+ */
+function isValidNetwork(network) {
+  const validNetworks = ['base', 'base_sepolia'];
+  return validNetworks.includes(network);
 }
 
 /**
@@ -100,31 +120,38 @@ async function ensureDataDir() {
 
 /**
  * Checks if there's an inconsistency between .env contracts and contracts.json
+ * Note: Network field is NOT compared because users can manually set contract networks
+ * that differ from the current REACT_APP_NETWORK setting
  * @param {Array} envContracts - Contracts from .env
  * @param {Array} jsonContracts - Contracts from contracts.json
  * @returns {boolean} True if inconsistent
  */
 function contractsAreDifferent(envContracts, jsonContracts) {
   if (envContracts.length !== jsonContracts.length) return true;
-  
-  // Create a map of addresses to names and classes from both sources for comparison
+
+  // Create a map of addresses to names and classes (NOT network) from both sources for comparison
   const envMap = new Map(envContracts.map(c => [c.address.toLowerCase(), { name: c.name, class: c.class }]));
   const jsonMap = new Map(jsonContracts.map(c => [c.address.toLowerCase(), { name: c.name, class: c.class }]));
-  
+
   // Check if all env contracts exist in json with same name and class
+  // Network is intentionally excluded from comparison to preserve manual user edits
   for (const [address, envContractData] of envMap.entries()) {
-    if (!jsonMap.has(address) || jsonMap.get(address).name !== envContractData.name || jsonMap.get(address).class !== envContractData.class) {
+    if (!jsonMap.has(address) ||
+        jsonMap.get(address).name !== envContractData.name ||
+        jsonMap.get(address).class !== envContractData.class) {
       return true;
     }
   }
-  
+
   // Check if all json contracts exist in env with same name and class
   for (const [address, jsonContractData] of jsonMap.entries()) {
-    if (!envMap.has(address) || envMap.get(address).name !== jsonContractData.name || envMap.get(address).class !== jsonContractData.class) {
+    if (!envMap.has(address) ||
+        envMap.get(address).name !== jsonContractData.name ||
+        envMap.get(address).class !== jsonContractData.class) {
       return true;
     }
   }
-  
+
   return false;
 }
 
@@ -152,10 +179,12 @@ async function loadContracts() {
       const contractsData = JSON.parse(data);
       
       if (contractsData && contractsData.contracts && Array.isArray(contractsData.contracts)) {
-        // Ensure all contracts from json have a class, default if missing
+        // Ensure all contracts from json have a class and network, default if missing
+        const currentNetwork = process.env.REACT_APP_NETWORK || 'base_sepolia';
         jsonContracts = contractsData.contracts.map(c => ({
           ...c,
-          class: (c.class !== undefined && c.class >= 0 && c.class <= 99999) ? c.class : 128
+          class: (c.class !== undefined && c.class >= 0 && c.class <= 99999) ? c.class : 128,
+          network: c.network && isValidNetwork(c.network) ? c.network : currentNetwork
         }));
         
         // Check if json contracts differ from env contracts
@@ -177,15 +206,26 @@ async function loadContracts() {
     }
     
     if (shouldUpdateJson) {
-      // Update contracts.json with .env contracts
+      // Merge .env contracts with contracts.json, preserving network from json
+      const jsonNetworkMap = new Map(jsonContracts.map(c => [c.address.toLowerCase(), c.network]));
+
+      const mergedContracts = envContracts.map(envContract => {
+        // If this contract exists in json, preserve its network setting
+        const existingNetwork = jsonNetworkMap.get(envContract.address.toLowerCase());
+        return {
+          ...envContract,
+          network: existingNetwork || envContract.network
+        };
+      });
+
       const dataToSave = {
-        contracts: envContracts, // envContracts already includes class with defaults
+        contracts: mergedContracts,
         lastUpdated: new Date().toISOString()
       };
-      
+
       await fs.writeFile(CONTRACTS_FILE_PATH, JSON.stringify(dataToSave, null, 2));
-      console.log('Updated contracts.json with .env contracts');
-      return envContracts;
+      console.log('Updated contracts.json with .env contracts (preserved network settings)');
+      return mergedContracts;
     }
     
     return jsonContracts;
@@ -213,12 +253,13 @@ async function saveContracts(contracts) {
     await ensureDataDir();
     
     // Validate each contract
+    const defaultNetwork = process.env.REACT_APP_NETWORK || 'base_sepolia';
     const validatedContracts = contracts.filter(contract => {
       if (!contract.address || !isValidEthereumAddress(contract.address)) {
         console.warn(`Invalid Ethereum address: ${contract?.address}, skipping`);
         return false;
       }
-      
+
       if (!contract.name || typeof contract.name !== 'string') {
         console.warn(`Invalid contract name for address ${contract.address}, using default name`);
         contract.name = `Contract ${contract.address.slice(0, 6)}`;
@@ -228,7 +269,12 @@ async function saveContracts(contracts) {
         console.warn(`Invalid or missing class for address ${contract.address}, defaulting to 128`);
         contract.class = 128;
       }
-      
+
+      if (!contract.network || !isValidNetwork(contract.network)) {
+        console.warn(`Invalid or missing network for address ${contract.address}, defaulting to ${defaultNetwork}`);
+        contract.network = defaultNetwork;
+      }
+
       return true;
     });
     
@@ -345,5 +391,6 @@ module.exports = {
   loadContracts,
   saveContracts,
   isValidEthereumAddress,
+  isValidNetwork,
   syncOnShutdown
 }; 

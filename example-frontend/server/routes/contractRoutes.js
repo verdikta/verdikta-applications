@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { loadContracts, saveContracts, isValidEthereumAddress } = require('../utils/contractsManager');
+const { loadContracts, saveContracts, isValidEthereumAddress, isValidNetwork } = require('../utils/contractsManager');
 
 /**
  * GET /api/contracts
@@ -40,6 +40,7 @@ router.put('/', async (req, res) => {
     }
     
     // Validate each contract
+    const defaultNetwork = process.env.REACT_APP_NETWORK || 'base_sepolia';
     for (const contract of contracts) {
       if (!contract.address || !contract.name) {
         return res.status(400).json({
@@ -47,7 +48,7 @@ router.put('/', async (req, res) => {
           error: 'Each contract must have an address and name'
         });
       }
-      
+
       if (!isValidEthereumAddress(contract.address)) {
         return res.status(400).json({
           success: false,
@@ -68,6 +69,19 @@ router.put('/', async (req, res) => {
       } else {
         // Default class if not provided during an update (though ideally it should always be present)
         contract.class = 128;
+      }
+
+      // Validate network
+      if (contract.network !== undefined) {
+        if (!isValidNetwork(contract.network)) {
+          return res.status(400).json({
+            success: false,
+            error: `Invalid network value for ${contract.address}. Must be either 'base' or 'base_sepolia'.`
+          });
+        }
+      } else {
+        // Default network if not provided
+        contract.network = defaultNetwork;
       }
     }
     
@@ -94,15 +108,15 @@ router.put('/', async (req, res) => {
  */
 router.post('/', async (req, res) => {
   try {
-    const { address, name, class: contractClassInput } = req.body;
-    
+    const { address, name, class: contractClassInput, network: networkInput } = req.body;
+
     if (!address || !name) {
       return res.status(400).json({
         success: false,
         error: 'Contract address and name are required'
       });
     }
-    
+
     if (!isValidEthereumAddress(address)) {
       return res.status(400).json({
         success: false,
@@ -121,9 +135,22 @@ router.post('/', async (req, res) => {
       }
       contractClass = parsedClass;
     }
-    
+
+    // Default network to current REACT_APP_NETWORK or base_sepolia
+    const defaultNetwork = process.env.REACT_APP_NETWORK || 'base_sepolia';
+    let network = defaultNetwork;
+    if (networkInput !== undefined) {
+      if (!isValidNetwork(networkInput)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid network value. Must be either 'base' or 'base_sepolia'."
+        });
+      }
+      network = networkInput;
+    }
+
     const contracts = await loadContracts();
-    
+
     // Check for duplicate address
     if (contracts.some(c => c.address.toLowerCase() === address.toLowerCase())) {
       return res.status(400).json({
@@ -131,16 +158,16 @@ router.post('/', async (req, res) => {
         error: 'Contract with this address already exists'
       });
     }
-    
+
     // Add the new contract
-    contracts.push({ address, name, class: contractClass });
-    
+    contracts.push({ address, name, class: contractClass, network });
+
     await saveContracts(contracts);
-    
+
     res.status(201).json({
       success: true,
       message: 'Contract added successfully',
-      contract: { address, name, class: contractClass }
+      contract: { address, name, class: contractClass, network }
     });
   } catch (error) {
     console.error('Error adding contract:', error);

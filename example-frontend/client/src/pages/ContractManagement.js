@@ -9,9 +9,11 @@ const ContractManagement = ({ onContractsUpdated }) => {
   const [contracts, setContracts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [newContract, setNewContract] = useState({ address: '', name: '' });
+  // Get current network from env, default to base_sepolia
+  const currentNetwork = (process.env.REACT_APP_NETWORK || 'base_sepolia').toLowerCase();
+  const [newContract, setNewContract] = useState({ address: '', name: '', network: currentNetwork });
   const [isEditing, setIsEditing] = useState(null);
-  const [editForm, setEditForm] = useState({ address: '', name: '' });
+  const [editForm, setEditForm] = useState({ address: '', name: '', network: currentNetwork });
 
   // Fetch contracts on component mount
   useEffect(() => {
@@ -25,15 +27,15 @@ const ContractManagement = ({ onContractsUpdated }) => {
       const data = await response.json();
       
       if (data.success) {
-        // Remove class coupling - contracts now only store address and name
-        const contractsWithoutClass = data.contracts.map(c => ({
-          address: c.address,
-          name: c.name
+        // Preserve all fields from server, ensure network has a default
+        const contractsWithDefaults = data.contracts.map(c => ({
+          ...c,
+          network: c.network || currentNetwork
         }));
-        setContracts(contractsWithoutClass);
+        setContracts(contractsWithDefaults);
         // Always notify parent component about contract updates
         if (onContractsUpdated) {
-          onContractsUpdated(contractsWithoutClass);
+          onContractsUpdated(contractsWithDefaults);
         }
       } else {
         setError(data.error || 'Failed to fetch contracts');
@@ -50,12 +52,12 @@ const ContractManagement = ({ onContractsUpdated }) => {
 
   const handleAddContract = async (e) => {
     e.preventDefault();
-    
+
     if (!newContract.address.trim() || !newContract.name.trim()) {
       toast.error('Address and name are required');
       return;
     }
-    
+
     try {
       const response = await fetch(`${SERVER_URL}/api/contracts`, {
         method: 'POST',
@@ -64,12 +66,12 @@ const ContractManagement = ({ onContractsUpdated }) => {
         },
         body: JSON.stringify(newContract),
       });
-      
+
       const data = await response.json();
-      
+
       if (data.success) {
         toast.success('Contract added successfully');
-        setNewContract({ address: '', name: '' });
+        setNewContract({ address: '', name: '', network: currentNetwork });
         await fetchContracts();
       } else {
         toast.error(data.error || 'Failed to add contract');
@@ -106,7 +108,7 @@ const ContractManagement = ({ onContractsUpdated }) => {
 
   const startEdit = (contract) => {
     setIsEditing(contract.address);
-    setEditForm({ address: contract.address, name: contract.name });
+    setEditForm({ address: contract.address, name: contract.name, network: contract.network || currentNetwork });
   };
 
   const cancelEdit = () => {
@@ -132,10 +134,11 @@ const ContractManagement = ({ onContractsUpdated }) => {
       const index = updatedContracts.findIndex(c => c.address === isEditing);
       
       if (index !== -1) {
-        // Update name only, address remains the same
-        updatedContracts[index] = { 
-          address: updatedContracts[index].address,
-          name: editForm.name
+        // Update name and network, preserve other fields like class
+        updatedContracts[index] = {
+          ...updatedContracts[index],
+          name: editForm.name,
+          network: editForm.network
         };
         
         const response = await fetch(`${SERVER_URL}/api/contracts`, {
@@ -191,6 +194,18 @@ const ContractManagement = ({ onContractsUpdated }) => {
               className="input-field"
             />
           </div>
+          <div className="form-group">
+            <label htmlFor="network">Network:</label>
+            <select
+              id="network"
+              value={newContract.network}
+              onChange={(e) => setNewContract({ ...newContract, network: e.target.value })}
+              className="input-field"
+            >
+              <option value="base">Base Mainnet</option>
+              <option value="base_sepolia">Base Sepolia Testnet</option>
+            </select>
+          </div>
           <button type="submit" className="button add-button">Add Contract</button>
         </form>
       </div>
@@ -228,6 +243,18 @@ const ContractManagement = ({ onContractsUpdated }) => {
                         className="input-field"
                       />
                     </div>
+                    <div className="form-group">
+                      <label>Network:</label>
+                      <select
+                        name="network"
+                        value={editForm.network}
+                        onChange={handleEditChange}
+                        className="input-field"
+                      >
+                        <option value="base">Base Mainnet</option>
+                        <option value="base_sepolia">Base Sepolia Testnet</option>
+                      </select>
+                    </div>
                     <div className="button-group">
                       <button type="submit" className="button save-button">Save</button>
                       <button type="button" onClick={cancelEdit} className="button secondary">Cancel</button>
@@ -236,7 +263,21 @@ const ContractManagement = ({ onContractsUpdated }) => {
                 ) : (
                   <>
                     <div className="contract-info">
-                      <strong className="contract-name">{contract.name}</strong>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <strong className="contract-name">{contract.name}</strong>
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            backgroundColor: contract.network === 'base' ? '#0052FF' : '#FF6B35',
+                            color: 'white',
+                            fontWeight: '500'
+                          }}
+                        >
+                          {contract.network === 'base' ? 'Base' : 'Base Sepolia'}
+                        </span>
+                      </div>
                       <code className="contract-address">{contract.address}</code>
                     </div>
                     <div className="contract-actions">

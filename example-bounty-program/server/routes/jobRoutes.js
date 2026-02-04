@@ -10,6 +10,7 @@ const multer = require('multer');
 const path = require('path');
 const os = require('os');
 const fs = require('fs').promises;
+const AdmZip = require('adm-zip');
 const logger = require('../utils/logger');
 const jobStorage = require('../utils/jobStorage');
 const { config } = require('../config');
@@ -1464,6 +1465,239 @@ router.get('/:jobId/submissions/:submissionId/evaluation', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Not found', details: error.message });
     }
     return res.status(500).json({ success: false, error: 'Failed to get evaluation', details: error.message });
+  }
+});
+
+
+/* =======================
+   GET SUBMISSION CONTENT (Agent-friendly endpoint)
+   ======================= */
+
+/**
+ * GET /api/jobs/:jobId/submissions/:submissionId/content
+ * Returns the submission content (manifest, narrative, file list).
+ * Fetches the hunter submission archive from IPFS and extracts metadata.
+ *
+ * Query params:
+ * - includeFileContent=true: Include base64-encoded file content (for small text files only)
+ * - file=<filename>: Return only a specific file's content
+ *
+ * Response includes:
+ * - manifest: The submission manifest with file metadata
+ * - narrative: The submission narrative (from primary_query.json)
+ * - files: List of files with names, sizes, types
+ * - meta: Submission and job context
+ */
+router.get('/:jobId/submissions/:submissionId/content', async (req, res) => {
+  const { jobId, submissionId } = req.params;
+  const { includeFileContent, file: requestedFile } = req.query;
+
+  try {
+    logger.info('[content] get', { jobId, submissionId, includeFileContent, requestedFile });
+
+    const job = await jobStorage.getJob(jobId);
+    const subId = parseInt(submissionId, 10);
+    const submission = job.submissions?.find(s => s.submissionId === subId);
+
+    if (!submission) {
+      return res.status(404).json({
+        success: false,
+        error: 'Submission not found',
+        details: `No submission with ID ${submissionId} found for job ${jobId}`
+      });
+    }
+
+    const hunterCid = submission.hunterCid;
+    if (!hunterCid) {
+      return res.status(404).json({
+        success: false,
+        error: 'No submission content available',
+        details: 'This submission does not have a hunterCid (no uploaded content)'
+      });
+    }
+
+    // Fetch the submission archive from IPFS
+    const ipfsClient = req.app.locals.ipfsClient;
+    if (!ipfsClient) {
+      return res.status(500).json({
+        success: false,
+        error: 'IPFS client not available',
+        hunterCid,
+        hint: 'You can fetch directly from IPFS gateway'
+      });
+    }
+
+    let archiveBuffer;
+    try {
+      // fetchFromIPFS returns string, but we need buffer for ZIP
+      // Try to get raw buffer if available, otherwise use gateway URL
+      const gatewayUrl = `${process.env.PINATA_GATEWAY || 'https://gateway.pinata.cloud'}/ipfs/${hunterCid}`;
+      const response = await withTimeout(
+        fetch(gatewayUrl),
+        PIN_TIMEOUT_MS * 2, // Give more time for archive download
+        'IPFS archive fetch'
+      );
+
+      if (!response.ok) {
+        throw new Error(`Gateway returned ${response.status}`);
+      }
+
+      archiveBuffer = Buffer.from(await response.arrayBuffer());
+      logger.info('[content] Archive fetched', { jobId, submissionId, size: archiveBuffer.length });
+    } catch (ipfsErr) {
+      logger.error('[content] Failed to fetch archive', { hunterCid, msg: ipfsErr.message });
+      return res.status(502).json({
+        success: false,
+        error: 'Failed to fetch submission archive from IPFS',
+        details: ipfsErr.message,
+        hunterCid,
+        hint: 'You can try fetching directly from IPFS gateway'
+      });
+    }
+
+    // Extract archive contents
+    let zip;
+    try {
+      zip = new AdmZip(archiveBuffer);
+    } catch (zipErr) {
+      logger.error('[content] Failed to parse archive', { hunterCid, msg: zipErr.message });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to parse submission archive',
+        details: 'The archive may be corrupted or not a valid ZIP file',
+        hunterCid
+      });
+    }
+
+    const zipEntries = zip.getEntries();
+
+    // Parse manifest.json
+    let manifest = null;
+    const manifestEntry = zipEntries.find(e => e.entryName === 'manifest.json');
+    if (manifestEntry) {
+      try {
+        manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
+      } catch (e) {
+        logger.warn('[content] Failed to parse manifest.json', { msg: e.message });
+      }
+    }
+
+    // Parse primary_query.json (contains narrative)
+    let narrative = null;
+    const queryEntry = zipEntries.find(e => e.entryName === 'primary_query.json');
+    if (queryEntry) {
+      try {
+        const queryData = JSON.parse(queryEntry.getData().toString('utf8'));
+        narrative = queryData.query || null;
+      } catch (e) {
+        logger.warn('[content] Failed to parse primary_query.json', { msg: e.message });
+      }
+    }
+
+    // List submission files
+    const submissionFiles = zipEntries
+      .filter(e => e.entryName.startsWith('submission/') && !e.isDirectory)
+      .map(e => {
+        const filename = e.entryName.replace('submission/', '');
+        const fileInfo = manifest?.additional?.find(a => a.filename === e.entryName || a.filename === `submission/${filename}`);
+
+        return {
+          filename,
+          path: e.entryName,
+          size: e.header.size,
+          compressedSize: e.header.compressedSize,
+          type: fileInfo?.type || 'application/octet-stream',
+          description: fileInfo?.description || null
+        };
+      });
+
+    // If a specific file was requested, return just that file
+    if (requestedFile) {
+      const fileEntry = zipEntries.find(e =>
+        e.entryName === `submission/${requestedFile}` ||
+        e.entryName === requestedFile
+      );
+
+      if (!fileEntry) {
+        return res.status(404).json({
+          success: false,
+          error: 'File not found in submission',
+          details: `No file named "${requestedFile}" found in the submission archive`,
+          availableFiles: submissionFiles.map(f => f.filename)
+        });
+      }
+
+      const fileData = fileEntry.getData();
+      const fileInfo = submissionFiles.find(f => f.filename === requestedFile || f.path === fileEntry.entryName);
+
+      // For text files, return as string; for binary, return base64
+      const isTextFile = /\.(txt|md|json|js|ts|py|sol|html|css|xml|yaml|yml|csv|log)$/i.test(requestedFile);
+
+      return res.json({
+        success: true,
+        file: {
+          ...fileInfo,
+          content: isTextFile ? fileData.toString('utf8') : fileData.toString('base64'),
+          encoding: isTextFile ? 'utf8' : 'base64'
+        },
+        meta: {
+          jobId: job.jobId,
+          submissionId: subId,
+          hunterCid
+        }
+      });
+    }
+
+    // Build response with optional file content
+    const filesWithContent = includeFileContent === 'true'
+      ? submissionFiles.map(f => {
+          const entry = zipEntries.find(e => e.entryName === f.path);
+          if (!entry) return f;
+
+          // Only include content for small text files (< 100KB)
+          const isSmallTextFile = f.size < 100000 &&
+            /\.(txt|md|json|js|ts|py|sol|html|css|xml|yaml|yml|csv)$/i.test(f.filename);
+
+          if (isSmallTextFile) {
+            return {
+              ...f,
+              content: entry.getData().toString('utf8'),
+              encoding: 'utf8'
+            };
+          }
+
+          return {
+            ...f,
+            content: null,
+            contentNote: f.size >= 100000 ? 'File too large' : 'Binary file - use ?file=<filename> to fetch'
+          };
+        })
+      : submissionFiles;
+
+    return res.json({
+      success: true,
+      manifest,
+      narrative,
+      files: filesWithContent,
+      fileCount: submissionFiles.length,
+      totalSize: submissionFiles.reduce((sum, f) => sum + f.size, 0),
+      meta: {
+        jobId: job.jobId,
+        jobTitle: job.title,
+        submissionId: subId,
+        hunter: submission.hunter,
+        hunterCid,
+        submittedAt: submission.submittedAt,
+        status: submission.status
+      }
+    });
+
+  } catch (error) {
+    logger.error('[content] error', { jobId, submissionId, msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ success: false, error: 'Not found', details: error.message });
+    }
+    return res.status(500).json({ success: false, error: 'Failed to get submission content', details: error.message });
   }
 });
 

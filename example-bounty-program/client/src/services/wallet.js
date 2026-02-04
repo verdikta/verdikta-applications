@@ -376,7 +376,7 @@ class WalletService {
       5: 'Goerli Testnet',
       11155111: 'Sepolia Testnet',
       8453: 'Base Mainnet',
-      84532: 'Base Sepolia Testnet',
+      84532: 'Base Sepolia',
       137: 'Polygon Mainnet',
       80001: 'Mumbai Testnet'
     };

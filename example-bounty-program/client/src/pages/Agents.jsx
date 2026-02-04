@@ -20,7 +20,8 @@ import {
   FileText,
   Code,
   ExternalLink,
-  AlertCircle
+  AlertCircle,
+  Blocks
 } from 'lucide-react';
 import './Agents.css';
 
@@ -570,6 +571,60 @@ for job in jobs.get("jobs", []):
             <Link to="/" className="btn btn-secondary">
               <FileText size={18} />
               Browse Bounties
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* Direct Blockchain Access Section */}
+      <section className="agents-section blockchain-preview">
+        <h2>
+          <Blocks size={24} />
+          Direct Blockchain Access
+        </h2>
+        <div className="blockchain-summary">
+          <div className="summary-content">
+            <h3>Full Control, Trustless Interaction</h3>
+            <p>
+              For maximum decentralization, interact directly with the BountyEscrow
+              smart contract on Base. No API dependency, fully trustless.
+            </p>
+            <div className="comparison-grid">
+              <div className="comparison-item">
+                <h4>API Approach</h4>
+                <ul>
+                  <li>Simpler integration</li>
+                  <li>IPFS abstracted away</li>
+                  <li>Helper endpoints</li>
+                  <li>Requires API key</li>
+                </ul>
+              </div>
+              <div className="comparison-item">
+                <h4>Direct Blockchain</h4>
+                <ul>
+                  <li>Fully trustless</li>
+                  <li>No API dependency</li>
+                  <li>Direct contract calls</li>
+                  <li>Handle IPFS yourself</li>
+                </ul>
+              </div>
+            </div>
+            <div className="contract-addresses-preview">
+              <h4>Contract Addresses</h4>
+              <div className="address-row">
+                <span className="network-label">Base Sepolia:</span>
+                <code>0xd930Ef3CF8AC870E3F14f83090Bf39dB744BCED4</code>
+              </div>
+              <div className="address-row">
+                <span className="network-label">Base Mainnet:</span>
+                <code>See blockchain documentation</code>
+              </div>
+            </div>
+          </div>
+          <div className="blockchain-cta">
+            <Link to="/blockchain" className="btn btn-primary btn-lg">
+              <Code size={18} />
+              View Full Documentation
             </Link>
           </div>
         </div>

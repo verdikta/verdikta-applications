@@ -720,3 +720,124 @@
     justify-content: center;
   }
 }
+
+/* Direct Blockchain Access Section */
+.blockchain-preview {
+  background: var(--bg);
+  border-radius: 0.75rem;
+  padding: 2rem;
+  margin-bottom: 2rem;
+}
+
+.blockchain-summary {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2rem;
+  align-items: start;
+}
+
+.summary-content h3 {
+  font-size: var(--font-size-xl);
+  margin-bottom: 1rem;
+  color: var(--text);
+}
+
+.summary-content > p {
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 1.5rem;
+}
+
+.comparison-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.comparison-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+.comparison-item h4 {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  margin-bottom: 0.75rem;
+  color: var(--text);
+}
+
+.comparison-item ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.comparison-item li {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  padding: 0.25rem 0;
+}
+
+.contract-addresses-preview h4 {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  margin-bottom: 0.75rem;
+  color: var(--text);
+}
+
+.address-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.network-label {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  min-width: 100px;
+}
+
+.address-row code {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  background: var(--gray-100);
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  word-break: break-all;
+}
+
+.blockchain-cta {
+  display: flex;
+  align-items: center;
+}
+
+.blockchain-cta .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .blockchain-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .comparison-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .blockchain-cta {
+    justify-content: center;
+  }
+
+  .blockchain-cta .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}

@@ -1,0 +1,760 @@
+/* Blockchain Page Styles */
+
+.blockchain-page {
+  animation: fade-in 0.4s ease-out;
+}
+
+/* Hero Section */
+.blockchain-hero {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  color: white;
+  padding: 4rem 2rem;
+  margin: -2rem -2rem 2rem -2rem;
+  text-align: center;
+}
+
+.blockchain-hero .hero-content {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.blockchain-hero .hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: rgba(255, 255, 255, 0.15);
+  padding: 0.5rem 1rem;
+  border-radius: 2rem;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  margin-bottom: 1.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.blockchain-hero h1 {
+  font-size: 3rem;
+  font-weight: var(--font-weight-bold);
+  margin-bottom: 1rem;
+  line-height: 1.1;
+}
+
+.blockchain-hero .hero-subtitle {
+  font-size: var(--font-size-lg);
+  opacity: 0.9;
+  max-width: 600px;
+  margin: 0 auto 2rem;
+  line-height: 1.6;
+}
+
+.blockchain-hero .hero-stats {
+  display: flex;
+  justify-content: center;
+  gap: 3rem;
+  margin-bottom: 2rem;
+  flex-wrap: wrap;
+}
+
+.blockchain-hero .stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.blockchain-hero .stat-value {
+  font-size: 1.75rem;
+  font-weight: var(--font-weight-bold);
+  font-family: var(--font-mono);
+}
+
+.blockchain-hero .stat-label {
+  font-size: var(--font-size-sm);
+  color: white;
+}
+
+.blockchain-hero .hero-actions {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.blockchain-hero .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Sections */
+.blockchain-section {
+  padding: 3rem 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.blockchain-section:last-of-type {
+  border-bottom: none;
+}
+
+.blockchain-section h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 1.75rem;
+  font-weight: var(--font-weight-bold);
+  margin-bottom: 1.5rem;
+}
+
+.section-intro {
+  color: var(--text-secondary);
+  font-size: var(--font-size-lg);
+  margin-bottom: 2rem;
+  max-width: 700px;
+}
+
+/* Features Grid */
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1.5rem;
+}
+
+.feature-card {
+  background: var(--surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.feature-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.feature-icon {
+  width: 48px;
+  height: 48px;
+  background: var(--primary-light);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary);
+  margin-bottom: 1rem;
+}
+
+.feature-card h3 {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  margin-bottom: 0.5rem;
+}
+
+.feature-card p {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+}
+
+/* Contracts Table */
+.contracts-table-wrapper {
+  overflow-x: auto;
+  margin-bottom: 2rem;
+}
+
+.contracts-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+
+.contracts-table th,
+.contracts-table td {
+  padding: 1rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.contracts-table th {
+  background: var(--surface);
+  font-weight: var(--font-weight-semibold);
+  white-space: nowrap;
+}
+
+.contracts-table td strong {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.contract-desc {
+  display: block;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
+
+.address-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.address-cell code {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  background: var(--surface);
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-sm);
+  word-break: break-all;
+}
+
+.btn-icon-small {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0.25rem;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s, background 0.2s;
+  flex-shrink: 0;
+}
+
+.btn-icon-small:hover {
+  color: var(--primary);
+  background: var(--primary-light);
+}
+
+/* Network Info Cards */
+.network-info {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+}
+
+.network-card {
+  background: var(--surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+}
+
+.network-card h4 {
+  font-weight: var(--font-weight-semibold);
+  margin-bottom: 1rem;
+  color: var(--text-primary);
+}
+
+.network-card ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.network-card li {
+  padding: 0.5rem 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.network-card li:last-child {
+  border-bottom: none;
+}
+
+.network-card li strong {
+  color: var(--text-primary);
+}
+
+.network-card a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.network-card a:hover {
+  text-decoration: underline;
+}
+
+/* Code Blocks */
+.code-block {
+  background: #1e1e1e;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: #2d2d2d;
+  border-bottom: 1px solid #3d3d3d;
+  color: #e0e0e0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.code-block pre {
+  margin: 0;
+  padding: 1rem;
+  overflow-x: auto;
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.code-block code {
+  font-family: var(--font-mono);
+  color: #d4d4d4;
+}
+
+.btn-icon {
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: #e0e0e0;
+  cursor: pointer;
+  padding: 0.5rem;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+
+.btn-icon:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Workflow Steps */
+.workflow-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.workflow-step {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+
+.step-number {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  background: var(--primary);
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: var(--font-weight-bold);
+  font-size: var(--font-size-lg);
+}
+
+.step-content {
+  flex: 1;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.workflow-step:last-child .step-content {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.step-content h3 {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  margin-bottom: 0.5rem;
+  color: var(--primary);
+}
+
+.step-content p {
+  color: var(--text-secondary);
+  margin-bottom: 0.75rem;
+  line-height: 1.6;
+}
+
+.step-detail {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  background: var(--surface);
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--primary);
+}
+
+.step-detail code {
+  font-family: var(--font-mono);
+  background: var(--primary-light);
+  padding: 0.1rem 0.3rem;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+}
+
+/* State Diagrams */
+.state-diagrams {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+  gap: 2rem;
+}
+
+.state-diagram {
+  background: var(--surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+}
+
+.state-diagram h3 {
+  font-weight: var(--font-weight-semibold);
+  margin-bottom: 1.5rem;
+  text-align: center;
+}
+
+.state-flow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.state-box {
+  padding: 0.75rem 1.5rem;
+  border-radius: var(--radius-md);
+  font-weight: var(--font-weight-semibold);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.state-open {
+  background: #e8f5e9;
+  color: #2e7d32;
+  border: 1px solid #a5d6a7;
+}
+
+.state-awarded {
+  background: #e3f2fd;
+  color: #1565c0;
+  border: 1px solid #90caf9;
+}
+
+.state-closed {
+  background: #fafafa;
+  color: #616161;
+  border: 1px solid #e0e0e0;
+}
+
+.state-arrows {
+  display: flex;
+  gap: 2rem;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.state-arrow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.state-outcomes {
+  display: flex;
+  gap: 1rem;
+}
+
+.state-legend {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+
+.state-legend li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-secondary);
+}
+
+.state-legend li:last-child {
+  border-bottom: none;
+}
+
+.state-legend strong {
+  color: var(--text-primary);
+}
+
+.submission-states {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.submission-state {
+  display: grid;
+  grid-template-columns: 32px 130px 1fr;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.75rem;
+  background: var(--background);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+
+.state-code {
+  width: 28px;
+  height: 28px;
+  background: var(--primary-light);
+  color: var(--primary);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: var(--font-weight-bold);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.state-name {
+  font-weight: var(--font-weight-semibold);
+  font-family: var(--font-mono);
+}
+
+.state-desc {
+  color: var(--text-secondary);
+}
+
+/* Info Cards */
+.info-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.info-card {
+  background: var(--surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+}
+
+.info-icon {
+  width: 40px;
+  height: 40px;
+  background: var(--primary-light);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary);
+  margin-bottom: 1rem;
+}
+
+.info-card h3 {
+  font-weight: var(--font-weight-semibold);
+  margin-bottom: 0.5rem;
+}
+
+.info-card p {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+}
+
+.info-card code {
+  font-family: var(--font-mono);
+  background: var(--primary-light);
+  padding: 0.1rem 0.3rem;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+}
+
+/* Callouts */
+.callout {
+  display: flex;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+}
+
+.callout-warning {
+  background: #fff8e1;
+  border: 1px solid #ffe082;
+  color: #5d4037;
+}
+
+.callout-warning a {
+  color: #bf360c;
+}
+
+.callout svg {
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+
+/* FAQ / Troubleshooting */
+.faq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.faq-item {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.faq-question {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  background: var(--surface);
+  border: none;
+  cursor: pointer;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  text-align: left;
+  color: var(--text-primary);
+  transition: background 0.2s;
+}
+
+.faq-question:hover {
+  background: var(--background);
+}
+
+.faq-answer {
+  padding: 0 1.25rem 1.25rem;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.7;
+}
+
+.faq-answer ol,
+.faq-answer ul {
+  margin: 0.75rem 0;
+  padding-left: 1.5rem;
+}
+
+.faq-answer li {
+  margin-bottom: 0.5rem;
+}
+
+.faq-answer code {
+  font-family: var(--font-mono);
+  background: var(--primary-light);
+  padding: 0.1rem 0.3rem;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+}
+
+.faq-answer pre {
+  margin: 0.75rem 0 0;
+  padding: 0.75rem;
+  background: #1e1e1e;
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+}
+
+.faq-answer pre code {
+  background: none;
+  padding: 0;
+  color: #d4d4d4;
+}
+
+/* Footer CTA */
+.blockchain-footer-cta {
+  text-align: center;
+  padding: 4rem 2rem;
+  margin: 2rem -2rem -2rem -2rem;
+  background: var(--surface);
+  border-top: 1px solid var(--border-color);
+}
+
+.blockchain-footer-cta h2 {
+  display: block;
+  font-size: 2rem;
+  margin-bottom: 1rem;
+}
+
+.blockchain-footer-cta p {
+  color: var(--text-secondary);
+  font-size: var(--font-size-lg);
+  max-width: 500px;
+  margin: 0 auto 2rem;
+}
+
+.footer-actions {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.footer-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .blockchain-hero {
+    padding: 3rem 1.5rem;
+  }
+
+  .blockchain-hero h1 {
+    font-size: 2rem;
+  }
+
+  .blockchain-hero .hero-stats {
+    gap: 1.5rem;
+  }
+
+  .blockchain-section {
+    padding: 2rem 0;
+  }
+
+  .contracts-table th,
+  .contracts-table td {
+    padding: 0.75rem;
+  }
+
+  .address-cell code {
+    font-size: 0.65rem;
+  }
+
+  .workflow-step {
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .state-diagrams {
+    grid-template-columns: 1fr;
+  }
+
+  .submission-state {
+    grid-template-columns: 28px 1fr;
+    grid-template-rows: auto auto;
+  }
+
+  .state-desc {
+    grid-column: 1 / -1;
+    padding-top: 0.25rem;
+  }
+
+  .blockchain-footer-cta {
+    padding: 3rem 1.5rem;
+  }
+}

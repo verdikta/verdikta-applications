@@ -620,6 +620,88 @@ router.get('/:jobId', async (req, res) => {
   }
 });
 
+/* =================
+   GET JOB RUBRIC (Agent-friendly endpoint)
+   ================= */
+
+/**
+ * GET /api/jobs/:jobId/rubric
+ * Returns the rubric content directly (not wrapped in job object).
+ * Designed for AI agents that need to understand evaluation criteria.
+ *
+ * Response includes:
+ * - rubric: The full rubric JSON with criteria, weights, etc.
+ * - meta: Job context (title, threshold, classId) for reference
+ */
+router.get('/:jobId/rubric', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    logger.info('[jobs/rubric] get', { jobId });
+
+    const job = await jobStorage.getJob(jobId);
+
+    if (!job.rubricCid) {
+      return res.status(404).json({
+        success: false,
+        error: 'No rubric available',
+        details: 'This job does not have a rubric CID'
+      });
+    }
+
+    const ipfsClient = req.app.locals.ipfsClient;
+    if (!ipfsClient) {
+      return res.status(500).json({
+        success: false,
+        error: 'IPFS client not available',
+        details: 'Server IPFS client is not initialized'
+      });
+    }
+
+    let rubricContent;
+    try {
+      const rawContent = await withTimeout(
+        ipfsClient.fetchFromIPFS(job.rubricCid),
+        PIN_TIMEOUT_MS,
+        'IPFS rubric fetch'
+      );
+      rubricContent = JSON.parse(rawContent);
+    } catch (ipfsErr) {
+      logger.error('[jobs/rubric] IPFS fetch failed', { jobId, cid: job.rubricCid, msg: ipfsErr.message });
+      return res.status(502).json({
+        success: false,
+        error: 'Failed to fetch rubric from IPFS',
+        details: ipfsErr.message,
+        rubricCid: job.rubricCid,
+        hint: 'You can try fetching directly from IPFS gateway'
+      });
+    }
+
+    // Return rubric with useful job context
+    return res.json({
+      success: true,
+      rubric: rubricContent,
+      meta: {
+        jobId: job.jobId,
+        title: job.title,
+        description: job.description,
+        workProductType: job.workProductType,
+        threshold: job.threshold,
+        classId: job.classId,
+        rubricCid: job.rubricCid,
+        submissionCloseTime: job.submissionCloseTime,
+        status: job.status
+      }
+    });
+
+  } catch (error) {
+    logger.error('[jobs/rubric] error', { msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ success: false, error: 'Job not found', details: error.message });
+    }
+    return res.status(500).json({ success: false, error: 'Failed to get rubric', details: error.message });
+  }
+});
+
 /* ==============
    SUBMIT WORK
    ============== */

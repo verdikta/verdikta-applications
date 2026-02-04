@@ -33,6 +33,7 @@ const { initializeArchivalService } = require('./utils/archivalService');
 const posterRoutes = require('./routes/posterRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
 const botRoutes = require('./routes/botRoutes');
+const receiptRoutes = require('./routes/receiptRoutes');
 const { initializeVerdiktaService } = require('./utils/verdiktaService');
 const clientIdentification = require('./middleware/clientIdentification');
 
@@ -166,6 +167,9 @@ app.use(require('./routes/resolveBounty'));
 app.use('/api/poster', posterRoutes);
 app.use('/api/analytics', analyticsRoutes); // Analytics dashboard endpoints
 app.use('/api/bots', botRoutes); // Bot registration and management
+
+// Public (non-API) routes for shareable receipts + OG images
+app.use(receiptRoutes);
 
 // ClassMap API endpoints (reused from example-frontend)
 app.get('/api/classes', (req, res) => {

@@ -89,6 +89,11 @@ const config = {
   // Testing
   devFakeRubricCid: process.env.DEV_FAKE_RUBRIC_CID === 'true',
 
+  // Receipts-as-memes
+  // Server-side salt used to generate stable pseudonymous agent IDs for receipts.
+  // REQUIRED in production if receipts are enabled.
+  receiptSalt: process.env.RECEIPT_SALT || '',
+
   // Archival settings
   archiveTtlDays: parseInt(process.env.ARCHIVE_TTL_DAYS) || 30,
   archiveAfterRetrievalDays: parseInt(process.env.ARCHIVE_AFTER_RETRIEVAL_DAYS) || 7,

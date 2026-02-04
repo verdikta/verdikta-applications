@@ -53,6 +53,7 @@ const CONFIG = {
   contractAddress: serverConfig.bountyEscrowAddress,
   privateKey: process.env.PRIVATE_KEY,
   network: serverConfig.network,
+  botApiKey: process.env.BOT_API_KEY,
 };
 
 // =============================================================================
@@ -251,11 +252,19 @@ async function finalizeSubmission(contract, bountyId, submissionId, dryRun) {
   }
 }
 
+function getBotHeaders() {
+  const headers = {};
+  if (CONFIG.botApiKey) {
+    headers['X-Bot-API-Key'] = CONFIG.botApiKey;
+  }
+  return headers;
+}
+
 async function syncBackend(jobId, submissionId) {
   try {
     const response = await fetch(
       `${CONFIG.apiUrl}/api/jobs/${jobId}/submissions/${submissionId}/refresh`,
-      { method: 'POST' }
+      { method: 'POST', headers: getBotHeaders() }
     );
     if (response.ok) {
       const data = await response.json();

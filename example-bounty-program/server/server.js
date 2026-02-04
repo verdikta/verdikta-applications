@@ -32,7 +32,9 @@ const { initializeSyncService } = require('./utils/syncService');
 const { initializeArchivalService } = require('./utils/archivalService');
 const posterRoutes = require('./routes/posterRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
+const botRoutes = require('./routes/botRoutes');
 const { initializeVerdiktaService } = require('./utils/verdiktaService');
+const clientIdentification = require('./middleware/clientIdentification');
 
 const app = express();
 
@@ -152,6 +154,9 @@ app.use((req, res, next) => {
   next();
 });
 
+// Client identification middleware (after logging, before routes)
+app.use(clientIdentification);
+
 // Routes
 app.use('/api/jobs', jobRoutes); // New job management routes (replaces bounty routes for MVP)
 app.use('/api/bounties', bountyRoutes);
@@ -160,6 +165,7 @@ app.use('/api', ipfsRoutes);
 app.use(require('./routes/resolveBounty'));
 app.use('/api/poster', posterRoutes);
 app.use('/api/analytics', analyticsRoutes); // Analytics dashboard endpoints
+app.use('/api/bots', botRoutes); // Bot registration and management
 
 // ClassMap API endpoints (reused from example-frontend)
 app.get('/api/classes', (req, res) => {

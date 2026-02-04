@@ -25,11 +25,28 @@ const api = axios.create({
     ? ''                                      // ← relative in dev: Vite proxy will catch /api/*
     : (config?.apiBaseUrl || config?.apiUrl || '/'),
   timeout: (config && config.apiTimeout) || 30000,
-  headers: { 'Content-Type': 'application/json' }
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Client-Key': import.meta.env.VITE_CLIENT_KEY || '',
+  }
 });
 
 // Optional: small runtime hint
-try { console.log('[API] baseURL =', api.defaults.baseURL); } catch {}
+try {
+  console.log('[API] baseURL =', api.defaults.baseURL);
+  console.log('[API] X-Client-Key =', import.meta.env.VITE_CLIENT_KEY ? 'SET (' + import.meta.env.VITE_CLIENT_KEY.substring(0, 8) + '...)' : 'NOT SET');
+} catch {}
+
+// Request interceptor to ensure X-Client-Key is always sent
+api.interceptors.request.use(request => {
+  const clientKey = import.meta.env.VITE_CLIENT_KEY;
+  if (clientKey) {
+    request.headers['X-Client-Key'] = clientKey;
+  }
+  console.log('[API] Request to:', request.url);
+  console.log('[API] X-Client-Key in request:', request.headers['X-Client-Key'] ? 'YES (' + request.headers['X-Client-Key'].substring(0,8) + '...)' : 'NO');
+  return request;
+});
 
 // Request interceptor for logging (debug mode)
 if (config && config.enableDebug) {

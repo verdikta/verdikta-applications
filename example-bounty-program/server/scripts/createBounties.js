@@ -59,6 +59,7 @@ const CONFIG = {
   privateKey: process.env.PRIVATE_KEY,
   chainId: serverConfig.chainId,
   network: serverConfig.network,
+  botApiKey: process.env.BOT_API_KEY,
 };
 
 const BOUNTY_ESCROW_ABI = [
@@ -314,9 +315,14 @@ async function createJobBackend(bountyData, creatorAddress, amount, hours) {
     iterations: 1,
   };
 
+  const headers = { 'Content-Type': 'application/json' };
+  if (CONFIG.botApiKey) {
+    headers['X-Bot-API-Key'] = CONFIG.botApiKey;
+  }
+
   const response = await fetch(`${CONFIG.apiUrl}/api/jobs/create`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(payload),
   });
 
@@ -329,9 +335,14 @@ async function createJobBackend(bountyData, creatorAddress, amount, hours) {
 }
 
 async function updateJobBountyId(jobId, bountyId, txHash, blockNumber) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (CONFIG.botApiKey) {
+    headers['X-Bot-API-Key'] = CONFIG.botApiKey;
+  }
+
   const response = await fetch(`${CONFIG.apiUrl}/api/jobs/${jobId}/bountyId`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ bountyId, txHash, blockNumber }),
   });
 

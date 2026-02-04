@@ -69,6 +69,7 @@ const CONFIG = {
   anthropicApiKey: process.env.ANTHROPIC_API_KEY,
   aiModel: process.env.AI_MODEL || 'claude-sonnet-4-20250514',
   ipfsGateway: serverConfig.ipfsGateway || 'https://ipfs.io',
+  botApiKey: process.env.BOT_API_KEY,
 };
 
 // =============================================================================
@@ -185,15 +186,27 @@ Examples:
 // API HELPERS
 // =============================================================================
 
+function getBotHeaders() {
+  const headers = {};
+  if (CONFIG.botApiKey) {
+    headers['X-Bot-API-Key'] = CONFIG.botApiKey;
+  }
+  return headers;
+}
+
 async function fetchOpenBounties() {
-  const response = await fetch(`${CONFIG.apiUrl}/api/jobs?status=OPEN`);
+  const response = await fetch(`${CONFIG.apiUrl}/api/jobs?status=OPEN`, {
+    headers: getBotHeaders(),
+  });
   if (!response.ok) throw new Error(`Failed to fetch bounties: ${response.status}`);
   const data = await response.json();
   return data.jobs || [];
 }
 
 async function fetchBountyDetails(jobId) {
-  const response = await fetch(`${CONFIG.apiUrl}/api/jobs/${jobId}?includeRubric=true`);
+  const response = await fetch(`${CONFIG.apiUrl}/api/jobs/${jobId}?includeRubric=true`, {
+    headers: getBotHeaders(),
+  });
   if (!response.ok) throw new Error(`Failed to fetch bounty ${jobId}: ${response.status}`);
   const data = await response.json();
   return data.job;
@@ -526,10 +539,11 @@ async function submitWork(jobId, content, hunter, dryRun) {
     form.append('files', fs.createReadStream(filepath), { filename });
     form.append('fileDescriptions', JSON.stringify({ [filename]: 'AI-generated content' }));
 
+    const headers = { ...form.getHeaders(), ...getBotHeaders() };
     const response = await axios.post(
       `${CONFIG.apiUrl}/api/jobs/${jobId}/submit`,
       form,
-      { headers: form.getHeaders() }
+      { headers }
     );
 
     return response.data;
@@ -988,7 +1002,7 @@ async function main() {
             for (let syncAttempt = 1; syncAttempt <= 8; syncAttempt++) {
               const refreshResponse = await fetch(
                 `${CONFIG.apiUrl}/api/jobs/${bounty.jobId}/submissions/${chainResult.submissionId}/refresh`,
-                { method: 'POST' }
+                { method: 'POST', headers: getBotHeaders() }
               );
               if (refreshResponse.ok) {
                 const refreshData = await refreshResponse.json();

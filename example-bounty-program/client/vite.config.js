@@ -22,6 +22,18 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
         // by default Vite preserves the /api prefix; no rewrite needed
+        // Forward custom headers for client identification
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq, req) => {
+            console.log('[Vite Proxy] Incoming headers:', Object.keys(req.headers).join(', '));
+            console.log('[Vite Proxy] x-client-key:', req.headers['x-client-key'] ? 'present' : 'MISSING');
+            // Ensure X-Client-Key header is forwarded
+            if (req.headers['x-client-key']) {
+              proxyReq.setHeader('x-client-key', req.headers['x-client-key']);
+              console.log('[Vite Proxy] Forwarded x-client-key');
+            }
+          });
+        },
       },
     },
   },

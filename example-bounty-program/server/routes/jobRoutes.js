@@ -703,7 +703,10 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
       fileCount: fileCount || 0,
       files: files || [],
       submittedAt: Math.floor(Date.now() / 1000),
-      status: 'Prepared'  // Will be updated to PendingVerdikta after startPreparedSubmission
+      status: 'Prepared',  // Will be updated to PendingVerdikta after startPreparedSubmission
+      // Track which client type submitted this work
+      clientType: req.clientType || 'unknown',
+      clientId: req.clientId || null,
     };
 
     job.submissions.push(submission);

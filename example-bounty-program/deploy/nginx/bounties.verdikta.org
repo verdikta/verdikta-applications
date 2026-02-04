@@ -2,18 +2,10 @@ server {
     listen 80;
     server_name bounties.verdikta.org;
 
-    # Mainnet client (Base)
-    location / {
-        proxy_pass http://localhost:5173;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
-    }
+    # Serve the built (production) Vite app directly from disk.
+    # Build output path produced by: client/buildClient.sh base
+    root /var/www/verdikta-bounties/base;
+    index index.html;
 
     # Mainnet API (Base)
     location /api/ {
@@ -23,5 +15,17 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # SPA routing: serve index.html for all non-file paths
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Cache static assets aggressively (hashed filenames)
+    location ~* \.(?:js|css|png|jpg|jpeg|gif|svg|ico|webp|woff2?)$ {
+        try_files $uri =404;
+        expires 30d;
+        add_header Cache-Control "public, max-age=2592000, immutable";
     }
 }

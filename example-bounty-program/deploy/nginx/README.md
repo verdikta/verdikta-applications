@@ -9,16 +9,16 @@ This directory contains Nginx configuration files for the bounty program applica
 
 ## Architecture
 
-Each domain routes to its own client and server instances:
+Each domain serves a **built production** client directly from disk (no Vite dev server), and proxies only the API to the backend.
 
 ```
 bounties.verdikta.org (Mainnet)
-├── Client: localhost:5173 (VITE_NETWORK=base)
-└── API:    localhost:5005 (NETWORK=base)
+├── Static client: /var/www/verdikta-bounties/base
+└── API:          localhost:5005 (NETWORK=base)
 
 bounties-testnet.verdikta.org (Testnet)
-├── Client: localhost:5174 (VITE_NETWORK=base-sepolia)
-└── API:    localhost:5006 (NETWORK=base-sepolia)
+├── Static client: /var/www/verdikta-bounties/base-sepolia
+└── API:          localhost:5006 (NETWORK=base-sepolia)
 ```
 
 ## Deployment
@@ -53,22 +53,43 @@ bounties-testnet.verdikta.org (Testnet)
 
    Certbot will automatically modify the configuration files to add HTTPS support and HTTP-to-HTTPS redirects.
 
-## Starting Services
+## Building + Deploying the Client (Production)
 
-Use the parameterized scripts to start/stop services:
+Build the static client(s):
 
 ```bash
-# Start both networks (default)
+cd example-bounty-program/client
+
+# Build both networks into example-bounty-program/deploy/www/<net>
+./buildClient.sh
+
+# Or build one
+./buildClient.sh base
+./buildClient.sh base-sepolia
+```
+
+Copy the built output to the server web root:
+
+```bash
+sudo mkdir -p /var/www/verdikta-bounties
+sudo rsync -av --delete ../deploy/www/base/ /var/www/verdikta-bounties/base/
+sudo rsync -av --delete ../deploy/www/base-sepolia/ /var/www/verdikta-bounties/base-sepolia/
+```
+
+## Starting Services
+
+Only the backend servers need to run persistently; Nginx serves the client statically.
+
+```bash
+# Start both backend networks (default)
 ./server/startServer.sh
-./client/startClient.sh
 
 # Start specific network
 ./server/startServer.sh base
-./client/startClient.sh base-sepolia
+./server/startServer.sh base-sepolia
 
 # Stop all
 ./server/stopServer.sh
-./client/stopClient.sh
 ```
 
 ## Notes

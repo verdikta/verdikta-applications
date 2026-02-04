@@ -1261,13 +1261,209 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       RPC_URL: RPC_URL ? 'set' : 'NOT SET',
       ESCROW_ADDR
     });
-    return res.status(500).json({ 
-      error: 'Failed to refresh submission', 
+    return res.status(500).json({
+      error: 'Failed to refresh submission',
       details: error.message,
       hint: error.message.includes('bad bountyId') ? 'Bounty ID may not exist on this contract' :
             error.message.includes('bad submissionId') ? 'Submission ID may not exist for this bounty' :
             'Check server logs for details'
     });
+  }
+});
+
+
+/* =======================
+   GET EVALUATION REPORT (Agent-friendly endpoint)
+   ======================= */
+
+/**
+ * GET /api/jobs/:jobId/submissions/:submissionId/evaluation
+ * Returns the AI evaluation report for a submission.
+ * Fetches justification content from IPFS so agents don't need direct IPFS access.
+ *
+ * Response includes:
+ * - scores: acceptance/rejection scores and pass/fail status
+ * - evaluation: The parsed AI evaluation report (criteria scores, feedback, etc.)
+ * - meta: Submission and job context
+ */
+router.get('/:jobId/submissions/:submissionId/evaluation', async (req, res) => {
+  const { jobId, submissionId } = req.params;
+
+  try {
+    logger.info('[evaluation] get', { jobId, submissionId });
+
+    const job = await jobStorage.getJob(jobId);
+    const subId = parseInt(submissionId, 10);
+    const submission = job.submissions?.find(s => s.submissionId === subId);
+
+    if (!submission) {
+      return res.status(404).json({
+        success: false,
+        error: 'Submission not found',
+        details: `No submission with ID ${submissionId} found for job ${jobId}`
+      });
+    }
+
+    // Check if evaluation is complete
+    const hasEvaluation = submission.status === 'APPROVED' ||
+                          submission.status === 'REJECTED' ||
+                          submission.status === 'PassedPaid' ||
+                          submission.status === 'PassedUnpaid' ||
+                          submission.status === 'Failed';
+
+    if (!hasEvaluation) {
+      return res.status(400).json({
+        success: false,
+        error: 'Evaluation not complete',
+        details: `Submission status is "${submission.status}". Evaluation results are only available after evaluation completes.`,
+        status: submission.status,
+        hint: 'Use POST /api/jobs/:jobId/submissions/:submissionId/refresh to check for updates'
+      });
+    }
+
+    // Build scores response
+    const scores = {
+      acceptance: submission.acceptance ?? submission.score ?? null,
+      rejection: submission.rejection ?? null,
+      threshold: job.threshold,
+      passed: (submission.acceptance ?? submission.score ?? 0) >= job.threshold,
+      status: submission.status,
+      failureReason: submission.failureReason || null
+    };
+
+    // Check if we have justification CIDs to fetch
+    const justificationCids = submission.justificationCids;
+    const evaluationCid = submission.evaluationCid;
+
+    if (!justificationCids && !evaluationCid) {
+      // No detailed evaluation available (e.g., oracle timeout)
+      return res.json({
+        success: true,
+        scores,
+        evaluation: null,
+        evaluationAvailable: false,
+        message: scores.failureReason === 'ORACLE_TIMEOUT'
+          ? 'No evaluation report available - oracle timeout occurred'
+          : 'No detailed evaluation report available',
+        meta: {
+          jobId: job.jobId,
+          submissionId: subId,
+          hunter: submission.hunter,
+          submittedAt: submission.submittedAt,
+          finalizedAt: submission.finalizedAt
+        }
+      });
+    }
+
+    // Fetch evaluation content from IPFS
+    const ipfsClient = req.app.locals.ipfsClient;
+    if (!ipfsClient) {
+      return res.status(500).json({
+        success: false,
+        error: 'IPFS client not available',
+        scores, // Still return scores even if IPFS fails
+        justificationCids,
+        evaluationCid,
+        hint: 'Scores are available but detailed report requires IPFS'
+      });
+    }
+
+    let evaluationContent = null;
+    let fetchedFrom = null;
+
+    // Try justificationCids first (contains the detailed AI feedback)
+    if (justificationCids) {
+      // justificationCids might be a single CID or comma-separated list
+      const cids = justificationCids.split(',').map(c => c.trim()).filter(Boolean);
+
+      for (const cid of cids) {
+        try {
+          const rawContent = await withTimeout(
+            ipfsClient.fetchFromIPFS(cid),
+            PIN_TIMEOUT_MS,
+            'IPFS evaluation fetch'
+          );
+
+          // Try to parse as JSON
+          try {
+            const parsed = JSON.parse(rawContent);
+            if (!evaluationContent) {
+              evaluationContent = parsed;
+              fetchedFrom = cid;
+            } else if (Array.isArray(evaluationContent)) {
+              evaluationContent.push(parsed);
+            } else {
+              evaluationContent = [evaluationContent, parsed];
+            }
+          } catch {
+            // Not JSON, store as raw text
+            if (!evaluationContent) {
+              evaluationContent = { raw: rawContent, cid };
+              fetchedFrom = cid;
+            }
+          }
+        } catch (ipfsErr) {
+          logger.warn('[evaluation] Failed to fetch justification CID', { cid, msg: ipfsErr.message });
+        }
+      }
+    }
+
+    // Fallback to evaluationCid if no justification content
+    if (!evaluationContent && evaluationCid) {
+      try {
+        const rawContent = await withTimeout(
+          ipfsClient.fetchFromIPFS(evaluationCid),
+          PIN_TIMEOUT_MS,
+          'IPFS evaluation fetch'
+        );
+        try {
+          evaluationContent = JSON.parse(rawContent);
+          fetchedFrom = evaluationCid;
+        } catch {
+          evaluationContent = { raw: rawContent, cid: evaluationCid };
+          fetchedFrom = evaluationCid;
+        }
+      } catch (ipfsErr) {
+        logger.warn('[evaluation] Failed to fetch evaluation CID', { cid: evaluationCid, msg: ipfsErr.message });
+      }
+    }
+
+    if (!evaluationContent) {
+      return res.status(502).json({
+        success: false,
+        error: 'Failed to fetch evaluation from IPFS',
+        scores, // Still return scores
+        justificationCids,
+        evaluationCid,
+        hint: 'You can try fetching directly from IPFS gateway using the CIDs above'
+      });
+    }
+
+    return res.json({
+      success: true,
+      scores,
+      evaluation: evaluationContent,
+      evaluationAvailable: true,
+      fetchedFrom,
+      meta: {
+        jobId: job.jobId,
+        jobTitle: job.title,
+        submissionId: subId,
+        hunter: submission.hunter,
+        hunterCid: submission.hunterCid,
+        submittedAt: submission.submittedAt,
+        finalizedAt: submission.finalizedAt,
+        justificationCids,
+        evaluationCid
+      }
+    });
+
+  } catch (error) {
+    logger.error('[evaluation] error', { jobId, submissionId, msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ success: false, error: 'Not found', details: error.message });
+    }
+    return res.status(500).json({ success: false, error: 'Failed to get evaluation', details: error.message });
   }
 });
 

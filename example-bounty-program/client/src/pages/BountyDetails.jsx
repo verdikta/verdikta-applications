@@ -2229,6 +2229,9 @@ function SubmissionCard({
   const isPrepared = submission.status === 'Prepared' || submission.status === 'PREPARED';
   const isApproved = submission.status === 'APPROVED' || submission.status === 'ACCEPTED' || submission.status === 'PassedPaid';
   const isRejected = submission.status === 'REJECTED' || submission.status === 'Failed';
+
+  // Receipts-as-memes: only show for paid winners
+  const isPaidWinner = submission.paidWinner === true;
   const ageMinutes = isPending && submission.submittedAt ? getSubmissionAge(submission.submittedAt) : 0;
   // Only allow timeout for submissions that are actually on-chain (not Prepared)
   const canTimeout = isOnChain && ageMinutes > timeoutMinutes;
@@ -2308,6 +2311,53 @@ function SubmissionCard({
 
       <div className="submission-meta">
         <span>Submitted: {submission.submittedAt ? new Date(submission.submittedAt * 1000).toLocaleString() : 'Just now'}</span>
+
+        {isPaidWinner && (
+          <div style={{ marginTop: '0.6rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <button
+              className="btn btn-success btn-sm"
+              style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', fontWeight: 'bold' }}
+              onClick={() => {
+                const url = `${window.location.origin}/r/${jobId}/${submission.submissionId}`;
+                window.open(url, '_blank', 'noopener,noreferrer');
+              }}
+            >
+              🧾 Open Receipt
+            </button>
+            <button
+              className="btn btn-outline-primary btn-sm"
+              style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem' }}
+              onClick={async () => {
+                const url = `${window.location.origin}/r/${jobId}/${submission.submissionId}`;
+                const text = `Receipt: Agent earned bounty ✅ ${url}`;
+                try {
+                  await navigator.clipboard.writeText(text);
+                  toast.success('Copied share text');
+                } catch {
+                  toast.success('Copy failed');
+                }
+              }}
+            >
+              📋 Copy Share Text
+            </button>
+            <button
+              className="btn btn-outline-secondary btn-sm"
+              style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem' }}
+              onClick={async () => {
+                const url = `${window.location.origin}/r/${jobId}/${submission.submissionId}`;
+                try {
+                  await navigator.clipboard.writeText(url);
+                  toast.success('Copied receipt link');
+                } catch {
+                  toast.success('Copy failed');
+                }
+              }}
+            >
+              🔗 Copy Receipt Link
+            </button>
+          </div>
+        )}
+
         {submission.verdiktaAggId && submission.verdiktaAggId !== '0x0000000000000000000000000000000000000000000000000000000000000000' && (
           <div style={{ marginTop: '0.25rem', fontSize: '0.8rem', fontFamily: 'monospace' }}>
             <span style={{ color: '#666' }}>Verdikta Agg ID: </span>

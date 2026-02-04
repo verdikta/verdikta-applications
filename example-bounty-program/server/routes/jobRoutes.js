@@ -1171,6 +1171,10 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
     };
     const statusIndex = Number(sub.status);
     const chainStatus = statusMap[statusIndex] || 'UNKNOWN';
+
+    // Receipt eligibility helpers
+    const paidWinner = statusIndex === 3;      // PassedPaid
+    const passedUnpaid = statusIndex === 4;    // PassedUnpaid
     
     logger.info('[refresh] Status mapping', {
       rawStatus: sub.status?.toString?.() ?? sub.status,
@@ -1220,6 +1224,8 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       localSubmission.finalizedAt = Number(sub.finalizedAt);
       localSubmission.verdiktaAggId = sub.verdiktaAggId;
       localSubmission.failureReason = failureReason;
+      localSubmission.paidWinner = paidWinner;
+      localSubmission.passedUnpaid = passedUnpaid;
 
       jobStorage.updateJob(jobId, { submissions: job.submissions });
       
@@ -1250,7 +1256,9 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
         finalizedAt: Number(sub.finalizedAt),
         hunter: sub.hunter,
         verdiktaAggId: sub.verdiktaAggId,
-        failureReason  // null, 'ORACLE_TIMEOUT', or 'EVALUATION_FAILED'
+        failureReason,  // null, 'ORACLE_TIMEOUT', or 'EVALUATION_FAILED'
+        paidWinner,
+        passedUnpaid
       }
     });
     

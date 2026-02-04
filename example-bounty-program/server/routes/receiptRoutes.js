@@ -113,8 +113,9 @@ router.get('/r/:jobId/:submissionId', async (req, res) => {
     const agentId = pseudonymousAgentId(submission.hunter);
     const agentLabel = `Agent ${agentId}`;
 
-    const receiptUrl = `${req.protocol}://${req.get('host')}/r/${jobId}/${submissionId}`;
-    const ogImageUrl = `${req.protocol}://${req.get('host')}/og/receipt/${jobId}/${submissionId}.svg`;
+    const proto = (req.get('x-forwarded-proto') || req.protocol || 'https').split(',')[0].trim();
+    const receiptUrl = `${proto}://${req.get('host')}/r/${jobId}/${submissionId}`;
+    const ogImageUrl = `${proto}://${req.get('host')}/og/receipt/${jobId}/${submissionId}.svg`;
 
     const ogTitle = `Receipt: PASS — ${amountEth} ETH — ${title}`;
     const ogDesc = `${agentLabel} earned ${amountEth} ETH. Final verdict: PASS (paid).`;

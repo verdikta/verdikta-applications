@@ -16,6 +16,7 @@ const jobStorage = require('../utils/jobStorage');
 const { config } = require('../config');
 const archiveGenerator = require('../utils/archiveGenerator');
 const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE } = require('../utils/validation');
+const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
 
 /* ======================
    Helpers / configuration
@@ -1700,6 +1701,186 @@ router.get('/:jobId/submissions/:submissionId/content', async (req, res) => {
     return res.status(500).json({ success: false, error: 'Failed to get submission content', details: error.message });
   }
 });
+
+
+/* =======================
+   ESTIMATE SUBMISSION FEE (Agent-friendly endpoint)
+   ======================= */
+
+/**
+ * GET /api/jobs/:jobId/estimate-fee
+ * POST /api/jobs/estimate-fee (with custom jury config)
+ *
+ * Estimates the LINK token cost for submitting to a bounty.
+ * This helps agents budget before committing to a submission.
+ *
+ * The fee depends on:
+ * - Number of AI models in the jury
+ * - Number of runs per model
+ * - Number of iterations
+ * - Current max oracle fee from Verdikta aggregator
+ *
+ * Response includes:
+ * - estimatedLinkCost: Estimated LINK tokens needed
+ * - breakdown: How the estimate was calculated
+ * - parameters: Fee parameters to use in prepareSubmission
+ */
+router.get('/:jobId/estimate-fee', async (req, res) => {
+  const { jobId } = req.params;
+
+  try {
+    logger.info('[estimate-fee] get', { jobId });
+
+    const job = await jobStorage.getJob(jobId);
+
+    // Get jury configuration from the job
+    const juryNodes = job.juryNodes || [];
+    const iterations = job.iterations || 1;
+
+    // Calculate the fee estimate
+    const estimate = await calculateFeeEstimate(juryNodes, iterations);
+
+    return res.json({
+      success: true,
+      ...estimate,
+      meta: {
+        jobId: job.jobId,
+        title: job.title,
+        classId: job.classId,
+        juryNodes: juryNodes.length,
+        iterations
+      }
+    });
+
+  } catch (error) {
+    logger.error('[estimate-fee] error', { jobId, msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ success: false, error: 'Job not found', details: error.message });
+    }
+    return res.status(500).json({ success: false, error: 'Failed to estimate fee', details: error.message });
+  }
+});
+
+/**
+ * POST /api/jobs/estimate-fee
+ * Estimate fee with custom jury configuration (without needing a job)
+ *
+ * Body:
+ * - juryNodes: Array of {provider, model, runs, weight}
+ * - iterations: Number of evaluation iterations (default: 1)
+ */
+router.post('/estimate-fee', async (req, res) => {
+  try {
+    const { juryNodes = [], iterations = 1 } = req.body;
+
+    logger.info('[estimate-fee] post', { juryNodesCount: juryNodes.length, iterations });
+
+    if (!Array.isArray(juryNodes) || juryNodes.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid jury configuration',
+        details: 'juryNodes must be a non-empty array'
+      });
+    }
+
+    const estimate = await calculateFeeEstimate(juryNodes, iterations);
+
+    return res.json({
+      success: true,
+      ...estimate,
+      meta: {
+        juryNodes: juryNodes.length,
+        iterations
+      }
+    });
+
+  } catch (error) {
+    logger.error('[estimate-fee] error', { msg: error.message });
+    return res.status(500).json({ success: false, error: 'Failed to estimate fee', details: error.message });
+  }
+});
+
+/**
+ * Calculate fee estimate based on jury configuration
+ */
+async function calculateFeeEstimate(juryNodes, iterations) {
+  // Default fee parameters (fallback values)
+  // These are conservative estimates based on typical Verdikta pricing
+  let maxOracleFeeWei = BigInt('3000000000000000'); // 0.003 LINK per oracle call
+  let aggregatorConfigAvailable = false;
+
+  // Try to get actual maxOracleFee from Verdikta aggregator
+  if (isVerdiktaServiceAvailable()) {
+    try {
+      const verdiktaService = getVerdiktaService();
+      const aggConfig = await verdiktaService.getAggregatorConfig();
+      if (aggConfig.maxOracleFee) {
+        // Convert from LINK string to wei
+        const parsed = parseFloat(aggConfig.maxOracleFee);
+        if (parsed > 0) {
+          maxOracleFeeWei = BigInt(Math.floor(parsed * 1e18));
+          aggregatorConfigAvailable = true;
+        }
+      }
+    } catch (err) {
+      logger.warn('[estimate-fee] Could not get aggregator config', { msg: err.message });
+    }
+  }
+
+  // Calculate total oracle calls
+  // Each jury node makes (runs) calls, repeated for each iteration
+  let totalCalls = 0;
+  for (const node of juryNodes) {
+    const runs = node.runs || 1;
+    totalCalls += runs;
+  }
+  totalCalls *= iterations;
+
+  // Base cost estimate (fixed overhead per evaluation)
+  const baseCostWei = BigInt('1000000000000000'); // 0.001 LINK
+
+  // Calculate raw cost: baseCost + (totalCalls × maxOracleFee)
+  const oracleCostWei = BigInt(totalCalls) * maxOracleFeeWei;
+  const rawCostWei = baseCostWei + oracleCostWei;
+
+  // Add safety margin (20% buffer for gas price fluctuations, etc.)
+  const safetyMargin = BigInt(120); // 120%
+  const estimatedCostWei = (rawCostWei * safetyMargin) / BigInt(100);
+
+  // Convert to LINK (human-readable)
+  const estimatedLinkCost = Number(estimatedCostWei) / 1e18;
+  const rawLinkCost = Number(rawCostWei) / 1e18;
+  const maxOracleFeeLINK = Number(maxOracleFeeWei) / 1e18;
+
+  // Recommended prepareSubmission parameters
+  // These are the values agents should use when calling prepareSubmission
+  const recommendedParams = {
+    alpha: '500',                                    // Reputation weight (0-1000), 500 = balanced
+    maxOracleFee: maxOracleFeeWei.toString(),       // Per-oracle fee cap
+    estimatedBaseCost: baseCostWei.toString(),     // Base cost
+    maxFeeBasedScaling: '1200000000000000000'      // 1.2x scaling factor (18 decimals)
+  };
+
+  return {
+    estimatedLinkCost: Math.round(estimatedLinkCost * 10000) / 10000, // 4 decimal places
+    estimatedLinkCostWei: estimatedCostWei.toString(),
+    breakdown: {
+      baseCost: Number(baseCostWei) / 1e18,
+      oracleCalls: totalCalls,
+      maxOracleFeePerCall: maxOracleFeeLINK,
+      oracleCostTotal: Number(oracleCostWei) / 1e18,
+      rawCost: rawLinkCost,
+      safetyMarginPercent: 20,
+      finalEstimate: estimatedLinkCost
+    },
+    recommendedParams,
+    aggregatorConfigAvailable,
+    note: aggregatorConfigAvailable
+      ? 'Fee based on current Verdikta aggregator configuration'
+      : 'Fee based on default estimates (Verdikta aggregator not available)',
+    warning: 'This is an estimate. Actual cost may vary based on network conditions and oracle availability.'
+  };
+}
 
 module.exports = router;
 

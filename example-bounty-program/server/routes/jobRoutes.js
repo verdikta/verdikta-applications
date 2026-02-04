@@ -428,9 +428,21 @@ router.get('/', async (req, res) => {
   try {
     const {
       status, creator, minPayout, search, onChainId,
-      hideEnded, excludeStatuses, includeOrphans, limit = 50, offset = 0
+      hideEnded, excludeStatuses, includeOrphans, limit = 50, offset = 0,
+      // New filters for agents
+      workProductType,    // Filter by type: "code", "writing", "research", etc. (comma-separated)
+      minHoursLeft,       // Minimum hours until deadline (e.g., "2" = at least 2 hours left)
+      maxHoursLeft,       // Maximum hours until deadline (e.g., "24" = deadline within 24 hours)
+      excludeSubmittedBy, // Exclude jobs this address has already submitted to
+      minBountyUSD,       // Minimum bounty in USD
+      maxBountyUSD,       // Maximum bounty in USD
+      classId,            // Filter by Verdikta class ID
+      hasWinner,          // "true" = only jobs with winner, "false" = only jobs without winner
     } = req.query;
-    logger.info('[jobs/list] filters', { status, creator, search, onChainId, hideEnded, excludeStatuses, includeOrphans });
+    logger.info('[jobs/list] filters', {
+      status, creator, search, onChainId, hideEnded, excludeStatuses, includeOrphans,
+      workProductType, minHoursLeft, maxHoursLeft, excludeSubmittedBy, minBountyUSD, maxBountyUSD, classId, hasWinner
+    });
 
     const filters = {
       // By default, don't show orphaned jobs
@@ -445,6 +457,64 @@ router.get('/', async (req, res) => {
 
     if (onChainId) {
       allJobs = allJobs.filter(j => Number(j.onChainId) === Number(onChainId));
+    }
+
+    // Filter by work product type (comma-separated list, case-insensitive)
+    if (workProductType) {
+      const types = workProductType.split(',').map(t => t.trim().toLowerCase());
+      allJobs = allJobs.filter(j => {
+        const jobType = (j.workProductType || '').toLowerCase();
+        return types.some(t => jobType.includes(t));
+      });
+    }
+
+    // Filter by time remaining until deadline
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (minHoursLeft) {
+      const minSeconds = parseFloat(minHoursLeft) * 3600;
+      allJobs = allJobs.filter(j => {
+        const remaining = (j.submissionCloseTime || 0) - nowSec;
+        return remaining >= minSeconds;
+      });
+    }
+    if (maxHoursLeft) {
+      const maxSeconds = parseFloat(maxHoursLeft) * 3600;
+      allJobs = allJobs.filter(j => {
+        const remaining = (j.submissionCloseTime || 0) - nowSec;
+        return remaining <= maxSeconds && remaining > 0;
+      });
+    }
+
+    // Exclude jobs that a specific address has already submitted to
+    if (excludeSubmittedBy) {
+      const excludeAddr = excludeSubmittedBy.toLowerCase();
+      allJobs = allJobs.filter(j => {
+        if (!j.submissions || j.submissions.length === 0) return true;
+        return !j.submissions.some(s => (s.hunter || '').toLowerCase() === excludeAddr);
+      });
+    }
+
+    // Filter by bounty amount in USD
+    if (minBountyUSD) {
+      const minUSD = parseFloat(minBountyUSD);
+      allJobs = allJobs.filter(j => (j.bountyAmountUSD || 0) >= minUSD);
+    }
+    if (maxBountyUSD) {
+      const maxUSD = parseFloat(maxBountyUSD);
+      allJobs = allJobs.filter(j => (j.bountyAmountUSD || 0) <= maxUSD);
+    }
+
+    // Filter by Verdikta class ID
+    if (classId) {
+      const cid = parseInt(classId, 10);
+      allJobs = allJobs.filter(j => j.classId === cid);
+    }
+
+    // Filter by whether job has a winner
+    if (hasWinner === 'true') {
+      allJobs = allJobs.filter(j => j.winner != null);
+    } else if (hasWinner === 'false') {
+      allJobs = allJobs.filter(j => j.winner == null);
     }
 
     const excludeSet = new Set();
@@ -470,24 +540,32 @@ router.get('/', async (req, res) => {
     const offsetNum = parseInt(offset, 10);
     const paginatedJobs = allJobs.slice(offsetNum, offsetNum + limitNum);
 
-    const jobSummaries = paginatedJobs.map(job => ({
-      jobId: job.jobId,
-      onChainId: job.onChainId,
-      title: job.title,
-      description: job.description,
-      workProductType: job.workProductType,
-      bountyAmount: job.bountyAmount,
-      bountyAmountUSD: job.bountyAmountUSD,
-      threshold: job.threshold,
-      status: job.status,
-      submissionCount: job.submissionCount,
-      submissionOpenTime: job.submissionOpenTime,
-      submissionCloseTime: job.submissionCloseTime,
-      createdAt: job.createdAt,
-      winner: job.winner,
-      syncedFromBlockchain: job.syncedFromBlockchain || false,
-      contractAddress: job.contractAddress // Include for debugging
-    }));
+    const jobSummaries = paginatedJobs.map(job => {
+      // Compute time remaining for agent convenience
+      const remainingSeconds = (job.submissionCloseTime || 0) - nowSec;
+      const hoursLeft = remainingSeconds > 0 ? Math.round(remainingSeconds / 360) / 10 : 0; // 1 decimal place
+
+      return {
+        jobId: job.jobId,
+        onChainId: job.onChainId,
+        title: job.title,
+        description: job.description,
+        workProductType: job.workProductType,
+        bountyAmount: job.bountyAmount,
+        bountyAmountUSD: job.bountyAmountUSD,
+        threshold: job.threshold,
+        classId: job.classId,
+        status: job.status,
+        submissionCount: job.submissionCount,
+        submissionOpenTime: job.submissionOpenTime,
+        submissionCloseTime: job.submissionCloseTime,
+        hoursLeft, // Computed field for agent convenience
+        createdAt: job.createdAt,
+        winner: job.winner,
+        syncedFromBlockchain: job.syncedFromBlockchain || false,
+        contractAddress: job.contractAddress // Include for debugging
+      };
+    });
 
     return res.json({
       success: true,

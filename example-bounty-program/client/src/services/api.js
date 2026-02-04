@@ -441,6 +441,48 @@ async uploadRubric(rubricJson, classId = 128) {
   async refreshAnalytics() {
     const response = await api.post('/api/analytics/refresh');
     return response.data;
+  },
+
+  // ============================================================
+  //                    CLASS ENDPOINTS
+  // ============================================================
+
+  /**
+   * Get list of available AI classes
+   */
+  async getClasses(params = {}) {
+    const response = await api.get('/api/classes', { params });
+    return response.data;
+  },
+
+  /**
+   * Get details for a specific class
+   */
+  async getClassById(classId) {
+    const response = await api.get(`/api/classes/${classId}`);
+    return response.data;
+  },
+
+  // ============================================================
+  //                    BOT ENDPOINTS
+  // ============================================================
+
+  /**
+   * Register a new bot/agent
+   * @param {Object} data - { name, ownerAddress, description }
+   * @returns {Object} - { success, bot, apiKey, warning }
+   */
+  async registerBot(data) {
+    const response = await api.post('/api/bots/register', data);
+    return response.data;
+  },
+
+  /**
+   * Get bot information by ID
+   */
+  async getBotById(botId) {
+    const response = await api.get(`/api/bots/${botId}`);
+    return response.data;
   }
 
 };

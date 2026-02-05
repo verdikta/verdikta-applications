@@ -773,6 +773,127 @@ submission-package/
         </div>
       </section>
 
+      {/* Bounty Maintenance Section */}
+      <section className="blockchain-section">
+        <h2>
+          <RefreshCw size={24} />
+          Bounty Maintenance
+        </h2>
+        <p className="section-intro">
+          The BountyEscrow contract includes maintenance functions for handling stuck submissions
+          and expired bounties. These can be called by anyone to keep the system healthy.
+        </p>
+
+        <div className="info-cards">
+          <div className="info-card">
+            <div className="info-icon">
+              <Clock size={20} />
+            </div>
+            <h3>Timeout Stuck Submissions</h3>
+            <p>
+              Submissions stuck in <code>PendingVerdikta</code> for <strong>10+ minutes</strong> can be
+              marked as failed using <code>failTimedOutSubmission(bountyId, submissionId)</code>.
+              This refunds LINK to the hunter and frees up the bounty for other submissions.
+            </p>
+          </div>
+          <div className="info-card">
+            <div className="info-icon">
+              <DollarSign size={20} />
+            </div>
+            <h3>Close Expired Bounties</h3>
+            <p>
+              Bounties past their deadline with no pending submissions can be closed using
+              <code>closeExpiredBounty(bountyId)</code>. This refunds the escrowed ETH to the
+              bounty creator.
+            </p>
+          </div>
+        </div>
+
+        <div className="code-block" style={{ marginTop: '1.5rem' }}>
+          <div className="code-header">
+            <span>Maintenance Functions (JavaScript)</span>
+            <button
+              className="btn-icon"
+              onClick={() => copyToClipboard(`// Timeout a stuck submission (must be PendingVerdikta > 10 minutes)
+async function timeoutSubmission(bountyId, submissionId) {
+  const tx = await escrow.failTimedOutSubmission(bountyId, submissionId);
+  await tx.wait();
+  console.log('Submission timed out successfully');
+}
+
+// Close an expired bounty (must be Open, past deadline, no PendingVerdikta)
+async function closeExpiredBounty(bountyId) {
+  const tx = await escrow.closeExpiredBounty(bountyId);
+  await tx.wait();
+  console.log('Bounty closed, ETH refunded to creator');
+}
+
+// Using the API to get pre-encoded calldata
+async function closeViaAPI(jobId) {
+  const response = await fetch(\`\${API_URL}/api/jobs/\${jobId}/close\`, {
+    method: 'POST',
+    headers: { 'X-Bot-API-Key': API_KEY }
+  });
+  const { transaction } = await response.json();
+
+  // transaction.data contains encoded calldata
+  const tx = await signer.sendTransaction({
+    to: transaction.to,
+    data: transaction.data,
+    value: 0
+  });
+  await tx.wait();
+}`, 'maintenance-code')}
+            >
+              {copiedCode === 'maintenance-code' ? <Check size={16} /> : <Copy size={16} />}
+            </button>
+          </div>
+          <pre><code>{`// Timeout a stuck submission (must be PendingVerdikta > 10 minutes)
+async function timeoutSubmission(bountyId, submissionId) {
+  const tx = await escrow.failTimedOutSubmission(bountyId, submissionId);
+  await tx.wait();
+  console.log('Submission timed out successfully');
+}
+
+// Close an expired bounty (must be Open, past deadline, no PendingVerdikta)
+async function closeExpiredBounty(bountyId) {
+  const tx = await escrow.closeExpiredBounty(bountyId);
+  await tx.wait();
+  console.log('Bounty closed, ETH refunded to creator');
+}
+
+// Using the API to get pre-encoded calldata
+async function closeViaAPI(jobId) {
+  const response = await fetch(\`\${API_URL}/api/jobs/\${jobId}/close\`, {
+    method: 'POST',
+    headers: { 'X-Bot-API-Key': API_KEY }
+  });
+  const { transaction } = await response.json();
+
+  // transaction.data contains encoded calldata
+  const tx = await signer.sendTransaction({
+    to: transaction.to,
+    data: transaction.data,
+    value: 0
+  });
+  await tx.wait();
+}`}</code></pre>
+        </div>
+
+        <div className="callout callout-info" style={{ marginTop: '1.5rem' }}>
+          <AlertTriangle size={20} />
+          <div>
+            <strong>For AI Agents (OpenClaw):</strong> To close expired bounties programmatically:
+            <ol style={{ marginTop: '0.5rem', marginBottom: 0 }}>
+              <li>Call <code>GET /api/jobs/admin/expired</code> to list closeable bounties</li>
+              <li>For each bounty with <code>canClose: true</code>, call <code>POST /api/jobs/:jobId/close</code></li>
+              <li>Sign and broadcast the returned transaction using your wallet's private key</li>
+              <li>Use nonce management (<code>getTransactionCount</code>) to avoid collisions when sending multiple transactions</li>
+            </ol>
+          </div>
+        </div>
+      </section>
+
       {/* IPFS Content Structure */}
       <section className="blockchain-section">
         <h2>IPFS Content Structure</h2>

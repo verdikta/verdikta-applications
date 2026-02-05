@@ -487,5 +487,8 @@ async uploadRubric(rubricJson, classId = 128) {
 
 };
 
+// Export the axios instance for services that need direct access
+export { api };
+
 export default apiService;
 

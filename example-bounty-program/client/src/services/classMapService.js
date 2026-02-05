@@ -1,7 +1,5 @@
 // Browser-compatible ClassMap service for consuming backend API
-import { config } from '../config';
-
-const SERVER_URL = config.apiUrl;
+import { api } from './api';
 
 /**
  * Service for interacting with ClassMap functionality via backend API
@@ -23,16 +21,12 @@ export class ClassMapService {
     if (cached) return cached;
 
     try {
-      const queryParams = new URLSearchParams();
-      if (filter.status) queryParams.append('status', filter.status);
-      if (filter.provider) queryParams.append('provider', filter.provider);
+      const params = {};
+      if (filter.status) params.status = filter.status;
+      if (filter.provider) params.provider = filter.provider;
 
-      const url = queryParams.toString() 
-        ? `${SERVER_URL}/api/classes?${queryParams}` 
-        : `${SERVER_URL}/api/classes`;
-
-      const response = await fetch(url);
-      const data = await response.json();
+      const response = await api.get('/api/classes', { params });
+      const data = response.data;
 
       if (!data.success) {
         throw new Error(data.error || 'Failed to fetch classes');
@@ -57,8 +51,8 @@ export class ClassMapService {
     if (cached) return cached;
 
     try {
-      const response = await fetch(`${SERVER_URL}/api/classes/${classId}`);
-      const data = await response.json();
+      const response = await api.get(`/api/classes/${classId}`);
+      const data = response.data;
 
       if (!data.success) {
         throw new Error(data.error || `Failed to fetch class ${classId}`);
@@ -83,12 +77,12 @@ export class ClassMapService {
     if (cached) return cached;
 
     try {
-      const response = await fetch(`${SERVER_URL}/api/classes/${classId}/models`);
-      const data = await response.json();
+      const response = await api.get(`/api/classes/${classId}/models`);
+      const data = response.data;
 
       if (!data.success) {
         // Handle specific error cases
-        if (data.status === 'EMPTY' || response.status === 404 || data.error?.toLowerCase().includes('not found')) {
+        if (data.status === 'EMPTY' || data.error?.toLowerCase().includes('not found')) {
           // Custom class IDs (not in the class map) are expected - don't treat as an error
           return {
             classId,
@@ -106,6 +100,18 @@ export class ClassMapService {
       this._setCache(cacheKey, data);
       return data;
     } catch (error) {
+      // Handle 404 responses for custom classes
+      if (error.response?.status === 404) {
+        return {
+          classId,
+          className: `Custom Class ${classId}`,
+          status: 'CUSTOM',
+          models: [],
+          modelsByProvider: {},
+          limits: null,
+          error: null
+        };
+      }
       // Only log errors for actual failures, not custom class lookups
       if (!error.message?.toLowerCase().includes('not found') && error.name !== 'TypeError') {
         console.error(`Error fetching models for class ${classId}:`, error);

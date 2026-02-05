@@ -339,6 +339,141 @@ router.get('/admin/diagnostics', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/jobs/admin/stuck
+ * Find all stuck submissions and diagnose them.
+ * A submission is considered "stuck" if it's been pending for more than 10 minutes.
+ */
+router.get('/admin/stuck', async (req, res) => {
+  const RPC_URL = config.rpcUrl;
+  const ESCROW_ADDR = config.bountyEscrowAddress;
+  const TIMEOUT_SECONDS = 10 * 60;
+
+  try {
+    const jobs = await jobStorage.listJobs({ includeOrphans: false });
+    const jobList = jobs.jobs || jobs;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+
+    const stuckSubmissions = [];
+    const summary = {
+      totalJobs: jobList.length,
+      totalSubmissions: 0,
+      stuckCount: 0,
+      byStatus: {},
+      byJob: {}
+    };
+
+    // Set up provider for on-chain checks
+    let provider = null;
+    let contract = null;
+    if (RPC_URL && ESCROW_ADDR) {
+      try {
+        provider = new ethers.JsonRpcProvider(RPC_URL);
+        contract = new ethers.Contract(ESCROW_ADDR, [
+          'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))'
+        ], provider);
+      } catch (e) {
+        logger.warn('[admin/stuck] Could not initialize provider', { msg: e.message });
+      }
+    }
+
+    for (const job of jobList) {
+      if (!job.submissions || job.submissions.length === 0) continue;
+
+      const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+
+      for (const sub of job.submissions) {
+        summary.totalSubmissions++;
+        const status = (sub.status || '').toLowerCase();
+        summary.byStatus[status] = (summary.byStatus[status] || 0) + 1;
+
+        // Check if stuck (pending + timeout elapsed)
+        const isPending = status === 'pending' || status === 'pendingverdikta' || status === 'pending_evaluation';
+        const submittedAt = sub.submittedAt || 0;
+        const elapsedSeconds = nowSeconds - submittedAt;
+        const isStuck = isPending && elapsedSeconds >= TIMEOUT_SECONDS;
+
+        if (isStuck) {
+          summary.stuckCount++;
+          summary.byJob[job.jobId] = (summary.byJob[job.jobId] || 0) + 1;
+
+          const stuckInfo = {
+            jobId: job.jobId,
+            jobTitle: job.title,
+            submissionId: sub.submissionId,
+            hunter: sub.hunter,
+            localStatus: sub.status,
+            submittedAt,
+            elapsedMinutes: Math.floor(elapsedSeconds / 60),
+            hunterCid: sub.hunterCid,
+            onChainBountyId,
+            onChainStatus: null,
+            canTimeout: false,
+            issue: null
+          };
+
+          // Check on-chain status if possible
+          if (contract && onChainBountyId != null) {
+            try {
+              const chainSub = await contract.getSubmission(onChainBountyId, sub.submissionId);
+              const statusNames = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'];
+              stuckInfo.onChainStatus = statusNames[Number(chainSub.status)] || `Unknown(${chainSub.status})`;
+              stuckInfo.verdiktaAggId = chainSub.verdiktaAggId;
+
+              if (stuckInfo.onChainStatus === 'Prepared') {
+                stuckInfo.issue = 'Never started - startPreparedSubmission not called';
+                stuckInfo.canTimeout = false;
+              } else if (stuckInfo.onChainStatus === 'PendingVerdikta') {
+                stuckInfo.canTimeout = true;
+                stuckInfo.issue = 'Stuck in evaluation - eligible for timeout';
+              } else {
+                stuckInfo.issue = `Already finalized on-chain as ${stuckInfo.onChainStatus}`;
+                stuckInfo.canTimeout = false;
+              }
+            } catch (chainErr) {
+              stuckInfo.onChainStatus = 'error';
+              stuckInfo.issue = `Chain read failed: ${chainErr.message}`;
+            }
+          } else {
+            stuckInfo.issue = 'Cannot verify on-chain - missing bountyId or RPC';
+          }
+
+          stuckSubmissions.push(stuckInfo);
+        }
+      }
+    }
+
+    // Group recommendations
+    const recommendations = [];
+    const canTimeoutCount = stuckSubmissions.filter(s => s.canTimeout).length;
+    const neverStartedCount = stuckSubmissions.filter(s => s.onChainStatus === 'Prepared').length;
+    const alreadyFinalizedCount = stuckSubmissions.filter(s =>
+      ['Failed', 'PassedPaid', 'PassedUnpaid'].includes(s.onChainStatus)
+    ).length;
+
+    if (canTimeoutCount > 0) {
+      recommendations.push(`${canTimeoutCount} submission(s) can be timed out via failTimedOutSubmission`);
+    }
+    if (neverStartedCount > 0) {
+      recommendations.push(`${neverStartedCount} submission(s) were never started - check LINK funding and startPreparedSubmission`);
+    }
+    if (alreadyFinalizedCount > 0) {
+      recommendations.push(`${alreadyFinalizedCount} submission(s) are finalized on-chain but local status is stale - run sync`);
+    }
+
+    return res.json({
+      success: true,
+      summary,
+      recommendations,
+      stuckSubmissions
+    });
+
+  } catch (error) {
+    logger.error('[admin/stuck] error', { msg: error.message });
+    return res.status(500).json({ error: 'Failed to find stuck submissions', details: error.message });
+  }
+});
+
 router.get('/admin/orphans', async (req, res) => {
   try {
     const orphans = await jobStorage.findOrphanedJobs();
@@ -379,21 +514,317 @@ router.delete('/admin/orphans', async (req, res) => {
   try {
     // Require confirmation query param to prevent accidental deletion
     if (req.query.confirm !== 'yes') {
-      return res.status(400).json({ 
-        error: 'Confirmation required', 
+      return res.status(400).json({
+        error: 'Confirmation required',
         details: 'Add ?confirm=yes to confirm deletion of orphaned jobs'
       });
     }
-    
+
     const result = await jobStorage.deleteOrphanedJobs();
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       message: `Deleted ${result.deleted} orphaned jobs`,
       ...result
     });
   } catch (error) {
     logger.error('[admin/orphans] delete error', { msg: error.message });
     return res.status(500).json({ error: 'Failed to delete orphaned jobs', details: error.message });
+  }
+});
+
+/**
+ * GET /api/jobs/admin/expired
+ * List all expired bounties and their close eligibility.
+ * An expired bounty can be closed if:
+ * 1. On-chain status is Open
+ * 2. Deadline has passed
+ * 3. No submissions are in PendingVerdikta status
+ */
+router.get('/admin/expired', async (req, res) => {
+  const RPC_URL = config.rpcUrl;
+  const ESCROW_ADDR = config.bountyEscrowAddress;
+
+  try {
+    const jobs = await jobStorage.listJobs({ includeOrphans: false });
+    const jobList = jobs.jobs || jobs;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+
+    const expiredBounties = [];
+    const summary = {
+      totalExpired: 0,
+      canCloseNow: 0,
+      blockedByPendingEval: 0,
+      alreadyClosed: 0,
+      notOnChain: 0
+    };
+
+    // Set up provider for on-chain checks
+    let provider = null;
+    let contract = null;
+    if (RPC_URL && ESCROW_ADDR) {
+      try {
+        provider = new ethers.JsonRpcProvider(RPC_URL);
+        contract = new ethers.Contract(ESCROW_ADDR, [
+          'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions))',
+          'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))',
+          'function submissionCount(uint256 bountyId) view returns (uint256)'
+        ], provider);
+      } catch (e) {
+        logger.warn('[admin/expired] Could not initialize provider', { msg: e.message });
+      }
+    }
+
+    for (const job of jobList) {
+      // Check if deadline has passed
+      const deadline = job.submissionCloseTime || 0;
+      if (deadline === 0 || nowSeconds < deadline) continue;
+
+      summary.totalExpired++;
+      const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+
+      const bountyInfo = {
+        jobId: job.jobId,
+        onChainId: onChainBountyId,
+        title: job.title,
+        creator: job.creator,
+        bountyAmount: job.bountyAmount,
+        deadline,
+        expiredMinutesAgo: Math.floor((nowSeconds - deadline) / 60),
+        localStatus: job.status,
+        onChainStatus: null,
+        canClose: false,
+        blockedBy: null,
+        pendingSubmissions: []
+      };
+
+      if (onChainBountyId == null) {
+        bountyInfo.blockedBy = 'Not linked to on-chain bounty';
+        summary.notOnChain++;
+        expiredBounties.push(bountyInfo);
+        continue;
+      }
+
+      // Check on-chain status
+      if (contract) {
+        try {
+          const chainBounty = await contract.getBounty(onChainBountyId);
+          const statusNames = ['Open', 'Awarded', 'Closed'];
+          bountyInfo.onChainStatus = statusNames[Number(chainBounty.status)] || `Unknown(${chainBounty.status})`;
+          bountyInfo.payoutWei = chainBounty.payoutWei.toString();
+
+          if (bountyInfo.onChainStatus === 'Closed') {
+            bountyInfo.blockedBy = 'Already closed';
+            summary.alreadyClosed++;
+          } else if (bountyInfo.onChainStatus === 'Awarded') {
+            bountyInfo.blockedBy = 'Already awarded to winner';
+            summary.alreadyClosed++;
+          } else if (bountyInfo.onChainStatus === 'Open') {
+            // Check for pending submissions
+            const subCount = Number(await contract.submissionCount(onChainBountyId));
+            let hasPending = false;
+
+            for (let i = 0; i < subCount; i++) {
+              try {
+                const chainSub = await contract.getSubmission(onChainBountyId, i);
+                if (Number(chainSub.status) === 1) { // PendingVerdikta
+                  hasPending = true;
+                  bountyInfo.pendingSubmissions.push({
+                    submissionId: i,
+                    hunter: chainSub.hunter,
+                    submittedAt: Number(chainSub.submittedAt)
+                  });
+                }
+              } catch (subErr) {
+                // Ignore individual submission errors
+              }
+            }
+
+            if (hasPending) {
+              bountyInfo.blockedBy = `${bountyInfo.pendingSubmissions.length} submission(s) still pending evaluation`;
+              bountyInfo.canClose = false;
+              summary.blockedByPendingEval++;
+            } else {
+              bountyInfo.canClose = true;
+              summary.canCloseNow++;
+            }
+          }
+        } catch (chainErr) {
+          bountyInfo.onChainStatus = 'error';
+          bountyInfo.blockedBy = `Chain read failed: ${chainErr.message}`;
+        }
+      }
+
+      expiredBounties.push(bountyInfo);
+    }
+
+    return res.json({
+      success: true,
+      summary,
+      expiredBounties
+    });
+
+  } catch (error) {
+    logger.error('[admin/expired] error', { msg: error.message });
+    return res.status(500).json({ error: 'Failed to list expired bounties', details: error.message });
+  }
+});
+
+/**
+ * POST /api/jobs/:jobId/close
+ * Prepare transaction to close an expired bounty.
+ * Returns encoded calldata for client to execute.
+ *
+ * On-chain requirements (from BountyEscrow.closeExpiredBounty):
+ * - Bounty status must be Open
+ * - Deadline must have passed
+ * - No submissions in PendingVerdikta status
+ * - Anyone can call (returns ETH to creator)
+ */
+router.post('/:jobId/close', async (req, res) => {
+  const { jobId } = req.params;
+  const RPC_URL = config.rpcUrl;
+  const ESCROW_ADDR = config.bountyEscrowAddress;
+
+  try {
+    logger.info('[close] check', { jobId });
+
+    const job = await jobStorage.getJob(jobId);
+    const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+
+    if (onChainBountyId == null) {
+      return res.status(400).json({
+        success: false,
+        canClose: false,
+        error: 'Job not on-chain',
+        details: 'This job has not been registered on the blockchain yet'
+      });
+    }
+
+    // Check deadline
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const deadline = job.submissionCloseTime || 0;
+
+    if (nowSeconds < deadline) {
+      return res.status(400).json({
+        success: false,
+        canClose: false,
+        error: 'Deadline not passed',
+        details: `Bounty expires in ${Math.ceil((deadline - nowSeconds) / 60)} minutes`,
+        deadline
+      });
+    }
+
+    // Check on-chain status and pending submissions
+    if (!RPC_URL || !ESCROW_ADDR) {
+      return res.status(500).json({
+        success: false,
+        canClose: false,
+        error: 'Blockchain not configured'
+      });
+    }
+
+    const provider = new ethers.JsonRpcProvider(RPC_URL);
+    const contract = new ethers.Contract(ESCROW_ADDR, [
+      'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions))',
+      'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))',
+      'function submissionCount(uint256 bountyId) view returns (uint256)'
+    ], provider);
+
+    const chainBounty = await contract.getBounty(onChainBountyId);
+    const statusNames = ['Open', 'Awarded', 'Closed'];
+    const onChainStatus = statusNames[Number(chainBounty.status)] || `Unknown(${chainBounty.status})`;
+
+    if (onChainStatus === 'Closed') {
+      return res.status(400).json({
+        success: false,
+        canClose: false,
+        error: 'Already closed',
+        details: 'This bounty has already been closed'
+      });
+    }
+
+    if (onChainStatus === 'Awarded') {
+      return res.status(400).json({
+        success: false,
+        canClose: false,
+        error: 'Already awarded',
+        details: 'This bounty was awarded to a winner'
+      });
+    }
+
+    // Check for pending submissions
+    const subCount = Number(await contract.submissionCount(onChainBountyId));
+    const pendingSubmissions = [];
+
+    for (let i = 0; i < subCount; i++) {
+      try {
+        const chainSub = await contract.getSubmission(onChainBountyId, i);
+        if (Number(chainSub.status) === 1) { // PendingVerdikta
+          pendingSubmissions.push({
+            submissionId: i,
+            hunter: chainSub.hunter
+          });
+        }
+      } catch (subErr) {
+        // Ignore individual submission errors
+      }
+    }
+
+    if (pendingSubmissions.length > 0) {
+      return res.status(400).json({
+        success: false,
+        canClose: false,
+        error: 'Pending evaluations',
+        details: `${pendingSubmissions.length} submission(s) still pending - timeout them first`,
+        pendingSubmissions,
+        hint: 'Call POST /api/jobs/:jobId/submissions/:subId/timeout for each pending submission'
+      });
+    }
+
+    // All conditions met - return transaction data
+    const iface = new ethers.Interface([
+      'function closeExpiredBounty(uint256 bountyId)'
+    ]);
+    const calldata = iface.encodeFunctionData('closeExpiredBounty', [onChainBountyId]);
+
+    logger.info('[close] conditions met', { jobId, onChainBountyId });
+
+    return res.json({
+      success: true,
+      canClose: true,
+      message: 'Bounty can be closed. Execute the transaction to return funds to creator.',
+      transaction: {
+        to: ESCROW_ADDR,
+        data: calldata,
+        value: '0',
+        chainId: config.chainId
+      },
+      contractCall: {
+        method: 'closeExpiredBounty',
+        args: [onChainBountyId],
+        abi: 'function closeExpiredBounty(uint256 bountyId)'
+      },
+      bounty: {
+        jobId: job.jobId,
+        onChainId: onChainBountyId,
+        title: job.title,
+        creator: job.creator,
+        payoutWei: chainBounty.payoutWei.toString(),
+        expiredMinutesAgo: Math.floor((nowSeconds - deadline) / 60)
+      }
+    });
+
+  } catch (error) {
+    logger.error('[close] error', { jobId, msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ success: false, canClose: false, error: 'Job not found' });
+    }
+    return res.status(500).json({
+      success: false,
+      canClose: false,
+      error: 'Failed to check close conditions',
+      details: error.message
+    });
   }
 });
 
@@ -1535,6 +1966,176 @@ router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
       canTimeout: false,
       error: 'Failed to check timeout conditions',
       details: error.message
+    });
+  }
+});
+
+
+/* =======================
+   DIAGNOSE STUCK SUBMISSION
+   ======================= */
+
+/**
+ * GET /api/jobs/:jobId/submissions/:submissionId/diagnose
+ * Deep diagnostic for stuck submissions - checks on-chain state, CID accessibility, and Verdikta status.
+ * Helps identify why a submission is stuck or why timeout is reverting.
+ */
+router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
+  const { jobId, submissionId } = req.params;
+  const RPC_URL = config.rpcUrl;
+  const ESCROW_ADDR = config.bountyEscrowAddress;
+
+  const diagnosis = {
+    jobId: parseInt(jobId),
+    submissionId: parseInt(submissionId),
+    checks: {},
+    issues: [],
+    recommendations: []
+  };
+
+  try {
+    logger.info('[diagnose] start', { jobId, submissionId });
+
+    // 1. Check local storage state
+    const job = await jobStorage.getJob(jobId);
+    const subId = parseInt(submissionId, 10);
+    const localSub = job.submissions?.find(s => s.submissionId === subId);
+
+    diagnosis.checks.localStorage = {
+      found: !!localSub,
+      status: localSub?.status || null,
+      submittedAt: localSub?.submittedAt || null,
+      hunterCid: localSub?.hunterCid || null,
+      evalWallet: localSub?.evalWallet || null,
+      verdiktaAggId: localSub?.verdiktaAggId || null
+    };
+
+    if (!localSub) {
+      diagnosis.issues.push('Submission not found in local storage');
+    }
+
+    // 2. Check on-chain state
+    const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+    diagnosis.checks.onChainIds = {
+      bountyId: onChainBountyId,
+      submissionId: subId
+    };
+
+    if (onChainBountyId == null) {
+      diagnosis.issues.push('Job not linked to on-chain bounty');
+      diagnosis.recommendations.push('Link job to on-chain bounty ID');
+    } else if (RPC_URL && ESCROW_ADDR) {
+      try {
+        const provider = new ethers.JsonRpcProvider(RPC_URL);
+        const contract = new ethers.Contract(ESCROW_ADDR, [
+          'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))'
+        ], provider);
+
+        const chainSub = await contract.getSubmission(onChainBountyId, subId);
+
+        // Map status enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
+        const statusNames = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'];
+        const chainStatus = statusNames[Number(chainSub.status)] || `Unknown(${chainSub.status})`;
+
+        const submittedAtChain = Number(chainSub.submittedAt);
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const elapsedSeconds = nowSeconds - submittedAtChain;
+        const timeoutEligible = elapsedSeconds >= 600; // 10 minutes
+
+        diagnosis.checks.onChain = {
+          found: true,
+          hunter: chainSub.hunter,
+          status: chainStatus,
+          statusCode: Number(chainSub.status),
+          evaluationCid: chainSub.evaluationCid,
+          hunterCid: chainSub.hunterCid,
+          evalWallet: chainSub.evalWallet,
+          verdiktaAggId: chainSub.verdiktaAggId,
+          submittedAt: submittedAtChain,
+          finalizedAt: Number(chainSub.finalizedAt),
+          acceptance: Number(chainSub.acceptance),
+          rejection: Number(chainSub.rejection),
+          elapsedMinutes: Math.floor(elapsedSeconds / 60),
+          timeoutEligible
+        };
+
+        // Analyze on-chain state
+        if (chainStatus === 'Prepared') {
+          diagnosis.issues.push('Submission is still in Prepared state - startPreparedSubmission was never called');
+          diagnosis.recommendations.push('Call startPreparedSubmission to begin evaluation, or check if LINK was transferred to evalWallet');
+        } else if (chainStatus === 'PendingVerdikta') {
+          if (!chainSub.verdiktaAggId || chainSub.verdiktaAggId === '0x0000000000000000000000000000000000000000000000000000000000000000') {
+            diagnosis.issues.push('PendingVerdikta but no verdiktaAggId - evaluation may not have started properly');
+          } else {
+            diagnosis.checks.verdiktaAggId = chainSub.verdiktaAggId;
+            if (timeoutEligible) {
+              diagnosis.recommendations.push('Submission is eligible for timeout - call failTimedOutSubmission');
+            } else {
+              diagnosis.recommendations.push(`Wait ${Math.ceil((600 - elapsedSeconds) / 60)} more minute(s) for timeout eligibility`);
+            }
+          }
+        } else if (chainStatus === 'Failed' || chainStatus === 'PassedPaid' || chainStatus === 'PassedUnpaid') {
+          diagnosis.issues.push(`Submission already finalized with status: ${chainStatus}`);
+          diagnosis.recommendations.push('No action needed - submission is complete');
+        }
+
+      } catch (chainErr) {
+        diagnosis.checks.onChain = { found: false, error: chainErr.message };
+        diagnosis.issues.push(`Failed to read on-chain state: ${chainErr.message}`);
+      }
+    }
+
+    // 3. Check CID accessibility
+    const ipfsClient = req.app.locals.ipfsClient;
+    if (ipfsClient && localSub?.hunterCid) {
+      try {
+        // Just do a HEAD check or quick fetch
+        const gatewayUrl = `${config.pinataGateway}/ipfs/${localSub.hunterCid}`;
+        const cidCheck = await fetch(gatewayUrl, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
+        diagnosis.checks.hunterCidAccessible = cidCheck.ok;
+        if (!cidCheck.ok) {
+          diagnosis.issues.push(`Hunter CID not accessible: ${cidCheck.status}`);
+          diagnosis.recommendations.push('Verify hunterCid is pinned and accessible');
+        }
+      } catch (cidErr) {
+        diagnosis.checks.hunterCidAccessible = false;
+        diagnosis.issues.push(`Hunter CID check failed: ${cidErr.message}`);
+      }
+    }
+
+    // 4. Check evaluation CID
+    if (job.primaryCid) {
+      try {
+        const gatewayUrl = `${config.pinataGateway}/ipfs/${job.primaryCid}`;
+        const cidCheck = await fetch(gatewayUrl, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
+        diagnosis.checks.evaluationCidAccessible = cidCheck.ok;
+        if (!cidCheck.ok) {
+          diagnosis.issues.push(`Evaluation package CID not accessible: ${cidCheck.status}`);
+          diagnosis.recommendations.push('Verify primaryCid (evaluation package) is pinned');
+        }
+      } catch (cidErr) {
+        diagnosis.checks.evaluationCidAccessible = false;
+        diagnosis.issues.push(`Evaluation CID check failed: ${cidErr.message}`);
+      }
+    }
+
+    // 5. Summary
+    diagnosis.summary = {
+      issueCount: diagnosis.issues.length,
+      status: diagnosis.issues.length === 0 ? 'healthy' : 'issues_found',
+      canTimeout: diagnosis.checks.onChain?.status === 'PendingVerdikta' &&
+                  diagnosis.checks.onChain?.timeoutEligible === true
+    };
+
+    return res.json({ success: true, diagnosis });
+
+  } catch (error) {
+    logger.error('[diagnose] error', { jobId, submissionId, msg: error.message });
+    return res.status(500).json({
+      success: false,
+      error: 'Diagnosis failed',
+      details: error.message,
+      partialDiagnosis: diagnosis
     });
   }
 });

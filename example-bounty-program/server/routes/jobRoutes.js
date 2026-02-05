@@ -584,6 +584,114 @@ router.get('/', async (req, res) => {
 });
 
 /* =================
+   LIST SUBMISSIONS FOR A JOB
+   ================= */
+
+/**
+ * GET /api/jobs/:jobId/submissions
+ * List all submissions for a bounty with simplified status.
+ * Public endpoint - no authentication required.
+ *
+ * Statuses:
+ * - PENDING_EVALUATION: Submitted, awaiting AI evaluation
+ * - EVALUATED_PASSED: Evaluation complete, passed threshold (but didn't win)
+ * - EVALUATED_FAILED: Evaluation complete, failed threshold
+ * - WINNER: Passed threshold and received payout
+ * - TIMED_OUT: Oracle timeout, no evaluation result
+ *
+ * Note: PREPARED submissions (not yet started on-chain) are excluded.
+ */
+router.get('/:jobId/submissions', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    logger.info('[jobs/submissions] list', { jobId });
+
+    const job = await jobStorage.getJob(jobId);
+    const threshold = job.threshold || 0;
+
+    // Map internal status to simplified public status
+    function mapStatus(sub) {
+      const status = (sub.status || '').toLowerCase();
+      const score = sub.acceptance ?? sub.score ?? null;
+      const hasScore = score !== null && score !== undefined;
+
+      // Check for winner (PassedPaid)
+      if (status === 'passedpaid' || status === 'winner') {
+        return 'WINNER';
+      }
+
+      // Check for timeout (Failed with zero scores and no justification)
+      if (status === 'failed' || status === 'rejected') {
+        const hasZeroScores = (sub.acceptance === 0 || sub.acceptance == null) &&
+                             (sub.rejection === 0 || sub.rejection == null);
+        const hasNoJustification = !sub.justificationCids || sub.justificationCids === '';
+        if (hasZeroScores && hasNoJustification) {
+          return 'TIMED_OUT';
+        }
+        return 'EVALUATED_FAILED';
+      }
+
+      // Check for passed but not winner (PassedUnpaid, Approved)
+      if (status === 'passedunpaid' || status === 'passed' || status === 'approved' || status === 'accepted') {
+        return 'EVALUATED_PASSED';
+      }
+
+      // Check pending states
+      if (status === 'pending' || status === 'pendingverdikta' || status === 'pending_evaluation') {
+        // If has score, evaluation completed but status wasn't updated
+        if (hasScore) {
+          return score >= threshold ? 'EVALUATED_PASSED' : 'EVALUATED_FAILED';
+        }
+        return 'PENDING_EVALUATION';
+      }
+
+      // Prepared submissions are filtered out below, but handle edge case
+      if (status === 'prepared') {
+        return null; // Will be filtered
+      }
+
+      // Unknown status - treat as pending if no score, otherwise evaluate
+      if (hasScore) {
+        return score >= threshold ? 'EVALUATED_PASSED' : 'EVALUATED_FAILED';
+      }
+      return 'PENDING_EVALUATION';
+    }
+
+    // Filter out PREPARED submissions and map to response format
+    const submissions = (job.submissions || [])
+      .map(sub => {
+        const mappedStatus = mapStatus(sub);
+        if (!mappedStatus) return null; // Filter out PREPARED
+
+        return {
+          id: sub.submissionId,
+          hunter: sub.hunter,
+          hunterCid: sub.hunterCid || null,
+          status: mappedStatus,
+          score: sub.acceptance ?? sub.score ?? null,
+          submittedAt: sub.submittedAt || null,
+          evaluatedAt: sub.finalizedAt || null
+        };
+      })
+      .filter(Boolean); // Remove nulls (PREPARED submissions)
+
+    return res.json({
+      success: true,
+      jobId: job.jobId,
+      threshold,
+      submissions
+    });
+
+  } catch (error) {
+    logger.error('[jobs/submissions] error', { msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: 'Job not found', details: error.message });
+    }
+    return res.status(500).json({ error: 'Failed to list submissions', details: error.message });
+  }
+});
+
+/* =================
    GET JOB DETAILS
    ================= */
 

@@ -263,7 +263,11 @@ for job in jobs.get("jobs", []):
 
 # Close expired bounties (for maintenance bots)
 def close_expired_bounties(w3, account):
-    """Scan and close all expired bounties"""
+    """Scan and close all expired bounties.
+
+    Eligibility: bounty past deadline + no pending evaluations.
+    IMPORTANT: Process sequentially - wait for each tx to confirm!
+    """
     expired = requests.get(f"{BASE_URL}/api/jobs/admin/expired", headers=HEADERS).json()
 
     for bounty in expired.get("expiredBounties", []):
@@ -282,6 +286,8 @@ def close_expired_bounties(w3, account):
                 }
                 signed = account.sign_transaction(tx)
                 tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+                # WAIT for confirmation before next tx (prevents nonce collision)
+                w3.eth.wait_for_transaction_receipt(tx_hash)
                 print(f"Closed bounty {bounty['jobId']}: {tx_hash.hex()}")`;
 
   return (
@@ -826,11 +832,16 @@ def close_expired_bounties(w3, account):
             {expandedSection === 'faq6' && (
               <div className="faq-answer">
                 <p>
-                  Submissions in <code>PENDING_EVALUATION</code> status for more than 10 minutes
-                  can be timed out. Use <code>GET /api/jobs/:jobId/submissions/:subId/diagnose</code>
-                  to check why it's stuck, then <code>POST /api/jobs/:jobId/submissions/:subId/timeout</code>
-                  to get the encoded transaction for <code>failTimedOutSubmission</code>.
-                  Sign and broadcast the transaction to recover your LINK tokens.
+                  Submissions can be timed out when <strong>both</strong> conditions are met:
+                </p>
+                <ul>
+                  <li>Status is <code>PENDING_EVALUATION</code> (on-chain: <code>PendingVerdikta</code>)</li>
+                  <li>At least 10 minutes have elapsed since <code>submittedAt</code></li>
+                </ul>
+                <p>
+                  Use <code>GET /api/jobs/:jobId/submissions/:subId/diagnose</code> to check eligibility,
+                  then <code>POST /api/jobs/:jobId/submissions/:subId/timeout</code> to get the encoded
+                  transaction for <code>failTimedOutSubmission</code>. Sign and broadcast to recover your LINK tokens.
                 </p>
               </div>
             )}
@@ -850,13 +861,14 @@ def close_expired_bounties(w3, account):
                 </p>
                 <ul>
                   <li><strong>Timeout stuck submissions:</strong> Use <code>GET /api/jobs/admin/stuck</code>
-                    to find submissions pending for 10+ minutes, then timeout them</li>
+                    to find submissions in <code>PENDING_EVALUATION</code> for 10+ minutes, then timeout them</li>
                   <li><strong>Close expired bounties:</strong> Use <code>GET /api/jobs/admin/expired</code>
-                    to find bounties past their deadline, then close them to refund creators</li>
+                    to find bounties past deadline with no pending evaluations, then close to refund creators</li>
                 </ul>
                 <p>
                   Both operations use <code>POST</code> endpoints that return pre-encoded transaction
-                  calldata, making it easy for bots to sign and broadcast without manual encoding.
+                  calldata. <strong>Important:</strong> Process transactions sequentially—wait for each
+                  confirmation before sending the next to avoid nonce collisions.
                 </p>
               </div>
             )}

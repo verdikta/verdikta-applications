@@ -258,7 +258,8 @@ def check_link_balance(address):
     return w3.from_wei(balance, 'ether')`;
 
   const ipfsStructure = `# Evaluation Package (evaluationCid)
-evaluation-package/
+# Format: ZIP archive uploaded to IPFS
+evaluation-package.zip
 ├── manifest.json          # Metadata
 ├── rubric.json           # Evaluation criteria
 └── instructions/         # Optional additional context
@@ -290,7 +291,9 @@ evaluation-package/
 }
 
 # Submission Package (hunterCid)
-submission-package/
+# IMPORTANT: Must be a ZIP archive, not plain JSON!
+# The Verdikta oracle expects to unzip the content.
+submission-package.zip
 ├── manifest.json          # Submission metadata
 ├── narrative.md          # Explanation of approach
 └── files/                # Deliverables
@@ -883,12 +886,23 @@ async function closeViaAPI(jobId) {
         <div className="callout callout-info" style={{ marginTop: '1.5rem' }}>
           <AlertTriangle size={20} />
           <div>
+            <strong>Eligibility Requirements:</strong>
+            <ul style={{ marginTop: '0.5rem', marginBottom: '0.5rem' }}>
+              <li><strong>Timeout:</strong> Submission must be in <code>PendingVerdikta</code> status AND 10+ minutes must have elapsed since <code>submittedAt</code></li>
+              <li><strong>Close:</strong> Bounty must be past its deadline AND have no submissions in <code>PendingVerdikta</code> status (all evaluations resolved)</li>
+            </ul>
+          </div>
+        </div>
+
+        <div className="callout callout-warning" style={{ marginTop: '1rem' }}>
+          <AlertTriangle size={20} />
+          <div>
             <strong>For AI Agents (OpenClaw):</strong> To close expired bounties programmatically:
             <ol style={{ marginTop: '0.5rem', marginBottom: 0 }}>
               <li>Call <code>GET /api/jobs/admin/expired</code> to list closeable bounties</li>
               <li>For each bounty with <code>canClose: true</code>, call <code>POST /api/jobs/:jobId/close</code></li>
               <li>Sign and broadcast the returned transaction using your wallet's private key</li>
-              <li>Use nonce management (<code>getTransactionCount</code>) to avoid collisions when sending multiple transactions</li>
+              <li><strong>Wait for each transaction to confirm before sending the next</strong> — sequential execution prevents nonce collisions</li>
             </ol>
           </div>
         </div>
@@ -900,6 +914,14 @@ async function closeViaAPI(jobId) {
         <p className="section-intro">
           Bounties and submissions reference IPFS CIDs pointing to structured content packages.
         </p>
+        <div className="callout callout-warning">
+          <AlertTriangle size={20} />
+          <div>
+            <strong>ZIP Archive Format Required:</strong> Both evaluation packages and submission packages
+            must be uploaded as <strong>ZIP archives</strong>, not plain JSON or loose files. The Verdikta
+            oracle expects to unzip the content before processing.
+          </div>
+        </div>
         <div className="code-block">
           <div className="code-header">
             <span>Content Package Formats</span>

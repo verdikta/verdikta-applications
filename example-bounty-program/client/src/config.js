@@ -27,7 +27,9 @@ export const config = {
       rpcUrl: 'https://sepolia.base.org',
       explorer: 'https://sepolia.basescan.org',
       currency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-      linkTokenAddress: '0xE4aB69C077896252FAFBD49EFD26B5D171A32410'
+      linkTokenAddress: '0xE4aB69C077896252FAFBD49EFD26B5D171A32410',
+      bountyEscrowAddress: '0x0520b15Ee61C4E2A1B00bA260d8B1FBD015D2780',
+      verdiktaAggregatorAddress: '0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089'
     },
     'base': {
       name: 'Base Mainnet',
@@ -36,7 +38,9 @@ export const config = {
       rpcUrl: 'https://mainnet.base.org',
       explorer: 'https://basescan.org',
       currency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-      linkTokenAddress: '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196'
+      linkTokenAddress: '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196',
+      bountyEscrowAddress: '0x0a6290EfA369Bbd4a9886ab9f98d7fAd7b0dc746',
+      verdiktaAggregatorAddress: '0x2f7a02298D4478213057edA5e5bEB07F20c4c054'
     }
   },
 
@@ -48,10 +52,11 @@ export const config = {
 
   // BountyEscrow address (selected based on network)
   get bountyEscrowAddress() {
+    const network = this.networks[this.network] || this.networks['base-sepolia'];
     if (this.network === 'base') {
-      return import.meta.env.VITE_BOUNTY_ESCROW_ADDRESS_BASE || '';
+      return import.meta.env.VITE_BOUNTY_ESCROW_ADDRESS_BASE || network.bountyEscrowAddress;
     }
-    return import.meta.env.VITE_BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA || '';
+    return import.meta.env.VITE_BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA || network.bountyEscrowAddress;
   }
 };
 

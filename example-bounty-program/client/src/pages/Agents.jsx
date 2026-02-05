@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
+import { config } from '../config';
 import {
   Bot,
   Key,
@@ -616,11 +617,11 @@ for job in jobs.get("jobs", []):
               <h4>Contract Addresses</h4>
               <div className="address-row">
                 <span className="network-label">Base Sepolia:</span>
-                <code>0xd930Ef3CF8AC870E3F14f83090Bf39dB744BCED4</code>
+                <code>{config.networks['base-sepolia'].bountyEscrowAddress}</code>
               </div>
               <div className="address-row">
                 <span className="network-label">Base Mainnet:</span>
-                <code>See blockchain documentation</code>
+                <code>{config.networks['base'].bountyEscrowAddress}</code>
               </div>
             </div>
           </div>

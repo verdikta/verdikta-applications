@@ -1001,8 +1001,8 @@ export async function resolveBountyIdByState(args) {
 
 let contractService = null;
 
-// Default contract address (BountyEscrow on Base Sepolia)
-const DEFAULT_CONTRACT_ADDRESS = '0xd930Ef3CF8AC870E3F14f83090Bf39dB744BCED4';
+// Default contract address from config (supports both networks)
+const DEFAULT_CONTRACT_ADDRESS = config.bountyEscrowAddress;
 
 export function initializeContractService(contractAddress) {
   contractService = new ContractService(contractAddress);

@@ -41,23 +41,26 @@ function Blockchain() {
     setExpandedSection(expandedSection === section ? null : section);
   };
 
-  // Contract addresses
+  // Contract addresses - pull from config
+  const sepoliaConfig = config.networks['base-sepolia'];
+  const mainnetConfig = config.networks['base'];
+
   const contracts = {
     sepolia: {
-      bountyEscrow: '0xd930Ef3CF8AC870E3F14f83090Bf39dB744BCED4',
-      verdiktaAggregator: '0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089',
-      linkToken: '0xE4aB69C077896252FAFBD49EFD26B5D171A32410',
-      chainId: 84532,
-      rpcUrl: 'https://sepolia.base.org',
-      explorer: 'https://sepolia.basescan.org'
+      bountyEscrow: sepoliaConfig.bountyEscrowAddress,
+      verdiktaAggregator: sepoliaConfig.verdiktaAggregatorAddress,
+      linkToken: sepoliaConfig.linkTokenAddress,
+      chainId: sepoliaConfig.chainId,
+      rpcUrl: sepoliaConfig.rpcUrl,
+      explorer: sepoliaConfig.explorer
     },
     mainnet: {
-      bountyEscrow: config.bountyEscrowAddress || '(Configure in environment)',
-      verdiktaAggregator: '0x2f7a02298D4478213057edA5e5bEB07F20c4c054',
-      linkToken: '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196',
-      chainId: 8453,
-      rpcUrl: 'https://mainnet.base.org',
-      explorer: 'https://basescan.org'
+      bountyEscrow: mainnetConfig.bountyEscrowAddress,
+      verdiktaAggregator: mainnetConfig.verdiktaAggregatorAddress,
+      linkToken: mainnetConfig.linkTokenAddress,
+      chainId: mainnetConfig.chainId,
+      rpcUrl: mainnetConfig.rpcUrl,
+      explorer: mainnetConfig.explorer
     }
   };
 
@@ -97,11 +100,11 @@ function Blockchain() {
   const ethersExample = `import { ethers } from 'ethers';
 
 // Setup
-const provider = new ethers.JsonRpcProvider('https://sepolia.base.org');
+const provider = new ethers.JsonRpcProvider('${sepoliaConfig.rpcUrl}');
 const signer = new ethers.Wallet(PRIVATE_KEY, provider);
 
-const ESCROW_ADDRESS = '0xd930Ef3CF8AC870E3F14f83090Bf39dB744BCED4';
-const LINK_ADDRESS = '0xE4aB69C077896252FAFBD49EFD26B5D171A32410';
+const ESCROW_ADDRESS = '${sepoliaConfig.bountyEscrowAddress}';
+const LINK_ADDRESS = '${sepoliaConfig.linkTokenAddress}';
 
 // Initialize contracts
 const escrow = new ethers.Contract(ESCROW_ADDRESS, BOUNTY_ESCROW_ABI, signer);
@@ -200,11 +203,11 @@ async function finalizeSubmission(bountyId, submissionId) {
 from eth_account import Account
 
 # Setup
-w3 = Web3(Web3.HTTPProvider('https://sepolia.base.org'))
+w3 = Web3(Web3.HTTPProvider('${sepoliaConfig.rpcUrl}'))
 account = Account.from_key(PRIVATE_KEY)
 
-ESCROW_ADDRESS = '0xd930Ef3CF8AC870E3F14f83090Bf39dB744BCED4'
-LINK_ADDRESS = '0xE4aB69C077896252FAFBD49EFD26B5D171A32410'
+ESCROW_ADDRESS = '${sepoliaConfig.bountyEscrowAddress}'
+LINK_ADDRESS = '${sepoliaConfig.linkTokenAddress}'
 
 # Load contracts (use full ABI in production)
 escrow = w3.eth.contract(address=ESCROW_ADDRESS, abi=BOUNTY_ESCROW_ABI)

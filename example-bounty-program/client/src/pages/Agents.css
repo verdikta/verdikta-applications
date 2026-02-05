@@ -723,10 +723,11 @@
 
 /* Direct Blockchain Access Section */
 .blockchain-preview {
-  background: var(--bg);
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
   border-radius: 0.75rem;
   padding: 2rem;
   margin-bottom: 2rem;
+  border: 1px solid #2a2a4e;
 }
 
 .blockchain-summary {
@@ -736,14 +737,18 @@
   align-items: start;
 }
 
+.blockchain-preview h2 {
+  color: white;
+}
+
 .summary-content h3 {
   font-size: var(--font-size-xl);
   margin-bottom: 1rem;
-  color: var(--text);
+  color: white;
 }
 
 .summary-content > p {
-  color: var(--text-secondary);
+  color: rgba(255, 255, 255, 0.85);
   line-height: 1.6;
   margin-bottom: 1.5rem;
 }
@@ -756,8 +761,8 @@
 }
 
 .comparison-item {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 0.5rem;
   padding: 1rem;
 }
@@ -766,7 +771,7 @@
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-semibold);
   margin-bottom: 0.75rem;
-  color: var(--text);
+  color: white;
 }
 
 .comparison-item ul {
@@ -777,7 +782,7 @@
 
 .comparison-item li {
   font-size: var(--font-size-sm);
-  color: var(--text-secondary);
+  color: rgba(255, 255, 255, 0.8);
   padding: 0.25rem 0;
 }
 
@@ -785,7 +790,7 @@
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-semibold);
   margin-bottom: 0.75rem;
-  color: var(--text);
+  color: white;
 }
 
 .address-row {
@@ -798,14 +803,15 @@
 
 .network-label {
   font-size: var(--font-size-sm);
-  color: var(--text-secondary);
+  color: rgba(255, 255, 255, 0.7);
   min-width: 100px;
 }
 
 .address-row code {
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
-  background: var(--gray-100);
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.9);
   padding: 0.25rem 0.5rem;
   border-radius: 0.25rem;
   word-break: break-all;

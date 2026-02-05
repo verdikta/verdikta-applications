@@ -68,13 +68,6 @@ export const currentNetwork = {
   linkTokenAddress: import.meta.env.VITE_LINK_TOKEN_ADDRESS || networkConfig.linkTokenAddress
 };
 
-// Debug: log the current network config
-console.log('🔧 Network config:', {
-  selectedNetwork: config.network,
-  networkConfig: networkConfig,
-  currentNetworkName: currentNetwork.name
-});
-
 // Log configuration in debug mode
 if (config.enableDebug) {
   console.log('🔧 App Configuration:', {

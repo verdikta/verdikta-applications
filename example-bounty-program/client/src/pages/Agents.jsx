@@ -616,11 +616,11 @@ for job in jobs.get("jobs", []):
             <div className="contract-addresses-preview">
               <h4>Contract Addresses</h4>
               <div className="address-row">
-                <span className="network-label">Base Sepolia:</span>
+                <span className="network-name">Base Sepolia:</span>
                 <code>{config.networks['base-sepolia'].bountyEscrowAddress}</code>
               </div>
               <div className="address-row">
-                <span className="network-label">Base Mainnet:</span>
+                <span className="network-name">Base Mainnet:</span>
                 <code>{config.networks['base'].bountyEscrowAddress}</code>
               </div>
             </div>

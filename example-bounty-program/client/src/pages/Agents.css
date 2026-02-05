@@ -813,7 +813,7 @@
   flex-wrap: wrap;
 }
 
-.network-label {
+.blockchain-preview .network-name {
   font-size: var(--font-size-sm);
   color: rgba(255, 255, 255, 0.7);
   min-width: 100px;

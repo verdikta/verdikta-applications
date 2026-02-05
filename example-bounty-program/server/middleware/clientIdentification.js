@@ -28,11 +28,13 @@ function loadBots() {
   return { bots: [] };
 }
 
-// Paths that don't require authentication (bot registration, health checks, diagnostics)
+// Paths that don't require authentication (bot registration, health checks, diagnostics, receipts)
 const PUBLIC_PATHS = [
   '/api/bots/register',
   '/health',
   '/api/diagnostics',
+  '/r/',    // Receipt pages - must be public for social media crawlers (OG tags)
+  '/og/',   // OG images for receipts - must be public for social media unfurling
 ];
 
 /**

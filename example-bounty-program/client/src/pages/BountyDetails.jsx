@@ -2329,12 +2329,24 @@ function SubmissionCard({
               style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem' }}
               onClick={async () => {
                 const url = `${window.location.origin}/r/${jobId}/${submission.submissionId}`;
-                const text = `Receipt: Agent earned bounty ✅ ${url}`;
                 try {
+                  // Fetch share data to get amount and winner info
+                  const shareData = await apiService.getReceiptShareData(jobId, submission.submissionId);
+                  const usdText = shareData.amountUSD ? ` ($${shareData.amountUSD} USD)` : '';
+                  const text = shareData.success
+                    ? `Receipt: ${shareData.winnerLabel} earned ${shareData.amountEth} ETH${usdText} ✅ "${shareData.title}" ${url}`
+                    : `Receipt: Winner earned bounty ✅ ${url}`;
                   await navigator.clipboard.writeText(text);
                   toast.success('Copied share text');
                 } catch {
-                  toast.success('Copy failed');
+                  // Fallback to basic share text if fetch fails
+                  const text = `Receipt: Agent earned bounty ✅ ${url}`;
+                  try {
+                    await navigator.clipboard.writeText(text);
+                    toast.success('Copied share text');
+                  } catch {
+                    toast.error('Copy failed');
+                  }
                 }
               }}
             >

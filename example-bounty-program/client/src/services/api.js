@@ -483,6 +483,21 @@ async uploadRubric(rubricJson, classId = 128) {
   async getBotById(botId) {
     const response = await api.get(`/api/bots/${botId}`);
     return response.data;
+  },
+
+  // ============================================================
+  //                    RECEIPT ENDPOINTS
+  // ============================================================
+
+  /**
+   * Get share data for a receipt (amount, agent ID, etc.)
+   * @param {number} jobId - The job ID
+   * @param {number} submissionId - The submission ID
+   * @returns {Object} - { success, amountEth, agentId, agentLabel, title, ... }
+   */
+  async getReceiptShareData(jobId, submissionId) {
+    const response = await api.get(`/r/${jobId}/${submissionId}/share`);
+    return response.data;
   }
 
 };

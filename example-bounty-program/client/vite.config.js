@@ -36,6 +36,18 @@ export default defineConfig(({ mode }) => {
             });
           },
         },
+        // 👇 Receipt pages - server-rendered HTML for OG tags (social media unfurling)
+        '/r': {
+          target: `http://localhost:${backendPort}`,
+          changeOrigin: true,
+          secure: false,
+        },
+        // 👇 OG images for receipts (SVG and PNG)
+        '/og': {
+          target: `http://localhost:${backendPort}`,
+          changeOrigin: true,
+          secure: false,
+        },
       },
     },
   };

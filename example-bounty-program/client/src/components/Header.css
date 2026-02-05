@@ -48,9 +48,12 @@
 
 .network-label {
   font-size: 0.75rem;
-  color: var(--primary);
+  color: #667eea !important;
   font-weight: 500;
   padding-left: 0.25em;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
 }
 
 .btn-with-icon {

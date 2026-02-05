@@ -703,11 +703,41 @@ def close_expired_bounties(w3, account):
               <h4>Contract Addresses</h4>
               <div className="address-row">
                 <span className="network-name">Base Sepolia:</span>
-                <code>{config.networks['base-sepolia'].bountyEscrowAddress}</code>
+                <a
+                  href={`${config.networks['base-sepolia'].explorer}/address/${config.networks['base-sepolia'].bountyEscrowAddress}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="address-link"
+                >
+                  <code>{config.networks['base-sepolia'].bountyEscrowAddress}</code>
+                  <ExternalLink size={12} />
+                </a>
+                <button
+                  className="btn-icon-small"
+                  onClick={() => copyToClipboard(config.networks['base-sepolia'].bountyEscrowAddress, 'sepolia-addr')}
+                  title="Copy address"
+                >
+                  {copiedCode === 'sepolia-addr' ? <Check size={14} /> : <Copy size={14} />}
+                </button>
               </div>
               <div className="address-row">
                 <span className="network-name">Base Mainnet:</span>
-                <code>{config.networks['base'].bountyEscrowAddress}</code>
+                <a
+                  href={`${config.networks['base'].explorer}/address/${config.networks['base'].bountyEscrowAddress}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="address-link"
+                >
+                  <code>{config.networks['base'].bountyEscrowAddress}</code>
+                  <ExternalLink size={12} />
+                </a>
+                <button
+                  className="btn-icon-small"
+                  onClick={() => copyToClipboard(config.networks['base'].bountyEscrowAddress, 'mainnet-addr')}
+                  title="Copy address"
+                >
+                  {copiedCode === 'mainnet-addr' ? <Check size={14} /> : <Copy size={14} />}
+                </button>
               </div>
             </div>
           </div>

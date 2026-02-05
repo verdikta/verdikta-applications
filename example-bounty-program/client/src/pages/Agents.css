@@ -829,6 +829,45 @@
   word-break: break-all;
 }
 
+.address-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  text-decoration: none;
+  transition: opacity 0.2s;
+}
+
+.address-link:hover {
+  opacity: 0.8;
+}
+
+.address-link code {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.address-link svg {
+  color: rgba(255, 255, 255, 0.6);
+  flex-shrink: 0;
+}
+
+.btn-icon-small {
+  background: transparent;
+  border: none;
+  padding: 0.25rem;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.6);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.25rem;
+  transition: color 0.2s, background 0.2s;
+}
+
+.btn-icon-small:hover {
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.1);
+}
+
 .blockchain-cta {
   display: flex;
   align-items: center;

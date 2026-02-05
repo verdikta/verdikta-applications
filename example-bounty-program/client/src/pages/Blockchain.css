@@ -209,6 +209,27 @@
   word-break: break-all;
 }
 
+.address-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  text-decoration: none;
+  transition: opacity 0.2s;
+}
+
+.address-link:hover {
+  opacity: 0.7;
+}
+
+.address-link code {
+  color: var(--text-primary, #1a1a1a);
+}
+
+.address-link svg {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
 .btn-icon-small {
   background: none;
   border: none;

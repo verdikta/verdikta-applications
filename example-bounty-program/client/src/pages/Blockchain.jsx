@@ -421,7 +421,15 @@ submission-package.zip
                 </td>
                 <td>
                   <div className="address-cell">
-                    <code>{contracts.sepolia.bountyEscrow}</code>
+                    <a
+                      href={`${contracts.sepolia.explorer}/address/${contracts.sepolia.bountyEscrow}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="address-link"
+                    >
+                      <code>{contracts.sepolia.bountyEscrow}</code>
+                      <ExternalLink size={12} />
+                    </a>
                     <button
                       className="btn-icon-small"
                       onClick={() => copyToClipboard(contracts.sepolia.bountyEscrow, 'escrow-sepolia')}
@@ -432,7 +440,15 @@ submission-package.zip
                 </td>
                 <td>
                   <div className="address-cell">
-                    <code>{contracts.mainnet.bountyEscrow}</code>
+                    <a
+                      href={`${contracts.mainnet.explorer}/address/${contracts.mainnet.bountyEscrow}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="address-link"
+                    >
+                      <code>{contracts.mainnet.bountyEscrow}</code>
+                      <ExternalLink size={12} />
+                    </a>
                     {contracts.mainnet.bountyEscrow.startsWith('0x') && (
                       <button
                         className="btn-icon-small"
@@ -451,7 +467,15 @@ submission-package.zip
                 </td>
                 <td>
                   <div className="address-cell">
-                    <code>{contracts.sepolia.verdiktaAggregator}</code>
+                    <a
+                      href={`${contracts.sepolia.explorer}/address/${contracts.sepolia.verdiktaAggregator}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="address-link"
+                    >
+                      <code>{contracts.sepolia.verdiktaAggregator}</code>
+                      <ExternalLink size={12} />
+                    </a>
                     <button
                       className="btn-icon-small"
                       onClick={() => copyToClipboard(contracts.sepolia.verdiktaAggregator, 'verdikta-sepolia')}
@@ -462,7 +486,15 @@ submission-package.zip
                 </td>
                 <td>
                   <div className="address-cell">
-                    <code>{contracts.mainnet.verdiktaAggregator}</code>
+                    <a
+                      href={`${contracts.mainnet.explorer}/address/${contracts.mainnet.verdiktaAggregator}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="address-link"
+                    >
+                      <code>{contracts.mainnet.verdiktaAggregator}</code>
+                      <ExternalLink size={12} />
+                    </a>
                     <button
                       className="btn-icon-small"
                       onClick={() => copyToClipboard(contracts.mainnet.verdiktaAggregator, 'verdikta-mainnet')}
@@ -479,7 +511,15 @@ submission-package.zip
                 </td>
                 <td>
                   <div className="address-cell">
-                    <code>{contracts.sepolia.linkToken}</code>
+                    <a
+                      href={`${contracts.sepolia.explorer}/address/${contracts.sepolia.linkToken}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="address-link"
+                    >
+                      <code>{contracts.sepolia.linkToken}</code>
+                      <ExternalLink size={12} />
+                    </a>
                     <button
                       className="btn-icon-small"
                       onClick={() => copyToClipboard(contracts.sepolia.linkToken, 'link-sepolia')}
@@ -490,7 +530,15 @@ submission-package.zip
                 </td>
                 <td>
                   <div className="address-cell">
-                    <code>{contracts.mainnet.linkToken}</code>
+                    <a
+                      href={`${contracts.mainnet.explorer}/address/${contracts.mainnet.linkToken}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="address-link"
+                    >
+                      <code>{contracts.mainnet.linkToken}</code>
+                      <ExternalLink size={12} />
+                    </a>
                     <button
                       className="btn-icon-small"
                       onClick={() => copyToClipboard(contracts.mainnet.linkToken, 'link-mainnet')}

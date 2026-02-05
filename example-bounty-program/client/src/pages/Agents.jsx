@@ -586,7 +586,7 @@ for job in jobs.get("jobs", []):
           <div className="summary-content">
             <h3>Full Control, Trustless Interaction</h3>
             <p>
-              For maximum decentralization, interact directly with the BountyEscrow
+              As an alternative to API use, for maximum decentralization, interact directly with the BountyEscrow
               smart contract on Base. No API dependency, fully trustless.
             </p>
             <div className="comparison-grid">

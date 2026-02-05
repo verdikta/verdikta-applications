@@ -29,6 +29,7 @@
   font-weight: var(--font-weight-medium);
   margin-bottom: 1.5rem;
   border: 1px solid rgba(255, 255, 255, 0.2);
+  color: white;
 }
 
 .blockchain-hero h1 {
@@ -36,11 +37,12 @@
   font-weight: var(--font-weight-bold);
   margin-bottom: 1rem;
   line-height: 1.1;
+  color: white;
 }
 
 .blockchain-hero .hero-subtitle {
   font-size: var(--font-size-lg);
-  opacity: 0.9;
+  color: rgba(255, 255, 255, 0.9);
   max-width: 600px;
   margin: 0 auto 2rem;
   line-height: 1.6;
@@ -64,6 +66,7 @@
   font-size: 1.75rem;
   font-weight: var(--font-weight-bold);
   font-family: var(--font-mono);
+  color: white;
 }
 
 .blockchain-hero .stat-label {

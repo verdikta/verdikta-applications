@@ -1383,6 +1383,164 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
 
 
 /* =======================
+   TIMEOUT STUCK SUBMISSION
+   ======================= */
+
+/**
+ * POST /api/jobs/:jobId/submissions/:submissionId/timeout
+ * Validate and prepare a timeout call for a stuck submission.
+ *
+ * On-chain requirements (from BountyEscrow.failTimedOutSubmission):
+ * - Status must be PendingVerdikta (PENDING_EVALUATION)
+ * - 10 minutes must have elapsed since submittedAt
+ * - Anyone can call (no access restriction)
+ *
+ * Returns contract call data for client to execute the transaction.
+ */
+router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
+  const { jobId, submissionId } = req.params;
+  const TIMEOUT_SECONDS = 10 * 60; // 10 minutes per contract
+
+  try {
+    logger.info('[timeout] check', { jobId, submissionId });
+
+    const job = await jobStorage.getJob(jobId);
+    const subId = parseInt(submissionId, 10);
+    const submission = job.submissions?.find(s => s.submissionId === subId);
+
+    if (!submission) {
+      return res.status(404).json({
+        success: false,
+        canTimeout: false,
+        error: 'Submission not found',
+        details: `No submission with ID ${submissionId} found for job ${jobId}`
+      });
+    }
+
+    // Get on-chain IDs
+    const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+    const onChainSubmissionId = submission.onChainSubmissionId ?? submission.submissionId;
+
+    if (onChainBountyId == null) {
+      return res.status(400).json({
+        success: false,
+        canTimeout: false,
+        error: 'Job not on-chain',
+        details: 'This job has not been registered on the blockchain yet'
+      });
+    }
+
+    // Check status - must be pending evaluation
+    const status = (submission.status || '').toLowerCase();
+    const isPending = status === 'pending' ||
+                      status === 'pendingverdikta' ||
+                      status === 'pending_evaluation';
+
+    if (!isPending) {
+      return res.status(400).json({
+        success: false,
+        canTimeout: false,
+        error: 'Submission not pending',
+        details: `Submission status is "${submission.status}". Only submissions with PENDING_EVALUATION status can be timed out.`,
+        currentStatus: submission.status
+      });
+    }
+
+    // Check time elapsed
+    const submittedAt = submission.submittedAt || 0;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const elapsedSeconds = nowSeconds - submittedAt;
+    const remainingSeconds = TIMEOUT_SECONDS - elapsedSeconds;
+
+    if (remainingSeconds > 0) {
+      const remainingMinutes = Math.ceil(remainingSeconds / 60);
+      return res.status(400).json({
+        success: false,
+        canTimeout: false,
+        error: 'Timeout not reached',
+        details: `${remainingMinutes} minute(s) remaining until timeout is allowed`,
+        submittedAt,
+        timeoutAt: submittedAt + TIMEOUT_SECONDS,
+        remainingSeconds
+      });
+    }
+
+    // All conditions met - return contract call data
+    const contractAddress = config.bountyEscrowAddress;
+
+    if (!contractAddress) {
+      return res.status(500).json({
+        success: false,
+        canTimeout: false,
+        error: 'Contract not configured',
+        details: 'BOUNTY_ESCROW_ADDRESS not set on server'
+      });
+    }
+
+    // Encode the function call data
+    const iface = new ethers.Interface([
+      'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)'
+    ]);
+    const calldata = iface.encodeFunctionData('failTimedOutSubmission', [
+      onChainBountyId,
+      onChainSubmissionId
+    ]);
+
+    logger.info('[timeout] conditions met', {
+      jobId,
+      submissionId,
+      onChainBountyId,
+      onChainSubmissionId,
+      elapsedSeconds
+    });
+
+    return res.json({
+      success: true,
+      canTimeout: true,
+      message: 'Submission can be timed out. Execute the transaction to trigger refund.',
+      // Ready-to-sign transaction object for bots
+      transaction: {
+        to: contractAddress,
+        data: calldata,
+        value: '0',
+        chainId: config.chainId
+      },
+      // Human-readable contract call info
+      contractCall: {
+        method: 'failTimedOutSubmission',
+        args: [onChainBountyId, onChainSubmissionId],
+        abi: 'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)'
+      },
+      submission: {
+        id: subId,
+        hunter: submission.hunter,
+        status: submission.status,
+        submittedAt,
+        elapsedMinutes: Math.floor(elapsedSeconds / 60)
+      }
+    });
+
+  } catch (error) {
+    logger.error('[timeout] error', { jobId, submissionId, msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({
+        success: false,
+        canTimeout: false,
+        error: 'Not found',
+        details: error.message
+      });
+    }
+    return res.status(500).json({
+      success: false,
+      canTimeout: false,
+      error: 'Failed to check timeout conditions',
+      details: error.message
+    });
+  }
+});
+
+
+/* =======================
    GET EVALUATION REPORT (Agent-friendly endpoint)
    ======================= */
 

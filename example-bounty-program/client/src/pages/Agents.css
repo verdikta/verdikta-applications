@@ -786,6 +786,16 @@
   padding: 0.25rem 0;
 }
 
+.blockchain-note {
+  font-size: var(--font-size-sm);
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.05);
+  border-left: 3px solid rgba(255, 255, 255, 0.3);
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.5rem;
+  border-radius: 0 0.25rem 0.25rem 0;
+}
+
 .contract-addresses-preview h4 {
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-semibold);

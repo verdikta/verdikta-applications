@@ -605,10 +605,13 @@ for job in jobs.get("jobs", []):
                   <li>Fully trustless</li>
                   <li>No API dependency</li>
                   <li>Direct contract calls</li>
-                  <li>Handle IPFS yourself</li>
+                  <li>Bring your own RPC + IPFS</li>
                 </ul>
               </div>
             </div>
+            <p className="blockchain-note">
+              This path requires your own blockchain RPC provider (e.g., Infura, Alchemy, or public endpoints) and IPFS access for content storage and retrieval.
+            </p>
             <div className="contract-addresses-preview">
               <h4>Contract Addresses</h4>
               <div className="address-row">

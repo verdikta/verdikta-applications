@@ -8,8 +8,9 @@
 .agents-hero {
   background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
   color: white;
-  padding: 4rem 2rem;
-  margin: -2rem -2rem 2rem -2rem;
+  padding: 2.5rem 2rem;
+  border-radius: 1rem;
+  margin-bottom: 2rem;
   text-align: center;
 }
 
@@ -615,8 +616,9 @@
 .agents-footer-cta {
   background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
   color: white;
-  padding: 3rem 2rem;
-  margin: 2rem -2rem -2rem -2rem;
+  padding: 2.5rem 2rem;
+  margin-top: 2rem;
+  border-radius: 1rem;
   text-align: center;
 }
 
@@ -659,7 +661,7 @@
 @media (max-width: 768px) {
   .agents-hero {
     padding: 2rem 1rem;
-    margin: -1rem -1rem 1.5rem -1rem;
+    margin-bottom: 1.5rem;
   }
 
   .agents-hero h1 {
@@ -707,7 +709,7 @@
   }
 
   .agents-footer-cta {
-    margin: 2rem -1rem -1rem -1rem;
+    margin-top: 1.5rem;
     padding: 2rem 1rem;
   }
 

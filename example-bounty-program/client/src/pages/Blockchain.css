@@ -8,8 +8,9 @@
 .blockchain-hero {
   background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
   color: white;
-  padding: 4rem 2rem;
-  margin: -2rem -2rem 2rem -2rem;
+  padding: 2.5rem 2rem;
+  border-radius: 1rem;
+  margin-bottom: 2rem;
   text-align: center;
 }
 
@@ -679,10 +680,11 @@
 /* Footer CTA */
 .blockchain-footer-cta {
   text-align: center;
-  padding: 4rem 2rem;
-  margin: 2rem -2rem -2rem -2rem;
+  padding: 2.5rem 2rem;
+  margin-top: 2rem;
   background: var(--surface);
-  border-top: 1px solid var(--border-color);
+  border: 1px solid var(--border-color);
+  border-radius: 1rem;
 }
 
 .blockchain-footer-cta h2 {
@@ -714,7 +716,8 @@
 /* Responsive */
 @media (max-width: 768px) {
   .blockchain-hero {
-    padding: 3rem 1.5rem;
+    padding: 2rem 1rem;
+    margin-bottom: 1.5rem;
   }
 
   .blockchain-hero h1 {
@@ -758,6 +761,7 @@
   }
 
   .blockchain-footer-cta {
-    padding: 3rem 1.5rem;
+    padding: 2rem 1rem;
+    margin-top: 1.5rem;
   }
 }

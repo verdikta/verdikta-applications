@@ -13,6 +13,7 @@ import MyBounties from './pages/MyBounties';
 import Analytics from './pages/Analytics';
 import Agents from './pages/Agents';
 import Blockchain from './pages/Blockchain';
+import ScrollToTop from './components/ScrollToTop';
 import './App.css';
 
 function AppContent() {
@@ -73,8 +74,10 @@ function AppContent() {
   };
 
   return (
-    <div className="app">
-      <Header
+    <>
+      <ScrollToTop />
+      <div className="app">
+        <Header
         walletState={walletState}
         onConnect={handleConnect}
         onDisconnect={handleDisconnect}
@@ -92,7 +95,8 @@ function AppContent() {
           <Route path="/blockchain" element={<Blockchain />} />
         </Routes>
       </main>
-    </div>
+      </div>
+    </>
   );
 }
 

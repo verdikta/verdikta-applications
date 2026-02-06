@@ -1,5 +1,7 @@
 import './_env.js';
 import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { JsonRpcProvider, Wallet, Contract, parseEther } from 'ethers';
 
 export const LINK = {
@@ -23,10 +25,18 @@ export function getRpcUrl(network) {
   return process.env.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org';
 }
 
+export function resolvePath(p) {
+  if (!p) return p;
+  // Resolve relative paths against the scripts directory (not the caller's CWD).
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  return path.isAbsolute(p) ? p : path.resolve(here, p);
+}
+
 export async function loadWallet() {
-  const keystorePath = process.env.VERDIKTA_KEYSTORE_PATH;
+  const keystorePathRaw = process.env.VERDIKTA_KEYSTORE_PATH;
   const password = process.env.VERDIKTA_WALLET_PASSWORD;
-  if (!keystorePath || !password) throw new Error('Set VERDIKTA_KEYSTORE_PATH and VERDIKTA_WALLET_PASSWORD');
+  if (!keystorePathRaw || !password) throw new Error('Set VERDIKTA_KEYSTORE_PATH and VERDIKTA_WALLET_PASSWORD');
+  const keystorePath = resolvePath(keystorePathRaw);
   const json = await fs.readFile(keystorePath, 'utf-8');
   return Wallet.fromEncryptedJson(json, password);
 }

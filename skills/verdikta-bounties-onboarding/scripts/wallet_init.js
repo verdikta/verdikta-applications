@@ -9,7 +9,7 @@ function arg(name, def = null) {
   return i >= 0 ? process.argv[i + 1] : def;
 }
 
-const out = arg('out', 'secrets/verdikta-wallet.json');
+const outArg = arg('out', '../secrets/verdikta-wallet.json');
 const password = process.env.VERDIKTA_WALLET_PASSWORD;
 if (!password) {
   console.error('Missing VERDIKTA_WALLET_PASSWORD');
@@ -18,6 +18,10 @@ if (!password) {
 
 const wallet = Wallet.createRandom();
 const json = await wallet.encrypt(password);
+
+// Resolve out path relative to this script's directory to avoid CWD confusion
+const scriptDir = path.dirname(new URL(import.meta.url).pathname);
+const out = path.isAbsolute(outArg) ? outArg : path.resolve(scriptDir, outArg);
 
 await fs.mkdir(path.dirname(out), { recursive: true });
 await fs.writeFile(out, json, { mode: 0o600 });

@@ -707,6 +707,12 @@ class SyncService {
       return true;
     }
 
+    // Update if description is still the placeholder (needs re-fetch from IPFS)
+    if (localJob.description === 'Fetched from blockchain') {
+      logger.info('Description needs re-fetch', { jobId: localJob.jobId });
+      return true;
+    }
+
     // Update if local submissions array is missing data (recovery from previous sync bug)
     const localSubmissionsLength = (localJob.submissions || []).length;
     if (chainJob.submissionCount > 0 && localSubmissionsLength < chainJob.submissionCount) {

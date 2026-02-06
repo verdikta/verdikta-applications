@@ -485,7 +485,7 @@ function JobCard({ job }) {
                 </span>
               ) : null}
               <button
-                className={`btn-validate ${validating ? 'validating' : ''} ${validationResult?.valid ? 'valid' : ''}`}
+                className={`btn-validate ${validating ? 'validating' : ''} ${validationResult?.valid ? 'valid' : ''} ${validationResult && !validationResult.valid ? 'invalid' : ''}`}
                 onClick={handleValidate}
                 disabled={validating}
                 title={validating ? 'Validating...' : 'Check if evaluation package is properly formatted'}

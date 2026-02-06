@@ -16,6 +16,8 @@ import {
   User,
   CheckCircle,
   ShieldCheck,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { apiService } from '../services/api';
 import { config } from '../config';
@@ -61,10 +63,13 @@ function Home({ walletState }) {
     search: '',
     minPayout: ''
   });
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(15);
 
-  // Refs for auto-refresh
+  // Refs for auto-refresh and scroll
   const autoRefreshIntervalRef = useRef(null);
   const isMountedRef = useRef(true);
+  const bountyGridRef = useRef(null);
 
   const loadJobs = useCallback(async (silent = false) => {
     if (!isMountedRef.current) return;
@@ -167,11 +172,30 @@ function Home({ walletState }) {
 
   const handleFilterChange = (key, value) => {
     setFilters(prev => ({ ...prev, [key]: value }));
+    setCurrentPage(1);
   };
 
   const clearFilters = () => {
     setFilters({ status: '', search: '', minPayout: '' });
+    setCurrentPage(1);
   };
+
+  // Scroll to top of grid when page changes (but not on initial load)
+  const isInitialRender = useRef(true);
+  useEffect(() => {
+    if (isInitialRender.current) {
+      isInitialRender.current = false;
+      return;
+    }
+    if (bountyGridRef.current) {
+      bountyGridRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [currentPage]);
+
+  // Pagination
+  const totalPages = Math.ceil(jobs.length / pageSize);
+  const startIndex = (currentPage - 1) * pageSize;
+  const paginatedJobs = jobs.slice(startIndex, startIndex + pageSize);
 
   return (
     <div className="home">
@@ -192,7 +216,7 @@ function Home({ walletState }) {
         </div>
       </div>
 
-      <section className="bounties-section">
+      <section className="bounties-section" ref={bountyGridRef}>
         <div className="section-header">
           <h2>Available Jobs</h2>
           <div className="filters">
@@ -261,11 +285,48 @@ function Home({ walletState }) {
         )}
 
         {!loading && jobs.length > 0 && (
-          <div className="bounty-grid">
-            {jobs.map(job => (
-              <JobCard key={job.jobId} job={job} />
-            ))}
-          </div>
+          <>
+            <div className="bounty-grid">
+              {paginatedJobs.map(job => (
+                <JobCard key={job.jobId} job={job} />
+              ))}
+            </div>
+            <div className="pagination">
+              <div className="pagination-info">
+                Showing {startIndex + 1}–{Math.min(startIndex + pageSize, jobs.length)} of {jobs.length}
+              </div>
+              <div className="pagination-controls">
+                <button
+                  className="btn-page"
+                  onClick={() => setCurrentPage(p => p - 1)}
+                  disabled={currentPage <= 1}
+                >
+                  <ChevronLeft size={16} /> Previous
+                </button>
+                <span className="page-indicator">
+                  Page {currentPage} of {totalPages}
+                </span>
+                <button
+                  className="btn-page"
+                  onClick={() => setCurrentPage(p => p + 1)}
+                  disabled={currentPage >= totalPages}
+                >
+                  Next <ChevronRight size={16} />
+                </button>
+              </div>
+              <div className="page-size-selector">
+                <label>Per page:</label>
+                <select
+                  value={pageSize}
+                  onChange={(e) => { setPageSize(Number(e.target.value)); setCurrentPage(1); }}
+                >
+                  <option value={15}>15</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
+            </div>
+          </>
         )}
       </section>
 

@@ -17,6 +17,7 @@ const { config } = require('../config');
 const archiveGenerator = require('../utils/archiveGenerator');
 const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE } = require('../utils/validation');
 const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
+const { validateBounty, IssueSeverity, IssueType } = require('../utils/bountyValidator');
 
 /* ======================
    Helpers / configuration
@@ -854,6 +855,234 @@ router.patch('/admin/:jobId/status', async (req, res) => {
 });
 
 /* ==============
+   VALIDATE BOUNTY
+   ============== */
+
+/**
+ * POST /api/jobs/validate
+ * Validate an evaluation package CID before creating a bounty.
+ * Use this to check format before committing ETH to a bounty.
+ *
+ * Body: { evaluationCid: "Qm...", classId?: number }
+ * Response: { valid: boolean, errors: string[], warnings: string[] }
+ */
+router.post('/validate', async (req, res) => {
+  const { evaluationCid, classId } = req.body;
+
+  if (!evaluationCid) {
+    return res.status(400).json({
+      valid: false,
+      errors: ['evaluationCid is required']
+    });
+  }
+
+  try {
+    const ipfsClient = req.app.locals.ipfsClient;
+    if (!ipfsClient) {
+      return res.status(500).json({
+        valid: false,
+        errors: ['IPFS client not available']
+      });
+    }
+
+    let classMap;
+    try {
+      const common = require('@verdikta/common');
+      classMap = common.classMap;
+    } catch (e) {
+      logger.warn('Could not load classMap for validation:', e.message);
+    }
+
+    const result = await validateBounty({
+      evaluationCid,
+      classId: classId || 128, // Default to class 128 if not specified
+      ipfsClient,
+      classMap
+    });
+
+    // Format response as simple errors/warnings arrays
+    const errors = result.issues
+      .filter(i => i.severity === 'error')
+      .map(i => i.message);
+    const warnings = result.issues
+      .filter(i => i.severity === 'warning')
+      .map(i => i.message);
+
+    return res.json({
+      valid: result.valid,
+      errors,
+      warnings,
+      evaluationCid,
+      checkedAt: new Date().toISOString()
+    });
+
+  } catch (error) {
+    logger.error('[validate-cid] error', { evaluationCid, msg: error.message });
+    return res.status(500).json({
+      valid: false,
+      errors: [`Validation failed: ${error.message}`]
+    });
+  }
+});
+
+/**
+ * GET /api/jobs/admin/validate-all
+ * Batch validate all open bounties for format issues.
+ * Stores validation results in job storage.
+ */
+router.get('/admin/validate-all', async (req, res) => {
+  try {
+    const ipfsClient = req.app.locals.ipfsClient;
+    if (!ipfsClient) {
+      return res.status(500).json({ error: 'IPFS client not available' });
+    }
+
+    let classMap;
+    try {
+      const common = require('@verdikta/common');
+      classMap = common.classMap;
+    } catch (e) {
+      logger.warn('Could not load classMap for validation:', e.message);
+    }
+
+    const jobs = await jobStorage.listJobs({ includeOrphans: false });
+    const jobList = jobs.jobs || jobs;
+
+    // Only validate OPEN and EXPIRED bounties (ones people might submit to)
+    const toValidate = jobList.filter(j =>
+      j.status === 'OPEN' || j.status === 'EXPIRED'
+    );
+
+    const results = [];
+    let validCount = 0;
+    let invalidCount = 0;
+
+    for (const job of toValidate) {
+      try {
+        // Use primaryCid - this is the evaluation package CID (ZIP with rubric)
+        const evaluationCid = job.primaryCid || job.evaluationCid;
+
+        const result = await validateBounty({
+          evaluationCid,
+          classId: job.classId,
+          ipfsClient,
+          classMap
+        });
+
+        // Store validation result in job
+        await jobStorage.updateJob(job.jobId, {
+          validationStatus: {
+            valid: result.valid,
+            issues: result.issues,
+            checkedAt: new Date().toISOString()
+          }
+        });
+
+        if (result.valid) {
+          validCount++;
+        } else {
+          invalidCount++;
+        }
+
+        results.push({
+          jobId: job.jobId,
+          onChainId: job.onChainId,
+          title: job.title,
+          valid: result.valid,
+          errorCount: result.issues.filter(i => i.severity === 'error').length,
+          warningCount: result.issues.filter(i => i.severity === 'warning').length
+        });
+
+      } catch (e) {
+        results.push({
+          jobId: job.jobId,
+          onChainId: job.onChainId,
+          title: job.title,
+          valid: false,
+          error: e.message
+        });
+        invalidCount++;
+      }
+    }
+
+    return res.json({
+      success: true,
+      summary: {
+        total: toValidate.length,
+        valid: validCount,
+        invalid: invalidCount
+      },
+      results
+    });
+
+  } catch (error) {
+    logger.error('[admin/validate-all] error', { msg: error.message });
+    return res.status(500).json({ error: 'Batch validation failed', details: error.message });
+  }
+});
+
+/**
+ * GET /api/jobs/:jobId/validate
+ * Validate a bounty's evaluation package format.
+ * Checks if the package is a properly formatted ZIP with valid rubric.
+ *
+ * Returns:
+ * - valid: boolean - Whether the bounty is properly formatted
+ * - issues: Array<{type, severity, message}> - List of issues found
+ * - format: object - Format detection info
+ */
+router.get('/:jobId/validate', async (req, res) => {
+  const { jobId } = req.params;
+
+  try {
+    const job = await jobStorage.getJob(jobId);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const ipfsClient = req.app.locals.ipfsClient;
+    if (!ipfsClient) {
+      return res.status(500).json({ error: 'IPFS client not available' });
+    }
+
+    // Try to get classMap for model validation
+    let classMap;
+    try {
+      const common = require('@verdikta/common');
+      classMap = common.classMap;
+    } catch (e) {
+      logger.warn('Could not load classMap for validation:', e.message);
+    }
+
+    // Use primaryCid - this is the evaluation package CID (ZIP with rubric)
+    const evaluationCid = job.primaryCid || job.evaluationCid;
+
+    const result = await validateBounty({
+      evaluationCid,
+      classId: job.classId,
+      ipfsClient,
+      classMap
+    });
+
+    return res.json({
+      success: true,
+      jobId: job.jobId,
+      evaluationCid,
+      valid: result.valid,
+      issues: result.issues,
+      checkedAt: new Date().toISOString()
+    });
+
+  } catch (error) {
+    logger.error('[validate] error', { jobId, msg: error.message });
+    return res.status(500).json({
+      error: 'Validation failed',
+      details: error.message
+    });
+  }
+});
+
+/* ==============
    LIST JOBS
    ============== */
 
@@ -978,6 +1207,13 @@ router.get('/', async (req, res) => {
       const remainingSeconds = (job.submissionCloseTime || 0) - nowSec;
       const hoursLeft = remainingSeconds > 0 ? Math.round(remainingSeconds / 360) / 10 : 0; // 1 decimal place
 
+      // Include validation status if available
+      const validationInfo = job.validationStatus ? {
+        hasIssues: !job.validationStatus.valid,
+        issueCount: job.validationStatus.issues?.length || 0,
+        errorCount: job.validationStatus.issues?.filter(i => i.severity === 'error').length || 0
+      } : null;
+
       return {
         jobId: job.jobId,
         onChainId: job.onChainId,
@@ -994,9 +1230,12 @@ router.get('/', async (req, res) => {
         submissionCloseTime: job.submissionCloseTime,
         hoursLeft, // Computed field for agent convenience
         createdAt: job.createdAt,
+        creator: job.creator, // Bounty creator address
         winner: job.winner,
         syncedFromBlockchain: job.syncedFromBlockchain || false,
-        contractAddress: job.contractAddress // Include for debugging
+        contractAddress: job.contractAddress, // Include for debugging
+        validationStatus: validationInfo, // Include validation info if available
+        submissions: job.submissions // Include for pending evaluation check
       };
     });
 

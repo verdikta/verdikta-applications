@@ -12,8 +12,13 @@ import {
   RefreshCw,
   Trophy,
   Search,
+  ExternalLink,
+  User,
+  CheckCircle,
+  ShieldCheck,
 } from 'lucide-react';
 import { apiService } from '../services/api';
+import { config } from '../config';
 import {
   BountyStatus,
   getBountyStatusLabel,
@@ -33,6 +38,18 @@ import './Home.css';
 const CONFIG = {
   // How often to refresh jobs list when there are pending submissions (15 seconds)
   AUTO_REFRESH_INTERVAL_MS: 15000,
+};
+
+// Helper to truncate Ethereum addresses for display
+const truncateAddress = (address) => {
+  if (!address || address.length < 10) return address || '';
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+};
+
+// Get explorer URL for the current network
+const getExplorerUrl = () => {
+  const network = config.networks[config.network] || config.networks['base-sepolia'];
+  return network.explorer;
 };
 
 function Home({ walletState }) {
@@ -309,6 +326,54 @@ function Home({ walletState }) {
 
 // Job Card Component
 function JobCard({ job }) {
+  const [validating, setValidating] = useState(false);
+  const [validationResult, setValidationResult] = useState(null);
+
+  // Handler for running validation
+  const handleValidate = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (validating) return;
+
+    setValidating(true);
+    setValidationResult(null);
+
+    try {
+      const result = await apiService.validateJob(job.jobId);
+      // API returns issues array with severity: 'error' | 'warning' | 'info'
+      const issues = result.issues || [];
+      const errorCount = issues.filter(i => i.severity === 'error').length;
+      const warningCount = issues.filter(i => i.severity === 'warning').length;
+
+      // Build message from issues
+      let message = 'Package is valid';
+      if (!result.valid) {
+        const errorMessages = issues
+          .filter(i => i.severity === 'error')
+          .map(i => i.message)
+          .join('; ');
+        message = errorMessages || `${errorCount} error(s) found`;
+      }
+
+      setValidationResult({
+        valid: result.valid,
+        errorCount,
+        warningCount,
+        message
+      });
+    } catch (err) {
+      console.error('Validation failed:', err);
+      setValidationResult({
+        valid: false,
+        errorCount: 1,
+        message: err.response?.data?.error || 'Validation failed'
+      });
+    } finally {
+      setValidating(false);
+    }
+  };
+
   // Calculate time remaining with better granularity
   const now = Math.floor(Date.now() / 1000);
   const timeRemaining = (job.submissionCloseTime ?? 0) - now;
@@ -363,13 +428,80 @@ function JobCard({ job }) {
     return <span>{daysRemaining}d remaining</span>;
   };
 
+  // Check for validation issues - use live result if available, otherwise use cached
+  const hasValidationIssues = validationResult
+    ? !validationResult.valid
+    : job.validationStatus?.hasIssues;
+  const validationErrorCount = validationResult
+    ? validationResult.errorCount
+    : (job.validationStatus?.errorCount || 0);
+
+  // Determine card border class: errors = red, warnings only = yellow
+  const validationClass = hasValidationIssues
+    ? (validationErrorCount > 0 ? 'has-errors' : 'has-warnings')
+    : '';
+
   return (
-    <Link to={`/bounty/${job.jobId}`} className="bounty-card">
+    <Link to={`/bounty/${job.jobId}`} className={`bounty-card ${validationClass}`}>
       <div className="bounty-header">
         <h3>{job.title || `Job #${job.jobId}`}</h3>
-        <span {...getBountyBadgeProps(status)}>
-          {getBountyStatusLabel(status)}
-        </span>
+        <div className="bounty-badges">
+          {/* Validation status indicator */}
+          {validationResult ? (
+            validationResult.valid ? (
+              <span
+                className="validation-success"
+                title="Evaluation package is valid"
+              >
+                <CheckCircle size={14} />
+              </span>
+            ) : validationResult.errorCount > 0 ? (
+              // Errors = red (fatal, won't work)
+              <span
+                className="validation-error"
+                title={validationResult.message}
+              >
+                <AlertTriangle size={14} />
+              </span>
+            ) : (
+              // Warnings only = yellow (might still work)
+              <span
+                className="validation-warning"
+                title={validationResult.message}
+              >
+                <AlertTriangle size={14} />
+              </span>
+            )
+          ) : hasValidationIssues ? (
+            <span
+              className={validationErrorCount > 0 ? "validation-error" : "validation-warning"}
+              title={`This bounty has ${validationErrorCount} format issue(s) that may prevent submissions from being evaluated`}
+            >
+              <AlertTriangle size={14} />
+            </span>
+          ) : null}
+
+          {/* Validate button */}
+          <button
+            className={`btn-validate ${validating ? 'validating' : ''} ${validationResult?.valid ? 'valid' : ''}`}
+            onClick={handleValidate}
+            disabled={validating}
+            title={validating ? 'Validating...' : 'Check if evaluation package is properly formatted'}
+          >
+            {validating ? (
+              <RefreshCw size={12} className="spin" />
+            ) : (
+              <ShieldCheck size={12} />
+            )}
+            <span className="btn-validate-text">
+              {validating ? 'Checking...' : 'Validate'}
+            </span>
+          </button>
+
+          <span {...getBountyBadgeProps(status)}>
+            {getBountyStatusLabel(status)}
+          </span>
+        </div>
       </div>
       {job.workProductType && (
         <div className="work-type-badge">{job.workProductType}</div>
@@ -424,6 +556,22 @@ function JobCard({ job }) {
           )}
         </div>
       </div>
+      {job.creator && (
+        <div className="bounty-creator">
+          <User size={14} className="inline-icon" />
+          <span className="label">Creator:</span>
+          <a
+            href={`${getExplorerUrl()}/address/${job.creator}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="creator-link"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {truncateAddress(job.creator)}
+            <ExternalLink size={10} />
+          </a>
+        </div>
+      )}
     </Link>
   );
 }

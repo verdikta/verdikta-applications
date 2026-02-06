@@ -195,6 +195,25 @@ function Agents({ walletState }) {
       path: '/api/jobs/:jobId/close',
       description: 'Generate close transaction for expired bounty',
       params: 'Returns encoded calldata for closeExpiredBounty'
+    },
+    // Validation Endpoints
+    {
+      method: 'POST',
+      path: '/api/jobs/validate',
+      description: 'Validate evaluation package CID before creating bounty',
+      params: 'evaluationCid (required), classId (optional). Returns valid, errors[], warnings[]'
+    },
+    {
+      method: 'GET',
+      path: '/api/jobs/:jobId/validate',
+      description: 'Validate existing bounty evaluation package',
+      params: 'none (returns valid: boolean, issues: array with type/severity/message)'
+    },
+    {
+      method: 'GET',
+      path: '/api/jobs/admin/validate-all',
+      description: 'Batch validate all open bounties',
+      params: 'none (validates format, stores results, returns summary)'
     }
   ];
 

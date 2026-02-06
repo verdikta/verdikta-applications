@@ -498,6 +498,31 @@ async uploadRubric(rubricJson, classId = 128) {
   async getReceiptShareData(jobId, submissionId) {
     const response = await api.get(`/r/${jobId}/${submissionId}/share`);
     return response.data;
+  },
+
+  // ============================================================
+  //                  VALIDATION ENDPOINTS
+  // ============================================================
+
+  /**
+   * Validate a job's evaluation package
+   * Checks if the evaluation CID is accessible and properly formatted (ZIP with rubric)
+   * @param {string|number} jobId - The job ID to validate
+   * @returns {Object} - { valid, errors[], warnings[], issues[] }
+   */
+  async validateJob(jobId) {
+    const response = await api.get(`/api/jobs/${jobId}/validate`);
+    return response.data;
+  },
+
+  /**
+   * Pre-validate an evaluation CID before creating a bounty
+   * @param {Object} data - { evaluationCid, classId }
+   * @returns {Object} - { valid, errors[], warnings[] }
+   */
+  async validateEvaluationPackage(data) {
+    const response = await api.post('/api/jobs/validate', data);
+    return response.data;
   }
 
 };

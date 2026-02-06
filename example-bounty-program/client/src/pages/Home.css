@@ -123,6 +123,114 @@
   margin: 0;
 }
 
+.bounty-badges {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Validation warning indicator (yellow border) */
+.bounty-card.has-warnings {
+  border-color: #f59e0b;
+  border-width: 2px;
+}
+
+/* Validation error indicator (red border - fatal issues) */
+.bounty-card.has-errors {
+  border-color: #dc2626;
+  border-width: 2px;
+}
+
+.validation-warning {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #f59e0b;
+  background: #fef3c7;
+  border-radius: 50%;
+  padding: 0.25rem;
+  cursor: help;
+}
+
+.validation-warning:hover {
+  background: #fde68a;
+}
+
+/* Validation error indicator (fatal issues - red) */
+.validation-error {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #dc2626;
+  background: #fee2e2;
+  border-radius: 50%;
+  padding: 0.25rem;
+  cursor: help;
+}
+
+.validation-error:hover {
+  background: #fecaca;
+}
+
+/* Validation success indicator */
+.validation-success {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--success, #10b981);
+  background: #d1fae5;
+  border-radius: 50%;
+  padding: 0.25rem;
+}
+
+/* Validate button */
+.btn-validate {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-validate:hover:not(:disabled) {
+  background: var(--primary-50, #eef2ff);
+  border-color: var(--primary-300, #a5b4fc);
+  color: var(--primary);
+}
+
+.btn-validate:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.btn-validate.validating {
+  background: var(--primary-50, #eef2ff);
+  border-color: var(--primary-300, #a5b4fc);
+}
+
+.btn-validate.valid {
+  background: #d1fae5;
+  border-color: #6ee7b7;
+  color: var(--success, #10b981);
+}
+
+.btn-validate-text {
+  display: none;
+}
+
+@media (min-width: 400px) {
+  .btn-validate-text {
+    display: inline;
+  }
+}
+
 .bounty-description {
   color: var(--text-secondary);
   margin-bottom: 1rem;
@@ -145,6 +253,45 @@
 .bounty-footer .amount {
   font-weight: 600;
   color: var(--primary);
+}
+
+/* Creator display */
+.bounty-creator {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.bounty-creator .label {
+  color: var(--text-secondary);
+}
+
+.bounty-creator .creator-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--primary);
+  text-decoration: none;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.4rem;
+  background: var(--primary-50, #eef2ff);
+  border-radius: 0.25rem;
+  transition: background 0.2s, color 0.2s;
+}
+
+.bounty-creator .creator-link:hover {
+  background: var(--primary-100, #e0e7ff);
+  color: var(--primary-dark, #4c51bf);
+}
+
+.bounty-creator .creator-link svg {
+  opacity: 0.7;
 }
 
 /* How It Works Section */

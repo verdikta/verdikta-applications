@@ -47,8 +47,9 @@ async function fetchEvaluationMetadata(evaluationCid) {
         try {
           const manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
           // Title is in format: "Job Title - Evaluation for Payment Release"
+          // Older packages may use just "- Evaluation" suffix
           if (manifest.name) {
-            title = manifest.name.replace(/ - Evaluation for Payment Release$/, '');
+            title = manifest.name.replace(/ - Evaluation(?: for Payment Release)?$/, '');
           }
         } catch (e) {
           logger.debug('Failed to parse manifest.json', { cid: evaluationCid, error: e.message });

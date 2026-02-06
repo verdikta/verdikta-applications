@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import ModelStatusGrid from './ModelStatusGrid';
 import WarningsList from './WarningsList';
+import { apiService } from '../services/api';
 import './JustificationDisplay.css';
 
 /**
@@ -85,14 +86,8 @@ function JustificationDisplay({ justificationCids, passed, score, threshold, jur
             try {
               console.log(`[JustificationDisplay] Fetching CID: ${cid}`);
               
-              // Fetch from server endpoint
-              const response = await fetch(`/api/fetch/${cid}`);
-              
-              if (!response.ok) {
-                throw new Error(`Failed to fetch: ${response.status}`);
-              }
-
-              const text = await response.text();
+              // Fetch from server endpoint using API service (includes auth headers)
+              const text = await apiService.fetchFromIPFS(cid);
               
               // Try to parse as JSON first (new format)
               try {

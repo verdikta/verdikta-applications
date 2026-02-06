@@ -19,6 +19,7 @@ const PINATA_JWT = process.env.IPFS_PINNING_KEY || '';
 const ARCHIVE_TTL_DAYS = parseInt(process.env.ARCHIVE_TTL_DAYS || '30', 10);
 const ARCHIVE_AFTER_RETRIEVAL_DAYS = parseInt(process.env.ARCHIVE_AFTER_RETRIEVAL_DAYS || '7', 10);
 const PIN_VERIFY_INTERVAL_HOURS = parseInt(process.env.PIN_VERIFY_INTERVAL_HOURS || '1', 10);
+const VERIFICATION_RATE_LIMIT_MS = parseInt(process.env.VERIFICATION_RATE_LIMIT_MS || '250', 10);
 
 /**
  * Get properly formatted Pinata auth header
@@ -28,6 +29,15 @@ function getPinataAuthHeader() {
   return PINATA_JWT.toLowerCase().startsWith('bearer ')
     ? PINATA_JWT
     : `Bearer ${PINATA_JWT}`;
+}
+
+/**
+ * Utility function to add delay between API calls (rate limiting)
+ * @param {number} ms - Milliseconds to delay
+ * @returns {Promise<void>}
+ */
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 class ArchivalService {
@@ -89,6 +99,12 @@ class ArchivalService {
             const wasModified = await this.processSubmission(job, submission, now);
             if (wasModified) {
               storageModified = true;
+            }
+            
+            // Rate limiting: Add delay between submissions to avoid saturating Pinata API
+            // This prevents HTTP 429 (Too Many Requests) errors when verifying many CIDs
+            if (VERIFICATION_RATE_LIMIT_MS > 0) {
+              await delay(VERIFICATION_RATE_LIMIT_MS);
             }
           } catch (err) {
             logger.error('[archival] Failed to process submission', {
@@ -443,6 +459,7 @@ class ArchivalService {
         archiveTtlDays: ARCHIVE_TTL_DAYS,
         archiveAfterRetrievalDays: ARCHIVE_AFTER_RETRIEVAL_DAYS,
         pinVerifyIntervalHours: PIN_VERIFY_INTERVAL_HOURS,
+        verificationRateLimitMs: VERIFICATION_RATE_LIMIT_MS,
         pinataConfigured: !!PINATA_JWT
       }
     };

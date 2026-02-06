@@ -111,18 +111,88 @@ router.post('/rubrics', async (req, res) => {
   }
 });
 
-// -------------------- FETCH VIA IPFS CLIENT (unchanged) --------------------
+// -------------------- FETCH VIA IPFS CLIENT WITH FALLBACK --------------------
+// Public IPFS gateways to try as fallback (no auth required)
+const PUBLIC_GATEWAYS = [
+  'https://ipfs.io',
+  'https://gateway.pinata.cloud',
+  'https://cloudflare-ipfs.com',
+  'https://dweb.link'
+];
+
+/**
+ * Fetch content from IPFS using multiple gateway fallbacks
+ * @param {string} cid - The IPFS CID to fetch
+ * @param {object} ipfsClient - The primary IPFS client
+ * @param {number} timeoutMs - Timeout for each attempt
+ * @returns {Promise<string>} The fetched content
+ */
+async function fetchWithFallback(cid, ipfsClient, timeoutMs) {
+  // First, try the primary IPFS client
+  if (ipfsClient) {
+    try {
+      const data = await withTimeout(ipfsClient.fetchFromIPFS(cid), timeoutMs, 'IPFS client fetch');
+      logger.debug('[fetch] Success via IPFS client', { cid });
+      return data;
+    } catch (clientErr) {
+      logger.warn('[fetch] IPFS client failed, trying public gateways', { 
+        cid, 
+        error: clientErr.message,
+        status: clientErr.status || clientErr.response?.status
+      });
+    }
+  }
+
+  // Try public gateways as fallback
+  for (const gateway of PUBLIC_GATEWAYS) {
+    try {
+      const url = `${gateway}/ipfs/${cid}`;
+      logger.debug('[fetch] Trying gateway', { gateway, cid });
+      
+      const response = await withTimeout(
+        fetch(url, {
+          headers: {
+            'Accept': 'text/plain, application/json, */*',
+            'User-Agent': 'Verdikta-Bounty-Server/1.0'
+          }
+        }),
+        timeoutMs,
+        `Gateway fetch (${gateway})`
+      );
+
+      if (!response.ok) {
+        logger.debug('[fetch] Gateway returned error', { gateway, status: response.status });
+        continue; // Try next gateway
+      }
+
+      const text = await response.text();
+      logger.info('[fetch] Success via public gateway', { gateway, cid });
+      return text;
+    } catch (gwErr) {
+      logger.debug('[fetch] Gateway failed', { gateway, cid, error: gwErr.message });
+      continue; // Try next gateway
+    }
+  }
+
+  // All attempts failed
+  throw new Error(`Failed to fetch CID ${cid} from all gateways`);
+}
+
 router.get('/fetch/:cid', async (req, res) => {
   try {
     const ipfs = req.app.locals.ipfsClient;
-    if (!ipfs) return res.status(500).send('IPFS client not initialized');
+    const cid = req.params.cid;
+    
+    if (!cid || cid.length < 10) {
+      return res.status(400).json({ error: 'Invalid CID' });
+    }
 
-    const data = await withTimeout(ipfs.fetchFromIPFS(req.params.cid), PIN_TIMEOUT_MS, 'IPFS fetch');
+    const data = await fetchWithFallback(cid, ipfs, PIN_TIMEOUT_MS);
     res.set('Content-Type', 'text/plain; charset=utf-8');
     return res.send(data);
   } catch (err) {
     const details = normalizeProviderError(err);
-    logger.error('[fetch] failed', { cid: req.params.cid, ...details });
+    logger.error('[fetch] All attempts failed', { cid: req.params.cid, ...details });
     return res.status(502).json({ error: 'Fetch failed', details });
   }
 });

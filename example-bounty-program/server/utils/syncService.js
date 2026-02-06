@@ -191,27 +191,66 @@ class SyncService {
         if (!existingJob) {
           // Check for recently created jobs without onChainId that might be waiting to be linked
           // This handles the race condition between frontend create and sync
-          const pendingJob = storage.jobs.find(j => 
-            j.onChainId == null && 
-            j.bountyId == null &&
-            j.creator?.toLowerCase() === bounty.creator?.toLowerCase() &&
-            // Match by submission deadline (within 60 seconds tolerance)
-            Math.abs((j.submissionCloseTime || 0) - bounty.submissionCloseTime) < 60
-          );
+          // 
+          // MATCHING STRATEGIES (in order of reliability):
+          // 1. evaluationCid/primaryCid match - most reliable, unique per job
+          // 2. creator + deadline match - fallback for older jobs
+          const pendingJob = storage.jobs.find(j => {
+            // Skip jobs that already have an onChainId
+            if (j.onChainId != null || j.bountyId != null) return false;
+            
+            // Strategy 1: Match by evaluationCid (most reliable - unique per job)
+            // The evaluationCid/primaryCid is the same CID used on-chain
+            if (bounty.evaluationCid && (
+              j.primaryCid === bounty.evaluationCid ||
+              j.evaluationCid === bounty.evaluationCid
+            )) {
+              return true;
+            }
+            
+            // Strategy 2: Match by creator + deadline (fallback)
+            if (j.creator?.toLowerCase() === bounty.creator?.toLowerCase() &&
+                Math.abs((j.submissionCloseTime || 0) - bounty.submissionCloseTime) < 60) {
+              return true;
+            }
+            
+            return false;
+          });
           
           if (pendingJob) {
             // Link existing job instead of creating duplicate
             logger.info('🔗 Linking pending job to on-chain bounty', {
               jobId: pendingJob.jobId,
               onChainId: bounty.jobId,
-              title: pendingJob.title
+              title: pendingJob.title,
+              matchedBy: pendingJob.primaryCid === bounty.evaluationCid ? 'evaluationCid' : 'creator+deadline'
             });
             await this.updateJobFromBlockchain(pendingJob, bounty, storage, currentContract);
             linked++;
           } else {
-            // Truly new job from blockchain (created by another frontend or directly) - add it
-            await this.addJobFromBlockchain(bounty, storage, currentContract);
-            added++;
+            // Check if a job with same evaluationCid already exists (even if it has onChainId set)
+            // This catches the race condition where PATCH set onChainId AFTER we read storage
+            const existingByCid = storage.jobs.find(j =>
+              bounty.evaluationCid && (
+                j.primaryCid === bounty.evaluationCid ||
+                j.evaluationCid === bounty.evaluationCid
+              )
+            );
+            
+            if (existingByCid) {
+              // Job already exists, just update it (handles PATCH race condition)
+              logger.info('🔗 Found existing job by CID match (race condition recovery)', {
+                jobId: existingByCid.jobId,
+                onChainId: bounty.jobId,
+                existingOnChainId: existingByCid.onChainId
+              });
+              await this.updateJobFromBlockchain(existingByCid, bounty, storage, currentContract);
+              linked++;
+            } else {
+              // Truly new job from blockchain (created by another frontend or directly) - add it
+              await this.addJobFromBlockchain(bounty, storage, currentContract);
+              added++;
+            }
           }
         } else {
           // Job exists - check if we need to update it
@@ -291,8 +330,54 @@ class SyncService {
       }
 
       // Persist changes if any
+      // IMPORTANT: Re-read storage and merge to avoid overwriting changes made during sync
+      // This handles the race condition where PATCH endpoints update jobs while sync is running
       if (added > 0 || updated > 0 || orphaned > 0 || linked > 0) {
-        await jobStorage.writeStorage(storage);
+        const freshStorage = await jobStorage.readStorage();
+        
+        // Merge strategy: For each job in our modified storage, update the fresh storage
+        // Preserve any fields set by PATCH (like onChainId, txHash) that we didn't modify
+        for (const modifiedJob of storage.jobs) {
+          const freshJob = freshStorage.jobs.find(j => j.jobId === modifiedJob.jobId);
+          
+          if (freshJob) {
+            // Fields that PATCH endpoints might set during sync - preserve if freshJob has them
+            const patchPreserveFields = ['onChainId', 'txHash', 'blockNumber', 'onChain', 'contractAddress'];
+            
+            // Save fresh values for PATCH fields
+            const preservedValues = {};
+            for (const field of patchPreserveFields) {
+              if (freshJob[field] != null) {
+                preservedValues[field] = freshJob[field];
+              }
+            }
+            
+            // Copy sync updates (status, submissions, winner, etc.)
+            Object.assign(freshJob, modifiedJob);
+            
+            // Restore PATCH fields if they were set in fresh storage
+            // (PATCH updates take precedence for these fields)
+            for (const [field, value] of Object.entries(preservedValues)) {
+              if (freshJob[field] == null || freshJob[field] !== value) {
+                logger.debug('[sync] Preserving PATCH field', { 
+                  jobId: freshJob.jobId, 
+                  field, 
+                  patchValue: value,
+                  syncValue: modifiedJob[field]
+                });
+                freshJob[field] = value;
+              }
+            }
+          } else {
+            // New job added by sync - add to fresh storage
+            freshStorage.jobs.push(modifiedJob);
+          }
+        }
+        
+        // Update nextId if we added jobs
+        freshStorage.nextId = Math.max(freshStorage.nextId, storage.nextId);
+        
+        await jobStorage.writeStorage(freshStorage);
       }
 
       this.lastSyncTime = new Date();

@@ -10,8 +10,8 @@ const botFile = process.env.VERDIKTA_BOT_FILE || '../secrets/verdikta-bounties-b
 
 const raw = await fs.readFile(botFile, 'utf-8');
 const j = JSON.parse(raw);
-const apiKey = j.api_key || j.bot?.api_key;
-if (!apiKey) throw new Error('Missing api_key in bot file');
+const apiKey = j.apiKey || j.api_key || j.bot?.apiKey || j.bot?.api_key;
+if (!apiKey) throw new Error('Missing apiKey/api_key in bot file');
 
 const url = new URL(`${baseUrl}/api/jobs`);
 url.searchParams.set('status', 'OPEN');

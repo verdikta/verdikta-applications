@@ -33,4 +33,4 @@ await fs.mkdir(new URL('.', `file:${outPath}`).pathname, { recursive: true }).ca
 await fs.writeFile(outPath, JSON.stringify(data, null, 2), { mode: 0o600 });
 
 console.log('Registered bot. Saved response to:', outPath);
-console.log('API key (keep secret):', data?.api_key || data?.bot?.api_key || '(check file)');
+console.log('API key (keep secret):', data?.apiKey || data?.api_key || data?.bot?.apiKey || data?.bot?.api_key || '(check file)');

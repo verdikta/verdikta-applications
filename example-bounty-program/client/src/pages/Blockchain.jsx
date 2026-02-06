@@ -1216,7 +1216,26 @@ const zipBuffer = await createEvaluationZip(
   ]
 );
 
-// Upload zipBuffer to IPFS...`, 'js-zip-example')}
+// Upload to IPFS via Pinata
+async function uploadToPinata(buffer, filename) {
+  const formData = new FormData();
+  formData.append('file', new Blob([buffer]), filename);
+
+  const response = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+    method: 'POST',
+    headers: {
+      'Authorization': \`Bearer \${process.env.PINATA_JWT}\`
+    },
+    body: formData
+  });
+
+  const result = await response.json();
+  return result.IpfsHash;  // This is your CID
+}
+
+const evaluationCid = await uploadToPinata(zipBuffer, 'evaluation.zip');
+console.log('Evaluation CID:', evaluationCid);
+// Use this CID when calling createBounty()`, 'js-zip-example')}
             >
               {copiedCode === 'js-zip-example' ? <Check size={16} /> : <Copy size={16} />}
             </button>
@@ -1275,7 +1294,26 @@ const zipBuffer = await createEvaluationZip(
   ]
 );
 
-// Upload zipBuffer to IPFS...`}</code></pre>
+// Upload to IPFS via Pinata
+async function uploadToPinata(buffer, filename) {
+  const formData = new FormData();
+  formData.append('file', new Blob([buffer]), filename);
+
+  const response = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+    method: 'POST',
+    headers: {
+      'Authorization': \`Bearer \${process.env.PINATA_JWT}\`
+    },
+    body: formData
+  });
+
+  const result = await response.json();
+  return result.IpfsHash;  // This is your CID
+}
+
+const evaluationCid = await uploadToPinata(zipBuffer, 'evaluation.zip');
+console.log('Evaluation CID:', evaluationCid);
+// Use this CID when calling createBounty()`}</code></pre>
         </div>
 
         <div className="callout callout-info" style={{ marginTop: '1.5rem' }}>

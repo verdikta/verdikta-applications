@@ -1091,8 +1091,8 @@ async function closeViaAPI(jobId) {
   "juryParameters": {
     "NUMBER_OF_OUTCOMES": 2,
     "AI_NODES": [
-      { "AI_MODEL": "gpt-4o", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.5 },
-      { "AI_MODEL": "claude-3-5-sonnet-20241022", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.5 }
+      { "AI_MODEL": "gpt-5.2-2025-12-11", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.5 },
+      { "AI_MODEL": "claude-3-5-haiku-20241022", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.5 }
     ],
     "ITERATIONS": 1
   },
@@ -1119,8 +1119,8 @@ async function closeViaAPI(jobId) {
   "juryParameters": {
     "NUMBER_OF_OUTCOMES": 2,
     "AI_NODES": [
-      { "AI_MODEL": "gpt-4o", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.5 },
-      { "AI_MODEL": "claude-3-5-sonnet-20241022", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.5 }
+      { "AI_MODEL": "gpt-5.2-2025-12-11", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.5 },
+      { "AI_MODEL": "claude-3-5-haiku-20241022", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.5 }
     ],
     "ITERATIONS": 1
   },
@@ -1136,6 +1136,26 @@ async function closeViaAPI(jobId) {
     "submittedWork": "The work submitted by a hunter."
   }
 }`}</code></pre>
+        </div>
+
+        <div className="callout callout-critical" style={{ marginTop: '1rem' }}>
+          <AlertTriangle size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
+          <div>
+            <strong>Use Only Supported AI Models</strong>
+            <p style={{ margin: '0.5rem 0 0 0' }}>
+              The oracle network will <strong>silently fail</strong> (no error, no commitment, submission stuck forever)
+              if you specify an unsupported model in <code>AI_NODES</code>. Only these models have been verified to work:
+            </p>
+            <ul style={{ margin: '0.5rem 0 0 0', paddingLeft: '1.5rem' }}>
+              <li><code>gpt-5.2-2025-12-11</code> (OpenAI)</li>
+              <li><code>gpt-5-mini-2025-08-07</code> (OpenAI)</li>
+              <li><code>claude-3-5-haiku-20241022</code> (Anthropic)</li>
+            </ul>
+            <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+              Deprecated models like <code>gpt-4o</code> and <code>claude-3-5-sonnet-20241022</code> are
+              no longer registered on the oracle network and will cause permanent evaluation failure.
+            </p>
+          </div>
         </div>
 
         <h3>Grading Rubric (Upload Separately to IPFS)</h3>
@@ -1231,6 +1251,24 @@ async function closeViaAPI(jobId) {
 // - Clear scoring criteria (DONT_FUND vs FUND)
 //
 // See the Node.js example below for a complete query template.`}</code></pre>
+        </div>
+
+        <div className="callout callout-critical" style={{ marginTop: '1rem' }}>
+          <AlertTriangle size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
+          <div>
+            <strong>Use the Exact Query Template — Do Not Abbreviate</strong>
+            <p style={{ margin: '0.5rem 0 0 0' }}>
+              The oracle adapter parses the query by its section headers. You <strong>must</strong> use
+              the standard template with these exact headers: <code>=== TASK DESCRIPTION ===</code>,{' '}
+              <code>=== EVALUATION INSTRUCTIONS ===</code>, and <code>=== YOUR TASK ===</code>.
+            </p>
+            <p style={{ margin: '0.5rem 0 0 0' }}>
+              Custom or abbreviated queries (e.g., using <code>=== TASK ===</code> or omitting sections)
+              will cause <strong>silent oracle failure</strong> — the submission will be stuck in PendingVerdikta
+              permanently with no error message. Copy the full template from the Node.js example below
+              and only change the placeholder values.
+            </p>
+          </div>
         </div>
 
         <h3>Creating the ZIP (Command Line)</h3>
@@ -1406,8 +1444,8 @@ const zipBuffer = await createEvaluationZip(
   "Blog Post",                            // workProductType
   rubricCid,                              // rubric CID from step 1
   [
-    { provider: "OpenAI", model: "gpt-4o", weight: 0.5 },
-    { provider: "Anthropic", model: "claude-3-5-sonnet-20241022", weight: 0.5 }
+    { provider: "OpenAI", model: "gpt-5.2-2025-12-11", weight: 0.5 },
+    { provider: "Anthropic", model: "claude-3-5-haiku-20241022", weight: 0.5 }
   ]
 );
 
@@ -1528,7 +1566,7 @@ async function createEvaluationZip(title, desc, workType, rubricCid, juryNodes) 
 const zipBuffer = await createEvaluationZip(
   "Write a Blog Post", "Create an engaging blog post about AI",
   "Blog Post", rubricCid,
-  [{ provider: "OpenAI", model: "gpt-4o", weight: 0.5 }, ...]
+  [{ provider: "OpenAI", model: "gpt-5.2-2025-12-11", weight: 1 }]
 );
 
 // ============================================
@@ -1576,6 +1614,8 @@ console.log('Evaluation CID:', evaluationCid);
               <li><strong>❌ Uploading raw JSON as evaluation</strong> — Always ZIP first, then upload the ZIP file</li>
               <li><strong>❌ Missing manifest.additional array</strong> — Required for rubric reference</li>
               <li><strong>❌ Zipping the folder</strong> — Zip the <em>contents</em>, not the containing folder</li>
+              <li><strong>❌ Using unsupported AI models</strong> — Models like <code>gpt-4o</code> or <code>claude-3-5-sonnet-20241022</code> are not registered on the oracle network. Use only verified models (see supported list above)</li>
+              <li><strong>❌ Custom or abbreviated query template</strong> — The oracle parses exact section headers (<code>=== TASK DESCRIPTION ===</code>, <code>=== EVALUATION INSTRUCTIONS ===</code>, <code>=== YOUR TASK ===</code>). Do not rewrite or shorten the template</li>
             </ul>
           </div>
         </div>

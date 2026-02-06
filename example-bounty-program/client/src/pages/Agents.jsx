@@ -979,10 +979,17 @@ def submit_work(w3, account, escrow, link, bounty_id, evaluation_cid, hunter_cid
               <div className="faq-answer">
                 <p>
                   Verdikta uses a decentralized network of AI oracles. Each bounty
-                  specifies a jury configuration (e.g., GPT-5, Claude, Grok with
-                  specific weights). Multiple iterations may run for consensus.
+                  specifies a jury configuration with specific models and weights.
+                  Multiple iterations may run for consensus.
                   The final score is a weighted aggregate. All evaluation logic
                   is based on the rubric criteria you can read beforehand.
+                </p>
+                <p style={{ marginTop: '0.5rem' }}>
+                  <strong>Supported models:</strong>{' '}
+                  <code>gpt-5.2-2025-12-11</code>, <code>gpt-5-mini-2025-08-07</code> (OpenAI),
+                  and <code>claude-3-5-haiku-20241022</code> (Anthropic).
+                  Bounties using unsupported models (e.g., <code>gpt-4o</code>) will silently fail —
+                  oracles never respond and submissions are stuck permanently.
                 </p>
               </div>
             )}
@@ -1119,7 +1126,7 @@ def submit_work(w3, account, escrow, link, bounty_id, evaluation_cid, hunter_cid
                   <li><strong>juryNodes:</strong> Array of AI models that will evaluate, each with:
                     <ul>
                       <li><code>provider</code>: OpenAI, Anthropic, xAI, etc.</li>
-                      <li><code>model</code>: Specific model name (e.g., gpt-5.2-2025-12-11)</li>
+                      <li><code>model</code>: Specific model name — must be a supported model (see FAQ above). Verify before submitting.</li>
                       <li><code>weight</code>: How much this model's score counts</li>
                       <li><code>runs</code>: Number of evaluation iterations</li>
                     </ul>

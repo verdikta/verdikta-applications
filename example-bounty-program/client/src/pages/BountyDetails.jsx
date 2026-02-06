@@ -1664,12 +1664,36 @@ function BountyDetails({ walletState }) {
               </div>
             ))}
           </div>
-          {rubric.forbidden_content && rubric.forbidden_content.length > 0 && (
+          {/* Support both camelCase and snake_case naming */}
+          {((rubric.forbiddenContent || rubric.forbidden_content)?.length > 0) && (
             <div className="forbidden-content">
               <h3><Ban size={18} className="inline-icon" /> Forbidden Content</h3>
-              <ul>{rubric.forbidden_content.map((item, index) => (<li key={index}>{item}</li>))}</ul>
+              <ul>{(rubric.forbiddenContent || rubric.forbidden_content).map((item, index) => (<li key={index}>{item}</li>))}</ul>
             </div>
           )}
+        </section>
+      )}
+
+      {/* Jury Configuration Section - AI Models */}
+      {job?.juryNodes && job.juryNodes.length > 0 && (
+        <section className="jury-section">
+          <h2>AI Jury Configuration</h2>
+          <p className="jury-description">
+            Submissions are evaluated by multiple AI models. Each model scores independently,
+            and the final score is a weighted average.
+          </p>
+          <div className="jury-grid">
+            {job.juryNodes.map((node, index) => (
+              <div key={index} className="jury-card">
+                <div className="jury-provider">{node.provider}</div>
+                <div className="jury-model">{node.model}</div>
+                <div className="jury-details">
+                  <span className="jury-weight">Weight: {Math.round(node.weight * 100)}%</span>
+                  {node.runs > 1 && <span className="jury-runs">{node.runs} runs</span>}
+                </div>
+              </div>
+            ))}
+          </div>
         </section>
       )}
 

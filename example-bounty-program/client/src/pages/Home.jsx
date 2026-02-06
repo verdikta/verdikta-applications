@@ -560,16 +560,26 @@ function JobCard({ job }) {
         <div className="bounty-creator">
           <User size={14} className="inline-icon" />
           <span className="label">Creator:</span>
-          <a
-            href={`${getExplorerUrl()}/address/${job.creator}`}
-            target="_blank"
-            rel="noopener noreferrer"
+          <span
             className="creator-link"
-            onClick={(e) => e.stopPropagation()}
+            role="link"
+            tabIndex={0}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              window.open(`${getExplorerUrl()}/address/${job.creator}`, '_blank', 'noopener,noreferrer');
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                window.open(`${getExplorerUrl()}/address/${job.creator}`, '_blank', 'noopener,noreferrer');
+              }
+            }}
           >
             {truncateAddress(job.creator)}
             <ExternalLink size={10} />
-          </a>
+          </span>
         </div>
       )}
     </Link>

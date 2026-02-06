@@ -1373,12 +1373,82 @@ router.get('/:jobId', async (req, res) => {
     const job = await jobStorage.getJob(jobId);
 
     let rubricContent = null;
-    if (req.query.includeRubric === 'true' && job.rubricCid) {
-      try {
-        const ipfsClient = req.app.locals.ipfsClient;
-        rubricContent = await ipfsClient.fetchFromIPFS(job.rubricCid);
-      } catch (err) {
-        logger.warn('[jobs/details] failed to fetch rubric', { msg: err.message });
+    let extractedJuryNodes = job.juryNodes || [];
+
+    if (req.query.includeRubric === 'true') {
+      const ipfsClient = req.app.locals.ipfsClient;
+
+      // Try fetching from rubricCid first (legacy format)
+      if (job.rubricCid) {
+        try {
+          const rawRubric = await ipfsClient.fetchFromIPFS(job.rubricCid);
+          rubricContent = JSON.parse(rawRubric);
+        } catch (err) {
+          logger.warn('[jobs/details] failed to fetch rubric from rubricCid', { msg: err.message });
+        }
+      }
+
+      // If no rubricCid or fetch failed, try extracting from primaryCid (ZIP archive)
+      if (!rubricContent && job.primaryCid) {
+        try {
+          const archiveBuffer = await ipfsClient.fetchFromIPFS(job.primaryCid);
+          const AdmZip = require('adm-zip');
+          const zip = new AdmZip(archiveBuffer);
+          const entries = zip.getEntries();
+
+          // Look for manifest.json first (new Verdikta format)
+          const manifestEntry = entries.find(e =>
+            e.entryName === 'manifest.json' || e.entryName.endsWith('/manifest.json')
+          );
+
+          if (manifestEntry) {
+            const manifestText = zip.readAsText(manifestEntry);
+            const manifest = JSON.parse(manifestText);
+
+            // Extract jury nodes from manifest.juryParameters.AI_NODES
+            if (manifest.juryParameters?.AI_NODES && extractedJuryNodes.length === 0) {
+              extractedJuryNodes = manifest.juryParameters.AI_NODES.map(node => ({
+                provider: node.AI_PROVIDER,
+                model: node.AI_MODEL,
+                runs: node.NO_COUNTS || 1,
+                weight: node.WEIGHT || 1
+              }));
+            }
+
+            // Look for grading rubric reference in manifest.additional
+            const gradingRubricRef = manifest.additional?.find(a => a.name === 'gradingRubric');
+            if (gradingRubricRef?.hash) {
+              try {
+                const rubricBuffer = await ipfsClient.fetchFromIPFS(gradingRubricRef.hash);
+                const rubricText = rubricBuffer.toString('utf8');
+                rubricContent = JSON.parse(rubricText);
+              } catch (err) {
+                logger.warn('[jobs/details] failed to fetch grading rubric from IPFS', {
+                  hash: gradingRubricRef.hash,
+                  msg: err.message
+                });
+              }
+            }
+          }
+
+          // Fallback: look for rubric.json directly in ZIP (older format)
+          if (!rubricContent) {
+            const rubricEntry = entries.find(e =>
+              e.entryName === 'rubric.json' || e.entryName.endsWith('/rubric.json')
+            );
+            if (rubricEntry) {
+              const rubricText = zip.readAsText(rubricEntry);
+              rubricContent = JSON.parse(rubricText);
+
+              // Extract jury from rubric if present
+              if (rubricContent.jury && Array.isArray(rubricContent.jury) && extractedJuryNodes.length === 0) {
+                extractedJuryNodes = rubricContent.jury;
+              }
+            }
+          }
+        } catch (err) {
+          logger.warn('[jobs/details] failed to extract from primaryCid', { msg: err.message });
+        }
       }
     }
 
@@ -1387,7 +1457,8 @@ router.get('/:jobId', async (req, res) => {
       job: {
         ...job,
         syncedFromBlockchain: job.syncedFromBlockchain || false,
-        rubricContent: rubricContent ? JSON.parse(rubricContent) : null
+        rubricContent: rubricContent || null,
+        juryNodes: extractedJuryNodes.length > 0 ? extractedJuryNodes : (job.juryNodes || [])
       }
     });
 

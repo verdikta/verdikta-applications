@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import './_env.js';
 import { ethers } from 'ethers';
-import { getNetwork, providerFor, loadWallet, parseEth } from './_lib.js';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { getNetwork, providerFor, loadWallet, parseEth, resolvePath } from './_lib.js';
+import { defaultSecretsDir } from './_paths.js';
 
 // Minimal on-chain bounty creation (no IPFS upload).
 // Intended for testnet smoke tests.
@@ -29,6 +32,64 @@ const evaluationCid = arg('cid', 'QmRLB6LYe6VER6UQDoX7wt4LmKATHbGA81ny5vgRMbfrtX
 // NOTE: This script does on-chain creation only. If you want a titled job + full evaluation package,
 // create via the HTTP API first (POST /api/jobs/create), then create on-chain with job.primaryCid.
 const classId = Number(arg('classId', '128')); // default active class (Core)
+
+// ---- Preflight: verify class exists + is ACTIVE and has models (via Agent API) ----
+async function loadBotApiKey() {
+  const botFile = process.env.VERDIKTA_BOT_FILE || `${defaultSecretsDir()}/verdikta-bounties-bot.json`;
+  const abs = resolvePath(botFile);
+  const raw = await fs.readFile(abs, 'utf8');
+  const j = JSON.parse(raw);
+  return j.apiKey || j.api_key || j.bot?.apiKey || j.bot?.api_key || null;
+}
+
+async function preflightClassOrThrow(classId) {
+  const noPreflight = process.argv.includes('--no-preflight');
+  if (noPreflight) return;
+
+  const baseUrl = (process.env.VERDIKTA_BOUNTIES_BASE_URL || '').replace(/\/+$/, '');
+  if (!baseUrl) {
+    console.warn('[preflight] VERDIKTA_BOUNTIES_BASE_URL not set; skipping class preflight. (use --no-preflight to silence)');
+    return;
+  }
+
+  let apiKey = null;
+  try {
+    apiKey = await loadBotApiKey();
+  } catch (e) {
+    console.warn(`[preflight] Could not load bot API key; skipping class preflight: ${e.message}`);
+    return;
+  }
+  if (!apiKey) {
+    console.warn('[preflight] Bot file missing apiKey; skipping class preflight.');
+    return;
+  }
+
+  const headers = { 'X-Bot-API-Key': apiKey };
+
+  const clsRes = await fetch(`${baseUrl}/api/classes/${classId}`, { headers });
+  if (!clsRes.ok) {
+    const t = await clsRes.text().catch(() => '');
+    throw new Error(`[preflight] Class ${classId} not available on ${baseUrl} (HTTP ${clsRes.status}). ${t}`);
+  }
+  const clsJson = await clsRes.json();
+  const status = clsJson?.class?.status;
+  if (status !== 'ACTIVE') {
+    throw new Error(`[preflight] Class ${classId} is not ACTIVE (status=${status}). Pick an ACTIVE class from GET /api/classes?status=ACTIVE`);
+  }
+
+  const modelsRes = await fetch(`${baseUrl}/api/classes/${classId}/models`, { headers });
+  if (!modelsRes.ok) {
+    const t = await modelsRes.text().catch(() => '');
+    throw new Error(`[preflight] Failed to fetch models for class ${classId} (HTTP ${modelsRes.status}). ${t}`);
+  }
+  const modelsJson = await modelsRes.json();
+  const modelCount = Array.isArray(modelsJson?.models) ? modelsJson.models.length : 0;
+  if (modelCount === 0) {
+    throw new Error(`[preflight] Class ${classId} returned 0 models. Refusing to create bounty (would likely be unevaluable).`);
+  }
+
+  console.log(`[preflight] ✅ class ${classId} ACTIVE; models available: ${modelCount}`);
+}
 const threshold = Number(arg('threshold', '80'));
 const hours = Number(arg('hours', '6'));
 const amountEth = arg('eth', '0.001');
@@ -42,6 +103,8 @@ const ABI = [
 ];
 
 const contract = new ethers.Contract(contractAddress, ABI, signer);
+
+await preflightClassOrThrow(classId);
 
 console.log('Creating bounty on-chain');
 console.log('Network:', network);

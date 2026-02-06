@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './_env.js';
 import { formatEther } from 'ethers';
 import { getNetwork, providerFor, loadWallet, linkBalance } from './_lib.js';
 

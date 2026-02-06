@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './_env.js';
 import fs from 'node:fs/promises';
 
 function arg(name, def = null) {

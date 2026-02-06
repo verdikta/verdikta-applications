@@ -1,3 +1,4 @@
+import './_env.js';
 import fs from 'node:fs/promises';
 import { JsonRpcProvider, Wallet, Contract, parseEther } from 'ethers';
 

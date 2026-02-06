@@ -146,7 +146,7 @@ async function submitWork(bountyId, hunterCid) {
     evaluationCid,
     hunterCid,                            // Your work's IPFS CID
     'Please evaluate carefully',          // Addendum
-    75n,                                  // Alpha (reputation weight)
+    75n,                                  // Alpha (reputation weight; 50 = nominal)
     ethers.parseEther('0.05'),            // maxOracleFee
     ethers.parseEther('0.03'),            // estimatedBaseCost
     ethers.parseEther('0.02')             // maxFeeBasedScaling
@@ -260,7 +260,7 @@ def check_link_balance(address):
   const ipfsStructure = `# Evaluation Package (evaluationCid / primaryCid)
 # Format: ZIP archive uploaded to IPFS
 evaluation-package.zip
-├── manifest.json          # Metadata + jury configuration
+├── manifest.json          # Metadata + jury configuration + bCIDs
 ├── primary_query.json     # Evaluation prompt for oracles
 └── (gradingRubric)        # Referenced via IPFS CID in manifest
 
@@ -285,8 +285,16 @@ evaluation-package.zip
       "hash": "QmXXX...",   // Separate IPFS CID for rubric
       "description": "Grading rubric with evaluation criteria"
     }
-  ]
+  ],
+  "bCIDs": {                 // REQUIRED for oracle to find submitted work
+    "submittedWork": "The work submitted by a hunter."
+  }
 }
+
+# primary_query.json requires three fields:
+#   "query"      - full evaluation prompt (the instructions sent to AI models)
+#   "references" - array linking to attachments in manifest.additional
+#   "outcomes"   - the scoring options, always ["DONT_FUND", "FUND"]
 
 # Example gradingRubric (separate IPFS file)
 {
@@ -656,6 +664,22 @@ submission-package.zip
               </div>
             </div>
           </div>
+          <div className="callout callout-info" style={{ marginLeft: '3rem', marginBottom: '1rem' }}>
+            <div>
+              <strong>prepareSubmission takes 8 parameters:</strong>
+              <pre style={{ margin: '0.5rem 0 0 0', fontSize: '0.85rem' }}>{`prepareSubmission(
+  bountyId,           // uint256 - on-chain bounty ID
+  evaluationCid,      // string - bounty's evaluation CID (NOT your submission)
+  hunterCid,          // string - your submission's IPFS CID
+  addendum,           // string - usually ""
+  alpha,              // uint256 - reputation weight (50 = nominal, higher = more confident)
+  maxOracleFee,       // uint256 - "50000000000000000" (0.05 LINK)
+  estimatedBaseCost,  // uint256 - "30000000000000000" (0.03 LINK)
+  maxFeeBasedScaling  // uint256 - "20000000000000000" (0.02 LINK)
+)`}</pre>
+            </div>
+          </div>
+
           <div className="workflow-step">
             <div className="step-number">2</div>
             <div className="step-content">
@@ -737,7 +761,7 @@ submission-package.zip
               <div className="submission-state">
                 <span className="state-code">0</span>
                 <span className="state-name">Prepared</span>
-                <span className="state-desc">EvaluationWallet ready, awaiting LINK</span>
+                <span className="state-desc">EvaluationWallet ready, awaiting startPreparedSubmission</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">1</span>
@@ -746,21 +770,71 @@ submission-package.zip
               </div>
               <div className="submission-state">
                 <span className="state-code">2</span>
-                <span className="state-name">Failed</span>
-                <span className="state-desc">Did not meet threshold</span>
+                <span className="state-name">PassedPaid</span>
+                <span className="state-desc">Score met threshold, ETH paid to hunter</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">3</span>
-                <span className="state-name">PassedPaid</span>
-                <span className="state-desc">Winner! Received ETH payout</span>
+                <span className="state-name">FailedRefunded</span>
+                <span className="state-desc">Below threshold, LINK refunded to hunter</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">4</span>
                 <span className="state-name">PassedUnpaid</span>
-                <span className="state-desc">Passed but another submission won first</span>
+                <span className="state-desc">Passed but payout pending (call finalizeSubmission)</span>
+              </div>
+              <div className="submission-state">
+                <span className="state-code">5</span>
+                <span className="state-name">FailedUnrefunded</span>
+                <span className="state-desc">Failed but refund pending (call finalizeSubmission)</span>
               </div>
             </div>
           </div>
+        </div>
+
+        <h3 style={{ marginTop: '2rem' }}>API to On-Chain Status Mapping</h3>
+        <div className="contracts-table-wrapper">
+          <table className="contracts-table">
+            <thead>
+              <tr>
+                <th>On-Chain Value</th>
+                <th>On-Chain Name</th>
+                <th>API Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>0</code></td>
+                <td>Prepared</td>
+                <td><code>PENDING_EVALUATION</code> (onChainStatus: Prepared)</td>
+              </tr>
+              <tr>
+                <td><code>1</code></td>
+                <td>PendingVerdikta</td>
+                <td><code>PENDING_EVALUATION</code> (onChainStatus: PendingVerdikta)</td>
+              </tr>
+              <tr>
+                <td><code>2</code></td>
+                <td>PassedPaid</td>
+                <td><code>APPROVED</code></td>
+              </tr>
+              <tr>
+                <td><code>3</code></td>
+                <td>FailedRefunded</td>
+                <td><code>REJECTED</code></td>
+              </tr>
+              <tr>
+                <td><code>4</code></td>
+                <td>PassedUnpaid</td>
+                <td><code>APPROVED</code> (paidWinner: false)</td>
+              </tr>
+              <tr>
+                <td><code>5</code></td>
+                <td>FailedUnrefunded</td>
+                <td><code>REJECTED</code> (needs finalize)</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -997,12 +1071,10 @@ async function closeViaAPI(jobId) {
 ├── manifest.json           # Metadata, jury config, rubric ref, bCIDs
 └── primary_query.json      # FULL evaluation prompt with "query" field
 
-# CRITICAL FORMAT REQUIREMENTS:
+# FORMAT REQUIREMENTS:
 # 1. manifest.json MUST have "additional" array referencing gradingRubric CID
-# 2. manifest.json MUST have "bCIDs" object for oracle to find work
-# 3. primary_query.json MUST use {query, references, outcomes} format
-#    ❌ WRONG: {title, description, outcomes} - causes oracles to hang!
-#    ✅ CORRECT: {query: "WORK PRODUCT EVALUATION...", references: ["gradingRubric"], outcomes: [...]}
+# 2. manifest.json MUST have "bCIDs" object for oracle to find submitted work
+# 3. primary_query.json MUST have {query, references, outcomes} fields
 # 4. gradingRubric MUST be uploaded separately to IPFS first`}</code></pre>
         </div>
 
@@ -1129,8 +1201,9 @@ async function closeViaAPI(jobId) {
 
         <h3>primary_query.json (Required - Oracle Evaluation Prompt)</h3>
         <p style={{ marginBottom: '1rem', color: 'var(--text-secondary)' }}>
-          <strong>Critical:</strong> The oracles expect a <code>query</code> field with full evaluation instructions,
-          not just title/description. This is the prompt sent to AI models.
+          This file contains the evaluation prompt sent to AI oracle models. It must have three fields:
+          a <code>query</code> string with the full evaluation instructions, a <code>references</code> array
+          linking to attachments, and an <code>outcomes</code> array.
         </p>
         <div className="code-block">
           <div className="code-header">
@@ -1148,7 +1221,7 @@ async function closeViaAPI(jobId) {
           </div>
           <pre><code>{`{
   "query": "WORK PRODUCT EVALUATION REQUEST\\n\\n...full prompt...",
-  "references": ["gradingRubric"],  // ← REQUIRED: links to rubric in manifest.additional
+  "references": ["gradingRubric"],  // ← links to rubric in manifest.additional
   "outcomes": ["DONT_FUND", "FUND"]
 }
 
@@ -1157,22 +1230,7 @@ async function closeViaAPI(jobId) {
 // - Evaluation instructions referencing the grading rubric
 // - Clear scoring criteria (DONT_FUND vs FUND)
 //
-// ❌ WRONG - This will cause oracles to hang:
-// { "title": "...", "description": "...", "outcomes": [...] }
-//
-// ✅ CORRECT - Full query with references:
-// { "query": "WORK PRODUCT EVALUATION...", "references": ["gradingRubric"], "outcomes": [...] }`}</code></pre>
-        </div>
-
-        <div className="callout callout-critical" style={{ marginTop: '1rem' }}>
-          <AlertTriangle size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
-          <div>
-            <strong>Do NOT use simplified format!</strong>
-            <p style={{ margin: '0.5rem 0 0 0' }}>
-              Using <code>{`{title, description, outcomes}`}</code> instead of <code>{`{query, references, outcomes}`}</code> will
-              cause oracles to hang indefinitely. The oracles require the verbose <code>query</code> format with explicit evaluation instructions.
-            </p>
-          </div>
+// See the Node.js example below for a complete query template.`}</code></pre>
         </div>
 
         <h3>Creating the ZIP (Command Line)</h3>
@@ -1512,8 +1570,7 @@ console.log('Evaluation CID:', evaluationCid);
           <div>
             <strong>Common Mistakes to Avoid:</strong>
             <ul style={{ margin: '0.5rem 0 0 0', paddingLeft: '1.5rem' }}>
-              <li><strong>❌ Using simplified primary_query.json format</strong> — Must use <code>{`{query, references, outcomes}`}</code> NOT <code>{`{title, description, outcomes}`}</code>. Simplified format causes oracles to hang!</li>
-              <li><strong>❌ Missing "references" array</strong> — primary_query.json must have <code>"references": ["gradingRubric"]</code> to link the rubric</li>
+              <li><strong>❌ Incomplete primary_query.json</strong> — Must have all three fields: <code>query</code> (full prompt string), <code>references</code>, and <code>outcomes</code></li>
               <li><strong>❌ Missing "bCIDs" in manifest</strong> — Required for oracles to find submitted work</li>
               <li><strong>❌ Using pinJSONToIPFS for ZIP</strong> — Use <code>pinFileToIPFS</code> for the evaluation package</li>
               <li><strong>❌ Uploading raw JSON as evaluation</strong> — Always ZIP first, then upload the ZIP file</li>

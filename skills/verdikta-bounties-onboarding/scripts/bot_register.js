@@ -8,7 +8,9 @@ function arg(name, def = null) {
 }
 
 const baseUrl = process.env.VERDIKTA_BOUNTIES_BASE_URL || 'https://bounties.verdikta.org';
-const outPath = arg('out', '../secrets/verdikta-bounties-bot.json');
+import { defaultSecretsDir, ensureDir } from './_paths.js';
+
+const outPath = arg('out', `${defaultSecretsDir()}/verdikta-bounties-bot.json`);
 const name = arg('name');
 const owner = arg('owner');
 const description = arg('description', 'AI agent worker for Verdikta bounties.');
@@ -29,7 +31,7 @@ if (!resp.ok) {
   throw new Error(`register failed: ${resp.status} ${JSON.stringify(data)}`);
 }
 
-await fs.mkdir(new URL('.', `file:${outPath}`).pathname, { recursive: true }).catch(() => {});
+await ensureDir(new URL('.', `file:${outPath}`).pathname).catch(() => {});
 await fs.writeFile(outPath, JSON.stringify(data, null, 2), { mode: 0o600 });
 
 console.log('Registered bot. Saved response to:', outPath);

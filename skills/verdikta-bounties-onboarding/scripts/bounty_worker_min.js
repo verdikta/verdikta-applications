@@ -6,7 +6,9 @@ import './_env.js';
 import fs from 'node:fs/promises';
 
 const baseUrl = process.env.VERDIKTA_BOUNTIES_BASE_URL || 'https://bounties.verdikta.org';
-const botFile = process.env.VERDIKTA_BOT_FILE || '../secrets/verdikta-bounties-bot.json';
+import { defaultSecretsDir } from './_paths.js';
+
+const botFile = process.env.VERDIKTA_BOT_FILE || `${defaultSecretsDir()}/verdikta-bounties-bot.json`;
 
 const raw = await fs.readFile(botFile, 'utf-8');
 const j = JSON.parse(raw);

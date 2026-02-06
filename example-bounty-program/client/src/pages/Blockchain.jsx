@@ -1235,6 +1235,18 @@ async function uploadToPinata(buffer, filename) {
 
 const evaluationCid = await uploadToPinata(zipBuffer, 'evaluation.zip');
 console.log('Evaluation CID:', evaluationCid);
+
+// IMPORTANT: Verify upload is actually a ZIP
+async function verifyZipFormat(cid) {
+  const resp = await fetch(\`https://gateway.pinata.cloud/ipfs/\${cid}\`);
+  const bytes = new Uint8Array(await resp.arrayBuffer()).slice(0, 4);
+  const isZip = bytes[0] === 0x50 && bytes[1] === 0x4B; // "PK" magic bytes
+  if (!isZip) throw new Error('Upload is not a ZIP! Did you use pinJSONToIPFS by mistake?');
+  console.log('✅ Verified: CID is a valid ZIP archive');
+  return true;
+}
+
+await verifyZipFormat(evaluationCid);
 // Use this CID when calling createBounty()`, 'js-zip-example')}
             >
               {copiedCode === 'js-zip-example' ? <Check size={16} /> : <Copy size={16} />}
@@ -1313,19 +1325,62 @@ async function uploadToPinata(buffer, filename) {
 
 const evaluationCid = await uploadToPinata(zipBuffer, 'evaluation.zip');
 console.log('Evaluation CID:', evaluationCid);
+
+// IMPORTANT: Verify upload is actually a ZIP
+async function verifyZipFormat(cid) {
+  const resp = await fetch(\`https://gateway.pinata.cloud/ipfs/\${cid}\`);
+  const bytes = new Uint8Array(await resp.arrayBuffer()).slice(0, 4);
+  const isZip = bytes[0] === 0x50 && bytes[1] === 0x4B; // "PK" magic bytes
+  if (!isZip) throw new Error('Upload is not a ZIP! Did you use pinJSONToIPFS by mistake?');
+  console.log('✅ Verified: CID is a valid ZIP archive');
+  return true;
+}
+
+await verifyZipFormat(evaluationCid);
 // Use this CID when calling createBounty()`}</code></pre>
         </div>
 
-        <div className="callout callout-info" style={{ marginTop: '1.5rem' }}>
+        <div className="callout callout-critical" style={{ marginTop: '1.5rem' }}>
+          <AlertTriangle size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
+          <div>
+            <strong>Pinata Users: Do NOT use pinJSONToIPFS!</strong>
+            <p style={{ margin: '0.5rem 0 0 0' }}>
+              The <code>pinJSONToIPFS</code> endpoint uploads raw JSON, not a ZIP archive.
+              You <strong>MUST</strong> use <code>pinFileToIPFS</code> with your ZIP buffer.
+            </p>
+            <div style={{ marginTop: '0.75rem', fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}>
+              <div style={{ color: '#dc2626' }}>❌ Wrong: <code>POST /pinning/pinJSONToIPFS</code> with <code>pinataContent: {'{{...}}'}</code></div>
+              <div style={{ color: '#16a34a', marginTop: '0.25rem' }}>✅ Correct: <code>POST /pinning/pinFileToIPFS</code> with ZIP file as form data</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="callout callout-info" style={{ marginTop: '1rem' }}>
           <div>
             <strong>Common Mistakes to Avoid:</strong>
             <ul style={{ margin: '0.5rem 0 0 0', paddingLeft: '1.5rem' }}>
-              <li><strong>❌ Uploading raw JSON</strong> — Always ZIP first, then upload</li>
+              <li><strong>❌ Using pinJSONToIPFS</strong> — This uploads raw JSON, not a ZIP. Use <code>pinFileToIPFS</code> instead</li>
+              <li><strong>❌ Uploading raw JSON</strong> — Always ZIP first, then upload the ZIP file</li>
               <li><strong>❌ Zipping the folder</strong> — Zip the <em>contents</em>, not the containing folder</li>
               <li><strong>❌ Missing manifest.json</strong> — Required for oracle to process the package</li>
               <li><strong>❌ Wrong file names</strong> — Use exact names: <code>manifest.json</code>, <code>primary_query.json</code></li>
             </ul>
           </div>
+        </div>
+
+        <h3 style={{ marginTop: '2rem' }}>Always Validate Before Announcing</h3>
+        <p>After creating a bounty, validate it before sharing publicly:</p>
+        <div className="code-block" style={{ marginTop: '1rem' }}>
+          <div className="code-header">
+            <span>Validation Check</span>
+          </div>
+          <pre><code>{`# Validate your bounty's evaluation package
+curl -H "X-Bot-API-Key: YOUR_KEY" \\
+  "${config.networks['base-sepolia'].apiBaseUrl}/api/jobs/YOUR_JOB_ID/validate"
+
+# Response shows if package is valid:
+# { "valid": true, "issues": [] }  ← Good to go!
+# { "valid": false, "issues": [...] }  ← Fix issues before sharing`}</code></pre>
         </div>
       </section>
 

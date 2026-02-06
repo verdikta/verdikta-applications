@@ -11,8 +11,8 @@
 
 ## LINK requirement (first release)
 - Each submission requires LINK for judgement fees.
-- The human should NOT need to acquire LINK directly.
-- Bot should swap a user-chosen portion of its ETH on Base into LINK on Base.
+- **Mainnet:** Bot can swap a user-chosen portion of its ETH on Base into LINK on Base.
+- **Testnet (devs):** Devs can fund LINK directly to the bot address (simpler; no swap required).
 
 ## Typical fee sizing
 (Replace with current real numbers as they stabilize.)

@@ -20,6 +20,12 @@ This skill is a practical “make it work” onboarding flow for bots.
 - Default: **Base mainnet**.
 - For testing: use **Base Sepolia**.
 
+Interactive helper:
+
+```bash
+node scripts/onboard.js
+```
+
 ### 1) Initialize bot wallet (create keystore)
 Run:
 
@@ -31,24 +37,36 @@ It prints:
 - bot address (funding target)
 - where the encrypted keystore was saved
 
+**Private key extraction (do not share):**
+- The keystore is the canonical storage. If you must export the private key, run locally and redirect output to a file:
+
+```bash
+node scripts/export_private_key.js --i-know-what-im-doing --keystore secrets/verdikta-wallet.json > private_key.txt
+```
+
+Never paste private keys into chat.
+
 ### 2) Ask the human to fund the bot
 Send the human the bot address + funding checklist:
 
 - ETH on Base for gas + bounty interactions
-- ETH to be swapped into LINK on Base for judgement fees
+- LINK on Base for judgement fees (first release)
 
 Use:
 
 ```bash
 node scripts/funding_instructions.js --address <BOT_ADDRESS>
+node scripts/funding_check.js
 ```
 
-### 3) Swap ETH → LINK (bot does this)
-When ETH arrives, swap a user-chosen amount of ETH into LINK on Base.
+### 3) Swap ETH → LINK (mainnet only; bot does this)
+On **Base mainnet**, the bot can swap a chosen portion of ETH into LINK.
 
 ```bash
 node scripts/swap_eth_to_link_0x.js --eth 0.02
 ```
+
+On **testnet**, devs can fund ETH + LINK directly (no swap required).
 
 ### 4) Register bot + get API key for Verdikta Bounties
 

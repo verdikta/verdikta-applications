@@ -994,12 +994,15 @@ async function closeViaAPI(jobId) {
         <div className="code-block">
           <div className="code-header"><span>evaluation.zip contents</span></div>
           <pre><code>{`evaluation.zip
-├── manifest.json           # Required: metadata and jury configuration
-└── primary_query.json      # Required: the evaluation prompt
+├── manifest.json           # Required: metadata, jury config, and rubric reference
+└── primary_query.json      # Required: title and description only
 
-# The grading rubric can be:
-# 1. Referenced via IPFS CID in manifest.json (recommended)
-# 2. Embedded in primary_query.json (simpler)`}</code></pre>
+# The grading rubric MUST be:
+# 1. Uploaded separately to IPFS as a JSON file
+# 2. Referenced in manifest.json via the "additional" array
+
+# ❌ Do NOT embed criteria directly in primary_query.json
+# ✅ Upload rubric first, then reference its CID in manifest.additional`}</code></pre>
         </div>
 
         <h3>manifest.json (Required)</h3>
@@ -1015,8 +1018,8 @@ async function closeViaAPI(jobId) {
   "juryParameters": {
     "NUMBER_OF_OUTCOMES": 2,
     "AI_NODES": [
-      { "AI_MODEL": "gpt-5.2-2025-12-11", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.5 },
-      { "AI_MODEL": "claude-haiku-4-5-20251001", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.5 }
+      { "AI_MODEL": "gpt-4o", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.5 },
+      { "AI_MODEL": "claude-3-5-sonnet-20241022", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.5 }
     ],
     "ITERATIONS": 1
   },
@@ -1040,26 +1043,29 @@ async function closeViaAPI(jobId) {
   "juryParameters": {
     "NUMBER_OF_OUTCOMES": 2,
     "AI_NODES": [
-      { "AI_MODEL": "gpt-5.2-2025-12-11", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.5 },
-      { "AI_MODEL": "claude-haiku-4-5-20251001", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.5 }
+      { "AI_MODEL": "gpt-4o", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.5 },
+      { "AI_MODEL": "claude-3-5-sonnet-20241022", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.5 }
     ],
     "ITERATIONS": 1
   },
-  "additional": [
+  "additional": [                          // ← REQUIRED array
     {
-      "name": "gradingRubric",
+      "name": "gradingRubric",             // ← REQUIRED: must be "gradingRubric"
       "type": "ipfs/cid",
-      "hash": "QmYourRubricCID...",
+      "hash": "QmYourRubricCID...",         // ← Upload rubric first, put CID here
       "description": "Grading rubric with evaluation criteria"
     }
   ]
 }`}</code></pre>
         </div>
 
-        <h3>Grading Rubric (Referenced or Embedded)</h3>
+        <h3>Grading Rubric (Upload Separately to IPFS)</h3>
+        <p style={{ marginBottom: '1rem', color: 'var(--text-secondary)' }}>
+          Upload this JSON file to IPFS first, then put its CID in <code>manifest.additional</code>.
+        </p>
         <div className="code-block">
           <div className="code-header">
-            <span>gradingRubric.json (upload separately to IPFS)</span>
+            <span>gradingRubric.json</span>
             <button
               className="btn-icon"
               onClick={() => copyToClipboard(`{
@@ -1156,7 +1162,10 @@ zip -r ../evaluation.zip .
 pinata upload evaluation.zip`}</code></pre>
         </div>
 
-        <h3>Programmatic ZIP Creation (Node.js)</h3>
+        <h3>Complete Upload Flow (Node.js)</h3>
+        <p style={{ marginBottom: '1rem', color: 'var(--text-secondary)' }}>
+          Two-step process: upload rubric first, then create ZIP that references it.
+        </p>
         <div className="code-block">
           <div className="code-header">
             <span>JavaScript / Node.js</span>
@@ -1164,7 +1173,45 @@ pinata upload evaluation.zip`}</code></pre>
               className="btn-icon"
               onClick={() => copyToClipboard(`const archiver = require('archiver');
 
-async function createEvaluationZip(title, description, criteria, juryNodes) {
+// ============================================
+// STEP 1: Upload grading rubric to IPFS first
+// ============================================
+const gradingRubric = {
+  version: "rubric-1",
+  title: "My Bounty Grading Rubric",
+  description: "Evaluate the submitted work product",
+  threshold: 70,
+  criteria: [
+    { id: "requirements", label: "Meets Requirements", weight: 0.5, must: true, description: "Does the submission address all stated requirements?" },
+    { id: "quality", label: "Overall Quality", weight: 0.5, must: false, description: "Is the work well-crafted and professional?" }
+  ],
+  forbiddenContent: ["Plagiarism", "NSFW content"]
+};
+
+// Upload rubric as JSON (this one CAN use pinJSONToIPFS since it's just data)
+async function uploadJsonToPinata(data, name) {
+  const response = await fetch('https://api.pinata.cloud/pinning/pinJSONToIPFS', {
+    method: 'POST',
+    headers: {
+      'Authorization': \`Bearer \${process.env.PINATA_JWT}\`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      pinataContent: data,
+      pinataMetadata: { name }
+    })
+  });
+  const result = await response.json();
+  return result.IpfsHash;
+}
+
+const rubricCid = await uploadJsonToPinata(gradingRubric, 'rubric.json');
+console.log('Rubric CID:', rubricCid);
+
+// ============================================
+// STEP 2: Create evaluation ZIP referencing rubric
+// ============================================
+async function createEvaluationZip(title, description, rubricCid, juryNodes) {
   return new Promise((resolve, reject) => {
     const archive = archiver('zip');
     const chunks = [];
@@ -1173,7 +1220,7 @@ async function createEvaluationZip(title, description, criteria, juryNodes) {
     archive.on('end', () => resolve(Buffer.concat(chunks)));
     archive.on('error', reject);
 
-    // manifest.json
+    // manifest.json - MUST include additional array with rubric reference
     archive.append(JSON.stringify({
       version: "1.0",
       name: \`\${title} - Evaluation\`,
@@ -1187,14 +1234,21 @@ async function createEvaluationZip(title, description, criteria, juryNodes) {
           WEIGHT: n.weight
         })),
         ITERATIONS: 1
-      }
+      },
+      additional: [
+        {
+          name: "gradingRubric",
+          type: "ipfs/cid",
+          hash: rubricCid,  // ← Reference the uploaded rubric
+          description: "Grading rubric with evaluation criteria"
+        }
+      ]
     }, null, 2), { name: 'manifest.json' });
 
-    // primary_query.json with embedded rubric
+    // primary_query.json - just title/description, NO embedded criteria
     archive.append(JSON.stringify({
       title,
       description,
-      criteria,
       outcomes: ["DONT_FUND", "FUND"]
     }, null, 2), { name: 'primary_query.json' });
 
@@ -1202,59 +1256,89 @@ async function createEvaluationZip(title, description, criteria, juryNodes) {
   });
 }
 
-// Usage:
 const zipBuffer = await createEvaluationZip(
   "Write a Blog Post",
   "Create an engaging blog post about AI",
+  rubricCid,  // ← Pass the rubric CID
   [
-    { id: "relevance", label: "Topic Relevance", weight: 0.4, must: true },
-    { id: "quality", label: "Writing Quality", weight: 0.6, must: false }
-  ],
-  [
-    { provider: "OpenAI", model: "gpt-5.2-2025-12-11", weight: 0.5 },
-    { provider: "Anthropic", model: "claude-haiku-4-5-20251001", weight: 0.5 }
+    { provider: "OpenAI", model: "gpt-4o", weight: 0.5 },
+    { provider: "Anthropic", model: "claude-3-5-sonnet-20241022", weight: 0.5 }
   ]
 );
 
-// Upload to IPFS via Pinata
-async function uploadToPinata(buffer, filename) {
+// ============================================
+// STEP 3: Upload ZIP to IPFS (NOT pinJSONToIPFS!)
+// ============================================
+async function uploadZipToPinata(buffer, filename) {
   const formData = new FormData();
-  formData.append('file', new Blob([buffer]), filename);
+  const blob = new Blob([buffer], { type: 'application/zip' });
+  formData.append('file', blob, filename);
+  formData.append('pinataMetadata', JSON.stringify({ name: filename }));
 
   const response = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
     method: 'POST',
-    headers: {
-      'Authorization': \`Bearer \${process.env.PINATA_JWT}\`
-    },
+    headers: { 'Authorization': \`Bearer \${process.env.PINATA_JWT}\` },
     body: formData
   });
-
   const result = await response.json();
-  return result.IpfsHash;  // This is your CID
+  return result.IpfsHash;
 }
 
-const evaluationCid = await uploadToPinata(zipBuffer, 'evaluation.zip');
+const evaluationCid = await uploadZipToPinata(zipBuffer, 'evaluation.zip');
 console.log('Evaluation CID:', evaluationCid);
 
-// IMPORTANT: Verify upload is actually a ZIP
+// Verify upload is actually a ZIP
 async function verifyZipFormat(cid) {
   const resp = await fetch(\`https://gateway.pinata.cloud/ipfs/\${cid}\`);
   const bytes = new Uint8Array(await resp.arrayBuffer()).slice(0, 4);
   const isZip = bytes[0] === 0x50 && bytes[1] === 0x4B; // "PK" magic bytes
   if (!isZip) throw new Error('Upload is not a ZIP! Did you use pinJSONToIPFS by mistake?');
   console.log('✅ Verified: CID is a valid ZIP archive');
-  return true;
 }
 
 await verifyZipFormat(evaluationCid);
-// Use this CID when calling createBounty()`, 'js-zip-example')}
+// Use evaluationCid when calling createBounty()`, 'js-zip-example')}
             >
               {copiedCode === 'js-zip-example' ? <Check size={16} /> : <Copy size={16} />}
             </button>
           </div>
           <pre><code>{`const archiver = require('archiver');
 
-async function createEvaluationZip(title, description, criteria, juryNodes) {
+// ============================================
+// STEP 1: Upload grading rubric to IPFS first
+// ============================================
+const gradingRubric = {
+  version: "rubric-1",
+  title: "My Bounty Grading Rubric",
+  description: "Evaluate the submitted work product",
+  threshold: 70,
+  criteria: [
+    { id: "requirements", label: "Meets Requirements", weight: 0.5, must: true, description: "..." },
+    { id: "quality", label: "Overall Quality", weight: 0.5, must: false, description: "..." }
+  ],
+  forbiddenContent: ["Plagiarism", "NSFW content"]
+};
+
+// Upload rubric as JSON (this one CAN use pinJSONToIPFS since it's just data)
+async function uploadJsonToPinata(data, name) {
+  const response = await fetch('https://api.pinata.cloud/pinning/pinJSONToIPFS', {
+    method: 'POST',
+    headers: {
+      'Authorization': \`Bearer \${process.env.PINATA_JWT}\`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ pinataContent: data, pinataMetadata: { name } })
+  });
+  return (await response.json()).IpfsHash;
+}
+
+const rubricCid = await uploadJsonToPinata(gradingRubric, 'rubric.json');
+console.log('Rubric CID:', rubricCid);
+
+// ============================================
+// STEP 2: Create evaluation ZIP referencing rubric
+// ============================================
+async function createEvaluationZip(title, description, rubricCid, juryNodes) {
   return new Promise((resolve, reject) => {
     const archive = archiver('zip');
     const chunks = [];
@@ -1263,7 +1347,7 @@ async function createEvaluationZip(title, description, criteria, juryNodes) {
     archive.on('end', () => resolve(Buffer.concat(chunks)));
     archive.on('error', reject);
 
-    // manifest.json
+    // manifest.json - MUST include additional array with rubric reference
     archive.append(JSON.stringify({
       version: "1.0",
       name: \`\${title} - Evaluation\`,
@@ -1271,86 +1355,65 @@ async function createEvaluationZip(title, description, criteria, juryNodes) {
       juryParameters: {
         NUMBER_OF_OUTCOMES: 2,
         AI_NODES: juryNodes.map(n => ({
-          AI_MODEL: n.model,
-          AI_PROVIDER: n.provider,
-          NO_COUNTS: n.runs || 1,
-          WEIGHT: n.weight
+          AI_MODEL: n.model, AI_PROVIDER: n.provider, NO_COUNTS: n.runs || 1, WEIGHT: n.weight
         })),
         ITERATIONS: 1
-      }
+      },
+      additional: [{
+        name: "gradingRubric",
+        type: "ipfs/cid",
+        hash: rubricCid,  // ← Reference the uploaded rubric
+        description: "Grading rubric"
+      }]
     }, null, 2), { name: 'manifest.json' });
 
-    // primary_query.json with embedded rubric
+    // primary_query.json - just title/description, NO embedded criteria
     archive.append(JSON.stringify({
-      title,
-      description,
-      criteria,
-      outcomes: ["DONT_FUND", "FUND"]
+      title, description, outcomes: ["DONT_FUND", "FUND"]
     }, null, 2), { name: 'primary_query.json' });
 
     archive.finalize();
   });
 }
 
-// Usage:
 const zipBuffer = await createEvaluationZip(
-  "Write a Blog Post",
-  "Create an engaging blog post about AI",
-  [
-    { id: "relevance", label: "Topic Relevance", weight: 0.4, must: true },
-    { id: "quality", label: "Writing Quality", weight: 0.6, must: false }
-  ],
-  [
-    { provider: "OpenAI", model: "gpt-5.2-2025-12-11", weight: 0.5 },
-    { provider: "Anthropic", model: "claude-haiku-4-5-20251001", weight: 0.5 }
-  ]
+  "Write a Blog Post", "Create an engaging blog post about AI",
+  rubricCid,  // ← Pass the rubric CID
+  [{ provider: "OpenAI", model: "gpt-4o", weight: 0.5 },
+   { provider: "Anthropic", model: "claude-3-5-sonnet-20241022", weight: 0.5 }]
 );
 
-// Upload to IPFS via Pinata
-async function uploadToPinata(buffer, filename) {
+// ============================================
+// STEP 3: Upload ZIP to IPFS (NOT pinJSONToIPFS!)
+// ============================================
+async function uploadZipToPinata(buffer, filename) {
   const formData = new FormData();
-  formData.append('file', new Blob([buffer]), filename);
-
+  formData.append('file', new Blob([buffer], { type: 'application/zip' }), filename);
   const response = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
     method: 'POST',
-    headers: {
-      'Authorization': \`Bearer \${process.env.PINATA_JWT}\`
-    },
+    headers: { 'Authorization': \`Bearer \${process.env.PINATA_JWT}\` },
     body: formData
   });
-
-  const result = await response.json();
-  return result.IpfsHash;  // This is your CID
+  return (await response.json()).IpfsHash;
 }
 
-const evaluationCid = await uploadToPinata(zipBuffer, 'evaluation.zip');
+const evaluationCid = await uploadZipToPinata(zipBuffer, 'evaluation.zip');
 console.log('Evaluation CID:', evaluationCid);
-
-// IMPORTANT: Verify upload is actually a ZIP
-async function verifyZipFormat(cid) {
-  const resp = await fetch(\`https://gateway.pinata.cloud/ipfs/\${cid}\`);
-  const bytes = new Uint8Array(await resp.arrayBuffer()).slice(0, 4);
-  const isZip = bytes[0] === 0x50 && bytes[1] === 0x4B; // "PK" magic bytes
-  if (!isZip) throw new Error('Upload is not a ZIP! Did you use pinJSONToIPFS by mistake?');
-  console.log('✅ Verified: CID is a valid ZIP archive');
-  return true;
-}
-
-await verifyZipFormat(evaluationCid);
-// Use this CID when calling createBounty()`}</code></pre>
+// Use evaluationCid when calling createBounty()`}</code></pre>
         </div>
 
         <div className="callout callout-critical" style={{ marginTop: '1.5rem' }}>
           <AlertTriangle size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
           <div>
-            <strong>Pinata Users: Do NOT use pinJSONToIPFS!</strong>
+            <strong>Pinata Users: Do NOT use pinJSONToIPFS for the evaluation ZIP!</strong>
             <p style={{ margin: '0.5rem 0 0 0' }}>
               The <code>pinJSONToIPFS</code> endpoint uploads raw JSON, not a ZIP archive.
-              You <strong>MUST</strong> use <code>pinFileToIPFS</code> with your ZIP buffer.
+              You <strong>MUST</strong> use <code>pinFileToIPFS</code> for the evaluation package.
             </p>
             <div style={{ marginTop: '0.75rem', fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}>
-              <div style={{ color: '#dc2626' }}>❌ Wrong: <code>POST /pinning/pinJSONToIPFS</code> with <code>pinataContent: {'{{...}}'}</code></div>
-              <div style={{ color: '#16a34a', marginTop: '0.25rem' }}>✅ Correct: <code>POST /pinning/pinFileToIPFS</code> with ZIP file as form data</div>
+              <div style={{ color: '#16a34a' }}>✅ <code>pinJSONToIPFS</code> — OK for grading rubric (it's just JSON data)</div>
+              <div style={{ color: '#dc2626', marginTop: '0.25rem' }}>❌ <code>pinJSONToIPFS</code> — WRONG for evaluation package (must be ZIP)</div>
+              <div style={{ color: '#16a34a', marginTop: '0.25rem' }}>✅ <code>pinFileToIPFS</code> — CORRECT for evaluation package ZIP</div>
             </div>
           </div>
         </div>
@@ -1359,10 +1422,11 @@ await verifyZipFormat(evaluationCid);
           <div>
             <strong>Common Mistakes to Avoid:</strong>
             <ul style={{ margin: '0.5rem 0 0 0', paddingLeft: '1.5rem' }}>
-              <li><strong>❌ Using pinJSONToIPFS</strong> — This uploads raw JSON, not a ZIP. Use <code>pinFileToIPFS</code> instead</li>
-              <li><strong>❌ Uploading raw JSON</strong> — Always ZIP first, then upload the ZIP file</li>
+              <li><strong>❌ Using pinJSONToIPFS for ZIP</strong> — This uploads raw JSON, not a ZIP. Use <code>pinFileToIPFS</code> for the evaluation package</li>
+              <li><strong>❌ Uploading raw JSON as evaluation</strong> — Always ZIP first, then upload the ZIP file</li>
+              <li><strong>❌ Embedding criteria in primary_query.json</strong> — Upload rubric separately and reference via <code>manifest.additional</code></li>
+              <li><strong>❌ Missing manifest.additional array</strong> — Required for proper evaluation; causes "default criteria" warning</li>
               <li><strong>❌ Zipping the folder</strong> — Zip the <em>contents</em>, not the containing folder</li>
-              <li><strong>❌ Missing manifest.json</strong> — Required for oracle to process the package</li>
               <li><strong>❌ Wrong file names</strong> — Use exact names: <code>manifest.json</code>, <code>primary_query.json</code></li>
             </ul>
           </div>
@@ -1378,9 +1442,18 @@ await verifyZipFormat(evaluationCid);
 curl -H "X-Bot-API-Key: YOUR_KEY" \\
   "https://bounties-testnet.verdikta.org/api/jobs/YOUR_JOB_ID/validate"
 
-# Response shows if package is valid:
-# { "valid": true, "issues": [] }  ← Good to go!
-# { "valid": false, "issues": [...] }  ← Fix issues before sharing`}</code></pre>
+# ✅ GOOD - No issues at all:
+{ "valid": true, "issues": [] }
+
+# ⚠️ WARNING - Works but not ideal (missing rubric reference):
+{ "valid": true, "issues": [
+  {"severity": "warning", "message": "Manifest does not reference a grading rubric..."}
+]}
+
+# ❌ ERROR - Will not work with oracles:
+{ "valid": false, "issues": [
+  {"severity": "error", "message": "Evaluation package is plain JSON, not a ZIP archive..."}
+]}`}</code></pre>
         </div>
       </section>
 

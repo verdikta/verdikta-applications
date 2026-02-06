@@ -60,16 +60,33 @@ async function fetchEvaluationMetadata(evaluationCid) {
       if (queryEntry) {
         try {
           const query = JSON.parse(queryEntry.getData().toString('utf8'));
+
+          // New format: direct fields in primary_query.json
+          if (query.description && !description) {
+            description = query.description;
+          }
+          if (query.title && !title) {
+            title = query.title;
+          }
+          if (query.workProductType && !workProductType) {
+            workProductType = query.workProductType;
+          }
+
+          // Legacy format: embedded in query.query text field
           if (query.query) {
             // Extract description from query text
-            const descMatch = query.query.match(/Task Description:\s*(.+?)(?:\n\n|===|$)/s);
-            if (descMatch) {
-              description = descMatch[1].trim();
+            if (!description) {
+              const descMatch = query.query.match(/Task Description:\s*(.+?)(?:\n\n|===|$)/s);
+              if (descMatch) {
+                description = descMatch[1].trim();
+              }
             }
             // Extract work product type
-            const typeMatch = query.query.match(/Work Product Type:\s*(.+?)(?:\n|$)/);
-            if (typeMatch) {
-              workProductType = typeMatch[1].trim();
+            if (!workProductType) {
+              const typeMatch = query.query.match(/Work Product Type:\s*(.+?)(?:\n|$)/);
+              if (typeMatch) {
+                workProductType = typeMatch[1].trim();
+              }
             }
             // Extract title if not found in manifest
             if (!title) {
@@ -641,6 +658,31 @@ class SyncService {
     // Also update deadline-related fields that might have been missing
     if (bounty.submissionCloseTime) {
       existingJob.submissionCloseTime = bounty.submissionCloseTime;
+    }
+
+    // Re-fetch metadata if description is still the placeholder
+    if (existingJob.description === 'Fetched from blockchain' && existingJob.evaluationCid) {
+      try {
+        const metadata = await fetchEvaluationMetadata(existingJob.evaluationCid);
+        if (metadata) {
+          if (metadata.title && existingJob.title.startsWith('Bounty #')) {
+            existingJob.title = metadata.title;
+          }
+          if (metadata.description) {
+            existingJob.description = metadata.description;
+          }
+          if (metadata.workProductType) {
+            existingJob.workProductType = metadata.workProductType;
+          }
+          logger.info('📋 Re-fetched bounty metadata from IPFS', {
+            jobId: existingJob.jobId,
+            title: existingJob.title,
+            hasDescription: !!metadata.description
+          });
+        }
+      } catch (error) {
+        logger.debug('Failed to re-fetch metadata', { jobId: existingJob.jobId, error: error.message });
+      }
     }
   }
 

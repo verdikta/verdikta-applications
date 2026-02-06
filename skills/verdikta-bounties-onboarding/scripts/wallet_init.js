@@ -9,7 +9,9 @@ function arg(name, def = null) {
   return i >= 0 ? process.argv[i + 1] : def;
 }
 
-const outArg = arg('out', '../secrets/verdikta-wallet.json');
+import { defaultSecretsDir, ensureDir } from './_paths.js';
+
+const outArg = arg('out', `${defaultSecretsDir()}/verdikta-wallet.json`);
 const password = process.env.VERDIKTA_WALLET_PASSWORD;
 if (!password) {
   console.error('Missing VERDIKTA_WALLET_PASSWORD');
@@ -23,7 +25,7 @@ const json = await wallet.encrypt(password);
 const scriptDir = path.dirname(new URL(import.meta.url).pathname);
 const out = path.isAbsolute(outArg) ? outArg : path.resolve(scriptDir, outArg);
 
-await fs.mkdir(path.dirname(out), { recursive: true });
+await ensureDir(path.dirname(out));
 await fs.writeFile(out, json, { mode: 0o600 });
 
 console.log('Bot wallet created');

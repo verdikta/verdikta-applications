@@ -30,7 +30,7 @@ node scripts/onboard.js
 Run:
 
 ```bash
-node scripts/wallet_init.js --out secrets/verdikta-wallet.json
+node scripts/wallet_init.js --out ~/.config/verdikta-bounties/verdikta-wallet.json
 ```
 
 It prints:

@@ -27,9 +27,14 @@ export function getRpcUrl(network) {
 
 export function resolvePath(p) {
   if (!p) return p;
+  let s = String(p);
+  // Expand ~ to home for convenience in .env files
+  if (s.startsWith('~/')) {
+    s = path.join(process.env.HOME || '', s.slice(2));
+  }
   // Resolve relative paths against the scripts directory (not the caller's CWD).
   const here = path.dirname(fileURLToPath(import.meta.url));
-  return path.isAbsolute(p) ? p : path.resolve(here, p);
+  return path.isAbsolute(s) ? s : path.resolve(here, s);
 }
 
 export async function loadWallet() {

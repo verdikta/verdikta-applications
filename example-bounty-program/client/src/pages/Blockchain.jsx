@@ -362,6 +362,21 @@ submission-package.zip
         </div>
       </section>
 
+      {/* Critical ZIP Warning */}
+      <section className="blockchain-section">
+        <div className="callout callout-critical">
+          <AlertTriangle size={24} />
+          <div>
+            <strong>CRITICAL: All IPFS content must be ZIP archives</strong>
+            <p style={{ margin: '0.5rem 0 0 0' }}>
+              Both evaluation criteria AND submissions must be uploaded as <strong>ZIP archives</strong>,
+              not plain JSON. Plain JSON uploads will cause oracle failures and your submission will be stuck
+              in PENDING_EVALUATION permanently. See the <a href="#creating-evaluation">Creating Evaluation Criteria</a> section below.
+            </p>
+          </div>
+        </div>
+      </section>
+
       {/* Why Go Direct Section */}
       <section className="blockchain-section">
         <h2>Why Interact Directly?</h2>
@@ -967,20 +982,321 @@ async function closeViaAPI(jobId) {
         </div>
       </section>
 
-      {/* IPFS Content Structure */}
-      <section className="blockchain-section">
-        <h2>IPFS Content Structure</h2>
+      {/* Creating Evaluation Criteria Section */}
+      <section className="blockchain-section" id="creating-evaluation">
+        <h2>Creating Evaluation Criteria</h2>
         <p className="section-intro">
-          Bounties and submissions reference IPFS CIDs pointing to structured content packages.
+          When creating a bounty, the evaluation CID must point to a <strong>ZIP archive</strong> with a specific structure.
+          This is the most common source of bounty failures.
         </p>
-        <div className="callout callout-warning">
-          <AlertTriangle size={20} />
+
+        <h3>Required ZIP Structure</h3>
+        <div className="code-block">
+          <div className="code-header"><span>evaluation.zip contents</span></div>
+          <pre><code>{`evaluation.zip
+├── manifest.json           # Required: metadata and jury configuration
+└── primary_query.json      # Required: the evaluation prompt
+
+# The grading rubric can be:
+# 1. Referenced via IPFS CID in manifest.json (recommended)
+# 2. Embedded in primary_query.json (simpler)`}</code></pre>
+        </div>
+
+        <h3>manifest.json (Required)</h3>
+        <div className="code-block">
+          <div className="code-header">
+            <span>manifest.json</span>
+            <button
+              className="btn-icon"
+              onClick={() => copyToClipboard(`{
+  "version": "1.0",
+  "name": "My Bounty - Evaluation",
+  "primary": { "filename": "primary_query.json" },
+  "juryParameters": {
+    "NUMBER_OF_OUTCOMES": 2,
+    "AI_NODES": [
+      { "AI_MODEL": "gpt-5.2-2025-12-11", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.5 },
+      { "AI_MODEL": "claude-haiku-4-5-20251001", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.5 }
+    ],
+    "ITERATIONS": 1
+  },
+  "additional": [
+    {
+      "name": "gradingRubric",
+      "type": "ipfs/cid",
+      "hash": "QmYourRubricCID...",
+      "description": "Grading rubric with evaluation criteria"
+    }
+  ]
+}`, 'manifest-example')}
+            >
+              {copiedCode === 'manifest-example' ? <Check size={16} /> : <Copy size={16} />}
+            </button>
+          </div>
+          <pre><code>{`{
+  "version": "1.0",
+  "name": "My Bounty - Evaluation",
+  "primary": { "filename": "primary_query.json" },
+  "juryParameters": {
+    "NUMBER_OF_OUTCOMES": 2,
+    "AI_NODES": [
+      { "AI_MODEL": "gpt-5.2-2025-12-11", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.5 },
+      { "AI_MODEL": "claude-haiku-4-5-20251001", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.5 }
+    ],
+    "ITERATIONS": 1
+  },
+  "additional": [
+    {
+      "name": "gradingRubric",
+      "type": "ipfs/cid",
+      "hash": "QmYourRubricCID...",
+      "description": "Grading rubric with evaluation criteria"
+    }
+  ]
+}`}</code></pre>
+        </div>
+
+        <h3>Grading Rubric (Referenced or Embedded)</h3>
+        <div className="code-block">
+          <div className="code-header">
+            <span>gradingRubric.json (upload separately to IPFS)</span>
+            <button
+              className="btn-icon"
+              onClick={() => copyToClipboard(`{
+  "version": "rubric-1",
+  "title": "My Bounty Grading Rubric",
+  "description": "Evaluate the submitted work product",
+  "threshold": 70,
+  "criteria": [
+    {
+      "id": "requirements",
+      "label": "Meets Requirements",
+      "weight": 0.5,
+      "must": true,
+      "description": "Does the submission address all stated requirements?"
+    },
+    {
+      "id": "quality",
+      "label": "Overall Quality",
+      "weight": 0.5,
+      "must": false,
+      "description": "Is the work well-crafted and professional?"
+    }
+  ],
+  "forbiddenContent": ["Plagiarism", "NSFW content", "Hate speech"]
+}`, 'rubric-example')}
+            >
+              {copiedCode === 'rubric-example' ? <Check size={16} /> : <Copy size={16} />}
+            </button>
+          </div>
+          <pre><code>{`{
+  "version": "rubric-1",
+  "title": "My Bounty Grading Rubric",
+  "description": "Evaluate the submitted work product",
+  "threshold": 70,
+  "criteria": [
+    {
+      "id": "requirements",
+      "label": "Meets Requirements",
+      "weight": 0.5,
+      "must": true,
+      "description": "Does the submission address all stated requirements?"
+    },
+    {
+      "id": "quality",
+      "label": "Overall Quality",
+      "weight": 0.5,
+      "must": false,
+      "description": "Is the work well-crafted and professional?"
+    }
+  ],
+  "forbiddenContent": ["Plagiarism", "NSFW content", "Hate speech"]
+}`}</code></pre>
+        </div>
+
+        <h3>Creating the ZIP (Command Line)</h3>
+        <div className="code-block">
+          <div className="code-header">
+            <span>Shell commands</span>
+            <button
+              className="btn-icon"
+              onClick={() => copyToClipboard(`# Create your evaluation folder
+mkdir my-evaluation
+cd my-evaluation
+
+# Create manifest.json and primary_query.json files
+# (see examples above)
+
+# IMPORTANT: Zip the FILES, not the folder!
+# ❌ Wrong: zip -r evaluation.zip my-evaluation/
+# ✅ Correct:
+cd my-evaluation
+zip -r ../evaluation.zip .
+
+# Upload to IPFS (using Pinata CLI as example)
+pinata upload evaluation.zip`, 'zip-commands')}
+            >
+              {copiedCode === 'zip-commands' ? <Check size={16} /> : <Copy size={16} />}
+            </button>
+          </div>
+          <pre><code>{`# Create your evaluation folder
+mkdir my-evaluation
+cd my-evaluation
+
+# Create manifest.json and primary_query.json files
+# (see examples above)
+
+# IMPORTANT: Zip the FILES, not the folder!
+# ❌ Wrong: zip -r evaluation.zip my-evaluation/
+# ✅ Correct:
+cd my-evaluation
+zip -r ../evaluation.zip .
+
+# Upload to IPFS (using Pinata CLI as example)
+pinata upload evaluation.zip`}</code></pre>
+        </div>
+
+        <h3>Programmatic ZIP Creation (Node.js)</h3>
+        <div className="code-block">
+          <div className="code-header">
+            <span>JavaScript / Node.js</span>
+            <button
+              className="btn-icon"
+              onClick={() => copyToClipboard(`const archiver = require('archiver');
+
+async function createEvaluationZip(title, description, criteria, juryNodes) {
+  return new Promise((resolve, reject) => {
+    const archive = archiver('zip');
+    const chunks = [];
+
+    archive.on('data', chunk => chunks.push(chunk));
+    archive.on('end', () => resolve(Buffer.concat(chunks)));
+    archive.on('error', reject);
+
+    // manifest.json
+    archive.append(JSON.stringify({
+      version: "1.0",
+      name: \`\${title} - Evaluation\`,
+      primary: { filename: "primary_query.json" },
+      juryParameters: {
+        NUMBER_OF_OUTCOMES: 2,
+        AI_NODES: juryNodes.map(n => ({
+          AI_MODEL: n.model,
+          AI_PROVIDER: n.provider,
+          NO_COUNTS: n.runs || 1,
+          WEIGHT: n.weight
+        })),
+        ITERATIONS: 1
+      }
+    }, null, 2), { name: 'manifest.json' });
+
+    // primary_query.json with embedded rubric
+    archive.append(JSON.stringify({
+      title,
+      description,
+      criteria,
+      outcomes: ["DONT_FUND", "FUND"]
+    }, null, 2), { name: 'primary_query.json' });
+
+    archive.finalize();
+  });
+}
+
+// Usage:
+const zipBuffer = await createEvaluationZip(
+  "Write a Blog Post",
+  "Create an engaging blog post about AI",
+  [
+    { id: "relevance", label: "Topic Relevance", weight: 0.4, must: true },
+    { id: "quality", label: "Writing Quality", weight: 0.6, must: false }
+  ],
+  [
+    { provider: "OpenAI", model: "gpt-5.2-2025-12-11", weight: 0.5 },
+    { provider: "Anthropic", model: "claude-haiku-4-5-20251001", weight: 0.5 }
+  ]
+);
+
+// Upload zipBuffer to IPFS...`, 'js-zip-example')}
+            >
+              {copiedCode === 'js-zip-example' ? <Check size={16} /> : <Copy size={16} />}
+            </button>
+          </div>
+          <pre><code>{`const archiver = require('archiver');
+
+async function createEvaluationZip(title, description, criteria, juryNodes) {
+  return new Promise((resolve, reject) => {
+    const archive = archiver('zip');
+    const chunks = [];
+
+    archive.on('data', chunk => chunks.push(chunk));
+    archive.on('end', () => resolve(Buffer.concat(chunks)));
+    archive.on('error', reject);
+
+    // manifest.json
+    archive.append(JSON.stringify({
+      version: "1.0",
+      name: \`\${title} - Evaluation\`,
+      primary: { filename: "primary_query.json" },
+      juryParameters: {
+        NUMBER_OF_OUTCOMES: 2,
+        AI_NODES: juryNodes.map(n => ({
+          AI_MODEL: n.model,
+          AI_PROVIDER: n.provider,
+          NO_COUNTS: n.runs || 1,
+          WEIGHT: n.weight
+        })),
+        ITERATIONS: 1
+      }
+    }, null, 2), { name: 'manifest.json' });
+
+    // primary_query.json with embedded rubric
+    archive.append(JSON.stringify({
+      title,
+      description,
+      criteria,
+      outcomes: ["DONT_FUND", "FUND"]
+    }, null, 2), { name: 'primary_query.json' });
+
+    archive.finalize();
+  });
+}
+
+// Usage:
+const zipBuffer = await createEvaluationZip(
+  "Write a Blog Post",
+  "Create an engaging blog post about AI",
+  [
+    { id: "relevance", label: "Topic Relevance", weight: 0.4, must: true },
+    { id: "quality", label: "Writing Quality", weight: 0.6, must: false }
+  ],
+  [
+    { provider: "OpenAI", model: "gpt-5.2-2025-12-11", weight: 0.5 },
+    { provider: "Anthropic", model: "claude-haiku-4-5-20251001", weight: 0.5 }
+  ]
+);
+
+// Upload zipBuffer to IPFS...`}</code></pre>
+        </div>
+
+        <div className="callout callout-info" style={{ marginTop: '1.5rem' }}>
           <div>
-            <strong>ZIP Archive Format Required:</strong> Both evaluation packages and submission packages
-            must be uploaded as <strong>ZIP archives</strong>, not plain JSON or loose files. The Verdikta
-            oracle expects to unzip the content before processing.
+            <strong>Common Mistakes to Avoid:</strong>
+            <ul style={{ margin: '0.5rem 0 0 0', paddingLeft: '1.5rem' }}>
+              <li><strong>❌ Uploading raw JSON</strong> — Always ZIP first, then upload</li>
+              <li><strong>❌ Zipping the folder</strong> — Zip the <em>contents</em>, not the containing folder</li>
+              <li><strong>❌ Missing manifest.json</strong> — Required for oracle to process the package</li>
+              <li><strong>❌ Wrong file names</strong> — Use exact names: <code>manifest.json</code>, <code>primary_query.json</code></li>
+            </ul>
           </div>
         </div>
+      </section>
+
+      {/* IPFS Content Structure */}
+      <section className="blockchain-section">
+        <h2>Complete IPFS Package Reference</h2>
+        <p className="section-intro">
+          Full reference for evaluation and submission package formats.
+        </p>
         <div className="code-block">
           <div className="code-header">
             <span>Content Package Formats</span>

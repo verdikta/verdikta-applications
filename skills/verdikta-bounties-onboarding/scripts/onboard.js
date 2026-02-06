@@ -5,7 +5,7 @@ import './_env.js';
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import fs from 'node:fs/promises';
-import { formatEther, Contract } from 'ethers';
+import { formatEther, formatUnits, Contract } from 'ethers';
 import { getNetwork, providerFor, loadWallet, LINK, ERC20_ABI } from './_lib.js';
 
 function envNum(name, def) {
@@ -68,7 +68,7 @@ async function main() {
     const linkAddr = LINK[network];
     const link = new Contract(linkAddr, ERC20_ABI, provider);
     const [lbal, dec] = await Promise.all([link.balanceOf(address), link.decimals()]);
-    const linkHuman = Number(lbal) / (10 ** dec);
+    const linkHuman = Number(formatUnits(lbal, dec));
 
     console.log('\nBalance summary');
     console.log('ETH:', formatEther(await provider.getBalance(address)));

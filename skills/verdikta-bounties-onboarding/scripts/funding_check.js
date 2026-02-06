@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import './_env.js';
-import { formatEther } from 'ethers';
+import { formatEther, formatUnits } from 'ethers';
 import { getNetwork, providerFor, loadWallet, linkBalance } from './_lib.js';
 
 const network = getNetwork();
@@ -10,7 +10,7 @@ const address = wallet.address;
 
 const ethBal = await provider.getBalance(address);
 const { bal, dec, linkAddr } = await linkBalance(network, provider, address);
-const linkHuman = Number(bal) / (10 ** dec);
+const linkHuman = Number(formatUnits(bal, dec));
 
 console.log('Funding status');
 console.log('Network:', network);

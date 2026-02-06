@@ -257,37 +257,48 @@ def check_link_balance(address):
     balance = link.functions.balanceOf(address).call()
     return w3.from_wei(balance, 'ether')`;
 
-  const ipfsStructure = `# Evaluation Package (evaluationCid)
+  const ipfsStructure = `# Evaluation Package (evaluationCid / primaryCid)
 # Format: ZIP archive uploaded to IPFS
 evaluation-package.zip
-├── manifest.json          # Metadata
-├── rubric.json           # Evaluation criteria
-└── instructions/         # Optional additional context
-    └── guidelines.md
+├── manifest.json          # Metadata + jury configuration
+├── primary_query.json     # Evaluation prompt for oracles
+└── (gradingRubric)        # Referenced via IPFS CID in manifest
 
-# Example rubric.json
+# Example manifest.json
 {
   "version": "1.0",
-  "criteria": [
+  "name": "Task Title - Evaluation for Payment Release",
+  "primary": { "filename": "primary_query.json" },
+  "juryParameters": {
+    "NUMBER_OF_OUTCOMES": 2,
+    "AI_NODES": [
+      { "AI_MODEL": "gpt-5.2-2025-12-11", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.4 },
+      { "AI_MODEL": "claude-haiku-4-5-20251001", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.4 },
+      { "AI_MODEL": "grok-4-1-fast-reasoning", "AI_PROVIDER": "xAI", "NO_COUNTS": 1, "WEIGHT": 0.2 }
+    ],
+    "ITERATIONS": 1
+  },
+  "additional": [
     {
-      "name": "Technical Correctness",
-      "label": "Is the solution technically sound?",
-      "weight": 0.4,
-      "levels": ["Poor", "Fair", "Good", "Excellent"]
-    },
-    {
-      "name": "Completeness",
-      "label": "Does it address all requirements?",
-      "weight": 0.35,
-      "levels": ["Incomplete", "Partial", "Complete"]
-    },
-    {
-      "name": "Clarity",
-      "label": "Is the work well-organized and clear?",
-      "weight": 0.25,
-      "levels": ["Unclear", "Somewhat Clear", "Very Clear"]
+      "name": "gradingRubric",
+      "type": "ipfs/cid",
+      "hash": "QmXXX...",   // Separate IPFS CID for rubric
+      "description": "Grading rubric with evaluation criteria"
     }
   ]
+}
+
+# Example gradingRubric (separate IPFS file)
+{
+  "version": "rubric-1",
+  "title": "Task Grading Rubric",
+  "description": "Evaluate the submitted work",
+  "threshold": 70,
+  "criteria": [
+    { "id": "quality", "label": "Overall Quality", "weight": 0.6, "must": false },
+    { "id": "requirements", "label": "Meets Requirements", "weight": 0.4, "must": true }
+  ],
+  "forbiddenContent": ["NSFW content", "Hate speech", "Plagiarism"]
 }
 
 # Submission Package (hunterCid)

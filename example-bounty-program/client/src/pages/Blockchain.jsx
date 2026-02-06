@@ -994,15 +994,16 @@ async function closeViaAPI(jobId) {
         <div className="code-block">
           <div className="code-header"><span>evaluation.zip contents</span></div>
           <pre><code>{`evaluation.zip
-├── manifest.json           # Required: metadata, jury config, and rubric reference
-└── primary_query.json      # Required: title and description only
+├── manifest.json           # Metadata, jury config, rubric ref, bCIDs
+└── primary_query.json      # FULL evaluation prompt with "query" field
 
-# The grading rubric MUST be:
-# 1. Uploaded separately to IPFS as a JSON file
-# 2. Referenced in manifest.json via the "additional" array
-
-# ❌ Do NOT embed criteria directly in primary_query.json
-# ✅ Upload rubric first, then reference its CID in manifest.additional`}</code></pre>
+# CRITICAL FORMAT REQUIREMENTS:
+# 1. manifest.json MUST have "additional" array referencing gradingRubric CID
+# 2. manifest.json MUST have "bCIDs" object for oracle to find work
+# 3. primary_query.json MUST use {query, references, outcomes} format
+#    ❌ WRONG: {title, description, outcomes} - causes oracles to hang!
+#    ✅ CORRECT: {query: "WORK PRODUCT EVALUATION...", references: ["gradingRubric"], outcomes: [...]}
+# 4. gradingRubric MUST be uploaded separately to IPFS first`}</code></pre>
         </div>
 
         <h3>manifest.json (Required)</h3>
@@ -1013,7 +1014,7 @@ async function closeViaAPI(jobId) {
               className="btn-icon"
               onClick={() => copyToClipboard(`{
   "version": "1.0",
-  "name": "My Bounty - Evaluation",
+  "name": "My Bounty - Evaluation for Payment Release",
   "primary": { "filename": "primary_query.json" },
   "juryParameters": {
     "NUMBER_OF_OUTCOMES": 2,
@@ -1028,9 +1029,12 @@ async function closeViaAPI(jobId) {
       "name": "gradingRubric",
       "type": "ipfs/cid",
       "hash": "QmYourRubricCID...",
-      "description": "Grading rubric with evaluation criteria"
+      "description": "Work Product grading rubric with evaluation criteria"
     }
-  ]
+  ],
+  "bCIDs": {
+    "submittedWork": "The work submitted by a hunter."
+  }
 }`, 'manifest-example')}
             >
               {copiedCode === 'manifest-example' ? <Check size={16} /> : <Copy size={16} />}
@@ -1038,7 +1042,7 @@ async function closeViaAPI(jobId) {
           </div>
           <pre><code>{`{
   "version": "1.0",
-  "name": "My Bounty - Evaluation",
+  "name": "My Bounty - Evaluation for Payment Release",
   "primary": { "filename": "primary_query.json" },
   "juryParameters": {
     "NUMBER_OF_OUTCOMES": 2,
@@ -1053,9 +1057,12 @@ async function closeViaAPI(jobId) {
       "name": "gradingRubric",             // ← REQUIRED: must be "gradingRubric"
       "type": "ipfs/cid",
       "hash": "QmYourRubricCID...",         // ← Upload rubric first, put CID here
-      "description": "Grading rubric with evaluation criteria"
+      "description": "Work Product grading rubric with evaluation criteria"
     }
-  ]
+  ],
+  "bCIDs": {                               // ← REQUIRED for oracle to find work
+    "submittedWork": "The work submitted by a hunter."
+  }
 }`}</code></pre>
         </div>
 
@@ -1118,6 +1125,54 @@ async function closeViaAPI(jobId) {
   ],
   "forbiddenContent": ["Plagiarism", "NSFW content", "Hate speech"]
 }`}</code></pre>
+        </div>
+
+        <h3>primary_query.json (Required - Oracle Evaluation Prompt)</h3>
+        <p style={{ marginBottom: '1rem', color: 'var(--text-secondary)' }}>
+          <strong>Critical:</strong> The oracles expect a <code>query</code> field with full evaluation instructions,
+          not just title/description. This is the prompt sent to AI models.
+        </p>
+        <div className="code-block">
+          <div className="code-header">
+            <span>primary_query.json</span>
+            <button
+              className="btn-icon"
+              onClick={() => copyToClipboard(`{
+  "query": "WORK PRODUCT EVALUATION REQUEST\\n\\nYou are evaluating a work product submission to determine whether it meets the required quality standards for payment release from escrow.\\n\\n=== TASK DESCRIPTION ===\\nWork Product Type: [Your work type]\\nTask Title: [Your bounty title]\\nTask Description: [Your detailed task description]\\n\\n=== EVALUATION INSTRUCTIONS ===\\nA detailed grading rubric is provided as an attachment (gradingRubric). You must thoroughly evaluate the submitted work product against ALL criteria specified in the rubric.\\n\\nFor each evaluation criterion in the rubric:\\n1. Assess how well the work product meets the requirement\\n2. Note specific strengths and weaknesses\\n3. Consider the overall quality and completeness\\n\\n=== YOUR TASK ===\\nEvaluate the quality of the submitted work product and provide scores for two outcomes:\\n- DONT_FUND: The work product does not meet quality standards\\n- FUND: The work product meets quality standards\\n\\nBase your scoring on the overall quality assessment from the rubric criteria. Higher quality work should receive higher FUND scores, while lower quality work should receive higher DONT_FUND scores.\\n\\nIn your justification, explain your evaluation of each rubric criterion and how the work product performs against the stated requirements.\\n\\nThe submitted work product will be provided in the next section.",
+  "references": ["gradingRubric"],
+  "outcomes": ["DONT_FUND", "FUND"]
+}`, 'query-example')}
+            >
+              {copiedCode === 'query-example' ? <Check size={16} /> : <Copy size={16} />}
+            </button>
+          </div>
+          <pre><code>{`{
+  "query": "WORK PRODUCT EVALUATION REQUEST\\n\\n...full prompt...",
+  "references": ["gradingRubric"],  // ← REQUIRED: links to rubric in manifest.additional
+  "outcomes": ["DONT_FUND", "FUND"]
+}
+
+// The "query" field must contain the FULL evaluation prompt including:
+// - Task description (title, type, detailed description)
+// - Evaluation instructions referencing the grading rubric
+// - Clear scoring criteria (DONT_FUND vs FUND)
+//
+// ❌ WRONG - This will cause oracles to hang:
+// { "title": "...", "description": "...", "outcomes": [...] }
+//
+// ✅ CORRECT - Full query with references:
+// { "query": "WORK PRODUCT EVALUATION...", "references": ["gradingRubric"], "outcomes": [...] }`}</code></pre>
+        </div>
+
+        <div className="callout callout-critical" style={{ marginTop: '1rem' }}>
+          <AlertTriangle size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
+          <div>
+            <strong>Do NOT use simplified format!</strong>
+            <p style={{ margin: '0.5rem 0 0 0' }}>
+              Using <code>{`{title, description, outcomes}`}</code> instead of <code>{`{query, references, outcomes}`}</code> will
+              cause oracles to hang indefinitely. The oracles require the verbose <code>query</code> format with explicit evaluation instructions.
+            </p>
+          </div>
         </div>
 
         <h3>Creating the ZIP (Command Line)</h3>
@@ -1211,7 +1266,7 @@ console.log('Rubric CID:', rubricCid);
 // ============================================
 // STEP 2: Create evaluation ZIP referencing rubric
 // ============================================
-async function createEvaluationZip(title, description, rubricCid, juryNodes) {
+async function createEvaluationZip(title, description, workProductType, rubricCid, juryNodes) {
   return new Promise((resolve, reject) => {
     const archive = archiver('zip');
     const chunks = [];
@@ -1220,10 +1275,10 @@ async function createEvaluationZip(title, description, rubricCid, juryNodes) {
     archive.on('end', () => resolve(Buffer.concat(chunks)));
     archive.on('error', reject);
 
-    // manifest.json - MUST include additional array with rubric reference
+    // manifest.json - MUST include additional array AND bCIDs
     archive.append(JSON.stringify({
       version: "1.0",
-      name: \`\${title} - Evaluation\`,
+      name: \`\${title} - Evaluation for Payment Release\`,
       primary: { filename: "primary_query.json" },
       juryParameters: {
         NUMBER_OF_OUTCOMES: 2,
@@ -1239,16 +1294,47 @@ async function createEvaluationZip(title, description, rubricCid, juryNodes) {
         {
           name: "gradingRubric",
           type: "ipfs/cid",
-          hash: rubricCid,  // ← Reference the uploaded rubric
-          description: "Grading rubric with evaluation criteria"
+          hash: rubricCid,
+          description: "Work Product grading rubric with evaluation criteria"
         }
-      ]
+      ],
+      bCIDs: {
+        submittedWork: "The work submitted by a hunter."
+      }
     }, null, 2), { name: 'manifest.json' });
 
-    // primary_query.json - just title/description, NO embedded criteria
+    // primary_query.json - MUST have "query" field with full instructions
+    const query = \`WORK PRODUCT EVALUATION REQUEST
+
+You are evaluating a work product submission to determine whether it meets the required quality standards for payment release from escrow.
+
+=== TASK DESCRIPTION ===
+Work Product Type: \${workProductType}
+Task Title: \${title}
+Task Description: \${description}
+
+=== EVALUATION INSTRUCTIONS ===
+A detailed grading rubric is provided as an attachment (gradingRubric). You must thoroughly evaluate the submitted work product against ALL criteria specified in the rubric.
+
+For each evaluation criterion in the rubric:
+1. Assess how well the work product meets the requirement
+2. Note specific strengths and weaknesses
+3. Consider the overall quality and completeness
+
+=== YOUR TASK ===
+Evaluate the quality of the submitted work product and provide scores for two outcomes:
+- DONT_FUND: The work product does not meet quality standards
+- FUND: The work product meets quality standards
+
+Base your scoring on the overall quality assessment from the rubric criteria. Higher quality work should receive higher FUND scores, while lower quality work should receive higher DONT_FUND scores.
+
+In your justification, explain your evaluation of each rubric criterion and how the work product performs against the stated requirements.
+
+The submitted work product will be provided in the next section.\`;
+
     archive.append(JSON.stringify({
-      title,
-      description,
+      query,
+      references: ["gradingRubric"],  // ← REQUIRED: links to rubric
       outcomes: ["DONT_FUND", "FUND"]
     }, null, 2), { name: 'primary_query.json' });
 
@@ -1257,9 +1343,10 @@ async function createEvaluationZip(title, description, rubricCid, juryNodes) {
 }
 
 const zipBuffer = await createEvaluationZip(
-  "Write a Blog Post",
-  "Create an engaging blog post about AI",
-  rubricCid,  // ← Pass the rubric CID
+  "Write a Blog Post",                    // title
+  "Create an engaging blog post about AI", // description
+  "Blog Post",                            // workProductType
+  rubricCid,                              // rubric CID from step 1
   [
     { provider: "OpenAI", model: "gpt-4o", weight: 0.5 },
     { provider: "Anthropic", model: "claude-3-5-sonnet-20241022", weight: 0.5 }
@@ -1336,51 +1423,54 @@ const rubricCid = await uploadJsonToPinata(gradingRubric, 'rubric.json');
 console.log('Rubric CID:', rubricCid);
 
 // ============================================
-// STEP 2: Create evaluation ZIP referencing rubric
+// STEP 2: Create evaluation ZIP with FULL query format
 // ============================================
-async function createEvaluationZip(title, description, rubricCid, juryNodes) {
-  return new Promise((resolve, reject) => {
-    const archive = archiver('zip');
-    const chunks = [];
+function buildEvaluationQuery(title, description, workProductType) {
+  return \`WORK PRODUCT EVALUATION REQUEST
 
-    archive.on('data', chunk => chunks.push(chunk));
-    archive.on('end', () => resolve(Buffer.concat(chunks)));
-    archive.on('error', reject);
+You are evaluating a work product submission to determine whether it meets the required quality standards for payment release from escrow.
 
-    // manifest.json - MUST include additional array with rubric reference
-    archive.append(JSON.stringify({
-      version: "1.0",
-      name: \`\${title} - Evaluation\`,
-      primary: { filename: "primary_query.json" },
-      juryParameters: {
-        NUMBER_OF_OUTCOMES: 2,
-        AI_NODES: juryNodes.map(n => ({
-          AI_MODEL: n.model, AI_PROVIDER: n.provider, NO_COUNTS: n.runs || 1, WEIGHT: n.weight
-        })),
-        ITERATIONS: 1
-      },
-      additional: [{
-        name: "gradingRubric",
-        type: "ipfs/cid",
-        hash: rubricCid,  // ← Reference the uploaded rubric
-        description: "Grading rubric"
-      }]
-    }, null, 2), { name: 'manifest.json' });
+=== TASK DESCRIPTION ===
+Work Product Type: \${workProductType}
+Task Title: \${title}
+Task Description: \${description}
 
-    // primary_query.json - just title/description, NO embedded criteria
-    archive.append(JSON.stringify({
-      title, description, outcomes: ["DONT_FUND", "FUND"]
-    }, null, 2), { name: 'primary_query.json' });
+=== EVALUATION INSTRUCTIONS ===
+A detailed grading rubric is provided as an attachment (gradingRubric). You must thoroughly evaluate the submitted work product against ALL criteria specified in the rubric.
 
-    archive.finalize();
-  });
+=== YOUR TASK ===
+Evaluate the quality and provide scores for:
+- DONT_FUND: Does not meet quality standards
+- FUND: Meets quality standards
+
+The submitted work product will be provided in the next section.\`;
+}
+
+async function createEvaluationZip(title, desc, workType, rubricCid, juryNodes) {
+  // ... archiver setup ...
+
+  // manifest.json - with bCIDs
+  archive.append(JSON.stringify({
+    version: "1.0",
+    name: \`\${title} - Evaluation for Payment Release\`,
+    primary: { filename: "primary_query.json" },
+    juryParameters: { /* ... */ },
+    additional: [{ name: "gradingRubric", type: "ipfs/cid", hash: rubricCid, description: "..." }],
+    bCIDs: { submittedWork: "The work submitted by a hunter." }  // ← REQUIRED
+  }, null, 2), { name: 'manifest.json' });
+
+  // primary_query.json - MUST use "query" format, NOT title/description!
+  archive.append(JSON.stringify({
+    query: buildEvaluationQuery(title, desc, workType),  // ← Full prompt
+    references: ["gradingRubric"],                        // ← Links to rubric
+    outcomes: ["DONT_FUND", "FUND"]
+  }, null, 2), { name: 'primary_query.json' });
 }
 
 const zipBuffer = await createEvaluationZip(
   "Write a Blog Post", "Create an engaging blog post about AI",
-  rubricCid,  // ← Pass the rubric CID
-  [{ provider: "OpenAI", model: "gpt-4o", weight: 0.5 },
-   { provider: "Anthropic", model: "claude-3-5-sonnet-20241022", weight: 0.5 }]
+  "Blog Post", rubricCid,
+  [{ provider: "OpenAI", model: "gpt-4o", weight: 0.5 }, ...]
 );
 
 // ============================================
@@ -1422,12 +1512,13 @@ console.log('Evaluation CID:', evaluationCid);
           <div>
             <strong>Common Mistakes to Avoid:</strong>
             <ul style={{ margin: '0.5rem 0 0 0', paddingLeft: '1.5rem' }}>
-              <li><strong>❌ Using pinJSONToIPFS for ZIP</strong> — This uploads raw JSON, not a ZIP. Use <code>pinFileToIPFS</code> for the evaluation package</li>
+              <li><strong>❌ Using simplified primary_query.json format</strong> — Must use <code>{`{query, references, outcomes}`}</code> NOT <code>{`{title, description, outcomes}`}</code>. Simplified format causes oracles to hang!</li>
+              <li><strong>❌ Missing "references" array</strong> — primary_query.json must have <code>"references": ["gradingRubric"]</code> to link the rubric</li>
+              <li><strong>❌ Missing "bCIDs" in manifest</strong> — Required for oracles to find submitted work</li>
+              <li><strong>❌ Using pinJSONToIPFS for ZIP</strong> — Use <code>pinFileToIPFS</code> for the evaluation package</li>
               <li><strong>❌ Uploading raw JSON as evaluation</strong> — Always ZIP first, then upload the ZIP file</li>
-              <li><strong>❌ Embedding criteria in primary_query.json</strong> — Upload rubric separately and reference via <code>manifest.additional</code></li>
-              <li><strong>❌ Missing manifest.additional array</strong> — Required for proper evaluation; causes "default criteria" warning</li>
+              <li><strong>❌ Missing manifest.additional array</strong> — Required for rubric reference</li>
               <li><strong>❌ Zipping the folder</strong> — Zip the <em>contents</em>, not the containing folder</li>
-              <li><strong>❌ Wrong file names</strong> — Use exact names: <code>manifest.json</code>, <code>primary_query.json</code></li>
             </ul>
           </div>
         </div>

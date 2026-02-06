@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './_env.js';
 // Prints the decrypted private key to stdout ONLY when explicitly acknowledged.
 // Do NOT paste the output into chat. Redirect to a local file if you must.
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './_env.js';
 import { Wallet } from 'ethers';
 import fs from 'node:fs/promises';
 import path from 'node:path';

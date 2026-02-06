@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './_env.js';
 // Minimal worker loop: list open jobs + print titles.
 // This is a scaffold; real workers should fetch rubric, do work, then submit.
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './_env.js';
 import { Contract, formatEther } from 'ethers';
 import { getNetwork, providerFor, loadWallet, LINK, linkBalance, parseEth } from './_lib.js';
 

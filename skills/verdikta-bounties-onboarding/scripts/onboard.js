@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './_env.js';
 // Interactive onboarding: wallet → funding instructions → (mainnet) optional swap ETH→LINK → optional sweep.
 
 import readline from 'node:readline/promises';

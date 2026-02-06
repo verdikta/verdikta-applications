@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './_env.js';
 
 function arg(name, def = null) {
   const i = process.argv.indexOf(`--${name}`);

@@ -125,8 +125,23 @@
 
 .bounty-badges {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.5rem;
+}
+
+/* Stack status badge and validate button vertically */
+.badge-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.35rem;
+}
+
+/* Validate button row with indicator */
+.validate-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 /* Validation warning indicator (yellow border) */

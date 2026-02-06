@@ -446,61 +446,61 @@ function JobCard({ job }) {
       <div className="bounty-header">
         <h3>{job.title || `Job #${job.jobId}`}</h3>
         <div className="bounty-badges">
-          {/* Validation status indicator */}
-          {validationResult ? (
-            validationResult.valid ? (
-              <span
-                className="validation-success"
-                title="Evaluation package is valid"
-              >
-                <CheckCircle size={14} />
-              </span>
-            ) : validationResult.errorCount > 0 ? (
-              // Errors = red (fatal, won't work)
-              <span
-                className="validation-error"
-                title={validationResult.message}
-              >
-                <AlertTriangle size={14} />
-              </span>
-            ) : (
-              // Warnings only = yellow (might still work)
-              <span
-                className="validation-warning"
-                title={validationResult.message}
-              >
-                <AlertTriangle size={14} />
-              </span>
-            )
-          ) : hasValidationIssues ? (
-            <span
-              className={validationErrorCount > 0 ? "validation-error" : "validation-warning"}
-              title={`This bounty has ${validationErrorCount} format issue(s) that may prevent submissions from being evaluated`}
-            >
-              <AlertTriangle size={14} />
+          {/* Status badge and validate button stacked vertically */}
+          <div className="badge-stack">
+            <span {...getBountyBadgeProps(status)}>
+              {getBountyStatusLabel(status)}
             </span>
-          ) : null}
-
-          {/* Validate button */}
-          <button
-            className={`btn-validate ${validating ? 'validating' : ''} ${validationResult?.valid ? 'valid' : ''}`}
-            onClick={handleValidate}
-            disabled={validating}
-            title={validating ? 'Validating...' : 'Check if evaluation package is properly formatted'}
-          >
-            {validating ? (
-              <RefreshCw size={12} className="spin" />
-            ) : (
-              <ShieldCheck size={12} />
-            )}
-            <span className="btn-validate-text">
-              {validating ? 'Checking...' : 'Validate'}
-            </span>
-          </button>
-
-          <span {...getBountyBadgeProps(status)}>
-            {getBountyStatusLabel(status)}
-          </span>
+            <div className="validate-row">
+              {/* Validation status indicator - next to validate button */}
+              {validationResult ? (
+                validationResult.valid ? (
+                  <span
+                    className="validation-success"
+                    title="Evaluation package is valid"
+                  >
+                    <CheckCircle size={14} />
+                  </span>
+                ) : validationResult.errorCount > 0 ? (
+                  <span
+                    className="validation-error"
+                    title={validationResult.message}
+                  >
+                    <AlertTriangle size={14} />
+                  </span>
+                ) : (
+                  <span
+                    className="validation-warning"
+                    title={validationResult.message}
+                  >
+                    <AlertTriangle size={14} />
+                  </span>
+                )
+              ) : hasValidationIssues ? (
+                <span
+                  className={validationErrorCount > 0 ? "validation-error" : "validation-warning"}
+                  title={`This bounty has ${validationErrorCount} format issue(s) that may prevent submissions from being evaluated`}
+                >
+                  <AlertTriangle size={14} />
+                </span>
+              ) : null}
+              <button
+                className={`btn-validate ${validating ? 'validating' : ''} ${validationResult?.valid ? 'valid' : ''}`}
+                onClick={handleValidate}
+                disabled={validating}
+                title={validating ? 'Validating...' : 'Check if evaluation package is properly formatted'}
+              >
+                {validating ? (
+                  <RefreshCw size={12} className="spin" />
+                ) : (
+                  <ShieldCheck size={12} />
+                )}
+                <span className="btn-validate-text">
+                  {validating ? 'Checking...' : 'Validate'}
+                </span>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
       {job.workProductType && (

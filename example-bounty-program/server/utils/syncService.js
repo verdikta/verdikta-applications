@@ -192,13 +192,10 @@ class SyncService {
 
       // First pass: Update/add jobs from blockchain
       for (const bounty of onChainBounties) {
-        // Find existing job by onChainId (primary) or legacy bountyId field
+        // Find existing job by jobId (aligned with on-chain ID)
         // IMPORTANT: Require contractAddress to match exactly to avoid cross-contract collisions
         const existingJob = storage.jobs.find(j => {
-          const matchesId = j.onChainId === bounty.jobId ||
-                           j.bountyId === bounty.jobId ||  // Legacy fallback
-                           j.onChainBountyId === bounty.jobId;  // Another legacy name
-          if (!matchesId) return false;
+          if (j.jobId !== bounty.jobId) return false;
 
           // Require explicit contract address match (jobs without contractAddress are legacy/orphaned)
           const jobContract = (j.contractAddress || '').toLowerCase();
@@ -206,15 +203,15 @@ class SyncService {
         });
 
         if (!existingJob) {
-          // Check for recently created jobs without onChainId that might be waiting to be linked
+          // Check for recently created jobs that might be waiting to be linked
           // This handles the race condition between frontend create and sync
-          // 
+          //
           // MATCHING STRATEGIES (in order of reliability):
           // 1. evaluationCid/primaryCid match - most reliable, unique per job
           // 2. creator + deadline match - fallback for older jobs
           const pendingJob = storage.jobs.find(j => {
-            // Skip jobs that already have an onChainId
-            if (j.onChainId != null || j.bountyId != null) return false;
+            // Skip jobs that are already synced (have syncedFromBlockchain flag)
+            if (j.syncedFromBlockchain) return false;
             
             // Strategy 1: Match by evaluationCid (most reliable - unique per job)
             // The evaluationCid/primaryCid is the same CID used on-chain
@@ -238,15 +235,15 @@ class SyncService {
             // Link existing job instead of creating duplicate
             logger.info('🔗 Linking pending job to on-chain bounty', {
               jobId: pendingJob.jobId,
-              onChainId: bounty.jobId,
+              onChainBountyId: bounty.jobId,
               title: pendingJob.title,
               matchedBy: pendingJob.primaryCid === bounty.evaluationCid ? 'evaluationCid' : 'creator+deadline'
             });
             await this.updateJobFromBlockchain(pendingJob, bounty, storage, currentContract);
             linked++;
           } else {
-            // Check if a job with same evaluationCid already exists (even if it has onChainId set)
-            // This catches the race condition where PATCH set onChainId AFTER we read storage
+            // Check if a job with same evaluationCid already exists (even if it was already linked)
+            // This catches the race condition where PATCH linked the job AFTER we read storage
             const existingByCid = storage.jobs.find(j =>
               bounty.evaluationCid && (
                 j.primaryCid === bounty.evaluationCid ||
@@ -258,8 +255,7 @@ class SyncService {
               // Job already exists, just update it (handles PATCH race condition)
               logger.info('🔗 Found existing job by CID match (race condition recovery)', {
                 jobId: existingByCid.jobId,
-                onChainId: bounty.jobId,
-                existingOnChainId: existingByCid.onChainId
+                onChainBountyId: bounty.jobId
               });
               await this.updateJobFromBlockchain(existingByCid, bounty, storage, currentContract);
               linked++;
@@ -286,8 +282,8 @@ class SyncService {
         // Skip jobs that are already marked as orphaned or closed
         if (job.status === 'ORPHANED' || job.status === 'CLOSED') continue;
 
-        // Skip jobs without an onChainId (never went on-chain)
-        const chainId = job.onChainId ?? job.bountyId ?? job.onChainBountyId;
+        // Skip jobs without a jobId (shouldn't happen, but be safe)
+        const chainId = job.jobId;
         if (chainId == null) continue;
 
         // Skip jobs from different contracts
@@ -300,8 +296,7 @@ class SyncService {
             job.orphanReason = 'different_contract';
             orphaned++;
             logger.info('Marked job as orphaned (different contract)', {
-              jobId: job.jobId,
-              onChainId: chainId
+              jobId: job.jobId
             });
           }
           continue;
@@ -316,7 +311,6 @@ class SyncService {
           orphaned++;
           logger.warn('Marked job as orphaned (not found on chain)', {
             jobId: job.jobId,
-            onChainId: chainId,
             contractAddress: currentContract
           });
         }
@@ -353,13 +347,13 @@ class SyncService {
         const freshStorage = await jobStorage.readStorage();
         
         // Merge strategy: For each job in our modified storage, update the fresh storage
-        // Preserve any fields set by PATCH (like onChainId, txHash) that we didn't modify
+        // Preserve any fields set by PATCH (like txHash) that we didn't modify
         for (const modifiedJob of storage.jobs) {
           const freshJob = freshStorage.jobs.find(j => j.jobId === modifiedJob.jobId);
-          
+
           if (freshJob) {
             // Fields that PATCH endpoints might set during sync - preserve if freshJob has them
-            const patchPreserveFields = ['onChainId', 'txHash', 'blockNumber', 'onChain', 'contractAddress'];
+            const patchPreserveFields = ['txHash', 'blockNumber', 'onChain', 'contractAddress'];
             
             // Save fresh values for PATCH fields
             const preservedValues = {};
@@ -567,8 +561,7 @@ class SyncService {
 
     // Note: evaluationCid in contract is the full evaluation package (was rubricCid)
     const job = {
-      jobId: bounty.jobId, // Use on-chain ID as jobId (aligned, both 0-based)
-      onChainId: bounty.jobId, // Keep for backward compat
+      jobId: bounty.jobId, // Aligned with on-chain ID (both 0-based)
       title,
       description,
       workProductType,
@@ -604,7 +597,6 @@ class SyncService {
   async updateJobFromBlockchain(existingJob, bounty, storage, currentContract) {
     logger.info('🔄 Updating job from blockchain', {
       jobId: existingJob.jobId,
-      onChainId: bounty.jobId,
       oldStatus: existingJob.status,
       newStatus: bounty.status,
       oldSubmissionCount: existingJob.submissionCount,
@@ -618,14 +610,9 @@ class SyncService {
     existingJob.winner = bounty.winner;
     existingJob.lastSyncedAt = Math.floor(Date.now() / 1000);
 
-    // Ensure onChainId is set (handles legacy jobs and newly linked jobs)
-    if (existingJob.onChainId == null) {
-      existingJob.onChainId = bounty.jobId;
-    }
-
-    // Reconcile jobId with onChainId (aligned ID migration)
+    // Reconcile jobId with on-chain ID (aligned ID system)
     if (existingJob.jobId !== bounty.jobId) {
-      logger.info('Reconciling jobId to match onChainId', {
+      logger.info('Reconciling jobId to match on-chain ID', {
         oldJobId: existingJob.jobId,
         newJobId: bounty.jobId
       });

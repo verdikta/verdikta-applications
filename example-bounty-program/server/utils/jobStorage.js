@@ -488,7 +488,7 @@ async function deleteOrphanedJobs() {
 
 /**
  * Migrate legacy jobs (add contract address to jobs that don't have one)
- * Only migrates jobs that have an onChainId and can be verified on current contract
+ * Only migrates jobs that have a jobId and can be verified on current contract
  */
 async function migrateLegacyJobs(verifyOnChain = null) {
   try {
@@ -506,10 +506,10 @@ async function migrateLegacyJobs(verifyOnChain = null) {
       // Skip jobs that already have a contract address
       if (job.contractAddress) continue;
       
-      // If job has onChainId, try to verify it exists on current contract
-      if (job.onChainId != null && verifyOnChain) {
+      // If job has a jobId, try to verify it exists on current contract
+      if (job.jobId != null && verifyOnChain) {
         try {
-          const exists = await verifyOnChain(job.onChainId);
+          const exists = await verifyOnChain(job.jobId);
           if (exists) {
             job.contractAddress = currentContract;
             migrated++;
@@ -522,7 +522,7 @@ async function migrateLegacyJobs(verifyOnChain = null) {
         } catch (e) {
           logger.warn('Failed to verify job on-chain', { jobId: job.jobId, error: e.message });
         }
-      } else if (!job.onChainId) {
+      } else if (job.jobId == null) {
         // Job was never put on-chain, assume it's for current contract
         job.contractAddress = currentContract;
         migrated++;

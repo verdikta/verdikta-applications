@@ -483,7 +483,6 @@ router.get('/admin/orphans', async (req, res) => {
       count: orphans.length,
       orphans: orphans.map(j => ({
         jobId: j.jobId,
-        onChainId: j.onChainId,
         title: j.title,
         status: j.status,
         contractAddress: j.contractAddress,
@@ -585,7 +584,6 @@ router.get('/admin/expired', async (req, res) => {
 
       const bountyInfo = {
         jobId: job.jobId,
-        onChainId: onChainBountyId,
         title: job.title,
         creator: job.creator,
         bountyAmount: job.bountyAmount,
@@ -807,7 +805,6 @@ router.post('/:jobId/close', async (req, res) => {
       },
       bounty: {
         jobId: job.jobId,
-        onChainId: onChainBountyId,
         title: job.title,
         creator: job.creator,
         payoutWei: chainBounty.payoutWei.toString(),
@@ -986,7 +983,6 @@ router.get('/admin/validate-all', async (req, res) => {
 
         results.push({
           jobId: job.jobId,
-          onChainId: job.onChainId,
           title: job.title,
           valid: result.valid,
           errorCount: result.issues.filter(i => i.severity === 'error').length,
@@ -996,7 +992,6 @@ router.get('/admin/validate-all', async (req, res) => {
       } catch (e) {
         results.push({
           jobId: job.jobId,
-          onChainId: job.onChainId,
           title: job.title,
           valid: false,
           error: e.message
@@ -1089,7 +1084,7 @@ router.get('/:jobId/validate', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const {
-      status, creator, minPayout, search, onChainId,
+      status, creator, minPayout, search,
       hideEnded, excludeStatuses, includeOrphans, limit = 50, offset = 0,
       // New filters for agents
       workProductType,    // Filter by type: "code", "writing", "research", etc. (comma-separated)
@@ -1102,7 +1097,7 @@ router.get('/', async (req, res) => {
       hasWinner,          // "true" = only jobs with winner, "false" = only jobs without winner
     } = req.query;
     logger.info('[jobs/list] filters', {
-      status, creator, search, onChainId, hideEnded, excludeStatuses, includeOrphans,
+      status, creator, search, hideEnded, excludeStatuses, includeOrphans,
       workProductType, minHoursLeft, maxHoursLeft, excludeSubmittedBy, minBountyUSD, maxBountyUSD, classId, hasWinner
     });
 
@@ -1116,10 +1111,6 @@ router.get('/', async (req, res) => {
     if (search) filters.search = search;
 
     let allJobs = await jobStorage.listJobs(filters);
-
-    if (onChainId) {
-      allJobs = allJobs.filter(j => Number(j.onChainId) === Number(onChainId));
-    }
 
     // Filter by work product type (comma-separated list, case-insensitive)
     if (workProductType) {
@@ -1216,7 +1207,6 @@ router.get('/', async (req, res) => {
 
       return {
         jobId: job.jobId,
-        onChainId: job.onChainId,
         title: job.title,
         description: job.description,
         workProductType: job.workProductType,
@@ -1757,14 +1747,13 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
     if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
 
-    job.onChainId   = Number(bountyId);  // Ensure it's a number, not string
     job.txHash      = txHash;
     job.blockNumber = blockNumber;
     job.onChain     = true;
 
     // Reconcile jobId to match on-chain ID (aligned ID system)
     if (job.jobId !== Number(bountyId)) {
-      logger.info('[jobs/bountyId] reconciling jobId to match onChainId', {
+      logger.info('[jobs/bountyId] reconciling jobId to match on-chain ID', {
         oldJobId: job.jobId, newJobId: Number(bountyId)
       });
       job.legacyJobId = job.legacyJobId || job.jobId;
@@ -1779,7 +1768,7 @@ router.patch('/:jobId/bountyId', async (req, res) => {
 
     await jobStorage.writeStorage(storage);
 
-    logger.info('[jobs/bountyId] updated', { jobId, onChainId: bountyId, contractAddress: job.contractAddress });
+    logger.info('[jobs/bountyId] updated', { jobId, bountyId, contractAddress: job.contractAddress });
     return res.json({ success: true, job });
   } catch (error) {
     logger.error('[jobs/bountyId] error', { msg: error.message });
@@ -1827,14 +1816,14 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
             try {
               const ev = iface.parseLog(log);
               const bountyId = Number(ev.args.bountyId);
-              job.onChainId = bountyId;  // ← Changed from job.bountyId
+              job.jobId = bountyId;
               job.onChain = true;
               job.txHash = job.txHash ?? txHash;
               // Track contract address
               const currentContract = jobStorage.getCurrentContractAddress();
               if (currentContract) job.contractAddress = currentContract;
               await jobStorage.writeStorage(storage);
-              logger.info('[resolve] via tx', { jobId: jobIdParam, onChainId: bountyId });
+              logger.info('[resolve] via tx', { jobId: jobIdParam, bountyId });
               return res.json({ success: true, method: 'tx', bountyId, job });
             } catch {}
           }
@@ -1869,13 +1858,13 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
       }
 
       if (best != null) {
-        job.onChainId = best;  // ← Changed from job.bountyId
+        job.jobId = best;
         job.onChain = true;
         // Track contract address
         const currentContract = jobStorage.getCurrentContractAddress();
         if (currentContract) job.contractAddress = currentContract;
         await jobStorage.writeStorage(storage);
-        logger.info('[resolve] via state', { jobId: jobIdParam, onChainId: best, delta: bestDelta });
+        logger.info('[resolve] via state', { jobId: jobIdParam, resolvedId: best, delta: bestDelta });
         return res.json({ success: true, method: 'state', bountyId: best, delta: bestDelta, job });
       }
 
@@ -1955,37 +1944,20 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
     
     logger.info('[refresh] Found job', { 
       jobId, 
-      onChainId: job.onChainId,
       title: job.title,
       submissionsCount: job.submissions?.length || 0
     });
-    
-    // Use onChainId as the standard field name, with fallbacks
-    let onChainId = job.jobId;
-    
-    // If still not found, try to find from submission data
-    if (onChainId == null && job.submissions?.length > 0) {
-      // Check if any submission has the bountyId from when it was created
-      const firstSub = job.submissions[0];
-      if (firstSub.onChainBountyId != null) {
-        onChainId = firstSub.onChainBountyId;
-        logger.info('[refresh] Found onChainId from submission', { jobId, onChainId });
-      }
-    }
-    
+
+    const onChainId = job.jobId;
+
     if (onChainId == null) {
-      logger.error('[refresh] No onChainId found', { 
-        jobId, 
-        hasOnChainId: job.onChainId,
-        hasOnChainBountyId: job.onChainBountyId,
-        hasBountyId: job.bountyId
-      });
-      return res.status(400).json({ 
-        error: 'No on-chain bounty ID', 
+      logger.error('[refresh] No on-chain ID found', { jobId });
+      return res.status(400).json({
+        error: 'No on-chain bounty ID',
         details: 'This job has not been registered on-chain yet. Please check that the bounty was created on-chain.'
       });
     }
-    
+
     logger.info('[refresh] Using on-chain bounty ID', { jobId, onChainId });
 
     const subId = parseInt(submissionId, 10);

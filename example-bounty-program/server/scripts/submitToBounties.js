@@ -878,7 +878,7 @@ async function main() {
   // Filter to target bounty if specified
   let targetBounties = bounties;
   if (options.bountyId !== null) {
-    targetBounties = bounties.filter(b => b.onChainId === options.bountyId);
+    targetBounties = bounties.filter(b => b.jobId === options.bountyId);
     if (targetBounties.length === 0) {
       console.error(`Bounty #${options.bountyId} not found or not open.`);
       process.exit(1);
@@ -895,7 +895,7 @@ async function main() {
     const bounty = targetBounties[i];
     bountyIndex++;
     console.log(`\n[${bountyIndex}] Checking: ${bounty.title}`);
-    console.log(`  Job ID: ${bounty.jobId}, On-chain ID: ${bounty.onChainId}`);
+    console.log(`  Bounty #${bounty.jobId}`);
 
     try {
       // Fetch full bounty details including rubric
@@ -918,7 +918,7 @@ async function main() {
 
       // Double-check on-chain status (backend might be out of sync with Verdikta)
       console.log('  Checking on-chain status...');
-      const onChainCheck = await checkOnChainWinner(wallet.provider, bounty.onChainId, details.threshold || 70);
+      const onChainCheck = await checkOnChainWinner(wallet.provider, bounty.jobId, details.threshold || 70);
       if (onChainCheck.hasWinner) {
         const info = onChainCheck.winnerInfo;
         console.log(`  ⏭️  Skipping - on-chain winner detected`);
@@ -984,7 +984,7 @@ async function main() {
 
           // Call directly - startSubmissionOnChain has internal retry logic for startPreparedSubmission
           // Do NOT wrap in withRetry, as that would re-run prepareSubmission creating orphans
-          const chainResult = await startSubmissionOnChain(wallet, bounty.onChainId, evaluationCid, hunterCid);
+          const chainResult = await startSubmissionOnChain(wallet, bounty.jobId, evaluationCid, hunterCid);
 
           console.log(`  ✅ Evaluation started on-chain!`);
           console.log(`  On-chain submission ID: ${chainResult.submissionId}`);

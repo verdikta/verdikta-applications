@@ -1790,11 +1790,10 @@ function BountyDetails({ walletState }) {
  * DiagnosticPanel - Shows backend vs on-chain status comparison
  * Toggle with Ctrl+Shift+D
  */
-function DiagnosticPanel({ 
-  job, 
-  bountyId, 
-  resolvedBountyId, 
-  onChainId, 
+function DiagnosticPanel({
+  job,
+  bountyId,
+  onChainId,
   statusOverride, 
   deadlinePassed,
   submissions,
@@ -1826,10 +1825,8 @@ function DiagnosticPanel({
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
         <div>
           <div style={{ color: '#aaa', marginBottom: '0.25rem' }}>IDs:</div>
-          <div>Backend jobId: <span style={{ color: '#4caf50' }}>{bountyId}</span></div>
-          <div>job.bountyId: <span style={{ color: job?.bountyId != null ? '#4caf50' : '#f44336' }}>{job?.bountyId ?? 'null'}</span></div>
-          <div>job.onChainId: <span style={{ color: job?.onChainId != null ? '#4caf50' : '#f44336' }}>{job?.onChainId ?? 'null'}</span></div>
-          <div>resolvedBountyId: <span style={{ color: resolvedBountyId != null ? '#4caf50' : '#888' }}>{resolvedBountyId ?? 'null'}</span></div>
+          <div>URL bountyId: <span style={{ color: '#4caf50' }}>{bountyId}</span></div>
+          <div>job.jobId: <span style={{ color: job?.jobId != null ? '#4caf50' : '#f44336' }}>{job?.jobId ?? 'null'}</span></div>
           <div>Effective onChainId: <span style={{ color: onChainId != null ? '#4caf50' : '#f44336', fontWeight: 'bold' }}>{onChainId ?? 'MISSING'}</span></div>
         </div>
         

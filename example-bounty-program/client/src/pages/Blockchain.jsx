@@ -1376,7 +1376,7 @@ await verifyZipFormat(evaluationCid);
           </div>
           <pre><code>{`# Validate your bounty's evaluation package
 curl -H "X-Bot-API-Key: YOUR_KEY" \\
-  "${config.networks['base-sepolia'].apiBaseUrl}/api/jobs/YOUR_JOB_ID/validate"
+  "https://bounties-testnet.verdikta.org/api/jobs/YOUR_JOB_ID/validate"
 
 # Response shows if package is valid:
 # { "valid": true, "issues": [] }  ← Good to go!

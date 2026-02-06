@@ -176,13 +176,22 @@ async function main() {
       throw new Error('Invalid network. Use base-sepolia or base.');
     }
 
-    // 2) Base URL default per network
-    const baseUrlDefault = current.VERDIKTA_BOUNTIES_BASE_URL
-      || process.env.VERDIKTA_BOUNTIES_BASE_URL
-      || (network === 'base-sepolia' ? 'https://bounties-testnet.verdikta.org' : 'https://bounties.verdikta.org');
+    // 2) Bounties base URL
+    // Clean install: do not bother the human; derive from network.
+    // Non-clean install: preserve existing env value, and optionally prompt.
+    const derivedBaseUrl = (network === 'base-sepolia'
+      ? 'https://bounties-testnet.verdikta.org'
+      : 'https://bounties.verdikta.org');
 
-    const baseUrlAns = (await rl.question(`Bounties base URL [${baseUrlDefault}] `)).trim();
-    const baseUrl = (baseUrlAns || baseUrlDefault).replace(/\/+$/, '');
+    const existingBaseUrl = current.VERDIKTA_BOUNTIES_BASE_URL || process.env.VERDIKTA_BOUNTIES_BASE_URL || '';
+    let baseUrl = (existingBaseUrl || derivedBaseUrl).replace(/\/+$/, '');
+
+    if (existingBaseUrl) {
+      const baseUrlAns = (await rl.question(`Bounties base URL [${baseUrl}]: `)).trim();
+      baseUrl = (baseUrlAns || baseUrl).replace(/\/+$/, '');
+    } else {
+      console.log(`Bounties base URL: ${baseUrl} (derived from network)`);
+    }
 
     // 3) Owner/sweep
     const ownerDefault = current.OFFBOT_ADDRESS && isAddress(current.OFFBOT_ADDRESS) ? current.OFFBOT_ADDRESS : '';
@@ -227,6 +236,18 @@ async function main() {
     process.env.VERDIKTA_WALLET_PASSWORD = password;
 
     // 6) Wallet creation
+    // If this is not a clean install and the user changes network, they should generally
+    // use a different wallet (different keystore path) to avoid confusion.
+    const priorNetwork = (current.VERDIKTA_NETWORK || '').toLowerCase();
+    const keystoreAbsPath = resolvePath(keystoreDefault);
+    const keystoreAlreadyExists = await fileExists(keystoreAbsPath);
+    if (keystoreAlreadyExists && priorNetwork && priorNetwork !== network) {
+      throw new Error(
+        `Keystore already exists at ${keystoreAbsPath}, but network changed (${priorNetwork} → ${network}). ` +
+        `For safety, set a new VERDIKTA_KEYSTORE_PATH (new wallet) or revert the network.`
+      );
+    }
+
     const { wallet, abs: keystoreAbs, created } = await ensureWalletKeystore({
       keystorePath: keystoreDefault,
       password,
@@ -253,18 +274,40 @@ async function main() {
 
     // 8) Register bot + save API key
     const botNameDefault = arg('name', current.BOT_NAME || 'MyBot');
-    const botName = (await rl.question(`\nBot name [${botNameDefault}]: `)).trim() || botNameDefault;
     const botDescDefault = arg('description', current.BOT_DESCRIPTION || 'Verdikta bounty worker');
-    const botDescription = (await rl.question(`Bot description [${botDescDefault}]: `)).trim() || botDescDefault;
-
-    const { apiKey, data } = await registerBot({ baseUrl, name: botName, ownerAddress, description: botDescription });
 
     await ensureDir(secretsDir);
     const botOut = path.join(secretsDir, 'verdikta-bounties-bot.json');
-    await fs.writeFile(botOut, JSON.stringify(data, null, 2), { mode: 0o600 });
 
-    console.log(`\n✅ Registered bot. Saved: ${botOut}`);
-    console.log('API key: saved to file (not reprinted here).');
+    // Reuse existing bot api key if present (non-clean install)
+    let apiKey = null;
+    if (await fileExists(botOut)) {
+      try {
+        const existing = JSON.parse(await fs.readFile(botOut, 'utf8'));
+        apiKey = existing?.apiKey || existing?.api_key || existing?.bot?.apiKey || existing?.bot?.api_key || null;
+      } catch {}
+
+      if (apiKey) {
+        const reuse = (await rl.question(`\nFound existing bot API key file. Reuse it? (Y/n) `)).trim().toLowerCase();
+        if (reuse === 'n' || reuse === 'no') {
+          apiKey = null;
+        }
+      }
+    }
+
+    if (!apiKey) {
+      const botName = (await rl.question(`\nBot name [${botNameDefault}]: `)).trim() || botNameDefault;
+      const botDescription = (await rl.question(`Bot description [${botDescDefault}]: `)).trim() || botDescDefault;
+
+      const reg = await registerBot({ baseUrl, name: botName, ownerAddress, description: botDescription });
+      apiKey = reg.apiKey;
+      await fs.writeFile(botOut, JSON.stringify(reg.data, null, 2), { mode: 0o600 });
+
+      console.log(`\n✅ Registered bot. Saved: ${botOut}`);
+      console.log('API key: saved to file (not reprinted here).');
+    } else {
+      console.log(`\n✅ Reusing existing bot API key file: ${botOut}`);
+    }
 
     // 9) Smoke test: list jobs
     const jobsRes = await fetch(`${baseUrl}/api/jobs?status=OPEN&minHoursLeft=0`, {
@@ -279,8 +322,19 @@ async function main() {
 
     console.log(`\n✅ Smoke test OK: can list jobs (OPEN jobs returned: ${count})`);
 
-    console.log('\nNext commands:');
-    console.log('  node bounty_worker_min.js');
+    // 10) Optional: run the worker once as a final integration test
+    const runWorker = (await rl.question('\nRun bounty_worker_min.js now (one-shot)? (Y/n) ')).trim().toLowerCase();
+    if (!(runWorker === 'n' || runWorker === 'no')) {
+      const { spawn } = await import('node:child_process');
+      await new Promise((resolve, reject) => {
+        const p = spawn(process.execPath, ['bounty_worker_min.js'], {
+          stdio: 'inherit',
+          env: { ...process.env, VERDIKTA_BOT_FILE: botOut }
+        });
+        p.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`bounty_worker_min.js exited with ${code}`)));
+      });
+      console.log('\n✅ Worker run complete.');
+    }
 
     console.log('\nPrivate key handling:');
     console.log(`- Keystore path: ${keystoreAbs}`);

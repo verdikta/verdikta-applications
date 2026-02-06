@@ -26,7 +26,9 @@ const contractAddress = ESCROW[network];
 if (!contractAddress) throw new Error(`Missing escrow address for network=${network}`);
 
 const evaluationCid = arg('cid', 'QmRLB6LYe6VER6UQDoX7wt4LmKATHbGA81ny5vgRMbfrtX');
-const classId = Number(arg('classId', '4')); // fallback class id
+// NOTE: This script does on-chain creation only. If you want a titled job + full evaluation package,
+// create via the HTTP API first (POST /api/jobs/create), then create on-chain with job.primaryCid.
+const classId = Number(arg('classId', '128')); // default active class (Core)
 const threshold = Number(arg('threshold', '80'));
 const hours = Number(arg('hours', '6'));
 const amountEth = arg('eth', '0.001');

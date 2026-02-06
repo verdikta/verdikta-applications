@@ -567,8 +567,8 @@ class SyncService {
 
     // Note: evaluationCid in contract is the full evaluation package (was rubricCid)
     const job = {
-      jobId: storage.nextId,
-      onChainId: bounty.jobId, // Track the on-chain ID
+      jobId: bounty.jobId, // Use on-chain ID as jobId (aligned, both 0-based)
+      onChainId: bounty.jobId, // Keep for backward compat
       title,
       description,
       workProductType,
@@ -594,7 +594,7 @@ class SyncService {
     };
 
     storage.jobs.push(job);
-    storage.nextId += 1;
+    storage.nextId = Math.max(storage.nextId, bounty.jobId + 1);
   }
 
   /**
@@ -621,6 +621,16 @@ class SyncService {
     // Ensure onChainId is set (handles legacy jobs and newly linked jobs)
     if (existingJob.onChainId == null) {
       existingJob.onChainId = bounty.jobId;
+    }
+
+    // Reconcile jobId with onChainId (aligned ID migration)
+    if (existingJob.jobId !== bounty.jobId) {
+      logger.info('Reconciling jobId to match onChainId', {
+        oldJobId: existingJob.jobId,
+        newJobId: bounty.jobId
+      });
+      existingJob.legacyJobId = existingJob.legacyJobId || existingJob.jobId;
+      existingJob.jobId = bounty.jobId;
     }
 
     // Set contract address if not already set (migration for legacy jobs)

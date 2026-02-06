@@ -29,7 +29,9 @@ const IssueType = {
   INVALID_RUBRIC: 'INVALID_RUBRIC',           // Rubric JSON is malformed
   MISSING_JURY: 'MISSING_JURY',               // No jury configuration
   INVALID_CLASS: 'INVALID_CLASS',             // Class ID not found/inactive
-  MODEL_UNAVAILABLE: 'MODEL_UNAVAILABLE'      // Jury model not in class
+  MODEL_UNAVAILABLE: 'MODEL_UNAVAILABLE',     // Jury model not in class
+  INVALID_PRIMARY_QUERY: 'INVALID_PRIMARY_QUERY', // primary_query.json has wrong format
+  MISSING_BCIDS: 'MISSING_BCIDS'              // manifest.json missing bCIDs
 };
 
 /**
@@ -150,6 +152,80 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
             type: IssueType.MISSING_RUBRIC,
             severity: IssueSeverity.WARNING,
             message: 'Manifest does not reference a grading rubric. Evaluation may use default criteria.'
+          });
+        }
+
+        // Validate primary_query.json format (critical for oracle processing)
+        const primaryFilename = manifest.primary?.filename || 'primary_query.json';
+        const primaryEntry = entries.find(e =>
+          e.entryName === primaryFilename || e.entryName.endsWith('/' + primaryFilename)
+        );
+
+        if (primaryEntry) {
+          try {
+            const primaryQuery = JSON.parse(zip.readAsText(primaryEntry));
+
+            // Check for WRONG format: {title, description, outcomes}
+            // Oracles require: {query, references, outcomes}
+            if (primaryQuery.title !== undefined || primaryQuery.description !== undefined) {
+              if (!primaryQuery.query) {
+                issues.push({
+                  type: IssueType.INVALID_PRIMARY_QUERY,
+                  severity: IssueSeverity.ERROR,
+                  message: 'primary_query.json uses wrong format: found "title"/"description" fields. Oracles require "query", "references", and "outcomes" fields. See Blockchain page for correct format.'
+                });
+              }
+            }
+
+            // Check for required "query" field
+            if (!primaryQuery.query || typeof primaryQuery.query !== 'string') {
+              if (!issues.some(i => i.type === IssueType.INVALID_PRIMARY_QUERY)) {
+                issues.push({
+                  type: IssueType.INVALID_PRIMARY_QUERY,
+                  severity: IssueSeverity.ERROR,
+                  message: 'primary_query.json missing required "query" field (must be a string with evaluation instructions).'
+                });
+              }
+            }
+
+            // Check for required "outcomes" field
+            if (!primaryQuery.outcomes || !Array.isArray(primaryQuery.outcomes) || primaryQuery.outcomes.length < 2) {
+              issues.push({
+                type: IssueType.INVALID_PRIMARY_QUERY,
+                severity: IssueSeverity.ERROR,
+                message: 'primary_query.json missing or invalid "outcomes" field (must be an array, e.g. ["DONT_FUND", "FUND"]).'
+              });
+            }
+
+            // Check for "references" field
+            if (!primaryQuery.references || !Array.isArray(primaryQuery.references)) {
+              issues.push({
+                type: IssueType.INVALID_PRIMARY_QUERY,
+                severity: IssueSeverity.WARNING,
+                message: 'primary_query.json missing "references" field. Oracles may not be able to access the grading rubric.'
+              });
+            }
+          } catch (err) {
+            issues.push({
+              type: IssueType.INVALID_PRIMARY_QUERY,
+              severity: IssueSeverity.ERROR,
+              message: `Failed to parse ${primaryFilename}: ${err.message}`
+            });
+          }
+        } else {
+          issues.push({
+            type: IssueType.INVALID_PRIMARY_QUERY,
+            severity: IssueSeverity.ERROR,
+            message: `ZIP archive does not contain ${primaryFilename} (referenced in manifest.primary.filename).`
+          });
+        }
+
+        // Check for bCIDs in manifest
+        if (!manifest.bCIDs || typeof manifest.bCIDs !== 'object' || Object.keys(manifest.bCIDs).length === 0) {
+          issues.push({
+            type: IssueType.MISSING_BCIDS,
+            severity: IssueSeverity.WARNING,
+            message: 'manifest.json missing "bCIDs" object. Oracles may not be able to access submitted work products.'
           });
         }
       } catch (err) {

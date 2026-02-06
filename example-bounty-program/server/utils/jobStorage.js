@@ -36,7 +36,7 @@ async function initStorage() {
       logger.info(`Using job storage: ${STORAGE_FILE}`);
     } catch {
       // File doesn't exist, create it
-      await fs.writeFile(STORAGE_FILE, JSON.stringify({ jobs: [], nextId: 1 }, null, 2));
+      await fs.writeFile(STORAGE_FILE, JSON.stringify({ jobs: [], nextId: 0 }, null, 2));
       logger.info(`Initialized job storage file: ${STORAGE_FILE}`);
     }
   } catch (error) {
@@ -55,7 +55,7 @@ async function readStorage() {
     return JSON.parse(content);
   } catch (error) {
     logger.error('Error reading storage:', error);
-    return { jobs: [], nextId: 1 };
+    return { jobs: [], nextId: 0 };
   }
 }
 

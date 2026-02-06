@@ -217,18 +217,11 @@ function BountyDetails({ walletState }) {
   // HELPER: Get on-chain ID from current state
   // ============================================================================
 
+  // jobId === onChainId (aligned ID system)
   const getOnChainBountyId = useCallback(() => {
-    if (job?.onChainId != null && !Number.isNaN(Number(job.onChainId))) {
-      return Number(job.onChainId);
-    }
-    if (job?.bountyId != null && !Number.isNaN(Number(job.bountyId))) {
-      return Number(job.bountyId);
-    }
-    if (resolvedBountyId != null && !Number.isNaN(Number(resolvedBountyId))) {
-      return Number(resolvedBountyId);
-    }
-    return null;
-  }, [job?.onChainId, job?.bountyId, resolvedBountyId]);
+    const id = parseInt(bountyId, 10);
+    return Number.isNaN(id) ? null : id;
+  }, [bountyId]);
 
   // ============================================================================
   // EVALUATION READINESS POLLING (NEW)
@@ -356,7 +349,7 @@ function BountyDetails({ walletState }) {
       // Check if on-chain status differs from backend and override if needed
       // ========================================================================
       if (finalJob) {
-        const onChainId = finalJob.onChainId ?? finalJob.bountyId ?? resolvedBountyId;
+        const onChainId = finalJob.jobId;
         
         if (onChainId != null) {
           try {
@@ -576,10 +569,10 @@ function BountyDetails({ walletState }) {
     (async () => {
       if (!job) return;
 
-      // Backend already has it (check BOTH bountyId and onChainId)
-      if (job?.bountyId != null || job?.onChainId != null) {
+      // jobId === onChainId in the aligned system, so resolution is trivial
+      if (job?.jobId != null) {
         if (!cancelled) {
-          setResolvedBountyId(Number(job?.onChainId ?? job?.bountyId));
+          setResolvedBountyId(Number(job.jobId));
           setResolveNote('');
           setResolvingId(false);
         }

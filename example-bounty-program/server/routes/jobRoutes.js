@@ -381,7 +381,7 @@ router.get('/admin/stuck', async (req, res) => {
     for (const job of jobList) {
       if (!job.submissions || job.submissions.length === 0) continue;
 
-      const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+      const onChainBountyId = job.jobId;
 
       for (const sub of job.submissions) {
         summary.totalSubmissions++;
@@ -581,7 +581,7 @@ router.get('/admin/expired', async (req, res) => {
       if (deadline === 0 || nowSeconds < deadline) continue;
 
       summary.totalExpired++;
-      const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+      const onChainBountyId = job.jobId;
 
       const bountyInfo = {
         jobId: job.jobId,
@@ -690,7 +690,7 @@ router.post('/:jobId/close', async (req, res) => {
     logger.info('[close] check', { jobId });
 
     const job = await jobStorage.getJob(jobId);
-    const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+    const onChainBountyId = job.jobId;
 
     if (onChainBountyId == null) {
       return res.status(400).json({
@@ -1370,7 +1370,17 @@ router.get('/:jobId', async (req, res) => {
     const { jobId } = req.params;
     logger.info('[jobs/details] get', { jobId });
 
-    const job = await jobStorage.getJob(jobId);
+    let job;
+    try {
+      job = await jobStorage.getJob(jobId);
+    } catch (e) {
+      // Fallback: try jobId - 1 for legacy URLs (old 1-based IDs)
+      const numId = parseInt(jobId);
+      if (numId > 0) {
+        try { job = await jobStorage.getJob(numId - 1); } catch {}
+      }
+      if (!job) throw e;
+    }
 
     let rubricContent = null;
     let extractedJuryNodes = job.juryNodes || [];
@@ -1751,6 +1761,15 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     job.txHash      = txHash;
     job.blockNumber = blockNumber;
     job.onChain     = true;
+
+    // Reconcile jobId to match on-chain ID (aligned ID system)
+    if (job.jobId !== Number(bountyId)) {
+      logger.info('[jobs/bountyId] reconciling jobId to match onChainId', {
+        oldJobId: job.jobId, newJobId: Number(bountyId)
+      });
+      job.legacyJobId = job.legacyJobId || job.jobId;
+      job.jobId = Number(bountyId);
+    }
     
     // Track which contract this job was created on
     const currentContract = jobStorage.getCurrentContractAddress();
@@ -1942,7 +1961,7 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
     });
     
     // Use onChainId as the standard field name, with fallbacks
-    let onChainId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+    let onChainId = job.jobId;
     
     // If still not found, try to find from submission data
     if (onChainId == null && job.submissions?.length > 0) {
@@ -2167,7 +2186,7 @@ router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
     }
 
     // Get on-chain IDs
-    const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+    const onChainBountyId = job.jobId;
     const onChainSubmissionId = submission.onChainSubmissionId ?? submission.submissionId;
 
     if (onChainBountyId == null) {
@@ -2333,7 +2352,7 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
     }
 
     // 2. Check on-chain state
-    const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+    const onChainBountyId = job.jobId;
     diagnosis.checks.onChainIds = {
       bountyId: onChainBountyId,
       submissionId: subId

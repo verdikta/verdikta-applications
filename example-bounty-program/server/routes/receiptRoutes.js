@@ -77,8 +77,20 @@ function shortHash(h) {
 
 async function loadReceiptData(jobId, submissionId) {
   try {
-    const job = await jobStorage.getJob(jobId);
-    const onChainId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+    let job;
+    try {
+      job = await jobStorage.getJob(jobId);
+    } catch (e) {
+      // Fallback: try jobId - 1 for legacy URLs (old 1-based IDs)
+      if (jobId > 0) {
+        job = await jobStorage.getJob(jobId - 1);
+        if (job) {
+          job._legacyRedirect = jobId - 1; // Signal to caller to redirect
+        }
+      }
+      if (!job) throw e;
+    }
+    const onChainId = job.jobId;
     if (onChainId == null) {
       const err = new Error('Job has no on-chain bounty ID');
       err.code = 'NO_ONCHAIN_ID';
@@ -182,6 +194,11 @@ router.get('/r/:jobId/:submissionId', async (req, res) => {
 
   try {
     const { job, onChainId, bounty, submission, localSubmission } = await loadReceiptData(jobId, submissionId);
+
+    // Redirect legacy URLs (old 1-based jobId) to new 0-based
+    if (job._legacyRedirect != null) {
+      return res.redirect(301, `/r/${job._legacyRedirect}/${submissionId}`);
+    }
 
     // Gate: receipts only for paid winners
     if (!isPaidWinner({ bounty, submission })) {

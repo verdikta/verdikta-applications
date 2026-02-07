@@ -2244,8 +2244,8 @@ function SubmissionCard({
   const isPending = isPendingStatus(submission.status);
   const isOnChain = isSubmissionOnChain(submission.status);
   const isPrepared = submission.status === 'Prepared' || submission.status === 'PREPARED';
-  const isApproved = submission.status === 'APPROVED' || submission.status === 'ACCEPTED' || submission.status === 'PassedPaid';
-  const isRejected = submission.status === 'REJECTED' || submission.status === 'Failed';
+  const isApproved = submission.status === 'APPROVED' || submission.status === 'ACCEPTED' || submission.status === 'PassedPaid' || submission.status === 'ACCEPTED_PENDING_CLAIM';
+  const isRejected = submission.status === 'REJECTED' || submission.status === 'Failed' || submission.status === 'REJECTED_PENDING_FINALIZATION';
 
   // Receipts-as-memes: only show for paid winners
   const isPaidWinner = submission.paidWinner === true;

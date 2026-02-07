@@ -12,6 +12,7 @@ const networks = {
     rpcUrl: 'https://sepolia.base.org',
     explorer: 'https://sepolia.basescan.org',
     verdiktaAggregatorAddress: '0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089',
+    linkTokenAddress: '0xE4aB69C077896252FAFBD49EFD26B5D171A32410',
   },
   'base': {
     chainId: 8453,
@@ -19,6 +20,7 @@ const networks = {
     rpcUrl: 'https://mainnet.base.org',
     explorer: 'https://basescan.org',
     verdiktaAggregatorAddress: '0x2f7a02298D4478213057edA5e5bEB07F20c4c054',
+    linkTokenAddress: '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196',
   },
 };
 
@@ -62,6 +64,8 @@ const config = {
   bountyEscrowAddress: bountyEscrowAddresses[networkKey] || '',
   // Verdikta aggregator from network config (determined by NETWORK)
   verdiktaAggregatorAddress: networkDefaults.verdiktaAggregatorAddress,
+  // LINK token address for oracle payments
+  linkTokenAddress: networkDefaults.linkTokenAddress,
 
   // Server settings
   port: parseInt(process.env.PORT) || 5005,

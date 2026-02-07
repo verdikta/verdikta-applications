@@ -728,6 +728,22 @@ class SyncService {
       return true;
     }
 
+    // CRITICAL: Always sync bounties that have pending submissions
+    // Submission status can change (e.g., oracle completes evaluation) without
+    // changing bounty-level fields like status, submissionCount, or winner
+    const hasPendingSubmissions = (localJob.submissions || []).some(
+      s => s.status === 'PENDING_EVALUATION' || s.onChainStatus === 'PendingVerdikta'
+    );
+    if (hasPendingSubmissions) {
+      logger.info('🔄 Syncing bounty with pending submissions', {
+        jobId: localJob.jobId,
+        pendingCount: (localJob.submissions || []).filter(
+          s => s.status === 'PENDING_EVALUATION' || s.onChainStatus === 'PendingVerdikta'
+        ).length
+      });
+      return true;
+    }
+
     // CRITICAL: Always sync EXPIRED bounties with submissions
     // Submissions may have timed out or been finalized
     if (chainJob.status === 'EXPIRED' && chainJob.submissionCount > 0) {

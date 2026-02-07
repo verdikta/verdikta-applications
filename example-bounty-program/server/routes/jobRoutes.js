@@ -1332,12 +1332,18 @@ router.get('/:jobId/submissions', async (req, res) => {
         const mappedStatus = mapStatus(sub);
         if (!mappedStatus) return null; // Filter out PREPARED
 
+        // Don't report score for pending/timed-out submissions — acceptance defaults
+        // to 0 on-chain, which is misleading (looks like 0% instead of "not yet scored")
+        const rawScore = sub.acceptance ?? sub.score ?? null;
+        const suppressScore = mappedStatus === 'PENDING_EVALUATION' || mappedStatus === 'TIMED_OUT';
+        const score = suppressScore ? null : rawScore;
+
         return {
           id: sub.submissionId,
           hunter: sub.hunter,
           hunterCid: sub.hunterCid || null,
           status: mappedStatus,
-          score: sub.acceptance ?? sub.score ?? null,
+          score,
           submittedAt: sub.submittedAt || null,
           evaluatedAt: sub.finalizedAt || null
         };

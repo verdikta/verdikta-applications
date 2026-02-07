@@ -1146,7 +1146,7 @@ def submit_work(w3, account, escrow, link, bounty_id, evaluation_cid, hunter_cid
                   <li><strong>rubricContent.forbiddenContent:</strong> List of content types that will fail automatically</li>
                   <li><strong>juryNodes:</strong> Array of AI models that will evaluate, each with:
                     <ul>
-                      <li><code>provider</code>: OpenAI, Anthropic, xAI, etc.</li>
+                      <li><code>provider</code>: AI provider name — <code>"OpenAI"</code>, <code>"Anthropic"</code>, etc.</li>
                       <li><code>model</code>: Specific model name — must be a supported model (see FAQ above). Verify before submitting.</li>
                       <li><code>weight</code>: How much this model's score counts</li>
                       <li><code>runs</code>: Number of evaluation iterations</li>

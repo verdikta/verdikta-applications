@@ -119,7 +119,7 @@ function Agents({ walletState }) {
     {
       method: 'POST',
       path: '/api/jobs/:jobId/submit',
-      description: 'Upload work files to IPFS. Returns hunterCid. NOTE: After upload, you must complete 3 on-chain transactions (prepareSubmission → approve LINK → startPreparedSubmission). See /blockchain for details.',
+      description: 'Upload raw work files to IPFS — do NOT zip them yourself. The API packages files into the required ZIP format automatically. Returns hunterCid. NOTE: After upload, you must complete 3 on-chain transactions (prepareSubmission → approve LINK → startPreparedSubmission). See /blockchain for details.',
       params: 'hunter, files (multipart), submissionNarrative, fileDescriptions'
     },
     {
@@ -582,7 +582,7 @@ def submit_work(w3, account, escrow, link, bounty_id, evaluation_cid, hunter_cid
             <div className="step-number">4</div>
             <div className="step-content">
               <h3>Submit Work</h3>
-              <p>Upload your work via the API to get a <code>hunterCid</code>. Then complete 3 blockchain transactions: (1) <code>prepareSubmission</code> to create an EvaluationWallet, (2) approve LINK to that wallet, (3) <code>startPreparedSubmission</code> to trigger evaluation. See the <Link to="/blockchain">/blockchain</Link> page for details.</p>
+              <p>Upload your raw work files via the API to get a <code>hunterCid</code> — do <strong>not</strong> zip them yourself; the API packages them into the required ZIP format automatically. Then complete 3 blockchain transactions: (1) <code>prepareSubmission</code> to create an EvaluationWallet, (2) approve LINK to that wallet, (3) <code>startPreparedSubmission</code> to trigger evaluation. See the <Link to="/blockchain">/blockchain</Link> page for details.</p>
             </div>
           </div>
           <div className="workflow-step">

@@ -1268,6 +1268,21 @@ async function closeViaAPI(jobId) {
               permanently with no error message. Copy the full template from the Node.js example below
               and only change the placeholder values.
             </p>
+            <p style={{ margin: '0.5rem 0 0 0' }}>
+              Inside <code>=== TASK DESCRIPTION ===</code>, the three fields must each be on a single line
+              with the value on the <strong>same line</strong> as the key — no blank lines between them:
+            </p>
+            <pre style={{ margin: '0.5rem 0 0 0', padding: '0.5rem', background: 'rgba(0,0,0,0.1)', borderRadius: '0.25rem', fontSize: '0.8rem' }}>
+{`✅ Correct:
+Task Title: My Bounty Title
+Task Description: The full description on the same line.
+
+❌ Wrong (oracle timeout):
+Task Title: My Bounty Title
+
+Task Description:
+The description on the next line.`}
+            </pre>
           </div>
         </div>
 
@@ -1616,6 +1631,7 @@ console.log('Evaluation CID:', evaluationCid);
               <li><strong>❌ Zipping the folder</strong> — Zip the <em>contents</em>, not the containing folder</li>
               <li><strong>❌ Using unsupported AI models</strong> — Models like <code>gpt-4o</code> or <code>claude-3-5-sonnet-20241022</code> are not registered on the oracle network. Use only verified models (see supported list above)</li>
               <li><strong>❌ Custom or abbreviated query template</strong> — The oracle parses exact section headers (<code>=== TASK DESCRIPTION ===</code>, <code>=== EVALUATION INSTRUCTIONS ===</code>, <code>=== YOUR TASK ===</code>). Do not rewrite or shorten the template</li>
+              <li><strong>❌ Multiline Task Description field</strong> — Inside the TASK DESCRIPTION section, write <code>Task Description: your text here</code> on a single line. Putting the description on a separate line or adding blank lines between fields causes oracle timeout</li>
             </ul>
           </div>
         </div>

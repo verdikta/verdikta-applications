@@ -72,6 +72,10 @@ export const SubmissionStatus = {
   PENDING_VERDIKTA: 'PendingVerdikta',
   PENDING_EVALUATION: 'PENDING_EVALUATION',
 
+  // Oracle evaluated, awaiting on-chain finalization
+  ACCEPTED_PENDING_CLAIM: 'ACCEPTED_PENDING_CLAIM',
+  REJECTED_PENDING_FINALIZATION: 'REJECTED_PENDING_FINALIZATION',
+
   // Final states
   PASSED: 'Passed',
   PASSED_PAID: 'PassedPaid',
@@ -95,12 +99,14 @@ const SUCCESS_STATUSES = [
   SubmissionStatus.PASSED_PAID,
   SubmissionStatus.APPROVED,
   SubmissionStatus.ACCEPTED,
+  SubmissionStatus.ACCEPTED_PENDING_CLAIM,
 ];
 
 // All statuses that indicate failure
 const FAILURE_STATUSES = [
   SubmissionStatus.FAILED,
   SubmissionStatus.REJECTED,
+  SubmissionStatus.REJECTED_PENDING_FINALIZATION,
 ];
 
 const SUBMISSION_STATUS_CONFIG = {
@@ -110,6 +116,20 @@ const SUBMISSION_STATUS_CONFIG = {
     description: 'Your submission is being evaluated by the AI jury. This typically takes 2-4 minutes.',
     badgeClass: 'status-pending',
     icon: IconName.HOURGLASS,
+  },
+  // Oracle evaluated, passed threshold, awaiting on-chain finalization
+  accepted_pending_claim: {
+    label: 'Approved \u2014 Ready to Claim',
+    description: 'AI evaluation passed the threshold. Click "Claim Bounty" to finalize on-chain.',
+    badgeClass: 'status-approved',
+    icon: IconName.CHECK,
+  },
+  // Oracle evaluated, below threshold, awaiting on-chain finalization
+  rejected_pending_finalization: {
+    label: 'Rejected \u2014 Pending Finalization',
+    description: 'AI evaluation did not meet the threshold. Awaiting on-chain finalization.',
+    badgeClass: 'status-rejected',
+    icon: IconName.X,
   },
   // Success states
   success: {
@@ -192,6 +212,13 @@ function getSubmissionStatusCategory(status) {
   if (PENDING_STATUSES.includes(normalizedStatus)) {
     return 'pending';
   }
+  // Oracle evaluated but not yet finalized — specific display categories
+  if (normalizedStatus === 'ACCEPTED_PENDING_CLAIM') {
+    return 'accepted_pending_claim';
+  }
+  if (normalizedStatus === 'REJECTED_PENDING_FINALIZATION') {
+    return 'rejected_pending_finalization';
+  }
   if (SUCCESS_STATUSES.includes(normalizedStatus)) {
     return 'success';
   }
@@ -259,7 +286,9 @@ export function isSubmissionOnChain(status) {
   const s = status.toString();
   return s === SubmissionStatus.PENDING_VERDIKTA ||
          s === SubmissionStatus.PENDING_EVALUATION ||
-         s === 'PENDING_EVALUATION';
+         s === 'PENDING_EVALUATION' ||
+         s === SubmissionStatus.ACCEPTED_PENDING_CLAIM ||
+         s === SubmissionStatus.REJECTED_PENDING_FINALIZATION;
 }
 
 /**

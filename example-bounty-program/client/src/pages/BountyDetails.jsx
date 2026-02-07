@@ -242,8 +242,11 @@ function BountyDetails({ walletState }) {
 
     // Get on-chain submissions that aren't already being actively polled after finalization
     // Skip "Prepared" submissions - they don't exist on-chain yet
+    // Skip already-evaluated submissions (ACCEPTED_PENDING_CLAIM / REJECTED_PENDING_FINALIZATION)
     const pendingSubs = submissions.filter(s =>
       isSubmissionOnChain(s.status) &&
+      s.status !== 'ACCEPTED_PENDING_CLAIM' &&
+      s.status !== 'REJECTED_PENDING_FINALIZATION' &&
       !pollingSubmissions.has(s.submissionId)
     );
 

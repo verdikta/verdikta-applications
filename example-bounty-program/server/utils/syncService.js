@@ -443,7 +443,7 @@ class SyncService {
    * Sync submissions for a bounty from blockchain
    * Merges on-chain status with existing backend data
    */
-  async syncSubmissions(bountyId, submissionCount, existingSubmissions = []) {
+  async syncSubmissions(bountyId, submissionCount, existingSubmissions = [], threshold = 50) {
     const contractService = getContractService();
     const submissions = [];
 
@@ -472,9 +472,35 @@ class SyncService {
             // Use existing status if available, otherwise mark as pending
             backendStatus = existing?.status || 'PENDING_EVALUATION';
             break;
-          case 1: // PendingVerdikta
-            backendStatus = 'PENDING_EVALUATION';
+          case 1: { // PendingVerdikta — check if oracle evaluation is already complete
+            const zeroHash = '0x' + '0'.repeat(64);
+            if (sub.verdiktaAggId && sub.verdiktaAggId !== zeroHash) {
+              try {
+                const evalResult = await contractService.checkEvaluationReady(bountyId, sub.submissionId);
+                if (evalResult.ready) {
+                  backendStatus = evalResult.scores.acceptance >= threshold
+                    ? 'ACCEPTED_PENDING_CLAIM'
+                    : 'REJECTED_PENDING_FINALIZATION';
+                  // Store aggregator scores so API can serve them
+                  sub.acceptance = evalResult.scores.acceptance;
+                  sub.rejection = evalResult.scores.rejection;
+                  sub.justificationCids = evalResult.justificationCids;
+                  logger.info('Oracle evaluation complete, pending finalization', {
+                    bountyId, submissionId: sub.submissionId, backendStatus,
+                    acceptance: evalResult.scores.acceptance
+                  });
+                } else {
+                  backendStatus = 'PENDING_EVALUATION';
+                }
+              } catch (error) {
+                logger.debug('Error checking evaluation ready', { bountyId, error: error.message });
+                backendStatus = 'PENDING_EVALUATION';
+              }
+            } else {
+              backendStatus = 'PENDING_EVALUATION';
+            }
             break;
+          }
           case 2: // Failed
             backendStatus = 'REJECTED';
             break;
@@ -635,7 +661,8 @@ class SyncService {
       const onChainSubmissions = await this.syncSubmissions(
         bounty.jobId,
         bounty.submissionCount,
-        existingJob.submissions || [] // Pass existing submissions to merge
+        existingJob.submissions || [], // Pass existing submissions to merge
+        existingJob.threshold || bounty.threshold || 50
       );
 
       // Preserve local "Prepared" submissions that aren't on-chain yet
@@ -732,13 +759,19 @@ class SyncService {
     // Submission status can change (e.g., oracle completes evaluation) without
     // changing bounty-level fields like status, submissionCount, or winner
     const hasPendingSubmissions = (localJob.submissions || []).some(
-      s => s.status === 'PENDING_EVALUATION' || s.onChainStatus === 'PendingVerdikta'
+      s => s.status === 'PENDING_EVALUATION' ||
+           s.status === 'ACCEPTED_PENDING_CLAIM' ||
+           s.status === 'REJECTED_PENDING_FINALIZATION' ||
+           s.onChainStatus === 'PendingVerdikta'
     );
     if (hasPendingSubmissions) {
       logger.info('🔄 Syncing bounty with pending submissions', {
         jobId: localJob.jobId,
         pendingCount: (localJob.submissions || []).filter(
-          s => s.status === 'PENDING_EVALUATION' || s.onChainStatus === 'PendingVerdikta'
+          s => s.status === 'PENDING_EVALUATION' ||
+               s.status === 'ACCEPTED_PENDING_CLAIM' ||
+               s.status === 'REJECTED_PENDING_FINALIZATION' ||
+               s.onChainStatus === 'PendingVerdikta'
         ).length
       });
       return true;

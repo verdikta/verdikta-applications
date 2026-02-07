@@ -18,6 +18,7 @@ const archiveGenerator = require('../utils/archiveGenerator');
 const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE } = require('../utils/validation');
 const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
 const { validateBounty, IssueSeverity, IssueType } = require('../utils/bountyValidator');
+const { getContractService } = require('../utils/contractService');
 
 /* ======================
    Helpers / configuration
@@ -1296,6 +1297,14 @@ router.get('/:jobId/submissions', async (req, res) => {
         return 'EVALUATED_PASSED';
       }
 
+      // Oracle evaluated but not yet finalized on BountyEscrow
+      if (status === 'accepted_pending_claim') {
+        return 'EVALUATED_PASSED';
+      }
+      if (status === 'rejected_pending_finalization') {
+        return 'EVALUATED_FAILED';
+      }
+
       // Check pending states
       if (status === 'pending' || status === 'pendingverdikta' || status === 'pending_evaluation') {
         // If has score, evaluation completed but status wasn't updated
@@ -2010,22 +2019,48 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       4: 'APPROVED'             // PassedUnpaid (passed but someone else won)
     };
     const statusIndex = Number(sub.status);
-    const chainStatus = statusMap[statusIndex] || 'UNKNOWN';
+    let chainStatus = statusMap[statusIndex] || 'UNKNOWN';
 
     // Receipt eligibility helpers
     const paidWinner = statusIndex === 3;      // PassedPaid
     const passedUnpaid = statusIndex === 4;    // PassedUnpaid
-    
+
+    // Scores are ALREADY normalized by the contract (divided by 10000)
+    // The contract stores acceptance/rejection as 0-100, NOT 0-1000000
+    let acceptScore = Number(sub.acceptance);
+    let rejectScore = Number(sub.rejection);
+
+    // For PendingVerdikta, check if oracle evaluation is already complete on VerdiktaAggregator
+    if (statusIndex === 1) {
+      const zeroHash = '0x' + '0'.repeat(64);
+      const aggId = sub.verdiktaAggId;
+      if (aggId && aggId !== zeroHash) {
+        try {
+          const cs = getContractService();
+          const evalResult = await cs.checkEvaluationReady(onChainId, subId);
+          if (evalResult.ready) {
+            const threshold = job.threshold || 50;
+            chainStatus = evalResult.scores.acceptance >= threshold
+              ? 'ACCEPTED_PENDING_CLAIM'
+              : 'REJECTED_PENDING_FINALIZATION';
+            acceptScore = evalResult.scores.acceptance;
+            rejectScore = evalResult.scores.rejection;
+            logger.info('[refresh] Oracle evaluation complete, pending finalization', {
+              jobId, submissionId: subId, chainStatus,
+              acceptance: acceptScore, rejection: rejectScore
+            });
+          }
+        } catch (err) {
+          logger.debug('[refresh] Error checking aggregator', { error: err.message });
+        }
+      }
+    }
+
     logger.info('[refresh] Status mapping', {
       rawStatus: sub.status?.toString?.() ?? sub.status,
       statusIndex,
       chainStatus
     });
-    
-    // Scores are ALREADY normalized by the contract (divided by 10000)
-    // The contract stores acceptance/rejection as 0-100, NOT 0-1000000
-    const acceptScore = Number(sub.acceptance);
-    const rejectScore = Number(sub.rejection);
 
     // Detect timeout vs actual evaluation failure
     // Timeout signature: REJECTED status with zero scores and empty justificationCids
@@ -2482,12 +2517,14 @@ router.get('/:jobId/submissions/:submissionId/evaluation', async (req, res) => {
       });
     }
 
-    // Check if evaluation is complete
+    // Check if evaluation is complete (includes oracle-complete-but-not-finalized statuses)
     const hasEvaluation = submission.status === 'APPROVED' ||
                           submission.status === 'REJECTED' ||
                           submission.status === 'PassedPaid' ||
                           submission.status === 'PassedUnpaid' ||
-                          submission.status === 'Failed';
+                          submission.status === 'Failed' ||
+                          submission.status === 'ACCEPTED_PENDING_CLAIM' ||
+                          submission.status === 'REJECTED_PENDING_FINALIZATION';
 
     if (!hasEvaluation) {
       return res.status(400).json({

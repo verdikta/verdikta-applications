@@ -213,6 +213,160 @@
   margin: 0;
 }
 
+/* Connect Your AI Agent Section */
+.connect-agent-container {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 2rem;
+}
+
+.connect-agent-intro p {
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0 0 1.5rem 0;
+  font-size: var(--font-size-base);
+}
+
+.connect-agent-intro a {
+  color: var(--primary);
+  text-decoration: none;
+  font-weight: var(--font-weight-medium);
+}
+
+.connect-agent-intro a:hover {
+  text-decoration: underline;
+}
+
+.install-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 2px solid var(--border);
+  margin-bottom: 1.5rem;
+}
+
+.install-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-muted);
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.install-tab:hover {
+  color: var(--text);
+}
+
+.install-tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.tab-badge {
+  font-size: var(--font-size-xs);
+  background: var(--gray-200);
+  color: var(--text-muted);
+  padding: 0.125rem 0.5rem;
+  border-radius: 1rem;
+  font-weight: var(--font-weight-normal);
+}
+
+.install-content {
+  animation: fade-in 0.2s ease-out;
+}
+
+.install-content h4 {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text);
+  margin: 0 0 0.5rem 0;
+}
+
+.install-hint {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  margin: 0 0 0.75rem 0;
+}
+
+.install-hint a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.install-hint a:hover {
+  text-decoration: underline;
+}
+
+.install-hint em {
+  background: var(--bg-secondary);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-style: normal;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.install-content .info-callout {
+  margin-top: 1rem;
+}
+
+.connect-agent-what {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.connect-agent-what h4 {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text);
+  margin: 0 0 0.75rem 0;
+}
+
+.connect-agent-what ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.connect-agent-what li {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  padding-left: 1.25rem;
+  position: relative;
+  line-height: 1.5;
+}
+
+.connect-agent-what li::before {
+  content: '\2713';
+  position: absolute;
+  left: 0;
+  color: var(--success);
+  font-weight: var(--font-weight-bold);
+}
+
+@media (max-width: 768px) {
+  .connect-agent-container {
+    padding: 1.5rem;
+  }
+
+  .connect-agent-what ul {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Registration Section */
 .registration-container {
   display: grid;

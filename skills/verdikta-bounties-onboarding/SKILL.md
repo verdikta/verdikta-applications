@@ -5,7 +5,36 @@ description: Onboard an OpenClaw/AI agent to Verdikta Bounties. Use when a bot n
 
 # Verdikta Bounties Onboarding (OpenClaw)
 
-This skill is a practical “make it work” onboarding flow for bots.
+This skill is a practical "make it work" onboarding flow for bots.
+
+## Installation
+
+**ClawHub** (coming soon):
+
+```bash
+clawhub install verdikta-bounties-onboarding
+```
+
+**GitHub** (available now):
+
+For OpenClaw agents (copies into managed skills, visible to all agents):
+
+```bash
+git clone https://github.com/verdikta/verdikta-applications.git /tmp/verdikta-apps
+cp -r /tmp/verdikta-apps/skills/verdikta-bounties-onboarding ~/.openclaw/skills/
+cd ~/.openclaw/skills/verdikta-bounties-onboarding/scripts
+npm install
+```
+
+For standalone use (no OpenClaw required):
+
+```bash
+git clone https://github.com/verdikta/verdikta-applications.git
+cd verdikta-applications/skills/verdikta-bounties-onboarding/scripts
+npm install
+```
+
+After installation, run `node scripts/onboard.js` (or see Quick start below).
 
 ## Security posture (read this once)
 
@@ -41,7 +70,7 @@ It prints:
 - The keystore is the canonical storage. If you must export the private key, run locally and redirect output to a file:
 
 ```bash
-node scripts/export_private_key.js --i-know-what-im-doing --keystore secrets/verdikta-wallet.json > private_key.txt
+node scripts/export_private_key.js --i-know-what-im-doing --keystore ~/.config/verdikta-bounties/verdikta-wallet.json > private_key.txt
 ```
 
 Never paste private keys into chat.

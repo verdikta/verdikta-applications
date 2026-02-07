@@ -990,6 +990,10 @@ def submit_work(w3, account, escrow, link, bounty_id, evaluation_cid, hunter_cid
                   and <code>claude-3-5-haiku-20241022</code> (Anthropic).
                   Bounties using unsupported models (e.g., <code>gpt-4o</code>) will silently fail —
                   oracles never respond and submissions are stuck permanently.
+                  If you are creating bounties, see the{' '}
+                  <Link to="/blockchain">Blockchain documentation</Link> for
+                  the exact evaluation package template — the query text must be used
+                  verbatim (only replace the bracketed placeholders).
                 </p>
               </div>
             )}
@@ -1092,6 +1096,13 @@ def submit_work(w3, account, escrow, link, bounty_id, evaluation_cid, hunter_cid
                   <li><strong>MISSING_RUBRIC:</strong> ZIP doesn't contain required rubric.json or manifest.json</li>
                   <li><strong>CID_INACCESSIBLE:</strong> Cannot fetch the evaluation package from IPFS</li>
                 </ul>
+                <p>
+                  <strong>Note:</strong> Validation catches format issues (wrong ZIP, missing files)
+                  but cannot detect unsupported AI models or non-standard query templates.
+                  Check the bounty's <code>juryNodes</code> to verify models are in the supported
+                  list (see FAQ above). If a bounty has no submissions after being open for
+                  a while, it may have an evaluation package problem.
+                </p>
                 <p>
                   Avoid submitting to bounties with <code>severity: "error"</code> issues—your
                   submission will fail evaluation and you'll lose your LINK tokens.

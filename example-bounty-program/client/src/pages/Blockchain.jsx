@@ -272,9 +272,9 @@ evaluation-package.zip
   "juryParameters": {
     "NUMBER_OF_OUTCOMES": 2,
     "AI_NODES": [
-      { "AI_MODEL": "gpt-5.2-2025-12-11", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.4 },
-      { "AI_MODEL": "claude-haiku-4-5-20251001", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.4 },
-      { "AI_MODEL": "grok-4-1-fast-reasoning", "AI_PROVIDER": "xAI", "NO_COUNTS": 1, "WEIGHT": 0.2 }
+      { "AI_MODEL": "gpt-5.2-2025-12-11", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.5 },
+      { "AI_MODEL": "claude-3-5-haiku-20241022", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.5 }
+      // Only use verified models — see "Supported AI Models" list below
     ],
     "ITERATIONS": 1
   },
@@ -1222,8 +1222,9 @@ async function closeViaAPI(jobId) {
         <h3>primary_query.json (Required - Oracle Evaluation Prompt)</h3>
         <p style={{ marginBottom: '1rem', color: 'var(--text-secondary)' }}>
           This file contains the evaluation prompt sent to AI oracle models. It must have three fields:
-          a <code>query</code> string with the full evaluation instructions, a <code>references</code> array
-          linking to attachments, and an <code>outcomes</code> array.
+          a <code>query</code> string, a <code>references</code> array, and an <code>outcomes</code> array.
+          The <code>query</code> must use the exact template below — only replace the
+          three <code>[bracketed placeholders]</code> with your bounty's values.
         </p>
         <div className="code-block">
           <div className="code-header">
@@ -1240,34 +1241,63 @@ async function closeViaAPI(jobId) {
             </button>
           </div>
           <pre><code>{`{
-  "query": "WORK PRODUCT EVALUATION REQUEST\\n\\n...full prompt...",
-  "references": ["gradingRubric"],  // ← links to rubric in manifest.additional
+  "query": "WORK PRODUCT EVALUATION REQUEST\\n\\n` +
+`You are evaluating a work product submission to determine whether ` +
+`it meets the required quality standards for payment release from ` +
+`escrow.\\n\\n` +
+`=== TASK DESCRIPTION ===\\n` +
+`Work Product Type: [Your work type]\\n` +
+`Task Title: [Your bounty title]\\n` +
+`Task Description: [Your detailed task description]\\n\\n` +
+`=== EVALUATION INSTRUCTIONS ===\\n` +
+`A detailed grading rubric is provided as an attachment ` +
+`(gradingRubric). You must thoroughly evaluate the submitted work ` +
+`product against ALL criteria specified in the rubric.\\n\\n` +
+`For each evaluation criterion in the rubric:\\n` +
+`1. Assess how well the work product meets the requirement\\n` +
+`2. Note specific strengths and weaknesses\\n` +
+`3. Consider the overall quality and completeness\\n\\n` +
+`=== YOUR TASK ===\\n` +
+`Evaluate the quality of the submitted work product and provide ` +
+`scores for two outcomes:\\n` +
+`- DONT_FUND: The work product does not meet quality standards\\n` +
+`- FUND: The work product meets quality standards\\n\\n` +
+`Base your scoring on the overall quality assessment from the ` +
+`rubric criteria. Higher quality work should receive higher FUND ` +
+`scores, while lower quality work should receive higher DONT_FUND ` +
+`scores.\\n\\n` +
+`In your justification, explain your evaluation of each rubric ` +
+`criterion and how the work product performs against the stated ` +
+`requirements.\\n\\n` +
+`The submitted work product will be provided in the next section.",
+  "references": ["gradingRubric"],
   "outcomes": ["DONT_FUND", "FUND"]
 }
 
-// The "query" field must contain the FULL evaluation prompt including:
-// - Task description (title, type, detailed description)
-// - Evaluation instructions referencing the grading rubric
-// - Clear scoring criteria (DONT_FUND vs FUND)
-//
-// See the Node.js example below for a complete query template.`}</code></pre>
+// ⚠️ IMPORTANT: Use this template VERBATIM.
+// Only replace the three [bracketed placeholders] above.
+// Do NOT rewrite, abbreviate, or rephrase any other text.`}</code></pre>
         </div>
 
         <div className="callout callout-critical" style={{ marginTop: '1rem' }}>
           <AlertTriangle size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
           <div>
-            <strong>Use the Exact Query Template — Do Not Abbreviate</strong>
+            <strong>Use the Exact Query Template — Do Not Modify</strong>
             <p style={{ margin: '0.5rem 0 0 0' }}>
-              The oracle adapter parses the query by its section headers. You <strong>must</strong> use
-              the standard template with these exact headers: <code>=== TASK DESCRIPTION ===</code>,{' '}
-              <code>=== EVALUATION INSTRUCTIONS ===</code>, and <code>=== YOUR TASK ===</code>.
+              The oracle adapter parses the query text, not just the section headers.
+              You <strong>must</strong> use the template above <strong>verbatim</strong> — only
+              replace the three <code>[bracketed placeholders]</code> with your bounty's details.
+              Do not rewrite, abbreviate, or rephrase any other text.
             </p>
             <p style={{ margin: '0.5rem 0 0 0' }}>
-              Custom or abbreviated queries (e.g., using <code>=== TASK ===</code> or omitting sections)
-              will cause <strong>silent oracle failure</strong> — the submission will be stuck in PendingVerdikta
-              permanently with no error message. Copy the full template from the Node.js example below
-              and only change the placeholder values.
+              All of the following cause <strong>silent oracle failure</strong> (stuck in PendingVerdikta, no error):
             </p>
+            <ul style={{ margin: '0.25rem 0 0 0', paddingLeft: '1.5rem', fontSize: '0.9rem' }}>
+              <li>Changing section headers (e.g., <code>=== TASK ===</code> instead of <code>=== TASK DESCRIPTION ===</code>)</li>
+              <li>Rewriting the body text within sections (e.g., replacing the numbered evaluation steps or scoring instructions)</li>
+              <li>Omitting the closing line: <code>"The submitted work product will be provided in the next section."</code></li>
+              <li>Omitting the scoring guidance paragraph (<code>"Base your scoring on..."</code>)</li>
+            </ul>
             <p style={{ margin: '0.5rem 0 0 0' }}>
               Inside <code>=== TASK DESCRIPTION ===</code>, the three fields must each be on a single line
               with the value on the <strong>same line</strong> as the key — no blank lines between them:
@@ -1630,7 +1660,7 @@ console.log('Evaluation CID:', evaluationCid);
               <li><strong>❌ Missing manifest.additional array</strong> — Required for rubric reference</li>
               <li><strong>❌ Zipping the folder</strong> — Zip the <em>contents</em>, not the containing folder</li>
               <li><strong>❌ Using unsupported AI models</strong> — Models like <code>gpt-4o</code> or <code>claude-3-5-sonnet-20241022</code> are not registered on the oracle network. Use only verified models (see supported list above)</li>
-              <li><strong>❌ Custom or abbreviated query template</strong> — The oracle parses exact section headers (<code>=== TASK DESCRIPTION ===</code>, <code>=== EVALUATION INSTRUCTIONS ===</code>, <code>=== YOUR TASK ===</code>). Do not rewrite or shorten the template</li>
+              <li><strong>❌ Rewriting the query template</strong> — Use the template <em>verbatim</em>. The oracle parses both the section headers and the body text. Only replace the three <code>[bracketed placeholders]</code>. Do not rephrase, abbreviate, or omit any lines</li>
               <li><strong>❌ Multiline Task Description field</strong> — Inside the TASK DESCRIPTION section, write <code>Task Description: your text here</code> on a single line. Putting the description on a separate line or adding blank lines between fields causes oracle timeout</li>
             </ul>
           </div>

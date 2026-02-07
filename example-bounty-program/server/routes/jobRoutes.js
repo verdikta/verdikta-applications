@@ -827,6 +827,328 @@ router.post('/:jobId/close', async (req, res) => {
   }
 });
 
+/* ===============================
+   SUBMISSION CALLDATA ENDPOINTS
+   =============================== */
+
+// POST /api/jobs/:jobId/submit/prepare
+// Encodes prepareSubmission() calldata — deploys an EvaluationWallet
+router.post('/:jobId/submit/prepare', async (req, res) => {
+  const { jobId } = req.params;
+
+  try {
+    logger.info('[submit/prepare] request', { jobId });
+
+    const {
+      hunter, hunterCid, addendum = '',
+      alpha = 75,
+      maxOracleFee = '0.05',
+      estimatedBaseCost = '0.03',
+      maxFeeBasedScaling = '0.02'
+    } = req.body || {};
+
+    if (!hunter || !/^0x[a-fA-F0-9]{40}$/.test(hunter)) {
+      return res.status(400).json({ success: false, error: 'Invalid or missing hunter address' });
+    }
+    if (!hunterCid) {
+      return res.status(400).json({ success: false, error: 'Missing hunterCid (from /api/jobs/:jobId/submit response)' });
+    }
+
+    const job = await jobStorage.getJob(jobId);
+    const onChainBountyId = job.jobId;
+
+    if (onChainBountyId == null) {
+      return res.status(400).json({ success: false, error: 'Job not on-chain' });
+    }
+    if (job.status !== 'OPEN') {
+      return res.status(400).json({ success: false, error: `Job is not open (status: ${job.status})` });
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const deadline = job.submissionCloseTime || 0;
+    if (deadline > 0 && nowSeconds > deadline) {
+      return res.status(400).json({ success: false, error: 'Submission window has closed' });
+    }
+
+    const evaluationCid = job.primaryCid;
+    if (!evaluationCid) {
+      return res.status(400).json({ success: false, error: 'Job missing evaluationCid (primaryCid)' });
+    }
+
+    const contractAddress = config.bountyEscrowAddress;
+    if (!contractAddress) {
+      return res.status(500).json({ success: false, error: 'Contract not configured' });
+    }
+
+    const iface = new ethers.Interface([
+      'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256 submissionId, address evalWallet, uint256 linkMaxBudget)'
+    ]);
+
+    const calldata = iface.encodeFunctionData('prepareSubmission', [
+      onChainBountyId,
+      evaluationCid,
+      hunterCid,
+      addendum,
+      alpha,
+      ethers.parseEther(maxOracleFee),
+      ethers.parseEther(estimatedBaseCost),
+      ethers.parseEther(maxFeeBasedScaling)
+    ]);
+
+    logger.info('[submit/prepare] encoded', { jobId, onChainBountyId, hunter });
+
+    return res.json({
+      success: true,
+      transaction: {
+        to: contractAddress,
+        data: calldata,
+        value: '0',
+        chainId: config.chainId
+      },
+      info: {
+        bountyId: onChainBountyId,
+        evaluationCid,
+        hunterCid
+      },
+      nextStep: 'After tx confirms, parse SubmissionPrepared event for submissionId, evalWallet, linkMaxBudget. Then call /submit/approve.'
+    });
+
+  } catch (error) {
+    logger.error('[submit/prepare] error', { jobId, msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ success: false, error: 'Job not found' });
+    }
+    return res.status(500).json({ success: false, error: 'Failed to encode prepareSubmission', details: error.message });
+  }
+});
+
+// POST /api/jobs/:jobId/submit/approve
+// Encodes LINK.approve() calldata for the EvaluationWallet
+router.post('/:jobId/submit/approve', async (req, res) => {
+  const { jobId } = req.params;
+
+  try {
+    logger.info('[submit/approve] request', { jobId });
+
+    const { evalWallet, linkAmount } = req.body || {};
+
+    if (!evalWallet || !/^0x[a-fA-F0-9]{40}$/.test(evalWallet)) {
+      return res.status(400).json({ success: false, error: 'Invalid or missing evalWallet address' });
+    }
+    if (!linkAmount || isNaN(Number(linkAmount)) || Number(linkAmount) <= 0) {
+      return res.status(400).json({ success: false, error: 'Invalid linkAmount — must be a positive number as string (e.g., "0.6")' });
+    }
+
+    const linkTokenAddress = config.linkTokenAddress;
+    if (!linkTokenAddress) {
+      return res.status(500).json({ success: false, error: 'LINK token address not configured' });
+    }
+
+    const iface = new ethers.Interface([
+      'function approve(address spender, uint256 amount) returns (bool)'
+    ]);
+
+    const amountWei = ethers.parseEther(linkAmount);
+    const calldata = iface.encodeFunctionData('approve', [evalWallet, amountWei]);
+
+    logger.info('[submit/approve] encoded', { jobId, evalWallet, linkAmount });
+
+    return res.json({
+      success: true,
+      transaction: {
+        to: linkTokenAddress,
+        data: calldata,
+        value: '0',
+        chainId: config.chainId
+      },
+      nextStep: 'After tx confirms, call /submissions/:submissionId/start'
+    });
+
+  } catch (error) {
+    logger.error('[submit/approve] error', { jobId, msg: error.message });
+    return res.status(500).json({ success: false, error: 'Failed to encode approve', details: error.message });
+  }
+});
+
+// POST /api/jobs/:jobId/submissions/:submissionId/start
+// Encodes startPreparedSubmission() calldata — triggers oracle evaluation
+router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
+  const { jobId, submissionId } = req.params;
+
+  try {
+    logger.info('[submit/start] request', { jobId, submissionId });
+
+    const { hunter } = req.body || {};
+
+    if (!hunter || !/^0x[a-fA-F0-9]{40}$/.test(hunter)) {
+      return res.status(400).json({ success: false, error: 'Invalid or missing hunter address' });
+    }
+
+    const job = await jobStorage.getJob(jobId);
+    const onChainBountyId = job.jobId;
+    const subId = parseInt(submissionId, 10);
+    const submission = job.submissions?.find(s => s.submissionId === subId);
+
+    if (!submission) {
+      return res.status(404).json({ success: false, error: `Submission ${submissionId} not found for job ${jobId}` });
+    }
+
+    if (onChainBountyId == null) {
+      return res.status(400).json({ success: false, error: 'Job not on-chain' });
+    }
+
+    const status = (submission.status || '').toLowerCase();
+    if (status !== 'prepared') {
+      return res.status(400).json({
+        success: false,
+        error: `Submission not in Prepared state (current: ${submission.status}). Only Prepared submissions can be started.`
+      });
+    }
+
+    if (submission.hunter && submission.hunter.toLowerCase() !== hunter.toLowerCase()) {
+      return res.status(403).json({ success: false, error: 'Hunter address does not match submission hunter' });
+    }
+
+    const contractAddress = config.bountyEscrowAddress;
+    if (!contractAddress) {
+      return res.status(500).json({ success: false, error: 'Contract not configured' });
+    }
+
+    const onChainSubmissionId = submission.onChainSubmissionId ?? submission.submissionId;
+
+    const iface = new ethers.Interface([
+      'function startPreparedSubmission(uint256 bountyId, uint256 submissionId)'
+    ]);
+    const calldata = iface.encodeFunctionData('startPreparedSubmission', [
+      onChainBountyId,
+      onChainSubmissionId
+    ]);
+
+    logger.info('[submit/start] encoded', { jobId, submissionId, onChainBountyId, onChainSubmissionId });
+
+    return res.json({
+      success: true,
+      transaction: {
+        to: contractAddress,
+        data: calldata,
+        value: '0',
+        chainId: config.chainId,
+        gasLimit: '4000000'
+      },
+      nextStep: 'After tx confirms, call /submissions/confirm, then poll /diagnose for oracleResult.'
+    });
+
+  } catch (error) {
+    logger.error('[submit/start] error', { jobId, submissionId, msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ success: false, error: 'Not found', details: error.message });
+    }
+    return res.status(500).json({ success: false, error: 'Failed to encode startPreparedSubmission', details: error.message });
+  }
+});
+
+// POST /api/jobs/:jobId/submissions/:submissionId/finalize
+// Encodes finalizeSubmission() calldata — pulls oracle results and claims payout
+router.post('/:jobId/submissions/:submissionId/finalize', async (req, res) => {
+  const { jobId, submissionId } = req.params;
+
+  try {
+    logger.info('[submit/finalize] request', { jobId, submissionId });
+
+    const { hunter } = req.body || {};
+
+    if (!hunter || !/^0x[a-fA-F0-9]{40}$/.test(hunter)) {
+      return res.status(400).json({ success: false, error: 'Invalid or missing hunter address' });
+    }
+
+    const job = await jobStorage.getJob(jobId);
+    const onChainBountyId = job.jobId;
+    const subId = parseInt(submissionId, 10);
+    const submission = job.submissions?.find(s => s.submissionId === subId);
+
+    if (!submission) {
+      return res.status(404).json({ success: false, error: `Submission ${submissionId} not found for job ${jobId}` });
+    }
+
+    if (onChainBountyId == null) {
+      return res.status(400).json({ success: false, error: 'Job not on-chain' });
+    }
+
+    if (submission.hunter && submission.hunter.toLowerCase() !== hunter.toLowerCase()) {
+      return res.status(403).json({ success: false, error: 'Hunter address does not match submission hunter' });
+    }
+
+    const onChainSubmissionId = submission.onChainSubmissionId ?? submission.submissionId;
+
+    // Check oracle readiness
+    let oracleResult = null;
+    try {
+      const contractService = getContractService();
+      const evalResult = await contractService.checkEvaluationReady(onChainBountyId, onChainSubmissionId);
+
+      if (!evalResult.ready) {
+        return res.status(400).json({
+          success: false,
+          error: 'Evaluation not ready',
+          reason: evalResult.reason || 'unknown',
+          hint: 'Wait for the oracle to complete, or check status via GET /api/jobs/:jobId/submissions/:subId/diagnose'
+        });
+      }
+
+      oracleResult = {
+        acceptance: evalResult.scores.acceptance,
+        rejection: evalResult.scores.rejection,
+        passed: evalResult.scores.acceptance >= (job.threshold || 0),
+        threshold: job.threshold || 0
+      };
+    } catch (csError) {
+      // contractService may not be initialized (blockchain sync disabled) — skip check
+      logger.warn('[submit/finalize] contractService unavailable, skipping readiness check', { msg: csError.message });
+    }
+
+    const contractAddress = config.bountyEscrowAddress;
+    if (!contractAddress) {
+      return res.status(500).json({ success: false, error: 'Contract not configured' });
+    }
+
+    const iface = new ethers.Interface([
+      'function finalizeSubmission(uint256 bountyId, uint256 submissionId)'
+    ]);
+    const calldata = iface.encodeFunctionData('finalizeSubmission', [
+      onChainBountyId,
+      onChainSubmissionId
+    ]);
+
+    logger.info('[submit/finalize] encoded', { jobId, submissionId, onChainBountyId, onChainSubmissionId });
+
+    const response = {
+      success: true,
+      transaction: {
+        to: contractAddress,
+        data: calldata,
+        value: '0',
+        chainId: config.chainId
+      }
+    };
+
+    if (oracleResult) {
+      response.oracleResult = oracleResult;
+      if (oracleResult.passed && job.bountyAmount) {
+        response.expectedPayout = job.bountyAmount;
+      }
+    }
+
+    return res.json(response);
+
+  } catch (error) {
+    logger.error('[submit/finalize] error', { jobId, submissionId, msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ success: false, error: 'Not found', details: error.message });
+    }
+    return res.status(500).json({ success: false, error: 'Failed to encode finalizeSubmission', details: error.message });
+  }
+});
+
 router.patch('/admin/:jobId/status', async (req, res) => {
   try {
     const { jobId } = req.params;

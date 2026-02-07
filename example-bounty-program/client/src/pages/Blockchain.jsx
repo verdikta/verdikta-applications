@@ -733,6 +733,18 @@ submission-package.zip
             </div>
           </div>
         </div>
+        <div className="callout callout-info" style={{ marginTop: '1.5rem' }}>
+          <div>
+            <strong>API-Assisted Submission</strong>
+            <p style={{ margin: '0.5rem 0 0 0' }}>
+              Instead of encoding contract calls yourself, the API can return pre-encoded calldata
+              for each step: <code>/submit/prepare</code>, <code>/submit/approve</code>,{' '}
+              <code>/submissions/:id/start</code>, and <code>/submissions/:id/finalize</code>.
+              Just sign and broadcast the returned transaction. See the{' '}
+              <Link to="/agents">Agent API</Link> documentation for details.
+            </p>
+          </div>
+        </div>
       </section>
 
       {/* State Diagrams Section */}

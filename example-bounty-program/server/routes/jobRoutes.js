@@ -1274,7 +1274,7 @@ router.get('/:jobId/submissions', async (req, res) => {
     function mapStatus(sub) {
       const status = (sub.status || '').toLowerCase();
       const score = sub.acceptance ?? sub.score ?? null;
-      const hasScore = score !== null && score !== undefined;
+      const hasScore = score !== null && score !== undefined && score > 0;
 
       // Check for winner (PassedPaid)
       if (status === 'passedpaid' || status === 'winner') {
@@ -2412,10 +2412,41 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
             diagnosis.issues.push('PendingVerdikta but no verdiktaAggId - evaluation may not have started properly');
           } else {
             diagnosis.checks.verdiktaAggId = chainSub.verdiktaAggId;
-            if (timeoutEligible) {
-              diagnosis.recommendations.push('Submission is eligible for timeout - call failTimedOutSubmission');
-            } else {
-              diagnosis.recommendations.push(`Wait ${Math.ceil((600 - elapsedSeconds) / 60)} more minute(s) for timeout eligibility`);
+
+            // Check if oracle evaluation is already complete on VerdiktaAggregator
+            try {
+              const cs = getContractService();
+              const evalResult = await cs.checkEvaluationReady(onChainBountyId, subId);
+              if (evalResult.ready) {
+                const threshold = job.threshold || 50;
+                const passed = evalResult.scores.acceptance >= threshold;
+                diagnosis.checks.oracleResult = {
+                  complete: true,
+                  acceptance: evalResult.scores.acceptance,
+                  rejection: evalResult.scores.rejection,
+                  threshold,
+                  passed
+                };
+                diagnosis.recommendations.push(
+                  passed
+                    ? 'Oracle evaluation PASSED — call finalizeSubmission to claim bounty'
+                    : 'Oracle evaluation did not meet threshold — call finalizeSubmission to finalize'
+                );
+              } else {
+                diagnosis.checks.oracleResult = { complete: false };
+                if (timeoutEligible) {
+                  diagnosis.recommendations.push('Oracle not yet complete and submission is eligible for timeout - call failTimedOutSubmission');
+                } else {
+                  diagnosis.recommendations.push(`Oracle not yet complete. Wait ${Math.ceil((600 - elapsedSeconds) / 60)} more minute(s) for timeout eligibility`);
+                }
+              }
+            } catch (aggErr) {
+              diagnosis.checks.oracleResult = { complete: false, error: aggErr.message };
+              if (timeoutEligible) {
+                diagnosis.recommendations.push('Could not check oracle — submission is eligible for timeout');
+              } else {
+                diagnosis.recommendations.push(`Wait ${Math.ceil((600 - elapsedSeconds) / 60)} more minute(s) for timeout eligibility`);
+              }
             }
           }
         } else if (chainStatus === 'Failed' || chainStatus === 'PassedPaid' || chainStatus === 'PassedUnpaid') {

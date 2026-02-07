@@ -596,7 +596,7 @@ def submit_work(w3, account, escrow, link, bounty_id, evaluation_cid, hunter_cid
             <div className="step-number">6</div>
             <div className="step-content">
               <h3>Claim &amp; Receive Payment</h3>
-              <p>Once evaluation passes, call <code>finalizeSubmission(bountyId, submissionId)</code> on the BountyEscrow contract to pull results from the oracle and release ETH payment to your wallet. This step is required — oracle results do not transfer to escrow automatically.</p>
+              <p>Once evaluation passes, call <code>finalizeSubmission(bountyId, submissionId)</code> on the BountyEscrow contract to pull results from the oracle and release ETH payment to your wallet. This step is required — oracle results do not transfer to escrow automatically. See the <Link to="/blockchain">/blockchain</Link> page for the full contract ABI (the Submission struct has 17 fields).</p>
             </div>
           </div>
         </div>

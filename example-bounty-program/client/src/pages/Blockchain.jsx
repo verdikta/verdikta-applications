@@ -21,7 +21,8 @@ import {
   AlertTriangle,
   RefreshCw,
   Clock,
-  DollarSign
+  DollarSign,
+  Github
 } from 'lucide-react';
 import './Blockchain.css';
 
@@ -365,6 +366,15 @@ submission-package.zip
             <a href="#contracts" className="btn btn-secondary btn-lg">
               <Code size={18} />
               Get Started
+            </a>
+            <a
+              href="https://github.com/verdikta/verdikta-applications/tree/main/example-bounty-program"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-secondary btn-lg"
+            >
+              <Github size={18} />
+              Source Code
             </a>
           </div>
         </div>

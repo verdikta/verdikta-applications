@@ -516,8 +516,8 @@ function JobCard({ job }) {
         <div className="bounty-badges">
           {/* Status badge and validate button stacked vertically */}
           <div className="badge-stack">
-            <span {...getBountyBadgeProps(status)}>
-              {getBountyStatusLabel(status)}
+            <span {...getBountyBadgeProps(hasAcceptedPendingClaim ? 'AWARDED' : status)}>
+              {hasAcceptedPendingClaim ? 'Accepted' : getBountyStatusLabel(status)}
             </span>
             <div className="validate-row">
               {/* Validation status indicator - next to validate button */}
@@ -598,7 +598,10 @@ function JobCard({ job }) {
               title={hasAcceptedPendingClaim ? 'Accepted — Ready to Claim' : getSubmissionStatusDescription('PendingVerdikta')}
               aria-label={hasAcceptedPendingClaim ? 'Accepted, pending claim' : 'Evaluation in progress'}
             >
-              <RefreshCw size={14} className="spin" />
+              {hasAcceptedPendingClaim
+                ? <CheckCircle size={14} />
+                : <RefreshCw size={14} className="spin" />
+              }
             </span>
           )}
         </div>

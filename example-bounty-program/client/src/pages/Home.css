@@ -518,7 +518,7 @@
 }
 
 .pending-indicator.accepted {
-  color: #1b9e2f;
+  color: var(--primary);
 }
 
 .spin {

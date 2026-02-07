@@ -11,7 +11,7 @@ const orphanedDupes = data.jobs.filter(j =>
   (j.submissions === undefined || j.submissions.length === 0)
 );
 
-console.log('Found orphaned duplicates:', orphanedDupes.map(j => ({ jobId: j.jobId, onChainId: j.onChainId })));
+console.log('Found orphaned duplicates:', orphanedDupes.map(j => ({ jobId: j.jobId })));
 
 // Remove them
 const before = data.jobs.length;

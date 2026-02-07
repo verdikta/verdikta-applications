@@ -579,7 +579,7 @@ function CreateBounty({ walletState }) {
         blockNumber: contractResult.blockNumber,
       });
 
-      toast.success(`Bounty created! Job ID: ${job.jobId}, On-Chain ID: ${contractResult.bountyId}`);
+      toast.success(`Bounty #${contractResult.bountyId} created successfully!`);
 
       navigate(`/bounty/${job.jobId}`);
     } catch (err) {

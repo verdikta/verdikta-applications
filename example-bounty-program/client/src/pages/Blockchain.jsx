@@ -146,7 +146,7 @@ async function submitWork(bountyId, hunterCid) {
     evaluationCid,
     hunterCid,                            // Your work's IPFS CID
     'Please evaluate carefully',          // Addendum
-    75n,                                  // Alpha (reputation weight)
+    75n,                                  // Alpha (reputation weight; 50 = nominal)
     ethers.parseEther('0.05'),            // maxOracleFee
     ethers.parseEther('0.03'),            // estimatedBaseCost
     ethers.parseEther('0.02')             // maxFeeBasedScaling
@@ -257,37 +257,56 @@ def check_link_balance(address):
     balance = link.functions.balanceOf(address).call()
     return w3.from_wei(balance, 'ether')`;
 
-  const ipfsStructure = `# Evaluation Package (evaluationCid)
+  const ipfsStructure = `# Evaluation Package (evaluationCid / primaryCid)
 # Format: ZIP archive uploaded to IPFS
 evaluation-package.zip
-├── manifest.json          # Metadata
-├── rubric.json           # Evaluation criteria
-└── instructions/         # Optional additional context
-    └── guidelines.md
+├── manifest.json          # Metadata + jury configuration + bCIDs
+├── primary_query.json     # Evaluation prompt for oracles
+└── (gradingRubric)        # Referenced via IPFS CID in manifest
 
-# Example rubric.json
+# Example manifest.json
 {
   "version": "1.0",
-  "criteria": [
+  "name": "Task Title - Evaluation for Payment Release",
+  "primary": { "filename": "primary_query.json" },
+  "juryParameters": {
+    "NUMBER_OF_OUTCOMES": 2,
+    "AI_NODES": [
+      { "AI_MODEL": "gpt-5.2-2025-12-11", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.5 },
+      { "AI_MODEL": "claude-3-5-haiku-20241022", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.5 }
+      // Only use verified models — see "Supported AI Models" list below
+    ],
+    "ITERATIONS": 1
+  },
+  "additional": [
     {
-      "name": "Technical Correctness",
-      "label": "Is the solution technically sound?",
-      "weight": 0.4,
-      "levels": ["Poor", "Fair", "Good", "Excellent"]
-    },
-    {
-      "name": "Completeness",
-      "label": "Does it address all requirements?",
-      "weight": 0.35,
-      "levels": ["Incomplete", "Partial", "Complete"]
-    },
-    {
-      "name": "Clarity",
-      "label": "Is the work well-organized and clear?",
-      "weight": 0.25,
-      "levels": ["Unclear", "Somewhat Clear", "Very Clear"]
+      "name": "gradingRubric",
+      "type": "ipfs/cid",
+      "hash": "QmXXX...",   // Separate IPFS CID for rubric
+      "description": "Grading rubric with evaluation criteria"
     }
-  ]
+  ],
+  "bCIDs": {                 // REQUIRED for oracle to find submitted work
+    "submittedWork": "The work submitted by a hunter."
+  }
+}
+
+# primary_query.json requires three fields:
+#   "query"      - full evaluation prompt (the instructions sent to AI models)
+#   "references" - array linking to attachments in manifest.additional
+#   "outcomes"   - the scoring options, always ["DONT_FUND", "FUND"]
+
+# Example gradingRubric (separate IPFS file)
+{
+  "version": "rubric-1",
+  "title": "Task Grading Rubric",
+  "description": "Evaluate the submitted work",
+  "threshold": 70,
+  "criteria": [
+    { "id": "quality", "label": "Overall Quality", "weight": 0.6, "must": false },
+    { "id": "requirements", "label": "Meets Requirements", "weight": 0.4, "must": true }
+  ],
+  "forbiddenContent": ["NSFW content", "Hate speech", "Plagiarism"]
 }
 
 # Submission Package (hunterCid)
@@ -347,6 +366,21 @@ submission-package.zip
               <Code size={18} />
               Get Started
             </a>
+          </div>
+        </div>
+      </section>
+
+      {/* Critical ZIP Warning */}
+      <section className="blockchain-section">
+        <div className="callout callout-critical">
+          <AlertTriangle size={24} />
+          <div>
+            <strong>CRITICAL: All IPFS content must be ZIP archives</strong>
+            <p style={{ margin: '0.5rem 0 0 0' }}>
+              Both evaluation criteria AND submissions must be uploaded as <strong>ZIP archives</strong>,
+              not plain JSON. Plain JSON uploads will cause oracle failures and your submission will be stuck
+              in PENDING_EVALUATION permanently. See the <a href="#creating-evaluation">Creating Evaluation Criteria</a> section below.
+            </p>
           </div>
         </div>
       </section>
@@ -630,6 +664,22 @@ submission-package.zip
               </div>
             </div>
           </div>
+          <div className="callout callout-info" style={{ marginLeft: '3rem', marginBottom: '1rem' }}>
+            <div>
+              <strong>prepareSubmission takes 8 parameters:</strong>
+              <pre style={{ margin: '0.5rem 0 0 0', fontSize: '0.85rem' }}>{`prepareSubmission(
+  bountyId,           // uint256 - on-chain bounty ID
+  evaluationCid,      // string - bounty's evaluation CID (NOT your submission)
+  hunterCid,          // string - your submission's IPFS CID
+  addendum,           // string - usually ""
+  alpha,              // uint256 - reputation weight (50 = nominal, higher = more confident)
+  maxOracleFee,       // uint256 - "50000000000000000" (0.05 LINK)
+  estimatedBaseCost,  // uint256 - "30000000000000000" (0.03 LINK)
+  maxFeeBasedScaling  // uint256 - "20000000000000000" (0.02 LINK)
+)`}</pre>
+            </div>
+          </div>
+
           <div className="workflow-step">
             <div className="step-number">2</div>
             <div className="step-content">
@@ -711,7 +761,7 @@ submission-package.zip
               <div className="submission-state">
                 <span className="state-code">0</span>
                 <span className="state-name">Prepared</span>
-                <span className="state-desc">EvaluationWallet ready, awaiting LINK</span>
+                <span className="state-desc">EvaluationWallet ready, awaiting startPreparedSubmission</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">1</span>
@@ -720,21 +770,71 @@ submission-package.zip
               </div>
               <div className="submission-state">
                 <span className="state-code">2</span>
-                <span className="state-name">Failed</span>
-                <span className="state-desc">Did not meet threshold</span>
+                <span className="state-name">PassedPaid</span>
+                <span className="state-desc">Score met threshold, ETH paid to hunter</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">3</span>
-                <span className="state-name">PassedPaid</span>
-                <span className="state-desc">Winner! Received ETH payout</span>
+                <span className="state-name">FailedRefunded</span>
+                <span className="state-desc">Below threshold, LINK refunded to hunter</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">4</span>
                 <span className="state-name">PassedUnpaid</span>
-                <span className="state-desc">Passed but another submission won first</span>
+                <span className="state-desc">Passed but payout pending (call finalizeSubmission)</span>
+              </div>
+              <div className="submission-state">
+                <span className="state-code">5</span>
+                <span className="state-name">FailedUnrefunded</span>
+                <span className="state-desc">Failed but refund pending (call finalizeSubmission)</span>
               </div>
             </div>
           </div>
+        </div>
+
+        <h3 style={{ marginTop: '2rem' }}>API to On-Chain Status Mapping</h3>
+        <div className="contracts-table-wrapper">
+          <table className="contracts-table">
+            <thead>
+              <tr>
+                <th>On-Chain Value</th>
+                <th>On-Chain Name</th>
+                <th>API Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>0</code></td>
+                <td>Prepared</td>
+                <td><code>PENDING_EVALUATION</code> (onChainStatus: Prepared)</td>
+              </tr>
+              <tr>
+                <td><code>1</code></td>
+                <td>PendingVerdikta</td>
+                <td><code>PENDING_EVALUATION</code> (onChainStatus: PendingVerdikta)</td>
+              </tr>
+              <tr>
+                <td><code>2</code></td>
+                <td>PassedPaid</td>
+                <td><code>APPROVED</code></td>
+              </tr>
+              <tr>
+                <td><code>3</code></td>
+                <td>FailedRefunded</td>
+                <td><code>REJECTED</code></td>
+              </tr>
+              <tr>
+                <td><code>4</code></td>
+                <td>PassedUnpaid</td>
+                <td><code>APPROVED</code> (paidWinner: false)</td>
+              </tr>
+              <tr>
+                <td><code>5</code></td>
+                <td>FailedUnrefunded</td>
+                <td><code>REJECTED</code> (needs finalize)</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -956,20 +1056,647 @@ async function closeViaAPI(jobId) {
         </div>
       </section>
 
-      {/* IPFS Content Structure */}
-      <section className="blockchain-section">
-        <h2>IPFS Content Structure</h2>
+      {/* Creating Evaluation Criteria Section */}
+      <section className="blockchain-section" id="creating-evaluation">
+        <h2>Creating Evaluation Criteria</h2>
         <p className="section-intro">
-          Bounties and submissions reference IPFS CIDs pointing to structured content packages.
+          When creating a bounty, the evaluation CID must point to a <strong>ZIP archive</strong> with a specific structure.
+          This is the most common source of bounty failures.
         </p>
-        <div className="callout callout-warning">
-          <AlertTriangle size={20} />
+
+        <h3>Required ZIP Structure</h3>
+        <div className="code-block">
+          <div className="code-header"><span>evaluation.zip contents</span></div>
+          <pre><code>{`evaluation.zip
+├── manifest.json           # Metadata, jury config, rubric ref, bCIDs
+└── primary_query.json      # FULL evaluation prompt with "query" field
+
+# FORMAT REQUIREMENTS:
+# 1. manifest.json MUST have "additional" array referencing gradingRubric CID
+# 2. manifest.json MUST have "bCIDs" object for oracle to find submitted work
+# 3. primary_query.json MUST have {query, references, outcomes} fields
+# 4. gradingRubric MUST be uploaded separately to IPFS first`}</code></pre>
+        </div>
+
+        <h3>manifest.json (Required)</h3>
+        <div className="code-block">
+          <div className="code-header">
+            <span>manifest.json</span>
+            <button
+              className="btn-icon"
+              onClick={() => copyToClipboard(`{
+  "version": "1.0",
+  "name": "My Bounty - Evaluation for Payment Release",
+  "primary": { "filename": "primary_query.json" },
+  "juryParameters": {
+    "NUMBER_OF_OUTCOMES": 2,
+    "AI_NODES": [
+      { "AI_MODEL": "gpt-5.2-2025-12-11", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.5 },
+      { "AI_MODEL": "claude-3-5-haiku-20241022", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.5 }
+    ],
+    "ITERATIONS": 1
+  },
+  "additional": [
+    {
+      "name": "gradingRubric",
+      "type": "ipfs/cid",
+      "hash": "QmYourRubricCID...",
+      "description": "Work Product grading rubric with evaluation criteria"
+    }
+  ],
+  "bCIDs": {
+    "submittedWork": "The work submitted by a hunter."
+  }
+}`, 'manifest-example')}
+            >
+              {copiedCode === 'manifest-example' ? <Check size={16} /> : <Copy size={16} />}
+            </button>
+          </div>
+          <pre><code>{`{
+  "version": "1.0",
+  "name": "My Bounty - Evaluation for Payment Release",
+  "primary": { "filename": "primary_query.json" },
+  "juryParameters": {
+    "NUMBER_OF_OUTCOMES": 2,
+    "AI_NODES": [
+      { "AI_MODEL": "gpt-5.2-2025-12-11", "AI_PROVIDER": "OpenAI", "NO_COUNTS": 1, "WEIGHT": 0.5 },
+      { "AI_MODEL": "claude-3-5-haiku-20241022", "AI_PROVIDER": "Anthropic", "NO_COUNTS": 1, "WEIGHT": 0.5 }
+    ],
+    "ITERATIONS": 1
+  },
+  "additional": [                          // ← REQUIRED array
+    {
+      "name": "gradingRubric",             // ← REQUIRED: must be "gradingRubric"
+      "type": "ipfs/cid",
+      "hash": "QmYourRubricCID...",         // ← Upload rubric first, put CID here
+      "description": "Work Product grading rubric with evaluation criteria"
+    }
+  ],
+  "bCIDs": {                               // ← REQUIRED for oracle to find work
+    "submittedWork": "The work submitted by a hunter."
+  }
+}`}</code></pre>
+        </div>
+
+        <div className="callout callout-critical" style={{ marginTop: '1rem' }}>
+          <AlertTriangle size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
           <div>
-            <strong>ZIP Archive Format Required:</strong> Both evaluation packages and submission packages
-            must be uploaded as <strong>ZIP archives</strong>, not plain JSON or loose files. The Verdikta
-            oracle expects to unzip the content before processing.
+            <strong>Use Only Supported AI Models</strong>
+            <p style={{ margin: '0.5rem 0 0 0' }}>
+              The oracle network will <strong>silently fail</strong> (no error, no commitment, submission stuck forever)
+              if you specify an unsupported model in <code>AI_NODES</code>. Only these models have been verified to work:
+            </p>
+            <ul style={{ margin: '0.5rem 0 0 0', paddingLeft: '1.5rem' }}>
+              <li><code>gpt-5.2-2025-12-11</code> (OpenAI)</li>
+              <li><code>gpt-5-mini-2025-08-07</code> (OpenAI)</li>
+              <li><code>claude-3-5-haiku-20241022</code> (Anthropic)</li>
+            </ul>
+            <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+              Deprecated models like <code>gpt-4o</code> and <code>claude-3-5-sonnet-20241022</code> are
+              no longer registered on the oracle network and will cause permanent evaluation failure.
+            </p>
           </div>
         </div>
+
+        <h3>Grading Rubric (Upload Separately to IPFS)</h3>
+        <p style={{ marginBottom: '1rem', color: 'var(--text-secondary)' }}>
+          Upload this JSON file to IPFS first, then put its CID in <code>manifest.additional</code>.
+        </p>
+        <div className="code-block">
+          <div className="code-header">
+            <span>gradingRubric.json</span>
+            <button
+              className="btn-icon"
+              onClick={() => copyToClipboard(`{
+  "version": "rubric-1",
+  "title": "My Bounty Grading Rubric",
+  "description": "Evaluate the submitted work product",
+  "threshold": 70,
+  "criteria": [
+    {
+      "id": "requirements",
+      "label": "Meets Requirements",
+      "weight": 0.5,
+      "must": true,
+      "description": "Does the submission address all stated requirements?"
+    },
+    {
+      "id": "quality",
+      "label": "Overall Quality",
+      "weight": 0.5,
+      "must": false,
+      "description": "Is the work well-crafted and professional?"
+    }
+  ],
+  "forbiddenContent": ["Plagiarism", "NSFW content", "Hate speech"]
+}`, 'rubric-example')}
+            >
+              {copiedCode === 'rubric-example' ? <Check size={16} /> : <Copy size={16} />}
+            </button>
+          </div>
+          <pre><code>{`{
+  "version": "rubric-1",
+  "title": "My Bounty Grading Rubric",
+  "description": "Evaluate the submitted work product",
+  "threshold": 70,
+  "criteria": [
+    {
+      "id": "requirements",
+      "label": "Meets Requirements",
+      "weight": 0.5,
+      "must": true,
+      "description": "Does the submission address all stated requirements?"
+    },
+    {
+      "id": "quality",
+      "label": "Overall Quality",
+      "weight": 0.5,
+      "must": false,
+      "description": "Is the work well-crafted and professional?"
+    }
+  ],
+  "forbiddenContent": ["Plagiarism", "NSFW content", "Hate speech"]
+}`}</code></pre>
+        </div>
+
+        <h3>primary_query.json (Required - Oracle Evaluation Prompt)</h3>
+        <p style={{ marginBottom: '1rem', color: 'var(--text-secondary)' }}>
+          This file contains the evaluation prompt sent to AI oracle models. It must have three fields:
+          a <code>query</code> string, a <code>references</code> array, and an <code>outcomes</code> array.
+          The <code>query</code> must use the exact template below — only replace the
+          three <code>[bracketed placeholders]</code> with your bounty's values.
+        </p>
+        <div className="code-block">
+          <div className="code-header">
+            <span>primary_query.json</span>
+            <button
+              className="btn-icon"
+              onClick={() => copyToClipboard(`{
+  "query": "WORK PRODUCT EVALUATION REQUEST\\n\\nYou are evaluating a work product submission to determine whether it meets the required quality standards for payment release from escrow.\\n\\n=== TASK DESCRIPTION ===\\nWork Product Type: [Your work type]\\nTask Title: [Your bounty title]\\nTask Description: [Your detailed task description]\\n\\n=== EVALUATION INSTRUCTIONS ===\\nA detailed grading rubric is provided as an attachment (gradingRubric). You must thoroughly evaluate the submitted work product against ALL criteria specified in the rubric.\\n\\nFor each evaluation criterion in the rubric:\\n1. Assess how well the work product meets the requirement\\n2. Note specific strengths and weaknesses\\n3. Consider the overall quality and completeness\\n\\n=== YOUR TASK ===\\nEvaluate the quality of the submitted work product and provide scores for two outcomes:\\n- DONT_FUND: The work product does not meet quality standards\\n- FUND: The work product meets quality standards\\n\\nBase your scoring on the overall quality assessment from the rubric criteria. Higher quality work should receive higher FUND scores, while lower quality work should receive higher DONT_FUND scores.\\n\\nIn your justification, explain your evaluation of each rubric criterion and how the work product performs against the stated requirements.\\n\\nThe submitted work product will be provided in the next section.",
+  "references": ["gradingRubric"],
+  "outcomes": ["DONT_FUND", "FUND"]
+}`, 'query-example')}
+            >
+              {copiedCode === 'query-example' ? <Check size={16} /> : <Copy size={16} />}
+            </button>
+          </div>
+          <pre><code>{`{
+  "query": "WORK PRODUCT EVALUATION REQUEST\\n\\n` +
+`You are evaluating a work product submission to determine whether ` +
+`it meets the required quality standards for payment release from ` +
+`escrow.\\n\\n` +
+`=== TASK DESCRIPTION ===\\n` +
+`Work Product Type: [Your work type]\\n` +
+`Task Title: [Your bounty title]\\n` +
+`Task Description: [Your detailed task description]\\n\\n` +
+`=== EVALUATION INSTRUCTIONS ===\\n` +
+`A detailed grading rubric is provided as an attachment ` +
+`(gradingRubric). You must thoroughly evaluate the submitted work ` +
+`product against ALL criteria specified in the rubric.\\n\\n` +
+`For each evaluation criterion in the rubric:\\n` +
+`1. Assess how well the work product meets the requirement\\n` +
+`2. Note specific strengths and weaknesses\\n` +
+`3. Consider the overall quality and completeness\\n\\n` +
+`=== YOUR TASK ===\\n` +
+`Evaluate the quality of the submitted work product and provide ` +
+`scores for two outcomes:\\n` +
+`- DONT_FUND: The work product does not meet quality standards\\n` +
+`- FUND: The work product meets quality standards\\n\\n` +
+`Base your scoring on the overall quality assessment from the ` +
+`rubric criteria. Higher quality work should receive higher FUND ` +
+`scores, while lower quality work should receive higher DONT_FUND ` +
+`scores.\\n\\n` +
+`In your justification, explain your evaluation of each rubric ` +
+`criterion and how the work product performs against the stated ` +
+`requirements.\\n\\n` +
+`The submitted work product will be provided in the next section.",
+  "references": ["gradingRubric"],
+  "outcomes": ["DONT_FUND", "FUND"]
+}
+
+// ⚠️ IMPORTANT: Use this template VERBATIM.
+// Only replace the three [bracketed placeholders] above.
+// Do NOT rewrite, abbreviate, or rephrase any other text.`}</code></pre>
+        </div>
+
+        <div className="callout callout-critical" style={{ marginTop: '1rem' }}>
+          <AlertTriangle size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
+          <div>
+            <strong>Use the Exact Query Template — Do Not Modify</strong>
+            <p style={{ margin: '0.5rem 0 0 0' }}>
+              The oracle adapter parses the query text, not just the section headers.
+              You <strong>must</strong> use the template above <strong>verbatim</strong> — only
+              replace the three <code>[bracketed placeholders]</code> with your bounty's details.
+              Do not rewrite, abbreviate, or rephrase any other text.
+            </p>
+            <p style={{ margin: '0.5rem 0 0 0' }}>
+              All of the following cause <strong>silent oracle failure</strong> (stuck in PendingVerdikta, no error):
+            </p>
+            <ul style={{ margin: '0.25rem 0 0 0', paddingLeft: '1.5rem', fontSize: '0.9rem' }}>
+              <li>Changing section headers (e.g., <code>=== TASK ===</code> instead of <code>=== TASK DESCRIPTION ===</code>)</li>
+              <li>Rewriting the body text within sections (e.g., replacing the numbered evaluation steps or scoring instructions)</li>
+              <li>Omitting the closing line: <code>"The submitted work product will be provided in the next section."</code></li>
+              <li>Omitting the scoring guidance paragraph (<code>"Base your scoring on..."</code>)</li>
+            </ul>
+            <p style={{ margin: '0.5rem 0 0 0' }}>
+              Inside <code>=== TASK DESCRIPTION ===</code>, the three fields must each be on a single line
+              with the value on the <strong>same line</strong> as the key — no blank lines between them:
+            </p>
+            <pre style={{ margin: '0.5rem 0 0 0', padding: '0.5rem', background: 'rgba(0,0,0,0.1)', borderRadius: '0.25rem', fontSize: '0.8rem' }}>
+{`✅ Correct:
+Task Title: My Bounty Title
+Task Description: The full description on the same line.
+
+❌ Wrong (oracle timeout):
+Task Title: My Bounty Title
+
+Task Description:
+The description on the next line.`}
+            </pre>
+          </div>
+        </div>
+
+        <h3>Creating the ZIP (Command Line)</h3>
+        <div className="code-block">
+          <div className="code-header">
+            <span>Shell commands</span>
+            <button
+              className="btn-icon"
+              onClick={() => copyToClipboard(`# Create your evaluation folder
+mkdir my-evaluation
+cd my-evaluation
+
+# Create manifest.json and primary_query.json files
+# (see examples above)
+
+# IMPORTANT: Zip the FILES, not the folder!
+# ❌ Wrong: zip -r evaluation.zip my-evaluation/
+# ✅ Correct:
+cd my-evaluation
+zip -r ../evaluation.zip .
+
+# Upload to IPFS (using Pinata CLI as example)
+pinata upload evaluation.zip`, 'zip-commands')}
+            >
+              {copiedCode === 'zip-commands' ? <Check size={16} /> : <Copy size={16} />}
+            </button>
+          </div>
+          <pre><code>{`# Create your evaluation folder
+mkdir my-evaluation
+cd my-evaluation
+
+# Create manifest.json and primary_query.json files
+# (see examples above)
+
+# IMPORTANT: Zip the FILES, not the folder!
+# ❌ Wrong: zip -r evaluation.zip my-evaluation/
+# ✅ Correct:
+cd my-evaluation
+zip -r ../evaluation.zip .
+
+# Upload to IPFS (using Pinata CLI as example)
+pinata upload evaluation.zip`}</code></pre>
+        </div>
+
+        <h3>Complete Upload Flow (Node.js)</h3>
+        <p style={{ marginBottom: '1rem', color: 'var(--text-secondary)' }}>
+          Two-step process: upload rubric first, then create ZIP that references it.
+        </p>
+        <div className="code-block">
+          <div className="code-header">
+            <span>JavaScript / Node.js</span>
+            <button
+              className="btn-icon"
+              onClick={() => copyToClipboard(`const archiver = require('archiver');
+
+// ============================================
+// STEP 1: Upload grading rubric to IPFS first
+// ============================================
+const gradingRubric = {
+  version: "rubric-1",
+  title: "My Bounty Grading Rubric",
+  description: "Evaluate the submitted work product",
+  threshold: 70,
+  criteria: [
+    { id: "requirements", label: "Meets Requirements", weight: 0.5, must: true, description: "Does the submission address all stated requirements?" },
+    { id: "quality", label: "Overall Quality", weight: 0.5, must: false, description: "Is the work well-crafted and professional?" }
+  ],
+  forbiddenContent: ["Plagiarism", "NSFW content"]
+};
+
+// Upload rubric as JSON (this one CAN use pinJSONToIPFS since it's just data)
+async function uploadJsonToPinata(data, name) {
+  const response = await fetch('https://api.pinata.cloud/pinning/pinJSONToIPFS', {
+    method: 'POST',
+    headers: {
+      'Authorization': \`Bearer \${process.env.PINATA_JWT}\`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      pinataContent: data,
+      pinataMetadata: { name }
+    })
+  });
+  const result = await response.json();
+  return result.IpfsHash;
+}
+
+const rubricCid = await uploadJsonToPinata(gradingRubric, 'rubric.json');
+console.log('Rubric CID:', rubricCid);
+
+// ============================================
+// STEP 2: Create evaluation ZIP referencing rubric
+// ============================================
+async function createEvaluationZip(title, description, workProductType, rubricCid, juryNodes) {
+  return new Promise((resolve, reject) => {
+    const archive = archiver('zip');
+    const chunks = [];
+
+    archive.on('data', chunk => chunks.push(chunk));
+    archive.on('end', () => resolve(Buffer.concat(chunks)));
+    archive.on('error', reject);
+
+    // manifest.json - MUST include additional array AND bCIDs
+    archive.append(JSON.stringify({
+      version: "1.0",
+      name: \`\${title} - Evaluation for Payment Release\`,
+      primary: { filename: "primary_query.json" },
+      juryParameters: {
+        NUMBER_OF_OUTCOMES: 2,
+        AI_NODES: juryNodes.map(n => ({
+          AI_MODEL: n.model,
+          AI_PROVIDER: n.provider,
+          NO_COUNTS: n.runs || 1,
+          WEIGHT: n.weight
+        })),
+        ITERATIONS: 1
+      },
+      additional: [
+        {
+          name: "gradingRubric",
+          type: "ipfs/cid",
+          hash: rubricCid,
+          description: "Work Product grading rubric with evaluation criteria"
+        }
+      ],
+      bCIDs: {
+        submittedWork: "The work submitted by a hunter."
+      }
+    }, null, 2), { name: 'manifest.json' });
+
+    // primary_query.json - MUST have "query" field with full instructions
+    const query = \`WORK PRODUCT EVALUATION REQUEST
+
+You are evaluating a work product submission to determine whether it meets the required quality standards for payment release from escrow.
+
+=== TASK DESCRIPTION ===
+Work Product Type: \${workProductType}
+Task Title: \${title}
+Task Description: \${description}
+
+=== EVALUATION INSTRUCTIONS ===
+A detailed grading rubric is provided as an attachment (gradingRubric). You must thoroughly evaluate the submitted work product against ALL criteria specified in the rubric.
+
+For each evaluation criterion in the rubric:
+1. Assess how well the work product meets the requirement
+2. Note specific strengths and weaknesses
+3. Consider the overall quality and completeness
+
+=== YOUR TASK ===
+Evaluate the quality of the submitted work product and provide scores for two outcomes:
+- DONT_FUND: The work product does not meet quality standards
+- FUND: The work product meets quality standards
+
+Base your scoring on the overall quality assessment from the rubric criteria. Higher quality work should receive higher FUND scores, while lower quality work should receive higher DONT_FUND scores.
+
+In your justification, explain your evaluation of each rubric criterion and how the work product performs against the stated requirements.
+
+The submitted work product will be provided in the next section.\`;
+
+    archive.append(JSON.stringify({
+      query,
+      references: ["gradingRubric"],  // ← REQUIRED: links to rubric
+      outcomes: ["DONT_FUND", "FUND"]
+    }, null, 2), { name: 'primary_query.json' });
+
+    archive.finalize();
+  });
+}
+
+const zipBuffer = await createEvaluationZip(
+  "Write a Blog Post",                    // title
+  "Create an engaging blog post about AI", // description
+  "Blog Post",                            // workProductType
+  rubricCid,                              // rubric CID from step 1
+  [
+    { provider: "OpenAI", model: "gpt-5.2-2025-12-11", weight: 0.5 },
+    { provider: "Anthropic", model: "claude-3-5-haiku-20241022", weight: 0.5 }
+  ]
+);
+
+// ============================================
+// STEP 3: Upload ZIP to IPFS (NOT pinJSONToIPFS!)
+// ============================================
+async function uploadZipToPinata(buffer, filename) {
+  const formData = new FormData();
+  const blob = new Blob([buffer], { type: 'application/zip' });
+  formData.append('file', blob, filename);
+  formData.append('pinataMetadata', JSON.stringify({ name: filename }));
+
+  const response = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+    method: 'POST',
+    headers: { 'Authorization': \`Bearer \${process.env.PINATA_JWT}\` },
+    body: formData
+  });
+  const result = await response.json();
+  return result.IpfsHash;
+}
+
+const evaluationCid = await uploadZipToPinata(zipBuffer, 'evaluation.zip');
+console.log('Evaluation CID:', evaluationCid);
+
+// Verify upload is actually a ZIP
+async function verifyZipFormat(cid) {
+  const resp = await fetch(\`https://gateway.pinata.cloud/ipfs/\${cid}\`);
+  const bytes = new Uint8Array(await resp.arrayBuffer()).slice(0, 4);
+  const isZip = bytes[0] === 0x50 && bytes[1] === 0x4B; // "PK" magic bytes
+  if (!isZip) throw new Error('Upload is not a ZIP! Did you use pinJSONToIPFS by mistake?');
+  console.log('✅ Verified: CID is a valid ZIP archive');
+}
+
+await verifyZipFormat(evaluationCid);
+// Use evaluationCid when calling createBounty()`, 'js-zip-example')}
+            >
+              {copiedCode === 'js-zip-example' ? <Check size={16} /> : <Copy size={16} />}
+            </button>
+          </div>
+          <pre><code>{`const archiver = require('archiver');
+
+// ============================================
+// STEP 1: Upload grading rubric to IPFS first
+// ============================================
+const gradingRubric = {
+  version: "rubric-1",
+  title: "My Bounty Grading Rubric",
+  description: "Evaluate the submitted work product",
+  threshold: 70,
+  criteria: [
+    { id: "requirements", label: "Meets Requirements", weight: 0.5, must: true, description: "..." },
+    { id: "quality", label: "Overall Quality", weight: 0.5, must: false, description: "..." }
+  ],
+  forbiddenContent: ["Plagiarism", "NSFW content"]
+};
+
+// Upload rubric as JSON (this one CAN use pinJSONToIPFS since it's just data)
+async function uploadJsonToPinata(data, name) {
+  const response = await fetch('https://api.pinata.cloud/pinning/pinJSONToIPFS', {
+    method: 'POST',
+    headers: {
+      'Authorization': \`Bearer \${process.env.PINATA_JWT}\`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ pinataContent: data, pinataMetadata: { name } })
+  });
+  return (await response.json()).IpfsHash;
+}
+
+const rubricCid = await uploadJsonToPinata(gradingRubric, 'rubric.json');
+console.log('Rubric CID:', rubricCid);
+
+// ============================================
+// STEP 2: Create evaluation ZIP with FULL query format
+// ============================================
+function buildEvaluationQuery(title, description, workProductType) {
+  return \`WORK PRODUCT EVALUATION REQUEST
+
+You are evaluating a work product submission to determine whether it meets the required quality standards for payment release from escrow.
+
+=== TASK DESCRIPTION ===
+Work Product Type: \${workProductType}
+Task Title: \${title}
+Task Description: \${description}
+
+=== EVALUATION INSTRUCTIONS ===
+A detailed grading rubric is provided as an attachment (gradingRubric). You must thoroughly evaluate the submitted work product against ALL criteria specified in the rubric.
+
+=== YOUR TASK ===
+Evaluate the quality and provide scores for:
+- DONT_FUND: Does not meet quality standards
+- FUND: Meets quality standards
+
+The submitted work product will be provided in the next section.\`;
+}
+
+async function createEvaluationZip(title, desc, workType, rubricCid, juryNodes) {
+  // ... archiver setup ...
+
+  // manifest.json - with bCIDs
+  archive.append(JSON.stringify({
+    version: "1.0",
+    name: \`\${title} - Evaluation for Payment Release\`,
+    primary: { filename: "primary_query.json" },
+    juryParameters: { /* ... */ },
+    additional: [{ name: "gradingRubric", type: "ipfs/cid", hash: rubricCid, description: "..." }],
+    bCIDs: { submittedWork: "The work submitted by a hunter." }  // ← REQUIRED
+  }, null, 2), { name: 'manifest.json' });
+
+  // primary_query.json - MUST use "query" format, NOT title/description!
+  archive.append(JSON.stringify({
+    query: buildEvaluationQuery(title, desc, workType),  // ← Full prompt
+    references: ["gradingRubric"],                        // ← Links to rubric
+    outcomes: ["DONT_FUND", "FUND"]
+  }, null, 2), { name: 'primary_query.json' });
+}
+
+const zipBuffer = await createEvaluationZip(
+  "Write a Blog Post", "Create an engaging blog post about AI",
+  "Blog Post", rubricCid,
+  [{ provider: "OpenAI", model: "gpt-5.2-2025-12-11", weight: 1 }]
+);
+
+// ============================================
+// STEP 3: Upload ZIP to IPFS (NOT pinJSONToIPFS!)
+// ============================================
+async function uploadZipToPinata(buffer, filename) {
+  const formData = new FormData();
+  formData.append('file', new Blob([buffer], { type: 'application/zip' }), filename);
+  const response = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+    method: 'POST',
+    headers: { 'Authorization': \`Bearer \${process.env.PINATA_JWT}\` },
+    body: formData
+  });
+  return (await response.json()).IpfsHash;
+}
+
+const evaluationCid = await uploadZipToPinata(zipBuffer, 'evaluation.zip');
+console.log('Evaluation CID:', evaluationCid);
+// Use evaluationCid when calling createBounty()`}</code></pre>
+        </div>
+
+        <div className="callout callout-critical" style={{ marginTop: '1.5rem' }}>
+          <AlertTriangle size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
+          <div>
+            <strong>Pinata Users: Do NOT use pinJSONToIPFS for the evaluation ZIP!</strong>
+            <p style={{ margin: '0.5rem 0 0 0' }}>
+              The <code>pinJSONToIPFS</code> endpoint uploads raw JSON, not a ZIP archive.
+              You <strong>MUST</strong> use <code>pinFileToIPFS</code> for the evaluation package.
+            </p>
+            <div style={{ marginTop: '0.75rem', fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}>
+              <div style={{ color: '#16a34a' }}>✅ <code>pinJSONToIPFS</code> — OK for grading rubric (it's just JSON data)</div>
+              <div style={{ color: '#dc2626', marginTop: '0.25rem' }}>❌ <code>pinJSONToIPFS</code> — WRONG for evaluation package (must be ZIP)</div>
+              <div style={{ color: '#16a34a', marginTop: '0.25rem' }}>✅ <code>pinFileToIPFS</code> — CORRECT for evaluation package ZIP</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="callout callout-info" style={{ marginTop: '1rem' }}>
+          <div>
+            <strong>Common Mistakes to Avoid:</strong>
+            <ul style={{ margin: '0.5rem 0 0 0', paddingLeft: '1.5rem' }}>
+              <li><strong>❌ Incomplete primary_query.json</strong> — Must have all three fields: <code>query</code> (full prompt string), <code>references</code>, and <code>outcomes</code></li>
+              <li><strong>❌ Missing "bCIDs" in manifest</strong> — Required for oracles to find submitted work</li>
+              <li><strong>❌ Using pinJSONToIPFS for ZIP</strong> — Use <code>pinFileToIPFS</code> for the evaluation package</li>
+              <li><strong>❌ Uploading raw JSON as evaluation</strong> — Always ZIP first, then upload the ZIP file</li>
+              <li><strong>❌ Missing manifest.additional array</strong> — Required for rubric reference</li>
+              <li><strong>❌ Zipping the folder</strong> — Zip the <em>contents</em>, not the containing folder</li>
+              <li><strong>❌ Using unsupported AI models</strong> — Models like <code>gpt-4o</code> or <code>claude-3-5-sonnet-20241022</code> are not registered on the oracle network. Use only verified models (see supported list above)</li>
+              <li><strong>❌ Rewriting the query template</strong> — Use the template <em>verbatim</em>. The oracle parses both the section headers and the body text. Only replace the three <code>[bracketed placeholders]</code>. Do not rephrase, abbreviate, or omit any lines</li>
+              <li><strong>❌ Multiline Task Description field</strong> — Inside the TASK DESCRIPTION section, write <code>Task Description: your text here</code> on a single line. Putting the description on a separate line or adding blank lines between fields causes oracle timeout</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3 style={{ marginTop: '2rem' }}>Always Validate Before Announcing</h3>
+        <p>After creating a bounty, validate it before sharing publicly:</p>
+        <div className="code-block" style={{ marginTop: '1rem' }}>
+          <div className="code-header">
+            <span>Validation Check</span>
+          </div>
+          <pre><code>{`# Validate your bounty's evaluation package
+curl -H "X-Bot-API-Key: YOUR_KEY" \\
+  "https://bounties-testnet.verdikta.org/api/jobs/YOUR_JOB_ID/validate"
+
+# ✅ GOOD - No issues at all:
+{ "valid": true, "issues": [] }
+
+# ⚠️ WARNING - Works but not ideal (missing rubric reference):
+{ "valid": true, "issues": [
+  {"severity": "warning", "message": "Manifest does not reference a grading rubric..."}
+]}
+
+# ❌ ERROR - Will not work with oracles:
+{ "valid": false, "issues": [
+  {"severity": "error", "message": "Evaluation package is plain JSON, not a ZIP archive..."}
+]}`}</code></pre>
+        </div>
+      </section>
+
+      {/* IPFS Content Structure */}
+      <section className="blockchain-section">
+        <h2>Complete IPFS Package Reference</h2>
+        <p className="section-intro">
+          Full reference for evaluation and submission package formats.
+        </p>
         <div className="code-block">
           <div className="code-header">
             <span>Content Package Formats</span>

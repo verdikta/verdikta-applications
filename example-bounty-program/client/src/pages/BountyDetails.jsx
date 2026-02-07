@@ -217,18 +217,11 @@ function BountyDetails({ walletState }) {
   // HELPER: Get on-chain ID from current state
   // ============================================================================
 
+  // jobId === onChainId (aligned ID system)
   const getOnChainBountyId = useCallback(() => {
-    if (job?.onChainId != null && !Number.isNaN(Number(job.onChainId))) {
-      return Number(job.onChainId);
-    }
-    if (job?.bountyId != null && !Number.isNaN(Number(job.bountyId))) {
-      return Number(job.bountyId);
-    }
-    if (resolvedBountyId != null && !Number.isNaN(Number(resolvedBountyId))) {
-      return Number(resolvedBountyId);
-    }
-    return null;
-  }, [job?.onChainId, job?.bountyId, resolvedBountyId]);
+    const id = parseInt(bountyId, 10);
+    return Number.isNaN(id) ? null : id;
+  }, [bountyId]);
 
   // ============================================================================
   // EVALUATION READINESS POLLING (NEW)
@@ -249,8 +242,11 @@ function BountyDetails({ walletState }) {
 
     // Get on-chain submissions that aren't already being actively polled after finalization
     // Skip "Prepared" submissions - they don't exist on-chain yet
+    // Skip already-evaluated submissions (ACCEPTED_PENDING_CLAIM / REJECTED_PENDING_FINALIZATION)
     const pendingSubs = submissions.filter(s =>
       isSubmissionOnChain(s.status) &&
+      s.status !== 'ACCEPTED_PENDING_CLAIM' &&
+      s.status !== 'REJECTED_PENDING_FINALIZATION' &&
       !pollingSubmissions.has(s.submissionId)
     );
 
@@ -356,7 +352,7 @@ function BountyDetails({ walletState }) {
       // Check if on-chain status differs from backend and override if needed
       // ========================================================================
       if (finalJob) {
-        const onChainId = finalJob.onChainId ?? finalJob.bountyId ?? resolvedBountyId;
+        const onChainId = finalJob.jobId;
         
         if (onChainId != null) {
           try {
@@ -576,10 +572,10 @@ function BountyDetails({ walletState }) {
     (async () => {
       if (!job) return;
 
-      // Backend already has it (check BOTH bountyId and onChainId)
-      if (job?.bountyId != null || job?.onChainId != null) {
+      // jobId === onChainId in the aligned system, so resolution is trivial
+      if (job?.jobId != null) {
         if (!cancelled) {
-          setResolvedBountyId(Number(job?.onChainId ?? job?.bountyId));
+          setResolvedBountyId(Number(job.jobId));
           setResolveNote('');
           setResolvingId(false);
         }
@@ -1664,12 +1660,36 @@ function BountyDetails({ walletState }) {
               </div>
             ))}
           </div>
-          {rubric.forbidden_content && rubric.forbidden_content.length > 0 && (
+          {/* Support both camelCase and snake_case naming */}
+          {((rubric.forbiddenContent || rubric.forbidden_content)?.length > 0) && (
             <div className="forbidden-content">
               <h3><Ban size={18} className="inline-icon" /> Forbidden Content</h3>
-              <ul>{rubric.forbidden_content.map((item, index) => (<li key={index}>{item}</li>))}</ul>
+              <ul>{(rubric.forbiddenContent || rubric.forbidden_content).map((item, index) => (<li key={index}>{item}</li>))}</ul>
             </div>
           )}
+        </section>
+      )}
+
+      {/* Jury Configuration Section - AI Models */}
+      {job?.juryNodes && job.juryNodes.length > 0 && (
+        <section className="jury-section">
+          <h2>AI Jury Configuration</h2>
+          <p className="jury-description">
+            Submissions are evaluated by multiple AI models. Each model scores independently,
+            and the final score is a weighted average.
+          </p>
+          <div className="jury-grid">
+            {job.juryNodes.map((node, index) => (
+              <div key={index} className="jury-card">
+                <div className="jury-provider">{node.provider}</div>
+                <div className="jury-model">{node.model}</div>
+                <div className="jury-details">
+                  <span className="jury-weight">Weight: {Math.round(node.weight * 100)}%</span>
+                  {node.runs > 1 && <span className="jury-runs">{node.runs} runs</span>}
+                </div>
+              </div>
+            ))}
+          </div>
         </section>
       )}
 
@@ -1773,11 +1793,10 @@ function BountyDetails({ walletState }) {
  * DiagnosticPanel - Shows backend vs on-chain status comparison
  * Toggle with Ctrl+Shift+D
  */
-function DiagnosticPanel({ 
-  job, 
-  bountyId, 
-  resolvedBountyId, 
-  onChainId, 
+function DiagnosticPanel({
+  job,
+  bountyId,
+  onChainId,
   statusOverride, 
   deadlinePassed,
   submissions,
@@ -1809,10 +1828,8 @@ function DiagnosticPanel({
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
         <div>
           <div style={{ color: '#aaa', marginBottom: '0.25rem' }}>IDs:</div>
-          <div>Backend jobId: <span style={{ color: '#4caf50' }}>{bountyId}</span></div>
-          <div>job.bountyId: <span style={{ color: job?.bountyId != null ? '#4caf50' : '#f44336' }}>{job?.bountyId ?? 'null'}</span></div>
-          <div>job.onChainId: <span style={{ color: job?.onChainId != null ? '#4caf50' : '#f44336' }}>{job?.onChainId ?? 'null'}</span></div>
-          <div>resolvedBountyId: <span style={{ color: resolvedBountyId != null ? '#4caf50' : '#888' }}>{resolvedBountyId ?? 'null'}</span></div>
+          <div>URL bountyId: <span style={{ color: '#4caf50' }}>{bountyId}</span></div>
+          <div>job.jobId: <span style={{ color: job?.jobId != null ? '#4caf50' : '#f44336' }}>{job?.jobId ?? 'null'}</span></div>
           <div>Effective onChainId: <span style={{ color: onChainId != null ? '#4caf50' : '#f44336', fontWeight: 'bold' }}>{onChainId ?? 'MISSING'}</span></div>
         </div>
         

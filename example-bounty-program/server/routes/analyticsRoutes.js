@@ -417,8 +417,7 @@ async function getSubmissionAnalytics() {
             // Check Verdikta Aggregator for evaluation result
             // Need on-chain bountyId and submissionId to query the contract
             let evalResult = null;
-            // Use onChainId (primary), then legacy field names
-            const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+            const onChainBountyId = job.jobId;
             const onChainSubmissionId = sub.onChainSubmissionId ?? sub.submissionId;
 
             if (onChainBountyId != null && onChainSubmissionId != null) {

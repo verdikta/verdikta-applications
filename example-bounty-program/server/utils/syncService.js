@@ -47,8 +47,9 @@ async function fetchEvaluationMetadata(evaluationCid) {
         try {
           const manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
           // Title is in format: "Job Title - Evaluation for Payment Release"
+          // Older packages may use just "- Evaluation" suffix
           if (manifest.name) {
-            title = manifest.name.replace(/ - Evaluation for Payment Release$/, '');
+            title = manifest.name.replace(/ - Evaluation(?: for Payment Release)?$/, '');
           }
         } catch (e) {
           logger.debug('Failed to parse manifest.json', { cid: evaluationCid, error: e.message });
@@ -60,16 +61,33 @@ async function fetchEvaluationMetadata(evaluationCid) {
       if (queryEntry) {
         try {
           const query = JSON.parse(queryEntry.getData().toString('utf8'));
+
+          // New format: direct fields in primary_query.json
+          if (query.description && !description) {
+            description = query.description;
+          }
+          if (query.title && !title) {
+            title = query.title;
+          }
+          if (query.workProductType && !workProductType) {
+            workProductType = query.workProductType;
+          }
+
+          // Legacy format: embedded in query.query text field
           if (query.query) {
             // Extract description from query text
-            const descMatch = query.query.match(/Task Description:\s*(.+?)(?:\n\n|===|$)/s);
-            if (descMatch) {
-              description = descMatch[1].trim();
+            if (!description) {
+              const descMatch = query.query.match(/Task Description:\s*(.+?)(?:\n\n|===|$)/s);
+              if (descMatch) {
+                description = descMatch[1].trim();
+              }
             }
             // Extract work product type
-            const typeMatch = query.query.match(/Work Product Type:\s*(.+?)(?:\n|$)/);
-            if (typeMatch) {
-              workProductType = typeMatch[1].trim();
+            if (!workProductType) {
+              const typeMatch = query.query.match(/Work Product Type:\s*(.+?)(?:\n|$)/);
+              if (typeMatch) {
+                workProductType = typeMatch[1].trim();
+              }
             }
             // Extract title if not found in manifest
             if (!title) {
@@ -175,13 +193,10 @@ class SyncService {
 
       // First pass: Update/add jobs from blockchain
       for (const bounty of onChainBounties) {
-        // Find existing job by onChainId (primary) or legacy bountyId field
+        // Find existing job by jobId (aligned with on-chain ID)
         // IMPORTANT: Require contractAddress to match exactly to avoid cross-contract collisions
         const existingJob = storage.jobs.find(j => {
-          const matchesId = j.onChainId === bounty.jobId ||
-                           j.bountyId === bounty.jobId ||  // Legacy fallback
-                           j.onChainBountyId === bounty.jobId;  // Another legacy name
-          if (!matchesId) return false;
+          if (j.jobId !== bounty.jobId) return false;
 
           // Require explicit contract address match (jobs without contractAddress are legacy/orphaned)
           const jobContract = (j.contractAddress || '').toLowerCase();
@@ -189,15 +204,15 @@ class SyncService {
         });
 
         if (!existingJob) {
-          // Check for recently created jobs without onChainId that might be waiting to be linked
+          // Check for recently created jobs that might be waiting to be linked
           // This handles the race condition between frontend create and sync
-          // 
+          //
           // MATCHING STRATEGIES (in order of reliability):
           // 1. evaluationCid/primaryCid match - most reliable, unique per job
           // 2. creator + deadline match - fallback for older jobs
           const pendingJob = storage.jobs.find(j => {
-            // Skip jobs that already have an onChainId
-            if (j.onChainId != null || j.bountyId != null) return false;
+            // Skip jobs that are already synced (have syncedFromBlockchain flag)
+            if (j.syncedFromBlockchain) return false;
             
             // Strategy 1: Match by evaluationCid (most reliable - unique per job)
             // The evaluationCid/primaryCid is the same CID used on-chain
@@ -221,15 +236,15 @@ class SyncService {
             // Link existing job instead of creating duplicate
             logger.info('🔗 Linking pending job to on-chain bounty', {
               jobId: pendingJob.jobId,
-              onChainId: bounty.jobId,
+              onChainBountyId: bounty.jobId,
               title: pendingJob.title,
               matchedBy: pendingJob.primaryCid === bounty.evaluationCid ? 'evaluationCid' : 'creator+deadline'
             });
             await this.updateJobFromBlockchain(pendingJob, bounty, storage, currentContract);
             linked++;
           } else {
-            // Check if a job with same evaluationCid already exists (even if it has onChainId set)
-            // This catches the race condition where PATCH set onChainId AFTER we read storage
+            // Check if a job with same evaluationCid already exists (even if it was already linked)
+            // This catches the race condition where PATCH linked the job AFTER we read storage
             const existingByCid = storage.jobs.find(j =>
               bounty.evaluationCid && (
                 j.primaryCid === bounty.evaluationCid ||
@@ -241,8 +256,7 @@ class SyncService {
               // Job already exists, just update it (handles PATCH race condition)
               logger.info('🔗 Found existing job by CID match (race condition recovery)', {
                 jobId: existingByCid.jobId,
-                onChainId: bounty.jobId,
-                existingOnChainId: existingByCid.onChainId
+                onChainBountyId: bounty.jobId
               });
               await this.updateJobFromBlockchain(existingByCid, bounty, storage, currentContract);
               linked++;
@@ -269,8 +283,8 @@ class SyncService {
         // Skip jobs that are already marked as orphaned or closed
         if (job.status === 'ORPHANED' || job.status === 'CLOSED') continue;
 
-        // Skip jobs without an onChainId (never went on-chain)
-        const chainId = job.onChainId ?? job.bountyId ?? job.onChainBountyId;
+        // Skip jobs without a jobId (shouldn't happen, but be safe)
+        const chainId = job.jobId;
         if (chainId == null) continue;
 
         // Skip jobs from different contracts
@@ -283,8 +297,7 @@ class SyncService {
             job.orphanReason = 'different_contract';
             orphaned++;
             logger.info('Marked job as orphaned (different contract)', {
-              jobId: job.jobId,
-              onChainId: chainId
+              jobId: job.jobId
             });
           }
           continue;
@@ -299,7 +312,6 @@ class SyncService {
           orphaned++;
           logger.warn('Marked job as orphaned (not found on chain)', {
             jobId: job.jobId,
-            onChainId: chainId,
             contractAddress: currentContract
           });
         }
@@ -336,13 +348,13 @@ class SyncService {
         const freshStorage = await jobStorage.readStorage();
         
         // Merge strategy: For each job in our modified storage, update the fresh storage
-        // Preserve any fields set by PATCH (like onChainId, txHash) that we didn't modify
+        // Preserve any fields set by PATCH (like txHash) that we didn't modify
         for (const modifiedJob of storage.jobs) {
           const freshJob = freshStorage.jobs.find(j => j.jobId === modifiedJob.jobId);
-          
+
           if (freshJob) {
             // Fields that PATCH endpoints might set during sync - preserve if freshJob has them
-            const patchPreserveFields = ['onChainId', 'txHash', 'blockNumber', 'onChain', 'contractAddress'];
+            const patchPreserveFields = ['txHash', 'blockNumber', 'onChain', 'contractAddress'];
             
             // Save fresh values for PATCH fields
             const preservedValues = {};
@@ -431,7 +443,7 @@ class SyncService {
    * Sync submissions for a bounty from blockchain
    * Merges on-chain status with existing backend data
    */
-  async syncSubmissions(bountyId, submissionCount, existingSubmissions = []) {
+  async syncSubmissions(bountyId, submissionCount, existingSubmissions = [], threshold = 50) {
     const contractService = getContractService();
     const submissions = [];
 
@@ -460,9 +472,35 @@ class SyncService {
             // Use existing status if available, otherwise mark as pending
             backendStatus = existing?.status || 'PENDING_EVALUATION';
             break;
-          case 1: // PendingVerdikta
-            backendStatus = 'PENDING_EVALUATION';
+          case 1: { // PendingVerdikta — check if oracle evaluation is already complete
+            const zeroHash = '0x' + '0'.repeat(64);
+            if (sub.verdiktaAggId && sub.verdiktaAggId !== zeroHash) {
+              try {
+                const evalResult = await contractService.checkEvaluationReady(bountyId, sub.submissionId);
+                if (evalResult.ready) {
+                  backendStatus = evalResult.scores.acceptance >= threshold
+                    ? 'ACCEPTED_PENDING_CLAIM'
+                    : 'REJECTED_PENDING_FINALIZATION';
+                  // Store aggregator scores so API can serve them
+                  sub.acceptance = evalResult.scores.acceptance;
+                  sub.rejection = evalResult.scores.rejection;
+                  sub.justificationCids = evalResult.justificationCids;
+                  logger.info('Oracle evaluation complete, pending finalization', {
+                    bountyId, submissionId: sub.submissionId, backendStatus,
+                    acceptance: evalResult.scores.acceptance
+                  });
+                } else {
+                  backendStatus = 'PENDING_EVALUATION';
+                }
+              } catch (error) {
+                logger.debug('Error checking evaluation ready', { bountyId, error: error.message });
+                backendStatus = 'PENDING_EVALUATION';
+              }
+            } else {
+              backendStatus = 'PENDING_EVALUATION';
+            }
             break;
+          }
           case 2: // Failed
             backendStatus = 'REJECTED';
             break;
@@ -550,8 +588,7 @@ class SyncService {
 
     // Note: evaluationCid in contract is the full evaluation package (was rubricCid)
     const job = {
-      jobId: storage.nextId,
-      onChainId: bounty.jobId, // Track the on-chain ID
+      jobId: bounty.jobId, // Aligned with on-chain ID (both 0-based)
       title,
       description,
       workProductType,
@@ -577,7 +614,7 @@ class SyncService {
     };
 
     storage.jobs.push(job);
-    storage.nextId += 1;
+    storage.nextId = Math.max(storage.nextId, bounty.jobId + 1);
   }
 
   /**
@@ -587,7 +624,6 @@ class SyncService {
   async updateJobFromBlockchain(existingJob, bounty, storage, currentContract) {
     logger.info('🔄 Updating job from blockchain', {
       jobId: existingJob.jobId,
-      onChainId: bounty.jobId,
       oldStatus: existingJob.status,
       newStatus: bounty.status,
       oldSubmissionCount: existingJob.submissionCount,
@@ -601,9 +637,14 @@ class SyncService {
     existingJob.winner = bounty.winner;
     existingJob.lastSyncedAt = Math.floor(Date.now() / 1000);
 
-    // Ensure onChainId is set (handles legacy jobs and newly linked jobs)
-    if (existingJob.onChainId == null) {
-      existingJob.onChainId = bounty.jobId;
+    // Reconcile jobId with on-chain ID (aligned ID system)
+    if (existingJob.jobId !== bounty.jobId) {
+      logger.info('Reconciling jobId to match on-chain ID', {
+        oldJobId: existingJob.jobId,
+        newJobId: bounty.jobId
+      });
+      existingJob.legacyJobId = existingJob.legacyJobId || existingJob.jobId;
+      existingJob.jobId = bounty.jobId;
     }
 
     // Set contract address if not already set (migration for legacy jobs)
@@ -620,7 +661,8 @@ class SyncService {
       const onChainSubmissions = await this.syncSubmissions(
         bounty.jobId,
         bounty.submissionCount,
-        existingJob.submissions || [] // Pass existing submissions to merge
+        existingJob.submissions || [], // Pass existing submissions to merge
+        existingJob.threshold || bounty.threshold || 50
       );
 
       // Preserve local "Prepared" submissions that aren't on-chain yet
@@ -641,6 +683,31 @@ class SyncService {
     // Also update deadline-related fields that might have been missing
     if (bounty.submissionCloseTime) {
       existingJob.submissionCloseTime = bounty.submissionCloseTime;
+    }
+
+    // Re-fetch metadata if description is still the placeholder
+    if (existingJob.description === 'Fetched from blockchain' && existingJob.evaluationCid) {
+      try {
+        const metadata = await fetchEvaluationMetadata(existingJob.evaluationCid);
+        if (metadata) {
+          if (metadata.title && existingJob.title.startsWith('Bounty #')) {
+            existingJob.title = metadata.title;
+          }
+          if (metadata.description) {
+            existingJob.description = metadata.description;
+          }
+          if (metadata.workProductType) {
+            existingJob.workProductType = metadata.workProductType;
+          }
+          logger.info('📋 Re-fetched bounty metadata from IPFS', {
+            jobId: existingJob.jobId,
+            title: existingJob.title,
+            hasDescription: !!metadata.description
+          });
+        }
+      } catch (error) {
+        logger.debug('Failed to re-fetch metadata', { jobId: existingJob.jobId, error: error.message });
+      }
     }
   }
 
@@ -665,6 +732,12 @@ class SyncService {
       return true;
     }
 
+    // Update if description is still the placeholder (needs re-fetch from IPFS)
+    if (localJob.description === 'Fetched from blockchain') {
+      logger.info('Description needs re-fetch', { jobId: localJob.jobId });
+      return true;
+    }
+
     // Update if local submissions array is missing data (recovery from previous sync bug)
     const localSubmissionsLength = (localJob.submissions || []).length;
     if (chainJob.submissionCount > 0 && localSubmissionsLength < chainJob.submissionCount) {
@@ -679,6 +752,28 @@ class SyncService {
     // Update if winner changed
     if (localJob.winner !== chainJob.winner) {
       logger.info('Winner changed', { jobId: localJob.jobId });
+      return true;
+    }
+
+    // CRITICAL: Always sync bounties that have pending submissions
+    // Submission status can change (e.g., oracle completes evaluation) without
+    // changing bounty-level fields like status, submissionCount, or winner
+    const hasPendingSubmissions = (localJob.submissions || []).some(
+      s => s.status === 'PENDING_EVALUATION' ||
+           s.status === 'ACCEPTED_PENDING_CLAIM' ||
+           s.status === 'REJECTED_PENDING_FINALIZATION' ||
+           s.onChainStatus === 'PendingVerdikta'
+    );
+    if (hasPendingSubmissions) {
+      logger.info('🔄 Syncing bounty with pending submissions', {
+        jobId: localJob.jobId,
+        pendingCount: (localJob.submissions || []).filter(
+          s => s.status === 'PENDING_EVALUATION' ||
+               s.status === 'ACCEPTED_PENDING_CLAIM' ||
+               s.status === 'REJECTED_PENDING_FINALIZATION' ||
+               s.onChainStatus === 'PendingVerdikta'
+        ).length
+      });
       return true;
     }
 

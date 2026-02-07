@@ -81,7 +81,6 @@ router.get('/:address/bounties', async (req, res) => {
 
       return {
         jobId: job.jobId,
-        onChainId: job.onChainId,
         title: job.title,
         description: job.description,
         status: job.status,
@@ -151,7 +150,6 @@ router.get('/:address/submissions', async (req, res) => {
         allSubmissions.push({
           // Job context
           jobId: job.jobId,
-          onChainId: job.onChainId,
           jobTitle: job.title,
           bountyAmount: job.bountyAmount,
           jobStatus: job.status,
@@ -287,7 +285,6 @@ router.get('/jobs/:jobId/submissions', async (req, res) => {
       success: true,
       job: {
         jobId: job.jobId,
-        onChainId: job.onChainId,
         title: job.title,
         status: job.status,
         bountyAmount: job.bountyAmount,

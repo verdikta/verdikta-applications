@@ -239,6 +239,79 @@
   color: #991b1b;
 }
 
+/* Jury Section - AI Models */
+.jury-section {
+  background-color: var(--bg);
+  padding: 2rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06);
+  margin-bottom: 2rem;
+}
+
+.jury-section h2 {
+  margin-bottom: 1rem;
+}
+
+.jury-description {
+  color: var(--text-secondary);
+  margin-bottom: 1.5rem;
+}
+
+.jury-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.jury-card {
+  background: linear-gradient(135deg, var(--primary-50, #eef2ff) 0%, var(--bg-secondary) 100%);
+  padding: 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  text-align: center;
+}
+
+.jury-provider {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--primary);
+  margin-bottom: 0.25rem;
+}
+
+.jury-model {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 0.5rem;
+  word-break: break-word;
+}
+
+.jury-details {
+  display: flex;
+  justify-content: center;
+  gap: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.jury-weight {
+  background: var(--primary);
+  color: white;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+  font-weight: 500;
+}
+
+.jury-runs {
+  background: var(--gray-200);
+  color: var(--gray-700);
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+}
+
 /* Actions Section */
 .actions-section,
 .submissions-section {
@@ -414,7 +487,8 @@
     gap: 1rem;
   }
 
-  .criteria-grid {
+  .criteria-grid,
+  .jury-grid {
     grid-template-columns: 1fr;
   }
 
@@ -432,6 +506,7 @@
   .bounty-header,
   .description-section,
   .rubric-section,
+  .jury-section,
   .actions-section,
   .submissions-section {
     padding: 1.25rem;

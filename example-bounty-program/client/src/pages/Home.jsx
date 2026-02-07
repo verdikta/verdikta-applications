@@ -16,6 +16,8 @@ import {
   User,
   CheckCircle,
   ShieldCheck,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { apiService } from '../services/api';
 import { config } from '../config';
@@ -61,10 +63,13 @@ function Home({ walletState }) {
     search: '',
     minPayout: ''
   });
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(15);
 
-  // Refs for auto-refresh
+  // Refs for auto-refresh and scroll
   const autoRefreshIntervalRef = useRef(null);
   const isMountedRef = useRef(true);
+  const bountyGridRef = useRef(null);
 
   const loadJobs = useCallback(async (silent = false) => {
     if (!isMountedRef.current) return;
@@ -167,11 +172,30 @@ function Home({ walletState }) {
 
   const handleFilterChange = (key, value) => {
     setFilters(prev => ({ ...prev, [key]: value }));
+    setCurrentPage(1);
   };
 
   const clearFilters = () => {
     setFilters({ status: '', search: '', minPayout: '' });
+    setCurrentPage(1);
   };
+
+  // Scroll to top of grid when page changes (but not on initial load)
+  const isInitialRender = useRef(true);
+  useEffect(() => {
+    if (isInitialRender.current) {
+      isInitialRender.current = false;
+      return;
+    }
+    if (bountyGridRef.current) {
+      bountyGridRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [currentPage]);
+
+  // Pagination
+  const totalPages = Math.ceil(jobs.length / pageSize);
+  const startIndex = (currentPage - 1) * pageSize;
+  const paginatedJobs = jobs.slice(startIndex, startIndex + pageSize);
 
   return (
     <div className="home">
@@ -192,7 +216,7 @@ function Home({ walletState }) {
         </div>
       </div>
 
-      <section className="bounties-section">
+      <section className="bounties-section" ref={bountyGridRef}>
         <div className="section-header">
           <h2>Available Jobs</h2>
           <div className="filters">
@@ -261,11 +285,48 @@ function Home({ walletState }) {
         )}
 
         {!loading && jobs.length > 0 && (
-          <div className="bounty-grid">
-            {jobs.map(job => (
-              <JobCard key={job.jobId} job={job} />
-            ))}
-          </div>
+          <>
+            <div className="bounty-grid">
+              {paginatedJobs.map(job => (
+                <JobCard key={job.jobId} job={job} />
+              ))}
+            </div>
+            <div className="pagination">
+              <div className="pagination-info">
+                Showing {startIndex + 1}–{Math.min(startIndex + pageSize, jobs.length)} of {jobs.length}
+              </div>
+              <div className="pagination-controls">
+                <button
+                  className="btn-page"
+                  onClick={() => setCurrentPage(p => p - 1)}
+                  disabled={currentPage <= 1}
+                >
+                  <ChevronLeft size={16} /> Previous
+                </button>
+                <span className="page-indicator">
+                  Page {currentPage} of {totalPages}
+                </span>
+                <button
+                  className="btn-page"
+                  onClick={() => setCurrentPage(p => p + 1)}
+                  disabled={currentPage >= totalPages}
+                >
+                  Next <ChevronRight size={16} />
+                </button>
+              </div>
+              <div className="page-size-selector">
+                <label>Per page:</label>
+                <select
+                  value={pageSize}
+                  onChange={(e) => { setPageSize(Number(e.target.value)); setCurrentPage(1); }}
+                >
+                  <option value={15}>15</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
+            </div>
+          </>
         )}
       </section>
 
@@ -394,8 +455,15 @@ function JobCard({ job }) {
   // Less than 1 hour = critical (show minutes)
   const isCritical = isOpen && timeRemaining > 0 && hoursRemaining < 1;
 
-  // Check if any submissions are pending evaluation
-  const hasPendingEvaluation = hasAnyPendingSubmissions(job.submissions);
+  // Check if any submissions are pending evaluation or pending claim
+  const hasAcceptedPendingClaim = (job.submissions || []).some(
+    s => s.status === 'ACCEPTED_PENDING_CLAIM'
+  );
+  const hasRejectedPendingFinalization = (job.submissions || []).some(
+    s => s.status === 'REJECTED_PENDING_FINALIZATION'
+  );
+  const hasPendingEvaluation = hasAnyPendingSubmissions(job.submissions) ||
+    hasAcceptedPendingClaim || hasRejectedPendingFinalization;
 
   // Format the time remaining string
   const getTimeRemainingString = () => {
@@ -446,61 +514,61 @@ function JobCard({ job }) {
       <div className="bounty-header">
         <h3>{job.title || `Job #${job.jobId}`}</h3>
         <div className="bounty-badges">
-          {/* Validation status indicator */}
-          {validationResult ? (
-            validationResult.valid ? (
-              <span
-                className="validation-success"
-                title="Evaluation package is valid"
-              >
-                <CheckCircle size={14} />
-              </span>
-            ) : validationResult.errorCount > 0 ? (
-              // Errors = red (fatal, won't work)
-              <span
-                className="validation-error"
-                title={validationResult.message}
-              >
-                <AlertTriangle size={14} />
-              </span>
-            ) : (
-              // Warnings only = yellow (might still work)
-              <span
-                className="validation-warning"
-                title={validationResult.message}
-              >
-                <AlertTriangle size={14} />
-              </span>
-            )
-          ) : hasValidationIssues ? (
-            <span
-              className={validationErrorCount > 0 ? "validation-error" : "validation-warning"}
-              title={`This bounty has ${validationErrorCount} format issue(s) that may prevent submissions from being evaluated`}
-            >
-              <AlertTriangle size={14} />
+          {/* Status badge and validate button stacked vertically */}
+          <div className="badge-stack">
+            <span {...getBountyBadgeProps(status)}>
+              {getBountyStatusLabel(status)}
             </span>
-          ) : null}
-
-          {/* Validate button */}
-          <button
-            className={`btn-validate ${validating ? 'validating' : ''} ${validationResult?.valid ? 'valid' : ''}`}
-            onClick={handleValidate}
-            disabled={validating}
-            title={validating ? 'Validating...' : 'Check if evaluation package is properly formatted'}
-          >
-            {validating ? (
-              <RefreshCw size={12} className="spin" />
-            ) : (
-              <ShieldCheck size={12} />
-            )}
-            <span className="btn-validate-text">
-              {validating ? 'Checking...' : 'Validate'}
-            </span>
-          </button>
-
-          <span {...getBountyBadgeProps(status)}>
-            {getBountyStatusLabel(status)}
-          </span>
+            <div className="validate-row">
+              {/* Validation status indicator - next to validate button */}
+              {validationResult ? (
+                validationResult.valid ? (
+                  <span
+                    className="validation-success"
+                    title="Evaluation package is valid"
+                  >
+                    <CheckCircle size={14} />
+                  </span>
+                ) : validationResult.errorCount > 0 ? (
+                  <span
+                    className="validation-error"
+                    title={validationResult.message}
+                  >
+                    <AlertTriangle size={14} />
+                  </span>
+                ) : (
+                  <span
+                    className="validation-warning"
+                    title={validationResult.message}
+                  >
+                    <AlertTriangle size={14} />
+                  </span>
+                )
+              ) : hasValidationIssues ? (
+                <span
+                  className={validationErrorCount > 0 ? "validation-error" : "validation-warning"}
+                  title={`This bounty has ${validationErrorCount} format issue(s) that may prevent submissions from being evaluated`}
+                >
+                  <AlertTriangle size={14} />
+                </span>
+              ) : null}
+              <button
+                className={`btn-validate ${validating ? 'validating' : ''} ${validationResult?.valid ? 'valid' : ''} ${validationResult && !validationResult.valid ? 'invalid' : ''}`}
+                onClick={handleValidate}
+                disabled={validating}
+                title={validating ? 'Validating...' : 'Check if evaluation package is properly formatted'}
+              >
+                {validating ? (
+                  <RefreshCw size={12} className="spin" />
+                ) : (
+                  <ShieldCheck size={12} />
+                )}
+                <span className="btn-validate-text">
+                  {validating ? 'Checking...' : 'Validate'}
+                </span>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
       {job.workProductType && (
@@ -526,9 +594,9 @@ function JobCard({ job }) {
           <span className="count">{job.submissionCount || 0}</span>
           {hasPendingEvaluation && (
             <span
-              className="pending-indicator"
-              title={getSubmissionStatusDescription('PendingVerdikta')}
-              aria-label="Evaluation in progress"
+              className={`pending-indicator${hasAcceptedPendingClaim ? ' accepted' : ''}`}
+              title={hasAcceptedPendingClaim ? 'Accepted — Ready to Claim' : getSubmissionStatusDescription('PendingVerdikta')}
+              aria-label={hasAcceptedPendingClaim ? 'Accepted, pending claim' : 'Evaluation in progress'}
             >
               <RefreshCw size={14} className="spin" />
             </span>
@@ -538,7 +606,7 @@ function JobCard({ job }) {
       <div className="bounty-meta">
         <div className="bounty-id">
           <span className="label">Bounty #</span>
-          <span className="value">{job.onChainId ?? job.bountyId ?? '...'}</span>
+          <span className="value">{job.jobId}</span>
         </div>
         <div className="threshold">
           <span className="label">Threshold:</span>
@@ -560,16 +628,26 @@ function JobCard({ job }) {
         <div className="bounty-creator">
           <User size={14} className="inline-icon" />
           <span className="label">Creator:</span>
-          <a
-            href={`${getExplorerUrl()}/address/${job.creator}`}
-            target="_blank"
-            rel="noopener noreferrer"
+          <span
             className="creator-link"
-            onClick={(e) => e.stopPropagation()}
+            role="link"
+            tabIndex={0}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              window.open(`${getExplorerUrl()}/address/${job.creator}`, '_blank', 'noopener,noreferrer');
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                window.open(`${getExplorerUrl()}/address/${job.creator}`, '_blank', 'noopener,noreferrer');
+              }
+            }}
           >
             {truncateAddress(job.creator)}
             <ExternalLink size={10} />
-          </a>
+          </span>
         </div>
       )}
     </Link>

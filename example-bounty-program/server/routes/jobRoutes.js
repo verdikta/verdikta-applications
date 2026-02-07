@@ -18,6 +18,7 @@ const archiveGenerator = require('../utils/archiveGenerator');
 const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE } = require('../utils/validation');
 const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
 const { validateBounty, IssueSeverity, IssueType } = require('../utils/bountyValidator');
+const { getContractService } = require('../utils/contractService');
 
 /* ======================
    Helpers / configuration
@@ -381,7 +382,7 @@ router.get('/admin/stuck', async (req, res) => {
     for (const job of jobList) {
       if (!job.submissions || job.submissions.length === 0) continue;
 
-      const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+      const onChainBountyId = job.jobId;
 
       for (const sub of job.submissions) {
         summary.totalSubmissions++;
@@ -483,7 +484,6 @@ router.get('/admin/orphans', async (req, res) => {
       count: orphans.length,
       orphans: orphans.map(j => ({
         jobId: j.jobId,
-        onChainId: j.onChainId,
         title: j.title,
         status: j.status,
         contractAddress: j.contractAddress,
@@ -581,11 +581,10 @@ router.get('/admin/expired', async (req, res) => {
       if (deadline === 0 || nowSeconds < deadline) continue;
 
       summary.totalExpired++;
-      const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+      const onChainBountyId = job.jobId;
 
       const bountyInfo = {
         jobId: job.jobId,
-        onChainId: onChainBountyId,
         title: job.title,
         creator: job.creator,
         bountyAmount: job.bountyAmount,
@@ -690,7 +689,7 @@ router.post('/:jobId/close', async (req, res) => {
     logger.info('[close] check', { jobId });
 
     const job = await jobStorage.getJob(jobId);
-    const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+    const onChainBountyId = job.jobId;
 
     if (onChainBountyId == null) {
       return res.status(400).json({
@@ -807,7 +806,6 @@ router.post('/:jobId/close', async (req, res) => {
       },
       bounty: {
         jobId: job.jobId,
-        onChainId: onChainBountyId,
         title: job.title,
         creator: job.creator,
         payoutWei: chainBounty.payoutWei.toString(),
@@ -986,7 +984,6 @@ router.get('/admin/validate-all', async (req, res) => {
 
         results.push({
           jobId: job.jobId,
-          onChainId: job.onChainId,
           title: job.title,
           valid: result.valid,
           errorCount: result.issues.filter(i => i.severity === 'error').length,
@@ -996,7 +993,6 @@ router.get('/admin/validate-all', async (req, res) => {
       } catch (e) {
         results.push({
           jobId: job.jobId,
-          onChainId: job.onChainId,
           title: job.title,
           valid: false,
           error: e.message
@@ -1089,7 +1085,7 @@ router.get('/:jobId/validate', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const {
-      status, creator, minPayout, search, onChainId,
+      status, creator, minPayout, search,
       hideEnded, excludeStatuses, includeOrphans, limit = 50, offset = 0,
       // New filters for agents
       workProductType,    // Filter by type: "code", "writing", "research", etc. (comma-separated)
@@ -1102,7 +1098,7 @@ router.get('/', async (req, res) => {
       hasWinner,          // "true" = only jobs with winner, "false" = only jobs without winner
     } = req.query;
     logger.info('[jobs/list] filters', {
-      status, creator, search, onChainId, hideEnded, excludeStatuses, includeOrphans,
+      status, creator, search, hideEnded, excludeStatuses, includeOrphans,
       workProductType, minHoursLeft, maxHoursLeft, excludeSubmittedBy, minBountyUSD, maxBountyUSD, classId, hasWinner
     });
 
@@ -1116,10 +1112,6 @@ router.get('/', async (req, res) => {
     if (search) filters.search = search;
 
     let allJobs = await jobStorage.listJobs(filters);
-
-    if (onChainId) {
-      allJobs = allJobs.filter(j => Number(j.onChainId) === Number(onChainId));
-    }
 
     // Filter by work product type (comma-separated list, case-insensitive)
     if (workProductType) {
@@ -1216,7 +1208,6 @@ router.get('/', async (req, res) => {
 
       return {
         jobId: job.jobId,
-        onChainId: job.onChainId,
         title: job.title,
         description: job.description,
         workProductType: job.workProductType,
@@ -1283,7 +1274,7 @@ router.get('/:jobId/submissions', async (req, res) => {
     function mapStatus(sub) {
       const status = (sub.status || '').toLowerCase();
       const score = sub.acceptance ?? sub.score ?? null;
-      const hasScore = score !== null && score !== undefined;
+      const hasScore = score !== null && score !== undefined && score > 0;
 
       // Check for winner (PassedPaid)
       if (status === 'passedpaid' || status === 'winner') {
@@ -1304,6 +1295,14 @@ router.get('/:jobId/submissions', async (req, res) => {
       // Check for passed but not winner (PassedUnpaid, Approved)
       if (status === 'passedunpaid' || status === 'passed' || status === 'approved' || status === 'accepted') {
         return 'EVALUATED_PASSED';
+      }
+
+      // Oracle evaluated but not yet finalized on BountyEscrow
+      if (status === 'accepted_pending_claim') {
+        return 'EVALUATED_PASSED';
+      }
+      if (status === 'rejected_pending_finalization') {
+        return 'EVALUATED_FAILED';
       }
 
       // Check pending states
@@ -1370,15 +1369,95 @@ router.get('/:jobId', async (req, res) => {
     const { jobId } = req.params;
     logger.info('[jobs/details] get', { jobId });
 
-    const job = await jobStorage.getJob(jobId);
+    let job;
+    try {
+      job = await jobStorage.getJob(jobId);
+    } catch (e) {
+      // Fallback: try jobId - 1 for legacy URLs (old 1-based IDs)
+      const numId = parseInt(jobId);
+      if (numId > 0) {
+        try { job = await jobStorage.getJob(numId - 1); } catch {}
+      }
+      if (!job) throw e;
+    }
 
     let rubricContent = null;
-    if (req.query.includeRubric === 'true' && job.rubricCid) {
-      try {
-        const ipfsClient = req.app.locals.ipfsClient;
-        rubricContent = await ipfsClient.fetchFromIPFS(job.rubricCid);
-      } catch (err) {
-        logger.warn('[jobs/details] failed to fetch rubric', { msg: err.message });
+    let extractedJuryNodes = job.juryNodes || [];
+
+    if (req.query.includeRubric === 'true') {
+      const ipfsClient = req.app.locals.ipfsClient;
+
+      // Try fetching from rubricCid first (legacy format)
+      if (job.rubricCid) {
+        try {
+          const rawRubric = await ipfsClient.fetchFromIPFS(job.rubricCid);
+          rubricContent = JSON.parse(rawRubric);
+        } catch (err) {
+          logger.warn('[jobs/details] failed to fetch rubric from rubricCid', { msg: err.message });
+        }
+      }
+
+      // If no rubricCid or fetch failed, try extracting from primaryCid (ZIP archive)
+      if (!rubricContent && job.primaryCid) {
+        try {
+          const archiveBuffer = await ipfsClient.fetchFromIPFS(job.primaryCid);
+          const AdmZip = require('adm-zip');
+          const zip = new AdmZip(archiveBuffer);
+          const entries = zip.getEntries();
+
+          // Look for manifest.json first (new Verdikta format)
+          const manifestEntry = entries.find(e =>
+            e.entryName === 'manifest.json' || e.entryName.endsWith('/manifest.json')
+          );
+
+          if (manifestEntry) {
+            const manifestText = zip.readAsText(manifestEntry);
+            const manifest = JSON.parse(manifestText);
+
+            // Extract jury nodes from manifest.juryParameters.AI_NODES
+            if (manifest.juryParameters?.AI_NODES && extractedJuryNodes.length === 0) {
+              extractedJuryNodes = manifest.juryParameters.AI_NODES.map(node => ({
+                provider: node.AI_PROVIDER,
+                model: node.AI_MODEL,
+                runs: node.NO_COUNTS || 1,
+                weight: node.WEIGHT || 1
+              }));
+            }
+
+            // Look for grading rubric reference in manifest.additional
+            const gradingRubricRef = manifest.additional?.find(a => a.name === 'gradingRubric');
+            if (gradingRubricRef?.hash) {
+              try {
+                const rubricBuffer = await ipfsClient.fetchFromIPFS(gradingRubricRef.hash);
+                const rubricText = rubricBuffer.toString('utf8');
+                rubricContent = JSON.parse(rubricText);
+              } catch (err) {
+                logger.warn('[jobs/details] failed to fetch grading rubric from IPFS', {
+                  hash: gradingRubricRef.hash,
+                  msg: err.message
+                });
+              }
+            }
+          }
+
+          // Fallback: look for rubric.json directly in ZIP (older format)
+          if (!rubricContent) {
+            const rubricEntry = entries.find(e =>
+              e.entryName === 'rubric.json' || e.entryName.endsWith('/rubric.json')
+            );
+            if (rubricEntry) {
+              const rubricText = zip.readAsText(rubricEntry);
+              rubricContent = JSON.parse(rubricText);
+
+              // Extract jury from rubric if present
+              if (rubricContent.jury && Array.isArray(rubricContent.jury) && extractedJuryNodes.length === 0) {
+                extractedJuryNodes = rubricContent.jury;
+              }
+            }
+          }
+        } catch (err) {
+          logger.warn('[jobs/details] failed to extract from primaryCid', { msg: err.message });
+        }
       }
     }
 
@@ -1387,7 +1466,8 @@ router.get('/:jobId', async (req, res) => {
       job: {
         ...job,
         syncedFromBlockchain: job.syncedFromBlockchain || false,
-        rubricContent: rubricContent ? JSON.parse(rubricContent) : null
+        rubricContent: rubricContent || null,
+        juryNodes: extractedJuryNodes.length > 0 ? extractedJuryNodes : (job.juryNodes || [])
       }
     });
 
@@ -1676,10 +1756,18 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
     if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
 
-    job.onChainId   = Number(bountyId);  // Ensure it's a number, not string
     job.txHash      = txHash;
     job.blockNumber = blockNumber;
     job.onChain     = true;
+
+    // Reconcile jobId to match on-chain ID (aligned ID system)
+    if (job.jobId !== Number(bountyId)) {
+      logger.info('[jobs/bountyId] reconciling jobId to match on-chain ID', {
+        oldJobId: job.jobId, newJobId: Number(bountyId)
+      });
+      job.legacyJobId = job.legacyJobId || job.jobId;
+      job.jobId = Number(bountyId);
+    }
     
     // Track which contract this job was created on
     const currentContract = jobStorage.getCurrentContractAddress();
@@ -1689,7 +1777,7 @@ router.patch('/:jobId/bountyId', async (req, res) => {
 
     await jobStorage.writeStorage(storage);
 
-    logger.info('[jobs/bountyId] updated', { jobId, onChainId: bountyId, contractAddress: job.contractAddress });
+    logger.info('[jobs/bountyId] updated', { jobId, bountyId, contractAddress: job.contractAddress });
     return res.json({ success: true, job });
   } catch (error) {
     logger.error('[jobs/bountyId] error', { msg: error.message });
@@ -1737,14 +1825,14 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
             try {
               const ev = iface.parseLog(log);
               const bountyId = Number(ev.args.bountyId);
-              job.onChainId = bountyId;  // ← Changed from job.bountyId
+              job.jobId = bountyId;
               job.onChain = true;
               job.txHash = job.txHash ?? txHash;
               // Track contract address
               const currentContract = jobStorage.getCurrentContractAddress();
               if (currentContract) job.contractAddress = currentContract;
               await jobStorage.writeStorage(storage);
-              logger.info('[resolve] via tx', { jobId: jobIdParam, onChainId: bountyId });
+              logger.info('[resolve] via tx', { jobId: jobIdParam, bountyId });
               return res.json({ success: true, method: 'tx', bountyId, job });
             } catch {}
           }
@@ -1779,13 +1867,13 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
       }
 
       if (best != null) {
-        job.onChainId = best;  // ← Changed from job.bountyId
+        job.jobId = best;
         job.onChain = true;
         // Track contract address
         const currentContract = jobStorage.getCurrentContractAddress();
         if (currentContract) job.contractAddress = currentContract;
         await jobStorage.writeStorage(storage);
-        logger.info('[resolve] via state', { jobId: jobIdParam, onChainId: best, delta: bestDelta });
+        logger.info('[resolve] via state', { jobId: jobIdParam, resolvedId: best, delta: bestDelta });
         return res.json({ success: true, method: 'state', bountyId: best, delta: bestDelta, job });
       }
 
@@ -1865,37 +1953,20 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
     
     logger.info('[refresh] Found job', { 
       jobId, 
-      onChainId: job.onChainId,
       title: job.title,
       submissionsCount: job.submissions?.length || 0
     });
-    
-    // Use onChainId as the standard field name, with fallbacks
-    let onChainId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
-    
-    // If still not found, try to find from submission data
-    if (onChainId == null && job.submissions?.length > 0) {
-      // Check if any submission has the bountyId from when it was created
-      const firstSub = job.submissions[0];
-      if (firstSub.onChainBountyId != null) {
-        onChainId = firstSub.onChainBountyId;
-        logger.info('[refresh] Found onChainId from submission', { jobId, onChainId });
-      }
-    }
-    
+
+    const onChainId = job.jobId;
+
     if (onChainId == null) {
-      logger.error('[refresh] No onChainId found', { 
-        jobId, 
-        hasOnChainId: job.onChainId,
-        hasOnChainBountyId: job.onChainBountyId,
-        hasBountyId: job.bountyId
-      });
-      return res.status(400).json({ 
-        error: 'No on-chain bounty ID', 
+      logger.error('[refresh] No on-chain ID found', { jobId });
+      return res.status(400).json({
+        error: 'No on-chain bounty ID',
         details: 'This job has not been registered on-chain yet. Please check that the bounty was created on-chain.'
       });
     }
-    
+
     logger.info('[refresh] Using on-chain bounty ID', { jobId, onChainId });
 
     const subId = parseInt(submissionId, 10);
@@ -1948,22 +2019,48 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       4: 'APPROVED'             // PassedUnpaid (passed but someone else won)
     };
     const statusIndex = Number(sub.status);
-    const chainStatus = statusMap[statusIndex] || 'UNKNOWN';
+    let chainStatus = statusMap[statusIndex] || 'UNKNOWN';
 
     // Receipt eligibility helpers
     const paidWinner = statusIndex === 3;      // PassedPaid
     const passedUnpaid = statusIndex === 4;    // PassedUnpaid
-    
+
+    // Scores are ALREADY normalized by the contract (divided by 10000)
+    // The contract stores acceptance/rejection as 0-100, NOT 0-1000000
+    let acceptScore = Number(sub.acceptance);
+    let rejectScore = Number(sub.rejection);
+
+    // For PendingVerdikta, check if oracle evaluation is already complete on VerdiktaAggregator
+    if (statusIndex === 1) {
+      const zeroHash = '0x' + '0'.repeat(64);
+      const aggId = sub.verdiktaAggId;
+      if (aggId && aggId !== zeroHash) {
+        try {
+          const cs = getContractService();
+          const evalResult = await cs.checkEvaluationReady(onChainId, subId);
+          if (evalResult.ready) {
+            const threshold = job.threshold || 50;
+            chainStatus = evalResult.scores.acceptance >= threshold
+              ? 'ACCEPTED_PENDING_CLAIM'
+              : 'REJECTED_PENDING_FINALIZATION';
+            acceptScore = evalResult.scores.acceptance;
+            rejectScore = evalResult.scores.rejection;
+            logger.info('[refresh] Oracle evaluation complete, pending finalization', {
+              jobId, submissionId: subId, chainStatus,
+              acceptance: acceptScore, rejection: rejectScore
+            });
+          }
+        } catch (err) {
+          logger.debug('[refresh] Error checking aggregator', { error: err.message });
+        }
+      }
+    }
+
     logger.info('[refresh] Status mapping', {
       rawStatus: sub.status?.toString?.() ?? sub.status,
       statusIndex,
       chainStatus
     });
-    
-    // Scores are ALREADY normalized by the contract (divided by 10000)
-    // The contract stores acceptance/rejection as 0-100, NOT 0-1000000
-    const acceptScore = Number(sub.acceptance);
-    const rejectScore = Number(sub.rejection);
 
     // Detect timeout vs actual evaluation failure
     // Timeout signature: REJECTED status with zero scores and empty justificationCids
@@ -2096,7 +2193,7 @@ router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
     }
 
     // Get on-chain IDs
-    const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+    const onChainBountyId = job.jobId;
     const onChainSubmissionId = submission.onChainSubmissionId ?? submission.submissionId;
 
     if (onChainBountyId == null) {
@@ -2262,7 +2359,7 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
     }
 
     // 2. Check on-chain state
-    const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+    const onChainBountyId = job.jobId;
     diagnosis.checks.onChainIds = {
       bountyId: onChainBountyId,
       submissionId: subId
@@ -2315,10 +2412,41 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
             diagnosis.issues.push('PendingVerdikta but no verdiktaAggId - evaluation may not have started properly');
           } else {
             diagnosis.checks.verdiktaAggId = chainSub.verdiktaAggId;
-            if (timeoutEligible) {
-              diagnosis.recommendations.push('Submission is eligible for timeout - call failTimedOutSubmission');
-            } else {
-              diagnosis.recommendations.push(`Wait ${Math.ceil((600 - elapsedSeconds) / 60)} more minute(s) for timeout eligibility`);
+
+            // Check if oracle evaluation is already complete on VerdiktaAggregator
+            try {
+              const cs = getContractService();
+              const evalResult = await cs.checkEvaluationReady(onChainBountyId, subId);
+              if (evalResult.ready) {
+                const threshold = job.threshold || 50;
+                const passed = evalResult.scores.acceptance >= threshold;
+                diagnosis.checks.oracleResult = {
+                  complete: true,
+                  acceptance: evalResult.scores.acceptance,
+                  rejection: evalResult.scores.rejection,
+                  threshold,
+                  passed
+                };
+                diagnosis.recommendations.push(
+                  passed
+                    ? 'Oracle evaluation PASSED — call finalizeSubmission to claim bounty'
+                    : 'Oracle evaluation did not meet threshold — call finalizeSubmission to finalize'
+                );
+              } else {
+                diagnosis.checks.oracleResult = { complete: false };
+                if (timeoutEligible) {
+                  diagnosis.recommendations.push('Oracle not yet complete and submission is eligible for timeout - call failTimedOutSubmission');
+                } else {
+                  diagnosis.recommendations.push(`Oracle not yet complete. Wait ${Math.ceil((600 - elapsedSeconds) / 60)} more minute(s) for timeout eligibility`);
+                }
+              }
+            } catch (aggErr) {
+              diagnosis.checks.oracleResult = { complete: false, error: aggErr.message };
+              if (timeoutEligible) {
+                diagnosis.recommendations.push('Could not check oracle — submission is eligible for timeout');
+              } else {
+                diagnosis.recommendations.push(`Wait ${Math.ceil((600 - elapsedSeconds) / 60)} more minute(s) for timeout eligibility`);
+              }
             }
           }
         } else if (chainStatus === 'Failed' || chainStatus === 'PassedPaid' || chainStatus === 'PassedUnpaid') {
@@ -2420,12 +2548,14 @@ router.get('/:jobId/submissions/:submissionId/evaluation', async (req, res) => {
       });
     }
 
-    // Check if evaluation is complete
+    // Check if evaluation is complete (includes oracle-complete-but-not-finalized statuses)
     const hasEvaluation = submission.status === 'APPROVED' ||
                           submission.status === 'REJECTED' ||
                           submission.status === 'PassedPaid' ||
                           submission.status === 'PassedUnpaid' ||
-                          submission.status === 'Failed';
+                          submission.status === 'Failed' ||
+                          submission.status === 'ACCEPTED_PENDING_CLAIM' ||
+                          submission.status === 'REJECTED_PENDING_FINALIZATION';
 
     if (!hasEvaluation) {
       return res.status(400).json({

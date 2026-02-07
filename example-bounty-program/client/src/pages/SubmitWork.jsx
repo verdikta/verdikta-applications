@@ -55,18 +55,9 @@ function SubmitWork({ walletState }) {
     loadJobDetails();
   }, [bountyId, walletState.isConnected]);
 
-  // Helper to get the on-chain bounty ID
-  // Returns null if not available (don't fall back to URL param as that's the database ID)
+  // jobId === onChainId in the aligned ID system
   const getOnChainId = (job) => {
-    if (job.onChainId !== undefined && job.onChainId !== null) {
-      return job.onChainId;
-    }
-    // Fallback for old data that might still have bountyId field
-    if (job.bountyId !== undefined && job.bountyId !== null) {
-      return job.bountyId;
-    }
-    // Don't use URL parameter as fallback - it's the database ID, not the on-chain ID
-    return null;
+    return job.jobId != null ? Number(job.jobId) : null;
   };
 
   const loadJobDetails = async () => {

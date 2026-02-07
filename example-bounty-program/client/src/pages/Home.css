@@ -510,6 +510,17 @@
   margin-bottom: 1rem;
 }
 
+.pending-indicator {
+  color: var(--text-secondary, #888);
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+}
+
+.pending-indicator.accepted {
+  color: #2e7d32;
+}
+
 .spin {
   animation: spin 1s linear infinite;
 }

@@ -455,8 +455,15 @@ function JobCard({ job }) {
   // Less than 1 hour = critical (show minutes)
   const isCritical = isOpen && timeRemaining > 0 && hoursRemaining < 1;
 
-  // Check if any submissions are pending evaluation
-  const hasPendingEvaluation = hasAnyPendingSubmissions(job.submissions);
+  // Check if any submissions are pending evaluation or pending claim
+  const hasAcceptedPendingClaim = (job.submissions || []).some(
+    s => s.status === 'ACCEPTED_PENDING_CLAIM'
+  );
+  const hasRejectedPendingFinalization = (job.submissions || []).some(
+    s => s.status === 'REJECTED_PENDING_FINALIZATION'
+  );
+  const hasPendingEvaluation = hasAnyPendingSubmissions(job.submissions) ||
+    hasAcceptedPendingClaim || hasRejectedPendingFinalization;
 
   // Format the time remaining string
   const getTimeRemainingString = () => {
@@ -587,9 +594,9 @@ function JobCard({ job }) {
           <span className="count">{job.submissionCount || 0}</span>
           {hasPendingEvaluation && (
             <span
-              className="pending-indicator"
-              title={getSubmissionStatusDescription('PendingVerdikta')}
-              aria-label="Evaluation in progress"
+              className={`pending-indicator${hasAcceptedPendingClaim ? ' accepted' : ''}`}
+              title={hasAcceptedPendingClaim ? 'Accepted — Ready to Claim' : getSubmissionStatusDescription('PendingVerdikta')}
+              aria-label={hasAcceptedPendingClaim ? 'Accepted, pending claim' : 'Evaluation in progress'}
             >
               <RefreshCw size={14} className="spin" />
             </span>

@@ -521,6 +521,10 @@
   color: var(--primary);
 }
 
+.pending-indicator.expired {
+  color: var(--warning);
+}
+
 .spin {
   animation: spin 1s linear infinite;
 }

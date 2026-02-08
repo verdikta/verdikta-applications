@@ -27,6 +27,7 @@ import {
   getBountyBadgeProps,
   getBountyStatusIcon,
   isSubmissionPending,
+  isSubmissionOnChain,
   hasAnyPendingSubmissions,
   getSubmissionStatusDescription,
 } from '../utils/statusDisplay';
@@ -462,8 +463,15 @@ function JobCard({ job }) {
   const hasRejectedPendingFinalization = (job.submissions || []).some(
     s => s.status === 'REJECTED_PENDING_FINALIZATION'
   );
-  const hasPendingEvaluation = hasAnyPendingSubmissions(job.submissions) ||
+  const hasIncompleteEvaluation = (job.submissions || []).some(
+    s => isSubmissionOnChain(s.status) && isSubmissionPending(s.status)
+  );
+  const hasPendingEvaluation = hasIncompleteEvaluation ||
     hasAcceptedPendingClaim || hasRejectedPendingFinalization;
+
+  // How long ago the bounty expired (negative timeRemaining means expired)
+  const minutesSinceExpiry = timeRemaining < 0 ? Math.abs(timeRemaining) / 60 : 0;
+  const expiredOverTenMin = isExpired && minutesSinceExpiry > 10;
 
   // Format the time remaining string
   const getTimeRemainingString = () => {
@@ -592,15 +600,17 @@ function JobCard({ job }) {
         <div className="submissions">
           <span className="label">Submissions:</span>
           <span className="count">{job.submissionCount || 0}</span>
-          {hasPendingEvaluation && (
+          {hasPendingEvaluation && (!isExpired || hasIncompleteEvaluation || hasAcceptedPendingClaim) && (
             <span
-              className={`pending-indicator${hasAcceptedPendingClaim ? ' accepted' : ''}`}
-              title={hasAcceptedPendingClaim ? 'Accepted — Ready to Claim' : getSubmissionStatusDescription('PendingVerdikta')}
-              aria-label={hasAcceptedPendingClaim ? 'Accepted, pending claim' : 'Evaluation in progress'}
+              className={`pending-indicator${hasAcceptedPendingClaim ? ' accepted' : isExpired ? ' expired' : ''}`}
+              title={hasAcceptedPendingClaim ? 'Accepted — Ready to Claim' : isExpired ? 'Evaluation pending — bounty expired' : getSubmissionStatusDescription('PendingVerdikta')}
+              aria-label={hasAcceptedPendingClaim ? 'Accepted, pending claim' : isExpired ? 'Expired, evaluation pending' : 'Evaluation in progress'}
             >
               {hasAcceptedPendingClaim
                 ? <CheckCircle size={14} />
-                : <RefreshCw size={14} className="spin" />
+                : expiredOverTenMin
+                  ? <AlertTriangle size={14} />
+                  : <RefreshCw size={14} className="spin" />
               }
             </span>
           )}

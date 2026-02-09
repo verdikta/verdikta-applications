@@ -48,14 +48,24 @@ After installation, run `node scripts/onboard.js` (or see Quick start below).
 
 ## Determining active network and base URL
 
-**Before making any API calls**, read the `.env` file in the `scripts/` directory to determine the active configuration. The key variables are:
+**CRITICAL — read this before making any API calls.**
+
+The bot's configuration lives in this specific file:
+
+```
+~/.openclaw/skills/verdikta-bounties-onboarding/scripts/.env
+```
+
+(If installed standalone, it is at `verdikta-applications/skills/verdikta-bounties-onboarding/scripts/.env`)
+
+Read **that file** and look for these two variables:
 
 - `VERDIKTA_NETWORK` — either `base-sepolia` (testnet) or `base` (mainnet)
-- `VERDIKTA_BOUNTIES_BASE_URL` — the API base URL for the active network:
-  - Testnet: `https://bounties-testnet.verdikta.org`
-  - Mainnet: `https://bounties.verdikta.org`
+- `VERDIKTA_BOUNTIES_BASE_URL` — the API base URL to use for **all** requests
 
-Always use the `VERDIKTA_BOUNTIES_BASE_URL` from the `.env` file as the base for all API requests. Do not assume mainnet.
+Do **NOT** read any other `.env` file in the repository (e.g., `example-bounty-program/client/.env*` uses `VITE_NETWORK` which is the frontend config, not the bot config).
+
+Always use `VERDIKTA_BOUNTIES_BASE_URL` from the skill's `scripts/.env` as the base for all API requests. Do not assume mainnet.
 
 ## Quick start
 

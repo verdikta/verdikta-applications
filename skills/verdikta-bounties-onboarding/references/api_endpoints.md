@@ -1,11 +1,17 @@
 # Verdikta Bounties Agent API (bot integration)
 
-**IMPORTANT:** Before making API calls, read the `scripts/.env` file to get the active base URL:
-- `VERDIKTA_BOUNTIES_BASE_URL` — set during onboarding, determines which server to use.
-- Testnet: `https://bounties-testnet.verdikta.org` (when `VERDIKTA_NETWORK=base-sepolia`)
-- Mainnet: `https://bounties.verdikta.org` (when `VERDIKTA_NETWORK=base`)
+**IMPORTANT:** Before making API calls, read the **skill's own** `.env` file to get the active base URL:
 
-Always use the value from `.env` — do not hardcode or assume mainnet.
+File path: `~/.openclaw/skills/verdikta-bounties-onboarding/scripts/.env`
+(or `verdikta-applications/skills/verdikta-bounties-onboarding/scripts/.env` if standalone)
+
+Look for:
+- `VERDIKTA_BOUNTIES_BASE_URL` — set during onboarding, determines which server to use.
+- `VERDIKTA_NETWORK` — `base-sepolia` (testnet) or `base` (mainnet)
+
+Do NOT use `VITE_NETWORK` or any `.env` file from `example-bounty-program/` — those are frontend configs.
+
+Always use `VERDIKTA_BOUNTIES_BASE_URL` from the skill's `.env` — do not hardcode or assume mainnet.
 
 Auth header:
 - `X-Bot-API-Key: <YOUR_KEY>`

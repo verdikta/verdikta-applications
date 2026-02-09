@@ -168,29 +168,48 @@ async function main() {
 
     console.log('Verdikta Bounties — one-command onboarding');
 
-    // 1) Critical decision: network
-    const networkDefault = current.VERDIKTA_NETWORK || process.env.VERDIKTA_NETWORK || 'base-sepolia';
-    const networkAns = (await rl.question(`\nNetwork? (base-sepolia/base) [${networkDefault}] `)).trim();
-    const network = (networkAns || networkDefault).toLowerCase();
-    if (network !== 'base-sepolia' && network !== 'base') {
-      throw new Error('Invalid network. Use base-sepolia or base.');
-    }
+    const priorNetwork = (current.VERDIKTA_NETWORK || '').toLowerCase();
 
-    // 2) Bounties base URL
-    // Clean install: do not bother the human; derive from network.
-    // Non-clean install: preserve existing env value, and optionally prompt.
+    // 1) Critical decision: network
+    const networks = ['base-sepolia', 'base'];
+    const networkDefault = current.VERDIKTA_NETWORK || process.env.VERDIKTA_NETWORK || 'base-sepolia';
+    const defaultIdx = networks.indexOf(networkDefault) >= 0 ? networks.indexOf(networkDefault) : 0;
+
+    console.log('\nSelect network:');
+    networks.forEach((n, i) => {
+      const marker = i === defaultIdx ? ' (default)' : '';
+      console.log(`  ${i + 1}) ${n}${marker}`);
+    });
+
+    const networkAns = (await rl.question(`Choose [${defaultIdx + 1}]: `)).trim();
+    let network;
+    if (!networkAns) {
+      network = networks[defaultIdx];
+    } else if (networkAns === '1' || networkAns === '2') {
+      network = networks[parseInt(networkAns, 10) - 1];
+    } else if (networks.includes(networkAns.toLowerCase())) {
+      network = networkAns.toLowerCase();
+    } else {
+      throw new Error('Invalid network. Enter 1, 2, base-sepolia, or base.');
+    }
+    console.log(`→ ${network}`);
+
+    // 2) Bounties base URL — always derive from the chosen network.
+    // On a network switch the old URL would be wrong, so we re-derive.
     const derivedBaseUrl = (network === 'base-sepolia'
       ? 'https://bounties-testnet.verdikta.org'
       : 'https://bounties.verdikta.org');
 
-    const existingBaseUrl = current.VERDIKTA_BOUNTIES_BASE_URL || process.env.VERDIKTA_BOUNTIES_BASE_URL || '';
-    let baseUrl = (existingBaseUrl || derivedBaseUrl).replace(/\/+$/, '');
+    const existingBaseUrl = (current.VERDIKTA_BOUNTIES_BASE_URL || process.env.VERDIKTA_BOUNTIES_BASE_URL || '').replace(/\/+$/, '');
+    const networkChanged = priorNetwork && priorNetwork !== network;
+    let baseUrl = (!networkChanged && existingBaseUrl) ? existingBaseUrl : derivedBaseUrl;
 
-    if (existingBaseUrl) {
+    if (!networkChanged && existingBaseUrl && existingBaseUrl !== derivedBaseUrl) {
+      // Existing URL doesn't match derived — ask if they want to keep it
       const baseUrlAns = (await rl.question(`Bounties base URL [${baseUrl}]: `)).trim();
       baseUrl = (baseUrlAns || baseUrl).replace(/\/+$/, '');
     } else {
-      console.log(`Bounties base URL: ${baseUrl} (derived from network)`);
+      console.log(`Bounties URL: ${baseUrl}`);
     }
 
     // 3) Owner/sweep
@@ -237,7 +256,6 @@ async function main() {
 
     // 6) Wallet creation
     // If the network changed, offer to create a network-specific wallet instead of erroring.
-    const priorNetwork = (current.VERDIKTA_NETWORK || '').toLowerCase();
     const keystoreAbsPath = resolvePath(keystoreDefault);
     const keystoreAlreadyExists = await fileExists(keystoreAbsPath);
     let activeKeystorePath = keystoreDefault;

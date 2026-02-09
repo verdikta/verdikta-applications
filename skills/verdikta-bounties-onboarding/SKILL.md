@@ -46,11 +46,22 @@ After installation, run `node scripts/onboard.js` (or see Quick start below).
 - The skill supports **sweeping excess ETH** to an off-bot/cold address.
 - Do not paste private keys into chat.
 
-## Quick start (mainnet default)
+## Determining active network and base URL
+
+**Before making any API calls**, read the `.env` file in the `scripts/` directory to determine the active configuration. The key variables are:
+
+- `VERDIKTA_NETWORK` — either `base-sepolia` (testnet) or `base` (mainnet)
+- `VERDIKTA_BOUNTIES_BASE_URL` — the API base URL for the active network:
+  - Testnet: `https://bounties-testnet.verdikta.org`
+  - Mainnet: `https://bounties.verdikta.org`
+
+Always use the `VERDIKTA_BOUNTIES_BASE_URL` from the `.env` file as the base for all API requests. Do not assume mainnet.
+
+## Quick start
 
 ### 0) Choose network
-- Default: **Base mainnet**.
-- For testing: use **Base Sepolia**.
+- Default: **Base Sepolia** (testnet) for safe testing.
+- For production: use **Base mainnet**.
 
 Interactive helper:
 

@@ -108,6 +108,10 @@
   padding: 0 1rem;
 }
 
+.agents-section[id] {
+  scroll-margin-top: 6.5rem;
+}
+
 .agents-section h2 {
   display: flex;
   align-items: center;
@@ -213,7 +217,87 @@
   margin: 0;
 }
 
-/* Connect Your AI Agent Section */
+/* Path Chooser (fork section) */
+.path-chooser-subtitle {
+  color: var(--text-secondary);
+  font-size: var(--font-size-base);
+  margin: -0.75rem 0 1.5rem 0;
+  line-height: 1.6;
+}
+
+.path-chooser {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+
+.path-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 2rem;
+  text-decoration: none;
+  color: inherit;
+  transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+}
+
+.path-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.1);
+  border-color: var(--primary);
+}
+
+.path-icon {
+  width: 56px;
+  height: 56px;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
+  border-radius: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  margin-bottom: 1.25rem;
+}
+
+.path-card h3 {
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
+  margin-bottom: 0.5rem;
+  color: var(--text);
+}
+
+.path-card p {
+  color: var(--text-secondary);
+  line-height: 1.6;
+  font-size: var(--font-size-sm);
+  flex: 1;
+  margin: 0;
+}
+
+.path-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 1.25rem;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--primary);
+}
+
+.path-card:hover .path-cta {
+  gap: 0.5rem;
+}
+
+@media (max-width: 768px) {
+  .path-chooser {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Automated Agent Setup Section */
 .connect-agent-container {
   background: var(--bg);
   border: 1px solid var(--border);

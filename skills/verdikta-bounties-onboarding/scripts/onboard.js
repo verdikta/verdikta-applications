@@ -236,20 +236,48 @@ async function main() {
     process.env.VERDIKTA_WALLET_PASSWORD = password;
 
     // 6) Wallet creation
-    // If this is not a clean install and the user changes network, they should generally
-    // use a different wallet (different keystore path) to avoid confusion.
+    // If the network changed, offer to create a network-specific wallet instead of erroring.
     const priorNetwork = (current.VERDIKTA_NETWORK || '').toLowerCase();
     const keystoreAbsPath = resolvePath(keystoreDefault);
     const keystoreAlreadyExists = await fileExists(keystoreAbsPath);
+    let activeKeystorePath = keystoreDefault;
+
     if (keystoreAlreadyExists && priorNetwork && priorNetwork !== network) {
-      throw new Error(
-        `Keystore already exists at ${keystoreAbsPath}, but network changed (${priorNetwork} → ${network}). ` +
-        `For safety, set a new VERDIKTA_KEYSTORE_PATH (new wallet) or revert the network.`
+      console.log(`\nNetwork changed: ${priorNetwork} → ${network}`);
+      console.log(`Existing wallet at: ${keystoreAbsPath}`);
+      const networkSuffix = network.replace(/[^a-z0-9]/g, '-');
+      const networkKeystorePath = keystoreDefault.replace(
+        /verdikta-wallet\.json$/,
+        `verdikta-wallet-${networkSuffix}.json`
       );
+      const networkKeystoreAbs = resolvePath(networkKeystorePath);
+      const networkKeystoreExists = await fileExists(networkKeystoreAbs);
+
+      if (networkKeystoreExists) {
+        console.log(`Found existing ${network} wallet: ${networkKeystoreAbs}`);
+        const reuseWallet = (await rl.question('Use this wallet? (Y/n) ')).trim().toLowerCase();
+        if (reuseWallet === 'n' || reuseWallet === 'no') {
+          throw new Error('Aborted. Set VERDIKTA_KEYSTORE_PATH manually for a different wallet.');
+        }
+      } else {
+        const createNew = (await rl.question(`Create a new wallet for ${network}? (Y/n) `)).trim().toLowerCase();
+        if (createNew === 'n' || createNew === 'no') {
+          throw new Error('Aborted. Set VERDIKTA_KEYSTORE_PATH manually or revert the network.');
+        }
+      }
+
+      activeKeystorePath = networkKeystorePath;
+
+      // Update .env with the new keystore path
+      const rePatch = upsertEnv(await fs.readFile(envPath, 'utf8'), {
+        VERDIKTA_KEYSTORE_PATH: activeKeystorePath,
+      });
+      await fs.writeFile(envPath, rePatch, { mode: 0o600 });
+      process.env.VERDIKTA_KEYSTORE_PATH = activeKeystorePath;
     }
 
     const { wallet, abs: keystoreAbs, created } = await ensureWalletKeystore({
-      keystorePath: keystoreDefault,
+      keystorePath: activeKeystorePath,
       password,
     });
 
@@ -288,9 +316,17 @@ async function main() {
       } catch {}
 
       if (apiKey) {
-        const reuse = (await rl.question(`\nFound existing bot API key file. Reuse it? (Y/n) `)).trim().toLowerCase();
-        if (reuse === 'n' || reuse === 'no') {
-          apiKey = null;
+        const networkChanged = priorNetwork && priorNetwork !== network;
+        if (networkChanged) {
+          console.log(`\nFound existing bot API key, but network changed (${priorNetwork} → ${network}).`);
+          console.log('The existing key was registered on a different server and will not work.');
+          const reuse = (await rl.question('Register a new bot on the new network? (Y/n) ')).trim().toLowerCase();
+          apiKey = (reuse === 'n' || reuse === 'no') ? apiKey : null;
+        } else {
+          const reuse = (await rl.question(`\nFound existing bot API key file. Reuse it? (Y/n) `)).trim().toLowerCase();
+          if (reuse === 'n' || reuse === 'no') {
+            apiKey = null;
+          }
         }
       }
     }
@@ -322,8 +358,8 @@ async function main() {
 
     console.log(`\n✅ Smoke test OK: can list jobs (OPEN jobs returned: ${count})`);
 
-    // 10) Optional: run the worker once as a final integration test
-    const runWorker = (await rl.question('\nRun bounty_worker_min.js now (one-shot)? (Y/n) ')).trim().toLowerCase();
+    // 10) Optional: run the worker once as a final integration test (read-only: lists open jobs)
+    const runWorker = (await rl.question('\nRun bounty_worker_min.js now (lists open bounties, read-only)? (Y/n) ')).trim().toLowerCase();
     if (!(runWorker === 'n' || runWorker === 'no')) {
       const { spawn } = await import('node:child_process');
       await new Promise((resolve, reject) => {

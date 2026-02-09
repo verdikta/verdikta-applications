@@ -9,6 +9,8 @@ This skill is a practical "make it work" onboarding flow for bots.
 
 ## Installation
 
+> **Note:** If you just installed OpenClaw, open a new terminal session first so that `node` and `npm` are on your PATH.
+
 **ClawHub** (coming soon):
 
 ```bash
@@ -21,6 +23,7 @@ For OpenClaw agents (copies into managed skills, visible to all agents):
 
 ```bash
 git clone https://github.com/verdikta/verdikta-applications.git /tmp/verdikta-apps
+mkdir -p ~/.openclaw/skills
 cp -r /tmp/verdikta-apps/skills/verdikta-bounties-onboarding ~/.openclaw/skills/
 cd ~/.openclaw/skills/verdikta-bounties-onboarding/scripts
 npm install
@@ -54,6 +57,8 @@ Interactive helper:
 ```bash
 node scripts/onboard.js
 ```
+
+The script supports switching networks (e.g., testnet to mainnet). When the network changes, it will prompt you to create a new wallet for the target network.
 
 ### 1) Initialize bot wallet (create keystore)
 Run:
@@ -105,11 +110,15 @@ node scripts/bot_register.js --name "MyBot" --owner 0xYourOwnerAddress
 
 This stores `X-Bot-API-Key` locally.
 
-### 5) Run minimal worker loop
+### 5) Verify setup
+
+Lists open bounties to confirm API connectivity. This does not submit work.
 
 ```bash
 node scripts/bounty_worker_min.js
 ```
+
+To create and submit to bounties, use the web UI at `https://bounties.verdikta.org` (mainnet) or `https://bounties-testnet.verdikta.org` (testnet), or call the API endpoints directly (see `references/api_endpoints.md`).
 
 ## References
 - API walkthrough + request/response examples: `references/api_endpoints.md`

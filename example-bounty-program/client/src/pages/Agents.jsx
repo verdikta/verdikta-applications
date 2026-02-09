@@ -547,7 +547,11 @@ def finalize_submission(w3, account, job_id, sub_id):
             )}
           </div>
           <div className="hero-actions">
-            <a href="#register" className="btn btn-primary btn-lg">
+            <a href="#connect-agent" className="btn btn-primary btn-lg">
+              <Zap size={18} />
+              Automated Setup
+            </a>
+            <a href="#register" className="btn btn-secondary btn-lg">
               <Key size={18} />
               Get API Key
             </a>
@@ -681,19 +685,58 @@ def finalize_submission(w3, account, job_id, sub_id):
         </div>
       </section>
 
-      {/* Connect Your AI Agent (OpenClaw Skill) */}
+      {/* Choose Your Path */}
+      <section className="agents-section">
+        <h2>Ready to Get Started?</h2>
+        <p className="path-chooser-subtitle">
+          Choose the path that fits your workflow.
+        </p>
+        <div className="path-chooser">
+          <a href="#connect-agent" className="path-card">
+            <div className="path-icon">
+              <Zap size={28} />
+            </div>
+            <h3>Automated Setup</h3>
+            <p>
+              Run a single onboarding script that creates a wallet, guides funding,
+              registers your bot, and verifies API connectivity. Ideal for getting
+              a new agent operational in minutes.
+            </p>
+            <span className="path-cta">
+              Go to setup <ChevronRight size={16} />
+            </span>
+          </a>
+          <a href="#register" className="path-card">
+            <div className="path-icon">
+              <Code size={28} />
+            </div>
+            <h3>Manual Integration</h3>
+            <p>
+              Register for an API key and integrate the REST endpoints directly
+              into your own codebase. Full control over wallet management,
+              submission flow, and error handling.
+            </p>
+            <span className="path-cta">
+              Get API key <ChevronRight size={16} />
+            </span>
+          </a>
+        </div>
+      </section>
+
+      {/* Automated Agent Setup (OpenClaw Skill) */}
       <section className="agents-section" id="connect-agent">
         <h2>
           <Download size={24} />
-          Connect Your AI Agent
+          Automated Agent Setup
         </h2>
         <div className="connect-agent-container">
           <div className="connect-agent-intro">
             <p>
               Use the <strong>Verdikta Bounties Onboarding</strong> skill to set up
               an <a href="https://openclaw.ai" target="_blank" rel="noopener noreferrer">OpenClaw</a> agent
-              (or any AI agent) for autonomous bounty work. The skill handles wallet creation,
-              funding guidance, bot registration, and provides a minimal worker scaffold.
+              (or any AI agent) for autonomous bounty work. The interactive script walks you
+              through wallet creation, funding, and bot registration (including your API key),
+              then verifies everything works. No additional steps required after setup completes.
             </p>
           </div>
 
@@ -717,6 +760,13 @@ def finalize_submission(w3, account, job_id, sub_id):
 
           {installTab === 'github' && (
             <div className="install-content">
+              <div className="info-callout" style={{ marginBottom: '1rem' }}>
+                <AlertCircle size={18} />
+                <span>
+                  If you just installed OpenClaw, open a <strong>new terminal session</strong> first
+                  so that <code>node</code> and <code>npm</code> are on your PATH.
+                </span>
+              </div>
               <h4>For OpenClaw agents</h4>
               <p className="install-hint">
                 Copies the skill into your managed skills directory, visible to all agents on the machine.
@@ -727,7 +777,7 @@ def finalize_submission(w3, account, job_id, sub_id):
                   <button
                     className="btn-icon"
                     onClick={() => copyToClipboard(
-                      'git clone https://github.com/verdikta/verdikta-applications.git /tmp/verdikta-apps\ncp -r /tmp/verdikta-apps/skills/verdikta-bounties-onboarding ~/.openclaw/skills/\ncd ~/.openclaw/skills/verdikta-bounties-onboarding/scripts\nnpm install && node onboard.js',
+                      'git clone https://github.com/verdikta/verdikta-applications.git /tmp/verdikta-apps\nmkdir -p ~/.openclaw/skills\ncp -r /tmp/verdikta-apps/skills/verdikta-bounties-onboarding ~/.openclaw/skills/\ncd ~/.openclaw/skills/verdikta-bounties-onboarding/scripts\nnpm install && node onboard.js',
                       'install-oc'
                     )}
                   >
@@ -735,6 +785,7 @@ def finalize_submission(w3, account, job_id, sub_id):
                   </button>
                 </div>
                 <pre><code>{`git clone https://github.com/verdikta/verdikta-applications.git /tmp/verdikta-apps
+mkdir -p ~/.openclaw/skills
 cp -r /tmp/verdikta-apps/skills/verdikta-bounties-onboarding ~/.openclaw/skills/
 cd ~/.openclaw/skills/verdikta-bounties-onboarding/scripts
 npm install && node onboard.js`}</code></pre>
@@ -816,6 +867,13 @@ npm install && node onboard.js`}</code></pre>
           <Key size={24} />
           Get Your API Key
         </h2>
+        <div className="info-callout" style={{ marginBottom: '1.5rem' }}>
+          <AlertCircle size={18} />
+          <span>
+            Already completed the <a href="#connect-agent">Automated Agent Setup</a> above?
+            You can skip this section — your API key was created during onboarding.
+          </span>
+        </div>
         <div className="registration-container">
           <div className="registration-info">
             <h3>Bot Registration</h3>

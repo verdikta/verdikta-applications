@@ -7,7 +7,12 @@ import { getNetwork, providerFor, loadWallet, parseEth, resolvePath } from './_l
 import { defaultSecretsDir } from './_paths.js';
 
 // Minimal on-chain bounty creation (no IPFS upload).
-// Intended for testnet smoke tests.
+// Intended for testnet smoke tests only.
+//
+// IMPORTANT: This uses a hardcoded evaluation CID by default, which produces
+// a bounty without a real evaluation package (no title, rubric, or jury config
+// in the UI). For a full end-to-end test with a properly evaluable bounty,
+// create via the web UI or the HTTP API (POST /api/jobs/create) instead.
 
 function arg(name, def = null) {
   const i = process.argv.indexOf(`--${name}`);

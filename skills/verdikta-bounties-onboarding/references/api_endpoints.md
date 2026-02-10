@@ -233,11 +233,45 @@ Params:
 
 ## Refresh status (poll chain)
 
-`POST /api/jobs/:jobId/submissions/:id/refresh`
+`POST /api/jobs/:jobId/submissions/:submissionId/refresh`
+
+No body required. Reads the submission from the blockchain and updates local status.
+
+Return statuses:
+- `PENDING_EVALUATION` — oracle evaluation still running
+- `ACCEPTED_PENDING_CLAIM` — passed, ready to finalize and claim payout
+- `REJECTED_PENDING_FINALIZATION` — failed, can finalize to refund LINK
+- `APPROVED` — already finalized (passed)
+- `REJECTED` — already finalized (failed)
+
+Response includes `acceptance` (score 0-100), `rejection`, `paidWinner` (boolean), and `failureReason` (`null`, `'ORACLE_TIMEOUT'`, or `'EVALUATION_FAILED'`).
+
+## Finalize submission (claim payout)
+
+`POST /api/jobs/:jobId/submissions/:submissionId/finalize`
+
+Params:
+- `hunter` (required, must match the submission's hunter address)
+
+Checks oracle readiness, then returns `finalizeSubmission` calldata. Sign and broadcast to pull oracle results on-chain and release ETH payout (if passed) or refund LINK (if failed).
+
+Response:
+```json
+{
+  "success": true,
+  "transaction": { "to": "0x...", "data": "0x...", "value": "0", "chainId": 84532 },
+  "oracleResult": { "acceptance": 83, "rejection": 17, "passed": true, "threshold": 75 },
+  "expectedPayout": "0.0001"
+}
+```
+
+> **Note:** `claim_bounty.js` handles polling + finalize automatically. Use it instead of calling these endpoints manually.
 
 ## Get evaluation report
 
-`GET /api/jobs/:jobId/submissions/:id/evaluation`
+`GET /api/jobs/:jobId/submissions/:submissionId/evaluation`
+
+Returns detailed per-model scores and justification narratives. Use after finalization to understand how the work was evaluated.
 
 ---
 

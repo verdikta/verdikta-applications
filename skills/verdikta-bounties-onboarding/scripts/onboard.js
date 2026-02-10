@@ -254,48 +254,19 @@ async function main() {
     process.env.VERDIKTA_KEYSTORE_PATH = keystoreDefault;
     process.env.VERDIKTA_WALLET_PASSWORD = password;
 
-    // 6) Wallet creation
-    // If the network changed, offer to create a network-specific wallet instead of erroring.
+    // 6) Wallet — reuse the same keystore regardless of network.
+    // EVM addresses are network-agnostic; only the configuration and funding differ.
     const keystoreAbsPath = resolvePath(keystoreDefault);
     const keystoreAlreadyExists = await fileExists(keystoreAbsPath);
-    let activeKeystorePath = keystoreDefault;
 
     if (keystoreAlreadyExists && priorNetwork && priorNetwork !== network) {
       console.log(`\nNetwork changed: ${priorNetwork} → ${network}`);
-      console.log(`Existing wallet at: ${keystoreAbsPath}`);
-      const networkSuffix = network.replace(/[^a-z0-9]/g, '-');
-      const networkKeystorePath = keystoreDefault.replace(
-        /verdikta-wallet\.json$/,
-        `verdikta-wallet-${networkSuffix}.json`
-      );
-      const networkKeystoreAbs = resolvePath(networkKeystorePath);
-      const networkKeystoreExists = await fileExists(networkKeystoreAbs);
-
-      if (networkKeystoreExists) {
-        console.log(`Found existing ${network} wallet: ${networkKeystoreAbs}`);
-        const reuseWallet = (await rl.question('Use this wallet? (Y/n) ')).trim().toLowerCase();
-        if (reuseWallet === 'n' || reuseWallet === 'no') {
-          throw new Error('Aborted. Set VERDIKTA_KEYSTORE_PATH manually for a different wallet.');
-        }
-      } else {
-        const createNew = (await rl.question(`Create a new wallet for ${network}? (Y/n) `)).trim().toLowerCase();
-        if (createNew === 'n' || createNew === 'no') {
-          throw new Error('Aborted. Set VERDIKTA_KEYSTORE_PATH manually or revert the network.');
-        }
-      }
-
-      activeKeystorePath = networkKeystorePath;
-
-      // Update .env with the new keystore path
-      const rePatch = upsertEnv(await fs.readFile(envPath, 'utf8'), {
-        VERDIKTA_KEYSTORE_PATH: activeKeystorePath,
-      });
-      await fs.writeFile(envPath, rePatch, { mode: 0o600 });
-      process.env.VERDIKTA_KEYSTORE_PATH = activeKeystorePath;
+      console.log(`Reusing existing wallet at: ${keystoreAbsPath}`);
+      console.log('(The same address works on any EVM network — only funding differs.)');
     }
 
     const { wallet, abs: keystoreAbs, created } = await ensureWalletKeystore({
-      keystorePath: activeKeystorePath,
+      keystorePath: keystoreDefault,
       password,
     });
 
@@ -308,6 +279,12 @@ async function main() {
     const pollSeconds = envNum('FUNDING_POLL_SECONDS', 15);
 
     console.log('\nHuman action required: fund the bot wallet');
+    if (networkChanged) {
+      console.log(`\n  NOTE: You switched from ${priorNetwork} to ${network}.`);
+      console.log('  Your wallet address is the same, but funds on one network');
+      console.log('  are NOT visible on the other. You need to send new funds');
+      console.log(`  on the ${network} network to the address below.\n`);
+    }
     console.log(`- Send ETH on ${network} to: ${wallet.address}`);
     console.log(`- Send LINK on ${network} to: ${wallet.address}`);
     console.log(`Targets: ≥ ${minEth} ETH and ≥ ${minLink} LINK`);
@@ -334,7 +311,6 @@ async function main() {
       } catch {}
 
       if (apiKey) {
-        const networkChanged = priorNetwork && priorNetwork !== network;
         if (networkChanged) {
           console.log(`\nFound existing bot API key, but network changed (${priorNetwork} → ${network}).`);
           console.log('The existing key was registered on a different server and will not work.');

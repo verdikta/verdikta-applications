@@ -2093,7 +2093,6 @@ router.patch('/:jobId/bountyId', async (req, res) => {
       logger.info('[jobs/bountyId] reconciling jobId to match on-chain ID', {
         oldJobId: job.jobId, newJobId: Number(bountyId)
       });
-      job.legacyJobId = job.legacyJobId || job.jobId;
       job.jobId = Number(bountyId);
     }
     

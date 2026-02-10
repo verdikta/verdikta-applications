@@ -278,7 +278,37 @@ class SyncService {
         }
       }
 
-      // Second pass: Check for orphaned jobs (exist locally but not on-chain)
+      // Second pass: Remove duplicates and check for orphaned jobs
+      // First, deduplicate: if multiple entries share the same jobId, keep the synced one
+      const seen = new Map();
+      const toRemove = [];
+      for (let i = 0; i < storage.jobs.length; i++) {
+        const job = storage.jobs[i];
+        const key = `${job.jobId}:${(job.contractAddress || '').toLowerCase()}`;
+        if (seen.has(key)) {
+          const prev = seen.get(key);
+          // Keep the one that's synced from blockchain; remove the other
+          if (job.syncedFromBlockchain && !prev.job.syncedFromBlockchain) {
+            toRemove.push(prev.idx);
+            seen.set(key, { idx: i, job });
+          } else {
+            toRemove.push(i);
+          }
+          logger.warn('Removing duplicate job entry', {
+            jobId: job.jobId,
+            removedIdx: toRemove[toRemove.length - 1],
+            reason: 'duplicate_jobId'
+          });
+          orphaned++;
+        } else {
+          seen.set(key, { idx: i, job });
+        }
+      }
+      // Remove in reverse order to preserve indices
+      for (const idx of toRemove.sort((a, b) => b - a)) {
+        storage.jobs.splice(idx, 1);
+      }
+
       for (const job of storage.jobs) {
         // Skip jobs that are already marked as orphaned or closed
         if (job.status === 'ORPHANED' || job.status === 'CLOSED') continue;
@@ -368,8 +398,10 @@ class SyncService {
             Object.assign(freshJob, modifiedJob);
 
             // Remove stale fields that were deleted during sync
-            if (!('onChainId' in modifiedJob) && 'onChainId' in freshJob) {
-              delete freshJob.onChainId;
+            for (const staleField of ['onChainId', 'legacyJobId']) {
+              if (!(staleField in modifiedJob) && staleField in freshJob) {
+                delete freshJob[staleField];
+              }
             }
 
             // Restore PATCH fields if they were set in fresh storage
@@ -648,13 +680,32 @@ class SyncService {
         oldJobId: existingJob.jobId,
         newJobId: bounty.jobId
       });
-      existingJob.legacyJobId = existingJob.legacyJobId || existingJob.jobId;
+
+      // Remove any existing entry that already has the target jobId to avoid duplicates
+      const collisionIdx = storage.jobs.findIndex(j =>
+        j !== existingJob &&
+        j.jobId === bounty.jobId &&
+        (j.contractAddress || '').toLowerCase() === currentContract
+      );
+      if (collisionIdx !== -1) {
+        logger.warn('Removing duplicate job during reconciliation', {
+          removedJobId: storage.jobs[collisionIdx].jobId,
+          removedLegacyId: storage.jobs[collisionIdx].legacyJobId,
+          keptJobId: existingJob.jobId,
+          newJobId: bounty.jobId
+        });
+        storage.jobs.splice(collisionIdx, 1);
+      }
+
       existingJob.jobId = bounty.jobId;
     }
 
-    // Remove stale onChainId field — jobId IS the on-chain ID in the aligned system
+    // Remove stale fields — jobId IS the on-chain index, no aliases needed
     if (existingJob.onChainId != null) {
       delete existingJob.onChainId;
+    }
+    if (existingJob.legacyJobId != null) {
+      delete existingJob.legacyJobId;
     }
 
     // Sync evaluationCid from on-chain (authoritative source)
@@ -812,8 +863,8 @@ class SyncService {
       return true;
     }
 
-    // Cleanup: remove stale onChainId field (jobId IS the on-chain ID)
-    if (localJob.onChainId != null) {
+    // Cleanup: remove stale legacy fields (jobId IS the on-chain index)
+    if (localJob.onChainId != null || localJob.legacyJobId != null) {
       return true;
     }
 

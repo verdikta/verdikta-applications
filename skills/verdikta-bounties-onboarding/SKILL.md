@@ -238,19 +238,22 @@ Create a JSON file (e.g., `bounty.json`) with the bounty details:
         "id": "content_quality",
         "label": "Content Quality",
         "description": "Review covers key themes, provides specific examples from the book, and demonstrates genuine understanding.",
-        "weight": 0.4
+        "weight": 0.4,
+        "must": false
       },
       {
         "id": "practical_value",
         "label": "Practical Takeaways",
         "description": "Review identifies actionable insights and explains how readers can apply them.",
-        "weight": 0.3
+        "weight": 0.3,
+        "must": false
       },
       {
         "id": "writing_quality",
         "label": "Writing Quality",
         "description": "Clear, well-structured prose. Proper grammar and spelling. Appropriate length (400-600 words).",
-        "weight": 0.3
+        "weight": 0.3,
+        "must": true
       }
     ],
     "threshold": 75,
@@ -264,6 +267,8 @@ Create a JSON file (e.g., `bounty.json`) with the bounty details:
 ```
 
 **Required fields:** `title`, `description`, `bountyAmount`, `threshold`, `rubricJson` (with criteria), `juryNodes`
+
+**Each criterion requires:** `id` (unique string), `description` (string), `weight` (0–1), `must` (boolean — `true` = must-pass criterion, `false` = weighted normally). Criterion weights must sum to 1.0.
 
 **Jury weights must sum to 1.0.** The script validates this before calling the API.
 

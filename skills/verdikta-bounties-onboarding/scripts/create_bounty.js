@@ -17,8 +17,8 @@
 //   "rubricJson": {
 //     "title": "Book Review",
 //     "criteria": [
-//       { "id": "quality", "label": "Quality", "description": "...", "weight": 0.5 },
-//       { "id": "clarity", "label": "Clarity", "description": "...", "weight": 0.5 }
+//       { "id": "quality", "label": "Quality", "description": "...", "weight": 0.5, "must": false },
+//       { "id": "clarity", "label": "Clarity", "description": "...", "weight": 0.5, "must": true }
 //     ],
 //     "threshold": 75,
 //     "forbiddenContent": []
@@ -92,6 +92,32 @@ if (!rubricJson || !Array.isArray(rubricJson.criteria) || rubricJson.criteria.le
   console.error('Config must include "rubricJson" with at least one criterion.');
   process.exit(1);
 }
+
+// Validate each criterion has all required fields
+const criterionErrors = [];
+const seenIds = new Set();
+for (let i = 0; i < rubricJson.criteria.length; i++) {
+  const c = rubricJson.criteria[i];
+  if (!c.id || typeof c.id !== 'string') criterionErrors.push(`Criterion ${i}: missing or invalid "id" (string)`);
+  if (seenIds.has(c.id)) criterionErrors.push(`Criterion ${i}: duplicate id "${c.id}"`);
+  seenIds.add(c.id);
+  if (!c.description || typeof c.description !== 'string') criterionErrors.push(`Criterion ${i}: missing "description" (string)`);
+  if (typeof c.weight !== 'number' || c.weight < 0 || c.weight > 1) criterionErrors.push(`Criterion ${i}: missing or invalid "weight" (number 0-1)`);
+  if (typeof c.must !== 'boolean') criterionErrors.push(`Criterion ${i}: missing "must" field (boolean, required). Set true for must-pass, false for weighted.`);
+}
+if (criterionErrors.length > 0) {
+  console.error('Rubric criteria validation failed:');
+  criterionErrors.forEach(e => console.error(`  - ${e}`));
+  process.exit(1);
+}
+
+// Validate criteria weights sum to ~1.0
+const criteriaWeightSum = rubricJson.criteria.reduce((s, c) => s + (c.weight || 0), 0);
+if (Math.abs(criteriaWeightSum - 1.0) > 0.01) {
+  console.error(`Criteria weights must sum to 1.0 (got ${criteriaWeightSum.toFixed(4)}).`);
+  process.exit(1);
+}
+
 if (!juryNodes || !Array.isArray(juryNodes) || juryNodes.length === 0) {
   console.error('Config must include "juryNodes" array with at least one model.');
   process.exit(1);

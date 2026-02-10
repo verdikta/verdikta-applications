@@ -366,7 +366,12 @@ class SyncService {
             
             // Copy sync updates (status, submissions, winner, etc.)
             Object.assign(freshJob, modifiedJob);
-            
+
+            // Remove stale fields that were deleted during sync
+            if (!('onChainId' in modifiedJob) && 'onChainId' in freshJob) {
+              delete freshJob.onChainId;
+            }
+
             // Restore PATCH fields if they were set in fresh storage
             // (PATCH updates take precedence for these fields)
             for (const [field, value] of Object.entries(preservedValues)) {
@@ -647,6 +652,21 @@ class SyncService {
       existingJob.jobId = bounty.jobId;
     }
 
+    // Remove stale onChainId field — jobId IS the on-chain ID in the aligned system
+    if (existingJob.onChainId != null) {
+      delete existingJob.onChainId;
+    }
+
+    // Sync evaluationCid from on-chain (authoritative source)
+    if (bounty.evaluationCid && existingJob.evaluationCid !== bounty.evaluationCid) {
+      logger.info('Syncing evaluationCid from blockchain', {
+        jobId: existingJob.jobId,
+        old: existingJob.evaluationCid,
+        new: bounty.evaluationCid
+      });
+      existingJob.evaluationCid = bounty.evaluationCid;
+    }
+
     // Set contract address if not already set (migration for legacy jobs)
     if (!existingJob.contractAddress && currentContract) {
       existingJob.contractAddress = currentContract;
@@ -789,6 +809,16 @@ class SyncService {
     // Update if job is missing contractAddress (needs migration)
     if (!localJob.contractAddress) {
       logger.info('Job needs contract address migration', { jobId: localJob.jobId });
+      return true;
+    }
+
+    // Cleanup: remove stale onChainId field (jobId IS the on-chain ID)
+    if (localJob.onChainId != null) {
+      return true;
+    }
+
+    // Cleanup: sync evaluationCid if it doesn't match on-chain
+    if (chainJob.evaluationCid && localJob.evaluationCid !== chainJob.evaluationCid) {
       return true;
     }
 

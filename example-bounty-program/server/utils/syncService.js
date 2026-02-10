@@ -423,6 +423,23 @@ class SyncService {
           }
         }
         
+        // Remove entries from freshStorage that were removed during sync (dedup/collision)
+        // Use the authoritative job count per ID from storage.jobs
+        const targetCounts = {};
+        storage.jobs.forEach(j => { targetCounts[j.jobId] = (targetCounts[j.jobId] || 0) + 1; });
+        const seenCounts = {};
+        for (let i = 0; i < freshStorage.jobs.length; i++) {
+          const id = freshStorage.jobs[i].jobId;
+          seenCounts[id] = (seenCounts[id] || 0) + 1;
+          // Remove non-synced duplicates that exceed the target count
+          if (seenCounts[id] > (targetCounts[id] || 0) && !freshStorage.jobs[i].syncedFromBlockchain) {
+            logger.info('[sync] Removing duplicate entry from storage', { jobId: id, idx: i });
+            freshStorage.jobs.splice(i, 1);
+            i--; // adjust index after splice
+            seenCounts[id]--;
+          }
+        }
+
         // Update nextId if we added jobs
         freshStorage.nextId = Math.max(freshStorage.nextId, storage.nextId);
         

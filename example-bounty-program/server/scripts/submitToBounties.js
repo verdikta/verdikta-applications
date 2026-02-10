@@ -186,13 +186,16 @@ Examples:
 // API HELPERS
 // =============================================================================
 
-function getBotHeaders() {
+function getAuthHeaders() {
   const headers = {};
   if (CONFIG.botApiKey) {
     headers['X-Bot-API-Key'] = CONFIG.botApiKey;
   }
   return headers;
 }
+
+// Backwards-compatible alias
+const getBotHeaders = getAuthHeaders;
 
 async function fetchOpenBounties() {
   const response = await fetch(`${CONFIG.apiUrl}/api/jobs?status=OPEN`, {

@@ -2,7 +2,18 @@
 const fs = require('fs');
 const path = require('path');
 
-const dataPath = path.join(__dirname, '..', 'data', 'jobs.json');
+// Load .env for NETWORK setting
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+
+const { config: serverConfig } = require('../config');
+
+const dataPath = path.join(__dirname, '..', 'data', serverConfig.network, 'jobs.json');
+if (!fs.existsSync(dataPath)) {
+  console.error(`Data file not found: ${dataPath}`);
+  console.error(`Check NETWORK env var (current: ${serverConfig.network})`);
+  process.exit(1);
+}
+
 const data = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
 
 // Find orphaned duplicates (no submissions, orphan reason is not_found_on_chain)

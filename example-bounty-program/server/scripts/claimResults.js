@@ -252,13 +252,16 @@ async function finalizeSubmission(contract, bountyId, submissionId, dryRun) {
   }
 }
 
-function getBotHeaders() {
+function getAuthHeaders() {
   const headers = {};
   if (CONFIG.botApiKey) {
     headers['X-Bot-API-Key'] = CONFIG.botApiKey;
   }
   return headers;
 }
+
+// Backwards-compatible alias
+const getBotHeaders = getAuthHeaders;
 
 async function syncBackend(jobId, submissionId) {
   try {

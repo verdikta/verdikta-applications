@@ -300,6 +300,14 @@ async function sleep(ms) {
 // API FUNCTIONS
 // =============================================================================
 
+function getAuthHeaders() {
+  const headers = {};
+  if (CONFIG.botApiKey) {
+    headers['X-Bot-API-Key'] = CONFIG.botApiKey;
+  }
+  return headers;
+}
+
 async function createJobBackend(bountyData, creatorAddress, amount, hours) {
   const payload = {
     title: bountyData.title,
@@ -315,10 +323,7 @@ async function createJobBackend(bountyData, creatorAddress, amount, hours) {
     iterations: 1,
   };
 
-  const headers = { 'Content-Type': 'application/json' };
-  if (CONFIG.botApiKey) {
-    headers['X-Bot-API-Key'] = CONFIG.botApiKey;
-  }
+  const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() };
 
   const response = await fetch(`${CONFIG.apiUrl}/api/jobs/create`, {
     method: 'POST',
@@ -335,10 +340,7 @@ async function createJobBackend(bountyData, creatorAddress, amount, hours) {
 }
 
 async function updateJobBountyId(jobId, bountyId, txHash, blockNumber) {
-  const headers = { 'Content-Type': 'application/json' };
-  if (CONFIG.botApiKey) {
-    headers['X-Bot-API-Key'] = CONFIG.botApiKey;
-  }
+  const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() };
 
   const response = await fetch(`${CONFIG.apiUrl}/api/jobs/${jobId}/bountyId`, {
     method: 'PATCH',

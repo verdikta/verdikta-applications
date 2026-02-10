@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Complete submission flow: upload files → prepare → approve LINK → start → confirm.
+// Complete submission flow: upload files → prepare → approve LINK → confirm → start.
 // The bot wallet signs all three on-chain transactions automatically.
 //
 // Usage:
@@ -137,17 +137,19 @@ console.log(`  primaryCid: ${job.primaryCid}`);
 
 async function sendTx(label, txObj) {
   console.log(`\n→ ${label}: sending transaction...`);
-  const txRequest = {
+  const baseTx = {
     to: txObj.to,
     data: txObj.data,
     value: txObj.value || '0',
-    gasLimit: txObj.gasLimit || 500000,
   };
 
-  // Dry-run first to catch revert reasons before spending gas
+  // Dry-run first to get actual gas estimate and catch revert reasons
+  let gasLimit;
   try {
-    const estimatedGas = await signer.estimateGas(txRequest);
-    console.log(`  estimated gas: ${estimatedGas.toString()}`);
+    const estimated = await signer.estimateGas(baseTx);
+    // Use 20% buffer over estimate (some txs like prepareSubmission need >500k)
+    gasLimit = (estimated * 120n) / 100n;
+    console.log(`  estimated gas: ${estimated.toString()} (limit: ${gasLimit.toString()})`);
   } catch (err) {
     // Extract revert reason from the error
     const reason = err.reason || err.shortMessage || err.message || 'unknown';
@@ -161,7 +163,7 @@ async function sendTx(label, txObj) {
     process.exit(1);
   }
 
-  const tx = await signer.sendTransaction(txRequest);
+  const tx = await signer.sendTransaction({ ...baseTx, gasLimit });
   console.log(`  tx: ${tx.hash}`);
   const receipt = await tx.wait();
   console.log(`  confirmed in block ${receipt.blockNumber}`);
@@ -265,26 +267,13 @@ if (!approveRes.ok || !approveData.transaction) {
 
 await sendTx('LINK approve', approveData.transaction);
 
-// ---- Step 4: Start evaluation (on-chain tx 3/3) ----
+// ---- Step 4: Confirm submission in API (before start) ----
+//
+// The backend needs the submission record confirmed before the /start
+// endpoint can look it up. Without this, /start returns
+// "Submission X not found for job Y".
 
-console.log('\n--- Step 4: Start evaluation (trigger oracle) ---');
-
-const startRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submissions/${submissionId}/start`, {
-  method: 'POST',
-  headers: jsonHeaders,
-  body: JSON.stringify({ hunter }),
-});
-const startData = await startRes.json();
-if (!startRes.ok || !startData.transaction) {
-  console.error('Start failed:', JSON.stringify(startData));
-  process.exit(1);
-}
-
-await sendTx('startPreparedSubmission', { ...startData.transaction, gasLimit: 4000000 });
-
-// ---- Step 5: Confirm in API ----
-
-console.log('\n--- Step 5: Confirm submission in API ---');
+console.log('\n--- Step 4: Confirm submission in API ---');
 
 const confirmRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submissions/confirm`, {
   method: 'POST',
@@ -297,6 +286,23 @@ if (!confirmRes.ok) {
 } else {
   console.log('  Confirmed in API.');
 }
+
+// ---- Step 5: Start evaluation (on-chain tx 3/3) ----
+
+console.log('\n--- Step 5: Start evaluation (trigger oracle) ---');
+
+const startRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submissions/${submissionId}/start`, {
+  method: 'POST',
+  headers: jsonHeaders,
+  body: JSON.stringify({ hunter }),
+});
+const startData = await startRes.json();
+if (!startRes.ok || !startData.transaction) {
+  console.error('Start failed:', JSON.stringify(startData));
+  process.exit(1);
+}
+
+await sendTx('startPreparedSubmission', startData.transaction);
 
 // ---- Done ----
 

@@ -188,14 +188,14 @@ node scripts/bounty_worker_min.js
 
 ---
 
-## Creating a bounty (use create_bounty.js)
+## Creating a bounty (REQUIRED: use create_bounty.js)
+
+> **You MUST use `create_bounty.js`.** Do not call `POST /api/jobs/create` and `create_bounty_min.js` separately — the CIDs will not match and the bounty will be orphaned.
 
 The `create_bounty.js` script handles the complete bounty creation flow in one command:
 1. Calls `POST /api/jobs/create` (builds evaluation package, pins to IPFS)
 2. Signs and broadcasts the on-chain `createBounty()` transaction using the bot wallet
 3. Returns the job ID and on-chain bounty ID
-
-**IMPORTANT:** Always use `create_bounty.js` instead of calling the API and on-chain steps separately. Doing them separately risks mismatched CIDs (the on-chain bounty must use the exact `primaryCid` from the API response).
 
 ### Step 1: Choose a class ID
 
@@ -320,7 +320,9 @@ Read the rubric carefully. Each criterion has a `weight`, `description`, and opt
 
 Generate the work product based on the rubric criteria. Save the output as one or more files (.md, .py, .js, .sol, .pdf, .docx, etc.).
 
-### Step 3: Submit using the script (recommended)
+### Step 3: Submit using submit_to_bounty.js (REQUIRED)
+
+> **You MUST use this script.** Do not call the submission API endpoints individually.
 
 The `submit_to_bounty.js` script handles the **entire** submission flow in one command:
 - Uploads files to IPFS

@@ -281,11 +281,12 @@ const confirmRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submissions/confirm
   body: JSON.stringify({ submissionId, hunter, hunterCid }),
 });
 const confirmData = await confirmRes.json();
-if (!confirmRes.ok) {
-  console.warn('Confirm warning:', JSON.stringify(confirmData));
-} else {
-  console.log('  Confirmed in API.');
+if (!confirmRes.ok && !confirmData?.alreadyExists) {
+  // Genuine failure — start will also fail without the submission record
+  console.error('Confirm failed:', JSON.stringify(confirmData));
+  process.exit(1);
 }
+console.log(confirmData?.alreadyExists ? '  Already confirmed in API.' : '  Confirmed in API.');
 
 // ---- Step 5: Start evaluation (on-chain tx 3/3) ----
 

@@ -215,6 +215,17 @@ console.log(`  Escrow:    ${contractAddress}`);
 console.log(`  CID:       ${primaryCid}`);
 console.log(`  Deadline:  ${new Date(deadline * 1000).toISOString()}`);
 
+// Dry-run first to catch revert reasons before spending gas
+try {
+  const gas = await contract.createBounty.estimateGas(primaryCid, classId, threshold, deadline, { value });
+  console.log(`  estimated gas: ${gas.toString()}`);
+} catch (err) {
+  const reason = err.reason || err.shortMessage || err.message || 'unknown';
+  console.error(`\n✖ createBounty will revert! Reason: ${reason}`);
+  if (err.data) console.error(`  revert data: ${err.data}`);
+  process.exit(1);
+}
+
 const tx = await contract.createBounty(primaryCid, classId, threshold, deadline, { value });
 console.log(`  tx: ${tx.hash}`);
 const receipt = await tx.wait();

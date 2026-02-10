@@ -97,16 +97,71 @@ console.log(`API:     ${baseUrl}`);
 console.log(`Files:   ${files.join(', ')}`);
 if (narrative) console.log(`Narrative: ${narrative}`);
 
+// ---- Pre-flight: verify the job is submittable ----
+
+console.log('\n--- Pre-flight check ---');
+
+const jobRes = await fetch(`${baseUrl}/api/jobs/${jobId}`, { headers });
+if (!jobRes.ok) {
+  console.error(`Job #${jobId} not found (HTTP ${jobRes.status}).`);
+  process.exit(1);
+}
+const jobData = await jobRes.json();
+const job = jobData.job || jobData;
+
+if (job.status && job.status !== 'OPEN') {
+  console.error(`Job #${jobId} is not OPEN (status: ${job.status}). Cannot submit.`);
+  process.exit(1);
+}
+
+if (job.submissionCloseTime) {
+  const deadline = new Date(typeof job.submissionCloseTime === 'number'
+    ? job.submissionCloseTime * 1000
+    : job.submissionCloseTime);
+  if (deadline < new Date()) {
+    console.error(`Job #${jobId} submission window closed at ${deadline.toISOString()}.`);
+    process.exit(1);
+  }
+  console.log(`  Deadline: ${deadline.toISOString()}`);
+}
+
+if (!job.primaryCid) {
+  console.error(`Job #${jobId} has no primaryCid. It may have been created with create_bounty_min.js (hardcoded CID) — these bounties cannot accept submissions through the API.`);
+  process.exit(1);
+}
+
+console.log(`  Job status: ${job.status || 'OPEN'}`);
+console.log(`  primaryCid: ${job.primaryCid}`);
+
 // ---- Helper: send transaction and wait ----
 
 async function sendTx(label, txObj) {
   console.log(`\n→ ${label}: sending transaction...`);
-  const tx = await signer.sendTransaction({
+  const txRequest = {
     to: txObj.to,
     data: txObj.data,
     value: txObj.value || '0',
     gasLimit: txObj.gasLimit || 500000,
-  });
+  };
+
+  // Dry-run first to catch revert reasons before spending gas
+  try {
+    const estimatedGas = await signer.estimateGas(txRequest);
+    console.log(`  estimated gas: ${estimatedGas.toString()}`);
+  } catch (err) {
+    // Extract revert reason from the error
+    const reason = err.reason || err.shortMessage || err.message || 'unknown';
+    console.error(`\n✖ ${label} will revert! Reason: ${reason}`);
+    if (err.data) console.error(`  revert data: ${err.data}`);
+    console.error(`  to: ${txObj.to}`);
+    console.error(`  This usually means:`);
+    console.error(`    - "evaluationCid mismatch": the job was created with create_bounty_min.js (hardcoded CID)`);
+    console.error(`    - "bounty not open": the bounty has been closed or finalized`);
+    console.error(`    - "deadline passed": the submission window has closed`);
+    process.exit(1);
+  }
+
+  const tx = await signer.sendTransaction(txRequest);
   console.log(`  tx: ${tx.hash}`);
   const receipt = await tx.wait();
   console.log(`  confirmed in block ${receipt.blockNumber}`);
@@ -139,9 +194,11 @@ if (!uploadRes.ok) {
   console.error('Upload failed:', JSON.stringify(uploadData));
   process.exit(1);
 }
-const hunterCid = uploadData.hunterCid || uploadData.cid;
+// API returns { submission: { hunterCid: "..." } } — also accept top-level for compat
+const hunterCid = uploadData.submission?.hunterCid || uploadData.hunterCid || uploadData.cid;
 if (!hunterCid) {
-  console.error('No hunterCid in response:', JSON.stringify(uploadData));
+  console.error('No hunterCid in response. Expected submission.hunterCid.');
+  console.error('Full response:', JSON.stringify(uploadData, null, 2));
   process.exit(1);
 }
 console.log(`  hunterCid: ${hunterCid}`);

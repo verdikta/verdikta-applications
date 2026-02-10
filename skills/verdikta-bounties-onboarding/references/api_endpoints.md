@@ -56,6 +56,47 @@ Response includes `job.primaryCid` — use this as the `evaluationCid` in the on
 
 After calling the API, the bot must sign an on-chain `createBounty(evaluationCid, classId, threshold, deadline)` transaction on the BountyEscrow contract with ETH as `msg.value`. See SKILL.md for the full flow with code example.
 
+**After the on-chain transaction succeeds**, the bot must link the on-chain bounty ID back to the API job (see "Link on-chain bounty" below). `create_bounty.js` handles all of this automatically.
+
+---
+
+## Link on-chain bounty to API job (REQUIRED after createBounty)
+
+After creating a bounty on-chain, the on-chain bounty ID must be linked to the API job. Without this step, the server cannot build correct submission calldata and submissions will revert on-chain.
+
+### Direct link
+
+`PATCH /api/jobs/:jobId/bountyId`
+
+Body:
+```json
+{
+  "bountyId": 78,
+  "txHash": "0x...",
+  "blockNumber": 12345
+}
+```
+
+Sets `onChain: true`, reconciles the API job ID with the on-chain bounty ID (if different), and records the contract address.
+
+### Resolve (fallback — searches chain)
+
+`PATCH /api/jobs/:jobId/bountyId/resolve`
+
+Body:
+```json
+{
+  "creator": "0x...",
+  "rubricCid": "Qm...",
+  "submissionCloseTime": 1700000000,
+  "txHash": "0x..."
+}
+```
+
+Searches recent on-chain bounties by creator + deadline + CID to find and link the matching bounty.
+
+> **Note:** `create_bounty.js` calls `PATCH /bountyId` automatically after the on-chain tx. You should not need to call these endpoints manually.
+
 ---
 
 ## Register bot (get API key)

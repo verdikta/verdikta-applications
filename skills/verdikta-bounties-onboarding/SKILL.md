@@ -280,10 +280,11 @@ node create_bounty.js --config /path/to/bounty.json
 ```
 
 The script will:
-1. Validate the config (required fields, jury weights)
+1. Validate the config (required fields, jury weights, criterion `must` fields)
 2. Call `POST /api/jobs/create` to build the evaluation package and pin to IPFS
 3. Sign and broadcast `createBounty()` on-chain with the correct `primaryCid`
-4. Print the job ID, bounty ID, and deadline
+4. Link the on-chain bounty ID back to the API job (via `PATCH /bountyId`) — this is required for submissions to work
+5. Print the job ID, bounty ID, and deadline
 
 After the script completes, the bounty is OPEN and fully visible in the UI with its title, rubric, and jury configuration.
 

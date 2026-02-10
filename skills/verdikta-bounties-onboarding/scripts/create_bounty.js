@@ -270,6 +270,62 @@ for (const log of (receipt.logs || [])) {
 console.log(`  Confirmed in block: ${receipt.blockNumber}`);
 console.log(`  On-chain bountyId:  ${bountyId ?? '(not parsed)'}`);
 
+// ---- Step 3: Link on-chain bounty to API job ----
+
+console.log('\n--- Step 3: Link on-chain bounty ID to API job ---');
+
+if (bountyId != null) {
+  const linkRes = await fetch(`${baseUrl}/api/jobs/${jobId}/bountyId`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Bot-API-Key': apiKey,
+    },
+    body: JSON.stringify({
+      bountyId: Number(bountyId),
+      txHash: tx.hash,
+      blockNumber: receipt.blockNumber,
+    }),
+  });
+  const linkData = await linkRes.json();
+
+  if (!linkRes.ok) {
+    // Fallback: try resolve endpoint (searches chain by creator + deadline)
+    console.warn(`  Direct link failed (${linkRes.status}), trying resolve...`);
+    const resolveRes = await fetch(`${baseUrl}/api/jobs/${jobId}/bountyId/resolve`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Bot-API-Key': apiKey,
+      },
+      body: JSON.stringify({
+        creator,
+        rubricCid: primaryCid,
+        submissionCloseTime: deadline,
+        txHash: tx.hash,
+      }),
+    });
+    const resolveData = await resolveRes.json();
+    if (resolveRes.ok) {
+      console.log(`  Linked via resolve (method: ${resolveData.method}, bountyId: ${resolveData.bountyId})`);
+    } else {
+      console.warn(`  ⚠ Could not link job to on-chain bounty: ${JSON.stringify(resolveData)}`);
+      console.warn(`    The bounty exists on-chain but the API may not find it for submissions.`);
+      console.warn(`    Wait for auto-sync or manually call: PATCH /api/jobs/${jobId}/bountyId`);
+    }
+  } else {
+    const linkedId = linkData.job?.jobId ?? bountyId;
+    console.log(`  Linked: API job ${jobId} → on-chain bounty ${linkedId}`);
+    // If IDs were reconciled, update jobId for output
+    if (linkData.job?.jobId != null && linkData.job.jobId !== Number(jobId)) {
+      console.log(`  Note: API job ID reconciled from ${jobId} → ${linkData.job.jobId} (aligned with on-chain)`);
+    }
+  }
+} else {
+  console.warn('  ⚠ Could not parse bountyId from event — skipping link step.');
+  console.warn(`    Wait for auto-sync or manually call: PATCH /api/jobs/${jobId}/bountyId/resolve`);
+}
+
 // ---- Done ----
 
 console.log('\n✅ Bounty created successfully!');

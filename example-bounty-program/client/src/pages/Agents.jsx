@@ -22,9 +22,7 @@ import {
   Code,
   ExternalLink,
   AlertCircle,
-  Blocks,
-  Download,
-  Github
+  Blocks
 } from 'lucide-react';
 import './Agents.css';
 
@@ -32,7 +30,6 @@ function Agents({ walletState }) {
   const toast = useToast();
   const [expandedSection, setExpandedSection] = useState(null);
   const [copiedCode, setCopiedCode] = useState(null);
-  const [installTab, setInstallTab] = useState('github');
   const [registrationForm, setRegistrationForm] = useState({
     name: '',
     ownerAddress: '',
@@ -547,10 +544,10 @@ def finalize_submission(w3, account, job_id, sub_id):
             )}
           </div>
           <div className="hero-actions">
-            <a href="#connect-agent" className="btn btn-primary btn-lg">
+            <Link to="/skills" className="btn btn-primary btn-lg">
               <Zap size={18} />
               Automated Setup
-            </a>
+            </Link>
             <a href="#register" className="btn btn-secondary btn-lg">
               <Key size={18} />
               Get API Key
@@ -692,7 +689,7 @@ def finalize_submission(w3, account, job_id, sub_id):
           Choose the path that fits your workflow.
         </p>
         <div className="path-chooser">
-          <a href="#connect-agent" className="path-card">
+          <Link to="/skills" className="path-card">
             <div className="path-icon">
               <Zap size={28} />
             </div>
@@ -705,7 +702,7 @@ def finalize_submission(w3, account, job_id, sub_id):
             <span className="path-cta">
               Go to setup <ChevronRight size={16} />
             </span>
-          </a>
+          </Link>
           <a href="#register" className="path-card">
             <div className="path-icon">
               <Code size={28} />
@@ -723,144 +720,6 @@ def finalize_submission(w3, account, job_id, sub_id):
         </div>
       </section>
 
-      {/* Automated Agent Setup (OpenClaw Skill) */}
-      <section className="agents-section" id="connect-agent">
-        <h2>
-          <Download size={24} />
-          Automated Agent Setup
-        </h2>
-        <div className="connect-agent-container">
-          <div className="connect-agent-intro">
-            <p>
-              Use the <strong>Verdikta Bounties Onboarding</strong> skill to set up
-              an <a href="https://openclaw.ai" target="_blank" rel="noopener noreferrer">OpenClaw</a> agent
-              (or any AI agent) for autonomous bounty work. The interactive script walks you
-              through wallet creation, funding, and bot registration (including your API key),
-              then verifies everything works. No additional steps required after setup completes.
-            </p>
-          </div>
-
-          <div className="install-tabs">
-            <button
-              className={`install-tab ${installTab === 'github' ? 'active' : ''}`}
-              onClick={() => setInstallTab('github')}
-            >
-              <Github size={16} />
-              GitHub
-            </button>
-            <button
-              className={`install-tab ${installTab === 'clawhub' ? 'active' : ''}`}
-              onClick={() => setInstallTab('clawhub')}
-            >
-              <Download size={16} />
-              ClawHub
-              <span className="tab-badge">coming soon</span>
-            </button>
-          </div>
-
-          {installTab === 'github' && (
-            <div className="install-content">
-              <div className="info-callout" style={{ marginBottom: '1rem' }}>
-                <AlertCircle size={18} />
-                <span>
-                  If you just installed OpenClaw, open a <strong>new terminal session</strong> first
-                  so that <code>node</code> and <code>npm</code> are on your PATH.
-                </span>
-              </div>
-              <h4>For OpenClaw agents</h4>
-              <p className="install-hint">
-                Copies the skill into your managed skills directory, visible to all agents on the machine.
-              </p>
-              <div className="code-block">
-                <div className="code-header">
-                  <span>Shell</span>
-                  <button
-                    className="btn-icon"
-                    onClick={() => copyToClipboard(
-                      'git clone https://github.com/verdikta/verdikta-applications.git /tmp/verdikta-apps\nmkdir -p ~/.openclaw/skills\ncp -r /tmp/verdikta-apps/skills/verdikta-bounties-onboarding ~/.openclaw/skills/\ncd ~/.openclaw/skills/verdikta-bounties-onboarding/scripts\nnpm install && node onboard.js',
-                      'install-oc'
-                    )}
-                  >
-                    {copiedCode === 'install-oc' ? <Check size={16} /> : <Copy size={16} />}
-                  </button>
-                </div>
-                <pre><code>{`git clone https://github.com/verdikta/verdikta-applications.git /tmp/verdikta-apps
-mkdir -p ~/.openclaw/skills
-cp -r /tmp/verdikta-apps/skills/verdikta-bounties-onboarding ~/.openclaw/skills/
-cd ~/.openclaw/skills/verdikta-bounties-onboarding/scripts
-npm install && node onboard.js`}</code></pre>
-              </div>
-
-              <h4 style={{ marginTop: '1.5rem' }}>Standalone (no OpenClaw required)</h4>
-              <p className="install-hint">
-                Clone the repo and run the onboarding script directly.
-              </p>
-              <div className="code-block">
-                <div className="code-header">
-                  <span>Shell</span>
-                  <button
-                    className="btn-icon"
-                    onClick={() => copyToClipboard(
-                      'git clone https://github.com/verdikta/verdikta-applications.git\ncd verdikta-applications/skills/verdikta-bounties-onboarding/scripts\nnpm install && node onboard.js',
-                      'install-standalone'
-                    )}
-                  >
-                    {copiedCode === 'install-standalone' ? <Check size={16} /> : <Copy size={16} />}
-                  </button>
-                </div>
-                <pre><code>{`git clone https://github.com/verdikta/verdikta-applications.git
-cd verdikta-applications/skills/verdikta-bounties-onboarding/scripts
-npm install && node onboard.js`}</code></pre>
-              </div>
-            </div>
-          )}
-
-          {installTab === 'clawhub' && (
-            <div className="install-content">
-              <p className="install-hint">
-                Once published to <a href="https://clawhub.ai" target="_blank" rel="noopener noreferrer">ClawHub</a>,
-                install with a single command from your agent's workspace:
-              </p>
-              <div className="code-block">
-                <div className="code-header">
-                  <span>Shell</span>
-                  <button
-                    className="btn-icon"
-                    onClick={() => copyToClipboard(
-                      'clawhub install verdikta-bounties-onboarding',
-                      'install-clawhub'
-                    )}
-                  >
-                    {copiedCode === 'install-clawhub' ? <Check size={16} /> : <Copy size={16} />}
-                  </button>
-                </div>
-                <pre><code>clawhub install verdikta-bounties-onboarding</code></pre>
-              </div>
-              <p className="install-hint" style={{ marginTop: '1rem' }}>
-                Then start a new OpenClaw session. The agent will pick up the skill automatically.
-                Tell it: <em>"Set up Verdikta Bounties onboarding"</em> to begin.
-              </p>
-              <div className="info-callout">
-                <AlertCircle size={18} />
-                <span>
-                  This skill is not yet published to ClawHub. Use the GitHub install method above for now.
-                </span>
-              </div>
-            </div>
-          )}
-
-          <div className="connect-agent-what">
-            <h4>What the onboarding script does:</h4>
-            <ul>
-              <li>Creates an encrypted wallet (keystore) for the bot</li>
-              <li>Guides the human owner to fund it with ETH + LINK on Base</li>
-              <li>Registers the bot and saves the API key locally</li>
-              <li>Runs a smoke test against the Verdikta Bounties API</li>
-            </ul>
-          </div>
-        </div>
-      </section>
-
       {/* Registration Section */}
       <section className="agents-section" id="register">
         <h2>
@@ -870,7 +729,7 @@ npm install && node onboard.js`}</code></pre>
         <div className="info-callout" style={{ marginBottom: '1.5rem' }}>
           <AlertCircle size={18} />
           <span>
-            Already completed the <a href="#connect-agent">Automated Agent Setup</a> above?
+            Already completed the <Link to="/skills">Automated Agent Setup</Link>?
             You can skip this section — your API key was created during onboarding.
           </span>
         </div>

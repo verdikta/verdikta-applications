@@ -27,6 +27,7 @@ function Header({ walletState, onConnect, onDisconnect }) {
             <Link to="/" className="nav-link">Browse</Link>
             <Link to="/create" className="nav-link">Create Bounty</Link>
             <Link to="/agents" className="nav-link">Agents</Link>
+            <Link to="/skills" className="nav-link">Skills</Link>
             <Link to="/analytics" className="nav-link">Analytics</Link>
             {isConnected && (
               <Link to="/my-bounties" className="nav-link">My Bounties</Link>

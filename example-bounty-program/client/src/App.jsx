@@ -12,6 +12,7 @@ import SubmitWork from './pages/SubmitWork';
 import MyBounties from './pages/MyBounties';
 import Analytics from './pages/Analytics';
 import Agents from './pages/Agents';
+import Skills from './pages/Skills';
 import Blockchain from './pages/Blockchain';
 import ScrollToTop from './components/ScrollToTop';
 import './App.css';
@@ -92,6 +93,7 @@ function AppContent() {
           <Route path="/my-bounties" element={<MyBounties walletState={walletState} />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/agents" element={<Agents walletState={walletState} />} />
+          <Route path="/skills" element={<Skills />} />
           <Route path="/blockchain" element={<Blockchain />} />
         </Routes>
       </main>

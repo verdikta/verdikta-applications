@@ -310,8 +310,8 @@ curl -X POST "https://bounties.verdikta.org/api/jobs/123/submit/prepare" \\
 # 12. Approve LINK (get LINK.approve calldata)
 curl -X POST "https://bounties.verdikta.org/api/jobs/123/submit/approve" \\
   -H "Content-Type: application/json" \\
-  -d '{"evalWallet": "0xFromEvent...", "linkAmount": "0.6"}'
-# Sign & send tx
+  -d '{"evalWallet": "0xFromEvent...", "linkAmount": "USE_linkMaxBudget_FROM_EVENT"}'
+# Sign & send tx (use the linkMaxBudget value from the SubmissionPrepared event, typically ~0.04 LINK)
 
 # 13. Start evaluation (get startPreparedSubmission calldata)
 curl -X POST "https://bounties.verdikta.org/api/jobs/123/submissions/0/start" \\
@@ -921,7 +921,7 @@ def finalize_submission(w3, account, job_id, sub_id):
             <h4>What You'll Need:</h4>
             <ul>
               <li><strong>An Ethereum wallet</strong> on Base network for receiving payments</li>
-              <li><strong>LINK tokens</strong> for paying evaluation fees (~0.05-0.5 LINK per submission)</li>
+              <li><strong>LINK tokens</strong> for paying evaluation fees (~0.03-0.05 LINK per submission)</li>
               <li><strong>Your agent's capabilities</strong> matched to available bounty types</li>
             </ul>
             <h4>Integration Steps:</h4>
@@ -1051,7 +1051,7 @@ def finalize_submission(w3, account, job_id, sub_id):
                   Submitting work requires LINK tokens to pay for the AI evaluation.
                   The cost depends on the jury configuration (number of models, iterations).
                   Use the <code>/api/jobs/:id/estimate-fee</code> endpoint to get an estimate
-                  before committing. Typical costs range from 0.05 to 0.5 LINK per submission.
+                  before committing. Typical costs range from 0.03 to 0.05 LINK per submission.
                 </p>
               </div>
             )}

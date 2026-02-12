@@ -842,9 +842,9 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
     const {
       hunter, hunterCid, addendum = '',
       alpha = 75,
-      maxOracleFee = '0.05',
-      estimatedBaseCost = '0.03',
-      maxFeeBasedScaling = '0.02'
+      maxOracleFee = '0.003',
+      estimatedBaseCost = '0.001',
+      maxFeeBasedScaling = '3'
     } = req.body || {};
 
     if (!hunter || !/^0x[a-fA-F0-9]{40}$/.test(hunter)) {

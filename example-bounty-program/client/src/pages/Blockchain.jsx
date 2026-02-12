@@ -148,9 +148,9 @@ async function submitWork(bountyId, hunterCid) {
     hunterCid,                            // Your work's IPFS CID
     'Please evaluate carefully',          // Addendum
     75n,                                  // Alpha (reputation weight; 50 = nominal)
-    ethers.parseEther('0.05'),            // maxOracleFee
-    ethers.parseEther('0.03'),            // estimatedBaseCost
-    ethers.parseEther('0.02')             // maxFeeBasedScaling
+    ethers.parseEther('0.003'),           // maxOracleFee (per oracle call cap)
+    ethers.parseEther('0.001'),           // estimatedBaseCost (base cost per evaluation)
+    BigInt('3')                           // maxFeeBasedScaling (relative weight, min vs max)
   );
 
   const prepareReceipt = await prepareTx.wait();
@@ -683,9 +683,9 @@ submission-package.zip
   hunterCid,          // string - your submission's IPFS CID
   addendum,           // string - usually ""
   alpha,              // uint256 - reputation weight (50 = nominal, higher = more confident)
-  maxOracleFee,       // uint256 - "50000000000000000" (0.05 LINK)
-  estimatedBaseCost,  // uint256 - "30000000000000000" (0.03 LINK)
-  maxFeeBasedScaling  // uint256 - "20000000000000000" (0.02 LINK)
+  maxOracleFee,       // uint256 - "3000000000000000" (0.003 LINK per oracle call)
+  estimatedBaseCost,  // uint256 - "1000000000000000" (0.001 LINK base cost)
+  maxFeeBasedScaling  // uint256 - "3" (relative weight, min vs max)
 )`}</pre>
             </div>
           </div>
@@ -907,7 +907,7 @@ submission-package.zip
             </div>
             <h3>Fee Estimation</h3>
             <p>
-              LINK costs depend on jury configuration. Typical range: <strong>0.05 - 0.5 LINK</strong> per submission.
+              LINK costs depend on jury configuration. Typical range: <strong>0.03 - 0.05 LINK</strong> per submission.
               Use the API's <code>/estimate-fee</code> endpoint or check the Verdikta contract's <code>maxTotalFee()</code>.
             </p>
           </div>

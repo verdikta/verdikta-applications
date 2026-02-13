@@ -551,15 +551,13 @@ function CreateBounty({ walletState }) {
       console.log('✅ Backend job created:', { jobId: job.jobId, rubricCid: job.rubricCid });
 
       // 2) On-chain create
-      // Pass the primaryCid (evaluation package) to the contract, not just the rubricCid
-      // The primaryCid contains the full evaluation package with jury config, rubric reference, etc.
       setLoadingText('Waiting for wallet / creating on-chain…');
       const { getContractService } = await import('../services/contractService');
       const contractService = getContractService();
       if (!contractService.isConnected()) await contractService.connect();
 
       const contractResult = await contractService.createBounty({
-        evaluationCid: job.primaryCid,  // The evaluation package CID, not just the rubric
+        evaluationCid: job.evaluationCid,
         classId: selectedClassId,
         threshold,
         bountyAmountEth: parseFloat(formData.payoutAmount),

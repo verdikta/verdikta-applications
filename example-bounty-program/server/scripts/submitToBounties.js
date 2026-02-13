@@ -983,7 +983,7 @@ async function main() {
         if (!options.dryRun && hunterCid) {
           console.log('  Starting on-chain submission...');
           // Use on-chain evaluationCid (authoritative) with backend fallback
-          const evaluationCid = onChainCheck.evaluationCid || details.evaluationCid || details.primaryCid;
+          const evaluationCid = onChainCheck.evaluationCid || details.evaluationCid;
           if (!evaluationCid) {
             throw new Error('No evaluation CID found for this bounty');
           }

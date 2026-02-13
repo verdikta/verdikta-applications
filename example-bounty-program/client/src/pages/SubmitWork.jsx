@@ -368,7 +368,7 @@ function SubmitWork({ walletState }) {
       // Get the evaluationCid from the job data:
       // - evaluationCid: The evaluation package CID (contains jury config, rubric reference, instructions)
       // - This was set when the bounty was created and stored on-chain
-      const evaluationCid = job.primaryCid;
+      const evaluationCid = job.evaluationCid;
       if (!evaluationCid) {
         throw new Error('Evaluation CID not found in job data. The bounty may not have been properly created.');
       }

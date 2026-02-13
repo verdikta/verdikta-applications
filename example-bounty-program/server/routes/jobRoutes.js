@@ -217,22 +217,22 @@ router.post('/create', async (req, res) => {
       return res.status(500).json({ success: false, error: `Primary archive build failed: ${e.message}` });
     }
 
-    // ---- Pin Primary archive (file) ----
-    let primaryCid;
+    // ---- Pin evaluation archive (file) ----
+    let evaluationCid;
     try {
       const devQuery = readBool(req.query?.dev);
       const devBypass = devQuery || DEV_ENV_FAKE;
 
       if (devBypass) {
-        primaryCid = `dev-${path.basename(primaryArchive.archivePath)}`;
-        logger.warn('[jobs/create] DEV bypass — fake primaryCid', { primaryCid });
+        evaluationCid = `dev-${path.basename(primaryArchive.archivePath)}`;
+        logger.warn('[jobs/create] DEV bypass — fake evaluationCid', { evaluationCid });
       } else {
         const ipfsClient = req.app.locals.ipfsClient;
         if (!ipfsClient || typeof ipfsClient.uploadToIPFS !== 'function') {
           throw new Error('IPFS client not initialized on server');
         }
-        primaryCid = await ipfsClient.uploadToIPFS(primaryArchive.archivePath);
-        logger.info('[jobs/create] primary archive pinned', { primaryCid });
+        evaluationCid = await ipfsClient.uploadToIPFS(primaryArchive.archivePath);
+        logger.info('[jobs/create] evaluation archive pinned', { evaluationCid });
       }
     } catch (err) {
       const msg = stringifyErr(err);
@@ -261,7 +261,7 @@ router.post('/create', async (req, res) => {
       bountyAmountUSD: Number(bountyAmountUSD || 0),
       threshold: Number(threshold),
       rubricCid,
-      primaryCid,
+      evaluationCid,
       classId: Number(classId),
       juryNodes,
       iterations: Number(iterations),
@@ -281,7 +281,7 @@ router.post('/create', async (req, res) => {
         bountyAmountUSD: job.bountyAmountUSD,
         threshold: job.threshold,
         rubricCid: job.rubricCid,
-        primaryCid: job.primaryCid,
+        evaluationCid: job.evaluationCid,
         status: job.status,
         submissionOpenTime: job.submissionOpenTime,
         submissionCloseTime: job.submissionCloseTime,
@@ -870,10 +870,10 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Submission window has closed' });
     }
 
-    const evaluationCid = job.evaluationCid || job.primaryCid;
-    if (!evaluationCid) {
+    if (!job.evaluationCid) {
       return res.status(400).json({ success: false, error: 'Job missing evaluationCid' });
     }
+    const evaluationCid = job.evaluationCid;
 
     const contractAddress = config.bountyEscrowAddress;
     if (!contractAddress) {
@@ -1279,8 +1279,7 @@ router.get('/admin/validate-all', async (req, res) => {
 
     for (const job of toValidate) {
       try {
-        // Use evaluationCid (synced from on-chain, authoritative) with primaryCid fallback
-        const evaluationCid = job.evaluationCid || job.primaryCid;
+        const evaluationCid = job.evaluationCid;
 
         const result = await validateBounty({
           evaluationCid,
@@ -1372,8 +1371,7 @@ router.get('/:jobId/validate', async (req, res) => {
       logger.warn('Could not load classMap for validation:', e.message);
     }
 
-    // Use primaryCid - this is the evaluation package CID (ZIP with rubric)
-    const evaluationCid = job.primaryCid || job.evaluationCid;
+    const evaluationCid = job.evaluationCid;
 
     const result = await validateBounty({
       evaluationCid,
@@ -1725,10 +1723,10 @@ router.get('/:jobId', async (req, res) => {
         }
       }
 
-      // If no rubricCid or fetch failed, try extracting from primaryCid (ZIP archive)
-      if (!rubricContent && job.primaryCid) {
+      // If no rubricCid or fetch failed, try extracting from evaluationCid (ZIP archive)
+      if (!rubricContent && job.evaluationCid) {
         try {
-          const archiveBuffer = await ipfsClient.fetchFromIPFS(job.primaryCid);
+          const archiveBuffer = await ipfsClient.fetchFromIPFS(job.evaluationCid);
           const AdmZip = require('adm-zip');
           const zip = new AdmZip(archiveBuffer);
           const entries = zip.getEntries();
@@ -1784,7 +1782,7 @@ router.get('/:jobId', async (req, res) => {
             }
           }
         } catch (err) {
-          logger.warn('[jobs/details] failed to extract from primaryCid', { msg: err.message });
+          logger.warn('[jobs/details] failed to extract from evaluationCid', { msg: err.message });
         }
       }
     }
@@ -1968,7 +1966,7 @@ router.post('/:jobId/submit', async (req, res) => {
     }
 
     // Note: We no longer create an "updated primary" archive at submission time.
-    // The evaluation package (primaryCid) was created at bounty creation and is stored in the contract.
+    // The evaluation package (evaluationCid) was created at bounty creation and is stored in the contract.
     // The hunterCid is passed to startPreparedSubmission() and sent to Verdikta along with
     // the bounty's evaluationCid (which the contract retrieves from storage).
 
@@ -1983,7 +1981,7 @@ router.post('/:jobId/submit', async (req, res) => {
       submission: {
         hunter,
         hunterCid,
-        // Note: evaluationCid is stored in the bounty on-chain (job.primaryCid)
+        // Note: evaluationCid is stored in the bounty on-chain (job.evaluationCid)
         fileCount: uploadedFiles.length,
         files: uploadedFiles.map(f => ({ filename: f.originalname, size: f.size, description: fileDescriptions[f.originalname] })),
         totalSize: uploadedFiles.reduce((s, f) => s + f.size, 0)
@@ -2093,6 +2091,20 @@ router.patch('/:jobId/bountyId', async (req, res) => {
       logger.info('[jobs/bountyId] reconciling jobId to match on-chain ID', {
         oldJobId: job.jobId, newJobId: Number(bountyId)
       });
+
+      // Remove any existing job with the target ID to avoid duplicates
+      const collisionIdx = storage.jobs.findIndex(j =>
+        j !== job && j.jobId === Number(bountyId)
+      );
+      if (collisionIdx !== -1) {
+        logger.warn('[jobs/bountyId] removing colliding job', {
+          collidingJobId: storage.jobs[collisionIdx].jobId,
+          collidingTitle: storage.jobs[collisionIdx].title,
+          collidingStatus: storage.jobs[collisionIdx].status
+        });
+        storage.jobs.splice(collisionIdx, 1);
+      }
+
       job.jobId = Number(bountyId);
     }
     
@@ -2806,14 +2818,14 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
     }
 
     // 4. Check evaluation CID
-    if (job.primaryCid) {
+    if (job.evaluationCid) {
       try {
-        const gatewayUrl = `${config.pinataGateway}/ipfs/${job.primaryCid}`;
+        const gatewayUrl = `${config.pinataGateway}/ipfs/${job.evaluationCid}`;
         const cidCheck = await fetch(gatewayUrl, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
         diagnosis.checks.evaluationCidAccessible = cidCheck.ok;
         if (!cidCheck.ok) {
           diagnosis.issues.push(`Evaluation package CID not accessible: ${cidCheck.status}`);
-          diagnosis.recommendations.push('Verify primaryCid (evaluation package) is pinned');
+          diagnosis.recommendations.push('Verify evaluationCid (evaluation package) is pinned');
         }
       } catch (cidErr) {
         diagnosis.checks.evaluationCidAccessible = false;

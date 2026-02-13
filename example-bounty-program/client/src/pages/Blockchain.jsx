@@ -258,7 +258,7 @@ def check_link_balance(address):
     balance = link.functions.balanceOf(address).call()
     return w3.from_wei(balance, 'ether')`;
 
-  const ipfsStructure = `# Evaluation Package (evaluationCid / primaryCid)
+  const ipfsStructure = `# Evaluation Package (evaluationCid)
 # Format: ZIP archive uploaded to IPFS
 evaluation-package.zip
 ├── manifest.json          # Metadata + jury configuration + bCIDs

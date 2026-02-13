@@ -13,6 +13,31 @@ const path = require('path');
 const logger = require('./logger');
 const { config } = require('../config');
 
+/**
+ * Normalize job data (lazy migrations).
+ * Returns true if any changes were made (caller should writeStorage).
+ */
+function normalizeJobs(jobs) {
+  let changed = false;
+  for (const j of jobs) {
+    // Normalize status to UPPERCASE
+    const uc = String(j.status).toUpperCase();
+    if (j.status !== uc) {
+      j.status = uc;
+      changed = true;
+    }
+    // Migrate primaryCid -> evaluationCid
+    if (j.primaryCid) {
+      if (!j.evaluationCid) {
+        j.evaluationCid = j.primaryCid;
+      }
+      delete j.primaryCid;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 // Network-specific storage directory
 const NETWORK = config.network || 'base-sepolia';
 const STORAGE_DIR = path.join(__dirname, `../data/${NETWORK}`);
@@ -112,6 +137,9 @@ async function createJob(jobData) {
 async function getJob(jobId) {
   try {
     const storage = await readStorage();
+    if (normalizeJobs(storage.jobs)) {
+      await writeStorage(storage);
+    }
     const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
 
     if (!job) {
@@ -166,18 +194,10 @@ async function listJobs(filters = {}) {
     let jobs = storage.jobs;
     const currentContract = getCurrentContractAddress();
 
-    // One-time normalization: ensure all job.status values are UPPERCASE
-    let normalized = false;
-    for (const j of jobs) {
-      const uc = String(j.status).toUpperCase();
-      if (j.status !== uc) {
-        j.status = uc;
-        normalized = true;
-      }
-    }
-    if (normalized) {
+    // Lazy data migrations (status normalization, primaryCid -> evaluationCid)
+    if (normalizeJobs(jobs)) {
       await writeStorage(storage);
-      logger.info('Normalized job statuses to UPPERCASE');
+      logger.info('Normalized job data');
     }
 
     // By default, only show jobs from current contract (unless explicitly disabled)

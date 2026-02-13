@@ -2246,6 +2246,8 @@ function SubmissionCard({
   const isPrepared = submission.status === 'Prepared' || submission.status === 'PREPARED';
   const isApproved = submission.status === 'APPROVED' || submission.status === 'ACCEPTED' || submission.status === 'PassedPaid' || submission.status === 'ACCEPTED_PENDING_CLAIM';
   const isRejected = submission.status === 'REJECTED' || submission.status === 'Failed' || submission.status === 'REJECTED_PENDING_FINALIZATION';
+  const needsFinalization = submission.status === 'ACCEPTED_PENDING_CLAIM' || submission.status === 'REJECTED_PENDING_FINALIZATION';
+  const isAcceptedPendingClaim = submission.status === 'ACCEPTED_PENDING_CLAIM';
 
   // Receipts-as-memes: only show for paid winners
   const isPaidWinner = submission.paidWinner === true;
@@ -2607,8 +2609,45 @@ function SubmissionCard({
         </div>
       )}
 
-      {/* Success message for approved submissions */}
-      {isApproved && (
+      {/* Claim/Finalize button for submissions awaiting on-chain finalization */}
+      {needsFinalization && walletState.isConnected && (
+        <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <div style={{
+            padding: '0.75rem',
+            backgroundColor: isAcceptedPendingClaim ? '#e8f5e9' : '#fff3e0',
+            border: `1px solid ${isAcceptedPendingClaim ? '#81c784' : '#ffcc80'}`,
+            borderRadius: '4px',
+            textAlign: 'center',
+            fontSize: '0.9rem',
+            color: isAcceptedPendingClaim ? '#2e7d32' : '#e65100',
+            fontWeight: 'bold'
+          }}>
+            {isAcceptedPendingClaim
+              ? '🎉 This submission passed! Claim your bounty below.'
+              : 'Evaluation complete. Finalize to update on-chain status and refund LINK.'}
+          </div>
+          <button
+            onClick={() => onFinalize(submission.submissionId)}
+            disabled={isFinalizing || disableActions}
+            className={isAcceptedPendingClaim ? "btn btn-success" : "btn btn-primary"}
+            style={{
+              fontSize: '1rem',
+              padding: '0.75rem 1rem',
+              width: '100%',
+              fontWeight: 'bold'
+            }}
+          >
+            {isFinalizing
+              ? '⏳ Processing transaction...'
+              : isAcceptedPendingClaim
+                ? '🎉 Claim Bounty & Update Status'
+                : 'Finalize & Update Status'}
+          </button>
+        </div>
+      )}
+
+      {/* Success message for fully finalized approved submissions */}
+      {isApproved && !needsFinalization && (
         <div style={{
           marginTop: '0.75rem',
           padding: '0.5rem',

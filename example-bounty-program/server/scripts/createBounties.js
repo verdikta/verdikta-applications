@@ -361,12 +361,12 @@ async function updateJobBountyId(jobId, bountyId, txHash, blockNumber) {
 // BLOCKCHAIN FUNCTIONS
 // =============================================================================
 
-async function createBountyOnChain(contract, primaryCid, classId, threshold, hours, amountEth) {
+async function createBountyOnChain(contract, evaluationCid, classId, threshold, hours, amountEth) {
   const deadline = Math.floor(Date.now() / 1000) + (hours * 3600);
   const value = ethers.parseEther(amountEth.toString());
 
   console.log(`    Sending transaction...`);
-  const tx = await contract.createBounty(primaryCid, classId, threshold, deadline, { value });
+  const tx = await contract.createBounty(evaluationCid, classId, threshold, deadline, { value });
 
   console.log(`    Tx hash: ${tx.hash}`);
   console.log(`    Waiting for confirmation...`);
@@ -502,13 +502,13 @@ async function main() {
       }
 
       const job = jobResult.job;
-      console.log(`  Job created: ID=${job.jobId}, CID=${job.primaryCid?.substring(0, 20)}...`);
+      console.log(`  Job created: ID=${job.jobId}, CID=${job.evaluationCid?.substring(0, 20)}...`);
 
       // Step 2: Create bounty on-chain
       console.log(`  Creating on-chain bounty...`);
       const chainResult = await createBountyOnChain(
         contract,
-        job.primaryCid,
+        job.evaluationCid,
         bountyData.classId,
         bountyData.threshold,
         options.hours,

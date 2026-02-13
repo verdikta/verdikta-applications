@@ -208,18 +208,14 @@ class SyncService {
           // This handles the race condition between frontend create and sync
           //
           // MATCHING STRATEGIES (in order of reliability):
-          // 1. evaluationCid/primaryCid match - most reliable, unique per job
+          // 1. evaluationCid match - most reliable, unique per job
           // 2. creator + deadline match - fallback for older jobs
           const pendingJob = storage.jobs.find(j => {
             // Skip jobs that are already synced (have syncedFromBlockchain flag)
             if (j.syncedFromBlockchain) return false;
-            
+
             // Strategy 1: Match by evaluationCid (most reliable - unique per job)
-            // The evaluationCid/primaryCid is the same CID used on-chain
-            if (bounty.evaluationCid && (
-              j.primaryCid === bounty.evaluationCid ||
-              j.evaluationCid === bounty.evaluationCid
-            )) {
+            if (bounty.evaluationCid && j.evaluationCid === bounty.evaluationCid) {
               return true;
             }
             
@@ -238,7 +234,7 @@ class SyncService {
               jobId: pendingJob.jobId,
               onChainBountyId: bounty.jobId,
               title: pendingJob.title,
-              matchedBy: pendingJob.primaryCid === bounty.evaluationCid ? 'evaluationCid' : 'creator+deadline'
+              matchedBy: pendingJob.evaluationCid === bounty.evaluationCid ? 'evaluationCid' : 'creator+deadline'
             });
             await this.updateJobFromBlockchain(pendingJob, bounty, storage, currentContract);
             linked++;
@@ -246,10 +242,7 @@ class SyncService {
             // Check if a job with same evaluationCid already exists (even if it was already linked)
             // This catches the race condition where PATCH linked the job AFTER we read storage
             const existingByCid = storage.jobs.find(j =>
-              bounty.evaluationCid && (
-                j.primaryCid === bounty.evaluationCid ||
-                j.evaluationCid === bounty.evaluationCid
-              )
+              bounty.evaluationCid && j.evaluationCid === bounty.evaluationCid
             );
             
             if (existingByCid) {
@@ -650,8 +643,7 @@ class SyncService {
       bountyAmount: parseFloat(bounty.bountyAmount),
       bountyAmountUSD: 0, // Would need price oracle
       threshold: bounty.threshold,
-      evaluationCid: bounty.evaluationCid, // The full evaluation package CID
-      primaryCid: bounty.evaluationCid, // Same as evaluationCid for compatibility
+      evaluationCid: bounty.evaluationCid,
       classId: bounty.classId,
       juryNodes: [], // Not stored on-chain
       submissionOpenTime: bounty.createdAt,
@@ -733,16 +725,6 @@ class SyncService {
         new: bounty.evaluationCid
       });
       existingJob.evaluationCid = bounty.evaluationCid;
-    }
-
-    // Keep primaryCid in sync — the contract's evaluationCid is authoritative
-    if (bounty.evaluationCid && existingJob.primaryCid !== bounty.evaluationCid) {
-      logger.info('Syncing primaryCid from blockchain', {
-        jobId: existingJob.jobId,
-        old: existingJob.primaryCid,
-        new: bounty.evaluationCid
-      });
-      existingJob.primaryCid = bounty.evaluationCid;
     }
 
     // Set contract address if not already set (migration for legacy jobs)

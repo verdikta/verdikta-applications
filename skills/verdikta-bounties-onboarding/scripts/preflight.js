@@ -127,12 +127,32 @@ if (job) {
 }
 
 // 3 & 4. On-chain bounty verification
-if (job?.bountyId != null) {
+//
+// The API uses a unified ID model: after reconciliation, job.jobId IS the
+// on-chain bountyId. There is no separate "bountyId" field on API jobs.
+// We detect on-chain linkage via job.onChain or job.txHash.
+const onChainBountyId = job?.bountyId ?? (job?.onChain || job?.txHash ? job.jobId : null);
+
+if (onChainBountyId != null) {
   try {
     const readContract = escrowContract(network, provider);
 
-    // getBounty
-    const onChain = await readContract.getBounty(BigInt(job.bountyId));
+    // getBounty (with retry for RPC eventual consistency)
+    let onChain;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        onChain = await readContract.getBounty(BigInt(onChainBountyId));
+        break;
+      } catch (rpcErr) {
+        if (attempt < 3 && rpcErr.message?.includes('bad bountyId')) {
+          console.log(`  (RPC returned stale state, retrying in ${attempt * 2}s...)`);
+          await new Promise(r => setTimeout(r, attempt * 2000));
+        } else {
+          throw rpcErr;
+        }
+      }
+    }
+
     const chainCid = onChain[1];
     const chainClass = Number(onChain[2]);
     const chainThreshold = Number(onChain[3]);
@@ -146,18 +166,18 @@ if (job?.bountyId != null) {
     if (mismatches.length > 0) {
       check('On-chain match', false, `mismatches: ${mismatches.join(', ')}`);
     } else {
-      check('On-chain match', true, 'CID, classId, threshold all match');
+      check('On-chain match', true, `CID, classId, threshold all match (bountyId=${onChainBountyId})`);
     }
 
     // isAcceptingSubmissions
-    const accepting = await readContract.isAcceptingSubmissions(BigInt(job.bountyId));
+    const accepting = await readContract.isAcceptingSubmissions(BigInt(onChainBountyId));
     check('Accepting submissions', accepting, accepting ? 'yes' : 'no (closed or deadline passed)');
 
   } catch (err) {
     check('On-chain verification', false, err.message);
   }
 } else {
-  check('On-chain match', false, 'no bountyId on API job (not linked to chain)');
+  check('On-chain match', false, 'job not linked to chain (no onChain flag or txHash)');
 }
 
 // 5. Deadline buffer

@@ -397,8 +397,23 @@ const issues = [];
 if (bountyId != null) {
   try {
     // On-chain verification via getBounty
+    // Retry with backoff to handle RPC eventual consistency on public endpoints
+    // (load-balanced RPCs may serve stale state right after tx.wait())
     const readContract = escrowContract(network, provider);
-    const onChain = await readContract.getBounty(BigInt(bountyId));
+    let onChain;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        onChain = await readContract.getBounty(BigInt(bountyId));
+        break;
+      } catch (rpcErr) {
+        if (attempt < 3 && rpcErr.message?.includes('bad bountyId')) {
+          console.log(`  (RPC returned stale state for bountyId ${bountyId}, retrying in ${attempt * 2}s...)`);
+          await new Promise(r => setTimeout(r, attempt * 2000));
+        } else {
+          throw rpcErr;
+        }
+      }
+    }
     // onChain: [creator, evaluationCid, requestedClass, threshold, payoutWei, createdAt, submissionDeadline, status, winner, submissions]
 
     const chainCreator = onChain[0];

@@ -210,18 +210,26 @@ try {
 }
 
 // 0c. On-chain: verify bounty is accepting submissions
-if (job.bountyId != null) {
+//
+// The API uses a unified ID model: after reconciliation, job.jobId IS the
+// on-chain bountyId. There is no separate "bountyId" field on API jobs.
+// Detect on-chain linkage via job.bountyId (legacy), job.onChain, or job.txHash.
+const onChainBountyId = job.bountyId ?? (job.onChain || job.txHash ? job.jobId : null);
+
+if (onChainBountyId != null) {
   try {
     const readContract = escrowContract(network, provider);
-    const accepting = await readContract.isAcceptingSubmissions(BigInt(job.bountyId));
+    const accepting = await readContract.isAcceptingSubmissions(BigInt(onChainBountyId));
     if (!accepting) {
-      console.error(`  ✖ On-chain bounty #${job.bountyId} is NOT accepting submissions. Aborting.`);
+      console.error(`  ✖ On-chain bounty #${onChainBountyId} is NOT accepting submissions. Aborting.`);
       process.exit(1);
     }
-    console.log(`  On-chain: accepting submissions ✓ (bountyId=${job.bountyId})`);
+    console.log(`  On-chain: accepting submissions ✓ (bountyId=${onChainBountyId})`);
   } catch (err) {
     console.warn(`  (Could not verify on-chain status: ${err.message})`);
   }
+} else {
+  console.warn(`  ⚠ Job not linked to chain (no onChain flag). Skipping on-chain pre-check.`);
 }
 
 // ---- Helper: send transaction and wait ----

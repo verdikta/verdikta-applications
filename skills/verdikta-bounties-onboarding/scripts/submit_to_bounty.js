@@ -174,13 +174,14 @@ if (job.submissionCloseTime) {
   console.log(`  Deadline: ${deadline.toISOString()}`);
 }
 
-if (!job.primaryCid) {
-  console.error(`Job #${jobId} has no primaryCid. It may have been created with create_bounty_min.js (hardcoded CID) — these bounties cannot accept submissions through the API.`);
+const jobCid = job.primaryCid || job.evaluationCid;
+if (!jobCid) {
+  console.error(`Job #${jobId} has no primaryCid/evaluationCid. It may have been created with create_bounty_min.js (hardcoded CID) — these bounties cannot accept submissions through the API.`);
   process.exit(1);
 }
 
 console.log(`  Job status: ${job.status || 'OPEN'}`);
-console.log(`  primaryCid: ${job.primaryCid}`);
+console.log(`  evaluationCid: ${jobCid}`);
 
 // 0b. Validate evaluation package format
 try {

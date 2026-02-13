@@ -203,15 +203,16 @@ if (!apiRes.ok || !apiData.success) {
 }
 
 const jobId = apiData.job?.jobId;
-const primaryCid = apiData.job?.primaryCid;
+// API may return the CID as primaryCid or evaluationCid depending on version
+const primaryCid = apiData.job?.primaryCid || apiData.job?.evaluationCid;
 
 if (!primaryCid) {
-  console.error('API response missing primaryCid:', JSON.stringify(apiData));
+  console.error('API response missing primaryCid/evaluationCid:', JSON.stringify(apiData));
   process.exit(1);
 }
 
 console.log(`  Job ID:     ${jobId}`);
-console.log(`  primaryCid: ${primaryCid}`);
+console.log(`  evaluationCid: ${primaryCid}`);
 
 // ---- Step 2: Create bounty on-chain ----
 
@@ -366,11 +367,12 @@ if (bountyId != null) {
       if (apiJob.bountyId != null && String(apiJob.bountyId) !== String(bountyId)) {
         issues.push(`API bountyId mismatch: API=${apiJob.bountyId}, on-chain=${bountyId}`);
       }
-      if (apiJob.primaryCid && apiJob.primaryCid !== primaryCid) {
-        issues.push(`API primaryCid mismatch: API=${apiJob.primaryCid}, expected=${primaryCid}`);
+      const apiCid = apiJob.primaryCid || apiJob.evaluationCid;
+      if (apiCid && apiCid !== primaryCid) {
+        issues.push(`API CID mismatch: API=${apiCid}, expected=${primaryCid}`);
       }
       if (issues.length === 0) {
-        console.log('  API cross-check: bountyId and primaryCid match. ✓');
+        console.log('  API cross-check: bountyId and evaluationCid match. ✓');
       }
     } else {
       issues.push(`API job fetch failed: HTTP ${verifyRes.status}`);

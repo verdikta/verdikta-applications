@@ -138,7 +138,8 @@ if (job?.bountyId != null) {
     const chainThreshold = Number(onChain[3]);
 
     const mismatches = [];
-    if (job.primaryCid && chainCid !== job.primaryCid) mismatches.push(`CID(chain=${chainCid.slice(0, 12)}…)`);
+    const jobCid = job.primaryCid || job.evaluationCid;
+    if (jobCid && chainCid !== jobCid) mismatches.push(`CID(chain=${chainCid.slice(0, 12)}…)`);
     if (job.classId != null && chainClass !== Number(job.classId)) mismatches.push(`classId(chain=${chainClass})`);
     if (job.threshold != null && chainThreshold !== Number(job.threshold)) mismatches.push(`threshold(chain=${chainThreshold})`);
 

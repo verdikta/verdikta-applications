@@ -735,6 +735,16 @@ class SyncService {
       existingJob.evaluationCid = bounty.evaluationCid;
     }
 
+    // Keep primaryCid in sync — the contract's evaluationCid is authoritative
+    if (bounty.evaluationCid && existingJob.primaryCid !== bounty.evaluationCid) {
+      logger.info('Syncing primaryCid from blockchain', {
+        jobId: existingJob.jobId,
+        old: existingJob.primaryCid,
+        new: bounty.evaluationCid
+      });
+      existingJob.primaryCid = bounty.evaluationCid;
+    }
+
     // Set contract address if not already set (migration for legacy jobs)
     if (!existingJob.contractAddress && currentContract) {
       existingJob.contractAddress = currentContract;

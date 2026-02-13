@@ -12,6 +12,7 @@
  *
  * Usage:
  *   node scripts/submitToBounties.js --count 1
+ *   NETWORK=base node scripts/submitToBounties.js --count 1
  *   node scripts/submitToBounties.js --count 3 --bounty-id 5
  *   node scripts/submitToBounties.js --count 1 --dry-run
  *
@@ -644,9 +645,10 @@ async function checkOnChainWinner(provider, onChainBountyId, threshold) {
       'getBounty'
     );
     const submissionCount = Number(bounty.submissions);
+    const evaluationCid = bounty.evaluationCid;
 
     if (submissionCount === 0) {
-      return { hasWinner: false };
+      return { hasWinner: false, evaluationCid };
     }
 
     // Check each submission for passing status
@@ -709,7 +711,7 @@ async function checkOnChainWinner(provider, onChainBountyId, threshold) {
       }
     }
 
-    return { hasWinner: false, submissionCount: checkedCount };
+    return { hasWinner: false, submissionCount: checkedCount, evaluationCid };
   } catch (error) {
     // Only warn for unexpected errors (not submission fetch errors, which are handled above)
     if (!error.message?.includes('bad submissionId')) {
@@ -980,7 +982,8 @@ async function main() {
         // Now start on-chain if not dry run
         if (!options.dryRun && hunterCid) {
           console.log('  Starting on-chain submission...');
-          const evaluationCid = details.primaryCid;
+          // Use on-chain evaluationCid (authoritative) with backend fallback
+          const evaluationCid = onChainCheck.evaluationCid || details.evaluationCid || details.primaryCid;
           if (!evaluationCid) {
             throw new Error('No evaluation CID found for this bounty');
           }

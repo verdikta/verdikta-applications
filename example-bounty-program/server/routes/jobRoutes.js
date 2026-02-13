@@ -870,9 +870,9 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Submission window has closed' });
     }
 
-    const evaluationCid = job.primaryCid;
+    const evaluationCid = job.evaluationCid || job.primaryCid;
     if (!evaluationCid) {
-      return res.status(400).json({ success: false, error: 'Job missing evaluationCid (primaryCid)' });
+      return res.status(400).json({ success: false, error: 'Job missing evaluationCid' });
     }
 
     const contractAddress = config.bountyEscrowAddress;
@@ -1279,8 +1279,8 @@ router.get('/admin/validate-all', async (req, res) => {
 
     for (const job of toValidate) {
       try {
-        // Use primaryCid - this is the evaluation package CID (ZIP with rubric)
-        const evaluationCid = job.primaryCid || job.evaluationCid;
+        // Use evaluationCid (synced from on-chain, authoritative) with primaryCid fallback
+        const evaluationCid = job.evaluationCid || job.primaryCid;
 
         const result = await validateBounty({
           evaluationCid,

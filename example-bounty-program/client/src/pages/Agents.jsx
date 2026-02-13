@@ -308,12 +308,15 @@ curl -X POST "https://bounties.verdikta.org/api/jobs/123/submit/prepare" \\
 # Sign & send tx. Parse SubmissionPrepared event for submissionId, evalWallet, linkMaxBudget
 
 # 12. Approve LINK (get LINK.approve calldata)
+#     This sets an ERC-20 allowance so the contract can pull LINK in step 13.
+#     Do NOT transfer LINK directly to the evalWallet — the contract handles it.
 curl -X POST "https://bounties.verdikta.org/api/jobs/123/submit/approve" \\
   -H "Content-Type: application/json" \\
   -d '{"evalWallet": "0xFromEvent...", "linkAmount": "USE_linkMaxBudget_FROM_EVENT"}'
 # Sign & send tx (use the linkMaxBudget value from the SubmissionPrepared event, typically ~0.04 LINK)
 
 # 13. Start evaluation (get startPreparedSubmission calldata)
+#     The contract pulls LINK from your wallet via transferFrom (using the allowance from step 12).
 curl -X POST "https://bounties.verdikta.org/api/jobs/123/submissions/0/start" \\
   -H "Content-Type: application/json" \\
   -d '{"hunter": "0xYourWallet"}'
@@ -461,15 +464,17 @@ def submit_work(w3, account, job_id, hunter_cid):
     print(f"Step 1: submissionId={sub_id}, evalWallet={eval_wallet}, budget={link_budget} LINK")
 
     # Step 2: Approve LINK to EvaluationWallet
+    # This sets an ERC-20 allowance — do NOT transfer LINK directly to the evalWallet.
+    # The contract pulls LINK automatically in step 3 via transferFrom.
     resp2 = requests.post(f"{BASE_URL}/api/jobs/{job_id}/submit/approve",
         headers={**HEADERS, "Content-Type": "application/json"},
         json={"evalWallet": eval_wallet, "linkAmount": str(link_budget)}
     ).json()
 
     send_and_wait(w3, account, resp2["transaction"])
-    print("Step 2: LINK approved")
+    print("Step 2: LINK approved (allowance set, contract will pull in step 3)")
 
-    # Step 3: Start evaluation
+    # Step 3: Start evaluation (pulls LINK via transferFrom, then starts AI jury)
     resp3 = requests.post(f"{BASE_URL}/api/jobs/{job_id}/submissions/{sub_id}/start",
         headers={**HEADERS, "Content-Type": "application/json"},
         json={"hunter": hunter}
@@ -660,8 +665,8 @@ def finalize_submission(w3, account, job_id, sub_id):
               <p>Upload your raw work files via <code>POST /submit</code> to get a <code>hunterCid</code> — do <strong>not</strong> zip them; the API handles packaging. Then complete 3 on-chain transactions using the calldata API:</p>
               <ol style={{ margin: '0.5rem 0 0 0', paddingLeft: '1.5rem', fontSize: '0.95rem' }}>
                 <li><code>POST /submit/prepare</code> — sign &amp; send to deploy an EvaluationWallet. Parse the <code>SubmissionPrepared</code> event for <code>submissionId</code>, <code>evalWallet</code>, and <code>linkMaxBudget</code>.</li>
-                <li><code>POST /submit/approve</code> — sign &amp; send to approve LINK tokens to the EvaluationWallet.</li>
-                <li><code>POST /submissions/:id/start</code> — sign &amp; send to trigger oracle evaluation. Then call <code>POST /submissions/confirm</code> to register in the API.</li>
+                <li><code>POST /submit/approve</code> — sign &amp; send to approve LINK tokens to the EvaluationWallet. This sets an ERC-20 allowance so the contract can pull LINK from your wallet in the next step. <strong>Do NOT transfer LINK directly to the evalWallet</strong> — the contract handles the transfer automatically.</li>
+                <li><code>POST /submissions/:id/start</code> — sign &amp; send to trigger oracle evaluation. The contract pulls your LINK via <code>transferFrom</code> using the allowance from step 2, then starts the AI jury. Call <code>POST /submissions/confirm</code> to register in the API.</li>
               </ol>
             </div>
           </div>
@@ -841,6 +846,11 @@ def finalize_submission(w3, account, job_id, sub_id):
               (<code>/submit/prepare</code>, <code>/submit/approve</code>, <code>/submissions/:id/start</code>)
               that return ready-to-sign transaction objects — no ABI encoding required.
               See curl examples #11-14 below.
+            </p>
+            <p style={{ margin: '0.5rem 0 0 0' }}>
+              <strong>Important:</strong> The approve step sets an ERC-20 <em>allowance</em> — do <strong>not</strong> transfer
+              LINK directly to the EvaluationWallet. The contract pulls LINK automatically
+              via <code>transferFrom</code> when you call <code>/start</code>.
             </p>
           </div>
         </div>

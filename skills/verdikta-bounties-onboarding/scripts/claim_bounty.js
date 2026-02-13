@@ -18,7 +18,7 @@
 import './_env.js';
 import fs from 'node:fs/promises';
 import { ethers } from 'ethers';
-import { getNetwork, providerFor, loadWallet, resolvePath } from './_lib.js';
+import { getNetwork, providerFor, loadWallet, resolvePath, redactApiKey } from './_lib.js';
 import { defaultSecretsDir } from './_paths.js';
 
 // ---- CLI args ----
@@ -199,6 +199,24 @@ if (!finalizeRes.ok || !finalizeData.transaction) {
   } else {
     console.error('  Finalize failed:', JSON.stringify(finalizeData, null, 2));
   }
+  // Try /diagnose for more context
+  try {
+    const diagRes = await fetch(
+      `${baseUrl}/api/jobs/${jobId}/submissions/${submissionId}/diagnose`,
+      { headers }
+    );
+    if (diagRes.ok) {
+      const diag = await diagRes.json();
+      if (diag.issues?.length) {
+        console.error('\n  Diagnosis:');
+        diag.issues.forEach(i => console.error(`    - [${i.severity || 'info'}] ${i.message || i}`));
+      }
+      if (diag.recommendations?.length) {
+        console.error('  Recommendations:');
+        diag.recommendations.forEach(r => console.error(`    → ${r}`));
+      }
+    }
+  } catch { /* best-effort */ }
   process.exit(1);
 }
 
@@ -224,5 +242,6 @@ console.log(`   Result:       ${passed ? 'PASSED — payout claimed!' : 'FAILED 
 if (passed && finalizeData.expectedPayout) {
   console.log(`   Payout:       ${finalizeData.expectedPayout} ETH → ${hunter}`);
 }
+const safeKey = redactApiKey(apiKey);
 console.log(`\nTo see detailed evaluation feedback:`);
-console.log(`  curl -H "X-Bot-API-Key: ${apiKey}" ${baseUrl}/api/jobs/${jobId}/submissions/${submissionId}/evaluation`);
+console.log(`  curl -H "X-Bot-API-Key: ${safeKey}" ${baseUrl}/api/jobs/${jobId}/submissions/${submissionId}/evaluation`);

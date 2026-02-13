@@ -38,7 +38,7 @@ import './_env.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ethers } from 'ethers';
-import { getNetwork, providerFor, loadWallet, resolvePath } from './_lib.js';
+import { getNetwork, providerFor, loadWallet, resolvePath, ESCROW, escrowContract } from './_lib.js';
 import { defaultSecretsDir } from './_paths.js';
 
 // ---- CLI args ----
@@ -217,23 +217,13 @@ console.log(`  primaryCid: ${primaryCid}`);
 
 console.log('\n--- Step 2: Create bounty on-chain (bot wallet signs tx) ---');
 
-const ESCROW = {
-  'base': '0x0a6290EfA369Bbd4a9886ab9f98d7fAd7b0dc746',
-  'base-sepolia': '0x0520b15Ee61C4E2A1B00bA260d8B1FBD015D2780',
-};
-
-const contractAddress = process.env.BOUNTY_ESCROW_ADDRESS || ESCROW[network];
+const contractAddress = ESCROW[network];
 if (!contractAddress) {
   console.error(`No escrow address for network ${network}`);
   process.exit(1);
 }
 
-const ABI = [
-  'function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline) payable returns (uint256)',
-  'event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)',
-];
-
-const contract = new ethers.Contract(contractAddress, ABI, signer);
+const contract = escrowContract(network, signer);
 const deadline = Math.floor(Date.now() / 1000) + (Number(submissionWindowHours) * 3600);
 const value = ethers.parseEther(String(bountyAmount));
 
@@ -326,9 +316,85 @@ if (bountyId != null) {
   console.warn(`    Wait for auto-sync or manually call: PATCH /api/jobs/${jobId}/bountyId/resolve`);
 }
 
+// ---- Step 4: Verify on-chain integrity ----
+
+console.log('\n--- Step 4: Verify on-chain ↔ API integrity ---');
+
+let integrityOk = true;
+const issues = [];
+
+if (bountyId != null) {
+  try {
+    // On-chain verification via getBounty
+    const readContract = escrowContract(network, provider);
+    const onChain = await readContract.getBounty(BigInt(bountyId));
+    // onChain: [creator, evaluationCid, requestedClass, threshold, payoutWei, createdAt, submissionDeadline, status, winner, submissions]
+
+    const chainCreator = onChain[0];
+    const chainCid = onChain[1];
+    const chainClass = Number(onChain[2]);
+    const chainThreshold = Number(onChain[3]);
+
+    if (chainCreator.toLowerCase() !== creator.toLowerCase()) {
+      issues.push(`creator mismatch: on-chain=${chainCreator}, expected=${creator}`);
+    }
+    if (chainCid !== primaryCid) {
+      issues.push(`evaluationCid mismatch: on-chain=${chainCid}, expected=${primaryCid}`);
+    }
+    if (chainClass !== Number(classId)) {
+      issues.push(`classId mismatch: on-chain=${chainClass}, expected=${classId}`);
+    }
+    if (chainThreshold !== Number(threshold)) {
+      issues.push(`threshold mismatch: on-chain=${chainThreshold}, expected=${threshold}`);
+    }
+
+    if (issues.length === 0) {
+      console.log('  On-chain: creator, CID, classId, threshold all match. ✓');
+    }
+  } catch (err) {
+    issues.push(`on-chain getBounty failed: ${err.message}`);
+  }
+
+  // API cross-check
+  try {
+    const verifyRes = await fetch(`${baseUrl}/api/jobs/${jobId}`, {
+      headers: { 'X-Bot-API-Key': apiKey },
+    });
+    if (verifyRes.ok) {
+      const verifyData = await verifyRes.json();
+      const apiJob = verifyData.job || verifyData;
+      if (apiJob.bountyId != null && String(apiJob.bountyId) !== String(bountyId)) {
+        issues.push(`API bountyId mismatch: API=${apiJob.bountyId}, on-chain=${bountyId}`);
+      }
+      if (apiJob.primaryCid && apiJob.primaryCid !== primaryCid) {
+        issues.push(`API primaryCid mismatch: API=${apiJob.primaryCid}, expected=${primaryCid}`);
+      }
+      if (issues.length === 0) {
+        console.log('  API cross-check: bountyId and primaryCid match. ✓');
+      }
+    } else {
+      issues.push(`API job fetch failed: HTTP ${verifyRes.status}`);
+    }
+  } catch (err) {
+    issues.push(`API cross-check failed: ${err.message}`);
+  }
+
+  if (issues.length > 0) {
+    integrityOk = false;
+    console.warn('\n  ⚠ INTEGRITY ISSUES DETECTED:');
+    issues.forEach(i => console.warn(`    - ${i}`));
+    console.warn('  DO NOT submit to this bounty until issues are resolved.');
+    console.warn('  This may indicate API index drift or ID collision on mainnet.');
+  }
+} else {
+  console.warn('  Skipping integrity check (bountyId not parsed from event).');
+  integrityOk = false;
+}
+
 // ---- Done ----
 
-console.log('\n✅ Bounty created successfully!');
+const verdict = integrityOk ? 'GO' : 'NO-GO (see warnings above)';
+console.log(`\n✅ Bounty created successfully!  Integrity: ${verdict}`);
 console.log(`   Title:     ${title}`);
 console.log(`   Job ID:    ${jobId}`);
 console.log(`   Bounty ID: ${bountyId}`);

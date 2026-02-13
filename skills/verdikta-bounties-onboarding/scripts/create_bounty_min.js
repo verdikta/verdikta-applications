@@ -3,7 +3,7 @@ import './_env.js';
 import { ethers } from 'ethers';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { getNetwork, providerFor, loadWallet, parseEth, resolvePath } from './_lib.js';
+import { getNetwork, providerFor, loadWallet, parseEth, resolvePath, ESCROW } from './_lib.js';
 import { defaultSecretsDir } from './_paths.js';
 
 // Minimal on-chain bounty creation (no IPFS upload).
@@ -23,12 +23,6 @@ const network = getNetwork();
 const provider = providerFor(network);
 const wallet = await loadWallet();
 const signer = wallet.connect(provider);
-
-// Escrow addresses (fallbacks)
-const ESCROW = {
-  base: process.env.BOUNTY_ESCROW_ADDRESS_BASE || '0x0a6290EfA369Bbd4a9886ab9f98d7fAd7b0dc746',
-  'base-sepolia': process.env.BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA || '0x0520b15Ee61C4E2A1B00bA260d8B1FBD015D2780'
-};
 
 const contractAddress = ESCROW[network];
 if (!contractAddress) throw new Error(`Missing escrow address for network=${network}`);

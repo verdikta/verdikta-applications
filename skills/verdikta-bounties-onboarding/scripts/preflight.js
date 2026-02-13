@@ -153,9 +153,9 @@ if (onChainBountyId != null) {
       }
     }
 
-    const chainCid = onChain[1];
-    const chainClass = Number(onChain[2]);
-    const chainThreshold = Number(onChain[3]);
+    const chainCid = onChain.evaluationCid ?? onChain[1];
+    const chainClass = Number(onChain.requestedClass ?? onChain[2]);
+    const chainThreshold = Number(onChain.threshold ?? onChain[3]);
 
     const mismatches = [];
     const jobCid = job.primaryCid || job.evaluationCid;

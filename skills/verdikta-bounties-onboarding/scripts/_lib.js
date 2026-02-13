@@ -41,7 +41,8 @@ export const BOUNTY_ESCROW_ABI = [
   'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)',
   // Read
   'function bountyCount() view returns (uint256)',
-  'function getBounty(uint256 bountyId) view returns (address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions)',
+  // getBounty returns Bounty memory (a struct) — must use tuple() for correct ABI decoding
+  'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions))',
   'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))',
   'function getEffectiveBountyStatus(uint256 bountyId) view returns (string)',
   'function isAcceptingSubmissions(uint256 bountyId) view returns (bool)',

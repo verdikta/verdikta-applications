@@ -414,12 +414,12 @@ if (bountyId != null) {
         }
       }
     }
-    // onChain: [creator, evaluationCid, requestedClass, threshold, payoutWei, createdAt, submissionDeadline, status, winner, submissions]
+    // onChain is a tuple: { creator, evaluationCid, requestedClass, threshold, payoutWei, createdAt, submissionDeadline, status, winner, submissions }
 
-    const chainCreator = onChain[0];
-    const chainCid = onChain[1];
-    const chainClass = Number(onChain[2]);
-    const chainThreshold = Number(onChain[3]);
+    const chainCreator = onChain.creator ?? onChain[0];
+    const chainCid = onChain.evaluationCid ?? onChain[1];
+    const chainClass = Number(onChain.requestedClass ?? onChain[2]);
+    const chainThreshold = Number(onChain.threshold ?? onChain[3]);
 
     if (chainCreator.toLowerCase() !== creator.toLowerCase()) {
       issues.push(`creator mismatch: on-chain=${chainCreator}, expected=${creator}`);

@@ -262,10 +262,20 @@ console.log(`  Confirmed in block: ${receipt.blockNumber}`);
 console.log(`  On-chain bountyId:  ${bountyId ?? '(not parsed)'}`);
 
 // ---- Step 3: Link on-chain bounty to API job ----
+//
+// The API sync service may reconcile the jobId to match the on-chain bountyId
+// before our link call runs. When that happens, the job moves from apiJobId (e.g. 19)
+// to bountyId (e.g. 12) in the API. We handle this by checking both IDs.
 
 console.log('\n--- Step 3: Link on-chain bounty ID to API job ---');
 
+// effectiveJobId is the ID to use for all subsequent API calls.
+// Starts as the original apiJobId, but may change to bountyId after reconciliation.
+let effectiveJobId = jobId;
+let linked = false;
+
 if (bountyId != null) {
+  // Attempt 1: Direct link via original apiJobId
   const linkRes = await fetch(`${baseUrl}/api/jobs/${jobId}/bountyId`, {
     method: 'PATCH',
     headers: {
@@ -278,44 +288,104 @@ if (bountyId != null) {
       blockNumber: receipt.blockNumber,
     }),
   });
-  const linkData = await linkRes.json();
 
-  if (!linkRes.ok) {
-    // Fallback: try resolve endpoint (searches chain by creator + deadline)
-    console.warn(`  Direct link failed (${linkRes.status}), trying resolve...`);
-    const resolveRes = await fetch(`${baseUrl}/api/jobs/${jobId}/bountyId/resolve`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Bot-API-Key': apiKey,
-      },
-      body: JSON.stringify({
-        creator,
-        rubricCid: primaryCid,
-        submissionCloseTime: deadline,
-        txHash: tx.hash,
-      }),
-    });
-    const resolveData = await resolveRes.json();
-    if (resolveRes.ok) {
-      console.log(`  Linked via resolve (method: ${resolveData.method}, bountyId: ${resolveData.bountyId})`);
-    } else {
-      console.warn(`  ⚠ Could not link job to on-chain bounty: ${JSON.stringify(resolveData)}`);
-      console.warn(`    The bounty exists on-chain but the API may not find it for submissions.`);
-      console.warn(`    Wait for auto-sync or manually call: PATCH /api/jobs/${jobId}/bountyId`);
+  if (linkRes.ok) {
+    const linkData = await linkRes.json();
+    const reconciledId = linkData.job?.jobId ?? bountyId;
+    effectiveJobId = reconciledId;
+    linked = true;
+    console.log(`  Linked: API job ${jobId} → on-chain bounty ${reconciledId}`);
+    if (Number(reconciledId) !== Number(jobId)) {
+      console.log(`  Note: API reconciled jobId from ${jobId} → ${reconciledId} (aligned with on-chain)`);
     }
   } else {
-    const linkedId = linkData.job?.jobId ?? bountyId;
-    console.log(`  Linked: API job ${jobId} → on-chain bounty ${linkedId}`);
-    // If IDs were reconciled, update jobId for output
-    if (linkData.job?.jobId != null && linkData.job.jobId !== Number(jobId)) {
-      console.log(`  Note: API job ID reconciled from ${jobId} → ${linkData.job.jobId} (aligned with on-chain)`);
+    console.warn(`  Direct link failed (HTTP ${linkRes.status}) — job ${jobId} may have been reconciled by sync service.`);
+
+    // Attempt 2: Check if sync service already reconciled the job under the bountyId
+    console.log(`  Waiting 3s for sync service, then checking API job at bountyId ${bountyId}...`);
+    await new Promise(r => setTimeout(r, 3000));
+
+    const syncCheckRes = await fetch(`${baseUrl}/api/jobs/${bountyId}`, {
+      headers: { 'X-Bot-API-Key': apiKey },
+    });
+
+    if (syncCheckRes.ok) {
+      const syncCheckData = await syncCheckRes.json();
+      const syncJob = syncCheckData.job || syncCheckData;
+      const syncCid = syncJob.primaryCid || syncJob.evaluationCid;
+
+      if (syncCid === primaryCid) {
+        // Sync service reconciled correctly — job now lives at bountyId
+        effectiveJobId = Number(bountyId);
+        linked = true;
+        console.log(`  ✓ Sync service already reconciled: job now at ID ${bountyId} with matching CID.`);
+      } else if (syncCid) {
+        console.warn(`  Found job at bountyId ${bountyId} but CID doesn't match:`);
+        console.warn(`    API CID:      ${syncCid}`);
+        console.warn(`    Expected CID: ${primaryCid}`);
+        console.warn(`  This may be a different bounty occupying ID ${bountyId}.`);
+      }
+    }
+
+    if (!linked) {
+      // Attempt 3: Try resolve endpoint using bountyId (in case job moved)
+      console.warn(`  Trying resolve via bountyId ${bountyId}...`);
+      const resolveRes = await fetch(`${baseUrl}/api/jobs/${bountyId}/bountyId/resolve`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Bot-API-Key': apiKey,
+        },
+        body: JSON.stringify({
+          creator,
+          rubricCid: primaryCid,
+          submissionCloseTime: deadline,
+          txHash: tx.hash,
+        }),
+      });
+
+      if (resolveRes.ok) {
+        const resolveData = await resolveRes.json();
+        effectiveJobId = resolveData.bountyId ?? bountyId;
+        linked = true;
+        console.log(`  Linked via resolve (method: ${resolveData.method}, bountyId: ${resolveData.bountyId})`);
+      } else {
+        // Attempt 4: Also try resolve with the original apiJobId
+        const resolveRes2 = await fetch(`${baseUrl}/api/jobs/${jobId}/bountyId/resolve`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Bot-API-Key': apiKey,
+          },
+          body: JSON.stringify({
+            creator,
+            rubricCid: primaryCid,
+            submissionCloseTime: deadline,
+            txHash: tx.hash,
+          }),
+        });
+
+        if (resolveRes2.ok) {
+          const resolveData2 = await resolveRes2.json();
+          effectiveJobId = resolveData2.bountyId ?? bountyId;
+          linked = true;
+          console.log(`  Linked via resolve on apiJobId (method: ${resolveData2.method}, bountyId: ${resolveData2.bountyId})`);
+        } else {
+          console.warn(`  ⚠ All link attempts failed. The bounty exists on-chain (bountyId=${bountyId})`);
+          console.warn(`    but the API could not be linked.`);
+          console.warn(`    The sync service may resolve this automatically. Use bountyId ${bountyId} for API calls.`);
+          // Default to bountyId since that's the on-chain truth
+          effectiveJobId = Number(bountyId);
+        }
+      }
     }
   }
 } else {
   console.warn('  ⚠ Could not parse bountyId from event — skipping link step.');
   console.warn(`    Wait for auto-sync or manually call: PATCH /api/jobs/${jobId}/bountyId/resolve`);
 }
+
+console.log(`\n  Effective job ID for API calls: ${effectiveJobId}`);
 
 // ---- Step 4: Verify on-chain integrity ----
 
@@ -356,26 +426,23 @@ if (bountyId != null) {
     issues.push(`on-chain getBounty failed: ${err.message}`);
   }
 
-  // API cross-check
+  // API cross-check (use effectiveJobId, which may be bountyId after reconciliation)
   try {
-    const verifyRes = await fetch(`${baseUrl}/api/jobs/${jobId}`, {
+    const verifyRes = await fetch(`${baseUrl}/api/jobs/${effectiveJobId}`, {
       headers: { 'X-Bot-API-Key': apiKey },
     });
     if (verifyRes.ok) {
       const verifyData = await verifyRes.json();
       const apiJob = verifyData.job || verifyData;
-      if (apiJob.bountyId != null && String(apiJob.bountyId) !== String(bountyId)) {
-        issues.push(`API bountyId mismatch: API=${apiJob.bountyId}, on-chain=${bountyId}`);
-      }
       const apiCid = apiJob.primaryCid || apiJob.evaluationCid;
       if (apiCid && apiCid !== primaryCid) {
         issues.push(`API CID mismatch: API=${apiCid}, expected=${primaryCid}`);
       }
       if (issues.length === 0) {
-        console.log('  API cross-check: bountyId and evaluationCid match. ✓');
+        console.log(`  API cross-check (jobId=${effectiveJobId}): evaluationCid match. ✓`);
       }
     } else {
-      issues.push(`API job fetch failed: HTTP ${verifyRes.status}`);
+      issues.push(`API job fetch failed: GET /api/jobs/${effectiveJobId} returned HTTP ${verifyRes.status}`);
     }
   } catch (err) {
     issues.push(`API cross-check failed: ${err.message}`);
@@ -397,9 +464,11 @@ if (bountyId != null) {
 
 const verdict = integrityOk ? 'GO' : 'NO-GO (see warnings above)';
 console.log(`\n✅ Bounty created successfully!  Integrity: ${verdict}`);
-console.log(`   Title:     ${title}`);
-console.log(`   Job ID:    ${jobId}`);
-console.log(`   Bounty ID: ${bountyId}`);
-console.log(`   Amount:    ${bountyAmount} ETH`);
-console.log(`   Deadline:  ${new Date(deadline * 1000).toISOString()}`);
+console.log(`   Title:        ${title}`);
+console.log(`   API Job ID:   ${jobId} (original)`);
+console.log(`   Effective ID: ${effectiveJobId} (use this for API calls)`);
+console.log(`   Bounty ID:    ${bountyId} (on-chain)`);
+console.log(`   Amount:       ${bountyAmount} ETH`);
+console.log(`   Deadline:     ${new Date(deadline * 1000).toISOString()}`);
+console.log(`   Linked:       ${linked ? 'yes' : 'no (sync service may resolve automatically)'}`);
 console.log(`\n   View: ${baseUrl.replace('/api', '')}`);

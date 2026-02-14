@@ -740,7 +740,6 @@ class SyncService {
     // If the bounty already has submissions, sync them from chain
     if (bounty.submissionCount > 0) {
       try {
-        const contractService = getContractService();
         job.submissions = await this.syncSubmissions(
           bounty.jobId,
           bounty.submissionCount,
@@ -751,6 +750,9 @@ class SyncService {
         logger.warn('Failed to sync submissions during addJob', { jobId: bounty.jobId, error: err.message });
       }
     }
+
+    // Keep submissionCount consistent with the actual submissions array
+    job.submissionCount = job.submissions.length;
 
     storage.jobs.push(job);
     storage.nextId = Math.max(storage.nextId, bounty.jobId + 1);
@@ -880,6 +882,7 @@ class SyncService {
    * Merge sync changes into fresh storage (handles PATCH race conditions)
    */
   _mergeStorageChanges(modifiedStorage, freshStorage, currentContract) {
+    // Fields that PATCH endpoints might set during sync — preserve fresh values
     const patchPreserveFields = ['txHash', 'blockNumber', 'onChain', 'contractAddress'];
 
     for (const modifiedJob of modifiedStorage.jobs) {
@@ -894,8 +897,45 @@ class SyncService {
           }
         }
 
+        // Merge submissions: keep the longer/richer array.
+        // PATCH endpoints add submissions to freshStorage while sync runs,
+        // so freshStorage.submissions may have entries that modifiedStorage doesn't.
+        const freshSubs = freshJob.submissions || [];
+        const modifiedSubs = modifiedJob.submissions || [];
+        let mergedSubs;
+        if (freshSubs.length > modifiedSubs.length) {
+          // Fresh has more — PATCH added submissions during sync. Keep fresh, overlay sync updates.
+          mergedSubs = freshSubs.map(fs => {
+            const ms = modifiedSubs.find(s => s.submissionId === fs.submissionId);
+            return ms ? { ...fs, ...ms } : fs;
+          });
+          // Also add any sync-only subs not in fresh
+          for (const ms of modifiedSubs) {
+            if (!mergedSubs.some(s => s.submissionId === ms.submissionId)) {
+              mergedSubs.push(ms);
+            }
+          }
+        } else {
+          // Modified has equal or more — sync found submissions. Keep modified, overlay PATCH fields.
+          mergedSubs = modifiedSubs.map(ms => {
+            const fs = freshSubs.find(s => s.submissionId === ms.submissionId);
+            // Preserve local-only fields from PATCH (files, archive metadata, etc.)
+            return fs ? { ...fs, ...ms } : ms;
+          });
+          // Also keep any fresh-only subs (locally prepared, not on-chain yet)
+          for (const fs of freshSubs) {
+            if (!mergedSubs.some(s => s.submissionId === fs.submissionId)) {
+              mergedSubs.push(fs);
+            }
+          }
+        }
+
         // Copy sync updates
         Object.assign(freshJob, modifiedJob);
+
+        // Restore merged submissions
+        freshJob.submissions = mergedSubs;
+        freshJob.submissionCount = mergedSubs.length;
 
         // Remove stale fields
         for (const staleField of ['onChainId', 'legacyJobId']) {

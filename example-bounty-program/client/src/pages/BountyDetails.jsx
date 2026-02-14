@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   RefreshCw,
@@ -42,8 +42,8 @@ import './BountyDetails.css';
 // ============================================================================
 
 const CONFIG = {
-  // How often to check for status updates (15 seconds)
-  AUTO_REFRESH_INTERVAL_MS: 15000,
+  // How often to check for status updates (20 seconds — aligned with server sync cycle)
+  AUTO_REFRESH_INTERVAL_MS: 20000,
 
   // Polling after blockchain actions (for backend sync)
   ACTION_POLL_INTERVAL_MS: 3000,
@@ -65,8 +65,6 @@ const CONFIG = {
   // How often to update the live timer display (1 second)
   TIMER_UPDATE_INTERVAL_MS: 1000,
 
-  // How often to check if Verdikta evaluation is ready (15 seconds)
-  EVALUATION_CHECK_INTERVAL_MS: 15000,
 };
 
 // Alias for backwards compatibility with existing code
@@ -126,9 +124,29 @@ function BountyDetails({ walletState }) {
   // Stores: { attempts, maxAttempts }
   const [pollingSubmissions, setPollingSubmissions] = useState(new Map());
 
-  // NEW: Evaluation results ready state
-  // Map of submissionId -> { ready: boolean, scores: { rejection, acceptance }, justificationCids: [] }
-  const [evaluationResults, setEvaluationResults] = useState(new Map());
+  // Evaluation results derived from backend submission status (no direct on-chain polling).
+  // The server sync service detects oracle completion and sets status to
+  // ACCEPTED_PENDING_CLAIM or REJECTED_PENDING_FINALIZATION with scores.
+  // We derive the same evaluationResults map shape for backward compatibility.
+  const evaluationResults = useMemo(() => {
+    const results = new Map();
+    for (const s of submissions) {
+      if (
+        (s.status === 'ACCEPTED_PENDING_CLAIM' || s.status === 'REJECTED_PENDING_FINALIZATION') &&
+        s.acceptance != null
+      ) {
+        results.set(s.submissionId, {
+          ready: true,
+          scores: {
+            acceptance: s.acceptance,
+            rejection: s.rejection ?? 0,
+          },
+          justificationCids: s.justificationCids || '',
+        });
+      }
+    }
+    return results;
+  }, [submissions]);
 
   // Resolution state for on-chain bountyId
   const [resolvedBountyId, setResolvedBountyId] = useState(null);
@@ -151,7 +169,6 @@ function BountyDetails({ walletState }) {
   const pollingSubmissionsRef = useRef(new Map());
   const autoRefreshIntervalRef = useRef(null);
   const timerIntervalRef = useRef(null);
-  const evaluationCheckIntervalRef = useRef(null);
   const isMountedRef = useRef(true);
 
   // Keep refs in sync with state
@@ -222,97 +239,6 @@ function BountyDetails({ walletState }) {
     const id = parseInt(bountyId, 10);
     return Number.isNaN(id) ? null : id;
   }, [bountyId]);
-
-  // ============================================================================
-  // EVALUATION READINESS POLLING (NEW)
-  // Checks VerdiktaAggregator directly to see if results are ready
-  // ============================================================================
-
-  useEffect(() => {
-    // Clear any existing interval
-    if (evaluationCheckIntervalRef.current) {
-      clearInterval(evaluationCheckIntervalRef.current);
-      evaluationCheckIntervalRef.current = null;
-    }
-
-    const onChainId = getOnChainBountyId();
-    if (onChainId == null) {
-      return; // Can't check without on-chain ID
-    }
-
-    // Get on-chain submissions that aren't already being actively polled after finalization
-    // Skip "Prepared" submissions - they don't exist on-chain yet
-    // Skip already-evaluated submissions (ACCEPTED_PENDING_CLAIM / REJECTED_PENDING_FINALIZATION)
-    const pendingSubs = submissions.filter(s =>
-      isSubmissionOnChain(s.status) &&
-      s.status !== 'ACCEPTED_PENDING_CLAIM' &&
-      s.status !== 'REJECTED_PENDING_FINALIZATION' &&
-      !pollingSubmissions.has(s.submissionId)
-    );
-
-    if (pendingSubs.length === 0) {
-      return;
-    }
-
-    // Check if evaluations are ready for pending submissions
-    const checkEvaluationReadiness = async (subsToCheck) => {
-      if (!isMountedRef.current) return;
-
-      try {
-        const contractService = getContractService();
-        
-        // Note: checkEvaluationReady uses getReadOnlyProvider() which doesn't require wallet connection
-        // It just needs window.ethereum to be present (MetaMask installed)
-        
-        for (const sub of subsToCheck) {
-          if (!isMountedRef.current) break;
-
-          try {
-            // Use onChainSubmissionId if available, otherwise fall back to submissionId
-            const chainSubmissionId = sub.onChainSubmissionId ?? sub.submissionId;
-            const result = await contractService.checkEvaluationReady(onChainId, chainSubmissionId);
-            
-            if (result.ready) {
-              setEvaluationResults(prev => {
-                const next = new Map(prev);
-                next.set(sub.submissionId, result);
-                return next;
-              });
-            }
-          } catch (err) {
-            // Don't spam console for expected "not ready" errors
-          }
-        }
-      } catch (err) {
-        // Silently ignore
-      }
-    };
-
-    // Check immediately on mount/change
-    checkEvaluationReadiness(pendingSubs);
-
-    // Then check periodically
-    evaluationCheckIntervalRef.current = setInterval(() => {
-      if (!isMountedRef.current) return;
-
-      // Only check on-chain submissions (not Prepared)
-      const currentSubs = submissionsRef.current.filter(s =>
-        isSubmissionOnChain(s.status) &&
-        !pollingSubmissionsRef.current.has(s.submissionId)
-      );
-
-      if (currentSubs.length > 0) {
-        checkEvaluationReadiness(currentSubs);
-      }
-    }, CONFIG.EVALUATION_CHECK_INTERVAL_MS);
-
-    return () => {
-      if (evaluationCheckIntervalRef.current) {
-        clearInterval(evaluationCheckIntervalRef.current);
-        evaluationCheckIntervalRef.current = null;
-      }
-    };
-  }, [submissions, getOnChainBountyId, pollingSubmissions]);
 
   // ============================================================================
   // DATA LOADING (with on-chain status verification)
@@ -445,7 +371,6 @@ function BountyDetails({ walletState }) {
       setResolvedBountyId(null);
       setResolvingId(false);
       setResolveNote('');
-      setEvaluationResults(new Map());
       setStatusOverride(null);
     }
 
@@ -552,9 +477,6 @@ function BountyDetails({ walletState }) {
       }
       if (timerIntervalRef.current) {
         clearInterval(timerIntervalRef.current);
-      }
-      if (evaluationCheckIntervalRef.current) {
-        clearInterval(evaluationCheckIntervalRef.current);
       }
     };
   }, []);
@@ -939,13 +861,6 @@ function BountyDetails({ walletState }) {
 
             // Clear polling state on success
             setPollingSubmissions(prev => {
-              const next = new Map(prev);
-              next.delete(submissionId);
-              return next;
-            });
-
-            // Clear evaluation results since we now have final status
-            setEvaluationResults(prev => {
               const next = new Map(prev);
               next.delete(submissionId);
               return next;
@@ -2472,7 +2387,7 @@ function SubmissionCard({
             ⏳ Waiting for AI evaluation...
           </div>
           <div style={{ fontSize: '0.8rem', color: '#888', marginTop: '0.25rem' }}>
-            {ageMinutes.toFixed(1)} min elapsed • Checking every 15s
+            {ageMinutes.toFixed(1)} min elapsed • Auto-refreshing every 20s
           </div>
         </div>
       )}

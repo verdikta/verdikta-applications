@@ -107,4 +107,14 @@ const config = {
 // Alias for backwards compatibility
 config.rpcProviderUrl = config.rpcUrl;
 
+// Deployment block numbers per network.
+// These are the blocks at or just before the BountyEscrow deployment transactions.
+// Used as the starting point for bootstrap event replay.
+const deploymentBlocks = {
+  'base-sepolia': 20_290_000,  // ~2026-01-07T19:42:34Z
+  'base':         26_800_000,  // ~2026-01-21T04:01:15Z
+};
+
+config.deploymentBlock = deploymentBlocks[networkKey] || 0;
+
 module.exports = { config, networks };

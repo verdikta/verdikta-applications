@@ -85,6 +85,34 @@ async function readStorage() {
 }
 
 /**
+ * Read the sync state cursor (lastSyncedBlock, lastKnownBountyCount).
+ * Returns null if not yet bootstrapped.
+ */
+async function readSyncState() {
+  try {
+    const storage = await readStorage();
+    return storage.syncState || null;
+  } catch (error) {
+    logger.error('Error reading sync state:', error);
+    return null;
+  }
+}
+
+/**
+ * Write the sync state cursor alongside the existing storage.
+ */
+async function writeSyncState(syncState) {
+  try {
+    const storage = await readStorage();
+    storage.syncState = syncState;
+    await writeStorage(storage);
+  } catch (error) {
+    logger.error('Error writing sync state:', error);
+    throw error;
+  }
+}
+
+/**
  * Write jobs to storage
  */
 async function writeStorage(data) {
@@ -610,6 +638,8 @@ module.exports = {
   initStorage,
   readStorage,
   writeStorage,
+  readSyncState,
+  writeSyncState,
   createJob,
   getJob,
   updateJob,

@@ -347,8 +347,6 @@ router.get('/admin/diagnostics', async (req, res) => {
  * A submission is considered "stuck" if it's been pending for more than 10 minutes.
  */
 router.get('/admin/stuck', async (req, res) => {
-  const RPC_URL = config.rpcUrl;
-  const ESCROW_ADDR = config.bountyEscrowAddress;
   const TIMEOUT_SECONDS = 10 * 60;
 
   try {
@@ -365,18 +363,13 @@ router.get('/admin/stuck', async (req, res) => {
       byJob: {}
     };
 
-    // Set up provider for on-chain checks
-    let provider = null;
+    // Use singleton provider for on-chain checks (only for specific stuck submissions)
     let contract = null;
-    if (RPC_URL && ESCROW_ADDR) {
-      try {
-        provider = new ethers.JsonRpcProvider(RPC_URL);
-        contract = new ethers.Contract(ESCROW_ADDR, [
-          'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))'
-        ], provider);
-      } catch (e) {
-        logger.warn('[admin/stuck] Could not initialize provider', { msg: e.message });
-      }
+    try {
+      const cs = getContractService();
+      contract = cs.contract;
+    } catch (e) {
+      logger.warn('[admin/stuck] Could not get contract service', { msg: e.message });
     }
 
     for (const job of jobList) {
@@ -542,9 +535,6 @@ router.delete('/admin/orphans', async (req, res) => {
  * 3. No submissions are in PendingVerdikta status
  */
 router.get('/admin/expired', async (req, res) => {
-  const RPC_URL = config.rpcUrl;
-  const ESCROW_ADDR = config.bountyEscrowAddress;
-
   try {
     const jobs = await jobStorage.listJobs({ includeOrphans: false });
     const jobList = jobs.jobs || jobs;
@@ -559,20 +549,13 @@ router.get('/admin/expired', async (req, res) => {
       notOnChain: 0
     };
 
-    // Set up provider for on-chain checks
-    let provider = null;
+    // Use singleton contract service for on-chain checks
     let contract = null;
-    if (RPC_URL && ESCROW_ADDR) {
-      try {
-        provider = new ethers.JsonRpcProvider(RPC_URL);
-        contract = new ethers.Contract(ESCROW_ADDR, [
-          'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions))',
-          'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))',
-          'function submissionCount(uint256 bountyId) view returns (uint256)'
-        ], provider);
-      } catch (e) {
-        logger.warn('[admin/expired] Could not initialize provider', { msg: e.message });
-      }
+    try {
+      const cs = getContractService();
+      contract = cs.contract;
+    } catch (e) {
+      logger.warn('[admin/expired] Could not get contract service', { msg: e.message });
     }
 
     for (const job of jobList) {
@@ -682,8 +665,6 @@ router.get('/admin/expired', async (req, res) => {
  */
 router.post('/:jobId/close', async (req, res) => {
   const { jobId } = req.params;
-  const RPC_URL = config.rpcUrl;
-  const ESCROW_ADDR = config.bountyEscrowAddress;
 
   try {
     logger.info('[close] check', { jobId });
@@ -715,7 +696,10 @@ router.post('/:jobId/close', async (req, res) => {
     }
 
     // Check on-chain status and pending submissions
-    if (!RPC_URL || !ESCROW_ADDR) {
+    let cs;
+    try {
+      cs = getContractService();
+    } catch (e) {
       return res.status(500).json({
         success: false,
         canClose: false,
@@ -723,13 +707,7 @@ router.post('/:jobId/close', async (req, res) => {
       });
     }
 
-    const provider = new ethers.JsonRpcProvider(RPC_URL);
-    const contract = new ethers.Contract(ESCROW_ADDR, [
-      'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions))',
-      'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))',
-      'function submissionCount(uint256 bountyId) view returns (uint256)'
-    ], provider);
-
+    const contract = cs.contract;
     const chainBounty = await contract.getBounty(onChainBountyId);
     const statusNames = ['Open', 'Awarded', 'Closed'];
     const onChainStatus = statusNames[Number(chainBounty.status)] || `Unknown(${chainBounty.status})`;
@@ -2125,15 +2103,7 @@ router.patch('/:jobId/bountyId', async (req, res) => {
 });
 
 
-// Resolve endpoint (unchanged logic from your working version)
-const RESOLVE_ABI = [
-  "function bountyCount() view returns (uint256)",
-  "function getBounty(uint256) view returns (address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256)"
-];
-function ro() { return new ethers.JsonRpcProvider(config.rpcUrl); }
-function escrowRO() { return new ethers.Contract(config.bountyEscrowAddress, RESOLVE_ABI, ro()); }
-
-
+// Resolve endpoint — uses singleton provider and targeted event query
 router.patch('/:id/bountyId/resolve', async (req, res) => {
   const jobIdParam = req.params.id;
   try {
@@ -2152,12 +2122,20 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
       ? Math.floor(Number(submissionCloseTime) / 1000)
       : Number(submissionCloseTime);
 
+    let cs;
+    try {
+      cs = getContractService();
+    } catch (e) {
+      return res.status(500).json({ success: false, error: 'Blockchain not configured' });
+    }
+    const ESCROW = config.bountyEscrowAddress;
+
     if (txHash) {
       try {
-        const receipt = await ro().getTransactionReceipt(txHash);
+        const receipt = await cs.provider.getTransactionReceipt(txHash);
         if (receipt && Array.isArray(receipt.logs)) {
           const iface = new ethers.Interface([
-            "event BountyCreated(uint256 indexed bountyId, address indexed creator, string rubricCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)"
+            "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)"
           ]);
           for (const log of receipt.logs) {
             if ((log.address || '').toLowerCase() !== (ESCROW || '').toLowerCase()) continue;
@@ -2167,7 +2145,6 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
               job.jobId = bountyId;
               job.onChain = true;
               job.txHash = job.txHash ?? txHash;
-              // Track contract address
               const currentContract = jobStorage.getCurrentContractAddress();
               if (currentContract) job.contractAddress = currentContract;
               await jobStorage.writeStorage(storage);
@@ -2181,46 +2158,63 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
       }
     }
 
+    // Use targeted BountyCreated event query filtered by creator address
+    // This replaces the old sequential scan of up to 300 bounties
     try {
-      const c = escrowRO();
-      const total = Number(await c.bountyCount());
-      if (!(total > 0)) return res.status(404).json({ success: false, error: 'No bounties on chain yet' });
+      const currentBlock = await cs.getBlockNumber();
+      const deploymentBlock = config.deploymentBlock || 0;
+      const wantCreator = String(creator).toLowerCase();
+      const wantCid = rubricCid ? String(rubricCid) : '';
 
-      const start = Math.max(0, total - 1);
-      const stop  = Math.max(0, total - 1 - 300);
-      const wantCreator  = String(creator).toLowerCase();
-      const wantCid      = rubricCid ? String(rubricCid) : '';
-      const wantDeadline = deadlineSec;
+      // Query BountyCreated events indexed by creator
+      const creatorTopic = ethers.zeroPadValue(wantCreator, 32);
+      const iface = new ethers.Interface([
+        "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)"
+      ]);
+      const eventTopic = iface.getEvent('BountyCreated').topicHash;
 
-      let best = null, bestDelta = Number.POSITIVE_INFINITY;
-      for (let i = start; i >= stop; i--) {
-        let b; try { b = await c.getBounty(i); } catch { continue; }
-        const bCreator  = (b[0] || '').toLowerCase();
-        if (bCreator !== wantCreator) continue;
-        const bCid      = b[1] || '';
-        const bDeadline = Number(b[6] || 0);
-        const delta     = Math.abs(bDeadline - wantDeadline);
-        const cidOk      = !wantCid || wantCid === bCid;
-        const deadlineOk = delta <= 300;
-        if ((cidOk && deadlineOk) || (cidOk && delta < bestDelta)) { best = i; bestDelta = delta; if (delta === 0) break; }
+      const logs = await cs.provider.getLogs({
+        address: ESCROW,
+        topics: [eventTopic, null, creatorTopic],
+        fromBlock: deploymentBlock,
+        toBlock: currentBlock
+      });
+
+      let best = null;
+      let bestDelta = Number.POSITIVE_INFINITY;
+
+      for (const log of logs) {
+        try {
+          const ev = iface.parseLog(log);
+          const bountyId = Number(ev.args.bountyId);
+          const bCid = ev.args.evaluationCid || '';
+          const bDeadline = Number(ev.args.submissionDeadline || 0);
+          const delta = Math.abs(bDeadline - deadlineSec);
+          const cidOk = !wantCid || wantCid === bCid;
+          const deadlineOk = delta <= 300;
+          if ((cidOk && deadlineOk) || (cidOk && delta < bestDelta)) {
+            best = bountyId;
+            bestDelta = delta;
+            if (delta === 0) break;
+          }
+        } catch {}
       }
 
       if (best != null) {
         job.jobId = best;
         job.onChain = true;
-        // Track contract address
         const currentContract = jobStorage.getCurrentContractAddress();
         if (currentContract) job.contractAddress = currentContract;
         await jobStorage.writeStorage(storage);
-        logger.info('[resolve] via state', { jobId: jobIdParam, resolvedId: best, delta: bestDelta });
-        return res.json({ success: true, method: 'state', bountyId: best, delta: bestDelta, job });
+        logger.info('[resolve] via event query', { jobId: jobIdParam, resolvedId: best, delta: bestDelta });
+        return res.json({ success: true, method: 'event', bountyId: best, delta: bestDelta, job });
       }
 
       job.onChain = false; await jobStorage.writeStorage(storage);
       return res.status(404).json({ success: false, error: 'No matching on-chain bounty', onChain: false });
     } catch (scanErr) {
-      logger.error('[resolve] state scan error', { msg: scanErr?.message });
-      return res.status(500).json({ success: false, error: `State scan failed: ${scanErr?.message}` });
+      logger.error('[resolve] event query error', { msg: scanErr?.message });
+      return res.status(500).json({ success: false, error: `Event query failed: ${scanErr?.message}` });
     }
   } catch (e) {
     logger.error('[resolve] fatal', { msg: e?.message });
@@ -2270,17 +2264,8 @@ router.delete('/:jobId/submissions/:submissionId', async (req, res) => {
 
 router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
   const { jobId, submissionId } = req.params;
-  const RPC_URL = config.rpcUrl;
-  const ESCROW_ADDR = config.bountyEscrowAddress;
 
-  logger.info('[refresh] Request received', { jobId, submissionId, RPC_URL: RPC_URL ? 'set' : 'NOT SET', ESCROW_ADDR });
-
-  if (!RPC_URL || !ESCROW_ADDR) {
-    return res.status(500).json({
-      error: 'Blockchain not configured',
-      details: 'RPC URL and BountyEscrow address must be configured'
-    });
-  }
+  logger.info('[refresh] Request received', { jobId, submissionId });
   
   try {
     // Get the job to find the on-chain bountyId
@@ -2326,12 +2311,10 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       }
     }
 
-    // Read submission from blockchain
-    const provider = new ethers.JsonRpcProvider(RPC_URL);
-    const contract = new ethers.Contract(ESCROW_ADDR, [
-      "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))"
-    ], provider);
-    
+    // Read submission from blockchain using singleton provider
+    const cs = getContractService();
+    const contract = cs.contract;
+
     const sub = await contract.getSubmission(onChainId, subId);
     
     // Debug: log raw struct fields
@@ -2665,8 +2648,6 @@ router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
  */
 router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
   const { jobId, submissionId } = req.params;
-  const RPC_URL = config.rpcUrl;
-  const ESCROW_ADDR = config.bountyEscrowAddress;
 
   const diagnosis = {
     jobId: parseInt(jobId),
@@ -2707,12 +2688,10 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
     if (onChainBountyId == null) {
       diagnosis.issues.push('Job not linked to on-chain bounty');
       diagnosis.recommendations.push('Link job to on-chain bounty ID');
-    } else if (RPC_URL && ESCROW_ADDR) {
+    } else {
       try {
-        const provider = new ethers.JsonRpcProvider(RPC_URL);
-        const contract = new ethers.Contract(ESCROW_ADDR, [
-          'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))'
-        ], provider);
+        const cs = getContractService();
+        const contract = cs.contract;
 
         const chainSub = await contract.getSubmission(onChainBountyId, subId);
 

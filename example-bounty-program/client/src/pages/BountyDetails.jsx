@@ -204,14 +204,20 @@ function BountyDetails({ walletState }) {
   // ============================================================================
 
   useEffect(() => {
-    // Check if there are any pending submissions that need the timer
-    const hasPendingSubmissions = submissions.some(s => isPendingStatus(s.status));
-
     // Clear any existing timer
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
       timerIntervalRef.current = null;
     }
+
+    // Don't run timer if the bounty is in a terminal state
+    const bountyStatus = job?.status?.toUpperCase?.();
+    if (bountyStatus === 'CLOSED' || bountyStatus === 'AWARDED') {
+      return;
+    }
+
+    // Check if there are any pending submissions that need the timer
+    const hasPendingSubmissions = submissions.some(s => isPendingStatus(s.status));
 
     // Only run timer if there are pending submissions
     if (hasPendingSubmissions) {
@@ -228,7 +234,7 @@ function BountyDetails({ walletState }) {
         timerIntervalRef.current = null;
       }
     };
-  }, [submissions]);
+  }, [submissions, job?.status]);
 
   // ============================================================================
   // HELPER: Get on-chain ID from current state
@@ -411,6 +417,12 @@ function BountyDetails({ walletState }) {
     const currentJobId = job?.jobId;
     if (!currentJobId) return;
 
+    // Don't auto-refresh if the bounty is in a terminal state
+    const bountyStatus = job?.status?.toUpperCase?.();
+    if (bountyStatus === 'CLOSED' || bountyStatus === 'AWARDED') {
+      return;
+    }
+
     // Check if there are pending submissions that need monitoring
     const hasPendingSubmissions = submissions.some(s => isPendingStatus(s.status));
 
@@ -466,7 +478,7 @@ function BountyDetails({ walletState }) {
         autoRefreshIntervalRef.current = null;
       }
     };
-  }, [job?.jobId, submissions, loadJobDetails]);
+  }, [job?.jobId, job?.status, submissions, loadJobDetails]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -1161,9 +1173,18 @@ function BountyDetails({ walletState }) {
         for (let i = 0; i < pendingToFinalize.length; i++) {
           const sub = pendingToFinalize[i];
           const subId = sub.onChainSubmissionId ?? sub.submissionId;
-          setClosingMessage(`Finalizing submission ${i + 1}/${pendingToFinalize.length} (#${subId})...`);
+          setClosingMessage(`Checking submission ${i + 1}/${pendingToFinalize.length} (#${subId})...`);
 
           try {
+            // Check actual on-chain status before attempting finalize
+            const onChainSub = await contractService.getSubmission(onChainId, subId);
+            if (onChainSub.status !== 'PendingVerdikta') {
+              console.log(`Submission #${subId} already ${onChainSub.status} on-chain, skipping finalize`);
+              toast.info(`Submission #${subId} already ${onChainSub.status} on-chain`);
+              continue;
+            }
+
+            setClosingMessage(`Finalizing submission ${i + 1}/${pendingToFinalize.length} (#${subId})...`);
             await contractService.finalizeSubmission(onChainId, subId);
             toast.info(`Finalized submission #${subId}`);
           } catch (err) {

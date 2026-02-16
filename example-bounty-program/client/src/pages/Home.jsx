@@ -29,7 +29,6 @@ import {
   isSubmissionPending,
   isSubmissionOnChain,
   hasAnyPendingSubmissions,
-  getSubmissionStatusDescription,
 } from '../utils/statusDisplay';
 import { StatusIcon } from '../components/StatusIcon';
 import './Home.css';
@@ -463,9 +462,10 @@ function JobCard({ job }) {
   const hasRejectedPendingFinalization = (job.submissions || []).some(
     s => s.status === 'REJECTED_PENDING_FINALIZATION'
   );
-  const hasIncompleteEvaluation = (job.submissions || []).some(
+  const pendingEvaluationCount = (job.submissions || []).filter(
     s => isSubmissionOnChain(s.status) && isSubmissionPending(s.status)
-  );
+  ).length;
+  const hasIncompleteEvaluation = pendingEvaluationCount > 0;
   const hasPendingEvaluation = hasIncompleteEvaluation ||
     hasAcceptedPendingClaim || hasRejectedPendingFinalization;
 
@@ -603,7 +603,7 @@ function JobCard({ job }) {
           {hasPendingEvaluation && (!isExpired || hasIncompleteEvaluation || hasAcceptedPendingClaim) && (
             <span
               className={`pending-indicator${hasAcceptedPendingClaim ? ' accepted' : isExpired ? ' expired' : ''}`}
-              title={hasAcceptedPendingClaim ? 'Accepted — Ready to Claim' : isExpired ? 'Evaluation pending — bounty expired' : getSubmissionStatusDescription('PendingVerdikta')}
+              title={hasAcceptedPendingClaim ? 'Accepted — Ready to Claim' : isExpired ? 'Evaluation pending — bounty expired' : pendingEvaluationCount === 1 ? 'A submission is being evaluated by the AI jury. This typically takes 2-4 minutes.' : 'Submissions are being evaluated by the AI jury. This typically takes 2-4 minutes.'}
               aria-label={hasAcceptedPendingClaim ? 'Accepted, pending claim' : isExpired ? 'Expired, evaluation pending' : 'Evaluation in progress'}
             >
               {hasAcceptedPendingClaim

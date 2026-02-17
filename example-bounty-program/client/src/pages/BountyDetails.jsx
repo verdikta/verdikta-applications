@@ -2400,7 +2400,7 @@ function SubmissionCard({
       })()}
 
       <div className="submission-meta">
-        <span>Submitted: {submission.submittedAt ? new Date(submission.submittedAt * 1000).toLocaleString() : 'Just now'}</span>
+        <span>Submitted: {submission.submittedAt ? new Date(submission.submittedAt * 1000).toLocaleString(undefined, { timeZoneName: 'short' }) : 'Just now'}</span>
 
         {isPaidWinner && (
           <div style={{ marginTop: '0.6rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>

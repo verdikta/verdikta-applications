@@ -637,6 +637,13 @@ function JobCard({ job }) {
           )}
         </div>
       </div>
+      {job.createdAt && (
+        <div className="bounty-created">
+          <Clock size={14} className="inline-icon" />
+          <span className="label">Created:</span>
+          <span className="value">{new Date(job.createdAt * 1000).toLocaleString(undefined, { timeZoneName: 'short' })}</span>
+        </div>
+      )}
       {job.creator && (
         <div className="bounty-creator">
           <User size={14} className="inline-icon" />

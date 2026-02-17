@@ -300,6 +300,11 @@ function BountyDetails({ walletState }) {
                 backendStatus,
                 reason: 'On-chain status differs from backend'
               });
+
+              // Push the correction to the backend so other pages (e.g. homepage) reflect reality
+              apiService.updateJobStatus(bountyId, onChainStatus).catch(err => {
+                console.warn('[Status] Could not push status correction to backend:', err.message);
+              });
             } else {
               setStatusOverride(null);
             }
@@ -1202,7 +1207,15 @@ function BountyDetails({ walletState }) {
       setClosingMessage('Closing bounty...');
       const result = await contractService.closeExpiredBounty(onChainId);
 
-      setClosingMessage('Transaction confirmed! Waiting for backend to sync...');
+      setClosingMessage('Transaction confirmed! Triggering backend sync...');
+
+      // Trigger an immediate sync so the backend picks up the new on-chain status
+      try {
+        await apiService.triggerSync();
+      } catch (syncErr) {
+        // Non-fatal — the periodic sync will pick it up eventually
+        console.warn('Could not trigger immediate sync:', syncErr.message);
+      }
 
       // Poll for backend to sync (up to 60 seconds with 3s intervals)
       const currentJobId = jobRef.current?.jobId || job?.jobId;
@@ -1228,7 +1241,14 @@ function BountyDetails({ walletState }) {
       if (synced) {
         toast.success(`Bounty closed! ${job?.bountyAmount ?? '...'} ETH returned to creator.`);
       } else {
-        toast.info('Transaction confirmed! Status is syncing and will update shortly.');
+        // Sync didn't pick up the status change — directly update the backend
+        try {
+          await apiService.updateJobStatus(currentJobId, 'CLOSED');
+          toast.success(`Bounty closed! ${job?.bountyAmount ?? '...'} ETH returned to creator.`);
+        } catch (statusErr) {
+          console.warn('Could not update backend status directly:', statusErr.message);
+          toast.info('Transaction confirmed! Status is syncing and will update shortly.');
+        }
       }
 
       setRetryCount(0);

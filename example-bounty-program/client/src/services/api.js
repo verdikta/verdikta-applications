@@ -307,6 +307,22 @@ async uploadRubric(rubricJson, classId = 128) {
     return response.data;
   },
 
+  /**
+   * Trigger an immediate blockchain sync cycle
+   */
+  async triggerSync() {
+    const response = await api.post('/api/jobs/sync/now');
+    return response.data;
+  },
+
+  /**
+   * Directly update a job's status in the backend (admin endpoint)
+   */
+  async updateJobStatus(jobId, status) {
+    const response = await api.patch(`/api/jobs/admin/${jobId}/status`, { status });
+    return response.data;
+  },
+
   // ============================================================
   //                  POSTER (BOUNTY CREATOR) ENDPOINTS
   // ============================================================

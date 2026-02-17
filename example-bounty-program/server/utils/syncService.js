@@ -390,8 +390,8 @@ class SyncService {
     };
     await jobStorage.writeStorage(freshStorage);
 
-    // Handle orphaned/expired off-chain jobs
-    await this._handleOrphanedJobs(freshStorage, currentContract);
+    // Handle orphaned/expired off-chain jobs + reconcile on-chain status
+    await this._handleOrphanedJobs(freshStorage, currentContract, contractService);
   }
 
   // ==========================================================================
@@ -980,9 +980,11 @@ class SyncService {
   }
 
   /**
-   * Handle orphaned/expired off-chain jobs and settled bounties
+   * Handle orphaned/expired off-chain jobs, settled bounties, and
+   * reconcile on-chain status for EXPIRED bounties that may have been
+   * closed externally (e.g., via script or direct contract call).
    */
-  async _handleOrphanedJobs(storage, currentContract) {
+  async _handleOrphanedJobs(storage, currentContract, contractService) {
     const now = Math.floor(Date.now() / 1000);
     let changed = false;
 
@@ -1013,6 +1015,34 @@ class SyncService {
           changed = true;
         }
         continue;
+      }
+
+      // Reconcile EXPIRED on-chain bounties: check if they were closed or
+      // awarded externally (not through the website). The event-based sync
+      // may have missed the BountyClosed event if it occurred before the
+      // sync cursor was established, or via a direct contract call.
+      if (job.status === 'EXPIRED' && job.onChain && contractService) {
+        try {
+          const onChainStatus = await contractService.getEffectiveStatus(job.jobId);
+          const upper = String(onChainStatus).toUpperCase();
+          if (upper === 'CLOSED') {
+            logger.info('[reconcile] EXPIRED bounty is CLOSED on-chain', { jobId: job.jobId });
+            job.status = 'CLOSED';
+            job.settledAt = now;
+            changed = true;
+            continue;
+          }
+          if (upper === 'AWARDED') {
+            logger.info('[reconcile] EXPIRED bounty is AWARDED on-chain', { jobId: job.jobId });
+            job.status = 'AWARDED';
+            job.settledAt = now;
+            changed = true;
+            continue;
+          }
+        } catch (err) {
+          // Non-fatal: if the RPC call fails, we'll try again next cycle
+          logger.debug('[reconcile] Could not check on-chain status', { jobId: job.jobId, error: err.message });
+        }
       }
 
       // Settle terminal bounties: compute effective status for OPEN bounties

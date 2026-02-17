@@ -2,9 +2,10 @@
 const express = require('express');
 const router = express.Router();
 const { ethers } = require('ethers');
+const { config } = require('../config');
 
-const ESCROW_ADDRESS = process.env.ESCROW_ADDRESS || process.env.BOUNTY_ESCROW_ADDRESS;
-const RPC_PROVIDER_URL = process.env.RPC_PROVIDER_URL;
+const ESCROW_ADDRESS = config.bountyEscrowAddress;
+const RPC_PROVIDER_URL = config.rpcUrl;
 
 const BOUNTY_ABI = [
   "event BountyCreated(uint256 indexed bountyId, address indexed creator, string rubricCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",

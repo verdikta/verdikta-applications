@@ -482,6 +482,60 @@ class ContractService {
   }
 
   /**
+   * Try to finalize a submission using a dry-run (staticCall) first.
+   * If the dry-run passes, sends the real transaction.
+   * If the dry-run reverts, returns structured failure info instead of prompting MetaMask.
+   *
+   * Returns: { success: true, txHash, ... }
+   *       or { success: false, reason, canFallbackToTimeout? }
+   */
+  async tryFinalizeSubmission(bountyId, submissionId) {
+    if (!this.contract) {
+      throw new Error('Contract not initialized. Call connect() first.');
+    }
+
+    try {
+      // Dry-run: staticCall to check if finalizeSubmission would succeed
+      console.log(`🔍 Dry-run finalizeSubmission(${bountyId}, ${submissionId})...`);
+      await this.contract.finalizeSubmission.staticCall(bountyId, submissionId);
+    } catch (staticErr) {
+      const msg = (staticErr?.shortMessage || staticErr?.reason || staticErr?.message || '').toLowerCase();
+      console.warn(`staticCall reverted for submission #${submissionId}:`, msg);
+
+      if (msg.includes('not pending') || msg.includes('not pendingverdikta')) {
+        return { success: false, reason: 'already_terminal' };
+      }
+      if (msg.includes('verdikta') || msg.includes('not ready') || msg.includes('evaluation')) {
+        return { success: false, reason: 'oracle_not_ready', canFallbackToTimeout: true };
+      }
+      // Unknown revert — still flag as potential timeout fallback
+      return { success: false, reason: msg || 'unknown_revert', canFallbackToTimeout: true };
+    }
+
+    // Dry-run passed — send the real transaction
+    try {
+      console.log(`📤 Sending finalizeSubmission(${bountyId}, ${submissionId})...`);
+      const tx = await this.contract.finalizeSubmission(bountyId, submissionId);
+      const receipt = await tx.wait();
+      console.log(`✅ Submission #${submissionId} finalized:`, receipt.hash);
+
+      this._statusCache.delete(`${bountyId}`);
+
+      return {
+        success: true,
+        txHash: receipt.hash,
+        blockNumber: receipt.blockNumber,
+        gasUsed: receipt.gasUsed?.toString?.() ?? null,
+      };
+    } catch (txErr) {
+      if (txErr.code === 'ACTION_REJECTED') {
+        return { success: false, reason: 'user_rejected' };
+      }
+      throw txErr;
+    }
+  }
+
+  /**
    * Force-fail a timed-out submission
    */
   async failTimedOutSubmission(bountyId, submissionId) {

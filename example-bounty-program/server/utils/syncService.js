@@ -1001,9 +1001,12 @@ class SyncService {
         continue;
       }
 
-      // Check off-chain jobs that expired
-      if (job.onChain === false && job.submissionCloseTime && now > job.submissionCloseTime) {
-        if (job.status !== 'ORPHANED' && job.status !== 'EXPIRED' && job.status !== 'AWARDED') {
+      // Check off-chain jobs that expired — including ones already marked EXPIRED,
+      // since off-chain bounties can't be closed on-chain and should be orphaned.
+      // Use !job.onChain (not === false) because the field may be undefined for
+      // jobs created via API that were never linked to the blockchain.
+      if (!job.onChain && job.submissionCloseTime && now > job.submissionCloseTime) {
+        if (job.status !== 'ORPHANED' && job.status !== 'AWARDED') {
           job.status = 'ORPHANED';
           job.orphanedAt = now;
           job.orphanReason = 'never_deployed';

@@ -1150,16 +1150,27 @@ function BountyDetails({ walletState }) {
       return;
     }
 
-    // Check for pending submissions that need to be finalized first
-    const pendingToFinalize = submissions.filter(s => {
+    // Identify pending submissions that need resolution before close
+    const pendingToResolve = submissions.filter(s => {
       const status = (s.status || s.onChainStatus || '').toLowerCase();
       return status === 'pendingverdikta' || status === 'pending_evaluation';
     });
 
+    // Build an informative confirmation dialog
     let confirmMessage = 'Close this expired bounty and return funds to the creator?\n\n';
-    if (pendingToFinalize.length > 0) {
-      confirmMessage += `This will first finalize ${pendingToFinalize.length} pending submission(s), then close the bounty.\n`;
-      confirmMessage += `You will need to sign ${pendingToFinalize.length + 1} transaction(s).\n\n`;
+    if (pendingToResolve.length > 0) {
+      confirmMessage += `${pendingToResolve.length} submission(s) are still pending:\n`;
+      for (const sub of pendingToResolve) {
+        const subId = sub.onChainSubmissionId ?? sub.submissionId;
+        const ageMin = sub.submittedAt ? getSubmissionAge(sub.submittedAt).toFixed(0) : '?';
+        const canTimeout = sub.submittedAt && getSubmissionAge(sub.submittedAt) > CONFIG.SUBMISSION_TIMEOUT_MINUTES;
+        confirmMessage += `  - Submission #${subId} (${ageMin} min old)`;
+        confirmMessage += canTimeout ? ' — timeout eligible\n' : '\n';
+      }
+      confirmMessage += '\nFor each, we will try to pull oracle results (finalize).\n';
+      confirmMessage += 'If the oracle is not ready, we will force-fail via timeout.\n';
+      const maxTx = pendingToResolve.length + 1; // +1 for close
+      confirmMessage += `Up to ${maxTx} transaction(s) may be required.\n\n`;
     }
     confirmMessage += 'This action requires blockchain transaction(s) that you must sign.';
 
@@ -1173,37 +1184,113 @@ function BountyDetails({ walletState }) {
       const contractService = getContractService();
       if (!contractService.isConnected()) await contractService.connect();
 
-      // First, finalize any pending submissions
-      if (pendingToFinalize.length > 0) {
-        for (let i = 0; i < pendingToFinalize.length; i++) {
-          const sub = pendingToFinalize[i];
+      // ====================================================================
+      // PHASE 1 — Resolve each pending submission (finalize or force-fail)
+      // ====================================================================
+      const resolvedIds = [];
+      const unresolvedIds = [];
+
+      if (pendingToResolve.length > 0) {
+        for (let i = 0; i < pendingToResolve.length; i++) {
+          const sub = pendingToResolve[i];
           const subId = sub.onChainSubmissionId ?? sub.submissionId;
-          setClosingMessage(`Checking submission ${i + 1}/${pendingToFinalize.length} (#${subId})...`);
+          setClosingMessage(`Checking submission ${i + 1}/${pendingToResolve.length} (#${subId})...`);
 
           try {
-            // Check actual on-chain status before attempting finalize
+            // Check actual on-chain status first
             const onChainSub = await contractService.getSubmission(onChainId, subId);
             if (onChainSub.status !== 'PendingVerdikta') {
-              console.log(`Submission #${subId} already ${onChainSub.status} on-chain, skipping finalize`);
-              toast.info(`Submission #${subId} already ${onChainSub.status} on-chain`);
+              console.log(`Submission #${subId} already ${onChainSub.status} on-chain, skipping`);
+              toast.info(`Submission #${subId} already ${onChainSub.status}`);
+              resolvedIds.push(subId);
               continue;
             }
 
-            setClosingMessage(`Finalizing submission ${i + 1}/${pendingToFinalize.length} (#${subId})...`);
-            await contractService.finalizeSubmission(onChainId, subId);
-            toast.info(`Finalized submission #${subId}`);
+            // Try finalize via dry-run first
+            setClosingMessage(`Finalizing submission ${i + 1}/${pendingToResolve.length} (#${subId})...`);
+            const finalizeResult = await contractService.tryFinalizeSubmission(onChainId, subId);
+
+            if (finalizeResult.success) {
+              toast.info(`Finalized submission #${subId}`);
+              resolvedIds.push(subId);
+              continue;
+            }
+
+            if (finalizeResult.reason === 'already_terminal') {
+              toast.info(`Submission #${subId} already resolved`);
+              resolvedIds.push(subId);
+              continue;
+            }
+
+            if (finalizeResult.reason === 'user_rejected') {
+              toast.warning(`Skipped submission #${subId} (transaction rejected)`);
+              unresolvedIds.push(subId);
+              continue;
+            }
+
+            // Finalize failed (oracle not ready) — try force-fail via timeout
+            const ageMin = sub.submittedAt ? getSubmissionAge(sub.submittedAt) : 0;
+            if (ageMin <= CONFIG.SUBMISSION_TIMEOUT_MINUTES) {
+              toast.warning(`Submission #${subId} cannot be finalized or timed out yet (${ageMin.toFixed(0)} min old, need >${CONFIG.SUBMISSION_TIMEOUT_MINUTES} min)`);
+              unresolvedIds.push(subId);
+              continue;
+            }
+
+            setClosingMessage(`Force-failing submission ${i + 1}/${pendingToResolve.length} (#${subId}) via timeout...`);
+            try {
+              await contractService.failTimedOutSubmission(onChainId, subId);
+              toast.info(`Force-failed submission #${subId} via timeout`);
+              resolvedIds.push(subId);
+            } catch (failErr) {
+              if (failErr.code === 'ACTION_REJECTED' || failErr.message?.includes('rejected by user')) {
+                toast.warning(`Skipped force-fail for submission #${subId} (transaction rejected)`);
+              } else {
+                console.warn(`Force-fail failed for submission #${subId}:`, failErr.message);
+                toast.warning(`Could not force-fail submission #${subId}: ${failErr.message}`);
+              }
+              unresolvedIds.push(subId);
+            }
           } catch (err) {
-            // If finalization fails, warn but continue trying others
-            console.warn(`Failed to finalize submission #${subId}:`, err.message);
-            toast.warning(`Could not finalize submission #${subId}: ${err.message}`);
+            console.warn(`Error resolving submission #${subId}:`, err.message);
+            toast.warning(`Could not resolve submission #${subId}: ${err.message}`);
+            unresolvedIds.push(subId);
           }
         }
 
         // Brief pause to let blockchain state settle
-        setClosingMessage('Preparing to close bounty...');
+        setClosingMessage('Verifying submissions resolved...');
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
 
+      // ====================================================================
+      // PHASE 2 — Pre-close verification: confirm all are out of PendingVerdikta
+      // ====================================================================
+      if (pendingToResolve.length > 0) {
+        let stillPending = [];
+        for (const sub of pendingToResolve) {
+          const subId = sub.onChainSubmissionId ?? sub.submissionId;
+          try {
+            const onChainSub = await contractService.getSubmission(onChainId, subId);
+            if (onChainSub.status === 'PendingVerdikta') {
+              stillPending.push(subId);
+            }
+          } catch (err) {
+            console.warn(`Could not verify submission #${subId}:`, err.message);
+            stillPending.push(subId);
+          }
+        }
+
+        if (stillPending.length > 0) {
+          const msg = `Cannot close bounty: submission(s) #${stillPending.join(', #')} are still PendingVerdikta on-chain. They may need more time before timeout is eligible.`;
+          toast.error(msg);
+          setError(msg);
+          return;
+        }
+      }
+
+      // ====================================================================
+      // PHASE 3 — Close the bounty
+      // ====================================================================
       setClosingMessage('Closing bounty...');
       const result = await contractService.closeExpiredBounty(onChainId);
 
@@ -1213,7 +1300,6 @@ function BountyDetails({ walletState }) {
       try {
         await apiService.triggerSync();
       } catch (syncErr) {
-        // Non-fatal — the periodic sync will pick it up eventually
         console.warn('Could not trigger immediate sync:', syncErr.message);
       }
 
@@ -1522,7 +1608,7 @@ function BountyDetails({ walletState }) {
                 <>
                   {hasActiveSubmissions && (
                     <div className="alert alert-info" style={{ marginBottom: '0.75rem' }}>
-                      {pendingSubmissions.length} pending submission(s) will be auto-finalized when you close the bounty.
+                      {pendingSubmissions.length} pending submission(s) will be resolved (finalize or force-fail) before closing.
                     </div>
                   )}
                   <button
@@ -1534,7 +1620,9 @@ function BountyDetails({ walletState }) {
                   >
                     {closingBounty
                       ? <><Loader2 size={20} className="spin" /> {closingMessage || 'Processing...'}</>
-                      : <><Lock size={20} /> Close Expired Bounty & Return Funds</>}
+                      : hasActiveSubmissions
+                        ? <><Lock size={20} /> Resolve {pendingSubmissions.length} Submission(s) & Close Bounty</>
+                        : <><Lock size={20} /> Close Expired Bounty & Return Funds</>}
                   </button>
                   {disableActionsForMissingId && !closingBounty && (
                     <p style={{ marginTop: 8, color: '#666', fontSize: '0.9rem' }}>
@@ -2135,7 +2223,7 @@ function ExpiredBountyActions({
       <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
         ⏰ <strong>This bounty has expired</strong> (deadline: {new Date((job.submissionCloseTime || 0) * 1000).toLocaleDateString()}).
         {hasActiveSubmissions ? (
-          <div style={{ marginTop: '0.5rem' }}>Active evaluations must be finalized before closing.</div>
+          <div style={{ marginTop: '0.5rem' }}>Active evaluations must be resolved before closing.</div>
         ) : (
           <div style={{ marginTop: '0.5rem' }}>
             Anyone can close it to return <strong>{job?.bountyAmount ?? '...'} ETH</strong> to the creator.
@@ -2149,9 +2237,34 @@ function ExpiredBountyActions({
         </div>
       ) : (
         <>
-          {hasActiveSubmissions && (
-            <div className="alert alert-info" style={{ marginBottom: '0.75rem' }}>
-              {pendingSubmissions.length} pending submission(s) will be auto-finalized when you close the bounty.
+          {hasActiveSubmissions && pendingSubmissions.length > 0 && (
+            <div style={{ marginBottom: '0.75rem' }}>
+              <div className="alert alert-info" style={{ marginBottom: '0.5rem' }}>
+                {pendingSubmissions.length} pending submission(s) will be resolved before closing:
+              </div>
+              <ul style={{ margin: '0 0 0.75rem 0', paddingLeft: '1.25rem', fontSize: '0.9rem' }}>
+                {pendingSubmissions.map(sub => {
+                  const subId = sub.onChainSubmissionId ?? sub.submissionId;
+                  const ageMin = sub.submittedAt ? getSubmissionAge(sub.submittedAt) : 0;
+                  const canTimeout = ageMin > timeoutMinutes;
+                  const evalResult = evaluationResults?.get(sub.submissionId);
+                  return (
+                    <li key={subId} style={{ marginBottom: '0.25rem' }}>
+                      <strong>#{subId}</strong> — {ageMin.toFixed(0)} min old
+                      {evalResult?.ready
+                        ? <span style={{ color: '#2e7d32' }}> (oracle results available — will finalize)</span>
+                        : canTimeout
+                          ? <span style={{ color: '#e65100' }}> (oracle not ready — will force-fail via timeout)</span>
+                          : <span style={{ color: '#666' }}> (waiting for oracle or timeout eligibility)</span>
+                      }
+                    </li>
+                  );
+                })}
+              </ul>
+              <div style={{ fontSize: '0.85rem', color: '#555', marginBottom: '0.75rem' }}>
+                For each submission, we first try to pull oracle results. If the oracle is not ready,
+                submissions older than {timeoutMinutes} minutes will be force-failed via timeout.
+              </div>
             </div>
           )}
           <button
@@ -2163,7 +2276,9 @@ function ExpiredBountyActions({
           >
             {closingBounty
               ? `⏳ ${closingMessage || 'Processing...'}`
-              : '🔒 Close Expired Bounty & Return Funds to Creator'}
+              : hasActiveSubmissions
+                ? `🔒 Resolve ${pendingSubmissions.length} Submission(s) & Close Bounty`
+                : '🔒 Close Expired Bounty & Return Funds to Creator'}
           </button>
           {disableActions && (
             <small style={{ display: 'block', marginTop: 8, color: '#666' }}>

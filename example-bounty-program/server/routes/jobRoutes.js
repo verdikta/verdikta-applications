@@ -772,7 +772,7 @@ router.post('/:jobId/close', async (req, res) => {
       canClose: true,
       message: 'Bounty can be closed. Execute the transaction to return funds to creator.',
       transaction: {
-        to: ESCROW_ADDR,
+        to: config.bountyEscrowAddress,
         data: calldata,
         value: '0',
         chainId: config.chainId
@@ -2465,8 +2465,8 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       submissionId, 
       error: error.message,
       stack: error.stack,
-      RPC_URL: RPC_URL ? 'set' : 'NOT SET',
-      ESCROW_ADDR
+      RPC_URL: config.rpcUrl ? 'set' : 'NOT SET',
+      ESCROW_ADDR: config.bountyEscrowAddress
     });
     return res.status(500).json({
       error: 'Failed to refresh submission',

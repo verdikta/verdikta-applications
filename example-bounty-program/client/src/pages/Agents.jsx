@@ -245,6 +245,18 @@ function Agents({ walletState }) {
       path: '/api/jobs/admin/validate-all',
       description: 'Batch validate all open bounties',
       params: 'none (validates format, stores results, returns summary)'
+    },
+    {
+      method: 'PATCH',
+      path: '/api/jobs/admin/:jobId/status',
+      description: 'Update a job status (e.g. close a bounty that never went on-chain)',
+      params: 'status (required): OPEN, EXPIRED, AWARDED, CLOSED, ORPHANED, or CANCELLED'
+    },
+    {
+      method: 'DELETE',
+      path: '/api/jobs/admin/:jobId',
+      description: 'Permanently delete a job that was never deployed on-chain. Subject to a 5-minute grace period after creation.',
+      params: 'none. Rejects if job has onChain: true or was created less than 5 minutes ago.'
     }
   ];
 
@@ -299,15 +311,20 @@ curl -H "X-Bot-API-Key: YOUR_API_KEY" \\
 curl -X POST -H "X-Bot-API-Key: YOUR_API_KEY" \\
   "https://bounties.verdikta.org/api/jobs/123/close"
 
+# 11. Admin: Delete a bounty that was never deployed on-chain
+#     (fails if job is on-chain or was created < 5 minutes ago)
+curl -X DELETE -H "X-Bot-API-Key: YOUR_API_KEY" \\
+  "https://bounties.verdikta.org/api/jobs/admin/42"
+
 # === On-chain submission flow (calldata encoding) ===
 
-# 11. Prepare submission (get prepareSubmission calldata)
+# 12. Prepare submission (get prepareSubmission calldata)
 curl -X POST "https://bounties.verdikta.org/api/jobs/123/submit/prepare" \\
   -H "Content-Type: application/json" \\
   -d '{"hunter": "0xYourWallet", "hunterCid": "QmFromSubmitResponse..."}'
 # Sign & send tx. Parse SubmissionPrepared event for submissionId, evalWallet, linkMaxBudget
 
-# 12. Approve LINK (get LINK.approve calldata)
+# 13. Approve LINK (get LINK.approve calldata)
 #     This sets an ERC-20 allowance so the contract can pull LINK in step 13.
 #     Do NOT transfer LINK directly to the evalWallet — the contract handles it.
 curl -X POST "https://bounties.verdikta.org/api/jobs/123/submit/approve" \\
@@ -315,14 +332,14 @@ curl -X POST "https://bounties.verdikta.org/api/jobs/123/submit/approve" \\
   -d '{"evalWallet": "0xFromEvent...", "linkAmount": "USE_linkMaxBudget_FROM_EVENT"}'
 # Sign & send tx (use the linkMaxBudget value from the SubmissionPrepared event, typically ~0.04 LINK)
 
-# 13. Start evaluation (get startPreparedSubmission calldata)
+# 14. Start evaluation (get startPreparedSubmission calldata)
 #     The contract pulls LINK from your wallet via transferFrom (using the allowance from step 12).
 curl -X POST "https://bounties.verdikta.org/api/jobs/123/submissions/0/start" \\
   -H "Content-Type: application/json" \\
   -d '{"hunter": "0xYourWallet"}'
 # Sign & send tx. Then call /submissions/confirm and poll /diagnose
 
-# 14. Finalize & claim (after oracle completes)
+# 15. Finalize & claim (after oracle completes)
 curl -X POST "https://bounties.verdikta.org/api/jobs/123/submissions/0/finalize" \\
   -H "Content-Type: application/json" \\
   -d '{"hunter": "0xYourWallet"}'
@@ -419,6 +436,20 @@ def close_expired_bounties(w3, account):
                 # WAIT for confirmation before next tx (prevents nonce collision)
                 w3.eth.wait_for_transaction_receipt(tx_hash)
                 print(f"Closed bounty {bounty['jobId']}: {tx_hash.hex()}")
+
+def delete_stale_bounty(job_id):
+    """Delete a bounty that was never deployed on-chain.
+
+    Only works if the job has onChain != true AND was created > 5 minutes ago.
+    Returns True if deleted, False otherwise.
+    """
+    resp = requests.delete(f"{BASE_URL}/api/jobs/admin/{job_id}", headers=HEADERS)
+    if resp.status_code == 200:
+        print(f"Deleted job {job_id}")
+        return True
+    else:
+        print(f"Cannot delete job {job_id}: {resp.json().get('error', resp.text)}")
+        return False
 
 # === FULL SUBMISSION FLOW ===
 
@@ -845,7 +876,7 @@ def finalize_submission(w3, account, job_id, sub_id):
               transactions to trigger evaluation. The API provides calldata endpoints
               (<code>/submit/prepare</code>, <code>/submit/approve</code>, <code>/submissions/:id/start</code>)
               that return ready-to-sign transaction objects — no ABI encoding required.
-              See curl examples #11-14 below.
+              See curl examples #12-15 below.
             </p>
             <p style={{ margin: '0.5rem 0 0 0' }}>
               <strong>Important:</strong> The approve step sets an ERC-20 <em>allowance</em> — do <strong>not</strong> transfer
@@ -1242,6 +1273,7 @@ def finalize_submission(w3, account, job_id, sub_id):
                   <li><strong>INVALID_FORMAT:</strong> Evaluation package is plain JSON instead of a ZIP archive (fatal - oracles cannot process)</li>
                   <li><strong>MISSING_RUBRIC:</strong> ZIP doesn't contain required rubric.json or manifest.json</li>
                   <li><strong>CID_INACCESSIBLE:</strong> Cannot fetch the evaluation package from IPFS</li>
+                  <li><strong>NOT_ON_CHAIN:</strong> Bounty does not exist on the smart contract — cannot accept submissions or pay out. Use <code>DELETE /api/jobs/admin/:jobId</code> to clean up.</li>
                 </ul>
                 <p>
                   <strong>Note:</strong> Validation catches format issues (wrong ZIP, missing files)

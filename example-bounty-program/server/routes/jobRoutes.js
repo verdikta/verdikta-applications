@@ -1255,6 +1255,14 @@ router.get('/admin/validate-all', async (req, res) => {
     let validCount = 0;
     let invalidCount = 0;
 
+    // Get contract service once for all on-chain checks
+    let contractService = null;
+    try {
+      contractService = getContractService();
+    } catch (e) {
+      logger.warn('[admin/validate-all] Contract service unavailable:', e.message);
+    }
+
     for (const job of toValidate) {
       try {
         const evaluationCid = job.evaluationCid;
@@ -1265,6 +1273,31 @@ router.get('/admin/validate-all', async (req, res) => {
           ipfsClient,
           classMap
         });
+
+        // Check if bounty exists on-chain
+        if (contractService) {
+          try {
+            const onChain = await contractService.getBounty(job.jobId);
+            if (onChain.status !== 'OPEN') {
+              result.issues.push({
+                type: IssueType.CHAIN_STATUS,
+                severity: IssueSeverity.ERROR,
+                message: `Bounty is "${onChain.status}" on-chain and cannot accept submissions or pay out.`
+              });
+              result.valid = false;
+            }
+          } catch (chainErr) {
+            const msg = chainErr.message || '';
+            if (msg.includes('bad bountyId') || msg.includes('CALL_EXCEPTION')) {
+              result.issues.push({
+                type: IssueType.NOT_ON_CHAIN,
+                severity: IssueSeverity.ERROR,
+                message: 'Bounty does not exist on-chain. It cannot accept submissions or pay out.'
+              });
+              result.valid = false;
+            }
+          }
+        }
 
         // Store validation result in job
         await jobStorage.updateJob(job.jobId, {
@@ -1357,6 +1390,37 @@ router.get('/:jobId/validate', async (req, res) => {
       ipfsClient,
       classMap
     });
+
+    // Check if bounty exists on-chain and is in a payable state
+    try {
+      const contractService = getContractService();
+      const onChain = await contractService.getBounty(job.jobId);
+
+      if (onChain.status !== 'OPEN') {
+        result.issues.push({
+          type: IssueType.CHAIN_STATUS,
+          severity: IssueSeverity.ERROR,
+          message: `Bounty is "${onChain.status}" on-chain and cannot accept submissions or pay out.`
+        });
+        result.valid = false;
+      }
+    } catch (chainErr) {
+      const msg = chainErr.message || '';
+      if (msg.includes('bad bountyId') || msg.includes('CALL_EXCEPTION')) {
+        result.issues.push({
+          type: IssueType.NOT_ON_CHAIN,
+          severity: IssueSeverity.ERROR,
+          message: 'Bounty does not exist on-chain. It cannot accept submissions or pay out.'
+        });
+        result.valid = false;
+      } else {
+        result.issues.push({
+          type: IssueType.CHAIN_STATUS,
+          severity: IssueSeverity.WARNING,
+          message: `Could not verify on-chain status: ${msg}`
+        });
+      }
+    }
 
     return res.json({
       success: true,

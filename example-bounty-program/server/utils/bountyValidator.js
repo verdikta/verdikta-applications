@@ -31,7 +31,9 @@ const IssueType = {
   INVALID_CLASS: 'INVALID_CLASS',             // Class ID not found/inactive
   MODEL_UNAVAILABLE: 'MODEL_UNAVAILABLE',     // Jury model not in class
   INVALID_PRIMARY_QUERY: 'INVALID_PRIMARY_QUERY', // primary_query.json has wrong format
-  MISSING_BCIDS: 'MISSING_BCIDS'              // manifest.json missing bCIDs
+  MISSING_BCIDS: 'MISSING_BCIDS',             // manifest.json missing bCIDs
+  NOT_ON_CHAIN: 'NOT_ON_CHAIN',               // Bounty does not exist on-chain
+  CHAIN_STATUS: 'CHAIN_STATUS'                // On-chain status issue (not open, expired, etc.)
 };
 
 /**

@@ -715,6 +715,10 @@ function Analytics() {
                     <span className="config-label">Timeout</span>
                     <span className="config-value">{data.system.aggregatorConfig.responseTimeoutSeconds}s</span>
                   </div>
+                  <div className="config-item">
+                    <span className="config-label">Max Oracle Fee</span>
+                    <span className="config-value">{data.system.aggregatorConfig.maxOracleFee} LINK</span>
+                  </div>
                 </div>
               </div>
             )}

@@ -323,6 +323,14 @@ async uploadRubric(rubricJson, classId = 128) {
     return response.data;
   },
 
+  /**
+   * Delete a job that doesn't exist on-chain (admin endpoint)
+   */
+  async deleteJob(jobId) {
+    const response = await api.delete(`/api/jobs/admin/${jobId}`);
+    return response.data;
+  },
+
   // ============================================================
   //                  POSTER (BOUNTY CREATOR) ENDPOINTS
   // ============================================================

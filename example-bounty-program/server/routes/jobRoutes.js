@@ -1152,6 +1152,20 @@ router.patch('/admin/:jobId/status', async (req, res) => {
   }
 });
 
+router.delete('/admin/:jobId', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const result = await jobStorage.deleteJob(jobId);
+    return res.json({ success: true, message: `Deleted job ${jobId}`, job: result.job });
+  } catch (error) {
+    logger.error('[admin/delete] error', { jobId: req.params.jobId, msg: error.message });
+    const status = error.message.includes('not found') ? 404
+      : error.message.includes('on-chain') ? 400
+      : 500;
+    return res.status(status).json({ error: error.message });
+  }
+});
+
 /* ==============
    VALIDATE BOUNTY
    ============== */

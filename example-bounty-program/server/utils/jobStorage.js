@@ -535,6 +535,44 @@ async function deleteOrphanedJobs() {
 }
 
 /**
+ * Delete a single job by jobId
+ * Only allows deletion of jobs that are not on-chain (no escrow to worry about)
+ */
+async function deleteJob(jobId) {
+  try {
+    const storage = await readStorage();
+    const index = storage.jobs.findIndex(j => String(j.jobId) === String(jobId));
+
+    if (index === -1) {
+      throw new Error(`Job ${jobId} not found`);
+    }
+
+    const job = storage.jobs[index];
+
+    // Safety check: don't delete jobs that are on-chain (they have real escrow)
+    if (job.onChain === true) {
+      throw new Error(`Job ${jobId} exists on-chain and cannot be deleted. Use close instead.`);
+    }
+
+    // Grace period: don't delete jobs created in the last 5 minutes
+    // (creator may still be completing the on-chain step)
+    const ageSeconds = Math.floor(Date.now() / 1000) - (job.createdAt || 0);
+    if (ageSeconds < 300) {
+      throw new Error(`Job ${jobId} was created ${ageSeconds}s ago. Wait 5 minutes before deleting (on-chain creation may still be in progress).`);
+    }
+
+    storage.jobs.splice(index, 1);
+    await writeStorage(storage);
+    logger.info(`Deleted job ${jobId}`, { title: job.title });
+
+    return { deleted: true, job };
+  } catch (error) {
+    logger.error('Error deleting job:', error);
+    throw error;
+  }
+}
+
+/**
  * Migrate legacy jobs (add contract address to jobs that don't have one)
  * Only migrates jobs that have a jobId and can be verified on current contract
  */
@@ -648,6 +686,7 @@ module.exports = {
   addSubmission,
   cancelSubmission,
   updateSubmissionResult,
+  deleteJob,
   // New orphan management functions
   findOrphanedJobs,
   markOrphanedJobs,

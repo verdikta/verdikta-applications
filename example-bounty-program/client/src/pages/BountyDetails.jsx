@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   RefreshCw,
   AlertTriangle,
@@ -14,6 +14,7 @@ import {
   Search,
   Loader2,
   Ban,
+  Trash2,
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
@@ -101,6 +102,7 @@ function copyToClipboard(text, toast) {
 
 function BountyDetails({ walletState }) {
   const toast = useToast();
+  const navigate = useNavigate();
   // URL param = backend jobId, NOT the on-chain id
   const { bountyId } = useParams();
 
@@ -155,6 +157,10 @@ function BountyDetails({ walletState }) {
 
   // Live timer state - updates every second to show real-time elapsed time
   const [currentTime, setCurrentTime] = useState(() => Math.floor(Date.now() / 1000));
+
+  // Track bounties that don't exist on-chain (can't accept submissions or pay out)
+  const [notOnChain, setNotOnChain] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // NEW: Status override tracking (when on-chain differs from backend)
   const [statusOverride, setStatusOverride] = useState(null);
@@ -308,7 +314,15 @@ function BountyDetails({ walletState }) {
             } else {
               setStatusOverride(null);
             }
+            setNotOnChain(false);
           } catch (err) {
+            // Check if bounty doesn't exist on-chain at all
+            const errMsg = err.message || '';
+            if (errMsg.includes('does not exist on-chain') || errMsg.includes('bad bountyId')) {
+              setNotOnChain(true);
+            } else {
+              setNotOnChain(false);
+            }
             // Can't verify on-chain - proceed with backend status
             // This is expected if wallet not connected or RPC issues
             console.log('[Status] Could not verify on-chain status:', err.message);
@@ -1741,13 +1755,51 @@ function BountyDetails({ walletState }) {
       <section className="actions-section">
         <h2>Actions</h2>
         <div className="action-buttons">
-          {isOpen && !deadlinePassed && walletState.isConnected && (
+          {notOnChain && (() => {
+            const ageSeconds = Math.floor(Date.now() / 1000) - (job?.createdAt || 0);
+            const graceRemaining = 300 - ageSeconds;
+            const canDelete = graceRemaining <= 0;
+            return (
+              <div style={{ width: '100%' }}>
+                <div className="alert alert-danger" style={{ marginBottom: '0.75rem' }}>
+                  <AlertTriangle size={16} className="inline-icon" /> This bounty does not exist on-chain. Submissions cannot be evaluated or paid out.
+                </div>
+                {canDelete ? (
+                  <button
+                    className="btn btn-danger btn-lg btn-with-icon"
+                    disabled={deleting}
+                    onClick={async () => {
+                      if (!window.confirm('Delete this bounty? This cannot be undone.')) return;
+                      setDeleting(true);
+                      try {
+                        await apiService.deleteJob(bountyId);
+                        toast.success('Bounty deleted');
+                        navigate('/');
+                      } catch (err) {
+                        toast.error(`Failed to delete: ${err.response?.data?.error || err.message}`);
+                        setDeleting(false);
+                      }
+                    }}
+                  >
+                    {deleting ? <Loader2 size={20} className="spinning" /> : <Trash2 size={20} />}
+                    {deleting ? 'Deleting...' : 'Delete Bounty'}
+                  </button>
+                ) : (
+                  <div className="alert alert-warning">
+                    <Clock size={16} className="inline-icon" /> On-chain creation may still be in progress. Delete available in {Math.ceil(graceRemaining / 60)} minute(s).
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {isOpen && !deadlinePassed && !notOnChain && walletState.isConnected && (
             <Link to={`/bounty/${bountyId}/submit`} className="btn btn-primary btn-lg btn-with-icon">
               <Send size={20} /> Submit Work
             </Link>
           )}
 
-          {isOpen && !deadlinePassed && !walletState.isConnected && (
+          {isOpen && !deadlinePassed && !notOnChain && !walletState.isConnected && (
             <div className="alert alert-info">Connect your wallet to submit work</div>
           )}
 

@@ -694,6 +694,50 @@ class SyncService {
   async addJobFromBlockchain(bounty, storage, currentContract) {
     logger.info('Adding job from blockchain', { jobId: bounty.jobId, evaluationCid: bounty.evaluationCid });
 
+    // ---- Duplicate prevention: check for existing job with same evaluationCid ----
+    // This catches API-created jobs whose IDs were never aligned with on-chain IDs
+    // (e.g. the PATCH /api/jobs/:id/bountyId step was skipped).
+    if (bounty.evaluationCid) {
+      // First try: unsynced pending job (same logic as _processEvent BountyCreated)
+      const pendingJob = storage.jobs.find(j =>
+        !j.syncedFromBlockchain &&
+        j.evaluationCid === bounty.evaluationCid
+      );
+
+      if (pendingJob) {
+        logger.info('[addJobFromBlockchain] Linking pending job by evaluationCid', {
+          oldJobId: pendingJob.jobId,
+          newBountyId: bounty.jobId,
+          evaluationCid: bounty.evaluationCid
+        });
+        pendingJob.jobId = bounty.jobId;
+        pendingJob.syncedFromBlockchain = true;
+        pendingJob.contractAddress = currentContract;
+        pendingJob.status = bounty.status || 'OPEN';
+        pendingJob.lastSyncedAt = Math.floor(Date.now() / 1000);
+        if (pendingJob.onChainId != null) delete pendingJob.onChainId;
+        if (pendingJob.legacyJobId != null) delete pendingJob.legacyJobId;
+        storage.nextId = Math.max(storage.nextId, bounty.jobId + 1);
+        return;
+      }
+
+      // Second try: already-synced job with same CID (race condition recovery)
+      const existingByCid = storage.jobs.find(j =>
+        j.syncedFromBlockchain &&
+        j.evaluationCid === bounty.evaluationCid &&
+        j.jobId === bounty.jobId
+      );
+
+      if (existingByCid) {
+        logger.info('[addJobFromBlockchain] Already tracked by CID+ID match', {
+          jobId: existingByCid.jobId,
+          evaluationCid: bounty.evaluationCid
+        });
+        existingByCid.lastSyncedAt = Math.floor(Date.now() / 1000);
+        return;
+      }
+    }
+
     // Try to fetch real title/description from the evaluation package on IPFS
     let title = bounty.title || `Bounty #${bounty.jobId}`;
     let description = bounty.description || 'Fetched from blockchain';

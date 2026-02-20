@@ -924,6 +924,14 @@ async function main() {
       // Double-check on-chain status (backend might be out of sync with Verdikta)
       console.log('  Checking on-chain status...');
       const onChainCheck = await checkOnChainWinner(wallet.provider, bounty.jobId, details.threshold || 70);
+
+      // Skip bounties that don't exist on-chain (backend ID not aligned with contract)
+      if (onChainCheck.error && onChainCheck.error.includes('bad bountyId')) {
+        console.log(`  ⏭️  Skipping - bounty does not exist on-chain (ID: ${bounty.jobId})`);
+        skipped++;
+        continue;
+      }
+
       if (onChainCheck.hasWinner) {
         const info = onChainCheck.winnerInfo;
         console.log(`  ⏭️  Skipping - on-chain winner detected`);

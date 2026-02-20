@@ -8,7 +8,7 @@
  * Usage:
  *   node scripts/createBounties.js --count 5
  *   node scripts/createBounties.js --count 1 --class 128 --amount 0.001 --hours 1
- *   NETWORK=base_sepolia node scripts/createBounties.js --count 1 --class 128 --amount 0.001 --hours 1
+ *   NETWORK=base-sepolia node scripts/createBounties.js --count 1 --class 128 --amount 0.001 --hours 1
  *   node scripts/createBounties.js --count 1 --template research --class 128 --amount 0.001 --threshold 90 --hours 1
  *   node scripts/createBounties.js --count 3 --template research --class 128 --amount 0.001 --threshold 70 --hours 1
  *   NETWORK=base node scripts/createBounties.js --count 1 --template research --class 128 --amount 0.001 --threshold 70 --hours 1

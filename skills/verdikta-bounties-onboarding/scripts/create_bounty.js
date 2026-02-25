@@ -211,7 +211,7 @@ if (!primaryCid) {
   process.exit(1);
 }
 
-console.log(`  Job ID:     ${jobId}`);
+console.log(`  Initial API Job ID: ${jobId}`);
 console.log(`  evaluationCid: ${primaryCid}`);
 
 // ---- Step 2: Create bounty on-chain ----

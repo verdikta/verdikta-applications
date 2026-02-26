@@ -72,7 +72,6 @@ function Skills() {
             >
               <Download size={16} />
               ClawHub
-              <span className="tab-badge">coming soon</span>
             </button>
           </div>
 
@@ -136,8 +135,7 @@ npm install && node onboard.js`}</code></pre>
           {installTab === 'clawhub' && (
             <div className="install-content">
               <p className="install-hint">
-                Once published to <a href="https://clawhub.ai" target="_blank" rel="noopener noreferrer">ClawHub</a>,
-                install with a single command from your agent's workspace:
+                Install from <a href="https://clawhub.ai/skills/verdikta-bounties-onboarding" target="_blank" rel="noopener noreferrer">ClawHub</a> with a single command from your agent's workspace:
               </p>
               <div className="code-block">
                 <div className="code-header">
@@ -161,7 +159,7 @@ npm install && node onboard.js`}</code></pre>
               <div className="info-callout">
                 <AlertCircle size={18} />
                 <span>
-                  This skill is not yet published to ClawHub. Use the GitHub install method above for now.
+                  Requires the <code>clawhub</code> CLI. Install it first: <code>npm i -g clawhub</code>
                 </span>
               </div>
             </div>

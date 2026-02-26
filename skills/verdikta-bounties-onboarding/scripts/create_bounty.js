@@ -472,3 +472,9 @@ console.log(`   Amount:       ${bountyAmount} ETH`);
 console.log(`   Deadline:     ${new Date(deadline * 1000).toISOString()}`);
 console.log(`   Linked:       ${linked ? 'yes' : 'no (sync service may resolve automatically)'}`);
 console.log(`\n   View: ${baseUrl.replace('/api', '')}`);
+
+// Machine-parseable identifiers for automation harnesses
+console.log(`API_JOB_ID=${jobId}`);
+console.log(`EFFECTIVE_JOB_ID=${effectiveJobId}`);
+console.log(`CANONICAL_JOB_ID=${effectiveJobId}`);
+console.log(`BOUNTY_ID=${bountyId}`);

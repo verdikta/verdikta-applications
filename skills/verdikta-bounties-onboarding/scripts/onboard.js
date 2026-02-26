@@ -88,19 +88,57 @@ function upsertEnv(text, patch) {
   return out.join(os.EOL).replace(/\s+$/,'') + os.EOL;
 }
 
-async function ensureWalletKeystore({ keystorePath, password }) {
+function isPrivateKey(s) {
+  const hex = String(s || '').trim().replace(/^0x/, '');
+  return /^[a-fA-F0-9]{64}$/.test(hex);
+}
+
+async function ensureWalletKeystore({ keystorePath, password, rl }) {
   const abs = resolvePath(keystorePath);
   if (await fileExists(abs)) {
     const wallet = await loadWallet();
-    return { wallet, abs, created: false };
+    return { wallet, abs, created: false, imported: false };
   }
 
   await ensureDir(path.dirname(abs));
 
+  // Offer to import an existing wallet instead of generating a new one
+  if (rl) {
+    console.log('\nWallet setup:');
+    console.log('  1) Create a new wallet (default)');
+    console.log('  2) Import an existing private key');
+    console.log('  3) Import an existing keystore file');
+    const walletChoice = (await rl.question('Choose [1]: ')).trim();
+
+    if (walletChoice === '2') {
+      const key = (await rl.question('Paste private key (hex, with or without 0x): ')).trim();
+      if (!isPrivateKey(key)) throw new Error('Invalid private key format (expected 64 hex chars).');
+      const wallet = new Wallet(key.startsWith('0x') ? key : `0x${key}`);
+      const json = await wallet.encrypt(password);
+      await fs.writeFile(abs, json, { mode: 0o600 });
+      console.log('  Imported and encrypted to keystore. Raw key was NOT saved.');
+      return { wallet, abs, created: true, imported: true };
+    }
+
+    if (walletChoice === '3') {
+      const srcPath = (await rl.question('Path to existing keystore JSON: ')).trim();
+      const srcAbs = resolvePath(srcPath);
+      if (!(await fileExists(srcAbs))) throw new Error(`Keystore file not found: ${srcAbs}`);
+      const srcJson = await fs.readFile(srcAbs, 'utf8');
+      const srcPw = (await rl.question('Password for the existing keystore: ')).trim();
+      const wallet = await Wallet.fromEncryptedJson(srcJson, srcPw);
+      // Re-encrypt with the skill's password so all scripts use a consistent credential
+      const reEncrypted = await wallet.encrypt(password);
+      await fs.writeFile(abs, reEncrypted, { mode: 0o600 });
+      console.log('  Imported and re-encrypted to skill keystore.');
+      return { wallet, abs, created: true, imported: true };
+    }
+  }
+
   const wallet = Wallet.createRandom();
   const json = await wallet.encrypt(password);
   await fs.writeFile(abs, json, { mode: 0o600 });
-  return { wallet, abs, created: true };
+  return { wallet, abs, created: true, imported: false };
 }
 
 async function waitForFunding({ network, address, minEth, minLink, pollSeconds }) {
@@ -257,13 +295,15 @@ async function main() {
       console.log('(The same address works on any EVM network — only funding differs.)');
     }
 
-    const { wallet, abs: keystoreAbs, created } = await ensureWalletKeystore({
+    const { wallet, abs: keystoreAbs, created, imported } = await ensureWalletKeystore({
       keystorePath: keystoreDefault,
       password,
+      rl,
     });
 
+    const statusLabel = imported ? ' (imported)' : created ? ' (created)' : '';
     console.log(`\nBot wallet: ${wallet.address}`);
-    console.log(`Keystore:  ${keystoreAbs}${created ? ' (created)' : ''}`);
+    console.log(`Keystore:  ${keystoreAbs}${statusLabel}`);
 
     // 7) Funding (human action)
     const minEth = envNum('MIN_ETH', network === 'base-sepolia' ? 0.01 : 0.005);

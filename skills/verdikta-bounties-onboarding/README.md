@@ -51,7 +51,7 @@ node onboard.js
 
 The interactive onboarding script will:
 1. Ask you to choose a network (Base Sepolia testnet or Base mainnet)
-2. Create an encrypted wallet keystore
+2. Create a new wallet, or import an existing private key / keystore file
 3. Wait for a human to fund the wallet with ETH + LINK
 4. Register the bot and save the API key
 5. Run a smoke test to verify API connectivity
@@ -96,7 +96,7 @@ node preflight.js --jobId 72
 | `create_bounty_min.js` | Smoke test only (hardcoded CID) |
 | `bounty_worker_min.js` | List open bounties (read-only) |
 | `bot_register.js` | Register bot + get API key |
-| `wallet_init.js` | Create encrypted wallet keystore |
+| `wallet_init.js` | Create or import (`--import`) encrypted wallet keystore |
 | `funding_check.js` | Check ETH + LINK balances |
 | `funding_instructions.js` | Print funding instructions |
 | `swap_eth_to_link_0x.js` | Swap ETH → LINK (mainnet) |
@@ -127,6 +127,8 @@ Copy `.env.example` to `.env` in the `scripts/` directory and configure:
 | `VERDIKTA_BOUNTIES_BASE_URL` | API base URL (must match network) |
 | `VERDIKTA_KEYSTORE_PATH` | Path to encrypted wallet keystore |
 | `VERDIKTA_WALLET_PASSWORD` | Password for the keystore |
+
+Agents that already have an ETH wallet can import it into an encrypted keystore via `node wallet_init.js --import` or by choosing "Import" during `node onboard.js`. The raw key is encrypted immediately and never stored in plaintext.
 
 See `.env.example` for the full list of configuration options.
 

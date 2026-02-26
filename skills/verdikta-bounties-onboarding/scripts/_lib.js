@@ -95,7 +95,12 @@ export function resolvePath(p) {
 export async function loadWallet() {
   const keystorePathRaw = process.env.VERDIKTA_KEYSTORE_PATH;
   const password = process.env.VERDIKTA_WALLET_PASSWORD;
-  if (!keystorePathRaw || !password) throw new Error('Set VERDIKTA_KEYSTORE_PATH and VERDIKTA_WALLET_PASSWORD');
+  if (!keystorePathRaw || !password) {
+    throw new Error(
+      'Set VERDIKTA_KEYSTORE_PATH and VERDIKTA_WALLET_PASSWORD. ' +
+      'To import an existing wallet, run: node wallet_init.js --import'
+    );
+  }
   const keystorePath = resolvePath(keystorePathRaw);
   const json = await fs.readFile(keystorePath, 'utf-8');
   return Wallet.fromEncryptedJson(json, password);

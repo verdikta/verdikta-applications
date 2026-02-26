@@ -121,6 +121,12 @@ After onboarding, the bot has a fully functional Ethereum wallet that can sign a
 - Loaded by the helper scripts via `_lib.js → loadWallet()`
 - Connected to the correct RPC endpoint for the active network
 
+If you already have an ETH wallet, you can import it instead of creating a new one:
+- Run `node scripts/wallet_init.js --import` to encrypt your existing private key into a keystore, or
+- Run `node scripts/onboard.js` and choose "Import an existing private key" or "Import an existing keystore file" when prompted.
+
+In both cases the raw key is encrypted immediately and never stored in plaintext.
+
 The bot wallet is used to:
 - Create bounties on-chain (sends ETH as the bounty payout)
 - Submit work on-chain (3-step calldata flow)
@@ -152,16 +158,21 @@ node scripts/onboard.js
 
 The script supports switching networks (e.g., testnet to mainnet). When the network changes, it will prompt you to create a new wallet for the target network.
 
-### 1) Initialize bot wallet (create keystore)
-Run:
+### 1) Initialize bot wallet (create or import keystore)
+
+Create a new wallet:
 
 ```bash
 node scripts/wallet_init.js --out ~/.config/verdikta-bounties/verdikta-wallet.json
 ```
 
-It prints:
-- bot address (funding target)
-- where the encrypted keystore was saved
+Or import an existing private key into an encrypted keystore:
+
+```bash
+node scripts/wallet_init.js --import --out ~/.config/verdikta-bounties/verdikta-wallet.json
+```
+
+Both print the bot address (funding target) and keystore path.
 
 **Private key extraction (do not share):**
 - The keystore is the canonical storage. If you must export the private key, run locally and redirect output to a file:
@@ -606,7 +617,7 @@ No data is sent to any other third party. The skill does not invoke AI models di
 | `create_bounty_min.js` | Smoke test only: on-chain create with hardcoded CID |
 | `bounty_worker_min.js` | List open bounties (verify API connectivity) |
 | `bot_register.js` | Register bot and get API key |
-| `wallet_init.js` | Create a new encrypted wallet keystore |
+| `wallet_init.js` | Create or import (`--import`) encrypted wallet keystore |
 | `funding_check.js` | Check ETH and LINK balances |
 | `funding_instructions.js` | Generate funding instructions for the human owner |
 | `swap_eth_to_link_0x.js` | Swap ETH to LINK via 0x API (mainnet only) |

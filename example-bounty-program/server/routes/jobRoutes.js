@@ -58,8 +58,12 @@ function normalizeProviderName(provider) {
 }
 
 function validateJuryModelsAgainstClass(juryNodes, classId, classMap) {
-  if (!classMap) {
-    return { valid: false, error: 'Class map unavailable for strict jury validation' };
+  if (!classMap || typeof classMap.getClass !== 'function') {
+    return {
+      valid: false,
+      misconfiguration: true,
+      error: 'Class map unavailable for strict jury validation'
+    };
   }
 
   const classInfo = classMap.getClass(Number(classId));
@@ -183,7 +187,11 @@ router.post('/create', async (req, res) => {
     // Strict: each provider/model must be currently supported by @verdikta/common class map
     let classMap;
     try {
-      classMap = require('@verdikta/common').classMap;
+      const common = require('@verdikta/common');
+      classMap = common?.classMap;
+      if (!classMap || typeof classMap.getClass !== 'function') {
+        throw new Error('Missing or invalid classMap export from @verdikta/common');
+      }
     } catch (e) {
       logger.error('[jobs/create] could not load classMap for strict jury validation', { msg: e.message });
       return res.status(500).json({
@@ -194,6 +202,17 @@ router.post('/create', async (req, res) => {
 
     const strictJuryCheck = validateJuryModelsAgainstClass(juryNodes, classId, classMap);
     if (!strictJuryCheck.valid) {
+      if (strictJuryCheck.misconfiguration) {
+        logger.error('[jobs/create] strict jury validation misconfigured', {
+          classId: Number(classId),
+          details: strictJuryCheck.error
+        });
+        return res.status(500).json({
+          error: 'Class map unavailable',
+          details: strictJuryCheck.error
+        });
+      }
+
       return res.status(400).json({
         error: 'Invalid jury configuration',
         details: strictJuryCheck.error || 'One or more jury models are not supported for this class',

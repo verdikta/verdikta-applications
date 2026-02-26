@@ -310,7 +310,11 @@ The script will:
 3. Sign and broadcast `createBounty()` on-chain with the correct `primaryCid`
 4. Link the on-chain bounty ID back to the API job (via `PATCH /bountyId`) — this is required for submissions to work
 5. **Verify on-chain integrity**: reads `getBounty()` from the contract and cross-checks creator, CID, classId, and threshold against the API. Prints a **GO / NO-GO** verdict. If there are mismatches (e.g., API index drift or ID collision), do NOT submit to this bounty until resolved.
-6. Print canonical identifiers and deadline (use `CANONICAL_JOB_ID` for all follow-up API calls)
+6. Print canonical identifiers and deadline. For automation, parse machine-readable lines:
+   - `CANONICAL_JOB_ID=<id>` (same as effective reconciled API ID)
+   - `EFFECTIVE_JOB_ID=<id>`
+   - `BOUNTY_ID=<id>`
+   - `API_JOB_ID=<id>` (initial pre-reconciliation ID; do not use for submit)
 
 After the script completes, the bounty is OPEN and fully visible in the UI with its title, rubric, and jury configuration. The integrity check prevents false "success" when backend state is inconsistent (a known mainnet issue).
 

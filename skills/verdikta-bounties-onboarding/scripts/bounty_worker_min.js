@@ -3,17 +3,12 @@ import './_env.js';
 // Verify setup: list open jobs + print titles.
 // Confirms API connectivity. Does not submit work.
 
-import fs from 'node:fs/promises';
+import { loadApiKey } from './_lib.js';
 
 const baseUrl = process.env.VERDIKTA_BOUNTIES_BASE_URL || 'https://bounties.verdikta.org';
-import { defaultSecretsDir } from './_paths.js';
 
-const botFile = process.env.VERDIKTA_BOT_FILE || `${defaultSecretsDir()}/verdikta-bounties-bot.json`;
-
-const raw = await fs.readFile(botFile, 'utf-8');
-const j = JSON.parse(raw);
-const apiKey = j.apiKey || j.api_key || j.bot?.apiKey || j.bot?.api_key;
-if (!apiKey) throw new Error('Missing apiKey/api_key in bot file');
+const apiKey = await loadApiKey();
+if (!apiKey) throw new Error('Missing apiKey. Run onboard.js first.');
 
 const url = new URL(`${baseUrl}/api/jobs`);
 url.searchParams.set('status', 'OPEN');

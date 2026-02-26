@@ -1,10 +1,7 @@
 #!/usr/bin/env node
 import './_env.js';
 import { ethers } from 'ethers';
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import { getNetwork, providerFor, loadWallet, parseEth, resolvePath, ESCROW } from './_lib.js';
-import { defaultSecretsDir } from './_paths.js';
+import { getNetwork, providerFor, loadWallet, parseEth, arg, loadApiKey, ESCROW } from './_lib.js';
 
 // Minimal on-chain bounty creation (no IPFS upload).
 // Intended for testnet smoke tests only.
@@ -13,11 +10,6 @@ import { defaultSecretsDir } from './_paths.js';
 // a bounty without a real evaluation package (no title, rubric, or jury config
 // in the UI). For a full end-to-end test with a properly evaluable bounty,
 // create via the web UI or the HTTP API (POST /api/jobs/create) instead.
-
-function arg(name, def = null) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : def;
-}
 
 const network = getNetwork();
 const provider = providerFor(network);
@@ -33,13 +25,6 @@ const evaluationCid = arg('cid', 'QmRLB6LYe6VER6UQDoX7wt4LmKATHbGA81ny5vgRMbfrtX
 const classId = Number(arg('classId', '128')); // default active class (Core)
 
 // ---- Preflight: verify class exists + is ACTIVE and has models (via Agent API) ----
-async function loadBotApiKey() {
-  const botFile = process.env.VERDIKTA_BOT_FILE || `${defaultSecretsDir()}/verdikta-bounties-bot.json`;
-  const abs = resolvePath(botFile);
-  const raw = await fs.readFile(abs, 'utf8');
-  const j = JSON.parse(raw);
-  return j.apiKey || j.api_key || j.bot?.apiKey || j.bot?.api_key || null;
-}
 
 async function preflightClassOrThrow(classId) {
   const noPreflight = process.argv.includes('--no-preflight');
@@ -53,7 +38,7 @@ async function preflightClassOrThrow(classId) {
 
   let apiKey = null;
   try {
-    apiKey = await loadBotApiKey();
+    apiKey = await loadApiKey();
   } catch (e) {
     console.warn(`[preflight] Could not load bot API key; skipping class preflight: ${e.message}`);
     return;

@@ -2,15 +2,10 @@
 import './_env.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-
-function arg(name, def = null) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : def;
-}
+import { arg, resolvePath } from './_lib.js';
+import { defaultSecretsDir, ensureDir } from './_paths.js';
 
 const baseUrl = process.env.VERDIKTA_BOUNTIES_BASE_URL || 'https://bounties.verdikta.org';
-import { defaultSecretsDir, ensureDir } from './_paths.js';
-import { resolvePath } from './_lib.js';
 
 const outPathRaw = arg('out', `${defaultSecretsDir()}/verdikta-bounties-bot.json`);
 const outPath = resolvePath(outPathRaw);

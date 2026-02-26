@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JsonRpcProvider, Wallet, Contract, parseEther } from 'ethers';
+import { defaultSecretsDir } from './_paths.js';
 
 export const LINK = {
   base: '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196',
@@ -113,4 +114,79 @@ export async function linkBalance(network, provider, address) {
 
 export function parseEth(s) {
   return parseEther(String(s));
+}
+
+// ---- CLI argument helpers ----
+
+export function arg(name, def = null) {
+  const i = process.argv.indexOf(`--${name}`);
+  return i >= 0 ? process.argv[i + 1] : def;
+}
+
+export function hasFlag(name) {
+  return process.argv.includes(`--${name}`);
+}
+
+export function argAll(name) {
+  const vals = [];
+  for (let i = 0; i < process.argv.length; i++) {
+    if (process.argv[i] === `--${name}` && i + 1 < process.argv.length) {
+      vals.push(process.argv[i + 1]);
+    }
+  }
+  return vals;
+}
+
+// ---- API key loading ----
+
+export async function loadApiKey() {
+  const botFile = process.env.VERDIKTA_BOT_FILE || `${defaultSecretsDir()}/verdikta-bounties-bot.json`;
+  const abs = resolvePath(botFile);
+  const raw = await fs.readFile(abs, 'utf8');
+  const j = JSON.parse(raw);
+  return j.apiKey || j.api_key || j.bot?.apiKey || j.bot?.api_key;
+}
+
+// ---- Transaction helper ----
+
+/**
+ * Sign and broadcast a transaction, with dry-run gas estimation.
+ * Exits the process on revert to prevent wasted gas.
+ * @param {import('ethers').Signer} signer
+ * @param {string} label - Human-readable label for logging
+ * @param {object} txObj - Transaction object from API ({ to, data, value, gasLimit? })
+ * @param {object} [opts]
+ * @param {boolean} [opts.useApiGasLimit] - Use the gasLimit from txObj instead of estimating
+ */
+export async function sendTx(signer, label, txObj, { useApiGasLimit = false } = {}) {
+  console.log(`\n→ ${label}: sending transaction...`);
+  const baseTx = {
+    to: txObj.to,
+    data: txObj.data,
+    value: txObj.value || '0',
+  };
+
+  let gasLimit;
+
+  if (useApiGasLimit && txObj.gasLimit) {
+    gasLimit = BigInt(txObj.gasLimit);
+    console.log(`  using API-recommended gasLimit: ${gasLimit.toString()}`);
+  } else {
+    try {
+      const estimated = await signer.estimateGas(baseTx);
+      gasLimit = (estimated * 120n) / 100n;
+      console.log(`  estimated gas: ${estimated.toString()} (limit: ${gasLimit.toString()})`);
+    } catch (err) {
+      const reason = err.reason || err.shortMessage || err.message || 'unknown';
+      console.error(`\n✖ ${label} will revert! Reason: ${reason}`);
+      if (err.data) console.error(`  revert data: ${err.data}`);
+      process.exit(1);
+    }
+  }
+
+  const tx = await signer.sendTransaction({ ...baseTx, gasLimit });
+  console.log(`  tx: ${tx.hash}`);
+  const receipt = await tx.wait();
+  console.log(`  confirmed in block ${receipt.blockNumber}`);
+  return receipt;
 }

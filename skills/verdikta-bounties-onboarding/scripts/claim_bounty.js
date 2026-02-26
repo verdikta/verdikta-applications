@@ -16,17 +16,10 @@
 //   - Bot wallet has ETH for gas (finalize tx)
 
 import './_env.js';
-import fs from 'node:fs/promises';
-import { ethers } from 'ethers';
-import { getNetwork, providerFor, loadWallet, resolvePath, redactApiKey } from './_lib.js';
-import { defaultSecretsDir } from './_paths.js';
-
-// ---- CLI args ----
-
-function arg(name, def = null) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : def;
-}
+import {
+  getNetwork, providerFor, loadWallet, redactApiKey,
+  arg, loadApiKey, sendTx,
+} from './_lib.js';
 
 const jobId = arg('jobId');
 const submissionId = arg('submissionId');
@@ -51,15 +44,6 @@ const wallet = await loadWallet();
 const signer = wallet.connect(provider);
 const hunter = signer.address;
 
-// Load API key
-async function loadApiKey() {
-  const botFile = process.env.VERDIKTA_BOT_FILE || `${defaultSecretsDir()}/verdikta-bounties-bot.json`;
-  const abs = resolvePath(botFile);
-  const raw = await fs.readFile(abs, 'utf8');
-  const j = JSON.parse(raw);
-  return j.apiKey || j.api_key || j.bot?.apiKey || j.bot?.api_key;
-}
-
 const apiKey = await loadApiKey();
 if (!apiKey) {
   console.error('Missing API key. Run onboard.js first.');
@@ -76,36 +60,6 @@ console.log(`Network:      ${network}`);
 console.log(`Hunter:       ${hunter}`);
 console.log(`API:          ${baseUrl}`);
 console.log(`Max wait:     ${maxWaitSec}s`);
-
-// ---- Helper: send transaction and wait ----
-
-async function sendTx(label, txObj) {
-  console.log(`\n→ ${label}: sending transaction...`);
-  const baseTx = {
-    to: txObj.to,
-    data: txObj.data,
-    value: txObj.value || '0',
-  };
-
-  // Dry-run first to catch revert reasons
-  let gasLimit;
-  try {
-    const estimated = await signer.estimateGas(baseTx);
-    gasLimit = (estimated * 120n) / 100n;
-    console.log(`  estimated gas: ${estimated.toString()} (limit: ${gasLimit.toString()})`);
-  } catch (err) {
-    const reason = err.reason || err.shortMessage || err.message || 'unknown';
-    console.error(`\n✖ ${label} will revert! Reason: ${reason}`);
-    if (err.data) console.error(`  revert data: ${err.data}`);
-    process.exit(1);
-  }
-
-  const tx = await signer.sendTransaction({ ...baseTx, gasLimit });
-  console.log(`  tx: ${tx.hash}`);
-  const receipt = await tx.wait();
-  console.log(`  confirmed in block ${receipt.blockNumber}`);
-  return receipt;
-}
 
 // ---- Helper: sleep ----
 
@@ -228,7 +182,7 @@ if (finalizeData.expectedPayout) {
   console.log(`  Expected payout: ${finalizeData.expectedPayout} ETH`);
 }
 
-const finalizeReceipt = await sendTx('finalizeSubmission', finalizeData.transaction);
+const finalizeReceipt = await sendTx(signer, 'finalizeSubmission', finalizeData.transaction);
 
 // ---- Done ----
 

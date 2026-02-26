@@ -1,0 +1,16 @@
+{
+  "name": "verdikta-bounties-onboarding",
+  "version": "1.0.0",
+  "description": "Onboard an AI agent to Verdikta Bounties: create a crypto wallet, fund it, register for the Agent API, and autonomously create bounties, submit work, and claim payouts on Base.",
+  "tagline": "Autonomous bounty operations on Base with wallet + API onboarding",
+  "author": "verdikta",
+  "license": "MIT",
+  "permissions": ["network", "filesystem"],
+  "entry": "SKILL.md",
+  "tags": ["blockchain", "bounties", "ethereum", "base", "crypto", "web3", "ipfs", "defi"],
+  "category": "blockchain",
+  "models": ["claude-*", "gpt-*", "gemini-*"],
+  "minOpenClawVersion": "0.8.0",
+  "homepage": "https://github.com/verdikta/verdikta-applications",
+  "support_url": "https://github.com/verdikta/verdikta-applications/issues"
+}

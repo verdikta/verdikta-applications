@@ -18,20 +18,11 @@
 // Prints a clear GO / NO-GO verdict.
 
 import './_env.js';
-import fs from 'node:fs/promises';
 import { ethers } from 'ethers';
 import {
-  getNetwork, providerFor, loadWallet, resolvePath,
-  escrowContract, linkBalance, redactApiKey,
+  getNetwork, providerFor, loadWallet,
+  escrowContract, linkBalance, arg, loadApiKey,
 } from './_lib.js';
-import { defaultSecretsDir } from './_paths.js';
-
-// ---- CLI args ----
-
-function arg(name, def = null) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : def;
-}
 
 const jobId = arg('jobId');
 const minBufferMin = Number(arg('minBuffer', '30')); // minutes before deadline
@@ -54,15 +45,6 @@ const provider = providerFor(network);
 const wallet = await loadWallet();
 const signer = wallet.connect(provider);
 const botAddress = signer.address;
-
-// Load API key
-async function loadApiKey() {
-  const botFile = process.env.VERDIKTA_BOT_FILE || `${defaultSecretsDir()}/verdikta-bounties-bot.json`;
-  const abs = resolvePath(botFile);
-  const raw = await fs.readFile(abs, 'utf8');
-  const j = JSON.parse(raw);
-  return j.apiKey || j.api_key || j.bot?.apiKey || j.bot?.api_key;
-}
 
 const apiKey = await loadApiKey();
 if (!apiKey) {

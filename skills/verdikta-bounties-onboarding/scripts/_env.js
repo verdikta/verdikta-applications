@@ -4,6 +4,7 @@
 
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 
 function loadIfExists(p) {
@@ -20,4 +21,4 @@ function loadIfExists(p) {
 // 1) .env in current working directory (where user runs scripts)
 // 2) .env next to this file (scripts/.env)
 loadIfExists(path.resolve(process.cwd(), '.env'));
-loadIfExists(path.resolve(path.dirname(new URL(import.meta.url).pathname), '.env'));
+loadIfExists(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.env'));

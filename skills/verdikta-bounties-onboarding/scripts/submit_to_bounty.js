@@ -26,31 +26,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ethers } from 'ethers';
 import {
-  getNetwork, providerFor, loadWallet, resolvePath,
+  getNetwork, providerFor, loadWallet,
   escrowContract, redactApiKey, BOUNTY_ESCROW_ABI,
+  arg, hasFlag, argAll, loadApiKey, sendTx,
 } from './_lib.js';
-import { defaultSecretsDir } from './_paths.js';
-
-// ---- CLI args ----
-
-function arg(name, def = null) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : def;
-}
-
-function hasFlag(name) {
-  return process.argv.includes(`--${name}`);
-}
-
-function argAll(name) {
-  const vals = [];
-  for (let i = 0; i < process.argv.length; i++) {
-    if (process.argv[i] === `--${name}` && i + 1 < process.argv.length) {
-      vals.push(process.argv[i + 1]);
-    }
-  }
-  return vals;
-}
 
 const jobId = arg('jobId');
 const files = argAll('file');
@@ -98,15 +77,6 @@ const provider = providerFor(network);
 const wallet = await loadWallet();
 const signer = wallet.connect(provider);
 const hunter = signer.address;
-
-// Load API key
-async function loadApiKey() {
-  const botFile = process.env.VERDIKTA_BOT_FILE || `${defaultSecretsDir()}/verdikta-bounties-bot.json`;
-  const abs = resolvePath(botFile);
-  const raw = await fs.readFile(abs, 'utf8');
-  const j = JSON.parse(raw);
-  return j.apiKey || j.api_key || j.bot?.apiKey || j.bot?.api_key;
-}
 
 const apiKey = await loadApiKey();
 if (!apiKey) {
@@ -232,50 +202,6 @@ if (onChainBountyId != null) {
   console.warn(`  ⚠ Job not linked to chain (no onChain flag). Skipping on-chain pre-check.`);
 }
 
-// ---- Helper: send transaction and wait ----
-
-async function sendTx(label, txObj, { useApiGasLimit = false } = {}) {
-  console.log(`\n→ ${label}: sending transaction...`);
-  const baseTx = {
-    to: txObj.to,
-    data: txObj.data,
-    value: txObj.value || '0',
-  };
-
-  let gasLimit;
-
-  // If the API provided a gasLimit recommendation and caller wants to use it, prefer that
-  if (useApiGasLimit && txObj.gasLimit) {
-    gasLimit = BigInt(txObj.gasLimit);
-    console.log(`  using API-recommended gasLimit: ${gasLimit.toString()}`);
-  } else {
-    // Dry-run first to get actual gas estimate and catch revert reasons
-    try {
-      const estimated = await signer.estimateGas(baseTx);
-      // Use 20% buffer over estimate (some txs like prepareSubmission need >500k)
-      gasLimit = (estimated * 120n) / 100n;
-      console.log(`  estimated gas: ${estimated.toString()} (limit: ${gasLimit.toString()})`);
-    } catch (err) {
-      // Extract revert reason from the error
-      const reason = err.reason || err.shortMessage || err.message || 'unknown';
-      console.error(`\n✖ ${label} will revert! Reason: ${reason}`);
-      if (err.data) console.error(`  revert data: ${err.data}`);
-      console.error(`  to: ${txObj.to}`);
-      console.error(`  This usually means:`);
-      console.error(`    - "evaluationCid mismatch": the job was created with create_bounty_min.js (hardcoded CID)`);
-      console.error(`    - "bounty not open": the bounty has been closed or finalized`);
-      console.error(`    - "deadline passed": the submission window has closed`);
-      process.exit(1);
-    }
-  }
-
-  const tx = await signer.sendTransaction({ ...baseTx, gasLimit });
-  console.log(`  tx: ${tx.hash}`);
-  const receipt = await tx.wait();
-  console.log(`  confirmed in block ${receipt.blockNumber}`);
-  return receipt;
-}
-
 // ---- Step 1: Upload files to IPFS ----
 
 console.log('\n--- Step 1: Upload files to IPFS ---');
@@ -333,7 +259,7 @@ if (!prepareRes.ok || !prepareData.transaction) {
   process.exit(1);
 }
 
-const prepareReceipt = await sendTx('prepareSubmission', prepareData.transaction);
+const prepareReceipt = await sendTx(signer, 'prepareSubmission', prepareData.transaction);
 
 // Parse SubmissionPrepared event (using centralized ABI)
 const escrowIface = new ethers.Interface(BOUNTY_ESCROW_ABI);
@@ -376,7 +302,7 @@ if (!approveRes.ok || !approveData.transaction) {
   process.exit(1);
 }
 
-await sendTx('LINK approve', approveData.transaction);
+await sendTx(signer, 'LINK approve', approveData.transaction);
 
 // ---- Steps 4 & 5: Start evaluation + Confirm in API ----
 //
@@ -415,7 +341,7 @@ async function doStart() {
     return { ok: false, data: startData, status: startRes.status };
   }
   // Use API-recommended gasLimit for start (typically 4M gas)
-  await sendTx('startPreparedSubmission', startData.transaction, { useApiGasLimit: true });
+  await sendTx(signer, 'startPreparedSubmission', startData.transaction, { useApiGasLimit: true });
   return { ok: true, data: startData };
 }
 

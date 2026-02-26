@@ -5,11 +5,7 @@ import './_env.js';
 
 import fs from 'node:fs/promises';
 import { Wallet } from 'ethers';
-
-function arg(name, def = null) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : def;
-}
+import { arg } from './_lib.js';
 
 const ack = process.argv.includes('--i-know-what-im-doing');
 if (!ack) {

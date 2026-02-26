@@ -8,20 +8,12 @@ import { stdin as input, stdout as output } from 'node:process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Wallet, formatEther, formatUnits, Contract } from 'ethers';
 
 import './_env.js';
-import { providerFor, loadWallet, LINK, ERC20_ABI, resolvePath } from './_lib.js';
+import { providerFor, loadWallet, LINK, ERC20_ABI, resolvePath, arg, hasFlag } from './_lib.js';
 import { defaultSecretsDir, ensureDir } from './_paths.js';
-
-function arg(name, def = null) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : def;
-}
-
-function hasFlag(name) {
-  return process.argv.includes(`--${name}`);
-}
 
 function envNum(name, def) {
   const v = process.env[name];
@@ -159,7 +151,7 @@ async function registerBot({ baseUrl, name, ownerAddress, description }) {
 async function main() {
   const rl = readline.createInterface({ input, output });
   try {
-    const scriptsDir = path.dirname(new URL(import.meta.url).pathname);
+    const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
     const envPath = path.join(scriptsDir, '.env');
     await loadOrInitEnvFile(envPath);
 

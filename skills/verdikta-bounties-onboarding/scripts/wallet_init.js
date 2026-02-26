@@ -3,15 +3,8 @@ import './_env.js';
 import { Wallet } from 'ethers';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-
-function arg(name, def = null) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : def;
-}
-
+import { arg, resolvePath } from './_lib.js';
 import { defaultSecretsDir, ensureDir } from './_paths.js';
-
-import { resolvePath } from './_lib.js';
 
 const outArg = arg('out', `${defaultSecretsDir()}/verdikta-wallet.json`);
 const password = process.env.VERDIKTA_WALLET_PASSWORD;

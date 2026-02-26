@@ -36,17 +36,11 @@
 
 import './_env.js';
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import { ethers } from 'ethers';
-import { getNetwork, providerFor, loadWallet, resolvePath, ESCROW, escrowContract } from './_lib.js';
-import { defaultSecretsDir } from './_paths.js';
-
-// ---- CLI args ----
-
-function arg(name, def = null) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : def;
-}
+import {
+  getNetwork, providerFor, loadWallet,
+  ESCROW, escrowContract, arg, loadApiKey,
+} from './_lib.js';
 
 const configPath = arg('config');
 if (!configPath) {
@@ -143,15 +137,6 @@ const provider = providerFor(network);
 const wallet = await loadWallet();
 const signer = wallet.connect(provider);
 const creator = signer.address;
-
-// Load API key
-async function loadApiKey() {
-  const botFile = process.env.VERDIKTA_BOT_FILE || `${defaultSecretsDir()}/verdikta-bounties-bot.json`;
-  const abs = resolvePath(botFile);
-  const raw = await fs.readFile(abs, 'utf8');
-  const j = JSON.parse(raw);
-  return j.apiKey || j.api_key || j.bot?.apiKey || j.bot?.api_key;
-}
 
 const apiKey = await loadApiKey();
 if (!apiKey) {

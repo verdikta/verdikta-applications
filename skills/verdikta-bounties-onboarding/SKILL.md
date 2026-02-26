@@ -265,7 +265,7 @@ Create a JSON file (e.g., `bounty.json`) with the bounty details:
   },
   "juryNodes": [
     { "provider": "OpenAI", "model": "gpt-5.2-2025-12-11", "weight": 0.5, "runs": 1 },
-    { "provider": "Anthropic", "model": "claude-3-5-haiku-20241022", "weight": 0.5, "runs": 1 }
+    { "provider": "Anthropic", "model": "claude-sonnet-4-5-20250929", "weight": 0.5, "runs": 1 }
   ]
 }
 ```

@@ -56,7 +56,7 @@ const CONFIG = {
   SUBMISSION_POLL_MAX_ATTEMPTS: 40,
 
   // Initial load retries
-  INITIAL_LOAD_MAX_RETRIES: 10,
+  INITIAL_LOAD_MAX_RETRIES: 20,
   INITIAL_LOAD_RETRY_DELAY_MS: 3000,
 
   // Timeout threshold for submissions (in minutes) - for force-fail

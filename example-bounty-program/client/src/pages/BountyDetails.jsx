@@ -1872,8 +1872,8 @@ function BountyDetails({ walletState }) {
             const canDelete = graceRemaining <= 0;
             return (
               <div style={{ width: '100%' }}>
-                <div className="alert alert-danger" style={{ marginBottom: '0.75rem' }}>
-                  <AlertTriangle size={16} className="inline-icon" /> This bounty does not exist on-chain. Submissions cannot be evaluated or paid out.
+                <div className="alert alert-warning" style={{ marginBottom: '0.75rem' }}>
+                  <AlertTriangle size={16} className="inline-icon" /> <strong>Not yet deployed on-chain.</strong> This bounty exists in the API but has not been deployed to the blockchain. To accept submissions and pay out, it must be deployed by calling <code>createBounty()</code> on the BountyEscrow contract with the evaluation CID and ETH escrow.
                 </div>
                 {canDelete ? (
                   <button
@@ -1896,8 +1896,8 @@ function BountyDetails({ walletState }) {
                     {deleting ? 'Deleting...' : 'Delete Bounty'}
                   </button>
                 ) : (
-                  <div className="alert alert-warning">
-                    <Clock size={16} className="inline-icon" /> On-chain creation may still be in progress. Delete available in {Math.ceil(graceRemaining / 60)} minute(s).
+                  <div className="alert alert-info">
+                    <Clock size={16} className="inline-icon" /> If you just deployed this bounty, the sync may still be in progress. Delete available in {Math.ceil(graceRemaining / 60)} minute(s).
                   </div>
                 )}
               </div>

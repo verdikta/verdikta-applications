@@ -1599,7 +1599,6 @@ router.get('/', async (req, res) => {
         createdAt: job.createdAt,
         creator: job.creator, // Bounty creator address
         winner: job.winner,
-        syncedFromBlockchain: job.syncedFromBlockchain || false,
         contractAddress: job.contractAddress, // Include for debugging
         validationStatus: validationInfo, // Include validation info if available
         submissions: job.submissions // Include for pending evaluation check
@@ -1843,11 +1842,12 @@ router.get('/:jobId', async (req, res) => {
       }
     }
 
+    // Strip internal sync bookkeeping fields before sending to client
+    const { syncedFromBlockchain: _sfb, lastSyncedAt: _lsa, ...jobForClient } = job;
     return res.json({
       success: true,
       job: {
-        ...job,
-        syncedFromBlockchain: job.syncedFromBlockchain || false,
+        ...jobForClient,
         rubricContent: rubricContent || null,
         juryNodes: extractedJuryNodes.length > 0 ? extractedJuryNodes : (job.juryNodes || [])
       }

@@ -15,6 +15,7 @@ import {
   Loader2,
   Ban,
   Trash2,
+  Play,
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
@@ -121,6 +122,7 @@ function BountyDetails({ walletState }) {
   const [failingSubmissions, setFailingSubmissions] = useState(new Set());
   const [cancelingSubmissions, setCancelingSubmissions] = useState(new Set());
   const [refreshingSubmissions, setRefreshingSubmissions] = useState(new Set());
+  const [startingSubmissions, setStartingSubmissions] = useState(new Set());
 
   // Polling state for submissions waiting for status update
   // Stores: { attempts, maxAttempts }
@@ -1152,6 +1154,113 @@ function BountyDetails({ walletState }) {
     }
   };
 
+  const handleStartSubmission = async (submissionId) => {
+    if (!walletState.isConnected) {
+      toast.warning('Please connect your wallet first');
+      return;
+    }
+
+    const onChainId = getOnChainBountyId();
+    if (onChainId == null) {
+      toast.warning('Unable to determine the on-chain bounty ID yet. Please wait for sync or refresh.');
+      return;
+    }
+
+    try {
+      setStartingSubmissions(prev => new Set(prev).add(submissionId));
+      setError(null);
+
+      const contractService = getContractService();
+      if (!contractService.isConnected()) await contractService.connect();
+
+      // Read on-chain submission to verify hunter and get LINK requirements
+      const chainSub = await contractService.getSubmission(onChainId, submissionId);
+
+      if (chainSub.hunter.toLowerCase() !== walletState.address.toLowerCase()) {
+        toast.error('Only the original submitter can start this evaluation. Please connect with the hunter wallet.');
+        return;
+      }
+
+      if (chainSub.status !== 'Prepared') {
+        toast.warning(`Submission is already in "${chainSub.status}" state. Refreshing...`);
+        await loadJobDetails();
+        return;
+      }
+
+      // Check LINK allowance — the contract will pull LINK from the hunter via evalWallet
+      const evalWallet = chainSub.evalWallet;
+      const linkMaxBudget = chainSub.linkMaxBudget;
+      let needsApproval = false;
+
+      try {
+        const allowanceOk = await contractService.verifyAllowanceOnChain(
+          walletState.address, evalWallet, linkMaxBudget, 1, 0
+        );
+        needsApproval = !allowanceOk;
+      } catch {
+        needsApproval = true;
+      }
+
+      const linkAmount = (Number(linkMaxBudget) / 1e18).toFixed(4);
+      const confirmMsg = needsApproval
+        ? `Start evaluation for submission #${submissionId}?\n\n` +
+          `LINK approval is missing. You will be asked to:\n` +
+          `1. Approve ${linkAmount} LINK to the EvaluationWallet\n` +
+          `2. Start the evaluation\n\n` +
+          'Both require blockchain transactions that you must sign.'
+        : `Start evaluation for submission #${submissionId}?\n\n` +
+          'This will trigger the Verdikta oracle evaluation on-chain.\n\n' +
+          'This action requires a blockchain transaction that you must sign.';
+
+      if (!window.confirm(confirmMsg)) return;
+
+      // Approve LINK if needed
+      if (needsApproval) {
+        toast.info(`Approving ${linkAmount} LINK...`);
+        await contractService.approveLink(evalWallet, linkMaxBudget);
+
+        // Verify allowance propagated
+        await contractService.verifyAllowanceOnChain(
+          walletState.address, evalWallet, linkMaxBudget, 15, 1000
+        );
+      }
+
+      const result = await contractService.startPreparedSubmission(onChainId, submissionId);
+
+      // Sync backend status
+      const currentJobId = jobRef.current?.jobId || job?.jobId;
+      try {
+        await apiService.refreshSubmission(currentJobId, submissionId);
+      } catch (syncErr) {
+        console.warn('Backend sync failed (will auto-sync later):', syncErr.message);
+      }
+
+      toast.success(`Submission #${submissionId} evaluation started! TX: ${result.txHash?.slice(0, 10)}...`);
+
+      setRetryCount(0);
+      await loadJobDetails();
+    } catch (err) {
+      console.error('Error starting submission:', err);
+      const msg = err.message || 'Failed to start submission';
+      if (msg.includes('submitted too late') || msg.includes('deadline')) {
+        toast.error('Cannot start: the bounty submission deadline has passed.');
+      } else if (msg.includes('LINK pull failed') || msg.includes('insufficient allowance')) {
+        toast.error('LINK approval failed. Please ensure you have enough LINK tokens and try again.');
+      } else if (msg.includes('ACTION_REJECTED') || msg.includes('rejected')) {
+        toast.warning('Transaction was rejected.');
+      } else {
+        toast.error(`Failed to start submission #${submissionId}: ${msg}`);
+      }
+      setError(msg);
+    } finally {
+      setStartingSubmissions(prev => {
+        const next = new Set(prev);
+        next.delete(submissionId);
+        return next;
+      });
+    }
+  };
+
   const handleCloseExpiredBounty = async () => {
     if (!walletState.isConnected) {
       toast.warning('Please connect your wallet first');
@@ -1602,9 +1711,11 @@ function BountyDetails({ walletState }) {
                   onFinalize={handleFinalizeSubmission}
                   onFailTimeout={handleFailTimedOutSubmission}
                   onCancel={handleCancelSubmission}
+                  onStart={handleStartSubmission}
                   finalizingSubmissions={finalizingSubmissions}
                   failingSubmissions={failingSubmissions}
                   cancelingSubmissions={cancelingSubmissions}
+                  startingSubmissions={startingSubmissions}
                   pollingSubmissions={pollingSubmissions}
                   evaluationResults={evaluationResults}
                   disableActions={disableActionsForMissingId}
@@ -1829,9 +1940,11 @@ function BountyDetails({ walletState }) {
               onFinalize={handleFinalizeSubmission}
               onFailTimeout={handleFailTimedOutSubmission}
               onCancel={handleCancelSubmission}
+              onStart={handleStartSubmission}
               finalizingSubmissions={finalizingSubmissions}
               failingSubmissions={failingSubmissions}
               cancelingSubmissions={cancelingSubmissions}
+              startingSubmissions={startingSubmissions}
               pollingSubmissions={pollingSubmissions}
               evaluationResults={evaluationResults}
               timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
@@ -1855,10 +1968,12 @@ function BountyDetails({ walletState }) {
                 onFailTimeout={handleFailTimedOutSubmission}
                 onFinalize={handleFinalizeSubmission}
                 onCancel={handleCancelSubmission}
+                onStart={handleStartSubmission}
                 onRefresh={handleRefreshSubmission}
                 isFailing={failingSubmissions.has(submission.submissionId)}
                 isFinalizing={finalizingSubmissions.has(submission.submissionId)}
                 isCanceling={cancelingSubmissions.has(submission.submissionId)}
+                isStarting={startingSubmissions.has(submission.submissionId)}
                 isRefreshing={refreshingSubmissions.has(submission.submissionId)}
                 isPolling={pollingSubmissions.has(submission.submissionId)}
                 pollingState={pollingSubmissions.get(submission.submissionId)}
@@ -2086,9 +2201,11 @@ function PendingSubmissionsPanel({
   onFinalize,
   onFailTimeout,
   onCancel,
+  onStart,
   finalizingSubmissions,
   failingSubmissions,
   cancelingSubmissions,
+  startingSubmissions,
   pollingSubmissions,
   evaluationResults,
   disableActions,
@@ -2174,12 +2291,20 @@ function PendingSubmissionsPanel({
             )}
 
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-              {/* Show message and cancel button for Prepared submissions */}
+              {/* Show message, start, and cancel buttons for Prepared submissions */}
               {isPrepared && (
                 <>
                   <div style={{ fontSize: '0.85rem', color: '#e65100', padding: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
                     <FileText size={14} /> Not started on-chain yet
                   </div>
+                  <button
+                    onClick={() => onStart(s.submissionId)}
+                    disabled={startingSubmissions?.has(s.submissionId) || disableActions}
+                    className="btn btn-primary btn-sm"
+                    style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+                  >
+                    {startingSubmissions?.has(s.submissionId) ? <><Loader2 size={12} className="spin" /> Starting...</> : <><Play size={12} /> Start</>}
+                  </button>
                   <button
                     onClick={() => onCancel(s.submissionId)}
                     disabled={cancelingSubmissions?.has(s.submissionId) || disableActions}
@@ -2256,9 +2381,11 @@ function ExpiredBountyActions({
   onFinalize,
   onFailTimeout,
   onCancel,
+  onStart,
   finalizingSubmissions,
   failingSubmissions,
   cancelingSubmissions,
+  startingSubmissions,
   pollingSubmissions,
   evaluationResults,
   timeoutMinutes,
@@ -2350,10 +2477,12 @@ function SubmissionCard({
   onFailTimeout,
   onFinalize,
   onCancel,
+  onStart,
   onRefresh,
   isFailing,
   isFinalizing,
   isCanceling,
+  isStarting,
   isRefreshing,
   isPolling,
   pollingState,
@@ -2645,6 +2774,16 @@ function SubmissionCard({
             This submission has not been started on-chain yet.
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+            {walletState.isConnected && (
+              <button
+                onClick={() => onStart(submission.submissionId)}
+                disabled={isStarting || disableActions}
+                className="btn btn-primary btn-sm"
+                style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+              >
+                {isStarting ? <><Loader2 size={14} className="spin" /> Starting...</> : <><Play size={14} /> Start Evaluation</>}
+              </button>
+            )}
             <button
               onClick={() => onRefresh(submission.submissionId)}
               disabled={isRefreshing || disableActions}

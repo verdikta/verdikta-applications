@@ -697,7 +697,8 @@ class ContractService {
           statusCode: sub.status,
           submittedAt: Number(sub.submittedAt),
           acceptance: Number(sub.acceptance),
-          rejection: Number(sub.rejection)
+          rejection: Number(sub.rejection),
+          linkMaxBudget: sub.linkMaxBudget.toString()
         };
 
       } catch (error) {

@@ -215,6 +215,12 @@ class SyncService {
         hotBounties: this.hotBountyIds.size
       });
 
+      // One-time backfill of awardTxHash for existing awarded jobs
+      if (!this._awardTxBackfillDone) {
+        await this._backfillAwardTxHashes(contractService);
+        this._awardTxBackfillDone = true;
+      }
+
       // Trigger archival processing after sync completes
       try {
         const { getArchivalService } = require('./archivalService');
@@ -392,6 +398,78 @@ class SyncService {
 
     // Handle orphaned/expired off-chain jobs + reconcile on-chain status
     await this._handleOrphanedJobs(freshStorage, currentContract, contractService);
+  }
+
+  // ==========================================================================
+  // One-time backfill: populate awardTxHash for awarded jobs
+  // ==========================================================================
+
+  async _backfillAwardTxHashes(contractService) {
+    try {
+      const storage = await jobStorage.readStorage();
+      const currentContract = jobStorage.getCurrentContractAddress();
+
+      const needsBackfill = storage.jobs.filter(j =>
+        j.status === 'AWARDED' &&
+        !j.awardTxHash &&
+        (j.contractAddress || '').toLowerCase() === currentContract
+      );
+
+      if (needsBackfill.length === 0) return;
+
+      logger.info('[backfill] Backfilling awardTxHash for awarded jobs', { count: needsBackfill.length });
+
+      // Fetch all events from deployment block to find PayoutSent
+      const deploymentBlock = config.deploymentBlock || 0;
+      const currentBlock = await contractService.getBlockNumber();
+
+      let allEvents = [];
+      for (let from = deploymentBlock; from <= currentBlock; from += BOOTSTRAP_CHUNK_SIZE) {
+        const to = Math.min(from + BOOTSTRAP_CHUNK_SIZE - 1, currentBlock);
+        try {
+          const chunk = await contractService.getEventsSince(from, to);
+          allEvents = allEvents.concat(chunk);
+        } catch (error) {
+          logger.warn('[backfill] Failed to fetch events chunk', { from, to, error: error.message });
+        }
+      }
+
+      // Build lookup: bountyId -> PayoutSent transactionHash
+      const payoutTxMap = new Map();
+      const creationTxMap = new Map();
+      for (const event of allEvents) {
+        if (event.name === 'PayoutSent') {
+          payoutTxMap.set(Number(event.args.bountyId), event.transactionHash);
+        } else if (event.name === 'BountyCreated') {
+          creationTxMap.set(Number(event.args.bountyId), {
+            txHash: event.transactionHash,
+            blockNumber: event.blockNumber
+          });
+        }
+      }
+
+      let patched = 0;
+      for (const job of storage.jobs) {
+        if ((job.contractAddress || '').toLowerCase() !== currentContract) continue;
+
+        if (!job.awardTxHash && payoutTxMap.has(job.jobId)) {
+          job.awardTxHash = payoutTxMap.get(job.jobId);
+          patched++;
+        }
+        if (!job.txHash && creationTxMap.has(job.jobId)) {
+          const info = creationTxMap.get(job.jobId);
+          job.txHash = info.txHash;
+          if (!job.blockNumber) job.blockNumber = info.blockNumber;
+        }
+      }
+
+      if (patched > 0) {
+        await jobStorage.writeStorage(storage);
+        logger.info('[backfill] awardTxHash backfill complete', { patched });
+      }
+    } catch (error) {
+      logger.warn('[backfill] awardTxHash backfill failed', { error: error.message });
+    }
   }
 
   // ==========================================================================

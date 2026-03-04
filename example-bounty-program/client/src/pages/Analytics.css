@@ -546,6 +546,10 @@
   text-decoration: none;
 }
 
+.fulfilled-table .address-link code {
+  color: inherit;
+}
+
 .fulfilled-table .address-link:hover {
   text-decoration: underline;
 }

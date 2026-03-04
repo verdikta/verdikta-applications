@@ -547,6 +547,19 @@ async uploadRubric(rubricJson, classId = 128) {
   async validateEvaluationPackage(data) {
     const response = await api.post('/api/jobs/validate', data);
     return response.data;
+  },
+
+  // ============================================================
+  //                  VERDIKTA AGGREGATOR ENDPOINTS
+  // ============================================================
+
+  /**
+   * Get full aggregation history for an aggId
+   * @param {string} aggId - The aggregation ID (0x + 64 hex chars)
+   */
+  async getAggHistory(aggId) {
+    const response = await api.get(`/api/verdikta/agg-history/${aggId}`, { timeout: 60000 });
+    return response.data;
   }
 
 };

@@ -14,6 +14,7 @@ import Analytics from './pages/Analytics';
 import Agents from './pages/Agents';
 import Skills from './pages/Skills';
 import Blockchain from './pages/Blockchain';
+import AggHistory from './pages/AggHistory';
 import ScrollToTop from './components/ScrollToTop';
 import './App.css';
 
@@ -95,6 +96,7 @@ function AppContent() {
           <Route path="/agents" element={<Agents walletState={walletState} />} />
           <Route path="/skills" element={<Skills />} />
           <Route path="/blockchain" element={<Blockchain />} />
+          <Route path="/agg-history/:aggId" element={<AggHistory />} />
         </Routes>
       </main>
       </div>

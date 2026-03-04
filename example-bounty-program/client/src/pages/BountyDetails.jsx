@@ -2644,7 +2644,14 @@ function SubmissionCard({
         {submission.verdiktaAggId && submission.verdiktaAggId !== '0x0000000000000000000000000000000000000000000000000000000000000000' && (
           <div style={{ marginTop: '0.25rem', fontSize: '0.8rem', fontFamily: 'monospace' }}>
             <span style={{ color: '#666' }}>Verdikta Agg ID: </span>
-            <span style={{ color: '#1976d2' }}>{submission.verdiktaAggId.slice(0, 18)}...</span>
+            <Link
+              to={`/agg-history/${submission.verdiktaAggId}`}
+              style={{ color: '#1976d2', textDecoration: 'underline' }}
+              title="View oracle evaluation history"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {submission.verdiktaAggId.slice(0, 18)}...
+            </Link>
             <button
               onClick={async (e) => {
                 e.stopPropagation();

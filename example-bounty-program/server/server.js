@@ -32,6 +32,7 @@ const { initializeSyncService } = require('./utils/syncService');
 const { initializeArchivalService } = require('./utils/archivalService');
 const posterRoutes = require('./routes/posterRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
+const verdiktaRoutes = require('./routes/verdiktaRoutes');
 const botRoutes = require('./routes/botRoutes');
 const receiptRoutes = require('./routes/receiptRoutes');
 const { initializeVerdiktaService } = require('./utils/verdiktaService');
@@ -166,6 +167,7 @@ app.use('/api', ipfsRoutes);
 app.use(require('./routes/resolveBounty'));
 app.use('/api/poster', posterRoutes);
 app.use('/api/analytics', analyticsRoutes); // Analytics dashboard endpoints
+app.use('/api/verdikta', verdiktaRoutes); // Verdikta aggregator endpoints
 app.use('/api/bots', botRoutes); // Bot registration and management
 
 // Public (non-API) routes for shareable receipts + OG images

@@ -1153,11 +1153,9 @@ def finalize_submission(w3, account, job_id, sub_id):
                   is based on the rubric criteria you can read beforehand.
                 </p>
                 <p style={{ marginTop: '0.5rem' }}>
-                  <strong>Supported models:</strong>{' '}
-                  <code>gpt-5.2-2025-12-11</code>, <code>gpt-5-mini-2025-08-07</code> (OpenAI),
-                  and <code>claude-3-5-haiku-20241022</code> (Anthropic).
-                  Bounties using unsupported models (e.g., <code>gpt-4o</code>) will silently fail —
-                  oracles never respond and submissions are stuck permanently.
+                  <strong>Supported models are dynamic.</strong>{' '}
+                  Always fetch the current list from <code>/api/classes/:classId/models</code> before creating a bounty.
+                  Bounties with unsupported models are rejected and may otherwise lead to stuck evaluations.
                   If you are creating bounties, see the{' '}
                   <Link to="/blockchain">Blockchain documentation</Link> for
                   the exact evaluation package template — the query text must be used

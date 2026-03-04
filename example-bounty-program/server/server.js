@@ -196,7 +196,10 @@ app.get('/api/classes', (req, res) => {
 
     res.json({
       success: true,
-      classes: serializedClasses
+      classes: serializedClasses,
+      classMapVersion: typeof classMap.getMapVersion === 'function' ? classMap.getMapVersion() : null,
+      source: '@verdikta/common',
+      generatedAt: new Date().toISOString()
     });
   } catch (error) {
     logger.error('Error fetching classes:', error);
@@ -237,7 +240,10 @@ app.get('/api/classes/:classId', (req, res) => {
 
     res.json({
       success: true,
-      class: serializedClass
+      class: serializedClass,
+      classMapVersion: typeof classMap.getMapVersion === 'function' ? classMap.getMapVersion() : null,
+      source: '@verdikta/common',
+      generatedAt: new Date().toISOString()
     });
   } catch (error) {
     logger.error('Error fetching class:', error);
@@ -300,7 +306,10 @@ app.get('/api/classes/:classId/models', (req, res) => {
       status: classInfo.status,
       models: classInfo.models || [],
       modelsByProvider,
-      limits: classInfo.limits || null
+      limits: classInfo.limits || null,
+      classMapVersion: typeof classMap.getMapVersion === 'function' ? classMap.getMapVersion() : null,
+      source: '@verdikta/common',
+      generatedAt: new Date().toISOString()
     };
 
     res.json(response);

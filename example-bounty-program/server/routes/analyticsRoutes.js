@@ -401,10 +401,10 @@ async function getSubmissionAnalytics() {
         if (status === 'passedpaid' || onChainStatus === 'passedpaid') {
           approvedPaid++;
           if (hasResult) scores.push(score);
-        } else if (status === 'passed' || status === 'passedunpaid' || status === 'approved' || status === 'accepted' || onChainStatus === 'passedunpaid') {
+        } else if (status === 'passed' || status === 'passedunpaid' || status === 'approved' || status === 'accepted' || status === 'accepted_pending_claim' || onChainStatus === 'passedunpaid') {
           approvedUnpaid++;
           if (hasResult) scores.push(score);
-        } else if (status === 'failed' || status === 'rejected') {
+        } else if (status === 'failed' || status === 'rejected' || status === 'rejected_pending_finalization') {
           rejected++;
         } else if (status === 'pending' || status === 'pendingverdikta' || status === 'pending_evaluation') {
           // Check if evaluation is actually complete but status wasn't updated

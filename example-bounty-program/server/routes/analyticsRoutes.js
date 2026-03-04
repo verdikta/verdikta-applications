@@ -33,11 +33,12 @@ router.get('/overview', async (req, res) => {
     }
 
     // Gather all analytics data
-    const [arbiterData, bountyData, submissionData, systemData] = await Promise.all([
+    const [arbiterData, bountyData, submissionData, systemData, fulfilledData] = await Promise.all([
       getArbiterAnalytics(),
       getBountyAnalytics(),
       getSubmissionAnalytics(),
-      getSystemHealth()
+      getSystemHealth(),
+      getFulfilledBounties()
     ]);
 
     const result = {
@@ -45,6 +46,7 @@ router.get('/overview', async (req, res) => {
       bounties: bountyData,
       submissions: submissionData,
       system: systemData,
+      fulfilledBounties: fulfilledData,
       generatedAt: Date.now()
     };
 
@@ -598,6 +600,37 @@ async function getSystemHealth() {
     bountyContract: config.bountyEscrowAddress || null,
     timestamp: Date.now()
   };
+}
+
+/**
+ * Get recently fulfilled (awarded) bounties
+ */
+async function getFulfilledBounties() {
+  try {
+    const jobs = await jobStorage.listJobs({});
+    const jobList = jobs.jobs || jobs;
+
+    const awarded = jobList
+      .filter(j => j.status === 'AWARDED' && j.winner)
+      .sort((a, b) => (b.settledAt || 0) - (a.settledAt || 0))
+      .slice(0, 10)
+      .map(j => ({
+        jobId: j.jobId,
+        title: j.title,
+        creator: j.creator,
+        winner: j.winner,
+        bountyAmount: j.bountyAmount,
+        txHash: j.txHash || null,
+        awardTxHash: j.awardTxHash || null,
+        settledAt: j.settledAt,
+        contractAddress: j.contractAddress || config.bountyEscrowAddress
+      }));
+
+    return awarded;
+  } catch (error) {
+    logger.error('Failed to get fulfilled bounties', { msg: error.message });
+    return [];
+  }
 }
 
 module.exports = router;

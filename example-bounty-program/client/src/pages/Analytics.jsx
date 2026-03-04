@@ -19,10 +19,13 @@ import {
   Hourglass,
   Coins,
   FileText,
-  Zap
+  Zap,
+  Award,
+  ExternalLink
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
+import { config } from '../config';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -519,6 +522,103 @@ function Analytics() {
                   Orphaned
                 </span>
               </div>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Recently Fulfilled Bounties Section */}
+      <section className="analytics-section">
+        <h2><Award size={20} className="inline-icon" /> Recently Fulfilled Bounties</h2>
+        <div className="section-content">
+          {data?.fulfilledBounties?.length > 0 ? (
+            <div className="stats-table fulfilled-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Bounty</th>
+                    <th>Creator</th>
+                    <th>Winner</th>
+                    <th>Amount</th>
+                    <th>Creation Tx</th>
+                    <th>Award Tx</th>
+                    <th>Awarded</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.fulfilledBounties.map((b) => {
+                    const explorerUrl = config.networks[config.network]?.explorer || 'https://sepolia.basescan.org';
+                    return (
+                      <tr key={b.jobId}>
+                        <td>
+                          <a href={`/bounty/${b.jobId}`} className="bounty-link">
+                            #{b.jobId} {b.title && <span className="bounty-title-text">- {b.title}</span>}
+                          </a>
+                        </td>
+                        <td>
+                          {b.creator ? (
+                            <a
+                              href={`${explorerUrl}/address/${b.creator}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="address-link"
+                            >
+                              <code className="address-truncated">{b.creator.slice(0, 6)}...{b.creator.slice(-4)}</code>
+                              <ExternalLink size={12} />
+                            </a>
+                          ) : 'N/A'}
+                        </td>
+                        <td>
+                          {b.winner ? (
+                            <a
+                              href={`${explorerUrl}/address/${b.winner}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="address-link"
+                            >
+                              <code className="address-truncated">{b.winner.slice(0, 6)}...{b.winner.slice(-4)}</code>
+                              <ExternalLink size={12} />
+                            </a>
+                          ) : 'N/A'}
+                        </td>
+                        <td>{b.bountyAmount ? `${b.bountyAmount} ETH` : 'N/A'}</td>
+                        <td>
+                          {b.txHash ? (
+                            <a
+                              href={`${explorerUrl}/tx/${b.txHash}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="address-link"
+                            >
+                              <code className="address-truncated">{b.txHash.slice(0, 6)}...{b.txHash.slice(-4)}</code>
+                              <ExternalLink size={12} />
+                            </a>
+                          ) : <span className="text-muted">N/A</span>}
+                        </td>
+                        <td>
+                          {b.awardTxHash ? (
+                            <a
+                              href={`${explorerUrl}/tx/${b.awardTxHash}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="address-link"
+                            >
+                              <code className="address-truncated">{b.awardTxHash.slice(0, 6)}...{b.awardTxHash.slice(-4)}</code>
+                              <ExternalLink size={12} />
+                            </a>
+                          ) : <span className="text-muted">N/A</span>}
+                        </td>
+                        <td>{b.settledAt ? new Date(b.settledAt * 1000).toLocaleDateString() : 'N/A'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Award size={32} />
+              <p>No fulfilled bounties yet</p>
             </div>
           )}
         </div>

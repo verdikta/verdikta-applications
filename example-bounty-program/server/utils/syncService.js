@@ -416,6 +416,9 @@ class SyncService {
             existing.contractAddress = currentContract;
             existing.lastSyncedAt = Math.floor(Date.now() / 1000);
           }
+          // Backfill creation tx info if missing (covers sync-discovered bounties)
+          if (!existing.txHash && transactionHash) existing.txHash = transactionHash;
+          if (!existing.blockNumber && blockNumber) existing.blockNumber = blockNumber;
           break;
         }
 
@@ -573,6 +576,7 @@ class SyncService {
         job.status = 'AWARDED';
         job.winner = winner;
         job.settledAt = Math.floor(Date.now() / 1000);
+        job.awardTxHash = transactionHash;
         this.hotBountyIds.delete(bountyId);
 
         // Mark the winning submission

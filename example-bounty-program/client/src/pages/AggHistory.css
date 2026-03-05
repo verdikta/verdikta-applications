@@ -218,7 +218,7 @@
 /* Requirements & Actual layout */
 .req-actual-container {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 2fr;
   gap: 1.5rem;
   margin-bottom: 0;
 }

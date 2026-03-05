@@ -335,6 +335,7 @@ function AggHistory() {
                 <tr>
                   <th>Slot</th>
                   <th>Oracle</th>
+                  <th>Job ID</th>
                   <th>Commit</th>
                   <th>Reveal Req</th>
                   <th>Reveal OK</th>
@@ -360,6 +361,9 @@ function AggHistory() {
                         {slot.oracle.slice(0, 8)}...{slot.oracle.slice(-4)}
                         <ExternalLink size={10} />
                       </a>
+                    </td>
+                    <td className="oracle-cell" title={slot.jobId || ''}>
+                      {slot.jobId ? `${slot.jobId.slice(0, 8)}...${slot.jobId.slice(-4)}` : '-'}
                     </td>
                     <BoolCell value={slot.committed} />
                     <BoolCell value={slot.revealRequested} />

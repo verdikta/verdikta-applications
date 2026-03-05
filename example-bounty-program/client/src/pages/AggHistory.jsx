@@ -116,6 +116,7 @@ function AggHistory() {
         <div className="header-content">
           <h1><Activity size={28} /> Aggregation History</h1>
           <div className="agg-id-display">
+            <span className="agg-id-label">Agg ID:</span>
             {aggId}
             <button className="copy-btn" onClick={handleCopy}>
               {copied ? 'Copied' : 'Copy'}

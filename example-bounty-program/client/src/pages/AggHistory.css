@@ -29,6 +29,12 @@
   margin: 0;
 }
 
+.agg-history .agg-id-label {
+  font-family: inherit;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
 .agg-history .agg-id-display {
   font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
   font-size: 0.8rem;

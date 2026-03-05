@@ -394,11 +394,11 @@ function MyBounties({ walletState }) {
                           <span
                             className="hunter-address"
                             data-label="Submitter"
-                            title={`${sub.hunter} — Click to copy`}
-                            style={{ cursor: 'pointer' }}
-                            onClick={() => copyToClipboard(sub.hunter, toast)}
+                            title={sub.hunter ? `${sub.hunter} — Click to copy` : 'Address not available'}
+                            style={{ cursor: sub.hunter ? 'pointer' : 'default' }}
+                            onClick={() => sub.hunter && copyToClipboard(sub.hunter, toast)}
                           >
-                            {truncateAddress(sub.hunter)}
+                            {truncateAddress(sub.hunter) || '—'}
                           </span>
                           {(() => {
                             const effectiveStatus = getEffectiveSubmissionStatus(sub.status, bounty.status);

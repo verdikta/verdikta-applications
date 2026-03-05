@@ -901,40 +901,6 @@ class ContractService {
   }
 
   /**
-   * Listen for account changes
-   */
-  onAccountChange(callback) {
-    if (window.ethereum) {
-      window.ethereum.on('accountsChanged', async (accounts) => {
-        // Clear caches on account change
-        this.clearCache();
-        
-        if (accounts.length > 0) {
-          await this.connect();
-          callback(accounts[0]);
-        } else {
-          this.disconnect();
-          callback(null);
-        }
-      });
-    }
-  }
-
-  /**
-   * Listen for network changes
-   */
-  onNetworkChange(callback) {
-    if (window.ethereum) {
-      window.ethereum.on('chainChanged', (chainId) => {
-        // Clear caches on network change
-        this.clearCache();
-        callback(chainId);
-        window.location.reload();
-      });
-    }
-  }
-
-  /**
    * Disconnect and clear all state
    */
   disconnect() {

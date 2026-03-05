@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { initializeContractService } from './services/contractService';
+import { initializeContractService, getContractService } from './services/contractService';
 import { config } from './config';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { walletService } from './services/wallet';
@@ -46,6 +46,15 @@ function AppContent() {
   useEffect(() => {
     const unsubscribe = walletService.subscribe((newState) => {
       setWalletState(newState);
+      // Reset contract service when account changes so it reconnects with the new signer
+      const cs = getContractService();
+      if (cs) {
+        if (!newState.isConnected) {
+          cs.disconnect();
+        } else if (cs.userAddress && newState.address !== cs.userAddress) {
+          cs.disconnect();
+        }
+      }
     });
 
     // Try to silently reconnect if user was previously connected

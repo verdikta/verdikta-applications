@@ -209,6 +209,103 @@
   white-space: nowrap;
 }
 
+/* Requirements & Actual layout */
+.req-actual-container {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  margin-bottom: 0;
+}
+
+.req-actual-half {
+  margin-bottom: 0 !important;
+}
+
+.req-actual-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.req-actual-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.req-actual-label {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.req-actual-value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
+}
+
+.req-actual-value.val-ok {
+  color: #22c55e;
+}
+
+.req-actual-value.val-warn {
+  color: #f59e0b;
+}
+
+.req-actual-value.val-fail {
+  color: #ef4444;
+}
+
+.req-actual-oracles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.35rem 0;
+}
+
+.oracle-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
+  font-size: 0.7rem;
+  background: var(--bg-secondary);
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.oracle-chip:hover {
+  text-decoration: underline;
+}
+
+.req-actual-detail {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  padding: 0.15rem 0;
+}
+
+.req-actual-failures {
+  padding-top: 0.25rem;
+}
+
+.failure-line {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  padding: 0.15rem 0;
+}
+
+.failure-line .icon-fail {
+  color: #ef4444;
+  flex-shrink: 0;
+}
+
 /* Fulfillment section */
 .fulfillment-details {
   display: flex;
@@ -239,6 +336,10 @@
 @media (max-width: 768px) {
   .agg-history .page-header {
     flex-direction: column;
+  }
+
+  .req-actual-container {
+    grid-template-columns: 1fr;
   }
 
   .agg-history .slots-table {

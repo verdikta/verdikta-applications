@@ -130,59 +130,114 @@ function AggHistory() {
         {outcome}
       </div>
 
-      {/* Contract Parameters */}
-      <div className="analytics-section">
-        <h2><Users size={20} /> Contract Parameters</h2>
-        <div className="stat-grid">
-          <div className="stat-card">
-            <div className="stat-value">{contractParams.K}</div>
-            <div className="stat-label">K (commit oracles)</div>
+      {/* Requirements & Actual */}
+      <div className="req-actual-container">
+        <div className="analytics-section req-actual-half">
+          <h2><Activity size={20} /> Requirements</h2>
+          <div className="req-actual-list">
+            <div className="req-actual-row">
+              <span className="req-actual-label">Commits needed</span>
+              <span className="req-actual-value">{contractParams.K}</span>
+            </div>
+            <div className="req-actual-row">
+              <span className="req-actual-label">Reveals needed</span>
+              <span className="req-actual-value">{contractParams.M}</span>
+            </div>
+            <div className="req-actual-row">
+              <span className="req-actual-label">Max scores per reveal</span>
+              <span className="req-actual-value">{contractParams.maxLikelihoodLength}</span>
+            </div>
           </div>
-          <div className="stat-card">
-            <div className="stat-value">{contractParams.M}</div>
-            <div className="stat-label">M (required responses)</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-value">{contractParams.maxLikelihoodLength}</div>
-            <div className="stat-label">Max Likelihood Length</div>
+        </div>
+
+        <div className="analytics-section req-actual-half">
+          <h2><Users size={20} /> Actual</h2>
+          <div className="req-actual-list">
+            <div className="req-actual-row">
+              <span className="req-actual-label">Commits</span>
+              <span className={`req-actual-value ${analysis.committed >= contractParams.K ? 'val-ok' : analysis.committed > 0 ? 'val-warn' : 'val-fail'}`}>
+                {analysis.committed} / {contractParams.K}
+              </span>
+            </div>
+            {slots && (() => {
+              const committers = slots.filter(s => s.committed);
+              return committers.length > 0 && (
+                <div className="req-actual-oracles">
+                  {committers.map(s => (
+                    <a
+                      key={`c-${s.slot}`}
+                      href={`${networkConfig.explorer}/address/${s.oracle}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="oracle-chip"
+                    >
+                      slot {s.slot}: {s.oracle.slice(0, 6)}...{s.oracle.slice(-4)} <ExternalLink size={10} />
+                    </a>
+                  ))}
+                </div>
+              );
+            })()}
+
+            <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
+              <span className="req-actual-label">Reveals</span>
+              <span className={`req-actual-value ${analysis.revealed >= contractParams.M ? 'val-ok' : analysis.revealed > 0 ? 'val-warn' : 'val-fail'}`}>
+                {analysis.revealed} / {contractParams.M}
+              </span>
+            </div>
+            {slots && (() => {
+              const revealers = slots.filter(s => s.revealOK);
+              return revealers.length > 0 && (
+                <div className="req-actual-oracles">
+                  {revealers.map(s => (
+                    <a
+                      key={`r-${s.slot}`}
+                      href={`${networkConfig.explorer}/address/${s.oracle}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="oracle-chip"
+                    >
+                      slot {s.slot}: {s.oracle.slice(0, 6)}...{s.oracle.slice(-4)} <ExternalLink size={10} />
+                    </a>
+                  ))}
+                </div>
+              );
+            })()}
+
+            {analysis.nonResponding > 0 && (
+              <>
+                <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
+                  <span className="req-actual-label">Non-responding</span>
+                  <span className="req-actual-value val-warn">{analysis.nonResponding}</span>
+                </div>
+                <div className="req-actual-detail">
+                  Slots: {analysis.nonRespondingSlotIds.join(', ')}
+                </div>
+              </>
+            )}
+
+            {Object.values(analysis.failures).some(v => v > 0) && (
+              <div className="req-actual-failures" style={{ marginTop: '0.75rem' }}>
+                <span className="req-actual-label" style={{ marginBottom: '0.25rem', display: 'block' }}>Failures</span>
+                {analysis.failures.hashMismatch > 0 && (
+                  <div className="failure-line"><XCircle size={12} className="icon-fail" /> {analysis.failures.hashMismatch} hash mismatch</div>
+                )}
+                {analysis.failures.invalidFormat > 0 && (
+                  <div className="failure-line"><XCircle size={12} className="icon-fail" /> {analysis.failures.invalidFormat} invalid format</div>
+                )}
+                {analysis.failures.tooManyScores > 0 && (
+                  <div className="failure-line"><XCircle size={12} className="icon-fail" /> {analysis.failures.tooManyScores} too many scores</div>
+                )}
+                {analysis.failures.wrongScoreCount > 0 && (
+                  <div className="failure-line"><XCircle size={12} className="icon-fail" /> {analysis.failures.wrongScoreCount} wrong score count</div>
+                )}
+                {analysis.failures.tooFewScores > 0 && (
+                  <div className="failure-line"><XCircle size={12} className="icon-fail" /> {analysis.failures.tooFewScores} too few scores</div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
-
-      {/* Aggregation Status */}
-      {aggregationStatus && (
-        <div className="analytics-section">
-          <h2><Activity size={20} /> Aggregation Status</h2>
-          <div className="stat-grid">
-            <div className={`stat-card ${aggregationStatus.isComplete ? 'success' : ''}`}>
-              <div className="stat-icon">{aggregationStatus.isComplete ? <CheckCircle size={20} /> : <Clock size={20} />}</div>
-              <div className="stat-value">{aggregationStatus.isComplete ? 'Yes' : 'No'}</div>
-              <div className="stat-label">Complete</div>
-            </div>
-            <div className={`stat-card ${aggregationStatus.failed ? 'danger' : ''}`}>
-              <div className="stat-icon">{aggregationStatus.failed ? <XCircle size={20} /> : <CheckCircle size={20} />}</div>
-              <div className="stat-value">{aggregationStatus.failed ? 'Yes' : 'No'}</div>
-              <div className="stat-label">Failed</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">{aggregationStatus.commitPhaseComplete ? 'Yes' : 'No'}</div>
-              <div className="stat-label">Commit Phase Done</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">{aggregationStatus.commitCount}</div>
-              <div className="stat-label">Commits</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">{aggregationStatus.responseCount}</div>
-              <div className="stat-label">Responses</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">{aggregationStatus.requestBlock}</div>
-              <div className="stat-label">Request Block</div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Request Event */}
       {requestEvent && (
@@ -305,86 +360,6 @@ function AggHistory() {
         </div>
       )}
 
-      {/* Analysis */}
-      <div className="analytics-section">
-        <h2><Activity size={20} /> Analysis</h2>
-        <div className="stat-grid">
-          <div className="stat-card">
-            <div className="stat-value">{analysis.totalSlots}</div>
-            <div className="stat-label">Total Slots</div>
-          </div>
-          <div className="stat-card success">
-            <div className="stat-icon"><CheckCircle size={16} /></div>
-            <div className="stat-value">{analysis.committed}</div>
-            <div className="stat-label">Committed</div>
-          </div>
-          <div className="stat-card success">
-            <div className="stat-icon"><CheckCircle size={16} /></div>
-            <div className="stat-value">{analysis.revealed}</div>
-            <div className="stat-label">Revealed</div>
-          </div>
-          <div className={`stat-card ${analysis.nonResponding > 0 ? 'warning' : ''}`}>
-            <div className="stat-icon">{analysis.nonResponding > 0 ? <AlertTriangle size={16} /> : <CheckCircle size={16} />}</div>
-            <div className="stat-value">{analysis.nonResponding}</div>
-            <div className="stat-label">Non-Responding</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-value">{analysis.uniqueOracles}</div>
-            <div className="stat-label">Unique Oracles</div>
-          </div>
-        </div>
-
-        {/* Non-responding slot IDs */}
-        {analysis.nonRespondingSlotIds && analysis.nonRespondingSlotIds.length > 0 && (
-          <p style={{ marginTop: '1rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-            Non-responding slots: {analysis.nonRespondingSlotIds.join(', ')}
-          </p>
-        )}
-
-        {/* Failure breakdown */}
-        {Object.values(analysis.failures).some(v => v > 0) && (
-          <div style={{ marginTop: '1rem' }}>
-            <h3 style={{ fontSize: '0.95rem', marginBottom: '0.5rem' }}>Failure Breakdown</h3>
-            <div className="stat-grid">
-              {analysis.failures.hashMismatch > 0 && (
-                <div className="stat-card danger">
-                  <div className="stat-icon"><XCircle size={16} /></div>
-                  <div className="stat-value">{analysis.failures.hashMismatch}</div>
-                  <div className="stat-label">Hash Mismatch</div>
-                </div>
-              )}
-              {analysis.failures.invalidFormat > 0 && (
-                <div className="stat-card danger">
-                  <div className="stat-icon"><XCircle size={16} /></div>
-                  <div className="stat-value">{analysis.failures.invalidFormat}</div>
-                  <div className="stat-label">Invalid Format</div>
-                </div>
-              )}
-              {analysis.failures.tooManyScores > 0 && (
-                <div className="stat-card danger">
-                  <div className="stat-icon"><XCircle size={16} /></div>
-                  <div className="stat-value">{analysis.failures.tooManyScores}</div>
-                  <div className="stat-label">Too Many Scores</div>
-                </div>
-              )}
-              {analysis.failures.wrongScoreCount > 0 && (
-                <div className="stat-card danger">
-                  <div className="stat-icon"><XCircle size={16} /></div>
-                  <div className="stat-value">{analysis.failures.wrongScoreCount}</div>
-                  <div className="stat-label">Wrong Score Count</div>
-                </div>
-              )}
-              {analysis.failures.tooFewScores > 0 && (
-                <div className="stat-card danger">
-                  <div className="stat-icon"><XCircle size={16} /></div>
-                  <div className="stat-value">{analysis.failures.tooFewScores}</div>
-                  <div className="stat-label">Too Few Scores</div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   );
 }

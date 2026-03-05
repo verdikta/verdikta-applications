@@ -13,6 +13,7 @@ import {
   Clock,
   Users,
   ExternalLink,
+  Copy,
   ArrowLeft,
   Loader2
 } from 'lucide-react';
@@ -27,7 +28,7 @@ function AggHistory() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState(null);
 
   useEffect(() => {
     async function fetchHistory() {
@@ -45,12 +46,12 @@ function AggHistory() {
     fetchHistory();
   }, [aggId]);
 
-  const handleCopy = async () => {
+  const handleCopy = async (text, key = 'aggId') => {
     try {
-      await navigator.clipboard.writeText(aggId);
+      await navigator.clipboard.writeText(text);
     } catch {
       const ta = document.createElement('textarea');
-      ta.value = aggId;
+      ta.value = text;
       ta.style.position = 'fixed';
       ta.style.left = '-9999px';
       document.body.appendChild(ta);
@@ -58,8 +59,8 @@ function AggHistory() {
       document.execCommand('copy');
       document.body.removeChild(ta);
     }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    setCopied(key);
+    setTimeout(() => setCopied(null), 1500);
   };
 
   if (loading) {
@@ -118,8 +119,8 @@ function AggHistory() {
           <div className="agg-id-display">
             <span className="agg-id-label">Agg ID:</span>
             {aggId}
-            <button className="copy-btn" onClick={handleCopy}>
-              {copied ? 'Copied' : 'Copy'}
+            <button className="copy-btn" onClick={() => handleCopy(aggId)}>
+              {copied === 'aggId' ? 'Copied' : 'Copy'}
             </button>
           </div>
         </div>
@@ -319,7 +320,23 @@ function AggHistory() {
             </div>
             <div className="detail-row">
               <span className="detail-label">CIDs:</span>
-              <span className="detail-value">{requestEvent.cids?.join(', ') || 'N/A'}</span>
+              <span className="detail-value">
+                {requestEvent.cids?.length > 0
+                  ? requestEvent.cids.map((cid, i) => (
+                      <span key={cid}>
+                        {i > 0 && ', '}
+                        <a
+                          href={`${config.ipfsGateway}/ipfs/${cid}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ color: 'var(--primary)', textDecoration: 'none' }}
+                        >
+                          {cid} <ExternalLink size={10} style={{ verticalAlign: 'middle' }} />
+                        </a>
+                      </span>
+                    ))
+                  : 'N/A'}
+              </span>
             </div>
           </div>
         </div>
@@ -334,7 +351,7 @@ function AggHistory() {
               <thead>
                 <tr>
                   <th>Slot</th>
-                  <th>Arbiter</th>
+                  <th>Arbiter Addr</th>
                   <th>Job ID</th>
                   <th>Commit</th>
                   <th>Reveal Req</th>
@@ -362,7 +379,14 @@ function AggHistory() {
                       </a>
                     </td>
                     <td className="oracle-cell" title={slot.jobId || ''}>
-                      {slot.jobId ? `${slot.jobId.slice(0, 8)}...${slot.jobId.slice(-4)}` : '-'}
+                      {slot.jobId ? (
+                        <span className="jobid-cell">
+                          {slot.jobId.slice(0, 8)}...{slot.jobId.slice(-4)}
+                          <button className="copy-icon-btn" onClick={() => handleCopy(slot.jobId, `job-${slot.slot}`)}>
+                            {copied === `job-${slot.slot}` ? <CheckCircle size={11} className="icon-ok" /> : <Copy size={11} />}
+                          </button>
+                        </span>
+                      ) : '-'}
                     </td>
                     <BoolCell value={slot.committed} />
                     <BoolCell value={slot.revealRequested} />
@@ -392,7 +416,16 @@ function AggHistory() {
             {fulfillment.justificationCID && (
               <div className="detail-row">
                 <span className="detail-label">Justification CID:</span>
-                <span className="detail-value">{fulfillment.justificationCID}</span>
+                <span className="detail-value">
+                  <a
+                    href={`${config.ipfsGateway}/ipfs/${fulfillment.justificationCID}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: 'var(--primary)', textDecoration: 'none' }}
+                  >
+                    {fulfillment.justificationCID} <ExternalLink size={10} style={{ verticalAlign: 'middle' }} />
+                  </a>
+                </span>
               </div>
             )}
             <div className="detail-row">

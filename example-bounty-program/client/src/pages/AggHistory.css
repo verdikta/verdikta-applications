@@ -312,6 +312,28 @@
   flex-shrink: 0;
 }
 
+.jobid-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.copy-icon-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+
+.copy-icon-btn:hover {
+  opacity: 1;
+}
+
 /* Fulfillment section */
 .fulfillment-details {
   display: flex;

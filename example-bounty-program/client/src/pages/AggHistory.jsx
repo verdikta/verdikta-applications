@@ -1,6 +1,6 @@
 /**
  * Aggregation History Page
- * Shows full oracle evaluation lifecycle for a given Verdikta aggregation ID
+ * Shows full arbiter evaluation lifecycle for a given Verdikta aggregation ID
  */
 
 import { useState, useEffect } from 'react';
@@ -137,7 +137,7 @@ function AggHistory() {
           <h2><Activity size={20} /> Requirements</h2>
           <div className="req-actual-list">
             <div className="req-actual-row">
-              <span className="req-actual-label">Oracles polled</span>
+              <span className="req-actual-label">Arbiters polled</span>
               <span className="req-actual-value">{contractParams.K}</span>
             </div>
             <div className="req-actual-row">
@@ -328,13 +328,13 @@ function AggHistory() {
       {/* Oracle Slots Table */}
       {slots && slots.length > 0 && (
         <div className="analytics-section">
-          <h2><Users size={20} /> Oracle Slots ({slots.length})</h2>
+          <h2><Users size={20} /> Arbiter Slots ({slots.length})</h2>
           <div className="slots-table">
             <table>
               <thead>
                 <tr>
                   <th>Slot</th>
-                  <th>Oracle</th>
+                  <th>Arbiter</th>
                   <th>Job ID</th>
                   <th>Commit</th>
                   <th>Reveal Req</th>

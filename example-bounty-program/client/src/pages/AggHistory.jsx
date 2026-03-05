@@ -344,7 +344,6 @@ function AggHistory() {
                   <th>Too Many</th>
                   <th>Wrong Cnt</th>
                   <th>Too Few</th>
-                  <th>Scores</th>
                 </tr>
               </thead>
               <tbody>
@@ -373,9 +372,6 @@ function AggHistory() {
                     <BoolCell value={slot.tooManyScores} invert />
                     <BoolCell value={slot.wrongScoreCount} invert />
                     <BoolCell value={slot.tooFewScores} invert />
-                    <td className="scores-cell" title={slot.scores ? slot.scores.join(', ') : ''}>
-                      {slot.scores ? `[${slot.scores.join(', ')}]` : '-'}
-                    </td>
                   </tr>
                 ))}
               </tbody>

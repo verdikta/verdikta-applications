@@ -22,18 +22,18 @@ const AGGREGATOR_ABI = [
   "function maxLikelihoodLength() view returns (uint256)",
   "function aggregatedEvaluations(bytes32) view returns (bool isComplete, bool failed, bool commitPhaseComplete, uint256 commitCount, uint256 responseCount, uint256 requestBlock)",
   "function requestIdToAggregatorId(bytes32) view returns (bytes32)",
-  // Agg history events
+  // Agg history events — signatures must match the actual contract exactly
   "event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)",
-  "event OracleSelected(bytes32 indexed aggRequestId, uint256 slot, address oracle, bytes32 jobId)",
-  "event CommitReceived(bytes32 indexed aggRequestId, uint256 slot)",
-  "event RevealRequestDispatched(bytes32 indexed aggRequestId, uint256 slot)",
-  "event NewOracleResponseRecorded(bytes32 indexed aggRequestId, uint256 slot, uint256[] scores)",
-  "event RevealHashMismatch(bytes32 indexed aggRequestId, uint256 slot)",
-  "event InvalidRevealFormat(bytes32 indexed aggRequestId, uint256 slot)",
-  "event RevealTooManyScores(bytes32 indexed aggRequestId, uint256 slot)",
-  "event RevealWrongScoreCount(bytes32 indexed aggRequestId, uint256 slot)",
-  "event RevealTooFewScores(bytes32 indexed aggRequestId, uint256 slot)",
-  "event EvaluationFailed(bytes32 indexed aggRequestId)",
+  "event OracleSelected(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address oracle, bytes32 jobId)",
+  "event CommitReceived(bytes32 indexed aggRequestId, uint256 pollIndex, address operator, bytes16 commitHash)",
+  "event RevealRequestDispatched(bytes32 indexed aggRequestId, uint256 pollIndex, bytes16 commitHash)",
+  "event NewOracleResponseRecorded(bytes32 requestId, uint256 pollIndex, bytes32 indexed aggRequestId, address operator)",
+  "event RevealHashMismatch(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, bytes16 expectedHash, bytes16 gotHash)",
+  "event InvalidRevealFormat(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, string badCid)",
+  "event RevealTooManyScores(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, uint256 responseLength, uint256 maxAllowed)",
+  "event RevealWrongScoreCount(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, uint256 responseLength, uint256 expectedLength)",
+  "event RevealTooFewScores(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, uint256 responseLength)",
+  "event EvaluationFailed(bytes32 indexed aggRequestId, string phase)",
   "event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] likelihoods, string justificationCID)"
 ];
 
@@ -460,28 +460,21 @@ class VerdiktaService {
       aggStatus = null;
     }
 
-    // 3. Find RequestAIEvaluation event — start with 10k blocks, widen to 50k
+    // 3. Find RequestAIEvaluation event
+    // Use requestBlock from on-chain storage when available for precise search
     const aggIdTopic = aggId;
     const reqEventSig = this.aggregator.interface.getEvent('RequestAIEvaluation').topicHash;
     let requestEvent = null;
-    let searchFrom = Math.max(0, currentBlock - 10000);
+    const searchFrom = aggStatus?.requestBlock
+      ? Math.max(0, aggStatus.requestBlock - 1)
+      : Math.max(0, currentBlock - 50000);
 
-    let logs = await this.provider.getLogs({
+    const logs = await this.provider.getLogs({
       address: this.aggregatorAddress,
       topics: [reqEventSig, aggIdTopic],
       fromBlock: searchFrom,
       toBlock: currentBlock
     });
-
-    if (logs.length === 0) {
-      searchFrom = Math.max(0, currentBlock - 50000);
-      logs = await this.provider.getLogs({
-        address: this.aggregatorAddress,
-        topics: [reqEventSig, aggIdTopic],
-        fromBlock: searchFrom,
-        toBlock: currentBlock
-      });
-    }
 
     if (logs.length > 0) {
       const parsed = this.aggregator.interface.parseLog(logs[0]);
@@ -493,7 +486,7 @@ class VerdiktaService {
     }
 
     if (!requestEvent && !aggStatus) {
-      return { found: false, aggId, message: 'No matching events found in last 50k blocks' };
+      return { found: false, aggId, message: 'No matching aggregation found on-chain' };
     }
 
     const eventFromBlock = requestEvent ? requestEvent.block : searchFrom;
@@ -507,10 +500,19 @@ class VerdiktaService {
       toBlock: currentBlock
     });
 
+    logger.info('AggHistory debug', {
+      oracleSelectedSig,
+      oracleLogsFound: oracleLogs.length,
+      aggIdTopic,
+      eventFromBlock,
+      currentBlock
+    });
+
     const slotMap = {};
     for (const log of oracleLogs) {
       const parsed = this.aggregator.interface.parseLog(log);
-      const slot = Number(parsed.args.slot);
+      logger.info('OracleSelected parsed', { args: Object.keys(parsed.args), pollIndex: String(parsed.args.pollIndex), oracle: parsed.args.oracle });
+      const slot = Number(parsed.args.pollIndex);
       slotMap[slot] = {
         slot,
         oracle: parsed.args.oracle,
@@ -547,9 +549,11 @@ class VerdiktaService {
     );
 
     for (let i = 0; i < eventNames.length; i++) {
+      logger.info(`Lifecycle ${eventNames[i]}`, { logsFound: lifecycleLogs[i].length });
       for (const log of lifecycleLogs[i]) {
         const parsed = this.aggregator.interface.parseLog(log);
-        const slot = Number(parsed.args.slot);
+        const slot = Number(parsed.args.pollIndex);
+        logger.info(`  ${eventNames[i]} slot=${slot}`, { args: Object.keys(parsed.args) });
         if (!slotMap[slot]) continue;
         switch (eventNames[i]) {
           case 'CommitReceived': slotMap[slot].committed = true; break;
@@ -572,12 +576,13 @@ class VerdiktaService {
       toBlock: currentBlock
     });
 
+    logger.info('NewOracleResponseRecorded', { logsFound: responseLogs.length });
     for (const log of responseLogs) {
       const parsed = this.aggregator.interface.parseLog(log);
-      const slot = Number(parsed.args.slot);
+      const slot = Number(parsed.args.pollIndex);
+      logger.info(`  Response slot=${slot}`, { args: Object.keys(parsed.args) });
       if (!slotMap[slot]) continue;
       slotMap[slot].revealOK = true;
-      slotMap[slot].scores = parsed.args.scores.map(s => Number(s));
     }
 
     // 7. Check for EvaluationFailed and FulfillAIEvaluation

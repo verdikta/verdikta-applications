@@ -432,14 +432,17 @@ class VerdiktaService {
     const currentBlock = await this.provider.getBlockNumber();
 
     // 1. Fetch contract params
-    const [K, M, maxLikLen] = await Promise.all([
+    // K = oracles polled, M = commits required, N = reveals required
+    const [K, M, N, maxLikLen] = await Promise.all([
       this.aggregator.commitOraclesToPoll(),
+      this.aggregator.oraclesToPoll(),
       this.aggregator.requiredResponses(),
       this.aggregator.maxLikelihoodLength()
     ]);
     const contractParams = {
       K: Number(K),
       M: Number(M),
+      N: Number(N),
       maxLikelihoodLength: Number(maxLikLen)
     };
 
@@ -631,7 +634,7 @@ class VerdiktaService {
     } else if (failLogs.length > 0 || (aggStatus && aggStatus.failed)) {
       let failPhase = 'unknown';
       if (committedSlots.length < contractParams.M) failPhase = 'commit';
-      else if (revealedSlots.length < contractParams.M) failPhase = 'reveal';
+      else if (revealedSlots.length < contractParams.N) failPhase = 'reveal';
       outcome = `FAILED (${failPhase} phase)`;
     } else {
       outcome = 'RUNNING';

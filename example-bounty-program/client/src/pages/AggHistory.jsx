@@ -137,12 +137,16 @@ function AggHistory() {
           <h2><Activity size={20} /> Requirements</h2>
           <div className="req-actual-list">
             <div className="req-actual-row">
-              <span className="req-actual-label">Commits needed</span>
+              <span className="req-actual-label">Oracles polled</span>
               <span className="req-actual-value">{contractParams.K}</span>
             </div>
             <div className="req-actual-row">
-              <span className="req-actual-label">Reveals needed</span>
+              <span className="req-actual-label">Commits needed</span>
               <span className="req-actual-value">{contractParams.M}</span>
+            </div>
+            <div className="req-actual-row">
+              <span className="req-actual-label">Reveals needed</span>
+              <span className="req-actual-value">{contractParams.N}</span>
             </div>
             <div className="req-actual-row">
               <span className="req-actual-label">Max scores per reveal</span>
@@ -154,9 +158,31 @@ function AggHistory() {
         <div className="analytics-section req-actual-half">
           <h2><Users size={20} /> Actual</h2>
           <div className="req-actual-list">
+            {/* Polled */}
             <div className="req-actual-row">
+              <span className="req-actual-label">Polled</span>
+              <span className="req-actual-value">{slots ? slots.length : 0} / {contractParams.K}</span>
+            </div>
+            {slots && slots.length > 0 && (
+              <div className="req-actual-oracles">
+                {slots.map(s => (
+                  <a
+                    key={`p-${s.slot}`}
+                    href={`${networkConfig.explorer}/address/${s.oracle}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="oracle-chip"
+                  >
+                    slot {s.slot}: {s.oracle.slice(0, 6)}...{s.oracle.slice(-4)} <ExternalLink size={10} />
+                  </a>
+                ))}
+              </div>
+            )}
+
+            {/* Commits */}
+            <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
               <span className="req-actual-label">Commits</span>
-              <span className={`req-actual-value ${analysis.committed >= contractParams.K ? 'val-ok' : analysis.committed > 0 ? 'val-warn' : 'val-fail'}`}>
+              <span className={`req-actual-value ${analysis.committed >= contractParams.M ? 'val-ok' : analysis.committed > 0 ? 'val-warn' : 'val-fail'}`}>
                 {analysis.committed} / {contractParams.K}
               </span>
             </div>
@@ -179,10 +205,37 @@ function AggHistory() {
               );
             })()}
 
+            {/* Selected for reveal */}
+            <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
+              <span className="req-actual-label">Reveal Requested</span>
+              <span className="req-actual-value">
+                {slots ? slots.filter(s => s.revealRequested).length : 0} / {contractParams.M}
+              </span>
+            </div>
+            {slots && (() => {
+              const selected = slots.filter(s => s.revealRequested);
+              return selected.length > 0 && (
+                <div className="req-actual-oracles">
+                  {selected.map(s => (
+                    <a
+                      key={`s-${s.slot}`}
+                      href={`${networkConfig.explorer}/address/${s.oracle}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="oracle-chip"
+                    >
+                      slot {s.slot}: {s.oracle.slice(0, 6)}...{s.oracle.slice(-4)} <ExternalLink size={10} />
+                    </a>
+                  ))}
+                </div>
+              );
+            })()}
+
+            {/* Reveals */}
             <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
               <span className="req-actual-label">Reveals</span>
-              <span className={`req-actual-value ${analysis.revealed >= contractParams.M ? 'val-ok' : analysis.revealed > 0 ? 'val-warn' : 'val-fail'}`}>
-                {analysis.revealed} / {contractParams.M}
+              <span className={`req-actual-value ${analysis.revealed >= contractParams.N ? 'val-ok' : analysis.revealed > 0 ? 'val-warn' : 'val-fail'}`}>
+                {analysis.revealed} / {contractParams.N}
               </span>
             </div>
             {slots && (() => {
@@ -204,6 +257,7 @@ function AggHistory() {
               );
             })()}
 
+            {/* Non-responding */}
             {analysis.nonResponding > 0 && (
               <>
                 <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
@@ -216,6 +270,7 @@ function AggHistory() {
               </>
             )}
 
+            {/* Failures */}
             {Object.values(analysis.failures).some(v => v > 0) && (
               <div className="req-actual-failures" style={{ marginTop: '0.75rem' }}>
                 <span className="req-actual-label" style={{ marginBottom: '0.25rem', display: 'block' }}>Failures</span>

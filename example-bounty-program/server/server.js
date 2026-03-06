@@ -141,6 +141,9 @@ const initializeBlockchainSync = () => {
 };
 // ===========================================================
 
+// Trust reverse proxy (nginx) so req.protocol and forwarded headers are correct
+app.set('trust proxy', true);
+
 // Middleware
 app.use(cors());
 app.options('*', cors());

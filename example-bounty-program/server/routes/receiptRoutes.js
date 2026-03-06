@@ -216,10 +216,14 @@ router.get('/r/:jobId/:submissionId', async (req, res) => {
     const ethPriceUSD = await fetchEthPrice();
     const amountUSD = ethPriceUSD ? (parseFloat(amountEth) * ethPriceUSD).toFixed(2) : null;
 
-    const proto = (req.get('x-forwarded-proto') || req.protocol || 'https').split(',')[0].trim();
-    const receiptUrl = `${proto}://${req.get('host')}/r/${jobId}/${submissionId}`;
+    let baseUrl = config.publicUrl;
+    if (!baseUrl) {
+      const proto = (req.get('x-forwarded-proto') || req.protocol || 'https').split(',')[0].trim();
+      baseUrl = `${proto}://${req.get('host')}`;
+    }
+    const receiptUrl = `${baseUrl}/r/${jobId}/${submissionId}`;
     // Use PNG for better X/Twitter compatibility
-    const ogImageUrl = `${proto}://${req.get('host')}/og/receipt/${jobId}/${submissionId}.png`;
+    const ogImageUrl = `${baseUrl}/og/receipt/${jobId}/${submissionId}.png`;
 
     const ogTitle = `Receipt: PASS — ${amountEth} ETH${amountUSD ? ` ($${amountUSD})` : ''} — ${title}`;
     const ogDesc = `${winnerLabel} earned ${amountEth} ETH${amountUSD ? ` ($${amountUSD} USD)` : ''}. Final verdict: PASS (paid).`;
@@ -354,7 +358,7 @@ router.get('/r/:jobId/:submissionId', async (req, res) => {
  * @param {Object} params - Receipt data
  * @returns {string} SVG content
  */
-function generateReceiptSvg({ jobId, submissionId, onChainId, amountEth, amountUSD, title, winnerLabel, winnerType, networkName }) {
+function generateReceiptSvg({ jobId, submissionId, onChainId, amountEth, amountUSD, title, winnerLabel, winnerType, networkName, publicUrl }) {
   const usdText = amountUSD ? ` ($${amountUSD} USD)` : '';
   const winnerTypeText = winnerType === 'agent' ? '🤖 AI Agent' : 'Human';
   const submissionDisplay = submissionId + 1; // Display as 1-indexed
@@ -398,7 +402,7 @@ function generateReceiptSvg({ jobId, submissionId, onChainId, amountEth, amountU
 
   <rect x="100" y="420" width="1000" height="6" fill="url(#accent)" opacity="0.7"/>
 
-  <text x="100" y="485" font-family="monospace" font-size="18" fill="#8ab4ff">bounties.verdikta.org/r/${jobId}/${submissionId}</text>
+  <text x="100" y="485" font-family="monospace" font-size="18" fill="#8ab4ff">${(publicUrl || 'https://bounties.verdikta.org').replace(/^https?:\/\//, '')}/r/${jobId}/${submissionId}</text>
   <text x="100" y="525" font-family="Arial, sans-serif" font-size="16" fill="#9a9aa3">Powered by Verdikta · Trust at Machine Speed · On-chain proof</text>
 </svg>`;
 }
@@ -424,7 +428,7 @@ router.get('/og/receipt/:jobId/:submissionId.svg', async (req, res) => {
     const ethPriceUSD = await fetchEthPrice();
     const amountUSD = ethPriceUSD ? (parseFloat(amountEth) * ethPriceUSD).toFixed(2) : null;
 
-    const svg = generateReceiptSvg({ jobId, submissionId, onChainId, amountEth, amountUSD, title, winnerLabel: winnerInfo.label, winnerType: winnerInfo.type, networkName: config.networkName });
+    const svg = generateReceiptSvg({ jobId, submissionId, onChainId, amountEth, amountUSD, title, winnerLabel: winnerInfo.label, winnerType: winnerInfo.type, networkName: config.networkName, publicUrl: config.publicUrl });
 
     res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
     // Allow caching; receipt content should be immutable once paid.
@@ -457,7 +461,7 @@ router.get('/og/receipt/:jobId/:submissionId.png', async (req, res) => {
     const ethPriceUSD = await fetchEthPrice();
     const amountUSD = ethPriceUSD ? (parseFloat(amountEth) * ethPriceUSD).toFixed(2) : null;
 
-    const svg = generateReceiptSvg({ jobId, submissionId, onChainId, amountEth, amountUSD, title, winnerLabel: winnerInfo.label, winnerType: winnerInfo.type, networkName: config.networkName });
+    const svg = generateReceiptSvg({ jobId, submissionId, onChainId, amountEth, amountUSD, title, winnerLabel: winnerInfo.label, winnerType: winnerInfo.type, networkName: config.networkName, publicUrl: config.publicUrl });
 
     // Convert SVG to PNG using sharp
     const pngBuffer = await sharp(Buffer.from(svg))

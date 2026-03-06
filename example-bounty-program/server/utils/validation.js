@@ -9,6 +9,7 @@ const ALLOWED_FILE_TYPES = [
   'text/markdown',
   'image/jpeg',
   'image/png',
+  'image/bmp',
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
   // Code/text file MIME types
@@ -37,7 +38,7 @@ const ALLOWED_EXTENSIONS = [
   // Documents
   '.txt', '.md', '.pdf', '.docx',
   // Images
-  '.jpg', '.jpeg', '.png',
+  '.jpg', '.jpeg', '.png', '.bmp',
   // Programming languages
   '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.cpp', '.h', '.hpp',
   '.cs', '.rb', '.go', '.rs', '.php', '.swift', '.kt', '.sol', '.r', '.m',

@@ -129,7 +129,7 @@ function SubmitWork({ walletState }) {
       // Documents
       '.txt', '.md', '.pdf', '.docx',
       // Images
-      '.jpg', '.jpeg', '.png',
+      '.jpg', '.jpeg', '.png', '.bmp',
       // Programming languages
       '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.cpp', '.h', '.hpp',
       '.cs', '.rb', '.go', '.rs', '.php', '.swift', '.kt', '.sol', '.r', '.m',
@@ -622,11 +622,11 @@ function SubmitWork({ walletState }) {
               id="files"
               type="file"
               onChange={handleFileAdd}
-              accept=".txt,.md,.pdf,.docx,.jpg,.jpeg,.png,.py,.js,.ts,.jsx,.tsx,.java,.c,.cpp,.h,.hpp,.cs,.rb,.go,.rs,.php,.swift,.kt,.sol,.r,.m,.html,.css,.scss,.sass,.json,.xml,.yaml,.yml,.toml,.csv,.sh,.bat,.ps1,.sql"
+              accept=".txt,.md,.pdf,.docx,.jpg,.jpeg,.png,.bmp,.py,.js,.ts,.jsx,.tsx,.java,.c,.cpp,.h,.hpp,.cs,.rb,.go,.rs,.php,.swift,.kt,.sol,.r,.m,.html,.css,.scss,.sass,.json,.xml,.yaml,.yml,.toml,.csv,.sh,.bat,.ps1,.sql"
               multiple
             />
             <small>
-              Allowed formats: Code files (.py, .sol, .cpp, .js, .ts, .java, .c, .h, .go, .rs, etc.), documents (.txt, .md, .pdf, .docx), images (.jpg, .png), and data files (.json, .xml, .yaml, .csv)<br />
+              Allowed formats: Code files (.py, .sol, .cpp, .js, .ts, .java, .c, .h, .go, .rs, etc.), documents (.txt, .md, .pdf, .docx), images (.jpg, .png, .bmp), and data files (.json, .xml, .yaml, .csv)<br />
               Maximum size per file: 20 MB | You can add up to 10 files
             </small>
           </div>

@@ -111,6 +111,34 @@ class ContractService {
   }
 
   // ==========================================================================
+  // ERROR DECODING HELPER
+  // ==========================================================================
+
+  /**
+   * Try to extract a human-readable revert reason from an error.
+   * Handles both custom Solidity errors (parseError) and legacy string requires.
+   * @param {Error} error - The caught error object
+   * @param {ethers.Contract[]} contracts - Contract instances whose ABIs to try
+   * @returns {string|null} Decoded error name/reason, or null if not decodable
+   */
+  _decodeRevertReason(error, contracts) {
+    // Try custom error decoding first
+    if (error.data) {
+      for (const c of contracts) {
+        try {
+          const parsed = c.interface.parseError(error.data);
+          if (parsed) {
+            const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
+            return parsed.name + args;
+          }
+        } catch {}
+      }
+    }
+    // Fall back to string reason or shortMessage
+    return error.reason || error.shortMessage || null;
+  }
+
+  // ==========================================================================
   // PROVIDER MANAGEMENT (OPTIMIZED)
   // ==========================================================================
 
@@ -261,11 +289,12 @@ class ContractService {
           { value: valueWei }
         );
       } catch (e) {
-        const msg = (e?.shortMessage || e?.message || '').toLowerCase();
-        if (msg.includes('no eth')) throw new Error('Bounty requires ETH value (msg.value > 0)');
-        if (msg.includes('empty evaluationcid')) throw new Error('Evaluation CID is empty');
-        if (msg.includes('bad threshold')) throw new Error('Threshold must be 0..100');
-        if (msg.includes('deadline in past')) throw new Error('Deadline must be in the future');
+        const decoded = this._decodeRevertReason(e, [this.contract]);
+        const msg = (decoded || e?.message || '').toLowerCase();
+        if (msg.includes('no eth') || msg.includes('noeth')) throw new Error('Bounty requires ETH value (msg.value > 0)');
+        if (msg.includes('empty evaluationcid') || msg.includes('emptyevaluationcid')) throw new Error('Evaluation CID is empty');
+        if (msg.includes('bad threshold') || msg.includes('badthreshold')) throw new Error('Threshold must be 0..100');
+        if (msg.includes('deadline in past') || msg.includes('deadlineinpast')) throw new Error('Deadline must be in the future');
         throw e;
       }
 
@@ -499,13 +528,14 @@ class ContractService {
       console.log(`🔍 Dry-run finalizeSubmission(${bountyId}, ${submissionId})...`);
       await this.contract.finalizeSubmission.staticCall(bountyId, submissionId);
     } catch (staticErr) {
-      const msg = (staticErr?.shortMessage || staticErr?.reason || staticErr?.message || '').toLowerCase();
+      const decoded = this._decodeRevertReason(staticErr, [this.contract]);
+      const msg = (decoded || staticErr?.message || '').toLowerCase();
       console.warn(`staticCall reverted for submission #${submissionId}:`, msg);
 
-      if (msg.includes('not pending') || msg.includes('not pendingverdikta')) {
+      if (msg.includes('not pending') || msg.includes('notpending') || msg.includes('not pendingverdikta')) {
         return { success: false, reason: 'already_terminal' };
       }
-      if (msg.includes('verdikta') || msg.includes('not ready') || msg.includes('evaluation')) {
+      if (msg.includes('verdikta') || msg.includes('not ready') || msg.includes('notready') || msg.includes('evaluation')) {
         return { success: false, reason: 'oracle_not_ready', canFallbackToTimeout: true };
       }
       // Unknown revert — still flag as potential timeout fallback
@@ -604,14 +634,15 @@ class ContractService {
         throw new Error('Transaction rejected by user');
       }
 
-      const msg = (error?.message || '').toLowerCase();
-      if (msg.includes('not open')) {
+      const decoded = this._decodeRevertReason(error, [this.contract]);
+      const msg = (decoded || error?.message || '').toLowerCase();
+      if (msg.includes('not open') || msg.includes('notopen')) {
         throw new Error('Bounty is not open - it may already be closed or awarded');
       }
-      if (msg.includes('deadline not passed')) {
+      if (msg.includes('deadline not passed') || msg.includes('deadlinenotpassed')) {
         throw new Error('Cannot close yet - deadline has not passed');
       }
-      if (msg.includes('active evaluation')) {
+      if (msg.includes('active evaluation') || msg.includes('activeevaluation')) {
         throw new Error('Cannot close - active evaluations in progress. Finalize them first.');
       }
 
@@ -659,8 +690,9 @@ class ContractService {
 
       } catch (error) {
         console.error('Error getting bounty status:', error);
-        const msg = (error?.message || '').toLowerCase();
-        if (msg.includes('bad bountyid')) {
+        const decoded = this._decodeRevertReason(error, [contract]);
+        const msg = (decoded || error?.message || '').toLowerCase();
+        if (msg.includes('bad bountyid') || msg.includes('badbountyid')) {
           throw new Error(`Bounty #${bountyId} does not exist on-chain`);
         }
         throw error;

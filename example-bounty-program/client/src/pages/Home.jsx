@@ -86,6 +86,8 @@ function Home({ walletState }) {
 
       if (['OPEN', 'EXPIRED', 'AWARDED', 'CLOSED'].includes(statusUpper)) {
         filterParams.status = statusUpper;
+      } else if (statusUpper === 'UNCLAIMED') {
+        filterParams.submissionStatus = 'ACCEPTED_PENDING_CLAIM';
       } else {
         // "All Active" excludes completed bounties (both CLOSED and AWARDED)
         filterParams.excludeStatuses = 'CLOSED,AWARDED';
@@ -235,6 +237,7 @@ function Home({ walletState }) {
               <option value="">All Active</option>
               <option value="OPEN">Open</option>
               <option value="EXPIRED">Expired</option>
+              <option value="UNCLAIMED">Unclaimed</option>
               <option value="AWARDED">Awarded</option>
               <option value="CLOSED">Closed</option>
             </select>

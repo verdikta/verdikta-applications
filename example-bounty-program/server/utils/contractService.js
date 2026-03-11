@@ -228,7 +228,19 @@ class ContractService {
       };
     } catch (error) {
       if (error.code === 'CALL_EXCEPTION') {
-        return { ready: false, reason: 'call_exception' };
+        // Try to decode custom error from the aggregator contract
+        let decoded = null;
+        if (error.data) {
+          try {
+            const agg = await this.getVerdiktaAggregator();
+            const parsed = agg.interface.parseError(error.data);
+            if (parsed) {
+              const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
+              decoded = parsed.name + args;
+            }
+          } catch {}
+        }
+        return { ready: false, reason: decoded || 'call_exception' };
       }
       logger.warn('Error in getEvaluationByAggId', { verdiktaAggId, msg: error.message });
       return { ready: false, error: error.message };

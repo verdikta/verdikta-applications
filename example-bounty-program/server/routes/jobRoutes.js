@@ -1461,7 +1461,7 @@ router.get('/:jobId/validate', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const {
-      status, creator, minPayout, search,
+      status, creator, minPayout, search, submissionStatus,
       hideEnded, excludeStatuses, includeOrphans, limit = 50, offset = 0,
       // New filters for agents
       workProductType,    // Filter by type: "code", "writing", "research", etc. (comma-separated)
@@ -1474,7 +1474,7 @@ router.get('/', async (req, res) => {
       hasWinner,          // "true" = only jobs with winner, "false" = only jobs without winner
     } = req.query;
     logger.info('[jobs/list] filters', {
-      status, creator, search, hideEnded, excludeStatuses, includeOrphans,
+      status, creator, search, submissionStatus, hideEnded, excludeStatuses, includeOrphans,
       workProductType, minHoursLeft, maxHoursLeft, excludeSubmittedBy, minBountyUSD, maxBountyUSD, classId, hasWinner
     });
 
@@ -1564,6 +1564,13 @@ router.get('/', async (req, res) => {
     }
     if (excludeSet.size > 0) {
       allJobs = allJobs.filter(j => !excludeSet.has(String(j.status).toUpperCase()));
+    }
+
+    if (submissionStatus) {
+      const wanted = String(submissionStatus).toUpperCase();
+      allJobs = allJobs.filter(j =>
+        (j.submissions || []).some(s => String(s.status).toUpperCase() === wanted)
+      );
     }
 
     const limitNum = parseInt(limit, 10);

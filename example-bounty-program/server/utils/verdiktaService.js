@@ -677,12 +677,13 @@ class VerdiktaService {
       const keeperAddress = await this.aggregator.reputationKeeper();
       const config = await this.getAggregatorConfig();
 
-      // Get LINK token address from aggregator's getContractConfig
+      // Get LINK token address from aggregator's getContractConfig (legacy)
       let linkTokenAddress = null;
       try {
         const contractConfig = await this.aggregator.getContractConfig();
-        linkTokenAddress = contractConfig.linkAddr;
+        linkTokenAddress = contractConfig.linkAddr || contractConfig[1];
       } catch (err) {
+        // May fail if getContractConfig is removed in future versions
         logger.debug('Could not get LINK token address', { msg: err.message });
       }
 

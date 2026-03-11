@@ -640,18 +640,31 @@ if (result.status === 'timed-out') {
       // Set error state to enable debug functionality
       setHasError(true);
       setLastError(error);
-      
-      if (error.message.includes('Insufficient LINK tokens')) {
+
+      // Try custom error decoding, then fall back to message string matching
+      let decoded = null;
+      if (error.data && writeContract) {
+        try {
+          const parsed = writeContract.interface.parseError(error.data);
+          if (parsed) {
+            const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
+            decoded = parsed.name + args;
+          }
+        } catch {}
+      }
+      const msg = decoded || error.reason || error.message || '';
+
+      if (msg.includes('Insufficient LINK tokens') || msg.toLowerCase().includes('insufficientlink')) {
         const errorMessage = `Contract doesn't have enough LINK tokens to perform this operation.
 
 This blockchain operation requires LINK tokens to pay for the AI jury service. Please contact the administrator to fund the contract.`;
         setTransactionStatus(`Error: Insufficient LINK tokens`);
         alert(errorMessage);
-      } else if (error.message.includes('User rejected')) {
+      } else if (msg.includes('User rejected')) {
         setTransactionStatus(`Error: Transaction rejected`);
         alert('You rejected the transaction in your wallet. Please try again and approve the transaction.');
       } else {
-        setTransactionStatus(`Error: ${error.message}`);
+        setTransactionStatus(`Error: ${msg}`);
         alert('An error occurred while processing the query. Check the console for details.');
       }
     } finally {

@@ -169,23 +169,38 @@ export class ContractDebugger {
       
     } catch (err) {
       console.error('❌ Dry run failed:', err.message);
-      
+
       let revertReason = 'Unknown';
-      
+
       // Try to extract revert reason
       if (err.data) {
+        // Try custom error decoding first
         try {
-          // Attempt to decode common revert reasons
-          if (err.data.includes('4e487b71')) {
-            revertReason = 'Panic error (assertion failure)';
-          } else if (err.data.includes('08c379a0')) {
-            revertReason = 'Revert with string message';
+          const parsed = this.contract.interface.parseError(err.data);
+          if (parsed) {
+            const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
+            revertReason = parsed.name + args;
           }
-        } catch (decodeErr) {
-          // Ignore decode errors
+        } catch {}
+
+        if (revertReason === 'Unknown') {
+          try {
+            if (err.data.includes('4e487b71')) {
+              revertReason = 'Panic error (assertion failure)';
+            } else if (err.data.includes('08c379a0')) {
+              revertReason = 'Revert with string message';
+            }
+          } catch (decodeErr) {
+            // Ignore decode errors
+          }
         }
       }
-      
+
+      // Fall back to reason/shortMessage from ethers
+      if (revertReason === 'Unknown' && (err.reason || err.shortMessage)) {
+        revertReason = err.reason || err.shortMessage;
+      }
+
       return {
         success: false,
         error: err.message,

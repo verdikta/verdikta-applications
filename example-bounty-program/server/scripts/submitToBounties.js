@@ -713,11 +713,22 @@ async function checkOnChainWinner(provider, onChainBountyId, threshold) {
 
     return { hasWinner: false, submissionCount: checkedCount, evaluationCid };
   } catch (error) {
-    // Only warn for unexpected errors (not submission fetch errors, which are handled above)
-    if (!error.message?.includes('bad submissionId')) {
-      console.log(`  Warning: Could not check on-chain status: ${error.message}`);
+    // Try custom error decoding
+    let errorMsg = error.message;
+    if (error.data) {
+      try {
+        const parsed = contract.interface.parseError(error.data);
+        if (parsed) {
+          const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
+          errorMsg = parsed.name + args;
+        }
+      } catch {}
     }
-    return { hasWinner: false, error: error.message };
+    // Only warn for unexpected errors (not submission fetch errors, which are handled above)
+    if (!errorMsg?.toLowerCase().includes('bad submissionid') && !errorMsg?.toLowerCase().includes('badsubmissionid')) {
+      console.log(`  Warning: Could not check on-chain status: ${errorMsg}`);
+    }
+    return { hasWinner: false, error: errorMsg };
   }
 }
 
@@ -808,14 +819,26 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
       console.log(`    Start tx: ${startReceipt.hash}`);
       break;
     } catch (error) {
-      // Check for non-retryable errors
-      const msg = (error.message || '').toLowerCase();
+      // Try custom error decoding, then fall back to reason/message
+      let decoded = null;
+      if (error.data) {
+        try {
+          const parsed = contract.interface.parseError(error.data);
+          if (parsed) {
+            const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
+            decoded = parsed.name + args;
+          }
+        } catch {}
+      }
+      const msg = (decoded || error.message || '').toLowerCase();
       const reason = (error.reason || '').toLowerCase();
-      if (msg.includes('another submission already passed') || reason.includes('another submission already passed')) {
+      // Check for non-retryable errors
+      if (msg.includes('another submission already passed') || msg.includes('anothersubmissionalreadypassed') ||
+          reason.includes('another submission already passed')) {
         throw error; // Don't retry
       }
       if (attempt < 3) {
-        console.log(`    ⚠ Start failed (attempt ${attempt}/3): ${error.reason || error.message}`);
+        console.log(`    ⚠ Start failed (attempt ${attempt}/3): ${decoded || error.reason || error.message}`);
         console.log(`    Waiting 3s before retry...`);
         await new Promise(resolve => setTimeout(resolve, 3000));
       } else {

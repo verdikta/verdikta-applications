@@ -245,9 +245,19 @@ async function finalizeSubmission(contract, bountyId, submissionId, dryRun) {
       gasUsed: receipt.gasUsed.toString(),
     };
   } catch (error) {
+    let msg = error.reason || error.message;
+    if (error.data) {
+      try {
+        const parsed = contract.interface.parseError(error.data);
+        if (parsed) {
+          const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
+          msg = parsed.name + args;
+        }
+      } catch {}
+    }
     return {
       success: false,
-      error: error.reason || error.message,
+      error: msg,
     };
   }
 }

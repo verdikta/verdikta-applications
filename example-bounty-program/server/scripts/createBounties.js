@@ -545,11 +545,22 @@ async function main() {
       }
 
     } catch (error) {
-      console.error(`  FAILED: ${error.message}\n`);
+      let errorMsg = error.message;
+      if (error.data && contract) {
+        try {
+          const parsed = contract.interface.parseError(error.data);
+          if (parsed) {
+            const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
+            errorMsg = parsed.name + args;
+          }
+        } catch {}
+      }
+      if (!errorMsg && error.reason) errorMsg = error.reason;
+      console.error(`  FAILED: ${errorMsg}\n`);
       results.push({
         index: i + 1,
         status: 'failed',
-        error: error.message,
+        error: errorMsg,
       });
     }
   }

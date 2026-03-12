@@ -68,7 +68,17 @@ function isPaidWinner({ bounty, submission }) {
  */
 function getBaseUrl(req) {
   const proto = (req.get('x-forwarded-proto') || req.protocol || 'https').split(',')[0].trim();
-  return `${proto}://${req.get('host')}`;
+  const host = req.get('host') || '';
+  // If the host looks like a local dev address (e.g. localhost:5005, 127.0.0.1),
+  // fall back to the public domain based on network name.
+  if (host.startsWith('localhost') || host.startsWith('127.0.0.1') || host.startsWith('0.0.0.0')) {
+    const network = (config.networkName || '').toLowerCase();
+    if (network.includes('sepolia') || network.includes('testnet')) {
+      return 'https://bounties-testnet.verdikta.org';
+    }
+    return 'https://bounties.verdikta.org';
+  }
+  return `${proto}://${host}`;
 }
 
 function escapeHtml(s) {
@@ -183,9 +193,10 @@ function getWinnerLabel(submission, localSubmission) {
   const isBot = localSubmission?.clientType === 'bot';
   
   if (isBot) {
-    // For bots, use Agent + pseudonym
+    // For bots, use Agent + pseudonym (or just "Agent" if no salt configured)
     const agentId = pseudonymousAgentId(submission.hunter);
-    return { label: `Agent ${agentId}`, type: 'agent' };
+    const label = agentId === 'UNKNOWN' ? 'Agent' : `Agent ${agentId}`;
+    return { label, type: 'agent' };
   } else {
     // For humans/frontend users, use pseudonymous wallet address
     const addr = submission.hunter || '';

@@ -72,10 +72,6 @@ const config = {
   host: process.env.HOST || '0.0.0.0',
   nodeEnv: process.env.NODE_ENV || 'development',
 
-  // Public-facing base URL for canonical links (receipts, OG tags, share text).
-  // Must include scheme, no trailing slash. Falls back to request headers if unset.
-  publicUrl: process.env.PUBLIC_URL || '',
-
   // Blockchain sync settings
   useBlockchainSync: process.env.USE_BLOCKCHAIN_SYNC === 'true',
   syncIntervalSeconds: parseInt(process.env.SYNC_INTERVAL_SECONDS) || 20,

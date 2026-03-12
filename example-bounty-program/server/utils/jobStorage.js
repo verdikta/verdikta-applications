@@ -240,7 +240,26 @@ async function listJobs(filters = {}) {
         const jobContract = (j.contractAddress || '').toLowerCase();
         const matchesContract = jobContract === currentContract;
         const notOrphaned = j.status !== 'ORPHANED';
-        return matchesContract && notOrphaned;
+        if (!matchesContract || !notOrphaned) return false;
+
+        return true;
+      });
+
+      // Hide ghost jobs: API-created but never deployed on-chain.
+      // A ghost is hidden once a synced job with the same evaluationCid exists
+      // (meaning the on-chain tx succeeded and sync picked it up), or after 1 hour.
+      const syncedCids = new Set(
+        jobs.filter(j => j.syncedFromBlockchain || j.onChain)
+            .map(j => j.evaluationCid)
+            .filter(Boolean)
+      );
+      const nowSec = Math.floor(Date.now() / 1000);
+      jobs = jobs.filter(j => {
+        if (j.syncedFromBlockchain || j.onChain) return true;
+        // Ghost: hide if a synced sibling exists, or if older than 1 hour
+        if (j.evaluationCid && syncedCids.has(j.evaluationCid)) return false;
+        if (nowSec - (j.createdAt || 0) > 3600) return false;
+        return true;
       });
     }
 

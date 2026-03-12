@@ -579,7 +579,7 @@ function CreateBounty({ walletState }) {
 
       toast.success(`Bounty #${contractResult.bountyId} created successfully!`);
 
-      navigate(`/bounty/${job.jobId}`);
+      navigate(`/bounty/${contractResult.bountyId}`);
     } catch (err) {
       const msg = messageFromAxios(err);
       console.error('❌ Create flow failed:', msg, err?.response?.data);

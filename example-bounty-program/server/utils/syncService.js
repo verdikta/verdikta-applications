@@ -513,13 +513,8 @@ class SyncService {
           return false;
         });
 
-        // Also check for existing job by evaluationCid (race condition recovery)
-        const existingByCid = !pendingJob && storage.jobs.find(j =>
-          evaluationCid && j.evaluationCid === evaluationCid
-        );
-
         if (pendingJob) {
-          // Link pending job
+          // Link pending job (API-created, not yet on-chain)
           logger.info('[event] Linking pending job to BountyCreated', {
             jobId: pendingJob.jobId,
             bountyId,
@@ -532,16 +527,6 @@ class SyncService {
           pendingJob.lastSyncedAt = Math.floor(Date.now() / 1000);
           if (pendingJob.onChainId != null) delete pendingJob.onChainId;
           if (pendingJob.legacyJobId != null) delete pendingJob.legacyJobId;
-        } else if (existingByCid) {
-          // Race condition recovery
-          logger.info('[event] Found existing job by CID match', {
-            jobId: existingByCid.jobId,
-            bountyId
-          });
-          existingByCid.jobId = bountyId;
-          existingByCid.syncedFromBlockchain = true;
-          existingByCid.contractAddress = currentContract;
-          existingByCid.lastSyncedAt = Math.floor(Date.now() / 1000);
         } else {
           // New bounty from chain — fetch full struct and metadata
           try {
@@ -803,21 +788,21 @@ class SyncService {
         return;
       }
 
-      // Second try: already-synced job with same CID (race condition recovery)
-      const existingByCid = storage.jobs.find(j =>
-        j.syncedFromBlockchain &&
-        j.evaluationCid === bounty.evaluationCid &&
-        j.jobId === bounty.jobId
-      );
+    }
 
-      if (existingByCid) {
-        logger.info('[addJobFromBlockchain] Already tracked by CID+ID match', {
-          jobId: existingByCid.jobId,
-          evaluationCid: bounty.evaluationCid
-        });
-        existingByCid.lastSyncedAt = Math.floor(Date.now() / 1000);
-        return;
-      }
+    // Check if this exact on-chain bountyId is already tracked
+    const existingById = storage.jobs.find(j =>
+      j.syncedFromBlockchain &&
+      j.jobId === bounty.jobId &&
+      (j.contractAddress || '').toLowerCase() === currentContract
+    );
+
+    if (existingById) {
+      logger.info('[addJobFromBlockchain] Already tracked by jobId', {
+        jobId: existingById.jobId
+      });
+      existingById.lastSyncedAt = Math.floor(Date.now() / 1000);
+      return;
     }
 
     // Try to fetch real title/description from the evaluation package on IPFS

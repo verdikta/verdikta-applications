@@ -246,6 +246,42 @@ router.post('/create', async (req, res) => {
       }
     }
 
+    // ---- Dedup: reuse existing job with same evaluationCid ----
+    // Prevents ghost duplicates when the user retries the create flow
+    // (e.g. on-chain tx failed, user navigates back and resubmits).
+    if (evaluationCid) {
+      const storage = await jobStorage.readStorage();
+      const existing = storage.jobs.find(j =>
+        j.evaluationCid === evaluationCid &&
+        j.status !== 'ORPHANED' &&
+        !j.syncedFromBlockchain &&
+        !j.onChain
+      );
+      if (existing) {
+        logger.info('[jobs/create] reusing existing job with same evaluationCid', {
+          jobId: existing.jobId, evaluationCid
+        });
+        return res.json({
+          success: true,
+          job: {
+            jobId: existing.jobId,
+            title: existing.title,
+            description: existing.description,
+            bountyAmount: existing.bountyAmount,
+            bountyAmountUSD: existing.bountyAmountUSD,
+            threshold: existing.threshold,
+            rubricCid: existing.rubricCid,
+            evaluationCid: existing.evaluationCid,
+            status: existing.status,
+            submissionOpenTime: existing.submissionOpenTime,
+            submissionCloseTime: existing.submissionCloseTime,
+            createdAt: existing.createdAt
+          },
+          message: 'Reusing existing job (same evaluation package).'
+        });
+      }
+    }
+
     // ---- Times ----
     const now = Math.floor(Date.now() / 1000);
     const submissionOpenTime = now;

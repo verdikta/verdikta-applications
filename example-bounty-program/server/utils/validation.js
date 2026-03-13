@@ -144,9 +144,9 @@ function validateRubric(rubric) {
       }
     });
 
-    // Check that weights sum to approximately 1.0 (allow small floating point errors)
-    if (Math.abs(totalWeight - 1.0) > 0.01 && totalWeight !== 0) {
-      errors.push(`Total weight of criteria must sum to 1.0 (current: ${totalWeight.toFixed(2)})`);
+    // Check that scored criteria weights sum to approximately 1.0 (allow small floating point errors)
+    if (Math.abs(totalWeight - 1.0) > 0.001 && totalWeight !== 0) {
+      errors.push(`Scored criteria weights must sum to 1.0 (got ${totalWeight.toFixed(3)})`);
     }
   }
 

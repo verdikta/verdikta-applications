@@ -332,6 +332,7 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
         message: 'Grading rubric does not contain evaluation criteria'
       });
     } else {
+      let scoredWeightSum = 0;
       rubric.criteria.forEach((criterion, index) => {
         if (criterion.must === true && typeof criterion.weight === 'number' && criterion.weight !== 0) {
           issues.push({
@@ -340,7 +341,18 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
             message: `Criterion ${index} ("${criterion.id || 'unknown'}"): Must-pass criteria must have weight 0 (got ${criterion.weight})`
           });
         }
+        if (!criterion.must && typeof criterion.weight === 'number') {
+          scoredWeightSum += criterion.weight;
+        }
       });
+
+      if (Math.abs(scoredWeightSum - 1.0) > 0.001) {
+        issues.push({
+          type: IssueType.INVALID_RUBRIC,
+          severity: IssueSeverity.ERROR,
+          message: `Scored criteria weights must sum to 1.0 (got ${scoredWeightSum.toFixed(3)})`
+        });
+      }
     }
   }
 

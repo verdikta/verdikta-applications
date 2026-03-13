@@ -418,6 +418,12 @@ function JobCard({ job }) {
           .map(i => i.message)
           .join('; ');
         message = errorMessages || `${errorCount} error(s) found`;
+      } else if (warningCount > 0) {
+        const warningMessages = issues
+          .filter(i => i.severity === 'warning')
+          .map(i => i.message)
+          .join('; ');
+        message = warningMessages;
       }
 
       setValidationResult({
@@ -533,12 +539,19 @@ function JobCard({ job }) {
             <div className="validate-row">
               {/* Validation status indicator - next to validate button */}
               {validationResult ? (
-                validationResult.valid ? (
+                validationResult.valid && !validationResult.warningCount ? (
                   <span
                     className="validation-success"
                     title="Evaluation package is valid"
                   >
                     <CheckCircle size={14} />
+                  </span>
+                ) : validationResult.valid && validationResult.warningCount > 0 ? (
+                  <span
+                    className="validation-warning"
+                    title={`Valid with ${validationResult.warningCount} warning(s)`}
+                  >
+                    <AlertTriangle size={14} />
                   </span>
                 ) : validationResult.errorCount > 0 ? (
                   <span
@@ -564,7 +577,7 @@ function JobCard({ job }) {
                 </span>
               ) : null}
               <button
-                className={`btn-validate ${validating ? 'validating' : ''} ${validationResult?.valid ? 'valid' : ''} ${validationResult && !validationResult.valid ? 'invalid' : ''}`}
+                className={`btn-validate ${validating ? 'validating' : ''} ${validationResult?.valid && !validationResult?.warningCount ? 'valid' : ''} ${validationResult?.valid && validationResult?.warningCount > 0 ? 'warning' : ''} ${validationResult && !validationResult.valid ? 'invalid' : ''}`}
                 onClick={handleValidate}
                 disabled={validating}
                 title={validating ? 'Validating...' : 'Check if evaluation package is properly formatted'}

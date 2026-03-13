@@ -236,6 +236,12 @@
   color: var(--success, #10b981);
 }
 
+.btn-validate.warning {
+  background: #fef3c7;
+  border-color: #fcd34d;
+  color: #92400e;
+}
+
 .btn-validate.invalid {
   background: #fee2e2;
   border-color: #fca5a5;

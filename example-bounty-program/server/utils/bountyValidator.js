@@ -331,6 +331,16 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
         severity: IssueSeverity.WARNING,
         message: 'Grading rubric does not contain evaluation criteria'
       });
+    } else {
+      rubric.criteria.forEach((criterion, index) => {
+        if (criterion.must === true && typeof criterion.weight === 'number' && criterion.weight !== 0) {
+          issues.push({
+            type: IssueType.INVALID_RUBRIC,
+            severity: IssueSeverity.WARNING,
+            message: `Criterion ${index} ("${criterion.id || 'unknown'}"): Must-pass criteria should have weight 0 (got ${criterion.weight})`
+          });
+        }
+      });
     }
   }
 

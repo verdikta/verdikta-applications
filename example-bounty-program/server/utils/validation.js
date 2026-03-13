@@ -131,7 +131,12 @@ function validateRubric(rubric) {
       } else if (criterion.weight < 0 || criterion.weight > 1) {
         errors.push(`Criterion ${index}: Weight must be between 0 and 1`);
       } else {
-        totalWeight += criterion.weight;
+        if (criterion.must === true && criterion.weight !== 0) {
+          errors.push(`Criterion ${index}: Must-pass criteria must have weight 0 (got ${criterion.weight})`);
+        }
+        if (!criterion.must) {
+          totalWeight += criterion.weight;
+        }
       }
 
       if (!criterion.description || typeof criterion.description !== 'string') {

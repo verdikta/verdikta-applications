@@ -417,13 +417,13 @@ function JobCard({ job }) {
           .filter(i => i.severity === 'error')
           .map(i => i.message)
           .join('; ');
-        message = errorMessages || `${errorCount} error(s) found`;
+        message = `${errorCount} error(s): ${errorMessages || 'Unknown'}`;
       } else if (warningCount > 0) {
         const warningMessages = issues
           .filter(i => i.severity === 'warning')
           .map(i => i.message)
           .join('; ');
-        message = warningMessages;
+        message = `${warningCount} warning(s): ${warningMessages}`;
       }
 
       setValidationResult({
@@ -571,7 +571,11 @@ function JobCard({ job }) {
               ) : hasValidationIssues ? (
                 <span
                   className={validationErrorCount > 0 ? "validation-error" : "validation-warning"}
-                  title={`This bounty has ${validationErrorCount} format issue(s) that may prevent submissions from being evaluated`}
+                  title={
+                    validationErrorCount > 0
+                      ? `${validationErrorCount} error(s): ${(job.validationStatus?.errorMessages || []).join('; ') || 'Unknown'}`
+                      : `${job.validationStatus?.warningMessages?.length || 0} warning(s): ${(job.validationStatus?.warningMessages || []).join('; ') || 'Unknown'}`
+                  }
                 >
                   <AlertTriangle size={14} />
                 </span>

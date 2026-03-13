@@ -1619,10 +1619,13 @@ router.get('/', async (req, res) => {
       const hoursLeft = remainingSeconds > 0 ? Math.round(remainingSeconds / 360) / 10 : 0; // 1 decimal place
 
       // Include validation status if available
+      const validationIssues = job.validationStatus?.issues || [];
       const validationInfo = job.validationStatus ? {
         hasIssues: !job.validationStatus.valid,
-        issueCount: job.validationStatus.issues?.length || 0,
-        errorCount: job.validationStatus.issues?.filter(i => i.severity === 'error').length || 0
+        issueCount: validationIssues.length,
+        errorCount: validationIssues.filter(i => i.severity === 'error').length,
+        errorMessages: validationIssues.filter(i => i.severity === 'error').map(i => i.message),
+        warningMessages: validationIssues.filter(i => i.severity === 'warning').map(i => i.message)
       } : null;
 
       return {

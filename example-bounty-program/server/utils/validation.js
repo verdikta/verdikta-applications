@@ -111,28 +111,30 @@ function validateRubric(rubric) {
     // Validate each criterion
     let totalWeight = 0;
     const ids = new Set();
-
     rubric.criteria.forEach((criterion, index) => {
+      const cLabel = criterion.label || criterion.id || 'unknown';
+      const cPrefix = `Criterion ${index} ("${cLabel}")`;
+
       if (!criterion.id || typeof criterion.id !== 'string') {
-        errors.push(`Criterion ${index}: Missing or invalid id`);
+        errors.push(`${cPrefix}: Missing or invalid id`);
       } else {
         if (ids.has(criterion.id)) {
-          errors.push(`Criterion ${index}: Duplicate id '${criterion.id}'`);
+          errors.push(`${cPrefix}: Duplicate id '${criterion.id}'`);
         }
         ids.add(criterion.id);
       }
 
       if (typeof criterion.must !== 'boolean') {
-        errors.push(`Criterion ${index}: Missing or invalid 'must' field (must be boolean)`);
+        errors.push(`${cPrefix}: Missing or invalid 'must' field (must be boolean)`);
       }
 
       if (typeof criterion.weight !== 'number') {
-        errors.push(`Criterion ${index}: Missing or invalid weight (must be number)`);
+        errors.push(`${cPrefix}: Missing or invalid weight (must be number)`);
       } else if (criterion.weight < 0 || criterion.weight > 1) {
-        errors.push(`Criterion ${index}: Weight must be between 0 and 1`);
+        errors.push(`${cPrefix}: Weight must be between 0 and 1`);
       } else {
         if (criterion.must === true && criterion.weight !== 0) {
-          errors.push(`Criterion ${index}: Must-pass criteria must have weight 0 (got ${criterion.weight})`);
+          errors.push(`${cPrefix}: Must-pass criteria must have weight 0 (got ${criterion.weight})`);
         }
         if (!criterion.must) {
           totalWeight += criterion.weight;
@@ -140,13 +142,13 @@ function validateRubric(rubric) {
       }
 
       if (!criterion.description || typeof criterion.description !== 'string') {
-        errors.push(`Criterion ${index}: Missing or invalid description`);
+        errors.push(`${cPrefix}: Missing or invalid description`);
       }
     });
 
     // Check that scored criteria weights sum to approximately 1.0 (allow small floating point errors)
     if (Math.abs(totalWeight - 1.0) > 0.001 && totalWeight !== 0) {
-      errors.push(`Scored criteria weights must sum to 1.0 (got ${totalWeight.toFixed(3)})`);
+      errors.push(`Rubric: Scored criteria weights must sum to 1.0 (got ${totalWeight.toFixed(3)})`);
     }
   }
 

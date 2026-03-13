@@ -338,7 +338,7 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
           issues.push({
             type: IssueType.INVALID_RUBRIC,
             severity: IssueSeverity.ERROR,
-            message: `Criterion ${index} ("${criterion.id || 'unknown'}"): Must-pass criteria must have weight 0 (got ${criterion.weight})`
+            message: `Criterion ${index} ("${criterion.label || criterion.id || 'unknown'}"): Must-pass criteria must have weight 0 (got ${criterion.weight})`
           });
         }
         if (!criterion.must && typeof criterion.weight === 'number') {
@@ -350,7 +350,7 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
         issues.push({
           type: IssueType.INVALID_RUBRIC,
           severity: IssueSeverity.ERROR,
-          message: `Scored criteria weights must sum to 1.0 (got ${scoredWeightSum.toFixed(3)})`
+          message: `Rubric: Scored criteria weights must sum to 1.0 (got ${scoredWeightSum.toFixed(3)})`
         });
       }
     }

@@ -778,6 +778,7 @@ class SyncService {
           evaluationCid: bounty.evaluationCid
         });
         pendingJob.jobId = bounty.jobId;
+        pendingJob.onChain = true;
         pendingJob.syncedFromBlockchain = true;
         pendingJob.contractAddress = currentContract;
         pendingJob.status = bounty.status || 'OPEN';
@@ -843,6 +844,7 @@ class SyncService {
       submissionCount: bounty.submissionCount,
       submissions: [],
       winner: bounty.winner,
+      onChain: true,
       syncedFromBlockchain: true,
       lastSyncedAt: Math.floor(Date.now() / 1000),
       contractAddress: currentContract
@@ -1116,9 +1118,9 @@ class SyncService {
 
       // Check off-chain jobs that expired — including ones already marked EXPIRED,
       // since off-chain bounties can't be closed on-chain and should be orphaned.
-      // Use !job.onChain (not === false) because the field may be undefined for
-      // jobs created via API that were never linked to the blockchain.
-      if (!job.onChain && job.submissionCloseTime && now > job.submissionCloseTime) {
+      // A job is considered on-chain if onChain===true OR syncedFromBlockchain===true
+      // (addJobFromBlockchain sets syncedFromBlockchain but not onChain).
+      if (!job.onChain && !job.syncedFromBlockchain && job.submissionCloseTime && now > job.submissionCloseTime) {
         if (job.status !== 'ORPHANED' && job.status !== 'AWARDED') {
           job.status = 'ORPHANED';
           job.orphanedAt = now;

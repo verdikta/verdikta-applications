@@ -549,7 +549,7 @@ function JobCard({ job }) {
                 ) : validationResult.valid && validationResult.warningCount > 0 ? (
                   <span
                     className="validation-warning"
-                    title={`Valid with ${validationResult.warningCount} warning(s)`}
+                    title={validationResult.message || `Valid with ${validationResult.warningCount} warning(s)`}
                   >
                     <AlertTriangle size={14} />
                   </span>

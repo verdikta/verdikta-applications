@@ -1983,6 +1983,7 @@ function BountyDetails({ walletState }) {
                 timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
                 threshold={job?.threshold ?? 80}
                 juryNodes={job?.juryNodes}
+                bountyStatus={status}
               />
             ))}
           </div>
@@ -2491,8 +2492,10 @@ function SubmissionCard({
   getSubmissionAge,
   timeoutMinutes,
   threshold,
-  juryNodes
+  juryNodes,
+  bountyStatus
 }) {
+  const bountyTerminal = bountyStatus === 'CLOSED' || bountyStatus === 'AWARDED';
   const isPending = isPendingStatus(submission.status);
   const isOnChain = isSubmissionOnChain(submission.status);
   const isPrepared = submission.status === 'Prepared' || submission.status === 'PREPARED';
@@ -2811,8 +2814,23 @@ function SubmissionCard({
         </div>
       )}
 
-      {/* Action buttons for pending submissions */}
-      {isPending && walletState.isConnected && !isPolling && (
+      {/* Stale submission notice when bounty is already closed/awarded */}
+      {isPending && bountyTerminal && (
+        <div style={{
+          marginTop: '0.75rem',
+          padding: '0.5rem',
+          backgroundColor: '#f5f5f5',
+          border: '1px solid #e0e0e0',
+          borderRadius: '4px',
+          fontSize: '0.85rem',
+          color: '#666'
+        }}>
+          This submission was never resolved. The bounty has already been {bountyStatus === 'AWARDED' ? 'awarded' : 'closed'}.
+        </div>
+      )}
+
+      {/* Action buttons for pending submissions (hidden if bounty is already closed/awarded) */}
+      {isPending && !bountyTerminal && walletState.isConnected && !isPolling && (
         <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
 
           {/* Show Finalize ONLY if on-chain and (evaluation is ready OR timeout not yet available) */}
@@ -2878,8 +2896,8 @@ function SubmissionCard({
         </div>
       )}
 
-      {/* Claim/Finalize button for submissions awaiting on-chain finalization */}
-      {needsFinalization && walletState.isConnected && (
+      {/* Claim/Finalize button for submissions awaiting on-chain finalization (hidden if bounty terminal) */}
+      {needsFinalization && !bountyTerminal && walletState.isConnected && (
         <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
           <div style={{
             padding: '0.75rem',

@@ -2522,6 +2522,19 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       }
     }
 
+    // If bounty is expired/closed and submission is still PendingVerdikta,
+    // treat it as a stuck/failed submission — it will never complete.
+    if (statusIndex === 1) {
+      const bountyStatus = job.status?.toUpperCase();
+      if (bountyStatus === 'EXPIRED' || bountyStatus === 'CLOSED') {
+        chainStatus = 'REJECTED';
+        failureReason = 'ORACLE_TIMEOUT';
+        logger.info('[refresh] Submission stuck on expired/closed bounty, marking as failed', {
+          jobId, submissionId: subId, bountyStatus
+        });
+      }
+    }
+
     logger.info('[refresh] Parsed submission from chain', {
       jobId,
       onChainId,
@@ -2532,7 +2545,7 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       rejectScore,
       failureReason
     });
-    
+
     // Update local storage (reuse localSubmission from earlier check)
     if (localSubmission) {
       localSubmission.status = chainStatus;

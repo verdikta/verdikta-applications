@@ -628,6 +628,17 @@ class VerdiktaService {
     const uniqueOracles = new Set(slots.map(s => s.oracle)).size;
 
     // Determine outcome
+    // If still early (< 15 min since request), show IN PROCESS instead of FAILED
+    const requestBlock = aggStatus?.requestBlock || requestEvent?.block;
+    let elapsedMinutes = null;
+    if (requestBlock) {
+      // ~2 seconds per block on Base
+      const blocksSinceRequest = currentBlock - requestBlock;
+      elapsedMinutes = Math.round(blocksSinceRequest * 2 / 60);
+    }
+    const IN_PROCESS_WINDOW_MINUTES = 10;
+    const isEarly = elapsedMinutes !== null && elapsedMinutes < IN_PROCESS_WINDOW_MINUTES;
+
     let outcome;
     if (fulfillment) {
       outcome = 'COMPLETED';
@@ -635,9 +646,17 @@ class VerdiktaService {
       let failPhase = 'unknown';
       if (committedSlots.length < contractParams.M) failPhase = 'commit';
       else if (revealedSlots.length < contractParams.N) failPhase = 'reveal';
-      outcome = `FAILED (${failPhase} phase)`;
+      if (isEarly) {
+        outcome = `IN PROCESS (${failPhase} phase, ${elapsedMinutes}m elapsed)`;
+      } else {
+        outcome = `FAILED (${failPhase} phase)`;
+      }
     } else {
-      outcome = 'RUNNING';
+      if (elapsedMinutes !== null) {
+        outcome = `RUNNING (${elapsedMinutes}m elapsed)`;
+      } else {
+        outcome = 'RUNNING';
+      }
     }
 
     const analysis = {

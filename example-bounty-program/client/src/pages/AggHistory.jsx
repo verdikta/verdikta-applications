@@ -105,8 +105,10 @@ function AggHistory() {
 
   const { contractParams, aggregationStatus, requestEvent, slots, fulfillment, outcome, analysis } = data;
 
-  const outcomeClass = outcome === 'COMPLETED' ? 'completed' : outcome === 'RUNNING' ? 'running' : 'failed';
-  const OutcomeIcon = outcome === 'COMPLETED' ? CheckCircle : outcome === 'RUNNING' ? Clock : XCircle;
+  const isCompleted = outcome === 'COMPLETED';
+  const isRunning = outcome?.startsWith('RUNNING') || outcome?.startsWith('IN PROCESS');
+  const outcomeClass = isCompleted ? 'completed' : isRunning ? 'running' : 'failed';
+  const OutcomeIcon = isCompleted ? CheckCircle : isRunning ? Clock : XCircle;
 
   return (
     <div className="agg-history">

@@ -2554,7 +2554,12 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       localSubmission.rejection = rejectScore;
       localSubmission.evaluationCid = sub.evaluationCid;
       localSubmission.hunterCid = sub.hunterCid;
-      localSubmission.justificationCids = sub.justificationCids;
+      // Only overwrite justificationCids if the on-chain value is non-empty.
+      // Before finalizeSubmission(), BountyEscrow has empty CIDs even though
+      // VerdiktaAggregator already has them (populated by hot-poll sync).
+      if (sub.justificationCids) {
+        localSubmission.justificationCids = sub.justificationCids;
+      }
       localSubmission.finalizedAt = Number(sub.finalizedAt);
       localSubmission.verdiktaAggId = sub.verdiktaAggId;
       localSubmission.failureReason = failureReason;

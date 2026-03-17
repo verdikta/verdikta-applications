@@ -628,8 +628,10 @@ class VerdiktaService {
     const uniqueOracles = new Set(slots.map(s => s.oracle)).size;
 
     // Determine outcome
-    // If still early (< 15 min since request), show IN PROCESS instead of FAILED
-    const requestBlock = aggStatus?.requestBlock || requestEvent?.block;
+    // If still early (< 10 min since request), show IN PROCESS instead of FAILED
+    // Prefer the event block (reliable) over aggStatus.requestBlock (may be an internal index, not a block number)
+    const requestBlock = requestEvent?.block
+      || (aggStatus?.requestBlock > 1000 ? aggStatus.requestBlock : null);
     let elapsedMinutes = null;
     if (requestBlock) {
       // ~2 seconds per block on Base

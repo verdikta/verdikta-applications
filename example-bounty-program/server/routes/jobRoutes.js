@@ -199,6 +199,34 @@ router.post('/create', async (req, res) => {
       }
     }
 
+    // ---- Extract rubric criteria for two-phase query ----
+    let rubricCriteria = null;
+    let forbiddenContent = null;
+
+    if (rubricJson) {
+      rubricCriteria = rubricJson.criteria || null;
+      forbiddenContent = rubricJson.forbiddenContent || rubricJson.forbidden_content || null;
+    } else {
+      // rubricCid path: try to fetch rubric from IPFS to extract criteria
+      try {
+        const ipfsClient = req.app.locals.ipfsClient;
+        if (ipfsClient?.fetchFromIPFS) {
+          const rubricBuffer = await ipfsClient.fetchFromIPFS(rubricCid);
+          const rubricData = JSON.parse(rubricBuffer.toString('utf8'));
+          rubricCriteria = rubricData.criteria || null;
+          forbiddenContent = rubricData.forbiddenContent || rubricData.forbidden_content || null;
+          logger.info('[jobs/create] rubric criteria extracted from IPFS', {
+            criteriaCount: rubricCriteria?.length || 0,
+            mustPassCount: (rubricCriteria || []).filter(c => c.must).length
+          });
+        }
+      } catch (e) {
+        logger.warn('[jobs/create] Could not fetch rubric from IPFS for criteria extraction (continuing with fallback query)', {
+          cid: rubricCid, msg: e.message
+        });
+      }
+    }
+
     // ---- Create Primary archive ----
     let primaryArchive;
     try {
@@ -209,8 +237,9 @@ router.post('/create', async (req, res) => {
         workProductType,
         classId,
         juryNodes,
-        iterations
-        // you can also pass tmpDir: TMP_BASE if your helper supports it
+        iterations,
+        rubricCriteria,
+        forbiddenContent
       });
     } catch (e) {
       logger.error('[jobs/create] primary archive creation failed', { msg: e.message });

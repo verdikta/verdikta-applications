@@ -325,21 +325,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-// TEMP DEBUG
-const { ethers } = require('ethers');
-app.get('/api/debug/bountyCount', async (req, res) => {
-  try {
-    const provider = new ethers.JsonRpcProvider(config.rpcUrl);
-    const escrow = new ethers.Contract(config.bountyEscrowAddress, [
-      "function bountyCount() view returns (uint256)"
-    ], provider);
-    const n = await escrow.bountyCount();
-    res.json({ success: true, address: config.bountyEscrowAddress, bountyCount: Number(n) });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
 // --- Temp-directory diagnostics (place ABOVE error handlers and 404) ---
 app.get('/api/diagnostics/tmp', (req, res) => {
   try {

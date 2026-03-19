@@ -34,6 +34,20 @@ start_network() {
         fi
     fi
 
+    # Kill any orphaned process still holding the port
+    local stragglers
+    stragglers=$(lsof -t -i:"$port" 2>/dev/null)
+    if [ -n "$stragglers" ]; then
+        echo "Killing orphaned process(es) on port $port: $stragglers"
+        echo "$stragglers" | xargs kill 2>/dev/null
+        sleep 1
+        stragglers=$(lsof -t -i:"$port" 2>/dev/null)
+        if [ -n "$stragglers" ]; then
+            echo "$stragglers" | xargs kill -9 2>/dev/null
+            sleep 1
+        fi
+    fi
+
     # Start the client with the appropriate mode and port
     echo "Starting client ($net) on port $port..."
     nohup npm run dev -- --mode "$net" --port "$port" --host 0.0.0.0 > "$log_file" 2>&1 &

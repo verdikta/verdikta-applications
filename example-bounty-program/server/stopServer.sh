@@ -9,20 +9,43 @@ NETWORK="${1:-both}"
 
 stop_network() {
     local net="$1"
-    local pid_file="server-${net}.pid"
+    local port pid_file
+
+    if [ "$net" = "base" ]; then
+        port=5005
+    elif [ "$net" = "base-sepolia" ]; then
+        port=5006
+    fi
+
+    pid_file="server-${net}.pid"
 
     if [ -f "$pid_file" ]; then
         PID=$(cat "$pid_file")
         if kill -0 "$PID" 2>/dev/null; then
-            kill "$PID"
-            rm "$pid_file"
+            pkill -P "$PID" 2>/dev/null
+            kill "$PID" 2>/dev/null
             echo "Server ($net) stopped (PID $PID)"
         else
-            rm "$pid_file"
             echo "Server ($net) was not running (stale PID file removed)"
         fi
+        rm -f "$pid_file"
     else
         echo "Server ($net) is not running (no PID file)"
+    fi
+
+    # Safety net: kill anything still listening on the expected port
+    if [ -n "$port" ]; then
+        local stragglers
+        stragglers=$(lsof -t -i:"$port" 2>/dev/null)
+        if [ -n "$stragglers" ]; then
+            echo "Cleaning up orphaned process(es) on port $port: $stragglers"
+            echo "$stragglers" | xargs kill 2>/dev/null
+            sleep 1
+            stragglers=$(lsof -t -i:"$port" 2>/dev/null)
+            if [ -n "$stragglers" ]; then
+                echo "$stragglers" | xargs kill -9 2>/dev/null
+            fi
+        fi
     fi
 }
 
@@ -31,7 +54,8 @@ stop_legacy() {
     if [ -f "server.pid" ]; then
         PID=$(cat "server.pid")
         if kill -0 "$PID" 2>/dev/null; then
-            kill "$PID"
+            pkill -P "$PID" 2>/dev/null
+            kill "$PID" 2>/dev/null
             echo "Legacy server stopped (PID $PID)"
         fi
         rm -f "server.pid"

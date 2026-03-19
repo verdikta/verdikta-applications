@@ -250,14 +250,6 @@ async uploadRubric(rubricJson, classId = 128) {
     return response.data;
   },
 
-  /**
-   * Get submission details (legacy path)
-   */
-  async getSubmission(submissionId) {
-    const response = await api.get(`/api/submissions/${submissionId}`);
-    return response.data;
-  },
-
   // ============================================================
   //                    IPFS ENDPOINTS
   // ============================================================

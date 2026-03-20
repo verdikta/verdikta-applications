@@ -157,14 +157,6 @@ Response: { "success": true, "models": [...], "modelsByProvider": {...} }
 
 #### IPFS Operations
 ```http
-POST /api/bounties
-Body: { "rubricJson": {...}, "classId": 128 }
-Response: { "success": true, "rubricCid": "QmXxx...", "size": 1234 }
-
-POST /api/bounties/:bountyId/submit
-Body: multipart/form-data with "file" field
-Response: { "success": true, "deliverableCid": "QmYyy...", "filename": "..." }
-
 GET /api/fetch/:cid
 Response: Raw content with appropriate Content-Type header
 
@@ -173,20 +165,84 @@ Body: { "rubric": {...} }
 Response: { "valid": true, "errors": [], "warnings": [] }
 ```
 
-#### Blockchain Queries (After Contract Deployment)
+#### Bounty Management (via /api/jobs)
 ```http
-GET /api/bounties
-Query: ?status=open&limit=20&offset=0
-Response: { "success": true, "bounties": [...], "total": 42 }
+GET /api/jobs
+Query: ?status=OPEN&workProductType=writing&minHoursLeft=2&minBountyUSD=5
+Response: { "success": true, "jobs": [...] }
 
-GET /api/bounties/:bountyId
-Response: { "success": true, "bounty": {...}, "submissions": [...] }
+GET /api/jobs/:jobId
+Query: ?includeRubric=true
+Response: { "success": true, "job": {...} }
 
-GET /api/bounties/:bountyId/submissions
+GET /api/jobs/:jobId/rubric
+Response: { "success": true, "rubric": {...} }
+
+GET /api/jobs/:jobId/validate
+Response: { "success": true, "valid": true/false, "issues": [...] }
+
+GET /api/jobs/:jobId/estimate-fee
+Response: { "success": true, "estimatedFee": "..." }
+```
+
+#### Bounty Creation (2-step: API then on-chain)
+```http
+POST /api/jobs/create
+Body: { "title", "description", "workProductType", "threshold", "creator",
+        "bountyAmount", "submissionWindowHours", "classId", "juryNodes", "rubricJson" }
+Response: { "success": true, "jobId": 42, "evaluationCid": "Qm...", "rubricCid": "Qm..." }
+
+PATCH /api/jobs/:jobId/bountyId
+Body: { "bountyId": <on-chain ID>, "txHash": "0x..." }
+Response: { "success": true }
+# REQUIRED after on-chain deployment. Links API job to on-chain bounty.
+# Without this, the bounty may be orphaned. Sync service can auto-link
+# within ~5 minutes, but this endpoint is instant.
+```
+
+#### Submission Flow
+```http
+POST /api/jobs/:jobId/submit
+Body: multipart/form-data with files, hunter, submissionNarrative
+Response: { "success": true, "hunterCid": "Qm..." }
+
+POST /api/jobs/:jobId/submit/prepare
+Body: { "hunter": "0x...", "hunterCid": "Qm..." }
+Response: { "success": true, "transaction": {...} }
+
+POST /api/jobs/:jobId/submit/approve
+Body: { "evalWallet": "0x...", "linkAmount": "..." }
+Response: { "success": true, "transaction": {...} }
+
+POST /api/jobs/:jobId/submissions/:subId/start
+Body: { "hunter": "0x..." }
+Response: { "success": true, "transaction": {...} }
+
+POST /api/jobs/:jobId/submissions/:subId/finalize
+Body: { "hunter": "0x..." }
+Response: { "success": true, "transaction": {...}, "oracleResult": {...} }
+
+GET /api/jobs/:jobId/submissions
 Response: { "success": true, "submissions": [...] }
 
-GET /api/submissions/:submissionId
-Response: { "success": true, "submission": {...} }
+GET /api/jobs/:jobId/submissions/:subId/evaluation
+Response: { "success": true, "evaluation": {...} }
+
+GET /api/jobs/:jobId/submissions/:subId/diagnose
+Response: { "success": true, "diagnosis": {...} }
+```
+
+#### Admin & Maintenance
+```http
+GET /api/jobs/admin/stuck
+GET /api/jobs/admin/expired
+GET /api/jobs/admin/orphans
+GET /api/jobs/admin/validate-all
+POST /api/jobs/:jobId/close
+PATCH /api/jobs/admin/:jobId/status
+Body: { "status": "OPEN|EXPIRED|AWARDED|CLOSED|ORPHANED|CANCELLED" }
+DELETE /api/jobs/admin/:jobId
+# Deletes a job never deployed on-chain (5-minute grace period)
 ```
 
 ---

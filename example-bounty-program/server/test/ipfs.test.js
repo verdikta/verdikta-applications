@@ -163,7 +163,7 @@ describe('IPFS Endpoints', () => {
 
 // Export for use in other test files
 module.exports = {
-  TEST_PORT
+  TEST_PORT: 5001
 };
 
 

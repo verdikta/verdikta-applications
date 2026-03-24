@@ -1922,7 +1922,7 @@ function BountyDetails({ walletState }) {
 
           {isClosed && (
             <div className="alert alert-info">
-              This bounty has been closed and {job?.bountyAmount ?? '...'} ETH has been returned to the creator.
+              This bounty has been closed and {job?.bountyAmount ?? '...'} ETH was returned to the creator{job?.settledAt ? ` (on ${new Date(job.settledAt * 1000).toLocaleDateString()})` : ''}.
             </div>
           )}
 

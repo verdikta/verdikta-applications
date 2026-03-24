@@ -999,7 +999,17 @@ class SyncService {
     const patchPreserveFields = ['txHash', 'blockNumber', 'onChain', 'contractAddress'];
 
     for (const modifiedJob of modifiedStorage.jobs) {
-      const freshJob = freshStorage.jobs.find(j => j.jobId === modifiedJob.jobId);
+      let freshJob = freshStorage.jobs.find(j => j.jobId === modifiedJob.jobId);
+
+      // If no match by jobId, try matching by evaluationCid — covers the case where
+      // sync linked a pending job (changed its jobId from null to the on-chain ID)
+      // but freshStorage still has the old null-id entry.
+      if (!freshJob && modifiedJob.evaluationCid) {
+        freshJob = freshStorage.jobs.find(j =>
+          j.evaluationCid === modifiedJob.evaluationCid &&
+          (j.contractAddress || '').toLowerCase() === (modifiedJob.contractAddress || '').toLowerCase()
+        );
+      }
 
       if (freshJob) {
         // Save PATCH fields from fresh storage
@@ -1067,25 +1077,54 @@ class SyncService {
       }
     }
 
-    // Deduplicate
+    // Deduplicate by jobId:contract, and also by evaluationCid:contract
+    // (catches null-id pending jobs that duplicate a synced entry)
     const seen = new Map();
-    const toRemove = [];
+    const seenByCid = new Map();
+    const toRemove = new Set();
     for (let i = 0; i < freshStorage.jobs.length; i++) {
       const job = freshStorage.jobs[i];
-      const key = `${job.jobId}:${(job.contractAddress || '').toLowerCase()}`;
-      if (seen.has(key)) {
-        const prev = seen.get(key);
-        if (job.syncedFromBlockchain && !prev.job.syncedFromBlockchain) {
-          toRemove.push(prev.idx);
-          seen.set(key, { idx: i, job });
+      const contract = (job.contractAddress || '').toLowerCase();
+
+      // Dedup by jobId (skip null jobIds — they can't collide on this key)
+      if (job.jobId != null) {
+        const key = `${job.jobId}:${contract}`;
+        if (seen.has(key)) {
+          const prev = seen.get(key);
+          if (job.syncedFromBlockchain && !prev.job.syncedFromBlockchain) {
+            toRemove.add(prev.idx);
+            seen.set(key, { idx: i, job });
+          } else {
+            toRemove.add(i);
+          }
         } else {
-          toRemove.push(i);
+          seen.set(key, { idx: i, job });
         }
-      } else {
-        seen.set(key, { idx: i, job });
+      }
+
+      // Dedup by evaluationCid — a null-id job with the same CID as a real-id job is a duplicate
+      if (job.evaluationCid) {
+        const cidKey = `${job.evaluationCid}:${contract}`;
+        if (seenByCid.has(cidKey)) {
+          const prev = seenByCid.get(cidKey);
+          // Keep the one with a real jobId; remove the null-id one
+          if (job.jobId != null && prev.job.jobId == null) {
+            toRemove.add(prev.idx);
+            seenByCid.set(cidKey, { idx: i, job });
+          } else if (job.jobId == null && prev.job.jobId != null) {
+            toRemove.add(i);
+          } else if (job.syncedFromBlockchain && !prev.job.syncedFromBlockchain) {
+            toRemove.add(prev.idx);
+            seenByCid.set(cidKey, { idx: i, job });
+          } else {
+            toRemove.add(i);
+          }
+        } else {
+          seenByCid.set(cidKey, { idx: i, job });
+        }
       }
     }
-    for (const idx of toRemove.sort((a, b) => b - a)) {
+    for (const idx of [...toRemove].sort((a, b) => b - a)) {
       freshStorage.jobs.splice(idx, 1);
     }
 

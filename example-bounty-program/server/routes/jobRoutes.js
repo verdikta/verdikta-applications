@@ -1816,6 +1816,153 @@ router.get('/:jobId/submissions', async (req, res) => {
   }
 });
 
+/* ============================
+   GET EVALUATION PACKAGE DETAILS
+   ============================ */
+
+/**
+ * GET /api/jobs/:jobId/evaluation-package
+ * Fetches and parses the full evaluation package from IPFS.
+ * Returns the manifest, primary query, rubric, and jury config
+ * so bidders can see exactly what oracles receive.
+ */
+router.get('/:jobId/evaluation-package', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    logger.info('[jobs/evaluation-package] get', { jobId });
+
+    let job;
+    try {
+      job = await jobStorage.getJob(jobId);
+    } catch (e) {
+      const numId = parseInt(jobId);
+      if (numId > 0) {
+        try { job = await jobStorage.getJob(numId - 1); } catch {}
+      }
+      if (!job) throw e;
+    }
+
+    if (!job.evaluationCid) {
+      return res.status(404).json({
+        success: false,
+        error: 'No evaluation package available',
+        details: 'This job does not have an evaluation CID'
+      });
+    }
+
+    if (job.evaluationCid.startsWith('dev-')) {
+      return res.status(400).json({
+        success: false,
+        error: 'Dev evaluation package',
+        details: 'Evaluation details are not available for dev-mode bounties'
+      });
+    }
+
+    const ipfsClient = req.app.locals.ipfsClient;
+    if (!ipfsClient) {
+      return res.status(500).json({
+        success: false,
+        error: 'IPFS client not available'
+      });
+    }
+
+    // Fetch and parse the evaluation ZIP archive
+    let archiveBuffer;
+    try {
+      archiveBuffer = await withTimeout(
+        ipfsClient.fetchFromIPFS(job.evaluationCid),
+        PIN_TIMEOUT_MS * 2,
+        'IPFS evaluation package fetch'
+      );
+    } catch (err) {
+      logger.error('[jobs/evaluation-package] IPFS fetch failed', { jobId, cid: job.evaluationCid, msg: err.message });
+      return res.status(502).json({
+        success: false,
+        error: 'Failed to fetch evaluation package from IPFS',
+        details: err.message,
+        evaluationCid: job.evaluationCid
+      });
+    }
+
+    const zip = new AdmZip(archiveBuffer);
+    const entries = zip.getEntries();
+
+    // Extract manifest.json
+    let manifest = null;
+    const manifestEntry = entries.find(e =>
+      e.entryName === 'manifest.json' || e.entryName.endsWith('/manifest.json')
+    );
+    if (manifestEntry) {
+      manifest = JSON.parse(zip.readAsText(manifestEntry));
+    }
+
+    // Extract primary_query.json
+    let primaryQuery = null;
+    const queryEntry = entries.find(e =>
+      e.entryName === 'primary_query.json' || e.entryName.endsWith('/primary_query.json')
+    );
+    if (queryEntry) {
+      primaryQuery = JSON.parse(zip.readAsText(queryEntry));
+    }
+
+    // Fetch the grading rubric from IPFS if referenced
+    let rubric = null;
+    let rubricCid = null;
+    if (manifest?.additional) {
+      const rubricRef = manifest.additional.find(a => a.name === 'gradingRubric');
+      if (rubricRef?.hash) {
+        rubricCid = rubricRef.hash;
+        try {
+          const rubricBuffer = await withTimeout(
+            ipfsClient.fetchFromIPFS(rubricRef.hash),
+            PIN_TIMEOUT_MS,
+            'IPFS rubric fetch'
+          );
+          rubric = JSON.parse(rubricBuffer.toString('utf8'));
+        } catch (err) {
+          logger.warn('[jobs/evaluation-package] rubric fetch failed', { hash: rubricRef.hash, msg: err.message });
+        }
+      }
+    }
+
+    // Build jury config from manifest
+    const juryConfig = manifest?.juryParameters ? {
+      nodes: (manifest.juryParameters.AI_NODES || []).map(node => ({
+        provider: node.AI_PROVIDER,
+        model: node.AI_MODEL,
+        runs: node.NO_COUNTS || 1,
+        weight: node.WEIGHT || 1
+      })),
+      iterations: manifest.juryParameters.ITERATIONS || 1,
+      numberOfOutcomes: manifest.juryParameters.NUMBER_OF_OUTCOMES || 2
+    } : null;
+
+    return res.json({
+      success: true,
+      evaluationCid: job.evaluationCid,
+      manifest,
+      primaryQuery,
+      rubric,
+      rubricCid,
+      juryConfig,
+      threshold: job.threshold || null,
+      classId: job.classId || null,
+      meta: {
+        jobId: job.jobId,
+        title: job.title,
+        workProductType: job.workProductType || 'Work Product'
+      }
+    });
+
+  } catch (error) {
+    logger.error('[jobs/evaluation-package] error', { msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: 'Job not found', details: error.message });
+    }
+    return res.status(500).json({ error: 'Failed to get evaluation package', details: error.message });
+  }
+});
+
 /* =================
    GET JOB DETAILS
    ================= */

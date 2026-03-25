@@ -1859,6 +1859,9 @@ function BountyDetails({ walletState }) {
               </div>
             ))}
           </div>
+          <Link to={`/bounty/${bountyId}/evaluation`} className="eval-details-link">
+            <FileText size={16} /> View Full Evaluation Details
+          </Link>
         </section>
       )}
 

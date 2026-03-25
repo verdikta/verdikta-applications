@@ -552,6 +552,15 @@ async uploadRubric(rubricJson, classId = 128) {
   async getAggHistory(aggId) {
     const response = await api.get(`/api/verdikta/agg-history/${aggId}`, { timeout: 60000 });
     return response.data;
+  },
+
+  /**
+   * Get full evaluation package details for a bounty
+   * @param {string|number} jobId - The bounty/job ID
+   */
+  async getEvaluationPackage(jobId) {
+    const response = await api.get(`/api/jobs/${jobId}/evaluation-package`, { timeout: 60000 });
+    return response.data;
   }
 
 };

@@ -258,6 +258,25 @@
   margin-bottom: 1.5rem;
 }
 
+.eval-details-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 1.25rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--primary);
+  text-decoration: none;
+  font-size: 0.875rem;
+  transition: all 0.2s;
+}
+
+.eval-details-link:hover {
+  background: var(--bg-secondary);
+  border-color: var(--primary);
+}
+
 .jury-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));

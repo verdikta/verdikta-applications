@@ -2242,6 +2242,321 @@ const upload = multer({
   limits: { fileSize: MAX_FILE_SIZE, files: 10 }
 }).array('files', 10);
 
+/**
+ * POST /api/jobs/:jobId/submit/dry-run
+ *
+ * Validates a submission against bounty requirements WITHOUT submitting on-chain.
+ * Read-only — nothing is written to IPFS, database, or blockchain.
+ * Agents can test their work before paying gas + LINK.
+ *
+ * Request: same multipart/form-data as regular submit (files + hunter).
+ * Response: { valid, checks[], errors[], warnings[], nextStep, estimatedCost }
+ */
+router.post('/:jobId/submit/dry-run', async (req, res) => {
+  let uploadedFiles = [];
+  try {
+    await ensureTmpBase();
+    await new Promise((resolve, reject) => upload(req, res, (err) => err ? reject(err) : resolve()));
+    uploadedFiles = req.files || [];
+
+    const { jobId } = req.params;
+    const hunter = req.body.hunter;
+    const checks = [];
+    const errors = [];
+    const warnings = [];
+
+    // ---- 1. files_present ----
+    if (uploadedFiles.length === 0) {
+      checks.push({ name: 'files_present', passed: false, details: 'No files uploaded' });
+      errors.push({
+        code: 'SUBMISSION_NO_FILES',
+        message: 'No files provided',
+        fix: 'Include files in multipart form: curl -F "files=@solution.txt" -F "hunter=0x..."'
+      });
+    } else {
+      const fileList = uploadedFiles.map(f => `${f.originalname} (${(f.size / 1024).toFixed(1)}KB)`).join(', ');
+      checks.push({ name: 'files_present', passed: true, details: `${uploadedFiles.length} file${uploadedFiles.length > 1 ? 's' : ''} uploaded: ${fileList}` });
+    }
+
+    // ---- 2. file_size ----
+    const totalSize = uploadedFiles.reduce((s, f) => s + f.size, 0);
+    const maxSizeMB = MAX_FILE_SIZE / (1024 * 1024);
+    if (totalSize > MAX_FILE_SIZE) {
+      checks.push({ name: 'file_size', passed: false, details: `Total size ${(totalSize / (1024 * 1024)).toFixed(1)}MB exceeds ${maxSizeMB}MB limit` });
+      errors.push({
+        code: 'SUBMISSION_FILE_TOO_LARGE',
+        message: `Total file size exceeds ${maxSizeMB}MB limit`,
+        fix: 'Reduce file size or split into multiple smaller files'
+      });
+    } else {
+      checks.push({ name: 'file_size', passed: true, details: `Total size ${(totalSize / 1024).toFixed(1)}KB is under ${maxSizeMB}MB limit` });
+    }
+
+    // ---- 3. file_type / file_readable ----
+    for (const f of uploadedFiles) {
+      const ext = f.originalname.toLowerCase().split('.').pop();
+      const textExts = ['txt', 'md', 'json', 'xml', 'yaml', 'yml', 'csv', 'py', 'js', 'ts', 'jsx', 'tsx',
+        'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'rb', 'go', 'rs', 'php', 'sol', 'html', 'css', 'sh', 'sql',
+        'toml', 'bat', 'ps1', 'swift', 'kt', 'r', 'm', 'scss', 'sass'];
+      if (textExts.includes(ext)) {
+        try {
+          const content = await fs.readFile(f.path, 'utf8');
+          if (content.length === 0) {
+            warnings.push(`File "${f.originalname}" is empty (0 bytes of content)`);
+          }
+        } catch {
+          warnings.push(`File "${f.originalname}" could not be read as UTF-8 text — may be binary`);
+        }
+      } else if (['pdf', 'docx', 'jpg', 'jpeg', 'png', 'bmp'].includes(ext)) {
+        // Binary formats — valid but note it
+      } else {
+        warnings.push(`File "${f.originalname}" has extension .${ext} — verify this is the intended format`);
+      }
+    }
+    if (uploadedFiles.length > 0) {
+      checks.push({ name: 'file_readable', passed: true, details: 'File content is accessible' });
+    }
+
+    // ---- 4. hunter_address ----
+    if (!hunter || !/^0x[a-fA-F0-9]{40}$/.test(hunter)) {
+      checks.push({ name: 'hunter_address', passed: false, details: `"${hunter || ''}" is not a valid Ethereum address` });
+      errors.push({
+        code: 'SUBMISSION_INVALID_HUNTER',
+        message: 'Invalid hunter address',
+        fix: 'Provide a valid 0x-prefixed Ethereum address (42 characters)'
+      });
+    } else {
+      checks.push({ name: 'hunter_address', passed: true, details: 'Valid Ethereum address' });
+    }
+
+    // ---- 5. bounty_open ----
+    let job;
+    try {
+      job = await jobStorage.getJob(jobId);
+    } catch (e) {
+      const numId = parseInt(jobId);
+      if (numId > 0) {
+        try { job = await jobStorage.getJob(numId - 1); } catch {}
+      }
+    }
+
+    if (!job) {
+      checks.push({ name: 'bounty_open', passed: false, details: `No bounty found with ID ${jobId}` });
+      errors.push({
+        code: 'BOUNTY_NOT_FOUND',
+        message: 'Bounty not found',
+        fix: 'List available bounties with GET /api/jobs?status=OPEN'
+      });
+    } else {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const remainingSec = (job.submissionCloseTime || 0) - nowSec;
+      const hoursLeft = remainingSec > 0 ? Math.round(remainingSec / 360) / 10 : 0;
+      const deadline = job.submissionCloseTime ? new Date(job.submissionCloseTime * 1000).toISOString() : 'unknown';
+
+      if (job.status !== 'OPEN') {
+        checks.push({ name: 'bounty_open', passed: false, details: `Bounty #${job.jobId} status is ${job.status}` });
+        errors.push({
+          code: job.status === 'EXPIRED' ? 'BOUNTY_EXPIRED' : 'BOUNTY_CLOSED',
+          message: job.status === 'EXPIRED'
+            ? 'This bounty is no longer accepting submissions'
+            : `This bounty has been ${job.status.toLowerCase()}`,
+          fix: 'Check open bounties with GET /api/jobs?status=OPEN'
+        });
+      } else if (remainingSec <= 0) {
+        checks.push({ name: 'bounty_open', passed: false, details: `Bounty #${job.jobId} deadline was ${deadline}` });
+        errors.push({
+          code: 'BOUNTY_EXPIRED',
+          message: 'Submission deadline has passed',
+          fix: 'Check open bounties with GET /api/jobs?status=OPEN'
+        });
+      } else {
+        checks.push({ name: 'bounty_open', passed: true, details: `Bounty #${job.jobId} is open with ${hoursLeft}h remaining (deadline: ${deadline})` });
+      }
+
+      // ---- 6. not_already_submitted ----
+      if (job && hunter && /^0x[a-fA-F0-9]{40}$/.test(hunter)) {
+        const existing = (job.submissions || []).find(s =>
+          (s.hunter || '').toLowerCase() === hunter.toLowerCase() &&
+          (s.status || '').toLowerCase() !== 'prepared'
+        );
+        if (existing) {
+          const subStatus = (existing.status || 'unknown').toUpperCase();
+          checks.push({ name: 'not_already_submitted', passed: false,
+            details: `Existing submission #${existing.submissionId} from this hunter (status: ${subStatus})` });
+          errors.push({
+            code: 'BOUNTY_ALREADY_SUBMITTED',
+            message: 'You have already submitted to this bounty',
+            fix: `Check your submission status at GET /api/jobs/${job.jobId}/submissions`
+          });
+        } else {
+          checks.push({ name: 'not_already_submitted', passed: true, details: 'No existing submission from this hunter' });
+        }
+      }
+
+      // ---- 7. hunter_not_creator ----
+      if (job && hunter && /^0x[a-fA-F0-9]{40}$/.test(hunter)) {
+        if (job.creator && hunter.toLowerCase() === job.creator.toLowerCase()) {
+          checks.push({ name: 'hunter_not_creator', passed: false, details: 'Hunter address matches the bounty creator' });
+          errors.push({
+            code: 'SUBMISSION_HUNTER_IS_CREATOR',
+            message: 'Cannot submit to your own bounty',
+            fix: 'Use a different wallet address or submit to a different bounty'
+          });
+        } else {
+          checks.push({ name: 'hunter_not_creator', passed: true, details: 'Hunter is not the bounty creator' });
+        }
+      }
+
+      // ---- 8. rubric_basic_check (best effort) ----
+      if (job && uploadedFiles.length > 0) {
+        try {
+          // Read text content from uploaded files
+          let combinedText = '';
+          for (const f of uploadedFiles) {
+            const ext = f.originalname.toLowerCase().split('.').pop();
+            const textExts = ['txt', 'md', 'json', 'xml', 'yaml', 'yml', 'csv', 'py', 'js', 'ts',
+              'jsx', 'tsx', 'java', 'c', 'cpp', 'sol', 'html', 'css', 'sh', 'sql', 'go', 'rs', 'rb', 'php'];
+            if (textExts.includes(ext)) {
+              try {
+                combinedText += await fs.readFile(f.path, 'utf8') + '\n';
+              } catch { /* skip unreadable */ }
+            }
+          }
+
+          const wordCount = combinedText.trim().split(/\s+/).filter(Boolean).length;
+
+          // Try to fetch rubric for deeper checks
+          let rubric = null;
+          if (job.rubricCid) {
+            try {
+              const ipfsClient = req.app.locals.ipfsClient;
+              if (ipfsClient) {
+                const raw = await withTimeout(ipfsClient.fetchFromIPFS(job.rubricCid), PIN_TIMEOUT_MS, 'rubric fetch');
+                rubric = JSON.parse(raw);
+              }
+            } catch { /* rubric fetch is best-effort */ }
+          }
+
+          if (combinedText.trim().length === 0 && uploadedFiles.some(f => {
+            const ext = f.originalname.toLowerCase().split('.').pop();
+            return !['pdf', 'docx', 'jpg', 'jpeg', 'png', 'bmp'].includes(ext);
+          })) {
+            warnings.push('Submission text content appears empty. Ensure your files contain the expected work product.');
+          } else if (wordCount > 0 && wordCount < 50) {
+            warnings.push(`Your submission is ${wordCount} words. If the task expects depth, consider expanding.`);
+          }
+
+          if (rubric) {
+            const criteria = rubric.criteria || rubric.rubricJson?.criteria || [];
+            const mustCriteria = criteria.filter(c => c.must === true);
+
+            // Check for required criteria keywords
+            const textLower = combinedText.toLowerCase();
+            for (const criterion of mustCriteria) {
+              const desc = (criterion.description || '').toLowerCase();
+              // Check for common keywords that suggest required content
+              if (desc.includes('source') || desc.includes('citation') || desc.includes('reference')) {
+                const hasCitations = /\b(http|https|doi|ref|source|citation|bibliography|\[\d+\])/i.test(combinedText);
+                if (!hasCitations) {
+                  warnings.push(`Rubric criterion "${criterion.id}" (required) mentions sources/citations. Make sure you included them.`);
+                }
+              }
+              if (desc.includes('original') || desc.includes('plagiari')) {
+                // Can't check plagiarism, but can note it
+                warnings.push(`Rubric criterion "${criterion.id}" requires originality — ensure your work is original.`);
+              }
+            }
+
+            // Check deliverable requirements if present
+            const delivReqs = rubric.deliverable_requirements || rubric.rubricJson?.deliverable_requirements;
+            if (delivReqs) {
+              if (delivReqs.min_words && wordCount > 0 && wordCount < delivReqs.min_words) {
+                warnings.push(`Rubric requires minimum ${delivReqs.min_words} words. Your submission has ${wordCount} words.`);
+              }
+              if (delivReqs.format && Array.isArray(delivReqs.format)) {
+                const fileExts = uploadedFiles.map(f => f.originalname.toLowerCase().split('.').pop());
+                const expectedFormats = delivReqs.format.map(f => f.toLowerCase());
+                const hasMatch = fileExts.some(ext => expectedFormats.some(fmt =>
+                  ext === fmt || (fmt === 'markdown' && ext === 'md') || (fmt === 'text' && ext === 'txt')
+                ));
+                if (!hasMatch) {
+                  warnings.push(`Rubric expects format: ${delivReqs.format.join(' or ')}. Your files: ${fileExts.join(', ')}`);
+                }
+              }
+            }
+
+            checks.push({ name: 'rubric_basic_check', passed: true, details: `Checked against ${criteria.length} rubric criteria (${mustCriteria.length} required). See warnings for details.` });
+          } else {
+            checks.push({ name: 'rubric_basic_check', passed: true, details: 'Basic content check passed (rubric not available for deep check)' });
+          }
+        } catch (rubricErr) {
+          checks.push({ name: 'rubric_basic_check', passed: true, details: 'Rubric check skipped (could not parse)' });
+        }
+      }
+    }
+
+    // ---- Build response ----
+    const valid = errors.length === 0;
+    const response = {
+      success: true,
+      valid,
+      message: valid
+        ? 'Submission looks good and is ready to submit'
+        : `Submission has ${errors.length} issue${errors.length > 1 ? 's' : ''} that need${errors.length === 1 ? 's' : ''} to be fixed`,
+      checks,
+    };
+
+    if (errors.length > 0) response.errors = errors;
+    if (warnings.length > 0) response.warnings = warnings;
+
+    if (valid && job) {
+      response.nextStep = `Ready to submit. Use POST /api/jobs/${job.jobId}/submit with the same files, or POST /api/jobs/${job.jobId}/submit/bundle for pre-encoded transactions.`;
+      response.estimatedCost = {
+        eth: '~0.005 (gas for 3 transactions)',
+        link: '~2.0 (oracle evaluation fee, actual amount depends on jury config)'
+      };
+    } else {
+      response.nextStep = 'Fix the errors above and try dry-run again';
+    }
+
+    if (job) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const remainingSec = (job.submissionCloseTime || 0) - nowSec;
+      const hoursLeft = remainingSec > 0 ? Math.round(remainingSec / 360) / 10 : 0;
+      response.bounty = {
+        jobId: job.jobId,
+        title: job.title,
+        threshold: job.threshold,
+        deadline: job.submissionCloseTime ? new Date(job.submissionCloseTime * 1000).toISOString() : null,
+        hoursLeft
+      };
+    }
+
+    return res.json(response);
+
+  } catch (error) {
+    logger.error('[jobs/submit/dry-run] error', { msg: error.message });
+    if (error.message.includes('not found')) {
+      return sendError(res, 404, {
+        code: ErrorCodes.BOUNTY_NOT_FOUND,
+        message: 'Bounty not found',
+        details: `No bounty exists with ID ${req.params.jobId}`,
+        fix: 'List available bounties with GET /api/jobs?status=OPEN'
+      });
+    }
+    return sendError(res, 500, {
+      code: ErrorCodes.INTERNAL_ERROR,
+      message: 'Dry-run validation failed',
+      details: error.message,
+      fix: 'Try again shortly or check server health: GET /health'
+    });
+  } finally {
+    for (const f of uploadedFiles) {
+      if (f?.path) await fs.unlink(f.path).catch(() => {});
+    }
+  }
+});
+
 router.post('/:jobId/submit', async (req, res) => {
   let uploadedFiles = [];
   try {

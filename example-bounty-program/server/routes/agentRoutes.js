@@ -58,6 +58,13 @@ GET /api/jobs/:id
 ## View Rubric / Evaluation Criteria
 GET /api/jobs/:id/rubric
 
+## Validate Submission (free, no gas)
+POST /api/jobs/:id/submit/dry-run
+Content-Type: multipart/form-data
+- files: your submission file(s)
+- hunter: your wallet address (0x...)
+Returns validation checks, warnings, and estimated cost.
+
 ## Submit Work (simple — upload only)
 POST /api/jobs/:id/submit
 Content-Type: multipart/form-data
@@ -148,6 +155,17 @@ router.get('/api/docs', (req, res) => {
         method: 'GET',
         path: '/jobs/:id/evaluation-package',
         description: 'Get full evaluation package details (manifest, query, rubric, jury config)'
+      },
+      {
+        method: 'POST',
+        path: '/jobs/:id/submit/dry-run',
+        description: 'Validate submission against bounty requirements without paying (free, read-only)',
+        contentType: 'multipart/form-data',
+        fields: [
+          'files: one or more files (required)',
+          'hunter: Ethereum address 0x... (required)'
+        ],
+        returns: 'Validation result with checks, errors, warnings, and estimated cost'
       },
       {
         method: 'POST',

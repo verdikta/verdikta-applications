@@ -19,6 +19,7 @@ const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE } = re
 const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
 const { validateBounty, IssueSeverity, IssueType } = require('../utils/bountyValidator');
 const { getContractService } = require('../utils/contractService');
+const { sendError, ErrorCodes } = require('../utils/apiErrors');
 
 /* ======================
    Helpers / configuration
@@ -1698,13 +1699,12 @@ router.get('/', async (req, res) => {
 
   } catch (error) {
     logger.error('[jobs/list] error', { msg: error.message });
-    return res.status(500).json({
-      error: 'Failed to list jobs',
+    return sendError(res, 500, {
+      code: ErrorCodes.INTERNAL_ERROR,
+      message: 'Failed to list jobs',
       details: error.message,
-      tips: [
-        'Try again shortly or check server health: GET /health',
-        'Plain text list: GET /api/jobs.txt'
-      ]
+      fix: 'Try again shortly or check server health: GET /health',
+      tips: ['Plain text list: GET /api/jobs.txt']
     });
   }
 });
@@ -1829,16 +1829,18 @@ router.get('/:jobId/submissions', async (req, res) => {
   } catch (error) {
     logger.error('[jobs/submissions] error', { msg: error.message });
     if (error.message.includes('not found')) {
-      return res.status(404).json({
-        error: 'Job not found',
-        details: error.message,
-        tips: ['List open bounties: GET /api/jobs?status=OPEN']
+      return sendError(res, 404, {
+        code: ErrorCodes.BOUNTY_NOT_FOUND,
+        message: 'Bounty not found',
+        details: `No bounty exists with ID ${req.params.jobId}`,
+        fix: 'List available bounties with GET /api/jobs?status=OPEN'
       });
     }
-    return res.status(500).json({
-      error: 'Failed to list submissions',
+    return sendError(res, 500, {
+      code: ErrorCodes.INTERNAL_ERROR,
+      message: 'Failed to list submissions',
       details: error.message,
-      tips: ['Try again shortly or check server health: GET /health']
+      fix: 'Try again shortly or check server health: GET /health'
     });
   }
 });
@@ -2113,19 +2115,19 @@ router.get('/:jobId', async (req, res) => {
   } catch (error) {
     logger.error('[jobs/details] error', { msg: error.message });
     if (error.message.includes('not found')) {
-      return res.status(404).json({
-        error: 'Job not found',
-        details: error.message,
-        tips: [
-          'List open bounties: GET /api/jobs?status=OPEN',
-          'Job IDs are 0-based — legacy 1-based URLs are auto-resolved'
-        ]
+      return sendError(res, 404, {
+        code: ErrorCodes.BOUNTY_NOT_FOUND,
+        message: 'Bounty not found',
+        details: `No bounty exists with ID ${req.params.jobId}`,
+        fix: 'List available bounties with GET /api/jobs?status=OPEN',
+        tips: ['Job IDs are 0-based — legacy 1-based URLs are auto-resolved']
       });
     }
-    return res.status(500).json({
-      error: 'Failed to get job',
+    return sendError(res, 500, {
+      code: ErrorCodes.INTERNAL_ERROR,
+      message: 'Failed to get job',
       details: error.message,
-      tips: ['Try again shortly or check server health: GET /health']
+      fix: 'Try again shortly or check server health: GET /health'
     });
   }
 });
@@ -2151,19 +2153,21 @@ router.get('/:jobId/rubric', async (req, res) => {
     const job = await jobStorage.getJob(jobId);
 
     if (!job.rubricCid) {
-      return res.status(404).json({
-        success: false,
-        error: 'No rubric available',
-        details: 'This job does not have a rubric CID'
+      return sendError(res, 404, {
+        code: ErrorCodes.NOT_FOUND,
+        message: 'No rubric available',
+        details: `Bounty #${jobId} does not have a rubric CID`,
+        fix: 'Try GET /api/jobs/:id/evaluation-package for the full evaluation details instead'
       });
     }
 
     const ipfsClient = req.app.locals.ipfsClient;
     if (!ipfsClient) {
-      return res.status(500).json({
-        success: false,
-        error: 'IPFS client not available',
-        details: 'Server IPFS client is not initialized'
+      return sendError(res, 500, {
+        code: ErrorCodes.INTERNAL_ERROR,
+        message: 'IPFS client not available',
+        details: 'Server IPFS client is not initialized',
+        fix: 'Try again shortly or check server health: GET /health'
       });
     }
 
@@ -2177,12 +2181,12 @@ router.get('/:jobId/rubric', async (req, res) => {
       rubricContent = JSON.parse(rawContent);
     } catch (ipfsErr) {
       logger.error('[jobs/rubric] IPFS fetch failed', { jobId, cid: job.rubricCid, msg: ipfsErr.message });
-      return res.status(502).json({
-        success: false,
-        error: 'Failed to fetch rubric from IPFS',
+      return sendError(res, 502, {
+        code: ErrorCodes.INTERNAL_ERROR,
+        message: 'Failed to fetch rubric from IPFS',
         details: ipfsErr.message,
-        rubricCid: job.rubricCid,
-        hint: 'You can try fetching directly from IPFS gateway'
+        fix: `You can try fetching directly from an IPFS gateway: https://ipfs.io/ipfs/${job.rubricCid}`,
+        extra: { rubricCid: job.rubricCid }
       });
     }
 
@@ -2206,9 +2210,19 @@ router.get('/:jobId/rubric', async (req, res) => {
   } catch (error) {
     logger.error('[jobs/rubric] error', { msg: error.message });
     if (error.message.includes('not found')) {
-      return res.status(404).json({ success: false, error: 'Job not found', details: error.message });
+      return sendError(res, 404, {
+        code: ErrorCodes.BOUNTY_NOT_FOUND,
+        message: 'Bounty not found',
+        details: `No bounty exists with ID ${req.params.jobId}`,
+        fix: 'List available bounties with GET /api/jobs?status=OPEN'
+      });
     }
-    return res.status(500).json({ success: false, error: 'Failed to get rubric', details: error.message });
+    return sendError(res, 500, {
+      code: ErrorCodes.INTERNAL_ERROR,
+      message: 'Failed to get rubric',
+      details: error.message,
+      fix: 'Try again shortly or check server health: GET /health'
+    });
   }
 });
 
@@ -2234,11 +2248,13 @@ router.post('/:jobId/submit', async (req, res) => {
     await new Promise((resolve, reject) => upload(req, res, (err) => err ? reject(err) : resolve()));
 
     if (!req.files || req.files.length === 0) {
-      return res.status(400).json({
-        error: 'No files uploaded',
-        details: 'Provide at least one file',
+      return sendError(res, 400, {
+        code: ErrorCodes.SUBMISSION_NO_FILES,
+        message: 'No files provided',
+        details: 'Submission requires at least one file',
+        fix: 'Include files in multipart form, for example: curl -F "files=@solution.txt" -F "hunter=0x..." /api/jobs/:id/submit',
         tips: [
-          'Submit: POST /api/jobs/:id/submit with multipart/form-data including files and hunter',
+          'Content-Type must be multipart/form-data',
           'hunter must be a valid Ethereum address (0x...)'
         ]
       });
@@ -2249,36 +2265,49 @@ router.post('/:jobId/submit', async (req, res) => {
     const { hunter, submissionNarrative } = req.body;
 
     if (!hunter || !/^0x[a-fA-F0-9]{40}$/.test(hunter)) {
-      return res.status(400).json({
-        error: 'Invalid hunter address',
-        details: 'Must be a valid Ethereum address',
-        tips: [
-          'hunter must be a valid Ethereum address (0x + 40 hex characters)',
-          'Submit: POST /api/jobs/:id/submit with multipart/form-data including files and hunter'
-        ]
+      return sendError(res, 400, {
+        code: ErrorCodes.SUBMISSION_INVALID_HUNTER,
+        message: 'Invalid hunter address',
+        details: `"${hunter || ''}" is not a valid Ethereum address`,
+        fix: 'Provide a valid 0x-prefixed Ethereum address (42 characters total)',
+        tips: ['Example: 0x742d35Cc6634C0532925a3b844Bc9e7595f2bD18']
       });
     }
 
     if (submissionNarrative) {
       const wordCount = submissionNarrative.trim().split(/\s+/).length;
       if (wordCount > 200) {
-        return res.status(400).json({ error: 'Submission narrative too long', details: `<= 200 words` });
+        return sendError(res, 400, {
+          code: ErrorCodes.SUBMISSION_NARRATIVE_LONG,
+          message: 'Submission narrative too long',
+          details: `Narrative is ${wordCount} words. Maximum allowed is 200 words.`,
+          fix: 'Shorten your submissionNarrative to 200 words or fewer'
+        });
       }
     }
 
     const job = await jobStorage.getJob(jobId);
     if (job.status !== 'OPEN') {
-      return res.status(400).json({
-        error: 'Job is not open',
-        details: `Status is ${job.status}`,
-        tips: ['List open bounties: GET /api/jobs?status=OPEN']
+      const codeMap = { EXPIRED: ErrorCodes.BOUNTY_EXPIRED, AWARDED: ErrorCodes.BOUNTY_CLOSED, CLOSED: ErrorCodes.BOUNTY_CLOSED };
+      return sendError(res, 400, {
+        code: codeMap[job.status] || ErrorCodes.BOUNTY_NOT_OPEN,
+        message: job.status === 'EXPIRED'
+          ? 'This bounty is no longer accepting submissions'
+          : job.status === 'AWARDED' || job.status === 'CLOSED'
+            ? 'This bounty has been closed'
+            : `Bounty is not open (status: ${job.status})`,
+        details: `Bounty #${jobId} status is ${job.status}${job.submissionCloseTime ? '. Deadline was ' + new Date(job.submissionCloseTime * 1000).toISOString() : ''}`,
+        fix: 'Check open bounties with GET /api/jobs?status=OPEN'
       });
     }
     const now = Math.floor(Date.now()/1000);
     if (now < job.submissionOpenTime || now > job.submissionCloseTime) {
-      return res.status(400).json({
-        error: 'Submission window closed',
-        tips: ['List open bounties: GET /api/jobs?status=OPEN']
+      const deadline = job.submissionCloseTime ? new Date(job.submissionCloseTime * 1000).toISOString() : 'unknown';
+      return sendError(res, 400, {
+        code: ErrorCodes.SUBMISSION_WINDOW_CLOSED,
+        message: 'Submission window closed',
+        details: `Bounty #${jobId} deadline was ${deadline}`,
+        fix: 'Check open bounties with GET /api/jobs?status=OPEN'
       });
     }
 
@@ -2340,16 +2369,18 @@ router.post('/:jobId/submit', async (req, res) => {
   } catch (error) {
     logger.error('[jobs/submit] error', { msg: error.message });
     if (error.message.includes('not found')) {
-      return res.status(404).json({
-        error: 'Job not found',
-        details: error.message,
-        tips: ['List open bounties: GET /api/jobs?status=OPEN']
+      return sendError(res, 404, {
+        code: ErrorCodes.BOUNTY_NOT_FOUND,
+        message: 'Bounty not found',
+        details: `No bounty exists with ID ${req.params.jobId}`,
+        fix: 'List available bounties with GET /api/jobs?status=OPEN'
       });
     }
-    return res.status(500).json({
-      error: 'Failed to submit work',
+    return sendError(res, 500, {
+      code: ErrorCodes.INTERNAL_ERROR,
+      message: 'Failed to submit work',
       details: error.message,
-      tips: ['Try again shortly or check server health: GET /health']
+      fix: 'Try again shortly or check server health: GET /health'
     });
   } finally {
     for (const f of uploadedFiles) {
@@ -2374,19 +2405,39 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
     const { submissionId, hunter, hunterCid, evalWallet, fileCount, files } = req.body;
 
     if (submissionId === undefined || submissionId === null) {
-      return res.status(400).json({ error: 'Missing submissionId', details: 'submissionId from on-chain event is required' });
+      return sendError(res, 400, {
+        code: ErrorCodes.VALIDATION_MISSING_FIELD,
+        message: 'Required field missing: submissionId',
+        details: 'submissionId from on-chain SubmissionPrepared event is required',
+        fix: 'Parse the SubmissionPrepared event from the prepareSubmission tx receipt to get the submissionId'
+      });
     }
     if (!hunter || !/^0x[a-fA-F0-9]{40}$/.test(hunter)) {
-      return res.status(400).json({ error: 'Invalid hunter address' });
+      return sendError(res, 400, {
+        code: ErrorCodes.SUBMISSION_INVALID_HUNTER,
+        message: 'Invalid hunter address',
+        details: `"${hunter || ''}" is not a valid Ethereum address`,
+        fix: 'Provide a valid 0x-prefixed Ethereum address (42 characters total)'
+      });
     }
     if (!hunterCid) {
-      return res.status(400).json({ error: 'Missing hunterCid' });
+      return sendError(res, 400, {
+        code: ErrorCodes.VALIDATION_MISSING_FIELD,
+        message: 'Required field missing: hunterCid',
+        details: 'hunterCid is the IPFS CID of the submitted work product',
+        fix: 'Use the hunterCid returned from POST /api/jobs/:id/submit or /submit/bundle'
+      });
     }
 
     const storage = await jobStorage.readStorage();
     const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
     if (!job) {
-      return res.status(404).json({ error: 'Job not found' });
+      return sendError(res, 404, {
+        code: ErrorCodes.BOUNTY_NOT_FOUND,
+        message: 'Bounty not found',
+        details: `No bounty exists with ID ${jobId}`,
+        fix: 'List available bounties with GET /api/jobs?status=OPEN'
+      });
     }
 
     // Check if submission with this ID already exists
@@ -2422,7 +2473,12 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
 
   } catch (error) {
     logger.error('[submissions/confirm] error', { msg: error.message });
-    return res.status(500).json({ error: 'Failed to confirm submission', details: error.message });
+    return sendError(res, 500, {
+      code: ErrorCodes.INTERNAL_ERROR,
+      message: 'Failed to confirm submission',
+      details: error.message,
+      fix: 'Try again shortly or check server health: GET /health'
+    });
   }
 });
 
@@ -2489,32 +2545,44 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
 
     // ---- Validate inputs ----
     if (!hunterAddress || !/^0x[a-fA-F0-9]{40}$/.test(hunterAddress)) {
-      return res.status(400).json({
-        error: 'Invalid or missing hunterAddress',
-        details: 'Must be a valid Ethereum address (0x + 40 hex chars)',
+      return sendError(res, 400, {
+        code: ErrorCodes.SUBMISSION_INVALID_HUNTER,
+        message: 'Invalid or missing hunterAddress',
+        details: `"${hunterAddress || ''}" is not a valid Ethereum address`,
+        fix: 'Provide a valid 0x-prefixed Ethereum address (42 characters total)',
         tips: ['POST /api/jobs/:id/submit/bundle with { "hunterAddress": "0x...", "hunterCid": "Qm..." }']
       });
     }
 
     const job = await jobStorage.getJob(jobId);
     if (job.status !== 'OPEN') {
-      return res.status(400).json({
-        error: `Bounty #${jobId} is ${job.status}`,
-        tips: ['List open bounties: GET /api/jobs?status=OPEN']
+      const codeMap = { EXPIRED: ErrorCodes.BOUNTY_EXPIRED, AWARDED: ErrorCodes.BOUNTY_CLOSED, CLOSED: ErrorCodes.BOUNTY_CLOSED };
+      return sendError(res, 400, {
+        code: codeMap[job.status] || ErrorCodes.BOUNTY_NOT_OPEN,
+        message: job.status === 'EXPIRED'
+          ? 'This bounty is no longer accepting submissions'
+          : `Bounty #${jobId} is ${job.status}`,
+        details: `Bounty #${jobId} status is ${job.status}${job.submissionCloseTime ? '. Deadline was ' + new Date(job.submissionCloseTime * 1000).toISOString() : ''}`,
+        fix: 'Check open bounties with GET /api/jobs?status=OPEN'
       });
     }
     const now = Math.floor(Date.now() / 1000);
     if (now < job.submissionOpenTime || now > job.submissionCloseTime) {
-      return res.status(400).json({
-        error: 'Submission window closed',
-        tips: ['List open bounties: GET /api/jobs?status=OPEN']
+      const deadline = job.submissionCloseTime ? new Date(job.submissionCloseTime * 1000).toISOString() : 'unknown';
+      return sendError(res, 400, {
+        code: ErrorCodes.SUBMISSION_WINDOW_CLOSED,
+        message: 'Submission window closed',
+        details: `Bounty #${jobId} deadline was ${deadline}`,
+        fix: 'Check open bounties with GET /api/jobs?status=OPEN'
       });
     }
 
     if (!job.evaluationCid) {
-      return res.status(400).json({
-        error: 'Bounty has no evaluation package',
-        details: 'This bounty is missing an evaluationCid and cannot accept submissions'
+      return sendError(res, 400, {
+        code: ErrorCodes.ONCHAIN_NO_EVAL_PKG,
+        message: 'Bounty has no evaluation package',
+        details: `Bounty #${jobId} is missing an evaluationCid and cannot accept submissions`,
+        fix: 'This bounty was not configured correctly. Try a different open bounty: GET /api/jobs?status=OPEN'
       });
     }
 
@@ -2544,12 +2612,14 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
     }
 
     if (!hunterCid) {
-      return res.status(400).json({
-        error: 'Missing hunterCid or files',
-        details: 'Provide either hunterCid (pre-uploaded) or files (multipart/form-data)',
+      return sendError(res, 400, {
+        code: ErrorCodes.SUBMISSION_MISSING_CID,
+        message: 'No work product provided',
+        details: 'Provide either a hunterCid (pre-uploaded IPFS CID) or files (multipart upload)',
+        fix: 'Option 1: POST with JSON { "hunterAddress": "0x...", "hunterCid": "Qm..." }. Option 2: POST with multipart/form-data including files + hunterAddress.',
         tips: [
-          'Option 1: POST with JSON { "hunterAddress": "0x...", "hunterCid": "Qm..." }',
-          'Option 2: POST with multipart/form-data including files + hunterAddress'
+          'Upload files first via POST /api/jobs/:id/submit to get a hunterCid',
+          'Or include files directly in this request as multipart/form-data'
         ]
       });
     }
@@ -2651,16 +2721,18 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
   } catch (error) {
     logger.error('[bundle] error', { msg: error.message });
     if (error.message.includes('not found')) {
-      return res.status(404).json({
-        error: 'Job not found',
-        details: error.message,
-        tips: ['List open bounties: GET /api/jobs?status=OPEN']
+      return sendError(res, 404, {
+        code: ErrorCodes.BOUNTY_NOT_FOUND,
+        message: 'Bounty not found',
+        details: `No bounty exists with ID ${req.params.jobId}`,
+        fix: 'List available bounties with GET /api/jobs?status=OPEN'
       });
     }
-    return res.status(500).json({
-      error: 'Failed to build transaction bundle',
+    return sendError(res, 500, {
+      code: ErrorCodes.INTERNAL_ERROR,
+      message: 'Failed to build transaction bundle',
       details: error.message,
-      tips: ['Try again shortly or check server health: GET /health']
+      fix: 'Try again shortly or check server health: GET /health'
     });
   } finally {
     for (const f of uploadedFiles) {
@@ -2684,10 +2756,11 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
     const { txHash } = req.body;
 
     if (!txHash || !/^0x[a-fA-F0-9]{64}$/.test(txHash)) {
-      return res.status(400).json({
-        error: 'Invalid or missing txHash',
-        details: 'Provide the transaction hash from step 1 (prepareSubmission)',
-        tips: ['txHash must be 0x + 64 hex characters']
+      return sendError(res, 400, {
+        code: ErrorCodes.VALIDATION_INVALID_FORMAT,
+        message: 'Invalid or missing txHash',
+        details: `"${txHash || ''}" is not a valid transaction hash. Expected 0x + 64 hex characters.`,
+        fix: 'Provide the transaction hash from step 1 (prepareSubmission), e.g. "0xabc123..."'
       });
     }
 
@@ -2696,37 +2769,31 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
     try {
       cs = getContractService();
     } catch (e) {
-      return res.status(503).json({
-        error: 'Blockchain not available',
+      return sendError(res, 503, {
+        code: ErrorCodes.ONCHAIN_NOT_AVAILABLE,
+        message: 'Blockchain service not available',
         details: 'Server cannot access blockchain to parse transaction receipt',
-        tips: [
-          'Parse the SubmissionPrepared event yourself using the ABI from /submit/bundle response',
-          'Extract: evalWallet, submissionId, linkMaxBudget'
-        ]
+        fix: 'Parse the SubmissionPrepared event yourself using the ABI from /submit/bundle response. Extract: evalWallet, submissionId, linkMaxBudget.'
       });
     }
 
     // Fetch transaction receipt
     const receipt = await cs.provider.getTransactionReceipt(txHash);
     if (!receipt) {
-      return res.status(404).json({
-        error: 'Transaction not found or not yet mined',
+      return sendError(res, 404, {
+        code: ErrorCodes.ONCHAIN_TX_NOT_FOUND,
+        message: 'Transaction not found or not yet mined',
         details: `No receipt for txHash ${txHash}`,
-        tips: [
-          'Wait for the transaction to be mined, then retry',
-          'Verify the txHash is correct'
-        ]
+        fix: 'Wait for the transaction to be mined (usually 2-5 seconds on Base), then retry this request'
       });
     }
 
     if (receipt.status === 0) {
-      return res.status(400).json({
-        error: 'Transaction reverted',
+      return sendError(res, 400, {
+        code: ErrorCodes.ONCHAIN_TX_REVERTED,
+        message: 'Transaction reverted',
         details: 'The prepareSubmission transaction failed on-chain',
-        tips: [
-          'Check the transaction on block explorer for revert reason',
-          `Explorer: ${config.explorer}/tx/${txHash}`
-        ]
+        fix: `Check the transaction on block explorer for revert reason: ${config.explorer}/tx/${txHash}`
       });
     }
 
@@ -2748,13 +2815,11 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
     }
 
     if (submissionId === undefined || !evalWallet) {
-      return res.status(400).json({
-        error: 'Could not parse SubmissionPrepared event',
-        details: 'Transaction succeeded but SubmissionPrepared event not found in logs',
-        tips: [
-          'Verify the txHash is for a prepareSubmission call to the correct escrow contract',
-          `Expected escrow: ${escrowAddress}`
-        ]
+      return sendError(res, 400, {
+        code: ErrorCodes.ONCHAIN_PARSE_FAILED,
+        message: 'Could not parse SubmissionPrepared event',
+        details: `Transaction succeeded but SubmissionPrepared event not found in logs. Expected escrow contract: ${escrowAddress}`,
+        fix: 'Verify the txHash is for a prepareSubmission call to the correct escrow contract. You can parse the event yourself using the ABI from /submit/bundle.'
       });
     }
 
@@ -2839,13 +2904,11 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
 
   } catch (error) {
     logger.error('[bundle/complete] error', { msg: error.message });
-    return res.status(500).json({
-      error: 'Failed to parse transaction',
+    return sendError(res, 500, {
+      code: ErrorCodes.INTERNAL_ERROR,
+      message: 'Failed to parse transaction',
       details: error.message,
-      tips: [
-        'Verify the txHash and try again',
-        'You can also parse the SubmissionPrepared event yourself using the ABI from /submit/bundle'
-      ]
+      fix: 'Verify the txHash and try again. You can also parse the SubmissionPrepared event yourself using the ABI from /submit/bundle.'
     });
   }
 });

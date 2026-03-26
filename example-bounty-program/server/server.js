@@ -358,11 +358,14 @@ app.get('/api/diagnostics/tmp', (req, res) => {
 
 
 // Error handling middleware
+const { sendError, ErrorCodes } = require('./utils/apiErrors');
 app.use((err, req, res, next) => {
   logger.error('Server error:', err);
-  res.status(500).json({
-    error: 'Internal server error',
+  sendError(res, 500, {
+    code: ErrorCodes.INTERNAL_ERROR,
+    message: 'Internal server error',
     details: process.env.NODE_ENV === 'development' ? err.message : 'An unexpected error occurred',
+    fix: 'Check server health at GET /health. If the problem persists, try again shortly.',
     tips: [
       'Check server health: GET /health',
       'Full docs: GET /api/docs'
@@ -372,9 +375,11 @@ app.use((err, req, res, next) => {
 
 // 404 handler
 app.use((req, res) => {
-  res.status(404).json({
-    error: 'Not found',
-    path: req.path,
+  sendError(res, 404, {
+    code: ErrorCodes.NOT_FOUND,
+    message: `No endpoint matches ${req.method} ${req.path}`,
+    details: `Path "${req.path}" does not exist`,
+    fix: 'Check the API documentation at GET /api/docs for available endpoints',
     tips: [
       'Agent guide: GET /agents.txt',
       'API docs: GET /api/docs',

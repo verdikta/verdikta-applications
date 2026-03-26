@@ -2426,6 +2426,430 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
   }
 });
 
+/* =============================================
+   TRANSACTION BUNDLE FOR AGENT SUBMISSIONS
+   ============================================= */
+
+/**
+ * ABI fragments for encoding transaction calldata.
+ * These mirror the on-chain BountyEscrow and ERC-20 (LINK) interfaces.
+ */
+const BUNDLE_ESCROW_ABI = [
+  "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
+  "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
+  "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
+  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)"
+];
+const BUNDLE_LINK_ABI = [
+  "function approve(address spender, uint256 amount) returns (bool)"
+];
+const bundleEscrowIface = new ethers.Interface(BUNDLE_ESCROW_ABI);
+const bundleLinkIface = new ethers.Interface(BUNDLE_LINK_ABI);
+
+/**
+ * POST /api/jobs/:jobId/submit/bundle
+ *
+ * Returns pre-encoded transaction calldata for the full submission flow.
+ * Agent signs and broadcasts each transaction in order.
+ *
+ * Accepts JSON body (if hunterCid already uploaded) or multipart/form-data (with files).
+ *
+ * Request body:
+ *   hunterAddress   - Ethereum address (required)
+ *   hunterCid       - IPFS CID of already-uploaded work (optional if files provided)
+ *   files           - multipart file uploads (optional if hunterCid provided)
+ *   addendum        - optional text appended to evaluation query
+ *   alpha           - reputation weight, default 75
+ *   maxOracleFee    - max LINK per oracle in wei, default "50000000000000000" (0.05 LINK)
+ *   estimatedBaseCost   - default "30000000000000000" (0.03 LINK)
+ *   maxFeeBasedScaling  - default "20000000000000000" (0.02 LINK)
+ *
+ * Response: step-1 transaction (prepareSubmission) + templates for steps 2-4.
+ * After broadcasting step 1, call POST /submit/bundle/complete with the txHash
+ * to get exact calldata for steps 2-4.
+ */
+router.post('/:jobId/submit/bundle', async (req, res) => {
+  let uploadedFiles = [];
+  try {
+    // Support both JSON and multipart
+    const isMultipart = (req.headers['content-type'] || '').includes('multipart');
+    if (isMultipart) {
+      await new Promise((resolve, reject) => upload(req, res, (err) => err ? reject(err) : resolve()));
+      uploadedFiles = req.files || [];
+    }
+
+    const { jobId } = req.params;
+    const hunterAddress = req.body.hunterAddress || req.body.hunter;
+    let { hunterCid } = req.body;
+    const addendum    = req.body.addendum || '';
+    const alpha       = parseInt(req.body.alpha) || 75;
+    const maxOracleFee       = req.body.maxOracleFee       || '50000000000000000';
+    const estimatedBaseCost  = req.body.estimatedBaseCost  || '30000000000000000';
+    const maxFeeBasedScaling = req.body.maxFeeBasedScaling || '20000000000000000';
+
+    // ---- Validate inputs ----
+    if (!hunterAddress || !/^0x[a-fA-F0-9]{40}$/.test(hunterAddress)) {
+      return res.status(400).json({
+        error: 'Invalid or missing hunterAddress',
+        details: 'Must be a valid Ethereum address (0x + 40 hex chars)',
+        tips: ['POST /api/jobs/:id/submit/bundle with { "hunterAddress": "0x...", "hunterCid": "Qm..." }']
+      });
+    }
+
+    const job = await jobStorage.getJob(jobId);
+    if (job.status !== 'OPEN') {
+      return res.status(400).json({
+        error: `Bounty #${jobId} is ${job.status}`,
+        tips: ['List open bounties: GET /api/jobs?status=OPEN']
+      });
+    }
+    const now = Math.floor(Date.now() / 1000);
+    if (now < job.submissionOpenTime || now > job.submissionCloseTime) {
+      return res.status(400).json({
+        error: 'Submission window closed',
+        tips: ['List open bounties: GET /api/jobs?status=OPEN']
+      });
+    }
+
+    if (!job.evaluationCid) {
+      return res.status(400).json({
+        error: 'Bounty has no evaluation package',
+        details: 'This bounty is missing an evaluationCid and cannot accept submissions'
+      });
+    }
+
+    // ---- Upload files to IPFS if provided (no hunterCid yet) ----
+    if (!hunterCid && uploadedFiles.length > 0) {
+      const fileDescriptions = (() => {
+        try { return req.body.fileDescriptions ? JSON.parse(req.body.fileDescriptions) : {}; }
+        catch { return {}; }
+      })();
+      const workProducts = uploadedFiles.map(f => ({
+        path: f.path,
+        name: f.originalname,
+        type: f.mimetype,
+        description: fileDescriptions[f.originalname] || `Work product file: ${f.originalname}`
+      }));
+      const hunterArchive = await archiveGenerator.createHunterSubmissionCIDArchive({
+        workProducts,
+        submissionNarrative: req.body.submissionNarrative || undefined
+      });
+      const ipfsClient = req.app.locals.ipfsClient;
+      try {
+        hunterCid = await ipfsClient.uploadToIPFS(hunterArchive.archivePath);
+        logger.info('[bundle] hunter submission pinned', { hunterCid, fileCount: uploadedFiles.length });
+      } finally {
+        await fs.unlink(hunterArchive.archivePath).catch(() => {});
+      }
+    }
+
+    if (!hunterCid) {
+      return res.status(400).json({
+        error: 'Missing hunterCid or files',
+        details: 'Provide either hunterCid (pre-uploaded) or files (multipart/form-data)',
+        tips: [
+          'Option 1: POST with JSON { "hunterAddress": "0x...", "hunterCid": "Qm..." }',
+          'Option 2: POST with multipart/form-data including files + hunterAddress'
+        ]
+      });
+    }
+
+    // ---- Build transaction calldata ----
+    const escrowAddress = config.bountyEscrowAddress;
+    const linkAddress   = config.linkTokenAddress;
+    const chainId       = config.chainId;
+    const bountyIdNum   = parseInt(jobId);
+
+    // Step 1: prepareSubmission calldata
+    const prepareData = bundleEscrowIface.encodeFunctionData('prepareSubmission', [
+      bountyIdNum,
+      job.evaluationCid,
+      hunterCid,
+      addendum,
+      alpha,
+      maxOracleFee,
+      estimatedBaseCost,
+      maxFeeBasedScaling
+    ]);
+
+    return res.json({
+      success: true,
+      hunterCid,
+      transactions: [
+        {
+          step: 1,
+          name: 'prepareSubmission',
+          description: 'Creates submission record on-chain. Parse SubmissionPrepared event from tx receipt to get evalWallet, submissionId, and linkMaxBudget.',
+          to: escrowAddress,
+          data: prepareData,
+          value: '0',
+          chainId,
+          gasLimit: 1000000
+        },
+        {
+          step: 2,
+          name: 'approveLINK',
+          description: 'Approve LINK tokens to evalWallet. Replace {EVAL_WALLET} and {LINK_MAX_BUDGET} from step 1 event.',
+          to: linkAddress,
+          data: null,
+          dataTemplate: 'approve({EVAL_WALLET}, {LINK_MAX_BUDGET})',
+          value: '0',
+          chainId,
+          gasLimit: 100000,
+          note: 'Use POST /api/jobs/:id/submit/bundle/complete with step 1 txHash to get exact calldata'
+        },
+        {
+          step: 3,
+          name: 'startPreparedSubmission',
+          description: 'Triggers oracle evaluation. Replace {SUBMISSION_ID} from step 1 event.',
+          to: escrowAddress,
+          data: null,
+          dataTemplate: 'startPreparedSubmission({BOUNTY_ID}, {SUBMISSION_ID})',
+          value: '0',
+          chainId,
+          gasLimit: 500000,
+          note: 'Use POST /api/jobs/:id/submit/bundle/complete with step 1 txHash to get exact calldata'
+        }
+      ],
+      postEvaluation: {
+        step: 4,
+        name: 'finalizeSubmission',
+        description: 'Call after oracle completes to claim reward (if passed) or close submission (if failed). Replace {SUBMISSION_ID}.',
+        to: escrowAddress,
+        data: null,
+        dataTemplate: 'finalizeSubmission({BOUNTY_ID}, {SUBMISSION_ID})',
+        value: '0',
+        chainId,
+        gasLimit: 300000,
+        note: 'Only call after GET /api/jobs/:id/submissions/:submissionId shows EVALUATED_PASSED or EVALUATED_FAILED'
+      },
+      contracts: {
+        escrow: escrowAddress,
+        link: linkAddress
+      },
+      requirements: {
+        ethForGas: '~0.005 ETH (estimate for all 3 transactions)',
+        linkForOracle: `${ethers.formatEther(maxOracleFee)} LINK per oracle node (linkMaxBudget returned in step 1 event)`
+      },
+      abis: {
+        SubmissionPrepared: 'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)',
+        prepareSubmission: 'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)',
+        startPreparedSubmission: 'function startPreparedSubmission(uint256 bountyId, uint256 submissionId)',
+        finalizeSubmission: 'function finalizeSubmission(uint256 bountyId, uint256 submissionId)',
+        approveLINK: 'function approve(address spender, uint256 amount) returns (bool)'
+      },
+      nextStep: `POST /api/jobs/${jobId}/submit/bundle/complete with { "txHash": "0x..." } after broadcasting step 1`,
+      tips: [
+        'Execute step 1 first, then call /submit/bundle/complete with the txHash',
+        '/submit/bundle/complete parses step 1 logs and returns exact calldata for steps 2, 3, and 4',
+        'If you can parse event logs yourself, extract evalWallet + submissionId + linkMaxBudget from SubmissionPrepared',
+        `Confirm submission with POST /api/jobs/${jobId}/submissions/confirm after step 1`,
+        `Poll GET /api/jobs/${jobId}/submissions after step 3 until evaluation completes, then execute step 4`
+      ]
+    });
+
+  } catch (error) {
+    logger.error('[bundle] error', { msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({
+        error: 'Job not found',
+        details: error.message,
+        tips: ['List open bounties: GET /api/jobs?status=OPEN']
+      });
+    }
+    return res.status(500).json({
+      error: 'Failed to build transaction bundle',
+      details: error.message,
+      tips: ['Try again shortly or check server health: GET /health']
+    });
+  } finally {
+    for (const f of uploadedFiles) {
+      if (f?.path) await fs.unlink(f.path).catch(() => {});
+    }
+  }
+});
+
+/**
+ * POST /api/jobs/:jobId/submit/bundle/complete
+ *
+ * After the agent broadcasts the prepareSubmission transaction (step 1),
+ * this endpoint parses the transaction receipt to extract evalWallet,
+ * submissionId, and linkMaxBudget, then returns exact calldata for steps 2-4.
+ *
+ * Request body: { "txHash": "0x..." }
+ */
+router.post('/:jobId/submit/bundle/complete', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { txHash } = req.body;
+
+    if (!txHash || !/^0x[a-fA-F0-9]{64}$/.test(txHash)) {
+      return res.status(400).json({
+        error: 'Invalid or missing txHash',
+        details: 'Provide the transaction hash from step 1 (prepareSubmission)',
+        tips: ['txHash must be 0x + 64 hex characters']
+      });
+    }
+
+    // We need blockchain access to parse the receipt
+    let cs;
+    try {
+      cs = getContractService();
+    } catch (e) {
+      return res.status(503).json({
+        error: 'Blockchain not available',
+        details: 'Server cannot access blockchain to parse transaction receipt',
+        tips: [
+          'Parse the SubmissionPrepared event yourself using the ABI from /submit/bundle response',
+          'Extract: evalWallet, submissionId, linkMaxBudget'
+        ]
+      });
+    }
+
+    // Fetch transaction receipt
+    const receipt = await cs.provider.getTransactionReceipt(txHash);
+    if (!receipt) {
+      return res.status(404).json({
+        error: 'Transaction not found or not yet mined',
+        details: `No receipt for txHash ${txHash}`,
+        tips: [
+          'Wait for the transaction to be mined, then retry',
+          'Verify the txHash is correct'
+        ]
+      });
+    }
+
+    if (receipt.status === 0) {
+      return res.status(400).json({
+        error: 'Transaction reverted',
+        details: 'The prepareSubmission transaction failed on-chain',
+        tips: [
+          'Check the transaction on block explorer for revert reason',
+          `Explorer: ${config.explorer}/tx/${txHash}`
+        ]
+      });
+    }
+
+    // Parse SubmissionPrepared event from logs
+    const escrowAddress = config.bountyEscrowAddress;
+    let evalWallet, submissionId, linkMaxBudget;
+
+    for (const log of receipt.logs) {
+      if ((log.address || '').toLowerCase() !== (escrowAddress || '').toLowerCase()) continue;
+      try {
+        const parsed = bundleEscrowIface.parseLog({ topics: log.topics, data: log.data });
+        if (parsed && parsed.name === 'SubmissionPrepared') {
+          submissionId   = parsed.args[1]; // indexed submissionId
+          evalWallet     = parsed.args[3]; // evalWallet (non-indexed)
+          linkMaxBudget  = parsed.args[5]; // linkMaxBudget (non-indexed)
+          break;
+        }
+      } catch { /* skip non-matching logs */ }
+    }
+
+    if (submissionId === undefined || !evalWallet) {
+      return res.status(400).json({
+        error: 'Could not parse SubmissionPrepared event',
+        details: 'Transaction succeeded but SubmissionPrepared event not found in logs',
+        tips: [
+          'Verify the txHash is for a prepareSubmission call to the correct escrow contract',
+          `Expected escrow: ${escrowAddress}`
+        ]
+      });
+    }
+
+    const bountyIdNum = parseInt(jobId);
+    const chainId     = config.chainId;
+    const linkAddress = config.linkTokenAddress;
+
+    // Encode exact calldata for steps 2, 3, and 4
+    const approveData = bundleLinkIface.encodeFunctionData('approve', [
+      evalWallet,
+      linkMaxBudget
+    ]);
+
+    const startData = bundleEscrowIface.encodeFunctionData('startPreparedSubmission', [
+      bountyIdNum,
+      submissionId
+    ]);
+
+    const finalizeData = bundleEscrowIface.encodeFunctionData('finalizeSubmission', [
+      bountyIdNum,
+      submissionId
+    ]);
+
+    return res.json({
+      success: true,
+      parsed: {
+        submissionId: Number(submissionId),
+        evalWallet,
+        linkMaxBudget: linkMaxBudget.toString(),
+        linkMaxBudgetFormatted: ethers.formatEther(linkMaxBudget) + ' LINK'
+      },
+      transactions: [
+        {
+          step: 2,
+          name: 'approveLINK',
+          description: `Approve ${ethers.formatEther(linkMaxBudget)} LINK to evalWallet ${evalWallet}`,
+          to: linkAddress,
+          data: approveData,
+          value: '0',
+          chainId,
+          gasLimit: 100000
+        },
+        {
+          step: 3,
+          name: 'startPreparedSubmission',
+          description: `Start oracle evaluation for submission #${Number(submissionId)}`,
+          to: escrowAddress,
+          data: startData,
+          value: '0',
+          chainId,
+          gasLimit: 500000
+        }
+      ],
+      postEvaluation: {
+        step: 4,
+        name: 'finalizeSubmission',
+        description: `Finalize submission #${Number(submissionId)} after oracle completes`,
+        to: escrowAddress,
+        data: finalizeData,
+        value: '0',
+        chainId,
+        gasLimit: 300000
+      },
+      confirm: {
+        description: 'Register this submission with the API server for status tracking',
+        method: 'POST',
+        url: `/api/jobs/${jobId}/submissions/confirm`,
+        body: {
+          submissionId: Number(submissionId),
+          hunter: receipt.from,
+          hunterCid: '(the hunterCid from /submit/bundle response)',
+          evalWallet
+        }
+      },
+      tips: [
+        'Execute step 2 (approve LINK), then step 3 (start evaluation)',
+        `After step 3, poll GET /api/jobs/${jobId}/submissions until status is EVALUATED_PASSED or EVALUATED_FAILED`,
+        'Then execute step 4 (finalize) to claim reward or close submission',
+        `Also call POST /api/jobs/${jobId}/submissions/confirm to register the submission for API tracking`
+      ]
+    });
+
+  } catch (error) {
+    logger.error('[bundle/complete] error', { msg: error.message });
+    return res.status(500).json({
+      error: 'Failed to parse transaction',
+      details: error.message,
+      tips: [
+        'Verify the txHash and try again',
+        'You can also parse the SubmissionPrepared event yourself using the ABI from /submit/bundle'
+      ]
+    });
+  }
+});
+
 /* ===============================
    PATCH bountyId + resolve helper
    =============================== */

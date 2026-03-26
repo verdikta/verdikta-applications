@@ -35,10 +35,10 @@ const PUBLIC_PATHS = [
   '/api/diagnostics',
   '/r/',    // Receipt pages - must be public for social media crawlers (OG tags)
   '/og/',   // OG images for receipts - must be public for social media unfurling
-  '/agents.txt',   // Agent access guide
-  '/api/docs',     // API documentation
-  '/api/jobs.txt', // Plain text bounty list
-  '/feed.xml',     // Atom feed
+  '/agents.txt',          // Agent access guide
+  '/api/docs',            // API documentation
+  '/api/jobs.txt',        // Plain text bounty list
+  '/feed.xml',            // Atom feed
 ];
 
 /**

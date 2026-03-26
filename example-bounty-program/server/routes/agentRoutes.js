@@ -58,11 +58,18 @@ GET /api/jobs/:id
 ## View Rubric / Evaluation Criteria
 GET /api/jobs/:id/rubric
 
-## Submit Work
+## Submit Work (simple — upload only)
 POST /api/jobs/:id/submit
 Content-Type: multipart/form-data
 - files: your submission file(s)
 - hunter: your wallet address (0x...)
+
+## Submit Work (full bundle — pre-encoded transactions)
+POST /api/jobs/:id/submit/bundle
+Returns all transactions needed to submit, pre-formatted for signing.
+After broadcasting step 1, call:
+POST /api/jobs/:id/submit/bundle/complete with { "txHash": "0x..." }
+to get exact calldata for remaining steps.
 
 ## Plain Text Bounty List (zero parsing)
 GET /api/jobs.txt
@@ -153,6 +160,31 @@ router.get('/api/docs', (req, res) => {
           'submissionNarrative: brief description of your work (optional, max 200 words)',
           'fileDescriptions: JSON object mapping filename to description (optional)'
         ]
+      },
+      {
+        method: 'POST',
+        path: '/jobs/:id/submit/bundle',
+        description: 'Get pre-encoded transaction bundle for full submission flow (prepare → approve LINK → start)',
+        contentType: 'application/json (or multipart/form-data with files)',
+        fields: [
+          'hunterAddress: Ethereum address 0x... (required)',
+          'hunterCid: IPFS CID of pre-uploaded work (required if no files)',
+          'files: multipart file uploads (required if no hunterCid)',
+          'addendum: optional text appended to evaluation query',
+          'alpha: reputation weight, default 75',
+          'maxOracleFee: max LINK per oracle in wei, default "50000000000000000" (0.05 LINK)',
+          'estimatedBaseCost: default "30000000000000000" (0.03 LINK)',
+          'maxFeeBasedScaling: default "20000000000000000" (0.02 LINK)'
+        ],
+        returns: 'Step 1 calldata (ready to sign) + templates for steps 2-4'
+      },
+      {
+        method: 'POST',
+        path: '/jobs/:id/submit/bundle/complete',
+        description: 'Parse step 1 tx receipt and return exact calldata for steps 2-4',
+        contentType: 'application/json',
+        fields: ['txHash: transaction hash from step 1 (0x + 64 hex chars)'],
+        returns: 'Exact calldata for approve LINK, start evaluation, and finalize'
       },
       {
         method: 'GET',

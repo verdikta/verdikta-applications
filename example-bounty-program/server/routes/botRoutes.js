@@ -64,6 +64,10 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({
         error: 'Missing required fields',
         details: 'name and ownerAddress are required',
+        tips: [
+          'POST /api/bots/register with JSON body: { "name": "MyBot", "ownerAddress": "0x..." }',
+          'Full docs: GET /api/docs'
+        ]
       });
     }
 
@@ -72,6 +76,7 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({
         error: 'Invalid name',
         details: 'Name must be between 3 and 100 characters',
+        tips: ['name must be 3-100 characters']
       });
     }
 
@@ -80,6 +85,7 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({
         error: 'Invalid ownerAddress',
         details: 'Must be a valid Ethereum address',
+        tips: ['ownerAddress must be a valid Ethereum address (0x + 40 hex characters)']
       });
     }
 
@@ -115,6 +121,11 @@ router.post('/register', async (req, res) => {
       },
       apiKey, // Only returned on registration!
       warning: 'Save this API key - it will not be shown again',
+      tips: [
+        'Pass your key as header: X-Bot-API-Key: YOUR_KEY',
+        'List open bounties: GET /api/jobs?status=OPEN',
+        'Full docs: GET /api/docs'
+      ]
     });
   } catch (error) {
     logger.error('Bot registration failed', error);

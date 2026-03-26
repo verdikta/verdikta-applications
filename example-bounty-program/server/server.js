@@ -35,6 +35,7 @@ const analyticsRoutes = require('./routes/analyticsRoutes');
 const verdiktaRoutes = require('./routes/verdiktaRoutes');
 const botRoutes = require('./routes/botRoutes');
 const receiptRoutes = require('./routes/receiptRoutes');
+const agentRoutes = require('./routes/agentRoutes');
 const { initializeVerdiktaService } = require('./utils/verdiktaService');
 const clientIdentification = require('./middleware/clientIdentification');
 
@@ -172,6 +173,9 @@ app.use('/api/poster', posterRoutes);
 app.use('/api/analytics', analyticsRoutes); // Analytics dashboard endpoints
 app.use('/api/verdikta', verdiktaRoutes); // Verdikta aggregator endpoints
 app.use('/api/bots', botRoutes); // Bot registration and management
+
+// Agent discovery routes (agents.txt, /api/docs, /api/jobs.txt, /feed.xml)
+app.use(agentRoutes);
 
 // Public (non-API) routes for shareable receipts + OG images
 app.use(receiptRoutes);
@@ -358,7 +362,11 @@ app.use((err, req, res, next) => {
   logger.error('Server error:', err);
   res.status(500).json({
     error: 'Internal server error',
-    details: process.env.NODE_ENV === 'development' ? err.message : 'An unexpected error occurred'
+    details: process.env.NODE_ENV === 'development' ? err.message : 'An unexpected error occurred',
+    tips: [
+      'Check server health: GET /health',
+      'Full docs: GET /api/docs'
+    ]
   });
 });
 
@@ -366,7 +374,12 @@ app.use((err, req, res, next) => {
 app.use((req, res) => {
   res.status(404).json({
     error: 'Not found',
-    path: req.path
+    path: req.path,
+    tips: [
+      'Agent guide: GET /agents.txt',
+      'API docs: GET /api/docs',
+      'List bounties: GET /api/jobs?status=OPEN'
+    ]
   });
 });
 

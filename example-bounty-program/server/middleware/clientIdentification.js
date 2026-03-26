@@ -28,13 +28,17 @@ function loadBots() {
   return { bots: [] };
 }
 
-// Paths that don't require authentication (bot registration, health checks, diagnostics, receipts)
+// Paths that don't require authentication (bot registration, health checks, diagnostics, receipts, agent discovery)
 const PUBLIC_PATHS = [
   '/api/bots/register',
   '/health',
   '/api/diagnostics',
   '/r/',    // Receipt pages - must be public for social media crawlers (OG tags)
   '/og/',   // OG images for receipts - must be public for social media unfurling
+  '/agents.txt',   // Agent access guide
+  '/api/docs',     // API documentation
+  '/api/jobs.txt', // Plain text bounty list
+  '/feed.xml',     // Atom feed
 ];
 
 /**
@@ -118,6 +122,11 @@ function clientIdentification(req, res, next) {
   return res.status(401).json({
     error: 'Authentication required',
     details: 'Valid X-Client-Key or X-Bot-API-Key header required',
+    tips: [
+      'Register for an API key: POST /api/bots/register',
+      'Pass your key as header: X-Bot-API-Key: YOUR_KEY',
+      'Agent guide: GET /agents.txt'
+    ]
   });
 }
 

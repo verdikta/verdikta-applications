@@ -1685,12 +1685,27 @@ router.get('/', async (req, res) => {
       jobs: jobSummaries,
       total: allJobs.length,
       limit: limitNum,
-      offset: offsetNum
+      offset: offsetNum,
+      tips: [
+        'Filter by status: GET /api/jobs?status=OPEN',
+        'Filter by type: GET /api/jobs?workProductType=code',
+        'To submit work: POST /api/jobs/:id/submit with files + hunter address',
+        'View rubric: GET /api/jobs/:id/rubric',
+        'Plain text list: GET /api/jobs.txt',
+        'Full docs: GET /api/docs'
+      ]
     });
 
   } catch (error) {
     logger.error('[jobs/list] error', { msg: error.message });
-    return res.status(500).json({ error: 'Failed to list jobs', details: error.message });
+    return res.status(500).json({
+      error: 'Failed to list jobs',
+      details: error.message,
+      tips: [
+        'Try again shortly or check server health: GET /health',
+        'Plain text list: GET /api/jobs.txt'
+      ]
+    });
   }
 });
 
@@ -1804,15 +1819,27 @@ router.get('/:jobId/submissions', async (req, res) => {
       success: true,
       jobId: job.jobId,
       threshold,
-      submissions
+      submissions,
+      tips: [
+        `View bounty details: GET /api/jobs/${job.jobId}`,
+        `Submit work: POST /api/jobs/${job.jobId}/submit`
+      ]
     });
 
   } catch (error) {
     logger.error('[jobs/submissions] error', { msg: error.message });
     if (error.message.includes('not found')) {
-      return res.status(404).json({ error: 'Job not found', details: error.message });
+      return res.status(404).json({
+        error: 'Job not found',
+        details: error.message,
+        tips: ['List open bounties: GET /api/jobs?status=OPEN']
+      });
     }
-    return res.status(500).json({ error: 'Failed to list submissions', details: error.message });
+    return res.status(500).json({
+      error: 'Failed to list submissions',
+      details: error.message,
+      tips: ['Try again shortly or check server health: GET /health']
+    });
   }
 });
 
@@ -2066,21 +2093,40 @@ router.get('/:jobId', async (req, res) => {
 
     // Strip internal sync bookkeeping fields before sending to client
     const { syncedFromBlockchain: _sfb, lastSyncedAt: _lsa, ...jobForClient } = job;
+    const jobIdVal = job.jobId;
     return res.json({
       success: true,
       job: {
         ...jobForClient,
         rubricContent: rubricContent || null,
         juryNodes: extractedJuryNodes.length > 0 ? extractedJuryNodes : (job.juryNodes || [])
-      }
+      },
+      tips: [
+        `Read the rubric carefully — 'must: true' criteria are gates`,
+        `View rubric: GET /api/jobs/${jobIdVal}/rubric`,
+        `Submit: POST /api/jobs/${jobIdVal}/submit`,
+        `Check submissions: GET /api/jobs/${jobIdVal}/submissions`,
+        `Evaluation package: GET /api/jobs/${jobIdVal}/evaluation-package`
+      ]
     });
 
   } catch (error) {
     logger.error('[jobs/details] error', { msg: error.message });
     if (error.message.includes('not found')) {
-      return res.status(404).json({ error: 'Job not found', details: error.message });
+      return res.status(404).json({
+        error: 'Job not found',
+        details: error.message,
+        tips: [
+          'List open bounties: GET /api/jobs?status=OPEN',
+          'Job IDs are 0-based — legacy 1-based URLs are auto-resolved'
+        ]
+      });
     }
-    return res.status(500).json({ error: 'Failed to get job', details: error.message });
+    return res.status(500).json({
+      error: 'Failed to get job',
+      details: error.message,
+      tips: ['Try again shortly or check server health: GET /health']
+    });
   }
 });
 
@@ -2188,7 +2234,14 @@ router.post('/:jobId/submit', async (req, res) => {
     await new Promise((resolve, reject) => upload(req, res, (err) => err ? reject(err) : resolve()));
 
     if (!req.files || req.files.length === 0) {
-      return res.status(400).json({ error: 'No files uploaded', details: 'Provide at least one file' });
+      return res.status(400).json({
+        error: 'No files uploaded',
+        details: 'Provide at least one file',
+        tips: [
+          'Submit: POST /api/jobs/:id/submit with multipart/form-data including files and hunter',
+          'hunter must be a valid Ethereum address (0x...)'
+        ]
+      });
     }
     uploadedFiles = req.files;
 
@@ -2196,7 +2249,14 @@ router.post('/:jobId/submit', async (req, res) => {
     const { hunter, submissionNarrative } = req.body;
 
     if (!hunter || !/^0x[a-fA-F0-9]{40}$/.test(hunter)) {
-      return res.status(400).json({ error: 'Invalid hunter address', details: 'Must be a valid Ethereum address' });
+      return res.status(400).json({
+        error: 'Invalid hunter address',
+        details: 'Must be a valid Ethereum address',
+        tips: [
+          'hunter must be a valid Ethereum address (0x + 40 hex characters)',
+          'Submit: POST /api/jobs/:id/submit with multipart/form-data including files and hunter'
+        ]
+      });
     }
 
     if (submissionNarrative) {
@@ -2208,11 +2268,18 @@ router.post('/:jobId/submit', async (req, res) => {
 
     const job = await jobStorage.getJob(jobId);
     if (job.status !== 'OPEN') {
-      return res.status(400).json({ error: 'Job is not open', details: `Status is ${job.status}` });
+      return res.status(400).json({
+        error: 'Job is not open',
+        details: `Status is ${job.status}`,
+        tips: ['List open bounties: GET /api/jobs?status=OPEN']
+      });
     }
     const now = Math.floor(Date.now()/1000);
     if (now < job.submissionOpenTime || now > job.submissionCloseTime) {
-      return res.status(400).json({ error: 'Submission window closed' });
+      return res.status(400).json({
+        error: 'Submission window closed',
+        tips: ['List open bounties: GET /api/jobs?status=OPEN']
+      });
     }
 
     const fileDescriptions = (() => {
@@ -2263,15 +2330,27 @@ router.post('/:jobId/submit', async (req, res) => {
         fileCount: uploadedFiles.length,
         files: uploadedFiles.map(f => ({ filename: f.originalname, size: f.size, description: fileDescriptions[f.originalname] })),
         totalSize: uploadedFiles.reduce((s, f) => s + f.size, 0)
-      }
+      },
+      tips: [
+        'Next: call prepareSubmission on-chain, then POST /api/jobs/:id/submissions/confirm',
+        `Check submission status: GET /api/jobs/${jobId}/submissions`
+      ]
     });
 
   } catch (error) {
     logger.error('[jobs/submit] error', { msg: error.message });
     if (error.message.includes('not found')) {
-      return res.status(404).json({ error: 'Job not found', details: error.message });
+      return res.status(404).json({
+        error: 'Job not found',
+        details: error.message,
+        tips: ['List open bounties: GET /api/jobs?status=OPEN']
+      });
     }
-    return res.status(500).json({ error: 'Failed to submit work', details: error.message });
+    return res.status(500).json({
+      error: 'Failed to submit work',
+      details: error.message,
+      tips: ['Try again shortly or check server health: GET /health']
+    });
   } finally {
     for (const f of uploadedFiles) {
       if (f?.path) await fs.unlink(f.path).catch(err =>

@@ -12,7 +12,6 @@ import { getAugmentedQueryText } from '../utils/queryUtils';
 import {
   CONTRACT_ABI,
   ensureCorrectNetwork,
-  CURRENT_NETWORK,
 } from '../utils/contractUtils';
 import { modelProviderService } from '../services/modelProviderService';
 import { waitForFulfilOrTimeout } from '../utils/timeoutUtils';
@@ -358,8 +357,9 @@ const handleRunQuery = async () => {
    // Verify the selected address actually exists on this chain
    const codeAtAddr = await roProvider.getCode(contractAddress);
    if (codeAtAddr === '0x') {
-     setTransactionStatus(`Error: No contract at ${contractAddress} on ${CURRENT_NETWORK.name}`);
-     alert(`No contract at ${contractAddress} on ${CURRENT_NETWORK.name}. Did you pick the right address for this network?`);
+     const networkName = getNetworkConfig(networkToUse).name;
+     setTransactionStatus(`Error: No contract at ${contractAddress} on ${networkName}`);
+     alert(`No contract at ${contractAddress} on ${networkName}. Did you pick the right address for this network?`);
      setLoadingResults(false);
      return;
    }
@@ -375,7 +375,7 @@ const handleRunQuery = async () => {
     const config = await readContract.getContractConfig();
     const linkTokenAddress = config.linkAddr;
     if ((await roProvider.getCode(linkTokenAddress)) === '0x') {
-      throw new Error(`LINK token not found at ${linkTokenAddress} on ${CURRENT_NETWORK.name}`);
+      throw new Error(`LINK token not found at ${linkTokenAddress} on ${getNetworkConfig(networkToUse).name}`);
     }
 
     // Read the on-chain responseTimeoutSeconds so UI stays in sync

@@ -155,7 +155,7 @@ async function topUpLinkAllowance({
 
   // 3.  Decide newTotal 
   let newTotal;
-  const requiredExtraWithMargin = BigInt(PAYMENT_MULTIPLIER)*requiredExtra;
+  const requiredExtraWithMargin = requiredExtra * 3n / 2n; // 1.5× margin
   if (!hasHistory) {
     // First approval over window 
     newTotal = requiredExtraWithMargin;

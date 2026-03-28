@@ -1175,7 +1175,7 @@ class SyncService {
       // occurred before the sync cursor was established, or via a direct
       // contract call. Covers both EXPIRED and OPEN-past-deadline bounties.
       const pastDeadline = job.submissionCloseTime && now > job.submissionCloseTime;
-      if ((job.status === 'EXPIRED' || (job.status === 'OPEN' && pastDeadline)) && job.onChain && contractService) {
+      if ((job.status === 'EXPIRED' || (job.status === 'OPEN' && pastDeadline)) && (job.onChain || job.syncedFromBlockchain) && contractService) {
         try {
           const onChainStatus = await contractService.getEffectiveStatus(job.jobId);
           const upper = String(onChainStatus).toUpperCase();

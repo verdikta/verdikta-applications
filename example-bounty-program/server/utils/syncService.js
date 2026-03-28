@@ -1169,23 +1169,25 @@ class SyncService {
         continue;
       }
 
-      // Reconcile EXPIRED on-chain bounties: check if they were closed or
-      // awarded externally (not through the website). The event-based sync
-      // may have missed the BountyClosed event if it occurred before the
-      // sync cursor was established, or via a direct contract call.
-      if (job.status === 'EXPIRED' && job.onChain && contractService) {
+      // Reconcile on-chain bounties whose local status may be stale: check
+      // if they were closed or awarded externally (not through the website).
+      // The event-based sync may have missed the BountyClosed event if it
+      // occurred before the sync cursor was established, or via a direct
+      // contract call. Covers both EXPIRED and OPEN-past-deadline bounties.
+      const pastDeadline = job.submissionCloseTime && now > job.submissionCloseTime;
+      if ((job.status === 'EXPIRED' || (job.status === 'OPEN' && pastDeadline)) && job.onChain && contractService) {
         try {
           const onChainStatus = await contractService.getEffectiveStatus(job.jobId);
           const upper = String(onChainStatus).toUpperCase();
           if (upper === 'CLOSED') {
-            logger.info('[reconcile] EXPIRED bounty is CLOSED on-chain', { jobId: job.jobId });
+            logger.info('[reconcile] %s bounty is CLOSED on-chain', job.status, { jobId: job.jobId });
             job.status = 'CLOSED';
             job.settledAt = now;
             changed = true;
             continue;
           }
           if (upper === 'AWARDED') {
-            logger.info('[reconcile] EXPIRED bounty is AWARDED on-chain', { jobId: job.jobId });
+            logger.info('[reconcile] %s bounty is AWARDED on-chain', job.status, { jobId: job.jobId });
             job.status = 'AWARDED';
             job.settledAt = now;
             changed = true;

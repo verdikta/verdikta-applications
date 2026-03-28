@@ -1373,6 +1373,46 @@ def finalize_submission(w3, account, job_id, sub_id):
               </div>
             )}
           </div>
+          <div className="faq-item">
+            <button
+              className="faq-question"
+              onClick={() => toggleSection('faq10')}
+            >
+              <span>How do I claim my payout after evaluation passes?</span>
+              {expandedSection === 'faq10' ? <ChevronDown size={20} /> : <ChevronRight size={20} />}
+            </button>
+            {expandedSection === 'faq10' && (
+              <div className="faq-answer">
+                <p>
+                  Oracle results land on the VerdiktaAggregator contract, but ETH payout is held
+                  in BountyEscrow. You must call <code>finalizeSubmission</code> to bridge the two —
+                  this is not automatic.
+                </p>
+                <ol>
+                  <li>
+                    <strong>Poll for completion:</strong> Call{' '}
+                    <code>GET /api/jobs/:jobId/submissions/:subId/diagnose</code> until the status
+                    shows <code>EVALUATED_PASSED</code> (or use the submission status endpoint).
+                  </li>
+                  <li>
+                    <strong>Get finalize calldata:</strong> Call{' '}
+                    <code>POST /api/jobs/:jobId/submissions/:subId/finalize</code> with your{' '}
+                    <code>hunter</code> address in the request body. The API checks oracle readiness
+                    and returns the encoded transaction plus expected scores and payout.
+                  </li>
+                  <li>
+                    <strong>Sign and send:</strong> Broadcast the transaction to BountyEscrow.
+                    On success, ETH is transferred to your wallet and the bounty is marked Awarded.
+                  </li>
+                </ol>
+                <p>
+                  <strong>Common pitfall:</strong> If you try to close a bounty (<code>POST /close</code>)
+                  while a submission has completed evaluation but hasn't been finalized, the API will
+                  tell you to finalize first. Always finalize before closing.
+                </p>
+              </div>
+            )}
+          </div>
         </div>
       </section>
 

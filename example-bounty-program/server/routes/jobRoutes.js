@@ -796,32 +796,53 @@ router.post('/:jobId/close', async (req, res) => {
       });
     }
 
-    // Check for pending submissions
+    // Check for pending submissions and classify them
     const subCount = Number(await contract.submissionCount(onChainBountyId));
-    const pendingSubmissions = [];
+    const needsFinalize = [];
+    const needsTimeout = [];
 
     for (let i = 0; i < subCount; i++) {
       try {
         const chainSub = await contract.getSubmission(onChainBountyId, i);
         if (Number(chainSub.status) === 1) { // PendingVerdikta
-          pendingSubmissions.push({
-            submissionId: i,
-            hunter: chainSub.hunter
-          });
+          // Check if oracle evaluation is already complete
+          let evaluated = false;
+          try {
+            const evalResult = await cs.checkEvaluationReady(onChainBountyId, i);
+            evaluated = evalResult.ready;
+          } catch (_) {}
+
+          const entry = { submissionId: i, hunter: chainSub.hunter };
+          if (evaluated) {
+            needsFinalize.push(entry);
+          } else {
+            needsTimeout.push(entry);
+          }
         }
       } catch (subErr) {
         // Ignore individual submission errors
       }
     }
 
-    if (pendingSubmissions.length > 0) {
+    if (needsFinalize.length > 0 || needsTimeout.length > 0) {
+      const hints = [];
+      if (needsFinalize.length > 0) {
+        hints.push(`${needsFinalize.length} submission(s) have completed evaluation - call POST /api/jobs/${jobId}/submissions/:subId/finalize to claim payout first`);
+      }
+      if (needsTimeout.length > 0) {
+        hints.push(`${needsTimeout.length} submission(s) are still evaluating - call POST /api/jobs/${jobId}/submissions/:subId/timeout for each`);
+      }
+
       return res.status(400).json({
         success: false,
         canClose: false,
-        error: 'Pending evaluations',
-        details: `${pendingSubmissions.length} submission(s) still pending - timeout them first`,
-        pendingSubmissions,
-        hint: 'Call POST /api/jobs/:jobId/submissions/:subId/timeout for each pending submission'
+        error: 'Pending submissions',
+        details: hints.join('. '),
+        needsFinalize,
+        needsTimeout,
+        hint: needsFinalize.length > 0
+          ? `Finalize completed evaluations first: POST /api/jobs/${jobId}/submissions/:subId/finalize`
+          : `Timeout stuck submissions: POST /api/jobs/${jobId}/submissions/:subId/timeout`
       });
     }
 

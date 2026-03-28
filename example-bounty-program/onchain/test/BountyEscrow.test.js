@@ -54,11 +54,18 @@ describe("BountyEscrow", function () {
   // Helper: create a bounty and return its ID
   async function createDefaultBounty(bountyEscrow, creator, overrides = {}) {
     const deadline = overrides.deadline ?? (await time.latest()) + 86400; // +24h
-    const tx = await bountyEscrow.connect(creator).createBounty(
+    const createFn = overrides.targetHunter != null
+      ? bountyEscrow.connect(creator)["createBounty(string,uint64,uint8,uint64,address)"]
+      : bountyEscrow.connect(creator)["createBounty(string,uint64,uint8,uint64)"];
+    const args = [
       overrides.evalCid ?? EVAL_CID,
       overrides.classId ?? CLASS_ID,
       overrides.threshold ?? THRESHOLD,
       deadline,
+    ];
+    if (overrides.targetHunter != null) args.push(overrides.targetHunter);
+    const tx = await createFn(
+      ...args,
       { value: overrides.value ?? BOUNTY_WEI }
     );
     const receipt = await tx.wait();
@@ -180,7 +187,7 @@ describe("BountyEscrow", function () {
       await expect(
         bountyEscrow
           .connect(creator)
-          .createBounty(EVAL_CID, CLASS_ID, THRESHOLD, deadline, {
+          ["createBounty(string,uint64,uint8,uint64)"](EVAL_CID, CLASS_ID, THRESHOLD, deadline, {
             value: BOUNTY_WEI,
           })
       )
@@ -212,7 +219,7 @@ describe("BountyEscrow", function () {
       await expect(
         bountyEscrow
           .connect(creator)
-          .createBounty(EVAL_CID, CLASS_ID, THRESHOLD, deadline, { value: 0 })
+          ["createBounty(string,uint64,uint8,uint64)"](EVAL_CID, CLASS_ID, THRESHOLD, deadline, { value: 0 })
       ).to.be.revertedWith("no ETH");
     });
 
@@ -225,7 +232,7 @@ describe("BountyEscrow", function () {
       await expect(
         bountyEscrow
           .connect(creator)
-          .createBounty("", CLASS_ID, THRESHOLD, deadline, { value: BOUNTY_WEI })
+          ["createBounty(string,uint64,uint8,uint64)"]("", CLASS_ID, THRESHOLD, deadline, { value: BOUNTY_WEI })
       ).to.be.revertedWith("empty evaluationCid");
     });
 
@@ -238,7 +245,7 @@ describe("BountyEscrow", function () {
       await expect(
         bountyEscrow
           .connect(creator)
-          .createBounty(EVAL_CID, CLASS_ID, 101, deadline, { value: BOUNTY_WEI })
+          ["createBounty(string,uint64,uint8,uint64)"](EVAL_CID, CLASS_ID, 101, deadline, { value: BOUNTY_WEI })
       ).to.be.revertedWith("bad threshold");
     });
 
@@ -251,7 +258,7 @@ describe("BountyEscrow", function () {
       await expect(
         bountyEscrow
           .connect(creator)
-          .createBounty(EVAL_CID, CLASS_ID, THRESHOLD, pastDeadline, {
+          ["createBounty(string,uint64,uint8,uint64)"](EVAL_CID, CLASS_ID, THRESHOLD, pastDeadline, {
             value: BOUNTY_WEI,
           })
       ).to.be.revertedWith("deadline in past");
@@ -1078,6 +1085,92 @@ describe("BountyEscrow", function () {
       const subAfter = await bountyEscrow.getSubmission(bountyId, submissionId);
       expect(subAfter.finalizedAt).to.be.gt(0);
       expect(subAfter.finalizedAt).to.be.gte(subAfter.submittedAt);
+    });
+  });
+
+  // =========================================================================
+  describe("Targeted Bounties", function () {
+    it("Should create a targeted bounty with targetHunter set", async function () {
+      const { bountyEscrow, creator, hunter } = await loadFixture(
+        deployBountyEscrowFixture
+      );
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
+        targetHunter: hunter.address,
+      });
+
+      const bounty = await bountyEscrow.getBounty(bountyId);
+      expect(bounty.targetHunter).to.equal(hunter.address);
+    });
+
+    it("Should create an open bounty with targetHunter = address(0)", async function () {
+      const { bountyEscrow, creator } = await loadFixture(
+        deployBountyEscrowFixture
+      );
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+
+      const bounty = await bountyEscrow.getBounty(bountyId);
+      expect(bounty.targetHunter).to.equal(ethers.ZeroAddress);
+    });
+
+    it("Should allow targeted hunter to submit", async function () {
+      const { bountyEscrow, creator, hunter } = await loadFixture(
+        deployBountyEscrowFixture
+      );
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
+        targetHunter: hunter.address,
+      });
+
+      const { submissionId } = await prepareDefaultSubmission(
+        bountyEscrow, hunter, bountyId
+      );
+      expect(submissionId).to.equal(0);
+    });
+
+    it("Should reject non-targeted hunter from submitting", async function () {
+      const { bountyEscrow, creator, hunter, hunter2 } = await loadFixture(
+        deployBountyEscrowFixture
+      );
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
+        targetHunter: hunter.address,
+      });
+
+      await expect(
+        prepareDefaultSubmission(bountyEscrow, hunter2, bountyId)
+      ).to.be.revertedWith("bounty is targeted");
+    });
+
+    it("Should allow full flow for targeted bounty: submit, evaluate, pay", async function () {
+      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
+        targetHunter: hunter.address,
+      });
+
+      const { submissionId, aggId } = await submitFull(
+        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+      );
+      await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+
+      await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+        .to.emit(bountyEscrow, "PayoutSent")
+        .withArgs(bountyId, hunter.address, BOUNTY_WEI);
+
+      const bounty = await bountyEscrow.getBounty(bountyId);
+      expect(bounty.status).to.equal(1); // Awarded
+      expect(bounty.winner).to.equal(hunter.address);
+    });
+
+    it("Should allow anyone to submit to open bounty (targetHunter = 0)", async function () {
+      const { bountyEscrow, creator, hunter, hunter2 } = await loadFixture(
+        deployBountyEscrowFixture
+      );
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+
+      // Both hunters can submit to an open bounty
+      await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+
+      expect(await bountyEscrow.submissionCount(bountyId)).to.equal(2);
     });
   });
 });

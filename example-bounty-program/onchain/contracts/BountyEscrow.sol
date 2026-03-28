@@ -35,6 +35,7 @@ contract BountyEscrow {
         BountyStatus status;
         address winner;
         uint256 submissions;        // count
+        address targetHunter;       // address(0) = open to all, otherwise only this address can submit
     }
 
     struct Submission {
@@ -124,13 +125,35 @@ contract BountyEscrow {
 
     // ------------- Bounty lifecycle -------------
 
-    /// @notice Create a new bounty with ETH escrow
+    /// @notice Create a new open bounty with ETH escrow (anyone can submit)
     function createBounty(
         string calldata evaluationCid,
         uint64  requestedClass,
         uint8   threshold,
         uint64  submissionDeadline
     ) external payable returns (uint256 bountyId) {
+        return _createBounty(evaluationCid, requestedClass, threshold, submissionDeadline, address(0));
+    }
+
+    /// @notice Create a targeted bounty with ETH escrow (only targetHunter can submit)
+    /// @param targetHunter The only address allowed to submit; address(0) = open to all
+    function createBounty(
+        string calldata evaluationCid,
+        uint64  requestedClass,
+        uint8   threshold,
+        uint64  submissionDeadline,
+        address targetHunter
+    ) external payable returns (uint256 bountyId) {
+        return _createBounty(evaluationCid, requestedClass, threshold, submissionDeadline, targetHunter);
+    }
+
+    function _createBounty(
+        string calldata evaluationCid,
+        uint64  requestedClass,
+        uint8   threshold,
+        uint64  submissionDeadline,
+        address targetHunter
+    ) internal returns (uint256 bountyId) {
         require(msg.value > 0, "no ETH");
         require(bytes(evaluationCid).length > 0, "empty evaluationCid");
         require(threshold <= 100, "bad threshold");
@@ -146,17 +169,18 @@ contract BountyEscrow {
             submissionDeadline: submissionDeadline,
             status: BountyStatus.Open,
             winner: address(0),
-            submissions: 0
+            submissions: 0,
+            targetHunter: targetHunter
         }));
 
         bountyId = bounties.length - 1;
         emit BountyCreated(
-            bountyId, 
-            msg.sender, 
-            evaluationCid, 
-            requestedClass, 
-            threshold, 
-            msg.value, 
+            bountyId,
+            msg.sender,
+            evaluationCid,
+            requestedClass,
+            threshold,
+            msg.value,
             submissionDeadline
         );
     }
@@ -216,6 +240,9 @@ contract BountyEscrow {
         Bounty storage b = _mustBounty(bountyId);
         require(b.status == BountyStatus.Open, "bounty not open");
         require(block.timestamp < b.submissionDeadline, "deadline passed");
+        if (b.targetHunter != address(0)) {
+            require(msg.sender == b.targetHunter, "bounty is targeted");
+        }
         require(bytes(evaluationCid).length > 0, "empty evaluationCid");
         require(bytes(hunterCid).length > 0, "empty hunterCid");
         

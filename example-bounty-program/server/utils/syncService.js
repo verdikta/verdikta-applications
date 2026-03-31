@@ -360,28 +360,27 @@ class SyncService {
     // Phase C: Hot polling — check oracle results for pending submissions
     await this._pollHotBounties(storage, currentContract, contractService);
 
-    // Phase D: bountyCount check (1 RPC call)
+    // Phase D: bountyCount check — fill any gaps from 0 to bountyCount
     const bountyCount = await contractService.getBountyCount();
-    if (bountyCount > (syncState.lastKnownBountyCount || 0)) {
-      const oldCount = syncState.lastKnownBountyCount || 0;
-      logger.info('[sync] New bounties detected via count check', {
-        oldCount,
-        newCount: bountyCount
-      });
-      for (let id = oldCount; id < bountyCount; id++) {
-        const existing = storage.jobs.find(j =>
-          j.jobId === id &&
-          (j.contractAddress || '').toLowerCase() === currentContract
-        );
-        if (!existing) {
-          try {
-            const bounty = await contractService.getBounty(id);
-            await this.addJobFromBlockchain(bounty, storage, currentContract);
-          } catch (err) {
-            logger.warn('[sync] Failed to fetch new bounty', { id, error: err.message });
-          }
+    const knownIds = new Set(
+      storage.jobs
+        .filter(j => (j.contractAddress || '').toLowerCase() === currentContract && j.syncedFromBlockchain)
+        .map(j => j.jobId)
+    );
+    let gapFilled = 0;
+    for (let id = 0; id < bountyCount; id++) {
+      if (!knownIds.has(id)) {
+        try {
+          const bounty = await contractService.getBounty(id);
+          await this.addJobFromBlockchain(bounty, storage, currentContract);
+          gapFilled++;
+        } catch (err) {
+          logger.warn('[sync] Failed to fetch bounty gap', { id, error: err.message });
         }
       }
+    }
+    if (gapFilled > 0) {
+      logger.info('[sync] Filled gaps from bountyCount check', { gapFilled, bountyCount });
     }
 
     // Phase E: Persist
@@ -999,15 +998,19 @@ class SyncService {
     const patchPreserveFields = ['txHash', 'blockNumber', 'onChain', 'contractAddress'];
 
     for (const modifiedJob of modifiedStorage.jobs) {
-      let freshJob = freshStorage.jobs.find(j => j.jobId === modifiedJob.jobId);
+      const modifiedContract = (modifiedJob.contractAddress || '').toLowerCase();
+      let freshJob = freshStorage.jobs.find(j =>
+        j.jobId === modifiedJob.jobId &&
+        (j.contractAddress || '').toLowerCase() === modifiedContract
+      );
 
-      // If no match by jobId, try matching by evaluationCid — covers the case where
+      // If no match by jobId+contract, try matching by evaluationCid — covers the case where
       // sync linked a pending job (changed its jobId from null to the on-chain ID)
       // but freshStorage still has the old null-id entry.
       if (!freshJob && modifiedJob.evaluationCid) {
         freshJob = freshStorage.jobs.find(j =>
           j.evaluationCid === modifiedJob.evaluationCid &&
-          (j.contractAddress || '').toLowerCase() === (modifiedJob.contractAddress || '').toLowerCase()
+          (j.contractAddress || '').toLowerCase() === modifiedContract
         );
       }
 

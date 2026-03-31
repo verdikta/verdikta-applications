@@ -50,7 +50,7 @@ start_network() {
 
     # Start the client with the appropriate mode and port
     echo "Starting client ($net) on port $port..."
-    nohup npm run dev -- --mode "$net" --port "$port" --host 0.0.0.0 > "$log_file" 2>&1 &
+    VITE_NETWORK="$net" nohup npm run dev -- --port "$port" --host 0.0.0.0 > "$log_file" 2>&1 &
     echo $! > "$pid_file"
     sleep 2
 

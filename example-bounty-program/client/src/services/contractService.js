@@ -27,6 +27,7 @@ const BOUNTY_ESCROW_ABI = [
 
   // Write Functions
   "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline) payable returns (uint256)",
+  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)",
   "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
@@ -37,7 +38,7 @@ const BOUNTY_ESCROW_ABI = [
   "function getEffectiveBountyStatus(uint256) view returns (string)",
   "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))",
   "function bountyCount() view returns (uint256)",
-  "function getBounty(uint256) view returns (address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256)",
+  "function getBounty(uint256) view returns (address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256,address)",
   "function verdikta() view returns (address)"
 ];
 
@@ -245,7 +246,7 @@ class ContractService {
   /**
    * Create a bounty on-chain via MetaMask
    */
-  async createBounty({ evaluationCid, classId, threshold, bountyAmountEth, submissionWindowHours }) {
+  async createBounty({ evaluationCid, classId, threshold, bountyAmountEth, submissionWindowHours, targetHunter }) {
     if (!this.contract) throw new Error('Contract not initialized. Call connect() first.');
 
     // Quick UI validations
@@ -279,15 +280,18 @@ class ContractService {
         valueWei: valueWei.toString()
       });
 
+      // Select the correct overload
+      const createFn = targetHunter
+        ? this.contract['createBounty(string,uint64,uint8,uint64,address)']
+        : this.contract['createBounty(string,uint64,uint8,uint64)'];
+
+      const args = targetHunter
+        ? [evaluationCid, classId64, thresh8, submissionDeadline, targetHunter, { value: valueWei }]
+        : [evaluationCid, classId64, thresh8, submissionDeadline, { value: valueWei }];
+
       // Dry-run to surface revert reasons
       try {
-        await this.contract.createBounty.staticCall(
-          evaluationCid,
-          classId64,
-          thresh8,
-          submissionDeadline,
-          { value: valueWei }
-        );
+        await createFn.staticCall(...args);
       } catch (e) {
         const decoded = this._decodeRevertReason(e, [this.contract]);
         const msg = (decoded || e?.message || '').toLowerCase();
@@ -299,13 +303,7 @@ class ContractService {
       }
 
       // Send the tx
-      const tx = await this.contract.createBounty(
-        evaluationCid,
-        classId64,
-        thresh8,
-        submissionDeadline,
-        { value: valueWei }
-      );
+      const tx = await createFn(...args);
       console.log('📤 Transaction sent:', tx.hash);
 
       const receipt = await tx.wait();

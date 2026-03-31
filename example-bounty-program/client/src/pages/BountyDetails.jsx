@@ -1766,6 +1766,7 @@ function BountyDetails({ walletState }) {
         <div className="header-content">
           <h1>{job?.title || `Job #${bountyId}`}</h1>
           <span {...getBountyBadgeProps(status)}>{getBountyStatusLabel(status)}</span>
+          {job?.targetHunter && <span className="badge-targeted">Targeted</span>}
           {job?.workProductType && <span className="work-type-badge">{job.workProductType}</span>}
         </div>
         <div className="bounty-stats">
@@ -1803,6 +1804,24 @@ function BountyDetails({ walletState }) {
           </div>
         </div>
       </div>
+
+      {/* Targeted Bounty Notice */}
+      {job?.targetHunter && (
+        <section className="targeted-notice">
+          <div className="targeted-notice-content">
+            {walletState.isConnected && walletState.address?.toLowerCase() === job.targetHunter.toLowerCase() ? (
+              <p><strong>This bounty is targeted to you.</strong> Only your wallet can submit work.</p>
+            ) : (
+              <p>
+                <strong>This bounty is targeted to a specific address.</strong>{' '}
+                Only <a href={`${currentNetwork.explorer}/address/${job.targetHunter}`} target="_blank" rel="noopener noreferrer">
+                  <code>{job.targetHunter.slice(0, 8)}...{job.targetHunter.slice(-6)}</code>
+                </a> can submit work.
+              </p>
+            )}
+          </div>
+        </section>
+      )}
 
       {/* Description Section */}
       {job?.description && (

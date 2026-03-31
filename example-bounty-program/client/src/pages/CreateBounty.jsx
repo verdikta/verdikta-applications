@@ -64,6 +64,7 @@ function CreateBounty({ walletState }) {
     payoutAmount: '0.001',
     ethPriceUSD: 0,
     submissionWindowHours: 1, // Default, for development, to 1 hour.
+    targetHunter: '',
     deliverableRequirements: {
       format: ['markdown', 'pdf']
     }
@@ -503,6 +504,9 @@ function CreateBounty({ walletState }) {
     const validation = validateWeights();
     if (!validation.valid) { toast.warning(`Invalid rubric weights: ${validation.message}`); return; }
     if (juryNodes.length === 0) { toast.warning('Please add at least one jury node'); return; }
+    if (formData.targetHunter && !/^0x[a-fA-F0-9]{40}$/.test(formData.targetHunter)) {
+      toast.warning('Target address must be a valid Ethereum address (0x...)'); return;
+    }
 
     const juryValidation = validateJuryWeights();
     if (!juryValidation.valid) { toast.warning(`Invalid jury weights: ${juryValidation.message}`); return; }
@@ -541,6 +545,7 @@ function CreateBounty({ walletState }) {
         })),
         iterations,
         submissionWindowHours: parseInt(formData.submissionWindowHours, 10),
+        ...(formData.targetHunter ? { targetHunter: formData.targetHunter } : {}),
       });
 
       if (!apiResponse?.success) {
@@ -562,6 +567,7 @@ function CreateBounty({ walletState }) {
         threshold,
         bountyAmountEth: parseFloat(formData.payoutAmount),
         submissionWindowHours: parseInt(formData.submissionWindowHours, 10),
+        ...(formData.targetHunter ? { targetHunter: formData.targetHunter } : {}),
       });
 
       if (!contractResult?.success || contractResult?.bountyId == null) {
@@ -727,6 +733,26 @@ function CreateBounty({ walletState }) {
                       {formData.submissionWindowHours % 24} hours 
                     </>
                   )}
+                </small>
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label htmlFor="targetHunter">
+                  Target Address (optional)
+                </label>
+                <input
+                  type="text"
+                  id="targetHunter"
+                  value={formData.targetHunter}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, targetHunter: e.target.value.trim() }))}
+                  placeholder="0x... (leave empty for open bounty)"
+                />
+                <small className="helper-text">
+                  {formData.targetHunter
+                    ? 'Targeted: only this address can submit'
+                    : 'Open to all: anyone can submit'}
                 </small>
               </div>
             </div>

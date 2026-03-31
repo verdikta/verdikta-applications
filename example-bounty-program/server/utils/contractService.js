@@ -14,7 +14,7 @@ const logger = require('./logger');
 const BOUNTY_ESCROW_ABI = [
   // Functions
   "function bountyCount() view returns (uint256)",
-  "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions))",
+  "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter))",
   "function getEffectiveBountyStatus(uint256 bountyId) view returns (string)",
   "function isAcceptingSubmissions(uint256 bountyId) view returns (bool)",
   "function canBeClosed(uint256 bountyId) view returns (bool)",
@@ -356,6 +356,7 @@ class ContractService {
         status: effectiveStatus,
         winner: bounty.winner === ethers.ZeroAddress ? null : bounty.winner,
         submissionCount: Number(bounty.submissions),
+        targetHunter: bounty.targetHunter === ethers.ZeroAddress ? null : bounty.targetHunter,
         isAcceptingSubmissions: isAccepting,
         canBeClosed: canClose,
         syncedFromBlockchain: true,
@@ -395,6 +396,7 @@ class ContractService {
         status: effectiveStatus,
         winner: bounty.winner === ethers.ZeroAddress ? null : bounty.winner,
         submissionCount: Number(bounty.submissions),
+        targetHunter: bounty.targetHunter === ethers.ZeroAddress ? null : bounty.targetHunter,
         isAcceptingSubmissions: isAccepting,
         canBeClosed: canClose,
         syncedFromBlockchain: true,

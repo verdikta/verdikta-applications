@@ -536,6 +536,11 @@ function JobCard({ job }) {
             <span {...getBountyBadgeProps(hasAcceptedPendingClaim ? 'AWARDED' : status)}>
               {hasAcceptedPendingClaim ? 'Accepted' : getBountyStatusLabel(status)}
             </span>
+            {job.targetHunter && (
+              <span className="badge badge-targeted" title={`Targeted to ${job.targetHunter}`}>
+                Targeted
+              </span>
+            )}
             <div className="validate-row">
               {/* Validation status indicator - next to validate button */}
               {validationResult ? (

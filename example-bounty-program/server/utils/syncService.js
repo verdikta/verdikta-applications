@@ -843,6 +843,7 @@ class SyncService {
       submissionCount: bounty.submissionCount,
       submissions: [],
       winner: bounty.winner,
+      targetHunter: bounty.targetHunter || null,
       onChain: true,
       syncedFromBlockchain: true,
       lastSyncedAt: Math.floor(Date.now() / 1000),

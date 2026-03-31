@@ -36,6 +36,37 @@
   color: white;
 }
 
+.badge-targeted {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background-color: #7c3aed;
+  color: white;
+}
+
+.targeted-notice {
+  background-color: #f5f3ff;
+  border: 1px solid #7c3aed;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.targeted-notice p {
+  margin: 0;
+  color: #4c1d95;
+  font-size: 0.9rem;
+}
+
+.targeted-notice code {
+  font-size: 0.85rem;
+  background-color: #ede9fe;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
 .status-badge.status-unknown {
   background-color: #e5e7eb;
   color: #374151;

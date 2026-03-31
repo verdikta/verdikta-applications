@@ -119,7 +119,8 @@ router.post('/create', async (req, res) => {
       classId = 128,
       juryNodes = [],
       iterations = 1,
-      submissionWindowHours = 24
+      submissionWindowHours = 24,
+      targetHunter
     } = req.body || {};
 
     // ---- Validate commons ----
@@ -128,6 +129,9 @@ router.post('/create', async (req, res) => {
     }
     if (!/^0x[a-fA-F0-9]{40}$/.test(creator)) {
       return res.status(400).json({ error: 'Invalid creator address', details: 'Must be a valid Ethereum address' });
+    }
+    if (targetHunter && !/^0x[a-fA-F0-9]{40}$/.test(targetHunter)) {
+      return res.status(400).json({ error: 'Invalid targetHunter address', details: 'Must be a valid Ethereum address' });
     }
     if (!Number.isFinite(Number(bountyAmount)) || Number(bountyAmount) <= 0) {
       return res.status(400).json({ error: 'Invalid bountyAmount', details: 'Must be a positive number' });
@@ -332,7 +336,8 @@ router.post('/create', async (req, res) => {
       juryNodes,
       iterations: Number(iterations),
       submissionOpenTime,
-      submissionCloseTime
+      submissionCloseTime,
+      targetHunter: targetHunter || null
     });
 
     logger.info('[jobs/create] job created', { jobId: job.jobId });
@@ -1696,6 +1701,7 @@ router.get('/', async (req, res) => {
         createdAt: job.createdAt,
         creator: job.creator, // Bounty creator address
         winner: job.winner,
+        targetHunter: job.targetHunter || null,
         contractAddress: job.contractAddress, // Include for debugging
         validationStatus: validationInfo, // Include validation info if available
         submissions: job.submissions // Include for pending evaluation check

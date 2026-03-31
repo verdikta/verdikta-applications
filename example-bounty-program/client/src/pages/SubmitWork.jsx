@@ -296,6 +296,12 @@ function SubmitWork({ walletState }) {
       return;
     }
 
+    // Check if targeted bounty and connected wallet doesn't match
+    if (job?.targetHunter && walletState.address?.toLowerCase() !== job.targetHunter.toLowerCase()) {
+      toast.warning('This bounty is targeted to a specific address. Only that address can submit.');
+      return;
+    }
+
     try {
       setLoading(true);
       setError(null);
@@ -483,10 +489,12 @@ function SubmitWork({ walletState }) {
         errorMessage = '🚫 Transaction cancelled by user';
       } else if (errorMessage.includes('LINK approval rejected')) {
         errorMessage = '🚫 LINK approval was cancelled';
+      } else if (errorMessage.includes('bounty is targeted')) {
+        errorMessage = 'This bounty is restricted to a specific address. Only the targeted wallet can submit.';
       } else if (errorMessage.includes('deadline passed')) {
-        errorMessage = '⏰ Submission deadline has passed';
+        errorMessage = 'Submission deadline has passed';
       } else if (errorMessage.includes('not open')) {
-        errorMessage = '🔒 Bounty is not accepting submissions';
+        errorMessage = 'Bounty is not accepting submissions';
       } else if (errorMessage.includes('insufficient allowance')) {
         errorMessage = '⚠️ LINK approval issue. The approval transaction succeeded but the state was not visible on-chain in time. Please try again.';
       } else if (errorMessage.includes('Could not initialize LINK contract')) {
@@ -529,6 +537,32 @@ function SubmitWork({ walletState }) {
           <h2>Wallet Not Connected</h2>
           <p>Please connect your wallet to submit work.</p>
           <button onClick={() => navigate(`/bounty/${bountyId}`)} className="btn btn-secondary">
+            Back to Bounty
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Check if targeted bounty and user is not the target
+  if (job && job.targetHunter && walletState.isConnected &&
+      walletState.address?.toLowerCase() !== job.targetHunter.toLowerCase()) {
+    return (
+      <div className="submit-work">
+        <div className="alert alert-warning">
+          <h2>Targeted Bounty</h2>
+          <p>This bounty is targeted to a specific address. Only that wallet can submit work.</p>
+          <p style={{ marginTop: '0.5rem' }}>
+            <strong>Target:</strong> <code>{job.targetHunter}</code>
+          </p>
+          <p style={{ marginTop: '0.25rem' }}>
+            <strong>Your wallet:</strong> <code>{walletState.address}</code>
+          </p>
+          <button
+            onClick={() => navigate(`/bounty/${bountyId}`)}
+            className="btn btn-primary"
+            style={{ marginTop: '1rem' }}
+          >
             Back to Bounty
           </button>
         </div>

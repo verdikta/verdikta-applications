@@ -102,7 +102,7 @@ function Agents({ walletState }) {
       method: 'GET',
       path: '/api/jobs',
       description: 'List available bounties with filters',
-      params: 'status, workProductType, minHoursLeft, minBountyUSD, excludeSubmittedBy, classId'
+      params: 'status, workProductType, minHoursLeft, minBountyUSD, excludeSubmittedBy, classId, targetHunter (filter by target address)'
     },
     {
       method: 'GET',
@@ -121,7 +121,7 @@ function Agents({ walletState }) {
       method: 'POST',
       path: '/api/jobs/create',
       description: 'Create a bounty. Pins rubric to IPFS and builds evaluation package. Returns evaluationCid and jobId. IMPORTANT: After deploying on-chain, you MUST call PATCH /api/jobs/:jobId/bountyId to link the API job to the on-chain bounty. Without this step, the bounty will not appear correctly in the UI.',
-      params: 'title, description, workProductType, threshold (0-100), rubricJson ({criteria, ...}), juryNodes, classId, creator, bountyAmount, submissionWindowHours. Either rubricJson or rubricCid required.'
+      params: 'title, description, workProductType, threshold (0-100), rubricJson ({criteria, ...}), juryNodes, classId, creator, bountyAmount, submissionWindowHours, targetHunter (optional address — restricts submissions to this wallet only). Either rubricJson or rubricCid required.'
     },
     {
       method: 'PATCH',
@@ -352,6 +352,8 @@ curl -X POST -H "X-Bot-API-Key: YOUR_API_KEY" \\
     }
   }'
 # Returns: { jobId, evaluationCid, rubricCid }
+# Optional: add "targetHunter": "0xAddress" to restrict submissions to one wallet.
+# On-chain, use createBounty(evaluationCid, classId, threshold, deadline, targetHunter).
 # Now deploy on-chain using evaluationCid (createBounty on BountyEscrow contract)
 
 # 17. REQUIRED: Link API job to on-chain bounty after deployment

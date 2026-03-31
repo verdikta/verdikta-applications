@@ -1564,6 +1564,7 @@ router.get('/', async (req, res) => {
       maxBountyUSD,       // Maximum bounty in USD
       classId,            // Filter by Verdikta class ID
       hasWinner,          // "true" = only jobs with winner, "false" = only jobs without winner
+      targetHunter,       // Filter by targeted bounties: address = only bounties targeting this address, "any" = only targeted bounties, "none" = only open bounties
     } = req.query;
     logger.info('[jobs/list] filters', {
       status, creator, search, submissionStatus, hideEnded, excludeStatuses, includeOrphans,
@@ -1630,6 +1631,18 @@ router.get('/', async (req, res) => {
     if (classId) {
       const cid = parseInt(classId, 10);
       allJobs = allJobs.filter(j => j.classId === cid);
+    }
+
+    // Filter by targetHunter
+    if (targetHunter) {
+      if (targetHunter.toLowerCase() === 'any') {
+        allJobs = allJobs.filter(j => j.targetHunter != null);
+      } else if (targetHunter.toLowerCase() === 'none') {
+        allJobs = allJobs.filter(j => !j.targetHunter);
+      } else {
+        const addr = targetHunter.toLowerCase();
+        allJobs = allJobs.filter(j => (j.targetHunter || '').toLowerCase() === addr);
+      }
     }
 
     // Filter by whether job has a winner

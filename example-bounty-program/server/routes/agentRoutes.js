@@ -51,6 +51,7 @@ Header: X-Bot-API-Key: <your-key>
 
 ## List Open Bounties
 GET /api/jobs?status=OPEN
+Filter targeted bounties: ?targetHunter=0x... (for you), ?targetHunter=none (open only), ?targetHunter=any (targeted only)
 
 ## View Bounty Details
 GET /api/jobs/:id
@@ -130,6 +131,7 @@ router.get('/api/docs', (req, res) => {
           'classId=N (Verdikta class ID)',
           'excludeSubmittedBy=0x... (hide jobs you already submitted to)',
           'hasWinner=true|false',
+          'targetHunter=0x...|any|none (filter by targeted bounties)',
           'search=keyword',
           'limit=50 (default)',
           'offset=0 (default)'

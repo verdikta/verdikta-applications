@@ -16,6 +16,7 @@ import Skills from './pages/Skills';
 import Blockchain from './pages/Blockchain';
 import AggHistory from './pages/AggHistory';
 import EvaluationDetails from './pages/EvaluationDetails';
+import ClassDetails from './pages/ClassDetails';
 import ScrollToTop from './components/ScrollToTop';
 import './App.css';
 
@@ -108,6 +109,7 @@ function AppContent() {
           <Route path="/blockchain" element={<Blockchain />} />
           <Route path="/bounty/:bountyId/evaluation" element={<EvaluationDetails />} />
           <Route path="/agg-history/:aggId" element={<AggHistory />} />
+          <Route path="/class/:classId" element={<ClassDetails />} />
         </Routes>
       </main>
       </div>

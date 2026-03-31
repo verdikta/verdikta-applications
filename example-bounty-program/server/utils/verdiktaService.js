@@ -363,7 +363,8 @@ class VerdiktaService {
               totalCallCount: 0,
               qualityScores: [],
               timelinessScores: [],
-              operatorAddresses: new Set()
+              operatorAddresses: new Set(),
+              arbiterList: []
             };
           }
 
@@ -371,6 +372,10 @@ class VerdiktaService {
           // Track unique operator contract addresses
           if (oracle.oracle) {
             byClass[classId].operatorAddresses.add(oracle.oracle.toLowerCase());
+            byClass[classId].arbiterList.push({
+              address: oracle.oracle,
+              jobId: oracle.jobId
+            });
           }
 
           // Determine arbiter status - "new" if called fewer than 3 times

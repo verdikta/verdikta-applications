@@ -5,6 +5,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   BarChart3,
   RefreshCw,
@@ -101,6 +102,7 @@ const SUBMISSION_STATUS_DESCRIPTIONS = {
 };
 
 function Analytics() {
+  const navigate = useNavigate();
   const toast = useToast();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -438,7 +440,14 @@ function Analytics() {
                     {Object.values(data.arbiters.byClass).map((cls) => (
                       <tr key={cls.classId}>
                         <td>
-                          <strong>{formatClassLabel(cls)}</strong>
+                          <a
+                            href={`/class/${cls.classId}`}
+                            onClick={(e) => { e.preventDefault(); navigate(`/class/${cls.classId}`); }}
+                            title={`${cls.operatorList?.length ?? 0} distinct address${(cls.operatorList?.length ?? 0) !== 1 ? 'es' : ''} — click for details`}
+                            style={{ color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}
+                          >
+                            <strong>{formatClassLabel(cls)}</strong>
+                          </a>
                         </td>
                         <td
                           title={cls.operatorList?.length > 0 ? cls.operatorList.join('\n') : 'No operators'}

@@ -168,7 +168,11 @@ async function getJob(jobId) {
     if (normalizeJobs(storage.jobs)) {
       await writeStorage(storage);
     }
-    const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
+    const id = parseInt(jobId);
+    const currentContract = getCurrentContractAddress();
+    // Prefer the job on the current contract when there are duplicates
+    const job = storage.jobs.find(j => j.jobId === id && (j.contractAddress || '').toLowerCase() === currentContract)
+             || storage.jobs.find(j => j.jobId === id);
 
     if (!job) {
       throw new Error(`Job ${jobId} not found`);

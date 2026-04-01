@@ -24,19 +24,26 @@ function ClassDetails() {
       setLoading(true);
       setError(null);
       try {
-        const [classRes, analyticsRes] = await Promise.all([
+        const [classRes, analyticsRes] = await Promise.allSettled([
           apiService.getClass(classId),
           apiService.getAnalyticsOverview()
         ]);
 
-        if (classRes?.success) {
-          setClassInfo(classRes.class);
+        if (classRes.status === 'fulfilled' && classRes.value?.success) {
+          setClassInfo(classRes.value.class);
         }
 
         // Extract arbiter list for this class from analytics data
-        const byClass = analyticsRes?.arbiters?.byClass;
-        if (byClass?.[classId]?.arbiterList) {
-          setArbiters(byClass[classId].arbiterList);
+        if (analyticsRes.status === 'fulfilled') {
+          const byClass = analyticsRes.value?.data?.arbiters?.byClass;
+          if (byClass?.[classId]?.arbiterList) {
+            setArbiters(byClass[classId].arbiterList);
+          }
+        }
+
+        // Only error if both failed
+        if (classRes.status === 'rejected' && analyticsRes.status === 'rejected') {
+          throw new Error('Failed to load class details');
         }
       } catch (err) {
         setError(err.message || 'Failed to load class details');
@@ -113,20 +120,31 @@ function ClassDetails() {
               </tr>
             </thead>
             <tbody>
-              {arbiters.map((arb, i) => (
-                <tr key={i}>
-                  <td>
-                    <a
-                      href={`${networkConfig.explorer}/address/${arb.address}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      <code>{arb.address}</code>
-                    </a>
-                  </td>
-                  <td><code>{arb.jobId}</code></td>
-                </tr>
-              ))}
+              {(() => {
+                // Only sort if not already grouped by address
+                const isGrouped = arbiters.every((arb, i) =>
+                  i === 0 || arb.address.toLowerCase() === arbiters[i - 1].address.toLowerCase() ||
+                  !arbiters.slice(0, i - 1).some(a => a.address.toLowerCase() === arb.address.toLowerCase())
+                );
+                return isGrouped ? arbiters : [...arbiters].sort((a, b) => a.address.toLowerCase().localeCompare(b.address.toLowerCase()));
+              })().map((arb, i, sorted) => {
+                const prevAddr = i > 0 ? sorted[i - 1].address.toLowerCase() : null;
+                const isGroupStart = arb.address.toLowerCase() !== prevAddr;
+                return (
+                  <tr key={i} className={isGroupStart && i > 0 ? 'group-start' : ''}>
+                    <td>
+                      <a
+                        href={`${networkConfig.explorer}/address/${arb.address}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <code>{arb.address}</code>
+                      </a>
+                    </td>
+                    <td><code>{arb.jobId}</code></td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         ) : (

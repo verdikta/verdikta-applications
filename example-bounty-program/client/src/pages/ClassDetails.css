@@ -100,6 +100,10 @@
   text-decoration: underline;
 }
 
+.class-table tr.group-start td {
+  border-top: 2px solid #9ca3af;
+}
+
 .loading-state,
 .error-state,
 .empty-state {

@@ -1562,11 +1562,11 @@ function BountyDetails({ walletState }) {
   };
 
   const hasActiveSubmissions = submissions.some(s =>
-    isActivelyPending(s.status)
+    isActivelyPending(s.status) || isActivelyPending(s.onChainStatus)
   );
 
   const pendingSubmissions = submissions.filter(s =>
-    isActivelyPending(s.status)
+    isActivelyPending(s.status) || isActivelyPending(s.onChainStatus)
   );
 
   const onChainIdForButtons = getOnChainBountyId();
@@ -2244,8 +2244,8 @@ function PendingSubmissionsPanel({
       </p>
       {pendingSubmissions.map(s => {
         const ageMinutes = getSubmissionAge(s.submittedAt);
-        const isOnChain = isSubmissionOnChain(s.status);
-        const isPrepared = s.status === 'Prepared' || s.status === 'PREPARED';
+        const isOnChain = isSubmissionOnChain(s.status) || isSubmissionOnChain(s.onChainStatus);
+        const isPrepared = (s.status === 'Prepared' || s.status === 'PREPARED') && !isSubmissionOnChain(s.onChainStatus);
         // Only allow timeout for on-chain submissions (not Prepared)
         const canTimeout = isOnChain && ageMinutes > timeoutMinutes;
         const isFailing = failingSubmissions.has(s.submissionId);

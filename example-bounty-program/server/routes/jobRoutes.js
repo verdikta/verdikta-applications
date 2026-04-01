@@ -2433,15 +2433,10 @@ router.post('/:jobId/submit/dry-run', async (req, res) => {
         }
       }
 
-      // ---- 7. hunter_not_creator ----
+      // ---- 7. hunter_not_creator (warning only, not enforced) ----
       if (job && hunter && /^0x[a-fA-F0-9]{40}$/.test(hunter)) {
         if (job.creator && hunter.toLowerCase() === job.creator.toLowerCase()) {
-          checks.push({ name: 'hunter_not_creator', passed: false, details: 'Hunter address matches the bounty creator' });
-          errors.push({
-            code: 'SUBMISSION_HUNTER_IS_CREATOR',
-            message: 'Cannot submit to your own bounty',
-            fix: 'Use a different wallet address or submit to a different bounty'
-          });
+          checks.push({ name: 'hunter_not_creator', passed: true, details: 'Hunter address matches the bounty creator (allowed)' });
         } else {
           checks.push({ name: 'hunter_not_creator', passed: true, details: 'Hunter is not the bounty creator' });
         }

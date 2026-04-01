@@ -374,7 +374,8 @@ class VerdiktaService {
             byClass[classId].operatorAddresses.add(oracle.oracle.toLowerCase());
             byClass[classId].arbiterList.push({
               address: oracle.oracle,
-              jobId: oracle.jobId
+              jobId: oracle.jobId,
+              classes: oracle.classes || [classId]
             });
           }
 

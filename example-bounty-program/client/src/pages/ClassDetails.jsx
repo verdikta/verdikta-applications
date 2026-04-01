@@ -141,7 +141,11 @@ function ClassDetails() {
                         <code>{arb.address}</code>
                       </a>
                     </td>
-                    <td><code>{arb.jobId}</code></td>
+                    <td>
+                      <code title={arb.classes?.length ? `Capability Classes: ${arb.classes.join(', ')}` : ''}>
+                        {arb.jobId}
+                      </code>
+                    </td>
                   </tr>
                 );
               })}

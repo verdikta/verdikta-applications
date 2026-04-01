@@ -66,7 +66,7 @@ const CONFIG = {
 
 const BOUNTY_ESCROW_ABI = [
   'event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)',
-  'function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline) payable returns (uint256)',
+  'function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)',
   'function bountyCount() view returns (uint256)',
 ];
 
@@ -367,7 +367,7 @@ async function createBountyOnChain(contract, evaluationCid, classId, threshold, 
   const value = ethers.parseEther(amountEth.toString());
 
   console.log(`    Sending transaction...`);
-  const tx = await contract.createBounty(evaluationCid, classId, threshold, deadline, { value });
+  const tx = await contract.createBounty(evaluationCid, classId, threshold, deadline, ethers.ZeroAddress, { value });
 
   console.log(`    Tx hash: ${tx.hash}`);
   console.log(`    Waiting for confirmation...`);

@@ -54,16 +54,14 @@ describe("BountyEscrow", function () {
   // Helper: create a bounty and return its ID
   async function createDefaultBounty(bountyEscrow, creator, overrides = {}) {
     const deadline = overrides.deadline ?? (await time.latest()) + 86400; // +24h
-    const createFn = overrides.targetHunter != null
-      ? bountyEscrow.connect(creator)["createBounty(string,uint64,uint8,uint64,address)"]
-      : bountyEscrow.connect(creator)["createBounty(string,uint64,uint8,uint64)"];
+    const createFn = bountyEscrow.connect(creator)["createBounty(string,uint64,uint8,uint64,address)"];
     const args = [
       overrides.evalCid ?? EVAL_CID,
       overrides.classId ?? CLASS_ID,
       overrides.threshold ?? THRESHOLD,
       deadline,
+      overrides.targetHunter ?? ethers.ZeroAddress,
     ];
-    if (overrides.targetHunter != null) args.push(overrides.targetHunter);
     const tx = await createFn(
       ...args,
       { value: overrides.value ?? BOUNTY_WEI }
@@ -187,7 +185,7 @@ describe("BountyEscrow", function () {
       await expect(
         bountyEscrow
           .connect(creator)
-          ["createBounty(string,uint64,uint8,uint64)"](EVAL_CID, CLASS_ID, THRESHOLD, deadline, {
+          ["createBounty(string,uint64,uint8,uint64,address)"](EVAL_CID, CLASS_ID, THRESHOLD, deadline, ethers.ZeroAddress, {
             value: BOUNTY_WEI,
           })
       )
@@ -219,7 +217,7 @@ describe("BountyEscrow", function () {
       await expect(
         bountyEscrow
           .connect(creator)
-          ["createBounty(string,uint64,uint8,uint64)"](EVAL_CID, CLASS_ID, THRESHOLD, deadline, { value: 0 })
+          ["createBounty(string,uint64,uint8,uint64,address)"](EVAL_CID, CLASS_ID, THRESHOLD, deadline, ethers.ZeroAddress, { value: 0 })
       ).to.be.revertedWith("no ETH");
     });
 
@@ -232,7 +230,7 @@ describe("BountyEscrow", function () {
       await expect(
         bountyEscrow
           .connect(creator)
-          ["createBounty(string,uint64,uint8,uint64)"]("", CLASS_ID, THRESHOLD, deadline, { value: BOUNTY_WEI })
+          ["createBounty(string,uint64,uint8,uint64,address)"]("", CLASS_ID, THRESHOLD, deadline, ethers.ZeroAddress, { value: BOUNTY_WEI })
       ).to.be.revertedWith("empty evaluationCid");
     });
 
@@ -245,7 +243,7 @@ describe("BountyEscrow", function () {
       await expect(
         bountyEscrow
           .connect(creator)
-          ["createBounty(string,uint64,uint8,uint64)"](EVAL_CID, CLASS_ID, 101, deadline, { value: BOUNTY_WEI })
+          ["createBounty(string,uint64,uint8,uint64,address)"](EVAL_CID, CLASS_ID, 101, deadline, ethers.ZeroAddress, { value: BOUNTY_WEI })
       ).to.be.revertedWith("bad threshold");
     });
 
@@ -258,7 +256,7 @@ describe("BountyEscrow", function () {
       await expect(
         bountyEscrow
           .connect(creator)
-          ["createBounty(string,uint64,uint8,uint64)"](EVAL_CID, CLASS_ID, THRESHOLD, pastDeadline, {
+          ["createBounty(string,uint64,uint8,uint64,address)"](EVAL_CID, CLASS_ID, THRESHOLD, pastDeadline, ethers.ZeroAddress, {
             value: BOUNTY_WEI,
           })
       ).to.be.revertedWith("deadline in past");

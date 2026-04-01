@@ -26,7 +26,6 @@ const BOUNTY_ESCROW_ABI = [
   "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)",
 
   // Write Functions
-  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline) payable returns (uint256)",
   "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)",
   "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
@@ -280,18 +279,18 @@ class ContractService {
         valueWei: valueWei.toString()
       });
 
-      // Select the correct overload
-      const createFn = targetHunter
-        ? this.contract['createBounty(string,uint64,uint8,uint64,address)']
-        : this.contract['createBounty(string,uint64,uint8,uint64)'];
-
-      const args = targetHunter
-        ? [evaluationCid, classId64, thresh8, submissionDeadline, targetHunter, { value: valueWei }]
-        : [evaluationCid, classId64, thresh8, submissionDeadline, { value: valueWei }];
+      const args = [
+        evaluationCid,
+        classId64,
+        thresh8,
+        submissionDeadline,
+        targetHunter || '0x0000000000000000000000000000000000000000',
+        { value: valueWei }
+      ];
 
       // Dry-run to surface revert reasons
       try {
-        await createFn.staticCall(...args);
+        await this.contract.createBounty.staticCall(...args);
       } catch (e) {
         const decoded = this._decodeRevertReason(e, [this.contract]);
         const msg = (decoded || e?.message || '').toLowerCase();
@@ -303,7 +302,7 @@ class ContractService {
       }
 
       // Send the tx
-      const tx = await createFn(...args);
+      const tx = await this.contract.createBounty(...args);
       console.log('📤 Transaction sent:', tx.hash);
 
       const receipt = await tx.wait();

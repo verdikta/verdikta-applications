@@ -75,7 +75,7 @@ function Blockchain() {
   "event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amount)",
 
   // Write Functions
-  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline) payable returns (uint256)",
+  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)",
   "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256 submissionId, address evalWallet, uint256 linkMaxBudget)",
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
@@ -121,6 +121,7 @@ async function createBounty() {
     128n,                          // Class ID (uint64)
     70n,                           // Threshold 70% (uint8)
     BigInt(deadline),              // Deadline (uint64)
+    ethers.ZeroAddress,            // targetHunter (address(0) = open to all)
     { value: ethers.parseEther('0.1') }
   );
 
@@ -223,7 +224,8 @@ def create_bounty(evaluation_cid, class_id, threshold, hours_window, payout_eth)
         evaluation_cid,
         class_id,
         threshold,
-        deadline
+        deadline,
+        '0x0000000000000000000000000000000000000000'  # open to all (or pass target address)
     ).build_transaction({
         'from': account.address,
         'value': w3.to_wei(payout_eth, 'ether'),

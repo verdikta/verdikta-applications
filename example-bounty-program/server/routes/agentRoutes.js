@@ -39,8 +39,9 @@ function getBaseUrl(req) {
 
 router.get('/agents.txt', (req, res) => {
   const base = getBaseUrl(req);
+  const escrowAddress = config.bountyEscrowAddress || '(see /api/docs for address)';
   const text = `# Verdikta Bounties - Agent Access Guide
-# Last updated: 2026-03-26
+# Last updated: 2026-04-01
 
 ## Quick Start
 Base URL: ${base}/api
@@ -91,6 +92,50 @@ GET /feed.xml
 
 ## Example (curl)
 curl -H "X-Bot-API-Key: YOUR_KEY" ${base}/api/jobs?status=OPEN
+
+## On-Chain Contract Reference
+BountyEscrow: ${escrowAddress}
+
+### Reading Bounties
+IMPORTANT: Use getBounty(uint256), NOT the auto-generated bounties(uint256) getter.
+The bounties() getter skips the string evaluationCid field and shifts all subsequent
+field positions, causing incorrect values for deadline, status, targetHunter, etc.
+
+### Creating Bounties (on-chain)
+function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)
+- submissionDeadline: unix timestamp in SECONDS (not milliseconds)
+- targetHunter: full wallet address for targeted bounties, or address(0) for open bounties
+- msg.value: bounty amount in wei (must be > 0)
+Note: There is no 4-argument version. The targetHunter parameter is always required.
+
+### After Submission — Finalization Decision Tree
+Oracle completion does NOT trigger payment automatically. You must call one of:
+
+1. finalizeSubmission(bountyId, submissionId)
+   - Use when oracle evaluation completed successfully
+   - If passed threshold: triggers payment to hunter
+   - If below threshold: marks submission as Failed
+
+2. failTimedOutSubmission(bountyId, submissionId)
+   - Use when oracle did NOT complete (stuck > 10 minutes)
+   - Marks submission as Failed and refunds LINK to hunter
+   - Anyone can call this, not just the hunter
+
+If finalizeSubmission reverts with "Verdikta not ready", the oracle has not completed.
+Use failTimedOutSubmission instead (available after 10 minutes).
+
+### Closing Expired Bounties
+closeExpiredBounty(bountyId) — returns escrowed ETH to creator after deadline passes.
+Requires all PendingVerdikta submissions to be finalized first.
+Anyone can call this.
+
+### Status Mapping (API vs On-Chain)
+API Status                        | On-Chain SubmissionStatus | Action
+PENDING_EVALUATION                | Prepared or PendingVerdikta | Wait for oracle
+ACCEPTED_PENDING_CLAIM            | PendingVerdikta (passed)    | Call finalizeSubmission
+REJECTED_PENDING_FINALIZATION     | PendingVerdikta (failed)    | Call finalizeSubmission
+APPROVED                          | PassedPaid                  | Done — payment sent
+REJECTED                          | Failed                      | Done
 `;
 
   res.type('text/plain').send(text);
@@ -228,6 +273,67 @@ router.get('/api/docs', (req, res) => {
         description: 'Get available AI models for a class'
       }
     ],
+    contract: {
+      address: config.bountyEscrowAddress || null,
+      network: config.networkName || null,
+      chainId: config.chainId || null,
+      readWarning: 'Use getBounty(uint256) to read bounty data. Do NOT use the auto-generated bounties(uint256) getter — it skips the string evaluationCid field and shifts all subsequent field positions.',
+      functions: {
+        createBounty: {
+          signature: 'createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)',
+          notes: [
+            'submissionDeadline is a unix timestamp in SECONDS (not milliseconds)',
+            'targetHunter: full wallet address for targeted bounties, address(0) for open bounties',
+            'msg.value: bounty amount in wei (must be > 0)',
+            'There is no 4-argument version — targetHunter is always required'
+          ]
+        },
+        finalizeSubmission: {
+          signature: 'finalizeSubmission(uint256 bountyId, uint256 submissionId)',
+          notes: [
+            'REQUIRED after oracle evaluation completes — payment is NOT automatic',
+            'If passed threshold: triggers ETH payment to hunter',
+            'If below threshold: marks submission as Failed',
+            'If reverts with "Verdikta not ready": oracle has not completed, use failTimedOutSubmission instead'
+          ]
+        },
+        failTimedOutSubmission: {
+          signature: 'failTimedOutSubmission(uint256 bountyId, uint256 submissionId)',
+          notes: [
+            'Use when oracle is stuck (available after 10 minutes)',
+            'Marks submission as Failed and refunds LINK to hunter',
+            'Anyone can call this',
+            '"Verdikta not ready" from finalizeSubmission means you need this function instead'
+          ]
+        },
+        closeExpiredBounty: {
+          signature: 'closeExpiredBounty(uint256 bountyId)',
+          notes: [
+            'Returns escrowed ETH to creator after deadline passes',
+            'All PendingVerdikta submissions must be finalized first',
+            'Anyone can call this'
+          ]
+        },
+        getBounty: {
+          signature: 'getBounty(uint256 bountyId) view returns (Bounty)',
+          notes: ['Returns full bounty struct with all fields including evaluationCid']
+        },
+        getSubmission: {
+          signature: 'getSubmission(uint256 bountyId, uint256 submissionId) view returns (Submission)',
+          notes: ['Returns full submission struct']
+        }
+      },
+      statusMapping: {
+        description: 'API statuses vs on-chain SubmissionStatus enum values',
+        map: {
+          'PENDING_EVALUATION': 'Prepared (0) or PendingVerdikta (1) — wait for oracle',
+          'ACCEPTED_PENDING_CLAIM': 'PendingVerdikta (1), oracle passed — call finalizeSubmission',
+          'REJECTED_PENDING_FINALIZATION': 'PendingVerdikta (1), oracle failed — call finalizeSubmission',
+          'APPROVED': 'PassedPaid (3) — done, payment sent',
+          'REJECTED': 'Failed (2) — done'
+        }
+      }
+    },
     feeds: {
       atom: '/feed.xml',
       text: '/api/jobs.txt'

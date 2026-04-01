@@ -3056,6 +3056,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         prepareSubmission: 'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)',
         startPreparedSubmission: 'function startPreparedSubmission(uint256 bountyId, uint256 submissionId)',
         finalizeSubmission: 'function finalizeSubmission(uint256 bountyId, uint256 submissionId)',
+        failTimedOutSubmission: 'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)',
         approveLINK: 'function approve(address spender, uint256 amount) returns (bool)'
       },
       nextStep: `POST /api/jobs/${jobId}/submit/bundle/complete with { "txHash": "0x..." } after broadcasting step 1`,
@@ -3064,7 +3065,9 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         '/submit/bundle/complete parses step 1 logs and returns exact calldata for steps 2, 3, and 4',
         'If you can parse event logs yourself, extract evalWallet + submissionId + linkMaxBudget from SubmissionPrepared',
         `Confirm submission with POST /api/jobs/${jobId}/submissions/confirm after step 1`,
-        `Poll GET /api/jobs/${jobId}/submissions after step 3 until evaluation completes, then execute step 4`
+        `Poll GET /api/jobs/${jobId}/submissions after step 3 until evaluation completes, then execute step 4`,
+        'Step 4 (finalizeSubmission) is REQUIRED — oracle completion does NOT trigger payment automatically',
+        'If finalizeSubmission reverts with "Verdikta not ready", the oracle timed out — call failTimedOutSubmission instead (available after 10 min)'
       ]
     });
 

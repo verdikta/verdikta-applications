@@ -218,7 +218,7 @@ describe("BountyEscrow", function () {
         bountyEscrow
           .connect(creator)
           ["createBounty(string,uint64,uint8,uint64,address)"](EVAL_CID, CLASS_ID, THRESHOLD, deadline, ethers.ZeroAddress, { value: 0 })
-      ).to.be.revertedWith("no ETH");
+      ).to.be.revertedWith("no creator payment");
     });
 
     it("Should reject bounty with empty evaluation CID", async function () {
@@ -1169,6 +1169,619 @@ describe("BountyEscrow", function () {
       await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
 
       expect(await bountyEscrow.submissionCount(bountyId)).to.equal(2);
+    });
+  });
+
+  // =========================================================================
+  describe("Creator Approval Window", function () {
+    const CREATOR_PAY = ethers.parseEther("0.5");
+    const ARBITER_PAY = ethers.parseEther("1");
+    const MAX_PAY = ARBITER_PAY; // max(0.5, 1) = 1
+    const WINDOW_SIZE = 3600; // 1 hour
+
+    // Helper: create a bounty with creator approval window
+    async function createWindowedBounty(bountyEscrow, creator, overrides = {}) {
+      const deadline = overrides.deadline ?? (await time.latest()) + 86400;
+      const creatorPay = overrides.creatorPay ?? CREATOR_PAY;
+      const arbiterPay = overrides.arbiterPay ?? ARBITER_PAY;
+      const windowSize = overrides.windowSize ?? WINDOW_SIZE;
+      const maxPay = creatorPay > arbiterPay ? creatorPay : arbiterPay;
+
+      const createFn = bountyEscrow.connect(creator)[
+        "createBounty(string,uint64,uint8,uint64,address,uint256,uint256,uint64)"
+      ];
+      const tx = await createFn(
+        overrides.evalCid ?? EVAL_CID,
+        overrides.classId ?? CLASS_ID,
+        overrides.threshold ?? THRESHOLD,
+        deadline,
+        overrides.targetHunter ?? ethers.ZeroAddress,
+        creatorPay,
+        arbiterPay,
+        windowSize,
+        { value: overrides.value ?? maxPay }
+      );
+      const receipt = await tx.wait();
+      const event = receipt.logs.find(
+        (l) => l.fragment && l.fragment.name === "BountyCreated"
+      );
+      return { bountyId: event.args.bountyId, deadline, tx };
+    }
+
+    describe("Bounty Creation with Window", function () {
+      it("Should create a windowed bounty with correct parameters", async function () {
+        const { bountyEscrow, creator } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        const bounty = await bountyEscrow.getBounty(bountyId);
+        expect(bounty.creatorDeterminationPayment).to.equal(CREATOR_PAY);
+        expect(bounty.arbiterDeterminationPayment).to.equal(ARBITER_PAY);
+        expect(bounty.creatorAssessmentWindowSize).to.equal(WINDOW_SIZE);
+        expect(bounty.payoutWei).to.equal(MAX_PAY);
+      });
+
+      it("Should store equal payments and zero window for backward-compat createBounty", async function () {
+        const { bountyEscrow, creator } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+
+        const bounty = await bountyEscrow.getBounty(bountyId);
+        expect(bounty.creatorDeterminationPayment).to.equal(BOUNTY_WEI);
+        expect(bounty.arbiterDeterminationPayment).to.equal(BOUNTY_WEI);
+        expect(bounty.creatorAssessmentWindowSize).to.equal(0);
+      });
+
+      it("Should reject when msg.value != max(creatorPay, arbiterPay)", async function () {
+        const { bountyEscrow, creator } = await loadFixture(deployBountyEscrowFixture);
+        const deadline = (await time.latest()) + 86400;
+
+        const createFn = bountyEscrow.connect(creator)[
+          "createBounty(string,uint64,uint8,uint64,address,uint256,uint256,uint64)"
+        ];
+
+        // Send less than max
+        await expect(
+          createFn(EVAL_CID, CLASS_ID, THRESHOLD, deadline, ethers.ZeroAddress,
+            CREATOR_PAY, ARBITER_PAY, WINDOW_SIZE,
+            { value: CREATOR_PAY }) // 0.5 ETH, but max is 1 ETH
+        ).to.be.revertedWith("ETH must equal max payment");
+      });
+
+      it("Should reject when payments differ but window is zero", async function () {
+        const { bountyEscrow, creator } = await loadFixture(deployBountyEscrowFixture);
+        const deadline = (await time.latest()) + 86400;
+
+        const createFn = bountyEscrow.connect(creator)[
+          "createBounty(string,uint64,uint8,uint64,address,uint256,uint256,uint64)"
+        ];
+
+        await expect(
+          createFn(EVAL_CID, CLASS_ID, THRESHOLD, deadline, ethers.ZeroAddress,
+            CREATOR_PAY, ARBITER_PAY, 0, // windowSize = 0 but payments differ
+            { value: ARBITER_PAY })
+        ).to.be.revertedWith("window required when payments differ");
+      });
+
+      it("Should allow equal payments with zero window via 8-arg overload", async function () {
+        const { bountyEscrow, creator } = await loadFixture(deployBountyEscrowFixture);
+        const deadline = (await time.latest()) + 86400;
+
+        const createFn = bountyEscrow.connect(creator)[
+          "createBounty(string,uint64,uint8,uint64,address,uint256,uint256,uint64)"
+        ];
+
+        await expect(
+          createFn(EVAL_CID, CLASS_ID, THRESHOLD, deadline, ethers.ZeroAddress,
+            BOUNTY_WEI, BOUNTY_WEI, 0,
+            { value: BOUNTY_WEI })
+        ).to.emit(bountyEscrow, "BountyCreated");
+      });
+
+      it("Should accept creatorPay > arbiterPay (creator escrows creatorPay)", async function () {
+        const { bountyEscrow, creator } = await loadFixture(deployBountyEscrowFixture);
+        const highCreatorPay = ethers.parseEther("2");
+        const lowArbiterPay = ethers.parseEther("1");
+
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
+          creatorPay: highCreatorPay,
+          arbiterPay: lowArbiterPay,
+        });
+
+        const bounty = await bountyEscrow.getBounty(bountyId);
+        expect(bounty.payoutWei).to.equal(highCreatorPay); // max(2, 1) = 2
+      });
+    });
+
+    describe("Submission with Creator Window", function () {
+      it("Should set status to PendingCreatorApproval for windowed bounties", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
+        expect(sub.status).to.equal(5); // PendingCreatorApproval
+        expect(sub.creatorWindowEnd).to.be.gt(0);
+      });
+
+      it("Should set creatorWindowEnd correctly", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
+        // creatorWindowEnd = submittedAt + windowSize
+        expect(sub.creatorWindowEnd).to.equal(Number(sub.submittedAt) + WINDOW_SIZE);
+      });
+
+      it("Should set status to Prepared for non-windowed bounties (unchanged behavior)", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+
+        const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
+        expect(sub.status).to.equal(0); // Prepared
+        expect(sub.creatorWindowEnd).to.equal(0);
+      });
+    });
+
+    describe("Creator Approval", function () {
+      it("Should allow creator to approve and pay during window", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        const hunterBalBefore = await ethers.provider.getBalance(hunter.address);
+
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, submissionId)
+        )
+          .to.emit(bountyEscrow, "CreatorApproved")
+          .withArgs(bountyId, submissionId, hunter.address, CREATOR_PAY)
+          .and.to.emit(bountyEscrow, "PayoutSent")
+          .withArgs(bountyId, hunter.address, CREATOR_PAY);
+
+        const hunterBalAfter = await ethers.provider.getBalance(hunter.address);
+        expect(hunterBalAfter - hunterBalBefore).to.equal(CREATOR_PAY);
+
+        const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
+        expect(sub.status).to.equal(3); // PassedPaid
+
+        const bounty = await bountyEscrow.getBounty(bountyId);
+        expect(bounty.status).to.equal(1); // Awarded
+        expect(bounty.winner).to.equal(hunter.address);
+      });
+
+      it("Should refund excess to creator when creatorPay < arbiterPay", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        const expectedRefund = ARBITER_PAY - CREATOR_PAY; // 0.5 ETH
+
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, submissionId)
+        )
+          .to.emit(bountyEscrow, "CreatorRefunded")
+          .withArgs(bountyId, creator.address, expectedRefund);
+      });
+
+      it("Should not refund when creatorPay = max(creatorPay, arbiterPay)", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const highCreatorPay = ethers.parseEther("2");
+        const lowArbiterPay = ethers.parseEther("1");
+
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
+          creatorPay: highCreatorPay,
+          arbiterPay: lowArbiterPay,
+        });
+
+        const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        // No CreatorRefunded event expected (refund = 0)
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, submissionId)
+        )
+          .to.emit(bountyEscrow, "PayoutSent")
+          .withArgs(bountyId, hunter.address, highCreatorPay)
+          .and.to.not.emit(bountyEscrow, "CreatorRefunded");
+      });
+
+      it("Should reject approval after window expires", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        // Advance past window
+        await time.increase(WINDOW_SIZE + 1);
+
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, submissionId)
+        ).to.be.revertedWith("window expired");
+      });
+
+      it("Should reject approval by non-creator", async function () {
+        const { bountyEscrow, creator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        await expect(
+          bountyEscrow.connect(other).creatorApproveSubmission(bountyId, submissionId)
+        ).to.be.revertedWith("only creator");
+      });
+
+      it("Should reject approval of non-PendingCreatorApproval submission", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        // Non-windowed bounty — submissions start as Prepared
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+
+        const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, submissionId)
+        ).to.be.revertedWith("not pending creator approval");
+      });
+
+      it("Should reject approval when bounty already awarded", async function () {
+        const { bountyEscrow, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        // First submission — creator approves
+        const { submissionId: sub0 } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        await bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, sub0);
+
+        // Second submission can't even be prepared (bounty not open)
+        await expect(
+          prepareDefaultSubmission(bountyEscrow, hunter2, bountyId)
+        ).to.be.revertedWith("bounty not open");
+      });
+    });
+
+    describe("Window Expiry and Arbitration", function () {
+      it("Should allow arbitration after window expires", async function () {
+        const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        const { submissionId, evalWallet, linkMaxBudget } =
+          await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        // Can't start during window
+        await linkToken.connect(hunter).approve(evalWallet, linkMaxBudget);
+        await expect(
+          bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId)
+        ).to.be.revertedWith("creator window still open");
+
+        // Advance past window
+        await time.increase(WINDOW_SIZE + 1);
+
+        // Now can start
+        await expect(
+          bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId)
+        ).to.emit(bountyEscrow, "WorkSubmitted");
+
+        const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
+        expect(sub.status).to.equal(1); // PendingVerdikta
+      });
+
+      it("Should pay arbiterDeterminationPayment and refund excess on arbiter approval", async function () {
+        const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        const { submissionId, evalWallet, linkMaxBudget } =
+          await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        await time.increase(WINDOW_SIZE + 1);
+        await linkToken.connect(hunter).approve(evalWallet, linkMaxBudget);
+        const startTx = await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId);
+        const startReceipt = await startTx.wait();
+        const workEvent = startReceipt.logs.find(
+          (l) => l.fragment && l.fragment.name === "WorkSubmitted"
+        );
+        const aggId = workEvent.args.verdiktaAggId;
+
+        await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+
+        const hunterBalBefore = await ethers.provider.getBalance(hunter.address);
+        const creatorBalBefore = await ethers.provider.getBalance(creator.address);
+
+        const expectedRefund = MAX_PAY - ARBITER_PAY; // 1 - 1 = 0 in this case
+        // With default CREATOR_PAY=0.5, ARBITER_PAY=1, max=1, refund = 1-1 = 0
+
+        await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+          .to.emit(bountyEscrow, "PayoutSent")
+          .withArgs(bountyId, hunter.address, ARBITER_PAY);
+
+        const hunterBalAfter = await ethers.provider.getBalance(hunter.address);
+        expect(hunterBalAfter - hunterBalBefore).to.equal(ARBITER_PAY);
+      });
+
+      it("Should refund excess to creator when arbiterPay < creatorPay", async function () {
+        const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter } =
+          await loadFixture(deployBountyEscrowFixture);
+        const highCreatorPay = ethers.parseEther("2");
+        const lowArbiterPay = ethers.parseEther("1");
+
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
+          creatorPay: highCreatorPay,
+          arbiterPay: lowArbiterPay,
+        });
+
+        const { submissionId, evalWallet, linkMaxBudget } =
+          await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        await time.increase(WINDOW_SIZE + 1);
+        await linkToken.connect(hunter).approve(evalWallet, linkMaxBudget);
+        const startTx = await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId);
+        const startReceipt = await startTx.wait();
+        const aggId = startReceipt.logs.find(
+          (l) => l.fragment && l.fragment.name === "WorkSubmitted"
+        ).args.verdiktaAggId;
+
+        await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+
+        const expectedRefund = highCreatorPay - lowArbiterPay; // 2 - 1 = 1 ETH
+
+        await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+          .to.emit(bountyEscrow, "CreatorRefunded")
+          .withArgs(bountyId, creator.address, expectedRefund)
+          .and.to.emit(bountyEscrow, "PayoutSent")
+          .withArgs(bountyId, hunter.address, lowArbiterPay);
+      });
+
+      it("Should allow anyone to fund arbitration after window expires", async function () {
+        const { bountyEscrow, linkToken, creator, hunter, other } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
+          targetHunter: hunter.address,
+        });
+
+        const { submissionId, evalWallet, linkMaxBudget } =
+          await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        await time.increase(WINDOW_SIZE + 1);
+
+        // Fund from 'other' account (not the hunter)
+        await linkToken.mint(other.address, linkMaxBudget);
+        await linkToken.connect(other).approve(evalWallet, linkMaxBudget);
+
+        // 'other' starts arbitration — should succeed
+        await expect(
+          bountyEscrow.connect(other).startPreparedSubmission(bountyId, submissionId)
+        ).to.emit(bountyEscrow, "WorkSubmitted");
+      });
+
+      it("Should block startPreparedSubmission on awarded bounty", async function () {
+        const { bountyEscrow, linkToken, creator, hunter, hunter2 } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        // Sub 0: creator approves
+        const sub0 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        await bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, sub0.submissionId);
+
+        // Bounty is now Awarded. If sub 1 existed, starting it would fail.
+        // But we can't even prepare sub 1 since bounty is Awarded.
+        const bounty = await bountyEscrow.getBounty(bountyId);
+        expect(bounty.status).to.equal(1); // Awarded
+      });
+    });
+
+    describe("Priority Ordering", function () {
+      it("Should block approval of sub 1 while sub 0 is PendingCreatorApproval", async function () {
+        const { bountyEscrow, creator, hunter, hunter2 } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        // Both submit
+        const sub0 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        const sub1 = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+
+        // Creator tries to approve sub 1 — blocked by sub 0
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, sub1.submissionId)
+        ).to.be.revertedWith("earlier submission unresolved");
+
+        // Creator can approve sub 0
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, sub0.submissionId)
+        ).to.emit(bountyEscrow, "CreatorApproved");
+      });
+
+      it("Should block approval of sub 1 while sub 0 is PendingVerdikta", async function () {
+        const { bountyEscrow, linkToken, creator, hunter, hunter2 } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        // Sub 0 submitted, window expires, goes to arbitration
+        const sub0 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        await time.increase(WINDOW_SIZE + 1);
+        await linkToken.connect(hunter).approve(sub0.evalWallet, sub0.linkMaxBudget);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, sub0.submissionId);
+
+        // Sub 1 submitted (needs to be before deadline, which it is since deadline is +24h)
+        const sub1 = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+
+        // Creator tries to approve sub 1 — blocked by sub 0 in PendingVerdikta
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, sub1.submissionId)
+        ).to.be.revertedWith("earlier submission unresolved");
+      });
+
+      it("Should allow approval of sub 1 after sub 0 fails arbitration", async function () {
+        const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter, hunter2 } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        // Sub 0: goes to arbitration and fails
+        const sub0 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        await time.increase(WINDOW_SIZE + 1);
+        await linkToken.connect(hunter).approve(sub0.evalWallet, sub0.linkMaxBudget);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, sub0.submissionId);
+
+        const sub0Data = await bountyEscrow.getSubmission(bountyId, sub0.submissionId);
+        await verdiktaAggregator.setEvaluation(sub0Data.verdiktaAggId, FAILING_SCORES, JUST_CIDS, true);
+        await bountyEscrow.finalizeSubmission(bountyId, sub0.submissionId);
+
+        // Sub 1: creator can now approve (sub 0 is Failed, no longer unresolved)
+        const sub1 = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, sub1.submissionId)
+        ).to.emit(bountyEscrow, "CreatorApproved");
+      });
+
+      it("Should block finalize payment of sub 1 while sub 0 is unresolved (windowed)", async function () {
+        const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter, hunter2 } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        // Sub 0 and sub 1 both submitted
+        const sub0 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        const sub1 = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+
+        // Both windows expire
+        await time.increase(WINDOW_SIZE + 1);
+
+        // Both go to arbitration
+        await linkToken.connect(hunter).approve(sub0.evalWallet, sub0.linkMaxBudget);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, sub0.submissionId);
+        await linkToken.connect(hunter2).approve(sub1.evalWallet, sub1.linkMaxBudget);
+        await bountyEscrow.connect(hunter2).startPreparedSubmission(bountyId, sub1.submissionId);
+
+        const sub0Data = await bountyEscrow.getSubmission(bountyId, sub0.submissionId);
+        const sub1Data = await bountyEscrow.getSubmission(bountyId, sub1.submissionId);
+
+        // Sub 1 completes first with passing score
+        await verdiktaAggregator.setEvaluation(sub1Data.verdiktaAggId, PASSING_SCORES, JUST_CIDS, true);
+        await bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId);
+
+        // Sub 1 should be PassedUnpaid (sub 0 is still PendingVerdikta)
+        const sub1After = await bountyEscrow.getSubmission(bountyId, sub1.submissionId);
+        expect(sub1After.status).to.equal(4); // PassedUnpaid
+
+        // Sub 0 completes with passing score — gets paid (it has priority)
+        await verdiktaAggregator.setEvaluation(sub0Data.verdiktaAggId, PASSING_SCORES, JUST_CIDS, true);
+        await expect(bountyEscrow.finalizeSubmission(bountyId, sub0.submissionId))
+          .to.emit(bountyEscrow, "PayoutSent");
+
+        const sub0After = await bountyEscrow.getSubmission(bountyId, sub0.submissionId);
+        expect(sub0After.status).to.equal(3); // PassedPaid
+      });
+
+      it("Should maintain first-to-complete behavior for non-windowed bounties", async function () {
+        const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter, hunter2 } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+
+        // Both submit (non-windowed — Prepared status)
+        const sub1 = await submitFull(bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId);
+        const sub2 = await submitFull(bountyEscrow, linkToken, verdiktaAggregator, hunter2, bountyId);
+
+        // First completes and gets paid
+        await verdiktaAggregator.setEvaluation(sub1.aggId, PASSING_SCORES, JUST_CIDS, true);
+        await bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId);
+        expect((await bountyEscrow.getSubmission(bountyId, sub1.submissionId)).status)
+          .to.equal(3); // PassedPaid
+
+        // Second completes — bounty already Awarded
+        await verdiktaAggregator.setEvaluation(sub2.aggId, PASSING_SCORES, JUST_CIDS, true);
+        await bountyEscrow.finalizeSubmission(bountyId, sub2.submissionId);
+        expect((await bountyEscrow.getSubmission(bountyId, sub2.submissionId)).status)
+          .to.equal(4); // PassedUnpaid
+      });
+    });
+
+    describe("Closing Windowed Bounties", function () {
+      it("Should allow closing with PendingCreatorApproval submissions (only PendingVerdikta blocks)", async function () {
+        const { bountyEscrow, creator, hunter } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId, deadline } = await createWindowedBounty(bountyEscrow, creator);
+
+        // Submit — status = PendingCreatorApproval
+        await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        await time.increaseTo(deadline);
+
+        // Close should succeed — PendingCreatorApproval does not block closing
+        await expect(bountyEscrow.closeExpiredBounty(bountyId))
+          .to.emit(bountyEscrow, "BountyClosed");
+      });
+
+      it("Should block closing with PendingVerdikta submissions on windowed bounty", async function () {
+        const { bountyEscrow, linkToken, creator, hunter } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId, deadline } = await createWindowedBounty(bountyEscrow, creator);
+
+        const { submissionId, evalWallet, linkMaxBudget } =
+          await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        // Window expires, start arbitration
+        await time.increase(WINDOW_SIZE + 1);
+        await linkToken.connect(hunter).approve(evalWallet, linkMaxBudget);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId);
+
+        await time.increaseTo(deadline);
+
+        await expect(
+          bountyEscrow.closeExpiredBounty(bountyId)
+        ).to.be.revertedWith("active evaluation - finalize first");
+      });
+    });
+
+    describe("Targeted Windowed Bounties", function () {
+      it("Should work end-to-end: targeted bounty with creator approval", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
+          targetHunter: hunter.address,
+        });
+
+        const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        await bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, submissionId);
+
+        const bounty = await bountyEscrow.getBounty(bountyId);
+        expect(bounty.status).to.equal(1); // Awarded
+        expect(bounty.winner).to.equal(hunter.address);
+      });
+
+      it("Should work end-to-end: targeted bounty with arbiter approval after window", async function () {
+        const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
+          targetHunter: hunter.address,
+        });
+
+        const { submissionId, evalWallet, linkMaxBudget } =
+          await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        // Window expires
+        await time.increase(WINDOW_SIZE + 1);
+
+        // Hunter starts arbitration
+        await linkToken.connect(hunter).approve(evalWallet, linkMaxBudget);
+        const startTx = await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId);
+        const startReceipt = await startTx.wait();
+        const aggId = startReceipt.logs.find(
+          (l) => l.fragment && l.fragment.name === "WorkSubmitted"
+        ).args.verdiktaAggId;
+
+        // Arbiter approves
+        await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+
+        await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+          .to.emit(bountyEscrow, "PayoutSent")
+          .withArgs(bountyId, hunter.address, ARBITER_PAY);
+
+        const bounty = await bountyEscrow.getBounty(bountyId);
+        expect(bounty.status).to.equal(1); // Awarded
+      });
     });
   });
 });

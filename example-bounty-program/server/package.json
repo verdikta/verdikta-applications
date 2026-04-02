@@ -4,6 +4,7 @@
   "description": "Backend API for Verdikta AI-Powered Bounty Program",
   "main": "server.js",
   "scripts": {
+    "prestart": "node scripts/check-verdikta-updates.js",
     "start": "node server.js",
     "dev": "nodemon --ignore data/* server.js",
     "test": "jest --coverage",
@@ -19,7 +20,7 @@
   "author": "Verdikta Team",
   "license": "MIT",
   "dependencies": {
-    "@verdikta/common": "latest",
+    "@verdikta/common": "^1.6.0",
     "adm-zip": "^0.5.10",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",

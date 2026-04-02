@@ -327,6 +327,7 @@ const handleRunQuery = async () => {
   }
 
   console.log('🔄 Proceeding with query execution...');
+  let writeContract;
   try {
     setLoadingResults(true);
     setTransactionStatus('Processing...');
@@ -365,7 +366,7 @@ const handleRunQuery = async () => {
    }
 
     const signer = await provider.getSigner();
-    const writeContract = new ethers.Contract(contractAddress, CONTRACT_ABI, signer);
+    writeContract = new ethers.Contract(contractAddress, CONTRACT_ABI, signer);
     const readContract  = new ethers.Contract(
        contractAddress, CONTRACT_ABI, roProvider);
 

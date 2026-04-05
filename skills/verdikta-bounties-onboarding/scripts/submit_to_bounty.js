@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// Complete submission flow: upload files → prepare → approve LINK → start → confirm.
-// The bot wallet signs all three on-chain transactions automatically.
+// Complete submission flow: upload files → [bundle OR prepare/approve/start] → confirm.
+// The bot wallet signs the on-chain transactions automatically.
 //
 // Usage:
 //   node submit_to_bounty.js --jobId 72 --file work_output.md
 //   node submit_to_bounty.js --jobId 72 --file report.md --file appendix.md --narrative "Summary of work"
+//   node submit_to_bounty.js --jobId 72 --file work_output.md --bundle
 //
 // Optional fee parameters (forwarded to /submit/prepare):
 //   --alpha 50             Reputation weight (default: API default)
@@ -36,6 +37,7 @@ const files = argAll('file');
 const narrative = arg('narrative', '');
 const skipConfirm = hasFlag('skip-confirm');
 const confirmFirst = hasFlag('confirm-first');
+const useBundle = hasFlag('bundle');
 
 // Optional fee parameters (forwarded to /submit/prepare)
 const feeAlpha = arg('alpha');
@@ -46,7 +48,7 @@ const feeMaxFeeBasedScaling = arg('maxFeeBasedScaling');
 if (!jobId) {
   console.error('Usage: node submit_to_bounty.js --jobId <ID> --file <path> [--file <path2>] [--narrative "..."]');
   console.error('Optional: --alpha N --maxOracleFee N --estimatedBaseCost N --maxFeeBasedScaling N');
-  console.error('Flags:    --skip-confirm  --confirm-first');
+  console.error('Flags:    --skip-confirm  --confirm-first  --bundle');
   process.exit(1);
 }
 if (files.length === 0) {
@@ -95,6 +97,7 @@ console.log(`Files:   ${files.join(', ')}`);
 if (narrative) console.log(`Narrative: ${narrative}`);
 if (skipConfirm) console.log(`Mode:    --skip-confirm (trustless, no API confirm)`);
 if (confirmFirst) console.log(`Mode:    --confirm-first (legacy ordering)`);
+if (useBundle) console.log(`Mode:    --bundle (use submit/bundle flow)`);
 
 // ---- Helper: call /diagnose for troubleshooting ----
 
@@ -206,8 +209,27 @@ if (onChainBountyId != null) {
 
 console.log('\n--- Step 1: Upload files to IPFS ---');
 
-// Build multipart form data manually using fetch + FormData
-// Node 18+ has global fetch and FormData
+// Parse SubmissionPrepared event details from a tx receipt.
+// Used by both the canonical prepare flow and the --bundle flow.
+function parsePreparedReceipt(receipt) {
+  const escrowIface = new ethers.Interface(BOUNTY_ESCROW_ABI);
+
+  let submissionId, evalWallet, linkMaxBudget;
+  for (const log of receipt.logs) {
+    try {
+      const parsed = escrowIface.parseLog(log);
+      if (parsed?.name === 'SubmissionPrepared') {
+        submissionId = Number(parsed.args.submissionId);
+        evalWallet = parsed.args.evalWallet;
+        linkMaxBudget = ethers.formatEther(parsed.args.linkMaxBudget);
+        break;
+      }
+    } catch {}
+  }
+
+  return { submissionId, evalWallet, linkMaxBudget };
+}
+
 const formData = new FormData();
 formData.append('hunter', hunter);
 if (narrative) formData.append('submissionNarrative', narrative);
@@ -218,7 +240,8 @@ for (const filePath of files) {
   formData.append('files', new Blob([content]), fileName);
 }
 
-const uploadRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submit`, {
+const submitEndpoint = useBundle ? `${baseUrl}/api/jobs/${jobId}/submit/bundle` : `${baseUrl}/api/jobs/${jobId}/submit`;
+const uploadRes = await fetch(submitEndpoint, {
   method: 'POST',
   headers: { 'X-Bot-API-Key': apiKey },
   body: formData,
@@ -228,6 +251,7 @@ if (!uploadRes.ok) {
   console.error('Upload failed:', JSON.stringify(uploadData));
   process.exit(1);
 }
+
 // API returns { submission: { hunterCid: "..." } } — also accept top-level for compat
 const hunterCid = uploadData.submission?.hunterCid || uploadData.hunterCid || uploadData.cid;
 if (!hunterCid) {
@@ -237,77 +261,127 @@ if (!hunterCid) {
 }
 console.log(`  hunterCid: ${hunterCid}`);
 
-// ---- Step 2: Prepare submission (on-chain tx 1/3) ----
+let submissionId = uploadData.submission?.submissionId ?? uploadData.submissionId;
+let evalWallet = uploadData.submission?.evalWallet ?? uploadData.evalWallet;
+let linkMaxBudget = uploadData.submission?.linkMaxBudget ?? uploadData.linkMaxBudget;
 
-console.log('\n--- Step 2: Prepare submission (deploy EvaluationWallet) ---');
+if (useBundle) {
+  console.log('\n--- Step 2: Execute bundle transaction ---');
 
-const prepareBody = { hunter, hunterCid };
-// Forward optional fee parameters if provided
-if (feeAlpha != null) prepareBody.alpha = Number(feeAlpha);
-if (feeMaxOracleFee != null) prepareBody.maxOracleFee = feeMaxOracleFee;
-if (feeEstimatedBaseCost != null) prepareBody.estimatedBaseCost = feeEstimatedBaseCost;
-if (feeMaxFeeBasedScaling != null) prepareBody.maxFeeBasedScaling = Number(feeMaxFeeBasedScaling);
+  if (!uploadData.transaction) {
+    console.error('Bundle mode was requested but /submit/bundle did not return a transaction payload.');
+    console.error('Full response:', JSON.stringify(uploadData, null, 2));
+    process.exit(1);
+  }
 
-const prepareRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submit/prepare`, {
-  method: 'POST',
-  headers: jsonHeaders,
-  body: JSON.stringify(prepareBody),
-});
-const prepareData = await prepareRes.json();
-if (!prepareRes.ok || !prepareData.transaction) {
-  console.error('Prepare failed:', JSON.stringify(prepareData));
-  process.exit(1);
+  const bundleReceipt = await sendTx(signer, 'submitBundle', uploadData.transaction, {
+    useApiGasLimit: true,
+  });
+
+  const parsed = parsePreparedReceipt(bundleReceipt);
+  submissionId = submissionId ?? parsed.submissionId;
+  evalWallet = evalWallet ?? parsed.evalWallet;
+  linkMaxBudget = linkMaxBudget ?? parsed.linkMaxBudget;
+
+  const bundleId = uploadData.bundleId || uploadData.bundle?.bundleId || uploadData.bundle?.id || null;
+
+  console.log('\n--- Step 3: Complete bundle in API ---');
+  // TODO: if the server expects a slightly different body shape, adjust here.
+  // Current best guess follows the same pattern as confirm/prepare payloads.
+  const completeBody = {
+    bundleId,
+    txHash: bundleReceipt.hash,
+    hunter,
+    hunterCid,
+    submissionId,
+    evalWallet,
+  };
+
+  const completeRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submit/bundle/complete`, {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify(completeBody),
+  });
+  const completeData = await completeRes.json().catch(() => ({}));
+  if (!completeRes.ok) {
+    console.error('Bundle complete failed:', JSON.stringify(completeData, null, 2));
+    process.exit(1);
+  }
+
+  submissionId = completeData.submission?.submissionId ?? completeData.submissionId ?? submissionId;
+  evalWallet = completeData.submission?.evalWallet ?? completeData.evalWallet ?? evalWallet;
+  linkMaxBudget = completeData.submission?.linkMaxBudget ?? completeData.linkMaxBudget ?? linkMaxBudget;
+
+  if (submissionId == null) {
+    console.error('Bundle flow completed but submissionId is still unknown.');
+    process.exit(1);
+  }
+
+  console.log(`  submissionId: ${submissionId}`);
+  if (evalWallet) console.log(`  evalWallet:   ${evalWallet}`);
+  if (linkMaxBudget) console.log(`  linkBudget:   ${linkMaxBudget} LINK`);
+} else {
+  // ---- Step 2: Prepare submission (on-chain tx 1/3) ----
+
+  console.log('\n--- Step 2: Prepare submission (deploy EvaluationWallet) ---');
+
+  const prepareBody = { hunter, hunterCid };
+  // Forward optional fee parameters if provided
+  if (feeAlpha != null) prepareBody.alpha = Number(feeAlpha);
+  if (feeMaxOracleFee != null) prepareBody.maxOracleFee = feeMaxOracleFee;
+  if (feeEstimatedBaseCost != null) prepareBody.estimatedBaseCost = feeEstimatedBaseCost;
+  if (feeMaxFeeBasedScaling != null) prepareBody.maxFeeBasedScaling = Number(feeMaxFeeBasedScaling);
+
+  const prepareRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submit/prepare`, {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify(prepareBody),
+  });
+  const prepareData = await prepareRes.json();
+  if (!prepareRes.ok || !prepareData.transaction) {
+    console.error('Prepare failed:', JSON.stringify(prepareData));
+    process.exit(1);
+  }
+
+  const prepareReceipt = await sendTx(signer, 'prepareSubmission', prepareData.transaction);
+  const parsed = parsePreparedReceipt(prepareReceipt);
+  submissionId = parsed.submissionId;
+  evalWallet = parsed.evalWallet;
+  linkMaxBudget = parsed.linkMaxBudget;
+
+  if (submissionId == null || !evalWallet) {
+    console.error('Failed to parse SubmissionPrepared event from receipt.');
+    console.error('Logs:', JSON.stringify(prepareReceipt.logs.map(l => ({ address: l.address, topics: l.topics }))));
+    process.exit(1);
+  }
+
+  console.log(`  submissionId: ${submissionId}`);
+  console.log(`  evalWallet:   ${evalWallet}`);
+  console.log(`  linkBudget:   ${linkMaxBudget} LINK`);
+
+  // ---- Step 3: Approve LINK (on-chain tx 2/3) ----
+
+  console.log('\n--- Step 3: Approve LINK to EvaluationWallet ---');
+
+  const approveRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submit/approve`, {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ evalWallet, linkAmount: linkMaxBudget }),
+  });
+  const approveData = await approveRes.json();
+  if (!approveRes.ok || !approveData.transaction) {
+    console.error('Approve failed:', JSON.stringify(approveData));
+    process.exit(1);
+  }
+
+  await sendTx(signer, 'LINK approve', approveData.transaction);
 }
 
-const prepareReceipt = await sendTx(signer, 'prepareSubmission', prepareData.transaction);
-
-// Parse SubmissionPrepared event (using centralized ABI)
-const escrowIface = new ethers.Interface(BOUNTY_ESCROW_ABI);
-
-let submissionId, evalWallet, linkMaxBudget;
-for (const log of prepareReceipt.logs) {
-  try {
-    const parsed = escrowIface.parseLog(log);
-    if (parsed?.name === 'SubmissionPrepared') {
-      submissionId = Number(parsed.args.submissionId);
-      evalWallet = parsed.args.evalWallet;
-      linkMaxBudget = ethers.formatEther(parsed.args.linkMaxBudget);
-      break;
-    }
-  } catch {}
-}
-
-if (submissionId == null || !evalWallet) {
-  console.error('Failed to parse SubmissionPrepared event from receipt.');
-  console.error('Logs:', JSON.stringify(prepareReceipt.logs.map(l => ({ address: l.address, topics: l.topics }))));
-  process.exit(1);
-}
-
-console.log(`  submissionId: ${submissionId}`);
-console.log(`  evalWallet:   ${evalWallet}`);
-console.log(`  linkBudget:   ${linkMaxBudget} LINK`);
-
-// ---- Step 3: Approve LINK (on-chain tx 2/3) ----
-
-console.log('\n--- Step 3: Approve LINK to EvaluationWallet ---');
-
-const approveRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submit/approve`, {
-  method: 'POST',
-  headers: jsonHeaders,
-  body: JSON.stringify({ evalWallet, linkAmount: linkMaxBudget }),
-});
-const approveData = await approveRes.json();
-if (!approveRes.ok || !approveData.transaction) {
-  console.error('Approve failed:', JSON.stringify(approveData));
-  process.exit(1);
-}
-
-await sendTx(signer, 'LINK approve', approveData.transaction);
-
-// ---- Steps 4 & 5: Start evaluation + Confirm in API ----
+// ---- Finalization path ----
 //
-// Documented order (Agents page): start → confirm
-// Legacy order (some backends): confirm → start
+// Non-bundle mode uses the documented start/confirm flow.
+// Bundle mode assumes the bundled transaction already performed the on-chain submit path,
+// so only the API completion + optional confirm remain.
 //
 // Default: try documented order. If /start fails with "not found",
 // auto-fallback to confirm-first, then retry start.
@@ -345,7 +419,19 @@ async function doStart() {
   return { ok: true, data: startData };
 }
 
-if (confirmFirst) {
+if (useBundle) {
+  if (!skipConfirm) {
+    console.log('\n--- Step 4: Confirm submission in API ---');
+    const confirmed = await doConfirm();
+    if (!confirmed) {
+      await diagnoseSubmission(submissionId);
+      process.exit(1);
+    }
+  } else {
+    console.log('\n--- Step 4: Skipping API confirm (--skip-confirm) ---');
+    console.log('  Bundle tx was broadcast, but API confirm was skipped by request.');
+  }
+} else if (confirmFirst) {
   // Legacy order: confirm → start
   console.log('\n--- Step 4: Confirm submission in API (--confirm-first) ---');
   await doConfirm();

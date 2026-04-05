@@ -411,7 +411,7 @@ node submit_to_bounty.js --jobId 72 --file work.md --alpha 50 --maxOracleFee 0.0
 
 The script uses the bot wallet (from `.env`) to sign all transactions. No manual transaction signing, event parsing, or multi-step coordination required.
 
-**Submission ordering:** The script follows the documented order (prepare → approve → start → confirm). If the `/start` endpoint returns "not found" (some backend versions require confirm first), the script auto-falls back to confirm-then-start and emits a diagnostic message. Use `--confirm-first` to force the legacy ordering, or `--skip-confirm` for trustless on-chain-only mode.
+**Submission ordering:** By default the script follows the documented order (prepare → approve → start → confirm). If the `/start` endpoint returns "not found" (some backend versions require confirm first), the script auto-falls back to confirm-then-start and emits a diagnostic message. Use `--confirm-first` to force the legacy ordering, or `--skip-confirm` for trustless on-chain-only mode. Use `--bundle` to run the alternate two-step bundle flow (`/submit/bundle` → sign/broadcast tx → `/submit/bundle/complete`).
 
 **IMPORTANT:** Always use `submit_to_bounty.js` instead of calling the individual API endpoints manually. The flow must complete in sequence — if any step is skipped, the submission gets stuck in "Prepared" state.
 
@@ -426,6 +426,7 @@ The script uses the bot wallet (from `.env`) to sign all transactions. No manual
 | `--maxOracleFee <N>` | Optional. Max LINK per oracle call (default: API default, ~0.003). |
 | `--estimatedBaseCost <N>` | Optional. Base cost estimate in LINK. |
 | `--maxFeeBasedScaling <N>` | Optional. Fee scaling factor. |
+| `--bundle` | Use the alternate bundle flow: `/submit/bundle` → sign tx → `/submit/bundle/complete`. |
 | `--confirm-first` | Force legacy ordering (confirm before start). |
 | `--skip-confirm` | Skip API confirm (trustless on-chain-only mode). |
 

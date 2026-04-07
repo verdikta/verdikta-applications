@@ -29,6 +29,7 @@ jest.mock('fs', () => {
         mockStorageData = JSON.parse(data);
         return Promise.resolve();
       }),
+      rename: jest.fn().mockResolvedValue(undefined),
     },
   };
 });

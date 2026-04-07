@@ -388,15 +388,17 @@ class SyncService {
     const freshStorage = await jobStorage.readStorage();
     this._mergeStorageChanges(storage, freshStorage, currentContract);
 
+    // Handle orphaned/expired off-chain jobs + reconcile on-chain status
+    // before writing, so there is a single atomic write per cycle (no
+    // intermediate state where the API can serve stale data).
+    await this._handleOrphanedJobs(freshStorage, currentContract, contractService);
+
     freshStorage.syncState = {
       lastSyncedBlock: currentBlock,
       lastKnownBountyCount: bountyCount,
       version: SYNC_STATE_VERSION
     };
     await jobStorage.writeStorage(freshStorage);
-
-    // Handle orphaned/expired off-chain jobs + reconcile on-chain status
-    await this._handleOrphanedJobs(freshStorage, currentContract, contractService);
   }
 
   // ==========================================================================
@@ -1008,10 +1010,15 @@ class SyncService {
       // If no match by jobId+contract, try matching by evaluationCid — covers the case where
       // sync linked a pending job (changed its jobId from null to the on-chain ID)
       // but freshStorage still has the old null-id entry.
+      // IMPORTANT: only match when at least one side has a null/undefined jobId (i.e. a
+      // pending job not yet linked to an on-chain bounty).  Multiple on-chain bounties
+      // can legitimately share the same evaluationCid, so matching two synced jobs by CID
+      // would cause them to overwrite each other and oscillate every sync cycle.
       if (!freshJob && modifiedJob.evaluationCid) {
         freshJob = freshStorage.jobs.find(j =>
           j.evaluationCid === modifiedJob.evaluationCid &&
-          (j.contractAddress || '').toLowerCase() === modifiedContract
+          (j.contractAddress || '').toLowerCase() === modifiedContract &&
+          (j.jobId == null || modifiedJob.jobId == null)
         );
       }
 
@@ -1106,22 +1113,27 @@ class SyncService {
         }
       }
 
-      // Dedup by evaluationCid — a null-id job with the same CID as a real-id job is a duplicate
+      // Dedup by evaluationCid — a null-id job with the same CID as a real-id job is a duplicate.
+      // Only dedup when at least one side has a null jobId; multiple on-chain bounties
+      // can legitimately share the same evaluationCid.
       if (job.evaluationCid) {
         const cidKey = `${job.evaluationCid}:${contract}`;
         if (seenByCid.has(cidKey)) {
           const prev = seenByCid.get(cidKey);
-          // Keep the one with a real jobId; remove the null-id one
-          if (job.jobId != null && prev.job.jobId == null) {
-            toRemove.add(prev.idx);
-            seenByCid.set(cidKey, { idx: i, job });
-          } else if (job.jobId == null && prev.job.jobId != null) {
-            toRemove.add(i);
-          } else if (job.syncedFromBlockchain && !prev.job.syncedFromBlockchain) {
-            toRemove.add(prev.idx);
-            seenByCid.set(cidKey, { idx: i, job });
-          } else {
-            toRemove.add(i);
+          const bothHaveIds = job.jobId != null && prev.job.jobId != null;
+          if (!bothHaveIds) {
+            // Keep the one with a real jobId; remove the null-id one
+            if (job.jobId != null && prev.job.jobId == null) {
+              toRemove.add(prev.idx);
+              seenByCid.set(cidKey, { idx: i, job });
+            } else if (job.jobId == null && prev.job.jobId != null) {
+              toRemove.add(i);
+            } else if (job.syncedFromBlockchain && !prev.job.syncedFromBlockchain) {
+              toRemove.add(prev.idx);
+              seenByCid.set(cidKey, { idx: i, job });
+            } else {
+              toRemove.add(i);
+            }
           }
         } else {
           seenByCid.set(cidKey, { idx: i, job });
@@ -1210,9 +1222,7 @@ class SyncService {
       }
     }
 
-    if (changed) {
-      await jobStorage.writeStorage(storage);
-    }
+    // Caller (_eventSync) handles the single write after all mutations.
   }
 }
 

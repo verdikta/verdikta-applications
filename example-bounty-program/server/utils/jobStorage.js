@@ -117,7 +117,11 @@ async function writeSyncState(syncState) {
  */
 async function writeStorage(data) {
   try {
-    await fs.writeFile(STORAGE_FILE, JSON.stringify(data, null, 2));
+    // Atomic write: write to temp file then rename, so concurrent readers
+    // never see a truncated/empty file (fs.writeFile truncates before writing).
+    const tmpFile = STORAGE_FILE + '.tmp';
+    await fs.writeFile(tmpFile, JSON.stringify(data, null, 2));
+    await fs.rename(tmpFile, STORAGE_FILE);
   } catch (error) {
     logger.error('Error writing storage:', error);
     throw error;

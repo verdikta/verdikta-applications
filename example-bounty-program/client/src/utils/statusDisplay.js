@@ -76,6 +76,9 @@ export const SubmissionStatus = {
   ACCEPTED_PENDING_CLAIM: 'ACCEPTED_PENDING_CLAIM',
   REJECTED_PENDING_FINALIZATION: 'REJECTED_PENDING_FINALIZATION',
 
+  // Creator approval window
+  PENDING_CREATOR_APPROVAL: 'PendingCreatorApproval',
+
   // Final states
   PASSED: 'Passed',
   PASSED_PAID: 'PassedPaid',
@@ -90,6 +93,7 @@ export const PENDING_STATUSES = [
   SubmissionStatus.PREPARED,
   SubmissionStatus.PENDING_VERDIKTA,
   SubmissionStatus.PENDING_EVALUATION,
+  SubmissionStatus.PENDING_CREATOR_APPROVAL,
   'PREPARED', // uppercase variant
 ];
 
@@ -114,6 +118,13 @@ const SUBMISSION_STATUS_CONFIG = {
   pending: {
     label: 'Evaluating',
     description: 'Your submission is being evaluated by the AI jury. This typically takes 2-4 minutes.',
+    badgeClass: 'status-pending',
+    icon: IconName.HOURGLASS,
+  },
+  // Creator approval window — awaiting bounty creator review
+  pending_creator_approval: {
+    label: 'Pending Creator Approval',
+    description: 'Awaiting bounty creator review. If not approved before the window closes, the submission proceeds to AI evaluation.',
     badgeClass: 'status-pending',
     icon: IconName.HOURGLASS,
   },
@@ -209,6 +220,9 @@ function getSubmissionStatusCategory(status) {
 
   const normalizedStatus = status.toString();
 
+  if (normalizedStatus === 'PendingCreatorApproval') {
+    return 'pending_creator_approval';
+  }
   if (PENDING_STATUSES.includes(normalizedStatus)) {
     return 'pending';
   }
@@ -287,6 +301,7 @@ export function isSubmissionOnChain(status) {
   return s === SubmissionStatus.PENDING_VERDIKTA ||
          s === SubmissionStatus.PENDING_EVALUATION ||
          s === 'PENDING_EVALUATION' ||
+         s === SubmissionStatus.PENDING_CREATOR_APPROVAL ||
          s === SubmissionStatus.ACCEPTED_PENDING_CLAIM ||
          s === SubmissionStatus.REJECTED_PENDING_FINALIZATION;
 }

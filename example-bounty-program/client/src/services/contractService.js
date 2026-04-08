@@ -27,11 +27,13 @@ const BOUNTY_ESCROW_ABI = [
 
   // Write Functions
   "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)",
+  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize) payable returns (uint256)",
   "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
   "function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)",
   "function closeExpiredBounty(uint256 bountyId)",
+  "function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)",
   
   // View Functions (used sparingly)
   "function getEffectiveBountyStatus(uint256) view returns (string)",
@@ -647,6 +649,57 @@ class ContractService {
     }
   }
 
+  /**
+   * Creator approves a submission during the approval window
+   * Uses dry-run first to surface revert reasons before prompting MetaMask.
+   */
+  async creatorApproveSubmission(bountyId, submissionId) {
+    if (!this.contract) {
+      throw new Error('Contract not initialized. Call connect() first.');
+    }
+
+    try {
+      console.log('🔍 Creator approving submission...', { bountyId, submissionId });
+
+      // Dry-run to surface revert reasons
+      try {
+        await this.contract.creatorApproveSubmission.staticCall(bountyId, submissionId);
+      } catch (e) {
+        const decoded = this._decodeRevertReason(e, [this.contract]);
+        const msg = (decoded || e?.message || '').toLowerCase();
+        if (msg.includes('only creator')) throw new Error('Only the bounty creator can approve submissions');
+        if (msg.includes('window expired')) throw new Error('The creator approval window has expired');
+        if (msg.includes('not pending creator approval')) throw new Error('Submission is not pending creator approval');
+        if (msg.includes('earlier submission unresolved')) throw new Error('An earlier submission must be resolved first');
+        if (msg.includes('bounty not open')) throw new Error('Bounty is not open');
+        throw e;
+      }
+
+      const tx = await this.contract.creatorApproveSubmission(bountyId, submissionId);
+      console.log('📤 Transaction sent:', tx.hash);
+
+      const receipt = await tx.wait();
+      console.log('✅ Submission approved by creator:', receipt.hash);
+
+      // Invalidate status cache
+      this._statusCache.delete(`${bountyId}`);
+
+      return {
+        success: true,
+        txHash: receipt.hash,
+        blockNumber: receipt.blockNumber,
+        gasUsed: receipt.gasUsed?.toString?.() ?? null,
+      };
+
+    } catch (error) {
+      console.error('Error in creator approval:', error);
+      if (error.code === 'ACTION_REJECTED') {
+        throw new Error('Transaction rejected by user');
+      }
+      throw error;
+    }
+  }
+
   // ==========================================================================
   // READ OPERATIONS (OPTIMIZED with caching)
   // ==========================================================================
@@ -716,7 +769,7 @@ class ContractService {
 
         const sub = await contract.getSubmission(bountyId, submissionId);
         
-        const statusMap = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'];
+        const statusMap = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
 
         return {
           hunter: sub.hunter,
@@ -727,7 +780,8 @@ class ContractService {
           submittedAt: Number(sub.submittedAt),
           acceptance: Number(sub.acceptance),
           rejection: Number(sub.rejection),
-          linkMaxBudget: sub.linkMaxBudget.toString()
+          linkMaxBudget: sub.linkMaxBudget.toString(),
+          creatorWindowEnd: Number(sub.creatorWindowEnd),
         };
 
       } catch (error) {
@@ -757,9 +811,9 @@ class ContractService {
     }
 
     try {
-      // Use the CORRECT 17-field Submission struct ABI (matches actual BountyEscrow.sol)
+      // Use the CORRECT 18-field Submission struct ABI (matches actual BountyEscrow.sol)
       const submissionAbi = [
-        'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))'
+        'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))'
       ];
 
       const tempContract = new ethers.Contract(this.contractAddress, submissionAbi, provider);

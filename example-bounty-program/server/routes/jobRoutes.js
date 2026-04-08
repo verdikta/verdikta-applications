@@ -3557,7 +3557,8 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       1: 'PENDING_EVALUATION',  // PendingVerdikta
       2: 'REJECTED',            // Failed
       3: 'APPROVED',            // PassedPaid (winner!)
-      4: 'APPROVED'             // PassedUnpaid (passed but someone else won)
+      4: 'APPROVED',            // PassedUnpaid (passed but someone else won)
+      5: 'PendingCreatorApproval',
     };
     const statusIndex = Number(sub.status);
     let chainStatus = statusMap[statusIndex] || 'UNKNOWN';

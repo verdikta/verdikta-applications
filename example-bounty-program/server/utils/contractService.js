@@ -423,7 +423,7 @@ class ContractService {
           const sub = await this.contract.getSubmission(bountyId, i);
 
           // Map submission status enum to string
-          const statusMap = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'];
+          const statusMap = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
 
           submissions.push({
             submissionId: i,
@@ -439,7 +439,8 @@ class ContractService {
             submittedAt: Number(sub.submittedAt),
             finalizedAt: Number(sub.finalizedAt),
             linkMaxBudget: sub.linkMaxBudget.toString(),
-            score: sub.acceptance > 0 ? Number(sub.acceptance) : null
+            score: sub.acceptance > 0 ? Number(sub.acceptance) : null,
+            creatorWindowEnd: Number(sub.creatorWindowEnd),
           });
         } catch (err) {
           logger.warn(`Failed to fetch submission ${i} for bounty ${bountyId}:`, err);

@@ -201,7 +201,7 @@ function Agents({ walletState }) {
       method: 'GET',
       path: '/api/jobs/:jobId/submissions',
       description: 'List all submissions for a bounty with simplified statuses',
-      params: 'none (returns: PENDING_EVALUATION, EVALUATED_PASSED, EVALUATED_FAILED, WINNER, TIMED_OUT). Note: EVALUATED_PASSED includes both finalized and pending-claim submissions.'
+      params: 'none (returns: PENDING_CREATOR_APPROVAL, PENDING_EVALUATION, EVALUATED_PASSED, EVALUATED_FAILED, WINNER, TIMED_OUT). Note: PENDING_CREATOR_APPROVAL means the bounty creator has a time window to approve before oracle evaluation.'
     },
     {
       method: 'POST',
@@ -353,7 +353,12 @@ curl -X POST -H "X-Bot-API-Key: YOUR_API_KEY" \\
   }'
 # Returns: { jobId, evaluationCid, rubricCid }
 # Optional: add "targetHunter": "0xAddress" to restrict submissions to one wallet.
+# Optional: add creator approval window (lets creator approve before oracle evaluation):
+#   "creatorDeterminationPayment": 0.005,    // ETH paid if creator approves directly
+#   "arbiterDeterminationPayment": 0.01,     // ETH paid if oracle approves (after window)
+#   "creatorAssessmentWindowHours": 1        // Hours creator has to review
 # On-chain, use createBounty(evaluationCid, classId, threshold, deadline, targetHunter).
+# For windowed bounties, use the 8-param overload adding creatorPay, arbiterPay, windowSize.
 # Now deploy on-chain using evaluationCid (createBounty on BountyEscrow contract)
 
 # 17. REQUIRED: Link API job to on-chain bounty after deployment
@@ -756,6 +761,11 @@ def finalize_submission(w3, account, job_id, sub_id):
             <div className="step-content">
               <h3>Get Evaluated</h3>
               <p>A jury of AI models evaluates your work against the rubric. Results are aggregated into a final score on the VerdiktaAggregator contract. The API status changes from <code>PENDING_EVALUATION</code> to <code>EVALUATED_PASSED</code> or <code>EVALUATED_FAILED</code>.</p>
+              <p style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: '#666' }}>
+                <strong>Creator approval window:</strong> Some bounties let the creator approve submissions directly before oracle evaluation.
+                If a bounty has an approval window, your submission status will be <code>PendingCreatorApproval</code> until the creator approves or the window expires.
+                If the window expires without approval, anyone can start the AI evaluation by funding LINK and calling <code>startPreparedSubmission</code>.
+              </p>
             </div>
           </div>
           <div className="workflow-step">

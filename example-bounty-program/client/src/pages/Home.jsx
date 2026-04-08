@@ -348,13 +348,13 @@ function Home({ walletState }) {
           </div>
           <div className="step">
             <div className="step-number">3</div>
-            <h3>AI Evaluates</h3>
-            <p>Verdikta's AI jury grades submissions against the rubric</p>
+            <h3>Review &amp; Evaluate</h3>
+            <p>Creator can approve directly, or an AI jury grades submissions against the rubric</p>
           </div>
           <div className="step">
             <div className="step-number">4</div>
             <h3>Auto Payment</h3>
-            <p>First passing submission wins ETH automatically</p>
+            <p>Approved submissions win ETH automatically from escrow</p>
           </div>
         </div>
       </section>

@@ -375,7 +375,10 @@ class VerdiktaService {
             byClass[classId].arbiterList.push({
               address: oracle.oracle,
               jobId: oracle.jobId,
-              classes: oracle.classes || [classId]
+              classes: oracle.classes || [classId],
+              callCount: oracle.callCount,
+              qualityScore: oracle.qualityScore,
+              timelinessScore: oracle.timelinessScore
             });
           }
 

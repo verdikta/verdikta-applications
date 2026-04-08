@@ -142,7 +142,12 @@ function ClassDetails() {
                       </a>
                     </td>
                     <td>
-                      <code title={arb.classes?.length ? `Capability Classes: ${arb.classes.join(', ')}` : ''}>
+                      <code title={[
+                        arb.classes?.length ? `Capability Classes: ${arb.classes.join(', ')}` : '',
+                        `Call Count: ${arb.callCount ?? 'N/A'}`,
+                        `Quality Score: ${arb.qualityScore ?? 'N/A'}`,
+                        `Timeliness Score: ${arb.timelinessScore ?? 'N/A'}`
+                      ].filter(Boolean).join('\n')}>
                         {arb.jobId}
                       </code>
                     </td>

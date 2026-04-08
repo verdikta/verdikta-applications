@@ -846,6 +846,9 @@ class SyncService {
       submissions: [],
       winner: bounty.winner,
       targetHunter: bounty.targetHunter || null,
+      creatorDeterminationPayment: bounty.creatorDeterminationPayment || '0.0',
+      arbiterDeterminationPayment: bounty.arbiterDeterminationPayment || '0.0',
+      creatorAssessmentWindowSize: bounty.creatorAssessmentWindowSize || 0,
       onChain: true,
       syncedFromBlockchain: true,
       lastSyncedAt: Math.floor(Date.now() / 1000),
@@ -894,7 +897,8 @@ class SyncService {
                          sub.status === 'PendingVerdikta' ? 1 :
                          sub.status === 'Failed' ? 2 :
                          sub.status === 'PassedPaid' ? 3 :
-                         sub.status === 'PassedUnpaid' ? 4 : -1;
+                         sub.status === 'PassedUnpaid' ? 4 :
+                         sub.status === 'PendingCreatorApproval' ? 5 : -1;
 
         switch (statusNum) {
           case 0:
@@ -932,6 +936,9 @@ class SyncService {
           case 4:
             backendStatus = 'APPROVED';
             break;
+          case 5:
+            backendStatus = 'PendingCreatorApproval';
+            break;
           default:
             backendStatus = 'UNKNOWN';
         }
@@ -951,7 +958,8 @@ class SyncService {
           justificationCids: sub.justificationCids,
           submittedAt: sub.submittedAt,
           finalizedAt: sub.finalizedAt,
-          score: sub.acceptance > 0 ? sub.acceptance : null
+          score: sub.acceptance > 0 ? sub.acceptance : null,
+          creatorWindowEnd: sub.creatorWindowEnd || 0,
         });
       }
 

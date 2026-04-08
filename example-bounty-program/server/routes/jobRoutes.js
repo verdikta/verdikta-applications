@@ -3661,6 +3661,7 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       localSubmission.failureReason = failureReason;
       localSubmission.paidWinner = paidWinner;
       localSubmission.passedUnpaid = passedUnpaid;
+      localSubmission.creatorWindowEnd = Number(sub.creatorWindowEnd);
 
       jobStorage.updateJob(jobId, { submissions: job.submissions });
       

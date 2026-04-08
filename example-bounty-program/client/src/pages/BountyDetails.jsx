@@ -123,6 +123,7 @@ function BountyDetails({ walletState }) {
   const [cancelingSubmissions, setCancelingSubmissions] = useState(new Set());
   const [refreshingSubmissions, setRefreshingSubmissions] = useState(new Set());
   const [startingSubmissions, setStartingSubmissions] = useState(new Set());
+  const [approvingSubmissions, setApprovingSubmissions] = useState(new Set());
 
   // Polling state for submissions waiting for status update
   // Stores: { attempts, maxAttempts }
@@ -1176,12 +1177,23 @@ function BountyDetails({ walletState }) {
       // Read on-chain submission to verify hunter and get LINK requirements
       const chainSub = await contractService.getSubmission(onChainId, submissionId);
 
-      if (chainSub.hunter.toLowerCase() !== walletState.address.toLowerCase()) {
-        toast.error('Only the original submitter can start this evaluation. Please connect with the hunter wallet.');
-        return;
-      }
+      const isFromCreatorWindow = chainSub.status === 'PendingCreatorApproval';
 
-      if (chainSub.status !== 'Prepared') {
+      if (isFromCreatorWindow) {
+        // After window expiry, anyone can start — verify window is expired
+        const windowEnd = chainSub.creatorWindowEnd || 0;
+        const now = Math.floor(Date.now() / 1000);
+        if (windowEnd > now) {
+          toast.warning('Creator approval window is still open. Cannot start evaluation yet.');
+          return;
+        }
+      } else if (chainSub.status === 'Prepared') {
+        // Classic flow — only hunter can start
+        if (chainSub.hunter.toLowerCase() !== walletState.address.toLowerCase()) {
+          toast.error('Only the original submitter can start this evaluation. Please connect with the hunter wallet.');
+          return;
+        }
+      } else {
         toast.warning(`Submission is already in "${chainSub.status}" state. Refreshing...`);
         await loadJobDetails();
         return;
@@ -1254,6 +1266,60 @@ function BountyDetails({ walletState }) {
       setError(msg);
     } finally {
       setStartingSubmissions(prev => {
+        const next = new Set(prev);
+        next.delete(submissionId);
+        return next;
+      });
+    }
+  };
+
+  const handleCreatorApprove = async (submissionId) => {
+    if (!walletState.isConnected) {
+      toast.warning('Please connect your wallet first');
+      return;
+    }
+
+    const onChainId = getOnChainBountyId();
+    if (onChainId == null) {
+      toast.warning('Unable to determine the on-chain bounty ID yet. Please wait for sync or refresh.');
+      return;
+    }
+
+    const creatorPay = job?.creatorDeterminationPayment || job?.bountyAmount || '?';
+    const confirmed = window.confirm(
+      `Approve submission #${submissionId}?\n\n` +
+      `This will pay the hunter ${creatorPay} ETH from the bounty escrow.\n\n` +
+      'This action requires a blockchain transaction that you must sign.'
+    );
+    if (!confirmed) return;
+
+    try {
+      setApprovingSubmissions(prev => new Set(prev).add(submissionId));
+      setError(null);
+
+      const contractService = getContractService();
+      if (!contractService.isConnected()) await contractService.connect();
+
+      const result = await contractService.creatorApproveSubmission(onChainId, submissionId);
+
+      setApprovingSubmissions(prev => {
+        const next = new Set(prev);
+        next.delete(submissionId);
+        return next;
+      });
+
+      toast.success(`Submission #${submissionId} approved! TX: ${result.txHash?.slice(0, 10)}...`);
+
+      // Refresh to pick up new status
+      await loadJobDetails(true);
+
+    } catch (err) {
+      console.error('Error approving submission:', err);
+      const msg = err.message || 'Failed to approve submission';
+      toast.error(`Failed to approve submission #${submissionId}: ${msg}`);
+      setError(msg);
+
+      setApprovingSubmissions(prev => {
         const next = new Set(prev);
         next.delete(submissionId);
         return next;
@@ -1712,14 +1778,17 @@ function BountyDetails({ walletState }) {
                   onFailTimeout={handleFailTimedOutSubmission}
                   onCancel={handleCancelSubmission}
                   onStart={handleStartSubmission}
+                  onCreatorApprove={handleCreatorApprove}
                   finalizingSubmissions={finalizingSubmissions}
                   failingSubmissions={failingSubmissions}
                   cancelingSubmissions={cancelingSubmissions}
                   startingSubmissions={startingSubmissions}
+                  approvingSubmissions={approvingSubmissions}
                   pollingSubmissions={pollingSubmissions}
                   evaluationResults={evaluationResults}
                   disableActions={disableActionsForMissingId}
                   timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
+                  walletState={walletState}
                   job={job}
                   toast={toast}
                 />
@@ -1992,10 +2061,12 @@ function BountyDetails({ walletState }) {
                 onCancel={handleCancelSubmission}
                 onStart={handleStartSubmission}
                 onRefresh={handleRefreshSubmission}
+                onCreatorApprove={handleCreatorApprove}
                 isFailing={failingSubmissions.has(submission.submissionId)}
                 isFinalizing={finalizingSubmissions.has(submission.submissionId)}
                 isCanceling={cancelingSubmissions.has(submission.submissionId)}
                 isStarting={startingSubmissions.has(submission.submissionId)}
+                isApproving={approvingSubmissions.has(submission.submissionId)}
                 isRefreshing={refreshingSubmissions.has(submission.submissionId)}
                 isPolling={pollingSubmissions.has(submission.submissionId)}
                 pollingState={pollingSubmissions.get(submission.submissionId)}
@@ -2006,6 +2077,7 @@ function BountyDetails({ walletState }) {
                 threshold={job?.threshold ?? 80}
                 juryNodes={job?.juryNodes}
                 bountyStatus={status}
+                job={job}
               />
             ))}
           </div>
@@ -2225,14 +2297,17 @@ function PendingSubmissionsPanel({
   onFailTimeout,
   onCancel,
   onStart,
+  onCreatorApprove,
   finalizingSubmissions,
   failingSubmissions,
   cancelingSubmissions,
   startingSubmissions,
+  approvingSubmissions,
   pollingSubmissions,
   evaluationResults,
   disableActions,
   timeoutMinutes,
+  walletState,
   job,
   toast
 }) {
@@ -2246,10 +2321,17 @@ function PendingSubmissionsPanel({
         const ageMinutes = getSubmissionAge(s.submittedAt);
         const isOnChain = isSubmissionOnChain(s.status) || isSubmissionOnChain(s.onChainStatus);
         const isPrepared = (s.status === 'Prepared' || s.status === 'PREPARED') && !isSubmissionOnChain(s.onChainStatus);
-        // Only allow timeout for on-chain submissions (not Prepared)
-        const canTimeout = isOnChain && ageMinutes > timeoutMinutes;
+        const isPendingCreatorApproval = s.status === 'PendingCreatorApproval';
+        const isCreator = walletState?.isConnected && walletState.address?.toLowerCase() === job?.creator?.toLowerCase();
+        const windowEnd = s.creatorWindowEnd || 0;
+        const now = Math.floor(Date.now() / 1000);
+        const windowOpen = isPendingCreatorApproval && windowEnd > now;
+        const windowExpired = isPendingCreatorApproval && windowEnd > 0 && windowEnd <= now;
+        // Only allow timeout for on-chain submissions (not Prepared or PendingCreatorApproval)
+        const canTimeout = isOnChain && !isPendingCreatorApproval && ageMinutes > timeoutMinutes;
         const isFailing = failingSubmissions.has(s.submissionId);
         const isFinalizing = finalizingSubmissions.has(s.submissionId);
+        const isApproving = approvingSubmissions?.has(s.submissionId);
         const isPolling = pollingSubmissions.has(s.submissionId);
         const pollState = pollingSubmissions.get(s.submissionId);
         const evalResult = evaluationResults?.get(s.submissionId);
@@ -2339,8 +2421,35 @@ function PendingSubmissionsPanel({
                 </>
               )}
 
-              {/* Only show Finalize button for on-chain submissions */}
-              {isOnChain && (
+              {/* Creator approval window actions */}
+              {isPendingCreatorApproval && windowOpen && isCreator && (
+                <button
+                  onClick={() => onCreatorApprove(s.submissionId)}
+                  disabled={isApproving || disableActions}
+                  className="btn btn-success btn-sm"
+                  style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+                >
+                  {isApproving ? <><Loader2 size={12} className="spin" /> Approving...</> : <><Check size={12} /> Approve ({job?.creatorDeterminationPayment || '?'} ETH)</>}
+                </button>
+              )}
+              {isPendingCreatorApproval && windowOpen && !isCreator && (
+                <span style={{ fontSize: '0.8rem', color: '#1565c0' }}>
+                  <Clock size={12} style={{ verticalAlign: 'middle' }} /> Awaiting creator ({Math.ceil((windowEnd - now) / 60)} min left)
+                </span>
+              )}
+              {isPendingCreatorApproval && windowExpired && walletState?.isConnected && (
+                <button
+                  onClick={() => onStart(s.submissionId)}
+                  disabled={startingSubmissions?.has(s.submissionId) || disableActions}
+                  className="btn btn-primary btn-sm"
+                  style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+                >
+                  {startingSubmissions?.has(s.submissionId) ? <><Loader2 size={12} className="spin" /> Starting...</> : <><Play size={12} /> Start AI Evaluation</>}
+                </button>
+              )}
+
+              {/* Only show Finalize button for on-chain submissions (not PendingCreatorApproval) */}
+              {isOnChain && !isPendingCreatorApproval && (
                 <button
                   onClick={() => onFinalize(s.submissionId)}
                   disabled={isFinalizing || isPolling || disableActions}
@@ -2502,10 +2611,12 @@ function SubmissionCard({
   onCancel,
   onStart,
   onRefresh,
+  onCreatorApprove,
   isFailing,
   isFinalizing,
   isCanceling,
   isStarting,
+  isApproving,
   isRefreshing,
   isPolling,
   pollingState,
@@ -2515,7 +2626,8 @@ function SubmissionCard({
   timeoutMinutes,
   threshold,
   juryNodes,
-  bountyStatus
+  bountyStatus,
+  job,
 }) {
   const bountyTerminal = bountyStatus === 'CLOSED' || bountyStatus === 'AWARDED';
   const isPending = isPendingStatus(submission.status);
@@ -2525,6 +2637,12 @@ function SubmissionCard({
   const isRejected = submission.status === 'REJECTED' || submission.status === 'Failed' || submission.status === 'REJECTED_PENDING_FINALIZATION';
   const needsFinalization = submission.status === 'ACCEPTED_PENDING_CLAIM' || submission.status === 'REJECTED_PENDING_FINALIZATION';
   const isAcceptedPendingClaim = submission.status === 'ACCEPTED_PENDING_CLAIM';
+  const isPendingCreatorApproval = submission.status === 'PendingCreatorApproval';
+  const isCreator = walletState.isConnected && walletState.address?.toLowerCase() === job?.creator?.toLowerCase();
+  const creatorWindowEnd = submission.creatorWindowEnd || 0;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const creatorWindowOpen = isPendingCreatorApproval && creatorWindowEnd > nowSec;
+  const creatorWindowExpired = isPendingCreatorApproval && creatorWindowEnd > 0 && creatorWindowEnd <= nowSec;
 
   // Receipts-as-memes: only show for paid winners
   const isPaidWinner = submission.paidWinner === true;
@@ -2743,7 +2861,7 @@ function SubmissionCard({
       })()}
 
       {/* Waiting for evaluation indicator */}
-      {isPending && !hasEvalReady && !isPolling && (
+      {isPending && !isPendingCreatorApproval && !hasEvalReady && !isPolling && (
         <div style={{
           marginTop: '0.75rem',
           padding: '0.75rem',
@@ -2836,6 +2954,77 @@ function SubmissionCard({
         </div>
       )}
 
+      {/* Creator Approval Window */}
+      {isPendingCreatorApproval && !bountyTerminal && (
+        <div style={{
+          marginTop: '0.75rem',
+          padding: '0.75rem',
+          backgroundColor: creatorWindowOpen ? '#e3f2fd' : '#fff3e0',
+          border: `1px solid ${creatorWindowOpen ? '#90caf9' : '#ffcc80'}`,
+          borderRadius: '4px',
+          textAlign: 'center'
+        }}>
+          {creatorWindowOpen ? (
+            <>
+              <div style={{ fontSize: '0.9rem', color: '#1565c0', fontWeight: 'bold', marginBottom: '0.25rem' }}>
+                <Clock size={14} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />
+                Awaiting Creator Approval
+              </div>
+              <div style={{ fontSize: '0.85rem', color: '#1976d2', marginBottom: '0.5rem' }}>
+                Window closes: {new Date(creatorWindowEnd * 1000).toLocaleString(undefined, { timeZoneName: 'short' })}
+                {' '}({Math.ceil((creatorWindowEnd - nowSec) / 60)} min remaining)
+              </div>
+              {job?.creatorDeterminationPayment && job?.arbiterDeterminationPayment && (
+                <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.5rem' }}>
+                  Creator approval: {job.creatorDeterminationPayment} ETH | Oracle approval: {job.arbiterDeterminationPayment} ETH
+                </div>
+              )}
+              {isCreator ? (
+                <button
+                  onClick={() => onCreatorApprove(submission.submissionId)}
+                  disabled={isApproving || disableActions}
+                  className="btn btn-success"
+                  style={{ fontSize: '1rem', padding: '0.75rem 1rem', fontWeight: 'bold', width: '100%' }}
+                >
+                  {isApproving
+                    ? <><Loader2 size={14} className="spin" /> Approving...</>
+                    : <><Check size={14} /> Approve Submission ({job?.creatorDeterminationPayment || '?'} ETH)</>}
+                </button>
+              ) : (
+                <div style={{ fontSize: '0.85rem', color: '#888' }}>
+                  Only the bounty creator can approve during this window.
+                </div>
+              )}
+            </>
+          ) : creatorWindowExpired ? (
+            <>
+              <div style={{ fontSize: '0.9rem', color: '#e65100', fontWeight: 'bold', marginBottom: '0.25rem' }}>
+                Creator Approval Window Expired
+              </div>
+              <div style={{ fontSize: '0.85rem', color: '#bf360c', marginBottom: '0.5rem' }}>
+                The creator did not approve within the window. This submission can now proceed to AI evaluation.
+              </div>
+              {walletState.isConnected && (
+                <button
+                  onClick={() => onStart(submission.submissionId)}
+                  disabled={isStarting || disableActions}
+                  className="btn btn-primary"
+                  style={{ fontSize: '1rem', padding: '0.75rem 1rem', fontWeight: 'bold', width: '100%' }}
+                >
+                  {isStarting
+                    ? <><Loader2 size={14} className="spin" /> Starting...</>
+                    : <><Play size={14} /> Start AI Evaluation</>}
+                </button>
+              )}
+            </>
+          ) : (
+            <div style={{ fontSize: '0.85rem', color: '#888' }}>
+              Pending creator review...
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Stale submission notice when bounty is already closed/awarded */}
       {isPending && bountyTerminal && (
         <div style={{
@@ -2852,7 +3041,7 @@ function SubmissionCard({
       )}
 
       {/* Action buttons for pending submissions (hidden if bounty is already closed/awarded) */}
-      {isPending && !bountyTerminal && walletState.isConnected && !isPolling && (
+      {isPending && !isPendingCreatorApproval && !bountyTerminal && walletState.isConnected && !isPolling && (
         <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
 
           {/* Show Finalize ONLY if on-chain and (evaluation is ready OR timeout not yet available) */}

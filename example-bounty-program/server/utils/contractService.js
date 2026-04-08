@@ -28,6 +28,8 @@ const BOUNTY_ESCROW_ABI = [
   "event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, bytes32 verdiktaAggId)",
   "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, uint8 status, uint256 acceptance, uint256 rejection)",
   "event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amount)",
+  "event CreatorApproved(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, uint256 amountPaid)",
+  "event CreatorRefunded(uint256 indexed bountyId, address indexed creator, uint256 amountRefunded)",
   "event LinkRefunded(uint256 indexed bountyId, uint256 indexed submissionId, uint256 amount)"
 ];
 

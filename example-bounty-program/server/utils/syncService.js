@@ -607,7 +607,7 @@ class SyncService {
         if (sub) {
           const statusMap = { 2: 'REJECTED', 3: 'APPROVED', 4: 'APPROVED' };
           sub.status = statusMap[chainStatus] || 'UNKNOWN';
-          sub.onChainStatus = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'][chainStatus] || 'Unknown';
+          sub.onChainStatus = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'][chainStatus] || 'Unknown';
           sub.acceptance = acceptance;
           sub.rejection = rejection;
           sub.finalizedAt = Math.floor(Date.now() / 1000);
@@ -621,13 +621,42 @@ class SyncService {
 
         // Check if bounty still has pending submissions — if not, remove from hot set
         const stillHot = (job.submissions || []).some(
-          s => s.status === 'PENDING_EVALUATION' || s.onChainStatus === 'PendingVerdikta'
+          s => s.status === 'PENDING_EVALUATION' || s.onChainStatus === 'PendingVerdikta' ||
+               s.status === 'PendingCreatorApproval'
         );
         if (!stillHot) {
           this.hotBountyIds.delete(bountyId);
         }
 
         logger.info('[event] SubmissionFinalized', { bountyId, submissionId, status: sub?.status });
+        break;
+      }
+
+      case 'CreatorApproved': {
+        const bountyId = Number(args.bountyId);
+        const submissionId = Number(args.submissionId);
+        const hunter = args.hunter;
+        const amountPaid = args.amountPaid?.toString();
+        const job = this._findJob(storage, bountyId, currentContract);
+        if (!job) break;
+
+        const sub = (job.submissions || []).find(s => s.submissionId === submissionId);
+        if (sub) {
+          sub.status = 'APPROVED';
+          sub.onChainStatus = 'PassedPaid';
+          sub.paidWinner = true;
+          sub.finalizedAt = Math.floor(Date.now() / 1000);
+        }
+
+        logger.info('[event] CreatorApproved', { bountyId, submissionId, hunter, amountPaid });
+        break;
+      }
+
+      case 'CreatorRefunded': {
+        const bountyId = Number(args.bountyId);
+        const creator = args.creator;
+        const amountRefunded = args.amountRefunded?.toString();
+        logger.info('[event] CreatorRefunded', { bountyId, creator, amountRefunded });
         break;
       }
 

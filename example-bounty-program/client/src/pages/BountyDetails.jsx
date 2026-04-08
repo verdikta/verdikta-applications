@@ -1846,6 +1846,20 @@ function BountyDetails({ walletState }) {
               {job?.bountyAmountUSD > 0 && (<small> (${job.bountyAmountUSD})</small>)}
             </span>
           </div>
+          {job?.creatorAssessmentWindowSize > 0 && (
+            <div className="stat">
+              <span className="label">Approval Window</span>
+              <span className="value">
+                {job.creatorAssessmentWindowSize >= 3600
+                  ? `${(job.creatorAssessmentWindowSize / 3600).toFixed(1)}h`
+                  : `${Math.round(job.creatorAssessmentWindowSize / 60)}m`}
+                {' '}
+                <small style={{ color: '#666' }}>
+                  ({job.creatorDeterminationPayment} / {job.arbiterDeterminationPayment} ETH)
+                </small>
+              </span>
+            </div>
+          )}
           <div className="stat">
             <span className="label">Submissions</span>
             <span className="value">{job?.submissionCount ?? 0}</span>
@@ -2602,6 +2616,40 @@ function ExpiredBountyActions({
   );
 }
 
+/**
+ * Live countdown for creator approval window.
+ * Ticks every second and calls onExpire when window closes.
+ */
+function CreatorWindowCountdown({ windowEnd, onExpire }) {
+  const [remaining, setRemaining] = useState(() => Math.max(0, windowEnd - Math.floor(Date.now() / 1000)));
+
+  useEffect(() => {
+    if (remaining <= 0) return;
+    const timer = setInterval(() => {
+      const left = Math.max(0, windowEnd - Math.floor(Date.now() / 1000));
+      setRemaining(left);
+      if (left <= 0) {
+        clearInterval(timer);
+        onExpire?.();
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [windowEnd, onExpire, remaining]);
+
+  if (remaining <= 0) return <span style={{ color: '#e65100', fontWeight: 'bold' }}>Window expired</span>;
+
+  const hours = Math.floor(remaining / 3600);
+  const mins = Math.floor((remaining % 3600) / 60);
+  const secs = remaining % 60;
+  const display = hours > 0
+    ? `${hours}h ${mins}m ${secs}s`
+    : mins > 0
+      ? `${mins}m ${secs}s`
+      : `${secs}s`;
+
+  return <span style={{ fontFamily: 'monospace', fontWeight: 'bold' }}>{display}</span>;
+}
+
 function SubmissionCard({
   submission,
   jobId,
@@ -2971,8 +3019,7 @@ function SubmissionCard({
                 Awaiting Creator Approval
               </div>
               <div style={{ fontSize: '0.85rem', color: '#1976d2', marginBottom: '0.5rem' }}>
-                Window closes: {new Date(creatorWindowEnd * 1000).toLocaleString(undefined, { timeZoneName: 'short' })}
-                {' '}({Math.ceil((creatorWindowEnd - nowSec) / 60)} min remaining)
+                Time remaining: <CreatorWindowCountdown windowEnd={creatorWindowEnd} onExpire={() => {}} />
               </div>
               {job?.creatorDeterminationPayment && job?.arbiterDeterminationPayment && (
                 <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.5rem' }}>

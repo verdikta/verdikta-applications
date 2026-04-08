@@ -120,7 +120,10 @@ router.post('/create', async (req, res) => {
       juryNodes = [],
       iterations = 1,
       submissionWindowHours = 24,
-      targetHunter
+      targetHunter,
+      creatorDeterminationPayment,
+      arbiterDeterminationPayment,
+      creatorAssessmentWindowHours,
     } = req.body || {};
 
     // ---- Validate commons ----
@@ -337,7 +340,12 @@ router.post('/create', async (req, res) => {
       iterations: Number(iterations),
       submissionOpenTime,
       submissionCloseTime,
-      targetHunter: targetHunter || null
+      targetHunter: targetHunter || null,
+      ...(creatorDeterminationPayment != null ? {
+        creatorDeterminationPayment: String(creatorDeterminationPayment),
+        arbiterDeterminationPayment: String(arbiterDeterminationPayment),
+        creatorAssessmentWindowSize: Math.trunc(Number(creatorAssessmentWindowHours) * 3600),
+      } : {}),
     });
 
     logger.info('[jobs/create] job created', { jobId: job.jobId });

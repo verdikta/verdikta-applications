@@ -67,7 +67,12 @@ function CreateBounty({ walletState }) {
     targetHunter: '',
     deliverableRequirements: {
       format: ['markdown', 'pdf']
-    }
+    },
+    // Creator approval window (optional)
+    enableApprovalWindow: false,
+    creatorPaymentEth: '',
+    arbiterPaymentEth: '',
+    approvalWindowHours: '',
   });
 
   // ---------- helpers ----------
@@ -507,6 +512,17 @@ function CreateBounty({ walletState }) {
     if (formData.targetHunter && !/^0x[a-fA-F0-9]{40}$/.test(formData.targetHunter)) {
       toast.warning('Target address must be a valid Ethereum address (0x...)'); return;
     }
+    if (formData.enableApprovalWindow) {
+      if (!formData.creatorPaymentEth || parseFloat(formData.creatorPaymentEth) <= 0) {
+        toast.warning('Creator approval payment must be > 0 ETH'); return;
+      }
+      if (!formData.arbiterPaymentEth || parseFloat(formData.arbiterPaymentEth) <= 0) {
+        toast.warning('Oracle approval payment must be > 0 ETH'); return;
+      }
+      if (!formData.approvalWindowHours || parseFloat(formData.approvalWindowHours) <= 0) {
+        toast.warning('Approval window must be > 0 hours'); return;
+      }
+    }
 
     const juryValidation = validateJuryWeights();
     if (!juryValidation.valid) { toast.warning(`Invalid jury weights: ${juryValidation.message}`); return; }
@@ -546,6 +562,11 @@ function CreateBounty({ walletState }) {
         iterations,
         submissionWindowHours: parseInt(formData.submissionWindowHours, 10),
         ...(formData.targetHunter ? { targetHunter: formData.targetHunter } : {}),
+        ...(formData.enableApprovalWindow ? {
+          creatorDeterminationPayment: parseFloat(formData.creatorPaymentEth),
+          arbiterDeterminationPayment: parseFloat(formData.arbiterPaymentEth),
+          creatorAssessmentWindowHours: parseFloat(formData.approvalWindowHours),
+        } : {}),
       });
 
       if (!apiResponse?.success) {
@@ -568,6 +589,11 @@ function CreateBounty({ walletState }) {
         bountyAmountEth: parseFloat(formData.payoutAmount),
         submissionWindowHours: parseInt(formData.submissionWindowHours, 10),
         ...(formData.targetHunter ? { targetHunter: formData.targetHunter } : {}),
+        ...(formData.enableApprovalWindow ? {
+          creatorDeterminationPaymentEth: parseFloat(formData.creatorPaymentEth),
+          arbiterDeterminationPaymentEth: parseFloat(formData.arbiterPaymentEth),
+          creatorAssessmentWindowHours: parseFloat(formData.approvalWindowHours),
+        } : {}),
       });
 
       if (!contractResult?.success || contractResult?.bountyId == null) {
@@ -756,6 +782,112 @@ function CreateBounty({ walletState }) {
                 </small>
               </div>
             </div>
+
+            {/* Creator Approval Window (optional) */}
+            <div className="form-row" style={{ marginTop: '1rem' }}>
+              <div className="form-group" style={{ width: '100%' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={formData.enableApprovalWindow}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, enableApprovalWindow: e.target.checked }))}
+                  />
+                  Enable Creator Approval Window
+                </label>
+                <small className="helper-text">
+                  Allow the bounty creator to approve submissions directly before they go to AI evaluation.
+                  {formData.enableApprovalWindow && ' The creator can offer a different payment for direct approval vs. oracle evaluation.'}
+                </small>
+              </div>
+            </div>
+
+            {formData.enableApprovalWindow && (
+              <div style={{
+                padding: '1rem',
+                backgroundColor: '#f8f9fa',
+                border: '1px solid #dee2e6',
+                borderRadius: '6px',
+                marginBottom: '1rem'
+              }}>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label htmlFor="creatorPaymentEth">
+                      Creator Approval Payment (ETH) <span className="required">*</span>
+                    </label>
+                    <input
+                      type="number"
+                      id="creatorPaymentEth"
+                      value={formData.creatorPaymentEth}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, creatorPaymentEth: e.target.value }))}
+                      placeholder="0.001"
+                      step="0.001"
+                      min="0"
+                    />
+                    <small className="helper-text">
+                      Amount paid to hunter if you approve directly
+                      {formData.creatorPaymentEth && formData.ethPriceUSD > 0 && (
+                        <> (≈ ${(parseFloat(formData.creatorPaymentEth) * formData.ethPriceUSD).toFixed(2)} USD)</>
+                      )}
+                    </small>
+                  </div>
+
+                  <div className="form-group">
+                    <label htmlFor="arbiterPaymentEth">
+                      Oracle Approval Payment (ETH) <span className="required">*</span>
+                    </label>
+                    <input
+                      type="number"
+                      id="arbiterPaymentEth"
+                      value={formData.arbiterPaymentEth}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, arbiterPaymentEth: e.target.value }))}
+                      placeholder="0.001"
+                      step="0.001"
+                      min="0"
+                    />
+                    <small className="helper-text">
+                      Amount paid to hunter if approved by AI oracle (after window expires)
+                      {formData.arbiterPaymentEth && formData.ethPriceUSD > 0 && (
+                        <> (≈ ${(parseFloat(formData.arbiterPaymentEth) * formData.ethPriceUSD).toFixed(2)} USD)</>
+                      )}
+                    </small>
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group">
+                    <label htmlFor="approvalWindowHours">
+                      Approval Window (hours) <span className="required">*</span>
+                    </label>
+                    <input
+                      type="number"
+                      id="approvalWindowHours"
+                      value={formData.approvalWindowHours}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, approvalWindowHours: e.target.value }))}
+                      placeholder="1"
+                      step="0.5"
+                      min="0.5"
+                    />
+                    <small className="helper-text">
+                      Time you have to review and approve each submission before it goes to oracle evaluation
+                    </small>
+                  </div>
+                </div>
+
+                {formData.creatorPaymentEth && formData.arbiterPaymentEth && (
+                  <div style={{
+                    marginTop: '0.5rem',
+                    padding: '0.5rem',
+                    backgroundColor: '#e3f2fd',
+                    borderRadius: '4px',
+                    fontSize: '0.85rem',
+                    color: '#1565c0'
+                  }}>
+                    Escrow required: {Math.max(parseFloat(formData.creatorPaymentEth) || 0, parseFloat(formData.arbiterPaymentEth) || 0)} ETH
+                    (max of creator and oracle payments)
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="form-actions">
               <button type="button" onClick={() => setStep(2)} className="btn btn-primary">

@@ -247,7 +247,8 @@ class ContractService {
   /**
    * Create a bounty on-chain via MetaMask
    */
-  async createBounty({ evaluationCid, classId, threshold, bountyAmountEth, submissionWindowHours, targetHunter }) {
+  async createBounty({ evaluationCid, classId, threshold, bountyAmountEth, submissionWindowHours, targetHunter,
+                       creatorDeterminationPaymentEth, arbiterDeterminationPaymentEth, creatorAssessmentWindowHours }) {
     if (!this.contract) throw new Error('Contract not initialized. Call connect() first.');
 
     // Quick UI validations
@@ -259,13 +260,15 @@ class ContractService {
     const ethStr = String(bountyAmountEth);
     if (isNaN(Number(ethStr)) || Number(ethStr) <= 0) throw new Error('Payout amount (ETH) must be > 0');
 
+    // Determine if this is a windowed bounty
+    const hasApprovalWindow = creatorAssessmentWindowHours != null && Number(creatorAssessmentWindowHours) > 0;
+
     try {
       // Encode exact solidity widths
       const now = Math.floor(Date.now() / 1000);
       const submissionDeadline = BigInt(now + Math.trunc(winHrs * 3600));
       const classId64 = BigInt(classId);
       const thresh8 = BigInt(thrNum);
-      const valueWei = ethers.parseEther(ethStr);
 
       // Validate ranges
       const mask64 = (1n << 64n) - 1n;
@@ -273,26 +276,71 @@ class ContractService {
       if ((classId64 & ~mask64) !== 0n) throw new Error('classId exceeds uint64');
       if ((thresh8 & ~mask8) !== 0n) throw new Error('threshold exceeds uint8');
 
-      console.log('🔍 createBounty params', {
-        evaluationCid: evaluationCid.substring(0, 20) + '...',
-        classId64: classId64.toString(),
-        threshold8: thresh8.toString(),
-        submissionDeadline: submissionDeadline.toString(),
-        valueWei: valueWei.toString()
-      });
+      let args;
+      let valueWei;
+      let callFn;
 
-      const args = [
-        evaluationCid,
-        classId64,
-        thresh8,
-        submissionDeadline,
-        targetHunter || '0x0000000000000000000000000000000000000000',
-        { value: valueWei }
-      ];
+      if (hasApprovalWindow) {
+        // 8-param overload with creator approval window
+        const creatorPayWei = ethers.parseEther(String(creatorDeterminationPaymentEth));
+        const arbiterPayWei = ethers.parseEther(String(arbiterDeterminationPaymentEth));
+        const windowSizeSec = BigInt(Math.trunc(Number(creatorAssessmentWindowHours) * 3600));
+
+        // Escrow = max(creatorPay, arbiterPay)
+        valueWei = creatorPayWei > arbiterPayWei ? creatorPayWei : arbiterPayWei;
+
+        console.log('🔍 createBounty (windowed) params', {
+          evaluationCid: evaluationCid.substring(0, 20) + '...',
+          classId64: classId64.toString(),
+          threshold8: thresh8.toString(),
+          submissionDeadline: submissionDeadline.toString(),
+          creatorPayWei: creatorPayWei.toString(),
+          arbiterPayWei: arbiterPayWei.toString(),
+          windowSizeSec: windowSizeSec.toString(),
+          valueWei: valueWei.toString()
+        });
+
+        args = [
+          evaluationCid,
+          classId64,
+          thresh8,
+          submissionDeadline,
+          targetHunter || '0x0000000000000000000000000000000000000000',
+          creatorPayWei,
+          arbiterPayWei,
+          windowSizeSec,
+          { value: valueWei }
+        ];
+
+        // Use the 8-param overload signature to disambiguate
+        callFn = this.contract['createBounty(string,uint64,uint8,uint64,address,uint256,uint256,uint64)'];
+      } else {
+        // Classic 5-param overload
+        valueWei = ethers.parseEther(ethStr);
+
+        console.log('🔍 createBounty params', {
+          evaluationCid: evaluationCid.substring(0, 20) + '...',
+          classId64: classId64.toString(),
+          threshold8: thresh8.toString(),
+          submissionDeadline: submissionDeadline.toString(),
+          valueWei: valueWei.toString()
+        });
+
+        args = [
+          evaluationCid,
+          classId64,
+          thresh8,
+          submissionDeadline,
+          targetHunter || '0x0000000000000000000000000000000000000000',
+          { value: valueWei }
+        ];
+
+        callFn = this.contract['createBounty(string,uint64,uint8,uint64,address)'];
+      }
 
       // Dry-run to surface revert reasons
       try {
-        await this.contract.createBounty.staticCall(...args);
+        await callFn.staticCall(...args);
       } catch (e) {
         const decoded = this._decodeRevertReason(e, [this.contract]);
         const msg = (decoded || e?.message || '').toLowerCase();
@@ -300,11 +348,14 @@ class ContractService {
         if (msg.includes('empty evaluationcid') || msg.includes('emptyevaluationcid')) throw new Error('Evaluation CID is empty');
         if (msg.includes('bad threshold') || msg.includes('badthreshold')) throw new Error('Threshold must be 0..100');
         if (msg.includes('deadline in past') || msg.includes('deadlineinpast')) throw new Error('Deadline must be in the future');
+        if (msg.includes('no creator payment')) throw new Error('Creator approval payment must be > 0');
+        if (msg.includes('no arbiter payment')) throw new Error('Arbiter (oracle) payment must be > 0');
+        if (msg.includes('window required')) throw new Error('Approval window is required when creator and arbiter payments differ');
         throw e;
       }
 
       // Send the tx
-      const tx = await this.contract.createBounty(...args);
+      const tx = await callFn(...args);
       console.log('📤 Transaction sent:', tx.hash);
 
       const receipt = await tx.wait();

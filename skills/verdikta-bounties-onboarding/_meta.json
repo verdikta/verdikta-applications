@@ -9,12 +9,12 @@
     "VERDIKTA_KEYSTORE_PATH"
   ],
   "requiredConfigPaths": [
-    "scripts/.env",
+    "~/.config/verdikta-bounties/.env",
     "~/.config/verdikta-bounties/verdikta-bounties-bot.json"
   ],
   "primaryCredential": {
     "type": "file",
-    "path": "scripts/.env",
+    "path": "~/.config/verdikta-bounties/.env",
     "fields": [
       "VERDIKTA_WALLET_PASSWORD",
       "VERDIKTA_NETWORK",

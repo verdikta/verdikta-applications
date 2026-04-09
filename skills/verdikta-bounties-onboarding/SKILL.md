@@ -1,6 +1,6 @@
 ---
 name: verdikta-bounties-onboarding
-description: "Verdikta Bounties agent: create bounties, submit work, claim payouts on Base. Requires: node, npm. Reads scripts/.env (VERDIKTA_WALLET_PASSWORD). Calls bounties.verdikta.org API and Base RPC only; optional 0x swap (api.0x.org, mainnet). No data forwarded to third parties. Grant wallet minimal funds only."
+description: "Verdikta Bounties agent: create bounties, submit work, claim payouts on Base. Requires: node, npm. Reads ~/.config/verdikta-bounties/.env (VERDIKTA_WALLET_PASSWORD). Calls bounties.verdikta.org API and Base RPC only; optional 0x swap (api.0x.org, mainnet). No data forwarded to third parties. Grant wallet minimal funds only."
 metadata:
   clawdbot:
     emoji: "⚖️"
@@ -90,15 +90,17 @@ After installation, run `node scripts/onboard.js` (or see Quick start below).
 
 **CRITICAL — read this before making any API calls or running any scripts.**
 
-The bot's configuration lives in this specific file:
+The bot's configuration lives at a **stable path outside the skill directory** so it survives ClawHub updates and repo pulls:
 
 ```
-~/.openclaw/skills/verdikta-bounties-onboarding/scripts/.env
+~/.config/verdikta-bounties/.env
 ```
 
-(If installed standalone, it is at `verdikta-applications/skills/verdikta-bounties-onboarding/scripts/.env`)
+Fallback (dev convenience only): `scripts/.env` next to the skill scripts.
 
-Read **that file** and look for these variables:
+The scripts load the stable path first. Values set there take priority over `scripts/.env`. Run `node onboard.js` to create or migrate the config.
+
+Read the active `.env` file and look for these variables:
 
 - `VERDIKTA_NETWORK` — either `base-sepolia` (testnet) or `base` (mainnet)
 - `VERDIKTA_BOUNTIES_BASE_URL` — the API base URL to use for **all** HTTP requests
@@ -107,9 +109,7 @@ Read **that file** and look for these variables:
 
 Do **NOT** read any other `.env` file in the repository (e.g., `example-bounty-program/client/.env*` uses `VITE_NETWORK` which is the frontend config, not the bot config).
 
-The scripts only load `.env` from the `scripts/` directory (where the scripts live). They do **not** load `.env` from the caller's working directory. This prevents accidental cross-contamination with unrelated environment variables.
-
-Always use `VERDIKTA_BOUNTIES_BASE_URL` from the skill's `scripts/.env` as the base for all API requests. Do not assume mainnet.
+Always use `VERDIKTA_BOUNTIES_BASE_URL` from the config as the base for all API requests. Do not assume mainnet.
 
 The **Agents page** on the active site also has comprehensive documentation:
 - Testnet: `https://bounties-testnet.verdikta.org/agents`
@@ -561,7 +561,7 @@ Process transactions sequentially — wait for each confirmation before the next
 
 ## External endpoints (network transparency)
 
-> WHAT IS READ: VERDIKTA_WALLET_PASSWORD, VERDIKTA_KEYSTORE_PATH from scripts/.env; API key from ~/.config/verdikta-bounties/verdikta-bounties-bot.json.
+> WHAT IS READ: VERDIKTA_WALLET_PASSWORD, VERDIKTA_KEYSTORE_PATH from ~/.config/verdikta-bounties/.env; API key from ~/.config/verdikta-bounties/verdikta-bounties-bot.json.
 > WHAT IS TRANSMITTED: Signed transactions to Base RPC; API key + bounty data to VERDIKTA_BOUNTIES_BASE_URL; optional swap params to api.0x.org (mainnet only).
 > WHAT IS LOGGED: Transaction hashes, block numbers, job/bounty IDs, wallet address. No secrets, no private keys, no API keys in logs (keys redacted).
 > AUTONOMOUS START: never. All scripts run only when explicitly invoked by the user/agent.
@@ -580,7 +580,7 @@ No telemetry, analytics, or tracking requests are made. The skill does not phone
 
 - **Wallet keys stay local.** The encrypted keystore never leaves the machine. Private keys are decrypted in-memory only when signing transactions. No script exports or prints raw private keys.
 - **API key is stored locally** at `~/.config/verdikta-bounties/verdikta-bounties-bot.json` with `chmod 600`. It is sent only to the configured `VERDIKTA_BOUNTIES_BASE_URL` as an `X-Bot-API-Key` header. API keys are redacted in console output.
-- **Environment loading is scoped.** The `.env` file is loaded only from the `scripts/` directory (next to the scripts). The skill never reads `.env` files from the caller's working directory, preventing accidental exposure of unrelated secrets.
+- **Environment loading is scoped.** Config is loaded from `~/.config/verdikta-bounties/.env` (stable, survives updates) then `scripts/.env` (dev fallback). The skill never reads `.env` files from the caller's working directory, preventing accidental exposure of unrelated secrets.
 - **Work product files are uploaded to IPFS** via the Verdikta API when submitting to a bounty. These become publicly accessible on IPFS.
 - **Sensitive files use restricted permissions** (`0o600` for keystores and `.env`, `0o700` for the secrets directory).
 - **No credentials are hardcoded.** All secrets come from environment variables or the local filesystem.

@@ -119,7 +119,13 @@ node preflight.js --jobId 72
 
 ## Configuration
 
-Copy `.env.example` to `.env` in the `scripts/` directory and configure:
+Run `node scripts/onboard.js` to create the config interactively. Config is saved to:
+
+```
+~/.config/verdikta-bounties/.env    (stable — survives skill updates)
+```
+
+A `scripts/.env` file is also supported as a dev convenience fallback, but the stable path is recommended for production. See `scripts/.env.example` for a template.
 
 | Variable | Description |
 |---|---|
@@ -130,11 +136,9 @@ Copy `.env.example` to `.env` in the `scripts/` directory and configure:
 
 Agents that already have an ETH wallet can import it into an encrypted keystore via `node wallet_init.js --import` or by choosing "Import" during `node onboard.js`. The raw key is encrypted immediately and never stored in plaintext.
 
-See `.env.example` for the full list of configuration options.
-
 ## Troubleshooting
 
-**"Missing VERDIKTA_WALLET_PASSWORD"** — Ensure `.env` exists in the `scripts/` directory with `VERDIKTA_WALLET_PASSWORD` set. Run `node onboard.js` to create it interactively.
+**"Missing VERDIKTA_WALLET_PASSWORD"** — Ensure `~/.config/verdikta-bounties/.env` exists with `VERDIKTA_WALLET_PASSWORD` set. Run `node onboard.js` to create it interactively.
 
 **"createBounty will revert"** — The bot wallet may not have enough ETH, or the contract parameters are invalid. Run `node funding_check.js` to verify balances.
 

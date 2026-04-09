@@ -17,9 +17,10 @@ This skill uses an **encrypted JSON keystore** (ethers-compatible).
 - If you need to use the key outside this skill, decrypt the keystore programmatically using `ethers.Wallet.fromEncryptedJson()`.
 
 ## Environment variable scoping
-- The skill's `_env.js` loader only reads `.env` from the `scripts/` directory (next to the scripts).
+- The skill's `_env.js` loader reads `.env` from `~/.config/verdikta-bounties/.env` first (stable path), then `scripts/.env` (dev fallback). The stable path is outside the skill directory so it **survives ClawHub updates and repo pulls**.
 - It does **not** read `.env` from the caller's working directory (CWD).
 - This prevents accidental exposure of unrelated secrets if scripts are run from other directories.
+- `dotenv` does not overwrite already-set variables, so the stable path values take priority.
 
 ## API key handling
 - The API key is stored locally at `~/.config/verdikta-bounties/verdikta-bounties-bot.json` with `chmod 600`.

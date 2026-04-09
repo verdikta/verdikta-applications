@@ -782,6 +782,7 @@ function SubmitWork({ walletState }) {
           <li>First passing submission wins the bounty</li>
           <li>Your submission becomes public once uploaded</li>
           <li>Make sure you have enough LINK and ETH before submitting</li>
+          <li><strong>Creator approval window:</strong> Some bounties give the creator a time window to approve submissions directly (skipping AI evaluation). If this bounty has one, your submission will show "Pending Creator Approval" until the creator approves or the window expires. After the window expires, AI evaluation can be triggered normally.</li>
         </ul>
       </div>
 

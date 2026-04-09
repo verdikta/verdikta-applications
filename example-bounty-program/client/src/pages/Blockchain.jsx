@@ -101,12 +101,16 @@ function Blockchain() {
   "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
   "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)",
   "event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, bytes32 verdiktaAggId)",
-  "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, uint8 status, uint256 acceptance)",
+  "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, uint8 status, uint256 acceptance, uint256 rejection)",
   "event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amount)",
+  "event CreatorApproved(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, uint256 amountPaid)",
+  "event CreatorRefunded(uint256 indexed bountyId, address indexed creator, uint256 amountRefunded)",
 
   // Write Functions
   "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)",
+  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize) payable returns (uint256)",
   "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256 submissionId, address evalWallet, uint256 linkMaxBudget)",
+  "function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)",
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
   "function closeExpiredBounty(uint256 bountyId)",
@@ -114,8 +118,8 @@ function Blockchain() {
 
   // View Functions
   "function bountyCount() view returns (uint256)",
-  "function getBounty(uint256 bountyId) view returns (address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions)",
-  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))",
+  "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize))",
+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
   "function getEffectiveBountyStatus(uint256 bountyId) view returns (string)",
   "function isAcceptingSubmissions(uint256 bountyId) view returns (bool)",
   "function verdikta() view returns (address)"
@@ -234,6 +238,49 @@ async function finalizeSubmission(bountyId, submissionId) {
 
   console.log('Submission finalized but did not win');
   return false;
+}
+
+// === Windowed bounties (creator approval window) ===
+
+// Create a windowed bounty (8-param overload)
+async function createWindowedBounty() {
+  const now = Math.floor(Date.now() / 1000);
+  const deadline = now + 48 * 3600;
+  const creatorPay = ethers.parseEther('0.05');  // creator approves directly
+  const arbiterPay = ethers.parseEther('0.10');  // oracle approves after window
+  const windowSize = 3600n;                       // 1 hour window
+
+  // Use the explicit signature to disambiguate the 8-param overload
+  const tx = await escrow['createBounty(string,uint64,uint8,uint64,address,uint256,uint256,uint64)'](
+    'QmYourEvaluationPackageCID',
+    128n,
+    70n,
+    BigInt(deadline),
+    ethers.ZeroAddress,
+    creatorPay,
+    arbiterPay,
+    windowSize,
+    { value: arbiterPay }  // escrow = max(creatorPay, arbiterPay)
+  );
+  await tx.wait();
+}
+
+// Detect if a bounty has an approval window
+async function isWindowed(bountyId) {
+  const bounty = await escrow.getBounty(bountyId);
+  return bounty.creatorAssessmentWindowSize > 0n;
+}
+
+// Creator approves a submission directly (skips oracle evaluation)
+async function creatorApprove(bountyId, submissionId) {
+  const tx = await escrow.creatorApproveSubmission(bountyId, submissionId);
+  await tx.wait();
+}
+
+// Check if a creator window has expired
+async function windowExpired(bountyId, submissionId) {
+  const sub = await escrow.getSubmission(bountyId, submissionId);
+  return Number(sub.creatorWindowEnd) <= Math.floor(Date.now() / 1000);
 }`;
 
   const web3pyExample = `from web3 import Web3
@@ -277,7 +324,7 @@ def create_bounty(evaluation_cid, class_id, threshold, hours_window, payout_eth)
     return event['args']['bountyId']
 
 def get_bounty(bounty_id):
-    """Read bounty details"""
+    """Read bounty details (returns 14-field tuple)"""
     result = escrow.functions.getBounty(bounty_id).call()
     return {
         'creator': result[0],
@@ -285,10 +332,61 @@ def get_bounty(bounty_id):
         'classId': result[2],
         'threshold': result[3],
         'payoutWei': result[4],
+        'createdAt': result[5],
         'deadline': result[6],
         'status': ['Open', 'Awarded', 'Closed'][result[7]],
         'winner': result[8],
+        'submissionCount': result[9],
+        'targetHunter': result[10],
+        # Creator approval window fields (zero/empty for non-windowed bounties)
+        'creatorDeterminationPayment': result[11],
+        'arbiterDeterminationPayment': result[12],
+        'creatorAssessmentWindowSize': result[13],
     }
+
+def is_windowed(bounty_id):
+    """True if bounty has a creator approval window"""
+    return get_bounty(bounty_id)['creatorAssessmentWindowSize'] > 0
+
+def create_windowed_bounty(eval_cid, class_id, threshold, hours_window,
+                           creator_pay_eth, arbiter_pay_eth, approval_hours):
+    """Create a bounty with a creator approval window (8-param overload)"""
+    import time
+    deadline = int(time.time()) + hours_window * 3600
+    creator_pay = w3.to_wei(creator_pay_eth, 'ether')
+    arbiter_pay = w3.to_wei(arbiter_pay_eth, 'ether')
+    escrow_amount = max(creator_pay, arbiter_pay)
+
+    # web3.py auto-disambiguates based on argument count
+    tx = escrow.functions.createBounty(
+        eval_cid,
+        class_id,
+        threshold,
+        deadline,
+        '0x0000000000000000000000000000000000000000',
+        creator_pay,
+        arbiter_pay,
+        approval_hours * 3600,
+    ).build_transaction({
+        'from': account.address,
+        'value': escrow_amount,
+        'nonce': w3.eth.get_transaction_count(account.address),
+        'gas': 600000,
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+    return w3.eth.wait_for_transaction_receipt(tx_hash)
+
+def creator_approve_submission(bounty_id, submission_id):
+    """Creator approves a submission directly (skips oracle, only callable by bounty creator)"""
+    tx = escrow.functions.creatorApproveSubmission(bounty_id, submission_id).build_transaction({
+        'from': account.address,
+        'nonce': w3.eth.get_transaction_count(account.address),
+        'gas': 300000,
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+    return w3.eth.wait_for_transaction_receipt(tx_hash)
 
 def check_link_balance(address):
     """Check LINK token balance"""
@@ -631,6 +729,20 @@ submission-package.zip
             </div>
           </div>
 
+          <div className="callout callout-warning" style={{ marginLeft: '3rem', marginBottom: '1rem' }}>
+            <div>
+              <strong>Windowed bounties (creator approval window):</strong>
+              <p style={{ margin: '0.5rem 0 0 0' }}>
+                If the bounty has <code>creatorAssessmentWindowSize &gt; 0</code>, prepareSubmission sets
+                the submission to <code>PendingCreatorApproval</code> instead of <code>Prepared</code>.
+                The bounty creator can then call <code>creatorApproveSubmission(bountyId, submissionId)</code>
+                during the window to pay the hunter directly (skipping oracle evaluation).
+                If the window expires, anyone can call <code>startPreparedSubmission</code> to begin the
+                normal AI evaluation flow (steps 2-4).
+              </p>
+            </div>
+          </div>
+
           <div className="workflow-step">
             <div className="step-number">2</div>
             <div className="step-content">
@@ -724,7 +836,7 @@ submission-package.zip
               <div className="submission-state">
                 <span className="state-code">0</span>
                 <span className="state-name">Prepared</span>
-                <span className="state-desc">EvaluationWallet ready, awaiting startPreparedSubmission</span>
+                <span className="state-desc">EvaluationWallet ready, awaiting startPreparedSubmission (non-windowed bounties)</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">1</span>
@@ -733,23 +845,23 @@ submission-package.zip
               </div>
               <div className="submission-state">
                 <span className="state-code">2</span>
-                <span className="state-name">PassedPaid</span>
-                <span className="state-desc">Score met threshold, ETH paid to hunter</span>
+                <span className="state-name">Failed</span>
+                <span className="state-desc">Below threshold or oracle timeout, LINK refunded to hunter</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">3</span>
-                <span className="state-name">FailedRefunded</span>
-                <span className="state-desc">Below threshold, LINK refunded to hunter</span>
+                <span className="state-name">PassedPaid</span>
+                <span className="state-desc">Score met threshold, ETH paid to hunter (winner)</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">4</span>
                 <span className="state-name">PassedUnpaid</span>
-                <span className="state-desc">Passed but payout pending (call finalizeSubmission)</span>
+                <span className="state-desc">Passed threshold but another submission already won the bounty</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">5</span>
-                <span className="state-name">FailedUnrefunded</span>
-                <span className="state-desc">Failed but refund pending (call finalizeSubmission)</span>
+                <span className="state-name">PendingCreatorApproval</span>
+                <span className="state-desc">Windowed bounty: awaiting creator decision. Creator may approve directly, or after window expires anyone can call startPreparedSubmission for AI evaluation.</span>
               </div>
             </div>
           </div>
@@ -774,17 +886,17 @@ submission-package.zip
               <tr>
                 <td><code>1</code></td>
                 <td>PendingVerdikta</td>
-                <td><code>PENDING_EVALUATION</code> (onChainStatus: PendingVerdikta)</td>
+                <td><code>PENDING_EVALUATION</code> / <code>ACCEPTED_PENDING_CLAIM</code> / <code>REJECTED_PENDING_FINALIZATION</code></td>
               </tr>
               <tr>
                 <td><code>2</code></td>
-                <td>PassedPaid</td>
-                <td><code>APPROVED</code></td>
+                <td>Failed</td>
+                <td><code>REJECTED</code></td>
               </tr>
               <tr>
                 <td><code>3</code></td>
-                <td>FailedRefunded</td>
-                <td><code>REJECTED</code></td>
+                <td>PassedPaid</td>
+                <td><code>APPROVED</code> (paidWinner: true)</td>
               </tr>
               <tr>
                 <td><code>4</code></td>
@@ -793,8 +905,8 @@ submission-package.zip
               </tr>
               <tr>
                 <td><code>5</code></td>
-                <td>FailedUnrefunded</td>
-                <td><code>REJECTED</code> (needs finalize)</td>
+                <td>PendingCreatorApproval</td>
+                <td><code>PendingCreatorApproval</code> (windowed bounties only)</td>
               </tr>
             </tbody>
           </table>

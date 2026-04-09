@@ -232,10 +232,12 @@ console.log(`  Escrow:    ${contractAddress}`);
 console.log(`  CID:       ${primaryCid}`);
 console.log(`  Deadline:  ${new Date(deadline * 1000).toISOString()}`);
 
+// Open bounty (no targeted hunter)
+const targetHunter = ethers.ZeroAddress;
+
 // Dry-run first to catch revert reasons before spending gas
 try {
-  const targetHunter = ethers.ZeroAddress;
-const gas = await contract.createBounty.estimateGas(primaryCid, classId, threshold, deadline, targetHunter, { value });
+  const gas = await contract.createBounty.estimateGas(primaryCid, classId, threshold, deadline, targetHunter, { value });
   console.log(`  estimated gas: ${gas.toString()}`);
 } catch (err) {
   const reason = err.reason || err.shortMessage || err.message || 'unknown';
@@ -244,8 +246,7 @@ const gas = await contract.createBounty.estimateGas(primaryCid, classId, thresho
   process.exit(1);
 }
 
-const targetHunter2 = ethers.ZeroAddress;
-const tx = await contract.createBounty(primaryCid, classId, threshold, deadline, targetHunter2, { value });
+const tx = await contract.createBounty(primaryCid, classId, threshold, deadline, targetHunter, { value });
 console.log(`  tx: ${tx.hash}`);
 const receipt = await tx.wait();
 

@@ -1627,13 +1627,20 @@ function BountyDetails({ walletState }) {
     return isPendingStatus(status);
   };
 
-  const hasActiveSubmissions = submissions.some(s =>
-    isActivelyPending(s.status) || isActivelyPending(s.onChainStatus)
-  );
+  // A submission is "actively pending" only if its primary status says so.
+  // Ignore stale onChainStatus when the backend status is already terminal
+  // (e.g., status=APPROVED but onChainStatus still says PendingVerdikta).
+  const isSubmissionActivelyPending = (s) => {
+    if (isActivelyPending(s.status)) return true;
+    // Only fall back to onChainStatus if primary status is not terminal
+    const terminal = ['APPROVED', 'REJECTED', 'ACCEPTED', 'PassedPaid', 'Failed',
+                      'ACCEPTED_PENDING_CLAIM', 'REJECTED_PENDING_FINALIZATION'];
+    if (terminal.includes(s.status)) return false;
+    return isActivelyPending(s.onChainStatus);
+  };
 
-  const pendingSubmissions = submissions.filter(s =>
-    isActivelyPending(s.status) || isActivelyPending(s.onChainStatus)
-  );
+  const hasActiveSubmissions = submissions.some(isSubmissionActivelyPending);
+  const pendingSubmissions = submissions.filter(isSubmissionActivelyPending);
 
   const onChainIdForButtons = getOnChainBountyId();
   const disableActionsForMissingId = onChainIdForButtons == null;

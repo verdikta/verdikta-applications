@@ -101,7 +101,7 @@ function Blockchain() {
   "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
   "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)",
   "event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, bytes32 verdiktaAggId)",
-  "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, uint8 status, uint256 acceptance, uint256 rejection)",
+  "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, bool passed, uint256 acceptance, uint256 rejection, string justificationCids)",
   "event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amount)",
   "event CreatorApproved(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, uint256 amountPaid)",
   "event CreatorRefunded(uint256 indexed bountyId, address indexed creator, uint256 amountRefunded)",

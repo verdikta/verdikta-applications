@@ -546,20 +546,23 @@ class SyncService {
         const job = this._findJob(storage, bountyId, currentContract);
         if (!job) break;
 
-        // Add submission if not already tracked
+        // Add submission if not already tracked.
+        // Note: hunterCid is NOT in this event — it's stored on-chain via prepareSubmission()
+        // and will be picked up by the next getSubmission() call (e.g., in syncSubmissions or refresh).
         const existing = (job.submissions || []).find(s => s.submissionId === submissionId);
         if (!existing) {
           if (!job.submissions) job.submissions = [];
           job.submissions.push({
             submissionId,
             hunter: args.hunter,
+            evalWallet: args.evalWallet,
             evaluationCid: args.evaluationCid,
-            hunterCid: args.hunterCid,
+            linkMaxBudget: args.linkMaxBudget?.toString(),
             status: 'Prepared',
             submittedAt: Math.floor(Date.now() / 1000)
           });
           job.submissionCount = (job.submissionCount || 0) + 1;
-          logger.info('[event] SubmissionPrepared', { bountyId, submissionId });
+          logger.info('[event] SubmissionPrepared', { bountyId, submissionId, evalWallet: args.evalWallet });
         }
         break;
       }
@@ -597,24 +600,37 @@ class SyncService {
       case 'SubmissionFinalized': {
         const bountyId = Number(args.bountyId);
         const submissionId = Number(args.submissionId);
-        const chainStatus = Number(args.status);
+        // Contract event signature: (bountyId, submissionId, bool passed, uint256 acceptance, uint256 rejection, string justificationCids)
+        const passed = Boolean(args.passed);
         const acceptance = Number(args.acceptance);
         const rejection = Number(args.rejection);
+        const justificationCids = args.justificationCids || '';
         const job = this._findJob(storage, bountyId, currentContract);
         if (!job) break;
 
         const sub = (job.submissions || []).find(s => s.submissionId === submissionId);
         if (sub) {
-          const statusMap = { 2: 'REJECTED', 3: 'APPROVED', 4: 'APPROVED' };
-          sub.status = statusMap[chainStatus] || 'UNKNOWN';
-          sub.onChainStatus = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'][chainStatus] || 'Unknown';
+          // For passed=true, the contract sets status to PassedPaid (3) if this is the winner,
+          // or PassedUnpaid (4) otherwise. The PayoutSent event (handled separately) flags the
+          // actual winner via paidWinner. Default to PassedPaid here; PassedUnpaid will be
+          // corrected by re-sync if needed.
+          if (passed) {
+            sub.status = 'APPROVED';
+            sub.onChainStatus = 'PassedPaid';
+          } else {
+            sub.status = 'REJECTED';
+            sub.onChainStatus = 'Failed';
+          }
           sub.acceptance = acceptance;
           sub.rejection = rejection;
           sub.finalizedAt = Math.floor(Date.now() / 1000);
           sub.score = acceptance > 0 ? acceptance : null;
+          if (justificationCids) {
+            sub.justificationCids = justificationCids;
+          }
 
-          // Detect timeout: zero scores = oracle timed out
-          if (chainStatus === 2 && acceptance === 0 && rejection === 0) {
+          // Detect timeout: failed with zero scores = oracle timed out (failTimedOutSubmission was called)
+          if (!passed && acceptance === 0 && rejection === 0) {
             sub.failureReason = 'ORACLE_TIMEOUT';
           }
         }
@@ -628,7 +644,7 @@ class SyncService {
           this.hotBountyIds.delete(bountyId);
         }
 
-        logger.info('[event] SubmissionFinalized', { bountyId, submissionId, status: sub?.status });
+        logger.info('[event] SubmissionFinalized', { bountyId, submissionId, passed, status: sub?.status });
         break;
       }
 
@@ -684,13 +700,15 @@ class SyncService {
 
       case 'BountyClosed': {
         const bountyId = Number(args.bountyId);
+        const creator = args.creator;
+        const amountReturned = args.amountReturned?.toString();
         const job = this._findJob(storage, bountyId, currentContract);
         if (!job) break;
 
         job.status = 'CLOSED';
         job.settledAt = Math.floor(Date.now() / 1000);
         this.hotBountyIds.delete(bountyId);
-        logger.info('[event] BountyClosed', { bountyId });
+        logger.info('[event] BountyClosed', { bountyId, creator, amountReturned });
         break;
       }
 

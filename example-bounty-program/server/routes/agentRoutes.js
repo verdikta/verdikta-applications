@@ -127,8 +127,9 @@ Some bounties have a creator approval window. When a submission is prepared on s
    (caller must fund LINK — does not have to be the hunter)
 5. If oracle approves: hunter receives arbiterDeterminationPayment
 
-IMPORTANT: Creator approval is an on-chain transaction only. There is no API endpoint to approve.
-The creator must sign creatorApproveSubmission() with their wallet.
+Creator approval calldata: POST /api/jobs/:id/submissions/:subId/approve-as-creator
+Body: { "creator": "0xCreatorWallet" }
+Returns encoded creatorApproveSubmission calldata for the creator to sign and broadcast.
 
 To detect windowed bounties: check creatorAssessmentWindowSize > 0 in the bounty data from GET /api/jobs/:id.
 To check window status: check creatorWindowEnd on the submission (unix timestamp when window closes).
@@ -228,6 +229,14 @@ router.get('/api/docs', (req, res) => {
         method: 'GET',
         path: '/jobs/:id/evaluation-package',
         description: 'Get full evaluation package details (manifest, query, rubric, jury config)'
+      },
+      {
+        method: 'POST',
+        path: '/jobs/:id/submissions/:subId/approve-as-creator',
+        description: 'Get encoded creatorApproveSubmission calldata (bounty creator only, during approval window)',
+        contentType: 'application/json',
+        fields: ['creator: Ethereum address 0x... of the bounty creator (required)'],
+        returns: 'Encoded calldata for creatorApproveSubmission, plus approval window details'
       },
       {
         method: 'POST',
@@ -331,7 +340,7 @@ router.get('/api/docs', (req, res) => {
             'Only callable by the bounty creator during the approval window',
             'Pays hunter creatorDeterminationPayment, refunds excess to creator',
             'Marks bounty as Awarded',
-            'No API endpoint exists — this is an on-chain wallet transaction only',
+            'Get calldata via POST /jobs/:id/submissions/:subId/approve-as-creator with { "creator": "0x..." }',
             'Earlier submissions must be resolved first (FIFO ordering)'
           ]
         },
@@ -385,7 +394,7 @@ router.get('/api/docs', (req, res) => {
         description: 'Bounties with a creator approval window allow the creator to approve submissions directly before oracle evaluation',
         detection: 'Check creatorAssessmentWindowSize > 0 in bounty data from GET /jobs/:id',
         submissionFields: 'creatorWindowEnd (unix timestamp) on each submission indicates when the window closes',
-        approvalMethod: 'On-chain only — creator must sign creatorApproveSubmission(bountyId, submissionId) with their wallet. No API endpoint exists for approval.',
+        approvalMethod: 'POST /jobs/:id/submissions/:subId/approve-as-creator with { "creator": "0x..." } returns encoded calldata. Creator signs and broadcasts the transaction.',
         afterWindowExpiry: 'Anyone can fund LINK and call startPreparedSubmission to begin oracle evaluation'
       }
     },

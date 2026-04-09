@@ -490,7 +490,7 @@ router.get('/admin/stuck', async (req, res) => {
           if (contract && onChainBountyId != null) {
             try {
               const chainSub = await contract.getSubmission(onChainBountyId, sub.submissionId);
-              const statusNames = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'];
+              const statusNames = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
               stuckInfo.onChainStatus = statusNames[Number(chainSub.status)] || `Unknown(${chainSub.status})`;
               stuckInfo.verdiktaAggId = chainSub.verdiktaAggId;
 
@@ -1076,14 +1076,33 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
     }
 
     const status = (submission.status || '').toLowerCase();
-    if (status !== 'prepared') {
+    const isPrepared = status === 'prepared';
+    const isPendingCreatorApproval = status === 'pendingcreatorapproval';
+
+    if (!isPrepared && !isPendingCreatorApproval) {
       return res.status(400).json({
         success: false,
-        error: `Submission not in Prepared state (current: ${submission.status}). Only Prepared submissions can be started.`
+        error: `Submission not in a startable state (current: ${submission.status}). Must be Prepared or PendingCreatorApproval (with expired window).`
       });
     }
 
-    if (submission.hunter && submission.hunter.toLowerCase() !== hunter.toLowerCase()) {
+    // For windowed bounties, check that the creator approval window has expired
+    if (isPendingCreatorApproval) {
+      const now = Math.floor(Date.now() / 1000);
+      const windowEnd = submission.creatorWindowEnd || 0;
+      if (windowEnd > now) {
+        return res.status(400).json({
+          success: false,
+          error: `Creator approval window is still open (expires ${new Date(windowEnd * 1000).toISOString()}). Cannot start evaluation until window closes.`,
+          creatorWindowEnd: windowEnd,
+          secondsRemaining: windowEnd - now
+        });
+      }
+    }
+
+    // For Prepared submissions, only the original hunter can start.
+    // For PendingCreatorApproval (expired window), anyone can fund LINK and start.
+    if (isPrepared && submission.hunter && submission.hunter.toLowerCase() !== hunter.toLowerCase()) {
       return res.status(403).json({ success: false, error: 'Hunter address does not match submission hunter' });
     }
 
@@ -1224,6 +1243,105 @@ router.post('/:jobId/submissions/:submissionId/finalize', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Not found', details: error.message });
     }
     return res.status(500).json({ success: false, error: 'Failed to encode finalizeSubmission', details: error.message });
+  }
+});
+
+/**
+ * POST /api/jobs/:jobId/submissions/:submissionId/approve-as-creator
+ * Encode creatorApproveSubmission calldata for the bounty creator to sign.
+ * Only works for PendingCreatorApproval submissions within the approval window.
+ */
+router.post('/:jobId/submissions/:submissionId/approve-as-creator', async (req, res) => {
+  const { jobId, submissionId } = req.params;
+
+  try {
+    logger.info('[approve-as-creator] request', { jobId, submissionId });
+
+    const { creator } = req.body || {};
+
+    if (!creator || !/^0x[a-fA-F0-9]{40}$/.test(creator)) {
+      return res.status(400).json({ success: false, error: 'Invalid or missing creator address' });
+    }
+
+    const job = await jobStorage.getJob(jobId);
+    const onChainBountyId = job.jobId;
+    const subId = parseInt(submissionId, 10);
+    const submission = job.submissions?.find(s => s.submissionId === subId);
+
+    if (!submission) {
+      return res.status(404).json({ success: false, error: `Submission ${submissionId} not found for job ${jobId}` });
+    }
+
+    if (onChainBountyId == null) {
+      return res.status(400).json({ success: false, error: 'Job not on-chain' });
+    }
+
+    // Verify caller is the bounty creator
+    if (!job.creator || job.creator.toLowerCase() !== creator.toLowerCase()) {
+      return res.status(403).json({ success: false, error: 'Only the bounty creator can approve submissions' });
+    }
+
+    // Verify submission is in the right state
+    const status = (submission.status || '').toLowerCase();
+    if (status !== 'pendingcreatorapproval') {
+      return res.status(400).json({
+        success: false,
+        error: `Submission not in PendingCreatorApproval state (current: ${submission.status}). Cannot approve.`
+      });
+    }
+
+    // Check window hasn't expired (optional — contract enforces this too, but better UX to catch early)
+    const now = Math.floor(Date.now() / 1000);
+    const windowEnd = submission.creatorWindowEnd || 0;
+    if (windowEnd > 0 && windowEnd <= now) {
+      return res.status(400).json({
+        success: false,
+        error: 'Creator approval window has expired. The submission can now be started for oracle evaluation instead.',
+        hint: `POST /api/jobs/${jobId}/submissions/${submissionId}/start`
+      });
+    }
+
+    const contractAddress = config.bountyEscrowAddress;
+    if (!contractAddress) {
+      return res.status(500).json({ success: false, error: 'Contract not configured' });
+    }
+
+    const onChainSubmissionId = submission.onChainSubmissionId ?? submission.submissionId;
+
+    const iface = new ethers.Interface([
+      'function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)'
+    ]);
+    const calldata = iface.encodeFunctionData('creatorApproveSubmission', [
+      onChainBountyId,
+      onChainSubmissionId
+    ]);
+
+    logger.info('[approve-as-creator] encoded', { jobId, submissionId, onChainBountyId, onChainSubmissionId });
+
+    return res.json({
+      success: true,
+      transaction: {
+        to: contractAddress,
+        data: calldata,
+        value: '0',
+        chainId: config.chainId
+      },
+      approvalDetails: {
+        creatorPayment: job.creatorDeterminationPayment || null,
+        arbiterPayment: job.arbiterDeterminationPayment || null,
+        windowEnd,
+        windowEndISO: windowEnd ? new Date(windowEnd * 1000).toISOString() : null,
+        secondsRemaining: windowEnd > now ? windowEnd - now : 0
+      },
+      note: 'Sign and broadcast this transaction with the creator wallet to approve the submission and pay the hunter.'
+    });
+
+  } catch (error) {
+    logger.error('[approve-as-creator] error', { jobId, submissionId, msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ success: false, error: 'Not found', details: error.message });
+    }
+    return res.status(500).json({ success: false, error: 'Failed to encode creatorApproveSubmission', details: error.message });
   }
 });
 
@@ -3075,8 +3193,20 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         `Confirm submission with POST /api/jobs/${jobId}/submissions/confirm after step 1`,
         `Poll GET /api/jobs/${jobId}/submissions after step 3 until evaluation completes, then execute step 4`,
         'Step 4 (finalizeSubmission) is REQUIRED — oracle completion does NOT trigger payment automatically',
-        'If finalizeSubmission reverts with "Verdikta not ready", the oracle timed out — call failTimedOutSubmission instead (available after 10 min)'
-      ]
+        'If finalizeSubmission reverts with "Verdikta not ready", the oracle timed out — call failTimedOutSubmission instead (available after 10 min)',
+        ...(job.creatorAssessmentWindowSize > 0 ? [
+          `WINDOWED BOUNTY: After step 1, the submission enters PendingCreatorApproval for ${job.creatorAssessmentWindowSize}s. The creator may approve directly. If the window expires, proceed with steps 2-4.`,
+          `Poll GET /api/jobs/${jobId}/submissions/:subId/diagnose to check window status before executing step 3.`
+        ] : [])
+      ],
+      ...(job.creatorAssessmentWindowSize > 0 ? {
+        windowedBounty: {
+          note: 'This bounty has a creator approval window. After step 1, the submission enters PendingCreatorApproval status. The creator may approve directly during the window. If the window expires without approval, proceed with steps 2-4 to start oracle evaluation.',
+          creatorAssessmentWindowSize: job.creatorAssessmentWindowSize,
+          creatorDeterminationPayment: job.creatorDeterminationPayment || null,
+          arbiterDeterminationPayment: job.arbiterDeterminationPayment || null,
+        }
+      } : {})
     });
 
   } catch (error) {
@@ -3943,7 +4073,7 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
         const chainSub = await contract.getSubmission(onChainBountyId, subId);
 
         // Map status enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
-        const statusNames = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'];
+        const statusNames = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
         const chainStatus = statusNames[Number(chainSub.status)] || `Unknown(${chainSub.status})`;
 
         const submittedAtChain = Number(chainSub.submittedAt);
@@ -4013,6 +4143,28 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
                 diagnosis.recommendations.push(`Wait ${Math.ceil((600 - elapsedSeconds) / 60)} more minute(s) for timeout eligibility`);
               }
             }
+          }
+        } else if (chainStatus === 'PendingCreatorApproval') {
+          const windowEnd = Number(chainSub.creatorWindowEnd);
+          const windowOpen = windowEnd > nowSeconds;
+
+          diagnosis.checks.creatorApprovalWindow = {
+            windowEnd,
+            windowEndISO: new Date(windowEnd * 1000).toISOString(),
+            windowOpen,
+            secondsRemaining: windowOpen ? windowEnd - nowSeconds : 0
+          };
+
+          if (windowOpen) {
+            diagnosis.recommendations.push(
+              `Creator approval window is open until ${new Date(windowEnd * 1000).toISOString()} (${Math.ceil((windowEnd - nowSeconds) / 60)} min remaining). ` +
+              `The bounty creator can approve via POST /api/jobs/${jobId}/submissions/${subId}/approve-as-creator, ` +
+              `or wait for the window to expire and then call POST /api/jobs/${jobId}/submissions/${subId}/start.`
+            );
+          } else {
+            diagnosis.recommendations.push(
+              `Creator approval window has expired. Call POST /api/jobs/${jobId}/submissions/${subId}/start to begin oracle evaluation (requires LINK funding).`
+            );
           }
         } else if (chainStatus === 'Failed' || chainStatus === 'PassedPaid' || chainStatus === 'PassedUnpaid') {
           diagnosis.issues.push(`Submission already finalized with status: ${chainStatus}`);

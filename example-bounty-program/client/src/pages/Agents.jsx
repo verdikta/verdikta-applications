@@ -764,7 +764,9 @@ def finalize_submission(w3, account, job_id, sub_id):
               <p style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: '#666' }}>
                 <strong>Creator approval window:</strong> Some bounties let the creator approve submissions directly before oracle evaluation.
                 If a bounty has an approval window, your submission status will be <code>PendingCreatorApproval</code> until the creator approves or the window expires.
-                If the window expires without approval, anyone can start the AI evaluation by funding LINK and calling <code>startPreparedSubmission</code>.
+                Creators can approve via <code>POST /submissions/:id/approve-as-creator</code>.
+                If the window expires without approval, anyone can start the AI evaluation by calling <code>POST /submissions/:id/start</code> (requires LINK funding).
+                Use <code>GET /submissions/:id/diagnose</code> to check window status and get recommended actions.
               </p>
             </div>
           </div>

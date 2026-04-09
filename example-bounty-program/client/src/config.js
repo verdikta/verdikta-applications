@@ -42,6 +42,8 @@ export const config = {
   verdiktaAggregatorAddress,
 
   // Network Details
+  // Contract addresses are only available for the active network (from env vars).
+  // The inactive network will have null addresses.
   networks: {
     'base-sepolia': {
       name: 'Base Sepolia Testnet',
@@ -50,6 +52,9 @@ export const config = {
       rpcUrl: 'https://sepolia.base.org',
       explorer: 'https://sepolia.basescan.org',
       currency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+      bountyEscrowAddress: network === 'base-sepolia' ? bountyEscrowAddress : null,
+      verdiktaAggregatorAddress: network === 'base-sepolia' ? verdiktaAggregatorAddress : null,
+      linkTokenAddress: network === 'base-sepolia' ? linkTokenAddress : null,
     },
     'base': {
       name: 'Base Mainnet',
@@ -58,6 +63,9 @@ export const config = {
       rpcUrl: 'https://mainnet.base.org',
       explorer: 'https://basescan.org',
       currency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+      bountyEscrowAddress: network === 'base' ? bountyEscrowAddress : null,
+      verdiktaAggregatorAddress: network === 'base' ? verdiktaAggregatorAddress : null,
+      linkTokenAddress: network === 'base' ? linkTokenAddress : null,
     }
   },
 };

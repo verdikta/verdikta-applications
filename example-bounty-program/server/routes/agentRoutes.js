@@ -609,7 +609,7 @@ router.get('/feed.xml', async (req, res) => {
       return `  <entry>
     <title>${escXml(title)}</title>
     <id>bounty-${job.jobId}</id>
-    <link href="${escXml(`${base}/jobs/${job.jobId}`)}"/>
+    <link href="${escXml(`${base}/bounty/${job.jobId}`)}"/>
     <summary>${escXml(summary)}</summary>
     <updated>${updated}</updated>
     <category term="${escXml(job.status)}"/>

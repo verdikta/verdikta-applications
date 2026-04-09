@@ -46,19 +46,20 @@ function Blockchain() {
   const sepoliaConfig = config.networks['base-sepolia'];
   const mainnetConfig = config.networks['base'];
 
+  const NOT_DEPLOYED = 'Not deployed';
   const contracts = {
     sepolia: {
-      bountyEscrow: sepoliaConfig.bountyEscrowAddress,
-      verdiktaAggregator: sepoliaConfig.verdiktaAggregatorAddress,
-      linkToken: sepoliaConfig.linkTokenAddress,
+      bountyEscrow: sepoliaConfig.bountyEscrowAddress || NOT_DEPLOYED,
+      verdiktaAggregator: sepoliaConfig.verdiktaAggregatorAddress || NOT_DEPLOYED,
+      linkToken: sepoliaConfig.linkTokenAddress || NOT_DEPLOYED,
       chainId: sepoliaConfig.chainId,
       rpcUrl: sepoliaConfig.rpcUrl,
       explorer: sepoliaConfig.explorer
     },
     mainnet: {
-      bountyEscrow: mainnetConfig.bountyEscrowAddress,
-      verdiktaAggregator: mainnetConfig.verdiktaAggregatorAddress,
-      linkToken: mainnetConfig.linkTokenAddress,
+      bountyEscrow: mainnetConfig.bountyEscrowAddress || NOT_DEPLOYED,
+      verdiktaAggregator: mainnetConfig.verdiktaAggregatorAddress || NOT_DEPLOYED,
+      linkToken: mainnetConfig.linkTokenAddress || NOT_DEPLOYED,
       chainId: mainnetConfig.chainId,
       rpcUrl: mainnetConfig.rpcUrl,
       explorer: mainnetConfig.explorer
@@ -495,7 +496,7 @@ submission-package.zip
                       <code>{contracts.mainnet.bountyEscrow}</code>
                       <ExternalLink size={12} />
                     </a>
-                    {contracts.mainnet.bountyEscrow.startsWith('0x') && (
+                    {contracts.mainnet.bountyEscrow?.startsWith('0x') && (
                       <button
                         className="btn-icon-small"
                         onClick={() => copyToClipboard(contracts.mainnet.bountyEscrow, 'escrow-mainnet')}

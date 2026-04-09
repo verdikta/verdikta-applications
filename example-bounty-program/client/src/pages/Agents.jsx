@@ -1087,44 +1087,39 @@ def finalize_submission(w3, account, job_id, sub_id):
             </p>
             <div className="contract-addresses-preview">
               <h4>Contract Addresses</h4>
-              <div className="address-row">
-                <span className="network-name">Base Sepolia:</span>
-                <a
-                  href={`${config.networks['base-sepolia'].explorer}/address/${config.networks['base-sepolia'].bountyEscrowAddress}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="address-link"
-                >
-                  <code>{config.networks['base-sepolia'].bountyEscrowAddress}</code>
-                  <ExternalLink size={12} />
-                </a>
-                <button
-                  className="btn-icon-small"
-                  onClick={() => copyToClipboard(config.networks['base-sepolia'].bountyEscrowAddress, 'sepolia-addr')}
-                  title="Copy address"
-                >
-                  {copiedCode === 'sepolia-addr' ? <Check size={14} /> : <Copy size={14} />}
-                </button>
-              </div>
-              <div className="address-row">
-                <span className="network-name">Base Mainnet:</span>
-                <a
-                  href={`${config.networks['base'].explorer}/address/${config.networks['base'].bountyEscrowAddress}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="address-link"
-                >
-                  <code>{config.networks['base'].bountyEscrowAddress}</code>
-                  <ExternalLink size={12} />
-                </a>
-                <button
-                  className="btn-icon-small"
-                  onClick={() => copyToClipboard(config.networks['base'].bountyEscrowAddress, 'mainnet-addr')}
-                  title="Copy address"
-                >
-                  {copiedCode === 'mainnet-addr' ? <Check size={14} /> : <Copy size={14} />}
-                </button>
-              </div>
+              {[
+                { label: 'Base Sepolia', key: 'base-sepolia', copyId: 'sepolia-addr' },
+                { label: 'Base Mainnet', key: 'base', copyId: 'mainnet-addr' },
+              ].map(({ label, key, copyId }) => {
+                const addr = config.networks[key]?.bountyEscrowAddress;
+                return (
+                  <div className="address-row" key={key}>
+                    <span className="network-name">{label}:</span>
+                    {addr ? (
+                      <>
+                        <a
+                          href={`${config.networks[key].explorer}/address/${addr}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="address-link"
+                        >
+                          <code>{addr}</code>
+                          <ExternalLink size={12} />
+                        </a>
+                        <button
+                          className="btn-icon-small"
+                          onClick={() => copyToClipboard(addr, copyId)}
+                          title="Copy address"
+                        >
+                          {copiedCode === copyId ? <Check size={14} /> : <Copy size={14} />}
+                        </button>
+                      </>
+                    ) : (
+                      <span style={{ color: '#999', fontStyle: 'italic' }}>Not deployed</span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
           <div className="blockchain-cta">

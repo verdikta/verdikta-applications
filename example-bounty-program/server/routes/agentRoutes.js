@@ -297,6 +297,89 @@ router.get('/api/docs', (req, res) => {
         fields: ['txHash: transaction hash from step 1 (0x + 64 hex chars)'],
         returns: 'Exact calldata for approve LINK, start evaluation, and finalize'
       },
+      // Individual calldata endpoints (alternative to bundle flow)
+      {
+        method: 'POST',
+        path: '/jobs/:id/submit/prepare',
+        description: 'Get encoded prepareSubmission calldata (step 1 of on-chain submission)',
+        contentType: 'application/json',
+        fields: ['hunter: Ethereum address 0x... (required)', 'hunterCid: IPFS CID from POST /submit (required)'],
+        returns: 'Encoded calldata for prepareSubmission. After tx, parse SubmissionPrepared event for submissionId, evalWallet, linkMaxBudget.'
+      },
+      {
+        method: 'POST',
+        path: '/jobs/:id/submit/approve',
+        description: 'Get encoded LINK.approve calldata (step 2 — sets ERC-20 allowance for evalWallet)',
+        contentType: 'application/json',
+        fields: ['evalWallet: address from SubmissionPrepared event (required)', 'linkAmount: linkMaxBudget from event (required)'],
+        returns: 'Encoded calldata for LINK.approve. Do NOT transfer LINK directly — the contract pulls it via transferFrom.'
+      },
+      {
+        method: 'POST',
+        path: '/jobs/:id/submissions/:subId/start',
+        description: 'Get encoded startPreparedSubmission calldata (step 3 — triggers oracle evaluation)',
+        contentType: 'application/json',
+        fields: ['hunter: Ethereum address 0x... (required — must be original hunter for Prepared, anyone for expired PendingCreatorApproval)'],
+        returns: 'Encoded calldata for startPreparedSubmission'
+      },
+      {
+        method: 'POST',
+        path: '/jobs/:id/submissions/:subId/finalize',
+        description: 'Get encoded finalizeSubmission calldata (step 4 — claims payout or finalizes rejection)',
+        contentType: 'application/json',
+        fields: ['hunter: Ethereum address 0x... (required)'],
+        returns: 'Encoded calldata plus oracleResult with scores and pass/fail status'
+      },
+      {
+        method: 'POST',
+        path: '/jobs/:id/submissions/:subId/timeout',
+        description: 'Get encoded failTimedOutSubmission calldata (for stuck submissions > 10 min)',
+        contentType: 'application/json',
+        fields: ['hunter: Ethereum address 0x... (required)'],
+        returns: 'Encoded calldata for failTimedOutSubmission'
+      },
+      {
+        method: 'POST',
+        path: '/jobs/:id/submissions/confirm',
+        description: 'Confirm a submission after broadcasting prepareSubmission tx (registers in backend)',
+        contentType: 'application/json',
+        fields: ['txHash: transaction hash from step 1 (required)', 'hunter: Ethereum address 0x... (required)']
+      },
+      {
+        method: 'GET',
+        path: '/jobs/:id/submissions/:subId/diagnose',
+        description: 'Deep diagnostic for submission state — checks on-chain status, oracle readiness, CID accessibility, and creator approval window',
+        returns: 'Diagnosis with checks, issues, and actionable recommendations'
+      },
+      {
+        method: 'POST',
+        path: '/jobs/:id/submissions/:subId/refresh',
+        description: 'Sync submission status from blockchain to local storage',
+        returns: 'Updated submission data with current on-chain status'
+      },
+      {
+        method: 'POST',
+        path: '/jobs/:id/close',
+        description: 'Get encoded closeExpiredBounty calldata (returns escrowed ETH to creator)',
+        returns: 'Encoded calldata for closeExpiredBounty. Requires all active evaluations to be finalized first.'
+      },
+      // Admin endpoints
+      {
+        method: 'GET',
+        path: '/jobs/admin/stuck',
+        description: 'List submissions stuck in PENDING_EVALUATION for 10+ minutes (timeout candidates)'
+      },
+      {
+        method: 'GET',
+        path: '/jobs/admin/expired',
+        description: 'List expired bounties that can be closed to return funds to creators'
+      },
+      {
+        method: 'GET',
+        path: '/jobs/eth-price',
+        description: 'Get current ETH price in USD (proxied from CoinGecko, cached 1 minute)'
+      },
+      // Discovery endpoints
       {
         method: 'GET',
         path: '/jobs.txt',

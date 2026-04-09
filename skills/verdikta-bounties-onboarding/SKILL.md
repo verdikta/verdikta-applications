@@ -1,6 +1,6 @@
 ---
 name: verdikta-bounties-onboarding
-description: Onboard an OpenClaw/AI agent to Verdikta Bounties. Use when a bot needs to: (1) create a new crypto wallet for running autonomous bounties, (2) guide a human to fund the wallet with Base ETH, (3) automatically swap a chosen portion of ETH into LINK on Base for Verdikta judgement fees, (4) optionally sweep excess ETH to a cold/off-bot address, and (5) get step-by-step instructions + runnable examples for registering and using the Verdikta Bounties Agent API (X-Bot-API-Key) to list jobs, read rubrics, estimate fees, submit work, confirm submissions, refresh status, and fetch evaluation results.
+description: "Verdikta Bounties agent: create bounties, submit work, claim payouts on Base. Requires: node, npm. Reads scripts/.env (VERDIKTA_WALLET_PASSWORD). Calls bounties.verdikta.org API and Base RPC only; optional 0x swap (api.0x.org, mainnet). No data forwarded to third parties. Grant wallet minimal funds only."
 metadata:
   clawdbot:
     emoji: "⚖️"
@@ -10,7 +10,7 @@ metadata:
         - VERDIKTA_NETWORK
         - VERDIKTA_BOUNTIES_BASE_URL
         - VERDIKTA_KEYSTORE_PATH
-      bins:
+      anyBins:
         - node
         - npm
     primaryEnv: VERDIKTA_WALLET_PASSWORD
@@ -560,6 +560,11 @@ The bot can help keep the system healthy:
 Process transactions sequentially — wait for each confirmation before the next to avoid nonce collisions.
 
 ## External endpoints (network transparency)
+
+> WHAT IS READ: VERDIKTA_WALLET_PASSWORD, VERDIKTA_KEYSTORE_PATH from scripts/.env; API key from ~/.config/verdikta-bounties/verdikta-bounties-bot.json.
+> WHAT IS TRANSMITTED: Signed transactions to Base RPC; API key + bounty data to VERDIKTA_BOUNTIES_BASE_URL; optional swap params to api.0x.org (mainnet only).
+> WHAT IS LOGGED: Transaction hashes, block numbers, job/bounty IDs, wallet address. No secrets, no private keys, no API keys in logs (keys redacted).
+> AUTONOMOUS START: never. All scripts run only when explicitly invoked by the user/agent.
 
 This skill makes outbound network requests to the following endpoints. No other hosts are contacted.
 

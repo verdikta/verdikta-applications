@@ -1,0 +1,48 @@
+{
+  "ownerId": "kn70kt901qt3bjzwb1v3q90jm181xhyf",
+  "slug": "verdikta-bounties-onboarding",
+  "version": "1.4.0",
+  "requiredEnvVars": [
+    "VERDIKTA_WALLET_PASSWORD",
+    "VERDIKTA_NETWORK",
+    "VERDIKTA_BOUNTIES_BASE_URL",
+    "VERDIKTA_KEYSTORE_PATH"
+  ],
+  "requiredConfigPaths": [
+    "scripts/.env",
+    "~/.config/verdikta-bounties/verdikta-bounties-bot.json"
+  ],
+  "primaryCredential": {
+    "type": "file",
+    "path": "scripts/.env",
+    "fields": [
+      "VERDIKTA_WALLET_PASSWORD",
+      "VERDIKTA_NETWORK",
+      "VERDIKTA_BOUNTIES_BASE_URL",
+      "VERDIKTA_KEYSTORE_PATH"
+    ],
+    "required": [
+      "VERDIKTA_WALLET_PASSWORD",
+      "VERDIKTA_NETWORK",
+      "VERDIKTA_BOUNTIES_BASE_URL",
+      "VERDIKTA_KEYSTORE_PATH"
+    ],
+    "optional": [
+      "BASE_RPC_URL",
+      "BASE_SEPOLIA_RPC_URL",
+      "ZEROX_BASE_URL",
+      "ZEROX_API_KEY",
+      "OFFBOT_ADDRESS"
+    ],
+    "sensitive": true,
+    "notes": "Credentials read fresh from disk at runtime — never embedded as literals. VERDIKTA_WALLET_PASSWORD decrypts the keystore in-memory only when signing transactions; private keys are never written to disk or logs. API key stored separately at ~/.config/verdikta-bounties/verdikta-bounties-bot.json (chmod 600). All files permission-restricted (0o600). Grant wallet minimal funds only — hot wallet posture."
+  },
+  "credentialSetup": {
+    "type": "interactive",
+    "description": "Run 'node scripts/onboard.js' for guided setup: creates encrypted wallet keystore, waits for human funding, registers bot API key. No secrets are hardcoded."
+  },
+  "requires": {
+    "anyBinaries": ["node", "npm"],
+    "os": ["windows", "macos", "linux"]
+  }
+}

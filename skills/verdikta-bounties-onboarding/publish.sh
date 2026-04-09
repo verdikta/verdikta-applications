@@ -10,7 +10,7 @@ set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
 STAGE_DIR="${SKILL_DIR}/.clawhub-stage"
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-1.4.0}"
 DRY_RUN=""
 
 if [[ "${1:-}" == "--dry-run" ]]; then
@@ -22,6 +22,7 @@ mkdir -p "$STAGE_DIR/scripts" "$STAGE_DIR/references"
 
 cp "$SKILL_DIR/SKILL.md" "$STAGE_DIR/"
 cp "$SKILL_DIR/README.md" "$STAGE_DIR/"
+cp "$SKILL_DIR/_meta.json" "$STAGE_DIR/"
 
 # Scripts: source files + package.json + .env.example only
 for f in "$SKILL_DIR"/scripts/*.js "$SKILL_DIR"/scripts/package.json "$SKILL_DIR"/scripts/.env.example; do

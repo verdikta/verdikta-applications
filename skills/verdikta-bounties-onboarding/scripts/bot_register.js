@@ -1,16 +1,14 @@
 #!/usr/bin/env node
 import './_env.js';
 import fs from 'node:fs/promises';
-
-function arg(name, def = null) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : def;
-}
-
-const baseUrl = process.env.VERDIKTA_BOUNTIES_BASE_URL || 'https://bounties.verdikta.org';
+import path from 'node:path';
+import { arg, resolvePath, redactApiKey } from './_lib.js';
 import { defaultSecretsDir, ensureDir } from './_paths.js';
 
-const outPath = arg('out', `${defaultSecretsDir()}/verdikta-bounties-bot.json`);
+const baseUrl = process.env.VERDIKTA_BOUNTIES_BASE_URL || 'https://bounties.verdikta.org';
+
+const outPathRaw = arg('out', `${defaultSecretsDir()}/verdikta-bounties-bot.json`);
+const outPath = resolvePath(outPathRaw);
 const name = arg('name');
 const owner = arg('owner');
 const description = arg('description', 'AI agent worker for Verdikta bounties.');
@@ -31,8 +29,9 @@ if (!resp.ok) {
   throw new Error(`register failed: ${resp.status} ${JSON.stringify(data)}`);
 }
 
-await ensureDir(new URL('.', `file:${outPath}`).pathname).catch(() => {});
+await ensureDir(path.dirname(outPath));
 await fs.writeFile(outPath, JSON.stringify(data, null, 2), { mode: 0o600 });
 
+const key = data?.apiKey || data?.api_key || data?.bot?.apiKey || data?.bot?.api_key;
 console.log('Registered bot. Saved response to:', outPath);
-console.log('API key (keep secret):', data?.apiKey || data?.api_key || data?.bot?.apiKey || data?.bot?.api_key || '(check file)');
+console.log('API key saved (redacted):', redactApiKey(key));

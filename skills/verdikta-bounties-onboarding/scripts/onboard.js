@@ -8,20 +8,12 @@ import { stdin as input, stdout as output } from 'node:process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Wallet, formatEther, formatUnits, Contract } from 'ethers';
 
 import './_env.js';
-import { providerFor, loadWallet, LINK, ERC20_ABI, resolvePath } from './_lib.js';
+import { providerFor, loadWallet, LINK, ERC20_ABI, resolvePath, arg, hasFlag } from './_lib.js';
 import { defaultSecretsDir, ensureDir } from './_paths.js';
-
-function arg(name, def = null) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : def;
-}
-
-function hasFlag(name) {
-  return process.argv.includes(`--${name}`);
-}
 
 function envNum(name, def) {
   const v = process.env[name];
@@ -96,19 +88,57 @@ function upsertEnv(text, patch) {
   return out.join(os.EOL).replace(/\s+$/,'') + os.EOL;
 }
 
-async function ensureWalletKeystore({ keystorePath, password }) {
+function isPrivateKey(s) {
+  const hex = String(s || '').trim().replace(/^0x/, '');
+  return /^[a-fA-F0-9]{64}$/.test(hex);
+}
+
+async function ensureWalletKeystore({ keystorePath, password, rl }) {
   const abs = resolvePath(keystorePath);
   if (await fileExists(abs)) {
     const wallet = await loadWallet();
-    return { wallet, abs, created: false };
+    return { wallet, abs, created: false, imported: false };
   }
 
   await ensureDir(path.dirname(abs));
 
+  // Offer to import an existing wallet instead of generating a new one
+  if (rl) {
+    console.log('\nWallet setup:');
+    console.log('  1) Create a new wallet (default)');
+    console.log('  2) Import an existing private key');
+    console.log('  3) Import an existing keystore file');
+    const walletChoice = (await rl.question('Choose [1]: ')).trim();
+
+    if (walletChoice === '2') {
+      const key = (await rl.question('Paste private key (hex, with or without 0x): ')).trim();
+      if (!isPrivateKey(key)) throw new Error('Invalid private key format (expected 64 hex chars).');
+      const wallet = new Wallet(key.startsWith('0x') ? key : `0x${key}`);
+      const json = await wallet.encrypt(password);
+      await fs.writeFile(abs, json, { mode: 0o600 });
+      console.log('  Imported and encrypted to keystore. Raw key was NOT saved.');
+      return { wallet, abs, created: true, imported: true };
+    }
+
+    if (walletChoice === '3') {
+      const srcPath = (await rl.question('Path to existing keystore JSON: ')).trim();
+      const srcAbs = resolvePath(srcPath);
+      if (!(await fileExists(srcAbs))) throw new Error(`Keystore file not found: ${srcAbs}`);
+      const srcJson = await fs.readFile(srcAbs, 'utf8');
+      const srcPw = (await rl.question('Password for the existing keystore: ')).trim();
+      const wallet = await Wallet.fromEncryptedJson(srcJson, srcPw);
+      // Re-encrypt with the skill's password so all scripts use a consistent credential
+      const reEncrypted = await wallet.encrypt(password);
+      await fs.writeFile(abs, reEncrypted, { mode: 0o600 });
+      console.log('  Imported and re-encrypted to skill keystore.');
+      return { wallet, abs, created: true, imported: true };
+    }
+  }
+
   const wallet = Wallet.createRandom();
   const json = await wallet.encrypt(password);
   await fs.writeFile(abs, json, { mode: 0o600 });
-  return { wallet, abs, created: true };
+  return { wallet, abs, created: true, imported: false };
 }
 
 async function waitForFunding({ network, address, minEth, minLink, pollSeconds }) {
@@ -159,7 +189,7 @@ async function registerBot({ baseUrl, name, ownerAddress, description }) {
 async function main() {
   const rl = readline.createInterface({ input, output });
   try {
-    const scriptsDir = path.dirname(new URL(import.meta.url).pathname);
+    const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
     const envPath = path.join(scriptsDir, '.env');
     await loadOrInitEnvFile(envPath);
 
@@ -168,29 +198,48 @@ async function main() {
 
     console.log('Verdikta Bounties — one-command onboarding');
 
-    // 1) Critical decision: network
-    const networkDefault = current.VERDIKTA_NETWORK || process.env.VERDIKTA_NETWORK || 'base-sepolia';
-    const networkAns = (await rl.question(`\nNetwork? (base-sepolia/base) [${networkDefault}] `)).trim();
-    const network = (networkAns || networkDefault).toLowerCase();
-    if (network !== 'base-sepolia' && network !== 'base') {
-      throw new Error('Invalid network. Use base-sepolia or base.');
-    }
+    const priorNetwork = (current.VERDIKTA_NETWORK || '').toLowerCase();
 
-    // 2) Bounties base URL
-    // Clean install: do not bother the human; derive from network.
-    // Non-clean install: preserve existing env value, and optionally prompt.
+    // 1) Critical decision: network
+    const networks = ['base-sepolia', 'base'];
+    const networkDefault = current.VERDIKTA_NETWORK || process.env.VERDIKTA_NETWORK || 'base-sepolia';
+    const defaultIdx = networks.indexOf(networkDefault) >= 0 ? networks.indexOf(networkDefault) : 0;
+
+    console.log('\nSelect network:');
+    networks.forEach((n, i) => {
+      const marker = i === defaultIdx ? ' (default)' : '';
+      console.log(`  ${i + 1}) ${n}${marker}`);
+    });
+
+    const networkAns = (await rl.question(`Choose [${defaultIdx + 1}]: `)).trim();
+    let network;
+    if (!networkAns) {
+      network = networks[defaultIdx];
+    } else if (networkAns === '1' || networkAns === '2') {
+      network = networks[parseInt(networkAns, 10) - 1];
+    } else if (networks.includes(networkAns.toLowerCase())) {
+      network = networkAns.toLowerCase();
+    } else {
+      throw new Error('Invalid network. Enter 1, 2, base-sepolia, or base.');
+    }
+    console.log(`→ ${network}`);
+
+    // 2) Bounties base URL — always derive from the chosen network.
+    // On a network switch the old URL would be wrong, so we re-derive.
     const derivedBaseUrl = (network === 'base-sepolia'
       ? 'https://bounties-testnet.verdikta.org'
       : 'https://bounties.verdikta.org');
 
-    const existingBaseUrl = current.VERDIKTA_BOUNTIES_BASE_URL || process.env.VERDIKTA_BOUNTIES_BASE_URL || '';
-    let baseUrl = (existingBaseUrl || derivedBaseUrl).replace(/\/+$/, '');
+    const existingBaseUrl = (current.VERDIKTA_BOUNTIES_BASE_URL || process.env.VERDIKTA_BOUNTIES_BASE_URL || '').replace(/\/+$/, '');
+    const networkChanged = priorNetwork && priorNetwork !== network;
+    let baseUrl = (!networkChanged && existingBaseUrl) ? existingBaseUrl : derivedBaseUrl;
 
-    if (existingBaseUrl) {
+    if (!networkChanged && existingBaseUrl && existingBaseUrl !== derivedBaseUrl) {
+      // Existing URL doesn't match derived — ask if they want to keep it
       const baseUrlAns = (await rl.question(`Bounties base URL [${baseUrl}]: `)).trim();
       baseUrl = (baseUrlAns || baseUrl).replace(/\/+$/, '');
     } else {
-      console.log(`Bounties base URL: ${baseUrl} (derived from network)`);
+      console.log(`Bounties URL: ${baseUrl}`);
     }
 
     // 3) Owner/sweep
@@ -235,26 +284,26 @@ async function main() {
     process.env.VERDIKTA_KEYSTORE_PATH = keystoreDefault;
     process.env.VERDIKTA_WALLET_PASSWORD = password;
 
-    // 6) Wallet creation
-    // If this is not a clean install and the user changes network, they should generally
-    // use a different wallet (different keystore path) to avoid confusion.
-    const priorNetwork = (current.VERDIKTA_NETWORK || '').toLowerCase();
+    // 6) Wallet — reuse the same keystore regardless of network.
+    // EVM addresses are network-agnostic; only the configuration and funding differ.
     const keystoreAbsPath = resolvePath(keystoreDefault);
     const keystoreAlreadyExists = await fileExists(keystoreAbsPath);
+
     if (keystoreAlreadyExists && priorNetwork && priorNetwork !== network) {
-      throw new Error(
-        `Keystore already exists at ${keystoreAbsPath}, but network changed (${priorNetwork} → ${network}). ` +
-        `For safety, set a new VERDIKTA_KEYSTORE_PATH (new wallet) or revert the network.`
-      );
+      console.log(`\nNetwork changed: ${priorNetwork} → ${network}`);
+      console.log(`Reusing existing wallet at: ${keystoreAbsPath}`);
+      console.log('(The same address works on any EVM network — only funding differs.)');
     }
 
-    const { wallet, abs: keystoreAbs, created } = await ensureWalletKeystore({
+    const { wallet, abs: keystoreAbs, created, imported } = await ensureWalletKeystore({
       keystorePath: keystoreDefault,
       password,
+      rl,
     });
 
+    const statusLabel = imported ? ' (imported)' : created ? ' (created)' : '';
     console.log(`\nBot wallet: ${wallet.address}`);
-    console.log(`Keystore:  ${keystoreAbs}${created ? ' (created)' : ''}`);
+    console.log(`Keystore:  ${keystoreAbs}${statusLabel}`);
 
     // 7) Funding (human action)
     const minEth = envNum('MIN_ETH', network === 'base-sepolia' ? 0.01 : 0.005);
@@ -262,6 +311,12 @@ async function main() {
     const pollSeconds = envNum('FUNDING_POLL_SECONDS', 15);
 
     console.log('\nHuman action required: fund the bot wallet');
+    if (networkChanged) {
+      console.log(`\n  NOTE: You switched from ${priorNetwork} to ${network}.`);
+      console.log('  Your wallet address is the same, but funds on one network');
+      console.log('  are NOT visible on the other. You need to send new funds');
+      console.log(`  on the ${network} network to the address below.\n`);
+    }
     console.log(`- Send ETH on ${network} to: ${wallet.address}`);
     console.log(`- Send LINK on ${network} to: ${wallet.address}`);
     console.log(`Targets: ≥ ${minEth} ETH and ≥ ${minLink} LINK`);
@@ -288,9 +343,16 @@ async function main() {
       } catch {}
 
       if (apiKey) {
-        const reuse = (await rl.question(`\nFound existing bot API key file. Reuse it? (Y/n) `)).trim().toLowerCase();
-        if (reuse === 'n' || reuse === 'no') {
-          apiKey = null;
+        if (networkChanged) {
+          console.log(`\nFound existing bot API key, but network changed (${priorNetwork} → ${network}).`);
+          console.log('The existing key was registered on a different server and will not work.');
+          const reuse = (await rl.question('Register a new bot on the new network? (Y/n) ')).trim().toLowerCase();
+          apiKey = (reuse === 'n' || reuse === 'no') ? apiKey : null;
+        } else {
+          const reuse = (await rl.question(`\nFound existing bot API key file. Reuse it? (Y/n) `)).trim().toLowerCase();
+          if (reuse === 'n' || reuse === 'no') {
+            apiKey = null;
+          }
         }
       }
     }
@@ -322,8 +384,8 @@ async function main() {
 
     console.log(`\n✅ Smoke test OK: can list jobs (OPEN jobs returned: ${count})`);
 
-    // 10) Optional: run the worker once as a final integration test
-    const runWorker = (await rl.question('\nRun bounty_worker_min.js now (one-shot)? (Y/n) ')).trim().toLowerCase();
+    // 10) Optional: run the worker once as a final integration test (read-only: lists open jobs)
+    const runWorker = (await rl.question('\nRun bounty_worker_min.js now (lists open bounties, read-only)? (Y/n) ')).trim().toLowerCase();
     if (!(runWorker === 'n' || runWorker === 'no')) {
       const { spawn } = await import('node:child_process');
       await new Promise((resolve, reject) => {
@@ -336,10 +398,9 @@ async function main() {
       console.log('\n✅ Worker run complete.');
     }
 
-    console.log('\nPrivate key handling:');
-    console.log(`- Keystore path: ${keystoreAbs}`);
-    console.log('- To export (DANGEROUS): node export_private_key.js --i-know-what-im-doing > private_key.txt');
-    console.log('  Do NOT paste private keys into chat.');
+    console.log('\nKeystore:');
+    console.log(`- Path: ${keystoreAbs}`);
+    console.log('- Private keys are never exported or printed. Keys are decrypted in-memory only when signing.');
 
   } finally {
     rl.close();

@@ -1,10 +1,6 @@
 #!/usr/bin/env node
 import './_env.js';
-
-function arg(name, def = null) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : def;
-}
+import { arg } from './_lib.js';
 
 const address = arg('address');
 if (!address) {

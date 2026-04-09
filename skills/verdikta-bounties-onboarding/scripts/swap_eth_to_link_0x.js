@@ -1,12 +1,7 @@
 #!/usr/bin/env node
 import './_env.js';
 import { Contract, formatEther } from 'ethers';
-import { getNetwork, providerFor, loadWallet, LINK, linkBalance, parseEth } from './_lib.js';
-
-function arg(name, def = null) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : def;
-}
+import { getNetwork, providerFor, loadWallet, LINK, linkBalance, parseEth, arg } from './_lib.js';
 
 const ethAmount = arg('eth');
 if (!ethAmount) {

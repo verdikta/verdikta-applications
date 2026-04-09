@@ -64,9 +64,15 @@ function CreateBounty({ walletState }) {
     payoutAmount: '0.001',
     ethPriceUSD: 0,
     submissionWindowHours: 1, // Default, for development, to 1 hour.
+    targetHunter: '',
     deliverableRequirements: {
       format: ['markdown', 'pdf']
-    }
+    },
+    // Creator approval window (optional)
+    enableApprovalWindow: false,
+    creatorPaymentEth: '',
+    arbiterPaymentEth: '',
+    approvalWindowHours: '',
   });
 
   // ---------- helpers ----------
@@ -139,11 +145,9 @@ function CreateBounty({ walletState }) {
   useEffect(() => {
     const fetchEthPrice = async () => {
       try {
-        const response = await fetch(
-          'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd'
-        );
+        const response = await fetch('/api/jobs/eth-price');
         const data = await response.json();
-        setFormData((prev) => ({ ...prev, ethPriceUSD: data?.ethereum?.usd || 0 }));
+        setFormData((prev) => ({ ...prev, ethPriceUSD: data?.usd || 0 }));
       } catch (err) {
         console.warn('Failed to fetch ETH price:', err);
       }
@@ -503,6 +507,20 @@ function CreateBounty({ walletState }) {
     const validation = validateWeights();
     if (!validation.valid) { toast.warning(`Invalid rubric weights: ${validation.message}`); return; }
     if (juryNodes.length === 0) { toast.warning('Please add at least one jury node'); return; }
+    if (formData.targetHunter && !/^0x[a-fA-F0-9]{40}$/.test(formData.targetHunter)) {
+      toast.warning('Target address must be a valid Ethereum address (0x...)'); return;
+    }
+    if (formData.enableApprovalWindow) {
+      if (!formData.creatorPaymentEth || parseFloat(formData.creatorPaymentEth) <= 0) {
+        toast.warning('Creator approval payment must be > 0 ETH'); return;
+      }
+      if (!formData.arbiterPaymentEth || parseFloat(formData.arbiterPaymentEth) <= 0) {
+        toast.warning('Oracle approval payment must be > 0 ETH'); return;
+      }
+      if (!formData.approvalWindowHours || parseFloat(formData.approvalWindowHours) <= 0) {
+        toast.warning('Approval window must be > 0 hours'); return;
+      }
+    }
 
     const juryValidation = validateJuryWeights();
     if (!juryValidation.valid) { toast.warning(`Invalid jury weights: ${juryValidation.message}`); return; }
@@ -541,6 +559,12 @@ function CreateBounty({ walletState }) {
         })),
         iterations,
         submissionWindowHours: parseInt(formData.submissionWindowHours, 10),
+        ...(formData.targetHunter ? { targetHunter: formData.targetHunter } : {}),
+        ...(formData.enableApprovalWindow ? {
+          creatorDeterminationPayment: parseFloat(formData.creatorPaymentEth),
+          arbiterDeterminationPayment: parseFloat(formData.arbiterPaymentEth),
+          creatorAssessmentWindowHours: parseFloat(formData.approvalWindowHours),
+        } : {}),
       });
 
       if (!apiResponse?.success) {
@@ -551,19 +575,23 @@ function CreateBounty({ walletState }) {
       console.log('✅ Backend job created:', { jobId: job.jobId, rubricCid: job.rubricCid });
 
       // 2) On-chain create
-      // Pass the primaryCid (evaluation package) to the contract, not just the rubricCid
-      // The primaryCid contains the full evaluation package with jury config, rubric reference, etc.
       setLoadingText('Waiting for wallet / creating on-chain…');
       const { getContractService } = await import('../services/contractService');
       const contractService = getContractService();
       if (!contractService.isConnected()) await contractService.connect();
 
       const contractResult = await contractService.createBounty({
-        evaluationCid: job.primaryCid,  // The evaluation package CID, not just the rubric
+        evaluationCid: job.evaluationCid,
         classId: selectedClassId,
         threshold,
         bountyAmountEth: parseFloat(formData.payoutAmount),
         submissionWindowHours: parseInt(formData.submissionWindowHours, 10),
+        ...(formData.targetHunter ? { targetHunter: formData.targetHunter } : {}),
+        ...(formData.enableApprovalWindow ? {
+          creatorDeterminationPaymentEth: parseFloat(formData.creatorPaymentEth),
+          arbiterDeterminationPaymentEth: parseFloat(formData.arbiterPaymentEth),
+          creatorAssessmentWindowHours: parseFloat(formData.approvalWindowHours),
+        } : {}),
       });
 
       if (!contractResult?.success || contractResult?.bountyId == null) {
@@ -579,9 +607,9 @@ function CreateBounty({ walletState }) {
         blockNumber: contractResult.blockNumber,
       });
 
-      toast.success(`Bounty created! Job ID: ${job.jobId}, On-Chain ID: ${contractResult.bountyId}`);
+      toast.success(`Bounty #${contractResult.bountyId} created successfully!`);
 
-      navigate(`/bounty/${job.jobId}`);
+      navigate(`/bounty/${contractResult.bountyId}`);
     } catch (err) {
       const msg = messageFromAxios(err);
       console.error('❌ Create flow failed:', msg, err?.response?.data);
@@ -732,6 +760,132 @@ function CreateBounty({ walletState }) {
                 </small>
               </div>
             </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label htmlFor="targetHunter">
+                  Target Address (optional)
+                </label>
+                <input
+                  type="text"
+                  id="targetHunter"
+                  value={formData.targetHunter}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, targetHunter: e.target.value.trim() }))}
+                  placeholder="0x... (leave empty for open bounty)"
+                />
+                <small className="helper-text">
+                  {formData.targetHunter
+                    ? 'Targeted: only this address can submit'
+                    : 'Open to all: anyone can submit'}
+                </small>
+              </div>
+            </div>
+
+            {/* Creator Approval Window (optional) */}
+            <div className="form-row" style={{ marginTop: '1rem' }}>
+              <div className="form-group" style={{ width: '100%' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={formData.enableApprovalWindow}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, enableApprovalWindow: e.target.checked }))}
+                  />
+                  Enable Creator Approval Window
+                </label>
+                <small className="helper-text">
+                  Allow the bounty creator to approve submissions directly before they go to AI evaluation.
+                  {formData.enableApprovalWindow && ' The creator can offer a different payment for direct approval vs. oracle evaluation.'}
+                </small>
+              </div>
+            </div>
+
+            {formData.enableApprovalWindow && (
+              <div style={{
+                padding: '1rem',
+                backgroundColor: '#f8f9fa',
+                border: '1px solid #dee2e6',
+                borderRadius: '6px',
+                marginBottom: '1rem'
+              }}>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label htmlFor="creatorPaymentEth">
+                      Creator Approval Payment (ETH) <span className="required">*</span>
+                    </label>
+                    <input
+                      type="number"
+                      id="creatorPaymentEth"
+                      value={formData.creatorPaymentEth}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, creatorPaymentEth: e.target.value }))}
+                      placeholder="0.001"
+                      step="0.001"
+                      min="0"
+                    />
+                    <small className="helper-text">
+                      Amount paid to hunter if you approve directly
+                      {formData.creatorPaymentEth && formData.ethPriceUSD > 0 && (
+                        <> (≈ ${(parseFloat(formData.creatorPaymentEth) * formData.ethPriceUSD).toFixed(2)} USD)</>
+                      )}
+                    </small>
+                  </div>
+
+                  <div className="form-group">
+                    <label htmlFor="arbiterPaymentEth">
+                      Oracle Approval Payment (ETH) <span className="required">*</span>
+                    </label>
+                    <input
+                      type="number"
+                      id="arbiterPaymentEth"
+                      value={formData.arbiterPaymentEth}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, arbiterPaymentEth: e.target.value }))}
+                      placeholder="0.001"
+                      step="0.001"
+                      min="0"
+                    />
+                    <small className="helper-text">
+                      Amount paid to hunter if approved by AI oracle (after window expires)
+                      {formData.arbiterPaymentEth && formData.ethPriceUSD > 0 && (
+                        <> (≈ ${(parseFloat(formData.arbiterPaymentEth) * formData.ethPriceUSD).toFixed(2)} USD)</>
+                      )}
+                    </small>
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group">
+                    <label htmlFor="approvalWindowHours">
+                      Approval Window (hours) <span className="required">*</span>
+                    </label>
+                    <input
+                      type="number"
+                      id="approvalWindowHours"
+                      value={formData.approvalWindowHours}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, approvalWindowHours: e.target.value }))}
+                      placeholder="1"
+                      step="0.5"
+                      min="0.5"
+                    />
+                    <small className="helper-text">
+                      Time you have to review and approve each submission before it goes to oracle evaluation
+                    </small>
+                  </div>
+                </div>
+
+                {formData.creatorPaymentEth && formData.arbiterPaymentEth && (
+                  <div style={{
+                    marginTop: '0.5rem',
+                    padding: '0.5rem',
+                    backgroundColor: '#e3f2fd',
+                    borderRadius: '4px',
+                    fontSize: '0.85rem',
+                    color: '#1565c0'
+                  }}>
+                    Escrow required: {Math.max(parseFloat(formData.creatorPaymentEth) || 0, parseFloat(formData.arbiterPaymentEth) || 0)} ETH
+                    (max of creator and oracle payments)
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="form-actions">
               <button type="button" onClick={() => setStep(2)} className="btn btn-primary">
@@ -1131,6 +1285,7 @@ function CreateBounty({ walletState }) {
           <li>Rubric (including threshold for selection) is uploaded to IPFS (immutable).</li>
           <li>Smart contract locks your ETH in escrow.</li>
           <li>Bounty status becomes OPEN - hunters can submit work before deadline.</li>
+          <li><strong>If approval window enabled:</strong> Each submission enters a creator review period. You can approve directly (paying the creator approval amount) or let the window expire for oracle evaluation.</li>
           <li>After deadline passes, bounty becomes EXPIRED if no winner yet.</li>
           <li>Anyone can close an EXPIRED bounty (if no active evaluations) to return funds to creator.</li>
         </ol>
@@ -1177,8 +1332,11 @@ function CreateBounty({ walletState }) {
           <p style={{ marginBottom: '0.5rem' }}>
             <strong>Active Evaluations:</strong> If submissions are being evaluated when the deadline passes, the bounty cannot be closed until those evaluations complete.
           </p>
-          <p style={{ marginBottom: 0 }}>
+          <p style={{ marginBottom: '0.5rem' }}>
             <strong>First Winner Takes All:</strong> The first submission that passes the threshold automatically wins. Plan your deadline and threshold accordingly.
+          </p>
+          <p style={{ marginBottom: 0 }}>
+            <strong>Approval Window:</strong> If enabled, submissions enter a "Pending Creator Approval" state. You can approve directly (faster, potentially lower cost) or let the window expire for standard AI oracle evaluation. Earlier submissions have priority — you must resolve them in order.
           </p>
         </div>
       </div>

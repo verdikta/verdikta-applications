@@ -14,5 +14,8 @@ frontend
 # Test files
 *.log
 
+# Logged Convenience Data
+
+old_addresses.txt
 
 

@@ -48,6 +48,22 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           secure: false,
         },
+        // 👇 Agent discovery routes (served by Express)
+        '/agents.txt': {
+          target: `http://localhost:${backendPort}`,
+          changeOrigin: true,
+          secure: false,
+        },
+        '/feed.xml': {
+          target: `http://localhost:${backendPort}`,
+          changeOrigin: true,
+          secure: false,
+        },
+        '/health': {
+          target: `http://localhost:${backendPort}`,
+          changeOrigin: true,
+          secure: false,
+        },
       },
     },
   };

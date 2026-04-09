@@ -624,6 +624,37 @@
   color: #bf360c;
 }
 
+.callout-critical {
+  background: #fee2e2;
+  border: 2px solid #f87171;
+  color: #991b1b;
+}
+
+.callout-critical a {
+  color: #dc2626;
+  text-decoration: underline;
+}
+
+.callout-critical strong {
+  color: #7f1d1d;
+}
+
+.callout-info {
+  background: #eff6ff;
+  border: 1px solid #93c5fd;
+  color: #1e40af;
+}
+
+.callout-info a {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+
+.callout-info code {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
 .callout svg {
   flex-shrink: 0;
   margin-top: 0.1rem;

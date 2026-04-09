@@ -250,14 +250,6 @@ async uploadRubric(rubricJson, classId = 128) {
     return response.data;
   },
 
-  /**
-   * Get submission details (legacy path)
-   */
-  async getSubmission(submissionId) {
-    const response = await api.get(`/api/submissions/${submissionId}`);
-    return response.data;
-  },
-
   // ============================================================
   //                    IPFS ENDPOINTS
   // ============================================================
@@ -304,6 +296,30 @@ async uploadRubric(rubricJson, classId = 128) {
    */
   async healthCheck() {
     const response = await api.get('/health');
+    return response.data;
+  },
+
+  /**
+   * Trigger an immediate blockchain sync cycle
+   */
+  async triggerSync() {
+    const response = await api.post('/api/jobs/sync/now');
+    return response.data;
+  },
+
+  /**
+   * Directly update a job's status in the backend (admin endpoint)
+   */
+  async updateJobStatus(jobId, status) {
+    const response = await api.patch(`/api/jobs/admin/${jobId}/status`, { status });
+    return response.data;
+  },
+
+  /**
+   * Delete a job that doesn't exist on-chain (admin endpoint)
+   */
+  async deleteJob(jobId) {
+    const response = await api.delete(`/api/jobs/admin/${jobId}`);
     return response.data;
   },
 
@@ -522,6 +538,28 @@ async uploadRubric(rubricJson, classId = 128) {
    */
   async validateEvaluationPackage(data) {
     const response = await api.post('/api/jobs/validate', data);
+    return response.data;
+  },
+
+  // ============================================================
+  //                  VERDIKTA AGGREGATOR ENDPOINTS
+  // ============================================================
+
+  /**
+   * Get full aggregation history for an aggId
+   * @param {string} aggId - The aggregation ID (0x + 64 hex chars)
+   */
+  async getAggHistory(aggId) {
+    const response = await api.get(`/api/verdikta/agg-history/${aggId}`, { timeout: 60000 });
+    return response.data;
+  },
+
+  /**
+   * Get full evaluation package details for a bounty
+   * @param {string|number} jobId - The bounty/job ID
+   */
+  async getEvaluationPackage(jobId) {
+    const response = await api.get(`/api/jobs/${jobId}/evaluation-package`, { timeout: 60000 });
     return response.data;
   }
 

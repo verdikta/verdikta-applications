@@ -33,11 +33,12 @@ router.get('/overview', async (req, res) => {
     }
 
     // Gather all analytics data
-    const [arbiterData, bountyData, submissionData, systemData] = await Promise.all([
+    const [arbiterData, bountyData, submissionData, systemData, fulfilledData] = await Promise.all([
       getArbiterAnalytics(),
       getBountyAnalytics(),
       getSubmissionAnalytics(),
-      getSystemHealth()
+      getSystemHealth(),
+      getFulfilledBounties()
     ]);
 
     const result = {
@@ -45,6 +46,7 @@ router.get('/overview', async (req, res) => {
       bounties: bountyData,
       submissions: submissionData,
       system: systemData,
+      fulfilledBounties: fulfilledData,
       generatedAt: Date.now()
     };
 
@@ -399,10 +401,10 @@ async function getSubmissionAnalytics() {
         if (status === 'passedpaid' || onChainStatus === 'passedpaid') {
           approvedPaid++;
           if (hasResult) scores.push(score);
-        } else if (status === 'passed' || status === 'passedunpaid' || status === 'approved' || status === 'accepted' || onChainStatus === 'passedunpaid') {
+        } else if (status === 'passed' || status === 'passedunpaid' || status === 'approved' || status === 'accepted' || status === 'accepted_pending_claim' || onChainStatus === 'passedunpaid') {
           approvedUnpaid++;
           if (hasResult) scores.push(score);
-        } else if (status === 'failed' || status === 'rejected') {
+        } else if (status === 'failed' || status === 'rejected' || status === 'rejected_pending_finalization') {
           rejected++;
         } else if (status === 'pending' || status === 'pendingverdikta' || status === 'pending_evaluation') {
           // Check if evaluation is actually complete but status wasn't updated
@@ -417,8 +419,7 @@ async function getSubmissionAnalytics() {
             // Check Verdikta Aggregator for evaluation result
             // Need on-chain bountyId and submissionId to query the contract
             let evalResult = null;
-            // Use onChainId (primary), then legacy field names
-            const onChainBountyId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+            const onChainBountyId = job.jobId;
             const onChainSubmissionId = sub.onChainSubmissionId ?? sub.submissionId;
 
             if (onChainBountyId != null && onChainSubmissionId != null) {
@@ -599,6 +600,37 @@ async function getSystemHealth() {
     bountyContract: config.bountyEscrowAddress || null,
     timestamp: Date.now()
   };
+}
+
+/**
+ * Get recently fulfilled (awarded) bounties
+ */
+async function getFulfilledBounties() {
+  try {
+    const jobs = await jobStorage.listJobs({});
+    const jobList = jobs.jobs || jobs;
+
+    const awarded = jobList
+      .filter(j => j.status === 'AWARDED' && j.winner)
+      .sort((a, b) => (b.settledAt || 0) - (a.settledAt || 0))
+      .slice(0, 10)
+      .map(j => ({
+        jobId: j.jobId,
+        title: j.title,
+        creator: j.creator,
+        winner: j.winner,
+        bountyAmount: j.bountyAmount,
+        txHash: j.txHash || null,
+        awardTxHash: j.awardTxHash || null,
+        settledAt: j.settledAt,
+        contractAddress: j.contractAddress || config.bountyEscrowAddress
+      }));
+
+    return awarded;
+  } catch (error) {
+    logger.error('Failed to get fulfilled bounties', { msg: error.message });
+    return [];
+  }
 }
 
 module.exports = router;

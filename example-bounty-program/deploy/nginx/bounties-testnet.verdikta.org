@@ -36,6 +36,7 @@ server {
 
     # Testnet API (Base Sepolia)
     location /api/ {
+        client_max_body_size 200M;
         proxy_pass http://localhost:5006/api/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;

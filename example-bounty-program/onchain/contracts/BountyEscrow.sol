@@ -10,18 +10,19 @@ import "./EvaluationWallet.sol";
 /// @dev No cancellation - creator can only reclaim funds after deadline via closeExpiredBounty
 contract BountyEscrow {
     /// @notice On-chain storage states (3 values for gas efficiency)
-    enum BountyStatus { 
+    enum BountyStatus {
         Open,    // 0: Active (maps to OPEN or EXPIRED based on deadline)
         Awarded, // 1: Winner has been paid
         Closed   // 2: Deadline passed, funds returned to creator
     }
-    
-    enum SubmissionStatus { 
-        Prepared,         // Wallet created, awaiting LINK and start
-        PendingVerdikta,  // Evaluation in progress
-        Failed,           // Did not meet threshold
-        PassedPaid,       // Met threshold and was paid
-        PassedUnpaid      // Met threshold but someone else already won
+
+    enum SubmissionStatus {
+        Prepared,               // 0: Wallet created, awaiting LINK and start
+        PendingVerdikta,        // 1: Evaluation in progress
+        Failed,                 // 2: Did not meet threshold
+        PassedPaid,             // 3: Met threshold and was paid
+        PassedUnpaid,           // 4: Met threshold but someone else already won
+        PendingCreatorApproval  // 5: Awaiting creator approval during window
     }
 
     struct Bounty {
@@ -29,12 +30,16 @@ contract BountyEscrow {
         string  evaluationCid;      // IPFS CID for evaluation package (contains jury config, rubric ref, instructions)
         uint64  requestedClass;     // Verdikta class ID
         uint8   threshold;          // 0..100 acceptance threshold
-        uint256 payoutWei;          // ETH locked
+        uint256 payoutWei;          // ETH locked (max of two payment amounts)
         uint256 createdAt;
         uint64  submissionDeadline; // Unix timestamp when submissions close
         BountyStatus status;
         address winner;
         uint256 submissions;        // count
+        address targetHunter;       // address(0) = open to all, otherwise only this address can submit
+        uint256 creatorDeterminationPayment;  // Payment if creator approves
+        uint256 arbiterDeterminationPayment;  // Payment if arbiters approve via Verdikta
+        uint64  creatorAssessmentWindowSize;  // Window duration in seconds (0 = no window)
     }
 
     struct Submission {
@@ -55,6 +60,7 @@ contract BountyEscrow {
         uint256 estimatedBaseCost;  // echo
         uint256 maxFeeBasedScaling; // echo
         string  addendum;           // echo
+        uint64  creatorWindowEnd;   // Timestamp when creator window expires (0 if no window)
     }
 
     IERC20 public immutable link;
@@ -105,15 +111,28 @@ contract BountyEscrow {
     );
 
     event PayoutSent(
-        uint256 indexed bountyId, 
-        address indexed winner, 
+        uint256 indexed bountyId,
+        address indexed winner,
         uint256 amountWei
     );
-    
+
     event LinkRefunded(
-        uint256 indexed bountyId, 
-        uint256 indexed submissionId, 
+        uint256 indexed bountyId,
+        uint256 indexed submissionId,
         uint256 amount
+    );
+
+    event CreatorApproved(
+        uint256 indexed bountyId,
+        uint256 indexed submissionId,
+        address indexed hunter,
+        uint256 amountPaid
+    );
+
+    event CreatorRefunded(
+        uint256 indexed bountyId,
+        address indexed creator,
+        uint256 amountRefunded
     );
 
     constructor(IERC20 _link, IVerdiktaAggregator _verdikta) {
@@ -124,17 +143,66 @@ contract BountyEscrow {
 
     // ------------- Bounty lifecycle -------------
 
-    /// @notice Create a new bounty with ETH escrow
+    /// @notice Create a bounty with ETH escrow (backward-compatible, no creator window)
+    /// @param targetHunter The only address allowed to submit; address(0) = open to all
     function createBounty(
         string calldata evaluationCid,
         uint64  requestedClass,
         uint8   threshold,
-        uint64  submissionDeadline
+        uint64  submissionDeadline,
+        address targetHunter
     ) external payable returns (uint256 bountyId) {
-        require(msg.value > 0, "no ETH");
+        return _createBounty(
+            evaluationCid, requestedClass, threshold, submissionDeadline,
+            targetHunter, msg.value, msg.value, 0
+        );
+    }
+
+    /// @notice Create a bounty with creator approval window and split payment amounts
+    /// @param targetHunter The only address allowed to submit; address(0) = open to all
+    /// @param creatorDeterminationPayment Payment amount if creator approves during window
+    /// @param arbiterDeterminationPayment Payment amount if arbiters approve via Verdikta
+    /// @param creatorAssessmentWindowSize Window duration in seconds after submission (0 = no window)
+    function createBounty(
+        string calldata evaluationCid,
+        uint64  requestedClass,
+        uint8   threshold,
+        uint64  submissionDeadline,
+        address targetHunter,
+        uint256 creatorDeterminationPayment,
+        uint256 arbiterDeterminationPayment,
+        uint64  creatorAssessmentWindowSize
+    ) external payable returns (uint256 bountyId) {
+        return _createBounty(
+            evaluationCid, requestedClass, threshold, submissionDeadline,
+            targetHunter, creatorDeterminationPayment, arbiterDeterminationPayment,
+            creatorAssessmentWindowSize
+        );
+    }
+
+    function _createBounty(
+        string calldata evaluationCid,
+        uint64  requestedClass,
+        uint8   threshold,
+        uint64  submissionDeadline,
+        address targetHunter,
+        uint256 creatorDeterminationPayment,
+        uint256 arbiterDeterminationPayment,
+        uint64  creatorAssessmentWindowSize
+    ) internal returns (uint256 bountyId) {
+        require(creatorDeterminationPayment > 0, "no creator payment");
+        require(arbiterDeterminationPayment > 0, "no arbiter payment");
+        require(
+            msg.value == _max(creatorDeterminationPayment, arbiterDeterminationPayment),
+            "ETH must equal max payment"
+        );
         require(bytes(evaluationCid).length > 0, "empty evaluationCid");
         require(threshold <= 100, "bad threshold");
         require(submissionDeadline > block.timestamp, "deadline in past");
+        require(
+            creatorAssessmentWindowSize > 0 || creatorDeterminationPayment == arbiterDeterminationPayment,
+            "window required when payments differ"
+        );
 
         bounties.push(Bounty({
             creator: msg.sender,
@@ -146,17 +214,21 @@ contract BountyEscrow {
             submissionDeadline: submissionDeadline,
             status: BountyStatus.Open,
             winner: address(0),
-            submissions: 0
+            submissions: 0,
+            targetHunter: targetHunter,
+            creatorDeterminationPayment: creatorDeterminationPayment,
+            arbiterDeterminationPayment: arbiterDeterminationPayment,
+            creatorAssessmentWindowSize: creatorAssessmentWindowSize
         }));
 
         bountyId = bounties.length - 1;
         emit BountyCreated(
-            bountyId, 
-            msg.sender, 
-            evaluationCid, 
-            requestedClass, 
-            threshold, 
-            msg.value, 
+            bountyId,
+            msg.sender,
+            evaluationCid,
+            requestedClass,
+            threshold,
+            msg.value,
             submissionDeadline
         );
     }
@@ -169,7 +241,7 @@ contract BountyEscrow {
         Bounty storage b = _mustBounty(bountyId);
         require(b.status == BountyStatus.Open, "not open");
         require(block.timestamp >= b.submissionDeadline, "deadline not passed");
-        
+
         // Check that no submissions are actively being evaluated
         uint256 subCount = subs[bountyId].length;
         for (uint256 i = 0; i < subCount; i++) {
@@ -178,15 +250,15 @@ contract BountyEscrow {
                 "active evaluation - finalize first"
             );
         }
-        
+
         // All clear - return funds to creator
         b.status = BountyStatus.Closed;
         uint256 amt = b.payoutWei;
         b.payoutWei = 0;
-        
+
         (bool ok,) = payable(b.creator).call{value: amt}("");
         require(ok, "eth send fail");
-        
+
         emit BountyClosed(bountyId, b.creator, amt);
     }
 
@@ -194,12 +266,14 @@ contract BountyEscrow {
 
     /// @notice STEP 1: Prepare a submission. Deploys an EvaluationWallet and records parameters.
     /// @dev The wallet address is emitted so the hunter can approve LINK to it.
+    /// @dev If the bounty has a creator assessment window, status starts as PendingCreatorApproval.
+    /// @dev Otherwise, status starts as Prepared (classic behavior).
     /// @dev Can only be called before the submission deadline
     /// @param bountyId The bounty to submit to
     /// @param evaluationCid The evaluation package CID (must match the bounty's stored evaluationCid)
     /// @param hunterCid The hunter's work product archive CID (bCID containing the actual submission)
     /// @param addendum Optional text addendum for the evaluation
-    /// @param alpha Reputation weight (0-100)
+    /// @param alpha Reputation weight (0-1000, see ReputationKeeper)
     /// @param maxOracleFee Maximum fee per oracle
     /// @param estimatedBaseCost Estimated base cost
     /// @param maxFeeBasedScaling Maximum fee-based scaling
@@ -216,9 +290,12 @@ contract BountyEscrow {
         Bounty storage b = _mustBounty(bountyId);
         require(b.status == BountyStatus.Open, "bounty not open");
         require(block.timestamp < b.submissionDeadline, "deadline passed");
+        if (b.targetHunter != address(0)) {
+            require(msg.sender == b.targetHunter, "bounty is targeted");
+        }
         require(bytes(evaluationCid).length > 0, "empty evaluationCid");
         require(bytes(hunterCid).length > 0, "empty hunterCid");
-        
+
         // Verify evaluationCid matches the bounty's stored evaluationCid
         require(
             keccak256(bytes(evaluationCid)) == keccak256(bytes(b.evaluationCid)),
@@ -229,11 +306,13 @@ contract BountyEscrow {
         require(linkMaxBudget > 0, "bad budget");
 
         EvaluationWallet wallet = new EvaluationWallet(
-            address(this), 
-            msg.sender, 
-            link, 
+            address(this),
+            msg.sender,
+            link,
             verdikta
         );
+
+        bool hasWindow = b.creatorAssessmentWindowSize > 0;
 
         Submission memory s = Submission({
             hunter: msg.sender,
@@ -241,7 +320,9 @@ contract BountyEscrow {
             hunterCid: hunterCid,
             evalWallet: address(wallet),
             verdiktaAggId: bytes32(0),
-            status: SubmissionStatus.Prepared,
+            status: hasWindow
+                ? SubmissionStatus.PendingCreatorApproval
+                : SubmissionStatus.Prepared,
             acceptance: 0,
             rejection: 0,
             justificationCids: "",
@@ -252,7 +333,10 @@ contract BountyEscrow {
             alpha: alpha,
             estimatedBaseCost: estimatedBaseCost,
             maxFeeBasedScaling: maxFeeBasedScaling,
-            addendum: addendum
+            addendum: addendum,
+            creatorWindowEnd: hasWindow
+                ? uint64(block.timestamp) + b.creatorAssessmentWindowSize
+                : 0
         });
 
         subs[bountyId].push(s);
@@ -271,16 +355,66 @@ contract BountyEscrow {
         return (submissionId, address(wallet), linkMaxBudget);
     }
 
-    /// @notice STEP 2: After hunter has approved LINK to the EvaluationWallet,
-    ///         start the Verdikta evaluation (pulls LINK into wallet, approves Verdikta, starts).
+    /// @notice Creator approves a submission during the assessment window
+    /// @dev Pays creatorDeterminationPayment to hunter, refunds excess to creator
+    /// @dev Blocked if any earlier submission is unresolved (PendingCreatorApproval or PendingVerdikta)
+    function creatorApproveSubmission(uint256 bountyId, uint256 submissionId) external {
+        Bounty storage b = _mustBounty(bountyId);
+        Submission storage s = _mustSubmission(bountyId, submissionId);
+
+        require(msg.sender == b.creator, "only creator");
+        require(b.status == BountyStatus.Open, "bounty not open");
+        require(s.status == SubmissionStatus.PendingCreatorApproval, "not pending creator approval");
+        require(block.timestamp <= s.creatorWindowEnd, "window expired");
+        require(
+            !_hasEarlierUnresolvedSubmission(bountyId, submissionId),
+            "earlier submission unresolved"
+        );
+
+        uint256 pay = b.creatorDeterminationPayment;
+        uint256 refund = b.payoutWei - pay;
+
+        b.payoutWei = 0;
+        b.status = BountyStatus.Awarded;
+        b.winner = s.hunter;
+        s.status = SubmissionStatus.PassedPaid;
+        s.finalizedAt = block.timestamp;
+
+        (bool okPay,) = payable(s.hunter).call{value: pay}("");
+        require(okPay, "eth payout failed");
+
+        emit CreatorApproved(bountyId, submissionId, s.hunter, pay);
+        emit PayoutSent(bountyId, s.hunter, pay);
+
+        if (refund > 0) {
+            (bool okRefund,) = payable(b.creator).call{value: refund}("");
+            require(okRefund, "refund to creator failed");
+            emit CreatorRefunded(bountyId, b.creator, refund);
+        }
+    }
+
+    /// @notice STEP 2: After LINK is approved to the EvaluationWallet,
+    ///         start the Verdikta evaluation (pulls LINK, approves Verdikta, starts).
+    /// @dev For Prepared submissions (no window): only the hunter can call, LINK from hunter.
+    /// @dev For PendingCreatorApproval submissions (window expired): anyone can call, LINK from caller.
     /// @dev Can be called after deadline as long as submission was prepared before deadline
     /// @dev Reverts if any existing submission has already passed evaluation (first-to-pass wins)
     function startPreparedSubmission(uint256 bountyId, uint256 submissionId) external {
         Bounty storage b = _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);
 
-        require(s.status == SubmissionStatus.Prepared, "not prepared");
-        require(msg.sender == s.hunter, "only hunter");
+        require(b.status == BountyStatus.Open, "bounty not open");
+
+        bool fromCreatorWindow = s.status == SubmissionStatus.PendingCreatorApproval;
+
+        if (fromCreatorWindow) {
+            // After window expires, anyone can start arbitration and fund LINK
+            require(block.timestamp > s.creatorWindowEnd, "creator window still open");
+        } else {
+            require(s.status == SubmissionStatus.Prepared, "not prepared");
+            require(msg.sender == s.hunter, "only hunter");
+        }
+
         require(s.submittedAt < b.submissionDeadline, "submitted too late");
 
         // Check if any existing submission has already passed on Verdikta
@@ -289,8 +423,12 @@ contract BountyEscrow {
 
         EvaluationWallet wallet = EvaluationWallet(s.evalWallet);
 
-        // Pull LINK from hunter into the wallet
-        wallet.pullLinkFromHunter(s.linkMaxBudget);
+        // Pull LINK: from hunter for Prepared, from msg.sender for PendingCreatorApproval
+        if (fromCreatorWindow) {
+            wallet.pullLinkFrom(msg.sender, s.linkMaxBudget);
+        } else {
+            wallet.pullLinkFromHunter(s.linkMaxBudget);
+        }
 
         // Approve Verdikta and start evaluation
         wallet.approveVerdikta(s.linkMaxBudget);
@@ -320,14 +458,15 @@ contract BountyEscrow {
     }
 
     /// @notice Finalize a submission by reading Verdikta results
-    /// @dev If accepted and bounty still open, pay the hunter and mark bounty as Awarded
+    /// @dev If accepted and bounty still open, pay arbiterDeterminationPayment and refund excess to creator
+    /// @dev For windowed bounties, payment blocked if earlier submission is unresolved
     /// @dev Can be called even after deadline (for submissions made before deadline)
     function finalizeSubmission(uint256 bountyId, uint256 submissionId) external {
         Bounty storage b = _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);
         require(s.status == SubmissionStatus.PendingVerdikta, "not pending");
 
-        (uint256[] memory scores, string memory justCids, bool ok) = 
+        (uint256[] memory scores, string memory justCids, bool ok) =
             verdikta.getEvaluation(s.verdiktaAggId);
 
         if (!ok) {
@@ -356,14 +495,21 @@ contract BountyEscrow {
         // Passed evaluation
         emit SubmissionFinalized(bountyId, submissionId, true, acceptance, rejection, justCids);
 
-        // Pay if bounty is still Open AND no other submission already passed
-        // This ensures "first to complete evaluation wins" not "first to finalize wins"
+        // Pay if bounty is still Open AND submission has priority
         if (b.status == BountyStatus.Open) {
-            // Check if another submission already passed (on Verdikta, even if not finalized)
-            bool anotherAlreadyPassed = _hasOtherPassingSubmission(bountyId, submissionId, b.threshold);
+            bool blocked;
+            if (b.creatorAssessmentWindowSize > 0) {
+                // Windowed bounties: priority ordering by submission index
+                blocked = _hasEarlierUnresolvedSubmission(bountyId, submissionId);
+            } else {
+                // Non-windowed bounties: first-to-complete-evaluation wins
+                blocked = _hasOtherPassingSubmission(bountyId, submissionId, b.threshold);
+            }
 
-            if (!anotherAlreadyPassed) {
-                uint256 pay = b.payoutWei;
+            if (!blocked) {
+                uint256 pay = b.arbiterDeterminationPayment;
+                uint256 refund = b.payoutWei - pay;
+
                 b.payoutWei = 0;
                 b.status = BountyStatus.Awarded;
                 b.winner = s.hunter;
@@ -373,8 +519,14 @@ contract BountyEscrow {
                 s.status = SubmissionStatus.PassedPaid;
 
                 emit PayoutSent(bountyId, s.hunter, pay);
+
+                if (refund > 0) {
+                    (bool okRefund,) = payable(b.creator).call{value: refund}("");
+                    require(okRefund, "refund to creator failed");
+                    emit CreatorRefunded(bountyId, b.creator, refund);
+                }
             } else {
-                // Another submission completed first with passing score
+                // Another submission has priority or already passed
                 s.status = SubmissionStatus.PassedUnpaid;
             }
         } else {
@@ -386,36 +538,36 @@ contract BountyEscrow {
     }
 
     /// @notice Force-fail a submission that's been stuck in PendingVerdikta too long
-    /// @dev Can be called by anyone after 20 minutes timeout
+    /// @dev Can be called by anyone after 10 minutes timeout
     /// @dev Useful for submissions where Verdikta evaluation never started or oracle failed
     function failTimedOutSubmission(uint256 bountyId, uint256 submissionId) external {
         _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);
-        
+
         require(s.status == SubmissionStatus.PendingVerdikta, "not pending");
         require(block.timestamp >= s.submittedAt + 10 minutes, "timeout not reached");
-        
+
         // Mark as failed
         s.status = SubmissionStatus.Failed;
         s.finalizedAt = block.timestamp;
-        
+
         emit SubmissionFinalized(
-            bountyId, 
-            submissionId, 
+            bountyId,
+            submissionId,
             false,  // passed = false
             0,      // acceptance
             0,      // rejection
             "TIMED_OUT"
         );
-        
+
         // Refund any LINK left in the wallet
         _refundLeftoverLink(bountyId, submissionId);
     }
 
     // ------------- Views -------------
 
-    function bountyCount() external view returns (uint256) { 
-        return bounties.length; 
+    function bountyCount() external view returns (uint256) {
+        return bounties.length;
     }
 
     function getBounty(uint256 bountyId) external view returns (Bounty memory) {
@@ -426,8 +578,8 @@ contract BountyEscrow {
         return subs[bountyId].length;
     }
 
-    function getSubmission(uint256 bountyId, uint256 submissionId) 
-        external view returns (Submission memory) 
+    function getSubmission(uint256 bountyId, uint256 submissionId)
+        external view returns (Submission memory)
     {
         return _mustSubmission(bountyId, submissionId);
     }
@@ -435,15 +587,15 @@ contract BountyEscrow {
     /// @notice Get the effective status of a bounty for frontend display
     /// @dev Returns: "OPEN", "EXPIRED", "AWARDED", or "CLOSED"
     /// @return status One of four status strings
-    function getEffectiveBountyStatus(uint256 bountyId) 
-        external view returns (string memory) 
+    function getEffectiveBountyStatus(uint256 bountyId)
+        external view returns (string memory)
     {
         Bounty storage b = _mustBounty(bountyId);
-        
+
         // Terminal states first
         if (b.status == BountyStatus.Awarded) return "AWARDED";
         if (b.status == BountyStatus.Closed) return "CLOSED";
-        
+
         // Open enum, but check if deadline passed
         if (b.status == BountyStatus.Open) {
             if (block.timestamp >= b.submissionDeadline) {
@@ -451,7 +603,7 @@ contract BountyEscrow {
             }
             return "OPEN"; // Active, accepting submissions
         }
-        
+
         return "UNKNOWN"; // Should never happen
     }
 
@@ -465,10 +617,10 @@ contract BountyEscrow {
     /// @notice Check if a bounty can be closed (deadline passed, no active evals)
     function canBeClosed(uint256 bountyId) external view returns (bool) {
         Bounty storage b = _mustBounty(bountyId);
-        
+
         if (b.status != BountyStatus.Open) return false;
         if (block.timestamp < b.submissionDeadline) return false;
-        
+
         // Check for active evaluations
         uint256 subCount = subs[bountyId].length;
         for (uint256 i = 0; i < subCount; i++) {
@@ -476,7 +628,7 @@ contract BountyEscrow {
                 return false;
             }
         }
-        
+
         return true;
     }
 
@@ -511,7 +663,7 @@ contract BountyEscrow {
     }
 
     /// @dev Check if any OTHER submission (not the current one) has already passed on Verdikta
-    /// @dev Used at finalization to ensure "first to complete evaluation wins"
+    /// @dev Used at finalization for non-windowed bounties to ensure "first to complete evaluation wins"
     function _hasOtherPassingSubmission(
         uint256 bountyId,
         uint256 currentSubmissionId,
@@ -551,6 +703,22 @@ contract BountyEscrow {
         return false;
     }
 
+    /// @dev Check if any earlier submission (lower index) is still unresolved
+    /// @dev Used for windowed bounties to enforce priority ordering at payment time
+    function _hasEarlierUnresolvedSubmission(
+        uint256 bountyId,
+        uint256 submissionId
+    ) internal view returns (bool) {
+        for (uint256 i = 0; i < submissionId; i++) {
+            SubmissionStatus st = subs[bountyId][i].status;
+            if (st == SubmissionStatus.PendingCreatorApproval ||
+                st == SubmissionStatus.PendingVerdikta) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     function _refundLeftoverLink(uint256 bountyId, uint256 submissionId) private {
         Submission storage s = subs[bountyId][submissionId];
         uint256 before = IERC20(link).balanceOf(s.evalWallet);
@@ -565,8 +733,8 @@ contract BountyEscrow {
         return bounties[bountyId];
     }
 
-    function _mustSubmission(uint256 bountyId, uint256 submissionId) 
-        internal view returns (Submission storage) 
+    function _mustSubmission(uint256 bountyId, uint256 submissionId)
+        internal view returns (Submission storage)
     {
         require(submissionId < subs[bountyId].length, "bad submissionId");
         return subs[bountyId][submissionId];
@@ -575,32 +743,35 @@ contract BountyEscrow {
     /// @dev Interpret Verdikta scores: scores[0]=reject (DONT_FUND), scores[1]=accept (FUND)
     /// @dev Verdikta returns scores that sum to 1,000,000 (e.g., [120000, 880000] = 12% reject, 88% accept)
     /// @dev We normalize to 0-100 by dividing by 10,000 to match threshold scale
-    function _interpretScores(uint256[] memory scores) 
-        internal pure returns (uint256 accept, uint256 reject) 
+    function _interpretScores(uint256[] memory scores)
+        internal pure returns (uint256 accept, uint256 reject)
     {
         require(scores.length == 2, "expected 2 scores from Verdikta");
-        
+
         // Two scores from Verdikta: [DONT_FUND, FUND]
         // scores[0] = DONT_FUND (rejection score)
         // scores[1] = FUND (acceptance score)
         // Normalize from 0-1000000 to 0-100
         reject = scores[0] / 10000;
         accept = scores[1] / 10000;
-        
+
         // Clamp to [0,100] just in case
         if (accept > 100) accept = 100;
         if (reject > 100) reject = 100;
-        
+
         return (accept, reject);
     }
 
     /// @dev Pass rule: acceptance must meet or exceed threshold
-    function _passed(uint256 acceptance, uint256 threshold) 
-        internal pure returns (bool) 
+    function _passed(uint256 acceptance, uint256 threshold)
+        internal pure returns (bool)
     {
         return acceptance >= threshold;
     }
 
+    function _max(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a > b ? a : b;
+    }
+
     receive() external payable {}
 }
-

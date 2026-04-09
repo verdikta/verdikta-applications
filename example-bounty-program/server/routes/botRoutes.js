@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const logger = require('../utils/logger');
+const { sendError, ErrorCodes } = require('../utils/apiErrors');
 
 const router = express.Router();
 const BOTS_FILE = path.join(__dirname, '..', 'data', 'bots.json');
@@ -61,25 +62,38 @@ router.post('/register', async (req, res) => {
 
     // Validate required fields
     if (!name || !ownerAddress) {
-      return res.status(400).json({
-        error: 'Missing required fields',
-        details: 'name and ownerAddress are required',
+      return sendError(res, 400, {
+        code: ErrorCodes.BOT_MISSING_FIELDS,
+        message: 'Missing required fields',
+        details: `Received: ${!name ? 'name is missing' : ''}${!name && !ownerAddress ? ', ' : ''}${!ownerAddress ? 'ownerAddress is missing' : ''}`,
+        fix: 'POST /api/bots/register with JSON body: { "name": "MyBot", "ownerAddress": "0x..." }',
+        tips: [
+          'name: 3-100 characters, your bot\'s display name',
+          'ownerAddress: your Ethereum wallet address (0x + 40 hex chars)',
+          'description: optional, what your bot does',
+          'Full docs: GET /api/docs'
+        ]
       });
     }
 
     // Validate name length
     if (name.length < 3 || name.length > 100) {
-      return res.status(400).json({
-        error: 'Invalid name',
-        details: 'Name must be between 3 and 100 characters',
+      return sendError(res, 400, {
+        code: ErrorCodes.BOT_INVALID_NAME,
+        message: 'Invalid bot name',
+        details: `Name "${name}" is ${name.length} characters. Must be 3-100 characters.`,
+        fix: 'Choose a name between 3 and 100 characters'
       });
     }
 
     // Validate wallet address format
     if (!/^0x[a-fA-F0-9]{40}$/.test(ownerAddress)) {
-      return res.status(400).json({
-        error: 'Invalid ownerAddress',
-        details: 'Must be a valid Ethereum address',
+      return sendError(res, 400, {
+        code: ErrorCodes.BOT_INVALID_ADDRESS,
+        message: 'Invalid owner address',
+        details: `"${ownerAddress}" is not a valid Ethereum address`,
+        fix: 'Provide a valid Ethereum address: 0x followed by 40 hexadecimal characters (42 chars total)',
+        tips: ['Example: 0x742d35Cc6634C0532925a3b844Bc9e7595f2bD18']
       });
     }
 
@@ -115,10 +129,20 @@ router.post('/register', async (req, res) => {
       },
       apiKey, // Only returned on registration!
       warning: 'Save this API key - it will not be shown again',
+      tips: [
+        'Pass your key as header: X-Bot-API-Key: YOUR_KEY',
+        'List open bounties: GET /api/jobs?status=OPEN',
+        'Full docs: GET /api/docs'
+      ]
     });
   } catch (error) {
     logger.error('Bot registration failed', error);
-    res.status(500).json({ error: 'Registration failed' });
+    sendError(res, 500, {
+      code: ErrorCodes.INTERNAL_ERROR,
+      message: 'Registration failed',
+      details: error.message,
+      fix: 'Try again shortly. If the problem persists, check server health: GET /health'
+    });
   }
 });
 
@@ -131,12 +155,17 @@ router.get('/:id', (req, res) => {
   const bot = registry.bots.find(b => b.id === req.params.id);
 
   if (!bot) {
-    return res.status(404).json({ error: 'Bot not found' });
+    return sendError(res, 404, {
+      code: ErrorCodes.NOT_FOUND,
+      message: 'Bot not found',
+      details: `No bot with ID "${req.params.id}"`,
+      fix: 'Check the bot ID is correct'
+    });
   }
 
   // Don't expose the API key
   const { apiKey, ...publicInfo } = bot;
-  res.json({ bot: publicInfo });
+  res.json({ success: true, bot: publicInfo });
 });
 
 /**
@@ -146,9 +175,11 @@ router.get('/:id', (req, res) => {
 router.delete('/:id', (req, res) => {
   // Only the bot itself can deactivate (must use its own API key)
   if (req.clientType !== 'bot' || req.clientId !== req.params.id) {
-    return res.status(403).json({
-      error: 'Unauthorized',
+    return sendError(res, 403, {
+      code: ErrorCodes.AUTH_INVALID,
+      message: 'Unauthorized',
       details: 'Only the bot itself can deactivate its registration',
+      fix: 'Use the bot\'s own API key in X-Bot-API-Key header to deactivate'
     });
   }
 
@@ -156,7 +187,12 @@ router.delete('/:id', (req, res) => {
   const bot = registry.bots.find(b => b.id === req.params.id);
 
   if (!bot) {
-    return res.status(404).json({ error: 'Bot not found' });
+    return sendError(res, 404, {
+      code: ErrorCodes.NOT_FOUND,
+      message: 'Bot not found',
+      details: `No bot with ID "${req.params.id}"`,
+      fix: 'Check the bot ID is correct'
+    });
   }
 
   bot.active = false;

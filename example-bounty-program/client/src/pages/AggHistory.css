@@ -1,0 +1,381 @@
+/* Aggregation History Page Styles */
+
+.agg-history {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+/* Page Header */
+.agg-history .page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 2rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.agg-history .header-content h1 {
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.agg-history .header-content p {
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.agg-history .agg-id-label {
+  font-family: inherit;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.agg-history .agg-id-display {
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
+  font-size: 0.8rem;
+  background: var(--bg-secondary);
+  padding: 0.35rem 0.6rem;
+  border-radius: 4px;
+  word-break: break-all;
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.agg-history .copy-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.15rem 0.4rem;
+  cursor: pointer;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  transition: all 0.2s;
+}
+
+.agg-history .copy-btn:hover {
+  background: var(--bg);
+  color: var(--text-primary);
+}
+
+/* Back link */
+.agg-history .back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--primary);
+  text-decoration: none;
+  font-size: 0.875rem;
+  margin-bottom: 1rem;
+}
+
+.agg-history .back-link:hover {
+  text-decoration: underline;
+}
+
+/* Loading and Error States */
+.agg-history .loading {
+  text-align: center;
+  padding: 4rem 2rem;
+}
+
+.agg-history .loading p {
+  margin-top: 1rem;
+  color: var(--text-secondary);
+}
+
+.agg-history .error-container {
+  text-align: center;
+  padding: 4rem 2rem;
+  color: var(--text-secondary);
+}
+
+.agg-history .error-container h2 {
+  margin: 1rem 0 0.5rem;
+  color: var(--text-primary);
+}
+
+.agg-history .not-found {
+  text-align: center;
+  padding: 4rem 2rem;
+  color: var(--text-secondary);
+}
+
+.agg-history .not-found h2 {
+  margin: 1rem 0 0.5rem;
+  color: var(--text-primary);
+}
+
+/* Outcome Banner */
+.outcome-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  border-radius: 10px;
+  margin-bottom: 1.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.outcome-banner.completed {
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: #22c55e;
+}
+
+.outcome-banner.failed {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+}
+
+.outcome-banner.running {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #f59e0b;
+}
+
+/* Oracle slots table */
+.agg-history .slots-table {
+  overflow-x: auto;
+}
+
+.agg-history .slots-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.agg-history .slots-table th,
+.agg-history .slots-table td {
+  padding: 0.6rem 0.5rem;
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.agg-history .slots-table th {
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.agg-history .slots-table td:first-child,
+.agg-history .slots-table th:first-child {
+  text-align: left;
+}
+
+.agg-history .slots-table .oracle-cell {
+  text-align: left;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
+  font-size: 0.75rem;
+}
+
+.agg-history .slots-table .oracle-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.agg-history .slots-table .oracle-link:hover {
+  text-decoration: underline;
+}
+
+.agg-history .slots-table .icon-ok {
+  color: #22c55e;
+}
+
+.agg-history .slots-table .icon-fail {
+  color: #ef4444;
+}
+
+.agg-history .slots-table .icon-na {
+  color: var(--border);
+}
+
+.agg-history .slots-table .scores-cell {
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
+  font-size: 0.7rem;
+  text-align: left;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Requirements & Actual layout */
+.req-actual-container {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 1.5rem;
+  margin-bottom: 0;
+}
+
+.req-actual-half {
+  margin-bottom: 0 !important;
+}
+
+.req-actual-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.req-actual-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.req-actual-label {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.req-actual-value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
+}
+
+.req-actual-value.val-ok {
+  color: #22c55e;
+}
+
+.req-actual-value.val-warn {
+  color: #f59e0b;
+}
+
+.req-actual-value.val-fail {
+  color: #ef4444;
+}
+
+.req-actual-oracles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.35rem 0;
+}
+
+.oracle-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
+  font-size: 0.7rem;
+  background: var(--bg-secondary);
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.oracle-chip:hover {
+  text-decoration: underline;
+}
+
+.req-actual-detail {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  padding: 0.15rem 0;
+}
+
+.req-actual-failures {
+  padding-top: 0.25rem;
+}
+
+.failure-line {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  padding: 0.15rem 0;
+}
+
+.failure-line .icon-fail {
+  color: #ef4444;
+  flex-shrink: 0;
+}
+
+.jobid-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.copy-icon-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+
+.copy-icon-btn:hover {
+  opacity: 1;
+}
+
+/* Fulfillment section */
+.fulfillment-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.fulfillment-details .detail-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+.fulfillment-details .detail-label {
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 120px;
+}
+
+.fulfillment-details .detail-value {
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .agg-history .page-header {
+    flex-direction: column;
+  }
+
+  .req-actual-container {
+    grid-template-columns: 1fr;
+  }
+
+  .agg-history .slots-table {
+    font-size: 0.75rem;
+  }
+
+  .agg-history .slots-table th,
+  .agg-history .slots-table td {
+    padding: 0.4rem 0.3rem;
+  }
+}

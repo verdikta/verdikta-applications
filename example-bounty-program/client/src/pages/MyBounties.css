@@ -201,7 +201,7 @@
 
 .submissions-header {
   display: grid;
-  grid-template-columns: 100px 110px 60px 90px 130px 50px;
+  grid-template-columns: 100px minmax(110px, auto) 60px 90px 130px 50px;
   gap: 0.75rem;
   padding: 0.5rem 0.75rem;
   font-size: 0.75rem;
@@ -213,7 +213,7 @@
 
 .submission-row {
   display: grid;
-  grid-template-columns: 100px 110px 60px 90px 130px 50px;
+  grid-template-columns: 100px minmax(110px, auto) 60px 90px 130px 50px;
   gap: 0.75rem;
   padding: 0.75rem;
   font-size: 0.875rem;
@@ -247,7 +247,6 @@
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  white-space: nowrap;
 }
 
 .sub-status.status-approved {

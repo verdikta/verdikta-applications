@@ -26,18 +26,20 @@ const BOUNTY_ESCROW_ABI = [
   "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)",
 
   // Write Functions
-  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline) payable returns (uint256)",
+  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)",
+  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize) payable returns (uint256)",
   "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
   "function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)",
   "function closeExpiredBounty(uint256 bountyId)",
+  "function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)",
   
   // View Functions (used sparingly)
   "function getEffectiveBountyStatus(uint256) view returns (string)",
-  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))",
+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
   "function bountyCount() view returns (uint256)",
-  "function getBounty(uint256) view returns (address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256)",
+  "function getBounty(uint256) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize))",
   "function verdikta() view returns (address)"
 ];
 
@@ -108,6 +110,34 @@ class ContractService {
     // Cache for expensive reads
     this._statusCache = new Map();
     this._statusCacheTTL = 5000; // 5 seconds
+  }
+
+  // ==========================================================================
+  // ERROR DECODING HELPER
+  // ==========================================================================
+
+  /**
+   * Try to extract a human-readable revert reason from an error.
+   * Handles both custom Solidity errors (parseError) and legacy string requires.
+   * @param {Error} error - The caught error object
+   * @param {ethers.Contract[]} contracts - Contract instances whose ABIs to try
+   * @returns {string|null} Decoded error name/reason, or null if not decodable
+   */
+  _decodeRevertReason(error, contracts) {
+    // Try custom error decoding first
+    if (error.data) {
+      for (const c of contracts) {
+        try {
+          const parsed = c.interface.parseError(error.data);
+          if (parsed) {
+            const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
+            return parsed.name + args;
+          }
+        } catch {}
+      }
+    }
+    // Fall back to string reason or shortMessage
+    return error.reason || error.shortMessage || null;
   }
 
   // ==========================================================================
@@ -217,7 +247,8 @@ class ContractService {
   /**
    * Create a bounty on-chain via MetaMask
    */
-  async createBounty({ evaluationCid, classId, threshold, bountyAmountEth, submissionWindowHours }) {
+  async createBounty({ evaluationCid, classId, threshold, bountyAmountEth, submissionWindowHours, targetHunter,
+                       creatorDeterminationPaymentEth, arbiterDeterminationPaymentEth, creatorAssessmentWindowHours }) {
     if (!this.contract) throw new Error('Contract not initialized. Call connect() first.');
 
     // Quick UI validations
@@ -229,13 +260,15 @@ class ContractService {
     const ethStr = String(bountyAmountEth);
     if (isNaN(Number(ethStr)) || Number(ethStr) <= 0) throw new Error('Payout amount (ETH) must be > 0');
 
+    // Determine if this is a windowed bounty
+    const hasApprovalWindow = creatorAssessmentWindowHours != null && Number(creatorAssessmentWindowHours) > 0;
+
     try {
       // Encode exact solidity widths
       const now = Math.floor(Date.now() / 1000);
       const submissionDeadline = BigInt(now + Math.trunc(winHrs * 3600));
       const classId64 = BigInt(classId);
       const thresh8 = BigInt(thrNum);
-      const valueWei = ethers.parseEther(ethStr);
 
       // Validate ranges
       const mask64 = (1n << 64n) - 1n;
@@ -243,40 +276,86 @@ class ContractService {
       if ((classId64 & ~mask64) !== 0n) throw new Error('classId exceeds uint64');
       if ((thresh8 & ~mask8) !== 0n) throw new Error('threshold exceeds uint8');
 
-      console.log('🔍 createBounty params', {
-        evaluationCid: evaluationCid.substring(0, 20) + '...',
-        classId64: classId64.toString(),
-        threshold8: thresh8.toString(),
-        submissionDeadline: submissionDeadline.toString(),
-        valueWei: valueWei.toString()
-      });
+      let args;
+      let valueWei;
+      let callFn;
 
-      // Dry-run to surface revert reasons
-      try {
-        await this.contract.createBounty.staticCall(
+      if (hasApprovalWindow) {
+        // 8-param overload with creator approval window
+        const creatorPayWei = ethers.parseEther(String(creatorDeterminationPaymentEth));
+        const arbiterPayWei = ethers.parseEther(String(arbiterDeterminationPaymentEth));
+        const windowSizeSec = BigInt(Math.trunc(Number(creatorAssessmentWindowHours) * 3600));
+
+        // Escrow = max(creatorPay, arbiterPay)
+        valueWei = creatorPayWei > arbiterPayWei ? creatorPayWei : arbiterPayWei;
+
+        console.log('🔍 createBounty (windowed) params', {
+          evaluationCid: evaluationCid.substring(0, 20) + '...',
+          classId64: classId64.toString(),
+          threshold8: thresh8.toString(),
+          submissionDeadline: submissionDeadline.toString(),
+          creatorPayWei: creatorPayWei.toString(),
+          arbiterPayWei: arbiterPayWei.toString(),
+          windowSizeSec: windowSizeSec.toString(),
+          valueWei: valueWei.toString()
+        });
+
+        args = [
           evaluationCid,
           classId64,
           thresh8,
           submissionDeadline,
+          targetHunter || '0x0000000000000000000000000000000000000000',
+          creatorPayWei,
+          arbiterPayWei,
+          windowSizeSec,
           { value: valueWei }
-        );
+        ];
+
+        // Use the 8-param overload signature to disambiguate
+        callFn = this.contract['createBounty(string,uint64,uint8,uint64,address,uint256,uint256,uint64)'];
+      } else {
+        // Classic 5-param overload
+        valueWei = ethers.parseEther(ethStr);
+
+        console.log('🔍 createBounty params', {
+          evaluationCid: evaluationCid.substring(0, 20) + '...',
+          classId64: classId64.toString(),
+          threshold8: thresh8.toString(),
+          submissionDeadline: submissionDeadline.toString(),
+          valueWei: valueWei.toString()
+        });
+
+        args = [
+          evaluationCid,
+          classId64,
+          thresh8,
+          submissionDeadline,
+          targetHunter || '0x0000000000000000000000000000000000000000',
+          { value: valueWei }
+        ];
+
+        callFn = this.contract['createBounty(string,uint64,uint8,uint64,address)'];
+      }
+
+      // Dry-run to surface revert reasons
+      try {
+        await callFn.staticCall(...args);
       } catch (e) {
-        const msg = (e?.shortMessage || e?.message || '').toLowerCase();
-        if (msg.includes('no eth')) throw new Error('Bounty requires ETH value (msg.value > 0)');
-        if (msg.includes('empty evaluationcid')) throw new Error('Evaluation CID is empty');
-        if (msg.includes('bad threshold')) throw new Error('Threshold must be 0..100');
-        if (msg.includes('deadline in past')) throw new Error('Deadline must be in the future');
+        const decoded = this._decodeRevertReason(e, [this.contract]);
+        const msg = (decoded || e?.message || '').toLowerCase();
+        if (msg.includes('no eth') || msg.includes('noeth')) throw new Error('Bounty requires ETH value (msg.value > 0)');
+        if (msg.includes('empty evaluationcid') || msg.includes('emptyevaluationcid')) throw new Error('Evaluation CID is empty');
+        if (msg.includes('bad threshold') || msg.includes('badthreshold')) throw new Error('Threshold must be 0..100');
+        if (msg.includes('deadline in past') || msg.includes('deadlineinpast')) throw new Error('Deadline must be in the future');
+        if (msg.includes('no creator payment')) throw new Error('Creator approval payment must be > 0');
+        if (msg.includes('no arbiter payment')) throw new Error('Arbiter (oracle) payment must be > 0');
+        if (msg.includes('window required')) throw new Error('Approval window is required when creator and arbiter payments differ');
         throw e;
       }
 
       // Send the tx
-      const tx = await this.contract.createBounty(
-        evaluationCid,
-        classId64,
-        thresh8,
-        submissionDeadline,
-        { value: valueWei }
-      );
+      const tx = await callFn(...args);
       console.log('📤 Transaction sent:', tx.hash);
 
       const receipt = await tx.wait();
@@ -312,7 +391,7 @@ class ContractService {
   /**
    * STEP 1: Prepare a submission (deploys EvaluationWallet)
    */
-  async prepareSubmission(bountyId, evaluationCid, hunterCid, addendum = "", alpha = 75,
+  async prepareSubmission(bountyId, evaluationCid, hunterCid, addendum = "", alpha = 500,
                           maxOracleFee = "50000000000000000",
                           estimatedBaseCost = "30000000000000000",
                           maxFeeBasedScaling = "20000000000000000") {
@@ -482,6 +561,61 @@ class ContractService {
   }
 
   /**
+   * Try to finalize a submission using a dry-run (staticCall) first.
+   * If the dry-run passes, sends the real transaction.
+   * If the dry-run reverts, returns structured failure info instead of prompting MetaMask.
+   *
+   * Returns: { success: true, txHash, ... }
+   *       or { success: false, reason, canFallbackToTimeout? }
+   */
+  async tryFinalizeSubmission(bountyId, submissionId) {
+    if (!this.contract) {
+      throw new Error('Contract not initialized. Call connect() first.');
+    }
+
+    try {
+      // Dry-run: staticCall to check if finalizeSubmission would succeed
+      console.log(`🔍 Dry-run finalizeSubmission(${bountyId}, ${submissionId})...`);
+      await this.contract.finalizeSubmission.staticCall(bountyId, submissionId);
+    } catch (staticErr) {
+      const decoded = this._decodeRevertReason(staticErr, [this.contract]);
+      const msg = (decoded || staticErr?.message || '').toLowerCase();
+      console.warn(`staticCall reverted for submission #${submissionId}:`, msg);
+
+      if (msg.includes('not pending') || msg.includes('notpending') || msg.includes('not pendingverdikta')) {
+        return { success: false, reason: 'already_terminal' };
+      }
+      if (msg.includes('verdikta') || msg.includes('not ready') || msg.includes('notready') || msg.includes('evaluation')) {
+        return { success: false, reason: 'oracle_not_ready', canFallbackToTimeout: true };
+      }
+      // Unknown revert — still flag as potential timeout fallback
+      return { success: false, reason: msg || 'unknown_revert', canFallbackToTimeout: true };
+    }
+
+    // Dry-run passed — send the real transaction
+    try {
+      console.log(`📤 Sending finalizeSubmission(${bountyId}, ${submissionId})...`);
+      const tx = await this.contract.finalizeSubmission(bountyId, submissionId);
+      const receipt = await tx.wait();
+      console.log(`✅ Submission #${submissionId} finalized:`, receipt.hash);
+
+      this._statusCache.delete(`${bountyId}`);
+
+      return {
+        success: true,
+        txHash: receipt.hash,
+        blockNumber: receipt.blockNumber,
+        gasUsed: receipt.gasUsed?.toString?.() ?? null,
+      };
+    } catch (txErr) {
+      if (txErr.code === 'ACTION_REJECTED') {
+        return { success: false, reason: 'user_rejected' };
+      }
+      throw txErr;
+    }
+  }
+
+  /**
    * Force-fail a timed-out submission
    */
   async failTimedOutSubmission(bountyId, submissionId) {
@@ -550,17 +684,69 @@ class ContractService {
         throw new Error('Transaction rejected by user');
       }
 
-      const msg = (error?.message || '').toLowerCase();
-      if (msg.includes('not open')) {
+      const decoded = this._decodeRevertReason(error, [this.contract]);
+      const msg = (decoded || error?.message || '').toLowerCase();
+      if (msg.includes('not open') || msg.includes('notopen')) {
         throw new Error('Bounty is not open - it may already be closed or awarded');
       }
-      if (msg.includes('deadline not passed')) {
+      if (msg.includes('deadline not passed') || msg.includes('deadlinenotpassed')) {
         throw new Error('Cannot close yet - deadline has not passed');
       }
-      if (msg.includes('active evaluation')) {
+      if (msg.includes('active evaluation') || msg.includes('activeevaluation')) {
         throw new Error('Cannot close - active evaluations in progress. Finalize them first.');
       }
 
+      throw error;
+    }
+  }
+
+  /**
+   * Creator approves a submission during the approval window
+   * Uses dry-run first to surface revert reasons before prompting MetaMask.
+   */
+  async creatorApproveSubmission(bountyId, submissionId) {
+    if (!this.contract) {
+      throw new Error('Contract not initialized. Call connect() first.');
+    }
+
+    try {
+      console.log('🔍 Creator approving submission...', { bountyId, submissionId });
+
+      // Dry-run to surface revert reasons
+      try {
+        await this.contract.creatorApproveSubmission.staticCall(bountyId, submissionId);
+      } catch (e) {
+        const decoded = this._decodeRevertReason(e, [this.contract]);
+        const msg = (decoded || e?.message || '').toLowerCase();
+        if (msg.includes('only creator')) throw new Error('Only the bounty creator can approve submissions');
+        if (msg.includes('window expired')) throw new Error('The creator approval window has expired');
+        if (msg.includes('not pending creator approval')) throw new Error('Submission is not pending creator approval');
+        if (msg.includes('earlier submission unresolved')) throw new Error('An earlier submission must be resolved first');
+        if (msg.includes('bounty not open')) throw new Error('Bounty is not open');
+        throw e;
+      }
+
+      const tx = await this.contract.creatorApproveSubmission(bountyId, submissionId);
+      console.log('📤 Transaction sent:', tx.hash);
+
+      const receipt = await tx.wait();
+      console.log('✅ Submission approved by creator:', receipt.hash);
+
+      // Invalidate status cache
+      this._statusCache.delete(`${bountyId}`);
+
+      return {
+        success: true,
+        txHash: receipt.hash,
+        blockNumber: receipt.blockNumber,
+        gasUsed: receipt.gasUsed?.toString?.() ?? null,
+      };
+
+    } catch (error) {
+      console.error('Error in creator approval:', error);
+      if (error.code === 'ACTION_REJECTED') {
+        throw new Error('Transaction rejected by user');
+      }
       throw error;
     }
   }
@@ -605,8 +791,9 @@ class ContractService {
 
       } catch (error) {
         console.error('Error getting bounty status:', error);
-        const msg = (error?.message || '').toLowerCase();
-        if (msg.includes('bad bountyid')) {
+        const decoded = this._decodeRevertReason(error, [contract]);
+        const msg = (decoded || error?.message || '').toLowerCase();
+        if (msg.includes('bad bountyid') || msg.includes('badbountyid')) {
           throw new Error(`Bounty #${bountyId} does not exist on-chain`);
         }
         throw error;
@@ -633,7 +820,7 @@ class ContractService {
 
         const sub = await contract.getSubmission(bountyId, submissionId);
         
-        const statusMap = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'];
+        const statusMap = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
 
         return {
           hunter: sub.hunter,
@@ -643,7 +830,9 @@ class ContractService {
           statusCode: sub.status,
           submittedAt: Number(sub.submittedAt),
           acceptance: Number(sub.acceptance),
-          rejection: Number(sub.rejection)
+          rejection: Number(sub.rejection),
+          linkMaxBudget: sub.linkMaxBudget.toString(),
+          creatorWindowEnd: Number(sub.creatorWindowEnd),
         };
 
       } catch (error) {
@@ -673,9 +862,9 @@ class ContractService {
     }
 
     try {
-      // Use the CORRECT 17-field Submission struct ABI (matches actual BountyEscrow.sol)
+      // Use the CORRECT 18-field Submission struct ABI (matches actual BountyEscrow.sol)
       const submissionAbi = [
-        'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))'
+        'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))'
       ];
 
       const tempContract = new ethers.Contract(this.contractAddress, submissionAbi, provider);
@@ -685,7 +874,7 @@ class ContractService {
       const verdiktaAggId = submission.verdiktaAggId || submission[4];
       const statusCode = Number(submission.status ?? submission[5]);
 
-      // Status codes: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
+      // Status codes: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid, 5=PendingCreatorApproval
       if (statusCode !== 0 && statusCode !== 1) {
         return { ready: false };
       }
@@ -843,40 +1032,6 @@ class ContractService {
   clearCache() {
     this._statusCache.clear();
     pendingCalls.clear();
-  }
-
-  /**
-   * Listen for account changes
-   */
-  onAccountChange(callback) {
-    if (window.ethereum) {
-      window.ethereum.on('accountsChanged', async (accounts) => {
-        // Clear caches on account change
-        this.clearCache();
-        
-        if (accounts.length > 0) {
-          await this.connect();
-          callback(accounts[0]);
-        } else {
-          this.disconnect();
-          callback(null);
-        }
-      });
-    }
-  }
-
-  /**
-   * Listen for network changes
-   */
-  onNetworkChange(callback) {
-    if (window.ethereum) {
-      window.ethereum.on('chainChanged', (chainId) => {
-        // Clear caches on network change
-        this.clearCache();
-        callback(chainId);
-        window.location.reload();
-      });
-    }
   }
 
   /**

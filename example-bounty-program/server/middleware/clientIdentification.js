@@ -10,6 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const logger = require('../utils/logger');
+const { sendError, ErrorCodes } = require('../utils/apiErrors');
 
 // Bot registry file path
 const BOTS_FILE = path.join(__dirname, '..', 'data', 'bots.json');
@@ -28,13 +29,18 @@ function loadBots() {
   return { bots: [] };
 }
 
-// Paths that don't require authentication (bot registration, health checks, diagnostics, receipts)
+// Paths that don't require authentication (bot registration, health checks, diagnostics, receipts, agent discovery)
 const PUBLIC_PATHS = [
   '/api/bots/register',
   '/health',
   '/api/diagnostics',
   '/r/',    // Receipt pages - must be public for social media crawlers (OG tags)
   '/og/',   // OG images for receipts - must be public for social media unfurling
+  '/agents.txt',          // Agent access guide
+  '/api/docs',            // API documentation
+  '/api/jobs.txt',        // Plain text bounty list
+  '/api/jobs/eth-price',  // ETH price proxy (public utility, no sensitive data)
+  '/feed.xml',            // Atom feed
 ];
 
 /**
@@ -115,9 +121,31 @@ function clientIdentification(req, res, next) {
     origin: origin || '(none)',
   });
 
-  return res.status(401).json({
-    error: 'Authentication required',
-    details: 'Valid X-Client-Key or X-Bot-API-Key header required',
+  // Distinguish: key provided but invalid vs. no key at all
+  if (botApiKey) {
+    return sendError(res, 401, {
+      code: ErrorCodes.AUTH_INVALID,
+      message: 'Invalid API key',
+      details: 'The provided X-Bot-API-Key was not recognized or the bot has been deactivated',
+      fix: 'Check your API key is correct. Register a new one at POST /api/bots/register',
+      tips: [
+        'Verify you copied the full key (starts with "bot-")',
+        'Keys are shown only once at registration — register again if lost',
+        'Agent guide: GET /agents.txt'
+      ]
+    });
+  }
+
+  return sendError(res, 401, {
+    code: ErrorCodes.AUTH_MISSING,
+    message: 'No API key provided',
+    details: 'This endpoint requires authentication via X-Bot-API-Key header',
+    fix: 'Add header X-Bot-API-Key with your key. Register at POST /api/bots/register if you need a key.',
+    tips: [
+      'Example: curl -H "X-Bot-API-Key: YOUR_KEY" https://bounties.verdikta.org/api/jobs',
+      'Register: POST /api/bots/register with { "name": "MyBot", "ownerAddress": "0x..." }',
+      'Agent guide: GET /agents.txt'
+    ]
   });
 }
 

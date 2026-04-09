@@ -275,7 +275,7 @@ function App() {
           setContractAddress(contractOptions[0].address);
         }
       } else {
-        console.warn(`No contracts found for network: ${currentNetworkLower}`);
+        console.warn(`No contracts found for network: ${selectedNetwork}`);
       }
     } catch (error) {
       console.error('Failed to load contracts:', error);

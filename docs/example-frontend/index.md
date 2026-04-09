@@ -36,5 +36,5 @@ This is the documentation for the Example Frontend application, part of the Verd
 
 ## Quick Links
 
-- [Source Code](../../example-frontend/)
+- [Source Code](https://github.com/verdikta/verdikta-applications/tree/main/example-frontend)
 - [GitHub Repository](https://github.com/verdikta/verdikta-applications) 

@@ -126,41 +126,5 @@ router.post('/bounties/:bountyId/submit', async (req, res) => {
   }
 });
 
-/**
- * GET /api/submissions/:submissionId
- * Get submission details
- */
-router.get('/:submissionId', async (req, res) => {
-  try {
-    const { submissionId } = req.params;
-
-    // TODO: Implement submission details fetching
-    // 1. Query blockchain for submission data
-    // 2. Fetch AI report from IPFS if available
-    // 3. Return detailed submission object
-
-    logger.info(`GET /api/submissions/${submissionId} called`);
-    logger.warn('TODO: Implement submission details fetching');
-
-    res.status(501).json({
-      error: 'Not implemented',
-      message: 'TODO: Implement submission details fetching',
-      steps: [
-        '1. Connect to BountyEscrow contract',
-        '2. Call contract.getSubmission(submissionId)',
-        '3. If reportCid exists, fetch AI report from IPFS',
-        '4. Parse and return detailed submission data'
-      ]
-    });
-
-  } catch (error) {
-    logger.error('Error fetching submission details:', error);
-    res.status(500).json({
-      error: 'Failed to fetch submission details',
-      details: error.message
-    });
-  }
-});
-
 module.exports = router;
 

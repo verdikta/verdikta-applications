@@ -18,9 +18,11 @@ import {
   Hourglass,
   HelpCircle,
   Clock,
+  Loader2,
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
+import { getContractService } from '../services/contractService';
 import {
   getBountyStatusLabel,
   getBountyBadgeProps,
@@ -116,6 +118,7 @@ function MyBounties({ walletState }) {
   const [expandedBounty, setExpandedBounty] = useState(null);
   const [downloadingSubmission, setDownloadingSubmission] = useState(null);
   const [downloadResult, setDownloadResult] = useState(null);
+  const [approvingSubmission, setApprovingSubmission] = useState(null);
 
   const { isConnected, address } = walletState;
 
@@ -173,6 +176,34 @@ function MyBounties({ walletState }) {
       toast.error(`Download failed: ${err.message}`);
     } finally {
       setDownloadingSubmission(null);
+    }
+  };
+
+  // Handle creator approval
+  const handleCreatorApprove = async (bounty, submissionId) => {
+    const key = `${bounty.jobId}-${submissionId}`;
+    const creatorPay = bounty.creatorDeterminationPayment || bounty.bountyAmount || '?';
+
+    const confirmed = window.confirm(
+      `Approve submission #${submissionId} for bounty "${bounty.title}"?\n\n` +
+      `This will pay the hunter ${creatorPay} ETH from the bounty escrow.\n\n` +
+      'This action requires a blockchain transaction that you must sign.'
+    );
+    if (!confirmed) return;
+
+    setApprovingSubmission(key);
+    try {
+      const contractService = getContractService();
+      if (!contractService.isConnected()) await contractService.connect();
+
+      await contractService.creatorApproveSubmission(bounty.jobId, submissionId);
+      toast.success(`Submission #${submissionId} approved!`);
+      loadBounties();
+    } catch (err) {
+      console.error('Error approving submission:', err);
+      toast.error(`Failed to approve: ${err.message}`);
+    } finally {
+      setApprovingSubmission(null);
     }
   };
 
@@ -394,11 +425,11 @@ function MyBounties({ walletState }) {
                           <span
                             className="hunter-address"
                             data-label="Submitter"
-                            title={`${sub.hunter} — Click to copy`}
-                            style={{ cursor: 'pointer' }}
-                            onClick={() => copyToClipboard(sub.hunter, toast)}
+                            title={sub.hunter ? `${sub.hunter} — Click to copy` : 'Address not available'}
+                            style={{ cursor: sub.hunter ? 'pointer' : 'default' }}
+                            onClick={() => sub.hunter && copyToClipboard(sub.hunter, toast)}
                           >
-                            {truncateAddress(sub.hunter)}
+                            {truncateAddress(sub.hunter) || '—'}
                           </span>
                           {(() => {
                             const effectiveStatus = getEffectiveSubmissionStatus(sub.status, bounty.status);
@@ -425,7 +456,37 @@ function MyBounties({ walletState }) {
                           <span className="submitted-date" data-label="Submitted">
                             {formatDate(sub.submittedAt)}
                           </span>
-                          <span className="action-cell">
+                          <span className="action-cell" style={{ display: 'flex', gap: '0.25rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                            {/* Creator approve button for PendingCreatorApproval */}
+                            {sub.status === 'PendingCreatorApproval' && (() => {
+                              const windowEnd = sub.creatorWindowEnd || 0;
+                              const now = Math.floor(Date.now() / 1000);
+                              const windowOpen = windowEnd > now;
+                              const key = `${bounty.jobId}-${sub.submissionId}`;
+                              const isApproving = approvingSubmission === key;
+
+                              if (windowOpen) {
+                                return (
+                                  <button
+                                    onClick={() => handleCreatorApprove(bounty, sub.submissionId)}
+                                    disabled={isApproving}
+                                    className="btn btn-sm btn-success"
+                                    title={`Approve and pay ${bounty.creatorDeterminationPayment || '?'} ETH (${Math.ceil((windowEnd - now) / 60)} min left)`}
+                                    style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.75rem' }}
+                                  >
+                                    {isApproving
+                                      ? <Loader2 size={12} className="spin" />
+                                      : <><Check size={12} /> Approve</>}
+                                  </button>
+                                );
+                              }
+                              return (
+                                <span className="expired-label" title="Creator approval window expired — proceed via bounty details page" style={{ fontSize: '0.75rem' }}>
+                                  Window expired
+                                </span>
+                              );
+                            })()}
+                            {/* Download button */}
                             {sub.hunterCid && !sub.isExpired ? (
                               <button
                                 onClick={() => handleDownload(bounty.jobId, sub.submissionId)}
@@ -437,10 +498,12 @@ function MyBounties({ walletState }) {
                                   ? <RefreshCw size={14} className="spin" />
                                   : <Download size={14} />}
                               </button>
-                            ) : sub.isExpired ? (
-                              <span className="expired-label">Expired</span>
-                            ) : (
-                              <span className="no-content">—</span>
+                            ) : sub.status !== 'PendingCreatorApproval' && (
+                              sub.isExpired ? (
+                                <span className="expired-label">Expired</span>
+                              ) : (
+                                <span className="no-content">—</span>
+                              )
                             )}
                           </span>
                         </div>

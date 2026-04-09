@@ -7,7 +7,7 @@
 const { ethers } = require('ethers');
 const logger = require('./logger');
 
-// ReputationAggregator ABI (functions needed for analytics)
+// ReputationAggregator ABI (functions needed for analytics + agg history)
 const AGGREGATOR_ABI = [
   "function reputationKeeper() view returns (address)",
   "function commitOraclesToPoll() view returns (uint256)",
@@ -17,7 +17,24 @@ const AGGREGATOR_ABI = [
   "function bonusMultiplier() view returns (uint256)",
   "function responseTimeoutSeconds() view returns (uint256)",
   "function maxOracleFee() view returns (uint256)",
-  "function getContractConfig() view returns (address oracleAddr, address linkAddr, bytes32 jobId, uint256 fee)"
+  "function getContractConfig() view returns (address oracleAddr, address linkAddr, bytes32 jobId, uint256 fee)",
+  // Agg history view functions
+  "function maxLikelihoodLength() view returns (uint256)",
+  "function aggregatedEvaluations(bytes32) view returns (bool isComplete, bool failed, bool commitPhaseComplete, uint256 commitCount, uint256 responseCount, uint256 requestBlock)",
+  "function requestIdToAggregatorId(bytes32) view returns (bytes32)",
+  // Agg history events — signatures must match the actual contract exactly
+  "event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)",
+  "event OracleSelected(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address oracle, bytes32 jobId)",
+  "event CommitReceived(bytes32 indexed aggRequestId, uint256 pollIndex, address operator, bytes16 commitHash)",
+  "event RevealRequestDispatched(bytes32 indexed aggRequestId, uint256 pollIndex, bytes16 commitHash)",
+  "event NewOracleResponseRecorded(bytes32 requestId, uint256 pollIndex, bytes32 indexed aggRequestId, address operator)",
+  "event RevealHashMismatch(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, bytes16 expectedHash, bytes16 gotHash)",
+  "event InvalidRevealFormat(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, string badCid)",
+  "event RevealTooManyScores(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, uint256 responseLength, uint256 maxAllowed)",
+  "event RevealWrongScoreCount(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, uint256 responseLength, uint256 expectedLength)",
+  "event RevealTooFewScores(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, uint256 responseLength)",
+  "event EvaluationFailed(bytes32 indexed aggRequestId, string phase)",
+  "event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] likelihoods, string justificationCID)"
 ];
 
 // ReputationKeeper ABI (functions needed for oracle data)
@@ -346,7 +363,8 @@ class VerdiktaService {
               totalCallCount: 0,
               qualityScores: [],
               timelinessScores: [],
-              operatorAddresses: new Set()
+              operatorAddresses: new Set(),
+              arbiterList: []
             };
           }
 
@@ -354,6 +372,14 @@ class VerdiktaService {
           // Track unique operator contract addresses
           if (oracle.oracle) {
             byClass[classId].operatorAddresses.add(oracle.oracle.toLowerCase());
+            byClass[classId].arbiterList.push({
+              address: oracle.oracle,
+              jobId: oracle.jobId,
+              classes: oracle.classes || [classId],
+              callCount: oracle.callCount,
+              qualityScore: oracle.qualityScore,
+              timelinessScore: oracle.timelinessScore
+            });
           }
 
           // Determine arbiter status - "new" if called fewer than 3 times
@@ -409,6 +435,271 @@ class VerdiktaService {
   }
 
   /**
+   * Get full aggregation history for an aggId by querying contract events
+   */
+  async getAggHistory(aggId) {
+    const currentBlock = await this.provider.getBlockNumber();
+
+    // 1. Fetch contract params
+    // K = oracles polled, M = commits required, N = reveals required
+    const [K, M, N, maxLikLen] = await Promise.all([
+      this.aggregator.commitOraclesToPoll(),
+      this.aggregator.oraclesToPoll(),
+      this.aggregator.requiredResponses(),
+      this.aggregator.maxLikelihoodLength()
+    ]);
+    const contractParams = {
+      K: Number(K),
+      M: Number(M),
+      N: Number(N),
+      maxLikelihoodLength: Number(maxLikLen)
+    };
+
+    // 2. Fetch aggregation status
+    let aggStatus;
+    try {
+      const raw = await this.aggregator.aggregatedEvaluations(aggId);
+      aggStatus = {
+        isComplete: raw.isComplete,
+        failed: raw.failed,
+        commitPhaseComplete: raw.commitPhaseComplete,
+        commitCount: Number(raw.commitCount),
+        responseCount: Number(raw.responseCount),
+        requestBlock: Number(raw.requestBlock)
+      };
+    } catch (err) {
+      logger.warn('Failed to fetch aggregatedEvaluations', { aggId, msg: err.message });
+      aggStatus = null;
+    }
+
+    // 3. Find RequestAIEvaluation event
+    // Use requestBlock from on-chain storage when available for precise search
+    const aggIdTopic = aggId;
+    const reqEventSig = this.aggregator.interface.getEvent('RequestAIEvaluation').topicHash;
+    let requestEvent = null;
+    const searchFrom = aggStatus?.requestBlock
+      ? Math.max(0, aggStatus.requestBlock - 1)
+      : Math.max(0, currentBlock - 50000);
+
+    const logs = await this.provider.getLogs({
+      address: this.aggregatorAddress,
+      topics: [reqEventSig, aggIdTopic],
+      fromBlock: searchFrom,
+      toBlock: currentBlock
+    });
+
+    if (logs.length > 0) {
+      const parsed = this.aggregator.interface.parseLog(logs[0]);
+      requestEvent = {
+        block: logs[0].blockNumber,
+        txHash: logs[0].transactionHash,
+        cids: parsed.args.cids
+      };
+    }
+
+    if (!requestEvent && !aggStatus) {
+      return { found: false, aggId, message: 'No matching aggregation found on-chain' };
+    }
+
+    const eventFromBlock = requestEvent ? requestEvent.block : searchFrom;
+
+    // 4. Fetch OracleSelected events
+    const oracleSelectedSig = this.aggregator.interface.getEvent('OracleSelected').topicHash;
+    const oracleLogs = await this.provider.getLogs({
+      address: this.aggregatorAddress,
+      topics: [oracleSelectedSig, aggIdTopic],
+      fromBlock: eventFromBlock,
+      toBlock: currentBlock
+    });
+
+    logger.info('AggHistory debug', {
+      oracleSelectedSig,
+      oracleLogsFound: oracleLogs.length,
+      aggIdTopic,
+      eventFromBlock,
+      currentBlock
+    });
+
+    const slotMap = {};
+    for (const log of oracleLogs) {
+      const parsed = this.aggregator.interface.parseLog(log);
+      logger.info('OracleSelected parsed', { args: Object.keys(parsed.args), pollIndex: String(parsed.args.pollIndex), oracle: parsed.args.oracle });
+      const slot = Number(parsed.args.pollIndex);
+      slotMap[slot] = {
+        slot,
+        oracle: parsed.args.oracle,
+        jobId: parsed.args.jobId,
+        committed: false,
+        revealRequested: false,
+        revealOK: false,
+        hashMismatch: false,
+        invalidFormat: false,
+        tooManyScores: false,
+        wrongScoreCount: false,
+        tooFewScores: false,
+        scores: null
+      };
+    }
+
+    // 5. Fetch lifecycle events (all indexed by aggRequestId)
+    const eventNames = [
+      'CommitReceived', 'RevealRequestDispatched',
+      'RevealHashMismatch', 'InvalidRevealFormat',
+      'RevealTooManyScores', 'RevealWrongScoreCount', 'RevealTooFewScores'
+    ];
+
+    const lifecycleLogs = await Promise.all(
+      eventNames.map(name => {
+        const sig = this.aggregator.interface.getEvent(name).topicHash;
+        return this.provider.getLogs({
+          address: this.aggregatorAddress,
+          topics: [sig, aggIdTopic],
+          fromBlock: eventFromBlock,
+          toBlock: currentBlock
+        });
+      })
+    );
+
+    for (let i = 0; i < eventNames.length; i++) {
+      logger.info(`Lifecycle ${eventNames[i]}`, { logsFound: lifecycleLogs[i].length });
+      for (const log of lifecycleLogs[i]) {
+        const parsed = this.aggregator.interface.parseLog(log);
+        const slot = Number(parsed.args.pollIndex);
+        logger.info(`  ${eventNames[i]} slot=${slot}`, { args: Object.keys(parsed.args) });
+        if (!slotMap[slot]) continue;
+        switch (eventNames[i]) {
+          case 'CommitReceived': slotMap[slot].committed = true; break;
+          case 'RevealRequestDispatched': slotMap[slot].revealRequested = true; break;
+          case 'RevealHashMismatch': slotMap[slot].hashMismatch = true; break;
+          case 'InvalidRevealFormat': slotMap[slot].invalidFormat = true; break;
+          case 'RevealTooManyScores': slotMap[slot].tooManyScores = true; break;
+          case 'RevealWrongScoreCount': slotMap[slot].wrongScoreCount = true; break;
+          case 'RevealTooFewScores': slotMap[slot].tooFewScores = true; break;
+        }
+      }
+    }
+
+    // 6. Fetch NewOracleResponseRecorded events
+    const responseSig = this.aggregator.interface.getEvent('NewOracleResponseRecorded').topicHash;
+    const responseLogs = await this.provider.getLogs({
+      address: this.aggregatorAddress,
+      topics: [responseSig, aggIdTopic],
+      fromBlock: eventFromBlock,
+      toBlock: currentBlock
+    });
+
+    logger.info('NewOracleResponseRecorded', { logsFound: responseLogs.length });
+    for (const log of responseLogs) {
+      const parsed = this.aggregator.interface.parseLog(log);
+      const slot = Number(parsed.args.pollIndex);
+      logger.info(`  Response slot=${slot}`, { args: Object.keys(parsed.args) });
+      if (!slotMap[slot]) continue;
+      slotMap[slot].revealOK = true;
+    }
+
+    // 7. Check for EvaluationFailed and FulfillAIEvaluation
+    const failSig = this.aggregator.interface.getEvent('EvaluationFailed').topicHash;
+    const fulfillSig = this.aggregator.interface.getEvent('FulfillAIEvaluation').topicHash;
+
+    const [failLogs, fulfillLogs] = await Promise.all([
+      this.provider.getLogs({
+        address: this.aggregatorAddress,
+        topics: [failSig, aggIdTopic],
+        fromBlock: eventFromBlock,
+        toBlock: currentBlock
+      }),
+      this.provider.getLogs({
+        address: this.aggregatorAddress,
+        topics: [fulfillSig, aggIdTopic],
+        fromBlock: eventFromBlock,
+        toBlock: currentBlock
+      })
+    ]);
+
+    let fulfillment = null;
+    if (fulfillLogs.length > 0) {
+      const parsed = this.aggregator.interface.parseLog(fulfillLogs[0]);
+      fulfillment = {
+        likelihoods: parsed.args.likelihoods.map(s => Number(s)),
+        justificationCID: parsed.args.justificationCID,
+        block: fulfillLogs[0].blockNumber,
+        txHash: fulfillLogs[0].transactionHash
+      };
+    }
+
+    // 8. Build slots array and analysis
+    const slots = Object.values(slotMap).sort((a, b) => a.slot - b.slot);
+    const totalSlots = slots.length;
+    const committedSlots = slots.filter(s => s.committed);
+    const revealedSlots = slots.filter(s => s.revealOK);
+    const failedSlots = slots.filter(s => s.hashMismatch || s.invalidFormat || s.tooManyScores || s.wrongScoreCount || s.tooFewScores);
+    const nonRespondingSlots = slots.filter(s => !s.committed);
+    const uniqueOracles = new Set(slots.map(s => s.oracle)).size;
+
+    // Determine outcome
+    // If still early (< 10 min since request), show IN PROCESS instead of FAILED
+    // Prefer the event block (reliable) over aggStatus.requestBlock (may be an internal index, not a block number)
+    const requestBlock = requestEvent?.block
+      || (aggStatus?.requestBlock > 1000 ? aggStatus.requestBlock : null);
+    let elapsedMinutes = null;
+    if (requestBlock) {
+      // ~2 seconds per block on Base
+      const blocksSinceRequest = currentBlock - requestBlock;
+      elapsedMinutes = Math.round(blocksSinceRequest * 2 / 60);
+    }
+    const IN_PROCESS_WINDOW_MINUTES = 10;
+    const isEarly = elapsedMinutes !== null && elapsedMinutes < IN_PROCESS_WINDOW_MINUTES;
+
+    let outcome;
+    if (fulfillment) {
+      outcome = 'COMPLETED';
+    } else if (failLogs.length > 0 || (aggStatus && aggStatus.failed)) {
+      let failPhase = 'unknown';
+      if (committedSlots.length < contractParams.M) failPhase = 'commit';
+      else if (revealedSlots.length < contractParams.N) failPhase = 'reveal';
+      if (isEarly) {
+        outcome = `IN PROCESS (${failPhase} phase, ${elapsedMinutes}m elapsed)`;
+      } else {
+        outcome = `FAILED (${failPhase} phase)`;
+      }
+    } else {
+      if (elapsedMinutes !== null) {
+        outcome = `RUNNING (${elapsedMinutes}m elapsed)`;
+      } else {
+        outcome = 'RUNNING';
+      }
+    }
+
+    const analysis = {
+      totalSlots,
+      committed: committedSlots.length,
+      revealed: revealedSlots.length,
+      nonResponding: nonRespondingSlots.length,
+      nonRespondingSlotIds: nonRespondingSlots.map(s => s.slot),
+      uniqueOracles,
+      failures: {
+        hashMismatch: slots.filter(s => s.hashMismatch).length,
+        invalidFormat: slots.filter(s => s.invalidFormat).length,
+        tooManyScores: slots.filter(s => s.tooManyScores).length,
+        wrongScoreCount: slots.filter(s => s.wrongScoreCount).length,
+        tooFewScores: slots.filter(s => s.tooFewScores).length
+      }
+    };
+
+    return {
+      found: true,
+      aggId,
+      contractParams,
+      aggregationStatus: aggStatus,
+      requestEvent,
+      slots,
+      fulfillment,
+      outcome,
+      analysis
+    };
+  }
+
+  /**
    * Check if the service is properly configured
    */
   async healthCheck() {
@@ -416,12 +707,13 @@ class VerdiktaService {
       const keeperAddress = await this.aggregator.reputationKeeper();
       const config = await this.getAggregatorConfig();
 
-      // Get LINK token address from aggregator's getContractConfig
+      // Get LINK token address from aggregator's getContractConfig (legacy)
       let linkTokenAddress = null;
       try {
         const contractConfig = await this.aggregator.getContractConfig();
-        linkTokenAddress = contractConfig.linkAddr;
+        linkTokenAddress = contractConfig.linkAddr || contractConfig[1];
       } catch (err) {
+        // May fail if getContractConfig is removed in future versions
         logger.debug('Could not get LINK token address', { msg: err.message });
       }
 

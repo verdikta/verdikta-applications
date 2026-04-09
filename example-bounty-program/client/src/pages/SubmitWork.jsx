@@ -55,18 +55,9 @@ function SubmitWork({ walletState }) {
     loadJobDetails();
   }, [bountyId, walletState.isConnected]);
 
-  // Helper to get the on-chain bounty ID
-  // Returns null if not available (don't fall back to URL param as that's the database ID)
+  // jobId === onChainId in the aligned ID system
   const getOnChainId = (job) => {
-    if (job.onChainId !== undefined && job.onChainId !== null) {
-      return job.onChainId;
-    }
-    // Fallback for old data that might still have bountyId field
-    if (job.bountyId !== undefined && job.bountyId !== null) {
-      return job.bountyId;
-    }
-    // Don't use URL parameter as fallback - it's the database ID, not the on-chain ID
-    return null;
+    return job.jobId != null ? Number(job.jobId) : null;
   };
 
   const loadJobDetails = async () => {
@@ -138,7 +129,7 @@ function SubmitWork({ walletState }) {
       // Documents
       '.txt', '.md', '.pdf', '.docx',
       // Images
-      '.jpg', '.jpeg', '.png',
+      '.jpg', '.jpeg', '.png', '.bmp',
       // Programming languages
       '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.cpp', '.h', '.hpp',
       '.cs', '.rb', '.go', '.rs', '.php', '.swift', '.kt', '.sol', '.r', '.m',
@@ -305,6 +296,12 @@ function SubmitWork({ walletState }) {
       return;
     }
 
+    // Check if targeted bounty and connected wallet doesn't match
+    if (job?.targetHunter && walletState.address?.toLowerCase() !== job.targetHunter.toLowerCase()) {
+      toast.warning('This bounty is targeted to a specific address. Only that address can submit.');
+      return;
+    }
+
     try {
       setLoading(true);
       setError(null);
@@ -377,7 +374,7 @@ function SubmitWork({ walletState }) {
       // Get the evaluationCid from the job data:
       // - evaluationCid: The evaluation package CID (contains jury config, rubric reference, instructions)
       // - This was set when the bounty was created and stored on-chain
-      const evaluationCid = job.primaryCid;
+      const evaluationCid = job.evaluationCid;
       if (!evaluationCid) {
         throw new Error('Evaluation CID not found in job data. The bounty may not have been properly created.');
       }
@@ -492,10 +489,12 @@ function SubmitWork({ walletState }) {
         errorMessage = '🚫 Transaction cancelled by user';
       } else if (errorMessage.includes('LINK approval rejected')) {
         errorMessage = '🚫 LINK approval was cancelled';
+      } else if (errorMessage.includes('bounty is targeted')) {
+        errorMessage = 'This bounty is restricted to a specific address. Only the targeted wallet can submit.';
       } else if (errorMessage.includes('deadline passed')) {
-        errorMessage = '⏰ Submission deadline has passed';
+        errorMessage = 'Submission deadline has passed';
       } else if (errorMessage.includes('not open')) {
-        errorMessage = '🔒 Bounty is not accepting submissions';
+        errorMessage = 'Bounty is not accepting submissions';
       } else if (errorMessage.includes('insufficient allowance')) {
         errorMessage = '⚠️ LINK approval issue. The approval transaction succeeded but the state was not visible on-chain in time. Please try again.';
       } else if (errorMessage.includes('Could not initialize LINK contract')) {
@@ -538,6 +537,32 @@ function SubmitWork({ walletState }) {
           <h2>Wallet Not Connected</h2>
           <p>Please connect your wallet to submit work.</p>
           <button onClick={() => navigate(`/bounty/${bountyId}`)} className="btn btn-secondary">
+            Back to Bounty
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Check if targeted bounty and user is not the target
+  if (job && job.targetHunter && walletState.isConnected &&
+      walletState.address?.toLowerCase() !== job.targetHunter.toLowerCase()) {
+    return (
+      <div className="submit-work">
+        <div className="alert alert-warning">
+          <h2>Targeted Bounty</h2>
+          <p>This bounty is targeted to a specific address. Only that wallet can submit work.</p>
+          <p style={{ marginTop: '0.5rem' }}>
+            <strong>Target:</strong> <code>{job.targetHunter}</code>
+          </p>
+          <p style={{ marginTop: '0.25rem' }}>
+            <strong>Your wallet:</strong> <code>{walletState.address}</code>
+          </p>
+          <button
+            onClick={() => navigate(`/bounty/${bountyId}`)}
+            className="btn btn-primary"
+            style={{ marginTop: '1rem' }}
+          >
             Back to Bounty
           </button>
         </div>
@@ -631,11 +656,11 @@ function SubmitWork({ walletState }) {
               id="files"
               type="file"
               onChange={handleFileAdd}
-              accept=".txt,.md,.pdf,.docx,.jpg,.jpeg,.png,.py,.js,.ts,.jsx,.tsx,.java,.c,.cpp,.h,.hpp,.cs,.rb,.go,.rs,.php,.swift,.kt,.sol,.r,.m,.html,.css,.scss,.sass,.json,.xml,.yaml,.yml,.toml,.csv,.sh,.bat,.ps1,.sql"
+              accept=".txt,.md,.pdf,.docx,.jpg,.jpeg,.png,.bmp,.py,.js,.ts,.jsx,.tsx,.java,.c,.cpp,.h,.hpp,.cs,.rb,.go,.rs,.php,.swift,.kt,.sol,.r,.m,.html,.css,.scss,.sass,.json,.xml,.yaml,.yml,.toml,.csv,.sh,.bat,.ps1,.sql"
               multiple
             />
             <small>
-              Allowed formats: Code files (.py, .sol, .cpp, .js, .ts, .java, .c, .h, .go, .rs, etc.), documents (.txt, .md, .pdf, .docx), images (.jpg, .png), and data files (.json, .xml, .yaml, .csv)<br />
+              Allowed formats: Code files (.py, .sol, .cpp, .js, .ts, .java, .c, .h, .go, .rs, etc.), documents (.txt, .md, .pdf, .docx), images (.jpg, .png, .bmp), and data files (.json, .xml, .yaml, .csv)<br />
               Maximum size per file: 20 MB | You can add up to 10 files
             </small>
           </div>
@@ -757,6 +782,7 @@ function SubmitWork({ walletState }) {
           <li>First passing submission wins the bounty</li>
           <li>Your submission becomes public once uploaded</li>
           <li>Make sure you have enough LINK and ETH before submitting</li>
+          <li><strong>Creator approval window:</strong> Some bounties give the creator a time window to approve submissions directly (skipping AI evaluation). If this bounty has one, your submission will show "Pending Creator Approval" until the creator approves or the window expires. After the window expires, AI evaluation can be triggered normally.</li>
         </ul>
       </div>
 

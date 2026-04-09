@@ -60,6 +60,27 @@ function isPaidWinner({ bounty, submission }) {
   return Boolean(passedPaid && hunter && winner && hunter === winner);
 }
 
+/**
+ * Derive public-facing base URL from request headers.
+ * Nginx forwards Host and X-Forwarded-Proto, so this works for both
+ * bounties.verdikta.org (mainnet) and bounties-testnet.verdikta.org (testnet)
+ * without any env config.
+ */
+function getBaseUrl(req) {
+  const proto = (req.get('x-forwarded-proto') || req.protocol || 'https').split(',')[0].trim();
+  const host = req.get('host') || '';
+  // If the host looks like a local dev address (e.g. localhost:5005, 127.0.0.1),
+  // fall back to the public domain based on network name.
+  if (host.startsWith('localhost') || host.startsWith('127.0.0.1') || host.startsWith('0.0.0.0')) {
+    const network = (config.networkName || '').toLowerCase();
+    if (network.includes('sepolia') || network.includes('testnet')) {
+      return 'https://bounties-testnet.verdikta.org';
+    }
+    return 'https://bounties.verdikta.org';
+  }
+  return `${proto}://${host}`;
+}
+
 function escapeHtml(s) {
   return String(s || '')
     .replace(/&/g, '&amp;')
@@ -77,8 +98,20 @@ function shortHash(h) {
 
 async function loadReceiptData(jobId, submissionId) {
   try {
-    const job = await jobStorage.getJob(jobId);
-    const onChainId = job.onChainId ?? job.onChainBountyId ?? job.bountyId;
+    let job;
+    try {
+      job = await jobStorage.getJob(jobId);
+    } catch (e) {
+      // Fallback: try jobId - 1 for legacy URLs (old 1-based IDs)
+      if (jobId > 0) {
+        job = await jobStorage.getJob(jobId - 1);
+        if (job) {
+          job._legacyRedirect = jobId - 1; // Signal to caller to redirect
+        }
+      }
+      if (!job) throw e;
+    }
+    const onChainId = job.jobId;
     if (onChainId == null) {
       const err = new Error('Job has no on-chain bounty ID');
       err.code = 'NO_ONCHAIN_ID';
@@ -160,9 +193,10 @@ function getWinnerLabel(submission, localSubmission) {
   const isBot = localSubmission?.clientType === 'bot';
   
   if (isBot) {
-    // For bots, use Agent + pseudonym
+    // For bots, use Agent + pseudonym (or just "Agent" if no salt configured)
     const agentId = pseudonymousAgentId(submission.hunter);
-    return { label: `Agent ${agentId}`, type: 'agent' };
+    const label = agentId === 'UNKNOWN' ? 'Agent' : `Agent ${agentId}`;
+    return { label, type: 'agent' };
   } else {
     // For humans/frontend users, use pseudonymous wallet address
     const addr = submission.hunter || '';
@@ -183,6 +217,11 @@ router.get('/r/:jobId/:submissionId', async (req, res) => {
   try {
     const { job, onChainId, bounty, submission, localSubmission } = await loadReceiptData(jobId, submissionId);
 
+    // Redirect legacy URLs (old 1-based jobId) to new 0-based
+    if (job._legacyRedirect != null) {
+      return res.redirect(301, `/r/${job._legacyRedirect}/${submissionId}`);
+    }
+
     // Gate: receipts only for paid winners
     if (!isPaidWinner({ bounty, submission })) {
       return res.status(404).send('Receipt not found');
@@ -199,10 +238,10 @@ router.get('/r/:jobId/:submissionId', async (req, res) => {
     const ethPriceUSD = await fetchEthPrice();
     const amountUSD = ethPriceUSD ? (parseFloat(amountEth) * ethPriceUSD).toFixed(2) : null;
 
-    const proto = (req.get('x-forwarded-proto') || req.protocol || 'https').split(',')[0].trim();
-    const receiptUrl = `${proto}://${req.get('host')}/r/${jobId}/${submissionId}`;
+    const baseUrl = getBaseUrl(req);
+    const receiptUrl = `${baseUrl}/r/${jobId}/${submissionId}`;
     // Use PNG for better X/Twitter compatibility
-    const ogImageUrl = `${proto}://${req.get('host')}/og/receipt/${jobId}/${submissionId}.png`;
+    const ogImageUrl = `${baseUrl}/og/receipt/${jobId}/${submissionId}.png`;
 
     const ogTitle = `Receipt: PASS — ${amountEth} ETH${amountUSD ? ` ($${amountUSD})` : ''} — ${title}`;
     const ogDesc = `${winnerLabel} earned ${amountEth} ETH${amountUSD ? ` ($${amountUSD} USD)` : ''}. Final verdict: PASS (paid).`;
@@ -337,7 +376,7 @@ router.get('/r/:jobId/:submissionId', async (req, res) => {
  * @param {Object} params - Receipt data
  * @returns {string} SVG content
  */
-function generateReceiptSvg({ jobId, submissionId, onChainId, amountEth, amountUSD, title, winnerLabel, winnerType, networkName }) {
+function generateReceiptSvg({ jobId, submissionId, onChainId, amountEth, amountUSD, title, winnerLabel, winnerType, networkName, publicUrl }) {
   const usdText = amountUSD ? ` ($${amountUSD} USD)` : '';
   const winnerTypeText = winnerType === 'agent' ? '🤖 AI Agent' : 'Human';
   const submissionDisplay = submissionId + 1; // Display as 1-indexed
@@ -381,7 +420,7 @@ function generateReceiptSvg({ jobId, submissionId, onChainId, amountEth, amountU
 
   <rect x="100" y="420" width="1000" height="6" fill="url(#accent)" opacity="0.7"/>
 
-  <text x="100" y="485" font-family="monospace" font-size="18" fill="#8ab4ff">bounties.verdikta.org/r/${jobId}/${submissionId}</text>
+  <text x="100" y="485" font-family="monospace" font-size="18" fill="#8ab4ff">${publicUrl.replace(/^https?:\/\//, '')}/r/${jobId}/${submissionId}</text>
   <text x="100" y="525" font-family="Arial, sans-serif" font-size="16" fill="#9a9aa3">Powered by Verdikta · Trust at Machine Speed · On-chain proof</text>
 </svg>`;
 }
@@ -407,7 +446,7 @@ router.get('/og/receipt/:jobId/:submissionId.svg', async (req, res) => {
     const ethPriceUSD = await fetchEthPrice();
     const amountUSD = ethPriceUSD ? (parseFloat(amountEth) * ethPriceUSD).toFixed(2) : null;
 
-    const svg = generateReceiptSvg({ jobId, submissionId, onChainId, amountEth, amountUSD, title, winnerLabel: winnerInfo.label, winnerType: winnerInfo.type, networkName: config.networkName });
+    const svg = generateReceiptSvg({ jobId, submissionId, onChainId, amountEth, amountUSD, title, winnerLabel: winnerInfo.label, winnerType: winnerInfo.type, networkName: config.networkName, publicUrl: getBaseUrl(req) });
 
     res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
     // Allow caching; receipt content should be immutable once paid.
@@ -440,7 +479,7 @@ router.get('/og/receipt/:jobId/:submissionId.png', async (req, res) => {
     const ethPriceUSD = await fetchEthPrice();
     const amountUSD = ethPriceUSD ? (parseFloat(amountEth) * ethPriceUSD).toFixed(2) : null;
 
-    const svg = generateReceiptSvg({ jobId, submissionId, onChainId, amountEth, amountUSD, title, winnerLabel: winnerInfo.label, winnerType: winnerInfo.type, networkName: config.networkName });
+    const svg = generateReceiptSvg({ jobId, submissionId, onChainId, amountEth, amountUSD, title, winnerLabel: winnerInfo.label, winnerType: winnerInfo.type, networkName: config.networkName, publicUrl: getBaseUrl(req) });
 
     // Convert SVG to PNG using sharp
     const pngBuffer = await sharp(Buffer.from(svg))

@@ -12,6 +12,7 @@ const networks = {
     rpcUrl: 'https://sepolia.base.org',
     explorer: 'https://sepolia.basescan.org',
     verdiktaAggregatorAddress: '0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089',
+    linkTokenAddress: '0xE4aB69C077896252FAFBD49EFD26B5D171A32410',
   },
   'base': {
     chainId: 8453,
@@ -19,6 +20,7 @@ const networks = {
     rpcUrl: 'https://mainnet.base.org',
     explorer: 'https://basescan.org',
     verdiktaAggregatorAddress: '0x2f7a02298D4478213057edA5e5bEB07F20c4c054',
+    linkTokenAddress: '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196',
   },
 };
 
@@ -62,6 +64,8 @@ const config = {
   bountyEscrowAddress: bountyEscrowAddresses[networkKey] || '',
   // Verdikta aggregator from network config (determined by NETWORK)
   verdiktaAggregatorAddress: networkDefaults.verdiktaAggregatorAddress,
+  // LINK token address for oracle payments
+  linkTokenAddress: networkDefaults.linkTokenAddress,
 
   // Server settings
   port: parseInt(process.env.PORT) || 5005,
@@ -102,5 +106,15 @@ const config = {
 
 // Alias for backwards compatibility
 config.rpcProviderUrl = config.rpcUrl;
+
+// Deployment block numbers per network.
+// These are the blocks at or just before the BountyEscrow deployment transactions.
+// Used as the starting point for bootstrap event replay.
+const deploymentBlocks = {
+  'base-sepolia': 20_290_000,  // ~2026-01-07T19:42:34Z
+  'base':         26_800_000,  // ~2026-01-21T04:01:15Z
+};
+
+config.deploymentBlock = deploymentBlocks[networkKey] || 0;
 
 module.exports = { config, networks };

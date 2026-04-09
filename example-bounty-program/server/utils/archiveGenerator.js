@@ -9,6 +9,196 @@ const AdmZip = require('adm-zip');
 const logger = require('./logger');
 
 /**
+ * Build the evaluation query text for primary_query.json.
+ *
+ * When rubric criteria are provided, the query uses a two-phase protocol:
+ *   Phase 1 - Must-pass criteria are inlined as hard gates (PASS/FAIL).
+ *   Phase 2 - Weighted criteria are scored only if all must-pass criteria pass.
+ *
+ * When criteria are not available, falls back to a generic evaluation query.
+ *
+ * @param {Object} params
+ * @param {string} params.workProductType
+ * @param {string} params.jobTitle
+ * @param {string} params.jobDescription
+ * @param {Array}  [params.rubricCriteria] - Criteria array from the rubric
+ * @param {Array}  [params.forbiddenContent] - Forbidden content list from the rubric
+ * @returns {string} The query text
+ */
+function buildEvaluationQuery({ workProductType, jobTitle, jobDescription, rubricCriteria, forbiddenContent }) {
+  const mustPass = (rubricCriteria || []).filter(c => c.must === true);
+  const weighted = (rubricCriteria || []).filter(c => !c.must);
+  const hasMustPass = mustPass.length > 0;
+  const hasWeighted = weighted.length > 0;
+
+  // If no criteria were provided, use a generic query (backward compatibility)
+  if (!rubricCriteria || rubricCriteria.length === 0) {
+    return buildFallbackQuery({ workProductType, jobTitle, jobDescription });
+  }
+
+  const sections = [];
+
+  sections.push(`WORK PRODUCT EVALUATION REQUEST
+
+You are an impartial evaluator determining whether a work product submission meets the required quality standards for payment release from escrow.
+
+=== TASK DESCRIPTION ===
+Work Product Type: ${workProductType}
+Task Title: ${jobTitle}
+Task Description: ${jobDescription}
+
+=== EVALUATION PROTOCOL ===
+${hasMustPass && hasWeighted
+    ? 'You MUST follow this two-phase evaluation process strictly and IN ORDER.'
+    : hasMustPass
+      ? 'You MUST evaluate all mandatory requirements below.'
+      : 'Evaluate the submission against the weighted criteria described below.'}`);
+
+  // ---- Phase 1: Must-Pass ----
+  if (hasMustPass) {
+    const criteriaList = mustPass
+      .map((c, i) => `  ${i + 1}. ${c.label || c.id}: ${c.instructions || c.description || ''}`)
+      .join('\n');
+
+    sections.push(`--- PHASE 1: MANDATORY REQUIREMENTS (Must-Pass) ---
+
+The following criteria are MANDATORY pass/fail gates. Evaluate each one as PASS or FAIL.
+
+CRITICAL RULE: If ANY mandatory criterion FAILS, you MUST immediately score:
+  DONT_FUND = 100, FUND = 0
+Do NOT proceed to Phase 2. Do NOT award any partial FUND score.
+
+Mandatory criteria:
+${criteriaList}`);
+
+    if (forbiddenContent && forbiddenContent.length > 0) {
+      const forbiddenList = forbiddenContent.map(item => `  - ${item}`).join('\n');
+      sections.push(`Additionally, the following content is explicitly forbidden and must result in immediate failure:
+${forbiddenList}`);
+    }
+
+    sections.push(`For each mandatory criterion above, you must explicitly state PASS or FAIL with a brief reason BEFORE proceeding.`);
+  }
+
+  // ---- Phase 2: Weighted ----
+  if (hasWeighted) {
+    const weightedList = weighted
+      .map((c, i) => `  ${i + 1}. ${c.label || c.id} (weight: ${(c.weight || 0).toFixed(2)}): ${c.instructions || c.description || ''}`)
+      .join('\n');
+
+    const phaseHeader = hasMustPass
+      ? `--- PHASE 2: QUALITY ASSESSMENT (Weighted Criteria) ---
+
+You may ONLY reach this phase if ALL mandatory criteria in Phase 1 PASSED.
+If any mandatory criterion failed, skip this phase entirely.`
+      : `--- QUALITY ASSESSMENT (Weighted Criteria) ---`;
+
+    sections.push(`${phaseHeader}
+
+The detailed grading rubric is also provided as an attachment (gradingRubric). Evaluate the submission against each weighted criterion below. Each criterion has an assigned weight reflecting its relative importance.
+
+Weighted criteria:
+${weightedList}
+
+For each weighted criterion, assess how well the submission meets the requirement on a 0-100 scale, noting specific strengths and weaknesses.`);
+  }
+
+  // ---- All must-pass, no weighted ----
+  if (hasMustPass && !hasWeighted) {
+    sections.push(`If ALL mandatory criteria PASS, score FUND = 100, DONT_FUND = 0.`);
+  }
+
+  // ---- Scoring Rules ----
+  sections.push(`=== SCORING RULES ===
+
+CRITICAL: These rules are absolute and must be followed exactly.
+
+Provide scores for two outcomes:
+- DONT_FUND: The work product should NOT receive payment
+- FUND: The work product SHOULD receive payment`);
+
+  if (hasMustPass) {
+    sections.push(`Rule 1 - Must-Pass Override:
+  If ANY mandatory criterion from Phase 1 FAILED:
+    -> DONT_FUND = 100, FUND = 0
+  This is absolute. No exceptions. Do not consider weighted criteria quality.`);
+  }
+
+  if (hasWeighted) {
+    const ruleNum = hasMustPass ? '2' : '1';
+    const condition = hasMustPass ? ' (only when ALL mandatory criteria pass)' : '';
+    sections.push(`Rule ${ruleNum} - Weighted Scoring${condition}:
+  Compute a weighted average from the quality scores above.
+  Higher weighted averages -> higher FUND score, lower DONT_FUND score.
+  Lower weighted averages -> lower FUND score, higher DONT_FUND score.`);
+  }
+
+  // ---- Justification Format ----
+  const justificationParts = [];
+
+  if (hasMustPass) {
+    justificationParts.push(`PHASE 1 - MANDATORY REQUIREMENTS:
+- [Criterion Name]: PASS or FAIL - [reason]
+  (repeat for each mandatory criterion)
+
+[If ANY criterion FAILED, state: "MANDATORY REQUIREMENT FAILED. Scoring DONT_FUND=100, FUND=0." and stop here.]`);
+  }
+
+  if (hasWeighted) {
+    const phaseLabel = hasMustPass ? 'PHASE 2 - QUALITY ASSESSMENT (only if all Phase 1 passed):' : 'QUALITY ASSESSMENT:';
+    justificationParts.push(`${phaseLabel}
+- [Criterion Name] (weight X.XX): [score]/100 - [assessment]
+  (repeat for each weighted criterion)
+- Weighted Average: XX/100`);
+  }
+
+  justificationParts.push(`FINAL SCORES: DONT_FUND=XX, FUND=XX`);
+
+  sections.push(`=== JUSTIFICATION FORMAT ===
+
+Structure your justification as follows:
+
+${justificationParts.join('\n\n')}`);
+
+  sections.push(`The submitted work product will be provided in the next section.`);
+
+  return sections.join('\n\n');
+}
+
+/**
+ * Fallback query when rubric criteria are not available at archive generation time.
+ */
+function buildFallbackQuery({ workProductType, jobTitle, jobDescription }) {
+  return `WORK PRODUCT EVALUATION REQUEST
+
+You are an impartial evaluator determining whether a work product submission meets the required quality standards for payment release from escrow.
+
+=== TASK DESCRIPTION ===
+Work Product Type: ${workProductType}
+Task Title: ${jobTitle}
+Task Description: ${jobDescription}
+
+=== EVALUATION INSTRUCTIONS ===
+A detailed grading rubric is provided as an attachment (gradingRubric). You must thoroughly evaluate the submitted work product against ALL criteria specified in the rubric.
+
+IMPORTANT: The rubric contains two types of criteria:
+- Criteria marked "must": true are MANDATORY pass/fail gates. If ANY of these fail, you MUST score DONT_FUND=100, FUND=0 with no exceptions.
+- Criteria marked "must": false are weighted quality criteria. Only evaluate these if all mandatory criteria pass.
+
+=== SCORING RULES ===
+Provide scores for two outcomes:
+- DONT_FUND: The work product should NOT receive payment
+- FUND: The work product SHOULD receive payment
+
+Rule 1: If ANY criterion with "must": true FAILS, score DONT_FUND=100, FUND=0 immediately.
+Rule 2: Only if all "must": true criteria pass, score based on the weighted criteria quality.
+
+In your justification, first explicitly state PASS or FAIL for each mandatory criterion, then evaluate weighted criteria only if all mandatory criteria passed.
+
+The submitted work product will be provided in the next section.`;
+}
+
+/**
  * Create Evaluation CID archive structure (also known as "Primary CID")
  * This archive contains: manifest.json + primary_query.json
  * 
@@ -27,6 +217,8 @@ const logger = require('./logger');
  * @param {number} options.classId - Verdikta class ID (default: 128)
  * @param {Array} options.juryNodes - AI jury configuration
  * @param {number} options.iterations - Number of iterations (default: 1)
+ * @param {Array}  [options.rubricCriteria] - Criteria array from the rubric (enables two-phase query)
+ * @param {Array}  [options.forbiddenContent] - Forbidden content list from the rubric
  * @returns {Promise<{archivePath: string, manifest: Object, primaryQuery: Object}>}
  */
 async function createEvaluationCIDArchive(options) {
@@ -37,11 +229,20 @@ async function createEvaluationCIDArchive(options) {
     workProductType = 'Work Product',
     classId = 128,
     juryNodes = [],
-    iterations = 1
+    iterations = 1,
+    rubricCriteria,
+    forbiddenContent
   } = options;
 
   try {
-    logger.info('Creating Evaluation CID archive', { rubricCid, jobTitle });
+    const hasCriteria = Array.isArray(rubricCriteria) && rubricCriteria.length > 0;
+    logger.info('Creating Evaluation CID archive', {
+      rubricCid,
+      jobTitle,
+      twoPhaseQuery: hasCriteria,
+      mustPassCount: hasCriteria ? rubricCriteria.filter(c => c.must).length : 0,
+      weightedCount: hasCriteria ? rubricCriteria.filter(c => !c.must).length : 0
+    });
 
     // Create temporary directory for archive files
     const tmpDir = path.join(__dirname, '../tmp');
@@ -78,42 +279,22 @@ async function createEvaluationCIDArchive(options) {
           description: `${workProductType} grading rubric with evaluation criteria`
         }
       ],
-      // bCIDs: Descriptions of expected bCID archives that will be passed separately
-      // The external adapter uses these descriptions to understand what each bCID contains
       bCIDs: {
         submittedWork: 'The work submitted by a hunter.'
       }
     };
 
-    // Create primary_query.json
+    // Create primary_query.json with two-phase protocol when criteria are available
+    const queryText = buildEvaluationQuery({
+      workProductType,
+      jobTitle,
+      jobDescription,
+      rubricCriteria,
+      forbiddenContent
+    });
+
     const primaryQuery = {
-      query: `WORK PRODUCT EVALUATION REQUEST
-
-You are evaluating a work product submission to determine whether it meets the required quality standards for payment release from escrow.
-
-=== TASK DESCRIPTION ===
-Work Product Type: ${workProductType}
-Task Title: ${jobTitle}
-Task Description: ${jobDescription}
-
-=== EVALUATION INSTRUCTIONS ===
-A detailed grading rubric is provided as an attachment (gradingRubric). You must thoroughly evaluate the submitted work product against ALL criteria specified in the rubric.
-
-For each evaluation criterion in the rubric:
-1. Assess how well the work product meets the requirement
-2. Note specific strengths and weaknesses
-3. Consider the overall quality and completeness
-
-=== YOUR TASK ===
-Evaluate the quality of the submitted work product and provide scores for two outcomes:
-- DONT_FUND: The work product does not meet quality standards
-- FUND: The work product meets quality standards
-
-Base your scoring on the overall quality assessment from the rubric criteria. Higher quality work should receive higher FUND scores, while lower quality work should receive higher DONT_FUND scores.
-
-In your justification, explain your evaluation of each rubric criterion and how the work product performs against the stated requirements.
-
-The submitted work product will be provided in the next section.`,
+      query: queryText,
       references: ['gradingRubric'],
       outcomes: ['DONT_FUND', 'FUND']
     };
@@ -325,6 +506,7 @@ module.exports = {
   createEvaluationCIDArchive,
   createPrimaryCIDArchive,  // Backward compatibility alias
   createHunterSubmissionCIDArchive,
-  updatePrimaryArchiveWithHunterCID
+  updatePrimaryArchiveWithHunterCID,
+  buildEvaluationQuery      // Exported for testing
 };
 

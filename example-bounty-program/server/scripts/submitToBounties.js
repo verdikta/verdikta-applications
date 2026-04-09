@@ -12,6 +12,7 @@
  *
  * Usage:
  *   node scripts/submitToBounties.js --count 1
+ *   NETWORK=base node scripts/submitToBounties.js --count 1
  *   node scripts/submitToBounties.js --count 3 --bounty-id 5
  *   node scripts/submitToBounties.js --count 1 --dry-run
  *
@@ -186,13 +187,16 @@ Examples:
 // API HELPERS
 // =============================================================================
 
-function getBotHeaders() {
+function getAuthHeaders() {
   const headers = {};
   if (CONFIG.botApiKey) {
     headers['X-Bot-API-Key'] = CONFIG.botApiKey;
   }
   return headers;
 }
+
+// Backwards-compatible alias
+const getBotHeaders = getAuthHeaders;
 
 async function fetchOpenBounties() {
   const response = await fetch(`${CONFIG.apiUrl}/api/jobs?status=OPEN`, {
@@ -246,7 +250,7 @@ function isBountyWinnable(bounty, hunterAddress = null) {
 
   // Check if this hunter already has a pending submission (avoid duplicates)
   if (hunterAddress) {
-    const pendingStatuses = ['Prepared', 'PREPARED', 'PendingVerdikta', 'PENDING_EVALUATION'];
+    const pendingStatuses = ['Prepared', 'PREPARED', 'PendingVerdikta', 'PENDING_EVALUATION', 'PendingCreatorApproval'];
     const hunterPendingSubmission = bounty.submissions.find(s =>
       s.hunter?.toLowerCase() === hunterAddress.toLowerCase() &&
       (pendingStatuses.includes(s.status) || pendingStatuses.includes(s.onChainStatus))
@@ -591,9 +595,9 @@ const LINK_ABI = [
 const BOUNTY_ESCROW_ABI = [
   'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)',
   'function startPreparedSubmission(uint256 bountyId, uint256 submissionId)',
-  'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions))',
+  'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize))',
   'function submissionCount(uint256 bountyId) view returns (uint256)',
-  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))',
+  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))',
   'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)',
 ];
 
@@ -605,6 +609,7 @@ const ON_CHAIN_STATUS = {
   2: 'Failed',
   3: 'PassedPaid',
   4: 'PassedUnpaid',
+  5: 'PendingCreatorApproval',
 };
 
 async function getWallet() {
@@ -641,9 +646,10 @@ async function checkOnChainWinner(provider, onChainBountyId, threshold) {
       'getBounty'
     );
     const submissionCount = Number(bounty.submissions);
+    const evaluationCid = bounty.evaluationCid;
 
     if (submissionCount === 0) {
-      return { hasWinner: false };
+      return { hasWinner: false, evaluationCid };
     }
 
     // Check each submission for passing status
@@ -706,23 +712,37 @@ async function checkOnChainWinner(provider, onChainBountyId, threshold) {
       }
     }
 
-    return { hasWinner: false, submissionCount: checkedCount };
+    return { hasWinner: false, submissionCount: checkedCount, evaluationCid };
   } catch (error) {
-    // Only warn for unexpected errors (not submission fetch errors, which are handled above)
-    if (!error.message?.includes('bad submissionId')) {
-      console.log(`  Warning: Could not check on-chain status: ${error.message}`);
+    // Try custom error decoding
+    let errorMsg = error.message;
+    if (error.data) {
+      try {
+        const parsed = contract.interface.parseError(error.data);
+        if (parsed) {
+          const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
+          errorMsg = parsed.name + args;
+        }
+      } catch {}
     }
-    return { hasWinner: false, error: error.message };
+    // Only warn for unexpected errors (not submission fetch errors, which are handled above)
+    if (!errorMsg?.toLowerCase().includes('bad submissionid') && !errorMsg?.toLowerCase().includes('badsubmissionid')) {
+      console.log(`  Warning: Could not check on-chain status: ${errorMsg}`);
+    }
+    return { hasWinner: false, error: errorMsg };
   }
 }
 
-async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid) {
+async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid, isWindowed = false) {
   const contract = new ethers.Contract(CONFIG.contractAddress, BOUNTY_ESCROW_ABI, wallet);
   const linkToken = new ethers.Contract(LINK_ADDRESS, LINK_ABI, wallet);
 
-  // Check LINK balance first
-  const linkBalance = await linkToken.balanceOf(wallet.address);
-  console.log(`    LINK balance: ${ethers.formatEther(linkBalance)} LINK`);
+  // Check LINK balance first (skipped for windowed bounties — LINK isn't pulled until after window expiry)
+  let linkBalance = 0n;
+  if (!isWindowed) {
+    linkBalance = await linkToken.balanceOf(wallet.address);
+    console.log(`    LINK balance: ${ethers.formatEther(linkBalance)} LINK`);
+  }
 
   // Step 1: Prepare submission on-chain (only do this ONCE, not on retry)
   console.log('    Preparing submission on-chain...');
@@ -731,7 +751,7 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
     evaluationCid,
     hunterCid,
     '',                        // addendum
-    500,                       // alpha (reputation weight)
+    500,                       // alpha (reputation weight, 0-1000, see ReputationKeeper)
     '3000000000000000',        // maxOracleFee (0.003 LINK)
     '1000000000000000',        // estimatedBaseCost (0.001 LINK)
     '3'                        // maxFeeBasedScaling
@@ -762,6 +782,20 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
 
   console.log(`    Submission ID: ${submissionId}, EvalWallet: ${evalWallet}`);
   console.log(`    LINK budget: ${ethers.formatEther(linkMaxBudget)} LINK`);
+
+  // For windowed bounties, stop here. The submission is in PendingCreatorApproval status.
+  // The creator may approve directly, or after window expires anyone can call
+  // startPreparedSubmission (which will pull LINK then). Submitting LINK approval and
+  // calling startPreparedSubmission now would revert with "creator window still open".
+  if (isWindowed) {
+    return {
+      submissionId: submissionId.toString(),
+      evalWallet,
+      txHash: prepareReceipt.hash,
+      blockNumber: prepareReceipt.blockNumber,
+      windowed: true,
+    };
+  }
 
   // Check if we have enough LINK
   if (linkBalance < linkMaxBudget) {
@@ -803,14 +837,26 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
       console.log(`    Start tx: ${startReceipt.hash}`);
       break;
     } catch (error) {
-      // Check for non-retryable errors
-      const msg = (error.message || '').toLowerCase();
+      // Try custom error decoding, then fall back to reason/message
+      let decoded = null;
+      if (error.data) {
+        try {
+          const parsed = contract.interface.parseError(error.data);
+          if (parsed) {
+            const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
+            decoded = parsed.name + args;
+          }
+        } catch {}
+      }
+      const msg = (decoded || error.message || '').toLowerCase();
       const reason = (error.reason || '').toLowerCase();
-      if (msg.includes('another submission already passed') || reason.includes('another submission already passed')) {
+      // Check for non-retryable errors
+      if (msg.includes('another submission already passed') || msg.includes('anothersubmissionalreadypassed') ||
+          reason.includes('another submission already passed')) {
         throw error; // Don't retry
       }
       if (attempt < 3) {
-        console.log(`    ⚠ Start failed (attempt ${attempt}/3): ${error.reason || error.message}`);
+        console.log(`    ⚠ Start failed (attempt ${attempt}/3): ${decoded || error.reason || error.message}`);
         console.log(`    Waiting 3s before retry...`);
         await new Promise(resolve => setTimeout(resolve, 3000));
       } else {
@@ -878,7 +924,7 @@ async function main() {
   // Filter to target bounty if specified
   let targetBounties = bounties;
   if (options.bountyId !== null) {
-    targetBounties = bounties.filter(b => b.onChainId === options.bountyId);
+    targetBounties = bounties.filter(b => b.jobId === options.bountyId);
     if (targetBounties.length === 0) {
       console.error(`Bounty #${options.bountyId} not found or not open.`);
       process.exit(1);
@@ -895,7 +941,7 @@ async function main() {
     const bounty = targetBounties[i];
     bountyIndex++;
     console.log(`\n[${bountyIndex}] Checking: ${bounty.title}`);
-    console.log(`  Job ID: ${bounty.jobId}, On-chain ID: ${bounty.onChainId}`);
+    console.log(`  Bounty #${bounty.jobId}`);
 
     try {
       // Fetch full bounty details including rubric
@@ -918,7 +964,15 @@ async function main() {
 
       // Double-check on-chain status (backend might be out of sync with Verdikta)
       console.log('  Checking on-chain status...');
-      const onChainCheck = await checkOnChainWinner(wallet.provider, bounty.onChainId, details.threshold || 70);
+      const onChainCheck = await checkOnChainWinner(wallet.provider, bounty.jobId, details.threshold || 70);
+
+      // Skip bounties that don't exist on-chain (backend ID not aligned with contract)
+      if (onChainCheck.error && onChainCheck.error.includes('bad bountyId')) {
+        console.log(`  ⏭️  Skipping - bounty does not exist on-chain (ID: ${bounty.jobId})`);
+        skipped++;
+        continue;
+      }
+
       if (onChainCheck.hasWinner) {
         const info = onChainCheck.winnerInfo;
         console.log(`  ⏭️  Skipping - on-chain winner detected`);
@@ -977,16 +1031,32 @@ async function main() {
         // Now start on-chain if not dry run
         if (!options.dryRun && hunterCid) {
           console.log('  Starting on-chain submission...');
-          const evaluationCid = details.primaryCid;
+          // Use on-chain evaluationCid (authoritative) with backend fallback
+          const evaluationCid = onChainCheck.evaluationCid || details.evaluationCid;
           if (!evaluationCid) {
             throw new Error('No evaluation CID found for this bounty');
           }
 
+          // Detect windowed bounty (creator approval window)
+          const windowSize = Number(details.creatorAssessmentWindowSize || 0);
+          const isWindowed = windowSize > 0;
+
           // Call directly - startSubmissionOnChain has internal retry logic for startPreparedSubmission
           // Do NOT wrap in withRetry, as that would re-run prepareSubmission creating orphans
-          const chainResult = await startSubmissionOnChain(wallet, bounty.onChainId, evaluationCid, hunterCid);
+          // For windowed bounties, only step 1 (prepareSubmission) runs — the rest waits for window expiry.
+          const chainResult = await startSubmissionOnChain(wallet, bounty.jobId, evaluationCid, hunterCid, isWindowed);
 
-          console.log(`  ✅ Evaluation started on-chain!`);
+          if (isWindowed) {
+            const windowMin = Math.round(windowSize / 60);
+            console.log(`  ✅ Submission prepared on-chain (windowed bounty)`);
+            console.log(`  Status: PendingCreatorApproval — creator has ${windowMin} min to approve directly`);
+            console.log(`  After window expires, anyone (including the hunter) can call startPreparedSubmission to begin AI evaluation.`);
+            if (details.creatorDeterminationPayment && details.arbiterDeterminationPayment) {
+              console.log(`  Payment: ${details.creatorDeterminationPayment} ETH (creator approval) / ${details.arbiterDeterminationPayment} ETH (oracle approval)`);
+            }
+          } else {
+            console.log(`  ✅ Evaluation started on-chain!`);
+          }
           console.log(`  On-chain submission ID: ${chainResult.submissionId}`);
           console.log(`  Transaction: ${chainResult.txHash}`);
 

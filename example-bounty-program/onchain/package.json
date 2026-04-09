@@ -7,8 +7,8 @@
     "compile": "hardhat compile",
     "test": "hardhat test",
     "coverage": "hardhat coverage",
-    "deploy:sepolia": "hardhat run scripts/deploy.js --network base-sepolia",
-    "deploy:base": "hardhat run scripts/deploy.js --network base",
+    "deploy:sepolia": "hardhat compile && hardhat run deploy/01_deploy_bounty.js --network base_sepolia",
+    "deploy:base": "hardhat compile && hardhat run deploy/01_deploy_bounty.js --network base",
     "verify": "hardhat verify --network base-sepolia",
     "clean": "hardhat clean",
     "node": "hardhat node"

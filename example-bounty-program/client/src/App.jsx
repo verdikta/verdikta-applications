@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { initializeContractService } from './services/contractService';
+import { initializeContractService, getContractService } from './services/contractService';
 import { config } from './config';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { walletService } from './services/wallet';
@@ -12,7 +12,11 @@ import SubmitWork from './pages/SubmitWork';
 import MyBounties from './pages/MyBounties';
 import Analytics from './pages/Analytics';
 import Agents from './pages/Agents';
+import Skills from './pages/Skills';
 import Blockchain from './pages/Blockchain';
+import AggHistory from './pages/AggHistory';
+import EvaluationDetails from './pages/EvaluationDetails';
+import ClassDetails from './pages/ClassDetails';
 import ScrollToTop from './components/ScrollToTop';
 import './App.css';
 
@@ -44,6 +48,15 @@ function AppContent() {
   useEffect(() => {
     const unsubscribe = walletService.subscribe((newState) => {
       setWalletState(newState);
+      // Reset contract service when account changes so it reconnects with the new signer
+      const cs = getContractService();
+      if (cs) {
+        if (!newState.isConnected) {
+          cs.disconnect();
+        } else if (cs.userAddress && newState.address !== cs.userAddress) {
+          cs.disconnect();
+        }
+      }
     });
 
     // Try to silently reconnect if user was previously connected
@@ -92,7 +105,11 @@ function AppContent() {
           <Route path="/my-bounties" element={<MyBounties walletState={walletState} />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/agents" element={<Agents walletState={walletState} />} />
+          <Route path="/skills" element={<Skills />} />
           <Route path="/blockchain" element={<Blockchain />} />
+          <Route path="/bounty/:bountyId/evaluation" element={<EvaluationDetails />} />
+          <Route path="/agg-history/:aggId" element={<AggHistory />} />
+          <Route path="/class/:classId" element={<ClassDetails />} />
         </Routes>
       </main>
       </div>

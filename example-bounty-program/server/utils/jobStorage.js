@@ -13,6 +13,31 @@ const path = require('path');
 const logger = require('./logger');
 const { config } = require('../config');
 
+/**
+ * Normalize job data (lazy migrations).
+ * Returns true if any changes were made (caller should writeStorage).
+ */
+function normalizeJobs(jobs) {
+  let changed = false;
+  for (const j of jobs) {
+    // Normalize status to UPPERCASE
+    const uc = String(j.status).toUpperCase();
+    if (j.status !== uc) {
+      j.status = uc;
+      changed = true;
+    }
+    // Migrate primaryCid -> evaluationCid
+    if (j.primaryCid) {
+      if (!j.evaluationCid) {
+        j.evaluationCid = j.primaryCid;
+      }
+      delete j.primaryCid;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 // Network-specific storage directory
 const NETWORK = config.network || 'base-sepolia';
 const STORAGE_DIR = path.join(__dirname, `../data/${NETWORK}`);
@@ -36,7 +61,7 @@ async function initStorage() {
       logger.info(`Using job storage: ${STORAGE_FILE}`);
     } catch {
       // File doesn't exist, create it
-      await fs.writeFile(STORAGE_FILE, JSON.stringify({ jobs: [], nextId: 1 }, null, 2));
+      await fs.writeFile(STORAGE_FILE, JSON.stringify({ jobs: [], nextId: 0 }, null, 2));
       logger.info(`Initialized job storage file: ${STORAGE_FILE}`);
     }
   } catch (error) {
@@ -55,7 +80,35 @@ async function readStorage() {
     return JSON.parse(content);
   } catch (error) {
     logger.error('Error reading storage:', error);
-    return { jobs: [], nextId: 1 };
+    return { jobs: [], nextId: 0 };
+  }
+}
+
+/**
+ * Read the sync state cursor (lastSyncedBlock, lastKnownBountyCount).
+ * Returns null if not yet bootstrapped.
+ */
+async function readSyncState() {
+  try {
+    const storage = await readStorage();
+    return storage.syncState || null;
+  } catch (error) {
+    logger.error('Error reading sync state:', error);
+    return null;
+  }
+}
+
+/**
+ * Write the sync state cursor alongside the existing storage.
+ */
+async function writeSyncState(syncState) {
+  try {
+    const storage = await readStorage();
+    storage.syncState = syncState;
+    await writeStorage(storage);
+  } catch (error) {
+    logger.error('Error writing sync state:', error);
+    throw error;
   }
 }
 
@@ -64,7 +117,11 @@ async function readStorage() {
  */
 async function writeStorage(data) {
   try {
-    await fs.writeFile(STORAGE_FILE, JSON.stringify(data, null, 2));
+    // Atomic write: write to temp file then rename, so concurrent readers
+    // never see a truncated/empty file (fs.writeFile truncates before writing).
+    const tmpFile = STORAGE_FILE + '.tmp';
+    await fs.writeFile(tmpFile, JSON.stringify(data, null, 2));
+    await fs.rename(tmpFile, STORAGE_FILE);
   } catch (error) {
     logger.error('Error writing storage:', error);
     throw error;
@@ -112,7 +169,14 @@ async function createJob(jobData) {
 async function getJob(jobId) {
   try {
     const storage = await readStorage();
-    const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
+    if (normalizeJobs(storage.jobs)) {
+      await writeStorage(storage);
+    }
+    const id = parseInt(jobId);
+    const currentContract = getCurrentContractAddress();
+    // Prefer the job on the current contract when there are duplicates
+    const job = storage.jobs.find(j => j.jobId === id && (j.contractAddress || '').toLowerCase() === currentContract)
+             || storage.jobs.find(j => j.jobId === id);
 
     if (!job) {
       throw new Error(`Job ${jobId} not found`);
@@ -166,18 +230,10 @@ async function listJobs(filters = {}) {
     let jobs = storage.jobs;
     const currentContract = getCurrentContractAddress();
 
-    // One-time normalization: ensure all job.status values are UPPERCASE
-    let normalized = false;
-    for (const j of jobs) {
-      const uc = String(j.status).toUpperCase();
-      if (j.status !== uc) {
-        j.status = uc;
-        normalized = true;
-      }
-    }
-    if (normalized) {
+    // Lazy data migrations (status normalization, primaryCid -> evaluationCid)
+    if (normalizeJobs(jobs)) {
       await writeStorage(storage);
-      logger.info('Normalized job statuses to UPPERCASE');
+      logger.info('Normalized job data');
     }
 
     // By default, only show jobs from current contract (unless explicitly disabled)
@@ -192,7 +248,26 @@ async function listJobs(filters = {}) {
         const jobContract = (j.contractAddress || '').toLowerCase();
         const matchesContract = jobContract === currentContract;
         const notOrphaned = j.status !== 'ORPHANED';
-        return matchesContract && notOrphaned;
+        if (!matchesContract || !notOrphaned) return false;
+
+        return true;
+      });
+
+      // Hide ghost jobs: API-created but never deployed on-chain.
+      // A ghost is hidden once a synced job with the same evaluationCid exists
+      // (meaning the on-chain tx succeeded and sync picked it up), or after 1 hour.
+      const syncedCids = new Set(
+        jobs.filter(j => j.syncedFromBlockchain || j.onChain)
+            .map(j => j.evaluationCid)
+            .filter(Boolean)
+      );
+      const nowSec = Math.floor(Date.now() / 1000);
+      jobs = jobs.filter(j => {
+        if (j.syncedFromBlockchain || j.onChain) return true;
+        // Ghost: hide if a synced sibling exists, or if older than 1 hour
+        if (j.evaluationCid && syncedCids.has(j.evaluationCid)) return false;
+        if (nowSec - (j.createdAt || 0) > 3600) return false;
+        return true;
       });
     }
 
@@ -487,8 +562,46 @@ async function deleteOrphanedJobs() {
 }
 
 /**
+ * Delete a single job by jobId
+ * Only allows deletion of jobs that are not on-chain (no escrow to worry about)
+ */
+async function deleteJob(jobId) {
+  try {
+    const storage = await readStorage();
+    const index = storage.jobs.findIndex(j => String(j.jobId) === String(jobId));
+
+    if (index === -1) {
+      throw new Error(`Job ${jobId} not found`);
+    }
+
+    const job = storage.jobs[index];
+
+    // Safety check: don't delete jobs that are on-chain (they have real escrow)
+    if (job.onChain === true) {
+      throw new Error(`Job ${jobId} exists on-chain and cannot be deleted. Use close instead.`);
+    }
+
+    // Grace period: don't delete jobs created in the last 5 minutes
+    // (creator may still be completing the on-chain step)
+    const ageSeconds = Math.floor(Date.now() / 1000) - (job.createdAt || 0);
+    if (ageSeconds < 300) {
+      throw new Error(`Job ${jobId} was created ${ageSeconds}s ago. Wait 5 minutes before deleting (on-chain creation may still be in progress).`);
+    }
+
+    storage.jobs.splice(index, 1);
+    await writeStorage(storage);
+    logger.info(`Deleted job ${jobId}`, { title: job.title });
+
+    return { deleted: true, job };
+  } catch (error) {
+    logger.error('Error deleting job:', error);
+    throw error;
+  }
+}
+
+/**
  * Migrate legacy jobs (add contract address to jobs that don't have one)
- * Only migrates jobs that have an onChainId and can be verified on current contract
+ * Only migrates jobs that have a jobId and can be verified on current contract
  */
 async function migrateLegacyJobs(verifyOnChain = null) {
   try {
@@ -506,10 +619,10 @@ async function migrateLegacyJobs(verifyOnChain = null) {
       // Skip jobs that already have a contract address
       if (job.contractAddress) continue;
       
-      // If job has onChainId, try to verify it exists on current contract
-      if (job.onChainId != null && verifyOnChain) {
+      // If job has a jobId, try to verify it exists on current contract
+      if (job.jobId != null && verifyOnChain) {
         try {
-          const exists = await verifyOnChain(job.onChainId);
+          const exists = await verifyOnChain(job.jobId);
           if (exists) {
             job.contractAddress = currentContract;
             migrated++;
@@ -522,7 +635,7 @@ async function migrateLegacyJobs(verifyOnChain = null) {
         } catch (e) {
           logger.warn('Failed to verify job on-chain', { jobId: job.jobId, error: e.message });
         }
-      } else if (!job.onChainId) {
+      } else if (job.jobId == null) {
         // Job was never put on-chain, assume it's for current contract
         job.contractAddress = currentContract;
         migrated++;
@@ -590,6 +703,8 @@ module.exports = {
   initStorage,
   readStorage,
   writeStorage,
+  readSyncState,
+  writeSyncState,
   createJob,
   getJob,
   updateJob,
@@ -598,6 +713,7 @@ module.exports = {
   addSubmission,
   cancelSubmission,
   updateSubmissionResult,
+  deleteJob,
   // New orphan management functions
   findOrphanedJobs,
   markOrphanedJobs,

@@ -32,8 +32,10 @@ const { initializeSyncService } = require('./utils/syncService');
 const { initializeArchivalService } = require('./utils/archivalService');
 const posterRoutes = require('./routes/posterRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
+const verdiktaRoutes = require('./routes/verdiktaRoutes');
 const botRoutes = require('./routes/botRoutes');
 const receiptRoutes = require('./routes/receiptRoutes');
+const agentRoutes = require('./routes/agentRoutes');
 const { initializeVerdiktaService } = require('./utils/verdiktaService');
 const clientIdentification = require('./middleware/clientIdentification');
 
@@ -140,6 +142,9 @@ const initializeBlockchainSync = () => {
 };
 // ===========================================================
 
+// Trust reverse proxy (nginx) so req.protocol and forwarded headers are correct
+app.set('trust proxy', true);
+
 // Middleware
 app.use(cors());
 app.options('*', cors());
@@ -166,7 +171,11 @@ app.use('/api', ipfsRoutes);
 app.use(require('./routes/resolveBounty'));
 app.use('/api/poster', posterRoutes);
 app.use('/api/analytics', analyticsRoutes); // Analytics dashboard endpoints
+app.use('/api/verdikta', verdiktaRoutes); // Verdikta aggregator endpoints
 app.use('/api/bots', botRoutes); // Bot registration and management
+
+// Agent discovery routes (agents.txt, /api/docs, /api/jobs.txt, /feed.xml)
+app.use(agentRoutes);
 
 // Public (non-API) routes for shareable receipts + OG images
 app.use(receiptRoutes);
@@ -320,21 +329,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-// TEMP DEBUG
-const { ethers } = require('ethers');
-app.get('/api/debug/bountyCount', async (req, res) => {
-  try {
-    const provider = new ethers.JsonRpcProvider(config.rpcUrl);
-    const escrow = new ethers.Contract(config.bountyEscrowAddress, [
-      "function bountyCount() view returns (uint256)"
-    ], provider);
-    const n = await escrow.bountyCount();
-    res.json({ success: true, address: config.bountyEscrowAddress, bountyCount: Number(n) });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
 // --- Temp-directory diagnostics (place ABOVE error handlers and 404) ---
 app.get('/api/diagnostics/tmp', (req, res) => {
   try {
@@ -364,19 +358,33 @@ app.get('/api/diagnostics/tmp', (req, res) => {
 
 
 // Error handling middleware
+const { sendError, ErrorCodes } = require('./utils/apiErrors');
 app.use((err, req, res, next) => {
   logger.error('Server error:', err);
-  res.status(500).json({
-    error: 'Internal server error',
-    details: process.env.NODE_ENV === 'development' ? err.message : 'An unexpected error occurred'
+  sendError(res, 500, {
+    code: ErrorCodes.INTERNAL_ERROR,
+    message: 'Internal server error',
+    details: process.env.NODE_ENV === 'development' ? err.message : 'An unexpected error occurred',
+    fix: 'Check server health at GET /health. If the problem persists, try again shortly.',
+    tips: [
+      'Check server health: GET /health',
+      'Full docs: GET /api/docs'
+    ]
   });
 });
 
 // 404 handler
 app.use((req, res) => {
-  res.status(404).json({
-    error: 'Not found',
-    path: req.path
+  sendError(res, 404, {
+    code: ErrorCodes.NOT_FOUND,
+    message: `No endpoint matches ${req.method} ${req.path}`,
+    details: `Path "${req.path}" does not exist`,
+    fix: 'Check the API documentation at GET /api/docs for available endpoints',
+    tips: [
+      'Agent guide: GET /agents.txt',
+      'API docs: GET /api/docs',
+      'List bounties: GET /api/jobs?status=OPEN'
+    ]
   });
 });
 

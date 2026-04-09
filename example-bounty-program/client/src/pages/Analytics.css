@@ -524,3 +524,64 @@
   margin: 0 0 0.75rem 0;
   color: var(--text-primary);
 }
+
+/* Fulfilled Bounties Table */
+.fulfilled-table {
+  margin-top: 0;
+}
+
+.fulfilled-table .address-truncated {
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
+  font-size: 0.75rem;
+  background: var(--bg);
+  padding: 0.15rem 0.35rem;
+  border-radius: 3px;
+}
+
+.fulfilled-table .address-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.fulfilled-table .address-link code {
+  color: inherit;
+}
+
+.fulfilled-table .address-link:hover {
+  text-decoration: underline;
+}
+
+.fulfilled-table .bounty-link {
+  color: var(--primary);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.fulfilled-table .bounty-link:hover {
+  text-decoration: underline;
+}
+
+.fulfilled-table .bounty-title-text {
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+.fulfilled-table .text-muted {
+  color: var(--text-muted, #9ca3af);
+  font-style: italic;
+  font-size: 0.8rem;
+}
+
+@media (max-width: 768px) {
+  .fulfilled-table table {
+    font-size: 0.75rem;
+  }
+
+  .fulfilled-table th,
+  .fulfilled-table td {
+    padding: 0.4rem;
+  }
+}

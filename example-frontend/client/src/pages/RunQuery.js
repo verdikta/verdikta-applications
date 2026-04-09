@@ -12,7 +12,6 @@ import { getAugmentedQueryText } from '../utils/queryUtils';
 import {
   CONTRACT_ABI,
   ensureCorrectNetwork,
-  CURRENT_NETWORK,
 } from '../utils/contractUtils';
 import { modelProviderService } from '../services/modelProviderService';
 import { waitForFulfilOrTimeout } from '../utils/timeoutUtils';
@@ -129,9 +128,9 @@ async function topUpLinkAllowance({
   setTransactionStatus,
   STALE_SECONDS   = 1800,      // 1/2 hour, after this approval is considered stale
   SEARCH_WINDOW   = 7_200,     // look back this many blocks seeking last approval (~4 hours on Base Sepolia)
-  PAYMENT_MULTIPLIER = 2,      // a >=1 multiplier to give a margin that helps support simultaneous calls
-  PAYMENT_MIN = parseUnits("3", 17), // minimum to reserve
-  PAYMENT_MAX = parseUnits("1", 18)  // maximum to reserve
+  PAYMENT_MULTIPLIER = 1.5,    // modest margin for overlapping calls; actual fee is ~0.03 LINK
+  PAYMENT_MIN = parseUnits("5", 15), // 0.005 LINK floor (safety only, not a buffer)
+  PAYMENT_MAX = parseUnits("2", 17)  // 0.2 LINK ceiling (sanity cap)
 }) {
   const signer = await provider.getSigner();
   const link   = new ethers.Contract(linkTokenAddress, LINK_TOKEN_ABI, signer);
@@ -156,7 +155,7 @@ async function topUpLinkAllowance({
 
   // 3.  Decide newTotal 
   let newTotal;
-  const requiredExtraWithMargin = BigInt(PAYMENT_MULTIPLIER)*requiredExtra;
+  const requiredExtraWithMargin = requiredExtra * 3n / 2n; // 1.5× margin
   if (!hasHistory) {
     // First approval over window 
     newTotal = requiredExtraWithMargin;
@@ -328,6 +327,7 @@ const handleRunQuery = async () => {
   }
 
   console.log('🔄 Proceeding with query execution...');
+  let writeContract;
   try {
     setLoadingResults(true);
     setTransactionStatus('Processing...');
@@ -358,14 +358,15 @@ const handleRunQuery = async () => {
    // Verify the selected address actually exists on this chain
    const codeAtAddr = await roProvider.getCode(contractAddress);
    if (codeAtAddr === '0x') {
-     setTransactionStatus(`Error: No contract at ${contractAddress} on ${CURRENT_NETWORK.name}`);
-     alert(`No contract at ${contractAddress} on ${CURRENT_NETWORK.name}. Did you pick the right address for this network?`);
+     const networkName = getNetworkConfig(networkToUse).name;
+     setTransactionStatus(`Error: No contract at ${contractAddress} on ${networkName}`);
+     alert(`No contract at ${contractAddress} on ${networkName}. Did you pick the right address for this network?`);
      setLoadingResults(false);
      return;
    }
 
     const signer = await provider.getSigner();
-    const writeContract = new ethers.Contract(contractAddress, CONTRACT_ABI, signer);
+    writeContract = new ethers.Contract(contractAddress, CONTRACT_ABI, signer);
     const readContract  = new ethers.Contract(
        contractAddress, CONTRACT_ABI, roProvider);
 
@@ -375,7 +376,7 @@ const handleRunQuery = async () => {
     const config = await readContract.getContractConfig();
     const linkTokenAddress = config.linkAddr;
     if ((await roProvider.getCode(linkTokenAddress)) === '0x') {
-      throw new Error(`LINK token not found at ${linkTokenAddress} on ${CURRENT_NETWORK.name}`);
+      throw new Error(`LINK token not found at ${linkTokenAddress} on ${getNetworkConfig(networkToUse).name}`);
     }
 
     // Read the on-chain responseTimeoutSeconds so UI stays in sync
@@ -640,18 +641,31 @@ if (result.status === 'timed-out') {
       // Set error state to enable debug functionality
       setHasError(true);
       setLastError(error);
-      
-      if (error.message.includes('Insufficient LINK tokens')) {
+
+      // Try custom error decoding, then fall back to message string matching
+      let decoded = null;
+      if (error.data && writeContract) {
+        try {
+          const parsed = writeContract.interface.parseError(error.data);
+          if (parsed) {
+            const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
+            decoded = parsed.name + args;
+          }
+        } catch {}
+      }
+      const msg = decoded || error.reason || error.message || '';
+
+      if (msg.includes('Insufficient LINK tokens') || msg.toLowerCase().includes('insufficientlink')) {
         const errorMessage = `Contract doesn't have enough LINK tokens to perform this operation.
 
 This blockchain operation requires LINK tokens to pay for the AI jury service. Please contact the administrator to fund the contract.`;
         setTransactionStatus(`Error: Insufficient LINK tokens`);
         alert(errorMessage);
-      } else if (error.message.includes('User rejected')) {
+      } else if (msg.includes('User rejected')) {
         setTransactionStatus(`Error: Transaction rejected`);
         alert('You rejected the transaction in your wallet. Please try again and approve the transaction.');
       } else {
-        setTransactionStatus(`Error: ${error.message}`);
+        setTransactionStatus(`Error: ${msg}`);
         alert('An error occurred while processing the query. Check the console for details.');
       }
     } finally {

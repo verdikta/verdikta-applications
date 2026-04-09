@@ -256,10 +256,22 @@ export async function checkContractFunding(contract, provider, networkKey = DEFA
 
     return config;
   } catch (error) {
+    // Try custom error decoding
+    let decoded = null;
+    if (error.data && contract) {
+      try {
+        const parsed = contract.interface.parseError(error.data);
+        if (parsed) {
+          const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
+          decoded = parsed.name + args;
+        }
+      } catch {}
+    }
     console.error('Detailed error in checkContractFunding:', {
       message: error.message,
       code: error.code,
       data: error.data,
+      decoded,
       name: error.name,
       stack: error.stack,
       contract: contract?.target,

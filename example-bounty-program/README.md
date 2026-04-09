@@ -11,22 +11,17 @@ The Verdikta AI-Powered Bounty Program is a fully decentralized platform that en
 
 ## Quick Links
 
-### 🎯 Essential Documents (Start Here)
-- **[📋 PROJECT-OVERVIEW.md](PROJECT-OVERVIEW.md)** — Architecture, concepts, and data models
-- **[⚙️ CURRENT-STATE.md](CURRENT-STATE.md)** — What's complete, how to get started, contribution guide
-- **[👨‍💻 DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md)** — Quick reference for commands, APIs, and patterns
-
-### 📚 Additional Resources
-- **[📖 DESIGN.md](DESIGN.md)** — Complete technical specification (1400+ lines)
-- **[🏗️ Example Frontend](../example-frontend/)** — Reference implementation showing Verdikta integration patterns
-- **[📚 Verdikta User Guide](../docs/user-guide.md)** — Understanding Verdikta's AI evaluation system
+- **[👨‍💻 DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md)** — Build, test, deploy, debug, conventions
+- **In-app `/blockchain` page** — Live contract reference: ABI, state transitions, code samples
+- **In-app `/agents` page** — Live API reference for autonomous agents
+- **[`server/`](server/), [`client/`](client/), [`onchain/`](onchain/)** — Subproject READMEs with quickstart commands
 
 ## Key Concepts
 
 ### For Bounty Owners
-1. **Create Bounty**: Define work requirements via a rubric JSON (criteria, weights, threshold)
+1. **Create Bounty**: Define work requirements via a rubric JSON (criteria, weights, threshold). Optionally enable a creator approval window with split payments.
 2. **Lock ETH**: Deposit payout amount on-chain in escrow
-3. **Wait**: Hunters submit work, AI evaluates automatically
+3. **Wait**: Hunters submit work. If enabled, you have a window to approve directly; otherwise the AI evaluates automatically.
 4. **Winner Paid**: First passing submission gets ETH instantly
 
 ### For Hunters
@@ -86,6 +81,7 @@ Receipt URL format: `bounties.verdikta.org/r/{jobId}/{submissionId}`
 - ✅ **Automatic payout** to first passing submission
 - ✅ **Flexible criteria** with weighted rubrics and custom thresholds
 - ✅ **Time-limited submissions** with configurable deadlines
+- ✅ **Optional creator approval window** — review and approve submissions directly before AI evaluation, with split payment amounts (creator vs oracle approval)
 
 ### For Hunters
 - ✅ **Browse opportunities** with search and filter by payout, status, deadline
@@ -110,56 +106,6 @@ Receipt URL format: `bounties.verdikta.org/r/{jobId}/{submissionId}`
 - **Oracles**: Verdikta Aggregator + Chainlink Functions
 - **Images**: Sharp (for OG image generation)
 - **Sync**: Automated blockchain sync service (2-minute intervals)
-
-## Development Roadmap
-
-### ✅ Phase 0: Planning (Complete)
-- [x] Requirements gathering
-- [x] Design document creation
-- [x] Architecture planning
-
-### ✅ Phase 1: Foundation (Complete)
-- [x] Backend API setup (Express + IPFS)
-- [x] Archive generation utilities
-- [x] Verdikta multi-CID integration
-- [x] Network-specific job storage
-
-### ✅ Phase 2: Frontend MVP (Complete)
-- [x] React UI components
-- [x] Create Job workflow with ETH/USD conversion
-- [x] Browse Jobs with search/filter
-- [x] Submit Work workflow with multi-file support
-- [x] MetaMask wallet integration
-
-### ✅ Phase 3: Smart Contracts (Complete)
-- [x] BountyEscrow contract development
-- [x] EvaluationWallet contract for LINK management
-- [x] Contract deployment to Base Sepolia
-- [x] Contract deployment to Base Mainnet
-- [x] Frontend-contract integration
-- [x] Three-step submission flow (prepare, approve LINK, start)
-
-### ✅ Phase 4: Advanced Features (Complete)
-- [x] Blockchain sync service for state consistency
-- [x] Bot API for autonomous agents
-- [x] Receipt generation with OG tags
-- [x] Social sharing features
-- [x] Archival service for submission data
-- [x] Network-aware contract switching
-
-### 🔄 Phase 5: Testing & Refinement (In Progress)
-- [x] E2E testing with deployed contracts
-- [x] Multi-network testing (Sepolia + Mainnet)
-- [ ] Security audit
-- [ ] Gas optimization
-- [ ] Load testing
-
-### ⏳ Phase 6: Growth (Future)
-- [ ] Public launch marketing
-- [ ] User onboarding improvements
-- [ ] Analytics dashboard enhancements
-- [ ] Multiple winner support
-- [ ] Stablecoin payment options
 
 ## Example Use Cases
 
@@ -303,21 +249,11 @@ This project is **production ready** with complete end-to-end functionality incl
 - ✅ Multi-network support (Base Sepolia testnet + Base mainnet)
 - ✅ Blockchain state synchronization every 2 minutes
 
-**For Developers & Contributors:**
-1. Read [PROJECT-OVERVIEW.md](PROJECT-OVERVIEW.md) for architecture understanding
-2. Read [CURRENT-STATE.md](CURRENT-STATE.md) for setup and testing instructions
-3. Use [DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md) as a quick reference
-4. Test bounty creation and submission on Base Sepolia
-5. Explore bot API integration for autonomous agents
-6. Test receipt generation and social sharing
-
 ### For Developers
-Want to contribute or integrate? Check out:
-1. **[CURRENT-STATE.md](CURRENT-STATE.md)** — Setup guide, environment configuration
-2. **[DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md)** — Commands, APIs, patterns, debugging
-3. **[PROJECT-OVERVIEW.md](PROJECT-OVERVIEW.md)** — Architecture and data models
-4. **[onchain/](onchain/)** — Smart contract code and deployment scripts
-5. **[Example Frontend](../example-frontend/)** — Reusable Verdikta integration patterns
+- **[DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md)** — Commands, environment, architecture, debugging, conventions
+- **In-app `/blockchain` page** — Live contract reference
+- **In-app `/agents` page** — Live API reference
+- **[`onchain/`](onchain/)** — Smart contract code and deployment scripts
 
 ## FAQ
 
@@ -382,7 +318,30 @@ See `.env.example` files for complete configuration options.
 - **Website**: [verdikta.org](https://verdikta.org)
 - **Bounties App**: [bounties.verdikta.org](https://bounties.verdikta.org) (mainnet) / [bounties-testnet.verdikta.org](https://bounties-testnet.verdikta.org) (testnet)
 
+## Contributing
+
+Contributions welcome. See [DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md) for build/test/deploy instructions and project conventions.
+
+When adding code:
+- Follow existing patterns — check the relevant subdirectory before introducing new abstractions
+- Run `npm run lint` in the affected subproject before committing
+- For UI changes, use helpers from `client/src/utils/statusDisplay.js` rather than hard-coding status labels
+- For API changes, document the endpoint in **both** `server/routes/agentRoutes.js` (`agents.txt` text + `/api/docs` JSON) and the in-app `/agents` page
+- For new submission statuses or contract fields, see the "Common Tasks" section of the developer guide for the full propagation checklist
+- Keep commits small and descriptive
+
+Open issues and pull requests at [github.com/verdikta/verdikta-applications](https://github.com/verdikta/verdikta-applications).
+
 ## Changelog
+
+### v0.4.0 (April 2026)
+- Added creator approval window: bounty creators can offer split payments (creator approval vs oracle approval) and approve submissions directly within a configurable time window before AI evaluation
+- New on-chain function `creatorApproveSubmission` and 8-param `createBounty` overload
+- New API endpoint `POST /api/jobs/:id/submissions/:subId/approve-as-creator` for programmatic creator approval
+- Fixed `/start` endpoint to support windowed submissions after window expiry (any caller may fund LINK)
+- Enhanced `/diagnose` endpoint with creator approval window state
+- Added `GET /api/jobs/eth-price` public proxy for ETH/USD price (avoids client-side CORS)
+- Documentation cleanup: consolidated 19 root markdown files down to 2 (README + DEVELOPER-GUIDE)
 
 ### v0.3.0 (February 2026)
 - Added receipt generation with social sharing (OG tags)

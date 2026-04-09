@@ -250,7 +250,7 @@ function isBountyWinnable(bounty, hunterAddress = null) {
 
   // Check if this hunter already has a pending submission (avoid duplicates)
   if (hunterAddress) {
-    const pendingStatuses = ['Prepared', 'PREPARED', 'PendingVerdikta', 'PENDING_EVALUATION'];
+    const pendingStatuses = ['Prepared', 'PREPARED', 'PendingVerdikta', 'PENDING_EVALUATION', 'PendingCreatorApproval'];
     const hunterPendingSubmission = bounty.submissions.find(s =>
       s.hunter?.toLowerCase() === hunterAddress.toLowerCase() &&
       (pendingStatuses.includes(s.status) || pendingStatuses.includes(s.onChainStatus))
@@ -733,13 +733,16 @@ async function checkOnChainWinner(provider, onChainBountyId, threshold) {
   }
 }
 
-async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid) {
+async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid, isWindowed = false) {
   const contract = new ethers.Contract(CONFIG.contractAddress, BOUNTY_ESCROW_ABI, wallet);
   const linkToken = new ethers.Contract(LINK_ADDRESS, LINK_ABI, wallet);
 
-  // Check LINK balance first
-  const linkBalance = await linkToken.balanceOf(wallet.address);
-  console.log(`    LINK balance: ${ethers.formatEther(linkBalance)} LINK`);
+  // Check LINK balance first (skipped for windowed bounties — LINK isn't pulled until after window expiry)
+  let linkBalance = 0n;
+  if (!isWindowed) {
+    linkBalance = await linkToken.balanceOf(wallet.address);
+    console.log(`    LINK balance: ${ethers.formatEther(linkBalance)} LINK`);
+  }
 
   // Step 1: Prepare submission on-chain (only do this ONCE, not on retry)
   console.log('    Preparing submission on-chain...');
@@ -779,6 +782,20 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
 
   console.log(`    Submission ID: ${submissionId}, EvalWallet: ${evalWallet}`);
   console.log(`    LINK budget: ${ethers.formatEther(linkMaxBudget)} LINK`);
+
+  // For windowed bounties, stop here. The submission is in PendingCreatorApproval status.
+  // The creator may approve directly, or after window expires anyone can call
+  // startPreparedSubmission (which will pull LINK then). Submitting LINK approval and
+  // calling startPreparedSubmission now would revert with "creator window still open".
+  if (isWindowed) {
+    return {
+      submissionId: submissionId.toString(),
+      evalWallet,
+      txHash: prepareReceipt.hash,
+      blockNumber: prepareReceipt.blockNumber,
+      windowed: true,
+    };
+  }
 
   // Check if we have enough LINK
   if (linkBalance < linkMaxBudget) {
@@ -1020,11 +1037,26 @@ async function main() {
             throw new Error('No evaluation CID found for this bounty');
           }
 
+          // Detect windowed bounty (creator approval window)
+          const windowSize = Number(details.creatorAssessmentWindowSize || 0);
+          const isWindowed = windowSize > 0;
+
           // Call directly - startSubmissionOnChain has internal retry logic for startPreparedSubmission
           // Do NOT wrap in withRetry, as that would re-run prepareSubmission creating orphans
-          const chainResult = await startSubmissionOnChain(wallet, bounty.jobId, evaluationCid, hunterCid);
+          // For windowed bounties, only step 1 (prepareSubmission) runs — the rest waits for window expiry.
+          const chainResult = await startSubmissionOnChain(wallet, bounty.jobId, evaluationCid, hunterCid, isWindowed);
 
-          console.log(`  ✅ Evaluation started on-chain!`);
+          if (isWindowed) {
+            const windowMin = Math.round(windowSize / 60);
+            console.log(`  ✅ Submission prepared on-chain (windowed bounty)`);
+            console.log(`  Status: PendingCreatorApproval — creator has ${windowMin} min to approve directly`);
+            console.log(`  After window expires, anyone (including the hunter) can call startPreparedSubmission to begin AI evaluation.`);
+            if (details.creatorDeterminationPayment && details.arbiterDeterminationPayment) {
+              console.log(`  Payment: ${details.creatorDeterminationPayment} ETH (creator approval) / ${details.arbiterDeterminationPayment} ETH (oracle approval)`);
+            }
+          } else {
+            console.log(`  ✅ Evaluation started on-chain!`);
+          }
           console.log(`  On-chain submission ID: ${chainResult.submissionId}`);
           console.log(`  Transaction: ${chainResult.txHash}`);
 

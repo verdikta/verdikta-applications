@@ -100,7 +100,6 @@ node preflight.js --jobId 72
 | `funding_check.js` | Check ETH + LINK balances |
 | `funding_instructions.js` | Print funding instructions |
 | `swap_eth_to_link_0x.js` | Swap ETH → LINK (mainnet) |
-| `export_private_key.js` | Export private key (dangerous) |
 
 ## Networks
 
@@ -113,8 +112,9 @@ node preflight.js --jobId 72
 
 - The bot wallet is a **hot wallet**. Keep balances low.
 - The keystore is encrypted with a password from `.env` and stored with `chmod 600`.
-- API keys are stored locally in `~/.config/verdikta-bounties/` with restricted permissions.
-- Private keys are never logged or printed (export requires an explicit safety flag).
+- API keys are stored locally in `~/.config/verdikta-bounties/` with restricted permissions. API keys are redacted in console output.
+- Private keys are never exported, logged, or printed by any script.
+- Environment variables are loaded only from the `scripts/.env` file, never from the caller's working directory.
 - See `references/security.md` for detailed security guidance.
 
 ## Configuration

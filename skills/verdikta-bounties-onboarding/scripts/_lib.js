@@ -34,7 +34,7 @@ export const BOUNTY_ESCROW_ABI = [
   'event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, uint8 status, uint256 acceptance)',
   'event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amount)',
   // Write
-  'function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline) payable returns (uint256)',
+  'function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)',
   'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256 submissionId, address evalWallet, uint256 linkMaxBudget)',
   'function startPreparedSubmission(uint256 bountyId, uint256 submissionId)',
   'function finalizeSubmission(uint256 bountyId, uint256 submissionId)',
@@ -150,6 +150,60 @@ export async function loadApiKey() {
   const raw = await fs.readFile(abs, 'utf8');
   const j = JSON.parse(raw);
   return j.apiKey || j.api_key || j.bot?.apiKey || j.bot?.api_key;
+}
+
+// ---- Class models (supported jury nodes) ----
+
+export function normalizeProvider(p) {
+  return String(p || '').trim().toLowerCase();
+}
+
+export function juryKey(provider, model) {
+  return `${normalizeProvider(provider)}/${String(model || '').trim()}`;
+}
+
+/**
+ * Fetch supported models for a Verdikta class.
+ * Uses X-Bot-API-Key auth.
+ */
+export async function getSupportedModelsForClass(baseUrl, apiKey, classId) {
+  const url = `${baseUrl.replace(/\/+$/, '')}/api/classes/${classId}/models`;
+  const res = await fetch(url, { headers: { 'X-Bot-API-Key': apiKey } });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Failed to fetch supported models for class ${classId}: HTTP ${res.status} ${text}`);
+  }
+  const data = await res.json();
+  const models = data.models || [];
+  return models.map(m => ({ provider: normalizeProvider(m.provider), model: String(m.model) }));
+}
+
+/**
+ * Strictly validate juryNodes against the supported model list for the class.
+ * Returns a normalized juryNodes array (providers lowercased).
+ * Throws on any unsupported node.
+ */
+export function validateAndNormalizeJuryNodes({ classId, juryNodes, supported }) {
+  const allowed = new Set(supported.map(m => juryKey(m.provider, m.model)));
+  const normalized = (juryNodes || []).map(n => ({ ...n, provider: normalizeProvider(n.provider) }));
+
+  const invalid = normalized
+    .map(n => ({ key: juryKey(n.provider, n.model), provider: n.provider, model: n.model }))
+    .filter(x => !allowed.has(x.key));
+
+  if (invalid.length) {
+    const examples = supported
+      .slice(0, 12)
+      .map(m => `- ${juryKey(m.provider, m.model)}`)
+      .join('\n');
+
+    const bad = invalid.map(x => `- ${x.key}`).join('\n');
+    throw new Error(
+      `Unsupported jury model(s) for class ${classId}:\n${bad}\n\nSupported examples (query /api/classes/${classId}/models):\n${examples}`
+    );
+  }
+
+  return normalized;
 }
 
 // ---- Transaction helper ----

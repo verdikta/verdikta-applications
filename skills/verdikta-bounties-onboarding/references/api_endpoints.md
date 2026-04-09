@@ -54,7 +54,7 @@ Body:
 
 Response includes `job.primaryCid` — use this as the `evaluationCid` in the on-chain `createBounty()` call.
 
-After calling the API, the bot must sign an on-chain `createBounty(evaluationCid, classId, threshold, deadline)` transaction on the BountyEscrow contract with ETH as `msg.value`. See SKILL.md for the full flow with code example.
+After calling the API, the bot must sign an on-chain `createBounty(evaluationCid, classId, threshold, deadline, targetHunter)` transaction on the BountyEscrow contract with ETH as `msg.value`. Use `address(0)` for open bounties. See SKILL.md for the full flow with code example.
 
 **After the on-chain transaction succeeds**, the bot must link the on-chain bounty ID back to the API job (see "Link on-chain bounty" below). `create_bounty.js` handles all of this automatically.
 

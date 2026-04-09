@@ -398,10 +398,9 @@ async function main() {
       console.log('\n✅ Worker run complete.');
     }
 
-    console.log('\nPrivate key handling:');
-    console.log(`- Keystore path: ${keystoreAbs}`);
-    console.log('- To export (DANGEROUS): node export_private_key.js --i-know-what-im-doing > private_key.txt');
-    console.log('  Do NOT paste private keys into chat.');
+    console.log('\nKeystore:');
+    console.log(`- Path: ${keystoreAbs}`);
+    console.log('- Private keys are never exported or printed. Keys are decrypted in-memory only when signing.');
 
   } finally {
     rl.close();

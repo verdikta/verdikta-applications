@@ -3688,7 +3688,7 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
     });
     
     // Map status enum to string (ethers v6 returns BigInt for enums)
-    // Contract enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
+    // Contract enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid, 5=PendingCreatorApproval
     // Frontend expects: PENDING_EVALUATION (still pending), APPROVED/REJECTED (final states)
     const statusMap = {
       0: 'Prepared',
@@ -4072,7 +4072,7 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
 
         const chainSub = await contract.getSubmission(onChainBountyId, subId);
 
-        // Map status enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
+        // Map status enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid, 5=PendingCreatorApproval
         const statusNames = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
         const chainStatus = statusNames[Number(chainSub.status)] || `Unknown(${chainSub.status})`;
 

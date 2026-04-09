@@ -874,7 +874,7 @@ class ContractService {
       const verdiktaAggId = submission.verdiktaAggId || submission[4];
       const statusCode = Number(submission.status ?? submission[5]);
 
-      // Status codes: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
+      // Status codes: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid, 5=PendingCreatorApproval
       if (statusCode !== 0 && statusCode !== 1) {
         return { ready: false };
       }

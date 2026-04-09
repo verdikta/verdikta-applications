@@ -134,15 +134,26 @@ Returns encoded creatorApproveSubmission calldata for the creator to sign and br
 To detect windowed bounties: check creatorAssessmentWindowSize > 0 in the bounty data from GET /api/jobs/:id.
 To check window status: check creatorWindowEnd on the submission (unix timestamp when window closes).
 
-### After Submission — Finalization Decision Tree
-Oracle completion does NOT trigger payment automatically. You must call one of:
+### After Submission — Decision Tree
+Payment is NOT automatic. Depending on the submission state, call one of:
 
-1. finalizeSubmission(bountyId, submissionId)
+1. creatorApproveSubmission(bountyId, submissionId)
+   - Windowed bounties only, during the approval window
+   - Only the bounty creator can call this
+   - Pays hunter creatorDeterminationPayment, refunds excess to creator
+   - Calldata: POST /api/jobs/:id/submissions/:subId/approve-as-creator
+
+2. startPreparedSubmission(bountyId, submissionId)
+   - For Prepared submissions: only the hunter can call (funds LINK)
+   - For PendingCreatorApproval (expired window): anyone can call (funds LINK)
+   - Triggers oracle evaluation
+
+3. finalizeSubmission(bountyId, submissionId)
    - Use when oracle evaluation completed successfully
    - If passed threshold: triggers payment to hunter
    - If below threshold: marks submission as Failed
 
-2. failTimedOutSubmission(bountyId, submissionId)
+4. failTimedOutSubmission(bountyId, submissionId)
    - Use when oracle did NOT complete (stuck > 10 minutes)
    - Marks submission as Failed and refunds LINK to hunter
    - Anyone can call this, not just the hunter

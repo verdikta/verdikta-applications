@@ -128,14 +128,19 @@ function Blockchain() {
   "function transfer(address to, uint256 amount) returns (bool)"
 ];`;
 
+  // For code samples, use the active network's addresses (or placeholders if unavailable)
+  const sampleEscrow = activeContract.bountyEscrow || '0xYOUR_BOUNTY_ESCROW_ADDRESS';
+  const sampleLink = activeContract.linkToken || '0xYOUR_LINK_TOKEN_ADDRESS';
+  const sampleRpc = activeContract.rpcUrl;
+
   const ethersExample = `import { ethers } from 'ethers';
 
 // Setup
-const provider = new ethers.JsonRpcProvider('${sepoliaConfig.rpcUrl}');
+const provider = new ethers.JsonRpcProvider('${sampleRpc}');
 const signer = new ethers.Wallet(PRIVATE_KEY, provider);
 
-const ESCROW_ADDRESS = '${sepoliaConfig.bountyEscrowAddress}';
-const LINK_ADDRESS = '${sepoliaConfig.linkTokenAddress}';
+const ESCROW_ADDRESS = '${sampleEscrow}';
+const LINK_ADDRESS = '${sampleLink}';
 
 // Initialize contracts
 const escrow = new ethers.Contract(ESCROW_ADDRESS, BOUNTY_ESCROW_ABI, signer);
@@ -235,11 +240,11 @@ async function finalizeSubmission(bountyId, submissionId) {
 from eth_account import Account
 
 # Setup
-w3 = Web3(Web3.HTTPProvider('${sepoliaConfig.rpcUrl}'))
+w3 = Web3(Web3.HTTPProvider('${sampleRpc}'))
 account = Account.from_key(PRIVATE_KEY)
 
-ESCROW_ADDRESS = '${sepoliaConfig.bountyEscrowAddress}'
-LINK_ADDRESS = '${sepoliaConfig.linkTokenAddress}'
+ESCROW_ADDRESS = '${sampleEscrow}'
+LINK_ADDRESS = '${sampleLink}'
 
 # Load contracts (use full ABI in production)
 escrow = w3.eth.contract(address=ESCROW_ADDRESS, abi=BOUNTY_ESCROW_ABI)

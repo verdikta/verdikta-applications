@@ -2158,6 +2158,39 @@ router.get('/:jobId/evaluation-package', async (req, res) => {
   }
 });
 
+// ==========================================================================
+// Utility: ETH price proxy (avoids client-side CORS issues with CoinGecko)
+// Must be above /:jobId to avoid "eth-price" being matched as a job ID.
+// ==========================================================================
+
+let cachedEthPrice = { usd: 0, fetchedAt: 0 };
+const ETH_PRICE_CACHE_MS = 60000; // 1 minute
+
+router.get('/eth-price', async (req, res) => {
+  const now = Date.now();
+  if (cachedEthPrice.usd > 0 && (now - cachedEthPrice.fetchedAt) < ETH_PRICE_CACHE_MS) {
+    return res.json({ usd: cachedEthPrice.usd, cached: true });
+  }
+
+  try {
+    const response = await fetch(
+      'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd',
+      { signal: AbortSignal.timeout(5000) }
+    );
+    const data = await response.json();
+    const usd = data?.ethereum?.usd || 0;
+
+    if (usd > 0) {
+      cachedEthPrice = { usd, fetchedAt: now };
+    }
+
+    return res.json({ usd });
+  } catch (err) {
+    // Return stale cache if available, otherwise 0
+    return res.json({ usd: cachedEthPrice.usd || 0, stale: true });
+  }
+});
+
 /* =================
    GET JOB DETAILS
    ================= */
@@ -4842,38 +4875,6 @@ async function calculateFeeEstimate(juryNodes, iterations) {
     warning: 'This is an estimate. Actual cost may vary based on network conditions and oracle availability.'
   };
 }
-
-// ==========================================================================
-// Utility: ETH price proxy (avoids client-side CORS issues with CoinGecko)
-// ==========================================================================
-
-let cachedEthPrice = { usd: 0, fetchedAt: 0 };
-const ETH_PRICE_CACHE_MS = 60000; // 1 minute
-
-router.get('/eth-price', async (req, res) => {
-  const now = Date.now();
-  if (cachedEthPrice.usd > 0 && (now - cachedEthPrice.fetchedAt) < ETH_PRICE_CACHE_MS) {
-    return res.json({ usd: cachedEthPrice.usd, cached: true });
-  }
-
-  try {
-    const response = await fetch(
-      'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd',
-      { signal: AbortSignal.timeout(5000) }
-    );
-    const data = await response.json();
-    const usd = data?.ethereum?.usd || 0;
-
-    if (usd > 0) {
-      cachedEthPrice = { usd, fetchedAt: now };
-    }
-
-    return res.json({ usd });
-  } catch (err) {
-    // Return stale cache if available, otherwise 0
-    return res.json({ usd: cachedEthPrice.usd || 0, stale: true });
-  }
-});
 
 module.exports = router;
 

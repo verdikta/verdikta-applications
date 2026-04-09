@@ -375,7 +375,7 @@ function getAuthHeaders() {
   return headers;
 }
 
-async function createJobBackend(bountyData, creatorAddress, amount, hours) {
+async function createJobBackend(bountyData, creatorAddress, amount, hours, extras = {}) {
   const payload = {
     title: bountyData.title,
     description: bountyData.description,
@@ -388,6 +388,13 @@ async function createJobBackend(bountyData, creatorAddress, amount, hours) {
     juryNodes: bountyData.juryNodes,
     rubricJson: bountyData.rubricJson,
     iterations: 1,
+    // Optional fields — passed only if provided so the backend job mirrors what the on-chain create will use
+    ...(extras.targetHunter ? { targetHunter: extras.targetHunter } : {}),
+    ...(extras.creatorPay != null ? {
+      creatorDeterminationPayment: extras.creatorPay,
+      arbiterDeterminationPayment: extras.arbiterPay,
+      creatorAssessmentWindowHours: extras.windowSeconds / 3600,
+    } : {}),
   };
 
   const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() };
@@ -579,7 +586,13 @@ async function main() {
         bountyData,
         wallet.address,
         options.amount,
-        options.hours
+        options.hours,
+        {
+          targetHunter: options.target || null,
+          creatorPay: options.creatorPay,
+          arbiterPay: options.arbiterPay,
+          windowSeconds: options.window,
+        }
       );
 
       if (!jobResult.success) {

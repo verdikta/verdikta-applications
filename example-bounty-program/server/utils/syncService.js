@@ -528,6 +528,27 @@ class SyncService {
           pendingJob.lastSyncedAt = Math.floor(Date.now() / 1000);
           if (pendingJob.onChainId != null) delete pendingJob.onChainId;
           if (pendingJob.legacyJobId != null) delete pendingJob.legacyJobId;
+
+          // Pull chain-only fields (targetHunter + creator approval window) that the
+          // pending job may not have if the API caller didn't pass them.
+          // The contract is the source of truth for these.
+          // Note: contractService.getBounty() already returns targetHunter as null when zero,
+          // and formats payment fields as ETH strings.
+          try {
+            const bounty = await contractService.getBounty(bountyId);
+            if (bounty.targetHunter) {
+              pendingJob.targetHunter = bounty.targetHunter;
+            }
+            if (bounty.creatorAssessmentWindowSize > 0) {
+              pendingJob.creatorAssessmentWindowSize = bounty.creatorAssessmentWindowSize;
+              pendingJob.creatorDeterminationPayment = bounty.creatorDeterminationPayment;
+              pendingJob.arbiterDeterminationPayment = bounty.arbiterDeterminationPayment;
+            }
+          } catch (err) {
+            logger.warn('[event] Failed to pull chain-only fields for linked pending job', {
+              bountyId, error: err.message
+            });
+          }
         } else {
           // New bounty from chain — fetch full struct and metadata
           try {

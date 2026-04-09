@@ -46,24 +46,53 @@ function Blockchain() {
   const sepoliaConfig = config.networks['base-sepolia'];
   const mainnetConfig = config.networks['base'];
 
-  const NOT_DEPLOYED = 'Not deployed';
+  // Contracts are populated from config — addresses may be null on the inactive network.
   const contracts = {
     sepolia: {
-      bountyEscrow: sepoliaConfig.bountyEscrowAddress || NOT_DEPLOYED,
-      verdiktaAggregator: sepoliaConfig.verdiktaAggregatorAddress || NOT_DEPLOYED,
-      linkToken: sepoliaConfig.linkTokenAddress || NOT_DEPLOYED,
+      bountyEscrow: sepoliaConfig.bountyEscrowAddress,
+      verdiktaAggregator: sepoliaConfig.verdiktaAggregatorAddress,
+      linkToken: sepoliaConfig.linkTokenAddress,
       chainId: sepoliaConfig.chainId,
       rpcUrl: sepoliaConfig.rpcUrl,
       explorer: sepoliaConfig.explorer
     },
     mainnet: {
-      bountyEscrow: mainnetConfig.bountyEscrowAddress || NOT_DEPLOYED,
-      verdiktaAggregator: mainnetConfig.verdiktaAggregatorAddress || NOT_DEPLOYED,
-      linkToken: mainnetConfig.linkTokenAddress || NOT_DEPLOYED,
+      bountyEscrow: mainnetConfig.bountyEscrowAddress,
+      verdiktaAggregator: mainnetConfig.verdiktaAggregatorAddress,
+      linkToken: mainnetConfig.linkTokenAddress,
       chainId: mainnetConfig.chainId,
       rpcUrl: mainnetConfig.rpcUrl,
       explorer: mainnetConfig.explorer
     }
+  };
+
+  // Pick the active network's primary contract for hero/footer "View on Explorer" buttons.
+  const activeContract = config.network === 'base' ? contracts.mainnet : contracts.sepolia;
+
+  // Render an address cell — link + copy if deployed, "Not deployed" placeholder if not.
+  const AddressCell = ({ address, explorer, copyId }) => {
+    if (!address) {
+      return <span style={{ color: '#999', fontStyle: 'italic' }}>Not deployed</span>;
+    }
+    return (
+      <div className="address-cell">
+        <a
+          href={`${explorer}/address/${address}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="address-link"
+        >
+          <code>{address}</code>
+          <ExternalLink size={12} />
+        </a>
+        <button
+          className="btn-icon-small"
+          onClick={() => copyToClipboard(address, copyId)}
+        >
+          {copiedCode === copyId ? <Check size={14} /> : <Copy size={14} />}
+        </button>
+      </div>
+    );
   };
 
   // ABI snippets
@@ -357,15 +386,17 @@ submission-package.zip
             </div>
           </div>
           <div className="hero-actions">
-            <a
-              href={`${contracts.sepolia.explorer}/address/${contracts.sepolia.bountyEscrow}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn btn-primary btn-lg"
-            >
-              <ExternalLink size={18} />
-              View on Explorer
-            </a>
+            {activeContract.bountyEscrow && (
+              <a
+                href={`${activeContract.explorer}/address/${activeContract.bountyEscrow}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn btn-primary btn-lg"
+              >
+                <ExternalLink size={18} />
+                View on Explorer
+              </a>
+            )}
             <a href="#contracts" className="btn btn-secondary btn-lg">
               <Code size={18} />
               Get Started
@@ -467,44 +498,10 @@ submission-package.zip
                   <span className="contract-desc">Main bounty contract</span>
                 </td>
                 <td>
-                  <div className="address-cell">
-                    <a
-                      href={`${contracts.sepolia.explorer}/address/${contracts.sepolia.bountyEscrow}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="address-link"
-                    >
-                      <code>{contracts.sepolia.bountyEscrow}</code>
-                      <ExternalLink size={12} />
-                    </a>
-                    <button
-                      className="btn-icon-small"
-                      onClick={() => copyToClipboard(contracts.sepolia.bountyEscrow, 'escrow-sepolia')}
-                    >
-                      {copiedCode === 'escrow-sepolia' ? <Check size={14} /> : <Copy size={14} />}
-                    </button>
-                  </div>
+                  <AddressCell address={contracts.sepolia.bountyEscrow} explorer={contracts.sepolia.explorer} copyId="escrow-sepolia" />
                 </td>
                 <td>
-                  <div className="address-cell">
-                    <a
-                      href={`${contracts.mainnet.explorer}/address/${contracts.mainnet.bountyEscrow}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="address-link"
-                    >
-                      <code>{contracts.mainnet.bountyEscrow}</code>
-                      <ExternalLink size={12} />
-                    </a>
-                    {contracts.mainnet.bountyEscrow?.startsWith('0x') && (
-                      <button
-                        className="btn-icon-small"
-                        onClick={() => copyToClipboard(contracts.mainnet.bountyEscrow, 'escrow-mainnet')}
-                      >
-                        {copiedCode === 'escrow-mainnet' ? <Check size={14} /> : <Copy size={14} />}
-                      </button>
-                    )}
-                  </div>
+                  <AddressCell address={contracts.mainnet.bountyEscrow} explorer={contracts.mainnet.explorer} copyId="escrow-mainnet" />
                 </td>
               </tr>
               <tr>
@@ -513,42 +510,10 @@ submission-package.zip
                   <span className="contract-desc">AI evaluation oracle</span>
                 </td>
                 <td>
-                  <div className="address-cell">
-                    <a
-                      href={`${contracts.sepolia.explorer}/address/${contracts.sepolia.verdiktaAggregator}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="address-link"
-                    >
-                      <code>{contracts.sepolia.verdiktaAggregator}</code>
-                      <ExternalLink size={12} />
-                    </a>
-                    <button
-                      className="btn-icon-small"
-                      onClick={() => copyToClipboard(contracts.sepolia.verdiktaAggregator, 'verdikta-sepolia')}
-                    >
-                      {copiedCode === 'verdikta-sepolia' ? <Check size={14} /> : <Copy size={14} />}
-                    </button>
-                  </div>
+                  <AddressCell address={contracts.sepolia.verdiktaAggregator} explorer={contracts.sepolia.explorer} copyId="verdikta-sepolia" />
                 </td>
                 <td>
-                  <div className="address-cell">
-                    <a
-                      href={`${contracts.mainnet.explorer}/address/${contracts.mainnet.verdiktaAggregator}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="address-link"
-                    >
-                      <code>{contracts.mainnet.verdiktaAggregator}</code>
-                      <ExternalLink size={12} />
-                    </a>
-                    <button
-                      className="btn-icon-small"
-                      onClick={() => copyToClipboard(contracts.mainnet.verdiktaAggregator, 'verdikta-mainnet')}
-                    >
-                      {copiedCode === 'verdikta-mainnet' ? <Check size={14} /> : <Copy size={14} />}
-                    </button>
-                  </div>
+                  <AddressCell address={contracts.mainnet.verdiktaAggregator} explorer={contracts.mainnet.explorer} copyId="verdikta-mainnet" />
                 </td>
               </tr>
               <tr>
@@ -557,42 +522,10 @@ submission-package.zip
                   <span className="contract-desc">Oracle payment token</span>
                 </td>
                 <td>
-                  <div className="address-cell">
-                    <a
-                      href={`${contracts.sepolia.explorer}/address/${contracts.sepolia.linkToken}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="address-link"
-                    >
-                      <code>{contracts.sepolia.linkToken}</code>
-                      <ExternalLink size={12} />
-                    </a>
-                    <button
-                      className="btn-icon-small"
-                      onClick={() => copyToClipboard(contracts.sepolia.linkToken, 'link-sepolia')}
-                    >
-                      {copiedCode === 'link-sepolia' ? <Check size={14} /> : <Copy size={14} />}
-                    </button>
-                  </div>
+                  <AddressCell address={contracts.sepolia.linkToken} explorer={contracts.sepolia.explorer} copyId="link-sepolia" />
                 </td>
                 <td>
-                  <div className="address-cell">
-                    <a
-                      href={`${contracts.mainnet.explorer}/address/${contracts.mainnet.linkToken}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="address-link"
-                    >
-                      <code>{contracts.mainnet.linkToken}</code>
-                      <ExternalLink size={12} />
-                    </a>
-                    <button
-                      className="btn-icon-small"
-                      onClick={() => copyToClipboard(contracts.mainnet.linkToken, 'link-mainnet')}
-                    >
-                      {copiedCode === 'link-mainnet' ? <Check size={14} /> : <Copy size={14} />}
-                    </button>
-                  </div>
+                  <AddressCell address={contracts.mainnet.linkToken} explorer={contracts.mainnet.explorer} copyId="link-mainnet" />
                 </td>
               </tr>
             </tbody>
@@ -1847,15 +1780,17 @@ curl -H "X-Bot-API-Key: YOUR_KEY" \\
             <Bot size={18} />
             API Documentation
           </Link>
-          <a
-            href={`${contracts.sepolia.explorer}/address/${contracts.sepolia.bountyEscrow}#code`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn btn-primary btn-lg"
-          >
-            <ExternalLink size={18} />
-            View Contract Source
-          </a>
+          {activeContract.bountyEscrow && (
+            <a
+              href={`${activeContract.explorer}/address/${activeContract.bountyEscrow}#code`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-primary btn-lg"
+            >
+              <ExternalLink size={18} />
+              View Contract Source
+            </a>
+          )}
         </div>
       </section>
     </div>

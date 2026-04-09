@@ -145,11 +145,9 @@ function CreateBounty({ walletState }) {
   useEffect(() => {
     const fetchEthPrice = async () => {
       try {
-        const response = await fetch(
-          'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd'
-        );
+        const response = await fetch('/api/jobs/eth-price');
         const data = await response.json();
-        setFormData((prev) => ({ ...prev, ethPriceUSD: data?.ethereum?.usd || 0 }));
+        setFormData((prev) => ({ ...prev, ethPriceUSD: data?.usd || 0 }));
       } catch (err) {
         console.warn('Failed to fetch ETH price:', err);
       }

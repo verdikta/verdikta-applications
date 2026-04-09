@@ -501,6 +501,16 @@
   color: white;
 }
 
+.badge-windowed {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background-color: #0891b2;
+  color: white;
+}
+
 /* Time Remaining States */
 .time-remaining.warning {
   color: var(--warning);

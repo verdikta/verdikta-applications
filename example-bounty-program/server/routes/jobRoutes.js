@@ -1841,6 +1841,10 @@ router.get('/', async (req, res) => {
         creator: job.creator, // Bounty creator address
         winner: job.winner,
         targetHunter: job.targetHunter || null,
+        // Creator approval window fields (zero/undefined for non-windowed bounties)
+        creatorAssessmentWindowSize: job.creatorAssessmentWindowSize || 0,
+        creatorDeterminationPayment: job.creatorDeterminationPayment || null,
+        arbiterDeterminationPayment: job.arbiterDeterminationPayment || null,
         contractAddress: job.contractAddress, // Include for debugging
         validationStatus: validationInfo, // Include validation info if available
         submissions: job.submissions // Include for pending evaluation check

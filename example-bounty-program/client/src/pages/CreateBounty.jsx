@@ -515,7 +515,7 @@ function CreateBounty({ walletState }) {
         toast.warning('Creator approval payment must be > 0 ETH'); return;
       }
       if (!formData.arbiterPaymentEth || parseFloat(formData.arbiterPaymentEth) <= 0) {
-        toast.warning('Oracle approval payment must be > 0 ETH'); return;
+        toast.warning('Arbiter approval payment must be > 0 ETH'); return;
       }
       if (!formData.approvalWindowHours || parseFloat(formData.approvalWindowHours) <= 0) {
         toast.warning('Approval window must be > 0 hours'); return;
@@ -831,7 +831,7 @@ function CreateBounty({ walletState }) {
 
                   <div className="form-group">
                     <label htmlFor="arbiterPaymentEth">
-                      Oracle Approval Payment (ETH) <span className="required">*</span>
+                      Arbiter Approval Payment (ETH) <span className="required">*</span>
                     </label>
                     <input
                       type="number"
@@ -843,7 +843,7 @@ function CreateBounty({ walletState }) {
                       min="0"
                     />
                     <small className="helper-text">
-                      Amount paid to hunter if approved by AI oracle (after window expires)
+                      Amount paid to hunter if approved by AI arbiters (after window expires)
                       {formData.arbiterPaymentEth && formData.ethPriceUSD > 0 && (
                         <> (≈ ${(parseFloat(formData.arbiterPaymentEth) * formData.ethPriceUSD).toFixed(2)} USD)</>
                       )}
@@ -881,7 +881,7 @@ function CreateBounty({ walletState }) {
                     color: '#1565c0'
                   }}>
                     Escrow required: {Math.max(parseFloat(formData.creatorPaymentEth) || 0, parseFloat(formData.arbiterPaymentEth) || 0)} ETH
-                    (max of creator and oracle payments)
+                    (max of creator and arbiter payments)
                   </div>
                 )}
               </div>

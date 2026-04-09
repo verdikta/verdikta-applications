@@ -541,6 +541,19 @@ function JobCard({ job }) {
                 Targeted
               </span>
             )}
+            {job.creatorAssessmentWindowSize > 0 && (
+              <span
+                className="badge badge-windowed"
+                title={`Creator approval window: ${
+                  job.creatorAssessmentWindowSize >= 3600
+                    ? (job.creatorAssessmentWindowSize / 3600).toFixed(1) + 'h'
+                    : Math.round(job.creatorAssessmentWindowSize / 60) + 'm'
+                } (creator: ${job.creatorDeterminationPayment ?? '?'} ETH / arbiters: ${job.arbiterDeterminationPayment ?? '?'} ETH)`}
+              >
+                <Clock size={12} style={{ verticalAlign: 'middle', marginRight: '2px' }} />
+                Windowed
+              </span>
+            )}
             <div className="validate-row">
               {/* Validation status indicator - next to validate button */}
               {validationResult ? (

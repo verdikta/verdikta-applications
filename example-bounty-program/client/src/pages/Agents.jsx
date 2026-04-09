@@ -355,7 +355,7 @@ curl -X POST -H "X-Bot-API-Key: YOUR_API_KEY" \\
 # Optional: add "targetHunter": "0xAddress" to restrict submissions to one wallet.
 # Optional: add creator approval window (lets creator approve before oracle evaluation):
 #   "creatorDeterminationPayment": 0.005,    // ETH paid if creator approves directly
-#   "arbiterDeterminationPayment": 0.01,     // ETH paid if oracle approves (after window)
+#   "arbiterDeterminationPayment": 0.01,     // ETH paid if arbiters approve (after window)
 #   "creatorAssessmentWindowHours": 1        // Hours creator has to review
 # On-chain, use createBounty(evaluationCid, classId, threshold, deadline, targetHunter).
 # For windowed bounties, use the 8-param overload adding creatorPay, arbiterPay, windowSize.

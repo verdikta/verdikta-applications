@@ -219,7 +219,9 @@ The production hosts behind nginx are `bounties.verdikta.org` (mainnet) and `bou
 ### Add a new bounty field
 1. Add to the contract struct and `getBounty()` ABI in both `client/src/services/contractService.js` and `server/utils/contractService.js`
 2. Extract the field in server `getBounty()` and store it in the job object via `syncService.js` `addJobFromBlockchain()`
-3. If needed in the create flow, accept it in `server/routes/jobRoutes.js` POST `/jobs` and pass through to `client/src/services/contractService.js` `createBounty()`
+3. **Add the field to the `jobSummaries` mapper in `server/routes/jobRoutes.js` `GET /api/jobs` (around line 1826).** The list endpoint returns a *whitelist* of fields, not the full job object — any field not in this mapper will be invisible to the frontend's bounty list view, even if it's correctly stored in `jobs.json`. This is a common pitfall.
+4. If the field is set at create time, also update the BountyCreated event handler in `server/utils/syncService.js` (line ~517, the "linking pending job" branch). When an API-created job is linked to its on-chain counterpart, the linker must pull chain-only fields from `getBounty()` — otherwise the field stays `undefined` until someone manually refreshes the bounty.
+5. If needed in the create flow, accept it in `server/routes/jobRoutes.js` POST `/api/jobs/create` and pass through to `client/src/services/contractService.js` `createBounty()` and `server/scripts/createBounties.js`.
 
 ### Migrate local job data
 **Always stop the server first** — the sync service will overwrite manual changes. Edit `server/data/{network}/jobs.json`, then restart.

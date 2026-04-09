@@ -1843,6 +1843,19 @@ function BountyDetails({ walletState }) {
           <h1>{job?.title || `Job #${bountyId}`}</h1>
           <span {...getBountyBadgeProps(status)}>{getBountyStatusLabel(status)}</span>
           {job?.targetHunter && <span className="badge-targeted">Targeted</span>}
+          {job?.creatorAssessmentWindowSize > 0 && (
+            <span
+              className="badge-windowed"
+              title={`Creator approval window: ${
+                job.creatorAssessmentWindowSize >= 3600
+                  ? (job.creatorAssessmentWindowSize / 3600).toFixed(1) + 'h'
+                  : Math.round(job.creatorAssessmentWindowSize / 60) + 'm'
+              } (creator: ${job.creatorDeterminationPayment ?? '?'} ETH / arbiters: ${job.arbiterDeterminationPayment ?? '?'} ETH)`}
+            >
+              <Clock size={12} style={{ verticalAlign: 'middle', marginRight: '2px' }} />
+              Windowed
+            </span>
+          )}
           {job?.workProductType && <span className="work-type-badge">{job.workProductType}</span>}
         </div>
         <div className="bounty-stats">
@@ -3030,7 +3043,7 @@ function SubmissionCard({
               </div>
               {job?.creatorDeterminationPayment && job?.arbiterDeterminationPayment && (
                 <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.5rem' }}>
-                  Creator approval: {job.creatorDeterminationPayment} ETH | Oracle approval: {job.arbiterDeterminationPayment} ETH
+                  Creator approval: {job.creatorDeterminationPayment} ETH | Arbiter approval: {job.arbiterDeterminationPayment} ETH
                 </div>
               )}
               {isCreator ? (

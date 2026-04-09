@@ -247,7 +247,7 @@ async function createWindowedBounty() {
   const now = Math.floor(Date.now() / 1000);
   const deadline = now + 48 * 3600;
   const creatorPay = ethers.parseEther('0.05');  // creator approves directly
-  const arbiterPay = ethers.parseEther('0.10');  // oracle approves after window
+  const arbiterPay = ethers.parseEther('0.10');  // arbiters approve after window
   const windowSize = 3600n;                       // 1 hour window
 
   // Use the explicit signature to disambiguate the 8-param overload

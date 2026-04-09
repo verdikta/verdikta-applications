@@ -1287,6 +1287,7 @@ function CreateBounty({ walletState }) {
           <li>Rubric (including threshold for selection) is uploaded to IPFS (immutable).</li>
           <li>Smart contract locks your ETH in escrow.</li>
           <li>Bounty status becomes OPEN - hunters can submit work before deadline.</li>
+          <li><strong>If approval window enabled:</strong> Each submission enters a creator review period. You can approve directly (paying the creator approval amount) or let the window expire for oracle evaluation.</li>
           <li>After deadline passes, bounty becomes EXPIRED if no winner yet.</li>
           <li>Anyone can close an EXPIRED bounty (if no active evaluations) to return funds to creator.</li>
         </ol>
@@ -1333,8 +1334,11 @@ function CreateBounty({ walletState }) {
           <p style={{ marginBottom: '0.5rem' }}>
             <strong>Active Evaluations:</strong> If submissions are being evaluated when the deadline passes, the bounty cannot be closed until those evaluations complete.
           </p>
-          <p style={{ marginBottom: 0 }}>
+          <p style={{ marginBottom: '0.5rem' }}>
             <strong>First Winner Takes All:</strong> The first submission that passes the threshold automatically wins. Plan your deadline and threshold accordingly.
+          </p>
+          <p style={{ marginBottom: 0 }}>
+            <strong>Approval Window:</strong> If enabled, submissions enter a "Pending Creator Approval" state. You can approve directly (faster, potentially lower cost) or let the window expire for standard AI oracle evaluation. Earlier submissions have priority — you must resolve them in order.
           </p>
         </div>
       </div>

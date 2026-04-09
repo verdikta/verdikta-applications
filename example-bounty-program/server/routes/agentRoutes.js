@@ -41,7 +41,7 @@ router.get('/agents.txt', (req, res) => {
   const base = getBaseUrl(req);
   const escrowAddress = config.bountyEscrowAddress || '(see /api/docs for address)';
   const text = `# Verdikta Bounties - Agent Access Guide
-# Last updated: 2026-04-01
+# Last updated: 2026-04-09
 
 ## Quick Start
 Base URL: ${base}/api
@@ -102,11 +102,36 @@ The bounties() getter skips the string evaluationCid field and shifts all subseq
 field positions, causing incorrect values for deadline, status, targetHunter, etc.
 
 ### Creating Bounties (on-chain)
+Standard (no approval window):
 function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)
+
+With creator approval window (8-param overload):
+function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize) payable returns (uint256)
+- creatorDeterminationPayment: ETH (in wei) paid to hunter if creator approves directly
+- arbiterDeterminationPayment: ETH (in wei) paid to hunter if oracle approves after window
+- creatorAssessmentWindowSize: window duration in SECONDS
+- msg.value: max(creatorPay, arbiterPay) in wei
+- If payments differ, window must be > 0
+
+Common params:
 - submissionDeadline: unix timestamp in SECONDS (not milliseconds)
 - targetHunter: full wallet address for targeted bounties, or address(0) for open bounties
-- msg.value: bounty amount in wei (must be > 0)
 Note: There is no 4-argument version. The targetHunter parameter is always required.
+
+### Creator Approval Window (Windowed Bounties)
+Some bounties have a creator approval window. When a submission is prepared on such a bounty:
+1. Status becomes PendingCreatorApproval (not Prepared)
+2. The bounty CREATOR can call creatorApproveSubmission(bountyId, submissionId) during the window
+3. If approved: hunter receives creatorDeterminationPayment, bounty is awarded
+4. If window expires without approval: anyone can call startPreparedSubmission to begin oracle evaluation
+   (caller must fund LINK — does not have to be the hunter)
+5. If oracle approves: hunter receives arbiterDeterminationPayment
+
+IMPORTANT: Creator approval is an on-chain transaction only. There is no API endpoint to approve.
+The creator must sign creatorApproveSubmission() with their wallet.
+
+To detect windowed bounties: check creatorAssessmentWindowSize > 0 in the bounty data from GET /api/jobs/:id.
+To check window status: check creatorWindowEnd on the submission (unix timestamp when window closes).
 
 ### After Submission — Finalization Decision Tree
 Oracle completion does NOT trigger payment automatically. You must call one of:
@@ -130,12 +155,13 @@ Requires all PendingVerdikta submissions to be finalized first.
 Anyone can call this.
 
 ### Status Mapping (API vs On-Chain)
-API Status                        | On-Chain SubmissionStatus | Action
-PENDING_EVALUATION                | Prepared or PendingVerdikta | Wait for oracle
-ACCEPTED_PENDING_CLAIM            | PendingVerdikta (passed)    | Call finalizeSubmission
-REJECTED_PENDING_FINALIZATION     | PendingVerdikta (failed)    | Call finalizeSubmission
-APPROVED                          | PassedPaid                  | Done — payment sent
-REJECTED                          | Failed                      | Done
+API Status                        | On-Chain SubmissionStatus       | Action
+PendingCreatorApproval            | PendingCreatorApproval (5)      | Wait for creator or window expiry, then startPreparedSubmission
+PENDING_EVALUATION                | Prepared (0) or PendingVerdikta (1) | Wait for oracle
+ACCEPTED_PENDING_CLAIM            | PendingVerdikta (1, passed)     | Call finalizeSubmission
+REJECTED_PENDING_FINALIZATION     | PendingVerdikta (1, failed)     | Call finalizeSubmission
+APPROVED                          | PassedPaid (3)                  | Done — payment sent
+REJECTED                          | Failed (2)                      | Done
 `;
 
   res.type('text/plain').send(text);
@@ -288,6 +314,27 @@ router.get('/api/docs', (req, res) => {
             'There is no 4-argument version — targetHunter is always required'
           ]
         },
+        createBountyWindowed: {
+          signature: 'createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize) payable returns (uint256)',
+          notes: [
+            '8-param overload for bounties with a creator approval window',
+            'creatorDeterminationPayment: ETH in wei paid if creator approves directly',
+            'arbiterDeterminationPayment: ETH in wei paid if oracle approves after window',
+            'creatorAssessmentWindowSize: window duration in seconds',
+            'msg.value: max(creatorPay, arbiterPay) in wei',
+            'If payments differ, window must be > 0'
+          ]
+        },
+        creatorApproveSubmission: {
+          signature: 'creatorApproveSubmission(uint256 bountyId, uint256 submissionId)',
+          notes: [
+            'Only callable by the bounty creator during the approval window',
+            'Pays hunter creatorDeterminationPayment, refunds excess to creator',
+            'Marks bounty as Awarded',
+            'No API endpoint exists — this is an on-chain wallet transaction only',
+            'Earlier submissions must be resolved first (FIFO ordering)'
+          ]
+        },
         finalizeSubmission: {
           signature: 'finalizeSubmission(uint256 bountyId, uint256 submissionId)',
           notes: [
@@ -326,12 +373,20 @@ router.get('/api/docs', (req, res) => {
       statusMapping: {
         description: 'API statuses vs on-chain SubmissionStatus enum values',
         map: {
+          'PendingCreatorApproval': 'PendingCreatorApproval (5) — waiting for creator approval or window expiry. After window expires, anyone can call startPreparedSubmission (requires LINK funding).',
           'PENDING_EVALUATION': 'Prepared (0) or PendingVerdikta (1) — wait for oracle',
           'ACCEPTED_PENDING_CLAIM': 'PendingVerdikta (1), oracle passed — call finalizeSubmission',
           'REJECTED_PENDING_FINALIZATION': 'PendingVerdikta (1), oracle failed — call finalizeSubmission',
           'APPROVED': 'PassedPaid (3) — done, payment sent',
           'REJECTED': 'Failed (2) — done'
         }
+      },
+      windowedBounties: {
+        description: 'Bounties with a creator approval window allow the creator to approve submissions directly before oracle evaluation',
+        detection: 'Check creatorAssessmentWindowSize > 0 in bounty data from GET /jobs/:id',
+        submissionFields: 'creatorWindowEnd (unix timestamp) on each submission indicates when the window closes',
+        approvalMethod: 'On-chain only — creator must sign creatorApproveSubmission(bountyId, submissionId) with their wallet. No API endpoint exists for approval.',
+        afterWindowExpiry: 'Anyone can fund LINK and call startPreparedSubmission to begin oracle evaluation'
       }
     },
     feeds: {
@@ -382,7 +437,10 @@ router.get('/api/jobs.txt', async (req, res) => {
       const amount = job.bountyAmount != null ? `${job.bountyAmount} ETH` : 'unknown';
       const subCount = job.submissionCount || 0;
 
-      lines.push(`#${job.jobId} | ${job.title || 'Untitled'} | ${amount} | deadline: ${deadline} | ${timeLeft} | ${subCount} submission${subCount !== 1 ? 's' : ''}`);
+      const windowInfo = job.creatorAssessmentWindowSize > 0
+        ? ` | approval window: ${job.creatorAssessmentWindowSize >= 3600 ? (job.creatorAssessmentWindowSize / 3600).toFixed(1) + 'h' : Math.round(job.creatorAssessmentWindowSize / 60) + 'm'} (creator: ${job.creatorDeterminationPayment || '?'} ETH / oracle: ${job.arbiterDeterminationPayment || '?'} ETH)`
+        : '';
+      lines.push(`#${job.jobId} | ${job.title || 'Untitled'} | ${amount} | deadline: ${deadline} | ${timeLeft} | ${subCount} submission${subCount !== 1 ? 's' : ''}${windowInfo}`);
       lines.push(`     Threshold: ${job.threshold || 0}% | Class: ${job.classId || 'unknown'}`);
       lines.push(`     ${base}/api/jobs/${job.jobId}`);
     }

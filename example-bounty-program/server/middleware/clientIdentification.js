@@ -39,6 +39,7 @@ const PUBLIC_PATHS = [
   '/agents.txt',          // Agent access guide
   '/api/docs',            // API documentation
   '/api/jobs.txt',        // Plain text bounty list
+  '/api/jobs/eth-price',  // ETH price proxy (public utility, no sensitive data)
   '/feed.xml',            // Atom feed
 ];
 

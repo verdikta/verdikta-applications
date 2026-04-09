@@ -1,899 +1,257 @@
-# Verdikta Bounty Program - Developer Guide
+# Developer Guide
 
-**Quick Reference for Development, Testing, and Deployment**
+Quick reference for building, testing, and deploying the Verdikta Bounty Program.
+
+For project overview, architecture, and changelog, see [README.md](README.md).
+For detailed API and contract docs, see the in-app `/agents` and `/blockchain` pages.
 
 ---
 
-## Quick Start Commands
+## Repository Layout
 
-### Backend Development
-```bash
-cd example-bounty-program/server
-npm install
-cp .env.example .env        # Add IPFS_PINNING_KEY
-npm run dev                 # Start dev server on :5005
-npm test                    # Run tests
-npm run lint                # Check code quality
 ```
-
-### Frontend Development
-```bash
-cd example-bounty-program/client
-npm install
-cp .env.example .env        # Set VITE_API_URL
-npm run dev                 # Start dev server on :5173
-npm run build               # Production build
-npm run preview             # Preview production build
-npm run lint                # Check code quality
-```
-
-### Smart Contract Development
-```bash
-cd example-bounty-program/contracts
-npm install
-cp .env.example .env        # Add PRIVATE_KEY, RPC_URL
-npx hardhat compile         # Compile contracts
-npx hardhat test            # Run tests
-npx hardhat run deploy/01_deploy_bounty.js --network baseSepolia
+example-bounty-program/
+├── client/      # React + Vite frontend
+├── server/      # Express + IPFS backend
+├── onchain/     # Solidity contracts + Hardhat
+├── README.md
+├── DEVELOPER-GUIDE.md
+└── CLAUDE.md
 ```
 
 ---
 
-## Environment Setup
+## Local Development
 
-### Required Environment Variables
+### Backend (`server/`)
 
-#### Backend (.env)
 ```bash
-# Server
-PORT=5005
-
-# IPFS (Required)
-IPFS_PINNING_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-# Get from: https://app.pinata.cloud/developers/api-keys
-
-# Blockchain (After contract deployment)
-BOUNTY_ESCROW_ADDRESS=0x1234567890123456789012345678901234567890
-RPC_URL=https://base-sepolia.g.alchemy.com/v2/YOUR_KEY_HERE
-```
-
-#### Frontend (.env)
-```bash
-# Backend API
-VITE_API_URL=http://localhost:5005
-
-# Smart Contract (After deployment)
-VITE_BOUNTY_ESCROW_ADDRESS=0x1234567890123456789012345678901234567890
-```
-
-#### Contracts (.env)
-```bash
-# Deployment
-PRIVATE_KEY=0xabcd...  # DO NOT COMMIT THIS
-RPC_URL=https://base-sepolia.g.alchemy.com/v2/YOUR_KEY_HERE
-
-# Contract Addresses
-VERDIKTA_AGGREGATOR_ADDRESS=0x...  # Existing Verdikta contract
-LINK_TOKEN_ADDRESS=0x...  # Base Sepolia LINK token
-
-# Verification (Optional)
-BASESCAN_API_KEY=YOUR_BASESCAN_API_KEY
-```
-
----
-
-## Development Workflow
-
-### Starting a New Feature
-
-1. **Read Specifications**
-   - Check `PROJECT-OVERVIEW.md` for architecture
-   - Review `DESIGN.md` for detailed specs
-   - Check `CURRENT-STATE.md` for implementation status
-
-2. **Create Branch**
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-
-3. **Implement**
-   - Follow existing code patterns
-   - Add comprehensive error handling
-   - Write JSDoc comments
-   - Add logging for debugging
-
-4. **Test**
-   - Write unit tests
-   - Manual testing
-   - Check linter: `npm run lint`
-
-5. **Commit & Push**
-   ```bash
-   git add .
-   git commit -m "feat: description of feature"
-   git push origin feature/your-feature-name
-   ```
-
-### Testing Workflow
-
-**Before Committing:**
-```bash
-# Backend
 cd server
-npm run lint
-npm test
+npm install
+cp .env.example .env       # then fill in IPFS_PINNING_KEY etc.
+npm run dev                # nodemon, default port 5005
+npm test                   # Jest test suite
+npm run lint               # ESLint
+```
 
-# Frontend
+Useful npm scripts:
+- `npm start` — run with `node` (no nodemon)
+- `npm run create-bounties` — populate test bounties via `scripts/createBounties.js`
+
+### Frontend (`client/`)
+
+```bash
+cd client
+npm install
+cp .env.example .env       # set VITE_NETWORK and VITE_*_ADDRESS_* vars
+npm run dev                # Vite dev server, port 5173
+npm run build              # production bundle to dist/
+npm run preview            # serve dist/ locally
+npm run lint               # ESLint
+```
+
+The client uses a relative `/api` URL — Vite is configured to proxy to the backend, so the server must be running on the expected port.
+
+### Smart Contracts (`onchain/`)
+
+```bash
+cd onchain
+npm install
+cp .env.example .env       # add PRIVATE_KEY, RPC URLs, BASESCAN_API_KEY
+npm run compile            # hardhat compile
+npm test                   # hardhat test
+npm run coverage           # solidity-coverage report
+npm run deploy:sepolia     # deploy to Base Sepolia
+npm run deploy:base        # deploy to Base mainnet
+```
+
+Deployment scripts: `deploy/01_deploy_bounty.js`. Convenience wrappers: `deploy_testnet.sh`, `deploy_mainnet.sh`.
+
+---
+
+## Environment Configuration
+
+### Server (`server/.env`)
+
+Required:
+```bash
+NETWORK=base-sepolia                    # or 'base'
+PORT=5005
+IPFS_PINNING_KEY=<pinata-jwt>
+RPC_PROVIDER_URL=https://sepolia.base.org
+BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA=0x0520b15Ee61C4E2A1B00bA260d8B1FBD015D2780
+BOUNTY_ESCROW_ADDRESS_BASE=0x0a6290EfA369Bbd4a9886ab9f98d7fAd7b0dc746
+FRONTEND_CLIENT_KEY=<must-match-client>
+FRONTEND_ALLOWED_ORIGINS=http://localhost:5173,https://bounties-testnet.verdikta.org
+RECEIPT_SALT=<random-string-for-pseudonymous-ids>
+USE_BLOCKCHAIN_SYNC=true
+SYNC_INTERVAL_MINUTES=2
+```
+
+See `server/.env.example` for the complete set including archival, rate-limiting, and oracle config.
+
+### Client (`client/.env`)
+
+```bash
+VITE_NETWORK=base-sepolia               # or 'base'
+VITE_CLIENT_KEY=<must-match-server>
+VITE_BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA=0x0520b15Ee61C4E2A1B00bA260d8B1FBD015D2780
+VITE_BOUNTY_ESCROW_ADDRESS_BASE=0x0a6290EfA369Bbd4a9886ab9f98d7fAd7b0dc746
+VITE_LINK_TOKEN_ADDRESS_BASE_SEPOLIA=0xE4aB69C077896252FAFBD49EFD26B5D171A32410
+VITE_LINK_TOKEN_ADDRESS_BASE=0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196
+VITE_VERDIKTA_AGGREGATOR_ADDRESS_BASE_SEPOLIA=0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089
+VITE_VERDIKTA_AGGREGATOR_ADDRESS_BASE=0x2f7a02298D4478213057edA5e5bEB07F20c4c054
+```
+
+### Contracts (`onchain/.env`)
+
+```bash
+PRIVATE_KEY=<deployer-private-key>      # NEVER commit
+BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
+BASE_MAINNET_RPC_URL=https://mainnet.base.org
+BASESCAN_API_KEY=<for-source-verification>
+```
+
+---
+
+## Architecture Overview
+
+```
+Browser  ──HTTP──▶  server (Express)  ──RPC──▶  Base Sepolia / Base
+   │                     │
+   │                     ├──▶  IPFS (Pinata)
+   │                     └──▶  jobs.json (per-network local storage)
+   │
+   └──MetaMask──▶  BountyEscrow contract  ──▶  VerdiktaAggregator
+```
+
+- **`server/utils/syncService.js`** — polls the contract every 2 min, mirrors on-chain state into `server/data/{network}/jobs.json`
+- **`server/utils/contractService.js`** — read-only contract calls used by sync and refresh endpoints
+- **`server/routes/jobRoutes.js`** — main API: bounty CRUD, calldata endpoints, diagnose, refresh
+- **`server/routes/agentRoutes.js`** — public agent discovery (`/agents.txt`, `/api/docs`, `/api/jobs.txt`, `/feed.xml`)
+- **`client/src/services/contractService.js`** — frontend ethers v6 wrapper for write operations
+- **`client/src/utils/statusDisplay.js`** — single source of truth for status labels and badges
+- **`onchain/contracts/BountyEscrow.sol`** — main contract; see [README.md#contract-addresses](README.md#contract-addresses)
+
+---
+
+## Testing
+
+### Backend
+```bash
+cd server
+npm test                   # Jest, all suites
+npm test -- --watch        # watch mode
+npm test path/to/file      # single file
+```
+
+### Contracts
+```bash
+cd onchain
+npm test                   # full Hardhat test suite
+npx hardhat test test/BountyEscrow.test.js
+npm run coverage           # solidity-coverage
+```
+
+### Frontend
+No automated UI tests. Manual smoke check before commit:
+```bash
 cd client
 npm run lint
-npm run build  # Ensure production build works
-
-# Contracts
-cd contracts
-npx hardhat compile
-npx hardhat test
+npm run build              # production bundle must build clean
 ```
 
----
-
-## API Reference
-
-### Backend Endpoints
-
-#### Health & Info
-```http
-GET /health
-Response: { "status": "healthy", "timestamp": "..." }
-
-GET /api/classes
-Response: { "success": true, "classes": [...] }
-
-GET /api/classes/:classId
-Response: { "success": true, "class": {...} }
-
-GET /api/classes/:classId/models
-Response: { "success": true, "models": [...], "modelsByProvider": {...} }
-```
-
-#### IPFS Operations
-```http
-GET /api/fetch/:cid
-Response: Raw content with appropriate Content-Type header
-
-POST /api/rubrics/validate
-Body: { "rubric": {...} }
-Response: { "valid": true, "errors": [], "warnings": [] }
-```
-
-#### Bounty Management (via /api/jobs)
-```http
-GET /api/jobs
-Query: ?status=OPEN&workProductType=writing&minHoursLeft=2&minBountyUSD=5
-Response: { "success": true, "jobs": [...] }
-
-GET /api/jobs/:jobId
-Query: ?includeRubric=true
-Response: { "success": true, "job": {...} }
-
-GET /api/jobs/:jobId/rubric
-Response: { "success": true, "rubric": {...} }
-
-GET /api/jobs/:jobId/validate
-Response: { "success": true, "valid": true/false, "issues": [...] }
-
-GET /api/jobs/:jobId/estimate-fee
-Response: { "success": true, "estimatedFee": "..." }
-```
-
-#### Bounty Creation (2-step: API then on-chain)
-```http
-POST /api/jobs/create
-Body: { "title", "description", "workProductType", "threshold", "creator",
-        "bountyAmount", "submissionWindowHours", "classId", "juryNodes", "rubricJson" }
-Response: { "success": true, "jobId": 42, "evaluationCid": "Qm...", "rubricCid": "Qm..." }
-
-PATCH /api/jobs/:jobId/bountyId
-Body: { "bountyId": <on-chain ID>, "txHash": "0x..." }
-Response: { "success": true }
-# REQUIRED after on-chain deployment. Links API job to on-chain bounty.
-# Without this, the bounty may be orphaned. Sync service can auto-link
-# within ~5 minutes, but this endpoint is instant.
-```
-
-#### Submission Flow
-```http
-POST /api/jobs/:jobId/submit
-Body: multipart/form-data with files, hunter, submissionNarrative
-Response: { "success": true, "hunterCid": "Qm..." }
-
-POST /api/jobs/:jobId/submit/prepare
-Body: { "hunter": "0x...", "hunterCid": "Qm..." }
-Response: { "success": true, "transaction": {...} }
-
-POST /api/jobs/:jobId/submit/approve
-Body: { "evalWallet": "0x...", "linkAmount": "..." }
-Response: { "success": true, "transaction": {...} }
-
-POST /api/jobs/:jobId/submissions/:subId/start
-Body: { "hunter": "0x..." }
-Response: { "success": true, "transaction": {...} }
-
-POST /api/jobs/:jobId/submissions/:subId/finalize
-Body: { "hunter": "0x..." }
-Response: { "success": true, "transaction": {...}, "oracleResult": {...} }
-
-GET /api/jobs/:jobId/submissions
-Response: { "success": true, "submissions": [...] }
-
-GET /api/jobs/:jobId/submissions/:subId/evaluation
-Response: { "success": true, "evaluation": {...} }
-
-GET /api/jobs/:jobId/submissions/:subId/diagnose
-Response: { "success": true, "diagnosis": {...} }
-```
-
-#### Admin & Maintenance
-```http
-GET /api/jobs/admin/stuck
-GET /api/jobs/admin/expired
-GET /api/jobs/admin/orphans
-GET /api/jobs/admin/validate-all
-POST /api/jobs/:jobId/close
-PATCH /api/jobs/admin/:jobId/status
-Body: { "status": "OPEN|EXPIRED|AWARDED|CLOSED|ORPHANED|CANCELLED" }
-DELETE /api/jobs/admin/:jobId
-# Deletes a job never deployed on-chain (5-minute grace period)
-```
-
----
-
-## Frontend Service Patterns
-
-### API Service (client/src/services/api.js)
-
-```javascript
-import api from '../services/api';
-
-// Upload rubric to IPFS
-const response = await api.uploadRubric(rubricJson, classId);
-// Returns: { rubricCid, size, criteriaCount }
-
-// Upload file to IPFS
-const response = await api.uploadDeliverable(bountyId, file);
-// Returns: { deliverableCid, filename, size }
-
-// Fetch from IPFS
-const content = await api.fetchFromIPFS(cid);
-
-// Validate rubric
-const result = await api.validateRubric(rubricJson);
-// Returns: { valid, errors, warnings }
-
-// Get classes
-const classes = await api.listClasses();
-
-// Get class details
-const classInfo = await api.getClass(classId);
-
-// Get available models
-const models = await api.getClassModels(classId);
-```
-
-### Wallet Service (client/src/services/wallet.js)
-
-```javascript
-import walletService from '../services/wallet';
-
-// Connect wallet
-await walletService.connect();
-
-// Disconnect
-walletService.disconnect();
-
-// Get current state
-const { isConnected, account, network, chainId } = walletService.getState();
-
-// Switch network
-await walletService.switchNetwork('baseSepolia');  // or 'base'
-
-// Get provider/signer
-const provider = walletService.getProvider();
-const signer = walletService.getSigner();
-
-// Format address
-const short = walletService.formatAddress('0x1234...', 6, 4);
-// Returns: "0x1234...5678"
-```
-
-### Rubric Storage Service (client/src/services/rubricStorage.js)
-
-```javascript
-import rubricStorage from '../services/rubricStorage';
-
-// Save rubric
-rubricStorage.saveRubric(walletAddress, {
-  cid: 'QmXxx...',
-  title: 'My Rubric',
-  rubricJson: {...}
-});
-
-// Get all saved rubrics
-const rubrics = rubricStorage.getSavedRubrics(walletAddress);
-
-// Delete rubric
-rubricStorage.deleteRubric(walletAddress, cid);
-
-// Increment usage count
-rubricStorage.incrementUsageCount(walletAddress, cid);
-```
-
-### Contract Service (client/src/services/contract.js) - TO BE IMPLEMENTED
-
-```javascript
-import contractService from '../services/contract';
-
-// Create bounty
-const { bountyId, txHash } = await contractService.createBounty(
-  signer,
-  rubricCid,
-  classId,
-  payoutEth
-);
-
-// Submit and evaluate
-const { submissionId, txHash } = await contractService.submitAndEvaluate(
-  signer,
-  bountyId,
-  deliverableCid
-);
-
-// Get bounty details
-const bounty = await contractService.getBounty(provider, bountyId);
-
-// Get submission details
-const submission = await contractService.getSubmission(provider, submissionId);
-
-// Cancel bounty
-const txHash = await contractService.cancelBounty(signer, bountyId);
-```
-
----
-
-## Smart Contract Patterns
-
-### Reading Data (No Gas)
-
-```javascript
-const { ethers } = require('ethers');
-
-// Setup
-const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
-const contract = new ethers.Contract(address, abi, provider);
-
-// Get bounty
-const bounty = await contract.getBounty(bountyId);
-console.log(bounty.creator, bounty.payoutAmount, bounty.status);
-
-// Get submission
-const submission = await contract.getSubmission(submissionId);
-console.log(submission.hunter, submission.score, submission.status);
-```
-
-### Writing Data (Requires Gas)
-
-```javascript
-// Setup with signer
-const signer = new ethers.Wallet(privateKey, provider);
-const contract = new ethers.Contract(address, abi, signer);
-
-// Create bounty
-const tx = await contract.createBounty(rubricCid, classId, {
-  value: ethers.parseEther("0.1")  // 0.1 ETH payout
-});
-const receipt = await tx.wait();
-console.log('Transaction hash:', receipt.hash);
-
-// Extract event data
-const event = receipt.logs.find(log => log.fragment?.name === 'BountyCreated');
-const bountyId = event.args.bountyId;
-```
-
-### Event Listening
-
-```javascript
-// Listen for new bounties
-contract.on('BountyCreated', (bountyId, creator, payoutAmount, rubricCid) => {
-  console.log('New bounty created:', bountyId);
-  // Update UI or database
-});
-
-// Query past events
-const filter = contract.filters.BountyCreated();
-const events = await contract.queryFilter(filter, -1000, 'latest');
-console.log('Found', events.length, 'bounties in last 1000 blocks');
-```
-
----
-
-## Common Code Patterns
-
-### Error Handling
-
-```javascript
-// Backend routes
-router.post('/api/endpoint', async (req, res) => {
-  try {
-    // Validate input
-    if (!req.body.required) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required field'
-      });
-    }
-
-    // Process
-    const result = await someAsyncOperation();
-
-    // Success response
-    res.status(200).json({
-      success: true,
-      data: result
-    });
-
-  } catch (error) {
-    logger.error('Operation failed:', { error: error.message, stack: error.stack });
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-      message: error.message
-    });
-  }
-});
-```
-
-### React Component Pattern
-
-```javascript
-import React, { useState, useEffect } from 'react';
-import api from '../services/api';
-import './Component.css';
-
-export default function Component() {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const result = await api.fetchSomething();
-      setData(result);
-    } catch (err) {
-      setError(err.message);
-      console.error('Failed to load:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (loading) return <div>Loading...</div>;
-  if (error) return <div className="error">{error}</div>;
-  if (!data) return <div>No data</div>;
-
-  return (
-    <div className="component">
-      {/* Render data */}
-    </div>
-  );
-}
-```
-
-### Form Validation
-
-```javascript
-// Frontend validation
-const validateForm = () => {
-  const errors = [];
-
-  if (!title || title.trim().length === 0) {
-    errors.push('Title is required');
-  }
-
-  if (payoutAmount <= 0) {
-    errors.push('Payout must be greater than 0');
-  }
-
-  const weightSum = criteria.reduce((sum, c) => sum + (c.must ? 0 : c.weight), 0);
-  if (Math.abs(weightSum - 1.0) > 0.01) {
-    errors.push(`Weights must sum to 1.00 (currently ${weightSum.toFixed(2)})`);
-  }
-
-  if (errors.length > 0) {
-    setError(errors.join('. '));
-    return false;
-  }
-
-  return true;
-};
-```
-
----
-
-## Testing Patterns
-
-### Backend Unit Tests (Jest)
-
-```javascript
-const request = require('supertest');
-const app = require('../server');
-
-describe('API Endpoints', () => {
-  it('should return health status', async () => {
-    const response = await request(app)
-      .get('/health')
-      .expect(200);
-
-    expect(response.body.status).toBe('healthy');
-  });
-
-  it('should validate rubric', async () => {
-    const rubric = {
-      threshold: 82,
-      criteria: [
-        { id: 'test', must: false, weight: 1.0, description: 'Test' }
-      ]
-    };
-
-    const response = await request(app)
-      .post('/api/rubrics/validate')
-      .send({ rubric })
-      .expect(200);
-
-    expect(response.body.valid).toBe(true);
-  });
-});
-```
-
-### Smart Contract Tests (Hardhat)
-
-```javascript
-const { expect } = require('chai');
-const { ethers } = require('hardhat');
-
-describe('BountyEscrow', () => {
-  let bountyEscrow, owner, hunter;
-
-  beforeEach(async () => {
-    [owner, hunter] = await ethers.getSigners();
-    const BountyEscrow = await ethers.getContractFactory('BountyEscrow');
-    bountyEscrow = await BountyEscrow.deploy(verdiktaAddress, linkAddress);
-  });
-
-  it('should create a bounty', async () => {
-    const rubricCid = 'QmXxx...';
-    const classId = 128;
-    const payoutAmount = ethers.parseEther('0.1');
-
-    const tx = await bountyEscrow.createBounty(rubricCid, classId, {
-      value: payoutAmount
-    });
-
-    await expect(tx)
-      .to.emit(bountyEscrow, 'BountyCreated')
-      .withArgs(1, owner.address, payoutAmount, rubricCid, classId);
-
-    const bounty = await bountyEscrow.getBounty(1);
-    expect(bounty.creator).to.equal(owner.address);
-    expect(bounty.payoutAmount).to.equal(payoutAmount);
-    expect(bounty.status).to.equal(0); // Open
-  });
-
-  it('should not allow cancellation before 24 hours', async () => {
-    await bountyEscrow.createBounty('QmXxx...', 128, {
-      value: ethers.parseEther('0.1')
-    });
-
-    await expect(
-      bountyEscrow.cancelBounty(1)
-    ).to.be.revertedWith('Cancellation locked for 24 hours');
-  });
-});
-```
-
----
-
-## Debugging Tips
-
-### Backend Debugging
-
-**Enable Verbose Logging:**
-```javascript
-// server/utils/logger.js
-logger.level = 'debug';  // Shows all debug messages
-```
-
-**Check Logs:**
-```bash
-cd server
-tail -f logs/app.log  # Watch logs in real-time
-```
-
-**Common Issues:**
-- IPFS upload fails → Check `IPFS_PINNING_KEY` in .env
-- CORS errors → Check `server.js` CORS configuration
-- Port in use → Kill process: `lsof -i :5005 && kill -9 <PID>`
-
-### Frontend Debugging
-
-**React DevTools:**
-- Install React Developer Tools extension
-- Inspect component state and props
-- Check performance with Profiler
-
-**Console Logging:**
-```javascript
-console.log('State:', state);
-console.log('API response:', response);
-```
-
-**Network Tab:**
-- Open browser DevTools → Network
-- Check API calls (XHR/Fetch)
-- Verify request/response data
-
-**Common Issues:**
-- White screen → Check console for errors
-- API call fails → Check backend is running, check CORS
-- MetaMask issues → Refresh page, check network
-
-### Smart Contract Debugging
-
-**Hardhat Console:**
-```bash
-npx hardhat console --network baseSepolia
-```
-
-**Contract Events:**
-```javascript
-// Listen to all events
-const events = await contract.queryFilter('*');
-console.log(events);
-```
-
-**Revert Reasons:**
-```javascript
-try {
-  await contract.someFunction();
-} catch (error) {
-  console.log('Revert reason:', error.reason || error.message);
-}
-```
+### End-to-end on testnet
+1. Start backend pointing at Base Sepolia (`NETWORK=base-sepolia`)
+2. Start frontend with matching network env vars
+3. Connect MetaMask to Base Sepolia
+4. Get test ETH and LINK from a faucet
+5. Create a bounty, submit work, finalize, verify payout
 
 ---
 
 ## Deployment
 
-### Backend Deployment (Render/Heroku)
-
-**Prepare:**
+### Smart contracts
 ```bash
-cd server
-npm run build  # If using TypeScript
+cd onchain
+npm run deploy:sepolia     # or deploy:base
+# Deployer key from .env, RPC from hardhat.config.js
 ```
 
-**Environment Variables (Set in hosting dashboard):**
-- `PORT` (usually auto-set)
-- `IPFS_PINNING_KEY`
-- `BOUNTY_ESCROW_ADDRESS`
-- `RPC_URL`
-- `NODE_ENV=production`
+After deployment:
+1. Note the new BountyEscrow address from console output
+2. Update `BOUNTY_ESCROW_ADDRESS_*` in `server/.env` and `client/.env`
+3. Restart server and rebuild client
+4. Verify on-chain via `cast call` or basescan
 
-**Deploy:**
-- Push to GitHub
-- Connect repository in Render/Heroku
-- Auto-deploys on push to main
+### Backend (production)
+The server is started by `startServer.sh` / `restartServer.sh` in the `server/` directory. It writes a PID file (`server-base.pid` or `server-base-sepolia.pid`) and logs to `server-base.log` / `server-base-sepolia.log`. Use `stopServer.sh` to shut down.
 
-### Frontend Deployment (Vercel/Netlify)
-
-**Build:**
+### Frontend (production)
 ```bash
 cd client
-npm run build
-# Output in dist/
+npm run build              # produces dist/
+# Serve dist/ via nginx or any static host
 ```
 
-**Environment Variables (Set in hosting dashboard):**
-- `VITE_API_URL` (deployed backend URL)
-- `VITE_BOUNTY_ESCROW_ADDRESS`
-
-**Deploy:**
-- Connect GitHub repository
-- Set build command: `npm run build`
-- Set output directory: `dist`
-- Auto-deploys on push
-
-### Smart Contract Deployment
-
-**Compile:**
-```bash
-cd contracts
-npx hardhat compile
-```
-
-**Deploy:**
-```bash
-# Testnet
-npx hardhat run deploy/01_deploy_bounty.js --network baseSepolia
-
-# Mainnet (when ready)
-npx hardhat run deploy/01_deploy_bounty.js --network base
-```
-
-**Verify:**
-```bash
-npx hardhat verify --network baseSepolia DEPLOYED_ADDRESS \
-  VERDIKTA_ADDRESS LINK_ADDRESS
-```
-
-**Save Deployment Info:**
-```json
-{
-  "network": "baseSepolia",
-  "address": "0x...",
-  "deployer": "0x...",
-  "timestamp": "2025-10-14T...",
-  "txHash": "0x...",
-  "blockNumber": 123456
-}
-```
+The production hosts behind nginx are `bounties.verdikta.org` (mainnet) and `bounties-testnet.verdikta.org` (testnet).
 
 ---
 
-## Performance Optimization
+## Common Tasks
 
-### Backend
+### Add a new API endpoint
+1. Add the route handler in `server/routes/jobRoutes.js` (or wherever it logically belongs)
+2. Document it in `server/routes/agentRoutes.js` — both the `/agents.txt` text and the `/api/docs` JSON `endpoints` array
+3. If it returns or accepts new data fields, update `client/src/services/api.js`
+4. Test with curl before wiring it up to the UI
 
-- Enable compression: `app.use(compression())`
-- Cache IPFS fetches (Redis or in-memory)
-- Rate limit API endpoints
-- Use connection pooling for RPC
-- Index contract events in database
+### Add a new submission status
+1. Update `client/src/utils/statusDisplay.js` (`SubmissionStatus` enum, `PENDING_STATUSES`, status config, helpers)
+2. Update `client/src/services/contractService.js` `statusMap` array in `getSubmission()`
+3. Update `server/utils/contractService.js` `statusMap` in `getSubmissions()`
+4. Update `server/utils/syncService.js` — both `syncSubmissions()` status mapping and the `SubmissionFinalized` event handler's `onChainStatus` array
+5. Update `server/routes/jobRoutes.js` `/diagnose` endpoint's `statusNames` array
+6. Document in `server/routes/agentRoutes.js` (`agents.txt` status mapping table and `/api/docs` `statusMapping`)
+7. Update the in-app `/blockchain` page status table in `client/src/pages/Blockchain.jsx`
 
-### Frontend
+### Add a new bounty field
+1. Add to the contract struct and `getBounty()` ABI in both `client/src/services/contractService.js` and `server/utils/contractService.js`
+2. Extract the field in server `getBounty()` and store it in the job object via `syncService.js` `addJobFromBlockchain()`
+3. If needed in the create flow, accept it in `server/routes/jobRoutes.js` POST `/jobs` and pass through to `client/src/services/contractService.js` `createBounty()`
 
-- Lazy load components: `React.lazy()`
-- Memoize expensive computations: `useMemo()`
-- Debounce user inputs
-- Optimize bundle size: `npm run build -- --analyze`
-- Cache wallet state in sessionStorage
-
-### Smart Contracts
-
-- Batch operations where possible
-- Use events for off-chain indexing
-- Minimize storage writes
-- Use `calldata` instead of `memory` for external functions
-- Consider L2 solutions for lower gas
-
----
-
-## Security Checklist
-
-### Backend
-
-- [ ] Validate all inputs
-- [ ] Sanitize file uploads
-- [ ] Rate limit endpoints
-- [ ] Use HTTPS in production
-- [ ] Set secure CORS policy
-- [ ] Don't expose sensitive errors
-- [ ] Keep dependencies updated
-- [ ] Use environment variables for secrets
-
-### Frontend
-
-- [ ] Validate user inputs
-- [ ] Sanitize displayed data
-- [ ] Use Content Security Policy
-- [ ] Verify contract addresses
-- [ ] Show transaction details before signing
-- [ ] Handle wallet disconnection
-- [ ] Don't trust client-side data
-
-### Smart Contracts
-
-- [ ] Use OpenZeppelin libraries
-- [ ] Implement ReentrancyGuard
-- [ ] Use SafeERC20 for token transfers
-- [ ] Follow Checks-Effects-Interactions
-- [ ] Add access control
-- [ ] Emit events for state changes
-- [ ] Test edge cases thoroughly
-- [ ] Get security audit (for mainnet)
+### Migrate local job data
+**Always stop the server first** — the sync service will overwrite manual changes. Edit `server/data/{network}/jobs.json`, then restart.
 
 ---
 
-## Useful Resources
+## Debugging
 
-### Documentation
-- **Ethers.js v6:** https://docs.ethers.org/v6/
-- **Hardhat:** https://hardhat.org/docs
-- **React:** https://react.dev/
-- **Vite:** https://vitejs.dev/
-- **Pinata:** https://docs.pinata.cloud/
+### Sync service not picking up new bounties
+- Check `server/server.log` for sync errors
+- Confirm `USE_BLOCKCHAIN_SYNC=true` in `.env`
+- Verify `BOUNTY_ESCROW_ADDRESS_*` matches the network you're querying
+- Force a refresh: `POST /api/jobs/:jobId/refresh`
 
-### Tools
-- **Base Sepolia Explorer:** https://sepolia.basescan.org/
-- **Base Sepolia Faucet:** https://www.alchemy.com/faucets/base-sepolia
-- **LINK Faucet:** https://faucets.chain.link/
-- **ABI Encoder:** https://abi.hashex.org/
+### Submission stuck in PENDING_EVALUATION
+- Use `GET /api/jobs/:jobId/submissions/:subId/diagnose` for actionable analysis
+- If oracle stuck >10 min, anyone can call `failTimedOutSubmission` (or use `/submissions/:subId/timeout`)
 
-### Example Code
-- **Example Frontend:** `../example-frontend/`
-- **Verdikta Common:** `node_modules/@verdikta/common/`
-- **OpenZeppelin:** `node_modules/@openzeppelin/contracts/`
+### LINK approval errors at startPreparedSubmission
+- The contract pulls LINK via `transferFrom` using the allowance set in step 2 — never `transfer` LINK directly to the EvaluationWallet
+- Confirm allowance with `link.allowance(hunter, evalWallet)` before calling start
 
----
-
-## Keyboard Shortcuts (VSCode)
-
-- `Cmd/Ctrl + P` - Quick file open
-- `Cmd/Ctrl + Shift + F` - Search in all files
-- `Cmd/Ctrl + /` - Toggle comment
-- `Cmd/Ctrl + D` - Select next occurrence
-- `Cmd/Ctrl + Shift + L` - Select all occurrences
-- `Alt + Click` - Multiple cursors
-- `F12` - Go to definition
-- `Shift + F12` - Find all references
+### Hot tips
+- The `/blockchain` and `/agents` in-app pages are the canonical reference for contract ABIs and endpoint shapes — they're tested every time the page renders
+- Memory of project gotchas lives in `CLAUDE.md` and the agent memory system
 
 ---
 
-## Git Best Practices
+## Project Conventions
 
-### Commit Message Format
-```
-<type>: <description>
-
-[optional body]
-
-[optional footer]
-```
-
-**Types:**
-- `feat:` New feature
-- `fix:` Bug fix
-- `docs:` Documentation
-- `style:` Formatting
-- `refactor:` Code restructuring
-- `test:` Adding tests
-- `chore:` Maintenance
-
-**Examples:**
-```bash
-git commit -m "feat: add jury configuration UI"
-git commit -m "fix: resolve IPFS upload timeout"
-git commit -m "docs: update API documentation"
-```
-
-### Branching Strategy
-
-- `main` - Production-ready code
-- `develop` - Integration branch
-- `feature/name` - New features
-- `fix/name` - Bug fixes
-- `hotfix/name` - Urgent production fixes
-
----
-
-**Happy coding! 🚀**
-
----
-
-**Document Version:** 1.0  
-**Last Updated:** October 14, 2025
-
+- **Status display:** never hard-code status labels in components — always use helpers from `client/src/utils/statusDisplay.js`
+- **IDs:** `jobId` is the on-chain bounty ID (0-indexed). Don't introduce a separate `onChainId` field.
+- **Storage:** server/data/{network}/jobs.json is the single source for all locally-cached bounty data
+- **Sync:** never modify `jobs.json` while the server is running — sync will overwrite
+- **Commits:** small, descriptive, present tense ("Add windowed bounty form" not "Added"). Co-author tag for AI assistance is fine.

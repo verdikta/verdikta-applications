@@ -282,7 +282,7 @@ router.get('/api/docs', (req, res) => {
           'hunterCid: IPFS CID of pre-uploaded work (required if no files)',
           'files: multipart file uploads (required if no hunterCid)',
           'addendum: optional text appended to evaluation query',
-          'alpha: reputation weight, default 75',
+          'alpha: reputation weight (0-1000, see ReputationKeeper), default 500',
           'maxOracleFee: max LINK per oracle in wei, default "50000000000000000" (0.05 LINK)',
           'estimatedBaseCost: default "30000000000000000" (0.03 LINK)',
           'maxFeeBasedScaling: default "20000000000000000" (0.02 LINK)'

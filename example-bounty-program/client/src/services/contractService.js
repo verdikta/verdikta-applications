@@ -391,7 +391,7 @@ class ContractService {
   /**
    * STEP 1: Prepare a submission (deploys EvaluationWallet)
    */
-  async prepareSubmission(bountyId, evaluationCid, hunterCid, addendum = "", alpha = 75,
+  async prepareSubmission(bountyId, evaluationCid, hunterCid, addendum = "", alpha = 500,
                           maxOracleFee = "50000000000000000",
                           estimatedBaseCost = "30000000000000000",
                           maxFeeBasedScaling = "20000000000000000") {

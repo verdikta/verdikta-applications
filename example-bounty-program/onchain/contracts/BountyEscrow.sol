@@ -273,7 +273,7 @@ contract BountyEscrow {
     /// @param evaluationCid The evaluation package CID (must match the bounty's stored evaluationCid)
     /// @param hunterCid The hunter's work product archive CID (bCID containing the actual submission)
     /// @param addendum Optional text addendum for the evaluation
-    /// @param alpha Reputation weight (0-100)
+    /// @param alpha Reputation weight (0-1000, see ReputationKeeper)
     /// @param maxOracleFee Maximum fee per oracle
     /// @param estimatedBaseCost Estimated base cost
     /// @param maxFeeBasedScaling Maximum fee-based scaling

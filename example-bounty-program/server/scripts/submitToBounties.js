@@ -748,7 +748,7 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
     evaluationCid,
     hunterCid,
     '',                        // addendum
-    500,                       // alpha (reputation weight)
+    500,                       // alpha (reputation weight, 0-1000, see ReputationKeeper)
     '3000000000000000',        // maxOracleFee (0.003 LINK)
     '1000000000000000',        // estimatedBaseCost (0.001 LINK)
     '3'                        // maxFeeBasedScaling

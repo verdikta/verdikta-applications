@@ -919,7 +919,7 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
 
     const {
       hunter, hunterCid, addendum = '',
-      alpha = 75,
+      alpha = 500,
       maxOracleFee = '0.003',
       estimatedBaseCost = '0.001',
       maxFeeBasedScaling = '3'
@@ -3024,7 +3024,7 @@ const bundleLinkIface = new ethers.Interface(BUNDLE_LINK_ABI);
  *   hunterCid       - IPFS CID of already-uploaded work (optional if files provided)
  *   files           - multipart file uploads (optional if hunterCid provided)
  *   addendum        - optional text appended to evaluation query
- *   alpha           - reputation weight, default 75
+ *   alpha           - reputation weight (0-1000, see ReputationKeeper), default 500
  *   maxOracleFee    - max LINK per oracle in wei, default "50000000000000000" (0.05 LINK)
  *   estimatedBaseCost   - default "30000000000000000" (0.03 LINK)
  *   maxFeeBasedScaling  - default "20000000000000000" (0.02 LINK)
@@ -3047,7 +3047,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
     const hunterAddress = req.body.hunterAddress || req.body.hunter;
     let { hunterCid } = req.body;
     const addendum    = req.body.addendum || '';
-    const alpha       = parseInt(req.body.alpha) || 75;
+    const alpha       = parseInt(req.body.alpha) || 500;
     const maxOracleFee       = req.body.maxOracleFee       || '50000000000000000';
     const estimatedBaseCost  = req.body.estimatedBaseCost  || '30000000000000000';
     const maxFeeBasedScaling = req.body.maxFeeBasedScaling || '20000000000000000';

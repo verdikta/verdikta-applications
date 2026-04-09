@@ -187,7 +187,7 @@ async function submitWork(bountyId, hunterCid) {
     evaluationCid,
     hunterCid,                            // Your work's IPFS CID
     'Please evaluate carefully',          // Addendum
-    75n,                                  // Alpha (reputation weight; 50 = nominal)
+    500n,                                 // Alpha (reputation weight; 0-1000, 500 = balanced)
     ethers.parseEther('0.003'),           // maxOracleFee (per oracle call cap)
     ethers.parseEther('0.001'),           // estimatedBaseCost (base cost per evaluation)
     BigInt('3')                           // maxFeeBasedScaling (relative weight, min vs max)
@@ -721,7 +721,7 @@ submission-package.zip
   evaluationCid,      // string - bounty's evaluation CID (NOT your submission)
   hunterCid,          // string - your submission's IPFS CID
   addendum,           // string - usually ""
-  alpha,              // uint256 - reputation weight (50 = nominal, higher = more confident)
+  alpha,              // uint256 - reputation weight (0-1000, 500 = balanced)
   maxOracleFee,       // uint256 - "3000000000000000" (0.003 LINK per oracle call)
   estimatedBaseCost,  // uint256 - "1000000000000000" (0.001 LINK base cost)
   maxFeeBasedScaling  // uint256 - "3" (relative weight, min vs max)

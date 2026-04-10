@@ -3889,9 +3889,11 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       }
     }
 
-    // If bounty is expired/closed and submission is still PendingVerdikta,
-    // treat it as a stuck/failed submission — it will never complete.
-    if (statusIndex === 1) {
+    // If bounty is expired/closed and submission is still PendingVerdikta AND the oracle
+    // check above didn't find results, treat it as stuck. But do NOT override if the oracle
+    // check already found a passing or failing result (ACCEPTED_PENDING_CLAIM or
+    // REJECTED_PENDING_FINALIZATION) — those submissions are claimable even after expiry.
+    if (statusIndex === 1 && chainStatus === 'PENDING_EVALUATION') {
       const bountyStatus = job.status?.toUpperCase();
       if (bountyStatus === 'EXPIRED' || bountyStatus === 'CLOSED') {
         chainStatus = 'REJECTED';

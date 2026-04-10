@@ -137,6 +137,7 @@ class SyncService {
 
     // Set of bountyIds with PendingVerdikta submissions — polled each cycle
     this.hotBountyIds = new Set();
+    this._staleCheckDone = false;
   }
 
   // ==========================================================================
@@ -381,6 +382,62 @@ class SyncService {
     }
     if (gapFilled > 0) {
       logger.info('[sync] Filled gaps from bountyCount check', { gapFilled, bountyCount });
+    }
+
+    // Phase D.5: Stale-detection sweep — verify jobs that claim to be on the current
+    // contract but were never confirmed by the sync service. These could be phantom
+    // entries from PATCH /bountyId calls that pointed at the wrong contract.
+    // Only runs once per startup (first sync cycle) to avoid repeated RPC costs.
+    if (!this._staleCheckDone) {
+      const suspects = storage.jobs.filter(j =>
+        (j.contractAddress || '').toLowerCase() === currentContract &&
+        j.onChain === true &&
+        !j.syncedFromBlockchain &&
+        typeof j.jobId === 'number' &&
+        j.jobId >= bountyCount // Can't exist if jobId >= bountyCount
+      );
+
+      let staleCount = 0;
+      for (const job of suspects) {
+        logger.info('[sync/stale-check] job claims onChain but jobId >= bountyCount, marking orphaned', {
+          jobId: job.jobId, bountyCount, contractAddress: job.contractAddress
+        });
+        job.status = 'ORPHANED';
+        job.orphanReason = 'jobId_exceeds_bountyCount';
+        staleCount++;
+      }
+
+      // For suspects below bountyCount, do a quick getBounty check
+      const suspectsBelowCount = storage.jobs.filter(j =>
+        (j.contractAddress || '').toLowerCase() === currentContract &&
+        j.onChain === true &&
+        !j.syncedFromBlockchain &&
+        typeof j.jobId === 'number' &&
+        j.jobId < bountyCount
+      );
+      for (const job of suspectsBelowCount) {
+        try {
+          await contractService.getBounty(job.jobId);
+          // It exists — mark it as synced so we don't check again
+          job.syncedFromBlockchain = true;
+          job.lastSyncedAt = Math.floor(Date.now() / 1000);
+        } catch (err) {
+          const msg = (err.message || '').toLowerCase();
+          if (msg.includes('bad bountyid') || msg.includes('badbountyid')) {
+            logger.info('[sync/stale-check] job does not exist on current contract, marking orphaned', {
+              jobId: job.jobId, contractAddress: job.contractAddress
+            });
+            job.status = 'ORPHANED';
+            job.orphanReason = 'not_found_on_current_contract';
+            staleCount++;
+          }
+        }
+      }
+
+      if (staleCount > 0) {
+        logger.info('[sync/stale-check] orphaned stale entries', { count: staleCount });
+      }
+      this._staleCheckDone = true;
     }
 
     // Phase E: Persist

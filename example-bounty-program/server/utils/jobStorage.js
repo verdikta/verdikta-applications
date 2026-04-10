@@ -253,18 +253,34 @@ async function listJobs(filters = {}) {
         return true;
       });
 
-      // Hide ghost jobs: API-created but never deployed on-chain.
+      // Hide ghost jobs: API-created but never verified on-chain.
       // A ghost is hidden once a synced job with the same evaluationCid exists
       // (meaning the on-chain tx succeeded and sync picked it up), or after 1 hour.
+      //
+      // Trust hierarchy:
+      //   syncedFromBlockchain === true  → sync service confirmed this bounty exists on-chain (highest trust)
+      //   onChain === true + lastSyncedAt set → PATCH /bountyId was called AND sync has seen it since
+      //   onChain === true alone → PATCH /bountyId was called but sync never confirmed it (may be phantom)
       const syncedCids = new Set(
-        jobs.filter(j => j.syncedFromBlockchain || j.onChain)
+        jobs.filter(j => j.syncedFromBlockchain)
             .map(j => j.evaluationCid)
             .filter(Boolean)
       );
       const nowSec = Math.floor(Date.now() / 1000);
       jobs = jobs.filter(j => {
-        if (j.syncedFromBlockchain || j.onChain) return true;
-        // Ghost: hide if a synced sibling exists, or if older than 1 hour
+        // Sync service has confirmed this job — trust it
+        if (j.syncedFromBlockchain) return true;
+        // PATCH /bountyId was called AND sync has touched it since — trust it
+        if (j.onChain && j.lastSyncedAt) return true;
+        // PATCH /bountyId was called but sync never confirmed — this might be a phantom
+        // from an old/wrong contract. Only show if it's less than 1 hour old (give sync
+        // time to pick it up) and no synced sibling exists.
+        if (j.onChain) {
+          if (j.evaluationCid && syncedCids.has(j.evaluationCid)) return false;
+          if (nowSec - (j.createdAt || 0) > 3600) return false;
+          return true;
+        }
+        // Pure API ghost (no onChain flag): same rules as before
         if (j.evaluationCid && syncedCids.has(j.evaluationCid)) return false;
         if (nowSec - (j.createdAt || 0) > 3600) return false;
         return true;

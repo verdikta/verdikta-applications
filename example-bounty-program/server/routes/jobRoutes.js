@@ -3478,6 +3478,79 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
     if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
 
+    // Verify the txHash actually emitted a BountyCreated event with the claimed bountyId
+    // on the current contract. This prevents phantom entries from old/wrong contracts.
+    const currentContract = jobStorage.getCurrentContractAddress();
+    if (txHash && currentContract) {
+      try {
+        const contractService = getContractService();
+        const provider = contractService.provider;
+        const receipt = await provider.getTransactionReceipt(txHash);
+
+        if (!receipt) {
+          return res.status(400).json({
+            success: false,
+            error: 'Transaction not found on chain',
+            details: `Could not fetch receipt for txHash ${txHash}. The tx may not be confirmed yet.`,
+            fix: 'Wait for transaction confirmation and try again.'
+          });
+        }
+
+        // Parse BountyCreated event from the receipt
+        const iface = new ethers.Interface([
+          'event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)'
+        ]);
+        let foundBountyId = null;
+        let emittingContract = null;
+        for (const log of receipt.logs) {
+          try {
+            const parsed = iface.parseLog(log);
+            if (parsed?.name === 'BountyCreated') {
+              foundBountyId = Number(parsed.args.bountyId);
+              emittingContract = log.address.toLowerCase();
+              break;
+            }
+          } catch {}
+        }
+
+        if (foundBountyId === null) {
+          return res.status(400).json({
+            success: false,
+            error: 'No BountyCreated event found in transaction',
+            details: `txHash ${txHash} did not emit a BountyCreated event.`,
+            fix: 'Verify you are passing the correct transaction hash from the createBounty call.'
+          });
+        }
+
+        if (foundBountyId !== Number(bountyId)) {
+          return res.status(400).json({
+            success: false,
+            error: 'BountyId mismatch',
+            details: `txHash emitted BountyCreated with bountyId=${foundBountyId}, but you claimed bountyId=${bountyId}.`,
+            fix: 'Use the bountyId from the BountyCreated event in the transaction receipt.'
+          });
+        }
+
+        if (emittingContract !== currentContract) {
+          return res.status(400).json({
+            success: false,
+            error: 'Wrong contract',
+            details: `BountyCreated was emitted by ${emittingContract}, but this server expects ${currentContract}. The bounty was created on a different contract.`,
+            fix: 'Ensure your wallet/frontend is targeting the correct BountyEscrow contract for this network.'
+          });
+        }
+
+        logger.info('[jobs/bountyId] txHash verified', { txHash, foundBountyId, emittingContract });
+      } catch (verifyErr) {
+        // If verification fails (e.g., RPC issue), log warning but allow the PATCH to proceed
+        // so we don't break the flow on transient RPC errors. The sync service will catch
+        // mismatches later via the stale-detection sweep.
+        logger.warn('[jobs/bountyId] txHash verification failed (proceeding anyway)', {
+          txHash, error: verifyErr.message
+        });
+      }
+    }
+
     job.txHash      = txHash;
     job.blockNumber = blockNumber;
     job.onChain     = true;
@@ -3503,9 +3576,8 @@ router.patch('/:jobId/bountyId', async (req, res) => {
 
       job.jobId = Number(bountyId);
     }
-    
+
     // Track which contract this job was created on
-    const currentContract = jobStorage.getCurrentContractAddress();
     if (currentContract && !job.contractAddress) {
       job.contractAddress = currentContract;
     }

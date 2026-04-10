@@ -625,7 +625,7 @@ No data is sent to any other third party. The skill does not invoke AI models di
 
 ## Environment variables reference
 
-### Required (must be set in `scripts/.env`)
+### Required (set in `~/.config/verdikta-bounties/.env`)
 
 | Variable | Description |
 |----------|-------------|

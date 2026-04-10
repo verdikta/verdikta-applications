@@ -1969,9 +1969,14 @@ router.get('/:jobId/submissions', async (req, res) => {
 
         // Don't report score for pending/timed-out submissions — acceptance defaults
         // to 0 on-chain, which is misleading (looks like 0% instead of "not yet scored")
-        const rawScore = sub.acceptance ?? sub.score ?? null;
+        const rawAcceptance = sub.acceptance ?? sub.score ?? null;
+        const rawRejection = sub.rejection ?? null;
         const suppressScore = mappedStatus === 'PENDING_EVALUATION' || mappedStatus === 'TIMED_OUT';
-        const score = suppressScore ? null : rawScore;
+        const score = suppressScore ? null : rawAcceptance;
+        const rejection = suppressScore ? null : rawRejection;
+
+        // Whether a detailed AI evaluation report is fetchable via the /evaluation endpoint
+        const hasEvaluationReport = !!sub.justificationCids && sub.justificationCids !== '';
 
         return {
           id: sub.submissionId,
@@ -1979,6 +1984,13 @@ router.get('/:jobId/submissions', async (req, res) => {
           hunterCid: sub.hunterCid || null,
           status: mappedStatus,
           score,
+          rejection,
+          failureReason: sub.failureReason || null,
+          justificationCids: sub.justificationCids || null,
+          hasEvaluationReport,
+          evaluationEndpoint: hasEvaluationReport
+            ? `/api/jobs/${job.jobId}/submissions/${sub.submissionId}/evaluation`
+            : null,
           submittedAt: sub.submittedAt || null,
           evaluatedAt: sub.finalizedAt || null
         };
@@ -1992,6 +2004,7 @@ router.get('/:jobId/submissions', async (req, res) => {
       submissions,
       tips: [
         `View bounty details: GET /api/jobs/${job.jobId}`,
+        `Get full AI evaluation report (scores + justification): GET /api/jobs/${job.jobId}/submissions/:subId/evaluation`,
         `Submit work: POST /api/jobs/${job.jobId}/submit`
       ]
     });

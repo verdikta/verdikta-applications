@@ -96,14 +96,50 @@ function isPrivateKey(s) {
 async function ensureWalletKeystore({ keystorePath, password, rl }) {
   const abs = resolvePath(keystorePath);
   if (await fileExists(abs)) {
-    const wallet = await loadWallet();
-    return { wallet, abs, created: false, imported: false };
+    try {
+      const wallet = await loadWallet();
+      return { wallet, abs, created: false, imported: false };
+    } catch (err) {
+      // Password/keystore mismatch (common after re-onboarding or migration)
+      if (!rl) throw err;
+      console.log(`\nExisting keystore found at ${abs} but decryption failed.`);
+      console.log(`(${err.message})\n`);
+      console.log('This usually means the password changed since the keystore was created.');
+      console.log('  1) Enter the correct password for the existing keystore');
+      console.log('  2) Create a new wallet (overwrites the existing keystore)');
+      console.log('  3) Import a different private key (overwrites the existing keystore)');
+      const choice = (await rl.question('Choose [1]: ')).trim();
+
+      if (!choice || choice === '1') {
+        const oldPw = (await rl.question('Enter password for existing keystore: ')).trim();
+        const rawJson = await fs.readFile(abs, 'utf8');
+        const wallet = await Wallet.fromEncryptedJson(rawJson, oldPw);
+        // Re-encrypt with the current config password so everything stays consistent
+        const reEncrypted = await wallet.encrypt(password);
+        await fs.writeFile(abs, reEncrypted, { mode: 0o600 });
+        console.log('  Keystore re-encrypted with current password.');
+        return { wallet, abs, created: false, imported: false };
+      }
+
+      if (choice === '3') {
+        const key = (await rl.question('Paste private key (hex, with or without 0x): ')).trim();
+        if (!isPrivateKey(key)) throw new Error('Invalid private key format (expected 64 hex chars).');
+        const wallet = new Wallet(key.startsWith('0x') ? key : `0x${key}`);
+        const json = await wallet.encrypt(password);
+        await fs.writeFile(abs, json, { mode: 0o600 });
+        console.log('  Imported and encrypted. Old keystore overwritten.');
+        return { wallet, abs, created: true, imported: true };
+      }
+
+      // choice === '2': fall through to create new wallet below
+      console.log('  Creating new wallet (old keystore will be overwritten)...');
+    }
   }
 
   await ensureDir(path.dirname(abs));
 
   // Offer to import an existing wallet instead of generating a new one
-  if (rl) {
+  if (rl && !(await fileExists(abs))) {
     console.log('\nWallet setup:');
     console.log('  1) Create a new wallet (default)');
     console.log('  2) Import an existing private key');

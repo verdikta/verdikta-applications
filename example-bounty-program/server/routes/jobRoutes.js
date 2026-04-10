@@ -2576,23 +2576,34 @@ router.post('/:jobId/submit/dry-run', async (req, res) => {
         checks.push({ name: 'bounty_open', passed: true, details: `Bounty #${job.jobId} is open with ${hoursLeft}h remaining (deadline: ${deadline})` });
       }
 
-      // ---- 6. not_already_submitted ----
+      // ---- 6. prior_submissions (informational only — resubmission is allowed) ----
+      // The contract permits any address to submit any number of times to the same bounty,
+      // including after a prior rejection. We surface prior submissions as a warning so the
+      // hunter is aware (and to discourage redundant evaluation costs while a prior submission
+      // is still pending), but we never block the dry-run on this.
       if (job && hunter && /^0x[a-fA-F0-9]{40}$/.test(hunter)) {
-        const existing = (job.submissions || []).find(s =>
-          (s.hunter || '').toLowerCase() === hunter.toLowerCase() &&
-          (s.status || '').toLowerCase() !== 'prepared'
+        const priors = (job.submissions || []).filter(s =>
+          (s.hunter || '').toLowerCase() === hunter.toLowerCase()
         );
-        if (existing) {
-          const subStatus = (existing.status || 'unknown').toUpperCase();
-          checks.push({ name: 'not_already_submitted', passed: false,
-            details: `Existing submission #${existing.submissionId} from this hunter (status: ${subStatus})` });
-          errors.push({
-            code: 'BOUNTY_ALREADY_SUBMITTED',
-            message: 'You have already submitted to this bounty',
-            fix: `Check your submission status at GET /api/jobs/${job.jobId}/submissions`
+        if (priors.length > 0) {
+          const summary = priors.map(s => `#${s.submissionId} (${(s.status || 'unknown').toUpperCase()})`).join(', ');
+          const pending = priors.filter(s => {
+            const st = (s.status || '').toUpperCase();
+            return st === 'PREPARED' || st === 'PENDING_EVALUATION' || st === 'PENDINGCREATORAPPROVAL' ||
+                   st === 'ACCEPTED_PENDING_CLAIM' || st === 'REJECTED_PENDING_FINALIZATION';
           });
+          checks.push({
+            name: 'prior_submissions',
+            passed: true,
+            details: `${priors.length} prior submission(s) from this hunter: ${summary}`
+          });
+          if (pending.length > 0) {
+            warnings.push(
+              `You have ${pending.length} unresolved prior submission(s) to this bounty. Resubmission is allowed, but each submission costs LINK — consider waiting for the pending one(s) to resolve first.`
+            );
+          }
         } else {
-          checks.push({ name: 'not_already_submitted', passed: true, details: 'No existing submission from this hunter' });
+          checks.push({ name: 'prior_submissions', passed: true, details: 'No prior submissions from this hunter' });
         }
       }
 

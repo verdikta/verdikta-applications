@@ -174,13 +174,13 @@ After evaluation completes (~2 minutes), anyone can call `finalizeSubmission()` 
 ## Contract Addresses
 
 ### Base Sepolia (Testnet)
-- **BountyEscrow**: `0x0520b15Ee61C4E2A1B00bA260d8B1FBD015D2780`
+- **BountyEscrow**: `0x4f8e25383fafb8171ca88810C4a8A20B4926908D`
 - **Verdikta Aggregator**: `0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089`
 - **LINK Token**: `0xE4aB69C077896252FAFBD49EFD26B5D171A32410`
 - **Explorer**: [Base Sepolia Scan](https://sepolia.basescan.org)
 
 ### Base (Mainnet)
-- **BountyEscrow**: `0x0a6290EfA369Bbd4a9886ab9f98d7fAd7b0dc746`
+- **BountyEscrow**: `0x3970dC3750DdE4E73fdcd3a81b66F1472BbaAEee`
 - **Verdikta Aggregator**: `0x2f7a02298D4478213057edA5e5bEB07F20c4c054`
 - **LINK Token**: `0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196`
 - **Explorer**: [BaseScan](https://basescan.org)
@@ -294,8 +294,8 @@ A: Use **Base Sepolia** for testing (free testnet ETH/LINK). Use **Base** (mainn
 **Server (.env):**
 ```bash
 NETWORK=base-sepolia  # or 'base' for mainnet
-BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA=0x0520b15Ee61C4E2A1B00bA260d8B1FBD015D2780
-BOUNTY_ESCROW_ADDRESS_BASE=0x0a6290EfA369Bbd4a9886ab9f98d7fAd7b0dc746
+BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA=0x4f8e25383fafb8171ca88810C4a8A20B4926908D
+BOUNTY_ESCROW_ADDRESS_BASE=0x3970dC3750DdE4E73fdcd3a81b66F1472BbaAEee
 RECEIPT_SALT=your-secret-salt-for-pseudonymous-ids
 FRONTEND_CLIENT_KEY=dev-local-key  # Must match client
 IPFS_PINNING_KEY=your-pinata-jwt

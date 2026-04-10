@@ -1,7 +1,7 @@
 {
   "ownerId": "kn70kt901qt3bjzwb1v3q90jm181xhyf",
   "slug": "verdikta-bounties-onboarding",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "requiredEnvVars": [
     "VERDIKTA_WALLET_PASSWORD",
     "VERDIKTA_NETWORK",

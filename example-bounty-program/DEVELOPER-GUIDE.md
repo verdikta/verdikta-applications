@@ -73,35 +73,29 @@ Deployment scripts: `deploy/01_deploy_bounty.js`. Convenience wrappers: `deploy_
 
 ### Server (`server/.env`)
 
-Required:
-```bash
-NETWORK=base-sepolia                    # or 'base'
-PORT=5005
-IPFS_PINNING_KEY=<pinata-jwt>
-RPC_PROVIDER_URL=https://sepolia.base.org
-BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA=0x4f8e25383fafb8171ca88810C4a8A20B4926908D
-BOUNTY_ESCROW_ADDRESS_BASE=0x3970dC3750DdE4E73fdcd3a81b66F1472BbaAEee
-FRONTEND_CLIENT_KEY=<must-match-client>
-FRONTEND_ALLOWED_ORIGINS=http://localhost:5173,https://bounties-testnet.verdikta.org
-RECEIPT_SALT=<random-string-for-pseudonymous-ids>
-USE_BLOCKCHAIN_SYNC=true
-SYNC_INTERVAL_MINUTES=2
-```
+Start from the `server/.env.example` template and fill in the values. Required keys include:
+
+- `NETWORK` — `base-sepolia` or `base`
+- `PORT` — default 5005
+- `IPFS_PINNING_KEY` — Pinata JWT
+- `RPC_PROVIDER_URL` — RPC endpoint for the active network
+- `BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA` and `BOUNTY_ESCROW_ADDRESS_BASE` — BountyEscrow contract per network. **Get the current values from the running website's Analytics page** (`/analytics` → System Health → Contract Addresses) or from the [Contract Addresses](../README.md#contract-addresses) section of the root README.
+- `FRONTEND_CLIENT_KEY` — must match `VITE_CLIENT_KEY` on the client
+- `FRONTEND_ALLOWED_ORIGINS` — comma-separated allowed origins
+- `RECEIPT_SALT` — random string for pseudonymous receipt IDs
+- `USE_BLOCKCHAIN_SYNC=true` — enable the 2-minute polling sync service
+- `SYNC_INTERVAL_MINUTES=2`
 
 See `server/.env.example` for the complete set including archival, rate-limiting, and oracle config.
 
 ### Client (`client/.env`)
 
-```bash
-VITE_NETWORK=base-sepolia               # or 'base'
-VITE_CLIENT_KEY=<must-match-server>
-VITE_BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA=0x4f8e25383fafb8171ca88810C4a8A20B4926908D
-VITE_BOUNTY_ESCROW_ADDRESS_BASE=0x3970dC3750DdE4E73fdcd3a81b66F1472BbaAEee
-VITE_LINK_TOKEN_ADDRESS_BASE_SEPOLIA=0xE4aB69C077896252FAFBD49EFD26B5D171A32410
-VITE_LINK_TOKEN_ADDRESS_BASE=0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196
-VITE_VERDIKTA_AGGREGATOR_ADDRESS_BASE_SEPOLIA=0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089
-VITE_VERDIKTA_AGGREGATOR_ADDRESS_BASE=0x2f7a02298D4478213057edA5e5bEB07F20c4c054
-```
+Start from `client/.env.example` and fill in the values. Required:
+
+- `VITE_NETWORK` — `base-sepolia` or `base`
+- `VITE_CLIENT_KEY` — must match `FRONTEND_CLIENT_KEY` on the server
+- `VITE_BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA` and `VITE_BOUNTY_ESCROW_ADDRESS_BASE` — **current values from the Analytics page** (`/analytics` → System Health → Contract Addresses)
+- `VITE_LINK_TOKEN_ADDRESS_*` and `VITE_VERDIKTA_AGGREGATOR_ADDRESS_*` — available from the Analytics page, from `onchain/deployments/*.json`, or from the [Contract Addresses](../README.md#contract-addresses) section of the README
 
 ### Contracts (`onchain/.env`)
 
@@ -180,10 +174,13 @@ npm run deploy:sepolia     # or deploy:base
 ```
 
 After deployment:
-1. Note the new BountyEscrow address from console output
-2. Update `BOUNTY_ESCROW_ADDRESS_*` in `server/.env` and `client/.env`
-3. Restart server and rebuild client
-4. Verify on-chain via `cast call` or basescan
+1. Note the new BountyEscrow address from console output. The deploy script also auto-writes it to `onchain/deployments/{chainId}-{network}.json`.
+2. Update `BOUNTY_ESCROW_ADDRESS_*` in `server/.env` and `VITE_BOUNTY_ESCROW_ADDRESS_*` in `client/.env` to the new address for this network.
+3. Restart the server (`cd server && ./restartServer.sh`) and rebuild the client (`cd client && ./rebuildClient.sh` or `npm run build`).
+4. **Update `README.md`** — the "Contract Addresses" section has the two canonical addresses hardcoded as a snapshot. Edit the relevant network's `BountyEscrow` line. **Do not leave this stale** — the running website's `/analytics` page is the live source of truth, and the README should agree with it.
+5. Verify the new address is live via Basescan, and cross-check against the `/analytics` page on the running website (System Health → Contract Addresses → Bounty Escrow).
+
+> **Single source of truth:** the running website's `/analytics` page always shows the live BountyEscrow address from the backend's runtime config. If any doc disagrees with it, the doc is stale. Only `README.md`'s "Contract Addresses" section has a hardcoded snapshot — all other docs and examples point at `.env.example` files or `/analytics`, so they self-update.
 
 ### Backend (production)
 The server is started by `startServer.sh` / `restartServer.sh` in the `server/` directory. It writes a PID file (`server-base.pid` or `server-base-sepolia.pid`) and logs to `server-base.log` / `server-base-sepolia.log`. Use `stopServer.sh` to shut down.

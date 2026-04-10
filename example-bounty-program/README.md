@@ -173,6 +173,8 @@ After evaluation completes (~2 minutes), anyone can call `finalizeSubmission()` 
 
 ## Contract Addresses
 
+> **Authoritative source:** the running website's **Analytics page** (`/analytics` → System Health → Contract Addresses) displays the live BountyEscrow address pulled from the backend's runtime config. If the address below ever disagrees with the Analytics page, trust the Analytics page — these docs are a snapshot and may be stale after a redeployment.
+
 ### Base Sepolia (Testnet)
 - **BountyEscrow**: `0x4f8e25383fafb8171ca88810C4a8A20B4926908D`
 - **Verdikta Aggregator**: `0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089`
@@ -289,27 +291,18 @@ A: Use **Base Sepolia** for testing (free testnet ETH/LINK). Use **Base** (mainn
 
 ## Environment Configuration
 
-### Required Environment Variables
+Copy `server/.env.example` → `server/.env` and `client/.env.example` → `client/.env`, then fill in the values. Both `.env.example` files list every required variable.
 
-**Server (.env):**
-```bash
-NETWORK=base-sepolia  # or 'base' for mainnet
-BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA=0x4f8e25383fafb8171ca88810C4a8A20B4926908D
-BOUNTY_ESCROW_ADDRESS_BASE=0x3970dC3750DdE4E73fdcd3a81b66F1472BbaAEee
-RECEIPT_SALT=your-secret-salt-for-pseudonymous-ids
-FRONTEND_CLIENT_KEY=dev-local-key  # Must match client
-IPFS_PINNING_KEY=your-pinata-jwt
-USE_BLOCKCHAIN_SYNC=true
-SYNC_INTERVAL_SECONDS=120
-```
+**For contract addresses**, use the current values from the running website's **Analytics page** (`/analytics` → System Health → Contract Addresses), or see the [Contract Addresses](#contract-addresses) section above.
 
-**Client (.env):**
-```bash
-VITE_NETWORK=base-sepolia  # or 'base'
-VITE_CLIENT_KEY=dev-local-key  # Must match server
-```
+**Key variables:**
+- `NETWORK` / `VITE_NETWORK` — `base-sepolia` or `base`
+- `BOUNTY_ESCROW_ADDRESS_*` / `VITE_BOUNTY_ESCROW_ADDRESS_*` — BountyEscrow address per network (from Analytics page)
+- `IPFS_PINNING_KEY` — Pinata JWT (server only)
+- `RECEIPT_SALT` — random string for pseudonymous receipt IDs (server only)
+- `FRONTEND_CLIENT_KEY` / `VITE_CLIENT_KEY` — must match between server and client
 
-See `.env.example` files for complete configuration options.
+See `server/.env.example` and `client/.env.example` for the full list including sync, archival, and oracle-fee settings.
 
 ## Support & Contact
 

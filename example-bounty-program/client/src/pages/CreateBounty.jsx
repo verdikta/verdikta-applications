@@ -69,10 +69,14 @@ function CreateBounty({ walletState }) {
       format: ['markdown', 'pdf']
     },
     // Creator approval window (optional)
+    // Defaults match the placeholders on the windowed-bounty inputs so the
+    // form is submittable as-is once the checkbox is enabled. Users can edit
+    // these values; this just avoids the "cannot be zero" validation error
+    // when the user trusted what looked like pre-filled values.
     enableApprovalWindow: false,
-    creatorPaymentEth: '',
-    arbiterPaymentEth: '',
-    approvalWindowHours: '',
+    creatorPaymentEth: '0.001',
+    arbiterPaymentEth: '0.001',
+    approvalWindowHours: '1',
   });
 
   // ---------- helpers ----------

@@ -195,6 +195,7 @@ class SyncService {
     this.hotBountyIds = new Set();
     this._staleCheckDone = false;
     this._healCheckDone = false;
+    this._subHealCheckDone = false;
   }
 
   // ==========================================================================
@@ -559,6 +560,86 @@ class SyncService {
       this._healCheckDone = true;
     }
 
+    // Phase D.7: Submission-level one-shot heal — find submissions on
+    // windowed bounties whose local status is still 'Prepared', and
+    // re-read chain state for them. A windowed bounty's submission can
+    // never legitimately be in state 'Prepared' on chain — the contract
+    // transitions it directly to PendingCreatorApproval. So if we see
+    // local='Prepared' on a windowed bounty, the local record is stale
+    // (the POST /submissions/confirm write landed before chain truth was
+    // read). See bounty 46 sub 0 incident.
+    //
+    // Runs once per server startup, gated by _subHealCheckDone.
+    if (!this._subHealCheckDone) {
+      const subHealCandidates = [];
+      for (const job of storage.jobs) {
+        if ((job.contractAddress || '').toLowerCase() !== currentContract) continue;
+        if (!job.syncedFromBlockchain) continue;
+        if (job.status === 'ORPHANED') continue;
+        if (!job.creatorAssessmentWindowSize || Number(job.creatorAssessmentWindowSize) === 0) continue;
+        if (!Array.isArray(job.submissions) || job.submissions.length === 0) continue;
+        for (const sub of job.submissions) {
+          // Target: locally 'Prepared' but the bounty is windowed. On chain
+          // this should be PendingCreatorApproval (or possibly further along
+          // if the window already closed and evaluation was started).
+          if (sub.status === 'Prepared' || sub.status === 'PREPARED') {
+            subHealCandidates.push({ job, sub });
+          }
+        }
+      }
+
+      let subHealed = 0;
+      for (const { job, sub } of subHealCandidates) {
+        try {
+          const contract = contractService.contract;
+          const chainSub = await contract.getSubmission(job.jobId, sub.submissionId);
+          const statusMap = {
+            0: 'Prepared',
+            1: 'PENDING_EVALUATION',
+            2: 'REJECTED',
+            3: 'APPROVED',
+            4: 'APPROVED',
+            5: 'PendingCreatorApproval',
+          };
+          const statusIndex = Number(chainSub.status);
+          const chainStatus = statusMap[statusIndex] || 'UNKNOWN';
+
+          if (chainStatus !== sub.status) {
+            sub.status = chainStatus;
+            sub.onChainStatus = chainStatus;
+            sub.creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
+            if (chainSub.linkMaxBudget != null) {
+              sub.linkMaxBudget = chainSub.linkMaxBudget.toString();
+            }
+            if (chainSub.submittedAt != null) {
+              sub.submittedAt = Number(chainSub.submittedAt) || sub.submittedAt;
+            }
+            subHealed++;
+            logger.info('[sync/sub-heal] updated submission from chain', {
+              bountyId: job.jobId,
+              submissionId: sub.submissionId,
+              newStatus: chainStatus,
+              creatorWindowEnd: sub.creatorWindowEnd,
+            });
+          }
+        } catch (err) {
+          logger.warn('[sync/sub-heal] failed to read submission from chain', {
+            bountyId: job.jobId,
+            submissionId: sub.submissionId,
+            error: err.message
+          });
+        }
+      }
+
+      if (subHealCandidates.length > 0) {
+        logger.info('[sync/sub-heal] submission heal sweep complete', {
+          candidates: subHealCandidates.length,
+          healed: subHealed,
+        });
+      }
+      this._subHealCheckDone = true;
+    }
+
     // Phase E: Persist
     // Re-read storage to merge with any concurrent PATCH updates
     const freshStorage = await jobStorage.readStorage();
@@ -739,18 +820,52 @@ class SyncService {
         // and will be picked up by the next getSubmission() call (e.g., in syncSubmissions or refresh).
         const existing = (job.submissions || []).find(s => s.submissionId === submissionId);
         if (!existing) {
+          // For windowed bounties, the contract puts the submission straight
+          // into PendingCreatorApproval (state 5) with a creatorWindowEnd —
+          // not Prepared (state 0). The event doesn't carry those fields, so
+          // we pull chain truth with a single getSubmission() call. Non-fatal:
+          // if the call fails we fall back to the 'Prepared' default and the
+          // submission-level heal sweep (Phase D.7) will fix it later.
+          let chainStatusString = 'Prepared';
+          let creatorWindowEnd = null;
+          let hunterCidFromChain = null;
+          try {
+            const chainSub = await contractService.contract.getSubmission(bountyId, submissionId);
+            const statusMap = {
+              0: 'Prepared',
+              1: 'PENDING_EVALUATION',
+              2: 'REJECTED',
+              3: 'APPROVED',
+              4: 'APPROVED',
+              5: 'PendingCreatorApproval',
+            };
+            chainStatusString = statusMap[Number(chainSub.status)] || 'Prepared';
+            creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
+            hunterCidFromChain = chainSub.hunterCid || null;
+          } catch (err) {
+            logger.warn('[event] SubmissionPrepared: chain read failed, falling back to Prepared', {
+              bountyId, submissionId, error: err.message
+            });
+          }
+
           if (!job.submissions) job.submissions = [];
           job.submissions.push({
             submissionId,
             hunter: args.hunter,
             evalWallet: args.evalWallet,
             evaluationCid: args.evaluationCid,
+            hunterCid: hunterCidFromChain,
             linkMaxBudget: args.linkMaxBudget?.toString(),
-            status: 'Prepared',
+            status: chainStatusString,
+            onChainStatus: chainStatusString,
+            creatorWindowEnd,
             submittedAt: Math.floor(Date.now() / 1000)
           });
           job.submissionCount = (job.submissionCount || 0) + 1;
-          logger.info('[event] SubmissionPrepared', { bountyId, submissionId, evalWallet: args.evalWallet });
+          logger.info('[event] SubmissionPrepared', {
+            bountyId, submissionId, evalWallet: args.evalWallet,
+            status: chainStatusString, creatorWindowEnd
+          });
         }
         break;
       }

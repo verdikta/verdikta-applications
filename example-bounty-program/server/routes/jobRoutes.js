@@ -2985,7 +2985,12 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
       return res.json({ success: true, submission: existingSubmission, alreadyExists: true });
     }
 
-    // Create the submission record with the on-chain submissionId
+    // Create the submission record with the on-chain submissionId.
+    // Start with a conservative default of 'Prepared'; below we try to read
+    // chain truth and overwrite with the real status. If the chain read
+    // succeeds and the bounty is windowed, this will already be
+    // 'PendingCreatorApproval' with creatorWindowEnd set — no follow-up
+    // refreshSubmission call needed from the client.
     const submission = {
       submissionId: Number(submissionId),
       hunter,
@@ -2994,11 +2999,56 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
       fileCount: fileCount || 0,
       files: files || [],
       submittedAt: Math.floor(Date.now() / 1000),
-      status: 'Prepared',  // Will be updated to PendingVerdikta after startPreparedSubmission
+      status: 'Prepared',
       // Track which client type submitted this work
       clientType: req.clientType || 'unknown',
       clientId: req.clientId || null,
     };
+
+    // Read chain truth and overwrite the skeleton fields. This closes the
+    // hole where the confirm write locked in status='Prepared' for windowed
+    // bounties (real chain status: 5=PendingCreatorApproval), leaving the
+    // local cache permanently wrong until someone manually refreshed. See
+    // bounty 46 sub 0 incident.
+    //
+    // Non-fatal: on RPC failure, we keep the 'Prepared' default and the
+    // background sync service / a manual refresh will heal later.
+    try {
+      const cs = getContractService();
+      const contract = cs.contract;
+      const chainSub = await contract.getSubmission(Number(jobId), Number(submissionId));
+
+      const statusMap = {
+        0: 'Prepared',
+        1: 'PENDING_EVALUATION',      // PendingVerdikta
+        2: 'REJECTED',                // Failed
+        3: 'APPROVED',                // PassedPaid
+        4: 'APPROVED',                // PassedUnpaid
+        5: 'PendingCreatorApproval',
+      };
+      const statusIndex = Number(chainSub.status);
+      const chainStatus = statusMap[statusIndex] || 'UNKNOWN';
+
+      submission.status = chainStatus;
+      submission.onChainStatus = chainStatus;
+      submission.creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
+      submission.linkMaxBudget = chainSub.linkMaxBudget?.toString() || submission.linkMaxBudget;
+      submission.submittedAt = Number(chainSub.submittedAt) || submission.submittedAt;
+      if (chainSub.evalWallet && chainSub.evalWallet !== '0x0000000000000000000000000000000000000000') {
+        submission.evalWallet = chainSub.evalWallet;
+      }
+      if (chainSub.evaluationCid) submission.evaluationCid = chainSub.evaluationCid;
+
+      logger.info('[submissions/confirm] chain truth applied', {
+        jobId, submissionId,
+        chainStatus,
+        creatorWindowEnd: submission.creatorWindowEnd,
+      });
+    } catch (chainErr) {
+      logger.warn('[submissions/confirm] chain read failed, keeping skeleton (sync will heal later)', {
+        jobId, submissionId, error: chainErr.message
+      });
+    }
 
     job.submissions.push(submission);
     job.submissionCount = job.submissions.length;

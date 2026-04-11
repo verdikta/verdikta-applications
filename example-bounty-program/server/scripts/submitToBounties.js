@@ -1046,6 +1046,38 @@ async function main() {
           // For windowed bounties, only step 1 (prepareSubmission) runs — the rest waits for window expiry.
           const chainResult = await startSubmissionOnChain(wallet, bounty.jobId, evaluationCid, hunterCid, isWindowed);
 
+          // Register the on-chain submission in the backend. The confirm
+          // endpoint reads chain truth internally, so for windowed bounties
+          // it writes PendingCreatorApproval + creatorWindowEnd on the first
+          // write — closing the bounty 46 bug where the script skipped confirm
+          // entirely and left the backend with a missing-or-stale record.
+          // Idempotent: returns the existing record if already present.
+          try {
+            const confirmResponse = await fetch(
+              `${CONFIG.apiUrl}/api/jobs/${bounty.jobId}/submissions/confirm`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getBotHeaders() },
+                body: JSON.stringify({
+                  submissionId: Number(chainResult.submissionId),
+                  hunter: hunterAddress,
+                  hunterCid,
+                  evalWallet: chainResult.evalWallet,
+                  fileCount: 1,
+                  files: [],
+                }),
+              }
+            );
+            if (!confirmResponse.ok) {
+              const errText = await confirmResponse.text().catch(() => '');
+              console.log(`  Warning: confirm returned ${confirmResponse.status}: ${errText.slice(0, 200)}`);
+            } else {
+              console.log('  Backend submission confirmed');
+            }
+          } catch (confirmErr) {
+            console.log(`  Warning: Could not confirm backend submission: ${confirmErr.message}`);
+          }
+
           if (isWindowed) {
             const windowMin = Math.round(windowSize / 60);
             console.log(`  ✅ Submission prepared on-chain (windowed bounty)`);

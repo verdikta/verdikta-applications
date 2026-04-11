@@ -15,6 +15,7 @@ import {
   Copy,
   X,
   Send,
+  Hourglass,
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
@@ -59,6 +60,17 @@ function SubmitWork({ walletState }) {
   const getOnChainId = (job) => {
     return job.jobId != null ? Number(job.jobId) : null;
   };
+
+  // A bounty is "windowed" if the creator has an assessment window
+  // during which they can approve submissions directly (skipping AI eval).
+  // Derived from creatorAssessmentWindowSize > 0.
+  const isWindowed = Number(job?.creatorAssessmentWindowSize || 0) > 0;
+  const windowMinutes = isWindowed
+    ? Math.max(1, Math.round(Number(job.creatorAssessmentWindowSize) / 60))
+    : 0;
+  const creatorPaymentEth = isWindowed
+    ? (job?.creatorDeterminationPayment ?? '?')
+    : null;
 
   const loadJobDetails = async () => {
     try {
@@ -418,6 +430,51 @@ function SubmitWork({ walletState }) {
         console.warn('⚠️ Confirm submission warning:', confirmErr.message);
       }
 
+      // ============================================================
+      // WINDOWED BOUNTY BRANCH
+      // ============================================================
+      // For windowed bounties, the contract puts the submission into
+      // PendingCreatorApproval and rejects startPreparedSubmission
+      // until the window expires ("creator window still open" revert).
+      //
+      // The correct flow is:
+      //   1. Stop here — do NOT approve LINK or call startPreparedSubmission.
+      //   2. Sync the backend so the new submission shows up.
+      //   3. Hand off to BountyDetails, where:
+      //      - the creator can approve directly (handleCreatorApprove), or
+      //      - after the window expires anyone can call handleStartSubmission,
+      //        which itself approves LINK + calls startPreparedSubmission.
+      // ============================================================
+      if (isWindowed) {
+        setLoadingMessage('Syncing submission status...');
+        try {
+          await apiService.refreshSubmission(bountyId, submissionId);
+          console.log('✅ Backend synced (windowed branch)');
+        } catch (syncErr) {
+          console.warn('⚠️ Backend sync failed (will auto-sync later):', syncErr.message);
+        }
+
+        setSubmissionResult({
+          ...response,
+          windowed: true,
+          blockchainData: {
+            submissionId,
+            evalWallet,
+            linkMaxBudget,
+            txHash: null,
+            blockNumber: null,
+            // creatorWindowEnd is set by the contract to
+            // block.timestamp + creatorAssessmentWindowSize. We can't read
+            // it back here without an extra RPC call, so we approximate
+            // from the current time. The dialog will refine via countdown.
+            creatorWindowEndApprox: Math.floor(Date.now() / 1000) +
+              Number(job.creatorAssessmentWindowSize || 0),
+          },
+        });
+        setShowCIDDialog(true);
+        return;
+      }
+
       // STEP 3: Approve LINK tokens to the EvaluationWallet
       setLoadingMessage(`Approving ${(Number(linkMaxBudget) / 1e18).toFixed(4)} LINK tokens...`);
       console.log('🔄 Approving LINK to EvaluationWallet:', evalWallet, 'amount:', linkMaxBudget);
@@ -514,7 +571,14 @@ function SubmitWork({ walletState }) {
 
   const handleCloseCIDDialog = () => {
     setShowCIDDialog(false);
-    navigate(`/bounty/${bountyId}`);
+    // For windowed bounties, hand off to BountyDetails with a marker so it
+    // can show a one-shot post-submit banner pointing at the new submission.
+    const submittedId = submissionResult?.blockchainData?.submissionId;
+    if (submissionResult?.windowed && submittedId != null) {
+      navigate(`/bounty/${bountyId}?submitted=${submittedId}`);
+    } else {
+      navigate(`/bounty/${bountyId}`);
+    }
   };
 
   // Loading state while checking job status
@@ -621,6 +685,26 @@ function SubmitWork({ walletState }) {
       {error && (
         <div className="alert alert-error">
           <p>{error}</p>
+        </div>
+      )}
+
+      {isWindowed && (
+        <div className="alert alert-info windowed-info-panel">
+          <h3>
+            <Hourglass size={18} className="inline-icon" /> This is a windowed bounty
+          </h3>
+          <p>
+            After you submit, the bounty creator has <strong>{windowMinutes} minute{windowMinutes === 1 ? '' : 's'}</strong>
+            {' '}to approve your work directly. If they approve, you receive
+            {' '}<strong>{creatorPaymentEth} ETH</strong> immediately and the bounty closes — no AI evaluation runs.
+          </p>
+          <p>
+            If they don't approve within the window, AI evaluation becomes available. You (or anyone) can trigger it
+            from this bounty's details page after the window expires. Triggering AI evaluation requires LINK in your wallet.
+          </p>
+          <p>
+            <strong>You will not be asked to spend LINK at submit time.</strong> Only ETH for gas is needed right now.
+          </p>
         </div>
       )}
 
@@ -739,16 +823,27 @@ function SubmitWork({ walletState }) {
 
       <div className="help-section">
         <h3><Lightbulb size={18} className="inline-icon" /> What Happens Next?</h3>
-        <ol>
-          <li>Your files are uploaded to IPFS (permanent storage)</li>
-          <li>Hunter Submission CID is generated with your work and narrative</li>
-          <li>Smart contract creates an EvaluationWallet for your submission</li>
-          <li>You approve LINK tokens to pay for AI evaluation (~0.04 LINK)</li>
-          <li>Approval is verified on-chain before proceeding</li>
-          <li>Evaluation starts with your Hunter CID + the bounty's evaluation package</li>
-          <li>Results are written back on-chain within 1-5 minutes</li>
-          <li>If you pass, bounty is awarded automatically! 🎉</li>
-        </ol>
+        {isWindowed ? (
+          <ol>
+            <li>Your files are uploaded to IPFS (permanent storage)</li>
+            <li>Hunter Submission CID is generated with your work and narrative</li>
+            <li>Smart contract creates an EvaluationWallet and records your submission as <em>Pending Creator Approval</em></li>
+            <li>The creator has <strong>{windowMinutes} minute{windowMinutes === 1 ? '' : 's'}</strong> to approve directly. If they approve, you receive <strong>{creatorPaymentEth} ETH</strong> immediately and the bounty closes 🎉</li>
+            <li>If the window expires without creator approval, you'll see a <em>Start AI Evaluation</em> button on the bounty details page. Clicking it will request a LINK approval and start oracle evaluation</li>
+            <li>Oracle results are written back on-chain within 1-5 minutes after evaluation starts</li>
+          </ol>
+        ) : (
+          <ol>
+            <li>Your files are uploaded to IPFS (permanent storage)</li>
+            <li>Hunter Submission CID is generated with your work and narrative</li>
+            <li>Smart contract creates an EvaluationWallet for your submission</li>
+            <li>You approve LINK tokens to pay for AI evaluation (~0.04 LINK)</li>
+            <li>Approval is verified on-chain before proceeding</li>
+            <li>Evaluation starts with your Hunter CID + the bounty's evaluation package</li>
+            <li>Results are written back on-chain within 1-5 minutes</li>
+            <li>If you pass, bounty is awarded automatically! 🎉</li>
+          </ol>
+        )}
 
         <h3><Coins size={18} className="inline-icon" /> Required Tokens</h3>
         <p>
@@ -777,12 +872,22 @@ function SubmitWork({ walletState }) {
 
         <h3><AlertTriangle size={18} className="inline-icon" /> Important Notes</h3>
         <ul>
-          <li>You'll need to approve 3 transactions in MetaMask</li>
+          {isWindowed ? (
+            <li>You'll need to approve <strong>1 transaction</strong> in MetaMask right now (the on-chain submission). LINK approval and AI evaluation only happen later, if the creator doesn't approve within the window.</li>
+          ) : (
+            <li>You'll need to approve 3 transactions in MetaMask</li>
+          )}
           <li>Evaluation is final (no appeals in MVP)</li>
           <li>First passing submission wins the bounty</li>
           <li>Your submission becomes public once uploaded</li>
           <li>Make sure you have enough LINK and ETH before submitting</li>
-          <li><strong>Creator approval window:</strong> Some bounties give the creator a time window to approve submissions directly (skipping AI evaluation). If this bounty has one, your submission will show "Pending Creator Approval" until the creator approves or the window expires. After the window expires, AI evaluation can be triggered normally.</li>
+          {!isWindowed && (
+            <li>
+              <strong>Creator approval window:</strong> Some bounties give the creator a time window to approve
+              submissions directly (skipping AI evaluation). This bounty does not have one — your submission
+              will go straight to AI evaluation.
+            </li>
+          )}
         </ul>
       </div>
 
@@ -790,9 +895,15 @@ function SubmitWork({ walletState }) {
       {showCIDDialog && submissionResult && (
         <div className="cid-dialog-overlay" onClick={handleCloseCIDDialog}>
           <div className="cid-dialog" onClick={(e) => e.stopPropagation()}>
-            <h2><CheckCircle size={24} className="inline-icon" /> Submission Complete!</h2>
+            <h2>
+              {submissionResult.windowed
+                ? <><Hourglass size={24} className="inline-icon" /> Submission Recorded — Awaiting Creator</>
+                : <><CheckCircle size={24} className="inline-icon" /> Submission Complete!</>}
+            </h2>
             <p className="dialog-intro">
-              Your work has been submitted and AI evaluation is in progress!
+              {submissionResult.windowed
+                ? `Your work is on-chain. The creator has ${windowMinutes} minute${windowMinutes === 1 ? '' : 's'} to approve directly. If they don't, you'll be able to trigger AI evaluation from the bounty details page.`
+                : 'Your work has been submitted and AI evaluation is in progress!'}
             </p>
 
             {submissionResult.blockchainData && (
@@ -806,19 +917,40 @@ function SubmitWork({ walletState }) {
                     <strong>Evaluation Wallet:</strong>
                     <code className="inline-code">{submissionResult.blockchainData.evalWallet}</code>
                   </p>
-                  <p>
-                    <strong>Transaction:</strong>{' '}
-                   <a 
-                      href={`https://sepolia.basescan.org/tx/${submissionResult.blockchainData.txHash}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      View on BaseScan ↗
-                    </a>
-                  </p>
-                  <p className="success-note">
-                    <CheckCircle size={14} className="inline-icon" /> Oracles are now evaluating your submission...
-                  </p>
+                  {submissionResult.windowed ? (
+                    <>
+                      <p>
+                        <strong>Status:</strong> Pending Creator Approval
+                      </p>
+                      <p>
+                        <strong>Creator window ends:</strong>{' '}
+                        {new Date(submissionResult.blockchainData.creatorWindowEndApprox * 1000).toLocaleTimeString()}
+                        {' '}(approximately {windowMinutes} min from now)
+                      </p>
+                      <p>
+                        <strong>Creator payout if approved:</strong> {creatorPaymentEth} ETH
+                      </p>
+                      <p className="success-note">
+                        <Hourglass size={14} className="inline-icon" /> No LINK was spent. You'll only be asked to approve LINK if you trigger AI evaluation later.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p>
+                        <strong>Transaction:</strong>{' '}
+                       <a
+                          href={`https://sepolia.basescan.org/tx/${submissionResult.blockchainData.txHash}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          View on BaseScan ↗
+                        </a>
+                      </p>
+                      <p className="success-note">
+                        <CheckCircle size={14} className="inline-icon" /> Oracles are now evaluating your submission...
+                      </p>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -860,13 +992,16 @@ function SubmitWork({ walletState }) {
 
             <div className="dialog-actions">
               <button onClick={handleCloseCIDDialog} className="btn btn-primary">
-                Back to Bounty Details
+                {submissionResult.windowed ? 'Go to Bounty Details' : 'Back to Bounty Details'}
               </button>
             </div>
 
             <p className="dialog-footer">
               <small>
-                <Lightbulb size={14} className="inline-icon" /> Check back in a few minutes to see your evaluation results!
+                <Lightbulb size={14} className="inline-icon" />{' '}
+                {submissionResult.windowed
+                  ? 'The bounty details page will live-update as the creator decides or the window expires.'
+                  : 'Check back in a few minutes to see your evaluation results!'}
               </small>
             </p>
           </div>

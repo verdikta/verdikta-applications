@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import {
   RefreshCw,
   AlertTriangle,
@@ -104,8 +104,19 @@ function copyToClipboard(text, toast) {
 function BountyDetails({ walletState }) {
   const toast = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
   // URL param = backend jobId, NOT the on-chain id
   const { bountyId } = useParams();
+
+  // Post-submit flash banner: when SubmitWork hands off here for a windowed
+  // bounty, it appends ?submitted=<submissionId>. We capture that once on
+  // mount, surface a banner highlighting the new submission, and clear the
+  // query param so a refresh doesn't re-trigger it.
+  const [justSubmittedId, setJustSubmittedId] = useState(() => {
+    const params = new URLSearchParams(location.search);
+    const raw = params.get('submitted');
+    return raw != null ? raw : null;
+  });
 
   // Core state
   const [job, setJob] = useState(null);
@@ -179,6 +190,16 @@ function BountyDetails({ walletState }) {
   const autoRefreshIntervalRef = useRef(null);
   const timerIntervalRef = useRef(null);
   const isMountedRef = useRef(true);
+
+  // Strip the ?submitted= query param from the URL after we've captured it,
+  // so a page refresh doesn't re-show the post-submit banner.
+  useEffect(() => {
+    if (justSubmittedId != null && location.search.includes('submitted=')) {
+      navigate(location.pathname, { replace: true });
+    }
+    // Only run on mount — justSubmittedId is captured once via useState init.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -1670,6 +1691,58 @@ function BountyDetails({ walletState }) {
           resolvingId={resolvingId}
         />
       )}
+
+      {/* POST-SUBMIT FLASH BANNER (windowed bounties handed off from SubmitWork) */}
+      {justSubmittedId != null && (() => {
+        const sub = submissions.find(s => String(s.submissionId) === String(justSubmittedId));
+        // If we don't have the submission yet (still loading), show a minimal banner.
+        // Once it loads we'll re-render with the live countdown.
+        const windowEnd = sub?.creatorWindowEnd;
+        const windowSize = Number(job?.creatorAssessmentWindowSize || 0);
+        const isWindowedBounty = windowSize > 0;
+        const now = currentTime;
+        const secondsLeft = windowEnd ? Math.max(0, windowEnd - now) : null;
+        const minsLeft = secondsLeft != null ? Math.floor(secondsLeft / 60) : null;
+        const secsLeft = secondsLeft != null ? secondsLeft % 60 : null;
+        const windowExpired = secondsLeft != null && secondsLeft === 0;
+        const creatorApproved = sub?.status === 'APPROVED' || sub?.onChainStatus === 'PassedPaid';
+
+        return (
+          <div className="alert alert-info" style={{
+            marginBottom: '1rem',
+            borderLeft: '4px solid #2196f3',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '0.75rem'
+          }}>
+            <Hourglass size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
+            <div style={{ flex: 1 }}>
+              <strong>Submission #{justSubmittedId} recorded.</strong>{' '}
+              {creatorApproved ? (
+                <>The creator approved your submission. Payout sent — congratulations! 🎉</>
+              ) : isWindowedBounty && !windowExpired && secondsLeft != null ? (
+                <>
+                  The creator has <strong>{minsLeft}m {secsLeft.toString().padStart(2, '0')}s</strong>
+                  {' '}left to approve directly. If they don't, you'll be able to trigger AI evaluation
+                  from the submission card below once the window expires. No LINK was spent.
+                </>
+              ) : isWindowedBounty && windowExpired ? (
+                <>The creator approval window has expired. You can trigger AI evaluation from the submission card below — that's when LINK will be requested.</>
+              ) : (
+                <>Waiting for the bounty data to load…</>
+              )}
+            </div>
+            <button
+              onClick={() => setJustSubmittedId(null)}
+              className="btn btn-sm"
+              style={{ background: 'transparent', border: 'none', cursor: 'pointer' }}
+              title="Dismiss"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        );
+      })()}
 
       {/* STATUS OVERRIDE WARNING */}
       {statusOverride && (

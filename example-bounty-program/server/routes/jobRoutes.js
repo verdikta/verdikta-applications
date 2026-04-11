@@ -3582,6 +3582,36 @@ router.patch('/:jobId/bountyId', async (req, res) => {
       job.contractAddress = currentContract;
     }
 
+    // Backfill chain-authoritative fields (targetHunter, creator approval window
+    // payments and duration) directly from the contract. The local pending job
+    // may have been created without these — for example by an older client, or
+    // because the dedup branch in POST /jobs/create reused a stale pending row.
+    // Pulling them here ensures the GUI sees a windowed/targeted bounty as such
+    // immediately, instead of relying on the sync service to backfill later.
+    // Non-fatal: if the chain call fails (transient RPC error), the sync service
+    // will heal it on its next pass.
+    try {
+      const { applyChainBountyFields } = require('../utils/syncService');
+      const cs = getContractService();
+      const chainBounty = await cs.getBounty(Number(bountyId));
+      const changed = applyChainBountyFields(job, chainBounty);
+      if (changed) {
+        logger.info('[jobs/bountyId] backfilled chain fields', {
+          bountyId: Number(bountyId),
+          targetHunter: job.targetHunter,
+          creatorAssessmentWindowSize: job.creatorAssessmentWindowSize
+        });
+      }
+      // We've now read chain truth — mark the job as synced so the sync
+      // service's stale-check doesn't redundantly hit the chain for it.
+      job.syncedFromBlockchain = true;
+      job.lastSyncedAt = Math.floor(Date.now() / 1000);
+    } catch (chainErr) {
+      logger.warn('[jobs/bountyId] chain backfill failed (non-fatal, sync will heal later)', {
+        bountyId: Number(bountyId), error: chainErr.message
+      });
+    }
+
     await jobStorage.writeStorage(storage);
 
     logger.info('[jobs/bountyId] updated', { jobId, bountyId, contractAddress: job.contractAddress });
@@ -3620,6 +3650,29 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
     }
     const ESCROW = config.bountyEscrowAddress;
 
+    // Helper: backfill chain-authoritative fields after we've resolved a bountyId.
+    // Mirrors the same logic in PATCH /:jobId/bountyId. Non-fatal on RPC failure.
+    const backfillChainFields = async (resolvedBountyId) => {
+      try {
+        const { applyChainBountyFields } = require('../utils/syncService');
+        const chainBounty = await cs.getBounty(resolvedBountyId);
+        const changed = applyChainBountyFields(job, chainBounty);
+        if (changed) {
+          logger.info('[resolve] backfilled chain fields', {
+            bountyId: resolvedBountyId,
+            targetHunter: job.targetHunter,
+            creatorAssessmentWindowSize: job.creatorAssessmentWindowSize
+          });
+        }
+        job.syncedFromBlockchain = true;
+        job.lastSyncedAt = Math.floor(Date.now() / 1000);
+      } catch (chainErr) {
+        logger.warn('[resolve] chain backfill failed (non-fatal, sync will heal later)', {
+          bountyId: resolvedBountyId, error: chainErr.message
+        });
+      }
+    };
+
     if (txHash) {
       try {
         const receipt = await cs.provider.getTransactionReceipt(txHash);
@@ -3637,6 +3690,7 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
               job.txHash = job.txHash ?? txHash;
               const currentContract = jobStorage.getCurrentContractAddress();
               if (currentContract) job.contractAddress = currentContract;
+              await backfillChainFields(bountyId);
               await jobStorage.writeStorage(storage);
               logger.info('[resolve] via tx', { jobId: jobIdParam, bountyId });
               return res.json({ success: true, method: 'tx', bountyId, job });
@@ -3695,6 +3749,7 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
         job.onChain = true;
         const currentContract = jobStorage.getCurrentContractAddress();
         if (currentContract) job.contractAddress = currentContract;
+        await backfillChainFields(best);
         await jobStorage.writeStorage(storage);
         logger.info('[resolve] via event query', { jobId: jobIdParam, resolvedId: best, delta: bestDelta });
         return res.json({ success: true, method: 'event', bountyId: best, delta: bestDelta, job });

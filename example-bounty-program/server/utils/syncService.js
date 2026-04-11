@@ -127,6 +127,62 @@ async function fetchEvaluationMetadata(evaluationCid) {
   return null;
 }
 
+/**
+ * Copy chain-authoritative bounty fields from a `getBounty()` result onto an
+ * existing local job record. Used by:
+ *   - Phase D.5 stale-check: when verifying a pending job against the chain.
+ *   - Heal sweep: when retroactively backfilling already-synced records that
+ *     are missing windowed/target fields.
+ *   - PATCH /:id/bountyId in routes: when the frontend tells us a pending job
+ *     is now on-chain at a known id.
+ *
+ * Fields copied are the ones the chain owns and the local cache shouldn't
+ * second-guess: identity (creator, contract address indirectly), economic
+ * params (payouts, deadline), threshold/class, and the targeting + creator-
+ * approval-window fields that are the source of the windowed-bounty bug.
+ *
+ * Returns true if any field was changed.
+ */
+function applyChainBountyFields(localJob, chainBounty) {
+  if (!localJob || !chainBounty) return false;
+  let changed = false;
+  const set = (key, value) => {
+    if (localJob[key] !== value) {
+      localJob[key] = value;
+      changed = true;
+    }
+  };
+
+  // Targeting + creator approval window — the fields that bug #45 lost.
+  // contractService.getBounty() already converts ZeroAddress → null and
+  // formats payment fields as ETH strings.
+  set('targetHunter', chainBounty.targetHunter || null);
+  set('creatorDeterminationPayment', chainBounty.creatorDeterminationPayment || '0.0');
+  set('arbiterDeterminationPayment', chainBounty.arbiterDeterminationPayment || '0.0');
+  set('creatorAssessmentWindowSize', Number(chainBounty.creatorAssessmentWindowSize || 0));
+
+  // Other authoritative chain fields — only overwrite if the chain has them.
+  // We don't want to wipe local-only metadata like title/description/juryNodes.
+  if (chainBounty.creator) set('creator', chainBounty.creator);
+  if (chainBounty.evaluationCid) set('evaluationCid', chainBounty.evaluationCid);
+  if (chainBounty.classId != null) set('classId', Number(chainBounty.classId));
+  if (chainBounty.threshold != null) set('threshold', Number(chainBounty.threshold));
+  if (chainBounty.bountyAmount != null) set('bountyAmount', parseFloat(chainBounty.bountyAmount));
+  if (chainBounty.submissionCloseTime != null) set('submissionCloseTime', Number(chainBounty.submissionCloseTime));
+  if (chainBounty.createdAt != null) {
+    // Don't clobber the local createdAt if it already exists; chain createdAt
+    // is the block timestamp which can differ slightly from when the local
+    // pending job was first created.
+    if (localJob.createdAt == null) set('createdAt', Number(chainBounty.createdAt));
+    if (localJob.submissionOpenTime == null) set('submissionOpenTime', Number(chainBounty.createdAt));
+  }
+  if (chainBounty.winner !== undefined) {
+    set('winner', chainBounty.winner || null);
+  }
+
+  return changed;
+}
+
 class SyncService {
   constructor(intervalMinutes = 2) {
     this.intervalMs = intervalMinutes * 60 * 1000;
@@ -138,6 +194,7 @@ class SyncService {
     // Set of bountyIds with PendingVerdikta submissions — polled each cycle
     this.hotBountyIds = new Set();
     this._staleCheckDone = false;
+    this._healCheckDone = false;
   }
 
   // ==========================================================================
@@ -417,10 +474,21 @@ class SyncService {
       );
       for (const job of suspectsBelowCount) {
         try {
-          await contractService.getBounty(job.jobId);
-          // It exists — mark it as synced so we don't check again
+          // Pull the chain truth — and ACTUALLY USE IT. Previously this call
+          // discarded its result and only flipped syncedFromBlockchain, which
+          // was the root cause of bounty #45 being stuck without targetHunter
+          // / creatorAssessmentWindowSize / payment fields.
+          const chainBounty = await contractService.getBounty(job.jobId);
+          const changed = applyChainBountyFields(job, chainBounty);
           job.syncedFromBlockchain = true;
           job.lastSyncedAt = Math.floor(Date.now() / 1000);
+          if (changed) {
+            logger.info('[sync/stale-check] backfilled chain fields for pending job', {
+              jobId: job.jobId,
+              targetHunter: job.targetHunter,
+              creatorAssessmentWindowSize: job.creatorAssessmentWindowSize
+            });
+          }
         } catch (err) {
           const msg = (err.message || '').toLowerCase();
           if (msg.includes('bad bountyid') || msg.includes('badbountyid')) {
@@ -438,6 +506,57 @@ class SyncService {
         logger.info('[sync/stale-check] orphaned stale entries', { count: staleCount });
       }
       this._staleCheckDone = true;
+    }
+
+    // Phase D.6: One-shot heal sweep — backfill chain-authoritative fields for
+    // jobs that were marked syncedFromBlockchain in the past but are missing
+    // the windowed/target fields (because of an older bug where Phase D.5
+    // discarded the getBounty() result instead of copying it). Runs once per
+    // server startup, gated by _healCheckDone.
+    //
+    // Detection heuristic: a synced job missing creatorDeterminationPayment is
+    // a clear indicator the chain-fields backfill never ran. (Even non-windowed
+    // bounties get a "0.0" string from applyChainBountyFields once it runs, so
+    // missing-entirely is unambiguous.)
+    if (!this._healCheckDone) {
+      const healCandidates = storage.jobs.filter(j =>
+        (j.contractAddress || '').toLowerCase() === currentContract &&
+        j.syncedFromBlockchain === true &&
+        j.status !== 'ORPHANED' &&
+        typeof j.jobId === 'number' &&
+        j.jobId < bountyCount &&
+        j.creatorDeterminationPayment == null
+      );
+
+      let healed = 0;
+      for (const job of healCandidates) {
+        try {
+          const chainBounty = await contractService.getBounty(job.jobId);
+          const changed = applyChainBountyFields(job, chainBounty);
+          job.lastSyncedAt = Math.floor(Date.now() / 1000);
+          if (changed) {
+            healed++;
+            logger.info('[sync/heal] backfilled chain fields for previously-synced job', {
+              jobId: job.jobId,
+              targetHunter: job.targetHunter,
+              creatorAssessmentWindowSize: job.creatorAssessmentWindowSize,
+              creatorDeterminationPayment: job.creatorDeterminationPayment
+            });
+          }
+        } catch (err) {
+          logger.warn('[sync/heal] failed to backfill', {
+            jobId: job.jobId, error: err.message
+          });
+        }
+      }
+
+      if (healCandidates.length > 0) {
+        logger.info('[sync/heal] heal sweep complete', {
+          candidates: healCandidates.length,
+          healed
+        });
+      }
+      this._healCheckDone = true;
     }
 
     // Phase E: Persist
@@ -586,21 +705,12 @@ class SyncService {
           if (pendingJob.onChainId != null) delete pendingJob.onChainId;
           if (pendingJob.legacyJobId != null) delete pendingJob.legacyJobId;
 
-          // Pull chain-only fields (targetHunter + creator approval window) that the
-          // pending job may not have if the API caller didn't pass them.
+          // Pull chain-only fields (targetHunter + creator approval window) that
+          // the pending job may not have if the API caller didn't pass them.
           // The contract is the source of truth for these.
-          // Note: contractService.getBounty() already returns targetHunter as null when zero,
-          // and formats payment fields as ETH strings.
           try {
             const bounty = await contractService.getBounty(bountyId);
-            if (bounty.targetHunter) {
-              pendingJob.targetHunter = bounty.targetHunter;
-            }
-            if (bounty.creatorAssessmentWindowSize > 0) {
-              pendingJob.creatorAssessmentWindowSize = bounty.creatorAssessmentWindowSize;
-              pendingJob.creatorDeterminationPayment = bounty.creatorDeterminationPayment;
-              pendingJob.arbiterDeterminationPayment = bounty.arbiterDeterminationPayment;
-            }
+            applyChainBountyFields(pendingJob, bounty);
           } catch (err) {
             logger.warn('[event] Failed to pull chain-only fields for linked pending job', {
               bountyId, error: err.message
@@ -1382,5 +1492,6 @@ function getSyncService() {
 module.exports = {
   initializeSyncService,
   getSyncService,
-  SyncService
+  SyncService,
+  applyChainBountyFields
 };

@@ -192,6 +192,16 @@ function ClassCard({ classData, isSelected, onSelect }) {
     }
   };
 
+  // Eagerly load details on mount so stat values (Models / Max / Runs / Iter)
+  // render with real numbers on first paint, not after a hover. The fetches
+  // across all cards run in parallel and are cached in classMapService for
+  // 5 minutes, so revisits are free. loadDetails is idempotent and bails
+  // early for non-ACTIVE classes.
+  useEffect(() => {
+    loadDetails();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const getCardClasses = () => {
     const baseClass = 'class-card';
     const classes = [baseClass];

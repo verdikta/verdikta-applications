@@ -2229,6 +2229,92 @@ router.get('/:jobId', async (req, res) => {
       if (!job) throw e;
     }
 
+    // ============================================================
+    // Read-side invariant: heal impossible-state submissions inline
+    // ============================================================
+    // A windowed bounty's submission can NEVER legitimately be in
+    // 'Prepared' state on chain — the contract transitions it directly
+    // to PendingCreatorApproval (state 5). If we see local='Prepared'
+    // on a windowed bounty, the local record is stale (chain-read
+    // fallback fired during the original write). Heal it inline before
+    // serving the response so the client never sees the impossible
+    // state. This is the read-time backstop for the prevention fixes
+    // in POST /submissions/confirm and the SubmissionPrepared event
+    // handler. See bounty 46 / bounty 52 incidents.
+    //
+    // Cost: zero RPC calls in the common case (in-memory filter pass).
+    // Only when stuck records are detected do we hit the chain.
+    if (Number(job.creatorAssessmentWindowSize || 0) > 0 && Array.isArray(job.submissions)) {
+      const stuckSubs = job.submissions.filter(s =>
+        s.status === 'Prepared' || s.status === 'PREPARED'
+      );
+      if (stuckSubs.length > 0) {
+        try {
+          const cs = getContractService();
+          const contract = cs.contract;
+          const statusMap = {
+            0: 'Prepared',
+            1: 'PENDING_EVALUATION',
+            2: 'REJECTED',
+            3: 'APPROVED',
+            4: 'APPROVED',
+            5: 'PendingCreatorApproval',
+          };
+          let healedAny = false;
+          // Run reads in parallel — usually 1 stuck record, but be safe
+          const healResults = await Promise.allSettled(
+            stuckSubs.map(s => contract.getSubmission(Number(job.jobId), Number(s.submissionId)))
+          );
+          for (let i = 0; i < stuckSubs.length; i++) {
+            const result = healResults[i];
+            const sub = stuckSubs[i];
+            if (result.status !== 'fulfilled') {
+              logger.warn('[jobs/details] read-side heal: chain read failed', {
+                jobId, submissionId: sub.submissionId, error: result.reason?.message
+              });
+              continue;
+            }
+            const chainSub = result.value;
+            const chainStatus = statusMap[Number(chainSub.status)] || 'UNKNOWN';
+            if (chainStatus !== sub.status) {
+              sub.status = chainStatus;
+              sub.onChainStatus = chainStatus;
+              sub.creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
+              if (chainSub.hunterCid && !sub.hunterCid) {
+                sub.hunterCid = chainSub.hunterCid;
+              }
+              if (chainSub.linkMaxBudget != null) {
+                sub.linkMaxBudget = chainSub.linkMaxBudget.toString();
+              }
+              if (chainSub.submittedAt != null) {
+                sub.submittedAt = Number(chainSub.submittedAt) || sub.submittedAt;
+              }
+              healedAny = true;
+              logger.info('[jobs/details] read-side heal: updated submission from chain', {
+                jobId, submissionId: sub.submissionId, newStatus: chainStatus,
+                creatorWindowEnd: sub.creatorWindowEnd,
+              });
+            }
+          }
+          // Persist the heal so future reads don't need to re-check.
+          if (healedAny) {
+            try {
+              await jobStorage.updateJob(job.jobId, { submissions: job.submissions });
+            } catch (persistErr) {
+              logger.warn('[jobs/details] read-side heal: persist failed (in-memory still healed)', {
+                jobId, error: persistErr.message
+              });
+            }
+          }
+        } catch (healErr) {
+          // Non-fatal: serve whatever we have rather than blocking the response.
+          logger.warn('[jobs/details] read-side heal: outer error (serving stale)', {
+            jobId, error: healErr.message
+          });
+        }
+      }
+    }
+
     let rubricContent = null;
     let extractedJuryNodes = job.juryNodes || [];
 

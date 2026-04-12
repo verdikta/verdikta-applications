@@ -195,7 +195,8 @@ class SyncService {
     this.hotBountyIds = new Set();
     this._staleCheckDone = false;
     this._healCheckDone = false;
-    this._subHealCheckDone = false;
+    // Note: submission-level heal (Phase D.7) runs every sync cycle, not
+    // gated by a one-shot flag — see the periodic-heal block in _eventSync.
   }
 
   // ==========================================================================
@@ -560,17 +561,26 @@ class SyncService {
       this._healCheckDone = true;
     }
 
-    // Phase D.7: Submission-level one-shot heal — find submissions on
+    // Phase D.7: Submission-level continuous heal — find submissions on
     // windowed bounties whose local status is still 'Prepared', and
     // re-read chain state for them. A windowed bounty's submission can
     // never legitimately be in state 'Prepared' on chain — the contract
     // transitions it directly to PendingCreatorApproval. So if we see
     // local='Prepared' on a windowed bounty, the local record is stale
     // (the POST /submissions/confirm write landed before chain truth was
-    // read). See bounty 46 sub 0 incident.
+    // read, or the chain-read fallback in the event handler fired).
+    // See bounty 46 / bounty 52 incidents.
     //
-    // Runs once per server startup, gated by _subHealCheckDone.
-    if (!this._subHealCheckDone) {
+    // Runs every sync cycle, NOT just at startup. The candidate-detection
+    // pass is an in-memory filter — zero RPC cost when nothing is stuck,
+    // which is the steady state. Only when we find a stuck record do we
+    // make any chain calls (one getSubmission per stuck record).
+    //
+    // This is the "recovery" backstop for the prevention fixes in
+    // POST /submissions/confirm and the SubmissionPrepared event handler.
+    // If either of those falls back to 'Prepared' due to a transient RPC
+    // failure, the next sync cycle (~20 sec by default) will heal it.
+    {
       const subHealCandidates = [];
       for (const job of storage.jobs) {
         if ((job.contractAddress || '').toLowerCase() !== currentContract) continue;
@@ -588,56 +598,60 @@ class SyncService {
         }
       }
 
-      let subHealed = 0;
-      for (const { job, sub } of subHealCandidates) {
-        try {
-          const contract = contractService.contract;
-          const chainSub = await contract.getSubmission(job.jobId, sub.submissionId);
-          const statusMap = {
-            0: 'Prepared',
-            1: 'PENDING_EVALUATION',
-            2: 'REJECTED',
-            3: 'APPROVED',
-            4: 'APPROVED',
-            5: 'PendingCreatorApproval',
-          };
-          const statusIndex = Number(chainSub.status);
-          const chainStatus = statusMap[statusIndex] || 'UNKNOWN';
+      // Steady state: zero candidates → skip the loop entirely (no RPC).
+      if (subHealCandidates.length > 0) {
+        let subHealed = 0;
+        for (const { job, sub } of subHealCandidates) {
+          try {
+            const contract = contractService.contract;
+            const chainSub = await contract.getSubmission(job.jobId, sub.submissionId);
+            const statusMap = {
+              0: 'Prepared',
+              1: 'PENDING_EVALUATION',
+              2: 'REJECTED',
+              3: 'APPROVED',
+              4: 'APPROVED',
+              5: 'PendingCreatorApproval',
+            };
+            const statusIndex = Number(chainSub.status);
+            const chainStatus = statusMap[statusIndex] || 'UNKNOWN';
 
-          if (chainStatus !== sub.status) {
-            sub.status = chainStatus;
-            sub.onChainStatus = chainStatus;
-            sub.creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
-            if (chainSub.linkMaxBudget != null) {
-              sub.linkMaxBudget = chainSub.linkMaxBudget.toString();
+            if (chainStatus !== sub.status) {
+              sub.status = chainStatus;
+              sub.onChainStatus = chainStatus;
+              sub.creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
+              if (chainSub.hunterCid && !sub.hunterCid) {
+                sub.hunterCid = chainSub.hunterCid;
+              }
+              if (chainSub.linkMaxBudget != null) {
+                sub.linkMaxBudget = chainSub.linkMaxBudget.toString();
+              }
+              if (chainSub.submittedAt != null) {
+                sub.submittedAt = Number(chainSub.submittedAt) || sub.submittedAt;
+              }
+              subHealed++;
+              logger.info('[sync/sub-heal] updated submission from chain', {
+                bountyId: job.jobId,
+                submissionId: sub.submissionId,
+                newStatus: chainStatus,
+                creatorWindowEnd: sub.creatorWindowEnd,
+                hunterCid: sub.hunterCid,
+              });
             }
-            if (chainSub.submittedAt != null) {
-              sub.submittedAt = Number(chainSub.submittedAt) || sub.submittedAt;
-            }
-            subHealed++;
-            logger.info('[sync/sub-heal] updated submission from chain', {
+          } catch (err) {
+            logger.warn('[sync/sub-heal] failed to read submission from chain', {
               bountyId: job.jobId,
               submissionId: sub.submissionId,
-              newStatus: chainStatus,
-              creatorWindowEnd: sub.creatorWindowEnd,
+              error: err.message
             });
           }
-        } catch (err) {
-          logger.warn('[sync/sub-heal] failed to read submission from chain', {
-            bountyId: job.jobId,
-            submissionId: sub.submissionId,
-            error: err.message
-          });
         }
-      }
 
-      if (subHealCandidates.length > 0) {
         logger.info('[sync/sub-heal] submission heal sweep complete', {
           candidates: subHealCandidates.length,
           healed: subHealed,
         });
       }
-      this._subHealCheckDone = true;
     }
 
     // Phase E: Persist

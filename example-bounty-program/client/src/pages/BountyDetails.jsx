@@ -2528,6 +2528,34 @@ function PendingSubmissionsPanel({
                 </>
               )}
 
+              {/* Download work product — visible to the creator whenever a hunterCid is on file */}
+              {isCreator && s.hunterCid && (
+                <button
+                  onClick={async () => {
+                    try {
+                      const result = await apiService.getSubmissionDownload(
+                        job.jobId, s.submissionId, walletState.address
+                      );
+                      if (result?.downloadUrls?.primary) {
+                        window.open(result.downloadUrls.primary, '_blank');
+                      } else {
+                        // Fallback to direct IPFS gateway if backend didn't return a URL
+                        window.open(`https://gateway.pinata.cloud/ipfs/${s.hunterCid}`, '_blank');
+                      }
+                    } catch (err) {
+                      toast?.error?.(`Download failed: ${err.message}`);
+                      // Last-resort: open the raw IPFS gateway URL so the creator can still see the work
+                      window.open(`https://gateway.pinata.cloud/ipfs/${s.hunterCid}`, '_blank');
+                    }
+                  }}
+                  className="btn btn-secondary btn-sm"
+                  style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+                  title="Download the submitted work product"
+                >
+                  <FileText size={12} /> Download
+                </button>
+              )}
+
               {/* Creator approval window actions */}
               {isPendingCreatorApproval && windowOpen && isCreator && (
                 <button
@@ -3118,6 +3146,30 @@ function SubmissionCard({
                 <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.5rem' }}>
                   Creator approval: {job.creatorDeterminationPayment} ETH | Arbiter approval: {job.arbiterDeterminationPayment} ETH
                 </div>
+              )}
+              {isCreator && submission.hunterCid && (
+                <button
+                  onClick={async () => {
+                    try {
+                      const result = await apiService.getSubmissionDownload(
+                        jobId, submission.submissionId, walletState.address
+                      );
+                      if (result?.downloadUrls?.primary) {
+                        window.open(result.downloadUrls.primary, '_blank');
+                      } else {
+                        window.open(`https://gateway.pinata.cloud/ipfs/${submission.hunterCid}`, '_blank');
+                      }
+                    } catch (err) {
+                      console.error('Download failed:', err);
+                      window.open(`https://gateway.pinata.cloud/ipfs/${submission.hunterCid}`, '_blank');
+                    }
+                  }}
+                  className="btn btn-secondary"
+                  style={{ fontSize: '0.95rem', padding: '0.6rem 1rem', fontWeight: 'normal', width: '100%', marginBottom: '0.5rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }}
+                  title="Download the submitted work product before approving"
+                >
+                  <FileText size={14} /> Download Work Product (review before approving)
+                </button>
               )}
               {isCreator ? (
                 <button

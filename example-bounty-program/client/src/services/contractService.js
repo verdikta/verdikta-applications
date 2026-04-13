@@ -149,8 +149,19 @@ class ContractService {
    * Used for view calls that don't need signing
    */
   getReadOnlyProvider() {
-    if (!this._readOnlyProvider && window.ethereum) {
-      this._readOnlyProvider = new ethers.BrowserProvider(window.ethereum);
+    if (!this._readOnlyProvider) {
+      // Prefer a public JSON-RPC provider so reads work without MetaMask.
+      // BrowserProvider requires a connected/unlocked wallet — if MetaMask
+      // is locked or absent, eth_call hangs forever, which freezes the UI.
+      const rpcUrl = currentNetwork?.rpcUrl;
+      if (rpcUrl) {
+        this._readOnlyProvider = new ethers.JsonRpcProvider(rpcUrl, {
+          chainId: currentNetwork.chainId,
+          name: currentNetwork.name,
+        });
+      } else if (window.ethereum) {
+        this._readOnlyProvider = new ethers.BrowserProvider(window.ethereum);
+      }
     }
     return this._readOnlyProvider;
   }

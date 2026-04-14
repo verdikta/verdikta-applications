@@ -390,6 +390,24 @@ async uploadRubric(rubricJson, classId = 128) {
   },
 
   /**
+   * Get an inline preview of a text-like submission file (.md/.txt/.json/.csv).
+   * Like getSubmissionDownload, this marks the archive as retrieved and starts
+   * the 7-day countdown. Response includes { previewable, format, content, ... }.
+   * @param {string|number} jobId
+   * @param {string|number} submissionId
+   * @param {string} posterAddress - Creator's wallet address (required)
+   */
+  async getSubmissionPreview(jobId, submissionId, posterAddress) {
+    if (!posterAddress) {
+      throw new Error('posterAddress is required to preview submissions');
+    }
+    const response = await api.get(
+      `/api/poster/jobs/${jobId}/submissions/${submissionId}/preview?posterAddress=${posterAddress}`
+    );
+    return response.data;
+  },
+
+  /**
    * Get archive status for a submission (without triggering retrieval)
    * @param {string|number} jobId - The job ID
    * @param {string|number} submissionId - The submission ID

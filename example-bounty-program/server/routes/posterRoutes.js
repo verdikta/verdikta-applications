@@ -7,9 +7,24 @@
  */
 
 const express = require('express');
+const AdmZip = require('adm-zip');
+const path = require('path');
 const router = express.Router();
 const logger = require('../utils/logger');
 const jobStorage = require('../utils/jobStorage');
+
+// Max bytes we'll send back as inline preview content
+const PREVIEW_MAX_BYTES = 500 * 1024;
+// Max ZIP size we're willing to fetch server-side for preview
+const PREVIEW_ZIP_MAX_BYTES = 20 * 1024 * 1024;
+
+const PREVIEWABLE_EXTS = {
+  '.md': 'md',
+  '.markdown': 'md',
+  '.txt': 'txt',
+  '.json': 'json',
+  '.csv': 'csv',
+};
 
 // Lazy-load archival service to avoid circular dependency issues
 function getArchivalService() {
@@ -425,6 +440,211 @@ router.get('/jobs/:jobId/submissions/:submissionId/download', async (req, res) =
       success: false,
       error: 'Download failed',
       details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/poster/jobs/:jobId/submissions/:submissionId/preview
+ * Fetch the submission ZIP server-side, identify a text-like work product
+ * (.md/.txt/.json/.csv) and return its contents inline for in-browser review.
+ * Like /download, this marks the archive as retrieved (starts 7-day countdown).
+ */
+router.get('/jobs/:jobId/submissions/:submissionId/preview', async (req, res) => {
+  try {
+    const { jobId, submissionId } = req.params;
+    const { posterAddress } = req.query;
+
+    if (!posterAddress) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing posterAddress',
+        details: 'posterAddress query parameter is required to verify ownership'
+      });
+    }
+
+    const job = await jobStorage.getJob(jobId);
+    if (job.creator.toLowerCase() !== posterAddress.toLowerCase()) {
+      return res.status(403).json({ success: false, error: 'Unauthorized' });
+    }
+
+    const submission = job.submissions?.find(s => s.submissionId === parseInt(submissionId));
+    if (!submission) {
+      return res.status(404).json({ success: false, error: 'Submission not found' });
+    }
+    if (!submission.hunterCid) {
+      return res.status(404).json({ success: false, error: 'Submission has no archived content' });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    if (submission.archiveExpiresAt && now > submission.archiveExpiresAt) {
+      return res.status(410).json({ success: false, error: 'Archive expired' });
+    }
+
+    // Fetch ZIP from IPFS (Pinata primary, ipfs.io fallback)
+    const gatewayUrls = [
+      `${PINATA_GATEWAY}/ipfs/${submission.hunterCid}`,
+      `${IPFS_GATEWAY}/ipfs/${submission.hunterCid}`,
+    ];
+
+    let zipBuffer = null;
+    let fetchError = null;
+    for (const url of gatewayUrls) {
+      try {
+        const resp = await fetch(url, { signal: AbortSignal.timeout(20000) });
+        if (!resp.ok) {
+          fetchError = `gateway ${url} returned ${resp.status}`;
+          continue;
+        }
+        const contentLength = parseInt(resp.headers.get('content-length') || '0', 10);
+        if (contentLength && contentLength > PREVIEW_ZIP_MAX_BYTES) {
+          return res.status(413).json({
+            success: false,
+            error: 'Archive too large to preview',
+            details: `ZIP is ${contentLength} bytes; max ${PREVIEW_ZIP_MAX_BYTES}. Use download instead.`,
+          });
+        }
+        const arrayBuffer = await resp.arrayBuffer();
+        if (arrayBuffer.byteLength > PREVIEW_ZIP_MAX_BYTES) {
+          return res.status(413).json({
+            success: false,
+            error: 'Archive too large to preview',
+            details: 'Use download instead.',
+          });
+        }
+        zipBuffer = Buffer.from(arrayBuffer);
+        break;
+      } catch (e) {
+        fetchError = e.message;
+      }
+    }
+
+    if (!zipBuffer) {
+      return res.status(502).json({
+        success: false,
+        error: 'Failed to fetch archive from IPFS',
+        details: fetchError || 'unknown error',
+      });
+    }
+
+    // Unzip and inspect manifest
+    let zip;
+    try {
+      zip = new AdmZip(zipBuffer);
+    } catch (e) {
+      return res.status(422).json({
+        success: false,
+        error: 'Archive is not a valid ZIP',
+        details: e.message,
+      });
+    }
+
+    const manifestEntry = zip.getEntry('manifest.json');
+    let previewFilename = null;
+    let previewFormat = null;
+    let mimeType = null;
+
+    if (manifestEntry) {
+      try {
+        const manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
+        const additional = Array.isArray(manifest.additional) ? manifest.additional : [];
+        // Pick first text-like entry from manifest
+        for (const entry of additional) {
+          const ext = path.extname(entry.filename || '').toLowerCase();
+          if (PREVIEWABLE_EXTS[ext]) {
+            previewFilename = entry.filename;
+            previewFormat = PREVIEWABLE_EXTS[ext];
+            mimeType = entry.type || null;
+            break;
+          }
+        }
+      } catch (e) {
+        logger.warn('[poster/preview] manifest parse failed', { error: e.message });
+      }
+    }
+
+    // Fallback: scan zip for any previewable file under submission/
+    if (!previewFilename) {
+      for (const entry of zip.getEntries()) {
+        if (entry.isDirectory) continue;
+        const ext = path.extname(entry.entryName).toLowerCase();
+        if (PREVIEWABLE_EXTS[ext] && entry.entryName.startsWith('submission/')) {
+          previewFilename = entry.entryName;
+          previewFormat = PREVIEWABLE_EXTS[ext];
+          break;
+        }
+      }
+    }
+
+    // Mark as retrieved (starts 7-day countdown) — preview counts as retrieval
+    const archivalService = getArchivalService();
+    if (archivalService) {
+      try {
+        await archivalService.markAsRetrieved(jobId, submissionId, posterAddress);
+      } catch (e) {
+        logger.warn('[poster/preview] Could not mark as retrieved', { error: e.message });
+      }
+    }
+    const newExpiresAt = now + (7 * 24 * 60 * 60);
+
+    const commonResponse = {
+      success: true,
+      submission: {
+        submissionId: submission.submissionId,
+        hunter: submission.hunter,
+        hunterCid: submission.hunterCid,
+        archiveExpiresAt: newExpiresAt,
+        daysUntilExpiry: 7,
+      },
+    };
+
+    if (!previewFilename) {
+      return res.json({
+        ...commonResponse,
+        previewable: false,
+        reason: 'no-text-file',
+        details: 'No .md/.txt/.json/.csv work product found in this submission.',
+      });
+    }
+
+    const fileEntry = zip.getEntry(previewFilename);
+    if (!fileEntry) {
+      return res.json({
+        ...commonResponse,
+        previewable: false,
+        reason: 'not-found',
+        filename: previewFilename,
+      });
+    }
+
+    const raw = fileEntry.getData();
+    const truncated = raw.length > PREVIEW_MAX_BYTES;
+    const content = (truncated ? raw.slice(0, PREVIEW_MAX_BYTES) : raw).toString('utf8');
+
+    return res.json({
+      ...commonResponse,
+      previewable: true,
+      filename: previewFilename,
+      format: previewFormat,
+      mimeType,
+      byteLength: raw.length,
+      truncated,
+      content,
+    });
+
+  } catch (error) {
+    logger.error('[poster/preview] error', {
+      jobId: req.params.jobId,
+      submissionId: req.params.submissionId,
+      error: error.message,
+    });
+    if (error.message && error.message.includes('not found')) {
+      return res.status(404).json({ success: false, error: 'Not found', details: error.message });
+    }
+    return res.status(500).json({
+      success: false,
+      error: 'Preview failed',
+      details: error.message,
     });
   }
 });

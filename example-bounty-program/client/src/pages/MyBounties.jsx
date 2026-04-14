@@ -19,7 +19,10 @@ import {
   HelpCircle,
   Clock,
   Loader2,
+  Eye,
 } from 'lucide-react';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
@@ -119,6 +122,8 @@ function MyBounties({ walletState }) {
   const [downloadingSubmission, setDownloadingSubmission] = useState(null);
   const [downloadResult, setDownloadResult] = useState(null);
   const [approvingSubmission, setApprovingSubmission] = useState(null);
+  const [previewingSubmission, setPreviewingSubmission] = useState(null);
+  const [previewResult, setPreviewResult] = useState(null);
 
   const { isConnected, address } = walletState;
 
@@ -176,6 +181,23 @@ function MyBounties({ walletState }) {
       toast.error(`Download failed: ${err.message}`);
     } finally {
       setDownloadingSubmission(null);
+    }
+  };
+
+  // Handle inline preview click
+  const handlePreview = async (jobId, submissionId) => {
+    if (!address) return;
+    setPreviewingSubmission(`${jobId}-${submissionId}`);
+    try {
+      const result = await apiService.getSubmissionPreview(jobId, submissionId, address);
+      setPreviewResult({ jobId, submissionId, ...result });
+      // Refresh to show updated retrieval status (preview also triggers countdown)
+      loadBounties();
+    } catch (err) {
+      console.error('Preview failed:', err);
+      toast.error(`Preview failed: ${err.message}`);
+    } finally {
+      setPreviewingSubmission(null);
     }
   };
 
@@ -364,6 +386,89 @@ function MyBounties({ walletState }) {
         </div>
       )}
 
+      {/* Preview Modal */}
+      {previewResult && (
+        <div className="download-modal-overlay" onClick={() => setPreviewResult(null)}>
+          <div
+            className="download-modal preview-modal"
+            style={{ maxWidth: '900px' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3><Eye size={20} className="inline-icon" /> Submission Preview</h3>
+            {previewResult.previewable ? (
+              <>
+                <div className="preview-meta" style={{ fontSize: '0.85rem', marginBottom: '0.75rem' }}>
+                  <strong>File:</strong> <code>{previewResult.filename}</code>
+                  {' · '}
+                  <strong>Format:</strong> {previewResult.format}
+                  {previewResult.truncated && (
+                    <span style={{ color: 'var(--warning, #b45309)', marginLeft: '0.5rem' }}>
+                      (truncated — download for full content)
+                    </span>
+                  )}
+                </div>
+                <div
+                  className="preview-body"
+                  style={{
+                    background: 'var(--bg-alt, #fafafa)',
+                    border: '1px solid var(--border, #e5e7eb)',
+                    borderRadius: '6px',
+                    padding: '1rem',
+                    maxHeight: '60vh',
+                    overflow: 'auto',
+                  }}
+                >
+                  {previewResult.format === 'md' ? (
+                    <div
+                      className="markdown-body"
+                      dangerouslySetInnerHTML={{
+                        __html: DOMPurify.sanitize(marked.parse(previewResult.content || '')),
+                      }}
+                    />
+                  ) : (
+                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>
+                      {previewResult.content}
+                    </pre>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="alert alert-warning">
+                <p>
+                  <AlertTriangle size={16} className="inline-icon" />{' '}
+                  This submission has no text-based file to preview
+                  {previewResult.filename ? <> ({previewResult.filename})</> : null}.
+                  Use Download to get the ZIP.
+                </p>
+              </div>
+            )}
+
+            <div className="download-warning" style={{ marginTop: '1rem' }}>
+              <p>
+                <AlertTriangle size={16} className="inline-icon" />{' '}
+                <strong>Note:</strong> Previewing starts the 7-day archival countdown,
+                same as downloading.
+              </p>
+            </div>
+
+            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
+              <button
+                onClick={() => {
+                  handleDownload(previewResult.jobId, previewResult.submissionId);
+                  setPreviewResult(null);
+                }}
+                className="btn btn-primary"
+              >
+                <Download size={14} className="inline-icon" /> Download ZIP
+              </button>
+              <button onClick={() => setPreviewResult(null)} className="btn btn-secondary">
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Bounties List */}
       {bounties.length === 0 ? (
         <div className="empty-state">
@@ -486,18 +591,32 @@ function MyBounties({ walletState }) {
                                 </span>
                               );
                             })()}
-                            {/* Download button */}
+                            {/* Preview + Download buttons */}
                             {sub.hunterCid && !sub.isExpired ? (
-                              <button
-                                onClick={() => handleDownload(bounty.jobId, sub.submissionId)}
-                                disabled={downloadingSubmission === `${bounty.jobId}-${sub.submissionId}`}
-                                className="btn btn-sm btn-primary download-btn"
-                                title={sub.retrievedByPoster ? 'Download again (already retrieved)' : 'Download submission'}
-                              >
-                                {downloadingSubmission === `${bounty.jobId}-${sub.submissionId}`
-                                  ? <RefreshCw size={14} className="spin" />
-                                  : <Download size={14} />}
-                              </button>
+                              <>
+                                <button
+                                  onClick={() => handlePreview(bounty.jobId, sub.submissionId)}
+                                  disabled={previewingSubmission === `${bounty.jobId}-${sub.submissionId}`}
+                                  className="btn btn-sm btn-secondary"
+                                  title={sub.retrievedByPoster
+                                    ? 'Preview inline (already retrieved)'
+                                    : 'Preview inline — also starts the 7-day retrieval countdown'}
+                                >
+                                  {previewingSubmission === `${bounty.jobId}-${sub.submissionId}`
+                                    ? <RefreshCw size={14} className="spin" />
+                                    : <Eye size={14} />}
+                                </button>
+                                <button
+                                  onClick={() => handleDownload(bounty.jobId, sub.submissionId)}
+                                  disabled={downloadingSubmission === `${bounty.jobId}-${sub.submissionId}`}
+                                  className="btn btn-sm btn-primary download-btn"
+                                  title={sub.retrievedByPoster ? 'Download again (already retrieved)' : 'Download submission'}
+                                >
+                                  {downloadingSubmission === `${bounty.jobId}-${sub.submissionId}`
+                                    ? <RefreshCw size={14} className="spin" />
+                                    : <Download size={14} />}
+                                </button>
+                              </>
                             ) : sub.status !== 'PendingCreatorApproval' && (
                               sub.isExpired ? (
                                 <span className="expired-label">Expired</span>
@@ -531,6 +650,7 @@ function MyBounties({ walletState }) {
           <li><strong>7 days after download:</strong> Once you download a submission, it remains available for 7 more days.</li>
           <li><strong>Save locally:</strong> Always save downloaded files to your computer for permanent access.</li>
           <li><strong>ZIP format:</strong> Submissions are ZIP archives containing the work product and a manifest.</li>
+          <li><strong>Inline preview:</strong> Text-based work products (.md, .txt, .json, .csv) can be previewed in-browser. Previewing starts the 7-day retrieval countdown, same as downloading.</li>
         </ul>
       </div>
     </div>

@@ -576,25 +576,15 @@ router.get('/jobs/:jobId/submissions/:submissionId/preview', async (req, res) =>
       }
     }
 
-    // Mark as retrieved (starts 7-day countdown) — preview counts as retrieval
-    const archivalService = getArchivalService();
-    if (archivalService) {
-      try {
-        await archivalService.markAsRetrieved(jobId, submissionId, posterAddress);
-      } catch (e) {
-        logger.warn('[poster/preview] Could not mark as retrieved', { error: e.message });
-      }
-    }
-    const newExpiresAt = now + (7 * 24 * 60 * 60);
-
+    // Preview does NOT mark the archive as retrieved — IPFS content is public,
+    // so a GET here doesn't prove the creator has a local copy. Only /download
+    // starts the 7-day countdown.
     const commonResponse = {
       success: true,
       submission: {
         submissionId: submission.submissionId,
         hunter: submission.hunter,
         hunterCid: submission.hunterCid,
-        archiveExpiresAt: newExpiresAt,
-        daysUntilExpiry: 7,
       },
     };
 

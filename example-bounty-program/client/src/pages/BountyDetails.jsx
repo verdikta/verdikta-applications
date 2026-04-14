@@ -2323,11 +2323,6 @@ function BountyDetails({ walletState }) {
               </div>
             )}
 
-            <div style={{ marginTop: '1rem', fontSize: '0.85rem', color: '#92400e' }}>
-              <AlertTriangle size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} />
-              Previewing starts the 7-day archival countdown, same as downloading.
-            </div>
-
             <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
               <button
                 onClick={() => setPreviewResult(null)}
@@ -2680,7 +2675,7 @@ function PendingSubmissionsPanel({
                   disabled={isPreviewing}
                   className="btn btn-outline-secondary btn-sm"
                   style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
-                  title="Preview inline (text/markdown/json/csv) — starts the 7-day retrieval countdown"
+                  title="Preview inline (text/markdown/json/csv)"
                 >
                   {isPreviewing
                     ? <><Loader2 size={12} className="spin" /> Preview</>

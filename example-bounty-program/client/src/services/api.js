@@ -391,8 +391,9 @@ async uploadRubric(rubricJson, classId = 128) {
 
   /**
    * Get an inline preview of a text-like submission file (.md/.txt/.json/.csv).
-   * Like getSubmissionDownload, this marks the archive as retrieved and starts
-   * the 7-day countdown. Response includes { previewable, format, content, ... }.
+   * Unlike getSubmissionDownload, this does NOT mark the archive as retrieved —
+   * preview is a read against public IPFS content and does not start the
+   * 7-day countdown. Response includes { previewable, format, content, ... }.
    * @param {string|number} jobId
    * @param {string|number} submissionId
    * @param {string} posterAddress - Creator's wallet address (required)

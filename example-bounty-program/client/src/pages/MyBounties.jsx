@@ -191,8 +191,6 @@ function MyBounties({ walletState }) {
     try {
       const result = await apiService.getSubmissionPreview(jobId, submissionId, address);
       setPreviewResult({ jobId, submissionId, ...result });
-      // Refresh to show updated retrieval status (preview also triggers countdown)
-      loadBounties();
     } catch (err) {
       console.error('Preview failed:', err);
       toast.error(`Preview failed: ${err.message}`);
@@ -443,14 +441,6 @@ function MyBounties({ walletState }) {
               </div>
             )}
 
-            <div className="download-warning" style={{ marginTop: '1rem' }}>
-              <p>
-                <AlertTriangle size={16} className="inline-icon" />{' '}
-                <strong>Note:</strong> Previewing starts the 7-day archival countdown,
-                same as downloading.
-              </p>
-            </div>
-
             <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
               <button
                 onClick={() => {
@@ -598,9 +588,7 @@ function MyBounties({ walletState }) {
                                   onClick={() => handlePreview(bounty.jobId, sub.submissionId)}
                                   disabled={previewingSubmission === `${bounty.jobId}-${sub.submissionId}`}
                                   className="btn btn-sm btn-secondary"
-                                  title={sub.retrievedByPoster
-                                    ? 'Preview inline (already retrieved)'
-                                    : 'Preview inline — also starts the 7-day retrieval countdown'}
+                                  title="Preview inline (text/markdown/json/csv)"
                                 >
                                   {previewingSubmission === `${bounty.jobId}-${sub.submissionId}`
                                     ? <RefreshCw size={14} className="spin" />
@@ -650,7 +638,7 @@ function MyBounties({ walletState }) {
           <li><strong>7 days after download:</strong> Once you download a submission, it remains available for 7 more days.</li>
           <li><strong>Save locally:</strong> Always save downloaded files to your computer for permanent access.</li>
           <li><strong>ZIP format:</strong> Submissions are ZIP archives containing the work product and a manifest.</li>
-          <li><strong>Inline preview:</strong> Text-based work products (.md, .txt, .json, .csv) can be previewed in-browser. Previewing starts the 7-day retrieval countdown, same as downloading.</li>
+          <li><strong>Inline preview:</strong> Text-based work products (.md, .txt, .json, .csv) can be previewed in-browser without starting the 7-day retrieval countdown — only Download does that.</li>
         </ul>
       </div>
     </div>

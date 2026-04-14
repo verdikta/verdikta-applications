@@ -17,6 +17,25 @@ const jobStorage = require('../utils/jobStorage');
 const PREVIEW_MAX_BYTES = 500 * 1024;
 // Max ZIP size we're willing to fetch server-side for preview
 const PREVIEW_ZIP_MAX_BYTES = 20 * 1024 * 1024;
+// Max uncompressed size of any single entry we'll decompress (zip-bomb guard).
+// Must be checked BEFORE calling entry.getData(), which decompresses fully
+// into memory regardless of our downstream slicing.
+const PREVIEW_ENTRY_MAX_BYTES = 5 * 1024 * 1024;
+const MANIFEST_MAX_BYTES = 256 * 1024;
+
+// DEFLATE's theoretical max expansion ratio is ~1032x. Adding headroom for
+// other rarer compression methods, we use 1100. If an entry's compressedSize
+// times this ratio exceeds our limit, refuse — the declared `size` field is
+// attacker-controlled and cannot be trusted, but `compressedSize` is the
+// actual bytes on disk and is bounded by the zip we already fetched.
+const MAX_COMPRESSION_RATIO = 1100;
+function entryBombs(entry, uncompressedLimit) {
+  const declared = entry?.header?.size ?? 0;
+  const compressed = entry?.header?.compressedSize ?? 0;
+  if (declared > uncompressedLimit) return true;
+  if (compressed * MAX_COMPRESSION_RATIO > uncompressedLimit) return true;
+  return false;
+}
 
 const PREVIEWABLE_EXTS = {
   '.md': 'md',
@@ -546,6 +565,14 @@ router.get('/jobs/:jobId/submissions/:submissionId/preview', async (req, res) =>
 
     if (manifestEntry) {
       try {
+        if (entryBombs(manifestEntry, MANIFEST_MAX_BYTES)) {
+          logger.warn('[poster/preview] manifest too large, skipping', {
+            declared: manifestEntry.header?.size,
+            compressed: manifestEntry.header?.compressedSize,
+            limit: MANIFEST_MAX_BYTES,
+          });
+          throw new Error('manifest exceeds size limit');
+        }
         const manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
         const additional = Array.isArray(manifest.additional) ? manifest.additional : [];
         // Pick first text-like entry from manifest
@@ -604,6 +631,21 @@ router.get('/jobs/:jobId/submissions/:submissionId/preview', async (req, res) =>
         previewable: false,
         reason: 'not-found',
         filename: previewFilename,
+      });
+    }
+
+    // Zip-bomb guard: refuse to decompress anything that could exceed our
+    // per-entry limit, based on both declared and compressed size (see
+    // entryBombs for rationale).
+    if (entryBombs(fileEntry, PREVIEW_ENTRY_MAX_BYTES)) {
+      return res.json({
+        ...commonResponse,
+        previewable: false,
+        reason: 'too-large',
+        filename: previewFilename,
+        byteLength: fileEntry.header?.size ?? null,
+        compressedBytes: fileEntry.header?.compressedSize ?? null,
+        details: `File exceeds ${PREVIEW_ENTRY_MAX_BYTES} byte preview limit. Use download instead.`,
       });
     }
 

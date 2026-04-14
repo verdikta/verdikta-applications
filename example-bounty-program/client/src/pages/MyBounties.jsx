@@ -432,11 +432,28 @@ function MyBounties({ walletState }) {
               </>
             ) : (
               <div className="alert alert-warning">
-                <p>
+                <p style={{ margin: 0 }}>
                   <AlertTriangle size={16} className="inline-icon" />{' '}
-                  This submission has no text-based file to preview
-                  {previewResult.filename ? <> ({previewResult.filename})</> : null}.
-                  Use Download to get the ZIP.
+                  {previewResult.reason === 'too-large' ? (
+                    <>
+                      <strong>File too large for inline preview.</strong>
+                      {previewResult.filename ? <> (<code>{previewResult.filename}</code>
+                      {previewResult.byteLength ? <> — {Math.round(previewResult.byteLength / 1024)} KB</> : null}
+                      )</> : null}{' '}
+                      Use <strong>Download ZIP</strong> below to get the full archive.
+                    </>
+                  ) : previewResult.reason === 'not-found' ? (
+                    <>
+                      <strong>The expected file wasn't found in the archive.</strong>{' '}
+                      Use <strong>Download ZIP</strong> below to inspect it directly.
+                    </>
+                  ) : (
+                    <>
+                      <strong>Nothing to preview inline.</strong>{' '}
+                      This submission doesn't contain a text-based file (.md, .txt, .json, .csv).{' '}
+                      Use <strong>Download ZIP</strong> below to get the work product.
+                    </>
+                  )}
                 </p>
               </div>
             )}
@@ -447,7 +464,7 @@ function MyBounties({ walletState }) {
                   handleDownload(previewResult.jobId, previewResult.submissionId);
                   setPreviewResult(null);
                 }}
-                className="btn btn-primary"
+                className={previewResult.previewable ? 'btn btn-secondary' : 'btn btn-primary'}
               >
                 <Download size={14} className="inline-icon" /> Download ZIP
               </button>

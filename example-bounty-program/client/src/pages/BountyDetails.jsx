@@ -2317,13 +2317,52 @@ function BountyDetails({ walletState }) {
             ) : (
               <div style={{ background: '#fef3c7', border: '1px solid #f59e0b', borderRadius: 6, padding: '0.75rem 1rem', fontSize: '0.9rem' }}>
                 <AlertTriangle size={16} style={{ verticalAlign: 'middle', marginRight: 4 }} />
-                No text-based file found to preview
-                {previewResult.filename ? <> ({previewResult.filename})</> : null}.
-                Use Download to get the ZIP.
+                {previewResult.reason === 'too-large' ? (
+                  <>
+                    <strong>File too large for inline preview.</strong>
+                    {previewResult.filename ? <> (<code>{previewResult.filename}</code>
+                    {previewResult.byteLength ? <> — {Math.round(previewResult.byteLength / 1024)} KB</> : null}
+                    )</> : null}{' '}
+                    Use <strong>Download ZIP</strong> below to get the full archive.
+                  </>
+                ) : previewResult.reason === 'not-found' ? (
+                  <>
+                    <strong>The expected file wasn't found in the archive.</strong>{' '}
+                    Use <strong>Download ZIP</strong> below to inspect it directly.
+                  </>
+                ) : (
+                  <>
+                    <strong>Nothing to preview inline.</strong>{' '}
+                    This submission doesn't contain a text-based file (.md, .txt, .json, .csv).{' '}
+                    Use <strong>Download ZIP</strong> below to get the work product.
+                  </>
+                )}
               </div>
             )}
 
             <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
+              <button
+                onClick={async () => {
+                  try {
+                    const result = await apiService.getSubmissionDownload(
+                      bountyId, previewResult.submissionId, walletState.address
+                    );
+                    const url = result?.downloadUrls?.primary
+                      || `https://gateway.pinata.cloud/ipfs/${previewResult.submission?.hunterCid}`;
+                    window.open(url, '_blank');
+                    setPreviewResult(null);
+                  } catch (err) {
+                    toast?.error?.(`Download failed: ${err.message}`);
+                    if (previewResult.submission?.hunterCid) {
+                      window.open(`https://gateway.pinata.cloud/ipfs/${previewResult.submission.hunterCid}`, '_blank');
+                    }
+                  }
+                }}
+                className={previewResult.previewable ? 'btn btn-secondary' : 'btn btn-primary'}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+              >
+                <Download size={14} /> Download ZIP
+              </button>
               <button
                 onClick={() => setPreviewResult(null)}
                 className="btn btn-secondary"

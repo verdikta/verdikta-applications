@@ -16,7 +16,11 @@ import {
   Ban,
   Trash2,
   Play,
+  Eye,
+  Download,
 } from 'lucide-react';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
@@ -135,6 +139,8 @@ function BountyDetails({ walletState }) {
   const [refreshingSubmissions, setRefreshingSubmissions] = useState(new Set());
   const [startingSubmissions, setStartingSubmissions] = useState(new Set());
   const [approvingSubmissions, setApprovingSubmissions] = useState(new Set());
+  const [previewingSubmissions, setPreviewingSubmissions] = useState(new Set());
+  const [previewResult, setPreviewResult] = useState(null);
 
   // Polling state for submissions waiting for status update
   // Stores: { attempts, maxAttempts }
@@ -1294,6 +1300,31 @@ function BountyDetails({ walletState }) {
     }
   };
 
+  const handlePreviewSubmission = async (submissionId) => {
+    if (!walletState.isConnected || !walletState.address) {
+      toast.warning('Please connect your wallet first');
+      return;
+    }
+    setPreviewingSubmissions(prev => new Set(prev).add(submissionId));
+    try {
+      const result = await apiService.getSubmissionPreview(
+        bountyId,
+        submissionId,
+        walletState.address
+      );
+      setPreviewResult({ submissionId, ...result });
+    } catch (err) {
+      console.error('Preview failed:', err);
+      toast.error(`Preview failed: ${err.message}`);
+    } finally {
+      setPreviewingSubmissions(prev => {
+        const next = new Set(prev);
+        next.delete(submissionId);
+        return next;
+      });
+    }
+  };
+
   const handleCreatorApprove = async (submissionId) => {
     if (!walletState.isConnected) {
       toast.warning('Please connect your wallet first');
@@ -1999,6 +2030,39 @@ function BountyDetails({ walletState }) {
         </section>
       )}
 
+      {/* Windowed Bounty Notice */}
+      {job?.creatorAssessmentWindowSize > 0 && (
+        <section
+          className="windowed-notice"
+          style={{
+            backgroundColor: '#eff6ff',
+            border: '1px solid #3b82f6',
+            borderRadius: 8,
+            padding: '0.75rem 1rem',
+            marginBottom: '1rem',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
+            <Clock size={18} style={{ color: '#1d4ed8', marginTop: 2, flexShrink: 0 }} />
+            <div style={{ flex: 1, fontSize: '0.9rem', color: '#1e3a8a' }}>
+              <p style={{ margin: 0, fontWeight: 600 }}>Windowed Bounty — Creator Approval Flow</p>
+              <p style={{ margin: '0.35rem 0 0 0' }}>
+                After a submission is made, the creator has{' '}
+                <strong>
+                  {job.creatorAssessmentWindowSize >= 3600
+                    ? `${(job.creatorAssessmentWindowSize / 3600).toFixed(1)} hours`
+                    : `${Math.round(job.creatorAssessmentWindowSize / 60)} minutes`}
+                </strong>{' '}
+                to approve directly. If the creator approves within the window, the hunter receives{' '}
+                <strong>{job.creatorDeterminationPayment ?? '?'} ETH</strong>. If the window expires without
+                creator action, AI arbiters evaluate and a successful submission is paid{' '}
+                <strong>{job.arbiterDeterminationPayment ?? '?'} ETH</strong>.
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Description Section */}
       {job?.description && (
         <section className="description-section">
@@ -2169,6 +2233,8 @@ function BountyDetails({ walletState }) {
                 onStart={handleStartSubmission}
                 onRefresh={handleRefreshSubmission}
                 onCreatorApprove={handleCreatorApprove}
+                onPreview={handlePreviewSubmission}
+                isPreviewing={previewingSubmissions.has(submission.submissionId)}
                 isFailing={failingSubmissions.has(submission.submissionId)}
                 isFinalizing={finalizingSubmissions.has(submission.submissionId)}
                 isCanceling={cancelingSubmissions.has(submission.submissionId)}
@@ -2194,6 +2260,85 @@ function BountyDetails({ walletState }) {
           </div>
         )}
       </section>
+
+      {/* Preview Modal */}
+      {previewResult && (
+        <div
+          onClick={() => setPreviewResult(null)}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.6)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+            padding: '1rem',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#fff', borderRadius: 12, padding: '2rem',
+              width: '100%', maxWidth: 900, maxHeight: '90vh', overflowY: 'auto',
+            }}
+          >
+            <h3 style={{ marginTop: 0 }}>
+              <Eye size={20} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+              Submission #{previewResult.submissionId} Preview
+            </h3>
+            {previewResult.previewable ? (
+              <>
+                <div style={{ fontSize: '0.85rem', marginBottom: '0.75rem' }}>
+                  <strong>File:</strong> <code>{previewResult.filename}</code>{' · '}
+                  <strong>Format:</strong> {previewResult.format}
+                  {previewResult.truncated && (
+                    <span style={{ color: '#b45309', marginLeft: '0.5rem' }}>
+                      (truncated — download for full content)
+                    </span>
+                  )}
+                </div>
+                <div
+                  style={{
+                    background: '#fafafa', border: '1px solid #e5e7eb',
+                    borderRadius: 6, padding: '1rem', maxHeight: '60vh', overflow: 'auto',
+                  }}
+                >
+                  {previewResult.format === 'md' ? (
+                    <div
+                      className="markdown-body"
+                      dangerouslySetInnerHTML={{
+                        __html: DOMPurify.sanitize(marked.parse(previewResult.content || '')),
+                      }}
+                    />
+                  ) : (
+                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>
+                      {previewResult.content}
+                    </pre>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div style={{ background: '#fef3c7', border: '1px solid #f59e0b', borderRadius: 6, padding: '0.75rem 1rem', fontSize: '0.9rem' }}>
+                <AlertTriangle size={16} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                No text-based file found to preview
+                {previewResult.filename ? <> ({previewResult.filename})</> : null}.
+                Use Download to get the ZIP.
+              </div>
+            )}
+
+            <div style={{ marginTop: '1rem', fontSize: '0.85rem', color: '#92400e' }}>
+              <AlertTriangle size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+              Previewing starts the 7-day archival countdown, same as downloading.
+            </div>
+
+            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
+              <button
+                onClick={() => setPreviewResult(null)}
+                className="btn btn-secondary"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2528,6 +2673,21 @@ function PendingSubmissionsPanel({
                 </>
               )}
 
+              {/* Preview inline — text-based work products */}
+              {isCreator && s.hunterCid && onPreview && (
+                <button
+                  onClick={() => onPreview(s.submissionId)}
+                  disabled={isPreviewing}
+                  className="btn btn-outline-secondary btn-sm"
+                  style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+                  title="Preview inline (text/markdown/json/csv) — starts the 7-day retrieval countdown"
+                >
+                  {isPreviewing
+                    ? <><Loader2 size={12} className="spin" /> Preview</>
+                    : <><Eye size={12} /> Preview</>}
+                </button>
+              )}
+
               {/* Download work product — visible to the creator whenever a hunterCid is on file */}
               {isCreator && s.hunterCid && (
                 <button
@@ -2781,6 +2941,8 @@ function SubmissionCard({
   onStart,
   onRefresh,
   onCreatorApprove,
+  onPreview,
+  isPreviewing,
   isFailing,
   isFinalizing,
   isCanceling,

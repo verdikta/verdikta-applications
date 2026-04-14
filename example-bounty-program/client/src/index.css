@@ -27,3 +27,19 @@ code {
 #root {
   min-height: 100vh;
 }
+
+.md-image-placeholder {
+  display: inline-block;
+  background: #f3f4f6;
+  border: 1px dashed #9ca3af;
+  color: #374151;
+  font-size: 0.85em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin: 2px 0;
+  word-break: break-all;
+}
+.md-image-placeholder a {
+  color: #1d4ed8;
+  text-decoration: underline;
+}

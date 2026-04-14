@@ -21,8 +21,7 @@ import {
   Loader2,
   Eye,
 } from 'lucide-react';
-import { marked } from 'marked';
-import DOMPurify from 'dompurify';
+import { renderMarkdownSafe } from '../utils/markdownPreview';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
@@ -420,7 +419,7 @@ function MyBounties({ walletState }) {
                     <div
                       className="markdown-body"
                       dangerouslySetInnerHTML={{
-                        __html: DOMPurify.sanitize(marked.parse(previewResult.content || '')),
+                        __html: renderMarkdownSafe(previewResult.content || ''),
                       }}
                     />
                   ) : (

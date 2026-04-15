@@ -1,0 +1,65 @@
+.coming-soon {
+  text-align: center;
+  padding: 4rem 1rem;
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.coming-soon-icon {
+  display: inline-flex;
+  padding: 1.25rem;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--primary), var(--accent));
+  color: white;
+  margin-bottom: 1.5rem;
+}
+
+.coming-soon h1 {
+  font-size: var(--text-4xl);
+  margin-bottom: 0.5rem;
+  background: linear-gradient(135deg, var(--primary), var(--accent));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.coming-soon .tagline {
+  color: var(--primary);
+  font-weight: var(--font-medium);
+  margin-bottom: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.inline-icon {
+  vertical-align: middle;
+}
+
+.coming-soon .description {
+  color: var(--text-secondary);
+  font-size: var(--text-lg);
+  line-height: var(--leading-relaxed);
+  margin-bottom: 2rem;
+}
+
+.status-card {
+  display: inline-block;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  font-size: var(--text-sm);
+}
+
+.status-card code {
+  color: var(--text-secondary);
+}
+
+.status-card.status-error {
+  border-color: var(--danger);
+  background: var(--danger-light);
+}
+.status-card.status-error code {
+  color: var(--danger-dark);
+}

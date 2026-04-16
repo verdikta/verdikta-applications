@@ -504,6 +504,46 @@ class SyncService {
         }
       }
 
+      // Cross-check: find synced jobs that share an evaluationCid with another
+      // job on the same contract. This is the hallmark of a phantom entry created
+      // by a coincidental ID collision during duplicate creation attempts. For
+      // each duplicate pair, verify which one matches chain truth and orphan the
+      // other. Only checks duplicates to avoid excessive RPC calls.
+      const cidCount = new Map();
+      for (const j of storage.jobs) {
+        if ((j.contractAddress || '').toLowerCase() !== currentContract) continue;
+        if (j.status === 'ORPHANED' || !j.evaluationCid) continue;
+        const key = j.evaluationCid;
+        if (!cidCount.has(key)) cidCount.set(key, []);
+        cidCount.get(key).push(j);
+      }
+      for (const [cid, jobs] of cidCount) {
+        if (jobs.length < 2) continue;
+        // Multiple local jobs share this evaluationCid — verify each against chain
+        for (const job of jobs) {
+          if (!job.syncedFromBlockchain || typeof job.jobId !== 'number') continue;
+          if (job.jobId >= bountyCount) continue;
+          try {
+            const chainBounty = await contractService.getBounty(job.jobId);
+            if (chainBounty.evaluationCid && job.evaluationCid !== chainBounty.evaluationCid) {
+              logger.warn('[sync/stale-check] evaluationCid mismatch in duplicate set — orphaning phantom', {
+                jobId: job.jobId,
+                localCid: job.evaluationCid,
+                chainCid: chainBounty.evaluationCid,
+                localTitle: job.title
+              });
+              job.status = 'ORPHANED';
+              job.orphanReason = 'evaluationCid_mismatch';
+              staleCount++;
+            }
+          } catch (err) {
+            logger.warn('[sync/stale-check] CID cross-check failed for job', {
+              jobId: job.jobId, error: err.message
+            });
+          }
+        }
+      }
+
       if (staleCount > 0) {
         logger.info('[sync/stale-check] orphaned stale entries', { count: staleCount });
       }
@@ -754,28 +794,44 @@ class SyncService {
     switch (name) {
       case 'BountyCreated': {
         const bountyId = Number(args.bountyId);
+        const evaluationCid = args.evaluationCid;
+        const creator = args.creator;
+        const deadline = Number(args.submissionDeadline);
+
         const existing = storage.jobs.find(j =>
           j.jobId === bountyId &&
           (j.contractAddress || '').toLowerCase() === currentContract
         );
 
         if (existing) {
-          // Already tracked — make sure it's synced
-          if (!existing.syncedFromBlockchain) {
-            existing.syncedFromBlockchain = true;
-            existing.contractAddress = currentContract;
-            existing.lastSyncedAt = Math.floor(Date.now() / 1000);
+          // Guard against coincidental ID collisions: if the local job hasn't
+          // been synced yet and its evaluationCid differs from the on-chain
+          // event, this is a different bounty that just happens to share the
+          // same local ID (nextId vs on-chain bountyId). Don't link — fall
+          // through to the pending-job search or create a new entry.
+          if (!existing.syncedFromBlockchain &&
+              evaluationCid && existing.evaluationCid &&
+              existing.evaluationCid !== evaluationCid) {
+            logger.warn('[event] BountyCreated: jobId collision with unsynced job (evaluationCid mismatch)', {
+              bountyId,
+              localCid: existing.evaluationCid,
+              chainCid: evaluationCid,
+              localTitle: existing.title
+            });
+            // Fall through — do NOT break; let the pending-job search handle it
+          } else {
+            // Already tracked — make sure it's synced
+            if (!existing.syncedFromBlockchain) {
+              existing.syncedFromBlockchain = true;
+              existing.contractAddress = currentContract;
+              existing.lastSyncedAt = Math.floor(Date.now() / 1000);
+            }
+            // Backfill creation tx info if missing (covers sync-discovered bounties)
+            if (!existing.txHash && transactionHash) existing.txHash = transactionHash;
+            if (!existing.blockNumber && blockNumber) existing.blockNumber = blockNumber;
+            break;
           }
-          // Backfill creation tx info if missing (covers sync-discovered bounties)
-          if (!existing.txHash && transactionHash) existing.txHash = transactionHash;
-          if (!existing.blockNumber && blockNumber) existing.blockNumber = blockNumber;
-          break;
         }
-
-        // Check for pending jobs that match by evaluationCid or creator+deadline
-        const evaluationCid = args.evaluationCid;
-        const creator = args.creator;
-        const deadline = Number(args.submissionDeadline);
 
         const pendingJob = storage.jobs.find(j => {
           if (j.syncedFromBlockchain) return false;

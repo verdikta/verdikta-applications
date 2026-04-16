@@ -448,18 +448,23 @@ class SyncService {
     // entries from PATCH /bountyId calls that pointed at the wrong contract.
     // Only runs once per startup (first sync cycle) to avoid repeated RPC costs.
     if (!this._staleCheckDone) {
+      // Any job (synced or not) with jobId >= bountyCount cannot exist on-chain.
+      // Previously this only caught unsynced jobs, but a phantom can acquire
+      // syncedFromBlockchain=true via the PATCH /bountyId endpoint's chain
+      // backfill or a coincidental ID collision in the BountyCreated handler.
       const suspects = storage.jobs.filter(j =>
         (j.contractAddress || '').toLowerCase() === currentContract &&
         j.onChain === true &&
-        !j.syncedFromBlockchain &&
+        j.status !== 'ORPHANED' &&
         typeof j.jobId === 'number' &&
         j.jobId >= bountyCount // Can't exist if jobId >= bountyCount
       );
 
       let staleCount = 0;
       for (const job of suspects) {
-        logger.info('[sync/stale-check] job claims onChain but jobId >= bountyCount, marking orphaned', {
-          jobId: job.jobId, bountyCount, contractAddress: job.contractAddress
+        logger.info('[sync/stale-check] job has jobId >= bountyCount, marking orphaned', {
+          jobId: job.jobId, bountyCount, syncedFromBlockchain: job.syncedFromBlockchain,
+          contractAddress: job.contractAddress
         });
         job.status = 'ORPHANED';
         job.orphanReason = 'jobId_exceeds_bountyCount';

@@ -734,7 +734,7 @@ function Analytics() {
                   <div className="contract-addresses">
                     {data.system.verdikta.aggregatorAddress && (
                       <div className="contract-row">
-                        <span className="contract-label">Aggregator:</span>
+                        <span className="contract-label">Verdikta Aggregator:</span>
                         <code className="address">{data.system.verdikta.aggregatorAddress}</code>
                       </div>
                     )}

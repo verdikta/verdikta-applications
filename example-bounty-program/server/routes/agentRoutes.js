@@ -295,10 +295,10 @@ router.get('/api/docs', (req, res) => {
           'hunterCid: IPFS CID of pre-uploaded work (required if no files)',
           'files: multipart file uploads (required if no hunterCid)',
           'addendum: optional text appended to evaluation query',
-          'alpha: reputation weight (0-1000, see ReputationKeeper), default 500',
+          'alpha: timeliness-vs-quality blend (0-1000), default 500. weighted = ((1000-alpha)*quality + alpha*timeliness)/1000; 0 = pure quality, 1000 = pure timeliness, 500 = equal.',
           'maxOracleFee: max LINK per oracle in wei, default "50000000000000000" (0.05 LINK)',
           'estimatedBaseCost: default "30000000000000000" (0.03 LINK)',
-          'maxFeeBasedScaling: default "20000000000000000" (0.02 LINK)'
+          'maxFeeBasedScaling: plain integer x-factor, default "3". Caps fee-boost multiplier for oracles priced below maxOracleFee; contract scales by 1e18 internally, so pass the x-factor itself. Must be >= 1.'
         ],
         returns: 'Step 1 calldata (ready to sign) + templates for steps 2-4'
       },

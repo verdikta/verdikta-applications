@@ -745,16 +745,22 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
   }
 
   // Step 1: Prepare submission on-chain (only do this ONCE, not on retry)
+  //
+  // alpha (0-1000): timeliness-vs-quality blend in ReputationKeeper.getSelectionScore:
+  //   weighted = ((1000 - alpha) * quality + alpha * timeliness) / 1000.
+  //   0 = pure quality; 1000 = pure timeliness; 500 = equal blend.
+  // maxFeeBasedScaling: plain integer x-factor (contract scales by 1e18 internally).
+  //   Caps the fee-boost multiplier for oracles priced below maxOracleFee. Must be >= 1.
   console.log('    Preparing submission on-chain...');
   const prepareTx = await contract.prepareSubmission(
     bountyId,
     evaluationCid,
     hunterCid,
     '',                        // addendum
-    500,                       // alpha (reputation weight, 0-1000, see ReputationKeeper)
+    500,                       // alpha (equal quality/timeliness blend)
     '3000000000000000',        // maxOracleFee (0.003 LINK)
     '1000000000000000',        // estimatedBaseCost (0.001 LINK)
-    '3'                        // maxFeeBasedScaling
+    '3'                        // maxFeeBasedScaling (3x cap on fee-based boost)
   );
 
   const prepareReceipt = await prepareTx.wait();

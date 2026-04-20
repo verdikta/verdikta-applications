@@ -399,10 +399,10 @@ function SubmitWork({ walletState }) {
         evaluationCid,       // Evaluation package CID (must match bounty's stored evaluationCid)
         hunterCid,           // Hunter's work product CID
         submissionNarrative || "",  // addendum
-        500,                  // alpha (reputation weight, 0-1000)
+        500,                  // alpha: timeliness-vs-quality blend (0-1000). 500 = equal; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
         "3000000000000000",   // maxOracleFee (0.003 LINK) - more than the currently charged 0.002 LINK
         "1000000000000000",   // estimatedBaseCost (Cheapest Arbiter, 0.001 LINK)
-        "3"                   // maxFeeBasedScaling (Relative weight, min vs. max, 3)
+        "3"                   // maxFeeBasedScaling: x-factor cap on fee-based boost (contract scales by 1e18 internally; must be >= 1)
       );
 
       console.log('✅ Submission prepared:', {

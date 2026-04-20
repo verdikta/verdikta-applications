@@ -911,6 +911,13 @@ router.post('/:jobId/close', async (req, res) => {
 
 // POST /api/jobs/:jobId/submit/prepare
 // Encodes prepareSubmission() calldata — deploys an EvaluationWallet
+//
+// alpha (0-1000): timeliness-vs-quality blend in ReputationKeeper.getSelectionScore:
+//   weighted = ((1000 - alpha) * qualityScore + alpha * timelinessScore) / 1000
+//   0 = pure quality; 1000 = pure timeliness; 500 = equal blend.
+// maxFeeBasedScaling: plain integer N (the x-factor), not an 18-decimal value.
+//   ReputationKeeper caps the fee-boost multiplier at N; internally it multiplies
+//   by 1e18 itself. Must be >= 1. Default 3 = at most 3x boost for cheap oracles.
 router.post('/:jobId/submit/prepare', async (req, res) => {
   const { jobId } = req.params;
 
@@ -970,7 +977,9 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
       alpha,
       ethers.parseEther(maxOracleFee),
       ethers.parseEther(estimatedBaseCost),
-      ethers.parseEther(maxFeeBasedScaling)
+      // maxFeeBasedScaling is a raw x-factor — do NOT parseEther it.
+      // The contract multiplies by 1e18 internally.
+      maxFeeBasedScaling
     ]);
 
     logger.info('[submit/prepare] encoded', { jobId, onChainBountyId, hunter });
@@ -3188,10 +3197,15 @@ const bundleLinkIface = new ethers.Interface(BUNDLE_LINK_ABI);
  *   hunterCid       - IPFS CID of already-uploaded work (optional if files provided)
  *   files           - multipart file uploads (optional if hunterCid provided)
  *   addendum        - optional text appended to evaluation query
- *   alpha           - reputation weight (0-1000, see ReputationKeeper), default 500
+ *   alpha           - timeliness-vs-quality blend (0-1000), default 500.
+ *                     ReputationKeeper: weighted = ((1000 - alpha) * quality + alpha * timeliness) / 1000.
+ *                     0 = pure quality; 1000 = pure timeliness; 500 = equal blend.
  *   maxOracleFee    - max LINK per oracle in wei, default "50000000000000000" (0.05 LINK)
  *   estimatedBaseCost   - default "30000000000000000" (0.03 LINK)
- *   maxFeeBasedScaling  - default "20000000000000000" (0.02 LINK)
+ *   maxFeeBasedScaling  - plain integer N (x-factor), default "3". Cap on fee-boost
+ *                         multiplier applied to oracles whose fee is below maxOracleFee.
+ *                         Contract multiplies by 1e18 internally — pass the x-factor itself, not a scaled value.
+ *                         Must be >= 1.
  *
  * Response: step-1 transaction (prepareSubmission) + templates for steps 2-4.
  * After broadcasting step 1, call POST /submit/bundle/complete with the txHash
@@ -3214,7 +3228,8 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
     const alpha       = parseInt(req.body.alpha) || 500;
     const maxOracleFee       = req.body.maxOracleFee       || '50000000000000000';
     const estimatedBaseCost  = req.body.estimatedBaseCost  || '30000000000000000';
-    const maxFeeBasedScaling = req.body.maxFeeBasedScaling || '20000000000000000';
+    // maxFeeBasedScaling: plain x-factor integer (contract scales by 1e18 internally).
+    const maxFeeBasedScaling = req.body.maxFeeBasedScaling || '3';
 
     // ---- Validate inputs ----
     if (!hunterAddress || !/^0x[a-fA-F0-9]{40}$/.test(hunterAddress)) {
@@ -5140,12 +5155,19 @@ async function calculateFeeEstimate(juryNodes, iterations) {
   const maxOracleFeeLINK = Number(maxOracleFeeWei) / 1e18;
 
   // Recommended prepareSubmission parameters
-  // These are the values agents should use when calling prepareSubmission
+  // These are the values agents should use when calling prepareSubmission.
+  //
+  // alpha (0-1000): timeliness-vs-quality blend in ReputationKeeper.getSelectionScore.
+  //   weighted = ((1000 - alpha) * quality + alpha * timeliness) / 1000.
+  //   0 = pure quality; 1000 = pure timeliness; 500 = equal blend.
+  // maxFeeBasedScaling: plain integer N (x-factor) — contract multiplies by 1e18
+  //   internally. Caps the fee-boost multiplier for oracles priced below maxOracleFee.
+  //   Must be >= 1. 3 = up to 3x boost for the cheapest eligible oracles.
   const recommendedParams = {
-    alpha: '500',                                    // Reputation weight (0-1000), 500 = balanced
-    maxOracleFee: maxOracleFeeWei.toString(),       // Per-oracle fee cap
-    estimatedBaseCost: baseCostWei.toString(),     // Base cost
-    maxFeeBasedScaling: '1200000000000000000'      // 1.2x scaling factor (18 decimals)
+    alpha: '500',
+    maxOracleFee: maxOracleFeeWei.toString(),
+    estimatedBaseCost: baseCostWei.toString(),
+    maxFeeBasedScaling: '3'
   };
 
   return {

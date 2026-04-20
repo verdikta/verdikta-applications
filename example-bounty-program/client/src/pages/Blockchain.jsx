@@ -187,10 +187,10 @@ async function submitWork(bountyId, hunterCid) {
     evaluationCid,
     hunterCid,                            // Your work's IPFS CID
     'Please evaluate carefully',          // Addendum
-    500n,                                 // Alpha (reputation weight; 0-1000, 500 = balanced)
+    500n,                                 // Alpha: timeliness-vs-quality blend (0-1000). 500 = equal blend; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
     ethers.parseEther('0.003'),           // maxOracleFee (per oracle call cap)
     ethers.parseEther('0.001'),           // estimatedBaseCost (base cost per evaluation)
-    BigInt('3')                           // maxFeeBasedScaling (relative weight, min vs max)
+    BigInt('3')                           // maxFeeBasedScaling: x-factor cap on fee-based boost (contract scales by 1e18 internally; must be >= 1)
   );
 
   const prepareReceipt = await prepareTx.wait();
@@ -721,10 +721,10 @@ submission-package.zip
   evaluationCid,      // string - bounty's evaluation CID (NOT your submission)
   hunterCid,          // string - your submission's IPFS CID
   addendum,           // string - usually ""
-  alpha,              // uint256 - reputation weight (0-1000, 500 = balanced)
+  alpha,              // uint256 - timeliness-vs-quality blend (0-1000). 500 = equal; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
   maxOracleFee,       // uint256 - "3000000000000000" (0.003 LINK per oracle call)
   estimatedBaseCost,  // uint256 - "1000000000000000" (0.001 LINK base cost)
-  maxFeeBasedScaling  // uint256 - "3" (relative weight, min vs max)
+  maxFeeBasedScaling  // uint256 - x-factor cap on fee-based boost, "3" = up to 3x (contract scales by 1e18 internally; must be >= 1)
 )`}</pre>
             </div>
           </div>

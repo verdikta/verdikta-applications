@@ -401,11 +401,18 @@ class ContractService {
 
   /**
    * STEP 1: Prepare a submission (deploys EvaluationWallet)
+   *
+   * alpha (0-1000): timeliness-vs-quality blend in ReputationKeeper.getSelectionScore:
+   *   weighted = ((1000 - alpha) * quality + alpha * timeliness) / 1000.
+   *   0 = pure quality; 1000 = pure timeliness; 500 = equal blend.
+   * maxFeeBasedScaling: plain integer N (x-factor). Caps the fee-boost multiplier
+   *   that favors oracles priced below maxOracleFee. The contract scales by 1e18
+   *   internally — pass the x-factor itself (e.g. 3 = up to 3x). Must be >= 1.
    */
   async prepareSubmission(bountyId, evaluationCid, hunterCid, addendum = "", alpha = 500,
                           maxOracleFee = "50000000000000000",
                           estimatedBaseCost = "30000000000000000",
-                          maxFeeBasedScaling = "20000000000000000") {
+                          maxFeeBasedScaling = "3") {
     if (!this.contract) {
       throw new Error('Contract not initialized. Call connect() first.');
     }

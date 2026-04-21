@@ -590,7 +590,7 @@ function Analytics() {
                             </a>
                           ) : 'N/A'}
                         </td>
-                        <td>{b.bountyAmount ? `${b.bountyAmount} ETH` : 'N/A'}</td>
+                        <td>{Number.isFinite(Number(b.bountyAmount)) ? `${b.bountyAmount} ETH` : 'N/A'}</td>
                         <td>
                           {b.txHash ? (
                             <a

@@ -95,6 +95,17 @@ export const apiService = {
   },
 
   /**
+   * Toggle the off-chain `publicSubmissions` flag on a bounty.
+   * Requires a personal_sign message from the bounty creator.
+   * Server route: PATCH /api/jobs/:jobId/public-submissions
+   * payload: { publicSubmissions, message, signature }
+   */
+  async setPublicSubmissions(jobId, payload) {
+    const { data } = await api.patch(`/api/jobs/${jobId}/public-submissions`, payload);
+    return data;
+  },
+
+  /**
    * List all jobs with optional filters
    */
   async listJobs(filters = {}) {

@@ -85,6 +85,21 @@ GET /api/jobs/:id/submissions
 Returns all submissions with simplified statuses, scores, and an evaluationEndpoint
 pointer for each submission whose AI report is fetchable.
 
+## Submission Visibility (Privacy Note)
+Work-product CIDs are public by design — stored on-chain in the submission record
+and returned by the submissions API to anyone. They are NOT cryptographically
+private. Anyone can fetch a submission's files from any IPFS gateway once they
+have its hunterCid.
+
+Bounty creators may additionally set a "publicSubmissions" flag that enables
+convenient preview/download buttons on the website for non-creator viewers. The
+flag does not change what data is accessible — only how easy it is to reach.
+Creators may revoke the flag at any time; revocation removes the website buttons
+but does NOT retract files that have already been downloaded, and does not affect
+the underlying IPFS pin. Hunters should submit with this visibility model in mind.
+Flag is returned as "publicSubmissions": true|false on GET /api/jobs and
+GET /api/jobs/:id.
+
 ## Get AI Evaluation Report (after rejection or approval)
 GET /api/jobs/:id/submissions/:subId/evaluation
 Returns the full AI evaluation report — scores, criterion-by-criterion feedback,

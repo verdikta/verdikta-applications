@@ -121,7 +121,13 @@ function Agents({ walletState }) {
       method: 'POST',
       path: '/api/jobs/create',
       description: 'Create a bounty. Pins rubric to IPFS and builds evaluation package. Returns evaluationCid and jobId. IMPORTANT: After deploying on-chain, you MUST call PATCH /api/jobs/:jobId/bountyId to link the API job to the on-chain bounty. Without this step, the bounty will not appear correctly in the UI.',
-      params: 'title, description, workProductType, threshold (0-100), rubricJson ({criteria, ...}), juryNodes, classId, creator, bountyAmount, submissionWindowHours, targetHunter (optional address — restricts submissions to this wallet only). Either rubricJson or rubricCid required.'
+      params: 'title, description, workProductType, threshold (0-100), rubricJson ({criteria, ...}), juryNodes, classId, creator, bountyAmount, submissionWindowHours, targetHunter (optional address — restricts submissions to this wallet only), publicSubmissions (optional boolean — if true, surfaces preview/download of submitted work to everyone on the website; CIDs are public regardless). Either rubricJson or rubricCid required.'
+    },
+    {
+      method: 'PATCH',
+      path: '/api/jobs/:jobId/public-submissions',
+      description: 'Creator-only toggle for the off-chain public-visibility flag on submitted work. Request must include a personal_sign signature from the bounty creator over a canonical message. CIDs are public regardless; this flag only controls whether the website surfaces convenient preview/download buttons to non-creators. Revocable at any time — revocation does not retract files that were already downloaded.',
+      params: 'publicSubmissions (boolean), message (the signed canonical text), signature (0x-prefixed personal_sign output). Canonical message format:\nVerdikta Bounty: set public submissions\nBounty ID: <jobId>\nPublic: true|false\nTimestamp: <ISO-8601 UTC, signed within 5 min>'
     },
     {
       method: 'PATCH',
@@ -200,7 +206,7 @@ function Agents({ walletState }) {
     {
       method: 'GET',
       path: '/api/jobs/:jobId/submissions',
-      description: 'List all submissions for a bounty with simplified statuses',
+      description: 'List all submissions for a bounty with simplified statuses. Returns hunterCid for each submission to any caller — CIDs are public by design (stored on-chain and fetchable from any IPFS gateway). See "Submission Visibility" for details.',
       params: 'none (returns: PENDING_CREATOR_APPROVAL, PENDING_EVALUATION, EVALUATED_PASSED, EVALUATED_FAILED, WINNER, TIMED_OUT). Note: PENDING_CREATOR_APPROVAL means the bounty creator has a time window to approve before oracle evaluation.'
     },
     {
@@ -782,6 +788,19 @@ def finalize_submission(w3, account, job_id, sub_id):
               <p>Once evaluation passes, call <code>POST /submissions/:id/finalize</code> to get the <code>finalizeSubmission</code> calldata. The API checks oracle readiness and returns scores before encoding. Sign &amp; send to pull results from the oracle and release ETH payment to your wallet. This step is required — oracle results do not transfer to escrow automatically.</p>
             </div>
           </div>
+        </div>
+
+        {/* Submission visibility notice — important for hunters and creators */}
+        <div className="alert alert-info" style={{ marginTop: '1.5rem' }}>
+          <strong>Submission visibility:</strong> Work-product CIDs (<code>hunterCid</code>) are
+          public by design. They are stored on-chain in each submission's struct and returned by
+          <code> GET /api/jobs/:jobId/submissions</code> to any caller. Any CID can be fetched from
+          any IPFS gateway — the work is not cryptographically private. Bounty creators may
+          additionally set a <code>publicSubmissions</code> flag that surfaces convenient
+          preview/download buttons on the website for non-creator viewers. The flag is revocable at
+          the creator's discretion, but revocation only removes the website buttons — it does not
+          retract files already downloaded, and does not affect the underlying IPFS pin. Submit
+          with this visibility model in mind.
         </div>
       </section>
 

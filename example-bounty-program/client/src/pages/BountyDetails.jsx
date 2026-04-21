@@ -22,6 +22,7 @@ import {
 import { renderMarkdownSafe } from '../utils/markdownPreview';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
+import { walletService } from '../services/wallet';
 import { getContractService } from '../services/contractService';
 import { config, currentNetwork } from '../config';
 import {
@@ -1378,6 +1379,56 @@ function BountyDetails({ walletState }) {
     }
   };
 
+  // Toggle the off-chain publicSubmissions flag. The creator signs a canonical
+  // message with their wallet; the server recovers the address and flips the
+  // flag. This does not touch the chain — CIDs are already public regardless;
+  // the flag only controls whether non-creators see preview/download buttons.
+  const [togglingPublicSubs, setTogglingPublicSubs] = useState(false);
+  const handleTogglePublicSubmissions = async () => {
+    if (!walletState.isConnected) {
+      toast.warning('Please connect your wallet first');
+      return;
+    }
+    if (!job) return;
+    const next = !job.publicSubmissions;
+    const confirmMsg = next
+      ? 'Enable public preview/download of submitted work on this bounty?\n\n' +
+        'Note: submission CIDs are already public via the API and on-chain record. ' +
+        'This toggle only surfaces convenient website buttons. Anyone who downloads ' +
+        'while public may keep their copy — revocation will not take files back.'
+      : 'Disable public preview/download for this bounty?\n\n' +
+        'Website buttons will disappear for non-creators. Anyone who already ' +
+        'downloaded work keeps their copy.';
+    if (!window.confirm(confirmMsg)) return;
+
+    setTogglingPublicSubs(true);
+    try {
+      const signer = walletService.getSigner();
+      if (!signer) throw new Error('Wallet signer unavailable');
+      const timestamp = new Date().toISOString();
+      const message = [
+        'Verdikta Bounty: set public submissions',
+        `Bounty ID: ${job.jobId}`,
+        `Public: ${next ? 'true' : 'false'}`,
+        `Timestamp: ${timestamp}`,
+      ].join('\n');
+      const signature = await signer.signMessage(message);
+      await apiService.setPublicSubmissions(job.jobId, {
+        publicSubmissions: next,
+        message,
+        signature,
+      });
+      toast.success(next ? 'Submissions are now publicly visible' : 'Submissions are now private again');
+      // Reflect the change locally without waiting for a full refresh
+      setJob((prev) => (prev ? { ...prev, publicSubmissions: next } : prev));
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message || 'Unknown error';
+      toast.error(`Failed to update visibility: ${msg}`);
+    } finally {
+      setTogglingPublicSubs(false);
+    }
+  };
+
   const handleCloseExpiredBounty = async () => {
     if (!walletState.isConnected) {
       toast.warning('Please connect your wallet first');
@@ -2138,6 +2189,41 @@ function BountyDetails({ walletState }) {
       {/* Actions Section */}
       <section className="actions-section">
         <h2>Actions</h2>
+
+        {/* Creator-only: toggle public preview/download of submitted work.
+            Visible to anyone for transparency when ON; actionable only by the creator. */}
+        {walletState.isConnected
+          && walletState.address?.toLowerCase() === job?.creator?.toLowerCase()
+          && !notOnChain
+          && (
+          <div className="alert alert-info" style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
+            <Eye size={18} style={{ marginTop: 2, flexShrink: 0 }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>
+                Submission visibility: <span style={{ color: job?.publicSubmissions ? '#15803d' : '#6b7280' }}>
+                  {job?.publicSubmissions ? 'Public' : 'Private to you'}
+                </span>
+              </div>
+              <div style={{ fontSize: '0.85rem', color: '#4b5563', marginBottom: '0.5rem' }}>
+                {job?.publicSubmissions
+                  ? 'Anyone viewing this bounty can preview and download submitted work. Submission CIDs are public regardless; this controls whether the website surfaces convenient buttons.'
+                  : 'Only you can preview and download submitted work via the website. Submission CIDs are still technically public via the API and the blockchain.'}
+                {' '}You can change this at any time. Revocation does not retract files that were already downloaded.
+              </div>
+              <button
+                onClick={handleTogglePublicSubmissions}
+                disabled={togglingPublicSubs}
+                className="btn btn-secondary btn-sm"
+                style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem' }}
+              >
+                {togglingPublicSubs
+                  ? <><Loader2 size={12} className="spin" /> Signing…</>
+                  : (job?.publicSubmissions ? 'Make submissions private' : 'Make submissions public')}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="action-buttons">
           {notOnChain && (() => {
             const ageSeconds = Math.floor(Date.now() / 1000) - (job?.createdAt || 0);
@@ -2718,8 +2804,10 @@ function PendingSubmissionsPanel({
                 </>
               )}
 
-              {/* Preview inline — text-based work products */}
-              {isCreator && s.hunterCid && onPreview && (
+              {/* Preview inline — text-based work products.
+                  Visible to the creator always, and to anyone when the creator
+                  has enabled publicSubmissions on this bounty. */}
+              {(isCreator || job?.publicSubmissions) && s.hunterCid && onPreview && (
                 <button
                   onClick={() => onPreview(s.submissionId)}
                   disabled={isPreviewing}
@@ -2733,8 +2821,9 @@ function PendingSubmissionsPanel({
                 </button>
               )}
 
-              {/* Download work product — visible to the creator whenever a hunterCid is on file */}
-              {isCreator && s.hunterCid && (
+              {/* Download work product — creator always, public viewers when the
+                  bounty has publicSubmissions enabled. */}
+              {(isCreator || job?.publicSubmissions) && s.hunterCid && (
                 <button
                   onClick={async () => {
                     try {

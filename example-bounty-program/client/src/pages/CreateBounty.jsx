@@ -11,6 +11,7 @@ import {
   Clock,
   ChevronRight,
   X,
+  Eye,
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
@@ -77,6 +78,11 @@ function CreateBounty({ walletState }) {
     creatorPaymentEth: '0.001',
     arbiterPaymentEth: '0.001',
     approvalWindowHours: '1',
+    // Off-chain visibility flag — creators can opt in to convenient public
+    // preview/download of submitted work. CIDs are public regardless; this
+    // just surfaces buttons on the website. Revocable later from the bounty
+    // details page.
+    publicSubmissions: false,
   });
 
   // ---------- helpers ----------
@@ -569,6 +575,7 @@ function CreateBounty({ walletState }) {
           arbiterDeterminationPayment: parseFloat(formData.arbiterPaymentEth),
           creatorAssessmentWindowHours: parseFloat(formData.approvalWindowHours),
         } : {}),
+        publicSubmissions: !!formData.publicSubmissions,
       });
 
       if (!apiResponse?.success) {
@@ -880,6 +887,31 @@ function CreateBounty({ walletState }) {
                   )}
                 </div>
               )}
+            </div>
+
+            {/* Public Submissions — off-chain visibility flag */}
+            <div className={`feature-card ${formData.publicSubmissions ? 'enabled' : ''}`}>
+              <label className="feature-card-header">
+                <Eye size={20} className="feature-card-icon" />
+                <div className="feature-card-text">
+                  <div className="feature-card-title">Allow public access to submissions</div>
+                  <div className="feature-card-desc">
+                    Lets anyone preview and download submitted work on the website, not just you.
+                    Submission CIDs are technically public regardless (stored on-chain and returned by
+                    the API); this toggle only controls whether the website shows convenient buttons.
+                    You can change this later from the bounty page.
+                  </div>
+                </div>
+                <span className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    checked={formData.publicSubmissions}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, publicSubmissions: e.target.checked }))}
+                    aria-label="Allow public access to submissions"
+                  />
+                  <span className="toggle-switch-slider" />
+                </span>
+              </label>
             </div>
 
             <div className="form-actions">

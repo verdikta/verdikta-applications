@@ -124,6 +124,7 @@ router.post('/create', async (req, res) => {
       creatorDeterminationPayment,
       arbiterDeterminationPayment,
       creatorAssessmentWindowHours,
+      publicSubmissions,
     } = req.body || {};
 
     // ---- Validate commons ----
@@ -341,6 +342,7 @@ router.post('/create', async (req, res) => {
       submissionOpenTime,
       submissionCloseTime,
       targetHunter: targetHunter || null,
+      publicSubmissions: !!publicSubmissions,
       ...(creatorDeterminationPayment != null ? {
         creatorDeterminationPayment: String(creatorDeterminationPayment),
         arbiterDeterminationPayment: String(arbiterDeterminationPayment),
@@ -1861,6 +1863,10 @@ router.get('/', async (req, res) => {
         // set by the PATCH /bountyId/resolve endpoint. Either = confirmed.
         syncedFromBlockchain: !!job.syncedFromBlockchain,
         onChain: !!job.onChain,
+        // Creator-controlled visibility flag (off-chain). When true, the
+        // client may render preview/download buttons for submitted work
+        // to non-creators. CIDs themselves are public regardless.
+        publicSubmissions: !!job.publicSubmissions,
         validationStatus: validationInfo, // Include validation info if available
         submissions: job.submissions // Include for pending evaluation check
       };
@@ -3646,6 +3652,65 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
       details: error.message,
       fix: 'Verify the txHash and try again. You can also parse the SubmissionPrepared event yourself using the ABI from /submit/bundle.'
     });
+  }
+});
+
+/* ===============================
+   PATCH publicSubmissions (creator-signed, off-chain)
+   Toggles the off-chain "publicSubmissions" flag on a bounty. Requires a
+   personal_sign message from the bounty creator. CIDs on the blockchain /
+   in API responses are public regardless — this flag only controls whether
+   the website surfaces convenient preview/download buttons to non-creators.
+   =============================== */
+
+router.patch('/:jobId/public-submissions', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { publicSubmissions, message, signature } = req.body || {};
+
+    if (typeof publicSubmissions !== 'boolean') {
+      return res.status(400).json({ success: false, error: 'publicSubmissions must be true or false' });
+    }
+    if (!message || !signature) {
+      return res.status(400).json({ success: false, error: 'message and signature required' });
+    }
+
+    const storage = await jobStorage.readStorage();
+    const job = storage.jobs.find(j => j.jobId === parseInt(jobId, 10));
+    if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
+    if (!job.creator) return res.status(400).json({ success: false, error: 'Job has no creator on record' });
+
+    const { verifyPublicSubmissionsAction } = require('../utils/messageAuth');
+    let parsed;
+    try {
+      parsed = verifyPublicSubmissionsAction({
+        message,
+        signature,
+        expectedSigner: job.creator,
+        expectedBountyId: parseInt(jobId, 10),
+      });
+    } catch (err) {
+      logger.warn('[public-submissions] signature rejected', { jobId, msg: err.message });
+      return res.status(401).json({ success: false, error: err.message });
+    }
+
+    if (parsed.publicSubmissions !== publicSubmissions) {
+      return res.status(400).json({ success: false, error: 'body.publicSubmissions does not match signed message' });
+    }
+
+    job.publicSubmissions = publicSubmissions;
+    job.publicSubmissionsUpdatedAt = Math.floor(Date.now() / 1000);
+    await jobStorage.writeStorage(storage);
+
+    logger.info('[public-submissions] updated', { jobId, publicSubmissions, creator: job.creator });
+
+    return res.json({
+      success: true,
+      job: { jobId: job.jobId, publicSubmissions: job.publicSubmissions }
+    });
+  } catch (err) {
+    logger.error('[public-submissions] fatal', { msg: err.message });
+    return res.status(500).json({ success: false, error: 'Failed to update public submissions flag', details: err.message });
   }
 });
 

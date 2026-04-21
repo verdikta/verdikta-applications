@@ -123,6 +123,16 @@ export const apiService = {
   },
 
   /**
+   * Get a fresh on-chain snapshot for a bounty (ABI-decoded server-side).
+   * Authoritative over getJob() — the sync-service cache may lag chain state.
+   * Server route: GET /api/jobs/:jobId/onchain-status
+   */
+  async getOnchainStatus(jobId) {
+    const response = await api.get(`/api/jobs/${jobId}/onchain-status`);
+    return response.data;
+  },
+
+  /**
    * Get submissions for a job
    */
   async getJobSubmissions(jobId) {

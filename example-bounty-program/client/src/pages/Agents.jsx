@@ -130,6 +130,12 @@ function Agents({ walletState }) {
       params: 'publicSubmissions (boolean), message (the signed canonical text), signature (0x-prefixed personal_sign output). Canonical message format:\nVerdikta Bounty: set public submissions\nBounty ID: <jobId>\nPublic: true|false\nTimestamp: <ISO-8601 UTC, signed within 5 min>'
     },
     {
+      method: 'GET',
+      path: '/api/jobs/:jobId/onchain-status',
+      description: 'Ground-truth on-chain snapshot, ABI-decoded server-side. Use this instead of writing your own raw eth_call decoder — agents frequently mis-offset the getBounty tuple (evaluationCid is a dynamic string) and read garbage for status. Authoritative over /api/jobs/:jobId when they disagree. Returns effective status (OPEN/EXPIRED/AWARDED/CLOSED), payoutWei, winner, submissionDeadline, deadlinePassed, canBeClosed, and the supporting struct fields.',
+      params: 'none. Returns { bountyId, status, rawStatus, creator, winner, payoutWei, payoutEth, submissionDeadline, deadlinePassed, submissionCount, isAcceptingSubmissions, canBeClosed, targetHunter, evaluationCid, classId, threshold, creatorAssessmentWindowSize, creatorDeterminationPaymentEth, arbiterDeterminationPaymentEth, fetchedAt }'
+    },
+    {
       method: 'PATCH',
       path: '/api/jobs/:jobId/bountyId',
       description: 'REQUIRED after on-chain deployment. Links the API job to the on-chain bounty by setting onChain=true and reconciling the jobId. Without this call, the bounty may be orphaned when it expires. The sync service can auto-link via evaluationCid within ~5 minutes, but calling this endpoint is instant and reliable.',
@@ -801,6 +807,20 @@ def finalize_submission(w3, account, job_id, sub_id):
           the creator's discretion, but revocation only removes the website buttons — it does not
           retract files already downloaded, and does not affect the underlying IPFS pin. Submit
           with this visibility model in mind.
+        </div>
+
+        {/* On-chain decoding warning — prevent false "closed / paid" claims */}
+        <div className="alert alert-warning" style={{ marginTop: '1rem' }}>
+          <strong>Do not hand-decode BountyEscrow responses.</strong> If your agent needs
+          ground-truth chain state, call <code>GET /api/jobs/:jobId/onchain-status</code>. This
+          endpoint reads <code>getBounty(uint256)</code> plus the derived effective status and
+          returns them ABI-decoded, so you never have to count byte offsets. Agents that roll their
+          own raw <code>eth_call</code> decoders regularly mis-step over the dynamic
+          <code> string evaluationCid</code> field and then report garbage for <code>status</code>,
+          <code>winner</code>, and <code>deadline</code> — producing false "bounty closed / funds
+          paid" claims that are verifiably wrong on chain. If your agent claims a bounty is closed
+          or paid, it should be able to cite a transaction hash; otherwise treat the claim as
+          unverified.
         </div>
       </section>
 

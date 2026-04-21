@@ -2483,6 +2483,112 @@ router.get('/:jobId', async (req, res) => {
 });
 
 /* =================
+   GET ON-CHAIN STATUS (Agent-friendly, trust-minimized)
+   ================= */
+
+/**
+ * GET /api/jobs/:jobId/onchain-status
+ *
+ * Returns a fresh on-chain snapshot of a bounty, with the server performing
+ * the ABI decoding. Designed for AI agents that want to verify chain state
+ * without writing their own raw-byte decoder (a common source of off-by-one
+ * field offset bugs — decode via this endpoint instead).
+ *
+ * One RPC call (getBounty); status/effectiveStatus/canBeClosed are derived
+ * locally from the struct to avoid extra round trips. Use this instead of
+ * hand-rolling eth_call decoders on the BountyEscrow.bounties() or
+ * BountyEscrow.getBounty() tuple.
+ *
+ * Response shape:
+ *   {
+ *     bountyId: number,
+ *     status: "OPEN" | "EXPIRED" | "AWARDED" | "CLOSED",  // effective status
+ *     rawStatus: 0 | 1 | 2,                                // on-chain enum
+ *     creator: "0x...",
+ *     winner: "0x..." | null,
+ *     payoutWei: string,                                   // still-escrowed ETH
+ *     payoutEth: string,                                   // human-readable
+ *     submissionDeadline: number,                          // unix seconds
+ *     deadlinePassed: boolean,
+ *     submissionCount: number,
+ *     isAcceptingSubmissions: boolean,
+ *     canBeClosed: boolean,                                // approximate; contract
+ *                                                         //   also checks pending subs
+ *     targetHunter: "0x..." | null,
+ *     evaluationCid: string,
+ *     classId: number,
+ *     threshold: number,
+ *     creatorAssessmentWindowSize: number,
+ *     creatorDeterminationPaymentEth: string,
+ *     arbiterDeterminationPaymentEth: string,
+ *     fetchedAt: ISO-8601 string
+ *   }
+ */
+router.get('/:jobId/onchain-status', async (req, res) => {
+  const { jobId } = req.params;
+  const bountyId = parseInt(jobId, 10);
+  if (!Number.isInteger(bountyId) || bountyId < 0) {
+    return res.status(400).json({ success: false, error: 'Invalid bountyId', details: `"${jobId}" is not a non-negative integer` });
+  }
+
+  try {
+    logger.info('[jobs/onchain-status] get', { bountyId });
+    const contractService = getContractService();
+    const b = await contractService.getBounty(bountyId);
+
+    const now = Math.floor(Date.now() / 1000);
+    const deadline = Number(b.submissionCloseTime) || 0;
+
+    // Re-derive rawStatus: contractService.getBounty returns effective-only.
+    // Effective → raw mapping:
+    //   OPEN or EXPIRED → rawStatus 0 (Open)
+    //   AWARDED         → rawStatus 1
+    //   CLOSED          → rawStatus 2
+    const eff = String(b.status || '').toUpperCase();
+    const rawStatus = eff === 'AWARDED' ? 1 : eff === 'CLOSED' ? 2 : 0;
+
+    return res.json({
+      success: true,
+      bountyId,
+      status: eff,                               // OPEN | EXPIRED | AWARDED | CLOSED
+      rawStatus,                                 // 0=Open, 1=Awarded, 2=Closed (enum)
+      creator: b.creator,
+      winner: b.winner,
+      payoutWei: b.bountyAmountWei,
+      payoutEth: b.bountyAmount,
+      submissionDeadline: deadline,
+      deadlinePassed: deadline > 0 && now > deadline,
+      submissionCount: b.submissionCount,
+      isAcceptingSubmissions: b.isAcceptingSubmissions,
+      canBeClosed: b.canBeClosed,                // local approximation; contract
+                                                 //   also rejects if any submission
+                                                 //   is still PendingVerdikta
+      targetHunter: b.targetHunter,
+      evaluationCid: b.evaluationCid,
+      classId: b.classId,
+      threshold: b.threshold,
+      creatorAssessmentWindowSize: b.creatorAssessmentWindowSize,
+      creatorDeterminationPaymentEth: b.creatorDeterminationPayment,
+      arbiterDeterminationPaymentEth: b.arbiterDeterminationPayment,
+      fetchedAt: new Date().toISOString(),
+      note: 'Ground truth from the BountyEscrow contract. If this disagrees with GET /api/jobs/:jobId the sync service has not yet observed the change; this endpoint is authoritative.'
+    });
+  } catch (err) {
+    const msg = (err?.message || '').toLowerCase();
+    if (msg.includes('bad bountyid') || msg.includes('badbountyid') || msg.includes('call_exception')) {
+      return res.status(404).json({
+        success: false,
+        error: 'Bounty not found on current contract',
+        details: `Bounty #${bountyId} does not exist on the active BountyEscrow contract`,
+        fix: 'Verify the bountyId and the current contract address (GET /api/docs).'
+      });
+    }
+    logger.error('[jobs/onchain-status] fatal', { bountyId, msg: err.message });
+    return res.status(500).json({ success: false, error: 'Failed to read on-chain status', details: err.message });
+  }
+});
+
+/* =================
    GET JOB RUBRIC (Agent-friendly endpoint)
    ================= */
 

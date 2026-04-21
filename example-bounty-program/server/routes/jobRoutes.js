@@ -2238,6 +2238,31 @@ router.get('/:jobId', async (req, res) => {
       if (!job) throw e;
     }
 
+    // Ghost guard: direct-by-ID lookups must not leak phantom bounties that
+    // the list endpoint is already hiding. If the job was never confirmed
+    // on-chain and has exceeded the 1h grace window, treat it as not found
+    // so agents calling closeExpiredBounty / finalizeSubmission don't try
+    // to act on a non-existent bounty. The sync service's orphan sweep will
+    // mark these ORPHANED on the next cycle — this guard is the read-time
+    // backstop for the window between creation and that sweep.
+    const GHOST_GRACE_SECS = 3600;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const isUnconfirmedGhost =
+      !job.onChain &&
+      !job.syncedFromBlockchain &&
+      job.status !== 'ORPHANED' &&
+      (nowSec - (job.createdAt || 0)) > GHOST_GRACE_SECS;
+    if (isUnconfirmedGhost) {
+      logger.warn('[jobs/details] ghost job served as 404', {
+        jobId: job.jobId, ageSec: nowSec - (job.createdAt || 0)
+      });
+      return res.status(404).json({
+        success: false,
+        error: 'Bounty not found',
+        details: `Job ${jobId} was never confirmed on-chain and has exceeded the 1h grace window.`
+      });
+    }
+
     // ============================================================
     // Read-side invariant: heal impossible-state submissions inline
     // ============================================================

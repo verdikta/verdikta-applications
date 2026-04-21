@@ -1604,11 +1604,22 @@ class SyncService {
         continue;
       }
 
-      // Check off-chain jobs that expired — including ones already marked EXPIRED,
-      // since off-chain bounties can't be closed on-chain and should be orphaned.
-      // A job is considered on-chain if onChain===true OR syncedFromBlockchain===true
-      // (addJobFromBlockchain sets syncedFromBlockchain but not onChain).
-      if (!job.onChain && !job.syncedFromBlockchain && job.submissionCloseTime && now > job.submissionCloseTime) {
+      // Orphan off-chain jobs that were never confirmed on-chain. A job is
+      // considered on-chain if onChain===true OR syncedFromBlockchain===true.
+      // Two triggers:
+      //   1. Age > 1h (matches the ghost-hiding threshold in jobStorage.listJobs).
+      //      After 1h an unsynced job is already hidden from list endpoints; we
+      //      mark it ORPHANED in storage too so direct GET /api/jobs/:id lookups
+      //      and analytics counters agree with list output.
+      //   2. Past submissionCloseTime (belt-and-suspenders for short windows).
+      // Recovery: if the on-chain tx eventually lands, the BountyCreated event
+      // handler re-links the pending job (sets status=OPEN, syncedFromBlockchain=true),
+      // so early orphaning is reversible.
+      const GHOST_GRACE_SECS = 3600;
+      const isOffChain = !job.onChain && !job.syncedFromBlockchain;
+      const pastGhostGrace = (now - (job.createdAt || 0)) > GHOST_GRACE_SECS;
+      const pastSubmissionDeadline = job.submissionCloseTime && now > job.submissionCloseTime;
+      if (isOffChain && (pastGhostGrace || pastSubmissionDeadline)) {
         if (job.status !== 'ORPHANED' && job.status !== 'AWARDED') {
           job.status = 'ORPHANED';
           job.orphanedAt = now;

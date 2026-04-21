@@ -563,7 +563,7 @@ function JobCard({ job }) {
             {isPendingOnChain && (
               <span
                 className="badge badge-pending"
-                title="This bounty was created through the website but its on-chain transaction has not yet been confirmed. Submissions will fail until confirmation. If this persists beyond ~1 hour the bounty will be removed automatically."
+                title="This bounty's on-chain transaction has not yet been confirmed. Submissions will fail until confirmation. If this persists beyond ~1 hour the bounty will be removed automatically."
               >
                 <RefreshCw size={12} style={{ verticalAlign: 'middle', marginRight: '2px' }} />
                 Pending on-chain

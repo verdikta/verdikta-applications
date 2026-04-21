@@ -1855,6 +1855,12 @@ router.get('/', async (req, res) => {
         creatorDeterminationPayment: job.creatorDeterminationPayment || null,
         arbiterDeterminationPayment: job.arbiterDeterminationPayment || null,
         contractAddress: job.contractAddress, // Include for debugging
+        // On-chain confirmation flags — needed by client to render the
+        // "Pending on-chain" badge. `syncedFromBlockchain` is set by the
+        // sync service after it sees a BountyCreated event; `onChain` is
+        // set by the PATCH /bountyId/resolve endpoint. Either = confirmed.
+        syncedFromBlockchain: !!job.syncedFromBlockchain,
+        onChain: !!job.onChain,
         validationStatus: validationInfo, // Include validation info if available
         submissions: job.submissions // Include for pending evaluation check
       };
@@ -2429,8 +2435,10 @@ router.get('/:jobId', async (req, res) => {
       }
     }
 
-    // Strip internal sync bookkeeping fields before sending to client
-    const { syncedFromBlockchain: _sfb, lastSyncedAt: _lsa, ...jobForClient } = job;
+    // Strip internal sync bookkeeping fields before sending to client.
+    // Keep `syncedFromBlockchain` — the UI needs it to render the
+    // "Pending on-chain" badge on bounties that haven't been confirmed yet.
+    const { lastSyncedAt: _lsa, ...jobForClient } = job;
     const jobIdVal = job.jobId;
     return res.json({
       success: true,

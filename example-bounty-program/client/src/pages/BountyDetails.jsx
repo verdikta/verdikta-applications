@@ -1959,6 +1959,18 @@ function BountyDetails({ walletState }) {
               Windowed
             </span>
           )}
+          {/* Pending-on-chain: the bounty was created via the API but not yet
+              confirmed by the sync service. Submit Work is already disabled
+              via notOnChain; this badge makes the reason visible. */}
+          {job && job.status === 'OPEN' && !job.syncedFromBlockchain && !job.onChain && (
+            <span
+              className="badge-pending"
+              title="This bounty was created through the website but its on-chain transaction has not yet been confirmed. Submissions will fail until confirmation. If this persists beyond ~1 hour the bounty will be removed automatically."
+            >
+              <RefreshCw size={12} style={{ verticalAlign: 'middle', marginRight: '2px' }} />
+              Pending on-chain
+            </span>
+          )}
           {job?.workProductType && <span className="work-type-badge">{job.workProductType}</span>}
         </div>
         <div className="bounty-stats">

@@ -459,6 +459,12 @@ function JobCard({ job }) {
   const isAwarded = status === BountyStatus.AWARDED;
   const isClosed = status === BountyStatus.CLOSED;
 
+  // Pending-on-chain: API-created but not yet confirmed by the sync service
+  // and not marked ORPHANED. Shown briefly (< 1h) while the creation tx is
+  // still confirming; after 1h the server-side ghost filter hides it. Submits
+  // against a pending bounty would revert on-chain, so warn before the click.
+  const isPendingOnChain = isOpen && !job.syncedFromBlockchain && !job.onChain;
+
   // Less than 24 hours = closing soon (show warning style)
   const isClosingSoon = isOpen && timeRemaining > 0 && hoursRemaining < 24;
   // Less than 1 hour = critical (show minutes)
@@ -552,6 +558,15 @@ function JobCard({ job }) {
               >
                 <Clock size={12} style={{ verticalAlign: 'middle', marginRight: '2px' }} />
                 Windowed
+              </span>
+            )}
+            {isPendingOnChain && (
+              <span
+                className="badge badge-pending"
+                title="This bounty was created through the website but its on-chain transaction has not yet been confirmed. Submissions will fail until confirmation. If this persists beyond ~1 hour the bounty will be removed automatically."
+              >
+                <RefreshCw size={12} style={{ verticalAlign: 'middle', marginRight: '2px' }} />
+                Pending on-chain
               </span>
             )}
             <div className="validate-row">

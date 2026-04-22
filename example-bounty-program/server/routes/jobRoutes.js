@@ -4563,6 +4563,42 @@ router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
    DIAGNOSE STUCK SUBMISSION
    ======================= */
 
+// Probes a CID against the configured IPFS gateways using a tiny range GET
+// (bytes=0-0) rather than HEAD, since some gateways are slow to populate HEAD
+// metadata for newly-pinned large objects. Returns on the first gateway that
+// answers with ok or a partial-content status; otherwise reports every attempt.
+async function probeCidAccessibility(cid, perGatewayTimeoutMs = 10000) {
+  const gateways = [config.pinataGateway, config.ipfsGateway].filter(Boolean);
+  const attempts = [];
+  for (const gateway of gateways) {
+    const url = `${gateway}/ipfs/${cid}`;
+    const startedAt = Date.now();
+    try {
+      const resp = await fetch(url, {
+        method: 'GET',
+        headers: { Range: 'bytes=0-0' },
+        signal: AbortSignal.timeout(perGatewayTimeoutMs),
+      });
+      const elapsedMs = Date.now() - startedAt;
+      const ok = resp.ok || resp.status === 206;
+      attempts.push({ gateway, status: resp.status, elapsedMs, ok });
+      if (ok) {
+        try { await resp.body?.cancel?.(); } catch (_) { /* ignore */ }
+        return { ok: true, gateway, attempts };
+      }
+    } catch (err) {
+      attempts.push({
+        gateway,
+        status: null,
+        elapsedMs: Date.now() - startedAt,
+        ok: false,
+        error: err.message,
+      });
+    }
+  }
+  return { ok: false, attempts };
+}
+
 /**
  * GET /api/jobs/:jobId/submissions/:submissionId/diagnose
  * Deep diagnostic for stuck submissions - checks on-chain state, CID accessibility, and Verdikta status.
@@ -4722,37 +4758,54 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
       }
     }
 
-    // 3. Check CID accessibility
+    // 3. Check CID accessibility (backend-side probe — see note below).
+    // NOTE: These probes use OUR own backend HTTP fetch against the configured
+    // IPFS gateways. A failure here means the bounty-program backend could not
+    // reach the gateway within the timeout — it does NOT, on its own, prove the
+    // Verdikta oracle failed to fetch the CID. Oracle-side fetch failures
+    // happen in a separate service and surface through the evaluation result
+    // or a 10-minute timeout window, not through this probe.
     const ipfsClient = req.app.locals.ipfsClient;
     if (ipfsClient && localSub?.hunterCid) {
-      try {
-        // Just do a HEAD check or quick fetch
-        const gatewayUrl = `${config.pinataGateway}/ipfs/${localSub.hunterCid}`;
-        const cidCheck = await fetch(gatewayUrl, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
-        diagnosis.checks.hunterCidAccessible = cidCheck.ok;
-        if (!cidCheck.ok) {
-          diagnosis.issues.push(`Hunter CID not accessible: ${cidCheck.status}`);
-          diagnosis.recommendations.push('Verify hunterCid is pinned and accessible');
-        }
-      } catch (cidErr) {
-        diagnosis.checks.hunterCidAccessible = false;
-        diagnosis.issues.push(`Hunter CID check failed: ${cidErr.message}`);
+      const probe = await probeCidAccessibility(localSub.hunterCid);
+      diagnosis.checks.hunterCidAccessible = probe.ok;
+      diagnosis.checks.hunterCidProbe = {
+        note: 'Backend-side gateway probe — not an oracle-side check',
+        servedBy: probe.gateway || null,
+        attempts: probe.attempts,
+      };
+      if (!probe.ok) {
+        diagnosis.issues.push(
+          `Backend gateway probe for hunterCid did not succeed against any configured gateway ` +
+          `(${probe.attempts.map(a => a.gateway).join(', ')}). This is a backend reachability check, ` +
+          `not an oracle failure. The oracle may still have fetched the CID successfully.`
+        );
+        diagnosis.recommendations.push(
+          'Verify hunterCid is pinned (GET via gateway.pinata.cloud directly). ' +
+          'If the CID resolves externally, the backend probe likely hit a transient gateway slowdown and can be ignored.'
+        );
       }
     }
 
-    // 4. Check evaluation CID
+    // 4. Check evaluation CID (backend-side probe — same caveat as hunterCid).
     if (job.evaluationCid) {
-      try {
-        const gatewayUrl = `${config.pinataGateway}/ipfs/${job.evaluationCid}`;
-        const cidCheck = await fetch(gatewayUrl, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
-        diagnosis.checks.evaluationCidAccessible = cidCheck.ok;
-        if (!cidCheck.ok) {
-          diagnosis.issues.push(`Evaluation package CID not accessible: ${cidCheck.status}`);
-          diagnosis.recommendations.push('Verify evaluationCid (evaluation package) is pinned');
-        }
-      } catch (cidErr) {
-        diagnosis.checks.evaluationCidAccessible = false;
-        diagnosis.issues.push(`Evaluation CID check failed: ${cidErr.message}`);
+      const probe = await probeCidAccessibility(job.evaluationCid);
+      diagnosis.checks.evaluationCidAccessible = probe.ok;
+      diagnosis.checks.evaluationCidProbe = {
+        note: 'Backend-side gateway probe — not an oracle-side check',
+        servedBy: probe.gateway || null,
+        attempts: probe.attempts,
+      };
+      if (!probe.ok) {
+        diagnosis.issues.push(
+          `Backend gateway probe for evaluationCid did not succeed against any configured gateway ` +
+          `(${probe.attempts.map(a => a.gateway).join(', ')}). This is a backend reachability check, ` +
+          `not an oracle failure.`
+        );
+        diagnosis.recommendations.push(
+          'Verify evaluationCid (evaluation package) is pinned. ' +
+          'If it resolves externally, the backend probe likely hit a transient gateway slowdown.'
+        );
       }
     }
 

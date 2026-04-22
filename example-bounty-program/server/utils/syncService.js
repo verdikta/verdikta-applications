@@ -718,7 +718,7 @@ class SyncService {
   }
 
   // ==========================================================================
-  // One-time backfill: populate awardTxHash for awarded jobs
+  // One-time backfill: populate txHash + awardTxHash for synced jobs
   // ==========================================================================
 
   async _backfillAwardTxHashes(contractService) {
@@ -727,16 +727,16 @@ class SyncService {
       const currentContract = jobStorage.getCurrentContractAddress();
 
       const needsBackfill = storage.jobs.filter(j =>
-        j.status === 'AWARDED' &&
-        !j.awardTxHash &&
-        (j.contractAddress || '').toLowerCase() === currentContract
+        (j.contractAddress || '').toLowerCase() === currentContract &&
+        j.syncedFromBlockchain &&
+        (!j.txHash || (j.status === 'AWARDED' && !j.awardTxHash))
       );
 
       if (needsBackfill.length === 0) return;
 
-      logger.info('[backfill] Backfilling awardTxHash for awarded jobs', { count: needsBackfill.length });
+      logger.info('[backfill] Backfilling creation/award tx hashes', { count: needsBackfill.length });
 
-      // Fetch all events from deployment block to find PayoutSent
+      // Fetch all events from deployment block to find PayoutSent + BountyCreated
       const deploymentBlock = config.deploymentBlock || 0;
       const currentBlock = await contractService.getBlockNumber();
 
@@ -751,7 +751,7 @@ class SyncService {
         }
       }
 
-      // Build lookup: bountyId -> PayoutSent transactionHash
+      // Build lookups: bountyId -> PayoutSent / BountyCreated
       const payoutTxMap = new Map();
       const creationTxMap = new Map();
       for (const event of allEvents) {
@@ -777,15 +777,16 @@ class SyncService {
           const info = creationTxMap.get(job.jobId);
           job.txHash = info.txHash;
           if (!job.blockNumber) job.blockNumber = info.blockNumber;
+          patched++;
         }
       }
 
       if (patched > 0) {
         await jobStorage.writeStorage(storage);
-        logger.info('[backfill] awardTxHash backfill complete', { patched });
+        logger.info('[backfill] creation/award tx backfill complete', { patched });
       }
     } catch (error) {
-      logger.warn('[backfill] awardTxHash backfill failed', { error: error.message });
+      logger.warn('[backfill] creation/award tx backfill failed', { error: error.message });
     }
   }
 
@@ -858,6 +859,8 @@ class SyncService {
           pendingJob.contractAddress = currentContract;
           pendingJob.status = 'OPEN';
           pendingJob.lastSyncedAt = Math.floor(Date.now() / 1000);
+          if (!pendingJob.txHash && transactionHash) pendingJob.txHash = transactionHash;
+          if (!pendingJob.blockNumber && blockNumber) pendingJob.blockNumber = blockNumber;
           if (pendingJob.onChainId != null) delete pendingJob.onChainId;
           if (pendingJob.legacyJobId != null) delete pendingJob.legacyJobId;
 
@@ -876,7 +879,7 @@ class SyncService {
           // New bounty from chain — fetch full struct and metadata
           try {
             const bounty = await contractService.getBounty(bountyId);
-            await this.addJobFromBlockchain(bounty, storage, currentContract);
+            await this.addJobFromBlockchain(bounty, storage, currentContract, { txHash: transactionHash, blockNumber });
           } catch (err) {
             logger.warn('[event] Failed to fetch BountyCreated bounty', { bountyId, error: err.message });
           }
@@ -1183,8 +1186,13 @@ class SyncService {
 
   /**
    * Add a new job from blockchain to local storage
+   *
+   * @param {object} eventMeta - Optional `{txHash, blockNumber}` from the
+   *   BountyCreated event. When present, stored on the job so the Analytics
+   *   "Creation Tx" column has a value. Gap-fill callers don't have this,
+   *   and the one-shot _backfillAwardTxHashes heals those rows later.
    */
-  async addJobFromBlockchain(bounty, storage, currentContract) {
+  async addJobFromBlockchain(bounty, storage, currentContract, eventMeta = null) {
     logger.info('Adding job from blockchain', { jobId: bounty.jobId, evaluationCid: bounty.evaluationCid });
 
     // ---- Duplicate prevention: check for existing job with same evaluationCid ----
@@ -1209,6 +1217,8 @@ class SyncService {
         pendingJob.contractAddress = currentContract;
         pendingJob.status = bounty.status || 'OPEN';
         pendingJob.lastSyncedAt = Math.floor(Date.now() / 1000);
+        if (!pendingJob.txHash && eventMeta?.txHash) pendingJob.txHash = eventMeta.txHash;
+        if (!pendingJob.blockNumber && eventMeta?.blockNumber) pendingJob.blockNumber = eventMeta.blockNumber;
         if (pendingJob.onChainId != null) delete pendingJob.onChainId;
         if (pendingJob.legacyJobId != null) delete pendingJob.legacyJobId;
         storage.nextId = Math.max(storage.nextId, bounty.jobId + 1);
@@ -1277,7 +1287,9 @@ class SyncService {
       onChain: true,
       syncedFromBlockchain: true,
       lastSyncedAt: Math.floor(Date.now() / 1000),
-      contractAddress: currentContract
+      contractAddress: currentContract,
+      txHash: eventMeta?.txHash || null,
+      blockNumber: eventMeta?.blockNumber || null
     };
 
     // If the bounty already has submissions, sync them from chain

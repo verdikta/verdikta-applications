@@ -134,19 +134,21 @@ The submission process is split into three on-chain transactions for better UX:
 1. **Prepare Submission** (`prepareSubmission`)
    - Deploys EvaluationWallet contract
    - Records submission parameters
-   - Returns wallet address for LINK approval
+   - Emits `SubmissionPrepared(submissionId, evalWallet, linkMaxBudget, …)` — parse from the receipt
 
-2. **Approve LINK** (standard ERC-20 approval)
-   - Hunter approves LINK to the EvaluationWallet
-   - No gas optimization needed (standard pattern)
+2. **Approve LINK** (standard ERC-20 approval — MANDATORY before step 3)
+   - Hunter approves `linkMaxBudget` (from step 1 event) to the EvaluationWallet
+   - The contract pulls LINK via `transferFrom`, so a direct `transfer` does **not** work
 
 3. **Start Evaluation** (`startPreparedSubmission`)
-   - Pulls LINK into wallet
+   - Pulls LINK into the wallet
    - Approves Verdikta Aggregator
    - Triggers AI evaluation
    - Returns immediately (evaluation continues async)
 
-After evaluation completes (~2 minutes), anyone can call `finalizeSubmission()` to read results and trigger payout.
+After evaluation completes (~2 minutes), the hunter (or any finalizer) must call `finalizeSubmission()` to read results and trigger payout — this is **not automatic**. If the oracle never responds, `failTimedOutSubmission()` (or the API's `/timeout` endpoint) refunds LINK after 10 minutes.
+
+Agent API entry points for each step are documented at `/agents.txt` and `/api/docs` on a running server.
 
 ## MVP Scope
 

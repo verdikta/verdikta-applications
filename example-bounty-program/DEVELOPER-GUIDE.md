@@ -240,6 +240,7 @@ The production hosts behind nginx are `bounties.verdikta.org` (mainnet) and `bou
 ### LINK approval errors at startPreparedSubmission
 - The contract pulls LINK via `transferFrom` using the allowance set in step 2 — never `transfer` LINK directly to the EvaluationWallet
 - Confirm allowance with `link.allowance(hunter, evalWallet)` before calling start
+- To generate the `LINK.approve` calldata use `POST /api/jobs/:id/submit/approve` with `{ evalWallet, linkAmount }` — note `linkAmount` is a **decimal LINK** string (e.g. `"0.6"`), not the raw wei `linkMaxBudget` from the `SubmissionPrepared` event. Convert first with `ethers.formatEther(linkMaxBudget)`.
 
 ### Hot tips
 - The `/blockchain` and `/agents` in-app pages are the canonical reference for contract ABIs and endpoint shapes — they're tested every time the page renders

@@ -3510,7 +3510,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
           dataTemplate: 'startPreparedSubmission({BOUNTY_ID}, {SUBMISSION_ID})',
           value: '0',
           chainId,
-          gasLimit: 500000,
+          gasLimit: 4000000,
           note: 'Use POST /api/jobs/:id/submit/bundle/complete with step 1 txHash to get exact calldata'
         }
       ],
@@ -3718,7 +3718,7 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
           data: startData,
           value: '0',
           chainId,
-          gasLimit: 500000
+          gasLimit: 4000000
         }
       ],
       postEvaluation: {

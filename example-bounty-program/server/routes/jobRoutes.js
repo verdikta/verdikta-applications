@@ -4660,7 +4660,15 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
         const submittedAtChain = Number(chainSub.submittedAt);
         const nowSeconds = Math.floor(Date.now() / 1000);
         const elapsedSeconds = nowSeconds - submittedAtChain;
-        const timeoutEligible = elapsedSeconds >= 600; // 10 minutes
+        // NOTE: BountyEscrow.failTimedOutSubmission measures the 10-minute clock
+        // from submittedAt (which is set at prepareSubmission, not at
+        // startPreparedSubmission). For bounties with a creator-approval
+        // window, a submission may become timeout-eligible the instant the
+        // window expires and `start` is called.
+        const TIMEOUT_SECONDS = 600;
+        const timeoutAt = submittedAtChain + TIMEOUT_SECONDS;
+        const secondsUntilTimeout = Math.max(0, timeoutAt - nowSeconds);
+        const timeoutEligible = elapsedSeconds >= TIMEOUT_SECONDS;
 
         diagnosis.checks.onChain = {
           found: true,
@@ -4672,11 +4680,18 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
           evalWallet: chainSub.evalWallet,
           verdiktaAggId: chainSub.verdiktaAggId,
           submittedAt: submittedAtChain,
+          submittedAtISO: new Date(submittedAtChain * 1000).toISOString(),
           finalizedAt: Number(chainSub.finalizedAt),
           acceptance: Number(chainSub.acceptance),
           rejection: Number(chainSub.rejection),
           elapsedMinutes: Math.floor(elapsedSeconds / 60),
-          timeoutEligible
+          elapsedSeconds,
+          timeoutEligible,
+          timeoutAt,
+          timeoutAtISO: new Date(timeoutAt * 1000).toISOString(),
+          secondsUntilTimeout,
+          timeoutReferenceNote:
+            'The 10-minute timeout clock runs from submittedAt (prepareSubmission), not from startPreparedSubmission.'
         };
 
         // Analyze on-chain state
@@ -4711,17 +4726,26 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
               } else {
                 diagnosis.checks.oracleResult = { complete: false };
                 if (timeoutEligible) {
-                  diagnosis.recommendations.push('Oracle not yet complete and submission is eligible for timeout - call failTimedOutSubmission');
+                  diagnosis.recommendations.push(
+                    `Oracle not yet complete and submission is eligible for timeout — call POST /api/jobs/${jobId}/submissions/${subId}/timeout (or failTimedOutSubmission on-chain).`
+                  );
                 } else {
-                  diagnosis.recommendations.push(`Oracle not yet complete. Wait ${Math.ceil((600 - elapsedSeconds) / 60)} more minute(s) for timeout eligibility`);
+                  diagnosis.recommendations.push(
+                    `Oracle not yet complete. Timeout becomes callable at ${new Date(timeoutAt * 1000).toISOString()} ` +
+                    `(unix ${timeoutAt}, in ${secondsUntilTimeout}s / ~${Math.ceil(secondsUntilTimeout / 60)} min). ` +
+                    `Clock runs from submittedAt (prepareSubmission), not startPreparedSubmission.`
+                  );
                 }
               }
             } catch (aggErr) {
               diagnosis.checks.oracleResult = { complete: false, error: aggErr.message };
               if (timeoutEligible) {
-                diagnosis.recommendations.push('Could not check oracle — submission is eligible for timeout');
+                diagnosis.recommendations.push('Could not check oracle — submission is eligible for timeout. Call /timeout.');
               } else {
-                diagnosis.recommendations.push(`Wait ${Math.ceil((600 - elapsedSeconds) / 60)} more minute(s) for timeout eligibility`);
+                diagnosis.recommendations.push(
+                  `Could not check oracle. Timeout becomes callable at ${new Date(timeoutAt * 1000).toISOString()} ` +
+                  `(unix ${timeoutAt}, in ${secondsUntilTimeout}s).`
+                );
               }
             }
           }

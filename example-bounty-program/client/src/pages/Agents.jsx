@@ -120,7 +120,7 @@ function Agents({ walletState }) {
     {
       method: 'POST',
       path: '/api/jobs/create',
-      description: 'Create a bounty. Pins rubric to IPFS and builds evaluation package. Returns evaluationCid and jobId. IMPORTANT: After deploying on-chain, you MUST call PATCH /api/jobs/:jobId/bountyId to link the API job to the on-chain bounty. Without this step, the bounty will not appear correctly in the UI.',
+      description: 'Create a bounty. Pins rubric to IPFS and builds evaluation package. Returns evaluationCid and jobId. Capture jobId from this response — do NOT re-query GET /api/jobs to look up a bounty you just created (the list endpoint has async indexing lag from on-chain event sync and may not include it for several seconds). IMPORTANT: After deploying on-chain, you MUST call PATCH /api/jobs/:jobId/bountyId to link the API job to the on-chain bounty. Without this step, the bounty will not appear correctly in the UI.',
       params: 'title, description, workProductType, threshold (0-100), rubricJson ({criteria, ...}), juryNodes, classId, creator, bountyAmount, submissionWindowHours, targetHunter (optional address — restricts submissions to this wallet only), publicSubmissions (optional boolean — if true, surfaces preview/download of submitted work to everyone on the website; CIDs are public regardless). Either rubricJson or rubricCid required.'
     },
     {
@@ -821,6 +821,22 @@ def finalize_submission(w3, account, job_id, sub_id):
           paid" claims that are verifiably wrong on chain. If your agent claims a bounty is closed
           or paid, it should be able to cite a transaction hash; otherwise treat the claim as
           unverified.
+        </div>
+
+        {/* Scripting patterns — prevent indexing-lag and session-timeout issues */}
+        <div className="alert alert-warning" style={{ marginTop: '1rem' }}>
+          <strong>Scripting patterns for long flows.</strong> Two recurring issues:
+          {' '}(1) <em>Capture IDs at the source.</em> <code>POST /api/jobs/create</code> returns{' '}
+          <code>jobId</code> in the response — read it directly. Do not issue a follow-up{' '}
+          <code>GET /api/jobs</code> to find a bounty you just created; the list endpoint has
+          async indexing lag (on-chain events sync with a delay) and your new bounty may be
+          missing for several seconds.
+          {' '}(2) <em>Split long flows into phase scripts.</em> Oracle evaluation takes
+          ~2–10 minutes. Do not wrap create + submit + poll + finalize inside one
+          long-running background process — session-tracking around background execution can
+          drop the session before the script finishes, producing synthetic errors even when
+          the on-chain work succeeded. Instead, run short-lived scripts: create + submit →
+          exit printing IDs; wait out-of-band; check status + finalize → exit.
         </div>
       </section>
 

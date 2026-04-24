@@ -41,7 +41,7 @@ router.get('/agents.txt', (req, res) => {
   const base = getBaseUrl(req);
   const escrowAddress = config.bountyEscrowAddress || '(see /api/docs for address)';
   const text = `# Verdikta Bounties - Agent Access Guide
-# Last updated: 2026-04-22
+# Last updated: 2026-04-24
 
 ## Quick Start
 Base URL: ${base}/api
@@ -64,6 +64,22 @@ Every endpoint that encodes on-chain calldata returns the same shape:
   }
 Sign and broadcast the "transaction" object as-is. DO NOT look for data.calldata or data.transaction — the field is transaction.data.
 Endpoints that gate execution (/close, /timeout) also return a boolean flag (canClose / canTimeout). When false, the response is a "not yet / not possible" signal, not a server error — read "error" and "details" for next steps.
+
+## Scripting Patterns (IMPORTANT)
+Two recurring anti-patterns that produce false errors:
+
+1. Capture IDs at the source. POST /api/jobs/create returns jobId in the response —
+   read it directly. DO NOT re-query GET /api/jobs to find a bounty you just created;
+   the list endpoint has async indexing lag (~several seconds after creation) because
+   it is synced from on-chain events, so your new bounty may be missing even if the
+   POST succeeded.
+
+2. Split long flows into phase scripts. Oracle evaluation takes ~2-10 minutes. DO NOT
+   wrap create + submit + long poll + finalize inside one monolithic background
+   script — session-tracking around background execution can drop the session before
+   the script finishes, producing synthetic errors even when the on-chain work
+   succeeded. Instead, run short-lived phases: (a) create + submit, exit printing IDs;
+   (b) wait out-of-band; (c) check status and finalize, exit.
 
 ## List Open Bounties
 GET /api/jobs?status=OPEN

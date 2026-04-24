@@ -28,6 +28,25 @@ const { sendError, ErrorCodes } = require('../utils/apiErrors');
 function readBool(v) { return /^(1|true|yes|on)$/i.test(String(v || '').trim()); }
 const DEV_ENV_FAKE = readBool(process.env.DEV_FAKE_RUBRIC_CID);
 
+/**
+ * Guard: a job is linked to an on-chain bounty if PATCH /bountyId set onChain,
+ * or the sync service auto-linked it via BountyCreated event.
+ * Without this, calldata endpoints happily encode the API-local jobId as the
+ * on-chain bountyId, producing transactions that revert on-chain.
+ * Returns true and sends a structured error if the job is not linked.
+ */
+function rejectIfNotOnChain(res, job, jobId, extra) {
+  if (job.onChain || job.syncedFromBlockchain) return false;
+  sendError(res, 400, {
+    code: ErrorCodes.BOUNTY_NOT_ONCHAIN,
+    message: 'Bounty not linked to on-chain contract',
+    details: `Bounty #${jobId} was created via the API but has no corresponding on-chain bounty. This usually means createBounty() was never called on the BountyEscrow contract, or the link step was skipped.`,
+    fix: `Call createBounty() on the BountyEscrow contract, then PATCH /api/jobs/${jobId}/bountyId with { bountyId, txHash } to link this job to the on-chain bountyId.`,
+    extra
+  });
+  return true;
+}
+
 // Loose IPFS CID check; we still try a HEAD fetch later when possible.
 const CID_REGEX =
   /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|bafy[0-9A-Za-z]{50,}|z[1-9A-HJ-NP-Za-km-z]{46,}|ba[ef]y[0-9A-Za-z]{50,}|b[A-Za-z2-7]{58,}|B[A-Z2-7]{58,}|F[0-9A-F]{50,})$/i;
@@ -661,7 +680,7 @@ router.get('/admin/expired', async (req, res) => {
         pendingSubmissions: []
       };
 
-      if (onChainBountyId == null) {
+      if (!job.onChain && !job.syncedFromBlockchain) {
         bountyInfo.blockedBy = 'Not linked to on-chain bounty';
         summary.notOnChain++;
         expiredBounties.push(bountyInfo);
@@ -751,16 +770,8 @@ router.post('/:jobId/close', async (req, res) => {
     logger.info('[close] check', { jobId });
 
     const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId, { canClose: false })) return;
     const onChainBountyId = job.jobId;
-
-    if (onChainBountyId == null) {
-      return res.status(400).json({
-        success: false,
-        canClose: false,
-        error: 'Job not on-chain',
-        details: 'This job has not been registered on the blockchain yet'
-      });
-    }
 
     // Check deadline
     const nowSeconds = Math.floor(Date.now() / 1000);
@@ -942,11 +953,9 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
     }
 
     const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId)) return;
     const onChainBountyId = job.jobId;
 
-    if (onChainBountyId == null) {
-      return res.status(400).json({ success: false, error: 'Job not on-chain' });
-    }
     if (job.status !== 'OPEN') {
       return res.status(400).json({ success: false, error: `Job is not open (status: ${job.status})` });
     }
@@ -1074,16 +1083,13 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
     }
 
     const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId)) return;
     const onChainBountyId = job.jobId;
     const subId = parseInt(submissionId, 10);
     const submission = job.submissions?.find(s => s.submissionId === subId);
 
     if (!submission) {
       return res.status(404).json({ success: false, error: `Submission ${submissionId} not found for job ${jobId}` });
-    }
-
-    if (onChainBountyId == null) {
-      return res.status(400).json({ success: false, error: 'Job not on-chain' });
     }
 
     const status = (submission.status || '').toLowerCase();
@@ -1170,16 +1176,13 @@ router.post('/:jobId/submissions/:submissionId/finalize', async (req, res) => {
     }
 
     const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId)) return;
     const onChainBountyId = job.jobId;
     const subId = parseInt(submissionId, 10);
     const submission = job.submissions?.find(s => s.submissionId === subId);
 
     if (!submission) {
       return res.status(404).json({ success: false, error: `Submission ${submissionId} not found for job ${jobId}` });
-    }
-
-    if (onChainBountyId == null) {
-      return res.status(400).json({ success: false, error: 'Job not on-chain' });
     }
 
     if (submission.hunter && submission.hunter.toLowerCase() !== hunter.toLowerCase()) {
@@ -1275,16 +1278,13 @@ router.post('/:jobId/submissions/:submissionId/approve-as-creator', async (req, 
     }
 
     const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId)) return;
     const onChainBountyId = job.jobId;
     const subId = parseInt(submissionId, 10);
     const submission = job.submissions?.find(s => s.submissionId === subId);
 
     if (!submission) {
       return res.status(404).json({ success: false, error: `Submission ${submissionId} not found for job ${jobId}` });
-    }
-
-    if (onChainBountyId == null) {
-      return res.status(400).json({ success: false, error: 'Job not on-chain' });
     }
 
     // Verify caller is the bounty creator
@@ -3064,6 +3064,7 @@ router.post('/:jobId/submit', async (req, res) => {
     }
 
     const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId)) return;
     if (job.status !== 'OPEN') {
       const codeMap = { EXPIRED: ErrorCodes.BOUNTY_EXPIRED, AWARDED: ErrorCodes.BOUNTY_CLOSED, CLOSED: ErrorCodes.BOUNTY_CLOSED };
       return sendError(res, 400, {
@@ -3388,6 +3389,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
     }
 
     const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId)) return;
     if (job.status !== 'OPEN') {
       const codeMap = { EXPIRED: ErrorCodes.BOUNTY_EXPIRED, AWARDED: ErrorCodes.BOUNTY_CLOSED, CLOSED: ErrorCodes.BOUNTY_CLOSED };
       return sendError(res, 400, {
@@ -3611,6 +3613,9 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
         fix: 'Provide the transaction hash from step 1 (prepareSubmission), e.g. "0xabc123..."'
       });
     }
+
+    const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId)) return;
 
     // We need blockchain access to parse the receipt
     let cs;
@@ -4424,6 +4429,7 @@ router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
     logger.info('[timeout] check', { jobId, submissionId });
 
     const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId, { canTimeout: false })) return;
     const subId = parseInt(submissionId, 10);
     const submission = job.submissions?.find(s => s.submissionId === subId);
 
@@ -4439,15 +4445,6 @@ router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
     // Get on-chain IDs
     const onChainBountyId = job.jobId;
     const onChainSubmissionId = submission.onChainSubmissionId ?? submission.submissionId;
-
-    if (onChainBountyId == null) {
-      return res.status(400).json({
-        success: false,
-        canTimeout: false,
-        error: 'Job not on-chain',
-        details: 'This job has not been registered on the blockchain yet'
-      });
-    }
 
     // Check status - must be pending evaluation
     const status = (submission.status || '').toLowerCase();
@@ -4643,7 +4640,7 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
       submissionId: subId
     };
 
-    if (onChainBountyId == null) {
+    if (!job.onChain && !job.syncedFromBlockchain) {
       diagnosis.issues.push('Job not linked to on-chain bounty');
       diagnosis.recommendations.push('Link job to on-chain bounty ID');
     } else {

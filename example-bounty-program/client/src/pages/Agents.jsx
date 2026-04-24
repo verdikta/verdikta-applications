@@ -823,9 +823,9 @@ def finalize_submission(w3, account, job_id, sub_id):
           unverified.
         </div>
 
-        {/* Scripting patterns — prevent indexing-lag and session-timeout issues */}
+        {/* Scripting patterns — prevent indexing-lag, session-timeout, ID-drift, and error-misreading issues */}
         <div className="alert alert-warning" style={{ marginTop: '1rem' }}>
-          <strong>Scripting patterns for long flows.</strong> Two recurring issues:
+          <strong>Scripting patterns for long flows.</strong> Four recurring issues:
           {' '}(1) <em>Capture IDs at the source.</em> <code>POST /api/jobs/create</code> returns{' '}
           <code>jobId</code> in the response — read it directly. Do not issue a follow-up{' '}
           <code>GET /api/jobs</code> to find a bounty you just created; the list endpoint has
@@ -837,6 +837,27 @@ def finalize_submission(w3, account, job_id, sub_id):
           drop the session before the script finishes, producing synthetic errors even when
           the on-chain work succeeded. Instead, run short-lived scripts: create + submit →
           exit printing IDs; wait out-of-band; check status + finalize → exit.
+          {' '}(3) <em>Never create an API job without deploying its on-chain bounty.</em>{' '}
+          Each <code>POST /api/jobs/create</code> auto-increments the API's{' '}
+          <code>jobId</code> counter, which must stay aligned with on-chain{' '}
+          <code>bountyCount</code>. Calling <code>/jobs/create</code> without immediately
+          following it with <code>createBounty</code> on-chain plus{' '}
+          <code>PATCH /api/jobs/:jobId/bountyId</code> drifts the counters. Use{' '}
+          <code>/submit/dry-run</code> or read-only endpoints to test response shapes; never{' '}
+          <code>/jobs/create</code>. Calldata endpoints (<code>/submit</code>,{' '}
+          <code>/submit/bundle</code>, <code>/submit/bundle/complete</code>,{' '}
+          <code>/submit/prepare</code>, <code>/submissions/:subId/start</code>,{' '}
+          <code>/finalize</code>, <code>/approve-as-creator</code>, <code>/timeout</code>,{' '}
+          <code>/close</code>) reject un-linked jobs with{' '}
+          <code>400 BOUNTY_NOT_ONCHAIN</code>; the fix is either to PATCH the linkage or wait
+          for the sync service to auto-link via the BountyCreated event.
+          {' '}(4) <em>Read revert reasons, not the ethers formatted error.</em> When a
+          submission transaction reverts, ethers' stringified error often shows{' '}
+          <code>data: ""</code> even when the real revert reason is on the receipt. During
+          submission, the most common real cause is LINK balance below{' '}
+          <code>linkMaxBudget</code> — <code>startPreparedSubmission</code> pulls LINK via{' '}
+          <code>transferFrom</code>, so an under-funded wallet fails with "ERC20: transfer
+          amount exceeds balance". Check wallet balance before debugging calldata.
         </div>
       </section>
 

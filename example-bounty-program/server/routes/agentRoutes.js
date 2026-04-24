@@ -66,7 +66,7 @@ Sign and broadcast the "transaction" object as-is. DO NOT look for data.calldata
 Endpoints that gate execution (/close, /timeout) also return a boolean flag (canClose / canTimeout). When false, the response is a "not yet / not possible" signal, not a server error — read "error" and "details" for next steps.
 
 ## Scripting Patterns (IMPORTANT)
-Two recurring anti-patterns that produce false errors:
+Four recurring anti-patterns that produce false errors:
 
 1. Capture IDs at the source. POST /api/jobs/create returns jobId in the response —
    read it directly. DO NOT re-query GET /api/jobs to find a bounty you just created;
@@ -80,6 +80,28 @@ Two recurring anti-patterns that produce false errors:
    the script finishes, producing synthetic errors even when the on-chain work
    succeeded. Instead, run short-lived phases: (a) create + submit, exit printing IDs;
    (b) wait out-of-band; (c) check status and finalize, exit.
+
+3. Never create an API job without deploying its on-chain bounty. Each
+   POST /api/jobs/create auto-increments the API's jobId counter, which must stay
+   aligned with on-chain bountyCount. Calling /jobs/create without immediately
+   following it with createBounty on-chain + PATCH /api/jobs/:jobId/bountyId drifts
+   the counters. Use /submit/dry-run or read-only endpoints to test response shapes
+   — never /jobs/create.
+
+   Server-side guard: all calldata endpoints (/submit, /submit/bundle,
+   /submit/bundle/complete, /submit/prepare, /submissions/:subId/start, /finalize,
+   /approve-as-creator, /timeout, /close) reject un-linked jobs with
+   400 BOUNTY_NOT_ONCHAIN. A "linked" job has onChain=true (set by PATCH
+   /bountyId) or syncedFromBlockchain=true (set by the sync service after the
+   BountyCreated event is observed, typically within ~2 min). The error body
+   includes a "fix" field pointing at the exact PATCH call to make.
+
+4. Read revert reasons, not the ethers formatted error. When a submission transaction
+   reverts, ethers' stringified error often shows data: "" even when the real revert
+   reason is on the receipt. During submission, the most common real cause is LINK
+   balance below linkMaxBudget — startPreparedSubmission pulls LINK via transferFrom,
+   so an under-funded wallet fails with "ERC20: transfer amount exceeds balance".
+   Check wallet balance before debugging calldata.
 
 ## List Open Bounties
 GET /api/jobs?status=OPEN

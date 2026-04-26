@@ -17,18 +17,13 @@
   gap: 2rem;
 }
 
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 2rem;
-}
-
 .logo {
   text-decoration: none;
   color: var(--text);
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  flex-shrink: 0;
 }
 
 .logo-icon {
@@ -40,10 +35,11 @@
   flex-direction: column;
 }
 
-.logo h1 {
+.logo-title {
   font-size: 1.5rem;
   font-weight: 700;
   line-height: 1.2;
+  color: var(--text);
 }
 
 .network-label {
@@ -57,6 +53,32 @@
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+.header-collapsible {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2rem;
+}
+
+.menu-toggle {
+  display: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.5rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.menu-toggle:hover {
+  background-color: var(--bg-secondary);
 }
 
 .nav {
@@ -91,9 +113,9 @@
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  color: var(--warning);
+  color: var(--warning-dark);
   font-size: 0.875rem;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .wallet-address {
@@ -118,51 +140,23 @@
   font-weight: 500;
 }
 
+.network-badge.correct {
+  background: var(--success-light);
+  color: var(--success-dark);
+  border: 1px solid var(--success);
+}
+
+.network-badge.incorrect {
+  background: var(--danger-light);
+  color: var(--danger-dark);
+  border: 1px solid var(--danger);
+}
+
 .address {
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 0.875rem;
   color: var(--text-secondary);
 }
-
-@media (max-width: 768px) {
-  .header-container {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .header-left {
-    flex-direction: column;
-    gap: 1rem;
-  }
-
-  .nav {
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-
-  /* Ensure nav links meet 44px touch target on mobile */
-  .nav-link {
-    min-height: 44px;
-    display: flex;
-    align-items: center;
-    padding: 0.75rem 1rem;
-    border-radius: 0.5rem;
-    background: var(--bg-secondary);
-  }
-
-  .nav-link:active {
-    background: var(--border);
-  }
-
-  .wallet-info {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  /* Wallet buttons meet touch target */
-  .wallet-info .btn {
-    min-height: 44px;
-  }
 
 .wrong-network-alert {
   display: flex;
@@ -173,12 +167,6 @@
   border: 1px solid var(--warning);
   border-radius: 6px;
   margin-right: 0.75rem;
-}
-
-.network-warning {
-  color: var(--warning-dark);
-  font-size: 0.875rem;
-  font-weight: 600;
 }
 
 .btn-warning {
@@ -202,42 +190,64 @@
   cursor: not-allowed;
 }
 
-.network-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  margin-right: 0.5rem;
+@media (max-width: 768px) {
+  .menu-toggle {
+    display: inline-flex;
+  }
+
+  /* Collapsible region holds nav + wallet area; hidden by default,
+     drops down below the header bar when .is-open. */
+  .header-collapsible {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1rem;
+    padding: 1rem;
+    background-color: var(--bg);
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.08);
+    flex: none;
+  }
+
+  .header-collapsible.is-open {
+    display: flex;
+  }
+
+  .nav {
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  /* Touch targets on collapsed nav */
+  .nav-link {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    border-radius: 0.5rem;
+    background: var(--bg-secondary);
+  }
+
+  .nav-link:active {
+    background: var(--border);
+  }
+
+  .header-right {
+    align-items: stretch;
+  }
+
+  .wallet-info {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  .wallet-info .btn {
+    min-height: 44px;
+    justify-content: center;
+  }
 }
-
-.network-badge.correct {
-  background: var(--success-light);
-  color: var(--success-dark);
-  border: 1px solid var(--success);
-}
-
-.network-badge.incorrect {
-  background: var(--danger-light);
-  color: var(--danger-dark);
-  border: 1px solid var(--danger);
-}
-
-.wallet-address {
-  display: flex;
-  align-items: center;
-}
-
-.address {
-  font-family: var(--font-mono);
-  padding: 0.375rem 0.75rem;
-  background: var(--gray-50);
-  border-radius: 4px;
-  margin-right: 0.5rem;
-  font-size: 0.875rem;
-}
-}
-
-
-

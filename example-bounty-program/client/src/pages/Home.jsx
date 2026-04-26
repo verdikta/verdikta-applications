@@ -182,13 +182,13 @@ function Home({ walletState }) {
     setCurrentPage(1);
   };
 
-  // Scroll to top of grid when page changes (but not on initial load)
-  const isInitialRender = useRef(true);
+  // Scroll to top of grid when page changes (but not on initial load).
+  // Compare against previous value so the guard survives StrictMode's
+  // intentional double-invocation of effects in dev.
+  const prevPageRef = useRef(currentPage);
   useEffect(() => {
-    if (isInitialRender.current) {
-      isInitialRender.current = false;
-      return;
-    }
+    if (prevPageRef.current === currentPage) return;
+    prevPageRef.current = currentPage;
     if (bountyGridRef.current) {
       bountyGridRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }

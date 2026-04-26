@@ -31,3 +31,9 @@ dist-ssr
 .env.local
 .env.production
 clientcodebase.txt
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/

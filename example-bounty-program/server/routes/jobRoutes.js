@@ -162,13 +162,28 @@ router.post('/create', async (req, res) => {
     if (!Number.isFinite(Number(threshold)) || Number(threshold) < 0 || Number(threshold) > 100) {
       return res.status(400).json({ error: 'Invalid threshold', details: 'Threshold must be between 0 and 100' });
     }
+    // Catch the most common shape mistake: agents pre-stringifying nested JSON
+    // fields. The request body is already JSON; nested objects must be passed
+    // as native objects, not as JSON-encoded strings.
+    if (typeof juryNodes === 'string') {
+      return res.status(400).json({
+        error: 'Invalid jury configuration',
+        details: 'juryNodes must be a JSON array, received a string. The request body is already JSON — do not pre-stringify nested fields. Pass it as a native array, e.g. "juryNodes": [ ... ], not "juryNodes": "[ ... ]".'
+      });
+    }
+    if (typeof rubricJson === 'string') {
+      return res.status(400).json({
+        error: 'Invalid rubric',
+        details: 'rubricJson must be a JSON object, received a string. The request body is already JSON — do not pre-stringify the rubric. Pass it as a native object, e.g. "rubricJson": { "criteria": [...] }, not "rubricJson": "{\\"criteria\\":[...]}". To debug rubric shape without side effects, use POST /api/jobs/rubric/validate.'
+      });
+    }
     // Validate jury configuration
     const juryValidation = validateJuryNodes(juryNodes);
     if (!juryValidation.valid) {
-      return res.status(400).json({ 
-        error: 'Invalid jury configuration', 
-        details: 'Jury validation failed', 
-        errors: juryValidation.errors 
+      return res.status(400).json({
+        error: 'Invalid jury configuration',
+        details: 'Jury validation failed',
+        errors: juryValidation.errors
       });
     }
     if (!rubricJson && !rubricCidIn) {
@@ -1393,6 +1408,53 @@ router.delete('/admin/:jobId', async (req, res) => {
       : 500;
     return res.status(status).json({ error: error.message });
   }
+});
+
+/* ==============
+   VALIDATE RUBRIC (side-effect free)
+   ============== */
+
+/**
+ * POST /api/jobs/rubric/validate
+ * Validate a rubric JSON object's shape without pinning, creating a job, or
+ * incrementing the jobId counter. Use this to debug rubric shapes before
+ * calling /jobs/create — never use /jobs/create as a debugging tool.
+ *
+ * Body: { rubricJson: object }
+ * Response: { valid: boolean, errors: string[] }
+ */
+router.post('/rubric/validate', (req, res) => {
+  const { rubricJson } = req.body || {};
+
+  if (rubricJson === undefined || rubricJson === null) {
+    return res.status(400).json({
+      valid: false,
+      errors: ['rubricJson is required']
+    });
+  }
+
+  if (typeof rubricJson === 'string') {
+    return res.status(400).json({
+      valid: false,
+      errors: [
+        'rubricJson must be a JSON object, received a string. The request body is already JSON — do not pre-stringify the rubric. Pass it as a native object, e.g. { "rubricJson": { "criteria": [...] } }, not { "rubricJson": "{\\"criteria\\":[...]}" }.'
+      ]
+    });
+  }
+
+  if (typeof rubricJson !== 'object' || Array.isArray(rubricJson)) {
+    return res.status(400).json({
+      valid: false,
+      errors: [`rubricJson must be a JSON object, received ${Array.isArray(rubricJson) ? 'array' : typeof rubricJson}.`]
+    });
+  }
+
+  const result = validateRubric(rubricJson);
+  return res.json({
+    valid: result.valid,
+    errors: result.errors,
+    checkedAt: new Date().toISOString()
+  });
 });
 
 /* ==============

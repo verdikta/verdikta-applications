@@ -511,6 +511,25 @@ router.get('/api/docs', (req, res) => {
       },
       {
         method: 'POST',
+        path: '/jobs/rubric/validate',
+        description: 'Validate a rubric JSON object\'s shape without pinning, creating a job, or incrementing the jobId counter. Use this BEFORE /jobs/create to debug rubric shape — never use /jobs/create as a debugging tool.',
+        contentType: 'application/json',
+        fields: ['rubricJson: object (required) — pass as a NATIVE JSON object, not a stringified one. The request body is already JSON.'],
+        returns: '{ valid: boolean, errors: string[], checkedAt }. Validates: 1-10 criteria; each has unique id (string), must (boolean), weight (number 0-1), description (string); must=true criteria must have weight=0; scored (must=false) weights must sum to 1.0 (±0.001). Threshold is NOT part of the rubric — it is a top-level field on /jobs/create.'
+      },
+      {
+        method: 'POST',
+        path: '/jobs/validate',
+        description: 'Validate an already-pinned evaluation-package CID before calling createBounty on-chain. Free, read-only.',
+        contentType: 'application/json',
+        fields: [
+          'evaluationCid: IPFS CID of the evaluation package (required)',
+          'classId: integer Verdikta class id (optional, default 128)'
+        ],
+        returns: '{ valid: boolean, errors: string[], warnings: string[], evaluationCid, checkedAt }'
+      },
+      {
+        method: 'POST',
         path: '/jobs/:id/submit/dry-run',
         description: 'Validate submission against bounty requirements without paying (free, read-only)',
         contentType: 'multipart/form-data',

@@ -190,6 +190,10 @@ class SyncService {
     this.isSyncing = false;
     this.lastSyncTime = null;
     this.syncErrors = 0;
+    this._stopped = false;
+    // Maximum delay between retries during an outage. Sync auto-recovers from
+    // transient RPC failures by exponential backoff up to this cap.
+    this.maxBackoffMs = 10 * 60 * 1000;
 
     // Set of bountyIds with PendingVerdikta submissions — polled each cycle
     this.hotBountyIds = new Set();
@@ -208,23 +212,31 @@ class SyncService {
       logger.warn('Sync service already running');
       return;
     }
+    this._stopped = false;
 
     logger.info('Starting blockchain sync service (event-based)', {
-      interval: `${this.intervalMs / 1000} seconds`
+      interval: `${this.intervalMs / 1000} seconds`,
+      maxBackoffSeconds: this.maxBackoffMs / 1000
     });
 
-    // Run initial sync immediately
-    this.syncNow();
-
-    // Then run periodically
-    this.syncTimer = setInterval(() => {
-      this.syncNow();
-    }, this.intervalMs);
+    // Chained setTimeout so each cycle can choose its own delay (exponential
+    // backoff after errors, normal interval after success). This replaces the
+    // previous setInterval + permanent-stop watchdog.
+    const tick = async () => {
+      if (this._stopped) return;
+      try { await this.syncNow(); } catch { /* syncNow handles its own errors */ }
+      if (this._stopped) return;
+      const delay = this._computeNextDelay();
+      this.syncTimer = setTimeout(tick, delay);
+    };
+    // First run fires immediately; subsequent runs are scheduled by tick().
+    this.syncTimer = setTimeout(tick, 0);
   }
 
   stop() {
+    this._stopped = true;
     if (this.syncTimer) {
-      clearInterval(this.syncTimer);
+      clearTimeout(this.syncTimer);
       this.syncTimer = null;
       logger.info('Blockchain sync service stopped');
     }
@@ -232,13 +244,26 @@ class SyncService {
 
   getStatus() {
     return {
-      isRunning: this.syncTimer !== null,
+      isRunning: this.syncTimer !== null && !this._stopped,
       isSyncing: this.isSyncing,
       lastSyncTime: this.lastSyncTime,
       intervalMinutes: this.intervalMs / 60000,
       consecutiveErrors: this.syncErrors,
+      nextDelayMs: this._computeNextDelay(),
       hotBountyCount: this.hotBountyIds.size
     };
+  }
+
+  /**
+   * Compute the delay for the next sync attempt.
+   * Normal cadence after a successful run; exponential backoff after errors,
+   * doubling each cycle (cap at maxBackoffMs). Auto-recovers when RPC returns
+   * and the next sync succeeds — syncErrors resets to 0 in syncNow().
+   */
+  _computeNextDelay() {
+    if (this.syncErrors === 0) return this.intervalMs;
+    const exp = Math.min(this.syncErrors - 1, 6); // cap exponent so we hit maxBackoff predictably
+    return Math.min(this.intervalMs * (2 ** exp), this.maxBackoffMs);
   }
 
   // ==========================================================================
@@ -294,15 +319,12 @@ class SyncService {
 
     } catch (error) {
       this.syncErrors++;
-      logger.error('Blockchain sync failed', {
+      const nextDelayMs = this._computeNextDelay();
+      logger.error('Blockchain sync failed — will retry with backoff', {
         error: error.message,
-        consecutiveErrors: this.syncErrors
+        consecutiveErrors: this.syncErrors,
+        nextRetryInSeconds: Math.round(nextDelayMs / 1000)
       });
-
-      if (this.syncErrors >= 5) {
-        logger.error('Too many sync errors, stopping sync service');
-        this.stop();
-      }
     } finally {
       this.isSyncing = false;
     }

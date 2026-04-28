@@ -3829,6 +3829,59 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
 });
 
 /* ===============================
+   GET publicSubmissions sign-payload helper
+   Returns the canonical message string that the bounty creator must sign
+   (via personal_sign / ethers signer.signMessage) to toggle the flag.
+   Removes the "build the message text by hand" foot-gun — the agent fetches
+   the message, signs it with the creator wallet, then PATCHes back.
+   =============================== */
+
+router.get('/:jobId/public-submissions/sign-payload', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const valueParam = String(req.query.value ?? '').toLowerCase();
+    if (valueParam !== 'true' && valueParam !== 'false') {
+      return res.status(400).json({
+        success: false,
+        error: 'Query param "value" must be "true" or "false"',
+        example: `${req.path}?value=true`
+      });
+    }
+    const publicSubmissions = valueParam === 'true';
+
+    const storage = await jobStorage.readStorage();
+    const job = storage.jobs.find(j => j.jobId === parseInt(jobId, 10));
+    if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
+    if (!job.creator) return res.status(400).json({ success: false, error: 'Job has no creator on record' });
+
+    const { buildPublicSubmissionsMessage } = require('../utils/messageAuth');
+    const timestamp = new Date().toISOString();
+    const message = buildPublicSubmissionsMessage({
+      bountyId: parseInt(jobId, 10),
+      publicSubmissions,
+      timestamp
+    });
+
+    return res.json({
+      success: true,
+      bountyId: parseInt(jobId, 10),
+      creator: job.creator,
+      publicSubmissions,
+      message,
+      timestamp,
+      validForSeconds: 300,
+      next: {
+        sign: 'Sign `message` verbatim with the bounty creator wallet (ethers: signer.signMessage(message); web3: personal_sign).',
+        submit: `PATCH /api/jobs/${jobId}/public-submissions with { publicSubmissions: ${publicSubmissions}, message, signature }`
+      }
+    });
+  } catch (err) {
+    logger.error('[public-submissions/sign-payload] fatal', { msg: err.message });
+    return res.status(500).json({ success: false, error: 'Failed to build sign payload', details: err.message });
+  }
+});
+
+/* ===============================
    PATCH publicSubmissions (creator-signed, off-chain)
    Toggles the off-chain "publicSubmissions" flag on a bounty. Requires a
    personal_sign message from the bounty creator. CIDs on the blockchain /

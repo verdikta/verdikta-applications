@@ -1464,8 +1464,15 @@ class SyncService {
    * Merge sync changes into fresh storage (handles PATCH race conditions)
    */
   _mergeStorageChanges(modifiedStorage, freshStorage, currentContract) {
-    // Fields that PATCH endpoints might set during sync — preserve fresh values
-    const patchPreserveFields = ['txHash', 'blockNumber', 'onChain', 'contractAddress'];
+    // Fields that PATCH endpoints might set during sync — preserve fresh values.
+    // Sync's Object.assign(freshJob, modifiedJob) below would otherwise
+    // overwrite a concurrent PATCH that landed between our initial readStorage
+    // and this merge. Add any new creator-controlled or off-chain-only fields
+    // here when adding new PATCH endpoints.
+    const patchPreserveFields = [
+      'txHash', 'blockNumber', 'onChain', 'contractAddress',
+      'publicSubmissions', 'publicSubmissionsUpdatedAt'
+    ];
 
     for (const modifiedJob of modifiedStorage.jobs) {
       const modifiedContract = (modifiedJob.contractAddress || '').toLowerCase();

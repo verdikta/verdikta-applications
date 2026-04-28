@@ -355,20 +355,20 @@ router.get('/jobs/:jobId/submissions/:submissionId/download', async (req, res) =
 
     const job = await jobStorage.getJob(jobId);
 
-    // Verify caller is the bounty creator (required for download)
-    if (!posterAddress) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing posterAddress',
-        details: 'posterAddress query parameter is required to verify ownership'
-      });
-    }
-
-    if (job.creator.toLowerCase() !== posterAddress.toLowerCase()) {
+    // Authorization: the bounty creator can always download. Anyone else can
+    // download too if the creator has enabled publicSubmissions on this bounty.
+    // (CIDs are public on-chain regardless; this just gates the convenience
+    // endpoint that returns gateway URLs and starts the retrieval countdown.)
+    const isCreator = !!posterAddress &&
+      job.creator?.toLowerCase() === posterAddress.toLowerCase();
+    const isPublicAccess = job.publicSubmissions === true;
+    if (!isCreator && !isPublicAccess) {
       return res.status(403).json({
         success: false,
         error: 'Unauthorized',
-        details: 'Only the bounty creator can download submissions'
+        details: posterAddress
+          ? 'Only the bounty creator can download submissions on this bounty. The creator has not enabled publicSubmissions.'
+          : 'posterAddress query parameter required to verify creator identity, or the creator must enable publicSubmissions on this bounty for open access.'
       });
     }
 
@@ -399,9 +399,10 @@ router.get('/jobs/:jobId/submissions/:submissionId/download', async (req, res) =
       });
     }
 
-    // Mark as retrieved (starts 7-day countdown)
+    // Mark as retrieved (starts 7-day countdown) — ONLY for the creator.
+    // Public viewers shouldn't shorten the archive TTL.
     const archivalService = getArchivalService();
-    if (archivalService) {
+    if (isCreator && archivalService) {
       try {
         await archivalService.markAsRetrieved(jobId, submissionId, posterAddress);
       } catch (e) {
@@ -410,12 +411,22 @@ router.get('/jobs/:jobId/submissions/:submissionId/download', async (req, res) =
       }
     }
 
-    // Calculate new expiry for response
-    const newExpiresAt = now + (7 * 24 * 60 * 60);
+    // Calculate new expiry for response. Public viewers see the existing
+    // expiry (which is anchored to the bounty close time + 30 days); only
+    // the creator's retrieval triggers the 7-day shortened countdown.
+    const newExpiresAt = isCreator
+      ? now + (7 * 24 * 60 * 60)
+      : (submission.archiveExpiresAt || null);
 
+    const daysUntilExpiry = newExpiresAt
+      ? Math.max(0, Math.ceil((newExpiresAt - now) / (24 * 60 * 60)))
+      : null;
     return res.json({
       success: true,
-      message: 'Archive will expire 7 days from now. Please download and save locally.',
+      message: isCreator
+        ? 'Archive will expire 7 days from now. Please download and save locally.'
+        : 'Public submission download. Archive lifetime is set by the creator and tracked from the bounty close time.',
+      accessMode: isCreator ? 'creator' : 'public',
       submission: {
         submissionId: submission.submissionId,
         hunter: submission.hunter,
@@ -426,9 +437,9 @@ router.get('/jobs/:jobId/submissions/:submissionId/download', async (req, res) =
         files: submission.files || [],
         archiveStatus: submission.archiveStatus,
         archiveExpiresAt: newExpiresAt,
-        daysUntilExpiry: 7,
-        retrievedByPoster: true,
-        retrievedAt: now
+        daysUntilExpiry,
+        retrievedByPoster: isCreator ? true : !!submission.retrievedByPoster,
+        retrievedAt: isCreator ? now : (submission.retrievedAt || null)
       },
       downloadUrls: {
         // Primary: Pinata gateway (faster, more reliable)
@@ -441,7 +452,9 @@ router.get('/jobs/:jobId/submissions/:submissionId/download', async (req, res) =
       instructions: [
         'Click the primary download URL to download the submission archive',
         'The archive is a ZIP file containing the submitted work and manifest',
-        'Save the file locally - the archive will expire in 7 days',
+        isCreator
+          ? 'Save the file locally - the archive will expire in 7 days'
+          : 'Save the file locally - this is a public-mode view; lifetime tracking is unaffected',
         'If primary fails, try the fallback URL'
       ]
     });
@@ -474,17 +487,22 @@ router.get('/jobs/:jobId/submissions/:submissionId/preview', async (req, res) =>
     const { jobId, submissionId } = req.params;
     const { posterAddress } = req.query;
 
-    if (!posterAddress) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing posterAddress',
-        details: 'posterAddress query parameter is required to verify ownership'
-      });
-    }
-
     const job = await jobStorage.getJob(jobId);
-    if (job.creator.toLowerCase() !== posterAddress.toLowerCase()) {
-      return res.status(403).json({ success: false, error: 'Unauthorized' });
+
+    // Same authorization model as /download: creator always, anyone when
+    // publicSubmissions=true. Preview never modifies state, so we don't need
+    // the creator-only branching the download endpoint has.
+    const isCreator = !!posterAddress &&
+      job.creator?.toLowerCase() === posterAddress.toLowerCase();
+    const isPublicAccess = job.publicSubmissions === true;
+    if (!isCreator && !isPublicAccess) {
+      return res.status(403).json({
+        success: false,
+        error: 'Unauthorized',
+        details: posterAddress
+          ? 'Only the bounty creator can preview submissions on this bounty. The creator has not enabled publicSubmissions.'
+          : 'posterAddress query parameter required to verify creator identity, or the creator must enable publicSubmissions on this bounty for open access.'
+      });
     }
 
     const submission = job.submissions?.find(s => s.submissionId === parseInt(submissionId));

@@ -3302,6 +3302,49 @@ function SubmissionCard({
         )}
       </div>
 
+      {/* Download / Preview — visible to the bounty creator always, and to
+          anyone when the creator has enabled publicSubmissions. CIDs are
+          public on-chain regardless; this just surfaces convenient buttons. */}
+      {submission.hunterCid && (isCreator || job?.publicSubmissions) && (
+        <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          {onPreview && (
+            <button
+              onClick={() => onPreview(submission.submissionId)}
+              disabled={isPreviewing}
+              className="btn btn-outline-secondary btn-sm"
+              style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+              title="Preview inline (text/markdown/json/csv)"
+            >
+              {isPreviewing
+                ? <><Loader2 size={12} className="spin" /> Preview</>
+                : <><Eye size={12} /> Preview</>}
+            </button>
+          )}
+          <button
+            onClick={async () => {
+              try {
+                const result = await apiService.getSubmissionDownload(
+                  jobId, submission.submissionId, walletState.address
+                );
+                if (result?.downloadUrls?.primary) {
+                  window.open(result.downloadUrls.primary, '_blank');
+                } else {
+                  window.open(`https://gateway.pinata.cloud/ipfs/${submission.hunterCid}`, '_blank');
+                }
+              } catch (err) {
+                console.error('Download failed:', err);
+                window.open(`https://gateway.pinata.cloud/ipfs/${submission.hunterCid}`, '_blank');
+              }
+            }}
+            className="btn btn-secondary btn-sm"
+            style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+            title="Download the submitted work product"
+          >
+            <Download size={12} /> Download
+          </button>
+        </div>
+      )}
+
       {/* NEW: Evaluation ready indicator */}
       {hasEvalReady && (() => {
         const score = evaluationResult.scores.acceptance;

@@ -23,12 +23,15 @@ const PREVIEW_ZIP_MAX_BYTES = 20 * 1024 * 1024;
 const PREVIEW_ENTRY_MAX_BYTES = 5 * 1024 * 1024;
 const MANIFEST_MAX_BYTES = 256 * 1024;
 
-// DEFLATE's theoretical max expansion ratio is ~1032x. Adding headroom for
-// other rarer compression methods, we use 1100. If an entry's compressedSize
-// times this ratio exceeds our limit, refuse — the declared `size` field is
-// attacker-controlled and cannot be trusted, but `compressedSize` is the
-// actual bytes on disk and is bounded by the zip we already fetched.
-const MAX_COMPRESSION_RATIO = 1100;
+// Real-world text/markdown/json compresses 2–20x; even highly repetitive
+// content rarely beats 100x. We use 100 as an "almost-always-safe" upper
+// bound for legitimate previewable content. A crafted DEFLATE blob between
+// 100x and ~1032x could slip past this check, but the resulting
+// decompression is still bounded by PREVIEW_ENTRY_MAX_BYTES, so the worst
+// case is a single allocation up to that cap — sized for the host.
+// (The theoretical DEFLATE max is ~1032x; using 1100 here false-positives
+// on normal text since markdown often compresses to >limit/1100 bytes.)
+const MAX_COMPRESSION_RATIO = 100;
 function entryBombs(entry, uncompressedLimit) {
   const declared = entry?.header?.size ?? 0;
   const compressed = entry?.header?.compressedSize ?? 0;

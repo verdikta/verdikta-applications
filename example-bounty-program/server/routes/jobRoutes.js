@@ -2424,6 +2424,7 @@ router.get('/:jobId', async (req, res) => {
     }
 
     let rubricContent = null;
+    let taskSpec = null;
     let extractedJuryNodes = job.juryNodes || [];
 
     if (req.query.includeRubric === 'true') {
@@ -2439,8 +2440,10 @@ router.get('/:jobId', async (req, res) => {
         }
       }
 
-      // If no rubricCid or fetch failed, try extracting from evaluationCid (ZIP archive)
-      if (!rubricContent && job.evaluationCid) {
+      // Open the evaluationCid ZIP for the rubric (if rubricCid wasn't set or
+      // failed) AND for the task spec (always — it's not on rubricCid).
+      const needsZip = (!rubricContent || !taskSpec) && job.evaluationCid;
+      if (needsZip) {
         try {
           const archiveBuffer = await ipfsClient.fetchFromIPFS(job.evaluationCid);
           const AdmZip = require('adm-zip');
@@ -2467,17 +2470,19 @@ router.get('/:jobId', async (req, res) => {
             }
 
             // Look for grading rubric reference in manifest.additional
-            const gradingRubricRef = manifest.additional?.find(a => a.name === 'gradingRubric');
-            if (gradingRubricRef?.hash) {
-              try {
-                const rubricBuffer = await ipfsClient.fetchFromIPFS(gradingRubricRef.hash);
-                const rubricText = rubricBuffer.toString('utf8');
-                rubricContent = JSON.parse(rubricText);
-              } catch (err) {
-                logger.warn('[jobs/details] failed to fetch grading rubric from IPFS', {
-                  hash: gradingRubricRef.hash,
-                  msg: err.message
-                });
+            if (!rubricContent) {
+              const gradingRubricRef = manifest.additional?.find(a => a.name === 'gradingRubric');
+              if (gradingRubricRef?.hash) {
+                try {
+                  const rubricBuffer = await ipfsClient.fetchFromIPFS(gradingRubricRef.hash);
+                  const rubricText = rubricBuffer.toString('utf8');
+                  rubricContent = JSON.parse(rubricText);
+                } catch (err) {
+                  logger.warn('[jobs/details] failed to fetch grading rubric from IPFS', {
+                    hash: gradingRubricRef.hash,
+                    msg: err.message
+                  });
+                }
               }
             }
           }
@@ -2497,6 +2502,41 @@ router.get('/:jobId', async (req, res) => {
               }
             }
           }
+
+          // Extract the full task specification from primary_query.json. The
+          // local job.description field can be much shorter than the canonical
+          // task text — agents sometimes pass a one-paragraph summary to the
+          // API while embedding the full multi-section spec only into the
+          // evaluation package. The block lives between the
+          // `=== TASK DESCRIPTION ===` and `=== EVALUATION PROTOCOL ===`
+          // markers in primary.query (see archiveGenerator's template).
+          const primaryEntry = entries.find(e =>
+            e.entryName === 'primary_query.json' || e.entryName.endsWith('/primary_query.json')
+          );
+          if (primaryEntry) {
+            try {
+              const primary = JSON.parse(zip.readAsText(primaryEntry));
+              const q = typeof primary?.query === 'string' ? primary.query : '';
+              const startMarker = '=== TASK DESCRIPTION ===';
+              const endMarker = '=== EVALUATION PROTOCOL ===';
+              const startIdx = q.indexOf(startMarker);
+              if (startIdx !== -1) {
+                const blockStart = startIdx + startMarker.length;
+                const endIdx = q.indexOf(endMarker, blockStart);
+                const block = (endIdx === -1
+                  ? q.slice(blockStart)
+                  : q.slice(blockStart, endIdx)
+                ).trim();
+                // Within the block, prefer just the post-"Task Description:"
+                // body so we don't duplicate Work Product Type / Task Title
+                // (those are already top-level fields on the bounty).
+                const bodyMatch = block.match(/^Task Description:\s*([\s\S]*)$/m);
+                taskSpec = (bodyMatch ? bodyMatch[1] : block).trim() || null;
+              }
+            } catch (err) {
+              logger.warn('[jobs/details] failed to parse primary_query.json', { msg: err.message });
+            }
+          }
         } catch (err) {
           logger.warn('[jobs/details] failed to extract from evaluationCid', { msg: err.message });
         }
@@ -2513,6 +2553,7 @@ router.get('/:jobId', async (req, res) => {
       job: {
         ...jobForClient,
         rubricContent: rubricContent || null,
+        taskSpec: taskSpec || null,
         juryNodes: extractedJuryNodes.length > 0 ? extractedJuryNodes : (job.juryNodes || [])
       },
       tips: [

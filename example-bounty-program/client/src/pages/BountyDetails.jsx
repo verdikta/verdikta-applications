@@ -2192,11 +2192,25 @@ function BountyDetails({ walletState }) {
         </section>
       )}
 
-      {/* Description Section */}
-      {job?.description && (
+      {/* Description Section. Prefer the full task specification extracted
+          from the on-IPFS evaluation package when available (job.taskSpec) —
+          the local job.description field can be a one-paragraph summary that
+          omits sections like "## The Task" and "## Submission Format". Fall
+          back to the local description for legacy bounties whose evaluation
+          package doesn't follow the standard primary_query.json template. */}
+      {(job?.taskSpec || job?.description) && (
         <section className="description-section">
           <h2>Job Description</h2>
-          <p>{job.description}</p>
+          {job?.taskSpec ? (
+            <div
+              className="markdown-body"
+              dangerouslySetInnerHTML={{
+                __html: renderMarkdownSafe(job.taskSpec),
+              }}
+            />
+          ) : (
+            <p>{job.description}</p>
+          )}
         </section>
       )}
 

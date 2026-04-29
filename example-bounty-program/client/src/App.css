@@ -306,6 +306,19 @@ h6 {
   letter-spacing: var(--tracking-wider);
 }
 
+/* Headings inside rendered markdown bodies need vertical breathing room.
+   The global h1..h6 rule above zeros margins for layout precision; here we
+   re-add symmetric top/bottom spacing so multi-section markdown (task specs,
+   long-form descriptions) reads naturally. The :first-child rule keeps the
+   leading heading flush with whatever section header sits just above it. */
+.markdown-body :is(h1, h2, h3, h4, h5, h6) {
+  margin-top: 0.6em;
+  margin-bottom: 0.6em;
+}
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+
 /* Display heading - for hero sections */
 .text-display {
   font-size: var(--text-4xl);

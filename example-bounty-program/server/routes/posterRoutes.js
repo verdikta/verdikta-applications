@@ -48,18 +48,30 @@ const PREVIEWABLE_EXTS = {
   '.csv': 'csv',
 };
 
-// Binary formats the preview modal can render but that don't fit the
-// inline-text shape. The /preview response for these returns metadata only;
-// the actual bytes are fetched by the frontend via the /file endpoint, so a
-// 6 MB PDF doesn't bloat the JSON 33% as a base64 blob.
+// Binary / rich-rendered formats the preview modal can render but that don't
+// fit the inline-text shape. The /preview response for these returns metadata
+// only; the actual bytes are fetched by the frontend via the /file endpoint,
+// so a 6 MB PDF doesn't bloat the JSON 33% as a base64 blob.
+//
+// SECURITY NOTE on .html: rendered client-side inside an <iframe sandbox="">
+// (no scripts, no same-origin, no forms). Serving with text/html is safe
+// because the sandbox attribute neutralizes script execution; without that,
+// a malicious submission could XSS our origin.
 const RICH_PREVIEWABLE_EXTS = {
-  '.pdf': { format: 'pdf', mimeType: 'application/pdf' },
+  '.pdf':  { format: 'pdf',   mimeType: 'application/pdf' },
+  '.png':  { format: 'image', mimeType: 'image/png' },
+  '.jpg':  { format: 'image', mimeType: 'image/jpeg' },
+  '.jpeg': { format: 'image', mimeType: 'image/jpeg' },
+  '.html': { format: 'html',  mimeType: 'text/html' },
+  '.htm':  { format: 'html',  mimeType: 'text/html' },
 };
 
 // Allowlist of file extensions the /file streaming endpoint will return.
 // Anything not in here is rejected so this endpoint can't be coerced into
 // serving arbitrary file types out of submission ZIPs.
-const FILE_STREAM_ALLOWED_EXTS = new Set(['.pdf']);
+const FILE_STREAM_ALLOWED_EXTS = new Set([
+  '.pdf', '.png', '.jpg', '.jpeg', '.html', '.htm'
+]);
 
 const FILE_STREAM_MAX_BYTES = 20 * 1024 * 1024;
 
@@ -905,6 +917,10 @@ router.get('/jobs/:jobId/submissions/:submissionId/file', async (req, res) => {
     res.setHeader('Content-Length', data.length);
     res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
     res.setHeader('Cache-Control', 'private, max-age=300');
+    // Defense in depth: stop the browser from MIME-sniffing the bytes into
+    // something more dangerous than what we declared. The frontend additionally
+    // renders HTML inside <iframe sandbox=""> so script execution is blocked.
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     return res.end(data);
 
   } catch (error) {

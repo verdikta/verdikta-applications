@@ -143,13 +143,17 @@ function BountyDetails({ walletState }) {
   const [approvingSubmissions, setApprovingSubmissions] = useState(new Set());
   const [previewingSubmissions, setPreviewingSubmissions] = useState(new Set());
   const [previewResult, setPreviewResult] = useState(null);
-  // Blob URL for PDF previews. The native <embed> tag does not carry the
-  // frontend's X-Client-Key header, so we fetch the bytes via axios (which
-  // does) and render the resulting Blob URL instead.
-  const [previewPdfBlobUrl, setPreviewPdfBlobUrl] = useState(null);
-  const [previewPdfLoading, setPreviewPdfLoading] = useState(false);
-  const [previewPdfError, setPreviewPdfError] = useState(null);
+  // Blob URL for "rich" previews (PDF, image, HTML). The native <embed>/<img>/
+  // <iframe> tags do not carry the frontend's X-Client-Key header, so we fetch
+  // the bytes via axios (which does) and render the resulting Blob URL.
+  const [previewBlobUrl, setPreviewBlobUrl] = useState(null);
+  const [previewBlobLoading, setPreviewBlobLoading] = useState(false);
+  const [previewBlobError, setPreviewBlobError] = useState(null);
   const [previewMaximized, setPreviewMaximized] = useState(false);
+
+  // Formats whose bytes are fetched via /file and rendered from a Blob URL.
+  // Text formats (md/txt/json/csv) come back inline in the /preview response.
+  const PREVIEW_BLOB_FORMATS = ['pdf', 'image', 'html'];
 
   // Polling state for submissions waiting for status update
   // Stores: { attempts, maxAttempts }
@@ -229,20 +233,25 @@ function BountyDetails({ walletState }) {
     pollingSubmissionsRef.current = pollingSubmissions;
   }, [pollingSubmissions]);
 
-  // Fetch the PDF bytes via axios when a PDF preview opens, then render the
-  // resulting Blob URL. This goes through axios so the frontend client-key
-  // header is attached — a raw <embed src> request would be auth-blocked.
+  // For "rich" preview formats (PDF, image, HTML), fetch the file bytes via
+  // axios when the modal opens and render from a Blob URL. The fetch goes
+  // through axios so the frontend client-key header is attached — a raw
+  // <embed>/<img>/<iframe src> request would be auth-blocked.
   useEffect(() => {
-    if (!previewResult || previewResult.format !== 'pdf' || !previewResult.filename) {
-      setPreviewPdfBlobUrl(null);
-      setPreviewPdfLoading(false);
-      setPreviewPdfError(null);
+    if (
+      !previewResult ||
+      !PREVIEW_BLOB_FORMATS.includes(previewResult.format) ||
+      !previewResult.filename
+    ) {
+      setPreviewBlobUrl(null);
+      setPreviewBlobLoading(false);
+      setPreviewBlobError(null);
       return;
     }
     let cancelled = false;
-    setPreviewPdfLoading(true);
-    setPreviewPdfError(null);
-    setPreviewPdfBlobUrl(null);
+    setPreviewBlobLoading(true);
+    setPreviewBlobError(null);
+    setPreviewBlobUrl(null);
     apiService.getSubmissionFileBlob(
       bountyId,
       previewResult.submissionId,
@@ -252,24 +261,25 @@ function BountyDetails({ walletState }) {
       .then(blob => {
         if (cancelled) return;
         const url = URL.createObjectURL(blob);
-        setPreviewPdfBlobUrl(url);
-        setPreviewPdfLoading(false);
+        setPreviewBlobUrl(url);
+        setPreviewBlobLoading(false);
       })
       .catch(err => {
         if (cancelled) return;
-        console.error('PDF preview fetch failed:', err);
-        setPreviewPdfError(err?.response?.data?.error || err?.message || 'Failed to load PDF');
-        setPreviewPdfLoading(false);
+        console.error('Preview fetch failed:', err);
+        setPreviewBlobError(err?.response?.data?.error || err?.message || 'Failed to load file');
+        setPreviewBlobLoading(false);
       });
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewResult, bountyId, walletState.address]);
 
   // Revoke the Blob URL when it changes or the component unmounts so we
   // don't leak memory across previews.
   useEffect(() => {
-    if (!previewPdfBlobUrl) return undefined;
-    return () => { URL.revokeObjectURL(previewPdfBlobUrl); };
-  }, [previewPdfBlobUrl]);
+    if (!previewBlobUrl) return undefined;
+    return () => { URL.revokeObjectURL(previewBlobUrl); };
+  }, [previewBlobUrl]);
 
   // Reset the maximize toggle each time the modal closes so the next open
   // starts at the default (smaller) size.
@@ -2481,28 +2491,55 @@ function BountyDetails({ walletState }) {
                         __html: renderMarkdownSafe(previewResult.content || ''),
                       }}
                     />
-                  ) : previewResult.format === 'pdf' ? (
-                    previewPdfLoading ? (
+                  ) : PREVIEW_BLOB_FORMATS.includes(previewResult.format) ? (
+                    previewBlobLoading ? (
                       <div style={{ padding: '2rem', textAlign: 'center', color: '#666' }}>
                         <Loader2 size={20} className="spin" style={{ verticalAlign: 'middle', marginRight: 8 }} />
-                        Loading PDF…
+                        Loading…
                       </div>
-                    ) : previewPdfError ? (
+                    ) : previewBlobError ? (
                       <div style={{ padding: '1rem', color: '#b91c1c' }}>
                         <AlertTriangle size={16} style={{ verticalAlign: 'middle', marginRight: 4 }} />
-                        Couldn't load PDF: {previewPdfError}. Use <strong>Download ZIP</strong> below.
+                        Couldn't load file: {previewBlobError}. Use <strong>Download ZIP</strong> below.
                       </div>
-                    ) : previewPdfBlobUrl ? (
-                      <embed
-                        type="application/pdf"
-                        src={previewPdfBlobUrl}
-                        style={{
-                          width: '100%',
-                          height: previewMaximized ? '88vh' : '70vh',
-                          border: 0, display: 'block',
-                        }}
-                        title={previewResult.filename}
-                      />
+                    ) : previewBlobUrl ? (
+                      previewResult.format === 'pdf' ? (
+                        <embed
+                          type="application/pdf"
+                          src={previewBlobUrl}
+                          style={{
+                            width: '100%',
+                            height: previewMaximized ? '88vh' : '70vh',
+                            border: 0, display: 'block',
+                          }}
+                          title={previewResult.filename}
+                        />
+                      ) : previewResult.format === 'image' ? (
+                        <img
+                          src={previewBlobUrl}
+                          alt={previewResult.filename}
+                          style={{
+                            display: 'block', margin: '0 auto',
+                            maxWidth: '100%',
+                            maxHeight: previewMaximized ? '88vh' : '70vh',
+                            objectFit: 'contain',
+                          }}
+                        />
+                      ) : previewResult.format === 'html' ? (
+                        // sandbox="" blocks scripts, forms, popups, and same-origin
+                        // access — neutralizes any malicious payload while still
+                        // rendering the document's layout, CSS, and inline images.
+                        <iframe
+                          src={previewBlobUrl}
+                          sandbox=""
+                          title={previewResult.filename}
+                          style={{
+                            width: '100%',
+                            height: previewMaximized ? '88vh' : '70vh',
+                            border: 0, display: 'block',
+                          }}
+                        />
+                      ) : null
                     ) : null
                   ) : (
                     <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>
@@ -2531,7 +2568,7 @@ function BountyDetails({ walletState }) {
                   <>
                     <strong>Nothing to preview inline.</strong>{' '}
                     This submission doesn't contain a previewable work product
-                    (supported: .md, .txt, .json, .csv, .pdf).{' '}
+                    (supported: .md, .txt, .json, .csv, .pdf, .png, .jpg, .html).{' '}
                     Use <strong>Download ZIP</strong> below to get the full archive.
                   </>
                 )}

@@ -217,6 +217,53 @@ Content-Type: multipart/form-data
 Returns: { submission: { hunterCid, ... } }. hunterCid is the IPFS CID you'll carry into /submit/prepare.
 NOTE: This endpoint ONLY pins files — it does not create an on-chain submission or a backend record. You still need prepare → (confirm + approve LINK) → start → finalize.
 
+## Submission File Formats (CRITICAL — read before submitting)
+
+Each file you upload becomes one entry in your submission's manifest.additional[].
+The Verdikta oracle pipeline forwards each entry to the AI evaluators
+INDIVIDUALLY. How that goes depends on the file type:
+
+  Format            | What the evaluators see
+  ------------------|--------------------------------------------------------
+  .md / .markdown   | Decoded as text — both models read content directly.
+  .txt              | Decoded as text — works.
+  .json / .csv      | Decoded as text — works.
+  .pdf              | Forwarded to models. Model capability varies — some
+                    | models can decode PDFs, others can't. Prefer .md when
+                    | the work is text. Use .pdf only when layout matters.
+  .png / .jpg       | Forwarded to models with multimodal vision. Works on
+                    | current jurors (gpt-5.2, claude-sonnet-4-5). Submit
+                    | individual image files, not images bundled inside .zip.
+  .zip / .rar / .7z | NOT digestible. The pipeline detects "binary data" and
+  / .tar / .gz /    | drops the attachment with this warning:
+  any archive       |   { "type": "attachment_skipped",
+                    |     "message": "File appears to contain binary data..." }
+                    | The models then see ZERO content for that attachment
+                    | and apply the rubric's must-pass-override → score 0.
+
+DO NOT submit a single .zip containing your deliverables. Even if the bounty
+asks for "a logo" and you have an SVG plus three PNGs and a rationale, submit
+ALL of them as separate files in one /submit call:
+
+  curl -X POST .../submit \\
+    -F "files=@logo.svg" \\
+    -F "files=@logo-512.png" \\
+    -F "files=@logo-128.png" \\
+    -F "files=@rationale.md" \\
+    -F "files=@palette.json" \\
+    -F "hunter=0x..."
+
+Each becomes its own manifest.additional[] entry, and each is forwarded to
+the models individually. Bundling them into a single .zip ("submission.zip")
+makes ALL of them invisible to the evaluators — the models will see only the
+manifest's filename string and reject for "missing deliverables", even though
+the files exist and a human downloader can extract them fine.
+
+How to verify your submission was readable: after evaluation, fetch the
+justification (GET /api/jobs/:id/submissions/:subId/evaluation) and look at
+the warnings[] array. An "attachment_skipped" entry there means that file
+wasn't seen. A clean evaluation has warnings: [].
+
 ## Submit Work (full bundle — pre-encoded transactions)
 POST /api/jobs/:id/submit/bundle
 Returns step-1 (prepareSubmission) calldata + templates for steps 2-4.

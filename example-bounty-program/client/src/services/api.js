@@ -395,36 +395,73 @@ async uploadRubric(rubricJson, classId = 128) {
   },
 
   /**
-   * Get download URLs for a submission (marks as retrieved, starts 7-day countdown)
-   * @param {string|number} jobId - The job ID
-   * @param {string|number} submissionId - The submission ID
-   * @param {string} posterAddress - Creator's wallet address (required)
+   * Get download URLs for a submission. For the bounty creator, this marks
+   * the archive as retrieved and starts the 7-day countdown. For non-creators
+   * (only allowed when the bounty has publicSubmissions=true), the response
+   * is a read-only public view that does not affect the archive lifetime.
+   * @param {string|number} jobId
+   * @param {string|number} submissionId
+   * @param {string} [posterAddress] - Creator wallet (optional; required for creator-mode access)
    */
   async getSubmissionDownload(jobId, submissionId, posterAddress) {
-    if (!posterAddress) {
-      throw new Error('posterAddress is required to download submissions');
-    }
+    const qs = posterAddress ? `?posterAddress=${posterAddress}` : '';
     const response = await api.get(
-      `/api/poster/jobs/${jobId}/submissions/${submissionId}/download?posterAddress=${posterAddress}`
+      `/api/poster/jobs/${jobId}/submissions/${submissionId}/download${qs}`
     );
     return response.data;
   },
 
   /**
-   * Get an inline preview of a text-like submission file (.md/.txt/.json/.csv).
-   * Unlike getSubmissionDownload, this does NOT mark the archive as retrieved —
-   * preview is a read against public IPFS content and does not start the
-   * 7-day countdown. Response includes { previewable, format, content, ... }.
+   * Get an inline preview of a previewable submission file. For text formats
+   * (.md/.txt/.json/.csv) the response carries inline `content`. For PDF, the
+   * response carries metadata only and the frontend embeds the file via
+   * getSubmissionFileUrl(). This endpoint never starts the 7-day countdown.
+   * Auth: creator always; anyone when publicSubmissions=true.
    * @param {string|number} jobId
    * @param {string|number} submissionId
-   * @param {string} posterAddress - Creator's wallet address (required)
+   * @param {string} [posterAddress] - Creator wallet (optional)
    */
   async getSubmissionPreview(jobId, submissionId, posterAddress) {
-    if (!posterAddress) {
-      throw new Error('posterAddress is required to preview submissions');
-    }
+    const qs = posterAddress ? `?posterAddress=${posterAddress}` : '';
     const response = await api.get(
-      `/api/poster/jobs/${jobId}/submissions/${submissionId}/preview?posterAddress=${posterAddress}`
+      `/api/poster/jobs/${jobId}/submissions/${submissionId}/preview${qs}`
+    );
+    return response.data;
+  },
+
+  /**
+   * Build the URL to a single file inside a submission's ZIP. Useful for
+   * server-to-server consumers and for debugging. Note: this URL is NOT
+   * directly usable in <embed src> from the official frontend, because the
+   * /file endpoint requires the X-Client-Key auth header which the browser
+   * does not attach to <embed>/<iframe> requests. Use getSubmissionFileBlob
+   * to fetch the bytes via axios and render with a Blob URL instead.
+   * @param {string|number} jobId
+   * @param {string|number} submissionId
+   * @param {string} filename - Path inside the ZIP (e.g. "submission/foo.pdf")
+   * @param {string} [posterAddress]
+   */
+  getSubmissionFileUrl(jobId, submissionId, filename, posterAddress) {
+    const params = new URLSearchParams({ path: filename });
+    if (posterAddress) params.set('posterAddress', posterAddress);
+    const base = api.defaults.baseURL || '';
+    return `${base}/api/poster/jobs/${jobId}/submissions/${submissionId}/file?${params.toString()}`;
+  },
+
+  /**
+   * Fetch a single file out of a submission's ZIP as a Blob. Uses the axios
+   * client so auth headers (X-Client-Key for the frontend, X-Bot-API-Key for
+   * bots) are attached automatically. Wrap the result with URL.createObjectURL
+   * for use in <embed>/<iframe>, and call URL.revokeObjectURL on cleanup.
+   * Currently only .pdf paths are accepted server-side.
+   * @returns {Promise<Blob>}
+   */
+  async getSubmissionFileBlob(jobId, submissionId, filename, posterAddress) {
+    const params = { path: filename };
+    if (posterAddress) params.posterAddress = posterAddress;
+    const response = await api.get(
+      `/api/poster/jobs/${jobId}/submissions/${submissionId}/file`,
+      { params, responseType: 'blob' }
     );
     return response.data;
   },

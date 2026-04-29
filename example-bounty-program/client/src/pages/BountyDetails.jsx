@@ -18,6 +18,8 @@ import {
   Play,
   Eye,
   Download,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { renderMarkdownSafe } from '../utils/markdownPreview';
 import { useToast } from '../components/Toast';
@@ -141,6 +143,13 @@ function BountyDetails({ walletState }) {
   const [approvingSubmissions, setApprovingSubmissions] = useState(new Set());
   const [previewingSubmissions, setPreviewingSubmissions] = useState(new Set());
   const [previewResult, setPreviewResult] = useState(null);
+  // Blob URL for PDF previews. The native <embed> tag does not carry the
+  // frontend's X-Client-Key header, so we fetch the bytes via axios (which
+  // does) and render the resulting Blob URL instead.
+  const [previewPdfBlobUrl, setPreviewPdfBlobUrl] = useState(null);
+  const [previewPdfLoading, setPreviewPdfLoading] = useState(false);
+  const [previewPdfError, setPreviewPdfError] = useState(null);
+  const [previewMaximized, setPreviewMaximized] = useState(false);
 
   // Polling state for submissions waiting for status update
   // Stores: { attempts, maxAttempts }
@@ -219,6 +228,54 @@ function BountyDetails({ walletState }) {
   useEffect(() => {
     pollingSubmissionsRef.current = pollingSubmissions;
   }, [pollingSubmissions]);
+
+  // Fetch the PDF bytes via axios when a PDF preview opens, then render the
+  // resulting Blob URL. This goes through axios so the frontend client-key
+  // header is attached — a raw <embed src> request would be auth-blocked.
+  useEffect(() => {
+    if (!previewResult || previewResult.format !== 'pdf' || !previewResult.filename) {
+      setPreviewPdfBlobUrl(null);
+      setPreviewPdfLoading(false);
+      setPreviewPdfError(null);
+      return;
+    }
+    let cancelled = false;
+    setPreviewPdfLoading(true);
+    setPreviewPdfError(null);
+    setPreviewPdfBlobUrl(null);
+    apiService.getSubmissionFileBlob(
+      bountyId,
+      previewResult.submissionId,
+      previewResult.filename,
+      walletState.address
+    )
+      .then(blob => {
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        setPreviewPdfBlobUrl(url);
+        setPreviewPdfLoading(false);
+      })
+      .catch(err => {
+        if (cancelled) return;
+        console.error('PDF preview fetch failed:', err);
+        setPreviewPdfError(err?.response?.data?.error || err?.message || 'Failed to load PDF');
+        setPreviewPdfLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [previewResult, bountyId, walletState.address]);
+
+  // Revoke the Blob URL when it changes or the component unmounts so we
+  // don't leak memory across previews.
+  useEffect(() => {
+    if (!previewPdfBlobUrl) return undefined;
+    return () => { URL.revokeObjectURL(previewPdfBlobUrl); };
+  }, [previewPdfBlobUrl]);
+
+  // Reset the maximize toggle each time the modal closes so the next open
+  // starts at the default (smaller) size.
+  useEffect(() => {
+    if (!previewResult) setPreviewMaximized(false);
+  }, [previewResult]);
 
   // ============================================================================
   // DIAGNOSTIC PANEL TOGGLE (Ctrl+Shift+D)
@@ -2372,14 +2429,31 @@ function BountyDetails({ walletState }) {
           <div
             onClick={(e) => e.stopPropagation()}
             style={{
-              background: '#fff', borderRadius: 12, padding: '2rem',
-              width: '100%', maxWidth: 900, maxHeight: '90vh', overflowY: 'auto',
+              background: '#fff', borderRadius: 12,
+              padding: previewMaximized ? '1rem' : '2rem',
+              width: '100%',
+              maxWidth: previewMaximized ? '98vw' : 900,
+              maxHeight: previewMaximized ? '98vh' : '90vh',
+              overflowY: 'auto',
+              display: 'flex', flexDirection: 'column',
             }}
           >
-            <h3 style={{ marginTop: 0 }}>
-              <Eye size={20} style={{ verticalAlign: 'middle', marginRight: 6 }} />
-              Submission #{previewResult.submissionId} Preview
-            </h3>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+              <h3 style={{ margin: 0 }}>
+                <Eye size={20} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+                Submission #{previewResult.submissionId} Preview
+              </h3>
+              <button
+                onClick={() => setPreviewMaximized(m => !m)}
+                className="btn btn-outline-secondary btn-sm"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.85rem', padding: '0.3rem 0.6rem' }}
+                title={previewMaximized ? 'Restore default size' : 'Maximize'}
+              >
+                {previewMaximized
+                  ? <><Minimize2 size={14} /> Restore</>
+                  : <><Maximize2 size={14} /> Maximize</>}
+              </button>
+            </div>
             {previewResult.previewable ? (
               <>
                 <div style={{ fontSize: '0.85rem', marginBottom: '0.75rem' }}>
@@ -2394,7 +2468,10 @@ function BountyDetails({ walletState }) {
                 <div
                   style={{
                     background: '#fafafa', border: '1px solid #e5e7eb',
-                    borderRadius: 6, padding: '1rem', maxHeight: '60vh', overflow: 'auto',
+                    borderRadius: 6, padding: previewResult.format === 'pdf' ? 0 : '1rem',
+                    maxHeight: previewMaximized ? '88vh' : '70vh',
+                    flex: previewMaximized ? '1 1 auto' : undefined,
+                    overflow: 'auto',
                   }}
                 >
                   {previewResult.format === 'md' ? (
@@ -2404,6 +2481,29 @@ function BountyDetails({ walletState }) {
                         __html: renderMarkdownSafe(previewResult.content || ''),
                       }}
                     />
+                  ) : previewResult.format === 'pdf' ? (
+                    previewPdfLoading ? (
+                      <div style={{ padding: '2rem', textAlign: 'center', color: '#666' }}>
+                        <Loader2 size={20} className="spin" style={{ verticalAlign: 'middle', marginRight: 8 }} />
+                        Loading PDF…
+                      </div>
+                    ) : previewPdfError ? (
+                      <div style={{ padding: '1rem', color: '#b91c1c' }}>
+                        <AlertTriangle size={16} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                        Couldn't load PDF: {previewPdfError}. Use <strong>Download ZIP</strong> below.
+                      </div>
+                    ) : previewPdfBlobUrl ? (
+                      <embed
+                        type="application/pdf"
+                        src={previewPdfBlobUrl}
+                        style={{
+                          width: '100%',
+                          height: previewMaximized ? '88vh' : '70vh',
+                          border: 0, display: 'block',
+                        }}
+                        title={previewResult.filename}
+                      />
+                    ) : null
                   ) : (
                     <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>
                       {previewResult.content}
@@ -2430,8 +2530,9 @@ function BountyDetails({ walletState }) {
                 ) : (
                   <>
                     <strong>Nothing to preview inline.</strong>{' '}
-                    This submission doesn't contain a text-based file (.md, .txt, .json, .csv).{' '}
-                    Use <strong>Download ZIP</strong> below to get the work product.
+                    This submission doesn't contain a previewable work product
+                    (supported: .md, .txt, .json, .csv, .pdf).{' '}
+                    Use <strong>Download ZIP</strong> below to get the full archive.
                   </>
                 )}
               </div>

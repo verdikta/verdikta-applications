@@ -48,6 +48,21 @@ const PREVIEWABLE_EXTS = {
   '.csv': 'csv',
 };
 
+// Binary formats the preview modal can render but that don't fit the
+// inline-text shape. The /preview response for these returns metadata only;
+// the actual bytes are fetched by the frontend via the /file endpoint, so a
+// 6 MB PDF doesn't bloat the JSON 33% as a base64 blob.
+const RICH_PREVIEWABLE_EXTS = {
+  '.pdf': { format: 'pdf', mimeType: 'application/pdf' },
+};
+
+// Allowlist of file extensions the /file streaming endpoint will return.
+// Anything not in here is rejected so this endpoint can't be coerced into
+// serving arbitrary file types out of submission ZIPs.
+const FILE_STREAM_ALLOWED_EXTS = new Set(['.pdf']);
+
+const FILE_STREAM_MAX_BYTES = 20 * 1024 * 1024;
+
 // Lazy-load archival service to avoid circular dependency issues
 function getArchivalService() {
   try {
@@ -583,6 +598,9 @@ router.get('/jobs/:jobId/submissions/:submissionId/preview', async (req, res) =>
     let previewFilename = null;
     let previewFormat = null;
     let mimeType = null;
+    // Cached manifest.additional so the rich-format fallback below doesn't
+    // re-parse manifest.json when the text scan came up empty.
+    let manifestAdditional = null;
 
     if (manifestEntry) {
       try {
@@ -596,6 +614,7 @@ router.get('/jobs/:jobId/submissions/:submissionId/preview', async (req, res) =>
         }
         const manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
         const additional = Array.isArray(manifest.additional) ? manifest.additional : [];
+        manifestAdditional = additional;
         // Pick first text-like entry from manifest
         for (const entry of additional) {
           const ext = path.extname(entry.filename || '').toLowerCase();
@@ -611,7 +630,7 @@ router.get('/jobs/:jobId/submissions/:submissionId/preview', async (req, res) =>
       }
     }
 
-    // Fallback: scan zip for any previewable file under submission/
+    // Fallback 1: scan zip for any previewable text file under submission/
     if (!previewFilename) {
       for (const entry of zip.getEntries()) {
         if (entry.isDirectory) continue;
@@ -620,6 +639,46 @@ router.get('/jobs/:jobId/submissions/:submissionId/preview', async (req, res) =>
           previewFilename = entry.entryName;
           previewFormat = PREVIEWABLE_EXTS[ext];
           break;
+        }
+      }
+    }
+
+    // Fallback 2: rich (binary) formats — currently PDF. The frontend renders
+    // these via <embed>; the bytes are NOT included in this JSON response,
+    // they're fetched separately via GET /api/poster/jobs/:id/submissions/:subId/file.
+    let richFormatHit = null;
+    if (!previewFilename) {
+      // Manifest first
+      if (manifestAdditional) {
+        for (const entry of manifestAdditional) {
+          const ext = path.extname(entry.filename || '').toLowerCase();
+          const richSpec = RICH_PREVIEWABLE_EXTS[ext];
+          if (richSpec) {
+            previewFilename = entry.filename;
+            previewFormat = richSpec.format;
+            // Trust the extension-derived mimeType over the manifest's
+            // self-reported `type`. archiveGenerator currently writes
+            // application/octet-stream for everything, which would break
+            // <embed type="..."> rendering on the frontend.
+            mimeType = richSpec.mimeType;
+            richFormatHit = richSpec;
+            break;
+          }
+        }
+      }
+      // Then zip scan
+      if (!previewFilename) {
+        for (const entry of zip.getEntries()) {
+          if (entry.isDirectory) continue;
+          const ext = path.extname(entry.entryName).toLowerCase();
+          const richSpec = RICH_PREVIEWABLE_EXTS[ext];
+          if (richSpec && entry.entryName.startsWith('submission/')) {
+            previewFilename = entry.entryName;
+            previewFormat = richSpec.format;
+            mimeType = richSpec.mimeType;
+            richFormatHit = richSpec;
+            break;
+          }
         }
       }
     }
@@ -640,8 +699,8 @@ router.get('/jobs/:jobId/submissions/:submissionId/preview', async (req, res) =>
       return res.json({
         ...commonResponse,
         previewable: false,
-        reason: 'no-text-file',
-        details: 'No .md/.txt/.json/.csv work product found in this submission.',
+        reason: 'no-previewable-file',
+        details: 'No previewable work product found. Supported inline formats: .md/.txt/.json/.csv (rendered as text) and .pdf (rendered via embed).',
       });
     }
 
@@ -667,6 +726,21 @@ router.get('/jobs/:jobId/submissions/:submissionId/preview', async (req, res) =>
         byteLength: fileEntry.header?.size ?? null,
         compressedBytes: fileEntry.header?.compressedSize ?? null,
         details: `File exceeds ${PREVIEW_ENTRY_MAX_BYTES} byte preview limit. Use download instead.`,
+      });
+    }
+
+    // Rich formats (PDF): respond with metadata only. The frontend fetches the
+    // actual bytes via /file. This avoids embedding a 6 MB+ base64 blob in JSON.
+    if (richFormatHit) {
+      const declaredSize = fileEntry.header?.size ?? null;
+      return res.json({
+        ...commonResponse,
+        previewable: true,
+        filename: previewFilename,
+        format: previewFormat,
+        mimeType,
+        byteLength: declaredSize,
+        truncated: false,
       });
     }
 
@@ -699,6 +773,151 @@ router.get('/jobs/:jobId/submissions/:submissionId/preview', async (req, res) =>
       error: 'Preview failed',
       details: error.message,
     });
+  }
+});
+
+/**
+ * GET /api/poster/jobs/:jobId/submissions/:submissionId/file?path=...
+ * Stream a single file out of a submission's ZIP archive, so the frontend can
+ * embed it directly (e.g. <embed type="application/pdf">). Same auth as
+ * /preview: bounty creator OR publicSubmissions=true.
+ *
+ * Currently allows .pdf only — see FILE_STREAM_ALLOWED_EXTS. The path is
+ * matched literally against ZIP entry names (no traversal/escape risk since
+ * we're reading from a sealed ZIP, but the allowlist keeps us from being
+ * coerced into serving arbitrary content types).
+ */
+router.get('/jobs/:jobId/submissions/:submissionId/file', async (req, res) => {
+  try {
+    const { jobId, submissionId } = req.params;
+    const { posterAddress, path: rawPath } = req.query;
+
+    if (!rawPath || typeof rawPath !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing path',
+        details: 'path query parameter required (e.g. submission/your-file.pdf)'
+      });
+    }
+
+    const job = await jobStorage.getJob(jobId);
+
+    const isCreator = !!posterAddress &&
+      job.creator?.toLowerCase() === posterAddress.toLowerCase();
+    const isPublicAccess = job.publicSubmissions === true;
+    if (!isCreator && !isPublicAccess) {
+      return res.status(403).json({
+        success: false,
+        error: 'Unauthorized',
+        details: posterAddress
+          ? 'Only the bounty creator can stream submission files. The creator has not enabled publicSubmissions.'
+          : 'posterAddress required, or the creator must enable publicSubmissions on this bounty.'
+      });
+    }
+
+    const submission = job.submissions?.find(s => s.submissionId === parseInt(submissionId));
+    if (!submission) return res.status(404).json({ success: false, error: 'Submission not found' });
+    if (!submission.hunterCid) return res.status(404).json({ success: false, error: 'Submission has no archived content' });
+
+    const ext = path.extname(rawPath).toLowerCase();
+    if (!FILE_STREAM_ALLOWED_EXTS.has(ext)) {
+      return res.status(400).json({
+        success: false,
+        error: 'File type not streamable',
+        details: `Only these extensions can be streamed inline: ${[...FILE_STREAM_ALLOWED_EXTS].join(', ')}. Use /download for the full ZIP.`
+      });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    if (submission.archiveExpiresAt && now > submission.archiveExpiresAt) {
+      return res.status(410).json({ success: false, error: 'Archive expired' });
+    }
+
+    // Fetch the ZIP (same gateway fallback as /preview)
+    const gatewayUrls = [
+      `${PINATA_GATEWAY}/ipfs/${submission.hunterCid}`,
+      `${IPFS_GATEWAY}/ipfs/${submission.hunterCid}`,
+    ];
+    let zipBuffer = null;
+    let fetchError = null;
+    for (const url of gatewayUrls) {
+      try {
+        const resp = await fetch(url, { signal: AbortSignal.timeout(20000) });
+        if (!resp.ok) { fetchError = `${url} → ${resp.status}`; continue; }
+        const contentLength = parseInt(resp.headers.get('content-length') || '0', 10);
+        if (contentLength && contentLength > FILE_STREAM_MAX_BYTES) {
+          return res.status(413).json({
+            success: false,
+            error: 'Archive too large to stream',
+            details: `ZIP is ${contentLength} bytes; max ${FILE_STREAM_MAX_BYTES}.`
+          });
+        }
+        const arrayBuffer = await resp.arrayBuffer();
+        if (arrayBuffer.byteLength > FILE_STREAM_MAX_BYTES) {
+          return res.status(413).json({ success: false, error: 'Archive too large to stream' });
+        }
+        zipBuffer = Buffer.from(arrayBuffer);
+        break;
+      } catch (e) {
+        fetchError = e.message;
+      }
+    }
+    if (!zipBuffer) {
+      return res.status(502).json({
+        success: false,
+        error: 'Failed to fetch archive from IPFS',
+        details: fetchError || 'unknown error'
+      });
+    }
+
+    let zip;
+    try {
+      zip = new AdmZip(zipBuffer);
+    } catch (e) {
+      return res.status(422).json({ success: false, error: 'Archive is not a valid ZIP', details: e.message });
+    }
+
+    const fileEntry = zip.getEntry(rawPath);
+    if (!fileEntry || fileEntry.isDirectory) {
+      return res.status(404).json({
+        success: false,
+        error: 'File not found in archive',
+        details: `No entry named "${rawPath}" in the submission ZIP.`
+      });
+    }
+
+    if (entryBombs(fileEntry, FILE_STREAM_MAX_BYTES)) {
+      return res.status(413).json({
+        success: false,
+        error: 'File exceeds streaming size limit',
+        details: `Use /download for the full archive.`,
+        byteLength: fileEntry.header?.size ?? null,
+        compressedBytes: fileEntry.header?.compressedSize ?? null,
+      });
+    }
+
+    const data = fileEntry.getData();
+    const richSpec = RICH_PREVIEWABLE_EXTS[ext];
+    const mimeType = richSpec?.mimeType || 'application/octet-stream';
+    const safeName = path.basename(rawPath).replace(/[^A-Za-z0-9._-]/g, '_');
+
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Length', data.length);
+    res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    return res.end(data);
+
+  } catch (error) {
+    logger.error('[poster/file] error', {
+      jobId: req.params.jobId,
+      submissionId: req.params.submissionId,
+      path: req.query.path,
+      error: error.message
+    });
+    if (error.message && error.message.includes('not found')) {
+      return res.status(404).json({ success: false, error: 'Not found', details: error.message });
+    }
+    return res.status(500).json({ success: false, error: 'Stream failed', details: error.message });
   }
 });
 

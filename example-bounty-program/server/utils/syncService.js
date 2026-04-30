@@ -680,12 +680,25 @@ class SyncService {
               4: 'APPROVED',
               5: 'PendingCreatorApproval',
             };
+            const onChainStatusMap = {
+              0: 'Prepared',
+              1: 'PendingVerdikta',
+              2: 'Failed',
+              3: 'PassedPaid',
+              4: 'PassedUnpaid',
+              5: 'PendingCreatorApproval',
+            };
             const statusIndex = Number(chainSub.status);
             const chainStatus = statusMap[statusIndex] || 'UNKNOWN';
+            const chainOnChainStatus = onChainStatusMap[statusIndex] || null;
 
             if (chainStatus !== sub.status) {
               sub.status = chainStatus;
-              sub.onChainStatus = chainStatus;
+              // Store the low-level chain enum name, not the collapsed
+              // high-level form — analytics needs PassedPaid vs PassedUnpaid.
+              if (chainOnChainStatus) {
+                sub.onChainStatus = chainOnChainStatus;
+              }
               sub.creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
               if (chainSub.hunterCid && !sub.hunterCid) {
                 sub.hunterCid = chainSub.hunterCid;

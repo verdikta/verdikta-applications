@@ -1991,11 +1991,16 @@ router.get('/:jobId/submissions', async (req, res) => {
     // Map internal status to simplified public status
     function mapStatus(sub) {
       const status = (sub.status || '').toLowerCase();
+      const onChainStatus = (sub.onChainStatus || '').toLowerCase();
       const score = sub.acceptance ?? sub.score ?? null;
       const hasScore = score !== null && score !== undefined && score > 0;
 
-      // Check for winner (PassedPaid)
-      if (status === 'passedpaid' || status === 'winner') {
+      // Check for winner (PassedPaid). The high-level `status` field collapses
+      // PassedPaid and PassedUnpaid into 'APPROVED', so we also key off the
+      // low-level `onChainStatus` and the `paidWinner` flag set by the
+      // PayoutSent event handler.
+      if (status === 'passedpaid' || status === 'winner' ||
+          onChainStatus === 'passedpaid' || sub.paidWinner === true) {
         return 'WINNER';
       }
 
@@ -2368,6 +2373,14 @@ router.get('/:jobId', async (req, res) => {
             4: 'APPROVED',
             5: 'PendingCreatorApproval',
           };
+          const onChainStatusMap = {
+            0: 'Prepared',
+            1: 'PendingVerdikta',
+            2: 'Failed',
+            3: 'PassedPaid',
+            4: 'PassedUnpaid',
+            5: 'PendingCreatorApproval',
+          };
           let healedAny = false;
           // Run reads in parallel — usually 1 stuck record, but be safe
           const healResults = await Promise.allSettled(
@@ -2384,9 +2397,15 @@ router.get('/:jobId', async (req, res) => {
             }
             const chainSub = result.value;
             const chainStatus = statusMap[Number(chainSub.status)] || 'UNKNOWN';
+            const chainOnChainStatus = onChainStatusMap[Number(chainSub.status)] || null;
             if (chainStatus !== sub.status) {
               sub.status = chainStatus;
-              sub.onChainStatus = chainStatus;
+              // Low-level chain enum name (PassedPaid/PassedUnpaid/Failed),
+              // not the collapsed high-level form, so analytics can tell
+              // paid winners from passed-but-unpaid submissions.
+              if (chainOnChainStatus) {
+                sub.onChainStatus = chainOnChainStatus;
+              }
               sub.creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
               if (chainSub.hunterCid && !sub.hunterCid) {
                 sub.hunterCid = chainSub.hunterCid;
@@ -3370,11 +3389,24 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
         4: 'APPROVED',                // PassedUnpaid
         5: 'PendingCreatorApproval',
       };
+      const onChainStatusMap = {
+        0: 'Prepared',
+        1: 'PendingVerdikta',
+        2: 'Failed',
+        3: 'PassedPaid',
+        4: 'PassedUnpaid',
+        5: 'PendingCreatorApproval',
+      };
       const statusIndex = Number(chainSub.status);
       const chainStatus = statusMap[statusIndex] || 'UNKNOWN';
+      const chainOnChainStatus = onChainStatusMap[statusIndex] || null;
 
       submission.status = chainStatus;
-      submission.onChainStatus = chainStatus;
+      // Low-level chain enum name — analytics needs this to distinguish
+      // PassedPaid (winner) from PassedUnpaid (passed but didn't win).
+      if (chainOnChainStatus) {
+        submission.onChainStatus = chainOnChainStatus;
+      }
       submission.creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
       submission.linkMaxBudget = chainSub.linkMaxBudget?.toString() || submission.linkMaxBudget;
       submission.submittedAt = Number(chainSub.submittedAt) || submission.submittedAt;
@@ -4402,8 +4434,23 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       4: 'APPROVED',            // PassedUnpaid (passed but someone else won)
       5: 'PendingCreatorApproval',
     };
+    // Low-level (chain enum) names — preserved alongside the high-level
+    // status so analytics and the public submissions endpoint can
+    // distinguish PassedPaid (winner) from PassedUnpaid (didn't win) even
+    // when both collapse to 'APPROVED' in the high-level field. See bug:
+    // 23 finalized submissions stuck as EVALUATED_PASSED because refresh
+    // never wrote onChainStatus.
+    const onChainStatusMap = {
+      0: 'Prepared',
+      1: 'PendingVerdikta',
+      2: 'Failed',
+      3: 'PassedPaid',
+      4: 'PassedUnpaid',
+      5: 'PendingCreatorApproval',
+    };
     const statusIndex = Number(sub.status);
     let chainStatus = statusMap[statusIndex] || 'UNKNOWN';
+    let chainOnChainStatus = onChainStatusMap[statusIndex] || null;
 
     // Receipt eligibility helpers
     const paidWinner = statusIndex === 3;      // PassedPaid
@@ -4489,6 +4536,12 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
     // Update local storage (reuse localSubmission from earlier check)
     if (localSubmission) {
       localSubmission.status = chainStatus;
+      // Low-level chain enum name. Analytics keys off this to distinguish
+      // PassedPaid vs PassedUnpaid; without it, paid winners are miscounted
+      // as approvedUnpaid in /api/analytics.
+      if (chainOnChainStatus) {
+        localSubmission.onChainStatus = chainOnChainStatus;
+      }
       localSubmission.score = acceptScore;
       localSubmission.acceptance = acceptScore;
       localSubmission.rejection = rejectScore;
@@ -4528,6 +4581,7 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       submission: {
         submissionId: subId,
         status: chainStatus,
+        onChainStatus: chainOnChainStatus,
         acceptance: acceptScore,
         rejection: rejectScore,
         evaluationCid: sub.evaluationCid,

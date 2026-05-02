@@ -184,9 +184,14 @@ const TEMPLATES = {
   },
 };
 
-// Default jury configuration
+// Default jury configuration.
+// The oracle network only routes a fixed list of provider/model pairs; using
+// anything outside that list produces a bounty whose submissions silently
+// hang in PendingVerdikta because no node accepts the work. Verified-working
+// (as of 2026): gpt-5.2-2025-12-11, gpt-5-mini-2025-08-07,
+// claude-3-5-haiku-20241022. Stick to one of these for the default.
 const DEFAULT_JURY = [
-  { provider: 'anthropic', model: 'claude-sonnet-4-20250514', runs: 1, weight: 1.0 },
+  { provider: 'anthropic', model: 'claude-3-5-haiku-20241022', runs: 1, weight: 1.0 },
 ];
 
 // =============================================================================
@@ -200,7 +205,7 @@ function parseArgs() {
     amount: 0.001,
     hours: 24,
     template: 'writing',
-    classId: 131,
+    classId: 128,
     threshold: null,  // null means use template default
     target: null,     // null = open bounty, address = targeted
     creatorPay: null,  // null = same as amount (no window)
@@ -230,7 +235,7 @@ function parseArgs() {
         break;
       case '--class':
       case '-c':
-        options.classId = parseInt(args[++i]) || 131;
+        options.classId = parseInt(args[++i]) || 128;
         break;
       case '--threshold':
         options.threshold = parseInt(args[++i]);
@@ -283,8 +288,16 @@ function parseArgs() {
   if (options.creatorPay !== null || options.arbiterPay !== null || options.window > 0) {
     options.creatorPay = options.creatorPay ?? options.amount;
     options.arbiterPay = options.arbiterPay ?? options.amount;
-    if (options.window === 0 && options.creatorPay !== options.arbiterPay) {
-      console.error('Error: --window is required when --creator-pay and --arbiter-pay differ');
+    // A windowed bounty MUST have a positive window. Without it the contract
+    // stores creator/arbiter determination payments but skips the
+    // PendingCreatorApproval state entirely — submissions go straight to
+    // Prepared, creatorWindowEnd is never set, and creatorApproveSubmission
+    // can't engage. This is the bug pattern that hit bounties #151-153 on
+    // Base. Reject the silent-no-op shape rather than let it on-chain.
+    if (options.window <= 0) {
+      console.error('Error: --window must be > 0 (in seconds) when --creator-pay or --arbiter-pay is set.');
+      console.error('       A non-zero window is what enables the creator approval flow on-chain;');
+      console.error('       without it the determination payments are stored but never used.');
       process.exit(1);
     }
     // amount must equal max of the two payments
@@ -310,7 +323,7 @@ Options:
   --amount, -a <eth>       Bounty amount in ETH (default: 0.001)
   --hours, -h <hours>      Submission window in hours (default: 24)
   --template, -t <name>    Template to use: writing, code, design, research (default: writing)
-  --class, -c <id>         Verdikta class ID (default: 131)
+  --class, -c <id>         Verdikta class ID (default: 128)
   --threshold <percent>    Passing threshold 0-100 (default: from template)
   --target <address>       Target a specific hunter address (default: open to all)
   --creator-pay <eth>      Payment if creator approves (enables approval window)

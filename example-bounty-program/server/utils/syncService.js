@@ -198,9 +198,9 @@ class SyncService {
     // Set of bountyIds with PendingVerdikta submissions — polled each cycle
     this.hotBountyIds = new Set();
     this._staleCheckDone = false;
-    this._healCheckDone = false;
-    // Note: submission-level heal (Phase D.7) runs every sync cycle, not
-    // gated by a one-shot flag — see the periodic-heal block in _eventSync.
+    // Note: chain-fields heal (Phase D.6) and submission-level heal (D.7) both
+    // run every sync cycle and gate on per-record sentinels rather than a
+    // one-shot process flag — see the heal blocks in _eventSync.
   }
 
   // ==========================================================================
@@ -577,32 +577,44 @@ class SyncService {
       this._staleCheckDone = true;
     }
 
-    // Phase D.6: One-shot heal sweep — backfill chain-authoritative fields for
-    // jobs that were marked syncedFromBlockchain in the past but are missing
-    // the windowed/target fields (because of an older bug where Phase D.5
-    // discarded the getBounty() result instead of copying it). Runs once per
-    // server startup, gated by _healCheckDone.
+    // Phase D.6: Reactive heal sweep — backfill chain-authoritative fields for
+    // jobs that were marked syncedFromBlockchain but are missing the
+    // windowed/target fields. Originally one-shot at startup, but jobs can
+    // drift into this state mid-process (e.g. BountyCreated event handler's
+    // "existing" branch before the targetHunter backfill landed; bounties
+    // #151-153 on Base). Runs every cycle when candidates exist.
     //
-    // Detection heuristic: a synced job missing creatorDeterminationPayment is
-    // a clear indicator the chain-fields backfill never ran. (Even non-windowed
-    // bounties get a "0.0" string from applyChainBountyFields once it runs, so
-    // missing-entirely is unambiguous.)
-    if (!this._healCheckDone) {
-      const healCandidates = storage.jobs.filter(j =>
-        (j.contractAddress || '').toLowerCase() === currentContract &&
-        j.syncedFromBlockchain === true &&
-        j.status !== 'ORPHANED' &&
-        typeof j.jobId === 'number' &&
-        j.jobId < bountyCount &&
-        j.creatorDeterminationPayment == null
-      );
+    // Detection heuristic: a synced job missing creatorDeterminationPayment OR
+    // targetHunter (with no prior healed marker) is a clear indicator the
+    // chain-fields backfill never ran. applyChainBountyFields always sets
+    // creatorDeterminationPayment to a string ("0.0" for un-windowed), so a
+    // missing/null value is unambiguous. We can't use null targetHunter as the
+    // sole signal because untargeted bounties legitimately have it null —
+    // pairing it with a sentinel (`_chainFieldsHealed`) lets us re-heal only
+    // jobs that have never been backfilled.
+    //
+    // Steady-state cost: zero RPC calls (filter pass is in-memory; once a job
+    // has been healed, _chainFieldsHealed=true keeps it out of the candidate
+    // set forever). Per-cycle cap of 50 keeps a large backlog from blocking
+    // the sync loop.
+    const healCandidates = storage.jobs.filter(j =>
+      (j.contractAddress || '').toLowerCase() === currentContract &&
+      j.syncedFromBlockchain === true &&
+      j.status !== 'ORPHANED' &&
+      typeof j.jobId === 'number' &&
+      j.jobId < bountyCount &&
+      !j._chainFieldsHealed &&
+      (j.creatorDeterminationPayment == null || j.targetHunter === null)
+    ).slice(0, 50);
 
+    if (healCandidates.length > 0) {
       let healed = 0;
       for (const job of healCandidates) {
         try {
           const chainBounty = await contractService.getBounty(job.jobId);
           const changed = applyChainBountyFields(job, chainBounty);
           job.lastSyncedAt = Math.floor(Date.now() / 1000);
+          job._chainFieldsHealed = true;
           if (changed) {
             healed++;
             logger.info('[sync/heal] backfilled chain fields for previously-synced job', {
@@ -619,13 +631,10 @@ class SyncService {
         }
       }
 
-      if (healCandidates.length > 0) {
-        logger.info('[sync/heal] heal sweep complete', {
-          candidates: healCandidates.length,
-          healed
-        });
-      }
-      this._healCheckDone = true;
+      logger.info('[sync/heal] heal sweep complete', {
+        candidates: healCandidates.length,
+        healed
+      });
     }
 
     // Phase D.7: Submission-level continuous heal — find submissions on
@@ -870,6 +879,25 @@ class SyncService {
             // Backfill creation tx info if missing (covers sync-discovered bounties)
             if (!existing.txHash && transactionHash) existing.txHash = transactionHash;
             if (!existing.blockNumber && blockNumber) existing.blockNumber = blockNumber;
+
+            // Pull chain-only fields (targetHunter + creator approval window).
+            // Why: if the local job pre-existed (e.g. created via /jobs/create
+            // without targetHunter in the body, then on-chain createBounty was
+            // called directly), this branch is the only place the event handler
+            // touches it — and without copying chain truth, targetHunter stays
+            // null locally even though the contract has it set. Bug seen on
+            // bounties #151-153 (Base) where /onchain-status returned the
+            // target but /jobs/:id and the UI showed them as untargeted.
+            if (existing.targetHunter == null || existing.creatorDeterminationPayment == null) {
+              try {
+                const bounty = await contractService.getBounty(bountyId);
+                applyChainBountyFields(existing, bounty);
+              } catch (err) {
+                logger.warn('[event] BountyCreated: failed to backfill chain fields on existing job', {
+                  bountyId, error: err.message
+                });
+              }
+            }
             break;
           }
         }

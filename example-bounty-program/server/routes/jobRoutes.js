@@ -2565,7 +2565,7 @@ router.get('/:jobId', async (req, res) => {
     // Strip internal sync bookkeeping fields before sending to client.
     // Keep `syncedFromBlockchain` — the UI needs it to render the
     // "Pending on-chain" badge on bounties that haven't been confirmed yet.
-    const { lastSyncedAt: _lsa, ...jobForClient } = job;
+    const { lastSyncedAt: _lsa, _chainFieldsHealed: _cfh, ...jobForClient } = job;
     const jobIdVal = job.jobId;
     return res.json({
       success: true,

@@ -1,9 +1,10 @@
 #!/bin/bash
-# Stop the example-arbiters Vite dev server.
+# Stop the example-arbiters client (build-watch mode).
+# Also cleans up any legacy dev-mode process still bound to the old port.
 
 cd "$(dirname "$0")"
 
-PORT="${PORT:-5175}"
+LEGACY_PORT="${PORT:-5175}"  # only used if a legacy `npm run dev` was started
 PID_FILE="client.pid"
 
 if [ -f "$PID_FILE" ]; then
@@ -20,13 +21,14 @@ else
     echo "Client is not running (no PID file)"
 fi
 
-# Safety net: kill anything still on the port
-stragglers=$(lsof -t -i:"$PORT" 2>/dev/null)
+# Safety net: in build-watch mode no port is bound — but if a legacy
+# `npm run dev` is still running on the old port, kill it.
+stragglers=$(lsof -t -i:"$LEGACY_PORT" 2>/dev/null)
 if [ -n "$stragglers" ]; then
-    echo "Cleaning up orphaned process(es) on port $PORT: $stragglers"
+    echo "Cleaning up legacy dev-mode processes on port $LEGACY_PORT: $stragglers"
     echo "$stragglers" | xargs kill 2>/dev/null
     sleep 1
-    stragglers=$(lsof -t -i:"$PORT" 2>/dev/null)
+    stragglers=$(lsof -t -i:"$LEGACY_PORT" 2>/dev/null)
     if [ -n "$stragglers" ]; then
         echo "$stragglers" | xargs kill -9 2>/dev/null
     fi

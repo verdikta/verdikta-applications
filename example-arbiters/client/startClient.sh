@@ -1,10 +1,13 @@
 #!/bin/bash
-# Start the example-arbiters Vite dev server.
-# Writes client.pid and client.log in this directory.
+# Start the example-arbiters client in BUILD-WATCH mode.
+#
+# Long-running process: rebuilds dist/ whenever source files change.
+# nginx serves dist/ directly — no Vite dev server, no public-facing dev port.
+# To see code changes after editing: refresh the browser. The watch process
+# rebuilds within ~1–3 seconds; nginx picks up new files on next request.
 
 cd "$(dirname "$0")"
 
-PORT="${PORT:-5175}"
 PID_FILE="client.pid"
 LOG_FILE="client.log"
 
@@ -19,26 +22,13 @@ if [ -f "$PID_FILE" ]; then
     fi
 fi
 
-# Kill any orphan holding the port
-stragglers=$(lsof -t -i:"$PORT" 2>/dev/null)
-if [ -n "$stragglers" ]; then
-    echo "Killing orphaned process(es) on port $PORT: $stragglers"
-    echo "$stragglers" | xargs kill 2>/dev/null
-    sleep 1
-    stragglers=$(lsof -t -i:"$PORT" 2>/dev/null)
-    if [ -n "$stragglers" ]; then
-        echo "$stragglers" | xargs kill -9 2>/dev/null
-        sleep 1
-    fi
-fi
-
-echo "Starting client on port $PORT..."
-nohup npm run dev -- --port "$PORT" --host 0.0.0.0 > "$LOG_FILE" 2>&1 &
+echo "Starting client in build-watch mode → dist/ ..."
+nohup npx vite build --watch > "$LOG_FILE" 2>&1 &
 echo $! > "$PID_FILE"
-sleep 2
+sleep 3
 
 if kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-    echo "Client started with PID $(cat "$PID_FILE")"
+    echo "Client started with PID $(cat "$PID_FILE") → dist/"
 else
     echo "ERROR: Client failed to start. Check $LOG_FILE"
     rm -f "$PID_FILE"

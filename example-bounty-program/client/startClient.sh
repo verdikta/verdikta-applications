@@ -1,5 +1,15 @@
 #!/bin/bash
-# Start client for specified network(s)
+# Start client in BUILD-WATCH mode for specified network(s).
+#
+# This is a long-running process that auto-rebuilds dist-<network>/ whenever
+# source files change. nginx serves dist-<network>/ directly — there is no
+# Vite dev server listening on any port. This eliminates the public-facing
+# /@fs/ file-disclosure surface that previously existed in dev mode.
+#
+# To see code changes after editing: just refresh the browser. The watch
+# process rebuilds dist within ~1–3 seconds; nginx picks up the new files
+# on the next request.
+#
 # Usage: ./startClient.sh [base|base-sepolia|both]
 # Default: both
 
@@ -9,21 +19,15 @@ NETWORK="${1:-both}"
 
 start_network() {
     local net="$1"
-    local port pid_file log_file
+    local pid_file="client-${net}.pid"
+    local log_file="client-${net}.log"
 
-    if [ "$net" = "base" ]; then
-        port=5173
-    elif [ "$net" = "base-sepolia" ]; then
-        port=5174
-    else
+    if [ "$net" != "base" ] && [ "$net" != "base-sepolia" ]; then
         echo "Unknown network: $net"
         return 1
     fi
 
-    pid_file="client-${net}.pid"
-    log_file="client-${net}.log"
-
-    # Check if already running
+    # Already running?
     if [ -f "$pid_file" ]; then
         PID=$(cat "$pid_file")
         if kill -0 "$PID" 2>/dev/null; then
@@ -34,29 +38,14 @@ start_network() {
         fi
     fi
 
-    # Kill any orphaned process still holding the port
-    local stragglers
-    stragglers=$(lsof -t -i:"$port" 2>/dev/null)
-    if [ -n "$stragglers" ]; then
-        echo "Killing orphaned process(es) on port $port: $stragglers"
-        echo "$stragglers" | xargs kill 2>/dev/null
-        sleep 1
-        stragglers=$(lsof -t -i:"$port" 2>/dev/null)
-        if [ -n "$stragglers" ]; then
-            echo "$stragglers" | xargs kill -9 2>/dev/null
-            sleep 1
-        fi
-    fi
-
-    # Start the client with the appropriate mode and port
-    echo "Starting client ($net) on port $port..."
-    VITE_NETWORK="$net" nohup npm run dev -- --port "$port" --host 0.0.0.0 > "$log_file" 2>&1 &
+    echo "Starting client ($net) in build-watch mode → dist-${net}/ ..."
+    VITE_NETWORK="$net" nohup npx vite build --watch --outDir "dist-${net}" \
+        > "$log_file" 2>&1 &
     echo $! > "$pid_file"
-    sleep 2
+    sleep 3   # give vite a moment to produce its first build
 
-    # Verify it started
     if kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-        echo "Client ($net) started with PID $(cat "$pid_file")"
+        echo "Client ($net) started with PID $(cat "$pid_file") → dist-${net}/"
     else
         echo "ERROR: Client ($net) failed to start. Check $log_file"
         rm -f "$pid_file"
@@ -77,9 +66,9 @@ case "$NETWORK" in
         ;;
     *)
         echo "Usage: $0 [base|base-sepolia|both]"
-        echo "  base        - Start mainnet client (port 5173)"
-        echo "  base-sepolia - Start testnet client (port 5174)"
-        echo "  both        - Start both (default)"
+        echo "  base         - Start mainnet build-watch (output: dist-base/)"
+        echo "  base-sepolia - Start testnet build-watch (output: dist-base-sepolia/)"
+        echo "  both         - Start both (default)"
         exit 1
         ;;
 esac

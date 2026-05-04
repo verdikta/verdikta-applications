@@ -89,3 +89,8 @@ public/static/
 # Runtime data files
 server/data/contracts.json
 server/data/admins.json
+
+# .env backups (catch timestamped backups like .env.bak.1234567890)
+**/.env.bak*
+**/.env.*.bak
+**/.env.backup*

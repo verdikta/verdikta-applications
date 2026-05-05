@@ -76,9 +76,47 @@ const ipfsClient = new IPFSClient({
   gateway: config.ipfsGateway,
   pinningService: config.ipfsPinningService,
   pinningKey: pinningKeyForClient,   // bare JWT only
-  timeout: 30000,
+  timeout: 8000,
   retryOptions: { retries: 5, factor: 2 }
 }, logger);
+
+// The hardcoded gateway list inside @verdikta/common puts ipfs.io first, but
+// that gateway has been intermittently returning 504s, which made every
+// bounty-detail load wait the full 30s timeout before falling back. Reorder
+// to favor Pinata (which has all our pinned content) and dweb.link, and push
+// ipfs.io to the back.
+ipfsClient.gateways = [
+  'https://gateway.pinata.cloud',
+  'https://dweb.link',
+  'https://cloudflare-ipfs.com',
+  'https://ipfs.io',
+];
+
+// CID-keyed cache for fetchFromIPFS. CIDs are content-addressed, so the bytes
+// at a given CID never change — caching is safe and turns repeat reads (every
+// bounty card click after the first) into in-memory lookups instead of 3–6s
+// public-gateway round trips. Bounded LRU so a long-running server doesn't
+// grow without limit.
+const IPFS_CACHE_MAX = 256;
+const ipfsCache = new Map();
+const _origFetchFromIPFS = ipfsClient.fetchFromIPFS.bind(ipfsClient);
+ipfsClient.fetchFromIPFS = async function fetchFromIPFSCached(cid) {
+  const key = String(cid).trim();
+  if (ipfsCache.has(key)) {
+    // Refresh recency for LRU eviction
+    const buf = ipfsCache.get(key);
+    ipfsCache.delete(key);
+    ipfsCache.set(key, buf);
+    return buf;
+  }
+  const buf = await _origFetchFromIPFS(cid);
+  ipfsCache.set(key, buf);
+  if (ipfsCache.size > IPFS_CACHE_MAX) {
+    const oldest = ipfsCache.keys().next().value;
+    if (oldest !== undefined) ipfsCache.delete(oldest);
+  }
+  return buf;
+};
 
 // Make ipfsClient available to routes
 app.locals.ipfsClient = ipfsClient;

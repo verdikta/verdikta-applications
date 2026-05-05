@@ -638,6 +638,17 @@ async uploadRubric(rubricJson, classId = 128) {
   async getEvaluationPackage(jobId) {
     const response = await api.get(`/api/jobs/${jobId}/evaluation-package`, { timeout: 60000 });
     return response.data;
+  },
+
+  /**
+   * Lazily fetch the expanded task description extracted from the evaluation
+   * package on IPFS. Used by the bounty-detail page's "Show full task
+   * description" disclosure so the initial render isn't blocked on the slow
+   * IPFS ZIP fetch.
+   */
+  async getJobTaskSpec(jobId) {
+    const response = await api.get(`/api/jobs/${jobId}/task-spec`, { timeout: 60000 });
+    return response.data;
   }
 
 };

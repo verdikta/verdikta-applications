@@ -2263,6 +2263,85 @@ router.get('/:jobId/evaluation-package', async (req, res) => {
   }
 });
 
+/* ============================
+   GET TASK SPEC (lazy)
+   ============================ */
+
+/**
+ * GET /api/jobs/:jobId/task-spec
+ * Lazily fetches and extracts the full task description from the evaluation
+ * package on IPFS. Split out from GET /:jobId so the bounty-detail page can
+ * render quickly without waiting on the (often slow) evaluation ZIP fetch —
+ * the expanded description is loaded only when the user explicitly opens it.
+ */
+router.get('/:jobId/task-spec', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    let job;
+    try {
+      job = await jobStorage.getJob(jobId);
+    } catch (e) {
+      const numId = parseInt(jobId);
+      if (numId > 0) {
+        try { job = await jobStorage.getJob(numId - 1); } catch {}
+      }
+      if (!job) throw e;
+    }
+
+    if (!job.evaluationCid || job.evaluationCid.startsWith('dev-')) {
+      return res.json({ success: true, taskSpec: null });
+    }
+
+    const ipfsClient = req.app.locals.ipfsClient;
+    if (!ipfsClient) {
+      return res.status(500).json({ success: false, error: 'IPFS client not available' });
+    }
+
+    let taskSpec = null;
+    try {
+      const archiveBuffer = await ipfsClient.fetchFromIPFS(job.evaluationCid);
+      const zip = new AdmZip(archiveBuffer);
+      const primaryEntry = zip.getEntries().find(e =>
+        e.entryName === 'primary_query.json' || e.entryName.endsWith('/primary_query.json')
+      );
+      if (primaryEntry) {
+        const primary = JSON.parse(zip.readAsText(primaryEntry));
+        const q = typeof primary?.query === 'string' ? primary.query : '';
+        const startMarker = '=== TASK DESCRIPTION ===';
+        const endMarker = '=== EVALUATION PROTOCOL ===';
+        const startIdx = q.indexOf(startMarker);
+        if (startIdx !== -1) {
+          const blockStart = startIdx + startMarker.length;
+          const endIdx = q.indexOf(endMarker, blockStart);
+          const block = (endIdx === -1
+            ? q.slice(blockStart)
+            : q.slice(blockStart, endIdx)
+          ).trim();
+          // Drop the duplicated Work Product Type / Task Title prefix; those
+          // are already rendered as top-level fields on the bounty page.
+          const bodyMatch = block.match(/^Task Description:\s*([\s\S]*)$/m);
+          taskSpec = (bodyMatch ? bodyMatch[1] : block).trim() || null;
+        }
+      }
+    } catch (err) {
+      logger.warn('[jobs/task-spec] failed to extract', { jobId, msg: err.message });
+      return res.status(502).json({
+        success: false,
+        error: 'Failed to fetch evaluation package from IPFS',
+        details: err.message
+      });
+    }
+
+    return res.json({ success: true, taskSpec });
+  } catch (error) {
+    logger.error('[jobs/task-spec] error', { msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ success: false, error: 'Job not found', details: error.message });
+    }
+    return res.status(500).json({ success: false, error: 'Failed to get task spec', details: error.message });
+  }
+});
+
 // ==========================================================================
 // Utility: ETH price proxy (avoids client-side CORS issues with CoinGecko)
 // Must be above /:jobId to avoid "eth-price" being matched as a job ID.
@@ -2443,7 +2522,6 @@ router.get('/:jobId', async (req, res) => {
     }
 
     let rubricContent = null;
-    let taskSpec = null;
     let extractedJuryNodes = job.juryNodes || [];
 
     if (req.query.includeRubric === 'true') {
@@ -2459,10 +2537,10 @@ router.get('/:jobId', async (req, res) => {
         }
       }
 
-      // Open the evaluationCid ZIP for the rubric (if rubricCid wasn't set or
-      // failed) AND for the task spec (always — it's not on rubricCid).
-      const needsZip = (!rubricContent || !taskSpec) && job.evaluationCid;
-      if (needsZip) {
+      // Fall back to opening the evaluationCid ZIP only when the direct rubric
+      // fetch didn't succeed. The task spec is served lazily by a separate
+      // endpoint (GET /:jobId/task-spec) so the common case is one IPFS read.
+      if (!rubricContent && job.evaluationCid) {
         try {
           const archiveBuffer = await ipfsClient.fetchFromIPFS(job.evaluationCid);
           const AdmZip = require('adm-zip');
@@ -2522,40 +2600,6 @@ router.get('/:jobId', async (req, res) => {
             }
           }
 
-          // Extract the full task specification from primary_query.json. The
-          // local job.description field can be much shorter than the canonical
-          // task text — agents sometimes pass a one-paragraph summary to the
-          // API while embedding the full multi-section spec only into the
-          // evaluation package. The block lives between the
-          // `=== TASK DESCRIPTION ===` and `=== EVALUATION PROTOCOL ===`
-          // markers in primary.query (see archiveGenerator's template).
-          const primaryEntry = entries.find(e =>
-            e.entryName === 'primary_query.json' || e.entryName.endsWith('/primary_query.json')
-          );
-          if (primaryEntry) {
-            try {
-              const primary = JSON.parse(zip.readAsText(primaryEntry));
-              const q = typeof primary?.query === 'string' ? primary.query : '';
-              const startMarker = '=== TASK DESCRIPTION ===';
-              const endMarker = '=== EVALUATION PROTOCOL ===';
-              const startIdx = q.indexOf(startMarker);
-              if (startIdx !== -1) {
-                const blockStart = startIdx + startMarker.length;
-                const endIdx = q.indexOf(endMarker, blockStart);
-                const block = (endIdx === -1
-                  ? q.slice(blockStart)
-                  : q.slice(blockStart, endIdx)
-                ).trim();
-                // Within the block, prefer just the post-"Task Description:"
-                // body so we don't duplicate Work Product Type / Task Title
-                // (those are already top-level fields on the bounty).
-                const bodyMatch = block.match(/^Task Description:\s*([\s\S]*)$/m);
-                taskSpec = (bodyMatch ? bodyMatch[1] : block).trim() || null;
-              }
-            } catch (err) {
-              logger.warn('[jobs/details] failed to parse primary_query.json', { msg: err.message });
-            }
-          }
         } catch (err) {
           logger.warn('[jobs/details] failed to extract from evaluationCid', { msg: err.message });
         }
@@ -2572,7 +2616,6 @@ router.get('/:jobId', async (req, res) => {
       job: {
         ...jobForClient,
         rubricContent: rubricContent || null,
-        taskSpec: taskSpec || null,
         juryNodes: extractedJuryNodes.length > 0 ? extractedJuryNodes : (job.juryNodes || [])
       },
       tips: [

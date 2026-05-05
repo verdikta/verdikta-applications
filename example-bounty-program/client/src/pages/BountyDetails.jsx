@@ -132,6 +132,14 @@ function BountyDetails({ walletState }) {
   const [error, setError] = useState(null);
   const [retryCount, setRetryCount] = useState(0);
 
+  // Lazy-loaded expanded task description (extracted from the IPFS evaluation
+  // package on demand). Kept out of the initial GET /:jobId response so the
+  // page renders without waiting on the slow IPFS ZIP fetch.
+  const [taskSpec, setTaskSpec] = useState(null);
+  const [taskSpecLoading, setTaskSpecLoading] = useState(false);
+  const [taskSpecError, setTaskSpecError] = useState(null);
+  const [taskSpecLoaded, setTaskSpecLoaded] = useState(false);
+
   // Action states
   const [closingBounty, setClosingBounty] = useState(false);
   const [closingMessage, setClosingMessage] = useState('');
@@ -494,6 +502,10 @@ function BountyDetails({ walletState }) {
       setResolvingId(false);
       setResolveNote('');
       setStatusOverride(null);
+      setTaskSpec(null);
+      setTaskSpecLoading(false);
+      setTaskSpecError(null);
+      setTaskSpecLoaded(false);
     }
 
     return () => {
@@ -1707,6 +1719,27 @@ function BountyDetails({ walletState }) {
     }
   };
 
+  // Lazily fetch the expanded task description from the IPFS evaluation
+  // package. Triggered by the "Show full task description" button so the
+  // initial bounty-detail render isn't blocked on the slow IPFS ZIP fetch.
+  const loadTaskSpec = useCallback(async () => {
+    if (taskSpecLoading || taskSpec) return;
+    setTaskSpecLoading(true);
+    setTaskSpecError(null);
+    try {
+      const res = await apiService.getJobTaskSpec(bountyId);
+      if (!isMountedRef.current) return;
+      setTaskSpec(res?.taskSpec || null);
+      setTaskSpecLoaded(true);
+    } catch (err) {
+      if (!isMountedRef.current) return;
+      const msg = err?.response?.data?.error || err?.message || 'Failed to load task description';
+      setTaskSpecError(msg);
+    } finally {
+      if (isMountedRef.current) setTaskSpecLoading(false);
+    }
+  }, [bountyId, taskSpec, taskSpecLoading]);
+
   // ============================================================================
   // RENDER HELPERS
   // ============================================================================
@@ -2192,24 +2225,48 @@ function BountyDetails({ walletState }) {
         </section>
       )}
 
-      {/* Description Section. Prefer the full task specification extracted
-          from the on-IPFS evaluation package when available (job.taskSpec) —
-          the local job.description field can be a one-paragraph summary that
-          omits sections like "## The Task" and "## Submission Format". Fall
-          back to the local description for legacy bounties whose evaluation
-          package doesn't follow the standard primary_query.json template. */}
-      {(job?.taskSpec || job?.description) && (
+      {/* Description Section. The short local description renders immediately;
+          the full task specification (extracted from the on-IPFS evaluation
+          package) is loaded lazily on click so the page doesn't block on the
+          slow IPFS ZIP fetch every time a card is opened. */}
+      {(taskSpec || job?.description) && (
         <section className="description-section">
           <h2>Job Description</h2>
-          {job?.taskSpec ? (
+          {taskSpec ? (
             <div
               className="markdown-body"
               dangerouslySetInnerHTML={{
-                __html: renderMarkdownSafe(job.taskSpec),
+                __html: renderMarkdownSafe(taskSpec),
               }}
             />
           ) : (
             <p>{job.description}</p>
+          )}
+          {job?.evaluationCid && !String(job.evaluationCid).startsWith('dev-') && !taskSpec && (
+            <div style={{ marginTop: '0.75rem' }}>
+              <button
+                type="button"
+                className="btn btn-secondary btn-with-icon"
+                onClick={loadTaskSpec}
+                disabled={taskSpecLoading}
+              >
+                {taskSpecLoading ? (
+                  <><Loader2 size={14} className="spin" /> Loading full description…</>
+                ) : (
+                  <><FileText size={14} /> Show full task description</>
+                )}
+              </button>
+              {taskSpecLoaded && !taskSpec && !taskSpecError && (
+                <p style={{ marginTop: '0.5rem', fontSize: '0.875rem', color: 'var(--text-muted, #6b7280)' }}>
+                  No expanded task description is available for this bounty.
+                </p>
+              )}
+              {taskSpecError && (
+                <p style={{ marginTop: '0.5rem', fontSize: '0.875rem', color: 'var(--color-danger, #b91c1c)' }}>
+                  <AlertTriangle size={12} className="inline-icon" /> {taskSpecError}
+                </p>
+              )}
+            </div>
           )}
         </section>
       )}

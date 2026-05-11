@@ -116,6 +116,25 @@ body {
   padding: 2rem 1rem;
 }
 
+.not-found {
+  text-align: center;
+  padding: 4rem 1rem;
+}
+
+.not-found h1 {
+  margin-bottom: 1rem;
+}
+
+.not-found p {
+  margin-bottom: 0.5rem;
+}
+
+.not-found code {
+  background-color: var(--gray-100);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+}
+
 /* App Footer */
 .app-footer {
   background-color: var(--bg);

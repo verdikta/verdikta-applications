@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { initializeContractService, getContractService } from './services/contractService';
 import { config } from './config';
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { walletService } from './services/wallet';
 import { ToastProvider, useToast } from './components/Toast';
 import Header from './components/Header';
@@ -19,6 +19,17 @@ import EvaluationDetails from './pages/EvaluationDetails';
 import ClassDetails from './pages/ClassDetails';
 import ScrollToTop from './components/ScrollToTop';
 import './App.css';
+
+function NotFound() {
+  const { pathname } = useLocation();
+  return (
+    <div className="not-found">
+      <h1>Page not found</h1>
+      <p>No page exists at <code>{pathname}</code>.</p>
+      <p><Link to="/">Return to home</Link></p>
+    </div>
+  );
+}
 
 function AppContent() {
   const toast = useToast();
@@ -110,6 +121,7 @@ function AppContent() {
           <Route path="/bounty/:bountyId/evaluation" element={<EvaluationDetails />} />
           <Route path="/agg-history/:aggId" element={<AggHistory />} />
           <Route path="/class/:classId" element={<ClassDetails />} />
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </main>
       </div>

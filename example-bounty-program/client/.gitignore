@@ -13,6 +13,9 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+dist-base
+dist-base-sepolia
+dist.legacy
 *.local
 
 # Editor directories and files

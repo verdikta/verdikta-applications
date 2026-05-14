@@ -33,6 +33,85 @@
   font-size: 0.8rem;
 }
 
+/* Action-required banner: shown when creator has expired bounties needing attention */
+.action-required-banner {
+  background-color: #fff8e1;
+  border: 2px solid #ffc107;
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+  color: #5a4500;
+}
+
+.action-required-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1.05rem;
+  margin-bottom: 0.5rem;
+}
+
+.action-required-body {
+  margin: 0 0 0.5rem 0;
+  line-height: 1.5;
+}
+
+.action-required-list summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: #5a4500;
+  user-select: none;
+}
+
+.action-required-list ul {
+  list-style: none;
+  padding: 0.5rem 0 0 0;
+  margin: 0;
+}
+
+.action-required-list li {
+  padding: 0.25rem 0;
+  font-size: 0.95rem;
+}
+
+.action-required-list a {
+  color: #856404;
+  text-decoration: underline;
+  font-weight: 500;
+}
+
+.reclaim-pill {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  text-decoration: none;
+  margin-left: 0.5rem;
+  white-space: nowrap;
+}
+
+.reclaim-pill.ready {
+  background-color: #fff3cd;
+  color: #856404;
+  border: 1px solid #ffc107;
+}
+
+.reclaim-pill.ready:hover {
+  background-color: #ffc107;
+  color: #5a4500;
+}
+
+.reclaim-pill.blocked {
+  background-color: #f8d7da;
+  color: #721c24;
+  border: 1px solid #f5c6cb;
+}
+
+.reclaim-pill.blocked:hover {
+  background-color: #f5c6cb;
+}
+
 /* Controls Bar */
 .controls-bar {
   display: flex;

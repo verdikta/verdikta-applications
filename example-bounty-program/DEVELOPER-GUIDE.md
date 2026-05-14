@@ -225,6 +225,87 @@ The production hosts behind nginx are `bounties.verdikta.org` (mainnet) and `bou
 
 ---
 
+## Common Tasks (cont.)
+
+### Reclaiming funds from an expired bounty
+
+After a bounty's deadline passes, escrowed ETH stays locked until someone calls `closeExpiredBounty(bountyId)`. **This does not happen automatically.** If any submission is still in `PendingVerdikta` status, the close call reverts and those submissions must be cleared first via `failTimedOutSubmission`.
+
+The website does this for the creator via the **My Bounties** action-required banner and the bounty page's **Close Expired Bounty** button. The flow below is for scripts, agents, and integrators that drive it through the API.
+
+#### 1. Discover which bounties need attention (creator-scoped)
+
+```
+GET /api/jobs/mine/action-required?creator=0x<creator>
+```
+
+Response shape:
+
+```jsonc
+{
+  "success": true,
+  "creator": "0x...",
+  "count": 2,
+  "readyToCloseCount": 1,
+  "blockedCount": 1,
+  "totalReclaimableWei": "150000000000000000",
+  "totalReclaimableEth": "0.15",
+  "bounties": [
+    {
+      "jobId": 41,
+      "title": "...",
+      "bountyAmount": "0.05",
+      "deadline": 1717000000,
+      "expiredMinutesAgo": 90,
+      "canClose": true,
+      "blockedBy": null,
+      "pendingSubmissions": []
+    },
+    {
+      "jobId": 47,
+      "canClose": false,
+      "blockedBy": "1 submission(s) still pending evaluation",
+      "pendingSubmissions": [
+        { "submissionId": 0, "hunter": "0x...", "submittedAt": 1716998800,
+          "ageMinutes": 22, "timeoutEligible": true }
+      ]
+    }
+  ]
+}
+```
+
+`timeoutEligible` is `true` once the submission is at least 10 minutes old (the on-chain timeout window). It's safe to poll this endpoint — it's read-only and small.
+
+For a system-wide view (all creators) use `GET /api/jobs/admin/expired` instead.
+
+#### 2. Clear blocking submissions
+
+For each entry in `pendingSubmissions` where `timeoutEligible: true`:
+
+```
+POST /api/jobs/:jobId/submissions/:submissionId/timeout
+```
+
+Returns calldata for `failTimedOutSubmission(bountyId, submissionId)`. Sign and submit from any wallet (anyone may call). LINK is refunded to the original hunter.
+
+If a submission is younger than 10 minutes, wait — the on-chain check enforces it.
+
+#### 3. Close the bounty
+
+Once `canClose` is `true`:
+
+```
+POST /api/jobs/:jobId/close
+```
+
+Returns calldata for `closeExpiredBounty(bountyId)`. Sign and submit from any wallet (anyone may call). ETH is returned to the creator.
+
+#### Common failure modes
+
+- **`closeExpiredBounty` reverts with no clear message:** a submission re-entered `PendingVerdikta` between your check and the close call. Re-query the action-required endpoint and timeout anything new.
+- **`failTimedOutSubmission` reverts with "too early":** submission is younger than 10 minutes. The endpoint's `timeoutEligible` flag should have caught this — check `ageMinutes` in the response.
+- **Bounty not in the list at all:** the job is not linked on-chain (`onChain === false` and not synced). There is no escrow to reclaim; the job will be archived. See `CLAUDE.md` "Sync service orphan race" for the underlying issue.
+
 ## Debugging
 
 ### Sync service not picking up new bounties
@@ -236,6 +317,7 @@ The production hosts behind nginx are `bounties.verdikta.org` (mainnet) and `bou
 ### Submission stuck in PENDING_EVALUATION
 - Use `GET /api/jobs/:jobId/submissions/:subId/diagnose` for actionable analysis
 - If oracle stuck >10 min, anyone can call `failTimedOutSubmission` (or use `/submissions/:subId/timeout`)
+- If the parent bounty is also expired and you need to reclaim creator funds, see [Reclaiming funds from an expired bounty](#reclaiming-funds-from-an-expired-bounty)
 
 ### LINK approval errors at startPreparedSubmission
 - The contract pulls LINK via `transferFrom` using the allowance set in step 2 — never `transfer` LINK directly to the EvaluationWallet

@@ -3,15 +3,44 @@ import { Link, useLocation } from 'react-router-dom';
 import { Target, Wallet, LogOut, Check, Menu, X } from 'lucide-react';
 import { walletService } from '../services/wallet';
 import { currentNetwork } from '../config';
+import { apiService } from '../services/api';
 import './Header.css';
+
+// How often to poll the action-required endpoint while the user has a wallet
+// connected. Once a minute is plenty for an expiry-triggered nag — close
+// actions are rare and on-chain state changes slowly.
+const ACTION_REQUIRED_POLL_MS = 60_000;
 
 function Header({ walletState, onConnect, onDisconnect }) {
   const { isConnected, address, chainId } = walletState;
   const [menuOpen, setMenuOpen] = useState(false);
+  const [actionRequiredCount, setActionRequiredCount] = useState(0);
   const location = useLocation();
 
   // Close the mobile menu on route change.
   useEffect(() => { setMenuOpen(false); }, [location.pathname]);
+
+  // Poll for expired-bounty action-required count while a wallet is connected.
+  // The endpoint returns 0 cheaply when there's nothing to do, so polling is
+  // fine. Cleared immediately on disconnect to avoid stale badges.
+  useEffect(() => {
+    if (!isConnected || !address) {
+      setActionRequiredCount(0);
+      return;
+    }
+    let cancelled = false;
+    const fetchCount = async () => {
+      try {
+        const result = await apiService.getActionRequired(address);
+        if (!cancelled) setActionRequiredCount(result?.count || 0);
+      } catch (_) {
+        // Swallow — the badge is best-effort; failure shouldn't disrupt the header.
+      }
+    };
+    fetchCount();
+    const id = setInterval(fetchCount, ACTION_REQUIRED_POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [isConnected, address]);
 
   // Close on Escape.
   useEffect(() => {
@@ -57,7 +86,18 @@ function Header({ walletState, onConnect, onDisconnect }) {
             <Link to="/agents" className="nav-link">Agents</Link>
             <Link to="/analytics" className="nav-link">Analytics</Link>
             {isConnected && (
-              <Link to="/my-bounties" className="nav-link">My Bounties</Link>
+              <Link to="/my-bounties" className="nav-link">
+                My Bounties
+                {actionRequiredCount > 0 && (
+                  <span
+                    className="nav-badge"
+                    aria-label={`${actionRequiredCount} bounty${actionRequiredCount === 1 ? '' : 'ies'} need attention`}
+                    title="Expired bounties needing close — click to review"
+                  >
+                    {actionRequiredCount}
+                  </span>
+                )}
+              </Link>
             )}
           </nav>
 

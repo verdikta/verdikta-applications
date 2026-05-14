@@ -109,7 +109,17 @@ export const apiService = {
    * List all jobs with optional filters
    */
   async listJobs(filters = {}) {
-    const { data } = await api.get('/api/jobs', { params: filters }); 
+    const { data } = await api.get('/api/jobs', { params: filters });
+    return data;
+  },
+
+  /**
+   * Get the list of expired bounties owned by `creator` that still need
+   * action (close, or resolve-then-close). Safe to poll.
+   * Server route: GET /api/jobs/mine/action-required?creator=0x...
+   */
+  async getActionRequired(creator) {
+    const { data } = await api.get('/api/jobs/mine/action-required', { params: { creator } });
     return data;
   },
 

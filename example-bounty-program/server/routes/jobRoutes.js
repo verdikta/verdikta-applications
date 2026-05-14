@@ -768,6 +768,131 @@ router.get('/admin/expired', async (req, res) => {
 });
 
 /**
+ * GET /api/jobs/mine/action-required?creator=0x...
+ * Creator-scoped list of bounties that need the creator's attention.
+ *
+ * Returns expired bounties owned by `creator` along with a per-bounty verdict:
+ *   - canClose: true  → ready for `closeExpiredBounty` (no pending evaluations)
+ *   - canClose: false → first resolve `pendingSubmissions` (each one needs
+ *                       `failTimedOutSubmission` after the 10-minute oracle
+ *                       timeout, then the bounty can be closed)
+ *
+ * Designed to be safe to poll (e.g., from a nav badge) — small response, no
+ * mutations. Returns 200 with empty list when the creator has nothing to do.
+ */
+router.get('/mine/action-required', async (req, res) => {
+  try {
+    const creator = String(req.query.creator || '').trim();
+    if (!/^0x[0-9a-fA-F]{40}$/.test(creator)) {
+      return res.status(400).json({
+        error: 'Invalid or missing creator address',
+        details: 'Pass ?creator=0x... (40 hex chars)'
+      });
+    }
+    const creatorLc = creator.toLowerCase();
+
+    const jobs = await jobStorage.listJobs({ includeOrphans: false });
+    const jobList = jobs.jobs || jobs;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+
+    let contract = null;
+    try {
+      const cs = getContractService();
+      contract = cs.contract;
+    } catch (e) {
+      logger.warn('[mine/action-required] Could not get contract service', { msg: e.message });
+    }
+
+    const bounties = [];
+    let totalReclaimableWei = 0n;
+
+    for (const job of jobList) {
+      if (!job.creator || job.creator.toLowerCase() !== creatorLc) continue;
+      const deadline = job.submissionCloseTime || 0;
+      if (deadline === 0 || nowSeconds < deadline) continue;
+      if (!job.onChain && !job.syncedFromBlockchain) continue;
+
+      const onChainBountyId = job.jobId;
+      const entry = {
+        jobId: job.jobId,
+        title: job.title,
+        bountyAmount: job.bountyAmount,
+        deadline,
+        expiredMinutesAgo: Math.floor((nowSeconds - deadline) / 60),
+        canClose: false,
+        blockedBy: null,
+        pendingSubmissions: []
+      };
+
+      if (!contract) {
+        entry.blockedBy = 'Chain read unavailable';
+        bounties.push(entry);
+        continue;
+      }
+
+      try {
+        const chainBounty = await contract.getBounty(onChainBountyId);
+        const statusNames = ['Open', 'Awarded', 'Closed'];
+        const onChainStatus = statusNames[Number(chainBounty.status)] || `Unknown(${chainBounty.status})`;
+
+        if (onChainStatus !== 'Open') continue; // Already resolved on-chain — nothing for creator to do
+
+        const subCount = Number(await contract.submissionCount(onChainBountyId));
+        for (let i = 0; i < subCount; i++) {
+          try {
+            const chainSub = await contract.getSubmission(onChainBountyId, i);
+            if (Number(chainSub.status) === 1) { // PendingVerdikta
+              const submittedAt = Number(chainSub.submittedAt);
+              entry.pendingSubmissions.push({
+                submissionId: i,
+                hunter: chainSub.hunter,
+                submittedAt,
+                ageMinutes: Math.floor((nowSeconds - submittedAt) / 60),
+                timeoutEligible: (nowSeconds - submittedAt) >= 600
+              });
+            }
+          } catch (_) { /* ignore individual submission errors */ }
+        }
+
+        if (entry.pendingSubmissions.length > 0) {
+          entry.blockedBy = `${entry.pendingSubmissions.length} submission(s) still pending evaluation`;
+          entry.canClose = false;
+        } else {
+          entry.canClose = true;
+          try {
+            totalReclaimableWei += BigInt(chainBounty.payoutWei.toString());
+          } catch (_) { /* skip totals on parse failure */ }
+        }
+      } catch (chainErr) {
+        entry.blockedBy = `Chain read failed: ${chainErr.message}`;
+      }
+
+      bounties.push(entry);
+    }
+
+    const totalReclaimableEth = (() => {
+      try {
+        return ethers.formatEther(totalReclaimableWei);
+      } catch (_) { return '0'; }
+    })();
+
+    return res.json({
+      success: true,
+      creator,
+      count: bounties.length,
+      readyToCloseCount: bounties.filter(b => b.canClose).length,
+      blockedCount: bounties.filter(b => !b.canClose).length,
+      totalReclaimableWei: totalReclaimableWei.toString(),
+      totalReclaimableEth,
+      bounties
+    });
+  } catch (error) {
+    logger.error('[mine/action-required] error', { msg: error.message });
+    return res.status(500).json({ error: 'Failed to list action-required bounties', details: error.message });
+  }
+});
+
+/**
  * POST /api/jobs/:jobId/close
  * Prepare transaction to close an expired bounty.
  * Returns encoded calldata for client to execute.

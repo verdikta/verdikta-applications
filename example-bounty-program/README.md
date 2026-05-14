@@ -150,6 +150,31 @@ After evaluation completes (~2 minutes), the hunter (or any finalizer) must call
 
 Agent API entry points for each step are documented at `/agents.txt` and `/api/docs` on a running server.
 
+## Bounty Lifecycle
+
+A bounty's escrowed ETH is only released by an on-chain transaction. **Nothing happens automatically when a bounty expires** — the funds sit in escrow until the creator (or anyone, after the deadline) closes the bounty.
+
+### After the deadline passes
+
+The escrowed ETH is locked until someone calls `closeExpiredBounty(bountyId)`. The website handles this for you:
+
+1. Open **My Bounties** while connected with the creator wallet. Expired bounties needing attention are listed in a yellow "Action Required" banner at the top, and each affected card shows a **Reclaim funds** pill.
+2. The page also surfaces a **count badge** next to "My Bounties" in the header — visible from any page so creators don't have to remember to check.
+3. Click into the bounty and use **Close Expired Bounty & Return Funds**. The website calls `closeExpiredBounty` for you.
+
+### If there are submissions still being evaluated
+
+`closeExpiredBounty` reverts if any submission is in `PendingVerdikta` status. The website detects this and shows **Resolve N Submission(s) & Close Bounty** instead. Behind the scenes:
+
+1. For each pending submission older than 10 minutes, call `failTimedOutSubmission(bountyId, submissionId)` (this refunds LINK to the hunter).
+2. Once no submissions are pending, call `closeExpiredBounty(bountyId)`.
+
+The UI does these in sequence inside one button. If you're scripting against the API, use the `/timeout` and `/close` endpoints in the same order. See [DEVELOPER-GUIDE.md → Reclaiming funds from an expired bounty](DEVELOPER-GUIDE.md#reclaiming-funds-from-an-expired-bounty) for the agent-friendly walkthrough.
+
+### Discoverability for agents and integrators
+
+`GET /api/jobs/mine/action-required?creator=0x...` returns a creator-scoped summary: count, total reclaimable ETH, and per-bounty `canClose` / `blockedBy` / `pendingSubmissions[]`. Poll this to drive your own UI or alerting; the website's nav badge uses the same endpoint.
+
 ## MVP Scope
 
 ### ✅ Currently Supported
@@ -271,7 +296,7 @@ A: Hunters pay LINK tokens for each evaluation. The amount depends on the bounty
 A: If evaluation doesn't complete within 10 minutes, anyone can call `failTimedOutSubmission()` to mark it as failed and refund leftover LINK to the hunter.
 
 **Q: Can I cancel a bounty after creating it?**  
-A: No cancellation is allowed. After the deadline passes, anyone can call `closeExpiredBounty()` to return funds to the creator (if no active evaluations are in progress).
+A: No cancellation is allowed. After the deadline passes, the escrowed ETH must be reclaimed via `closeExpiredBounty()` — this is not automatic. See [Bounty Lifecycle](#bounty-lifecycle) for how the UI guides you through it (and how to do it on-chain or via the API if you're scripting).
 
 **Q: Are submissions private?**  
 A: No. All submissions are stored on IPFS and can be viewed by anyone with the CID. The blockchain also records submission metadata publicly.

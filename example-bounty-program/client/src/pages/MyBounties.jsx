@@ -123,6 +123,7 @@ function MyBounties({ walletState }) {
   const [approvingSubmission, setApprovingSubmission] = useState(null);
   const [previewingSubmission, setPreviewingSubmission] = useState(null);
   const [previewResult, setPreviewResult] = useState(null);
+  const [actionRequired, setActionRequired] = useState(null);
 
   const { isConnected, address } = walletState;
 
@@ -144,14 +145,35 @@ function MyBounties({ walletState }) {
     }
   }, [address, includeExpired]);
 
+  // Load action-required (expired bounties needing close / submission resolution)
+  const loadActionRequired = useCallback(async () => {
+    if (!address) return;
+    try {
+      const result = await apiService.getActionRequired(address);
+      setActionRequired(result);
+    } catch (err) {
+      console.warn('Failed to load action-required bounties:', err);
+      setActionRequired(null);
+    }
+  }, [address]);
+
   useEffect(() => {
     if (isConnected && address) {
       loadBounties();
+      loadActionRequired();
     } else {
       setBounties([]);
+      setActionRequired(null);
       setLoading(false);
     }
-  }, [isConnected, address, loadBounties]);
+  }, [isConnected, address, loadBounties, loadActionRequired]);
+
+  // Quick-lookup map of action-required entries by jobId
+  const actionByJobId = (() => {
+    const map = new Map();
+    (actionRequired?.bounties || []).forEach(b => map.set(String(b.jobId), b));
+    return map;
+  })();
 
   // Handle download click
   const handleDownload = async (jobId, submissionId) => {
@@ -304,6 +326,51 @@ function MyBounties({ walletState }) {
           <button onClick={loadBounties} className="btn btn-sm btn-secondary">
             Retry
           </button>
+        </div>
+      )}
+
+      {actionRequired && actionRequired.count > 0 && (
+        <div className="action-required-banner">
+          <div className="action-required-header">
+            <AlertTriangle size={20} className="inline-icon" />
+            <strong>
+              {actionRequired.count} expired bounty{actionRequired.count === 1 ? '' : 'ies'} need
+              {actionRequired.count === 1 ? 's' : ''} your attention
+            </strong>
+          </div>
+          <p className="action-required-body">
+            {actionRequired.readyToCloseCount > 0 && (
+              <>
+                {actionRequired.readyToCloseCount} ready to close
+                {Number(actionRequired.totalReclaimableEth) > 0 && (
+                  <> — <strong>{actionRequired.totalReclaimableEth} ETH</strong> reclaimable</>
+                )}
+                .{' '}
+              </>
+            )}
+            {actionRequired.blockedCount > 0 && (
+              <>
+                {actionRequired.blockedCount} blocked by pending submission(s) — resolve those first.{' '}
+              </>
+            )}
+            Open each bounty below and use <strong>Close Expired Bounty</strong> to return funds.
+          </p>
+          <details className="action-required-list">
+            <summary>Show affected bounties</summary>
+            <ul>
+              {actionRequired.bounties.map(b => (
+                <li key={b.jobId}>
+                  <Link to={`/bounty/${b.jobId}`}>
+                    #{b.jobId}: {b.title || 'Untitled'}
+                  </Link>
+                  {' — '}
+                  {b.canClose
+                    ? <span className="reclaim-pill ready">Ready to close · {b.bountyAmount} ETH</span>
+                    : <span className="reclaim-pill blocked">{b.blockedBy || 'Action needed'}</span>}
+                </li>
+              ))}
+            </ul>
+          </details>
         </div>
       )}
 
@@ -486,9 +553,11 @@ function MyBounties({ walletState }) {
         </div>
       ) : (
         <div className="bounties-list">
-          {bounties.map((bounty) => (
+          {bounties.map((bounty) => {
+            const action = actionByJobId.get(String(bounty.jobId));
+            return (
             <div key={bounty.jobId} className="bounty-card">
-              <div 
+              <div
                 className="bounty-header"
                 onClick={() => setExpandedBounty(expandedBounty === bounty.jobId ? null : bounty.jobId)}
               >
@@ -497,6 +566,18 @@ function MyBounties({ walletState }) {
                   <span {...getBountyBadgeProps(bounty.status)}>
                     {getBountyStatusLabel(bounty.status)}
                   </span>
+                  {action && (
+                    <Link
+                      to={`/bounty/${bounty.jobId}`}
+                      className={`reclaim-pill ${action.canClose ? 'ready' : 'blocked'}`}
+                      onClick={(e) => e.stopPropagation()}
+                      title={action.canClose
+                        ? 'This bounty is expired and funds are reclaimable. Click to close.'
+                        : action.blockedBy || 'Pending submissions must be resolved before close.'}
+                    >
+                      {action.canClose ? 'Reclaim funds' : 'Resolve & close'}
+                    </Link>
+                  )}
                 </div>
                 <div className="bounty-meta">
                   <span className="meta-item">
@@ -642,7 +723,8 @@ function MyBounties({ walletState }) {
                 </div>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

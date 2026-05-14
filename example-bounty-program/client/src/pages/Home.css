@@ -40,6 +40,19 @@
 
 .section-header h2 {
   font-size: 2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.bounty-count {
+  font-size: 1rem;
+  font-weight: var(--font-medium, 500);
+  line-height: 1;
+  padding: 0.25rem 0.625rem;
+  border-radius: 999px;
+  background-color: var(--gray-100);
+  color: var(--text-secondary);
 }
 
 .empty-state {

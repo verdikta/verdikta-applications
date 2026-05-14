@@ -220,7 +220,14 @@ function Home({ walletState }) {
 
       <section className="bounties-section" ref={bountyGridRef}>
         <div className="section-header">
-          <h2>Available Jobs</h2>
+          <h2>
+            Available Jobs
+            {!loading && !error && (
+              <span className="bounty-count" aria-label={`${jobs.length} jobs`}>
+                {jobs.length}
+              </span>
+            )}
+          </h2>
           <div className="filters">
             <input
               type="text"

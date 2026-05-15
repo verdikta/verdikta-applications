@@ -319,6 +319,44 @@ Returns calldata for `closeExpiredBounty(bountyId)`. Sign and submit from any wa
 - If oracle stuck >10 min, anyone can call `failTimedOutSubmission` (or use `/submissions/:subId/timeout`)
 - If the parent bounty is also expired and you need to reclaim creator funds, see [Reclaiming funds from an expired bounty](#reclaiming-funds-from-an-expired-bounty)
 
+### Diagnosing ID drift between API and on-chain (BOUNTY_NOT_ONCHAIN)
+
+The API jobId and the on-chain bountyId must match for any submission API call to route correctly. They normally do — `PATCH /api/jobs/:jobId/bountyId` reconciles the local jobId to match the on-chain bountyId. The drift cases are:
+
+- `/api/jobs/create` was called but `PATCH /bountyId` was skipped (link step missing).
+- Multiple `/api/jobs/create` calls advanced the API counter past the on-chain `bountyCount`.
+- The on-chain `createBounty` was never made (job exists locally, no escrow).
+
+The server now blocks calldata endpoints in any of these states with `400 BOUNTY_NOT_ONCHAIN`, and the error body's `extra.recoveryEndpoints` points at the two diagnostic endpoints below.
+
+**1. Discover which API jobId corresponds to your on-chain bounty:**
+
+```
+GET /api/jobs/lookup?txHash=0x<your-createBounty-tx>
+GET /api/jobs/lookup?bountyId=<n>
+GET /api/jobs/lookup?evaluationCid=<cid>
+```
+
+Returns `{ success, lookedUpBy, job, linkage }`. The 404 response distinguishes "bounty does not exist on chain" (`onChainExists: false`) from "exists but local sync hasn't picked it up yet" (`onChainExists: true`) — the latter is just a timing issue; call `POST /api/jobs/sync/now` and retry.
+
+**2. Diagnose linkage health (one-call agent-friendly check):**
+
+```
+GET /api/jobs/:jobId/onchain-status
+```
+
+The `linkage` field is a structured verdict — `state` is one of:
+
+| state | meaning | what to do |
+| --- | --- | --- |
+| `linked` | jobId == on-chain bountyId, sync confirmed | nothing — safe to use |
+| `patched-not-synced` | PATCH ran; sync will confirm shortly | nothing — calldata endpoints already work |
+| `not-on-chain` | API-only, never linked | follow `linkage.fix` (createBounty + PATCH) |
+| `mismatch` | local jobId disagrees with on-chain bountyId | route via `linkage.correctJobId` instead |
+| `untracked` | bounty exists on-chain, no local job | `POST /api/jobs/sync/now`, then retry |
+
+**3. Do NOT compensate by spending more on-chain.** Creating an additional bounty to "fix" the alignment makes it worse, not better. The fix is always either the lookup endpoint (find the right jobId) or the PATCH endpoint (link the existing one).
+
 ### LINK approval errors at startPreparedSubmission
 - The contract pulls LINK via `transferFrom` using the allowance set in step 2 — never `transfer` LINK directly to the EvaluationWallet
 - Confirm allowance with `link.allowance(hunter, evalWallet)` before calling start

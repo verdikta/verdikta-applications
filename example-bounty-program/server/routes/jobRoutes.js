@@ -40,9 +40,22 @@ function rejectIfNotOnChain(res, job, jobId, extra) {
   sendError(res, 400, {
     code: ErrorCodes.BOUNTY_NOT_ONCHAIN,
     message: 'Bounty not linked to on-chain contract',
-    details: `Bounty #${jobId} was created via the API but has no corresponding on-chain bounty. This usually means createBounty() was never called on the BountyEscrow contract, or the link step was skipped.`,
-    fix: `Call createBounty() on the BountyEscrow contract, then PATCH /api/jobs/${jobId}/bountyId with { bountyId, txHash } to link this job to the on-chain bountyId.`,
-    extra
+    details: `Bounty #${jobId} was created via the API but has no corresponding on-chain bounty. This usually means createBounty() was never called on the BountyEscrow contract, or the link step was skipped. Calldata endpoints would otherwise emit a transaction that references the wrong on-chain bountyId — this is the silent-failure mode this guard prevents.`,
+    fix: `PATCH /api/jobs/${jobId}/bountyId with { bountyId, txHash } to link this job to the on-chain bountyId. If you don't know which API jobId matches your on-chain bounty, call GET /api/jobs/lookup first.`,
+    tips: [
+      `If you already called createBounty(): PATCH /api/jobs/${jobId}/bountyId with { bountyId, txHash } to link.`,
+      `If you're not sure which API jobId matches your on-chain bounty: GET /api/jobs/lookup?txHash=<your-tx> (or ?bountyId=<n> or ?evaluationCid=<cid>).`,
+      `To diagnose drift between local and on-chain ids: GET /api/jobs/${jobId}/onchain-status and read the "linkage" field.`,
+      `If you have not yet created the on-chain bounty: call createBounty() on the BountyEscrow contract, then PATCH /bountyId.`
+    ],
+    extra: {
+      ...(extra || {}),
+      recoveryEndpoints: {
+        lookup: '/api/jobs/lookup',
+        linkageDiagnostic: `/api/jobs/${jobId}/onchain-status`,
+        link: `PATCH /api/jobs/${jobId}/bountyId`
+      }
+    }
   });
   return true;
 }
@@ -891,6 +904,174 @@ router.get('/mine/action-required', async (req, res) => {
     return res.status(500).json({ error: 'Failed to list action-required bounties', details: error.message });
   }
 });
+
+/**
+ * GET /api/jobs/lookup
+ * Discover which API job corresponds to an on-chain bounty.
+ *
+ * Accepts one of (in priority order):
+ *   ?bountyId=<N>          → look up by on-chain bountyId (== local jobId for linked jobs)
+ *   ?txHash=0x<hash>       → look up by stored createBounty txHash
+ *   ?evaluationCid=<cid>   → look up by evaluation-archive CID
+ *
+ * This endpoint exists because in the "drift" case — where /jobs/create has
+ * been called but PATCH /:jobId/bountyId has not, or counters got out of sync
+ * during testing — agents can otherwise have no way to tell which API jobId
+ * actually corresponds to the bounty they created on-chain. After the PATCH
+ * is performed, jobId always equals on-chain bountyId, so a 200 response
+ * here means "you can safely route subsequent API calls by `job.jobId`".
+ *
+ * Returns 200 with the matched job and a `linkage` field, or 404 with a hint
+ * to call sync / PATCH if the on-chain bounty exists but no local job tracks
+ * it yet.
+ */
+router.get('/lookup', async (req, res) => {
+  try {
+    const { bountyId, txHash, evaluationCid } = req.query || {};
+    if (!bountyId && !txHash && !evaluationCid) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing lookup key',
+        details: 'Provide exactly one of ?bountyId=N, ?txHash=0x..., or ?evaluationCid=...'
+      });
+    }
+
+    const storage = await jobStorage.readStorage();
+    const jobs = storage.jobs || [];
+
+    let match = null;
+    let by = null;
+    if (bountyId !== undefined && bountyId !== '') {
+      const n = parseInt(bountyId, 10);
+      if (!Number.isInteger(n) || n < 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid bountyId',
+          details: `"${bountyId}" is not a non-negative integer`
+        });
+      }
+      // After PATCH /bountyId, jobId == on-chain bountyId — direct match.
+      // Pre-PATCH (drifted), an API-only row may sit at this jobId without
+      // being on-chain; we still surface it so the caller sees the conflict.
+      match = jobs.find(j => Number(j.jobId) === n) || null;
+      by = 'bountyId';
+    } else if (txHash) {
+      const lc = String(txHash).toLowerCase();
+      match = jobs.find(j => (j.txHash || '').toLowerCase() === lc) || null;
+      by = 'txHash';
+    } else if (evaluationCid) {
+      match = jobs.find(j => j.evaluationCid === evaluationCid) || null;
+      by = 'evaluationCid';
+    }
+
+    if (!match) {
+      // For bountyId lookups, check on-chain so we can distinguish
+      // "doesn't exist" from "exists but not tracked locally yet".
+      let onChainExists = null;
+      let hint = 'No local job matches that key.';
+      if (by === 'bountyId') {
+        try {
+          const cs = getContractService();
+          const chainBounty = await cs.getBounty(parseInt(bountyId, 10));
+          onChainExists = !!(chainBounty && chainBounty.creator && chainBounty.creator !== '0x0000000000000000000000000000000000000000');
+        } catch (_) {
+          onChainExists = false;
+        }
+        if (onChainExists) {
+          hint = 'Bounty exists on-chain but the local sync service has not picked it up yet. Try POST /api/jobs/sync/now, or PATCH /api/jobs/<your-local-jobId>/bountyId with { bountyId, txHash } to link manually.';
+        } else {
+          hint = `No bounty with id ${bountyId} exists on the active BountyEscrow contract. Verify the id and the contract address (GET /api/docs).`;
+        }
+      } else if (by === 'txHash') {
+        hint = 'No local job has that txHash. If the createBounty transaction has confirmed but no job is tracking it yet, call POST /api/jobs/sync/now, then PATCH /api/jobs/<your-local-jobId>/bountyId with { bountyId, txHash }.';
+      } else if (by === 'evaluationCid') {
+        hint = 'No local job has that evaluationCid. This means the job was never created via POST /api/jobs/create on this server; the rubric/archive may belong to a different deployment.';
+      }
+      return res.status(404).json({
+        success: false,
+        error: 'Job not found',
+        lookedUpBy: by,
+        onChainExists,
+        hint
+      });
+    }
+
+    const linkage = buildLinkageReport(match);
+
+    return res.json({
+      success: true,
+      lookedUpBy: by,
+      job: {
+        jobId: match.jobId,
+        title: match.title,
+        creator: match.creator,
+        evaluationCid: match.evaluationCid,
+        rubricCid: match.rubricCid,
+        txHash: match.txHash || null,
+        blockNumber: match.blockNumber || null,
+        status: match.status,
+        onChain: !!match.onChain,
+        syncedFromBlockchain: !!match.syncedFromBlockchain,
+        contractAddress: match.contractAddress || null,
+        submissionOpenTime: match.submissionOpenTime,
+        submissionCloseTime: match.submissionCloseTime,
+        createdAt: match.createdAt
+      },
+      linkage,
+      note: linkage.state === 'linked'
+        ? 'jobId is safe to use as the on-chain bountyId for all subsequent API calls.'
+        : 'jobId may NOT match the on-chain bountyId yet — see linkage.fix before routing transactions through it.'
+    });
+  } catch (error) {
+    logger.error('[jobs/lookup] error', { msg: error.message });
+    return res.status(500).json({ success: false, error: 'Lookup failed', details: error.message });
+  }
+});
+
+/**
+ * Build a structured linkage health report for a local job.
+ * `state` is the single-string verdict; `mismatch` is set only when the local
+ * jobId doesn't agree with what's on-chain (rare, but the failure mode the
+ * lookup endpoint exists to surface).
+ */
+function buildLinkageReport(job, options = {}) {
+  const { onChainBountyId = null } = options;
+  if (job.syncedFromBlockchain) {
+    return {
+      state: 'linked',
+      onChain: true,
+      syncedFromBlockchain: true,
+      detail: 'Sync service has confirmed this job matches an on-chain bounty with the same id.',
+      fix: null
+    };
+  }
+  if (job.onChain) {
+    return {
+      state: 'patched-not-synced',
+      onChain: true,
+      syncedFromBlockchain: false,
+      detail: 'PATCH /bountyId set onChain=true, but the sync service has not yet observed the BountyCreated event. Calldata endpoints will work; sync will confirm shortly.',
+      fix: 'Optional: call POST /api/jobs/sync/now to force a sync pass.'
+    };
+  }
+  if (onChainBountyId !== null && Number(job.jobId) !== Number(onChainBountyId)) {
+    return {
+      state: 'mismatch',
+      onChain: false,
+      syncedFromBlockchain: false,
+      detail: `Local jobId ${job.jobId} disagrees with the on-chain bountyId ${onChainBountyId}. Submissions routed through this job will reference the wrong on-chain bounty.`,
+      mismatch: { localJobId: job.jobId, onChainBountyId: Number(onChainBountyId) },
+      fix: `Call PATCH /api/jobs/${job.jobId}/bountyId with { bountyId: ${onChainBountyId}, txHash } to reconcile.`
+    };
+  }
+  return {
+    state: 'not-on-chain',
+    onChain: false,
+    syncedFromBlockchain: false,
+    detail: 'This job was created via the API but is not linked to any on-chain bounty yet. createBounty() may not have been called, or the link step was skipped.',
+    fix: `Call createBounty() on the BountyEscrow contract, then PATCH /api/jobs/${job.jobId}/bountyId with { bountyId, txHash } to link.`
+  };
+}
 
 /**
  * POST /api/jobs/:jobId/close
@@ -2837,6 +3018,39 @@ router.get('/:jobId/onchain-status', async (req, res) => {
     const eff = String(b.status || '').toUpperCase();
     const rawStatus = eff === 'AWARDED' ? 1 : eff === 'CLOSED' ? 2 : 0;
 
+    // Build a linkage report so agents can diagnose ID drift in one call.
+    // We look up by the caller-supplied id; an evaluationCid match is the
+    // strongest signal that local and on-chain are talking about the same
+    // bounty, so we prefer that when the id-based row disagrees.
+    let linkage;
+    try {
+      const storage = await jobStorage.readStorage();
+      const byId = (storage.jobs || []).find(j => Number(j.jobId) === bountyId) || null;
+      const byCid = b.evaluationCid
+        ? (storage.jobs || []).find(j => j.evaluationCid === b.evaluationCid)
+        : null;
+      // Prefer the row that actually matches the on-chain bounty's evaluationCid.
+      // If the id-based row has a different evaluationCid, that's drift — surface it.
+      const localJob = byCid || byId;
+      if (!localJob) {
+        linkage = {
+          state: 'untracked',
+          onChain: true,
+          syncedFromBlockchain: false,
+          detail: `Bounty #${bountyId} exists on-chain but no local job tracks it. The sync service has not picked it up yet.`,
+          fix: 'Call POST /api/jobs/sync/now to force a sync pass, or look up via GET /api/jobs/lookup?evaluationCid=... if you have the CID.'
+        };
+      } else {
+        linkage = buildLinkageReport(localJob, { onChainBountyId: bountyId });
+        if (byCid && byId && byCid !== byId) {
+          linkage.idDriftWarning = `Local job at id ${bountyId} has a different evaluationCid than the on-chain bounty. The job that actually matches this bounty is at jobId ${byCid.jobId}. Route API calls through that id instead.`;
+          linkage.correctJobId = byCid.jobId;
+        }
+      }
+    } catch (linkErr) {
+      linkage = { state: 'unknown', detail: `Linkage check failed: ${linkErr.message}` };
+    }
+
     return res.json({
       success: true,
       bountyId,
@@ -2860,6 +3074,9 @@ router.get('/:jobId/onchain-status', async (req, res) => {
       creatorAssessmentWindowSize: b.creatorAssessmentWindowSize,
       creatorDeterminationPaymentEth: b.creatorDeterminationPayment,
       arbiterDeterminationPaymentEth: b.arbiterDeterminationPayment,
+      linkage,                                   // see buildLinkageReport — state is
+                                                 //   linked | patched-not-synced |
+                                                 //   not-on-chain | mismatch | untracked
       fetchedAt: new Date().toISOString(),
       note: 'Ground truth from the BountyEscrow contract. If this disagrees with GET /api/jobs/:jobId the sync service has not yet observed the change; this endpoint is authoritative.'
     });

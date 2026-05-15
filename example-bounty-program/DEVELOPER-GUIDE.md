@@ -342,8 +342,10 @@ Returns `{ success, lookedUpBy, job, linkage }`. The 404 response distinguishes 
 **2. Diagnose linkage health (one-call agent-friendly check):**
 
 ```
-GET /api/jobs/:jobId/onchain-status
+GET /api/jobs/:bountyId/onchain-status
 ```
+
+> **Path param gotcha:** the `:id` here is the **on-chain bountyId**, not the API jobId. They are equal for `linked` jobs, but during drift you may be holding an API jobId that points to a different (or no) on-chain bounty. Always run `/api/jobs/lookup` first if you're not sure. The endpoint's 404 response cross-checks for a local API job at the same id and includes a `fix` pointing at `/lookup` when it finds one.
 
 The `linkage` field is a structured verdict — `state` is one of:
 

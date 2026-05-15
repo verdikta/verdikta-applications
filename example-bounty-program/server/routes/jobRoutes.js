@@ -2960,6 +2960,14 @@ router.get('/:jobId', async (req, res) => {
 /**
  * GET /api/jobs/:jobId/onchain-status
  *
+ * IMPORTANT: the path param is the ON-CHAIN bountyId, not the API jobId. They
+ * are equal for linked jobs (after PATCH /bountyId has reconciled the local
+ * row), but differ during the drift window between /jobs/create and the link
+ * step. If you are debugging a job in drift, call GET /api/jobs/lookup first
+ * to discover the on-chain bountyId, then pass that here. The 404 response
+ * for a missing bounty checks for a local API job at the same id and points
+ * you at /lookup if it finds one.
+ *
  * Returns a fresh on-chain snapshot of a bounty, with the server performing
  * the ABI decoding. Designed for AI agents that want to verify chain state
  * without writing their own raw-byte decoder (a common source of off-by-one
@@ -3083,11 +3091,34 @@ router.get('/:jobId/onchain-status', async (req, res) => {
   } catch (err) {
     const msg = (err?.message || '').toLowerCase();
     if (msg.includes('bad bountyid') || msg.includes('badbountyid') || msg.includes('call_exception')) {
+      // Check whether a local job exists at this id — if so, the caller is
+      // probably hitting the drift case (API jobId != on-chain bountyId).
+      let localJob = null;
+      let identityHint = null;
+      try {
+        const storage = await jobStorage.readStorage();
+        localJob = (storage.jobs || []).find(j => Number(j.jobId) === bountyId) || null;
+      } catch (_) { /* non-fatal */ }
+
+      if (localJob && !localJob.onChain && !localJob.syncedFromBlockchain) {
+        identityHint = `A local API job #${bountyId} exists but is not linked to any on-chain bounty. The path param of /onchain-status is the on-chain bountyId — NOT the API jobId — and they only match after PATCH /bountyId reconciles them. To find the real on-chain bountyId for this job, call GET /api/jobs/lookup?txHash=<your-createBounty-tx> (or ?evaluationCid=${localJob.evaluationCid || '<your-cid>'}).`;
+      } else if (!localJob) {
+        identityHint = `No on-chain bounty #${bountyId} exists, and no local API job has that jobId either. Verify the id (the path param is the on-chain bountyId, which equals the API jobId only for linked jobs).`;
+      } else {
+        identityHint = `Local API job #${bountyId} exists and is marked on-chain, but the contract has no bounty at that id. This is a stale-link state — call GET /api/jobs/lookup?evaluationCid=${localJob.evaluationCid || '<cid>'} to find the correct on-chain id, or POST /api/jobs/sync/now to re-reconcile.`;
+      }
+
       return res.status(404).json({
         success: false,
         error: 'Bounty not found on current contract',
-        details: `Bounty #${bountyId} does not exist on the active BountyEscrow contract`,
-        fix: 'Verify the bountyId and the current contract address (GET /api/docs).'
+        details: `Bounty #${bountyId} does not exist on the active BountyEscrow contract. Note: this endpoint's path param is the on-chain bountyId, which differs from the API jobId when there is drift.`,
+        fix: identityHint,
+        localJobExists: !!localJob,
+        localJobLinked: !!(localJob && (localJob.onChain || localJob.syncedFromBlockchain)),
+        recoveryEndpoints: {
+          lookup: '/api/jobs/lookup',
+          forceSync: '/api/jobs/sync/now'
+        }
       });
     }
     logger.error('[jobs/onchain-status] fatal', { bountyId, msg: err.message });

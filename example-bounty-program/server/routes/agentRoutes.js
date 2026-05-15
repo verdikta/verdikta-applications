@@ -145,6 +145,12 @@ GET /api/jobs/:id
 
 ## Check On-Chain Status (ground truth, ABI-decoded server-side)
 GET /api/jobs/:id/onchain-status
+The path param :id is the ON-CHAIN bountyId, not the API jobId. They are equal
+for linked jobs, but differ during drift. If you have an API jobId for a job that
+isn't fully linked yet, call /api/jobs/lookup first to discover the on-chain id,
+then pass that here. (The 404 response for a missing bounty cross-checks for a
+local API job at the same id and points you at /lookup if it finds one.)
+
 Returns a fresh snapshot read directly from the BountyEscrow contract with the
 server performing all ABI decoding. PREFER THIS over writing your own raw eth_call
 decoder. Returns { status (OPEN|EXPIRED|AWARDED|CLOSED), rawStatus, payoutWei,
@@ -657,8 +663,8 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'GET',
         path: '/jobs/:id/onchain-status',
-        description: 'Authoritative on-chain snapshot, ABI-decoded server-side. Use when the cached /jobs/:id view may be stale, or to diagnose ID drift via the "linkage" field.',
-        returns: '{ success, bountyId, status, rawStatus, creator, winner, payoutWei, payoutEth, submissionDeadline, deadlinePassed, submissionCount, isAcceptingSubmissions, canBeClosed, targetHunter, evaluationCid, classId, threshold, linkage: { state, onChain, syncedFromBlockchain, detail, fix?, mismatch?, correctJobId?, idDriftWarning? }, fetchedAt, note }. linkage.state ∈ { linked | patched-not-synced | not-on-chain | mismatch | untracked }.'
+        description: 'Authoritative on-chain snapshot, ABI-decoded server-side. Use when the cached /jobs/:id view may be stale, or to diagnose ID drift via the "linkage" field. IMPORTANT: :id is the on-chain bountyId, not the API jobId — they only match for linked jobs. Use /api/jobs/lookup first if you are not sure.',
+        returns: '{ success, bountyId, status, rawStatus, creator, winner, payoutWei, payoutEth, submissionDeadline, deadlinePassed, submissionCount, isAcceptingSubmissions, canBeClosed, targetHunter, evaluationCid, classId, threshold, linkage: { state, onChain, syncedFromBlockchain, detail, fix?, mismatch?, correctJobId?, idDriftWarning? }, fetchedAt, note }. linkage.state ∈ { linked | patched-not-synced | not-on-chain | mismatch | untracked }. 404 responses for missing on-chain bounties include localJobExists/localJobLinked flags and a fix pointing at /api/jobs/lookup.'
       },
       {
         method: 'GET',

@@ -378,7 +378,8 @@ class VerdiktaService {
               classes: oracle.classes || [classId],
               callCount: oracle.callCount,
               qualityScore: oracle.qualityScore,
-              timelinessScore: oracle.timelinessScore
+              timelinessScore: oracle.timelinessScore,
+              fee: oracle.fee
             });
           }
 

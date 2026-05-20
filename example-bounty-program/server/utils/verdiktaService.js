@@ -247,13 +247,13 @@ class VerdiktaService {
         };
       }
 
-      // Check 3: Sustained recent decline - look at last 7 scores.
-      // Max single-step drop is 20, so a 120-point net drop over 6 increments
-      // is equivalent to 6 consecutive declines (no zigzag possible).
-      if (recentScores.length >= 7) {
-        const last7 = recentScores.slice(-7);
-        const recentDrop = last7[0].timelinessScore - last7[last7.length - 1].timelinessScore;
-        if (recentDrop >= 120) {
+      // Check 3: Sustained recent decline - look at last 8 scores.
+      // Max single-step drop is 20, so a 140-point net drop over 7 increments
+      // is equivalent to 7 consecutive declines (no zigzag possible).
+      if (recentScores.length >= 8) {
+        const last8 = recentScores.slice(-8);
+        const recentDrop = last8[0].timelinessScore - last8[last8.length - 1].timelinessScore;
+        if (recentDrop >= 140) {
           return {
             isUnresponsive: true,
             reason: 'rapid_decline'

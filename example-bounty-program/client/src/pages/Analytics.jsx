@@ -76,7 +76,7 @@ const COLORS = {
 const ARBITER_STATUS_DESCRIPTIONS = {
   Active: 'Registered, responding normally, available for selection, and called three or more times',
   New: 'Arbiters that have been called fewer than three times',
-  Unresponsive: 'Registered but showing signs of poor availability: timeliness score <= -60, or 60%+ declining trend in recent scores, or sustained score decline (120+ points in last 7 updates)',
+  Unresponsive: 'Registered but showing signs of poor availability: timeliness score <= -60, or 60%+ declining trend in recent scores, or sustained score decline (140+ points in last 8 updates)',
   Blocked: 'Temporarily locked due to severe performance issues (timeliness or quality score below threshold)',
   Inactive: 'Not currently registered or has been deactivated in the contract'
 };

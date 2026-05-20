@@ -144,6 +144,7 @@ function ClassDetails() {
                     <td>
                       <code title={[
                         arb.classes?.length ? `Capability Classes: ${arb.classes.join(', ')}` : '',
+                        `Status: ${arb.status ?? 'N/A'}`,
                         `Call Count: ${arb.callCount ?? 'N/A'}`,
                         `Quality Score: ${arb.qualityScore ?? 'N/A'}`,
                         `Timeliness Score: ${arb.timelinessScore ?? 'N/A'}`,

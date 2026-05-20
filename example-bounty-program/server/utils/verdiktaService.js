@@ -335,6 +335,15 @@ class VerdiktaService {
           thresholds
         );
 
+        // Determine arbiter status - "new" if called fewer than 3 times
+        const isNew = oracle.callCount < 3;
+        let status;
+        if (!oracle.isActive) status = 'inactive';
+        else if (isBlocked) status = 'blocked';
+        else if (responsiveness.isUnresponsive) status = 'unresponsive';
+        else if (isNew) status = 'new';
+        else status = 'active';
+
         // Debug logging for 5050 class
         if (oracle.classes.includes(5050)) {
           logger.info('5050 class oracle analysis', {
@@ -344,7 +353,8 @@ class VerdiktaService {
             timelinessScore: oracle.timelinessScore,
             recentScoresCount: oracle.recentScores?.length || 0,
             recentScores: oracle.recentScores?.slice(-5).map(s => s.timelinessScore),
-            responsiveness
+            responsiveness,
+            status
           });
         }
 
@@ -379,24 +389,12 @@ class VerdiktaService {
               callCount: oracle.callCount,
               qualityScore: oracle.qualityScore,
               timelinessScore: oracle.timelinessScore,
-              fee: oracle.fee
+              fee: oracle.fee,
+              status
             });
           }
 
-          // Determine arbiter status - "new" if called fewer than 3 times
-          const isNew = oracle.callCount < 3;
-
-          if (!oracle.isActive) {
-            byClass[classId].inactive++;
-          } else if (isBlocked) {
-            byClass[classId].blocked++;
-          } else if (responsiveness.isUnresponsive) {
-            byClass[classId].unresponsive++;
-          } else if (isNew) {
-            byClass[classId].new++;
-          } else {
-            byClass[classId].active++;
-          }
+          byClass[classId][status]++;
 
           byClass[classId].totalCallCount += oracle.callCount;
           byClass[classId].qualityScores.push(oracle.qualityScore);

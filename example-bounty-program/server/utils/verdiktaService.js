@@ -247,12 +247,13 @@ class VerdiktaService {
         };
       }
 
-      // Check 3: Rapid recent decline - look at last 3 scores
-      if (recentScores.length >= 3) {
-        const last3 = recentScores.slice(-3);
-        const recentDrop = last3[0].timelinessScore - last3[last3.length - 1].timelinessScore;
-        // If dropped by 40+ points in last 3 updates (2+ missed responses recently)
-        if (recentDrop >= 40) {
+      // Check 3: Sustained recent decline - look at last 7 scores.
+      // Max single-step drop is 20, so a 120-point net drop over 6 increments
+      // is equivalent to 6 consecutive declines (no zigzag possible).
+      if (recentScores.length >= 7) {
+        const last7 = recentScores.slice(-7);
+        const recentDrop = last7[0].timelinessScore - last7[last7.length - 1].timelinessScore;
+        if (recentDrop >= 120) {
           return {
             isUnresponsive: true,
             reason: 'rapid_decline'

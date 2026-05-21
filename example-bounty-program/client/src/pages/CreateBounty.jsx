@@ -374,7 +374,6 @@ function CreateBounty({ walletState }) {
       });
       setThreshold(template.threshold ?? RUBRIC_DEFAULTS.threshold);
       setSelectedClassId(template.classId ?? RUBRIC_DEFAULTS.classId);
-      setFormData((prev) => ({ ...prev, title: template.title }));
       setLoadedRubricCid(null);
     }
   };

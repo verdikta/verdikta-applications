@@ -17,6 +17,7 @@ import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
 import { modelProviderService } from '../services/modelProviderService';
 import { walletService } from '../services/wallet';
+import { getContractService } from '../services/contractService';
 import * as rubricStorage from '../services/rubricStorage';
 import { getTemplateOptions, getTemplate, createBlankRubric, RUBRIC_DEFAULTS } from '../data/rubricTemplates';
 import ClassSelector from '../components/ClassSelector';
@@ -586,7 +587,6 @@ function CreateBounty({ walletState }) {
 
       // 2) On-chain create
       setLoadingText('Waiting for wallet / creating on-chain…');
-      const { getContractService } = await import('../services/contractService');
       const contractService = getContractService();
       if (!contractService.isConnected()) await contractService.connect();
 

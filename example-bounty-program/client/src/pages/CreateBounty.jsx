@@ -963,7 +963,7 @@ function CreateBounty({ walletState }) {
             </div>
 
             <div className="form-group">
-              <label htmlFor="rubricDescription">Rubric Description</label>
+              <label htmlFor="rubricDescription">Rubric Description (Optional)</label>
               <textarea
                 id="rubricDescription"
                 value={rubric.description}
@@ -971,6 +971,7 @@ function CreateBounty({ walletState }) {
                 placeholder="Describe what this rubric evaluates..."
                 rows={3}
               />
+              <small className="helper-text">Shown on the bounty page for human readers. Does not affect grading.</small>
             </div>
 
             <div className="form-group">

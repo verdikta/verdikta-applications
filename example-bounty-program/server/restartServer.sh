@@ -1,6 +1,7 @@
 #!/bin/bash
 # Restart server for specified network(s)
 # Usage: ./restartServer.sh [base|base-sepolia|both]
+# Typical Default Usage: ./restartServer.sh
 # Default: both
 
 cd "$(dirname "$0")"

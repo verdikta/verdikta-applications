@@ -971,7 +971,7 @@ function CreateBounty({ walletState }) {
                 placeholder="Describe what this rubric evaluates..."
                 rows={3}
               />
-              <small className="helper-text">Shown on the bounty page for human readers. Does not affect grading.</small>
+              <small className="helper-text">Rubric Title and Rubric Description are only used as labels for human readers. Neither affects grading.</small>
             </div>
 
             <div className="form-group">

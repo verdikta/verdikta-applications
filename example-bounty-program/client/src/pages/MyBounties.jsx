@@ -18,9 +18,13 @@ import {
   Hourglass,
   HelpCircle,
   Clock,
+  Loader2,
+  Eye,
 } from 'lucide-react';
+import { renderMarkdownSafe } from '../utils/markdownPreview';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
+import { getContractService } from '../services/contractService';
 import {
   getBountyStatusLabel,
   getBountyBadgeProps,
@@ -116,6 +120,10 @@ function MyBounties({ walletState }) {
   const [expandedBounty, setExpandedBounty] = useState(null);
   const [downloadingSubmission, setDownloadingSubmission] = useState(null);
   const [downloadResult, setDownloadResult] = useState(null);
+  const [approvingSubmission, setApprovingSubmission] = useState(null);
+  const [previewingSubmission, setPreviewingSubmission] = useState(null);
+  const [previewResult, setPreviewResult] = useState(null);
+  const [actionRequired, setActionRequired] = useState(null);
 
   const { isConnected, address } = walletState;
 
@@ -137,14 +145,35 @@ function MyBounties({ walletState }) {
     }
   }, [address, includeExpired]);
 
+  // Load action-required (expired bounties needing close / submission resolution)
+  const loadActionRequired = useCallback(async () => {
+    if (!address) return;
+    try {
+      const result = await apiService.getActionRequired(address);
+      setActionRequired(result);
+    } catch (err) {
+      console.warn('Failed to load action-required bounties:', err);
+      setActionRequired(null);
+    }
+  }, [address]);
+
   useEffect(() => {
     if (isConnected && address) {
       loadBounties();
+      loadActionRequired();
     } else {
       setBounties([]);
+      setActionRequired(null);
       setLoading(false);
     }
-  }, [isConnected, address, loadBounties]);
+  }, [isConnected, address, loadBounties, loadActionRequired]);
+
+  // Quick-lookup map of action-required entries by jobId
+  const actionByJobId = (() => {
+    const map = new Map();
+    (actionRequired?.bounties || []).forEach(b => map.set(String(b.jobId), b));
+    return map;
+  })();
 
   // Handle download click
   const handleDownload = async (jobId, submissionId) => {
@@ -173,6 +202,49 @@ function MyBounties({ walletState }) {
       toast.error(`Download failed: ${err.message}`);
     } finally {
       setDownloadingSubmission(null);
+    }
+  };
+
+  // Handle inline preview click
+  const handlePreview = async (jobId, submissionId) => {
+    if (!address) return;
+    setPreviewingSubmission(`${jobId}-${submissionId}`);
+    try {
+      const result = await apiService.getSubmissionPreview(jobId, submissionId, address);
+      setPreviewResult({ jobId, submissionId, ...result });
+    } catch (err) {
+      console.error('Preview failed:', err);
+      toast.error(`Preview failed: ${err.message}`);
+    } finally {
+      setPreviewingSubmission(null);
+    }
+  };
+
+  // Handle creator approval
+  const handleCreatorApprove = async (bounty, submissionId) => {
+    const key = `${bounty.jobId}-${submissionId}`;
+    const creatorPay = bounty.creatorDeterminationPayment || bounty.bountyAmount || '?';
+
+    const confirmed = window.confirm(
+      `Approve submission #${submissionId} for bounty "${bounty.title}"?\n\n` +
+      `This will pay the hunter ${creatorPay} ETH from the bounty escrow.\n\n` +
+      'This action requires a blockchain transaction that you must sign.'
+    );
+    if (!confirmed) return;
+
+    setApprovingSubmission(key);
+    try {
+      const contractService = getContractService();
+      if (!contractService.isConnected()) await contractService.connect();
+
+      await contractService.creatorApproveSubmission(bounty.jobId, submissionId);
+      toast.success(`Submission #${submissionId} approved!`);
+      loadBounties();
+    } catch (err) {
+      console.error('Error approving submission:', err);
+      toast.error(`Failed to approve: ${err.message}`);
+    } finally {
+      setApprovingSubmission(null);
     }
   };
 
@@ -257,6 +329,51 @@ function MyBounties({ walletState }) {
         </div>
       )}
 
+      {actionRequired && actionRequired.count > 0 && (
+        <div className="action-required-banner">
+          <div className="action-required-header">
+            <AlertTriangle size={20} className="inline-icon" />
+            <strong>
+              {actionRequired.count} expired bounty{actionRequired.count === 1 ? '' : 'ies'} need
+              {actionRequired.count === 1 ? 's' : ''} your attention
+            </strong>
+          </div>
+          <p className="action-required-body">
+            {actionRequired.readyToCloseCount > 0 && (
+              <>
+                {actionRequired.readyToCloseCount} ready to close
+                {Number(actionRequired.totalReclaimableEth) > 0 && (
+                  <> — <strong>{actionRequired.totalReclaimableEth} ETH</strong> reclaimable</>
+                )}
+                .{' '}
+              </>
+            )}
+            {actionRequired.blockedCount > 0 && (
+              <>
+                {actionRequired.blockedCount} blocked by pending submission(s) — resolve those first.{' '}
+              </>
+            )}
+            Open each bounty below and use <strong>Close Expired Bounty</strong> to return funds.
+          </p>
+          <details className="action-required-list">
+            <summary>Show affected bounties</summary>
+            <ul>
+              {actionRequired.bounties.map(b => (
+                <li key={b.jobId}>
+                  <Link to={`/bounty/${b.jobId}`}>
+                    #{b.jobId}: {b.title || 'Untitled'}
+                  </Link>
+                  {' — '}
+                  {b.canClose
+                    ? <span className="reclaim-pill ready">Ready to close · {b.bountyAmount} ETH</span>
+                    : <span className="reclaim-pill blocked">{b.blockedBy || 'Action needed'}</span>}
+                </li>
+              ))}
+            </ul>
+          </details>
+        </div>
+      )}
+
       {/* Controls */}
       <div className="controls-bar">
         <label className="checkbox-label">
@@ -333,6 +450,98 @@ function MyBounties({ walletState }) {
         </div>
       )}
 
+      {/* Preview Modal */}
+      {previewResult && (
+        <div className="download-modal-overlay" onClick={() => setPreviewResult(null)}>
+          <div
+            className="download-modal preview-modal"
+            style={{ maxWidth: '900px' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3><Eye size={20} className="inline-icon" /> Submission Preview</h3>
+            {previewResult.previewable ? (
+              <>
+                <div className="preview-meta" style={{ fontSize: '0.85rem', marginBottom: '0.75rem' }}>
+                  <strong>File:</strong> <code>{previewResult.filename}</code>
+                  {' · '}
+                  <strong>Format:</strong> {previewResult.format}
+                  {previewResult.truncated && (
+                    <span style={{ color: 'var(--warning, #b45309)', marginLeft: '0.5rem' }}>
+                      (truncated — download for full content)
+                    </span>
+                  )}
+                </div>
+                <div
+                  className="preview-body"
+                  style={{
+                    background: 'var(--bg-alt, #fafafa)',
+                    border: '1px solid var(--border, #e5e7eb)',
+                    borderRadius: '6px',
+                    padding: '1rem',
+                    maxHeight: '60vh',
+                    overflow: 'auto',
+                  }}
+                >
+                  {previewResult.format === 'md' ? (
+                    <div
+                      className="markdown-body"
+                      dangerouslySetInnerHTML={{
+                        __html: renderMarkdownSafe(previewResult.content || ''),
+                      }}
+                    />
+                  ) : (
+                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>
+                      {previewResult.content}
+                    </pre>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="alert alert-warning">
+                <p style={{ margin: 0 }}>
+                  <AlertTriangle size={16} className="inline-icon" />{' '}
+                  {previewResult.reason === 'too-large' ? (
+                    <>
+                      <strong>File too large for inline preview.</strong>
+                      {previewResult.filename ? <> (<code>{previewResult.filename}</code>
+                      {previewResult.byteLength ? <> — {Math.round(previewResult.byteLength / 1024)} KB</> : null}
+                      )</> : null}{' '}
+                      Use <strong>Download ZIP</strong> below to get the full archive.
+                    </>
+                  ) : previewResult.reason === 'not-found' ? (
+                    <>
+                      <strong>The expected file wasn't found in the archive.</strong>{' '}
+                      Use <strong>Download ZIP</strong> below to inspect it directly.
+                    </>
+                  ) : (
+                    <>
+                      <strong>Nothing to preview inline.</strong>{' '}
+                      This submission doesn't contain a text-based file (.md, .txt, .json, .csv).{' '}
+                      Use <strong>Download ZIP</strong> below to get the work product.
+                    </>
+                  )}
+                </p>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
+              <button
+                onClick={() => {
+                  handleDownload(previewResult.jobId, previewResult.submissionId);
+                  setPreviewResult(null);
+                }}
+                className={previewResult.previewable ? 'btn btn-secondary' : 'btn btn-primary'}
+              >
+                <Download size={14} className="inline-icon" /> Download ZIP
+              </button>
+              <button onClick={() => setPreviewResult(null)} className="btn btn-secondary">
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Bounties List */}
       {bounties.length === 0 ? (
         <div className="empty-state">
@@ -344,9 +553,11 @@ function MyBounties({ walletState }) {
         </div>
       ) : (
         <div className="bounties-list">
-          {bounties.map((bounty) => (
+          {bounties.map((bounty) => {
+            const action = actionByJobId.get(String(bounty.jobId));
+            return (
             <div key={bounty.jobId} className="bounty-card">
-              <div 
+              <div
                 className="bounty-header"
                 onClick={() => setExpandedBounty(expandedBounty === bounty.jobId ? null : bounty.jobId)}
               >
@@ -355,6 +566,18 @@ function MyBounties({ walletState }) {
                   <span {...getBountyBadgeProps(bounty.status)}>
                     {getBountyStatusLabel(bounty.status)}
                   </span>
+                  {action && (
+                    <Link
+                      to={`/bounty/${bounty.jobId}`}
+                      className={`reclaim-pill ${action.canClose ? 'ready' : 'blocked'}`}
+                      onClick={(e) => e.stopPropagation()}
+                      title={action.canClose
+                        ? 'This bounty is expired and funds are reclaimable. Click to close.'
+                        : action.blockedBy || 'Pending submissions must be resolved before close.'}
+                    >
+                      {action.canClose ? 'Reclaim funds' : 'Resolve & close'}
+                    </Link>
+                  )}
                 </div>
                 <div className="bounty-meta">
                   <span className="meta-item">
@@ -425,22 +648,66 @@ function MyBounties({ walletState }) {
                           <span className="submitted-date" data-label="Submitted">
                             {formatDate(sub.submittedAt)}
                           </span>
-                          <span className="action-cell">
+                          <span className="action-cell" style={{ display: 'flex', gap: '0.25rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                            {/* Creator approve button for PendingCreatorApproval */}
+                            {sub.status === 'PendingCreatorApproval' && (() => {
+                              const windowEnd = sub.creatorWindowEnd || 0;
+                              const now = Math.floor(Date.now() / 1000);
+                              const windowOpen = windowEnd > now;
+                              const key = `${bounty.jobId}-${sub.submissionId}`;
+                              const isApproving = approvingSubmission === key;
+
+                              if (windowOpen) {
+                                return (
+                                  <button
+                                    onClick={() => handleCreatorApprove(bounty, sub.submissionId)}
+                                    disabled={isApproving}
+                                    className="btn btn-sm btn-success"
+                                    title={`Approve and pay ${bounty.creatorDeterminationPayment || '?'} ETH (${Math.ceil((windowEnd - now) / 60)} min left)`}
+                                    style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.75rem' }}
+                                  >
+                                    {isApproving
+                                      ? <Loader2 size={12} className="spin" />
+                                      : <><Check size={12} /> Approve</>}
+                                  </button>
+                                );
+                              }
+                              return (
+                                <span className="expired-label" title="Creator approval window expired — proceed via bounty details page" style={{ fontSize: '0.75rem' }}>
+                                  Window expired
+                                </span>
+                              );
+                            })()}
+                            {/* Preview + Download buttons */}
                             {sub.hunterCid && !sub.isExpired ? (
-                              <button
-                                onClick={() => handleDownload(bounty.jobId, sub.submissionId)}
-                                disabled={downloadingSubmission === `${bounty.jobId}-${sub.submissionId}`}
-                                className="btn btn-sm btn-primary download-btn"
-                                title={sub.retrievedByPoster ? 'Download again (already retrieved)' : 'Download submission'}
-                              >
-                                {downloadingSubmission === `${bounty.jobId}-${sub.submissionId}`
-                                  ? <RefreshCw size={14} className="spin" />
-                                  : <Download size={14} />}
-                              </button>
-                            ) : sub.isExpired ? (
-                              <span className="expired-label">Expired</span>
-                            ) : (
-                              <span className="no-content">—</span>
+                              <>
+                                <button
+                                  onClick={() => handlePreview(bounty.jobId, sub.submissionId)}
+                                  disabled={previewingSubmission === `${bounty.jobId}-${sub.submissionId}`}
+                                  className="btn btn-sm btn-secondary"
+                                  title="Preview inline (text/markdown/json/csv)"
+                                >
+                                  {previewingSubmission === `${bounty.jobId}-${sub.submissionId}`
+                                    ? <RefreshCw size={14} className="spin" />
+                                    : <Eye size={14} />}
+                                </button>
+                                <button
+                                  onClick={() => handleDownload(bounty.jobId, sub.submissionId)}
+                                  disabled={downloadingSubmission === `${bounty.jobId}-${sub.submissionId}`}
+                                  className="btn btn-sm btn-primary download-btn"
+                                  title={sub.retrievedByPoster ? 'Download again (already retrieved)' : 'Download submission'}
+                                >
+                                  {downloadingSubmission === `${bounty.jobId}-${sub.submissionId}`
+                                    ? <RefreshCw size={14} className="spin" />
+                                    : <Download size={14} />}
+                                </button>
+                              </>
+                            ) : sub.status !== 'PendingCreatorApproval' && (
+                              sub.isExpired ? (
+                                <span className="expired-label">Expired</span>
+                              ) : (
+                                <span className="no-content">—</span>
+                              )
                             )}
                           </span>
                         </div>
@@ -456,7 +723,8 @@ function MyBounties({ walletState }) {
                 </div>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -468,6 +736,7 @@ function MyBounties({ walletState }) {
           <li><strong>7 days after download:</strong> Once you download a submission, it remains available for 7 more days.</li>
           <li><strong>Save locally:</strong> Always save downloaded files to your computer for permanent access.</li>
           <li><strong>ZIP format:</strong> Submissions are ZIP archives containing the work product and a manifest.</li>
+          <li><strong>Inline preview:</strong> Text-based work products (.md, .txt, .json, .csv) can be previewed in-browser without starting the 7-day retrieval countdown — only Download does that.</li>
         </ul>
       </div>
     </div>

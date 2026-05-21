@@ -40,6 +40,7 @@ import { ethers } from 'ethers';
 import {
   getNetwork, providerFor, loadWallet,
   ESCROW, escrowContract, arg, loadApiKey,
+  getSupportedModelsForClass, validateAndNormalizeJuryNodes,
 } from './_lib.js';
 
 const configPath = arg('config');
@@ -70,8 +71,10 @@ const {
   submissionWindowHours = 24,
   workProductType = 'writing',
   rubricJson,
-  juryNodes,
+  juryNodes: juryNodesInput,
 } = config;
+
+let juryNodes = juryNodesInput;
 
 // Validate required fields
 if (!title || !description) {
@@ -141,6 +144,18 @@ const creator = signer.address;
 const apiKey = await loadApiKey();
 if (!apiKey) {
   console.error('Missing API key. Run onboard.js first.');
+  process.exit(1);
+}
+
+// ---- Jury model preflight (hard gate) ----
+let supported = [];
+try {
+  supported = await getSupportedModelsForClass(baseUrl, apiKey, classId);
+  const normalized = validateAndNormalizeJuryNodes({ classId, juryNodes, supported });
+  juryNodes = normalized;
+  config.juryNodes = normalized;
+} catch (e) {
+  console.error(`Jury model validation failed: ${e.message}`);
   process.exit(1);
 }
 
@@ -217,9 +232,12 @@ console.log(`  Escrow:    ${contractAddress}`);
 console.log(`  CID:       ${primaryCid}`);
 console.log(`  Deadline:  ${new Date(deadline * 1000).toISOString()}`);
 
+// Open bounty (no targeted hunter)
+const targetHunter = ethers.ZeroAddress;
+
 // Dry-run first to catch revert reasons before spending gas
 try {
-  const gas = await contract.createBounty.estimateGas(primaryCid, classId, threshold, deadline, { value });
+  const gas = await contract.createBounty.estimateGas(primaryCid, classId, threshold, deadline, targetHunter, { value });
   console.log(`  estimated gas: ${gas.toString()}`);
 } catch (err) {
   const reason = err.reason || err.shortMessage || err.message || 'unknown';
@@ -228,7 +246,7 @@ try {
   process.exit(1);
 }
 
-const tx = await contract.createBounty(primaryCid, classId, threshold, deadline, { value });
+const tx = await contract.createBounty(primaryCid, classId, threshold, deadline, targetHunter, { value });
 console.log(`  tx: ${tx.hash}`);
 const receipt = await tx.wait();
 

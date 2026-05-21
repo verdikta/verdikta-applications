@@ -4,10 +4,37 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
 const os = require('os');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+// Logger isn't initialized yet — print boot-time env diagnostics to stdout so
+// they're captured in the server log file. Existence checks only — never log
+// secret values.
+const _envLocalPath = path.join(__dirname, '.env');
+const _envLocalResult = require('dotenv').config({ path: _envLocalPath });
+if (_envLocalResult.error) {
+  console.warn('[boot] local .env load failed', { path: _envLocalPath, error: _envLocalResult.error.message });
+} else {
+  console.log('[boot] local .env loaded', { path: _envLocalPath, keysParsed: Object.keys(_envLocalResult.parsed || {}).length });
+}
 // Load secrets from shared secrets file (overrides local .env)
 const secretsPath = path.join(__dirname, '../../../secrets/.env.secrets');
-require('dotenv').config({ path: secretsPath, override: true });
+const _secretsResult = require('dotenv').config({ path: secretsPath, override: true });
+if (_secretsResult.error) {
+  console.warn('[boot] secrets .env.secrets load failed — falling back to defaults (e.g. public RPC). This is the most common cause of sync trouble.', {
+    path: secretsPath,
+    error: _secretsResult.error.message,
+    code: _secretsResult.error.code
+  });
+} else {
+  console.log('[boot] secrets loaded', { path: secretsPath, keysParsed: Object.keys(_secretsResult.parsed || {}).length });
+}
+// Verify that critical keys ended up in process.env (existence only, no values).
+// If any are missing, log loudly so silent fallbacks (public RPC, no IPFS auth)
+// are visible at boot rather than only in a downstream RPC failure 10 hours later.
+const _criticalKeys = ['INFURA_API_KEY', 'RPC_URL', 'IPFS_PINNING_KEY'];
+const _envSummary = Object.fromEntries(_criticalKeys.map(k => [k, process.env[k] ? 'set' : 'unset']));
+console.log('[boot] critical env keys', _envSummary);
+if (!process.env.INFURA_API_KEY && !process.env.RPC_URL && !process.env.RPC_PROVIDER_URL) {
+  console.warn('[boot] No INFURA_API_KEY or RPC_URL set after env load — server will fall back to the public default RPC. Sync watchdog may trip on transient RPC errors.');
+}
 
 // Load configuration (must be after dotenv)
 const { config } = require('./config');
@@ -49,9 +76,47 @@ const ipfsClient = new IPFSClient({
   gateway: config.ipfsGateway,
   pinningService: config.ipfsPinningService,
   pinningKey: pinningKeyForClient,   // bare JWT only
-  timeout: 30000,
+  timeout: 8000,
   retryOptions: { retries: 5, factor: 2 }
 }, logger);
+
+// The hardcoded gateway list inside @verdikta/common puts ipfs.io first, but
+// that gateway has been intermittently returning 504s, which made every
+// bounty-detail load wait the full 30s timeout before falling back. Reorder
+// to favor Pinata (which has all our pinned content) and dweb.link, and push
+// ipfs.io to the back.
+ipfsClient.gateways = [
+  'https://gateway.pinata.cloud',
+  'https://dweb.link',
+  'https://cloudflare-ipfs.com',
+  'https://ipfs.io',
+];
+
+// CID-keyed cache for fetchFromIPFS. CIDs are content-addressed, so the bytes
+// at a given CID never change — caching is safe and turns repeat reads (every
+// bounty card click after the first) into in-memory lookups instead of 3–6s
+// public-gateway round trips. Bounded LRU so a long-running server doesn't
+// grow without limit.
+const IPFS_CACHE_MAX = 256;
+const ipfsCache = new Map();
+const _origFetchFromIPFS = ipfsClient.fetchFromIPFS.bind(ipfsClient);
+ipfsClient.fetchFromIPFS = async function fetchFromIPFSCached(cid) {
+  const key = String(cid).trim();
+  if (ipfsCache.has(key)) {
+    // Refresh recency for LRU eviction
+    const buf = ipfsCache.get(key);
+    ipfsCache.delete(key);
+    ipfsCache.set(key, buf);
+    return buf;
+  }
+  const buf = await _origFetchFromIPFS(cid);
+  ipfsCache.set(key, buf);
+  if (ipfsCache.size > IPFS_CACHE_MAX) {
+    const oldest = ipfsCache.keys().next().value;
+    if (oldest !== undefined) ipfsCache.delete(oldest);
+  }
+  return buf;
+};
 
 // Make ipfsClient available to routes
 app.locals.ipfsClient = ipfsClient;

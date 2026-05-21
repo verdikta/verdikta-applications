@@ -11,22 +11,17 @@ The Verdikta AI-Powered Bounty Program is a fully decentralized platform that en
 
 ## Quick Links
 
-### 🎯 Essential Documents (Start Here)
-- **[📋 PROJECT-OVERVIEW.md](PROJECT-OVERVIEW.md)** — Architecture, concepts, and data models
-- **[⚙️ CURRENT-STATE.md](CURRENT-STATE.md)** — What's complete, how to get started, contribution guide
-- **[👨‍💻 DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md)** — Quick reference for commands, APIs, and patterns
-
-### 📚 Additional Resources
-- **[📖 DESIGN.md](DESIGN.md)** — Complete technical specification (1400+ lines)
-- **[🏗️ Example Frontend](../example-frontend/)** — Reference implementation showing Verdikta integration patterns
-- **[📚 Verdikta User Guide](../docs/user-guide.md)** — Understanding Verdikta's AI evaluation system
+- **[👨‍💻 DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md)** — Build, test, deploy, debug, conventions
+- **In-app `/blockchain` page** — Live contract reference: ABI, state transitions, code samples
+- **In-app `/agents` page** — Live API reference for autonomous agents
+- **[`server/`](server/), [`client/`](client/), [`onchain/`](onchain/)** — Subproject READMEs with quickstart commands
 
 ## Key Concepts
 
 ### For Bounty Owners
-1. **Create Bounty**: Define work requirements via a rubric JSON (criteria, weights, threshold)
+1. **Create Bounty**: Define work requirements via a rubric JSON (criteria, weights, threshold). Optionally enable a creator approval window with split payments.
 2. **Lock ETH**: Deposit payout amount on-chain in escrow
-3. **Wait**: Hunters submit work, AI evaluates automatically
+3. **Wait**: Hunters submit work. If enabled, you have a window to approve directly; otherwise the AI evaluates automatically.
 4. **Winner Paid**: First passing submission gets ETH instantly
 
 ### For Hunters
@@ -86,6 +81,7 @@ Receipt URL format: `bounties.verdikta.org/r/{jobId}/{submissionId}`
 - ✅ **Automatic payout** to first passing submission
 - ✅ **Flexible criteria** with weighted rubrics and custom thresholds
 - ✅ **Time-limited submissions** with configurable deadlines
+- ✅ **Optional creator approval window** — review and approve submissions directly before AI evaluation, with split payment amounts (creator vs oracle approval)
 
 ### For Hunters
 - ✅ **Browse opportunities** with search and filter by payout, status, deadline
@@ -99,6 +95,7 @@ Receipt URL format: `bounties.verdikta.org/r/{jobId}/{submissionId}`
 - ✅ **API key authentication** for registered bots
 - ✅ **Automatic submission** workflow integration
 - ✅ **Receipt differentiation** (Agent vs Human)
+- ✅ **ID-drift diagnostics**: `GET /api/jobs/lookup` (find the API jobId for an on-chain bounty via `bountyId`, `txHash`, or `evaluationCid`) and `GET /api/jobs/:id/onchain-status` (returns a `linkage` field with state and a one-line fix). See `agents.txt` for the full workflow.
 
 ## Technology Stack
 
@@ -110,56 +107,6 @@ Receipt URL format: `bounties.verdikta.org/r/{jobId}/{submissionId}`
 - **Oracles**: Verdikta Aggregator + Chainlink Functions
 - **Images**: Sharp (for OG image generation)
 - **Sync**: Automated blockchain sync service (2-minute intervals)
-
-## Development Roadmap
-
-### ✅ Phase 0: Planning (Complete)
-- [x] Requirements gathering
-- [x] Design document creation
-- [x] Architecture planning
-
-### ✅ Phase 1: Foundation (Complete)
-- [x] Backend API setup (Express + IPFS)
-- [x] Archive generation utilities
-- [x] Verdikta multi-CID integration
-- [x] Network-specific job storage
-
-### ✅ Phase 2: Frontend MVP (Complete)
-- [x] React UI components
-- [x] Create Job workflow with ETH/USD conversion
-- [x] Browse Jobs with search/filter
-- [x] Submit Work workflow with multi-file support
-- [x] MetaMask wallet integration
-
-### ✅ Phase 3: Smart Contracts (Complete)
-- [x] BountyEscrow contract development
-- [x] EvaluationWallet contract for LINK management
-- [x] Contract deployment to Base Sepolia
-- [x] Contract deployment to Base Mainnet
-- [x] Frontend-contract integration
-- [x] Three-step submission flow (prepare, approve LINK, start)
-
-### ✅ Phase 4: Advanced Features (Complete)
-- [x] Blockchain sync service for state consistency
-- [x] Bot API for autonomous agents
-- [x] Receipt generation with OG tags
-- [x] Social sharing features
-- [x] Archival service for submission data
-- [x] Network-aware contract switching
-
-### 🔄 Phase 5: Testing & Refinement (In Progress)
-- [x] E2E testing with deployed contracts
-- [x] Multi-network testing (Sepolia + Mainnet)
-- [ ] Security audit
-- [ ] Gas optimization
-- [ ] Load testing
-
-### ⏳ Phase 6: Growth (Future)
-- [ ] Public launch marketing
-- [ ] User onboarding improvements
-- [ ] Analytics dashboard enhancements
-- [ ] Multiple winner support
-- [ ] Stablecoin payment options
 
 ## Example Use Cases
 
@@ -188,19 +135,46 @@ The submission process is split into three on-chain transactions for better UX:
 1. **Prepare Submission** (`prepareSubmission`)
    - Deploys EvaluationWallet contract
    - Records submission parameters
-   - Returns wallet address for LINK approval
+   - Emits `SubmissionPrepared(submissionId, evalWallet, linkMaxBudget, …)` — parse from the receipt
 
-2. **Approve LINK** (standard ERC-20 approval)
-   - Hunter approves LINK to the EvaluationWallet
-   - No gas optimization needed (standard pattern)
+2. **Approve LINK** (standard ERC-20 approval — MANDATORY before step 3)
+   - Hunter approves `linkMaxBudget` (from step 1 event) to the EvaluationWallet
+   - The contract pulls LINK via `transferFrom`, so a direct `transfer` does **not** work
 
 3. **Start Evaluation** (`startPreparedSubmission`)
-   - Pulls LINK into wallet
+   - Pulls LINK into the wallet
    - Approves Verdikta Aggregator
    - Triggers AI evaluation
    - Returns immediately (evaluation continues async)
 
-After evaluation completes (~2 minutes), anyone can call `finalizeSubmission()` to read results and trigger payout.
+After evaluation completes (~2 minutes), the hunter (or any finalizer) must call `finalizeSubmission()` to read results and trigger payout — this is **not automatic**. If the oracle never responds, `failTimedOutSubmission()` (or the API's `/timeout` endpoint) refunds LINK after 10 minutes.
+
+Agent API entry points for each step are documented at `/agents.txt` and `/api/docs` on a running server.
+
+## Bounty Lifecycle
+
+A bounty's escrowed ETH is only released by an on-chain transaction. **Nothing happens automatically when a bounty expires** — the funds sit in escrow until the creator (or anyone, after the deadline) closes the bounty.
+
+### After the deadline passes
+
+The escrowed ETH is locked until someone calls `closeExpiredBounty(bountyId)`. The website handles this for you:
+
+1. Open **My Bounties** while connected with the creator wallet. Expired bounties needing attention are listed in a yellow "Action Required" banner at the top, and each affected card shows a **Reclaim funds** pill.
+2. The page also surfaces a **count badge** next to "My Bounties" in the header — visible from any page so creators don't have to remember to check.
+3. Click into the bounty and use **Close Expired Bounty & Return Funds**. The website calls `closeExpiredBounty` for you.
+
+### If there are submissions still being evaluated
+
+`closeExpiredBounty` reverts if any submission is in `PendingVerdikta` status. The website detects this and shows **Resolve N Submission(s) & Close Bounty** instead. Behind the scenes:
+
+1. For each pending submission older than 10 minutes, call `failTimedOutSubmission(bountyId, submissionId)` (this refunds LINK to the hunter).
+2. Once no submissions are pending, call `closeExpiredBounty(bountyId)`.
+
+The UI does these in sequence inside one button. If you're scripting against the API, use the `/timeout` and `/close` endpoints in the same order. See [DEVELOPER-GUIDE.md → Reclaiming funds from an expired bounty](DEVELOPER-GUIDE.md#reclaiming-funds-from-an-expired-bounty) for the agent-friendly walkthrough.
+
+### Discoverability for agents and integrators
+
+`GET /api/jobs/mine/action-required?creator=0x...` returns a creator-scoped summary: count, total reclaimable ETH, and per-bounty `canClose` / `blockedBy` / `pendingSubmissions[]`. Poll this to drive your own UI or alerting; the website's nav badge uses the same endpoint.
 
 ## MVP Scope
 
@@ -227,14 +201,16 @@ After evaluation completes (~2 minutes), anyone can call `finalizeSubmission()` 
 
 ## Contract Addresses
 
+> **Authoritative source:** the running website's **Analytics page** (`/analytics` → System Health → Contract Addresses) displays the live BountyEscrow address pulled from the backend's runtime config. If the address below ever disagrees with the Analytics page, trust the Analytics page — these docs are a snapshot and may be stale after a redeployment.
+
 ### Base Sepolia (Testnet)
-- **BountyEscrow**: `0x0520b15Ee61C4E2A1B00bA260d8B1FBD015D2780`
+- **BountyEscrow**: `0x4f8e25383fafb8171ca88810C4a8A20B4926908D`
 - **Verdikta Aggregator**: `0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089`
 - **LINK Token**: `0xE4aB69C077896252FAFBD49EFD26B5D171A32410`
 - **Explorer**: [Base Sepolia Scan](https://sepolia.basescan.org)
 
 ### Base (Mainnet)
-- **BountyEscrow**: `0x0a6290EfA369Bbd4a9886ab9f98d7fAd7b0dc746`
+- **BountyEscrow**: `0x3970dC3750DdE4E73fdcd3a81b66F1472BbaAEee`
 - **Verdikta Aggregator**: `0x2f7a02298D4478213057edA5e5bEB07F20c4c054`
 - **LINK Token**: `0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196`
 - **Explorer**: [BaseScan](https://basescan.org)
@@ -303,21 +279,11 @@ This project is **production ready** with complete end-to-end functionality incl
 - ✅ Multi-network support (Base Sepolia testnet + Base mainnet)
 - ✅ Blockchain state synchronization every 2 minutes
 
-**For Developers & Contributors:**
-1. Read [PROJECT-OVERVIEW.md](PROJECT-OVERVIEW.md) for architecture understanding
-2. Read [CURRENT-STATE.md](CURRENT-STATE.md) for setup and testing instructions
-3. Use [DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md) as a quick reference
-4. Test bounty creation and submission on Base Sepolia
-5. Explore bot API integration for autonomous agents
-6. Test receipt generation and social sharing
-
 ### For Developers
-Want to contribute or integrate? Check out:
-1. **[CURRENT-STATE.md](CURRENT-STATE.md)** — Setup guide, environment configuration
-2. **[DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md)** — Commands, APIs, patterns, debugging
-3. **[PROJECT-OVERVIEW.md](PROJECT-OVERVIEW.md)** — Architecture and data models
-4. **[onchain/](onchain/)** — Smart contract code and deployment scripts
-5. **[Example Frontend](../example-frontend/)** — Reusable Verdikta integration patterns
+- **[DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md)** — Commands, environment, architecture, debugging, conventions
+- **In-app `/blockchain` page** — Live contract reference
+- **In-app `/agents` page** — Live API reference
+- **[`onchain/`](onchain/)** — Smart contract code and deployment scripts
 
 ## FAQ
 
@@ -331,7 +297,7 @@ A: Hunters pay LINK tokens for each evaluation. The amount depends on the bounty
 A: If evaluation doesn't complete within 10 minutes, anyone can call `failTimedOutSubmission()` to mark it as failed and refund leftover LINK to the hunter.
 
 **Q: Can I cancel a bounty after creating it?**  
-A: No cancellation is allowed. After the deadline passes, anyone can call `closeExpiredBounty()` to return funds to the creator (if no active evaluations are in progress).
+A: No cancellation is allowed. After the deadline passes, the escrowed ETH must be reclaimed via `closeExpiredBounty()` — this is not automatic. See [Bounty Lifecycle](#bounty-lifecycle) for how the UI guides you through it (and how to do it on-chain or via the API if you're scripting).
 
 **Q: Are submissions private?**  
 A: No. All submissions are stored on IPFS and can be viewed by anyone with the CID. The blockchain also records submission metadata publicly.
@@ -353,27 +319,18 @@ A: Use **Base Sepolia** for testing (free testnet ETH/LINK). Use **Base** (mainn
 
 ## Environment Configuration
 
-### Required Environment Variables
+Copy `server/.env.example` → `server/.env` and `client/.env.example` → `client/.env`, then fill in the values. Both `.env.example` files list every required variable.
 
-**Server (.env):**
-```bash
-NETWORK=base-sepolia  # or 'base' for mainnet
-BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA=0x0520b15Ee61C4E2A1B00bA260d8B1FBD015D2780
-BOUNTY_ESCROW_ADDRESS_BASE=0x0a6290EfA369Bbd4a9886ab9f98d7fAd7b0dc746
-RECEIPT_SALT=your-secret-salt-for-pseudonymous-ids
-FRONTEND_CLIENT_KEY=dev-local-key  # Must match client
-IPFS_PINNING_KEY=your-pinata-jwt
-USE_BLOCKCHAIN_SYNC=true
-SYNC_INTERVAL_SECONDS=120
-```
+**For contract addresses**, use the current values from the running website's **Analytics page** (`/analytics` → System Health → Contract Addresses), or see the [Contract Addresses](#contract-addresses) section above.
 
-**Client (.env):**
-```bash
-VITE_NETWORK=base-sepolia  # or 'base'
-VITE_CLIENT_KEY=dev-local-key  # Must match server
-```
+**Key variables:**
+- `NETWORK` / `VITE_NETWORK` — `base-sepolia` or `base`
+- `BOUNTY_ESCROW_ADDRESS_*` / `VITE_BOUNTY_ESCROW_ADDRESS_*` — BountyEscrow address per network (from Analytics page)
+- `IPFS_PINNING_KEY` — Pinata JWT (server only)
+- `RECEIPT_SALT` — random string for pseudonymous receipt IDs (server only)
+- `FRONTEND_CLIENT_KEY` / `VITE_CLIENT_KEY` — must match between server and client
 
-See `.env.example` files for complete configuration options.
+See `server/.env.example` and `client/.env.example` for the full list including sync, archival, and oracle-fee settings.
 
 ## Support & Contact
 
@@ -382,7 +339,30 @@ See `.env.example` files for complete configuration options.
 - **Website**: [verdikta.org](https://verdikta.org)
 - **Bounties App**: [bounties.verdikta.org](https://bounties.verdikta.org) (mainnet) / [bounties-testnet.verdikta.org](https://bounties-testnet.verdikta.org) (testnet)
 
+## Contributing
+
+Contributions welcome. See [DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md) for build/test/deploy instructions and project conventions.
+
+When adding code:
+- Follow existing patterns — check the relevant subdirectory before introducing new abstractions
+- Run `npm run lint` in the affected subproject before committing
+- For UI changes, use helpers from `client/src/utils/statusDisplay.js` rather than hard-coding status labels
+- For API changes, document the endpoint in **both** `server/routes/agentRoutes.js` (`agents.txt` text + `/api/docs` JSON) and the in-app `/agents` page
+- For new submission statuses or contract fields, see the "Common Tasks" section of the developer guide for the full propagation checklist
+- Keep commits small and descriptive
+
+Open issues and pull requests at [github.com/verdikta/verdikta-applications](https://github.com/verdikta/verdikta-applications).
+
 ## Changelog
+
+### v0.4.0 (April 2026)
+- Added creator approval window: bounty creators can offer split payments (creator approval vs oracle approval) and approve submissions directly within a configurable time window before AI evaluation
+- New on-chain function `creatorApproveSubmission` and 8-param `createBounty` overload
+- New API endpoint `POST /api/jobs/:id/submissions/:subId/approve-as-creator` for programmatic creator approval
+- Fixed `/start` endpoint to support windowed submissions after window expiry (any caller may fund LINK)
+- Enhanced `/diagnose` endpoint with creator approval window state
+- Added `GET /api/jobs/eth-price` public proxy for ETH/USD price (avoids client-side CORS)
+- Documentation cleanup: consolidated 19 root markdown files down to 2 (README + DEVELOPER-GUIDE)
 
 ### v0.3.0 (February 2026)
 - Added receipt generation with social sharing (OG tags)

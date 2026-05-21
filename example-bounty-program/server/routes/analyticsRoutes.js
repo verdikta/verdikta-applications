@@ -306,6 +306,33 @@ function getClassOnlyAnalytics() {
 }
 
 /**
+ * Effective historical bounty amount for analytics display.
+ *
+ * `job.bountyAmount` mirrors the contract's `payoutWei`, which is the *remaining*
+ * escrow — not the original bounty value. Once a bounty is awarded, the contract
+ * zeroes `payoutWei`, so the analytics row and totals lose the historical amount.
+ *
+ * For AWARDED (post-payout) or CLOSED (post-refund) bounties, fall back to the
+ * determination-payment fields on the Bounty struct, which are preserved and
+ * represent the paid-out amount (or the intended payout for non-windowed
+ * bounties). Returns 0 only when we genuinely have no signal.
+ */
+function effectiveBountyAmount(job) {
+  const cur = parseFloat(job?.bountyAmount);
+  if (Number.isFinite(cur) && cur > 0) return cur;
+
+  const arb = parseFloat(job?.arbiterDeterminationPayment);
+  const cre = parseFloat(job?.creatorDeterminationPayment);
+  const candidate = Math.max(
+    Number.isFinite(arb) ? arb : 0,
+    Number.isFinite(cre) ? cre : 0,
+  );
+  if (candidate > 0) return candidate;
+
+  return Number.isFinite(cur) ? cur : 0;
+}
+
+/**
  * Get bounty statistics from job storage
  * Only counts jobs from the current contract
  */
@@ -325,8 +352,10 @@ async function getBountyAnalytics() {
       const status = job.status || 'UNKNOWN';
       byStatus[status] = (byStatus[status] || 0) + 1;
 
-      // Sum ETH
-      const amount = parseFloat(job.bountyAmount) || 0;
+      // Sum ETH — use the effective historical amount so awarded bounties
+      // (whose on-chain payoutWei has been zeroed) still contribute to the
+      // lifetime total.
+      const amount = effectiveBountyAmount(job);
       totalETH += amount;
       if (amount > 0) totalWithAmount++;
     }
@@ -619,7 +648,10 @@ async function getFulfilledBounties() {
         title: j.title,
         creator: j.creator,
         winner: j.winner,
-        bountyAmount: j.bountyAmount,
+        // Post-payout the on-chain payoutWei is zero, so j.bountyAmount loses
+        // the original value. Fall back to the determination-payment fields
+        // preserved on the Bounty struct so the row shows what was paid out.
+        bountyAmount: effectiveBountyAmount(j),
         txHash: j.txHash || null,
         awardTxHash: j.awardTxHash || null,
         settledAt: j.settledAt,

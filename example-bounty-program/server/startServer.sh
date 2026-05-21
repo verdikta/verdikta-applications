@@ -5,6 +5,9 @@
 
 cd "$(dirname "$0")"
 
+# Update Common
+npm install @verdikta/common@latest
+
 NETWORK="${1:-both}"
 
 start_network() {

@@ -14,20 +14,22 @@ const logger = require('./logger');
 const BOUNTY_ESCROW_ABI = [
   // Functions
   "function bountyCount() view returns (uint256)",
-  "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions))",
+  "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize))",
   "function getEffectiveBountyStatus(uint256 bountyId) view returns (string)",
   "function isAcceptingSubmissions(uint256 bountyId) view returns (bool)",
   "function canBeClosed(uint256 bountyId) view returns (bool)",
   "function submissionCount(uint256 bountyId) view returns (uint256)",
-  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))",
+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
   "function verdikta() view returns (address)",
   // Events
   "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
-  "event BountyClosed(uint256 indexed bountyId)",
-  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, string evaluationCid, string hunterCid)",
+  "event BountyClosed(uint256 indexed bountyId, address indexed creator, uint256 amountReturned)",
+  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)",
   "event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, bytes32 verdiktaAggId)",
-  "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, uint8 status, uint256 acceptance, uint256 rejection)",
+  "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, bool passed, uint256 acceptance, uint256 rejection, string justificationCids)",
   "event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amount)",
+  "event CreatorApproved(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, uint256 amountPaid)",
+  "event CreatorRefunded(uint256 indexed bountyId, address indexed creator, uint256 amountRefunded)",
   "event LinkRefunded(uint256 indexed bountyId, uint256 indexed submissionId, uint256 amount)"
 ];
 
@@ -356,6 +358,10 @@ class ContractService {
         status: effectiveStatus,
         winner: bounty.winner === ethers.ZeroAddress ? null : bounty.winner,
         submissionCount: Number(bounty.submissions),
+        targetHunter: bounty.targetHunter === ethers.ZeroAddress ? null : bounty.targetHunter,
+        creatorDeterminationPayment: ethers.formatEther(bounty.creatorDeterminationPayment),
+        arbiterDeterminationPayment: ethers.formatEther(bounty.arbiterDeterminationPayment),
+        creatorAssessmentWindowSize: Number(bounty.creatorAssessmentWindowSize),
         isAcceptingSubmissions: isAccepting,
         canBeClosed: canClose,
         syncedFromBlockchain: true,
@@ -395,6 +401,10 @@ class ContractService {
         status: effectiveStatus,
         winner: bounty.winner === ethers.ZeroAddress ? null : bounty.winner,
         submissionCount: Number(bounty.submissions),
+        targetHunter: bounty.targetHunter === ethers.ZeroAddress ? null : bounty.targetHunter,
+        creatorDeterminationPayment: ethers.formatEther(bounty.creatorDeterminationPayment),
+        arbiterDeterminationPayment: ethers.formatEther(bounty.arbiterDeterminationPayment),
+        creatorAssessmentWindowSize: Number(bounty.creatorAssessmentWindowSize),
         isAcceptingSubmissions: isAccepting,
         canBeClosed: canClose,
         syncedFromBlockchain: true,
@@ -421,7 +431,7 @@ class ContractService {
           const sub = await this.contract.getSubmission(bountyId, i);
 
           // Map submission status enum to string
-          const statusMap = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'];
+          const statusMap = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
 
           submissions.push({
             submissionId: i,
@@ -437,7 +447,8 @@ class ContractService {
             submittedAt: Number(sub.submittedAt),
             finalizedAt: Number(sub.finalizedAt),
             linkMaxBudget: sub.linkMaxBudget.toString(),
-            score: sub.acceptance > 0 ? Number(sub.acceptance) : null
+            score: sub.acceptance > 0 ? Number(sub.acceptance) : null,
+            creatorWindowEnd: Number(sub.creatorWindowEnd),
           });
         } catch (err) {
           logger.warn(`Failed to fetch submission ${i} for bounty ${bountyId}:`, err);

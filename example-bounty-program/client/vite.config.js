@@ -11,6 +11,18 @@ export default defineConfig(({ mode }) => {
     server: {
       host: true,                 // listen on all interfaces (VPS-friendly)
       port: 5173,
+      // Vite's file watcher defaults to the project root, which in dev also
+      // picks up the backend's runtime-written files (logs, jobs.json). Every
+      // server log line or sync write was triggering a full browser reload,
+      // producing a "continuously scrolling / vite connecting" loop on the
+      // homepage. These files are server-only artifacts — never imported by
+      // the client — so exclude them from HMR watching.
+      watch: {
+        ignored: [
+          '**/*.log',
+          '**/server/data/**',
+        ],
+      },
       allowedHosts: [
         'bounties.verdikta.org',
         'bounties-testnet.verdikta.org',

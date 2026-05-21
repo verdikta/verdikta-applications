@@ -1,251 +1,55 @@
-# BountyEscrow Smart Contracts
+# Verdikta Bounty Program — Smart Contracts
 
-Smart contracts for the Verdikta AI-Powered Bounty Program.
-
-## Overview
-
-The `BountyEscrow` contract manages the full lifecycle of AI-evaluated bounties:
-- Accepts ETH deposits and locks them in escrow
-- Coordinates with Verdikta Aggregator for AI evaluations
-- Automatically pays winners based on evaluation results
-- Enforces cancellation rules and timeout handling
+Solidity contracts for the Verdikta AI-Powered Bounty Program, built with Hardhat.
 
 ## Contracts
 
-### BountyEscrow.sol
-Main contract that handles bounty creation, submissions, and payments.
+- **`BountyEscrow.sol`** — main contract. Holds ETH escrow, manages bounty lifecycle, coordinates with VerdiktaAggregator, supports an optional creator approval window.
+- **`EvaluationWallet.sol`** — per-submission wallet that holds LINK and pays oracle fees.
+- **`interfaces/IVerdiktaAggregator.sol`** — interface to the AI oracle aggregator.
+- **`interfaces/ILinkToken.sol`** — minimal LINK ERC-677 interface.
 
-**Key Features:**
-- ✅ ETH escrow with minimum amount validation
-- ✅ 24-hour cancellation lockout period
-- ✅ Integration with Verdikta Aggregator for AI evaluation
-- ✅ Automatic winner payout on passing evaluation
-- ✅ Timeout handling with refunds
-- ✅ Reentrancy protection
-- ✅ Owner controls for contract upgrades
-
-### interfaces/IVerdiktaAggregator.sol
-Interface for interacting with the Verdikta AI evaluation system.
-
-## Development Status
-
-**Current Status:** 🟡 Interface Complete, Implementation Pending
-
-- [x] Contract structure defined
-- [x] State variables and data structures
-- [x] Function signatures with NatSpec documentation
-- [x] Events defined
-- [ ] **TODO**: Implementation of all functions
-- [ ] **TODO**: Comprehensive test suite
-- [ ] **TODO**: Gas optimization
-- [ ] **TODO**: Security audit
-
-## Setup
-
-### Prerequisites
-- Node.js >= 18
-- npm or yarn
-
-### Installation
+## Quick start
 
 ```bash
-cd contracts
 npm install
-```
-
-### Configuration
-
-Copy `env.example` to `.env` and fill in the values:
-
-```bash
-cp .env.example .env
-```
-
-Required environment variables:
-- `PRIVATE_KEY` - Deployer wallet private key
-- `VERDIKTA_AGGREGATOR_ADDRESS` - Deployed Verdikta Aggregator contract
-- `LINK_TOKEN_ADDRESS` - LINK token address on target network
-- `BASESCAN_API_KEY` - For contract verification
-
-## Usage
-
-### Compile Contracts
-
-```bash
+cp .env.example .env       # PRIVATE_KEY, RPC URLs, BASESCAN_API_KEY
 npm run compile
-```
-
-### Run Tests
-
-```bash
 npm test
 ```
 
-**Note:** Tests are currently scaffolded with TODOs. Implementation needed.
+## Scripts
 
-### Deploy
+| Command | Description |
+|---|---|
+| `npm run compile` | `hardhat compile` |
+| `npm test` | `hardhat test` |
+| `npm run coverage` | solidity-coverage report |
+| `npm run deploy:sepolia` | Deploy to Base Sepolia |
+| `npm run deploy:base` | Deploy to Base mainnet |
+| `npm run verify` | Verify source on Basescan |
+| `npm run clean` | `hardhat clean` |
+| `npm run node` | Local Hardhat node |
 
-Deploy to Base Sepolia:
+Convenience deployment wrappers: `deploy_testnet.sh`, `deploy_mainnet.sh`.
+
+## Environment
+
+See `.env.example`. Required:
+
+- `PRIVATE_KEY` — deployer key (NEVER commit)
+- `BASE_SEPOLIA_RPC_URL`, `BASE_MAINNET_RPC_URL` — RPC endpoints
+- `BASESCAN_API_KEY` — for source verification
+
+## Deployment
 
 ```bash
-npm run deploy:sepolia
+npm run deploy:sepolia     # or deploy:base
 ```
 
-Deploy to Base Mainnet:
+After deployment, the new BountyEscrow address is printed to console and saved to `deployments/`. Update `BOUNTY_ESCROW_ADDRESS_*` in both `server/.env` and `client/.env`, then restart the server and rebuild the client.
 
-```bash
-npm run deploy:base
-```
+## Project context
 
-### Verify Contract
-
-After deployment, verify on Basescan:
-
-```bash
-npm run verify
-```
-
-## Contract Architecture
-
-```
-BountyEscrow
-    ├─ State: bounties, submissions, mappings
-    ├─ Create Bounty (payable)
-    │   └─ Lock ETH, set cancellation lock
-    ├─ Submit & Evaluate
-    │   ├─ Check LINK approval
-    │   ├─ Call Verdikta Aggregator
-    │   └─ Create submission record
-    ├─ Fulfill Evaluation (Verdikta callback)
-    │   ├─ Parse AI result
-    │   ├─ If PASS: Pay hunter, close bounty
-    │   └─ If FAIL: Keep bounty open
-    ├─ Handle Timeout
-    │   └─ Refund on evaluation timeout
-    └─ Cancel Bounty
-        ├─ Check: 24h passed, no active evaluations
-        └─ Refund ETH to creator
-```
-
-## Key Data Structures
-
-### Bounty
-```solidity
-struct Bounty {
-    address creator;
-    uint256 payoutAmount;
-    string rubricCid;
-    uint64 classId;
-    BountyStatus status;
-    uint256 createdAt;
-    uint256 cancelLockUntil;
-    bytes32 winningSubmission;
-}
-```
-
-### Submission
-```solidity
-struct Submission {
-    uint256 bountyId;
-    address hunter;
-    string deliverableCid;
-    bytes32 verdiktaRequestId;
-    uint256 submittedAt;
-    SubmissionStatus status;
-    uint8 score;
-    string reportCid;
-}
-```
-
-## Security Considerations
-
-### Implemented
-- ✅ ReentrancyGuard on payable functions
-- ✅ Ownable for admin functions
-- ✅ Minimum bounty amount to prevent dust
-- ✅ 24-hour cancellation lock
-- ✅ Verdikta-only callback restriction
-
-### TODO
-- [ ] Comprehensive test coverage
-- [ ] Gas optimization review
-- [ ] External security audit
-- [ ] Formal verification (optional)
-
-## Testing Checklist
-
-- [ ] Bounty creation with valid/invalid parameters
-- [ ] ETH escrow and refunds
-- [ ] Submission with LINK approval flow
-- [ ] Verdikta callback handling (pass/fail)
-- [ ] Timeout handling
-- [ ] Cancellation rules (timing, permissions, state)
-- [ ] Multiple submissions to same bounty
-- [ ] Reentrancy attack prevention
-- [ ] Gas consumption analysis
-- [ ] Edge cases and error conditions
-
-## Network Addresses
-
-### Base Sepolia (Testnet)
-- LINK Token: `0xE4aB69C077896252FAFBD49EFD26B5D171A32410`
-- Verdikta Aggregator: TBD
-- BountyEscrow: TBD (after deployment)
-
-### Base Mainnet
-- LINK Token: `0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196`
-- Verdikta Aggregator: TBD
-- BountyEscrow: TBD (after deployment)
-
-## Gas Estimates
-
-(To be measured after implementation)
-
-| Function | Estimated Gas |
-|----------|---------------|
-| createBounty | TBD |
-| submitAndEvaluate | TBD |
-| fulfillEvaluation | TBD |
-| cancelBounty | TBD |
-| markEvaluationTimeout | TBD |
-
-## Next Steps
-
-1. **Implement Core Functions**
-   - Start with `createBounty()` and `getBounty()`
-   - Add submission logic
-   - Implement Verdikta integration
-   - Add cancellation and timeout handling
-
-2. **Write Tests**
-   - Fill in test TODOs in `test/BountyEscrow.test.js`
-   - Aim for >90% coverage
-   - Test all edge cases
-
-3. **Deploy to Testnet**
-   - Deploy to Base Sepolia
-   - Test with real Verdikta Aggregator
-   - Verify all functions work end-to-end
-
-4. **Security Review**
-   - Self-audit checklist
-   - External audit (if budget permits)
-   - Address any findings
-
-5. **Mainnet Deployment**
-   - Final testing
-   - Deploy to Base Mainnet
-   - Verify contract on Basescan
-
-## Resources
-
-- [Hardhat Documentation](https://hardhat.org/docs)
-- [OpenZeppelin Contracts](https://docs.openzeppelin.com/contracts)
-- [Verdikta Documentation](../../../docs/user-guide.md)
-- [Base Network](https://base.org)
-- [Chainlink LINK Token](https://chain.link)
-
-## License
-
-MIT
-
+For deployed contract addresses, see [../README.md#contract-addresses](../README.md#contract-addresses).
+For full contract reference (ABI, state diagrams, code samples), the in-app `/blockchain` page on the frontend is the canonical source.

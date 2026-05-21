@@ -12,10 +12,18 @@
  *   node scripts/createBounties.js --count 1 --template research --class 128 --amount 0.001 --threshold 90 --hours 1
  *   node scripts/createBounties.js --count 3 --template research --class 128 --amount 0.001 --threshold 70 --hours 1
  *   NETWORK=base node scripts/createBounties.js --count 1 --template research --class 128 --amount 0.001 --threshold 70 --hours 1
+ *   NETWORK=base node scripts/createBounties.js --count 1 --template research --class 128 --amount 0.001 --threshold 95 --hours 12
  *   node scripts/createBounties.js --count 3 --amount 0.001 --hours 2
  *   node scripts/createBounties.js --count 2 --template writing
  *   node scripts/createBounties.js --count 1 --threshold 50 --hours 1
  *   node scripts/createBounties.js --count 1 --dry-run
+ *
+ * Targeted bounties:
+ *   node scripts/createBounties.js --count 1 --target 0xF6DD9256D0091c6E773EBfDFC79783f9663e65Fc
+ *
+ * Creator approval window (two-tier payment):
+ *   node scripts/createBounties.js --count 1 --amount 0.01 --creator-pay 0.005 --window 3600
+ *   node scripts/createBounties.js --count 1 --amount 0.01 --creator-pay 0.008 --arbiter-pay 0.01 --window 7200 --target 0x...
  *
  * Environment Variables Required:
  *   PRIVATE_KEY - Private key for signing transactions (without 0x prefix)
@@ -66,7 +74,8 @@ const CONFIG = {
 
 const BOUNTY_ESCROW_ABI = [
   'event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)',
-  'function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline) payable returns (uint256)',
+  'function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)',
+  'function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize) payable returns (uint256)',
   'function bountyCount() view returns (uint256)',
 ];
 
@@ -176,9 +185,14 @@ const TEMPLATES = {
   },
 };
 
-// Default jury configuration
+// Default jury configuration.
+// The oracle network only routes a fixed list of provider/model pairs; using
+// anything outside that list produces a bounty whose submissions silently
+// hang in PendingVerdikta because no node accepts the work. Verified-working
+// (as of 2026): gpt-5.2-2025-12-11, gpt-5-mini-2025-08-07,
+// claude-3-5-haiku-20241022. Stick to one of these for the default.
 const DEFAULT_JURY = [
-  { provider: 'anthropic', model: 'claude-sonnet-4-20250514', runs: 1, weight: 1.0 },
+  { provider: 'anthropic', model: 'claude-3-5-haiku-20241022', runs: 1, weight: 1.0 },
 ];
 
 // =============================================================================
@@ -192,8 +206,12 @@ function parseArgs() {
     amount: 0.001,
     hours: 24,
     template: 'writing',
-    classId: 131,
+    classId: 128,
     threshold: null,  // null means use template default
+    target: null,     // null = open bounty, address = targeted
+    creatorPay: null,  // null = same as amount (no window)
+    arbiterPay: null,  // null = same as amount (no window)
+    window: 0,         // creator approval window in seconds (0 = no window)
     dryRun: false,
     help: false,
   };
@@ -218,12 +236,40 @@ function parseArgs() {
         break;
       case '--class':
       case '-c':
-        options.classId = parseInt(args[++i]) || 131;
+        options.classId = parseInt(args[++i]) || 128;
         break;
       case '--threshold':
         options.threshold = parseInt(args[++i]);
         if (isNaN(options.threshold) || options.threshold < 0 || options.threshold > 100) {
           console.error('Error: --threshold must be a number between 0 and 100');
+          process.exit(1);
+        }
+        break;
+      case '--target':
+        options.target = args[++i];
+        if (!options.target || !/^0x[a-fA-F0-9]{40}$/.test(options.target)) {
+          console.error('Error: --target must be a valid Ethereum address (0x + 40 hex chars)');
+          process.exit(1);
+        }
+        break;
+      case '--creator-pay':
+        options.creatorPay = parseFloat(args[++i]);
+        if (isNaN(options.creatorPay) || options.creatorPay <= 0) {
+          console.error('Error: --creator-pay must be a positive number');
+          process.exit(1);
+        }
+        break;
+      case '--arbiter-pay':
+        options.arbiterPay = parseFloat(args[++i]);
+        if (isNaN(options.arbiterPay) || options.arbiterPay <= 0) {
+          console.error('Error: --arbiter-pay must be a positive number');
+          process.exit(1);
+        }
+        break;
+      case '--window':
+        options.window = parseInt(args[++i]);
+        if (isNaN(options.window) || options.window < 0) {
+          console.error('Error: --window must be a non-negative number of seconds');
           process.exit(1);
         }
         break;
@@ -234,6 +280,32 @@ function parseArgs() {
       case '--help':
         options.help = true;
         break;
+    }
+  }
+
+  // Resolve payment amounts
+  // If creator-pay is set but arbiter-pay isn't, arbiter-pay defaults to amount
+  // If arbiter-pay is set but creator-pay isn't, creator-pay defaults to amount
+  if (options.creatorPay !== null || options.arbiterPay !== null || options.window > 0) {
+    options.creatorPay = options.creatorPay ?? options.amount;
+    options.arbiterPay = options.arbiterPay ?? options.amount;
+    // A windowed bounty MUST have a positive window. Without it the contract
+    // stores creator/arbiter determination payments but skips the
+    // PendingCreatorApproval state entirely — submissions go straight to
+    // Prepared, creatorWindowEnd is never set, and creatorApproveSubmission
+    // can't engage. This is the bug pattern that hit bounties #151-153 on
+    // Base. Reject the silent-no-op shape rather than let it on-chain.
+    if (options.window <= 0) {
+      console.error('Error: --window must be > 0 (in seconds) when --creator-pay or --arbiter-pay is set.');
+      console.error('       A non-zero window is what enables the creator approval flow on-chain;');
+      console.error('       without it the determination payments are stored but never used.');
+      process.exit(1);
+    }
+    // amount must equal max of the two payments
+    const maxPay = Math.max(options.creatorPay, options.arbiterPay);
+    if (Math.abs(options.amount - maxPay) > 0.0000001) {
+      console.log(`Note: --amount adjusted to ${maxPay} ETH (max of creator-pay and arbiter-pay)`);
+      options.amount = maxPay;
     }
   }
 
@@ -252,8 +324,12 @@ Options:
   --amount, -a <eth>       Bounty amount in ETH (default: 0.001)
   --hours, -h <hours>      Submission window in hours (default: 24)
   --template, -t <name>    Template to use: writing, code, design, research (default: writing)
-  --class, -c <id>         Verdikta class ID (default: 131)
+  --class, -c <id>         Verdikta class ID (default: 128)
   --threshold <percent>    Passing threshold 0-100 (default: from template)
+  --target <address>       Target a specific hunter address (default: open to all)
+  --creator-pay <eth>      Payment if creator approves (enables approval window)
+  --arbiter-pay <eth>      Payment if arbiters approve (default: same as --amount)
+  --window <seconds>       Creator approval window in seconds (required when payments differ)
   --dry-run, -d            Simulate without creating bounties
   --help                   Show this help message
 
@@ -269,6 +345,9 @@ Examples:
   node scripts/createBounties.js --count 2 --template code
   node scripts/createBounties.js --count 1 --threshold 50 --hours 1
   node scripts/createBounties.js --count 1 --dry-run
+  node scripts/createBounties.js --count 1 --target 0xF6DD9256D0091c6E773EBfDFC79783f9663e65Fc
+  node scripts/createBounties.js --count 1 --amount 0.01 --creator-pay 0.005 --window 3600
+  node scripts/createBounties.js --count 1 --amount 0.01 --creator-pay 0.008 --arbiter-pay 0.01 --window 7200 --target 0x...
 `);
 }
 
@@ -310,7 +389,7 @@ function getAuthHeaders() {
   return headers;
 }
 
-async function createJobBackend(bountyData, creatorAddress, amount, hours) {
+async function createJobBackend(bountyData, creatorAddress, amount, hours, extras = {}) {
   const payload = {
     title: bountyData.title,
     description: bountyData.description,
@@ -323,6 +402,13 @@ async function createJobBackend(bountyData, creatorAddress, amount, hours) {
     juryNodes: bountyData.juryNodes,
     rubricJson: bountyData.rubricJson,
     iterations: 1,
+    // Optional fields — passed only if provided so the backend job mirrors what the on-chain create will use
+    ...(extras.targetHunter ? { targetHunter: extras.targetHunter } : {}),
+    ...(extras.creatorPay != null ? {
+      creatorDeterminationPayment: extras.creatorPay,
+      arbiterDeterminationPayment: extras.arbiterPay,
+      creatorAssessmentWindowHours: extras.windowSeconds / 3600,
+    } : {}),
   };
 
   const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() };
@@ -362,12 +448,25 @@ async function updateJobBountyId(jobId, bountyId, txHash, blockNumber) {
 // BLOCKCHAIN FUNCTIONS
 // =============================================================================
 
-async function createBountyOnChain(contract, evaluationCid, classId, threshold, hours, amountEth) {
+async function createBountyOnChain(contract, evaluationCid, classId, threshold, hours, amountEth, options = {}) {
   const deadline = Math.floor(Date.now() / 1000) + (hours * 3600);
   const value = ethers.parseEther(amountEth.toString());
+  const targetHunter = options.target || ethers.ZeroAddress;
 
   console.log(`    Sending transaction...`);
-  const tx = await contract.createBounty(evaluationCid, classId, threshold, deadline, { value });
+
+  let tx;
+  if (options.creatorPay !== null && options.creatorPay !== undefined) {
+    // 8-arg: windowed bounty with split payments
+    const creatorPayWei = ethers.parseEther(options.creatorPay.toString());
+    const arbiterPayWei = ethers.parseEther(options.arbiterPay.toString());
+    const createFn = contract['createBounty(string,uint64,uint8,uint64,address,uint256,uint256,uint64)'];
+    tx = await createFn(evaluationCid, classId, threshold, deadline, targetHunter, creatorPayWei, arbiterPayWei, options.window, { value });
+  } else {
+    // 5-arg: standard bounty
+    const createFn = contract['createBounty(string,uint64,uint8,uint64,address)'];
+    tx = await createFn(evaluationCid, classId, threshold, deadline, targetHunter, { value });
+  }
 
   console.log(`    Tx hash: ${tx.hash}`);
   console.log(`    Waiting for confirmation...`);
@@ -441,10 +540,16 @@ async function main() {
   console.log('='.repeat(60));
   console.log(`Count:     ${options.count}`);
   console.log(`Amount:    ${options.amount} ETH each`);
-  console.log(`Window:    ${options.hours} hours`);
+  console.log(`Deadline:  ${options.hours} hours`);
   console.log(`Template:  ${options.template}`);
   console.log(`Class ID:  ${options.classId}`);
   console.log(`Threshold: ${effectiveThreshold}%${options.threshold !== null ? ' (override)' : ' (from template)'}`);
+  console.log(`Target:    ${options.target || 'open (anyone can submit)'}`);
+  if (options.creatorPay !== null) {
+    console.log(`Creator Pay:  ${options.creatorPay} ETH`);
+    console.log(`Arbiter Pay:  ${options.arbiterPay} ETH`);
+    console.log(`Window:       ${options.window}s (${(options.window / 3600).toFixed(1)}h)`);
+  }
   console.log(`Dry Run:   ${options.dryRun ? 'Yes' : 'No'}`);
   console.log('='.repeat(60));
 
@@ -495,7 +600,13 @@ async function main() {
         bountyData,
         wallet.address,
         options.amount,
-        options.hours
+        options.hours,
+        {
+          targetHunter: options.target || null,
+          creatorPay: options.creatorPay,
+          arbiterPay: options.arbiterPay,
+          windowSeconds: options.window,
+        }
       );
 
       if (!jobResult.success) {
@@ -513,7 +624,13 @@ async function main() {
         bountyData.classId,
         bountyData.threshold,
         options.hours,
-        options.amount
+        options.amount,
+        {
+          target: options.target,
+          creatorPay: options.creatorPay,
+          arbiterPay: options.arbiterPay,
+          window: options.window,
+        }
       );
 
       console.log(`  On-chain bounty created: ID=${chainResult.bountyId}`);

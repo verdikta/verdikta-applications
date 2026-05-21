@@ -96,14 +96,50 @@ function isPrivateKey(s) {
 async function ensureWalletKeystore({ keystorePath, password, rl }) {
   const abs = resolvePath(keystorePath);
   if (await fileExists(abs)) {
-    const wallet = await loadWallet();
-    return { wallet, abs, created: false, imported: false };
+    try {
+      const wallet = await loadWallet();
+      return { wallet, abs, created: false, imported: false };
+    } catch (err) {
+      // Password/keystore mismatch (common after re-onboarding or migration)
+      if (!rl) throw err;
+      console.log(`\nExisting keystore found at ${abs} but decryption failed.`);
+      console.log(`(${err.message})\n`);
+      console.log('This usually means the password changed since the keystore was created.');
+      console.log('  1) Enter the correct password for the existing keystore');
+      console.log('  2) Create a new wallet (overwrites the existing keystore)');
+      console.log('  3) Import a different private key (overwrites the existing keystore)');
+      const choice = (await rl.question('Choose [1]: ')).trim();
+
+      if (!choice || choice === '1') {
+        const oldPw = (await rl.question('Enter password for existing keystore: ')).trim();
+        const rawJson = await fs.readFile(abs, 'utf8');
+        const wallet = await Wallet.fromEncryptedJson(rawJson, oldPw);
+        // Re-encrypt with the current config password so everything stays consistent
+        const reEncrypted = await wallet.encrypt(password);
+        await fs.writeFile(abs, reEncrypted, { mode: 0o600 });
+        console.log('  Keystore re-encrypted with current password.');
+        return { wallet, abs, created: false, imported: false };
+      }
+
+      if (choice === '3') {
+        const key = (await rl.question('Paste private key (hex, with or without 0x): ')).trim();
+        if (!isPrivateKey(key)) throw new Error('Invalid private key format (expected 64 hex chars).');
+        const wallet = new Wallet(key.startsWith('0x') ? key : `0x${key}`);
+        const json = await wallet.encrypt(password);
+        await fs.writeFile(abs, json, { mode: 0o600 });
+        console.log('  Imported and encrypted. Old keystore overwritten.');
+        return { wallet, abs, created: true, imported: true };
+      }
+
+      // choice === '2': fall through to create new wallet below
+      console.log('  Creating new wallet (old keystore will be overwritten)...');
+    }
   }
 
   await ensureDir(path.dirname(abs));
 
   // Offer to import an existing wallet instead of generating a new one
-  if (rl) {
+  if (rl && !(await fileExists(abs))) {
     console.log('\nWallet setup:');
     console.log('  1) Create a new wallet (default)');
     console.log('  2) Import an existing private key');
@@ -190,11 +226,30 @@ async function main() {
   const rl = readline.createInterface({ input, output });
   try {
     const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
-    const envPath = path.join(scriptsDir, '.env');
-    await loadOrInitEnvFile(envPath);
+    const secretsDir = defaultSecretsDir();
+    const stableEnvPath = path.join(secretsDir, '.env');
+    const localEnvPath = path.join(scriptsDir, '.env');
 
-    const currentEnvText = await fs.readFile(envPath, 'utf8').catch(() => '');
-    const current = parseEnv(currentEnvText);
+    // Read existing config from both locations (stable path takes priority)
+    await ensureDir(secretsDir);
+    const stableEnvText = await fs.readFile(stableEnvPath, 'utf8').catch(() => '');
+    const localEnvText = await fs.readFile(localEnvPath, 'utf8').catch(() => '');
+    const stableVars = parseEnv(stableEnvText);
+    const localVars = parseEnv(localEnvText);
+
+    // Merge: stable wins over local (matches _env.js load order)
+    const current = { ...localVars, ...stableVars };
+    const currentEnvText = stableEnvText || localEnvText;
+
+    // Migration notice
+    const migrating = !stableEnvText && localEnvText;
+    if (migrating) {
+      console.log(`\nMigrating config from scripts/.env to ${stableEnvPath}`);
+      console.log('(The stable path survives skill updates and ClawHub reinstalls.)\n');
+    }
+
+    // Write target is always the stable path
+    const envPath = stableEnvPath;
 
     console.log('Verdikta Bounties — one-command onboarding');
 
@@ -251,7 +306,7 @@ async function main() {
     if (!sweepAddress) sweepAddress = ownerDefault || ownerAddress;
     if (!isAddress(sweepAddress)) throw new Error('Invalid sweep address.');
 
-    // 4) Wallet password (stored in .env for now; local file permissions 600)
+    // 4) Wallet password (stored in stable .env at ~/.config/verdikta-bounties/.env)
     const pwDefault = current.VERDIKTA_WALLET_PASSWORD || process.env.VERDIKTA_WALLET_PASSWORD || '';
     let password = pwDefault;
     if (!password) {
@@ -260,7 +315,6 @@ async function main() {
     if (!password) throw new Error('Missing VERDIKTA_WALLET_PASSWORD');
 
     // 5) Keystore path default in secrets dir
-    const secretsDir = defaultSecretsDir();
     const keystoreDefault = current.VERDIKTA_KEYSTORE_PATH || process.env.VERDIKTA_KEYSTORE_PATH || `${secretsDir}/verdikta-wallet.json`;
 
     // Apply env patch (idempotent)
@@ -274,7 +328,7 @@ async function main() {
     });
     await fs.writeFile(envPath, patched, { mode: 0o600 });
 
-    console.log(`\nSaved config: ${envPath}`);
+    console.log(`\nSaved config: ${envPath} (survives skill updates)`);
     console.log('Secrets dir:', secretsDir);
 
     // Reload env into process (dotenv was loaded before; but our helper reads process.env, not file)
@@ -398,10 +452,9 @@ async function main() {
       console.log('\n✅ Worker run complete.');
     }
 
-    console.log('\nPrivate key handling:');
-    console.log(`- Keystore path: ${keystoreAbs}`);
-    console.log('- To export (DANGEROUS): node export_private_key.js --i-know-what-im-doing > private_key.txt');
-    console.log('  Do NOT paste private keys into chat.');
+    console.log('\nKeystore:');
+    console.log(`- Path: ${keystoreAbs}`);
+    console.log('- Private keys are never exported or printed. Keys are decrypted in-memory only when signing.');
 
   } finally {
     rl.close();

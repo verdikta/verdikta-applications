@@ -247,12 +247,13 @@ class VerdiktaService {
         };
       }
 
-      // Check 3: Rapid recent decline - look at last 3 scores
-      if (recentScores.length >= 3) {
-        const last3 = recentScores.slice(-3);
-        const recentDrop = last3[0].timelinessScore - last3[last3.length - 1].timelinessScore;
-        // If dropped by 40+ points in last 3 updates (2+ missed responses recently)
-        if (recentDrop >= 40) {
+      // Check 3: Sustained recent decline - look at last 8 scores.
+      // Max single-step drop is 20, so a 140-point net drop over 7 increments
+      // is equivalent to 7 consecutive declines (no zigzag possible).
+      if (recentScores.length >= 8) {
+        const last8 = recentScores.slice(-8);
+        const recentDrop = last8[0].timelinessScore - last8[last8.length - 1].timelinessScore;
+        if (recentDrop >= 140) {
           return {
             isUnresponsive: true,
             reason: 'rapid_decline'
@@ -335,6 +336,15 @@ class VerdiktaService {
           thresholds
         );
 
+        // Determine arbiter status - "new" if called fewer than 3 times
+        const isNew = oracle.callCount < 3;
+        let status;
+        if (!oracle.isActive) status = 'inactive';
+        else if (isBlocked) status = 'blocked';
+        else if (responsiveness.isUnresponsive) status = 'unresponsive';
+        else if (isNew) status = 'new';
+        else status = 'active';
+
         // Debug logging for 5050 class
         if (oracle.classes.includes(5050)) {
           logger.info('5050 class oracle analysis', {
@@ -344,7 +354,8 @@ class VerdiktaService {
             timelinessScore: oracle.timelinessScore,
             recentScoresCount: oracle.recentScores?.length || 0,
             recentScores: oracle.recentScores?.slice(-5).map(s => s.timelinessScore),
-            responsiveness
+            responsiveness,
+            status
           });
         }
 
@@ -363,7 +374,8 @@ class VerdiktaService {
               totalCallCount: 0,
               qualityScores: [],
               timelinessScores: [],
-              operatorAddresses: new Set()
+              operatorAddresses: new Set(),
+              arbiterList: []
             };
           }
 
@@ -371,22 +383,19 @@ class VerdiktaService {
           // Track unique operator contract addresses
           if (oracle.oracle) {
             byClass[classId].operatorAddresses.add(oracle.oracle.toLowerCase());
+            byClass[classId].arbiterList.push({
+              address: oracle.oracle,
+              jobId: oracle.jobId,
+              classes: oracle.classes || [classId],
+              callCount: oracle.callCount,
+              qualityScore: oracle.qualityScore,
+              timelinessScore: oracle.timelinessScore,
+              fee: oracle.fee,
+              status
+            });
           }
 
-          // Determine arbiter status - "new" if called fewer than 3 times
-          const isNew = oracle.callCount < 3;
-
-          if (!oracle.isActive) {
-            byClass[classId].inactive++;
-          } else if (isBlocked) {
-            byClass[classId].blocked++;
-          } else if (responsiveness.isUnresponsive) {
-            byClass[classId].unresponsive++;
-          } else if (isNew) {
-            byClass[classId].new++;
-          } else {
-            byClass[classId].active++;
-          }
+          byClass[classId][status]++;
 
           byClass[classId].totalCallCount += oracle.callCount;
           byClass[classId].qualityScores.push(oracle.qualityScore);

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stop client for specified network(s)
+# Stop client (build-watch mode) for specified network(s).
 # Usage: ./stopClient.sh [base|base-sepolia|both]
 # Default: both
 
@@ -9,20 +9,12 @@ NETWORK="${1:-both}"
 
 stop_network() {
     local net="$1"
-    local port pid_file
-
-    if [ "$net" = "base" ]; then
-        port=5173
-    elif [ "$net" = "base-sepolia" ]; then
-        port=5174
-    fi
-
-    pid_file="client-${net}.pid"
+    local pid_file="client-${net}.pid"
 
     if [ -f "$pid_file" ]; then
         PID=$(cat "$pid_file")
         if kill -0 "$PID" 2>/dev/null; then
-            # Kill the entire process tree (npm + vite child)
+            # Kill the entire process tree (npm/sh/vite children)
             pkill -P "$PID" 2>/dev/null
             kill "$PID" 2>/dev/null
             echo "Client ($net) stopped (PID $PID)"
@@ -34,16 +26,20 @@ stop_network() {
         echo "Client ($net) is not running (no PID file)"
     fi
 
-    # Safety net: kill anything still listening on the expected port
-    if [ -n "$port" ]; then
+    # Safety net: kill any LEGACY dev-mode vite still bound to the old ports.
+    # In build-watch mode, no port is bound — this only fires if something was
+    # left over from the old `npm run dev` setup.
+    local legacy_port
+    [ "$net" = "base" ]         && legacy_port=5173
+    [ "$net" = "base-sepolia" ] && legacy_port=5174
+    if [ -n "$legacy_port" ]; then
         local stragglers
-        stragglers=$(lsof -t -i:"$port" 2>/dev/null)
+        stragglers=$(lsof -t -i:"$legacy_port" 2>/dev/null)
         if [ -n "$stragglers" ]; then
-            echo "Cleaning up orphaned process(es) on port $port: $stragglers"
+            echo "Cleaning up legacy dev-mode processes on port $legacy_port: $stragglers"
             echo "$stragglers" | xargs kill 2>/dev/null
             sleep 1
-            # Force-kill anything that didn't exit gracefully
-            stragglers=$(lsof -t -i:"$port" 2>/dev/null)
+            stragglers=$(lsof -t -i:"$legacy_port" 2>/dev/null)
             if [ -n "$stragglers" ]; then
                 echo "$stragglers" | xargs kill -9 2>/dev/null
             fi

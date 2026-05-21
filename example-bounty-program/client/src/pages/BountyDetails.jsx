@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import {
   RefreshCw,
   AlertTriangle,
@@ -16,9 +16,15 @@ import {
   Ban,
   Trash2,
   Play,
+  Eye,
+  Download,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
+import { renderMarkdownSafe } from '../utils/markdownPreview';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
+import { walletService } from '../services/wallet';
 import { getContractService } from '../services/contractService';
 import { config, currentNetwork } from '../config';
 import {
@@ -104,8 +110,19 @@ function copyToClipboard(text, toast) {
 function BountyDetails({ walletState }) {
   const toast = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
   // URL param = backend jobId, NOT the on-chain id
   const { bountyId } = useParams();
+
+  // Post-submit flash banner: when SubmitWork hands off here for a windowed
+  // bounty, it appends ?submitted=<submissionId>. We capture that once on
+  // mount, surface a banner highlighting the new submission, and clear the
+  // query param so a refresh doesn't re-trigger it.
+  const [justSubmittedId, setJustSubmittedId] = useState(() => {
+    const params = new URLSearchParams(location.search);
+    const raw = params.get('submitted');
+    return raw != null ? raw : null;
+  });
 
   // Core state
   const [job, setJob] = useState(null);
@@ -115,6 +132,14 @@ function BountyDetails({ walletState }) {
   const [error, setError] = useState(null);
   const [retryCount, setRetryCount] = useState(0);
 
+  // Lazy-loaded expanded task description (extracted from the IPFS evaluation
+  // package on demand). Kept out of the initial GET /:jobId response so the
+  // page renders without waiting on the slow IPFS ZIP fetch.
+  const [taskSpec, setTaskSpec] = useState(null);
+  const [taskSpecLoading, setTaskSpecLoading] = useState(false);
+  const [taskSpecError, setTaskSpecError] = useState(null);
+  const [taskSpecLoaded, setTaskSpecLoaded] = useState(false);
+
   // Action states
   const [closingBounty, setClosingBounty] = useState(false);
   const [closingMessage, setClosingMessage] = useState('');
@@ -123,6 +148,20 @@ function BountyDetails({ walletState }) {
   const [cancelingSubmissions, setCancelingSubmissions] = useState(new Set());
   const [refreshingSubmissions, setRefreshingSubmissions] = useState(new Set());
   const [startingSubmissions, setStartingSubmissions] = useState(new Set());
+  const [approvingSubmissions, setApprovingSubmissions] = useState(new Set());
+  const [previewingSubmissions, setPreviewingSubmissions] = useState(new Set());
+  const [previewResult, setPreviewResult] = useState(null);
+  // Blob URL for "rich" previews (PDF, image, HTML). The native <embed>/<img>/
+  // <iframe> tags do not carry the frontend's X-Client-Key header, so we fetch
+  // the bytes via axios (which does) and render the resulting Blob URL.
+  const [previewBlobUrl, setPreviewBlobUrl] = useState(null);
+  const [previewBlobLoading, setPreviewBlobLoading] = useState(false);
+  const [previewBlobError, setPreviewBlobError] = useState(null);
+  const [previewMaximized, setPreviewMaximized] = useState(false);
+
+  // Formats whose bytes are fetched via /file and rendered from a Blob URL.
+  // Text formats (md/txt/json/csv) come back inline in the /preview response.
+  const PREVIEW_BLOB_FORMATS = ['pdf', 'image', 'html'];
 
   // Polling state for submissions waiting for status update
   // Stores: { attempts, maxAttempts }
@@ -179,6 +218,16 @@ function BountyDetails({ walletState }) {
   const timerIntervalRef = useRef(null);
   const isMountedRef = useRef(true);
 
+  // Strip the ?submitted= query param from the URL after we've captured it,
+  // so a page refresh doesn't re-show the post-submit banner.
+  useEffect(() => {
+    if (justSubmittedId != null && location.search.includes('submitted=')) {
+      navigate(location.pathname, { replace: true });
+    }
+    // Only run on mount — justSubmittedId is captured once via useState init.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Keep refs in sync with state
   useEffect(() => {
     jobRef.current = job;
@@ -191,6 +240,60 @@ function BountyDetails({ walletState }) {
   useEffect(() => {
     pollingSubmissionsRef.current = pollingSubmissions;
   }, [pollingSubmissions]);
+
+  // For "rich" preview formats (PDF, image, HTML), fetch the file bytes via
+  // axios when the modal opens and render from a Blob URL. The fetch goes
+  // through axios so the frontend client-key header is attached — a raw
+  // <embed>/<img>/<iframe src> request would be auth-blocked.
+  useEffect(() => {
+    if (
+      !previewResult ||
+      !PREVIEW_BLOB_FORMATS.includes(previewResult.format) ||
+      !previewResult.filename
+    ) {
+      setPreviewBlobUrl(null);
+      setPreviewBlobLoading(false);
+      setPreviewBlobError(null);
+      return;
+    }
+    let cancelled = false;
+    setPreviewBlobLoading(true);
+    setPreviewBlobError(null);
+    setPreviewBlobUrl(null);
+    apiService.getSubmissionFileBlob(
+      bountyId,
+      previewResult.submissionId,
+      previewResult.filename,
+      walletState.address
+    )
+      .then(blob => {
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        setPreviewBlobUrl(url);
+        setPreviewBlobLoading(false);
+      })
+      .catch(err => {
+        if (cancelled) return;
+        console.error('Preview fetch failed:', err);
+        setPreviewBlobError(err?.response?.data?.error || err?.message || 'Failed to load file');
+        setPreviewBlobLoading(false);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewResult, bountyId, walletState.address]);
+
+  // Revoke the Blob URL when it changes or the component unmounts so we
+  // don't leak memory across previews.
+  useEffect(() => {
+    if (!previewBlobUrl) return undefined;
+    return () => { URL.revokeObjectURL(previewBlobUrl); };
+  }, [previewBlobUrl]);
+
+  // Reset the maximize toggle each time the modal closes so the next open
+  // starts at the default (smaller) size.
+  useEffect(() => {
+    if (!previewResult) setPreviewMaximized(false);
+  }, [previewResult]);
 
   // ============================================================================
   // DIAGNOSTIC PANEL TOGGLE (Ctrl+Shift+D)
@@ -399,6 +502,10 @@ function BountyDetails({ walletState }) {
       setResolvingId(false);
       setResolveNote('');
       setStatusOverride(null);
+      setTaskSpec(null);
+      setTaskSpecLoading(false);
+      setTaskSpecError(null);
+      setTaskSpecLoaded(false);
     }
 
     return () => {
@@ -1176,12 +1283,23 @@ function BountyDetails({ walletState }) {
       // Read on-chain submission to verify hunter and get LINK requirements
       const chainSub = await contractService.getSubmission(onChainId, submissionId);
 
-      if (chainSub.hunter.toLowerCase() !== walletState.address.toLowerCase()) {
-        toast.error('Only the original submitter can start this evaluation. Please connect with the hunter wallet.');
-        return;
-      }
+      const isFromCreatorWindow = chainSub.status === 'PendingCreatorApproval';
 
-      if (chainSub.status !== 'Prepared') {
+      if (isFromCreatorWindow) {
+        // After window expiry, anyone can start — verify window is expired
+        const windowEnd = chainSub.creatorWindowEnd || 0;
+        const now = Math.floor(Date.now() / 1000);
+        if (windowEnd > now) {
+          toast.warning('Creator approval window is still open. Cannot start evaluation yet.');
+          return;
+        }
+      } else if (chainSub.status === 'Prepared') {
+        // Classic flow — only hunter can start
+        if (chainSub.hunter.toLowerCase() !== walletState.address.toLowerCase()) {
+          toast.error('Only the original submitter can start this evaluation. Please connect with the hunter wallet.');
+          return;
+        }
+      } else {
         toast.warning(`Submission is already in "${chainSub.status}" state. Refreshing...`);
         await loadJobDetails();
         return;
@@ -1258,6 +1376,135 @@ function BountyDetails({ walletState }) {
         next.delete(submissionId);
         return next;
       });
+    }
+  };
+
+  const handlePreviewSubmission = async (submissionId) => {
+    if (!walletState.isConnected || !walletState.address) {
+      toast.warning('Please connect your wallet first');
+      return;
+    }
+    setPreviewingSubmissions(prev => new Set(prev).add(submissionId));
+    try {
+      const result = await apiService.getSubmissionPreview(
+        bountyId,
+        submissionId,
+        walletState.address
+      );
+      setPreviewResult({ submissionId, ...result });
+    } catch (err) {
+      console.error('Preview failed:', err);
+      toast.error(`Preview failed: ${err.message}`);
+    } finally {
+      setPreviewingSubmissions(prev => {
+        const next = new Set(prev);
+        next.delete(submissionId);
+        return next;
+      });
+    }
+  };
+
+  const handleCreatorApprove = async (submissionId) => {
+    if (!walletState.isConnected) {
+      toast.warning('Please connect your wallet first');
+      return;
+    }
+
+    const onChainId = getOnChainBountyId();
+    if (onChainId == null) {
+      toast.warning('Unable to determine the on-chain bounty ID yet. Please wait for sync or refresh.');
+      return;
+    }
+
+    const creatorPay = job?.creatorDeterminationPayment || job?.bountyAmount || '?';
+    const confirmed = window.confirm(
+      `Approve submission #${submissionId}?\n\n` +
+      `This will pay the hunter ${creatorPay} ETH from the bounty escrow.\n\n` +
+      'This action requires a blockchain transaction that you must sign.'
+    );
+    if (!confirmed) return;
+
+    try {
+      setApprovingSubmissions(prev => new Set(prev).add(submissionId));
+      setError(null);
+
+      const contractService = getContractService();
+      if (!contractService.isConnected()) await contractService.connect();
+
+      const result = await contractService.creatorApproveSubmission(onChainId, submissionId);
+
+      setApprovingSubmissions(prev => {
+        const next = new Set(prev);
+        next.delete(submissionId);
+        return next;
+      });
+
+      toast.success(`Submission #${submissionId} approved! TX: ${result.txHash?.slice(0, 10)}...`);
+
+      // Refresh to pick up new status
+      await loadJobDetails(true);
+
+    } catch (err) {
+      console.error('Error approving submission:', err);
+      const msg = err.message || 'Failed to approve submission';
+      toast.error(`Failed to approve submission #${submissionId}: ${msg}`);
+      setError(msg);
+
+      setApprovingSubmissions(prev => {
+        const next = new Set(prev);
+        next.delete(submissionId);
+        return next;
+      });
+    }
+  };
+
+  // Toggle the off-chain publicSubmissions flag. The creator signs a canonical
+  // message with their wallet; the server recovers the address and flips the
+  // flag. This does not touch the chain — CIDs are already public regardless;
+  // the flag only controls whether non-creators see preview/download buttons.
+  const [togglingPublicSubs, setTogglingPublicSubs] = useState(false);
+  const handleTogglePublicSubmissions = async () => {
+    if (!walletState.isConnected) {
+      toast.warning('Please connect your wallet first');
+      return;
+    }
+    if (!job) return;
+    const next = !job.publicSubmissions;
+    const confirmMsg = next
+      ? 'Enable public preview/download of submitted work on this bounty?\n\n' +
+        'Note: submission CIDs are already public via the API and on-chain record. ' +
+        'This toggle only surfaces convenient website buttons. Anyone who downloads ' +
+        'while public may keep their copy — revocation will not take files back.'
+      : 'Disable public preview/download for this bounty?\n\n' +
+        'Website buttons will disappear for non-creators. Anyone who already ' +
+        'downloaded work keeps their copy.';
+    if (!window.confirm(confirmMsg)) return;
+
+    setTogglingPublicSubs(true);
+    try {
+      const signer = walletService.getSigner();
+      if (!signer) throw new Error('Wallet signer unavailable');
+      const timestamp = new Date().toISOString();
+      const message = [
+        'Verdikta Bounty: set public submissions',
+        `Bounty ID: ${job.jobId}`,
+        `Public: ${next ? 'true' : 'false'}`,
+        `Timestamp: ${timestamp}`,
+      ].join('\n');
+      const signature = await signer.signMessage(message);
+      await apiService.setPublicSubmissions(job.jobId, {
+        publicSubmissions: next,
+        message,
+        signature,
+      });
+      toast.success(next ? 'Submissions are now publicly visible' : 'Submissions are now private again');
+      // Reflect the change locally without waiting for a full refresh
+      setJob((prev) => (prev ? { ...prev, publicSubmissions: next } : prev));
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message || 'Unknown error';
+      toast.error(`Failed to update visibility: ${msg}`);
+    } finally {
+      setTogglingPublicSubs(false);
     }
   };
 
@@ -1472,6 +1719,27 @@ function BountyDetails({ walletState }) {
     }
   };
 
+  // Lazily fetch the expanded task description from the IPFS evaluation
+  // package. Triggered by the "Show full task description" button so the
+  // initial bounty-detail render isn't blocked on the slow IPFS ZIP fetch.
+  const loadTaskSpec = useCallback(async () => {
+    if (taskSpecLoading || taskSpec) return;
+    setTaskSpecLoading(true);
+    setTaskSpecError(null);
+    try {
+      const res = await apiService.getJobTaskSpec(bountyId);
+      if (!isMountedRef.current) return;
+      setTaskSpec(res?.taskSpec || null);
+      setTaskSpecLoaded(true);
+    } catch (err) {
+      if (!isMountedRef.current) return;
+      const msg = err?.response?.data?.error || err?.message || 'Failed to load task description';
+      setTaskSpecError(msg);
+    } finally {
+      if (isMountedRef.current) setTaskSpecLoading(false);
+    }
+  }, [bountyId, taskSpec, taskSpecLoading]);
+
   // ============================================================================
   // RENDER HELPERS
   // ============================================================================
@@ -1561,13 +1829,20 @@ function BountyDetails({ walletState }) {
     return isPendingStatus(status);
   };
 
-  const hasActiveSubmissions = submissions.some(s =>
-    isActivelyPending(s.status)
-  );
+  // A submission is "actively pending" only if its primary status says so.
+  // Ignore stale onChainStatus when the backend status is already terminal
+  // (e.g., status=APPROVED but onChainStatus still says PendingVerdikta).
+  const isSubmissionActivelyPending = (s) => {
+    if (isActivelyPending(s.status)) return true;
+    // Only fall back to onChainStatus if primary status is not terminal
+    const terminal = ['APPROVED', 'REJECTED', 'ACCEPTED', 'PassedPaid', 'Failed',
+                      'ACCEPTED_PENDING_CLAIM', 'REJECTED_PENDING_FINALIZATION'];
+    if (terminal.includes(s.status)) return false;
+    return isActivelyPending(s.onChainStatus);
+  };
 
-  const pendingSubmissions = submissions.filter(s =>
-    isActivelyPending(s.status)
-  );
+  const hasActiveSubmissions = submissions.some(isSubmissionActivelyPending);
+  const pendingSubmissions = submissions.filter(isSubmissionActivelyPending);
 
   const onChainIdForButtons = getOnChainBountyId();
   const disableActionsForMissingId = onChainIdForButtons == null;
@@ -1597,6 +1872,58 @@ function BountyDetails({ walletState }) {
           resolvingId={resolvingId}
         />
       )}
+
+      {/* POST-SUBMIT FLASH BANNER (windowed bounties handed off from SubmitWork) */}
+      {justSubmittedId != null && (() => {
+        const sub = submissions.find(s => String(s.submissionId) === String(justSubmittedId));
+        // If we don't have the submission yet (still loading), show a minimal banner.
+        // Once it loads we'll re-render with the live countdown.
+        const windowEnd = sub?.creatorWindowEnd;
+        const windowSize = Number(job?.creatorAssessmentWindowSize || 0);
+        const isWindowedBounty = windowSize > 0;
+        const now = currentTime;
+        const secondsLeft = windowEnd ? Math.max(0, windowEnd - now) : null;
+        const minsLeft = secondsLeft != null ? Math.floor(secondsLeft / 60) : null;
+        const secsLeft = secondsLeft != null ? secondsLeft % 60 : null;
+        const windowExpired = secondsLeft != null && secondsLeft === 0;
+        const creatorApproved = sub?.status === 'APPROVED' || sub?.onChainStatus === 'PassedPaid';
+
+        return (
+          <div className="alert alert-info" style={{
+            marginBottom: '1rem',
+            borderLeft: '4px solid #2196f3',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '0.75rem'
+          }}>
+            <Hourglass size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
+            <div style={{ flex: 1 }}>
+              <strong>Submission #{justSubmittedId} recorded.</strong>{' '}
+              {creatorApproved ? (
+                <>The creator approved your submission. Payout sent — congratulations! 🎉</>
+              ) : isWindowedBounty && !windowExpired && secondsLeft != null ? (
+                <>
+                  The creator has <strong>{minsLeft}m {secsLeft.toString().padStart(2, '0')}s</strong>
+                  {' '}left to approve directly. If they don't, you'll be able to trigger AI evaluation
+                  from the submission card below once the window expires. No LINK was spent.
+                </>
+              ) : isWindowedBounty && windowExpired ? (
+                <>The creator approval window has expired. You can trigger AI evaluation from the submission card below — that's when LINK will be requested.</>
+              ) : (
+                <>Waiting for the bounty data to load…</>
+              )}
+            </div>
+            <button
+              onClick={() => setJustSubmittedId(null)}
+              className="btn btn-sm"
+              style={{ background: 'transparent', border: 'none', cursor: 'pointer' }}
+              title="Dismiss"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        );
+      })()}
 
       {/* STATUS OVERRIDE WARNING */}
       {statusOverride && (
@@ -1712,14 +2039,17 @@ function BountyDetails({ walletState }) {
                   onFailTimeout={handleFailTimedOutSubmission}
                   onCancel={handleCancelSubmission}
                   onStart={handleStartSubmission}
+                  onCreatorApprove={handleCreatorApprove}
                   finalizingSubmissions={finalizingSubmissions}
                   failingSubmissions={failingSubmissions}
                   cancelingSubmissions={cancelingSubmissions}
                   startingSubmissions={startingSubmissions}
+                  approvingSubmissions={approvingSubmissions}
                   pollingSubmissions={pollingSubmissions}
                   evaluationResults={evaluationResults}
                   disableActions={disableActionsForMissingId}
                   timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
+                  walletState={walletState}
                   job={job}
                   toast={toast}
                 />
@@ -1766,6 +2096,32 @@ function BountyDetails({ walletState }) {
         <div className="header-content">
           <h1>{job?.title || `Job #${bountyId}`}</h1>
           <span {...getBountyBadgeProps(status)}>{getBountyStatusLabel(status)}</span>
+          {job?.targetHunter && <span className="badge-targeted">Targeted</span>}
+          {job?.creatorAssessmentWindowSize > 0 && (
+            <span
+              className="badge-windowed"
+              title={`Creator approval window: ${
+                job.creatorAssessmentWindowSize >= 3600
+                  ? (job.creatorAssessmentWindowSize / 3600).toFixed(1) + 'h'
+                  : Math.round(job.creatorAssessmentWindowSize / 60) + 'm'
+              } (creator: ${job.creatorDeterminationPayment ?? '?'} ETH / arbiters: ${job.arbiterDeterminationPayment ?? '?'} ETH)`}
+            >
+              <Clock size={12} style={{ verticalAlign: 'middle', marginRight: '2px' }} />
+              Windowed
+            </span>
+          )}
+          {/* Pending-on-chain: the bounty record exists locally but hasn't
+              been confirmed on-chain yet. Submit Work is already disabled
+              via notOnChain; this badge makes the reason visible. */}
+          {job && job.status === 'OPEN' && !job.syncedFromBlockchain && !job.onChain && (
+            <span
+              className="badge-pending"
+              title="This bounty's on-chain transaction has not yet been confirmed. Submissions will fail until confirmation. If this persists beyond ~1 hour the bounty will be removed automatically."
+            >
+              <RefreshCw size={12} style={{ verticalAlign: 'middle', marginRight: '2px' }} />
+              Pending on-chain
+            </span>
+          )}
           {job?.workProductType && <span className="work-type-badge">{job.workProductType}</span>}
         </div>
         <div className="bounty-stats">
@@ -1776,6 +2132,20 @@ function BountyDetails({ walletState }) {
               {job?.bountyAmountUSD > 0 && (<small> (${job.bountyAmountUSD})</small>)}
             </span>
           </div>
+          {job?.creatorAssessmentWindowSize > 0 && (
+            <div className="stat">
+              <span className="label">Approval Window</span>
+              <span className="value">
+                {job.creatorAssessmentWindowSize >= 3600
+                  ? `${(job.creatorAssessmentWindowSize / 3600).toFixed(1)}h`
+                  : `${Math.round(job.creatorAssessmentWindowSize / 60)}m`}
+                {' '}
+                <small style={{ color: '#666' }}>
+                  ({job.creatorDeterminationPayment} / {job.arbiterDeterminationPayment} ETH)
+                </small>
+              </span>
+            </div>
+          )}
           <div className="stat">
             <span className="label">Submissions</span>
             <span className="value">{job?.submissionCount ?? 0}</span>
@@ -1804,11 +2174,100 @@ function BountyDetails({ walletState }) {
         </div>
       </div>
 
-      {/* Description Section */}
-      {job?.description && (
+      {/* Targeted Bounty Notice */}
+      {job?.targetHunter && (
+        <section className="targeted-notice">
+          <div className="targeted-notice-content">
+            {walletState.isConnected && walletState.address?.toLowerCase() === job.targetHunter.toLowerCase() ? (
+              <p><strong>This bounty is targeted to you.</strong> Only your wallet can submit work.</p>
+            ) : (
+              <p>
+                <strong>This bounty is targeted to a specific address.</strong>{' '}
+                Only <a href={`${currentNetwork.explorer}/address/${job.targetHunter}`} target="_blank" rel="noopener noreferrer">
+                  <code>{job.targetHunter.slice(0, 8)}...{job.targetHunter.slice(-6)}</code>
+                </a> can submit work.
+              </p>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* Windowed Bounty Notice */}
+      {job?.creatorAssessmentWindowSize > 0 && (
+        <section
+          className="windowed-notice"
+          style={{
+            backgroundColor: '#eff6ff',
+            border: '1px solid #3b82f6',
+            borderRadius: 8,
+            padding: '0.75rem 1rem',
+            marginBottom: '1rem',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
+            <Clock size={18} style={{ color: '#1d4ed8', marginTop: 2, flexShrink: 0 }} />
+            <div style={{ flex: 1, fontSize: '0.9rem', color: '#1e3a8a' }}>
+              <p style={{ margin: 0, fontWeight: 600 }}>Windowed Bounty — Creator Approval Flow</p>
+              <p style={{ margin: '0.35rem 0 0 0' }}>
+                After a submission is made, the creator has{' '}
+                <strong>
+                  {job.creatorAssessmentWindowSize >= 3600
+                    ? `${(job.creatorAssessmentWindowSize / 3600).toFixed(1)} hours`
+                    : `${Math.round(job.creatorAssessmentWindowSize / 60)} minutes`}
+                </strong>{' '}
+                to approve directly. If the creator approves within the window, the hunter receives{' '}
+                <strong>{job.creatorDeterminationPayment ?? '?'} ETH</strong>. If the window expires without
+                creator action, AI arbiters evaluate and a successful submission is paid{' '}
+                <strong>{job.arbiterDeterminationPayment ?? '?'} ETH</strong>.
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Description Section. The short local description renders immediately;
+          the full task specification (extracted from the on-IPFS evaluation
+          package) is loaded lazily on click so the page doesn't block on the
+          slow IPFS ZIP fetch every time a card is opened. */}
+      {(taskSpec || job?.description) && (
         <section className="description-section">
           <h2>Job Description</h2>
-          <p>{job.description}</p>
+          {taskSpec ? (
+            <div
+              className="markdown-body"
+              dangerouslySetInnerHTML={{
+                __html: renderMarkdownSafe(taskSpec),
+              }}
+            />
+          ) : (
+            <p>{job.description}</p>
+          )}
+          {job?.evaluationCid && !String(job.evaluationCid).startsWith('dev-') && !taskSpec && (
+            <div style={{ marginTop: '0.75rem' }}>
+              <button
+                type="button"
+                className="btn btn-secondary btn-with-icon"
+                onClick={loadTaskSpec}
+                disabled={taskSpecLoading}
+              >
+                {taskSpecLoading ? (
+                  <><Loader2 size={14} className="spin" /> Loading full description…</>
+                ) : (
+                  <><FileText size={14} /> Show full task description</>
+                )}
+              </button>
+              {taskSpecLoaded && !taskSpec && !taskSpecError && (
+                <p style={{ marginTop: '0.5rem', fontSize: '0.875rem', color: 'var(--text-muted, #6b7280)' }}>
+                  No expanded task description is available for this bounty.
+                </p>
+              )}
+              {taskSpecError && (
+                <p style={{ marginTop: '0.5rem', fontSize: '0.875rem', color: 'var(--color-danger, #b91c1c)' }}>
+                  <AlertTriangle size={12} className="inline-icon" /> {taskSpecError}
+                </p>
+              )}
+            </div>
+          )}
         </section>
       )}
 
@@ -1868,6 +2327,41 @@ function BountyDetails({ walletState }) {
       {/* Actions Section */}
       <section className="actions-section">
         <h2>Actions</h2>
+
+        {/* Creator-only: toggle public preview/download of submitted work.
+            Visible to anyone for transparency when ON; actionable only by the creator. */}
+        {walletState.isConnected
+          && walletState.address?.toLowerCase() === job?.creator?.toLowerCase()
+          && !notOnChain
+          && (
+          <div className="alert alert-info" style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
+            <Eye size={18} style={{ marginTop: 2, flexShrink: 0 }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>
+                Submission visibility: <span style={{ color: job?.publicSubmissions ? '#15803d' : '#6b7280' }}>
+                  {job?.publicSubmissions ? 'Public' : 'Private to you'}
+                </span>
+              </div>
+              <div style={{ fontSize: '0.85rem', color: '#4b5563', marginBottom: '0.5rem' }}>
+                {job?.publicSubmissions
+                  ? 'Anyone viewing this bounty can preview and download submitted work. Submission CIDs are public regardless; this controls whether the website surfaces convenient buttons.'
+                  : 'Only you can preview and download submitted work via the website. Submission CIDs are still technically public via the API and the blockchain.'}
+                {' '}You can change this at any time. Revocation does not retract files that were already downloaded.
+              </div>
+              <button
+                onClick={handleTogglePublicSubmissions}
+                disabled={togglingPublicSubs}
+                className="btn btn-secondary btn-sm"
+                style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem' }}
+              >
+                {togglingPublicSubs
+                  ? <><Loader2 size={12} className="spin" /> Signing…</>
+                  : (job?.publicSubmissions ? 'Make submissions private' : 'Make submissions public')}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="action-buttons">
           {notOnChain && (() => {
             const ageSeconds = Math.floor(Date.now() / 1000) - (job?.createdAt || 0);
@@ -1973,10 +2467,14 @@ function BountyDetails({ walletState }) {
                 onCancel={handleCancelSubmission}
                 onStart={handleStartSubmission}
                 onRefresh={handleRefreshSubmission}
+                onCreatorApprove={handleCreatorApprove}
+                onPreview={handlePreviewSubmission}
+                isPreviewing={previewingSubmissions.has(submission.submissionId)}
                 isFailing={failingSubmissions.has(submission.submissionId)}
                 isFinalizing={finalizingSubmissions.has(submission.submissionId)}
                 isCanceling={cancelingSubmissions.has(submission.submissionId)}
                 isStarting={startingSubmissions.has(submission.submissionId)}
+                isApproving={approvingSubmissions.has(submission.submissionId)}
                 isRefreshing={refreshingSubmissions.has(submission.submissionId)}
                 isPolling={pollingSubmissions.has(submission.submissionId)}
                 pollingState={pollingSubmissions.get(submission.submissionId)}
@@ -1987,6 +2485,7 @@ function BountyDetails({ walletState }) {
                 threshold={job?.threshold ?? 80}
                 juryNodes={job?.juryNodes}
                 bountyStatus={status}
+                job={job}
               />
             ))}
           </div>
@@ -1996,6 +2495,190 @@ function BountyDetails({ walletState }) {
           </div>
         )}
       </section>
+
+      {/* Preview Modal */}
+      {previewResult && (
+        <div
+          onClick={() => setPreviewResult(null)}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.6)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+            padding: '1rem',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#fff', borderRadius: 12,
+              padding: previewMaximized ? '1rem' : '2rem',
+              width: '100%',
+              maxWidth: previewMaximized ? '98vw' : 900,
+              maxHeight: previewMaximized ? '98vh' : '90vh',
+              overflowY: 'auto',
+              display: 'flex', flexDirection: 'column',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+              <h3 style={{ margin: 0 }}>
+                <Eye size={20} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+                Submission #{previewResult.submissionId} Preview
+              </h3>
+              <button
+                onClick={() => setPreviewMaximized(m => !m)}
+                className="btn btn-outline-secondary btn-sm"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.85rem', padding: '0.3rem 0.6rem' }}
+                title={previewMaximized ? 'Restore default size' : 'Maximize'}
+              >
+                {previewMaximized
+                  ? <><Minimize2 size={14} /> Restore</>
+                  : <><Maximize2 size={14} /> Maximize</>}
+              </button>
+            </div>
+            {previewResult.previewable ? (
+              <>
+                <div style={{ fontSize: '0.85rem', marginBottom: '0.75rem' }}>
+                  <strong>File:</strong> <code>{previewResult.filename}</code>{' · '}
+                  <strong>Format:</strong> {previewResult.format}
+                  {previewResult.truncated && (
+                    <span style={{ color: '#b45309', marginLeft: '0.5rem' }}>
+                      (truncated — download for full content)
+                    </span>
+                  )}
+                </div>
+                <div
+                  style={{
+                    background: '#fafafa', border: '1px solid #e5e7eb',
+                    borderRadius: 6, padding: previewResult.format === 'pdf' ? 0 : '1rem',
+                    maxHeight: previewMaximized ? '88vh' : '70vh',
+                    flex: previewMaximized ? '1 1 auto' : undefined,
+                    overflow: 'auto',
+                  }}
+                >
+                  {previewResult.format === 'md' ? (
+                    <div
+                      className="markdown-body"
+                      dangerouslySetInnerHTML={{
+                        __html: renderMarkdownSafe(previewResult.content || ''),
+                      }}
+                    />
+                  ) : PREVIEW_BLOB_FORMATS.includes(previewResult.format) ? (
+                    previewBlobLoading ? (
+                      <div style={{ padding: '2rem', textAlign: 'center', color: '#666' }}>
+                        <Loader2 size={20} className="spin" style={{ verticalAlign: 'middle', marginRight: 8 }} />
+                        Loading…
+                      </div>
+                    ) : previewBlobError ? (
+                      <div style={{ padding: '1rem', color: '#b91c1c' }}>
+                        <AlertTriangle size={16} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                        Couldn't load file: {previewBlobError}. Use <strong>Download ZIP</strong> below.
+                      </div>
+                    ) : previewBlobUrl ? (
+                      previewResult.format === 'pdf' ? (
+                        <embed
+                          type="application/pdf"
+                          src={previewBlobUrl}
+                          style={{
+                            width: '100%',
+                            height: previewMaximized ? '88vh' : '70vh',
+                            border: 0, display: 'block',
+                          }}
+                          title={previewResult.filename}
+                        />
+                      ) : previewResult.format === 'image' ? (
+                        <img
+                          src={previewBlobUrl}
+                          alt={previewResult.filename}
+                          style={{
+                            display: 'block', margin: '0 auto',
+                            maxWidth: '100%',
+                            maxHeight: previewMaximized ? '88vh' : '70vh',
+                            objectFit: 'contain',
+                          }}
+                        />
+                      ) : previewResult.format === 'html' ? (
+                        // sandbox="" blocks scripts, forms, popups, and same-origin
+                        // access — neutralizes any malicious payload while still
+                        // rendering the document's layout, CSS, and inline images.
+                        <iframe
+                          src={previewBlobUrl}
+                          sandbox=""
+                          title={previewResult.filename}
+                          style={{
+                            width: '100%',
+                            height: previewMaximized ? '88vh' : '70vh',
+                            border: 0, display: 'block',
+                          }}
+                        />
+                      ) : null
+                    ) : null
+                  ) : (
+                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>
+                      {previewResult.content}
+                    </pre>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div style={{ background: '#fef3c7', border: '1px solid #f59e0b', borderRadius: 6, padding: '0.75rem 1rem', fontSize: '0.9rem' }}>
+                <AlertTriangle size={16} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                {previewResult.reason === 'too-large' ? (
+                  <>
+                    <strong>File too large for inline preview.</strong>
+                    {previewResult.filename ? <> (<code>{previewResult.filename}</code>
+                    {previewResult.byteLength ? <> — {Math.round(previewResult.byteLength / 1024)} KB</> : null}
+                    )</> : null}{' '}
+                    Use <strong>Download ZIP</strong> below to get the full archive.
+                  </>
+                ) : previewResult.reason === 'not-found' ? (
+                  <>
+                    <strong>The expected file wasn't found in the archive.</strong>{' '}
+                    Use <strong>Download ZIP</strong> below to inspect it directly.
+                  </>
+                ) : (
+                  <>
+                    <strong>Nothing to preview inline.</strong>{' '}
+                    This submission doesn't contain a previewable work product
+                    (supported: .md, .txt, .json, .csv, .pdf, .png, .jpg, .html).{' '}
+                    Use <strong>Download ZIP</strong> below to get the full archive.
+                  </>
+                )}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
+              <button
+                onClick={async () => {
+                  try {
+                    const result = await apiService.getSubmissionDownload(
+                      bountyId, previewResult.submissionId, walletState.address
+                    );
+                    const url = result?.downloadUrls?.primary
+                      || `https://gateway.pinata.cloud/ipfs/${previewResult.submission?.hunterCid}`;
+                    window.open(url, '_blank');
+                    setPreviewResult(null);
+                  } catch (err) {
+                    toast?.error?.(`Download failed: ${err.message}`);
+                    if (previewResult.submission?.hunterCid) {
+                      window.open(`https://gateway.pinata.cloud/ipfs/${previewResult.submission.hunterCid}`, '_blank');
+                    }
+                  }
+                }}
+                className={previewResult.previewable ? 'btn btn-secondary' : 'btn btn-primary'}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+              >
+                <Download size={14} /> Download ZIP
+              </button>
+              <button
+                onClick={() => setPreviewResult(null)}
+                className="btn btn-secondary"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2206,14 +2889,17 @@ function PendingSubmissionsPanel({
   onFailTimeout,
   onCancel,
   onStart,
+  onCreatorApprove,
   finalizingSubmissions,
   failingSubmissions,
   cancelingSubmissions,
   startingSubmissions,
+  approvingSubmissions,
   pollingSubmissions,
   evaluationResults,
   disableActions,
   timeoutMinutes,
+  walletState,
   job,
   toast
 }) {
@@ -2225,12 +2911,19 @@ function PendingSubmissionsPanel({
       </p>
       {pendingSubmissions.map(s => {
         const ageMinutes = getSubmissionAge(s.submittedAt);
-        const isOnChain = isSubmissionOnChain(s.status);
-        const isPrepared = s.status === 'Prepared' || s.status === 'PREPARED';
-        // Only allow timeout for on-chain submissions (not Prepared)
-        const canTimeout = isOnChain && ageMinutes > timeoutMinutes;
+        const isOnChain = isSubmissionOnChain(s.status) || isSubmissionOnChain(s.onChainStatus);
+        const isPrepared = (s.status === 'Prepared' || s.status === 'PREPARED') && !isSubmissionOnChain(s.onChainStatus);
+        const isPendingCreatorApproval = s.status === 'PendingCreatorApproval';
+        const isCreator = walletState?.isConnected && walletState.address?.toLowerCase() === job?.creator?.toLowerCase();
+        const windowEnd = s.creatorWindowEnd || 0;
+        const now = Math.floor(Date.now() / 1000);
+        const windowOpen = isPendingCreatorApproval && windowEnd > now;
+        const windowExpired = isPendingCreatorApproval && windowEnd > 0 && windowEnd <= now;
+        // Only allow timeout for on-chain submissions (not Prepared or PendingCreatorApproval)
+        const canTimeout = isOnChain && !isPendingCreatorApproval && ageMinutes > timeoutMinutes;
         const isFailing = failingSubmissions.has(s.submissionId);
         const isFinalizing = finalizingSubmissions.has(s.submissionId);
+        const isApproving = approvingSubmissions?.has(s.submissionId);
         const isPolling = pollingSubmissions.has(s.submissionId);
         const pollState = pollingSubmissions.get(s.submissionId);
         const evalResult = evaluationResults?.get(s.submissionId);
@@ -2320,8 +3013,81 @@ function PendingSubmissionsPanel({
                 </>
               )}
 
-              {/* Only show Finalize button for on-chain submissions */}
-              {isOnChain && (
+              {/* Preview inline — text-based work products.
+                  Visible to the creator always, and to anyone when the creator
+                  has enabled publicSubmissions on this bounty. */}
+              {(isCreator || job?.publicSubmissions) && s.hunterCid && onPreview && (
+                <button
+                  onClick={() => onPreview(s.submissionId)}
+                  disabled={isPreviewing}
+                  className="btn btn-outline-secondary btn-sm"
+                  style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+                  title="Preview inline (text/markdown/json/csv)"
+                >
+                  {isPreviewing
+                    ? <><Loader2 size={12} className="spin" /> Preview</>
+                    : <><Eye size={12} /> Preview</>}
+                </button>
+              )}
+
+              {/* Download work product — creator always, public viewers when the
+                  bounty has publicSubmissions enabled. */}
+              {(isCreator || job?.publicSubmissions) && s.hunterCid && (
+                <button
+                  onClick={async () => {
+                    try {
+                      const result = await apiService.getSubmissionDownload(
+                        job.jobId, s.submissionId, walletState.address
+                      );
+                      if (result?.downloadUrls?.primary) {
+                        window.open(result.downloadUrls.primary, '_blank');
+                      } else {
+                        // Fallback to direct IPFS gateway if backend didn't return a URL
+                        window.open(`https://gateway.pinata.cloud/ipfs/${s.hunterCid}`, '_blank');
+                      }
+                    } catch (err) {
+                      toast?.error?.(`Download failed: ${err.message}`);
+                      // Last-resort: open the raw IPFS gateway URL so the creator can still see the work
+                      window.open(`https://gateway.pinata.cloud/ipfs/${s.hunterCid}`, '_blank');
+                    }
+                  }}
+                  className="btn btn-secondary btn-sm"
+                  style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+                  title="Download the submitted work product"
+                >
+                  <FileText size={12} /> Download
+                </button>
+              )}
+
+              {/* Creator approval window actions */}
+              {isPendingCreatorApproval && windowOpen && isCreator && (
+                <button
+                  onClick={() => onCreatorApprove(s.submissionId)}
+                  disabled={isApproving || disableActions}
+                  className="btn btn-success btn-sm"
+                  style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+                >
+                  {isApproving ? <><Loader2 size={12} className="spin" /> Approving...</> : <><Check size={12} /> Approve ({job?.creatorDeterminationPayment || '?'} ETH)</>}
+                </button>
+              )}
+              {isPendingCreatorApproval && windowOpen && !isCreator && (
+                <span style={{ fontSize: '0.8rem', color: '#1565c0' }}>
+                  <Clock size={12} style={{ verticalAlign: 'middle' }} /> Awaiting creator ({Math.ceil((windowEnd - now) / 60)} min left)
+                </span>
+              )}
+              {isPendingCreatorApproval && windowExpired && walletState?.isConnected && (
+                <button
+                  onClick={() => onStart(s.submissionId)}
+                  disabled={startingSubmissions?.has(s.submissionId) || disableActions}
+                  className="btn btn-primary btn-sm"
+                  style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+                >
+                  {startingSubmissions?.has(s.submissionId) ? <><Loader2 size={12} className="spin" /> Starting...</> : <><Play size={12} /> Start AI Evaluation</>}
+                </button>
+              )}
+
+              {/* Only show Finalize button for on-chain submissions (not PendingCreatorApproval) */}
+              {isOnChain && !isPendingCreatorApproval && (
                 <button
                   onClick={() => onFinalize(s.submissionId)}
                   disabled={isFinalizing || isPolling || disableActions}
@@ -2474,6 +3240,40 @@ function ExpiredBountyActions({
   );
 }
 
+/**
+ * Live countdown for creator approval window.
+ * Ticks every second and calls onExpire when window closes.
+ */
+function CreatorWindowCountdown({ windowEnd, onExpire }) {
+  const [remaining, setRemaining] = useState(() => Math.max(0, windowEnd - Math.floor(Date.now() / 1000)));
+
+  useEffect(() => {
+    if (remaining <= 0) return;
+    const timer = setInterval(() => {
+      const left = Math.max(0, windowEnd - Math.floor(Date.now() / 1000));
+      setRemaining(left);
+      if (left <= 0) {
+        clearInterval(timer);
+        onExpire?.();
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [windowEnd, onExpire, remaining]);
+
+  if (remaining <= 0) return <span style={{ color: '#e65100', fontWeight: 'bold' }}>Window expired</span>;
+
+  const hours = Math.floor(remaining / 3600);
+  const mins = Math.floor((remaining % 3600) / 60);
+  const secs = remaining % 60;
+  const display = hours > 0
+    ? `${hours}h ${mins}m ${secs}s`
+    : mins > 0
+      ? `${mins}m ${secs}s`
+      : `${secs}s`;
+
+  return <span style={{ fontFamily: 'monospace', fontWeight: 'bold' }}>{display}</span>;
+}
+
 function SubmissionCard({
   submission,
   jobId,
@@ -2483,10 +3283,14 @@ function SubmissionCard({
   onCancel,
   onStart,
   onRefresh,
+  onCreatorApprove,
+  onPreview,
+  isPreviewing,
   isFailing,
   isFinalizing,
   isCanceling,
   isStarting,
+  isApproving,
   isRefreshing,
   isPolling,
   pollingState,
@@ -2496,7 +3300,8 @@ function SubmissionCard({
   timeoutMinutes,
   threshold,
   juryNodes,
-  bountyStatus
+  bountyStatus,
+  job,
 }) {
   const bountyTerminal = bountyStatus === 'CLOSED' || bountyStatus === 'AWARDED';
   const isPending = isPendingStatus(submission.status);
@@ -2506,6 +3311,12 @@ function SubmissionCard({
   const isRejected = submission.status === 'REJECTED' || submission.status === 'Failed' || submission.status === 'REJECTED_PENDING_FINALIZATION';
   const needsFinalization = submission.status === 'ACCEPTED_PENDING_CLAIM' || submission.status === 'REJECTED_PENDING_FINALIZATION';
   const isAcceptedPendingClaim = submission.status === 'ACCEPTED_PENDING_CLAIM';
+  const isPendingCreatorApproval = submission.status === 'PendingCreatorApproval';
+  const isCreator = walletState.isConnected && walletState.address?.toLowerCase() === job?.creator?.toLowerCase();
+  const creatorWindowEnd = submission.creatorWindowEnd || 0;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const creatorWindowOpen = isPendingCreatorApproval && creatorWindowEnd > nowSec;
+  const creatorWindowExpired = isPendingCreatorApproval && creatorWindowEnd > 0 && creatorWindowEnd <= nowSec;
 
   // Receipts-as-memes: only show for paid winners
   const isPaidWinner = submission.paidWinner === true;
@@ -2700,6 +3511,49 @@ function SubmissionCard({
         )}
       </div>
 
+      {/* Download / Preview — visible to the bounty creator always, and to
+          anyone when the creator has enabled publicSubmissions. CIDs are
+          public on-chain regardless; this just surfaces convenient buttons. */}
+      {submission.hunterCid && (isCreator || job?.publicSubmissions) && (
+        <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          {onPreview && (
+            <button
+              onClick={() => onPreview(submission.submissionId)}
+              disabled={isPreviewing}
+              className="btn btn-outline-secondary btn-sm"
+              style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+              title="Preview inline (text/markdown/json/csv)"
+            >
+              {isPreviewing
+                ? <><Loader2 size={12} className="spin" /> Preview</>
+                : <><Eye size={12} /> Preview</>}
+            </button>
+          )}
+          <button
+            onClick={async () => {
+              try {
+                const result = await apiService.getSubmissionDownload(
+                  jobId, submission.submissionId, walletState.address
+                );
+                if (result?.downloadUrls?.primary) {
+                  window.open(result.downloadUrls.primary, '_blank');
+                } else {
+                  window.open(`https://gateway.pinata.cloud/ipfs/${submission.hunterCid}`, '_blank');
+                }
+              } catch (err) {
+                console.error('Download failed:', err);
+                window.open(`https://gateway.pinata.cloud/ipfs/${submission.hunterCid}`, '_blank');
+              }
+            }}
+            className="btn btn-secondary btn-sm"
+            style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+            title="Download the submitted work product"
+          >
+            <Download size={12} /> Download
+          </button>
+        </div>
+      )}
+
       {/* NEW: Evaluation ready indicator */}
       {hasEvalReady && (() => {
         const score = evaluationResult.scores.acceptance;
@@ -2724,7 +3578,7 @@ function SubmissionCard({
       })()}
 
       {/* Waiting for evaluation indicator */}
-      {isPending && !hasEvalReady && !isPolling && (
+      {isPending && !isPendingCreatorApproval && !hasEvalReady && !isPolling && (
         <div style={{
           marginTop: '0.75rem',
           padding: '0.75rem',
@@ -2817,6 +3671,100 @@ function SubmissionCard({
         </div>
       )}
 
+      {/* Creator Approval Window */}
+      {isPendingCreatorApproval && !bountyTerminal && (
+        <div style={{
+          marginTop: '0.75rem',
+          padding: '0.75rem',
+          backgroundColor: creatorWindowOpen ? '#e3f2fd' : '#fff3e0',
+          border: `1px solid ${creatorWindowOpen ? '#90caf9' : '#ffcc80'}`,
+          borderRadius: '4px',
+          textAlign: 'center'
+        }}>
+          {creatorWindowOpen ? (
+            <>
+              <div style={{ fontSize: '0.9rem', color: '#1565c0', fontWeight: 'bold', marginBottom: '0.25rem' }}>
+                <Clock size={14} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />
+                Awaiting Creator Approval
+              </div>
+              <div style={{ fontSize: '0.85rem', color: '#1976d2', marginBottom: '0.5rem' }}>
+                Time remaining: <CreatorWindowCountdown windowEnd={creatorWindowEnd} onExpire={() => {}} />
+              </div>
+              {job?.creatorDeterminationPayment && job?.arbiterDeterminationPayment && (
+                <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.5rem' }}>
+                  Creator approval: {job.creatorDeterminationPayment} ETH | Arbiter approval: {job.arbiterDeterminationPayment} ETH
+                </div>
+              )}
+              {isCreator && submission.hunterCid && (
+                <button
+                  onClick={async () => {
+                    try {
+                      const result = await apiService.getSubmissionDownload(
+                        jobId, submission.submissionId, walletState.address
+                      );
+                      if (result?.downloadUrls?.primary) {
+                        window.open(result.downloadUrls.primary, '_blank');
+                      } else {
+                        window.open(`https://gateway.pinata.cloud/ipfs/${submission.hunterCid}`, '_blank');
+                      }
+                    } catch (err) {
+                      console.error('Download failed:', err);
+                      window.open(`https://gateway.pinata.cloud/ipfs/${submission.hunterCid}`, '_blank');
+                    }
+                  }}
+                  className="btn btn-secondary"
+                  style={{ fontSize: '0.95rem', padding: '0.6rem 1rem', fontWeight: 'normal', width: '100%', marginBottom: '0.5rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }}
+                  title="Download the submitted work product before approving"
+                >
+                  <FileText size={14} /> Download Work Product (review before approving)
+                </button>
+              )}
+              {isCreator ? (
+                <button
+                  onClick={() => onCreatorApprove(submission.submissionId)}
+                  disabled={isApproving || disableActions}
+                  className="btn btn-success"
+                  style={{ fontSize: '1rem', padding: '0.75rem 1rem', fontWeight: 'bold', width: '100%' }}
+                >
+                  {isApproving
+                    ? <><Loader2 size={14} className="spin" /> Approving...</>
+                    : <><Check size={14} /> Approve Submission ({job?.creatorDeterminationPayment || '?'} ETH)</>}
+                </button>
+              ) : (
+                <div style={{ fontSize: '0.85rem', color: '#888' }}>
+                  Only the bounty creator can approve during this window.
+                </div>
+              )}
+            </>
+          ) : creatorWindowExpired ? (
+            <>
+              <div style={{ fontSize: '0.9rem', color: '#e65100', fontWeight: 'bold', marginBottom: '0.25rem' }}>
+                Creator Approval Window Expired
+              </div>
+              <div style={{ fontSize: '0.85rem', color: '#bf360c', marginBottom: '0.5rem' }}>
+                The creator did not approve within the window. This submission can now proceed to AI evaluation.
+              </div>
+              {walletState.isConnected && (
+                <button
+                  onClick={() => onStart(submission.submissionId)}
+                  disabled={isStarting || disableActions}
+                  className="btn btn-primary"
+                  style={{ fontSize: '1rem', padding: '0.75rem 1rem', fontWeight: 'bold', width: '100%' }}
+                >
+                  {isStarting
+                    ? <><Loader2 size={14} className="spin" /> Starting...</>
+                    : <><Play size={14} /> Start AI Evaluation</>}
+                </button>
+              )}
+            </>
+          ) : (
+            <div style={{ fontSize: '0.85rem', color: '#888' }}>
+              Pending creator review...
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Stale submission notice when bounty is already closed/awarded */}
       {isPending && bountyTerminal && (
         <div style={{
@@ -2833,7 +3781,7 @@ function SubmissionCard({
       )}
 
       {/* Action buttons for pending submissions (hidden if bounty is already closed/awarded) */}
-      {isPending && !bountyTerminal && walletState.isConnected && !isPolling && (
+      {isPending && !isPendingCreatorApproval && !bountyTerminal && walletState.isConnected && !isPolling && (
         <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
 
           {/* Show Finalize ONLY if on-chain and (evaluation is ready OR timeout not yet available) */}

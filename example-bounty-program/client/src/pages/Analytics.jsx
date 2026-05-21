@@ -5,6 +5,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   BarChart3,
   RefreshCw,
@@ -75,7 +76,7 @@ const COLORS = {
 const ARBITER_STATUS_DESCRIPTIONS = {
   Active: 'Registered, responding normally, available for selection, and called three or more times',
   New: 'Arbiters that have been called fewer than three times',
-  Unresponsive: 'Registered but showing signs of poor availability: timeliness score <= -60, or 60%+ declining trend in recent scores, or rapid score decline (40+ points in last 3 updates)',
+  Unresponsive: 'Registered but showing signs of poor availability: timeliness score <= -60, or 60%+ declining trend in recent scores, or sustained score decline (140+ points in last 8 updates)',
   Blocked: 'Temporarily locked due to severe performance issues (timeliness or quality score below threshold)',
   Inactive: 'Not currently registered or has been deactivated in the contract'
 };
@@ -101,6 +102,7 @@ const SUBMISSION_STATUS_DESCRIPTIONS = {
 };
 
 function Analytics() {
+  const navigate = useNavigate();
   const toast = useToast();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -438,7 +440,14 @@ function Analytics() {
                     {Object.values(data.arbiters.byClass).map((cls) => (
                       <tr key={cls.classId}>
                         <td>
-                          <strong>{formatClassLabel(cls)}</strong>
+                          <a
+                            href={`/class/${cls.classId}`}
+                            onClick={(e) => { e.preventDefault(); navigate(`/class/${cls.classId}`); }}
+                            title={`${cls.operatorList?.length ?? 0} distinct address${(cls.operatorList?.length ?? 0) !== 1 ? 'es' : ''} — click for details`}
+                            style={{ color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}
+                          >
+                            <strong>{formatClassLabel(cls)}</strong>
+                          </a>
                         </td>
                         <td
                           title={cls.operatorList?.length > 0 ? cls.operatorList.join('\n') : 'No operators'}
@@ -581,7 +590,7 @@ function Analytics() {
                             </a>
                           ) : 'N/A'}
                         </td>
-                        <td>{b.bountyAmount ? `${b.bountyAmount} ETH` : 'N/A'}</td>
+                        <td>{Number.isFinite(Number(b.bountyAmount)) ? `${b.bountyAmount} ETH` : 'N/A'}</td>
                         <td>
                           {b.txHash ? (
                             <a
@@ -725,7 +734,7 @@ function Analytics() {
                   <div className="contract-addresses">
                     {data.system.verdikta.aggregatorAddress && (
                       <div className="contract-row">
-                        <span className="contract-label">Aggregator:</span>
+                        <span className="contract-label">Verdikta Aggregator:</span>
                         <code className="address">{data.system.verdikta.aggregatorAddress}</code>
                       </div>
                     )}

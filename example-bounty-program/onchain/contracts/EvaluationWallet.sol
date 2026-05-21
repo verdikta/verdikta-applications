@@ -32,6 +32,12 @@ contract EvaluationWallet {
         require(link.transferFrom(hunter, address(this), amount), "LINK pull failed");
     }
 
+    /// @dev Pull LINK from an arbitrary funder into this wallet (funder must have approved this wallet).
+    /// @dev Used when anyone funds arbitration after a creator approval window expires.
+    function pullLinkFrom(address funder, uint256 amount) external onlyBounty {
+        require(link.transferFrom(funder, address(this), amount), "LINK pull failed");
+    }
+
     /// @dev Approve Verdikta for up to `amount` LINK.
     function approveVerdikta(uint256 amount) external onlyBounty {
         // reset allowance first (safer for some ERC-20 implementations)

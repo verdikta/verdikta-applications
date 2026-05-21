@@ -449,3 +449,21 @@
   border-top: 1px solid #dee2e6;
   font-size: 0.9rem;
 }
+
+.windowed-info-panel {
+  margin-bottom: 1.5rem;
+}
+
+.windowed-info-panel h3 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.windowed-info-panel p {
+  margin: 0.5rem 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}

@@ -46,6 +46,7 @@ function Blockchain() {
   const sepoliaConfig = config.networks['base-sepolia'];
   const mainnetConfig = config.networks['base'];
 
+  // Contracts are populated from config — addresses may be null on the inactive network.
   const contracts = {
     sepolia: {
       bountyEscrow: sepoliaConfig.bountyEscrowAddress,
@@ -65,18 +66,51 @@ function Blockchain() {
     }
   };
 
+  // Pick the active network's primary contract for hero/footer "View on Explorer" buttons.
+  const activeContract = config.network === 'base' ? contracts.mainnet : contracts.sepolia;
+
+  // Render an address cell — link + copy if deployed, "Not deployed" placeholder if not.
+  const AddressCell = ({ address, explorer, copyId }) => {
+    if (!address) {
+      return <span style={{ color: '#999', fontStyle: 'italic' }}>Not deployed</span>;
+    }
+    return (
+      <div className="address-cell">
+        <a
+          href={`${explorer}/address/${address}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="address-link"
+        >
+          <code>{address}</code>
+          <ExternalLink size={12} />
+        </a>
+        <button
+          className="btn-icon-small"
+          onClick={() => copyToClipboard(address, copyId)}
+        >
+          {copiedCode === copyId ? <Check size={14} /> : <Copy size={14} />}
+        </button>
+      </div>
+    );
+  };
+
   // ABI snippets
   const bountyEscrowABI = `const BOUNTY_ESCROW_ABI = [
   // Events
   "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
   "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)",
   "event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, bytes32 verdiktaAggId)",
-  "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, uint8 status, uint256 acceptance)",
+  "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, bool passed, uint256 acceptance, uint256 rejection, string justificationCids)",
   "event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amount)",
+  "event CreatorApproved(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, uint256 amountPaid)",
+  "event CreatorRefunded(uint256 indexed bountyId, address indexed creator, uint256 amountRefunded)",
 
   // Write Functions
-  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline) payable returns (uint256)",
+  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)",
+  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize) payable returns (uint256)",
   "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256 submissionId, address evalWallet, uint256 linkMaxBudget)",
+  "function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)",
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
   "function closeExpiredBounty(uint256 bountyId)",
@@ -84,8 +118,8 @@ function Blockchain() {
 
   // View Functions
   "function bountyCount() view returns (uint256)",
-  "function getBounty(uint256 bountyId) view returns (address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions)",
-  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))",
+  "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize))",
+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
   "function getEffectiveBountyStatus(uint256 bountyId) view returns (string)",
   "function isAcceptingSubmissions(uint256 bountyId) view returns (bool)",
   "function verdikta() view returns (address)"
@@ -98,14 +132,19 @@ function Blockchain() {
   "function transfer(address to, uint256 amount) returns (bool)"
 ];`;
 
+  // For code samples, use the active network's addresses (or placeholders if unavailable)
+  const sampleEscrow = activeContract.bountyEscrow || '0xYOUR_BOUNTY_ESCROW_ADDRESS';
+  const sampleLink = activeContract.linkToken || '0xYOUR_LINK_TOKEN_ADDRESS';
+  const sampleRpc = activeContract.rpcUrl;
+
   const ethersExample = `import { ethers } from 'ethers';
 
 // Setup
-const provider = new ethers.JsonRpcProvider('${sepoliaConfig.rpcUrl}');
+const provider = new ethers.JsonRpcProvider('${sampleRpc}');
 const signer = new ethers.Wallet(PRIVATE_KEY, provider);
 
-const ESCROW_ADDRESS = '${sepoliaConfig.bountyEscrowAddress}';
-const LINK_ADDRESS = '${sepoliaConfig.linkTokenAddress}';
+const ESCROW_ADDRESS = '${sampleEscrow}';
+const LINK_ADDRESS = '${sampleLink}';
 
 // Initialize contracts
 const escrow = new ethers.Contract(ESCROW_ADDRESS, BOUNTY_ESCROW_ABI, signer);
@@ -121,6 +160,7 @@ async function createBounty() {
     128n,                          // Class ID (uint64)
     70n,                           // Threshold 70% (uint8)
     BigInt(deadline),              // Deadline (uint64)
+    ethers.ZeroAddress,            // targetHunter (address(0) = open to all)
     { value: ethers.parseEther('0.1') }
   );
 
@@ -147,10 +187,10 @@ async function submitWork(bountyId, hunterCid) {
     evaluationCid,
     hunterCid,                            // Your work's IPFS CID
     'Please evaluate carefully',          // Addendum
-    75n,                                  // Alpha (reputation weight; 50 = nominal)
+    500n,                                 // Alpha: timeliness-vs-quality blend (0-1000). 500 = equal blend; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
     ethers.parseEther('0.003'),           // maxOracleFee (per oracle call cap)
     ethers.parseEther('0.001'),           // estimatedBaseCost (base cost per evaluation)
-    BigInt('3')                           // maxFeeBasedScaling (relative weight, min vs max)
+    BigInt('3')                           // maxFeeBasedScaling: x-factor cap on fee-based boost (contract scales by 1e18 internally; must be >= 1)
   );
 
   const prepareReceipt = await prepareTx.wait();
@@ -198,17 +238,60 @@ async function finalizeSubmission(bountyId, submissionId) {
 
   console.log('Submission finalized but did not win');
   return false;
+}
+
+// === Windowed bounties (creator approval window) ===
+
+// Create a windowed bounty (8-param overload)
+async function createWindowedBounty() {
+  const now = Math.floor(Date.now() / 1000);
+  const deadline = now + 48 * 3600;
+  const creatorPay = ethers.parseEther('0.05');  // creator approves directly
+  const arbiterPay = ethers.parseEther('0.10');  // arbiters approve after window
+  const windowSize = 3600n;                       // 1 hour window
+
+  // Use the explicit signature to disambiguate the 8-param overload
+  const tx = await escrow['createBounty(string,uint64,uint8,uint64,address,uint256,uint256,uint64)'](
+    'QmYourEvaluationPackageCID',
+    128n,
+    70n,
+    BigInt(deadline),
+    ethers.ZeroAddress,
+    creatorPay,
+    arbiterPay,
+    windowSize,
+    { value: arbiterPay }  // escrow = max(creatorPay, arbiterPay)
+  );
+  await tx.wait();
+}
+
+// Detect if a bounty has an approval window
+async function isWindowed(bountyId) {
+  const bounty = await escrow.getBounty(bountyId);
+  return bounty.creatorAssessmentWindowSize > 0n;
+}
+
+// Creator approves a submission directly (skips oracle evaluation)
+async function creatorApprove(bountyId, submissionId) {
+  const tx = await escrow.creatorApproveSubmission(bountyId, submissionId);
+  await tx.wait();
+}
+
+// Check if a creator window has expired
+async function windowExpired(bountyId, submissionId) {
+  const sub = await escrow.getSubmission(bountyId, submissionId);
+  return Number(sub.creatorWindowEnd) <= Math.floor(Date.now() / 1000);
 }`;
 
   const web3pyExample = `from web3 import Web3
 from eth_account import Account
 
 # Setup
-w3 = Web3(Web3.HTTPProvider('${sepoliaConfig.rpcUrl}'))
+w3 = Web3(Web3.HTTPProvider('${sampleRpc}'))
 account = Account.from_key(PRIVATE_KEY)
 
-ESCROW_ADDRESS = '${sepoliaConfig.bountyEscrowAddress}'
-LINK_ADDRESS = '${sepoliaConfig.linkTokenAddress}'
+ESCROW_ADDRESS = '${sampleEscrow}'
+LINK_ADDRESS = '${sampleLink}'
 
 # Load contracts (use full ABI in production)
 escrow = w3.eth.contract(address=ESCROW_ADDRESS, abi=BOUNTY_ESCROW_ABI)
@@ -223,7 +306,8 @@ def create_bounty(evaluation_cid, class_id, threshold, hours_window, payout_eth)
         evaluation_cid,
         class_id,
         threshold,
-        deadline
+        deadline,
+        '0x0000000000000000000000000000000000000000'  # open to all (or pass target address)
     ).build_transaction({
         'from': account.address,
         'value': w3.to_wei(payout_eth, 'ether'),
@@ -240,7 +324,7 @@ def create_bounty(evaluation_cid, class_id, threshold, hours_window, payout_eth)
     return event['args']['bountyId']
 
 def get_bounty(bounty_id):
-    """Read bounty details"""
+    """Read bounty details (returns 14-field tuple)"""
     result = escrow.functions.getBounty(bounty_id).call()
     return {
         'creator': result[0],
@@ -248,10 +332,61 @@ def get_bounty(bounty_id):
         'classId': result[2],
         'threshold': result[3],
         'payoutWei': result[4],
+        'createdAt': result[5],
         'deadline': result[6],
         'status': ['Open', 'Awarded', 'Closed'][result[7]],
         'winner': result[8],
+        'submissionCount': result[9],
+        'targetHunter': result[10],
+        # Creator approval window fields (zero/empty for non-windowed bounties)
+        'creatorDeterminationPayment': result[11],
+        'arbiterDeterminationPayment': result[12],
+        'creatorAssessmentWindowSize': result[13],
     }
+
+def is_windowed(bounty_id):
+    """True if bounty has a creator approval window"""
+    return get_bounty(bounty_id)['creatorAssessmentWindowSize'] > 0
+
+def create_windowed_bounty(eval_cid, class_id, threshold, hours_window,
+                           creator_pay_eth, arbiter_pay_eth, approval_hours):
+    """Create a bounty with a creator approval window (8-param overload)"""
+    import time
+    deadline = int(time.time()) + hours_window * 3600
+    creator_pay = w3.to_wei(creator_pay_eth, 'ether')
+    arbiter_pay = w3.to_wei(arbiter_pay_eth, 'ether')
+    escrow_amount = max(creator_pay, arbiter_pay)
+
+    # web3.py auto-disambiguates based on argument count
+    tx = escrow.functions.createBounty(
+        eval_cid,
+        class_id,
+        threshold,
+        deadline,
+        '0x0000000000000000000000000000000000000000',
+        creator_pay,
+        arbiter_pay,
+        approval_hours * 3600,
+    ).build_transaction({
+        'from': account.address,
+        'value': escrow_amount,
+        'nonce': w3.eth.get_transaction_count(account.address),
+        'gas': 600000,
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+    return w3.eth.wait_for_transaction_receipt(tx_hash)
+
+def creator_approve_submission(bounty_id, submission_id):
+    """Creator approves a submission directly (skips oracle, only callable by bounty creator)"""
+    tx = escrow.functions.creatorApproveSubmission(bounty_id, submission_id).build_transaction({
+        'from': account.address,
+        'nonce': w3.eth.get_transaction_count(account.address),
+        'gas': 300000,
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+    return w3.eth.wait_for_transaction_receipt(tx_hash)
 
 def check_link_balance(address):
     """Check LINK token balance"""
@@ -354,15 +489,17 @@ submission-package.zip
             </div>
           </div>
           <div className="hero-actions">
-            <a
-              href={`${contracts.sepolia.explorer}/address/${contracts.sepolia.bountyEscrow}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn btn-primary btn-lg"
-            >
-              <ExternalLink size={18} />
-              View on Explorer
-            </a>
+            {activeContract.bountyEscrow && (
+              <a
+                href={`${activeContract.explorer}/address/${activeContract.bountyEscrow}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn btn-primary btn-lg"
+              >
+                <ExternalLink size={18} />
+                View on Explorer
+              </a>
+            )}
             <a href="#contracts" className="btn btn-secondary btn-lg">
               <Code size={18} />
               Get Started
@@ -464,44 +601,10 @@ submission-package.zip
                   <span className="contract-desc">Main bounty contract</span>
                 </td>
                 <td>
-                  <div className="address-cell">
-                    <a
-                      href={`${contracts.sepolia.explorer}/address/${contracts.sepolia.bountyEscrow}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="address-link"
-                    >
-                      <code>{contracts.sepolia.bountyEscrow}</code>
-                      <ExternalLink size={12} />
-                    </a>
-                    <button
-                      className="btn-icon-small"
-                      onClick={() => copyToClipboard(contracts.sepolia.bountyEscrow, 'escrow-sepolia')}
-                    >
-                      {copiedCode === 'escrow-sepolia' ? <Check size={14} /> : <Copy size={14} />}
-                    </button>
-                  </div>
+                  <AddressCell address={contracts.sepolia.bountyEscrow} explorer={contracts.sepolia.explorer} copyId="escrow-sepolia" />
                 </td>
                 <td>
-                  <div className="address-cell">
-                    <a
-                      href={`${contracts.mainnet.explorer}/address/${contracts.mainnet.bountyEscrow}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="address-link"
-                    >
-                      <code>{contracts.mainnet.bountyEscrow}</code>
-                      <ExternalLink size={12} />
-                    </a>
-                    {contracts.mainnet.bountyEscrow.startsWith('0x') && (
-                      <button
-                        className="btn-icon-small"
-                        onClick={() => copyToClipboard(contracts.mainnet.bountyEscrow, 'escrow-mainnet')}
-                      >
-                        {copiedCode === 'escrow-mainnet' ? <Check size={14} /> : <Copy size={14} />}
-                      </button>
-                    )}
-                  </div>
+                  <AddressCell address={contracts.mainnet.bountyEscrow} explorer={contracts.mainnet.explorer} copyId="escrow-mainnet" />
                 </td>
               </tr>
               <tr>
@@ -510,42 +613,10 @@ submission-package.zip
                   <span className="contract-desc">AI evaluation oracle</span>
                 </td>
                 <td>
-                  <div className="address-cell">
-                    <a
-                      href={`${contracts.sepolia.explorer}/address/${contracts.sepolia.verdiktaAggregator}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="address-link"
-                    >
-                      <code>{contracts.sepolia.verdiktaAggregator}</code>
-                      <ExternalLink size={12} />
-                    </a>
-                    <button
-                      className="btn-icon-small"
-                      onClick={() => copyToClipboard(contracts.sepolia.verdiktaAggregator, 'verdikta-sepolia')}
-                    >
-                      {copiedCode === 'verdikta-sepolia' ? <Check size={14} /> : <Copy size={14} />}
-                    </button>
-                  </div>
+                  <AddressCell address={contracts.sepolia.verdiktaAggregator} explorer={contracts.sepolia.explorer} copyId="verdikta-sepolia" />
                 </td>
                 <td>
-                  <div className="address-cell">
-                    <a
-                      href={`${contracts.mainnet.explorer}/address/${contracts.mainnet.verdiktaAggregator}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="address-link"
-                    >
-                      <code>{contracts.mainnet.verdiktaAggregator}</code>
-                      <ExternalLink size={12} />
-                    </a>
-                    <button
-                      className="btn-icon-small"
-                      onClick={() => copyToClipboard(contracts.mainnet.verdiktaAggregator, 'verdikta-mainnet')}
-                    >
-                      {copiedCode === 'verdikta-mainnet' ? <Check size={14} /> : <Copy size={14} />}
-                    </button>
-                  </div>
+                  <AddressCell address={contracts.mainnet.verdiktaAggregator} explorer={contracts.mainnet.explorer} copyId="verdikta-mainnet" />
                 </td>
               </tr>
               <tr>
@@ -554,42 +625,10 @@ submission-package.zip
                   <span className="contract-desc">Oracle payment token</span>
                 </td>
                 <td>
-                  <div className="address-cell">
-                    <a
-                      href={`${contracts.sepolia.explorer}/address/${contracts.sepolia.linkToken}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="address-link"
-                    >
-                      <code>{contracts.sepolia.linkToken}</code>
-                      <ExternalLink size={12} />
-                    </a>
-                    <button
-                      className="btn-icon-small"
-                      onClick={() => copyToClipboard(contracts.sepolia.linkToken, 'link-sepolia')}
-                    >
-                      {copiedCode === 'link-sepolia' ? <Check size={14} /> : <Copy size={14} />}
-                    </button>
-                  </div>
+                  <AddressCell address={contracts.sepolia.linkToken} explorer={contracts.sepolia.explorer} copyId="link-sepolia" />
                 </td>
                 <td>
-                  <div className="address-cell">
-                    <a
-                      href={`${contracts.mainnet.explorer}/address/${contracts.mainnet.linkToken}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="address-link"
-                    >
-                      <code>{contracts.mainnet.linkToken}</code>
-                      <ExternalLink size={12} />
-                    </a>
-                    <button
-                      className="btn-icon-small"
-                      onClick={() => copyToClipboard(contracts.mainnet.linkToken, 'link-mainnet')}
-                    >
-                      {copiedCode === 'link-mainnet' ? <Check size={14} /> : <Copy size={14} />}
-                    </button>
-                  </div>
+                  <AddressCell address={contracts.mainnet.linkToken} explorer={contracts.mainnet.explorer} copyId="link-mainnet" />
                 </td>
               </tr>
             </tbody>
@@ -682,11 +721,25 @@ submission-package.zip
   evaluationCid,      // string - bounty's evaluation CID (NOT your submission)
   hunterCid,          // string - your submission's IPFS CID
   addendum,           // string - usually ""
-  alpha,              // uint256 - reputation weight (50 = nominal, higher = more confident)
+  alpha,              // uint256 - timeliness-vs-quality blend (0-1000). 500 = equal; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
   maxOracleFee,       // uint256 - "3000000000000000" (0.003 LINK per oracle call)
   estimatedBaseCost,  // uint256 - "1000000000000000" (0.001 LINK base cost)
-  maxFeeBasedScaling  // uint256 - "3" (relative weight, min vs max)
+  maxFeeBasedScaling  // uint256 - x-factor cap on fee-based boost, "3" = up to 3x (contract scales by 1e18 internally; must be >= 1)
 )`}</pre>
+            </div>
+          </div>
+
+          <div className="callout callout-warning" style={{ marginLeft: '3rem', marginBottom: '1rem' }}>
+            <div>
+              <strong>Windowed bounties (creator approval window):</strong>
+              <p style={{ margin: '0.5rem 0 0 0' }}>
+                If the bounty has <code>creatorAssessmentWindowSize &gt; 0</code>, prepareSubmission sets
+                the submission to <code>PendingCreatorApproval</code> instead of <code>Prepared</code>.
+                The bounty creator can then call <code>creatorApproveSubmission(bountyId, submissionId)</code>
+                during the window to pay the hunter directly (skipping oracle evaluation).
+                If the window expires, anyone can call <code>startPreparedSubmission</code> to begin the
+                normal AI evaluation flow (steps 2-4).
+              </p>
             </div>
           </div>
 
@@ -783,7 +836,7 @@ submission-package.zip
               <div className="submission-state">
                 <span className="state-code">0</span>
                 <span className="state-name">Prepared</span>
-                <span className="state-desc">EvaluationWallet ready, awaiting startPreparedSubmission</span>
+                <span className="state-desc">EvaluationWallet ready, awaiting startPreparedSubmission (non-windowed bounties)</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">1</span>
@@ -792,23 +845,23 @@ submission-package.zip
               </div>
               <div className="submission-state">
                 <span className="state-code">2</span>
-                <span className="state-name">PassedPaid</span>
-                <span className="state-desc">Score met threshold, ETH paid to hunter</span>
+                <span className="state-name">Failed</span>
+                <span className="state-desc">Below threshold or oracle timeout, LINK refunded to hunter</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">3</span>
-                <span className="state-name">FailedRefunded</span>
-                <span className="state-desc">Below threshold, LINK refunded to hunter</span>
+                <span className="state-name">PassedPaid</span>
+                <span className="state-desc">Score met threshold, ETH paid to hunter (winner)</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">4</span>
                 <span className="state-name">PassedUnpaid</span>
-                <span className="state-desc">Passed but payout pending (call finalizeSubmission)</span>
+                <span className="state-desc">Passed threshold but another submission already won the bounty</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">5</span>
-                <span className="state-name">FailedUnrefunded</span>
-                <span className="state-desc">Failed but refund pending (call finalizeSubmission)</span>
+                <span className="state-name">PendingCreatorApproval</span>
+                <span className="state-desc">Windowed bounty: awaiting creator decision. Creator may approve directly, or after window expires anyone can call startPreparedSubmission for AI evaluation.</span>
               </div>
             </div>
           </div>
@@ -833,17 +886,17 @@ submission-package.zip
               <tr>
                 <td><code>1</code></td>
                 <td>PendingVerdikta</td>
-                <td><code>PENDING_EVALUATION</code> (onChainStatus: PendingVerdikta)</td>
+                <td><code>PENDING_EVALUATION</code> / <code>ACCEPTED_PENDING_CLAIM</code> / <code>REJECTED_PENDING_FINALIZATION</code></td>
               </tr>
               <tr>
                 <td><code>2</code></td>
-                <td>PassedPaid</td>
-                <td><code>APPROVED</code></td>
+                <td>Failed</td>
+                <td><code>REJECTED</code></td>
               </tr>
               <tr>
                 <td><code>3</code></td>
-                <td>FailedRefunded</td>
-                <td><code>REJECTED</code></td>
+                <td>PassedPaid</td>
+                <td><code>APPROVED</code> (paidWinner: true)</td>
               </tr>
               <tr>
                 <td><code>4</code></td>
@@ -852,8 +905,8 @@ submission-package.zip
               </tr>
               <tr>
                 <td><code>5</code></td>
-                <td>FailedUnrefunded</td>
-                <td><code>REJECTED</code> (needs finalize)</td>
+                <td>PendingCreatorApproval</td>
+                <td><code>PendingCreatorApproval</code> (windowed bounties only)</td>
               </tr>
             </tbody>
           </table>
@@ -1844,15 +1897,17 @@ curl -H "X-Bot-API-Key: YOUR_KEY" \\
             <Bot size={18} />
             API Documentation
           </Link>
-          <a
-            href={`${contracts.sepolia.explorer}/address/${contracts.sepolia.bountyEscrow}#code`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn btn-primary btn-lg"
-          >
-            <ExternalLink size={18} />
-            View Contract Source
-          </a>
+          {activeContract.bountyEscrow && (
+            <a
+              href={`${activeContract.explorer}/address/${activeContract.bountyEscrow}#code`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-primary btn-lg"
+            >
+              <ExternalLink size={18} />
+              View Contract Source
+            </a>
+          )}
         </div>
       </section>
     </div>

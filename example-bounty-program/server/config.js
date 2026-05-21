@@ -1,7 +1,8 @@
 /**
  * Server configuration
  * Network-specific values are selected based on NETWORK env var.
- * Contract addresses (BOUNTY_ESCROW_ADDRESS) must be set in .env file.
+ * Contract addresses must be set in .env file via the network-specific
+ * variables BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA and BOUNTY_ESCROW_ADDRESS_BASE.
  */
 
 // Network definitions

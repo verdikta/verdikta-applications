@@ -1,0 +1,243 @@
+.header {
+  background-color: var(--bg);
+  border-bottom: 1px solid var(--border);
+  padding: 1rem 0;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.header-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 2rem;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+}
+
+.logo {
+  text-decoration: none;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.logo-icon {
+  color: var(--primary);
+}
+
+.logo-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.logo h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.network-label {
+  font-size: 0.75rem;
+  color: var(--primary);
+  font-weight: 500;
+  padding-left: 0.25em;
+}
+
+.btn-with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.nav {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.nav-link {
+  text-decoration: none;
+  color: var(--text-secondary);
+  font-weight: 500;
+  transition: color 0.2s;
+}
+
+.nav-link:hover {
+  color: var(--primary);
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.wallet-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.network-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--warning);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.wallet-address {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background-color: var(--bg-secondary);
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+}
+
+.network-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  background-color: var(--primary);
+  color: white;
+  border-radius: 0.25rem;
+  font-weight: 500;
+}
+
+.address {
+  font-family: monospace;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 768px) {
+  .header-container {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .header-left {
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .nav {
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  /* Ensure nav links meet 44px touch target on mobile */
+  .nav-link {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    border-radius: 0.5rem;
+    background: var(--bg-secondary);
+  }
+
+  .nav-link:active {
+    background: var(--border);
+  }
+
+  .wallet-info {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  /* Wallet buttons meet touch target */
+  .wallet-info .btn {
+    min-height: 44px;
+  }
+
+.wrong-network-alert {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--warning-light);
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  margin-right: 0.75rem;
+}
+
+.network-warning {
+  color: var(--warning-dark);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.btn-warning {
+  background: var(--warning);
+  color: var(--gray-900);
+  border: 1px solid var(--warning);
+  padding: 0.375rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-warning:hover:not(:disabled) {
+  background: var(--warning-dark);
+  border-color: var(--warning-dark);
+}
+
+.btn-warning:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.network-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin-right: 0.5rem;
+}
+
+.network-badge.correct {
+  background: var(--success-light);
+  color: var(--success-dark);
+  border: 1px solid var(--success);
+}
+
+.network-badge.incorrect {
+  background: var(--danger-light);
+  color: var(--danger-dark);
+  border: 1px solid var(--danger);
+}
+
+.wallet-address {
+  display: flex;
+  align-items: center;
+}
+
+.address {
+  font-family: var(--font-mono);
+  padding: 0.375rem 0.75rem;
+  background: var(--gray-50);
+  border-radius: 4px;
+  margin-right: 0.5rem;
+  font-size: 0.875rem;
+}
+}
+
+
+

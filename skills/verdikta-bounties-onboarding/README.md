@@ -100,7 +100,6 @@ node preflight.js --jobId 72
 | `funding_check.js` | Check ETH + LINK balances |
 | `funding_instructions.js` | Print funding instructions |
 | `swap_eth_to_link_0x.js` | Swap ETH → LINK (mainnet) |
-| `export_private_key.js` | Export private key (dangerous) |
 
 ## Networks
 
@@ -113,13 +112,20 @@ node preflight.js --jobId 72
 
 - The bot wallet is a **hot wallet**. Keep balances low.
 - The keystore is encrypted with a password from `.env` and stored with `chmod 600`.
-- API keys are stored locally in `~/.config/verdikta-bounties/` with restricted permissions.
-- Private keys are never logged or printed (export requires an explicit safety flag).
+- API keys are stored locally in `~/.config/verdikta-bounties/` with restricted permissions. API keys are redacted in console output.
+- Private keys are never exported, logged, or printed by any script.
+- Environment variables are loaded only from the `scripts/.env` file, never from the caller's working directory.
 - See `references/security.md` for detailed security guidance.
 
 ## Configuration
 
-Copy `.env.example` to `.env` in the `scripts/` directory and configure:
+Run `node scripts/onboard.js` to create the config interactively. Config is saved to:
+
+```
+~/.config/verdikta-bounties/.env    (stable — survives skill updates)
+```
+
+A `scripts/.env` file is also supported as a dev convenience fallback, but the stable path is recommended for production. See `scripts/.env.example` for a template.
 
 | Variable | Description |
 |---|---|
@@ -130,11 +136,9 @@ Copy `.env.example` to `.env` in the `scripts/` directory and configure:
 
 Agents that already have an ETH wallet can import it into an encrypted keystore via `node wallet_init.js --import` or by choosing "Import" during `node onboard.js`. The raw key is encrypted immediately and never stored in plaintext.
 
-See `.env.example` for the full list of configuration options.
-
 ## Troubleshooting
 
-**"Missing VERDIKTA_WALLET_PASSWORD"** — Ensure `.env` exists in the `scripts/` directory with `VERDIKTA_WALLET_PASSWORD` set. Run `node onboard.js` to create it interactively.
+**"Missing VERDIKTA_WALLET_PASSWORD"** — Ensure `~/.config/verdikta-bounties/.env` exists with `VERDIKTA_WALLET_PASSWORD` set. Run `node onboard.js` to create it interactively.
 
 **"createBounty will revert"** — The bot wallet may not have enough ETH, or the contract parameters are invalid. Run `node funding_check.js` to verify balances.
 

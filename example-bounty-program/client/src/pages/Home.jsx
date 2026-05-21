@@ -182,13 +182,13 @@ function Home({ walletState }) {
     setCurrentPage(1);
   };
 
-  // Scroll to top of grid when page changes (but not on initial load)
-  const isInitialRender = useRef(true);
+  // Scroll to top of grid when page changes (but not on initial load).
+  // Compare against previous value so the guard survives StrictMode's
+  // intentional double-invocation of effects in dev.
+  const prevPageRef = useRef(currentPage);
   useEffect(() => {
-    if (isInitialRender.current) {
-      isInitialRender.current = false;
-      return;
-    }
+    if (prevPageRef.current === currentPage) return;
+    prevPageRef.current = currentPage;
     if (bountyGridRef.current) {
       bountyGridRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
@@ -220,7 +220,14 @@ function Home({ walletState }) {
 
       <section className="bounties-section" ref={bountyGridRef}>
         <div className="section-header">
-          <h2>Available Jobs</h2>
+          <h2>
+            Available Jobs
+            {!loading && !error && (
+              <span className="bounty-count" aria-label={`${jobs.length} jobs`}>
+                {jobs.length}
+              </span>
+            )}
+          </h2>
           <div className="filters">
             <input
               type="text"
@@ -348,13 +355,13 @@ function Home({ walletState }) {
           </div>
           <div className="step">
             <div className="step-number">3</div>
-            <h3>AI Evaluates</h3>
-            <p>Verdikta's AI jury grades submissions against the rubric</p>
+            <h3>Review &amp; Evaluate</h3>
+            <p>Creator can approve directly, or an AI jury grades submissions against the rubric</p>
           </div>
           <div className="step">
             <div className="step-number">4</div>
             <h3>Auto Payment</h3>
-            <p>First passing submission wins ETH automatically</p>
+            <p>Approved submissions win ETH automatically from escrow</p>
           </div>
         </div>
       </section>
@@ -459,6 +466,12 @@ function JobCard({ job }) {
   const isAwarded = status === BountyStatus.AWARDED;
   const isClosed = status === BountyStatus.CLOSED;
 
+  // Pending-on-chain: API-created but not yet confirmed by the sync service
+  // and not marked ORPHANED. Shown briefly (< 1h) while the creation tx is
+  // still confirming; after 1h the server-side ghost filter hides it. Submits
+  // against a pending bounty would revert on-chain, so warn before the click.
+  const isPendingOnChain = isOpen && !job.syncedFromBlockchain && !job.onChain;
+
   // Less than 24 hours = closing soon (show warning style)
   const isClosingSoon = isOpen && timeRemaining > 0 && hoursRemaining < 24;
   // Less than 1 hour = critical (show minutes)
@@ -536,6 +549,33 @@ function JobCard({ job }) {
             <span {...getBountyBadgeProps(hasAcceptedPendingClaim ? 'AWARDED' : status)}>
               {hasAcceptedPendingClaim ? 'Accepted' : getBountyStatusLabel(status)}
             </span>
+            {job.targetHunter && (
+              <span className="badge badge-targeted" title={`Targeted to ${job.targetHunter}`}>
+                Targeted
+              </span>
+            )}
+            {job.creatorAssessmentWindowSize > 0 && (
+              <span
+                className="badge badge-windowed"
+                title={`Creator approval window: ${
+                  job.creatorAssessmentWindowSize >= 3600
+                    ? (job.creatorAssessmentWindowSize / 3600).toFixed(1) + 'h'
+                    : Math.round(job.creatorAssessmentWindowSize / 60) + 'm'
+                } (creator: ${job.creatorDeterminationPayment ?? '?'} ETH / arbiters: ${job.arbiterDeterminationPayment ?? '?'} ETH)`}
+              >
+                <Clock size={12} style={{ verticalAlign: 'middle', marginRight: '2px' }} />
+                Windowed
+              </span>
+            )}
+            {isPendingOnChain && (
+              <span
+                className="badge badge-pending"
+                title="This bounty's on-chain transaction has not yet been confirmed. Submissions will fail until confirmation. If this persists beyond ~1 hour the bounty will be removed automatically."
+              >
+                <RefreshCw size={12} style={{ verticalAlign: 'middle', marginRight: '2px' }} />
+                Pending on-chain
+              </span>
+            )}
             <div className="validate-row">
               {/* Validation status indicator - next to validate button */}
               {validationResult ? (

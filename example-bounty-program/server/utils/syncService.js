@@ -127,6 +127,62 @@ async function fetchEvaluationMetadata(evaluationCid) {
   return null;
 }
 
+/**
+ * Copy chain-authoritative bounty fields from a `getBounty()` result onto an
+ * existing local job record. Used by:
+ *   - Phase D.5 stale-check: when verifying a pending job against the chain.
+ *   - Heal sweep: when retroactively backfilling already-synced records that
+ *     are missing windowed/target fields.
+ *   - PATCH /:id/bountyId in routes: when the frontend tells us a pending job
+ *     is now on-chain at a known id.
+ *
+ * Fields copied are the ones the chain owns and the local cache shouldn't
+ * second-guess: identity (creator, contract address indirectly), economic
+ * params (payouts, deadline), threshold/class, and the targeting + creator-
+ * approval-window fields that are the source of the windowed-bounty bug.
+ *
+ * Returns true if any field was changed.
+ */
+function applyChainBountyFields(localJob, chainBounty) {
+  if (!localJob || !chainBounty) return false;
+  let changed = false;
+  const set = (key, value) => {
+    if (localJob[key] !== value) {
+      localJob[key] = value;
+      changed = true;
+    }
+  };
+
+  // Targeting + creator approval window — the fields that bug #45 lost.
+  // contractService.getBounty() already converts ZeroAddress → null and
+  // formats payment fields as ETH strings.
+  set('targetHunter', chainBounty.targetHunter || null);
+  set('creatorDeterminationPayment', chainBounty.creatorDeterminationPayment || '0.0');
+  set('arbiterDeterminationPayment', chainBounty.arbiterDeterminationPayment || '0.0');
+  set('creatorAssessmentWindowSize', Number(chainBounty.creatorAssessmentWindowSize || 0));
+
+  // Other authoritative chain fields — only overwrite if the chain has them.
+  // We don't want to wipe local-only metadata like title/description/juryNodes.
+  if (chainBounty.creator) set('creator', chainBounty.creator);
+  if (chainBounty.evaluationCid) set('evaluationCid', chainBounty.evaluationCid);
+  if (chainBounty.classId != null) set('classId', Number(chainBounty.classId));
+  if (chainBounty.threshold != null) set('threshold', Number(chainBounty.threshold));
+  if (chainBounty.bountyAmount != null) set('bountyAmount', parseFloat(chainBounty.bountyAmount));
+  if (chainBounty.submissionCloseTime != null) set('submissionCloseTime', Number(chainBounty.submissionCloseTime));
+  if (chainBounty.createdAt != null) {
+    // Don't clobber the local createdAt if it already exists; chain createdAt
+    // is the block timestamp which can differ slightly from when the local
+    // pending job was first created.
+    if (localJob.createdAt == null) set('createdAt', Number(chainBounty.createdAt));
+    if (localJob.submissionOpenTime == null) set('submissionOpenTime', Number(chainBounty.createdAt));
+  }
+  if (chainBounty.winner !== undefined) {
+    set('winner', chainBounty.winner || null);
+  }
+
+  return changed;
+}
+
 class SyncService {
   constructor(intervalMinutes = 2) {
     this.intervalMs = intervalMinutes * 60 * 1000;
@@ -134,9 +190,17 @@ class SyncService {
     this.isSyncing = false;
     this.lastSyncTime = null;
     this.syncErrors = 0;
+    this._stopped = false;
+    // Maximum delay between retries during an outage. Sync auto-recovers from
+    // transient RPC failures by exponential backoff up to this cap.
+    this.maxBackoffMs = 10 * 60 * 1000;
 
     // Set of bountyIds with PendingVerdikta submissions — polled each cycle
     this.hotBountyIds = new Set();
+    this._staleCheckDone = false;
+    // Note: chain-fields heal (Phase D.6) and submission-level heal (D.7) both
+    // run every sync cycle and gate on per-record sentinels rather than a
+    // one-shot process flag — see the heal blocks in _eventSync.
   }
 
   // ==========================================================================
@@ -148,23 +212,31 @@ class SyncService {
       logger.warn('Sync service already running');
       return;
     }
+    this._stopped = false;
 
     logger.info('Starting blockchain sync service (event-based)', {
-      interval: `${this.intervalMs / 1000} seconds`
+      interval: `${this.intervalMs / 1000} seconds`,
+      maxBackoffSeconds: this.maxBackoffMs / 1000
     });
 
-    // Run initial sync immediately
-    this.syncNow();
-
-    // Then run periodically
-    this.syncTimer = setInterval(() => {
-      this.syncNow();
-    }, this.intervalMs);
+    // Chained setTimeout so each cycle can choose its own delay (exponential
+    // backoff after errors, normal interval after success). This replaces the
+    // previous setInterval + permanent-stop watchdog.
+    const tick = async () => {
+      if (this._stopped) return;
+      try { await this.syncNow(); } catch { /* syncNow handles its own errors */ }
+      if (this._stopped) return;
+      const delay = this._computeNextDelay();
+      this.syncTimer = setTimeout(tick, delay);
+    };
+    // First run fires immediately; subsequent runs are scheduled by tick().
+    this.syncTimer = setTimeout(tick, 0);
   }
 
   stop() {
+    this._stopped = true;
     if (this.syncTimer) {
-      clearInterval(this.syncTimer);
+      clearTimeout(this.syncTimer);
       this.syncTimer = null;
       logger.info('Blockchain sync service stopped');
     }
@@ -172,13 +244,26 @@ class SyncService {
 
   getStatus() {
     return {
-      isRunning: this.syncTimer !== null,
+      isRunning: this.syncTimer !== null && !this._stopped,
       isSyncing: this.isSyncing,
       lastSyncTime: this.lastSyncTime,
       intervalMinutes: this.intervalMs / 60000,
       consecutiveErrors: this.syncErrors,
+      nextDelayMs: this._computeNextDelay(),
       hotBountyCount: this.hotBountyIds.size
     };
+  }
+
+  /**
+   * Compute the delay for the next sync attempt.
+   * Normal cadence after a successful run; exponential backoff after errors,
+   * doubling each cycle (cap at maxBackoffMs). Auto-recovers when RPC returns
+   * and the next sync succeeds — syncErrors resets to 0 in syncNow().
+   */
+  _computeNextDelay() {
+    if (this.syncErrors === 0) return this.intervalMs;
+    const exp = Math.min(this.syncErrors - 1, 6); // cap exponent so we hit maxBackoff predictably
+    return Math.min(this.intervalMs * (2 ** exp), this.maxBackoffMs);
   }
 
   // ==========================================================================
@@ -234,15 +319,12 @@ class SyncService {
 
     } catch (error) {
       this.syncErrors++;
-      logger.error('Blockchain sync failed', {
+      const nextDelayMs = this._computeNextDelay();
+      logger.error('Blockchain sync failed — will retry with backoff', {
         error: error.message,
-        consecutiveErrors: this.syncErrors
+        consecutiveErrors: this.syncErrors,
+        nextRetryInSeconds: Math.round(nextDelayMs / 1000)
       });
-
-      if (this.syncErrors >= 5) {
-        logger.error('Too many sync errors, stopping sync service');
-        this.stop();
-      }
     } finally {
       this.isSyncing = false;
     }
@@ -360,27 +442,304 @@ class SyncService {
     // Phase C: Hot polling — check oracle results for pending submissions
     await this._pollHotBounties(storage, currentContract, contractService);
 
-    // Phase D: bountyCount check (1 RPC call)
+    // Phase D: bountyCount check — fill any gaps from 0 to bountyCount
     const bountyCount = await contractService.getBountyCount();
-    if (bountyCount > (syncState.lastKnownBountyCount || 0)) {
-      const oldCount = syncState.lastKnownBountyCount || 0;
-      logger.info('[sync] New bounties detected via count check', {
-        oldCount,
-        newCount: bountyCount
-      });
-      for (let id = oldCount; id < bountyCount; id++) {
-        const existing = storage.jobs.find(j =>
-          j.jobId === id &&
-          (j.contractAddress || '').toLowerCase() === currentContract
-        );
-        if (!existing) {
-          try {
-            const bounty = await contractService.getBounty(id);
-            await this.addJobFromBlockchain(bounty, storage, currentContract);
-          } catch (err) {
-            logger.warn('[sync] Failed to fetch new bounty', { id, error: err.message });
+    const knownIds = new Set(
+      storage.jobs
+        .filter(j => (j.contractAddress || '').toLowerCase() === currentContract && j.syncedFromBlockchain)
+        .map(j => j.jobId)
+    );
+    let gapFilled = 0;
+    for (let id = 0; id < bountyCount; id++) {
+      if (!knownIds.has(id)) {
+        try {
+          const bounty = await contractService.getBounty(id);
+          await this.addJobFromBlockchain(bounty, storage, currentContract);
+          gapFilled++;
+        } catch (err) {
+          logger.warn('[sync] Failed to fetch bounty gap', { id, error: err.message });
+        }
+      }
+    }
+    if (gapFilled > 0) {
+      logger.info('[sync] Filled gaps from bountyCount check', { gapFilled, bountyCount });
+    }
+
+    // Phase D.5: Stale-detection sweep — verify jobs that claim to be on the current
+    // contract but were never confirmed by the sync service. These could be phantom
+    // entries from PATCH /bountyId calls that pointed at the wrong contract.
+    // Only runs once per startup (first sync cycle) to avoid repeated RPC costs.
+    if (!this._staleCheckDone) {
+      // Any job (synced or not) with jobId >= bountyCount cannot exist on-chain.
+      // Previously this only caught unsynced jobs, but a phantom can acquire
+      // syncedFromBlockchain=true via the PATCH /bountyId endpoint's chain
+      // backfill or a coincidental ID collision in the BountyCreated handler.
+      const suspects = storage.jobs.filter(j =>
+        (j.contractAddress || '').toLowerCase() === currentContract &&
+        j.onChain === true &&
+        j.status !== 'ORPHANED' &&
+        typeof j.jobId === 'number' &&
+        j.jobId >= bountyCount // Can't exist if jobId >= bountyCount
+      );
+
+      let staleCount = 0;
+      for (const job of suspects) {
+        logger.info('[sync/stale-check] job has jobId >= bountyCount, marking orphaned', {
+          jobId: job.jobId, bountyCount, syncedFromBlockchain: job.syncedFromBlockchain,
+          contractAddress: job.contractAddress
+        });
+        job.status = 'ORPHANED';
+        job.orphanReason = 'jobId_exceeds_bountyCount';
+        staleCount++;
+      }
+
+      // For suspects below bountyCount, do a quick getBounty check
+      const suspectsBelowCount = storage.jobs.filter(j =>
+        (j.contractAddress || '').toLowerCase() === currentContract &&
+        j.onChain === true &&
+        !j.syncedFromBlockchain &&
+        typeof j.jobId === 'number' &&
+        j.jobId < bountyCount
+      );
+      for (const job of suspectsBelowCount) {
+        try {
+          // Pull the chain truth — and ACTUALLY USE IT. Previously this call
+          // discarded its result and only flipped syncedFromBlockchain, which
+          // was the root cause of bounty #45 being stuck without targetHunter
+          // / creatorAssessmentWindowSize / payment fields.
+          const chainBounty = await contractService.getBounty(job.jobId);
+          const changed = applyChainBountyFields(job, chainBounty);
+          job.syncedFromBlockchain = true;
+          job.lastSyncedAt = Math.floor(Date.now() / 1000);
+          if (changed) {
+            logger.info('[sync/stale-check] backfilled chain fields for pending job', {
+              jobId: job.jobId,
+              targetHunter: job.targetHunter,
+              creatorAssessmentWindowSize: job.creatorAssessmentWindowSize
+            });
+          }
+        } catch (err) {
+          const msg = (err.message || '').toLowerCase();
+          if (msg.includes('bad bountyid') || msg.includes('badbountyid')) {
+            logger.info('[sync/stale-check] job does not exist on current contract, marking orphaned', {
+              jobId: job.jobId, contractAddress: job.contractAddress
+            });
+            job.status = 'ORPHANED';
+            job.orphanReason = 'not_found_on_current_contract';
+            staleCount++;
           }
         }
+      }
+
+      // Cross-check: find synced jobs that share an evaluationCid with another
+      // job on the same contract. This is the hallmark of a phantom entry created
+      // by a coincidental ID collision during duplicate creation attempts. For
+      // each duplicate pair, verify which one matches chain truth and orphan the
+      // other. Only checks duplicates to avoid excessive RPC calls.
+      const cidCount = new Map();
+      for (const j of storage.jobs) {
+        if ((j.contractAddress || '').toLowerCase() !== currentContract) continue;
+        if (j.status === 'ORPHANED' || !j.evaluationCid) continue;
+        const key = j.evaluationCid;
+        if (!cidCount.has(key)) cidCount.set(key, []);
+        cidCount.get(key).push(j);
+      }
+      for (const [cid, jobs] of cidCount) {
+        if (jobs.length < 2) continue;
+        // Multiple local jobs share this evaluationCid — verify each against chain
+        for (const job of jobs) {
+          if (!job.syncedFromBlockchain || typeof job.jobId !== 'number') continue;
+          if (job.jobId >= bountyCount) continue;
+          try {
+            const chainBounty = await contractService.getBounty(job.jobId);
+            if (chainBounty.evaluationCid && job.evaluationCid !== chainBounty.evaluationCid) {
+              logger.warn('[sync/stale-check] evaluationCid mismatch in duplicate set — orphaning phantom', {
+                jobId: job.jobId,
+                localCid: job.evaluationCid,
+                chainCid: chainBounty.evaluationCid,
+                localTitle: job.title
+              });
+              job.status = 'ORPHANED';
+              job.orphanReason = 'evaluationCid_mismatch';
+              staleCount++;
+            }
+          } catch (err) {
+            logger.warn('[sync/stale-check] CID cross-check failed for job', {
+              jobId: job.jobId, error: err.message
+            });
+          }
+        }
+      }
+
+      if (staleCount > 0) {
+        logger.info('[sync/stale-check] orphaned stale entries', { count: staleCount });
+      }
+      this._staleCheckDone = true;
+    }
+
+    // Phase D.6: Reactive heal sweep — backfill chain-authoritative fields for
+    // jobs that were marked syncedFromBlockchain but are missing the
+    // windowed/target fields. Originally one-shot at startup, but jobs can
+    // drift into this state mid-process (e.g. BountyCreated event handler's
+    // "existing" branch before the targetHunter backfill landed; bounties
+    // #151-153 on Base). Runs every cycle when candidates exist.
+    //
+    // Detection heuristic: a synced job missing creatorDeterminationPayment OR
+    // targetHunter (with no prior healed marker) is a clear indicator the
+    // chain-fields backfill never ran. applyChainBountyFields always sets
+    // creatorDeterminationPayment to a string ("0.0" for un-windowed), so a
+    // missing/null value is unambiguous. We can't use null targetHunter as the
+    // sole signal because untargeted bounties legitimately have it null —
+    // pairing it with a sentinel (`_chainFieldsHealed`) lets us re-heal only
+    // jobs that have never been backfilled.
+    //
+    // Steady-state cost: zero RPC calls (filter pass is in-memory; once a job
+    // has been healed, _chainFieldsHealed=true keeps it out of the candidate
+    // set forever). Per-cycle cap of 50 keeps a large backlog from blocking
+    // the sync loop.
+    const healCandidates = storage.jobs.filter(j =>
+      (j.contractAddress || '').toLowerCase() === currentContract &&
+      j.syncedFromBlockchain === true &&
+      j.status !== 'ORPHANED' &&
+      typeof j.jobId === 'number' &&
+      j.jobId < bountyCount &&
+      !j._chainFieldsHealed &&
+      (j.creatorDeterminationPayment == null || j.targetHunter === null)
+    ).slice(0, 50);
+
+    if (healCandidates.length > 0) {
+      let healed = 0;
+      for (const job of healCandidates) {
+        try {
+          const chainBounty = await contractService.getBounty(job.jobId);
+          const changed = applyChainBountyFields(job, chainBounty);
+          job.lastSyncedAt = Math.floor(Date.now() / 1000);
+          job._chainFieldsHealed = true;
+          if (changed) {
+            healed++;
+            logger.info('[sync/heal] backfilled chain fields for previously-synced job', {
+              jobId: job.jobId,
+              targetHunter: job.targetHunter,
+              creatorAssessmentWindowSize: job.creatorAssessmentWindowSize,
+              creatorDeterminationPayment: job.creatorDeterminationPayment
+            });
+          }
+        } catch (err) {
+          logger.warn('[sync/heal] failed to backfill', {
+            jobId: job.jobId, error: err.message
+          });
+        }
+      }
+
+      logger.info('[sync/heal] heal sweep complete', {
+        candidates: healCandidates.length,
+        healed
+      });
+    }
+
+    // Phase D.7: Submission-level continuous heal — find submissions on
+    // windowed bounties whose local status is still 'Prepared', and
+    // re-read chain state for them. A windowed bounty's submission can
+    // never legitimately be in state 'Prepared' on chain — the contract
+    // transitions it directly to PendingCreatorApproval. So if we see
+    // local='Prepared' on a windowed bounty, the local record is stale
+    // (the POST /submissions/confirm write landed before chain truth was
+    // read, or the chain-read fallback in the event handler fired).
+    // See bounty 46 / bounty 52 incidents.
+    //
+    // Runs every sync cycle, NOT just at startup. The candidate-detection
+    // pass is an in-memory filter — zero RPC cost when nothing is stuck,
+    // which is the steady state. Only when we find a stuck record do we
+    // make any chain calls (one getSubmission per stuck record).
+    //
+    // This is the "recovery" backstop for the prevention fixes in
+    // POST /submissions/confirm and the SubmissionPrepared event handler.
+    // If either of those falls back to 'Prepared' due to a transient RPC
+    // failure, the next sync cycle (~20 sec by default) will heal it.
+    {
+      const subHealCandidates = [];
+      for (const job of storage.jobs) {
+        if ((job.contractAddress || '').toLowerCase() !== currentContract) continue;
+        if (!job.syncedFromBlockchain) continue;
+        if (job.status === 'ORPHANED') continue;
+        if (!job.creatorAssessmentWindowSize || Number(job.creatorAssessmentWindowSize) === 0) continue;
+        if (!Array.isArray(job.submissions) || job.submissions.length === 0) continue;
+        for (const sub of job.submissions) {
+          // Target: locally 'Prepared' but the bounty is windowed. On chain
+          // this should be PendingCreatorApproval (or possibly further along
+          // if the window already closed and evaluation was started).
+          if (sub.status === 'Prepared' || sub.status === 'PREPARED') {
+            subHealCandidates.push({ job, sub });
+          }
+        }
+      }
+
+      // Steady state: zero candidates → skip the loop entirely (no RPC).
+      if (subHealCandidates.length > 0) {
+        let subHealed = 0;
+        for (const { job, sub } of subHealCandidates) {
+          try {
+            const contract = contractService.contract;
+            const chainSub = await contract.getSubmission(job.jobId, sub.submissionId);
+            const statusMap = {
+              0: 'Prepared',
+              1: 'PENDING_EVALUATION',
+              2: 'REJECTED',
+              3: 'APPROVED',
+              4: 'APPROVED',
+              5: 'PendingCreatorApproval',
+            };
+            const onChainStatusMap = {
+              0: 'Prepared',
+              1: 'PendingVerdikta',
+              2: 'Failed',
+              3: 'PassedPaid',
+              4: 'PassedUnpaid',
+              5: 'PendingCreatorApproval',
+            };
+            const statusIndex = Number(chainSub.status);
+            const chainStatus = statusMap[statusIndex] || 'UNKNOWN';
+            const chainOnChainStatus = onChainStatusMap[statusIndex] || null;
+
+            if (chainStatus !== sub.status) {
+              sub.status = chainStatus;
+              // Store the low-level chain enum name, not the collapsed
+              // high-level form — analytics needs PassedPaid vs PassedUnpaid.
+              if (chainOnChainStatus) {
+                sub.onChainStatus = chainOnChainStatus;
+              }
+              sub.creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
+              if (chainSub.hunterCid && !sub.hunterCid) {
+                sub.hunterCid = chainSub.hunterCid;
+              }
+              if (chainSub.linkMaxBudget != null) {
+                sub.linkMaxBudget = chainSub.linkMaxBudget.toString();
+              }
+              if (chainSub.submittedAt != null) {
+                sub.submittedAt = Number(chainSub.submittedAt) || sub.submittedAt;
+              }
+              subHealed++;
+              logger.info('[sync/sub-heal] updated submission from chain', {
+                bountyId: job.jobId,
+                submissionId: sub.submissionId,
+                newStatus: chainStatus,
+                creatorWindowEnd: sub.creatorWindowEnd,
+                hunterCid: sub.hunterCid,
+              });
+            }
+          } catch (err) {
+            logger.warn('[sync/sub-heal] failed to read submission from chain', {
+              bountyId: job.jobId,
+              submissionId: sub.submissionId,
+              error: err.message
+            });
+          }
+        }
+
+        logger.info('[sync/sub-heal] submission heal sweep complete', {
+          candidates: subHealCandidates.length,
+          healed: subHealed,
+        });
       }
     }
 
@@ -389,19 +748,21 @@ class SyncService {
     const freshStorage = await jobStorage.readStorage();
     this._mergeStorageChanges(storage, freshStorage, currentContract);
 
+    // Handle orphaned/expired off-chain jobs + reconcile on-chain status
+    // before writing, so there is a single atomic write per cycle (no
+    // intermediate state where the API can serve stale data).
+    await this._handleOrphanedJobs(freshStorage, currentContract, contractService);
+
     freshStorage.syncState = {
       lastSyncedBlock: currentBlock,
       lastKnownBountyCount: bountyCount,
       version: SYNC_STATE_VERSION
     };
     await jobStorage.writeStorage(freshStorage);
-
-    // Handle orphaned/expired off-chain jobs + reconcile on-chain status
-    await this._handleOrphanedJobs(freshStorage, currentContract, contractService);
   }
 
   // ==========================================================================
-  // One-time backfill: populate awardTxHash for awarded jobs
+  // One-time backfill: populate txHash + awardTxHash for synced jobs
   // ==========================================================================
 
   async _backfillAwardTxHashes(contractService) {
@@ -410,16 +771,16 @@ class SyncService {
       const currentContract = jobStorage.getCurrentContractAddress();
 
       const needsBackfill = storage.jobs.filter(j =>
-        j.status === 'AWARDED' &&
-        !j.awardTxHash &&
-        (j.contractAddress || '').toLowerCase() === currentContract
+        (j.contractAddress || '').toLowerCase() === currentContract &&
+        j.syncedFromBlockchain &&
+        (!j.txHash || (j.status === 'AWARDED' && !j.awardTxHash))
       );
 
       if (needsBackfill.length === 0) return;
 
-      logger.info('[backfill] Backfilling awardTxHash for awarded jobs', { count: needsBackfill.length });
+      logger.info('[backfill] Backfilling creation/award tx hashes', { count: needsBackfill.length });
 
-      // Fetch all events from deployment block to find PayoutSent
+      // Fetch all events from deployment block to find PayoutSent + BountyCreated
       const deploymentBlock = config.deploymentBlock || 0;
       const currentBlock = await contractService.getBlockNumber();
 
@@ -434,7 +795,7 @@ class SyncService {
         }
       }
 
-      // Build lookup: bountyId -> PayoutSent transactionHash
+      // Build lookups: bountyId -> PayoutSent / BountyCreated
       const payoutTxMap = new Map();
       const creationTxMap = new Map();
       for (const event of allEvents) {
@@ -460,15 +821,16 @@ class SyncService {
           const info = creationTxMap.get(job.jobId);
           job.txHash = info.txHash;
           if (!job.blockNumber) job.blockNumber = info.blockNumber;
+          patched++;
         }
       }
 
       if (patched > 0) {
         await jobStorage.writeStorage(storage);
-        logger.info('[backfill] awardTxHash backfill complete', { patched });
+        logger.info('[backfill] creation/award tx backfill complete', { patched });
       }
     } catch (error) {
-      logger.warn('[backfill] awardTxHash backfill failed', { error: error.message });
+      logger.warn('[backfill] creation/award tx backfill failed', { error: error.message });
     }
   }
 
@@ -482,28 +844,63 @@ class SyncService {
     switch (name) {
       case 'BountyCreated': {
         const bountyId = Number(args.bountyId);
+        const evaluationCid = args.evaluationCid;
+        const creator = args.creator;
+        const deadline = Number(args.submissionDeadline);
+
         const existing = storage.jobs.find(j =>
           j.jobId === bountyId &&
           (j.contractAddress || '').toLowerCase() === currentContract
         );
 
         if (existing) {
-          // Already tracked — make sure it's synced
-          if (!existing.syncedFromBlockchain) {
-            existing.syncedFromBlockchain = true;
-            existing.contractAddress = currentContract;
-            existing.lastSyncedAt = Math.floor(Date.now() / 1000);
-          }
-          // Backfill creation tx info if missing (covers sync-discovered bounties)
-          if (!existing.txHash && transactionHash) existing.txHash = transactionHash;
-          if (!existing.blockNumber && blockNumber) existing.blockNumber = blockNumber;
-          break;
-        }
+          // Guard against coincidental ID collisions: if the local job hasn't
+          // been synced yet and its evaluationCid differs from the on-chain
+          // event, this is a different bounty that just happens to share the
+          // same local ID (nextId vs on-chain bountyId). Don't link — fall
+          // through to the pending-job search or create a new entry.
+          if (!existing.syncedFromBlockchain &&
+              evaluationCid && existing.evaluationCid &&
+              existing.evaluationCid !== evaluationCid) {
+            logger.warn('[event] BountyCreated: jobId collision with unsynced job (evaluationCid mismatch)', {
+              bountyId,
+              localCid: existing.evaluationCid,
+              chainCid: evaluationCid,
+              localTitle: existing.title
+            });
+            // Fall through — do NOT break; let the pending-job search handle it
+          } else {
+            // Already tracked — make sure it's synced
+            if (!existing.syncedFromBlockchain) {
+              existing.syncedFromBlockchain = true;
+              existing.contractAddress = currentContract;
+              existing.lastSyncedAt = Math.floor(Date.now() / 1000);
+            }
+            // Backfill creation tx info if missing (covers sync-discovered bounties)
+            if (!existing.txHash && transactionHash) existing.txHash = transactionHash;
+            if (!existing.blockNumber && blockNumber) existing.blockNumber = blockNumber;
 
-        // Check for pending jobs that match by evaluationCid or creator+deadline
-        const evaluationCid = args.evaluationCid;
-        const creator = args.creator;
-        const deadline = Number(args.submissionDeadline);
+            // Pull chain-only fields (targetHunter + creator approval window).
+            // Why: if the local job pre-existed (e.g. created via /jobs/create
+            // without targetHunter in the body, then on-chain createBounty was
+            // called directly), this branch is the only place the event handler
+            // touches it — and without copying chain truth, targetHunter stays
+            // null locally even though the contract has it set. Bug seen on
+            // bounties #151-153 (Base) where /onchain-status returned the
+            // target but /jobs/:id and the UI showed them as untargeted.
+            if (existing.targetHunter == null || existing.creatorDeterminationPayment == null) {
+              try {
+                const bounty = await contractService.getBounty(bountyId);
+                applyChainBountyFields(existing, bounty);
+              } catch (err) {
+                logger.warn('[event] BountyCreated: failed to backfill chain fields on existing job', {
+                  bountyId, error: err.message
+                });
+              }
+            }
+            break;
+          }
+        }
 
         const pendingJob = storage.jobs.find(j => {
           if (j.syncedFromBlockchain) return false;
@@ -525,13 +922,27 @@ class SyncService {
           pendingJob.contractAddress = currentContract;
           pendingJob.status = 'OPEN';
           pendingJob.lastSyncedAt = Math.floor(Date.now() / 1000);
+          if (!pendingJob.txHash && transactionHash) pendingJob.txHash = transactionHash;
+          if (!pendingJob.blockNumber && blockNumber) pendingJob.blockNumber = blockNumber;
           if (pendingJob.onChainId != null) delete pendingJob.onChainId;
           if (pendingJob.legacyJobId != null) delete pendingJob.legacyJobId;
+
+          // Pull chain-only fields (targetHunter + creator approval window) that
+          // the pending job may not have if the API caller didn't pass them.
+          // The contract is the source of truth for these.
+          try {
+            const bounty = await contractService.getBounty(bountyId);
+            applyChainBountyFields(pendingJob, bounty);
+          } catch (err) {
+            logger.warn('[event] Failed to pull chain-only fields for linked pending job', {
+              bountyId, error: err.message
+            });
+          }
         } else {
           // New bounty from chain — fetch full struct and metadata
           try {
             const bounty = await contractService.getBounty(bountyId);
-            await this.addJobFromBlockchain(bounty, storage, currentContract);
+            await this.addJobFromBlockchain(bounty, storage, currentContract, { txHash: transactionHash, blockNumber });
           } catch (err) {
             logger.warn('[event] Failed to fetch BountyCreated bounty', { bountyId, error: err.message });
           }
@@ -545,20 +956,57 @@ class SyncService {
         const job = this._findJob(storage, bountyId, currentContract);
         if (!job) break;
 
-        // Add submission if not already tracked
+        // Add submission if not already tracked.
+        // Note: hunterCid is NOT in this event — it's stored on-chain via prepareSubmission()
+        // and will be picked up by the next getSubmission() call (e.g., in syncSubmissions or refresh).
         const existing = (job.submissions || []).find(s => s.submissionId === submissionId);
         if (!existing) {
+          // For windowed bounties, the contract puts the submission straight
+          // into PendingCreatorApproval (state 5) with a creatorWindowEnd —
+          // not Prepared (state 0). The event doesn't carry those fields, so
+          // we pull chain truth with a single getSubmission() call. Non-fatal:
+          // if the call fails we fall back to the 'Prepared' default and the
+          // submission-level heal sweep (Phase D.7) will fix it later.
+          let chainStatusString = 'Prepared';
+          let creatorWindowEnd = null;
+          let hunterCidFromChain = null;
+          try {
+            const chainSub = await contractService.contract.getSubmission(bountyId, submissionId);
+            const statusMap = {
+              0: 'Prepared',
+              1: 'PENDING_EVALUATION',
+              2: 'REJECTED',
+              3: 'APPROVED',
+              4: 'APPROVED',
+              5: 'PendingCreatorApproval',
+            };
+            chainStatusString = statusMap[Number(chainSub.status)] || 'Prepared';
+            creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
+            hunterCidFromChain = chainSub.hunterCid || null;
+          } catch (err) {
+            logger.warn('[event] SubmissionPrepared: chain read failed, falling back to Prepared', {
+              bountyId, submissionId, error: err.message
+            });
+          }
+
           if (!job.submissions) job.submissions = [];
           job.submissions.push({
             submissionId,
             hunter: args.hunter,
+            evalWallet: args.evalWallet,
             evaluationCid: args.evaluationCid,
-            hunterCid: args.hunterCid,
-            status: 'Prepared',
+            hunterCid: hunterCidFromChain,
+            linkMaxBudget: args.linkMaxBudget?.toString(),
+            status: chainStatusString,
+            onChainStatus: chainStatusString,
+            creatorWindowEnd,
             submittedAt: Math.floor(Date.now() / 1000)
           });
           job.submissionCount = (job.submissionCount || 0) + 1;
-          logger.info('[event] SubmissionPrepared', { bountyId, submissionId });
+          logger.info('[event] SubmissionPrepared', {
+            bountyId, submissionId, evalWallet: args.evalWallet,
+            status: chainStatusString, creatorWindowEnd
+          });
         }
         break;
       }
@@ -596,37 +1044,79 @@ class SyncService {
       case 'SubmissionFinalized': {
         const bountyId = Number(args.bountyId);
         const submissionId = Number(args.submissionId);
-        const chainStatus = Number(args.status);
+        // Contract event signature: (bountyId, submissionId, bool passed, uint256 acceptance, uint256 rejection, string justificationCids)
+        const passed = Boolean(args.passed);
         const acceptance = Number(args.acceptance);
         const rejection = Number(args.rejection);
+        const justificationCids = args.justificationCids || '';
         const job = this._findJob(storage, bountyId, currentContract);
         if (!job) break;
 
         const sub = (job.submissions || []).find(s => s.submissionId === submissionId);
         if (sub) {
-          const statusMap = { 2: 'REJECTED', 3: 'APPROVED', 4: 'APPROVED' };
-          sub.status = statusMap[chainStatus] || 'UNKNOWN';
-          sub.onChainStatus = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'][chainStatus] || 'Unknown';
+          // For passed=true, the contract sets status to PassedPaid (3) if this is the winner,
+          // or PassedUnpaid (4) otherwise. The PayoutSent event (handled separately) flags the
+          // actual winner via paidWinner. Default to PassedPaid here; PassedUnpaid will be
+          // corrected by re-sync if needed.
+          if (passed) {
+            sub.status = 'APPROVED';
+            sub.onChainStatus = 'PassedPaid';
+          } else {
+            sub.status = 'REJECTED';
+            sub.onChainStatus = 'Failed';
+          }
           sub.acceptance = acceptance;
           sub.rejection = rejection;
           sub.finalizedAt = Math.floor(Date.now() / 1000);
           sub.score = acceptance > 0 ? acceptance : null;
+          if (justificationCids) {
+            sub.justificationCids = justificationCids;
+          }
 
-          // Detect timeout: zero scores = oracle timed out
-          if (chainStatus === 2 && acceptance === 0 && rejection === 0) {
+          // Detect timeout: failed with zero scores = oracle timed out (failTimedOutSubmission was called)
+          if (!passed && acceptance === 0 && rejection === 0) {
             sub.failureReason = 'ORACLE_TIMEOUT';
           }
         }
 
         // Check if bounty still has pending submissions — if not, remove from hot set
         const stillHot = (job.submissions || []).some(
-          s => s.status === 'PENDING_EVALUATION' || s.onChainStatus === 'PendingVerdikta'
+          s => s.status === 'PENDING_EVALUATION' || s.onChainStatus === 'PendingVerdikta' ||
+               s.status === 'PendingCreatorApproval'
         );
         if (!stillHot) {
           this.hotBountyIds.delete(bountyId);
         }
 
-        logger.info('[event] SubmissionFinalized', { bountyId, submissionId, status: sub?.status });
+        logger.info('[event] SubmissionFinalized', { bountyId, submissionId, passed, status: sub?.status });
+        break;
+      }
+
+      case 'CreatorApproved': {
+        const bountyId = Number(args.bountyId);
+        const submissionId = Number(args.submissionId);
+        const hunter = args.hunter;
+        const amountPaid = args.amountPaid?.toString();
+        const job = this._findJob(storage, bountyId, currentContract);
+        if (!job) break;
+
+        const sub = (job.submissions || []).find(s => s.submissionId === submissionId);
+        if (sub) {
+          sub.status = 'APPROVED';
+          sub.onChainStatus = 'PassedPaid';
+          sub.paidWinner = true;
+          sub.finalizedAt = Math.floor(Date.now() / 1000);
+        }
+
+        logger.info('[event] CreatorApproved', { bountyId, submissionId, hunter, amountPaid });
+        break;
+      }
+
+      case 'CreatorRefunded': {
+        const bountyId = Number(args.bountyId);
+        const creator = args.creator;
+        const amountRefunded = args.amountRefunded?.toString();
+        logger.info('[event] CreatorRefunded', { bountyId, creator, amountRefunded });
         break;
       }
 
@@ -654,13 +1144,15 @@ class SyncService {
 
       case 'BountyClosed': {
         const bountyId = Number(args.bountyId);
+        const creator = args.creator;
+        const amountReturned = args.amountReturned?.toString();
         const job = this._findJob(storage, bountyId, currentContract);
         if (!job) break;
 
         job.status = 'CLOSED';
         job.settledAt = Math.floor(Date.now() / 1000);
         this.hotBountyIds.delete(bountyId);
-        logger.info('[event] BountyClosed', { bountyId });
+        logger.info('[event] BountyClosed', { bountyId, creator, amountReturned });
         break;
       }
 
@@ -757,8 +1249,13 @@ class SyncService {
 
   /**
    * Add a new job from blockchain to local storage
+   *
+   * @param {object} eventMeta - Optional `{txHash, blockNumber}` from the
+   *   BountyCreated event. When present, stored on the job so the Analytics
+   *   "Creation Tx" column has a value. Gap-fill callers don't have this,
+   *   and the one-shot _backfillAwardTxHashes heals those rows later.
    */
-  async addJobFromBlockchain(bounty, storage, currentContract) {
+  async addJobFromBlockchain(bounty, storage, currentContract, eventMeta = null) {
     logger.info('Adding job from blockchain', { jobId: bounty.jobId, evaluationCid: bounty.evaluationCid });
 
     // ---- Duplicate prevention: check for existing job with same evaluationCid ----
@@ -783,6 +1280,8 @@ class SyncService {
         pendingJob.contractAddress = currentContract;
         pendingJob.status = bounty.status || 'OPEN';
         pendingJob.lastSyncedAt = Math.floor(Date.now() / 1000);
+        if (!pendingJob.txHash && eventMeta?.txHash) pendingJob.txHash = eventMeta.txHash;
+        if (!pendingJob.blockNumber && eventMeta?.blockNumber) pendingJob.blockNumber = eventMeta.blockNumber;
         if (pendingJob.onChainId != null) delete pendingJob.onChainId;
         if (pendingJob.legacyJobId != null) delete pendingJob.legacyJobId;
         storage.nextId = Math.max(storage.nextId, bounty.jobId + 1);
@@ -844,10 +1343,16 @@ class SyncService {
       submissionCount: bounty.submissionCount,
       submissions: [],
       winner: bounty.winner,
+      targetHunter: bounty.targetHunter || null,
+      creatorDeterminationPayment: bounty.creatorDeterminationPayment || '0.0',
+      arbiterDeterminationPayment: bounty.arbiterDeterminationPayment || '0.0',
+      creatorAssessmentWindowSize: bounty.creatorAssessmentWindowSize || 0,
       onChain: true,
       syncedFromBlockchain: true,
       lastSyncedAt: Math.floor(Date.now() / 1000),
-      contractAddress: currentContract
+      contractAddress: currentContract,
+      txHash: eventMeta?.txHash || null,
+      blockNumber: eventMeta?.blockNumber || null
     };
 
     // If the bounty already has submissions, sync them from chain
@@ -892,7 +1397,8 @@ class SyncService {
                          sub.status === 'PendingVerdikta' ? 1 :
                          sub.status === 'Failed' ? 2 :
                          sub.status === 'PassedPaid' ? 3 :
-                         sub.status === 'PassedUnpaid' ? 4 : -1;
+                         sub.status === 'PassedUnpaid' ? 4 :
+                         sub.status === 'PendingCreatorApproval' ? 5 : -1;
 
         switch (statusNum) {
           case 0:
@@ -930,6 +1436,9 @@ class SyncService {
           case 4:
             backendStatus = 'APPROVED';
             break;
+          case 5:
+            backendStatus = 'PendingCreatorApproval';
+            break;
           default:
             backendStatus = 'UNKNOWN';
         }
@@ -949,7 +1458,8 @@ class SyncService {
           justificationCids: sub.justificationCids,
           submittedAt: sub.submittedAt,
           finalizedAt: sub.finalizedAt,
-          score: sub.acceptance > 0 ? sub.acceptance : null
+          score: sub.acceptance > 0 ? sub.acceptance : null,
+          creatorWindowEnd: sub.creatorWindowEnd || 0,
         });
       }
 
@@ -995,19 +1505,35 @@ class SyncService {
    * Merge sync changes into fresh storage (handles PATCH race conditions)
    */
   _mergeStorageChanges(modifiedStorage, freshStorage, currentContract) {
-    // Fields that PATCH endpoints might set during sync — preserve fresh values
-    const patchPreserveFields = ['txHash', 'blockNumber', 'onChain', 'contractAddress'];
+    // Fields that PATCH endpoints might set during sync — preserve fresh values.
+    // Sync's Object.assign(freshJob, modifiedJob) below would otherwise
+    // overwrite a concurrent PATCH that landed between our initial readStorage
+    // and this merge. Add any new creator-controlled or off-chain-only fields
+    // here when adding new PATCH endpoints.
+    const patchPreserveFields = [
+      'txHash', 'blockNumber', 'onChain', 'contractAddress',
+      'publicSubmissions', 'publicSubmissionsUpdatedAt'
+    ];
 
     for (const modifiedJob of modifiedStorage.jobs) {
-      let freshJob = freshStorage.jobs.find(j => j.jobId === modifiedJob.jobId);
+      const modifiedContract = (modifiedJob.contractAddress || '').toLowerCase();
+      let freshJob = freshStorage.jobs.find(j =>
+        j.jobId === modifiedJob.jobId &&
+        (j.contractAddress || '').toLowerCase() === modifiedContract
+      );
 
-      // If no match by jobId, try matching by evaluationCid — covers the case where
+      // If no match by jobId+contract, try matching by evaluationCid — covers the case where
       // sync linked a pending job (changed its jobId from null to the on-chain ID)
       // but freshStorage still has the old null-id entry.
+      // IMPORTANT: only match when at least one side has a null/undefined jobId (i.e. a
+      // pending job not yet linked to an on-chain bounty).  Multiple on-chain bounties
+      // can legitimately share the same evaluationCid, so matching two synced jobs by CID
+      // would cause them to overwrite each other and oscillate every sync cycle.
       if (!freshJob && modifiedJob.evaluationCid) {
         freshJob = freshStorage.jobs.find(j =>
           j.evaluationCid === modifiedJob.evaluationCid &&
-          (j.contractAddress || '').toLowerCase() === (modifiedJob.contractAddress || '').toLowerCase()
+          (j.contractAddress || '').toLowerCase() === modifiedContract &&
+          (j.jobId == null || modifiedJob.jobId == null)
         );
       }
 
@@ -1102,22 +1628,27 @@ class SyncService {
         }
       }
 
-      // Dedup by evaluationCid — a null-id job with the same CID as a real-id job is a duplicate
+      // Dedup by evaluationCid — a null-id job with the same CID as a real-id job is a duplicate.
+      // Only dedup when at least one side has a null jobId; multiple on-chain bounties
+      // can legitimately share the same evaluationCid.
       if (job.evaluationCid) {
         const cidKey = `${job.evaluationCid}:${contract}`;
         if (seenByCid.has(cidKey)) {
           const prev = seenByCid.get(cidKey);
-          // Keep the one with a real jobId; remove the null-id one
-          if (job.jobId != null && prev.job.jobId == null) {
-            toRemove.add(prev.idx);
-            seenByCid.set(cidKey, { idx: i, job });
-          } else if (job.jobId == null && prev.job.jobId != null) {
-            toRemove.add(i);
-          } else if (job.syncedFromBlockchain && !prev.job.syncedFromBlockchain) {
-            toRemove.add(prev.idx);
-            seenByCid.set(cidKey, { idx: i, job });
-          } else {
-            toRemove.add(i);
+          const bothHaveIds = job.jobId != null && prev.job.jobId != null;
+          if (!bothHaveIds) {
+            // Keep the one with a real jobId; remove the null-id one
+            if (job.jobId != null && prev.job.jobId == null) {
+              toRemove.add(prev.idx);
+              seenByCid.set(cidKey, { idx: i, job });
+            } else if (job.jobId == null && prev.job.jobId != null) {
+              toRemove.add(i);
+            } else if (job.syncedFromBlockchain && !prev.job.syncedFromBlockchain) {
+              toRemove.add(prev.idx);
+              seenByCid.set(cidKey, { idx: i, job });
+            } else {
+              toRemove.add(i);
+            }
           }
         } else {
           seenByCid.set(cidKey, { idx: i, job });
@@ -1155,11 +1686,22 @@ class SyncService {
         continue;
       }
 
-      // Check off-chain jobs that expired — including ones already marked EXPIRED,
-      // since off-chain bounties can't be closed on-chain and should be orphaned.
-      // A job is considered on-chain if onChain===true OR syncedFromBlockchain===true
-      // (addJobFromBlockchain sets syncedFromBlockchain but not onChain).
-      if (!job.onChain && !job.syncedFromBlockchain && job.submissionCloseTime && now > job.submissionCloseTime) {
+      // Orphan off-chain jobs that were never confirmed on-chain. A job is
+      // considered on-chain if onChain===true OR syncedFromBlockchain===true.
+      // Two triggers:
+      //   1. Age > 1h (matches the ghost-hiding threshold in jobStorage.listJobs).
+      //      After 1h an unsynced job is already hidden from list endpoints; we
+      //      mark it ORPHANED in storage too so direct GET /api/jobs/:id lookups
+      //      and analytics counters agree with list output.
+      //   2. Past submissionCloseTime (belt-and-suspenders for short windows).
+      // Recovery: if the on-chain tx eventually lands, the BountyCreated event
+      // handler re-links the pending job (sets status=OPEN, syncedFromBlockchain=true),
+      // so early orphaning is reversible.
+      const GHOST_GRACE_SECS = 3600;
+      const isOffChain = !job.onChain && !job.syncedFromBlockchain;
+      const pastGhostGrace = (now - (job.createdAt || 0)) > GHOST_GRACE_SECS;
+      const pastSubmissionDeadline = job.submissionCloseTime && now > job.submissionCloseTime;
+      if (isOffChain && (pastGhostGrace || pastSubmissionDeadline)) {
         if (job.status !== 'ORPHANED' && job.status !== 'AWARDED') {
           job.status = 'ORPHANED';
           job.orphanedAt = now;
@@ -1206,9 +1748,7 @@ class SyncService {
       }
     }
 
-    if (changed) {
-      await jobStorage.writeStorage(storage);
-    }
+    // Caller (_eventSync) handles the single write after all mutations.
   }
 }
 
@@ -1235,5 +1775,6 @@ function getSyncService() {
 module.exports = {
   initializeSyncService,
   getSyncService,
-  SyncService
+  SyncService,
+  applyChainBountyFields
 };

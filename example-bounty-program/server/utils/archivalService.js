@@ -21,6 +21,48 @@ const ARCHIVE_AFTER_RETRIEVAL_DAYS = parseInt(process.env.ARCHIVE_AFTER_RETRIEVA
 const PIN_VERIFY_INTERVAL_HOURS = parseInt(process.env.PIN_VERIFY_INTERVAL_HOURS || '1', 10);
 const VERIFICATION_RATE_LIMIT_MS = parseInt(process.env.VERIFICATION_RATE_LIMIT_MS || '250', 10);
 
+// Submission fields the archival service is allowed to mutate. ANY field NOT
+// in this list is read-only from this service's perspective — when we write
+// storage we re-read fresh state and only copy these fields back, so we don't
+// clobber concurrent PATCH writes (e.g. publicSubmissions) that happened while
+// processSubmissions() was iterating Pinata.
+const ARCHIVAL_SUBMISSION_FIELDS = [
+  'archiveStatus',
+  'archiveExpiresAt',
+  'archivedAt',
+  'archiveVerifiedAt',
+  'lastRepinnedAt',
+  'lastFailedAt',
+  'retrievedByPoster',
+  'retrievedAt',
+  'retrieverAddress'
+];
+
+/**
+ * Re-read storage and copy only archival-specific submission fields from the
+ * working in-memory copy onto the fresh on-disk copy, then write. This avoids
+ * the read-modify-write race where a PATCH endpoint updates a field (like
+ * publicSubmissions) between our initial read and our writeStorage call —
+ * a plain writeStorage would silently clobber the PATCH.
+ */
+async function writeArchivalChanges(modifiedStorage) {
+  const freshStorage = await jobStorage.readStorage();
+  for (const modifiedJob of modifiedStorage.jobs) {
+    const freshJob = freshStorage.jobs.find(j => j.jobId === modifiedJob.jobId);
+    if (!freshJob) continue;
+    for (const modifiedSub of modifiedJob.submissions || []) {
+      const freshSub = (freshJob.submissions || []).find(s => s.submissionId === modifiedSub.submissionId);
+      if (!freshSub) continue;
+      for (const field of ARCHIVAL_SUBMISSION_FIELDS) {
+        if (modifiedSub[field] !== undefined) {
+          freshSub[field] = modifiedSub[field];
+        }
+      }
+    }
+  }
+  await jobStorage.writeStorage(freshStorage);
+}
+
 /**
  * Get properly formatted Pinata auth header
  */
@@ -117,9 +159,10 @@ class ArchivalService {
         }
       }
 
-      // Persist any updates
+      // Persist any updates. Use merge-on-write so concurrent PATCH endpoints
+      // that fired while we were iterating Pinata aren't silently clobbered.
       if (storageModified) {
-        await jobStorage.writeStorage(storage);
+        await writeArchivalChanges(storage);
       }
 
       this.lastRunTime = new Date();
@@ -377,7 +420,7 @@ class ArchivalService {
     // Set new expiry: 7 days from retrieval
     submission.archiveExpiresAt = now + (ARCHIVE_AFTER_RETRIEVAL_DAYS * 24 * 60 * 60);
 
-    await jobStorage.writeStorage(storage);
+    await writeArchivalChanges(storage);
 
     logger.info('[archival] Submission marked as retrieved', {
       jobId,
@@ -438,7 +481,7 @@ class ArchivalService {
 
     const now = Math.floor(Date.now() / 1000);
     await this.processSubmission(job, submission, now);
-    await jobStorage.writeStorage(storage);
+    await writeArchivalChanges(storage);
 
     return {
       hunterCid: submission.hunterCid,

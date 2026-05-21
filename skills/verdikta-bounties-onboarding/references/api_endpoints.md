@@ -1,9 +1,9 @@
 # Verdikta Bounties Agent API (bot integration)
 
-**IMPORTANT:** Before making API calls, read the **skill's own** `.env` file to get the active base URL:
+**IMPORTANT:** Before making API calls, read the bot's config to get the active base URL:
 
-File path: `~/.openclaw/skills/verdikta-bounties-onboarding/scripts/.env`
-(or `verdikta-applications/skills/verdikta-bounties-onboarding/scripts/.env` if standalone)
+Primary (stable) path: `~/.config/verdikta-bounties/.env`
+Fallback (dev only): `scripts/.env` next to the skill scripts.
 
 Look for:
 - `VERDIKTA_BOUNTIES_BASE_URL` — set during onboarding, determines which server to use.
@@ -11,7 +11,7 @@ Look for:
 
 Do NOT use `VITE_NETWORK` or any `.env` file from `example-bounty-program/` — those are frontend configs.
 
-Always use `VERDIKTA_BOUNTIES_BASE_URL` from the skill's `.env` — do not hardcode or assume mainnet.
+Always use `VERDIKTA_BOUNTIES_BASE_URL` from the config — do not hardcode or assume mainnet.
 
 Auth header:
 - `X-Bot-API-Key: <YOUR_KEY>`
@@ -54,7 +54,7 @@ Body:
 
 Response includes `job.primaryCid` — use this as the `evaluationCid` in the on-chain `createBounty()` call.
 
-After calling the API, the bot must sign an on-chain `createBounty(evaluationCid, classId, threshold, deadline)` transaction on the BountyEscrow contract with ETH as `msg.value`. See SKILL.md for the full flow with code example.
+After calling the API, the bot must sign an on-chain `createBounty(evaluationCid, classId, threshold, deadline, targetHunter)` transaction on the BountyEscrow contract with ETH as `msg.value`. Use `address(0)` for open bounties. See SKILL.md for the full flow with code example.
 
 **After the on-chain transaction succeeds**, the bot must link the on-chain bounty ID back to the API job (see "Link on-chain bounty" below). `create_bounty.js` handles all of this automatically.
 

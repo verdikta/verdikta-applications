@@ -917,3 +917,168 @@
   }
 }
 
+/* ============================================================
+   Feature Card — opt-in feature with embedded toggle
+   Used by the "Creator Approval Window" section. The card has
+   a header (icon + title + description + toggle switch) and a
+   body that reveals the feature's parameter inputs when enabled.
+   ============================================================ */
+
+.feature-card {
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--bg);
+  margin-top: 1rem;
+  margin-bottom: 1.5rem;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+  overflow: hidden;
+}
+
+.feature-card:hover {
+  border-color: #cbd5e1;
+  background: var(--bg-secondary);
+}
+
+.feature-card.enabled {
+  border-color: var(--primary);
+  background: var(--bg);
+  box-shadow: 0 1px 3px rgba(102, 126, 234, 0.12), 0 0 0 1px var(--primary);
+}
+
+.feature-card.enabled:hover {
+  background: var(--bg);
+}
+
+/* Header — clickable label that wraps the toggle */
+.feature-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.875rem;
+  padding: 1rem 1.125rem;
+  cursor: pointer;
+  margin-bottom: 0;
+}
+
+.feature-card-icon {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  transition: color 0.18s ease;
+}
+
+.feature-card.enabled .feature-card-icon {
+  color: var(--primary);
+}
+
+.feature-card-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.feature-card-title {
+  font-weight: var(--font-semibold);
+  font-size: var(--text-base);
+  color: var(--text);
+  line-height: var(--leading-snug);
+}
+
+.feature-card-desc {
+  margin-top: 0.25rem;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+/* Body — only rendered when the toggle is on */
+.feature-card-body {
+  padding: 1.125rem 1.125rem 1rem 1.125rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.feature-card-body .form-group:last-child {
+  margin-bottom: 0;
+}
+
+/* iOS-style toggle switch — visible control, native checkbox underneath */
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  margin: 0;
+}
+
+.toggle-switch-slider {
+  position: absolute;
+  inset: 0;
+  background: #cbd5e1;
+  border-radius: 999px;
+  transition: background 0.2s ease;
+}
+
+.toggle-switch-slider::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 18px;
+  height: 18px;
+  background: #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  transition: transform 0.2s ease;
+}
+
+.toggle-switch input:checked + .toggle-switch-slider {
+  background: var(--primary);
+}
+
+.toggle-switch input:checked + .toggle-switch-slider::before {
+  transform: translateX(20px);
+}
+
+.toggle-switch input:focus-visible + .toggle-switch-slider {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+/* Make the body's existing "Escrow required" preview pill blend with
+   the card body background — was previously on a gray panel. */
+.feature-card-body .escrow-preview {
+  margin-top: 0.75rem;
+  padding: 0.625rem 0.875rem;
+  background: var(--info-light);
+  color: var(--info-dark);
+  border-radius: 0.375rem;
+  font-size: var(--text-sm);
+}
+
+/* Mobile: keep the toggle a bit larger so it's still tap-friendly,
+   even though the surrounding label is already 44px tall via padding. */
+@media (max-width: 768px) {
+  .feature-card-header {
+    padding: 1rem;
+    gap: 0.75rem;
+  }
+  .toggle-switch {
+    width: 48px;
+    height: 26px;
+  }
+  .toggle-switch-slider::before {
+    width: 20px;
+    height: 20px;
+  }
+  .toggle-switch input:checked + .toggle-switch-slider::before {
+    transform: translateX(22px);
+  }
+}
+

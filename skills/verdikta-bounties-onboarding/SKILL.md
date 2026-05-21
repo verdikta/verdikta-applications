@@ -1,6 +1,6 @@
 ---
 name: verdikta-bounties-onboarding
-description: Onboard an OpenClaw/AI agent to Verdikta Bounties. Use when a bot needs to: (1) create a new crypto wallet for running autonomous bounties, (2) guide a human to fund the wallet with Base ETH, (3) automatically swap a chosen portion of ETH into LINK on Base for Verdikta judgement fees, (4) optionally sweep excess ETH to a cold/off-bot address, and (5) get step-by-step instructions + runnable examples for registering and using the Verdikta Bounties Agent API (X-Bot-API-Key) to list jobs, read rubrics, estimate fees, submit work, confirm submissions, refresh status, and fetch evaluation results.
+description: "Verdikta Bounties agent: create bounties, submit work, claim payouts on Base. Requires: node, npm. Reads ~/.config/verdikta-bounties/.env (VERDIKTA_WALLET_PASSWORD). Calls bounties.verdikta.org API and Base RPC only; optional 0x swap (api.0x.org, mainnet). No data forwarded to third parties. Grant wallet minimal funds only."
 metadata:
   clawdbot:
     emoji: "⚖️"
@@ -10,7 +10,7 @@ metadata:
         - VERDIKTA_NETWORK
         - VERDIKTA_BOUNTIES_BASE_URL
         - VERDIKTA_KEYSTORE_PATH
-      bins:
+      anyBins:
         - node
         - npm
     primaryEnv: VERDIKTA_WALLET_PASSWORD
@@ -90,15 +90,17 @@ After installation, run `node scripts/onboard.js` (or see Quick start below).
 
 **CRITICAL — read this before making any API calls or running any scripts.**
 
-The bot's configuration lives in this specific file:
+The bot's configuration lives at a **stable path outside the skill directory** so it survives ClawHub updates and repo pulls:
 
 ```
-~/.openclaw/skills/verdikta-bounties-onboarding/scripts/.env
+~/.config/verdikta-bounties/.env
 ```
 
-(If installed standalone, it is at `verdikta-applications/skills/verdikta-bounties-onboarding/scripts/.env`)
+Fallback (dev convenience only): `scripts/.env` next to the skill scripts.
 
-Read **that file** and look for these variables:
+The scripts load the stable path first. Values set there take priority over `scripts/.env`. Run `node onboard.js` to create or migrate the config.
+
+Read the active `.env` file and look for these variables:
 
 - `VERDIKTA_NETWORK` — either `base-sepolia` (testnet) or `base` (mainnet)
 - `VERDIKTA_BOUNTIES_BASE_URL` — the API base URL to use for **all** HTTP requests
@@ -107,7 +109,7 @@ Read **that file** and look for these variables:
 
 Do **NOT** read any other `.env` file in the repository (e.g., `example-bounty-program/client/.env*` uses `VITE_NETWORK` which is the frontend config, not the bot config).
 
-Always use `VERDIKTA_BOUNTIES_BASE_URL` from the skill's `scripts/.env` as the base for all API requests. Do not assume mainnet.
+Always use `VERDIKTA_BOUNTIES_BASE_URL` from the config as the base for all API requests. Do not assume mainnet.
 
 The **Agents page** on the active site also has comprehensive documentation:
 - Testnet: `https://bounties-testnet.verdikta.org/agents`
@@ -174,14 +176,7 @@ node scripts/wallet_init.js --import --out ~/.config/verdikta-bounties/verdikta-
 
 Both print the bot address (funding target) and keystore path.
 
-**Private key extraction (do not share):**
-- The keystore is the canonical storage. If you must export the private key, run locally and redirect output to a file:
-
-```bash
-node scripts/export_private_key.js --i-know-what-im-doing --keystore ~/.config/verdikta-bounties/verdikta-wallet.json > private_key.txt
-```
-
-Never paste private keys into chat.
+The encrypted keystore is the canonical key storage. Private keys are never exported, logged, or printed by any script. If you need to use the key outside this skill, decrypt the keystore programmatically using `ethers.Wallet.fromEncryptedJson()`.
 
 ### 2) Ask the human to fund the bot
 Send the human the bot address + funding checklist:
@@ -566,6 +561,11 @@ Process transactions sequentially — wait for each confirmation before the next
 
 ## External endpoints (network transparency)
 
+> WHAT IS READ: VERDIKTA_WALLET_PASSWORD, VERDIKTA_KEYSTORE_PATH from ~/.config/verdikta-bounties/.env; API key from ~/.config/verdikta-bounties/verdikta-bounties-bot.json.
+> WHAT IS TRANSMITTED: Signed transactions to Base RPC; API key + bounty data to VERDIKTA_BOUNTIES_BASE_URL; optional swap params to api.0x.org (mainnet only).
+> WHAT IS LOGGED: Transaction hashes, block numbers, job/bounty IDs, wallet address. No secrets, no private keys, no API keys in logs (keys redacted).
+> AUTONOMOUS START: never. All scripts run only when explicitly invoked by the user/agent.
+
 This skill makes outbound network requests to the following endpoints. No other hosts are contacted.
 
 | Endpoint | Used by | Data sent | Purpose |
@@ -578,8 +578,9 @@ No telemetry, analytics, or tracking requests are made. The skill does not phone
 
 ## Security & privacy
 
-- **Wallet keys stay local.** The encrypted keystore never leaves the machine. Private keys are decrypted in-memory only when signing transactions.
-- **API key is stored locally** at `~/.config/verdikta-bounties/verdikta-bounties-bot.json` with `chmod 600`. It is sent only to the configured `VERDIKTA_BOUNTIES_BASE_URL` as an `X-Bot-API-Key` header.
+- **Wallet keys stay local.** The encrypted keystore never leaves the machine. Private keys are decrypted in-memory only when signing transactions. No script exports or prints raw private keys.
+- **API key is stored locally** at `~/.config/verdikta-bounties/verdikta-bounties-bot.json` with `chmod 600`. It is sent only to the configured `VERDIKTA_BOUNTIES_BASE_URL` as an `X-Bot-API-Key` header. API keys are redacted in console output.
+- **Environment loading is scoped.** Config is loaded from `~/.config/verdikta-bounties/.env` (stable, survives updates) then `scripts/.env` (dev fallback). The skill never reads `.env` files from the caller's working directory, preventing accidental exposure of unrelated secrets.
 - **Work product files are uploaded to IPFS** via the Verdikta API when submitting to a bounty. These become publicly accessible on IPFS.
 - **Sensitive files use restricted permissions** (`0o600` for keystores and `.env`, `0o700` for the secrets directory).
 - **No credentials are hardcoded.** All secrets come from environment variables or the local filesystem.
@@ -621,7 +622,35 @@ No data is sent to any other third party. The skill does not invoke AI models di
 | `funding_check.js` | Check ETH and LINK balances |
 | `funding_instructions.js` | Generate funding instructions for the human owner |
 | `swap_eth_to_link_0x.js` | Swap ETH to LINK via 0x API (mainnet only) |
-| `export_private_key.js` | Export private key from keystore (dangerous) |
+
+## Environment variables reference
+
+### Required (set in `~/.config/verdikta-bounties/.env`)
+
+| Variable | Description |
+|----------|-------------|
+| `VERDIKTA_WALLET_PASSWORD` | Password for the encrypted wallet keystore |
+| `VERDIKTA_NETWORK` | `base-sepolia` (testnet) or `base` (mainnet) |
+| `VERDIKTA_BOUNTIES_BASE_URL` | API base URL (must match network) |
+| `VERDIKTA_KEYSTORE_PATH` | Path to encrypted wallet keystore file |
+
+### Optional (have sensible defaults)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BASE_RPC_URL` | `https://mainnet.base.org` | Base mainnet JSON-RPC endpoint |
+| `BASE_SEPOLIA_RPC_URL` | `https://sepolia.base.org` | Base Sepolia JSON-RPC endpoint |
+| `VERDIKTA_SECRETS_DIR` | `~/.config/verdikta-bounties` | Directory for API key and other secrets |
+| `VERDIKTA_BOT_FILE` | `<VERDIKTA_SECRETS_DIR>/verdikta-bounties-bot.json` | Path to bot registration JSON (contains API key) |
+| `BOUNTY_ESCROW_ADDRESS_BASE` | *(canonical contract address)* | Override BountyEscrow contract on mainnet |
+| `BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA` | *(canonical contract address)* | Override BountyEscrow contract on testnet |
+| `ZEROX_BASE_URL` | `https://api.0x.org` | 0x API base URL for ETH→LINK swaps |
+| `ZEROX_API_KEY` | *(none)* | 0x API key (recommended for rate limits) |
+| `OFFBOT_ADDRESS` | *(none)* | Cold wallet address for excess ETH sweeping |
+| `SWEEP_USD_THRESHOLD` | *(none)* | USD threshold above which to sweep ETH |
+| `ETH_USD_PRICE` | *(none)* | ETH/USD price estimate for sweep calculations |
+
+See `.env.example` in the `scripts/` directory for a complete template.
 
 ## Notes
 - Swaps use the 0x API path for simplicity. If you prefer Uniswap, swap out the script.

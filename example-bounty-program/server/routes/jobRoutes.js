@@ -28,6 +28,38 @@ const { sendError, ErrorCodes } = require('../utils/apiErrors');
 function readBool(v) { return /^(1|true|yes|on)$/i.test(String(v || '').trim()); }
 const DEV_ENV_FAKE = readBool(process.env.DEV_FAKE_RUBRIC_CID);
 
+/**
+ * Guard: a job is linked to an on-chain bounty if PATCH /bountyId set onChain,
+ * or the sync service auto-linked it via BountyCreated event.
+ * Without this, calldata endpoints happily encode the API-local jobId as the
+ * on-chain bountyId, producing transactions that revert on-chain.
+ * Returns true and sends a structured error if the job is not linked.
+ */
+function rejectIfNotOnChain(res, job, jobId, extra) {
+  if (job.onChain || job.syncedFromBlockchain) return false;
+  sendError(res, 400, {
+    code: ErrorCodes.BOUNTY_NOT_ONCHAIN,
+    message: 'Bounty not linked to on-chain contract',
+    details: `Bounty #${jobId} was created via the API but has no corresponding on-chain bounty. This usually means createBounty() was never called on the BountyEscrow contract, or the link step was skipped. Calldata endpoints would otherwise emit a transaction that references the wrong on-chain bountyId — this is the silent-failure mode this guard prevents.`,
+    fix: `PATCH /api/jobs/${jobId}/bountyId with { bountyId, txHash } to link this job to the on-chain bountyId. If you don't know which API jobId matches your on-chain bounty, call GET /api/jobs/lookup first.`,
+    tips: [
+      `If you already called createBounty(): PATCH /api/jobs/${jobId}/bountyId with { bountyId, txHash } to link.`,
+      `If you're not sure which API jobId matches your on-chain bounty: GET /api/jobs/lookup?txHash=<your-tx> (or ?bountyId=<n> or ?evaluationCid=<cid>).`,
+      `To diagnose drift between local and on-chain ids: GET /api/jobs/${jobId}/onchain-status and read the "linkage" field.`,
+      `If you have not yet created the on-chain bounty: call createBounty() on the BountyEscrow contract, then PATCH /bountyId.`
+    ],
+    extra: {
+      ...(extra || {}),
+      recoveryEndpoints: {
+        lookup: '/api/jobs/lookup',
+        linkageDiagnostic: `/api/jobs/${jobId}/onchain-status`,
+        link: `PATCH /api/jobs/${jobId}/bountyId`
+      }
+    }
+  });
+  return true;
+}
+
 // Loose IPFS CID check; we still try a HEAD fetch later when possible.
 const CID_REGEX =
   /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|bafy[0-9A-Za-z]{50,}|z[1-9A-HJ-NP-Za-km-z]{46,}|ba[ef]y[0-9A-Za-z]{50,}|b[A-Za-z2-7]{58,}|B[A-Z2-7]{58,}|F[0-9A-F]{50,})$/i;
@@ -119,7 +151,12 @@ router.post('/create', async (req, res) => {
       classId = 128,
       juryNodes = [],
       iterations = 1,
-      submissionWindowHours = 24
+      submissionWindowHours = 24,
+      targetHunter,
+      creatorDeterminationPayment,
+      arbiterDeterminationPayment,
+      creatorAssessmentWindowHours,
+      publicSubmissions,
     } = req.body || {};
 
     // ---- Validate commons ----
@@ -129,19 +166,37 @@ router.post('/create', async (req, res) => {
     if (!/^0x[a-fA-F0-9]{40}$/.test(creator)) {
       return res.status(400).json({ error: 'Invalid creator address', details: 'Must be a valid Ethereum address' });
     }
+    if (targetHunter && !/^0x[a-fA-F0-9]{40}$/.test(targetHunter)) {
+      return res.status(400).json({ error: 'Invalid targetHunter address', details: 'Must be a valid Ethereum address' });
+    }
     if (!Number.isFinite(Number(bountyAmount)) || Number(bountyAmount) <= 0) {
       return res.status(400).json({ error: 'Invalid bountyAmount', details: 'Must be a positive number' });
     }
     if (!Number.isFinite(Number(threshold)) || Number(threshold) < 0 || Number(threshold) > 100) {
       return res.status(400).json({ error: 'Invalid threshold', details: 'Threshold must be between 0 and 100' });
     }
+    // Catch the most common shape mistake: agents pre-stringifying nested JSON
+    // fields. The request body is already JSON; nested objects must be passed
+    // as native objects, not as JSON-encoded strings.
+    if (typeof juryNodes === 'string') {
+      return res.status(400).json({
+        error: 'Invalid jury configuration',
+        details: 'juryNodes must be a JSON array, received a string. The request body is already JSON — do not pre-stringify nested fields. Pass it as a native array, e.g. "juryNodes": [ ... ], not "juryNodes": "[ ... ]".'
+      });
+    }
+    if (typeof rubricJson === 'string') {
+      return res.status(400).json({
+        error: 'Invalid rubric',
+        details: 'rubricJson must be a JSON object, received a string. The request body is already JSON — do not pre-stringify the rubric. Pass it as a native object, e.g. "rubricJson": { "criteria": [...] }, not "rubricJson": "{\\"criteria\\":[...]}". To debug rubric shape without side effects, use POST /api/jobs/rubric/validate.'
+      });
+    }
     // Validate jury configuration
     const juryValidation = validateJuryNodes(juryNodes);
     if (!juryValidation.valid) {
-      return res.status(400).json({ 
-        error: 'Invalid jury configuration', 
-        details: 'Jury validation failed', 
-        errors: juryValidation.errors 
+      return res.status(400).json({
+        error: 'Invalid jury configuration',
+        details: 'Jury validation failed',
+        errors: juryValidation.errors
       });
     }
     if (!rubricJson && !rubricCidIn) {
@@ -332,7 +387,14 @@ router.post('/create', async (req, res) => {
       juryNodes,
       iterations: Number(iterations),
       submissionOpenTime,
-      submissionCloseTime
+      submissionCloseTime,
+      targetHunter: targetHunter || null,
+      publicSubmissions: !!publicSubmissions,
+      ...(creatorDeterminationPayment != null ? {
+        creatorDeterminationPayment: String(creatorDeterminationPayment),
+        arbiterDeterminationPayment: String(arbiterDeterminationPayment),
+        creatorAssessmentWindowSize: Math.trunc(Number(creatorAssessmentWindowHours) * 3600),
+      } : {}),
     });
 
     logger.info('[jobs/create] job created', { jobId: job.jobId });
@@ -477,7 +539,7 @@ router.get('/admin/stuck', async (req, res) => {
           if (contract && onChainBountyId != null) {
             try {
               const chainSub = await contract.getSubmission(onChainBountyId, sub.submissionId);
-              const statusNames = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'];
+              const statusNames = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
               stuckInfo.onChainStatus = statusNames[Number(chainSub.status)] || `Unknown(${chainSub.status})`;
               stuckInfo.verdiktaAggId = chainSub.verdiktaAggId;
 
@@ -646,7 +708,7 @@ router.get('/admin/expired', async (req, res) => {
         pendingSubmissions: []
       };
 
-      if (onChainBountyId == null) {
+      if (!job.onChain && !job.syncedFromBlockchain) {
         bountyInfo.blockedBy = 'Not linked to on-chain bounty';
         summary.notOnChain++;
         expiredBounties.push(bountyInfo);
@@ -719,6 +781,299 @@ router.get('/admin/expired', async (req, res) => {
 });
 
 /**
+ * GET /api/jobs/mine/action-required?creator=0x...
+ * Creator-scoped list of bounties that need the creator's attention.
+ *
+ * Returns expired bounties owned by `creator` along with a per-bounty verdict:
+ *   - canClose: true  → ready for `closeExpiredBounty` (no pending evaluations)
+ *   - canClose: false → first resolve `pendingSubmissions` (each one needs
+ *                       `failTimedOutSubmission` after the 10-minute oracle
+ *                       timeout, then the bounty can be closed)
+ *
+ * Designed to be safe to poll (e.g., from a nav badge) — small response, no
+ * mutations. Returns 200 with empty list when the creator has nothing to do.
+ */
+router.get('/mine/action-required', async (req, res) => {
+  try {
+    const creator = String(req.query.creator || '').trim();
+    if (!/^0x[0-9a-fA-F]{40}$/.test(creator)) {
+      return res.status(400).json({
+        error: 'Invalid or missing creator address',
+        details: 'Pass ?creator=0x... (40 hex chars)'
+      });
+    }
+    const creatorLc = creator.toLowerCase();
+
+    const jobs = await jobStorage.listJobs({ includeOrphans: false });
+    const jobList = jobs.jobs || jobs;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+
+    let contract = null;
+    try {
+      const cs = getContractService();
+      contract = cs.contract;
+    } catch (e) {
+      logger.warn('[mine/action-required] Could not get contract service', { msg: e.message });
+    }
+
+    const bounties = [];
+    let totalReclaimableWei = 0n;
+
+    for (const job of jobList) {
+      if (!job.creator || job.creator.toLowerCase() !== creatorLc) continue;
+      const deadline = job.submissionCloseTime || 0;
+      if (deadline === 0 || nowSeconds < deadline) continue;
+      if (!job.onChain && !job.syncedFromBlockchain) continue;
+
+      const onChainBountyId = job.jobId;
+      const entry = {
+        jobId: job.jobId,
+        title: job.title,
+        bountyAmount: job.bountyAmount,
+        deadline,
+        expiredMinutesAgo: Math.floor((nowSeconds - deadline) / 60),
+        canClose: false,
+        blockedBy: null,
+        pendingSubmissions: []
+      };
+
+      if (!contract) {
+        entry.blockedBy = 'Chain read unavailable';
+        bounties.push(entry);
+        continue;
+      }
+
+      try {
+        const chainBounty = await contract.getBounty(onChainBountyId);
+        const statusNames = ['Open', 'Awarded', 'Closed'];
+        const onChainStatus = statusNames[Number(chainBounty.status)] || `Unknown(${chainBounty.status})`;
+
+        if (onChainStatus !== 'Open') continue; // Already resolved on-chain — nothing for creator to do
+
+        const subCount = Number(await contract.submissionCount(onChainBountyId));
+        for (let i = 0; i < subCount; i++) {
+          try {
+            const chainSub = await contract.getSubmission(onChainBountyId, i);
+            if (Number(chainSub.status) === 1) { // PendingVerdikta
+              const submittedAt = Number(chainSub.submittedAt);
+              entry.pendingSubmissions.push({
+                submissionId: i,
+                hunter: chainSub.hunter,
+                submittedAt,
+                ageMinutes: Math.floor((nowSeconds - submittedAt) / 60),
+                timeoutEligible: (nowSeconds - submittedAt) >= 600
+              });
+            }
+          } catch (_) { /* ignore individual submission errors */ }
+        }
+
+        if (entry.pendingSubmissions.length > 0) {
+          entry.blockedBy = `${entry.pendingSubmissions.length} submission(s) still pending evaluation`;
+          entry.canClose = false;
+        } else {
+          entry.canClose = true;
+          try {
+            totalReclaimableWei += BigInt(chainBounty.payoutWei.toString());
+          } catch (_) { /* skip totals on parse failure */ }
+        }
+      } catch (chainErr) {
+        entry.blockedBy = `Chain read failed: ${chainErr.message}`;
+      }
+
+      bounties.push(entry);
+    }
+
+    const totalReclaimableEth = (() => {
+      try {
+        return ethers.formatEther(totalReclaimableWei);
+      } catch (_) { return '0'; }
+    })();
+
+    return res.json({
+      success: true,
+      creator,
+      count: bounties.length,
+      readyToCloseCount: bounties.filter(b => b.canClose).length,
+      blockedCount: bounties.filter(b => !b.canClose).length,
+      totalReclaimableWei: totalReclaimableWei.toString(),
+      totalReclaimableEth,
+      bounties
+    });
+  } catch (error) {
+    logger.error('[mine/action-required] error', { msg: error.message });
+    return res.status(500).json({ error: 'Failed to list action-required bounties', details: error.message });
+  }
+});
+
+/**
+ * GET /api/jobs/lookup
+ * Discover which API job corresponds to an on-chain bounty.
+ *
+ * Accepts one of (in priority order):
+ *   ?bountyId=<N>          → look up by on-chain bountyId (== local jobId for linked jobs)
+ *   ?txHash=0x<hash>       → look up by stored createBounty txHash
+ *   ?evaluationCid=<cid>   → look up by evaluation-archive CID
+ *
+ * This endpoint exists because in the "drift" case — where /jobs/create has
+ * been called but PATCH /:jobId/bountyId has not, or counters got out of sync
+ * during testing — agents can otherwise have no way to tell which API jobId
+ * actually corresponds to the bounty they created on-chain. After the PATCH
+ * is performed, jobId always equals on-chain bountyId, so a 200 response
+ * here means "you can safely route subsequent API calls by `job.jobId`".
+ *
+ * Returns 200 with the matched job and a `linkage` field, or 404 with a hint
+ * to call sync / PATCH if the on-chain bounty exists but no local job tracks
+ * it yet.
+ */
+router.get('/lookup', async (req, res) => {
+  try {
+    const { bountyId, txHash, evaluationCid } = req.query || {};
+    if (!bountyId && !txHash && !evaluationCid) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing lookup key',
+        details: 'Provide exactly one of ?bountyId=N, ?txHash=0x..., or ?evaluationCid=...'
+      });
+    }
+
+    const storage = await jobStorage.readStorage();
+    const jobs = storage.jobs || [];
+
+    let match = null;
+    let by = null;
+    if (bountyId !== undefined && bountyId !== '') {
+      const n = parseInt(bountyId, 10);
+      if (!Number.isInteger(n) || n < 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid bountyId',
+          details: `"${bountyId}" is not a non-negative integer`
+        });
+      }
+      // After PATCH /bountyId, jobId == on-chain bountyId — direct match.
+      // Pre-PATCH (drifted), an API-only row may sit at this jobId without
+      // being on-chain; we still surface it so the caller sees the conflict.
+      match = jobs.find(j => Number(j.jobId) === n) || null;
+      by = 'bountyId';
+    } else if (txHash) {
+      const lc = String(txHash).toLowerCase();
+      match = jobs.find(j => (j.txHash || '').toLowerCase() === lc) || null;
+      by = 'txHash';
+    } else if (evaluationCid) {
+      match = jobs.find(j => j.evaluationCid === evaluationCid) || null;
+      by = 'evaluationCid';
+    }
+
+    if (!match) {
+      // For bountyId lookups, check on-chain so we can distinguish
+      // "doesn't exist" from "exists but not tracked locally yet".
+      let onChainExists = null;
+      let hint = 'No local job matches that key.';
+      if (by === 'bountyId') {
+        try {
+          const cs = getContractService();
+          const chainBounty = await cs.getBounty(parseInt(bountyId, 10));
+          onChainExists = !!(chainBounty && chainBounty.creator && chainBounty.creator !== '0x0000000000000000000000000000000000000000');
+        } catch (_) {
+          onChainExists = false;
+        }
+        if (onChainExists) {
+          hint = 'Bounty exists on-chain but the local sync service has not picked it up yet. Try POST /api/jobs/sync/now, or PATCH /api/jobs/<your-local-jobId>/bountyId with { bountyId, txHash } to link manually.';
+        } else {
+          hint = `No bounty with id ${bountyId} exists on the active BountyEscrow contract. Verify the id and the contract address (GET /api/docs).`;
+        }
+      } else if (by === 'txHash') {
+        hint = 'No local job has that txHash. If the createBounty transaction has confirmed but no job is tracking it yet, call POST /api/jobs/sync/now, then PATCH /api/jobs/<your-local-jobId>/bountyId with { bountyId, txHash }.';
+      } else if (by === 'evaluationCid') {
+        hint = 'No local job has that evaluationCid. This means the job was never created via POST /api/jobs/create on this server; the rubric/archive may belong to a different deployment.';
+      }
+      return res.status(404).json({
+        success: false,
+        error: 'Job not found',
+        lookedUpBy: by,
+        onChainExists,
+        hint
+      });
+    }
+
+    const linkage = buildLinkageReport(match);
+
+    return res.json({
+      success: true,
+      lookedUpBy: by,
+      job: {
+        jobId: match.jobId,
+        title: match.title,
+        creator: match.creator,
+        evaluationCid: match.evaluationCid,
+        rubricCid: match.rubricCid,
+        txHash: match.txHash || null,
+        blockNumber: match.blockNumber || null,
+        status: match.status,
+        onChain: !!match.onChain,
+        syncedFromBlockchain: !!match.syncedFromBlockchain,
+        contractAddress: match.contractAddress || null,
+        submissionOpenTime: match.submissionOpenTime,
+        submissionCloseTime: match.submissionCloseTime,
+        createdAt: match.createdAt
+      },
+      linkage,
+      note: linkage.state === 'linked'
+        ? 'jobId is safe to use as the on-chain bountyId for all subsequent API calls.'
+        : 'jobId may NOT match the on-chain bountyId yet — see linkage.fix before routing transactions through it.'
+    });
+  } catch (error) {
+    logger.error('[jobs/lookup] error', { msg: error.message });
+    return res.status(500).json({ success: false, error: 'Lookup failed', details: error.message });
+  }
+});
+
+/**
+ * Build a structured linkage health report for a local job.
+ * `state` is the single-string verdict; `mismatch` is set only when the local
+ * jobId doesn't agree with what's on-chain (rare, but the failure mode the
+ * lookup endpoint exists to surface).
+ */
+function buildLinkageReport(job, options = {}) {
+  const { onChainBountyId = null } = options;
+  if (job.syncedFromBlockchain) {
+    return {
+      state: 'linked',
+      onChain: true,
+      syncedFromBlockchain: true,
+      detail: 'Sync service has confirmed this job matches an on-chain bounty with the same id.',
+      fix: null
+    };
+  }
+  if (job.onChain) {
+    return {
+      state: 'patched-not-synced',
+      onChain: true,
+      syncedFromBlockchain: false,
+      detail: 'PATCH /bountyId set onChain=true, but the sync service has not yet observed the BountyCreated event. Calldata endpoints will work; sync will confirm shortly.',
+      fix: 'Optional: call POST /api/jobs/sync/now to force a sync pass.'
+    };
+  }
+  if (onChainBountyId !== null && Number(job.jobId) !== Number(onChainBountyId)) {
+    return {
+      state: 'mismatch',
+      onChain: false,
+      syncedFromBlockchain: false,
+      detail: `Local jobId ${job.jobId} disagrees with the on-chain bountyId ${onChainBountyId}. Submissions routed through this job will reference the wrong on-chain bounty.`,
+      mismatch: { localJobId: job.jobId, onChainBountyId: Number(onChainBountyId) },
+      fix: `Call PATCH /api/jobs/${job.jobId}/bountyId with { bountyId: ${onChainBountyId}, txHash } to reconcile.`
+    };
+  }
+  return {
+    state: 'not-on-chain',
+    onChain: false,
+    syncedFromBlockchain: false,
+    detail: 'This job was created via the API but is not linked to any on-chain bounty yet. createBounty() may not have been called, or the link step was skipped.',
+    fix: `Call createBounty() on the BountyEscrow contract, then PATCH /api/jobs/${job.jobId}/bountyId with { bountyId, txHash } to link.`
+  };
+}
+
+/**
  * POST /api/jobs/:jobId/close
  * Prepare transaction to close an expired bounty.
  * Returns encoded calldata for client to execute.
@@ -736,16 +1091,8 @@ router.post('/:jobId/close', async (req, res) => {
     logger.info('[close] check', { jobId });
 
     const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId, { canClose: false })) return;
     const onChainBountyId = job.jobId;
-
-    if (onChainBountyId == null) {
-      return res.status(400).json({
-        success: false,
-        canClose: false,
-        error: 'Job not on-chain',
-        details: 'This job has not been registered on the blockchain yet'
-      });
-    }
 
     // Check deadline
     const nowSeconds = Math.floor(Date.now() / 1000);
@@ -898,6 +1245,13 @@ router.post('/:jobId/close', async (req, res) => {
 
 // POST /api/jobs/:jobId/submit/prepare
 // Encodes prepareSubmission() calldata — deploys an EvaluationWallet
+//
+// alpha (0-1000): timeliness-vs-quality blend in ReputationKeeper.getSelectionScore:
+//   weighted = ((1000 - alpha) * qualityScore + alpha * timelinessScore) / 1000
+//   0 = pure quality; 1000 = pure timeliness; 500 = equal blend.
+// maxFeeBasedScaling: plain integer N (the x-factor), not an 18-decimal value.
+//   ReputationKeeper caps the fee-boost multiplier at N; internally it multiplies
+//   by 1e18 itself. Must be >= 1. Default 3 = at most 3x boost for cheap oracles.
 router.post('/:jobId/submit/prepare', async (req, res) => {
   const { jobId } = req.params;
 
@@ -906,7 +1260,7 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
 
     const {
       hunter, hunterCid, addendum = '',
-      alpha = 75,
+      alpha = 500,
       maxOracleFee = '0.003',
       estimatedBaseCost = '0.001',
       maxFeeBasedScaling = '3'
@@ -920,11 +1274,9 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
     }
 
     const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId)) return;
     const onChainBountyId = job.jobId;
 
-    if (onChainBountyId == null) {
-      return res.status(400).json({ success: false, error: 'Job not on-chain' });
-    }
     if (job.status !== 'OPEN') {
       return res.status(400).json({ success: false, error: `Job is not open (status: ${job.status})` });
     }
@@ -957,7 +1309,9 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
       alpha,
       ethers.parseEther(maxOracleFee),
       ethers.parseEther(estimatedBaseCost),
-      ethers.parseEther(maxFeeBasedScaling)
+      // maxFeeBasedScaling is a raw x-factor — do NOT parseEther it.
+      // The contract multiplies by 1e18 internally.
+      maxFeeBasedScaling
     ]);
 
     logger.info('[submit/prepare] encoded', { jobId, onChainBountyId, hunter });
@@ -1050,6 +1404,7 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
     }
 
     const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId)) return;
     const onChainBountyId = job.jobId;
     const subId = parseInt(submissionId, 10);
     const submission = job.submissions?.find(s => s.submissionId === subId);
@@ -1058,19 +1413,34 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
       return res.status(404).json({ success: false, error: `Submission ${submissionId} not found for job ${jobId}` });
     }
 
-    if (onChainBountyId == null) {
-      return res.status(400).json({ success: false, error: 'Job not on-chain' });
-    }
-
     const status = (submission.status || '').toLowerCase();
-    if (status !== 'prepared') {
+    const isPrepared = status === 'prepared';
+    const isPendingCreatorApproval = status === 'pendingcreatorapproval';
+
+    if (!isPrepared && !isPendingCreatorApproval) {
       return res.status(400).json({
         success: false,
-        error: `Submission not in Prepared state (current: ${submission.status}). Only Prepared submissions can be started.`
+        error: `Submission not in a startable state (current: ${submission.status}). Must be Prepared or PendingCreatorApproval (with expired window).`
       });
     }
 
-    if (submission.hunter && submission.hunter.toLowerCase() !== hunter.toLowerCase()) {
+    // For windowed bounties, check that the creator approval window has expired
+    if (isPendingCreatorApproval) {
+      const now = Math.floor(Date.now() / 1000);
+      const windowEnd = submission.creatorWindowEnd || 0;
+      if (windowEnd > now) {
+        return res.status(400).json({
+          success: false,
+          error: `Creator approval window is still open (expires ${new Date(windowEnd * 1000).toISOString()}). Cannot start evaluation until window closes.`,
+          creatorWindowEnd: windowEnd,
+          secondsRemaining: windowEnd - now
+        });
+      }
+    }
+
+    // For Prepared submissions, only the original hunter can start.
+    // For PendingCreatorApproval (expired window), anyone can fund LINK and start.
+    if (isPrepared && submission.hunter && submission.hunter.toLowerCase() !== hunter.toLowerCase()) {
       return res.status(403).json({ success: false, error: 'Hunter address does not match submission hunter' });
     }
 
@@ -1127,16 +1497,13 @@ router.post('/:jobId/submissions/:submissionId/finalize', async (req, res) => {
     }
 
     const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId)) return;
     const onChainBountyId = job.jobId;
     const subId = parseInt(submissionId, 10);
     const submission = job.submissions?.find(s => s.submissionId === subId);
 
     if (!submission) {
       return res.status(404).json({ success: false, error: `Submission ${submissionId} not found for job ${jobId}` });
-    }
-
-    if (onChainBountyId == null) {
-      return res.status(400).json({ success: false, error: 'Job not on-chain' });
     }
 
     if (submission.hunter && submission.hunter.toLowerCase() !== hunter.toLowerCase()) {
@@ -1214,6 +1581,102 @@ router.post('/:jobId/submissions/:submissionId/finalize', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/jobs/:jobId/submissions/:submissionId/approve-as-creator
+ * Encode creatorApproveSubmission calldata for the bounty creator to sign.
+ * Only works for PendingCreatorApproval submissions within the approval window.
+ */
+router.post('/:jobId/submissions/:submissionId/approve-as-creator', async (req, res) => {
+  const { jobId, submissionId } = req.params;
+
+  try {
+    logger.info('[approve-as-creator] request', { jobId, submissionId });
+
+    const { creator } = req.body || {};
+
+    if (!creator || !/^0x[a-fA-F0-9]{40}$/.test(creator)) {
+      return res.status(400).json({ success: false, error: 'Invalid or missing creator address' });
+    }
+
+    const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId)) return;
+    const onChainBountyId = job.jobId;
+    const subId = parseInt(submissionId, 10);
+    const submission = job.submissions?.find(s => s.submissionId === subId);
+
+    if (!submission) {
+      return res.status(404).json({ success: false, error: `Submission ${submissionId} not found for job ${jobId}` });
+    }
+
+    // Verify caller is the bounty creator
+    if (!job.creator || job.creator.toLowerCase() !== creator.toLowerCase()) {
+      return res.status(403).json({ success: false, error: 'Only the bounty creator can approve submissions' });
+    }
+
+    // Verify submission is in the right state
+    const status = (submission.status || '').toLowerCase();
+    if (status !== 'pendingcreatorapproval') {
+      return res.status(400).json({
+        success: false,
+        error: `Submission not in PendingCreatorApproval state (current: ${submission.status}). Cannot approve.`
+      });
+    }
+
+    // Check window hasn't expired (optional — contract enforces this too, but better UX to catch early)
+    const now = Math.floor(Date.now() / 1000);
+    const windowEnd = submission.creatorWindowEnd || 0;
+    if (windowEnd > 0 && windowEnd <= now) {
+      return res.status(400).json({
+        success: false,
+        error: 'Creator approval window has expired. The submission can now be started for oracle evaluation instead.',
+        hint: `POST /api/jobs/${jobId}/submissions/${submissionId}/start`
+      });
+    }
+
+    const contractAddress = config.bountyEscrowAddress;
+    if (!contractAddress) {
+      return res.status(500).json({ success: false, error: 'Contract not configured' });
+    }
+
+    const onChainSubmissionId = submission.onChainSubmissionId ?? submission.submissionId;
+
+    const iface = new ethers.Interface([
+      'function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)'
+    ]);
+    const calldata = iface.encodeFunctionData('creatorApproveSubmission', [
+      onChainBountyId,
+      onChainSubmissionId
+    ]);
+
+    logger.info('[approve-as-creator] encoded', { jobId, submissionId, onChainBountyId, onChainSubmissionId });
+
+    return res.json({
+      success: true,
+      transaction: {
+        to: contractAddress,
+        data: calldata,
+        value: '0',
+        chainId: config.chainId
+      },
+      approvalDetails: {
+        creatorPayment: job.creatorDeterminationPayment || null,
+        arbiterPayment: job.arbiterDeterminationPayment || null,
+        windowEnd,
+        windowEndISO: windowEnd ? new Date(windowEnd * 1000).toISOString() : null,
+        secondsRemaining: windowEnd > now ? windowEnd - now : 0
+      },
+      note: 'Sign and broadcast this transaction with the creator wallet to approve the submission and pay the hunter.'
+    });
+
+  } catch (error) {
+    logger.error('[approve-as-creator] error', { jobId, submissionId, msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ success: false, error: 'Not found', details: error.message });
+    }
+    return res.status(500).json({ success: false, error: 'Failed to encode creatorApproveSubmission', details: error.message });
+  }
+});
+
 router.patch('/admin/:jobId/status', async (req, res) => {
   try {
     const { jobId } = req.params;
@@ -1251,6 +1714,53 @@ router.delete('/admin/:jobId', async (req, res) => {
       : 500;
     return res.status(status).json({ error: error.message });
   }
+});
+
+/* ==============
+   VALIDATE RUBRIC (side-effect free)
+   ============== */
+
+/**
+ * POST /api/jobs/rubric/validate
+ * Validate a rubric JSON object's shape without pinning, creating a job, or
+ * incrementing the jobId counter. Use this to debug rubric shapes before
+ * calling /jobs/create — never use /jobs/create as a debugging tool.
+ *
+ * Body: { rubricJson: object }
+ * Response: { valid: boolean, errors: string[] }
+ */
+router.post('/rubric/validate', (req, res) => {
+  const { rubricJson } = req.body || {};
+
+  if (rubricJson === undefined || rubricJson === null) {
+    return res.status(400).json({
+      valid: false,
+      errors: ['rubricJson is required']
+    });
+  }
+
+  if (typeof rubricJson === 'string') {
+    return res.status(400).json({
+      valid: false,
+      errors: [
+        'rubricJson must be a JSON object, received a string. The request body is already JSON — do not pre-stringify the rubric. Pass it as a native object, e.g. { "rubricJson": { "criteria": [...] } }, not { "rubricJson": "{\\"criteria\\":[...]}" }.'
+      ]
+    });
+  }
+
+  if (typeof rubricJson !== 'object' || Array.isArray(rubricJson)) {
+    return res.status(400).json({
+      valid: false,
+      errors: [`rubricJson must be a JSON object, received ${Array.isArray(rubricJson) ? 'array' : typeof rubricJson}.`]
+    });
+  }
+
+  const result = validateRubric(rubricJson);
+  return res.json({
+    valid: result.valid,
+    errors: result.errors,
+    checkedAt: new Date().toISOString()
+  });
 });
 
 /* ==============
@@ -1559,6 +2069,7 @@ router.get('/', async (req, res) => {
       maxBountyUSD,       // Maximum bounty in USD
       classId,            // Filter by Verdikta class ID
       hasWinner,          // "true" = only jobs with winner, "false" = only jobs without winner
+      targetHunter,       // Filter by targeted bounties: address = only bounties targeting this address, "any" = only targeted bounties, "none" = only open bounties
     } = req.query;
     logger.info('[jobs/list] filters', {
       status, creator, search, submissionStatus, hideEnded, excludeStatuses, includeOrphans,
@@ -1625,6 +2136,18 @@ router.get('/', async (req, res) => {
     if (classId) {
       const cid = parseInt(classId, 10);
       allJobs = allJobs.filter(j => j.classId === cid);
+    }
+
+    // Filter by targetHunter
+    if (targetHunter) {
+      if (targetHunter.toLowerCase() === 'any') {
+        allJobs = allJobs.filter(j => j.targetHunter != null);
+      } else if (targetHunter.toLowerCase() === 'none') {
+        allJobs = allJobs.filter(j => !j.targetHunter);
+      } else {
+        const addr = targetHunter.toLowerCase();
+        allJobs = allJobs.filter(j => (j.targetHunter || '').toLowerCase() === addr);
+      }
     }
 
     // Filter by whether job has a winner
@@ -1696,7 +2219,22 @@ router.get('/', async (req, res) => {
         createdAt: job.createdAt,
         creator: job.creator, // Bounty creator address
         winner: job.winner,
+        targetHunter: job.targetHunter || null,
+        // Creator approval window fields (zero/undefined for non-windowed bounties)
+        creatorAssessmentWindowSize: job.creatorAssessmentWindowSize || 0,
+        creatorDeterminationPayment: job.creatorDeterminationPayment || null,
+        arbiterDeterminationPayment: job.arbiterDeterminationPayment || null,
         contractAddress: job.contractAddress, // Include for debugging
+        // On-chain confirmation flags — needed by client to render the
+        // "Pending on-chain" badge. `syncedFromBlockchain` is set by the
+        // sync service after it sees a BountyCreated event; `onChain` is
+        // set by the PATCH /bountyId/resolve endpoint. Either = confirmed.
+        syncedFromBlockchain: !!job.syncedFromBlockchain,
+        onChain: !!job.onChain,
+        // Creator-controlled visibility flag (off-chain). When true, the
+        // client may render preview/download buttons for submitted work
+        // to non-creators. CIDs themselves are public regardless.
+        publicSubmissions: !!job.publicSubmissions,
         validationStatus: validationInfo, // Include validation info if available
         submissions: job.submissions // Include for pending evaluation check
       };
@@ -1759,11 +2297,16 @@ router.get('/:jobId/submissions', async (req, res) => {
     // Map internal status to simplified public status
     function mapStatus(sub) {
       const status = (sub.status || '').toLowerCase();
+      const onChainStatus = (sub.onChainStatus || '').toLowerCase();
       const score = sub.acceptance ?? sub.score ?? null;
       const hasScore = score !== null && score !== undefined && score > 0;
 
-      // Check for winner (PassedPaid)
-      if (status === 'passedpaid' || status === 'winner') {
+      // Check for winner (PassedPaid). The high-level `status` field collapses
+      // PassedPaid and PassedUnpaid into 'APPROVED', so we also key off the
+      // low-level `onChainStatus` and the `paidWinner` flag set by the
+      // PayoutSent event handler.
+      if (status === 'passedpaid' || status === 'winner' ||
+          onChainStatus === 'passedpaid' || sub.paidWinner === true) {
         return 'WINNER';
       }
 
@@ -1820,9 +2363,14 @@ router.get('/:jobId/submissions', async (req, res) => {
 
         // Don't report score for pending/timed-out submissions — acceptance defaults
         // to 0 on-chain, which is misleading (looks like 0% instead of "not yet scored")
-        const rawScore = sub.acceptance ?? sub.score ?? null;
+        const rawAcceptance = sub.acceptance ?? sub.score ?? null;
+        const rawRejection = sub.rejection ?? null;
         const suppressScore = mappedStatus === 'PENDING_EVALUATION' || mappedStatus === 'TIMED_OUT';
-        const score = suppressScore ? null : rawScore;
+        const score = suppressScore ? null : rawAcceptance;
+        const rejection = suppressScore ? null : rawRejection;
+
+        // Whether a detailed AI evaluation report is fetchable via the /evaluation endpoint
+        const hasEvaluationReport = !!sub.justificationCids && sub.justificationCids !== '';
 
         return {
           id: sub.submissionId,
@@ -1830,6 +2378,13 @@ router.get('/:jobId/submissions', async (req, res) => {
           hunterCid: sub.hunterCid || null,
           status: mappedStatus,
           score,
+          rejection,
+          failureReason: sub.failureReason || null,
+          justificationCids: sub.justificationCids || null,
+          hasEvaluationReport,
+          evaluationEndpoint: hasEvaluationReport
+            ? `/api/jobs/${job.jobId}/submissions/${sub.submissionId}/evaluation`
+            : null,
           submittedAt: sub.submittedAt || null,
           evaluatedAt: sub.finalizedAt || null
         };
@@ -1843,6 +2398,7 @@ router.get('/:jobId/submissions', async (req, res) => {
       submissions,
       tips: [
         `View bounty details: GET /api/jobs/${job.jobId}`,
+        `Get full AI evaluation report (scores + justification): GET /api/jobs/${job.jobId}/submissions/:subId/evaluation`,
         `Submit work: POST /api/jobs/${job.jobId}/submit`
       ]
     });
@@ -2013,6 +2569,118 @@ router.get('/:jobId/evaluation-package', async (req, res) => {
   }
 });
 
+/* ============================
+   GET TASK SPEC (lazy)
+   ============================ */
+
+/**
+ * GET /api/jobs/:jobId/task-spec
+ * Lazily fetches and extracts the full task description from the evaluation
+ * package on IPFS. Split out from GET /:jobId so the bounty-detail page can
+ * render quickly without waiting on the (often slow) evaluation ZIP fetch —
+ * the expanded description is loaded only when the user explicitly opens it.
+ */
+router.get('/:jobId/task-spec', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    let job;
+    try {
+      job = await jobStorage.getJob(jobId);
+    } catch (e) {
+      const numId = parseInt(jobId);
+      if (numId > 0) {
+        try { job = await jobStorage.getJob(numId - 1); } catch {}
+      }
+      if (!job) throw e;
+    }
+
+    if (!job.evaluationCid || job.evaluationCid.startsWith('dev-')) {
+      return res.json({ success: true, taskSpec: null });
+    }
+
+    const ipfsClient = req.app.locals.ipfsClient;
+    if (!ipfsClient) {
+      return res.status(500).json({ success: false, error: 'IPFS client not available' });
+    }
+
+    let taskSpec = null;
+    try {
+      const archiveBuffer = await ipfsClient.fetchFromIPFS(job.evaluationCid);
+      const zip = new AdmZip(archiveBuffer);
+      const primaryEntry = zip.getEntries().find(e =>
+        e.entryName === 'primary_query.json' || e.entryName.endsWith('/primary_query.json')
+      );
+      if (primaryEntry) {
+        const primary = JSON.parse(zip.readAsText(primaryEntry));
+        const q = typeof primary?.query === 'string' ? primary.query : '';
+        const startMarker = '=== TASK DESCRIPTION ===';
+        const endMarker = '=== EVALUATION PROTOCOL ===';
+        const startIdx = q.indexOf(startMarker);
+        if (startIdx !== -1) {
+          const blockStart = startIdx + startMarker.length;
+          const endIdx = q.indexOf(endMarker, blockStart);
+          const block = (endIdx === -1
+            ? q.slice(blockStart)
+            : q.slice(blockStart, endIdx)
+          ).trim();
+          // Drop the duplicated Work Product Type / Task Title prefix; those
+          // are already rendered as top-level fields on the bounty page.
+          const bodyMatch = block.match(/^Task Description:\s*([\s\S]*)$/m);
+          taskSpec = (bodyMatch ? bodyMatch[1] : block).trim() || null;
+        }
+      }
+    } catch (err) {
+      logger.warn('[jobs/task-spec] failed to extract', { jobId, msg: err.message });
+      return res.status(502).json({
+        success: false,
+        error: 'Failed to fetch evaluation package from IPFS',
+        details: err.message
+      });
+    }
+
+    return res.json({ success: true, taskSpec });
+  } catch (error) {
+    logger.error('[jobs/task-spec] error', { msg: error.message });
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ success: false, error: 'Job not found', details: error.message });
+    }
+    return res.status(500).json({ success: false, error: 'Failed to get task spec', details: error.message });
+  }
+});
+
+// ==========================================================================
+// Utility: ETH price proxy (avoids client-side CORS issues with CoinGecko)
+// Must be above /:jobId to avoid "eth-price" being matched as a job ID.
+// ==========================================================================
+
+let cachedEthPrice = { usd: 0, fetchedAt: 0 };
+const ETH_PRICE_CACHE_MS = 60000; // 1 minute
+
+router.get('/eth-price', async (req, res) => {
+  const now = Date.now();
+  if (cachedEthPrice.usd > 0 && (now - cachedEthPrice.fetchedAt) < ETH_PRICE_CACHE_MS) {
+    return res.json({ usd: cachedEthPrice.usd, cached: true });
+  }
+
+  try {
+    const response = await fetch(
+      'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd',
+      { signal: AbortSignal.timeout(5000) }
+    );
+    const data = await response.json();
+    const usd = data?.ethereum?.usd || 0;
+
+    if (usd > 0) {
+      cachedEthPrice = { usd, fetchedAt: now };
+    }
+
+    return res.json({ usd });
+  } catch (err) {
+    // Return stale cache if available, otherwise 0
+    return res.json({ usd: cachedEthPrice.usd || 0, stale: true });
+  }
+});
+
 /* =================
    GET JOB DETAILS
    ================= */
@@ -2034,6 +2702,131 @@ router.get('/:jobId', async (req, res) => {
       if (!job) throw e;
     }
 
+    // Ghost guard: direct-by-ID lookups must not leak phantom bounties that
+    // the list endpoint is already hiding. If the job was never confirmed
+    // on-chain and has exceeded the 1h grace window, treat it as not found
+    // so agents calling closeExpiredBounty / finalizeSubmission don't try
+    // to act on a non-existent bounty. The sync service's orphan sweep will
+    // mark these ORPHANED on the next cycle — this guard is the read-time
+    // backstop for the window between creation and that sweep.
+    const GHOST_GRACE_SECS = 3600;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const isUnconfirmedGhost =
+      !job.onChain &&
+      !job.syncedFromBlockchain &&
+      job.status !== 'ORPHANED' &&
+      (nowSec - (job.createdAt || 0)) > GHOST_GRACE_SECS;
+    if (isUnconfirmedGhost) {
+      logger.warn('[jobs/details] ghost job served as 404', {
+        jobId: job.jobId, ageSec: nowSec - (job.createdAt || 0)
+      });
+      return res.status(404).json({
+        success: false,
+        error: 'Bounty not found',
+        details: `Job ${jobId} was never confirmed on-chain and has exceeded the 1h grace window.`
+      });
+    }
+
+    // ============================================================
+    // Read-side invariant: heal impossible-state submissions inline
+    // ============================================================
+    // A windowed bounty's submission can NEVER legitimately be in
+    // 'Prepared' state on chain — the contract transitions it directly
+    // to PendingCreatorApproval (state 5). If we see local='Prepared'
+    // on a windowed bounty, the local record is stale (chain-read
+    // fallback fired during the original write). Heal it inline before
+    // serving the response so the client never sees the impossible
+    // state. This is the read-time backstop for the prevention fixes
+    // in POST /submissions/confirm and the SubmissionPrepared event
+    // handler. See bounty 46 / bounty 52 incidents.
+    //
+    // Cost: zero RPC calls in the common case (in-memory filter pass).
+    // Only when stuck records are detected do we hit the chain.
+    if (Number(job.creatorAssessmentWindowSize || 0) > 0 && Array.isArray(job.submissions)) {
+      const stuckSubs = job.submissions.filter(s =>
+        s.status === 'Prepared' || s.status === 'PREPARED'
+      );
+      if (stuckSubs.length > 0) {
+        try {
+          const cs = getContractService();
+          const contract = cs.contract;
+          const statusMap = {
+            0: 'Prepared',
+            1: 'PENDING_EVALUATION',
+            2: 'REJECTED',
+            3: 'APPROVED',
+            4: 'APPROVED',
+            5: 'PendingCreatorApproval',
+          };
+          const onChainStatusMap = {
+            0: 'Prepared',
+            1: 'PendingVerdikta',
+            2: 'Failed',
+            3: 'PassedPaid',
+            4: 'PassedUnpaid',
+            5: 'PendingCreatorApproval',
+          };
+          let healedAny = false;
+          // Run reads in parallel — usually 1 stuck record, but be safe
+          const healResults = await Promise.allSettled(
+            stuckSubs.map(s => contract.getSubmission(Number(job.jobId), Number(s.submissionId)))
+          );
+          for (let i = 0; i < stuckSubs.length; i++) {
+            const result = healResults[i];
+            const sub = stuckSubs[i];
+            if (result.status !== 'fulfilled') {
+              logger.warn('[jobs/details] read-side heal: chain read failed', {
+                jobId, submissionId: sub.submissionId, error: result.reason?.message
+              });
+              continue;
+            }
+            const chainSub = result.value;
+            const chainStatus = statusMap[Number(chainSub.status)] || 'UNKNOWN';
+            const chainOnChainStatus = onChainStatusMap[Number(chainSub.status)] || null;
+            if (chainStatus !== sub.status) {
+              sub.status = chainStatus;
+              // Low-level chain enum name (PassedPaid/PassedUnpaid/Failed),
+              // not the collapsed high-level form, so analytics can tell
+              // paid winners from passed-but-unpaid submissions.
+              if (chainOnChainStatus) {
+                sub.onChainStatus = chainOnChainStatus;
+              }
+              sub.creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
+              if (chainSub.hunterCid && !sub.hunterCid) {
+                sub.hunterCid = chainSub.hunterCid;
+              }
+              if (chainSub.linkMaxBudget != null) {
+                sub.linkMaxBudget = chainSub.linkMaxBudget.toString();
+              }
+              if (chainSub.submittedAt != null) {
+                sub.submittedAt = Number(chainSub.submittedAt) || sub.submittedAt;
+              }
+              healedAny = true;
+              logger.info('[jobs/details] read-side heal: updated submission from chain', {
+                jobId, submissionId: sub.submissionId, newStatus: chainStatus,
+                creatorWindowEnd: sub.creatorWindowEnd,
+              });
+            }
+          }
+          // Persist the heal so future reads don't need to re-check.
+          if (healedAny) {
+            try {
+              await jobStorage.updateJob(job.jobId, { submissions: job.submissions });
+            } catch (persistErr) {
+              logger.warn('[jobs/details] read-side heal: persist failed (in-memory still healed)', {
+                jobId, error: persistErr.message
+              });
+            }
+          }
+        } catch (healErr) {
+          // Non-fatal: serve whatever we have rather than blocking the response.
+          logger.warn('[jobs/details] read-side heal: outer error (serving stale)', {
+            jobId, error: healErr.message
+          });
+        }
+      }
+    }
+
     let rubricContent = null;
     let extractedJuryNodes = job.juryNodes || [];
 
@@ -2050,7 +2843,9 @@ router.get('/:jobId', async (req, res) => {
         }
       }
 
-      // If no rubricCid or fetch failed, try extracting from evaluationCid (ZIP archive)
+      // Fall back to opening the evaluationCid ZIP only when the direct rubric
+      // fetch didn't succeed. The task spec is served lazily by a separate
+      // endpoint (GET /:jobId/task-spec) so the common case is one IPFS read.
       if (!rubricContent && job.evaluationCid) {
         try {
           const archiveBuffer = await ipfsClient.fetchFromIPFS(job.evaluationCid);
@@ -2078,17 +2873,19 @@ router.get('/:jobId', async (req, res) => {
             }
 
             // Look for grading rubric reference in manifest.additional
-            const gradingRubricRef = manifest.additional?.find(a => a.name === 'gradingRubric');
-            if (gradingRubricRef?.hash) {
-              try {
-                const rubricBuffer = await ipfsClient.fetchFromIPFS(gradingRubricRef.hash);
-                const rubricText = rubricBuffer.toString('utf8');
-                rubricContent = JSON.parse(rubricText);
-              } catch (err) {
-                logger.warn('[jobs/details] failed to fetch grading rubric from IPFS', {
-                  hash: gradingRubricRef.hash,
-                  msg: err.message
-                });
+            if (!rubricContent) {
+              const gradingRubricRef = manifest.additional?.find(a => a.name === 'gradingRubric');
+              if (gradingRubricRef?.hash) {
+                try {
+                  const rubricBuffer = await ipfsClient.fetchFromIPFS(gradingRubricRef.hash);
+                  const rubricText = rubricBuffer.toString('utf8');
+                  rubricContent = JSON.parse(rubricText);
+                } catch (err) {
+                  logger.warn('[jobs/details] failed to fetch grading rubric from IPFS', {
+                    hash: gradingRubricRef.hash,
+                    msg: err.message
+                  });
+                }
               }
             }
           }
@@ -2108,14 +2905,17 @@ router.get('/:jobId', async (req, res) => {
               }
             }
           }
+
         } catch (err) {
           logger.warn('[jobs/details] failed to extract from evaluationCid', { msg: err.message });
         }
       }
     }
 
-    // Strip internal sync bookkeeping fields before sending to client
-    const { syncedFromBlockchain: _sfb, lastSyncedAt: _lsa, ...jobForClient } = job;
+    // Strip internal sync bookkeeping fields before sending to client.
+    // Keep `syncedFromBlockchain` — the UI needs it to render the
+    // "Pending on-chain" badge on bounties that haven't been confirmed yet.
+    const { lastSyncedAt: _lsa, _chainFieldsHealed: _cfh, ...jobForClient } = job;
     const jobIdVal = job.jobId;
     return res.json({
       success: true,
@@ -2150,6 +2950,179 @@ router.get('/:jobId', async (req, res) => {
       details: error.message,
       fix: 'Try again shortly or check server health: GET /health'
     });
+  }
+});
+
+/* =================
+   GET ON-CHAIN STATUS (Agent-friendly, trust-minimized)
+   ================= */
+
+/**
+ * GET /api/jobs/:jobId/onchain-status
+ *
+ * IMPORTANT: the path param is the ON-CHAIN bountyId, not the API jobId. They
+ * are equal for linked jobs (after PATCH /bountyId has reconciled the local
+ * row), but differ during the drift window between /jobs/create and the link
+ * step. If you are debugging a job in drift, call GET /api/jobs/lookup first
+ * to discover the on-chain bountyId, then pass that here. The 404 response
+ * for a missing bounty checks for a local API job at the same id and points
+ * you at /lookup if it finds one.
+ *
+ * Returns a fresh on-chain snapshot of a bounty, with the server performing
+ * the ABI decoding. Designed for AI agents that want to verify chain state
+ * without writing their own raw-byte decoder (a common source of off-by-one
+ * field offset bugs — decode via this endpoint instead).
+ *
+ * One RPC call (getBounty); status/effectiveStatus/canBeClosed are derived
+ * locally from the struct to avoid extra round trips. Use this instead of
+ * hand-rolling eth_call decoders on the BountyEscrow.bounties() or
+ * BountyEscrow.getBounty() tuple.
+ *
+ * Response shape:
+ *   {
+ *     bountyId: number,
+ *     status: "OPEN" | "EXPIRED" | "AWARDED" | "CLOSED",  // effective status
+ *     rawStatus: 0 | 1 | 2,                                // on-chain enum
+ *     creator: "0x...",
+ *     winner: "0x..." | null,
+ *     payoutWei: string,                                   // still-escrowed ETH
+ *     payoutEth: string,                                   // human-readable
+ *     submissionDeadline: number,                          // unix seconds
+ *     deadlinePassed: boolean,
+ *     submissionCount: number,
+ *     isAcceptingSubmissions: boolean,
+ *     canBeClosed: boolean,                                // approximate; contract
+ *                                                         //   also checks pending subs
+ *     targetHunter: "0x..." | null,
+ *     evaluationCid: string,
+ *     classId: number,
+ *     threshold: number,
+ *     creatorAssessmentWindowSize: number,
+ *     creatorDeterminationPaymentEth: string,
+ *     arbiterDeterminationPaymentEth: string,
+ *     fetchedAt: ISO-8601 string
+ *   }
+ */
+router.get('/:jobId/onchain-status', async (req, res) => {
+  const { jobId } = req.params;
+  const bountyId = parseInt(jobId, 10);
+  if (!Number.isInteger(bountyId) || bountyId < 0) {
+    return res.status(400).json({ success: false, error: 'Invalid bountyId', details: `"${jobId}" is not a non-negative integer` });
+  }
+
+  try {
+    logger.info('[jobs/onchain-status] get', { bountyId });
+    const contractService = getContractService();
+    const b = await contractService.getBounty(bountyId);
+
+    const now = Math.floor(Date.now() / 1000);
+    const deadline = Number(b.submissionCloseTime) || 0;
+
+    // Re-derive rawStatus: contractService.getBounty returns effective-only.
+    // Effective → raw mapping:
+    //   OPEN or EXPIRED → rawStatus 0 (Open)
+    //   AWARDED         → rawStatus 1
+    //   CLOSED          → rawStatus 2
+    const eff = String(b.status || '').toUpperCase();
+    const rawStatus = eff === 'AWARDED' ? 1 : eff === 'CLOSED' ? 2 : 0;
+
+    // Build a linkage report so agents can diagnose ID drift in one call.
+    // We look up by the caller-supplied id; an evaluationCid match is the
+    // strongest signal that local and on-chain are talking about the same
+    // bounty, so we prefer that when the id-based row disagrees.
+    let linkage;
+    try {
+      const storage = await jobStorage.readStorage();
+      const byId = (storage.jobs || []).find(j => Number(j.jobId) === bountyId) || null;
+      const byCid = b.evaluationCid
+        ? (storage.jobs || []).find(j => j.evaluationCid === b.evaluationCid)
+        : null;
+      // Prefer the row that actually matches the on-chain bounty's evaluationCid.
+      // If the id-based row has a different evaluationCid, that's drift — surface it.
+      const localJob = byCid || byId;
+      if (!localJob) {
+        linkage = {
+          state: 'untracked',
+          onChain: true,
+          syncedFromBlockchain: false,
+          detail: `Bounty #${bountyId} exists on-chain but no local job tracks it. The sync service has not picked it up yet.`,
+          fix: 'Call POST /api/jobs/sync/now to force a sync pass, or look up via GET /api/jobs/lookup?evaluationCid=... if you have the CID.'
+        };
+      } else {
+        linkage = buildLinkageReport(localJob, { onChainBountyId: bountyId });
+        if (byCid && byId && byCid !== byId) {
+          linkage.idDriftWarning = `Local job at id ${bountyId} has a different evaluationCid than the on-chain bounty. The job that actually matches this bounty is at jobId ${byCid.jobId}. Route API calls through that id instead.`;
+          linkage.correctJobId = byCid.jobId;
+        }
+      }
+    } catch (linkErr) {
+      linkage = { state: 'unknown', detail: `Linkage check failed: ${linkErr.message}` };
+    }
+
+    return res.json({
+      success: true,
+      bountyId,
+      status: eff,                               // OPEN | EXPIRED | AWARDED | CLOSED
+      rawStatus,                                 // 0=Open, 1=Awarded, 2=Closed (enum)
+      creator: b.creator,
+      winner: b.winner,
+      payoutWei: b.bountyAmountWei,
+      payoutEth: b.bountyAmount,
+      submissionDeadline: deadline,
+      deadlinePassed: deadline > 0 && now > deadline,
+      submissionCount: b.submissionCount,
+      isAcceptingSubmissions: b.isAcceptingSubmissions,
+      canBeClosed: b.canBeClosed,                // local approximation; contract
+                                                 //   also rejects if any submission
+                                                 //   is still PendingVerdikta
+      targetHunter: b.targetHunter,
+      evaluationCid: b.evaluationCid,
+      classId: b.classId,
+      threshold: b.threshold,
+      creatorAssessmentWindowSize: b.creatorAssessmentWindowSize,
+      creatorDeterminationPaymentEth: b.creatorDeterminationPayment,
+      arbiterDeterminationPaymentEth: b.arbiterDeterminationPayment,
+      linkage,                                   // see buildLinkageReport — state is
+                                                 //   linked | patched-not-synced |
+                                                 //   not-on-chain | mismatch | untracked
+      fetchedAt: new Date().toISOString(),
+      note: 'Ground truth from the BountyEscrow contract. If this disagrees with GET /api/jobs/:jobId the sync service has not yet observed the change; this endpoint is authoritative.'
+    });
+  } catch (err) {
+    const msg = (err?.message || '').toLowerCase();
+    if (msg.includes('bad bountyid') || msg.includes('badbountyid') || msg.includes('call_exception')) {
+      // Check whether a local job exists at this id — if so, the caller is
+      // probably hitting the drift case (API jobId != on-chain bountyId).
+      let localJob = null;
+      let identityHint = null;
+      try {
+        const storage = await jobStorage.readStorage();
+        localJob = (storage.jobs || []).find(j => Number(j.jobId) === bountyId) || null;
+      } catch (_) { /* non-fatal */ }
+
+      if (localJob && !localJob.onChain && !localJob.syncedFromBlockchain) {
+        identityHint = `A local API job #${bountyId} exists but is not linked to any on-chain bounty. The path param of /onchain-status is the on-chain bountyId — NOT the API jobId — and they only match after PATCH /bountyId reconciles them. To find the real on-chain bountyId for this job, call GET /api/jobs/lookup?txHash=<your-createBounty-tx> (or ?evaluationCid=${localJob.evaluationCid || '<your-cid>'}).`;
+      } else if (!localJob) {
+        identityHint = `No on-chain bounty #${bountyId} exists, and no local API job has that jobId either. Verify the id (the path param is the on-chain bountyId, which equals the API jobId only for linked jobs).`;
+      } else {
+        identityHint = `Local API job #${bountyId} exists and is marked on-chain, but the contract has no bounty at that id. This is a stale-link state — call GET /api/jobs/lookup?evaluationCid=${localJob.evaluationCid || '<cid>'} to find the correct on-chain id, or POST /api/jobs/sync/now to re-reconcile.`;
+      }
+
+      return res.status(404).json({
+        success: false,
+        error: 'Bounty not found on current contract',
+        details: `Bounty #${bountyId} does not exist on the active BountyEscrow contract. Note: this endpoint's path param is the on-chain bountyId, which differs from the API jobId when there is drift.`,
+        fix: identityHint,
+        localJobExists: !!localJob,
+        localJobLinked: !!(localJob && (localJob.onChain || localJob.syncedFromBlockchain)),
+        recoveryEndpoints: {
+          lookup: '/api/jobs/lookup',
+          forceSync: '/api/jobs/sync/now'
+        }
+      });
+    }
+    logger.error('[jobs/onchain-status] fatal', { bountyId, msg: err.message });
+    return res.status(500).json({ success: false, error: 'Failed to read on-chain status', details: err.message });
   }
 });
 
@@ -2394,35 +3367,41 @@ router.post('/:jobId/submit/dry-run', async (req, res) => {
         checks.push({ name: 'bounty_open', passed: true, details: `Bounty #${job.jobId} is open with ${hoursLeft}h remaining (deadline: ${deadline})` });
       }
 
-      // ---- 6. not_already_submitted ----
+      // ---- 6. prior_submissions (informational only — resubmission is allowed) ----
+      // The contract permits any address to submit any number of times to the same bounty,
+      // including after a prior rejection. We surface prior submissions as a warning so the
+      // hunter is aware (and to discourage redundant evaluation costs while a prior submission
+      // is still pending), but we never block the dry-run on this.
       if (job && hunter && /^0x[a-fA-F0-9]{40}$/.test(hunter)) {
-        const existing = (job.submissions || []).find(s =>
-          (s.hunter || '').toLowerCase() === hunter.toLowerCase() &&
-          (s.status || '').toLowerCase() !== 'prepared'
+        const priors = (job.submissions || []).filter(s =>
+          (s.hunter || '').toLowerCase() === hunter.toLowerCase()
         );
-        if (existing) {
-          const subStatus = (existing.status || 'unknown').toUpperCase();
-          checks.push({ name: 'not_already_submitted', passed: false,
-            details: `Existing submission #${existing.submissionId} from this hunter (status: ${subStatus})` });
-          errors.push({
-            code: 'BOUNTY_ALREADY_SUBMITTED',
-            message: 'You have already submitted to this bounty',
-            fix: `Check your submission status at GET /api/jobs/${job.jobId}/submissions`
+        if (priors.length > 0) {
+          const summary = priors.map(s => `#${s.submissionId} (${(s.status || 'unknown').toUpperCase()})`).join(', ');
+          const pending = priors.filter(s => {
+            const st = (s.status || '').toUpperCase();
+            return st === 'PREPARED' || st === 'PENDING_EVALUATION' || st === 'PENDINGCREATORAPPROVAL' ||
+                   st === 'ACCEPTED_PENDING_CLAIM' || st === 'REJECTED_PENDING_FINALIZATION';
           });
+          checks.push({
+            name: 'prior_submissions',
+            passed: true,
+            details: `${priors.length} prior submission(s) from this hunter: ${summary}`
+          });
+          if (pending.length > 0) {
+            warnings.push(
+              `You have ${pending.length} unresolved prior submission(s) to this bounty. Resubmission is allowed, but each submission costs LINK — consider waiting for the pending one(s) to resolve first.`
+            );
+          }
         } else {
-          checks.push({ name: 'not_already_submitted', passed: true, details: 'No existing submission from this hunter' });
+          checks.push({ name: 'prior_submissions', passed: true, details: 'No prior submissions from this hunter' });
         }
       }
 
-      // ---- 7. hunter_not_creator ----
+      // ---- 7. hunter_not_creator (warning only, not enforced) ----
       if (job && hunter && /^0x[a-fA-F0-9]{40}$/.test(hunter)) {
         if (job.creator && hunter.toLowerCase() === job.creator.toLowerCase()) {
-          checks.push({ name: 'hunter_not_creator', passed: false, details: 'Hunter address matches the bounty creator' });
-          errors.push({
-            code: 'SUBMISSION_HUNTER_IS_CREATOR',
-            message: 'Cannot submit to your own bounty',
-            fix: 'Use a different wallet address or submit to a different bounty'
-          });
+          checks.push({ name: 'hunter_not_creator', passed: true, details: 'Hunter address matches the bounty creator (allowed)' });
         } else {
           checks.push({ name: 'hunter_not_creator', passed: true, details: 'Hunter is not the bounty creator' });
         }
@@ -2623,6 +3602,7 @@ router.post('/:jobId/submit', async (req, res) => {
     }
 
     const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId)) return;
     if (job.status !== 'OPEN') {
       const codeMap = { EXPIRED: ErrorCodes.BOUNTY_EXPIRED, AWARDED: ErrorCodes.BOUNTY_CLOSED, CLOSED: ErrorCodes.BOUNTY_CLOSED };
       return sendError(res, 400, {
@@ -2784,7 +3764,12 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
       return res.json({ success: true, submission: existingSubmission, alreadyExists: true });
     }
 
-    // Create the submission record with the on-chain submissionId
+    // Create the submission record with the on-chain submissionId.
+    // Start with a conservative default of 'Prepared'; below we try to read
+    // chain truth and overwrite with the real status. If the chain read
+    // succeeds and the bounty is windowed, this will already be
+    // 'PendingCreatorApproval' with creatorWindowEnd set — no follow-up
+    // refreshSubmission call needed from the client.
     const submission = {
       submissionId: Number(submissionId),
       hunter,
@@ -2793,11 +3778,69 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
       fileCount: fileCount || 0,
       files: files || [],
       submittedAt: Math.floor(Date.now() / 1000),
-      status: 'Prepared',  // Will be updated to PendingVerdikta after startPreparedSubmission
+      status: 'Prepared',
       // Track which client type submitted this work
       clientType: req.clientType || 'unknown',
       clientId: req.clientId || null,
     };
+
+    // Read chain truth and overwrite the skeleton fields. This closes the
+    // hole where the confirm write locked in status='Prepared' for windowed
+    // bounties (real chain status: 5=PendingCreatorApproval), leaving the
+    // local cache permanently wrong until someone manually refreshed. See
+    // bounty 46 sub 0 incident.
+    //
+    // Non-fatal: on RPC failure, we keep the 'Prepared' default and the
+    // background sync service / a manual refresh will heal later.
+    try {
+      const cs = getContractService();
+      const contract = cs.contract;
+      const chainSub = await contract.getSubmission(Number(jobId), Number(submissionId));
+
+      const statusMap = {
+        0: 'Prepared',
+        1: 'PENDING_EVALUATION',      // PendingVerdikta
+        2: 'REJECTED',                // Failed
+        3: 'APPROVED',                // PassedPaid
+        4: 'APPROVED',                // PassedUnpaid
+        5: 'PendingCreatorApproval',
+      };
+      const onChainStatusMap = {
+        0: 'Prepared',
+        1: 'PendingVerdikta',
+        2: 'Failed',
+        3: 'PassedPaid',
+        4: 'PassedUnpaid',
+        5: 'PendingCreatorApproval',
+      };
+      const statusIndex = Number(chainSub.status);
+      const chainStatus = statusMap[statusIndex] || 'UNKNOWN';
+      const chainOnChainStatus = onChainStatusMap[statusIndex] || null;
+
+      submission.status = chainStatus;
+      // Low-level chain enum name — analytics needs this to distinguish
+      // PassedPaid (winner) from PassedUnpaid (passed but didn't win).
+      if (chainOnChainStatus) {
+        submission.onChainStatus = chainOnChainStatus;
+      }
+      submission.creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
+      submission.linkMaxBudget = chainSub.linkMaxBudget?.toString() || submission.linkMaxBudget;
+      submission.submittedAt = Number(chainSub.submittedAt) || submission.submittedAt;
+      if (chainSub.evalWallet && chainSub.evalWallet !== '0x0000000000000000000000000000000000000000') {
+        submission.evalWallet = chainSub.evalWallet;
+      }
+      if (chainSub.evaluationCid) submission.evaluationCid = chainSub.evaluationCid;
+
+      logger.info('[submissions/confirm] chain truth applied', {
+        jobId, submissionId,
+        chainStatus,
+        creatorWindowEnd: submission.creatorWindowEnd,
+      });
+    } catch (chainErr) {
+      logger.warn('[submissions/confirm] chain read failed, keeping skeleton (sync will heal later)', {
+        jobId, submissionId, error: chainErr.message
+      });
+    }
 
     job.submissions.push(submission);
     job.submissionCount = job.submissions.length;
@@ -2851,10 +3894,15 @@ const bundleLinkIface = new ethers.Interface(BUNDLE_LINK_ABI);
  *   hunterCid       - IPFS CID of already-uploaded work (optional if files provided)
  *   files           - multipart file uploads (optional if hunterCid provided)
  *   addendum        - optional text appended to evaluation query
- *   alpha           - reputation weight, default 75
+ *   alpha           - timeliness-vs-quality blend (0-1000), default 500.
+ *                     ReputationKeeper: weighted = ((1000 - alpha) * quality + alpha * timeliness) / 1000.
+ *                     0 = pure quality; 1000 = pure timeliness; 500 = equal blend.
  *   maxOracleFee    - max LINK per oracle in wei, default "50000000000000000" (0.05 LINK)
  *   estimatedBaseCost   - default "30000000000000000" (0.03 LINK)
- *   maxFeeBasedScaling  - default "20000000000000000" (0.02 LINK)
+ *   maxFeeBasedScaling  - plain integer N (x-factor), default "3". Cap on fee-boost
+ *                         multiplier applied to oracles whose fee is below maxOracleFee.
+ *                         Contract multiplies by 1e18 internally — pass the x-factor itself, not a scaled value.
+ *                         Must be >= 1.
  *
  * Response: step-1 transaction (prepareSubmission) + templates for steps 2-4.
  * After broadcasting step 1, call POST /submit/bundle/complete with the txHash
@@ -2874,10 +3922,11 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
     const hunterAddress = req.body.hunterAddress || req.body.hunter;
     let { hunterCid } = req.body;
     const addendum    = req.body.addendum || '';
-    const alpha       = parseInt(req.body.alpha) || 75;
+    const alpha       = parseInt(req.body.alpha) || 500;
     const maxOracleFee       = req.body.maxOracleFee       || '50000000000000000';
     const estimatedBaseCost  = req.body.estimatedBaseCost  || '30000000000000000';
-    const maxFeeBasedScaling = req.body.maxFeeBasedScaling || '20000000000000000';
+    // maxFeeBasedScaling: plain x-factor integer (contract scales by 1e18 internally).
+    const maxFeeBasedScaling = req.body.maxFeeBasedScaling || '3';
 
     // ---- Validate inputs ----
     if (!hunterAddress || !/^0x[a-fA-F0-9]{40}$/.test(hunterAddress)) {
@@ -2891,6 +3940,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
     }
 
     const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId)) return;
     if (job.status !== 'OPEN') {
       const codeMap = { EXPIRED: ErrorCodes.BOUNTY_EXPIRED, AWARDED: ErrorCodes.BOUNTY_CLOSED, CLOSED: ErrorCodes.BOUNTY_CLOSED };
       return sendError(res, 400, {
@@ -3013,7 +4063,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
           dataTemplate: 'startPreparedSubmission({BOUNTY_ID}, {SUBMISSION_ID})',
           value: '0',
           chainId,
-          gasLimit: 500000,
+          gasLimit: 4000000,
           note: 'Use POST /api/jobs/:id/submit/bundle/complete with step 1 txHash to get exact calldata'
         }
       ],
@@ -3042,6 +4092,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         prepareSubmission: 'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)',
         startPreparedSubmission: 'function startPreparedSubmission(uint256 bountyId, uint256 submissionId)',
         finalizeSubmission: 'function finalizeSubmission(uint256 bountyId, uint256 submissionId)',
+        failTimedOutSubmission: 'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)',
         approveLINK: 'function approve(address spender, uint256 amount) returns (bool)'
       },
       nextStep: `POST /api/jobs/${jobId}/submit/bundle/complete with { "txHash": "0x..." } after broadcasting step 1`,
@@ -3050,8 +4101,22 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         '/submit/bundle/complete parses step 1 logs and returns exact calldata for steps 2, 3, and 4',
         'If you can parse event logs yourself, extract evalWallet + submissionId + linkMaxBudget from SubmissionPrepared',
         `Confirm submission with POST /api/jobs/${jobId}/submissions/confirm after step 1`,
-        `Poll GET /api/jobs/${jobId}/submissions after step 3 until evaluation completes, then execute step 4`
-      ]
+        `Poll GET /api/jobs/${jobId}/submissions after step 3 until evaluation completes, then execute step 4`,
+        'Step 4 (finalizeSubmission) is REQUIRED — oracle completion does NOT trigger payment automatically',
+        'If finalizeSubmission reverts with "Verdikta not ready", the oracle timed out — call failTimedOutSubmission instead (available after 10 min)',
+        ...(job.creatorAssessmentWindowSize > 0 ? [
+          `WINDOWED BOUNTY: After step 1, the submission enters PendingCreatorApproval for ${job.creatorAssessmentWindowSize}s. The creator may approve directly. If the window expires, proceed with steps 2-4.`,
+          `Poll GET /api/jobs/${jobId}/submissions/:subId/diagnose to check window status before executing step 3.`
+        ] : [])
+      ],
+      ...(job.creatorAssessmentWindowSize > 0 ? {
+        windowedBounty: {
+          note: 'This bounty has a creator approval window. After step 1, the submission enters PendingCreatorApproval status. The creator may approve directly during the window. If the window expires without approval, proceed with steps 2-4 to start oracle evaluation.',
+          creatorAssessmentWindowSize: job.creatorAssessmentWindowSize,
+          creatorDeterminationPayment: job.creatorDeterminationPayment || null,
+          arbiterDeterminationPayment: job.arbiterDeterminationPayment || null,
+        }
+      } : {})
     });
 
   } catch (error) {
@@ -3099,6 +4164,9 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
         fix: 'Provide the transaction hash from step 1 (prepareSubmission), e.g. "0xabc123..."'
       });
     }
+
+    const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId)) return;
 
     // We need blockchain access to parse the receipt
     let cs;
@@ -3206,7 +4274,7 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
           data: startData,
           value: '0',
           chainId,
-          gasLimit: 500000
+          gasLimit: 4000000
         }
       ],
       postEvaluation: {
@@ -3250,6 +4318,118 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
 });
 
 /* ===============================
+   GET publicSubmissions sign-payload helper
+   Returns the canonical message string that the bounty creator must sign
+   (via personal_sign / ethers signer.signMessage) to toggle the flag.
+   Removes the "build the message text by hand" foot-gun — the agent fetches
+   the message, signs it with the creator wallet, then PATCHes back.
+   =============================== */
+
+router.get('/:jobId/public-submissions/sign-payload', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const valueParam = String(req.query.value ?? '').toLowerCase();
+    if (valueParam !== 'true' && valueParam !== 'false') {
+      return res.status(400).json({
+        success: false,
+        error: 'Query param "value" must be "true" or "false"',
+        example: `${req.path}?value=true`
+      });
+    }
+    const publicSubmissions = valueParam === 'true';
+
+    const storage = await jobStorage.readStorage();
+    const job = storage.jobs.find(j => j.jobId === parseInt(jobId, 10));
+    if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
+    if (!job.creator) return res.status(400).json({ success: false, error: 'Job has no creator on record' });
+
+    const { buildPublicSubmissionsMessage } = require('../utils/messageAuth');
+    const timestamp = new Date().toISOString();
+    const message = buildPublicSubmissionsMessage({
+      bountyId: parseInt(jobId, 10),
+      publicSubmissions,
+      timestamp
+    });
+
+    return res.json({
+      success: true,
+      bountyId: parseInt(jobId, 10),
+      creator: job.creator,
+      publicSubmissions,
+      message,
+      timestamp,
+      validForSeconds: 300,
+      next: {
+        sign: 'Sign `message` verbatim with the bounty creator wallet (ethers: signer.signMessage(message); web3: personal_sign).',
+        submit: `PATCH /api/jobs/${jobId}/public-submissions with { publicSubmissions: ${publicSubmissions}, message, signature }`
+      }
+    });
+  } catch (err) {
+    logger.error('[public-submissions/sign-payload] fatal', { msg: err.message });
+    return res.status(500).json({ success: false, error: 'Failed to build sign payload', details: err.message });
+  }
+});
+
+/* ===============================
+   PATCH publicSubmissions (creator-signed, off-chain)
+   Toggles the off-chain "publicSubmissions" flag on a bounty. Requires a
+   personal_sign message from the bounty creator. CIDs on the blockchain /
+   in API responses are public regardless — this flag only controls whether
+   the website surfaces convenient preview/download buttons to non-creators.
+   =============================== */
+
+router.patch('/:jobId/public-submissions', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { publicSubmissions, message, signature } = req.body || {};
+
+    if (typeof publicSubmissions !== 'boolean') {
+      return res.status(400).json({ success: false, error: 'publicSubmissions must be true or false' });
+    }
+    if (!message || !signature) {
+      return res.status(400).json({ success: false, error: 'message and signature required' });
+    }
+
+    const storage = await jobStorage.readStorage();
+    const job = storage.jobs.find(j => j.jobId === parseInt(jobId, 10));
+    if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
+    if (!job.creator) return res.status(400).json({ success: false, error: 'Job has no creator on record' });
+
+    const { verifyPublicSubmissionsAction } = require('../utils/messageAuth');
+    let parsed;
+    try {
+      parsed = verifyPublicSubmissionsAction({
+        message,
+        signature,
+        expectedSigner: job.creator,
+        expectedBountyId: parseInt(jobId, 10),
+      });
+    } catch (err) {
+      logger.warn('[public-submissions] signature rejected', { jobId, msg: err.message });
+      return res.status(401).json({ success: false, error: err.message });
+    }
+
+    if (parsed.publicSubmissions !== publicSubmissions) {
+      return res.status(400).json({ success: false, error: 'body.publicSubmissions does not match signed message' });
+    }
+
+    job.publicSubmissions = publicSubmissions;
+    job.publicSubmissionsUpdatedAt = Math.floor(Date.now() / 1000);
+    await jobStorage.writeStorage(storage);
+
+    logger.info('[public-submissions] updated', { jobId, publicSubmissions, creator: job.creator });
+
+    return res.json({
+      success: true,
+      job: { jobId: job.jobId, publicSubmissions: job.publicSubmissions }
+    });
+  } catch (err) {
+    logger.error('[public-submissions] fatal', { msg: err.message });
+    return res.status(500).json({ success: false, error: 'Failed to update public submissions flag', details: err.message });
+  }
+});
+
+/* ===============================
    PATCH bountyId + resolve helper
    =============================== */
 
@@ -3261,6 +4441,79 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     const storage = await jobStorage.readStorage();
     const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
     if (!job) return res.status(404).json({ success: false, error: 'Job not found' });
+
+    // Verify the txHash actually emitted a BountyCreated event with the claimed bountyId
+    // on the current contract. This prevents phantom entries from old/wrong contracts.
+    const currentContract = jobStorage.getCurrentContractAddress();
+    if (txHash && currentContract) {
+      try {
+        const contractService = getContractService();
+        const provider = contractService.provider;
+        const receipt = await provider.getTransactionReceipt(txHash);
+
+        if (!receipt) {
+          return res.status(400).json({
+            success: false,
+            error: 'Transaction not found on chain',
+            details: `Could not fetch receipt for txHash ${txHash}. The tx may not be confirmed yet.`,
+            fix: 'Wait for transaction confirmation and try again.'
+          });
+        }
+
+        // Parse BountyCreated event from the receipt
+        const iface = new ethers.Interface([
+          'event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)'
+        ]);
+        let foundBountyId = null;
+        let emittingContract = null;
+        for (const log of receipt.logs) {
+          try {
+            const parsed = iface.parseLog(log);
+            if (parsed?.name === 'BountyCreated') {
+              foundBountyId = Number(parsed.args.bountyId);
+              emittingContract = log.address.toLowerCase();
+              break;
+            }
+          } catch {}
+        }
+
+        if (foundBountyId === null) {
+          return res.status(400).json({
+            success: false,
+            error: 'No BountyCreated event found in transaction',
+            details: `txHash ${txHash} did not emit a BountyCreated event.`,
+            fix: 'Verify you are passing the correct transaction hash from the createBounty call.'
+          });
+        }
+
+        if (foundBountyId !== Number(bountyId)) {
+          return res.status(400).json({
+            success: false,
+            error: 'BountyId mismatch',
+            details: `txHash emitted BountyCreated with bountyId=${foundBountyId}, but you claimed bountyId=${bountyId}.`,
+            fix: 'Use the bountyId from the BountyCreated event in the transaction receipt.'
+          });
+        }
+
+        if (emittingContract !== currentContract) {
+          return res.status(400).json({
+            success: false,
+            error: 'Wrong contract',
+            details: `BountyCreated was emitted by ${emittingContract}, but this server expects ${currentContract}. The bounty was created on a different contract.`,
+            fix: 'Ensure your wallet/frontend is targeting the correct BountyEscrow contract for this network.'
+          });
+        }
+
+        logger.info('[jobs/bountyId] txHash verified', { txHash, foundBountyId, emittingContract });
+      } catch (verifyErr) {
+        // If verification fails (e.g., RPC issue), log warning but allow the PATCH to proceed
+        // so we don't break the flow on transient RPC errors. The sync service will catch
+        // mismatches later via the stale-detection sweep.
+        logger.warn('[jobs/bountyId] txHash verification failed (proceeding anyway)', {
+          txHash, error: verifyErr.message
+        });
+      }
+    }
 
     job.txHash      = txHash;
     job.blockNumber = blockNumber;
@@ -3287,11 +4540,40 @@ router.patch('/:jobId/bountyId', async (req, res) => {
 
       job.jobId = Number(bountyId);
     }
-    
+
     // Track which contract this job was created on
-    const currentContract = jobStorage.getCurrentContractAddress();
     if (currentContract && !job.contractAddress) {
       job.contractAddress = currentContract;
+    }
+
+    // Backfill chain-authoritative fields (targetHunter, creator approval window
+    // payments and duration) directly from the contract. The local pending job
+    // may have been created without these — for example by an older client, or
+    // because the dedup branch in POST /jobs/create reused a stale pending row.
+    // Pulling them here ensures the GUI sees a windowed/targeted bounty as such
+    // immediately, instead of relying on the sync service to backfill later.
+    // Non-fatal: if the chain call fails (transient RPC error), the sync service
+    // will heal it on its next pass.
+    try {
+      const { applyChainBountyFields } = require('../utils/syncService');
+      const cs = getContractService();
+      const chainBounty = await cs.getBounty(Number(bountyId));
+      const changed = applyChainBountyFields(job, chainBounty);
+      if (changed) {
+        logger.info('[jobs/bountyId] backfilled chain fields', {
+          bountyId: Number(bountyId),
+          targetHunter: job.targetHunter,
+          creatorAssessmentWindowSize: job.creatorAssessmentWindowSize
+        });
+      }
+      // We've now read chain truth — mark the job as synced so the sync
+      // service's stale-check doesn't redundantly hit the chain for it.
+      job.syncedFromBlockchain = true;
+      job.lastSyncedAt = Math.floor(Date.now() / 1000);
+    } catch (chainErr) {
+      logger.warn('[jobs/bountyId] chain backfill failed (non-fatal, sync will heal later)', {
+        bountyId: Number(bountyId), error: chainErr.message
+      });
     }
 
     await jobStorage.writeStorage(storage);
@@ -3332,6 +4614,29 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
     }
     const ESCROW = config.bountyEscrowAddress;
 
+    // Helper: backfill chain-authoritative fields after we've resolved a bountyId.
+    // Mirrors the same logic in PATCH /:jobId/bountyId. Non-fatal on RPC failure.
+    const backfillChainFields = async (resolvedBountyId) => {
+      try {
+        const { applyChainBountyFields } = require('../utils/syncService');
+        const chainBounty = await cs.getBounty(resolvedBountyId);
+        const changed = applyChainBountyFields(job, chainBounty);
+        if (changed) {
+          logger.info('[resolve] backfilled chain fields', {
+            bountyId: resolvedBountyId,
+            targetHunter: job.targetHunter,
+            creatorAssessmentWindowSize: job.creatorAssessmentWindowSize
+          });
+        }
+        job.syncedFromBlockchain = true;
+        job.lastSyncedAt = Math.floor(Date.now() / 1000);
+      } catch (chainErr) {
+        logger.warn('[resolve] chain backfill failed (non-fatal, sync will heal later)', {
+          bountyId: resolvedBountyId, error: chainErr.message
+        });
+      }
+    };
+
     if (txHash) {
       try {
         const receipt = await cs.provider.getTransactionReceipt(txHash);
@@ -3349,6 +4654,7 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
               job.txHash = job.txHash ?? txHash;
               const currentContract = jobStorage.getCurrentContractAddress();
               if (currentContract) job.contractAddress = currentContract;
+              await backfillChainFields(bountyId);
               await jobStorage.writeStorage(storage);
               logger.info('[resolve] via tx', { jobId: jobIdParam, bountyId });
               return res.json({ success: true, method: 'tx', bountyId, job });
@@ -3407,6 +4713,7 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
         job.onChain = true;
         const currentContract = jobStorage.getCurrentContractAddress();
         if (currentContract) job.contractAddress = currentContract;
+        await backfillChainFields(best);
         await jobStorage.writeStorage(storage);
         logger.info('[resolve] via event query', { jobId: jobIdParam, resolvedId: best, delta: bestDelta });
         return res.json({ success: true, method: 'event', bountyId: best, delta: bestDelta, job });
@@ -3533,17 +4840,33 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
     });
     
     // Map status enum to string (ethers v6 returns BigInt for enums)
-    // Contract enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
+    // Contract enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid, 5=PendingCreatorApproval
     // Frontend expects: PENDING_EVALUATION (still pending), APPROVED/REJECTED (final states)
     const statusMap = {
       0: 'Prepared',
       1: 'PENDING_EVALUATION',  // PendingVerdikta
       2: 'REJECTED',            // Failed
       3: 'APPROVED',            // PassedPaid (winner!)
-      4: 'APPROVED'             // PassedUnpaid (passed but someone else won)
+      4: 'APPROVED',            // PassedUnpaid (passed but someone else won)
+      5: 'PendingCreatorApproval',
+    };
+    // Low-level (chain enum) names — preserved alongside the high-level
+    // status so analytics and the public submissions endpoint can
+    // distinguish PassedPaid (winner) from PassedUnpaid (didn't win) even
+    // when both collapse to 'APPROVED' in the high-level field. See bug:
+    // 23 finalized submissions stuck as EVALUATED_PASSED because refresh
+    // never wrote onChainStatus.
+    const onChainStatusMap = {
+      0: 'Prepared',
+      1: 'PendingVerdikta',
+      2: 'Failed',
+      3: 'PassedPaid',
+      4: 'PassedUnpaid',
+      5: 'PendingCreatorApproval',
     };
     const statusIndex = Number(sub.status);
     let chainStatus = statusMap[statusIndex] || 'UNKNOWN';
+    let chainOnChainStatus = onChainStatusMap[statusIndex] || null;
 
     // Receipt eligibility helpers
     const paidWinner = statusIndex === 3;      // PassedPaid
@@ -3600,9 +4923,11 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       }
     }
 
-    // If bounty is expired/closed and submission is still PendingVerdikta,
-    // treat it as a stuck/failed submission — it will never complete.
-    if (statusIndex === 1) {
+    // If bounty is expired/closed and submission is still PendingVerdikta AND the oracle
+    // check above didn't find results, treat it as stuck. But do NOT override if the oracle
+    // check already found a passing or failing result (ACCEPTED_PENDING_CLAIM or
+    // REJECTED_PENDING_FINALIZATION) — those submissions are claimable even after expiry.
+    if (statusIndex === 1 && chainStatus === 'PENDING_EVALUATION') {
       const bountyStatus = job.status?.toUpperCase();
       if (bountyStatus === 'EXPIRED' || bountyStatus === 'CLOSED') {
         chainStatus = 'REJECTED';
@@ -3627,6 +4952,12 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
     // Update local storage (reuse localSubmission from earlier check)
     if (localSubmission) {
       localSubmission.status = chainStatus;
+      // Low-level chain enum name. Analytics keys off this to distinguish
+      // PassedPaid vs PassedUnpaid; without it, paid winners are miscounted
+      // as approvedUnpaid in /api/analytics.
+      if (chainOnChainStatus) {
+        localSubmission.onChainStatus = chainOnChainStatus;
+      }
       localSubmission.score = acceptScore;
       localSubmission.acceptance = acceptScore;
       localSubmission.rejection = rejectScore;
@@ -3643,6 +4974,7 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       localSubmission.failureReason = failureReason;
       localSubmission.paidWinner = paidWinner;
       localSubmission.passedUnpaid = passedUnpaid;
+      localSubmission.creatorWindowEnd = Number(sub.creatorWindowEnd);
 
       jobStorage.updateJob(jobId, { submissions: job.submissions });
       
@@ -3665,6 +4997,7 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       submission: {
         submissionId: subId,
         status: chainStatus,
+        onChainStatus: chainOnChainStatus,
         acceptance: acceptScore,
         rejection: rejectScore,
         evaluationCid: sub.evaluationCid,
@@ -3722,6 +5055,7 @@ router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
     logger.info('[timeout] check', { jobId, submissionId });
 
     const job = await jobStorage.getJob(jobId);
+    if (rejectIfNotOnChain(res, job, jobId, { canTimeout: false })) return;
     const subId = parseInt(submissionId, 10);
     const submission = job.submissions?.find(s => s.submissionId === subId);
 
@@ -3737,15 +5071,6 @@ router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
     // Get on-chain IDs
     const onChainBountyId = job.jobId;
     const onChainSubmissionId = submission.onChainSubmissionId ?? submission.submissionId;
-
-    if (onChainBountyId == null) {
-      return res.status(400).json({
-        success: false,
-        canTimeout: false,
-        error: 'Job not on-chain',
-        details: 'This job has not been registered on the blockchain yet'
-      });
-    }
 
     // Check status - must be pending evaluation
     const status = (submission.status || '').toLowerCase();
@@ -3861,6 +5186,42 @@ router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
    DIAGNOSE STUCK SUBMISSION
    ======================= */
 
+// Probes a CID against the configured IPFS gateways using a tiny range GET
+// (bytes=0-0) rather than HEAD, since some gateways are slow to populate HEAD
+// metadata for newly-pinned large objects. Returns on the first gateway that
+// answers with ok or a partial-content status; otherwise reports every attempt.
+async function probeCidAccessibility(cid, perGatewayTimeoutMs = 10000) {
+  const gateways = [config.pinataGateway, config.ipfsGateway].filter(Boolean);
+  const attempts = [];
+  for (const gateway of gateways) {
+    const url = `${gateway}/ipfs/${cid}`;
+    const startedAt = Date.now();
+    try {
+      const resp = await fetch(url, {
+        method: 'GET',
+        headers: { Range: 'bytes=0-0' },
+        signal: AbortSignal.timeout(perGatewayTimeoutMs),
+      });
+      const elapsedMs = Date.now() - startedAt;
+      const ok = resp.ok || resp.status === 206;
+      attempts.push({ gateway, status: resp.status, elapsedMs, ok });
+      if (ok) {
+        try { await resp.body?.cancel?.(); } catch (_) { /* ignore */ }
+        return { ok: true, gateway, attempts };
+      }
+    } catch (err) {
+      attempts.push({
+        gateway,
+        status: null,
+        elapsedMs: Date.now() - startedAt,
+        ok: false,
+        error: err.message,
+      });
+    }
+  }
+  return { ok: false, attempts };
+}
+
 /**
  * GET /api/jobs/:jobId/submissions/:submissionId/diagnose
  * Deep diagnostic for stuck submissions - checks on-chain state, CID accessibility, and Verdikta status.
@@ -3905,7 +5266,7 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
       submissionId: subId
     };
 
-    if (onChainBountyId == null) {
+    if (!job.onChain && !job.syncedFromBlockchain) {
       diagnosis.issues.push('Job not linked to on-chain bounty');
       diagnosis.recommendations.push('Link job to on-chain bounty ID');
     } else {
@@ -3915,14 +5276,22 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
 
         const chainSub = await contract.getSubmission(onChainBountyId, subId);
 
-        // Map status enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid
-        const statusNames = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'];
+        // Map status enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid, 5=PendingCreatorApproval
+        const statusNames = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
         const chainStatus = statusNames[Number(chainSub.status)] || `Unknown(${chainSub.status})`;
 
         const submittedAtChain = Number(chainSub.submittedAt);
         const nowSeconds = Math.floor(Date.now() / 1000);
         const elapsedSeconds = nowSeconds - submittedAtChain;
-        const timeoutEligible = elapsedSeconds >= 600; // 10 minutes
+        // NOTE: BountyEscrow.failTimedOutSubmission measures the 10-minute clock
+        // from submittedAt (which is set at prepareSubmission, not at
+        // startPreparedSubmission). For bounties with a creator-approval
+        // window, a submission may become timeout-eligible the instant the
+        // window expires and `start` is called.
+        const TIMEOUT_SECONDS = 600;
+        const timeoutAt = submittedAtChain + TIMEOUT_SECONDS;
+        const secondsUntilTimeout = Math.max(0, timeoutAt - nowSeconds);
+        const timeoutEligible = elapsedSeconds >= TIMEOUT_SECONDS;
 
         diagnosis.checks.onChain = {
           found: true,
@@ -3934,11 +5303,18 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
           evalWallet: chainSub.evalWallet,
           verdiktaAggId: chainSub.verdiktaAggId,
           submittedAt: submittedAtChain,
+          submittedAtISO: new Date(submittedAtChain * 1000).toISOString(),
           finalizedAt: Number(chainSub.finalizedAt),
           acceptance: Number(chainSub.acceptance),
           rejection: Number(chainSub.rejection),
           elapsedMinutes: Math.floor(elapsedSeconds / 60),
-          timeoutEligible
+          elapsedSeconds,
+          timeoutEligible,
+          timeoutAt,
+          timeoutAtISO: new Date(timeoutAt * 1000).toISOString(),
+          secondsUntilTimeout,
+          timeoutReferenceNote:
+            'The 10-minute timeout clock runs from submittedAt (prepareSubmission), not from startPreparedSubmission.'
         };
 
         // Analyze on-chain state
@@ -3973,19 +5349,50 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
               } else {
                 diagnosis.checks.oracleResult = { complete: false };
                 if (timeoutEligible) {
-                  diagnosis.recommendations.push('Oracle not yet complete and submission is eligible for timeout - call failTimedOutSubmission');
+                  diagnosis.recommendations.push(
+                    `Oracle not yet complete and submission is eligible for timeout — call POST /api/jobs/${jobId}/submissions/${subId}/timeout (or failTimedOutSubmission on-chain).`
+                  );
                 } else {
-                  diagnosis.recommendations.push(`Oracle not yet complete. Wait ${Math.ceil((600 - elapsedSeconds) / 60)} more minute(s) for timeout eligibility`);
+                  diagnosis.recommendations.push(
+                    `Oracle not yet complete. Timeout becomes callable at ${new Date(timeoutAt * 1000).toISOString()} ` +
+                    `(unix ${timeoutAt}, in ${secondsUntilTimeout}s / ~${Math.ceil(secondsUntilTimeout / 60)} min). ` +
+                    `Clock runs from submittedAt (prepareSubmission), not startPreparedSubmission.`
+                  );
                 }
               }
             } catch (aggErr) {
               diagnosis.checks.oracleResult = { complete: false, error: aggErr.message };
               if (timeoutEligible) {
-                diagnosis.recommendations.push('Could not check oracle — submission is eligible for timeout');
+                diagnosis.recommendations.push('Could not check oracle — submission is eligible for timeout. Call /timeout.');
               } else {
-                diagnosis.recommendations.push(`Wait ${Math.ceil((600 - elapsedSeconds) / 60)} more minute(s) for timeout eligibility`);
+                diagnosis.recommendations.push(
+                  `Could not check oracle. Timeout becomes callable at ${new Date(timeoutAt * 1000).toISOString()} ` +
+                  `(unix ${timeoutAt}, in ${secondsUntilTimeout}s).`
+                );
               }
             }
+          }
+        } else if (chainStatus === 'PendingCreatorApproval') {
+          const windowEnd = Number(chainSub.creatorWindowEnd);
+          const windowOpen = windowEnd > nowSeconds;
+
+          diagnosis.checks.creatorApprovalWindow = {
+            windowEnd,
+            windowEndISO: new Date(windowEnd * 1000).toISOString(),
+            windowOpen,
+            secondsRemaining: windowOpen ? windowEnd - nowSeconds : 0
+          };
+
+          if (windowOpen) {
+            diagnosis.recommendations.push(
+              `Creator approval window is open until ${new Date(windowEnd * 1000).toISOString()} (${Math.ceil((windowEnd - nowSeconds) / 60)} min remaining). ` +
+              `The bounty creator can approve via POST /api/jobs/${jobId}/submissions/${subId}/approve-as-creator, ` +
+              `or wait for the window to expire and then call POST /api/jobs/${jobId}/submissions/${subId}/start.`
+            );
+          } else {
+            diagnosis.recommendations.push(
+              `Creator approval window has expired. Call POST /api/jobs/${jobId}/submissions/${subId}/start to begin oracle evaluation (requires LINK funding).`
+            );
           }
         } else if (chainStatus === 'Failed' || chainStatus === 'PassedPaid' || chainStatus === 'PassedUnpaid') {
           diagnosis.issues.push(`Submission already finalized with status: ${chainStatus}`);
@@ -3998,37 +5405,54 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
       }
     }
 
-    // 3. Check CID accessibility
+    // 3. Check CID accessibility (backend-side probe — see note below).
+    // NOTE: These probes use OUR own backend HTTP fetch against the configured
+    // IPFS gateways. A failure here means the bounty-program backend could not
+    // reach the gateway within the timeout — it does NOT, on its own, prove the
+    // Verdikta oracle failed to fetch the CID. Oracle-side fetch failures
+    // happen in a separate service and surface through the evaluation result
+    // or a 10-minute timeout window, not through this probe.
     const ipfsClient = req.app.locals.ipfsClient;
     if (ipfsClient && localSub?.hunterCid) {
-      try {
-        // Just do a HEAD check or quick fetch
-        const gatewayUrl = `${config.pinataGateway}/ipfs/${localSub.hunterCid}`;
-        const cidCheck = await fetch(gatewayUrl, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
-        diagnosis.checks.hunterCidAccessible = cidCheck.ok;
-        if (!cidCheck.ok) {
-          diagnosis.issues.push(`Hunter CID not accessible: ${cidCheck.status}`);
-          diagnosis.recommendations.push('Verify hunterCid is pinned and accessible');
-        }
-      } catch (cidErr) {
-        diagnosis.checks.hunterCidAccessible = false;
-        diagnosis.issues.push(`Hunter CID check failed: ${cidErr.message}`);
+      const probe = await probeCidAccessibility(localSub.hunterCid);
+      diagnosis.checks.hunterCidAccessible = probe.ok;
+      diagnosis.checks.hunterCidProbe = {
+        note: 'Backend-side gateway probe — not an oracle-side check',
+        servedBy: probe.gateway || null,
+        attempts: probe.attempts,
+      };
+      if (!probe.ok) {
+        diagnosis.issues.push(
+          `Backend gateway probe for hunterCid did not succeed against any configured gateway ` +
+          `(${probe.attempts.map(a => a.gateway).join(', ')}). This is a backend reachability check, ` +
+          `not an oracle failure. The oracle may still have fetched the CID successfully.`
+        );
+        diagnosis.recommendations.push(
+          'Verify hunterCid is pinned (GET via gateway.pinata.cloud directly). ' +
+          'If the CID resolves externally, the backend probe likely hit a transient gateway slowdown and can be ignored.'
+        );
       }
     }
 
-    // 4. Check evaluation CID
+    // 4. Check evaluation CID (backend-side probe — same caveat as hunterCid).
     if (job.evaluationCid) {
-      try {
-        const gatewayUrl = `${config.pinataGateway}/ipfs/${job.evaluationCid}`;
-        const cidCheck = await fetch(gatewayUrl, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
-        diagnosis.checks.evaluationCidAccessible = cidCheck.ok;
-        if (!cidCheck.ok) {
-          diagnosis.issues.push(`Evaluation package CID not accessible: ${cidCheck.status}`);
-          diagnosis.recommendations.push('Verify evaluationCid (evaluation package) is pinned');
-        }
-      } catch (cidErr) {
-        diagnosis.checks.evaluationCidAccessible = false;
-        diagnosis.issues.push(`Evaluation CID check failed: ${cidErr.message}`);
+      const probe = await probeCidAccessibility(job.evaluationCid);
+      diagnosis.checks.evaluationCidAccessible = probe.ok;
+      diagnosis.checks.evaluationCidProbe = {
+        note: 'Backend-side gateway probe — not an oracle-side check',
+        servedBy: probe.gateway || null,
+        attempts: probe.attempts,
+      };
+      if (!probe.ok) {
+        diagnosis.issues.push(
+          `Backend gateway probe for evaluationCid did not succeed against any configured gateway ` +
+          `(${probe.attempts.map(a => a.gateway).join(', ')}). This is a backend reachability check, ` +
+          `not an oracle failure.`
+        );
+        diagnosis.recommendations.push(
+          'Verify evaluationCid (evaluation package) is pinned. ' +
+          'If it resolves externally, the backend probe likely hit a transient gateway slowdown.'
+        );
       }
     }
 
@@ -4635,12 +6059,19 @@ async function calculateFeeEstimate(juryNodes, iterations) {
   const maxOracleFeeLINK = Number(maxOracleFeeWei) / 1e18;
 
   // Recommended prepareSubmission parameters
-  // These are the values agents should use when calling prepareSubmission
+  // These are the values agents should use when calling prepareSubmission.
+  //
+  // alpha (0-1000): timeliness-vs-quality blend in ReputationKeeper.getSelectionScore.
+  //   weighted = ((1000 - alpha) * quality + alpha * timeliness) / 1000.
+  //   0 = pure quality; 1000 = pure timeliness; 500 = equal blend.
+  // maxFeeBasedScaling: plain integer N (x-factor) — contract multiplies by 1e18
+  //   internally. Caps the fee-boost multiplier for oracles priced below maxOracleFee.
+  //   Must be >= 1. 3 = up to 3x boost for the cheapest eligible oracles.
   const recommendedParams = {
-    alpha: '500',                                    // Reputation weight (0-1000), 500 = balanced
-    maxOracleFee: maxOracleFeeWei.toString(),       // Per-oracle fee cap
-    estimatedBaseCost: baseCostWei.toString(),     // Base cost
-    maxFeeBasedScaling: '1200000000000000000'      // 1.2x scaling factor (18 decimals)
+    alpha: '500',
+    maxOracleFee: maxOracleFeeWei.toString(),
+    estimatedBaseCost: baseCostWei.toString(),
+    maxFeeBasedScaling: '3'
   };
 
   return {

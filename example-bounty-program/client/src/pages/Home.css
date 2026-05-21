@@ -40,6 +40,19 @@
 
 .section-header h2 {
   font-size: 2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.bounty-count {
+  font-size: 1rem;
+  font-weight: var(--font-medium, 500);
+  line-height: 1;
+  padding: 0.25rem 0.625rem;
+  border-radius: 999px;
+  background-color: var(--gray-100);
+  color: var(--text-secondary);
 }
 
 .empty-state {
@@ -489,6 +502,36 @@
 .status-badge.status-unknown {
   background-color: var(--gray-200);
   color: var(--gray-700);
+}
+
+.badge-targeted {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background-color: #7c3aed;
+  color: white;
+}
+
+.badge-windowed {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background-color: #0891b2;
+  color: white;
+}
+
+.badge-pending {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background-color: #d97706;
+  color: white;
 }
 
 /* Time Remaining States */

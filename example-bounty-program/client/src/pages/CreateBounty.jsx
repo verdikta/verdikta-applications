@@ -11,11 +11,13 @@ import {
   Clock,
   ChevronRight,
   X,
+  Eye,
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
 import { modelProviderService } from '../services/modelProviderService';
 import { walletService } from '../services/wallet';
+import { getContractService } from '../services/contractService';
 import * as rubricStorage from '../services/rubricStorage';
 import { getTemplateOptions, getTemplate, createBlankRubric, RUBRIC_DEFAULTS } from '../data/rubricTemplates';
 import ClassSelector from '../components/ClassSelector';
@@ -64,9 +66,24 @@ function CreateBounty({ walletState }) {
     payoutAmount: '0.001',
     ethPriceUSD: 0,
     submissionWindowHours: 1, // Default, for development, to 1 hour.
+    targetHunter: '',
     deliverableRequirements: {
       format: ['markdown', 'pdf']
-    }
+    },
+    // Creator approval window (optional)
+    // Defaults match the placeholders on the windowed-bounty inputs so the
+    // form is submittable as-is once the checkbox is enabled. Users can edit
+    // these values; this just avoids the "cannot be zero" validation error
+    // when the user trusted what looked like pre-filled values.
+    enableApprovalWindow: false,
+    creatorPaymentEth: '0.001',
+    arbiterPaymentEth: '0.001',
+    approvalWindowHours: '1',
+    // Off-chain visibility flag — creators can opt in to convenient public
+    // preview/download of submitted work. CIDs are public regardless; this
+    // just surfaces buttons on the website. Revocable later from the bounty
+    // details page.
+    publicSubmissions: false,
   });
 
   // ---------- helpers ----------
@@ -139,11 +156,9 @@ function CreateBounty({ walletState }) {
   useEffect(() => {
     const fetchEthPrice = async () => {
       try {
-        const response = await fetch(
-          'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd'
-        );
+        const response = await fetch('/api/jobs/eth-price');
         const data = await response.json();
-        setFormData((prev) => ({ ...prev, ethPriceUSD: data?.ethereum?.usd || 0 }));
+        setFormData((prev) => ({ ...prev, ethPriceUSD: data?.usd || 0 }));
       } catch (err) {
         console.warn('Failed to fetch ETH price:', err);
       }
@@ -360,7 +375,6 @@ function CreateBounty({ walletState }) {
       });
       setThreshold(template.threshold ?? RUBRIC_DEFAULTS.threshold);
       setSelectedClassId(template.classId ?? RUBRIC_DEFAULTS.classId);
-      setFormData((prev) => ({ ...prev, title: template.title }));
       setLoadedRubricCid(null);
     }
   };
@@ -503,6 +517,20 @@ function CreateBounty({ walletState }) {
     const validation = validateWeights();
     if (!validation.valid) { toast.warning(`Invalid rubric weights: ${validation.message}`); return; }
     if (juryNodes.length === 0) { toast.warning('Please add at least one jury node'); return; }
+    if (formData.targetHunter && !/^0x[a-fA-F0-9]{40}$/.test(formData.targetHunter)) {
+      toast.warning('Target address must be a valid Ethereum address (0x...)'); return;
+    }
+    if (formData.enableApprovalWindow) {
+      if (!formData.creatorPaymentEth || parseFloat(formData.creatorPaymentEth) <= 0) {
+        toast.warning('Creator approval payment must be > 0 ETH'); return;
+      }
+      if (!formData.arbiterPaymentEth || parseFloat(formData.arbiterPaymentEth) <= 0) {
+        toast.warning('Arbiter approval payment must be > 0 ETH'); return;
+      }
+      if (!formData.approvalWindowHours || parseFloat(formData.approvalWindowHours) <= 0) {
+        toast.warning('Approval window must be > 0 hours'); return;
+      }
+    }
 
     const juryValidation = validateJuryWeights();
     if (!juryValidation.valid) { toast.warning(`Invalid jury weights: ${juryValidation.message}`); return; }
@@ -541,6 +569,13 @@ function CreateBounty({ walletState }) {
         })),
         iterations,
         submissionWindowHours: parseInt(formData.submissionWindowHours, 10),
+        ...(formData.targetHunter ? { targetHunter: formData.targetHunter } : {}),
+        ...(formData.enableApprovalWindow ? {
+          creatorDeterminationPayment: parseFloat(formData.creatorPaymentEth),
+          arbiterDeterminationPayment: parseFloat(formData.arbiterPaymentEth),
+          creatorAssessmentWindowHours: parseFloat(formData.approvalWindowHours),
+        } : {}),
+        publicSubmissions: !!formData.publicSubmissions,
       });
 
       if (!apiResponse?.success) {
@@ -552,7 +587,6 @@ function CreateBounty({ walletState }) {
 
       // 2) On-chain create
       setLoadingText('Waiting for wallet / creating on-chain…');
-      const { getContractService } = await import('../services/contractService');
       const contractService = getContractService();
       if (!contractService.isConnected()) await contractService.connect();
 
@@ -562,6 +596,12 @@ function CreateBounty({ walletState }) {
         threshold,
         bountyAmountEth: parseFloat(formData.payoutAmount),
         submissionWindowHours: parseInt(formData.submissionWindowHours, 10),
+        ...(formData.targetHunter ? { targetHunter: formData.targetHunter } : {}),
+        ...(formData.enableApprovalWindow ? {
+          creatorDeterminationPaymentEth: parseFloat(formData.creatorPaymentEth),
+          arbiterDeterminationPaymentEth: parseFloat(formData.arbiterPaymentEth),
+          creatorAssessmentWindowHours: parseFloat(formData.approvalWindowHours),
+        } : {}),
       });
 
       if (!contractResult?.success || contractResult?.bountyId == null) {
@@ -731,6 +771,148 @@ function CreateBounty({ walletState }) {
               </div>
             </div>
 
+            <div className="form-row">
+              <div className="form-group">
+                <label htmlFor="targetHunter">
+                  Target Address (optional)
+                </label>
+                <input
+                  type="text"
+                  id="targetHunter"
+                  value={formData.targetHunter}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, targetHunter: e.target.value.trim() }))}
+                  placeholder="0x... (leave empty for open bounty)"
+                />
+                <small className="helper-text">
+                  {formData.targetHunter
+                    ? 'Targeted: only this address can submit'
+                    : 'Open to all: anyone can submit'}
+                </small>
+              </div>
+            </div>
+
+            {/* Creator Approval Window — opt-in feature card with embedded toggle */}
+            <div className={`feature-card ${formData.enableApprovalWindow ? 'enabled' : ''}`}>
+              <label className="feature-card-header">
+                <Clock size={20} className="feature-card-icon" />
+                <div className="feature-card-text">
+                  <div className="feature-card-title">Creator Approval Window</div>
+                  <div className="feature-card-desc">
+                    Approve submissions directly before AI evaluation runs. You can offer a different payment for direct approval vs. oracle approval.
+                  </div>
+                </div>
+                <span className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    checked={formData.enableApprovalWindow}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, enableApprovalWindow: e.target.checked }))}
+                    aria-label="Enable creator approval window"
+                  />
+                  <span className="toggle-switch-slider" />
+                </span>
+              </label>
+
+              {formData.enableApprovalWindow && (
+                <div className="feature-card-body">
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label htmlFor="creatorPaymentEth">
+                        Creator Approval Payment (ETH) <span className="required">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        id="creatorPaymentEth"
+                        value={formData.creatorPaymentEth}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, creatorPaymentEth: e.target.value }))}
+                        placeholder="0.001"
+                        step="0.001"
+                        min="0"
+                      />
+                      <small className="helper-text">
+                        Amount paid to hunter if you approve directly
+                        {formData.creatorPaymentEth && formData.ethPriceUSD > 0 && (
+                          <> (≈ ${(parseFloat(formData.creatorPaymentEth) * formData.ethPriceUSD).toFixed(2)} USD)</>
+                        )}
+                      </small>
+                    </div>
+
+                    <div className="form-group">
+                      <label htmlFor="arbiterPaymentEth">
+                        Arbiter Approval Payment (ETH) <span className="required">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        id="arbiterPaymentEth"
+                        value={formData.arbiterPaymentEth}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, arbiterPaymentEth: e.target.value }))}
+                        placeholder="0.001"
+                        step="0.001"
+                        min="0"
+                      />
+                      <small className="helper-text">
+                        Amount paid to hunter if approved by AI arbiters (after window expires)
+                        {formData.arbiterPaymentEth && formData.ethPriceUSD > 0 && (
+                          <> (≈ ${(parseFloat(formData.arbiterPaymentEth) * formData.ethPriceUSD).toFixed(2)} USD)</>
+                        )}
+                      </small>
+                    </div>
+                  </div>
+
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label htmlFor="approvalWindowHours">
+                        Approval Window (hours) <span className="required">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        id="approvalWindowHours"
+                        value={formData.approvalWindowHours}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, approvalWindowHours: e.target.value }))}
+                        placeholder="1"
+                        step="0.5"
+                        min="0.5"
+                      />
+                      <small className="helper-text">
+                        Time you have to review and approve each submission before it goes to oracle evaluation
+                      </small>
+                    </div>
+                  </div>
+
+                  {formData.creatorPaymentEth && formData.arbiterPaymentEth && (
+                    <div className="escrow-preview">
+                      Escrow required: {Math.max(parseFloat(formData.creatorPaymentEth) || 0, parseFloat(formData.arbiterPaymentEth) || 0)} ETH
+                      {' '}(max of creator and arbiter payments)
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Public Submissions — off-chain visibility flag */}
+            <div className={`feature-card ${formData.publicSubmissions ? 'enabled' : ''}`}>
+              <label className="feature-card-header">
+                <Eye size={20} className="feature-card-icon" />
+                <div className="feature-card-text">
+                  <div className="feature-card-title">Allow public access to submissions</div>
+                  <div className="feature-card-desc">
+                    Lets anyone preview and download submitted work on the website, not just you.
+                    Submission CIDs are technically public regardless (stored on-chain and returned by
+                    the API); this toggle only controls whether the website shows convenient buttons.
+                    You can change this later from the bounty page.
+                  </div>
+                </div>
+                <span className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    checked={formData.publicSubmissions}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, publicSubmissions: e.target.checked }))}
+                    aria-label="Allow public access to submissions"
+                  />
+                  <span className="toggle-switch-slider" />
+                </span>
+              </label>
+            </div>
+
             <div className="form-actions">
               <button type="button" onClick={() => setStep(2)} className="btn btn-primary">
                 Next: Create Rubric →
@@ -781,7 +963,7 @@ function CreateBounty({ walletState }) {
             </div>
 
             <div className="form-group">
-              <label htmlFor="rubricDescription">Rubric Description</label>
+              <label htmlFor="rubricDescription">Rubric Description (Optional)</label>
               <textarea
                 id="rubricDescription"
                 value={rubric.description}
@@ -789,6 +971,7 @@ function CreateBounty({ walletState }) {
                 placeholder="Describe what this rubric evaluates..."
                 rows={3}
               />
+              <small className="helper-text">Rubric Title and Rubric Description are only used as labels for human readers. Neither affects grading.</small>
             </div>
 
             <div className="form-group">
@@ -1129,6 +1312,7 @@ function CreateBounty({ walletState }) {
           <li>Rubric (including threshold for selection) is uploaded to IPFS (immutable).</li>
           <li>Smart contract locks your ETH in escrow.</li>
           <li>Bounty status becomes OPEN - hunters can submit work before deadline.</li>
+          <li><strong>If approval window enabled:</strong> Each submission enters a creator review period. You can approve directly (paying the creator approval amount) or let the window expire for oracle evaluation.</li>
           <li>After deadline passes, bounty becomes EXPIRED if no winner yet.</li>
           <li>Anyone can close an EXPIRED bounty (if no active evaluations) to return funds to creator.</li>
         </ol>
@@ -1175,8 +1359,11 @@ function CreateBounty({ walletState }) {
           <p style={{ marginBottom: '0.5rem' }}>
             <strong>Active Evaluations:</strong> If submissions are being evaluated when the deadline passes, the bounty cannot be closed until those evaluations complete.
           </p>
-          <p style={{ marginBottom: 0 }}>
+          <p style={{ marginBottom: '0.5rem' }}>
             <strong>First Winner Takes All:</strong> The first submission that passes the threshold automatically wins. Plan your deadline and threshold accordingly.
+          </p>
+          <p style={{ marginBottom: 0 }}>
+            <strong>Approval Window:</strong> If enabled, submissions enter a "Pending Creator Approval" state. You can approve directly (faster, potentially lower cost) or let the window expire for standard AI oracle evaluation. Earlier submissions have priority — you must resolve them in order.
           </p>
         </div>
       </div>

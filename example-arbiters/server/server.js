@@ -7,6 +7,7 @@ const logger = require('./utils/logger');
 const statusRoutes = require('./routes/statusRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
 const contractsRoutes = require('./routes/contractsRoutes');
+const arbitersRoutes = require('./routes/arbitersRoutes');
 
 process.on('uncaughtException', (err) => {
   logger.error('[fatal] uncaughtException', { error: err.message, stack: err.stack });
@@ -28,6 +29,7 @@ app.get('/health', (_req, res) => {
 app.use('/api', statusRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/contracts', contractsRoutes);
+app.use('/api/arbiters', arbitersRoutes);
 
 app.use((err, _req, res, _next) => {
   logger.error('[express] unhandled error', { error: err.message, stack: err.stack });

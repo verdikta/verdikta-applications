@@ -52,6 +52,17 @@ export const apiService = {
     });
     return response.data;
   },
+
+  // Arbiters owned by `owner` on `network`, grouped by operator contract, with
+  // claimable LINK and per-job stake/lock state. Backs the My Arbiters page.
+  // Allows extra time for the on-chain enumeration.
+  async getOwnedArbiters(owner, network) {
+    const response = await api.get('/api/arbiters/owned', {
+      params: { owner, network },
+      timeout: 60000,
+    });
+    return response.data;
+  },
 };
 
 export default apiService;

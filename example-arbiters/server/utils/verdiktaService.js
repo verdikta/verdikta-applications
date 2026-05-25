@@ -77,6 +77,14 @@ const ERC20_ABI = [
   "function totalSupply() view returns (uint256)"
 ];
 
+// ArbiterOperator (Chainlink Operator) ABI — owner + claimable LINK balance.
+// An operator contract serves one owner and may back several jobIds; earned
+// LINK accrues here and is withdrawn by the owner (see client write path).
+const OPERATOR_ABI = [
+  "function owner() view returns (address)",
+  "function withdrawable() view returns (uint256)"
+];
+
 class VerdiktaService {
   constructor(providerUrl, aggregatorAddress) {
     this.provider = new ethers.JsonRpcProvider(providerUrl);
@@ -440,6 +448,107 @@ class VerdiktaService {
       logger.error('Failed to get arbiter availability', { msg: error.message });
       throw error;
     }
+  }
+
+  /**
+   * Derive a display status for an arbiter from its on-chain info, matching the
+   * logic used by the availability table.
+   */
+  _statusFor(oracle, thresholds, now) {
+    const isBlocked = oracle.blocked && oracle.lockedUntil > now;
+    const responsiveness = this.analyzeResponsiveness(
+      oracle.recentScores,
+      oracle.timelinessScore,
+      thresholds
+    );
+    if (!oracle.isActive) return 'inactive';
+    if (isBlocked) return 'blocked';
+    if (responsiveness.isUnresponsive) return 'unresponsive';
+    if (oracle.callCount < 3) return 'new';
+    return 'active';
+  }
+
+  /**
+   * Arbiters owned by a given wallet, grouped by operator contract.
+   *
+   * Ownership is the operator contract's own `owner()` (Chainlink ConfirmedOwner)
+   * — the address allowed to withdraw earned LINK and to deregister. One operator
+   * may back several jobIds, so claimable LINK is reported once per operator while
+   * stake/lock state is reported per (oracle, jobId).
+   *
+   * The keeper address is returned so the client can build the deregister tx.
+   */
+  async getOwnedArbiters(ownerAddress) {
+    const target = String(ownerAddress).toLowerCase();
+    // Ensure keeperAddress is resolved for the client write path.
+    await this.getReputationKeeper();
+
+    const [oracles, thresholds] = await Promise.all([
+      this.getAllOracles(),
+      this.getThresholds()
+    ]);
+
+    // Distinct operator contracts (skip indexes that failed to read).
+    const operatorAddrs = [...new Set(
+      oracles.filter(o => !o.error && o.oracle).map(o => o.oracle)
+    )];
+
+    // Read owner() + withdrawable() per operator, tolerating failures so one
+    // bad operator doesn't sink the whole list.
+    const ownerInfo = {};
+    await Promise.all(operatorAddrs.map(async (addr) => {
+      const op = new ethers.Contract(addr, OPERATOR_ABI, this.provider);
+      const [owner, withdrawable] = await Promise.all([
+        withRetry(() => op.owner()).catch(() => null),
+        withRetry(() => op.withdrawable()).catch(() => null)
+      ]);
+      ownerInfo[addr.toLowerCase()] = {
+        owner: owner ? String(owner) : null,
+        withdrawable
+      };
+    }));
+
+    const now = Math.floor(Date.now() / 1000);
+    const byOperator = {};
+
+    for (const oracle of oracles) {
+      if (oracle.error || !oracle.oracle) continue;
+      const info = ownerInfo[oracle.oracle.toLowerCase()];
+      if (!info || !info.owner || info.owner.toLowerCase() !== target) continue;
+
+      if (!byOperator[oracle.oracle]) {
+        byOperator[oracle.oracle] = {
+          operator: oracle.oracle,
+          owner: info.owner,
+          withdrawableLink: info.withdrawable != null
+            ? ethers.formatEther(info.withdrawable)
+            : null,
+          jobs: []
+        };
+      }
+
+      byOperator[oracle.oracle].jobs.push({
+        jobId: oracle.jobId,
+        classes: oracle.classes,
+        status: this._statusFor(oracle, thresholds, now),
+        isActive: oracle.isActive,
+        blocked: oracle.blocked,
+        lockedUntil: oracle.lockedUntil,
+        locked: oracle.lockedUntil > now,
+        stakeAmount: oracle.stakeAmount, // formatted ether string ("100.0")
+        fee: oracle.fee,
+        callCount: oracle.callCount,
+        qualityScore: oracle.qualityScore,
+        timelinessScore: oracle.timelinessScore
+      });
+    }
+
+    return {
+      owner: ownerAddress,
+      keeperAddress: this.keeperAddress,
+      operators: Object.values(byOperator),
+      timestamp: Date.now()
+    };
   }
 
   /**

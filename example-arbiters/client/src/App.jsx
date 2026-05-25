@@ -1,12 +1,14 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { ToastProvider } from './components/Toast';
 import { NetworkProvider } from './context/NetworkContext';
+import { WalletProvider } from './context/WalletContext';
 import ScrollToTop from './components/ScrollToTop';
 import Header from './components/Header';
 import Home from './pages/Home';
 import Analytics from './pages/Analytics';
 import Contracts from './pages/Contracts';
 import ClassDetails from './pages/ClassDetails';
+import MyArbiters from './pages/MyArbiters';
 import './App.css';
 
 function AppContent() {
@@ -21,6 +23,7 @@ function AppContent() {
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/contracts" element={<Contracts />} />
             <Route path="/class/:classId" element={<ClassDetails />} />
+            <Route path="/my-arbiters" element={<MyArbiters />} />
           </Routes>
         </main>
       </div>
@@ -32,9 +35,11 @@ function App() {
   return (
     <ToastProvider>
       <NetworkProvider>
-        <Router>
-          <AppContent />
-        </Router>
+        <WalletProvider>
+          <Router>
+            <AppContent />
+          </Router>
+        </WalletProvider>
       </NetworkProvider>
     </ToastProvider>
   );

@@ -63,6 +63,65 @@
   cursor: pointer;
 }
 
+/* Wallet connect button / connected pill */
+.btn-connect {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.85rem;
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+  transition: opacity 0.2s;
+}
+
+.btn-connect:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.btn-connect:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.wallet-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.5rem 0.35rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  font-size: 0.875rem;
+  color: var(--text);
+}
+
+.wallet-address-short {
+  font-family: monospace;
+}
+
+.wallet-disconnect {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.2rem;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.wallet-disconnect:hover {
+  color: var(--danger, #ef4444);
+  background: var(--border);
+}
+
 .btn-with-icon {
   display: inline-flex;
   align-items: center;
@@ -166,12 +225,23 @@
 
   .header-right {
     width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
   }
 
-  /* Network selector meets 44px touch target on mobile */
-  .network-selector {
+  /* Network selector + wallet controls meet 44px touch target on mobile */
+  .network-selector,
+  .btn-connect,
+  .wallet-pill {
     width: 100%;
     min-height: 44px;
+  }
+
+  .btn-connect,
+  .wallet-pill {
+    justify-content: center;
+    box-sizing: border-box;
   }
 
   .wallet-info {

@@ -1,0 +1,110 @@
+/* My Arbiters page — builds on the shared .analytics layout (page-header,
+   analytics-section, stats-table, btn-*). Only page-specific pieces here. */
+
+/* Gating panels: connect / wrong-network / empty / install */
+.my-arbiters .gate-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.75rem;
+  padding: 2.5rem 1rem;
+  color: var(--text-secondary);
+}
+
+.my-arbiters .gate-state h2 {
+  margin: 0;
+}
+
+.my-arbiters .gate-state p {
+  max-width: 32rem;
+  margin: 0;
+}
+
+.my-arbiters .gate-state .btn {
+  margin-top: 0.5rem;
+}
+
+.my-arbiters .gate-state code {
+  font-family: monospace;
+}
+
+.my-arbiters .warn-icon {
+  color: var(--warning, #f59e0b);
+}
+
+/* Operator card header: address + claimable LINK + claim button */
+.my-arbiters .operator-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.my-arbiters .operator-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.my-arbiters .operator-title h2 {
+  margin: 0;
+}
+
+.my-arbiters .operator-claim {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.my-arbiters .claim-balance {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.my-arbiters .claim-balance strong {
+  color: var(--text);
+  font-size: 1.05rem;
+}
+
+.my-arbiters .job-action {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.my-arbiters .locked-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--warning, #f59e0b);
+}
+
+/* Danger button (close out / deregister) */
+.btn-danger {
+  background: var(--danger, #ef4444);
+  color: #fff;
+  border: 1px solid var(--danger, #ef4444);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-dark, #dc2626);
+  border-color: var(--danger-dark, #dc2626);
+}
+
+.btn-danger:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Arbiter status badges (match the Analytics palette) */
+.my-arbiters .status-active { background: #dcfce7; color: #166534; }
+.my-arbiters .status-new { background: #ede9fe; color: #5b21b6; }
+.my-arbiters .status-unresponsive { background: #fef3c7; color: #92400e; }
+.my-arbiters .status-blocked { background: #fee2e2; color: #991b1b; }
+.my-arbiters .status-inactive { background: #f3f4f6; color: #374151; }

@@ -1,5 +1,6 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { ToastProvider } from './components/Toast';
+import { NetworkProvider } from './context/NetworkContext';
 import ScrollToTop from './components/ScrollToTop';
 import Header from './components/Header';
 import Home from './pages/Home';
@@ -30,9 +31,11 @@ function AppContent() {
 function App() {
   return (
     <ToastProvider>
-      <Router>
-        <AppContent />
-      </Router>
+      <NetworkProvider>
+        <Router>
+          <AppContent />
+        </Router>
+      </NetworkProvider>
     </ToastProvider>
   );
 }

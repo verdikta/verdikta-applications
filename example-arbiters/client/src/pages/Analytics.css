@@ -43,22 +43,6 @@
   color: var(--text-secondary);
 }
 
-/* Network selector */
-.analytics .network-selector {
-  padding: 0.4rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  color: var(--text);
-  font-size: 0.875rem;
-  cursor: pointer;
-}
-
-.analytics .network-selector:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
 /* Loading and Error States */
 .analytics .loading {
   text-align: center;

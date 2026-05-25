@@ -4,8 +4,8 @@
  * the ReputationKeeper, and the wVDKA staking token. Shows what each contract
  * does, a block-explorer link, its address, and live on-chain configuration.
  *
- * A network toggle (Base mainnet / Base Sepolia) is persisted to localStorage
- * and passed to the API, mirroring the Analytics page.
+ * The network (Base mainnet / Base Sepolia) is selected globally in the Header
+ * and read here via useNetwork(); changing it re-runs the data load.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -20,16 +20,9 @@ import {
   Coins
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
+import { useNetwork } from '../context/NetworkContext';
 import { apiService } from '../services/api';
 import './Contracts.css';
-
-// Network options mirror the Analytics page (underscored keys; the server
-// normalizes 'base_sepolia' -> 'base-sepolia').
-const NETWORKS = [
-  { value: 'base', label: 'Base Mainnet' },
-  { value: 'base_sepolia', label: 'Base Sepolia Testnet' }
-];
-const DEFAULT_NETWORK = 'base_sepolia';
 
 // Concise plain-language descriptions of each contract's role.
 const DESCRIPTIONS = {
@@ -86,18 +79,20 @@ function ConfigItem({ label, value }) {
 
 function Contracts() {
   const toast = useToast();
-  const [selectedNetwork, setSelectedNetwork] = useState(() => {
-    return localStorage.getItem('selectedNetwork') || DEFAULT_NETWORK;
-  });
+  const { selectedNetwork } = useNetwork();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const isMountedRef = useRef(true);
+  // Tracks the most recently requested network so a slow response for a network
+  // the user has since switched away from is ignored.
+  const requestedNetworkRef = useRef(selectedNetwork);
 
   const loadContracts = useCallback(async (network, silent = false) => {
     if (!isMountedRef.current) return;
+    requestedNetworkRef.current = network;
 
     try {
       if (!silent) setLoading(true);
@@ -105,34 +100,26 @@ function Contracts() {
 
       const result = await apiService.getContractsOverview(network);
 
-      if (isMountedRef.current) {
-        if (result.success) {
-          setData(result.data);
-          setLastUpdated(new Date());
-        } else {
-          throw new Error(result.error || 'Failed to load contracts');
-        }
+      if (!isMountedRef.current || network !== requestedNetworkRef.current) return;
+      if (result.success) {
+        setData(result.data);
+        setLastUpdated(new Date());
+      } else {
+        throw new Error(result.error || 'Failed to load contracts');
       }
     } catch (err) {
-      if (isMountedRef.current) {
+      if (isMountedRef.current && network === requestedNetworkRef.current) {
         console.error('Error loading contracts:', err);
         setError(err.message || 'Failed to load contracts');
         if (!silent) toast.error('Failed to load contract data');
       }
     } finally {
-      if (isMountedRef.current) {
+      if (isMountedRef.current && network === requestedNetworkRef.current) {
         setLoading(false);
         setRefreshing(false);
       }
     }
   }, [toast]);
-
-  const handleNetworkChange = (network) => {
-    setSelectedNetwork(network);
-    localStorage.setItem('selectedNetwork', network);
-    setData(null);
-    loadContracts(network);
-  };
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -148,14 +135,16 @@ function Contracts() {
 
   useEffect(() => {
     isMountedRef.current = true;
-    loadContracts(selectedNetwork);
-
     return () => {
       isMountedRef.current = false;
     };
-    // Only run on mount; network changes go through handleNetworkChange.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // (Re)load whenever the globally-selected network changes.
+  useEffect(() => {
+    setData(null);
+    loadContracts(selectedNetwork);
+  }, [selectedNetwork, loadContracts]);
 
   const formatTimeAgo = (date) => {
     if (!date) return 'Never';
@@ -167,19 +156,6 @@ function Contracts() {
     return `${hours}h ago`;
   };
 
-  const networkSelector = (
-    <select
-      value={selectedNetwork}
-      onChange={(e) => handleNetworkChange(e.target.value)}
-      className="network-selector"
-      disabled={loading || refreshing}
-    >
-      {NETWORKS.map((n) => (
-        <option key={n.value} value={n.value}>{n.label}</option>
-      ))}
-    </select>
-  );
-
   const header = (
     <div className="page-header">
       <div className="header-content">
@@ -187,7 +163,6 @@ function Contracts() {
         <p>Core Verdikta contracts &mdash; what they do and how they&rsquo;re configured</p>
       </div>
       <div className="header-actions">
-        {networkSelector}
         {!loading && !error && (
           <span className="last-updated">
             <Clock size={14} /> Updated {formatTimeAgo(lastUpdated)}

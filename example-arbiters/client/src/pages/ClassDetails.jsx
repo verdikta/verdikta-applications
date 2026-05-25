@@ -3,12 +3,13 @@
  * Lists every registered arbiter (address + job ID) for a class, with the same
  * hover detail shown on the Analytics availability table. Arbiter data comes
  * from the analytics overview's byClass[classId].arbiterList for the network
- * currently selected on the Analytics page (persisted in localStorage).
+ * selected globally in the Header (read here via useNetwork()).
  */
 
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Users } from 'lucide-react';
+import { useNetwork } from '../context/NetworkContext';
 import { apiService } from '../services/api';
 import './ClassDetails.css';
 
@@ -25,7 +26,7 @@ const DEFAULT_NETWORK = 'base_sepolia';
 
 function ClassDetails() {
   const { classId } = useParams();
-  const network = localStorage.getItem('selectedNetwork') || DEFAULT_NETWORK;
+  const { selectedNetwork: network } = useNetwork();
   const explorer = EXPLORERS[network] || EXPLORERS[DEFAULT_NETWORK];
 
   const [classData, setClassData] = useState(null);

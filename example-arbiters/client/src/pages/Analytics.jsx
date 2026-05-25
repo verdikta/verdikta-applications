@@ -4,8 +4,8 @@
  * and system health. Read directly from the aggregator + ReputationKeeper
  * contracts; no bounty or submission data is involved.
  *
- * A network toggle (Base mainnet / Base Sepolia) is persisted to localStorage
- * and passed to the API, mirroring the example-frontend pattern.
+ * The network (Base mainnet / Base Sepolia) is selected globally in the Header
+ * and read here via useNetwork(); changing it re-runs the data load.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -22,6 +22,7 @@ import {
   Zap
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
+import { useNetwork } from '../context/NetworkContext';
 import { apiService } from '../services/api';
 import {
   Chart as ChartJS,
@@ -56,28 +57,22 @@ const ARBITER_STATUS_DESCRIPTIONS = {
   Inactive: 'Not currently registered or has been deactivated in the contract'
 };
 
-// Network options mirror example-frontend (underscored keys). The server
-// normalizes 'base_sepolia' -> 'base-sepolia'.
-const NETWORKS = [
-  { value: 'base', label: 'Base Mainnet' },
-  { value: 'base_sepolia', label: 'Base Sepolia Testnet' }
-];
-const DEFAULT_NETWORK = 'base_sepolia';
-
 function Analytics() {
   const toast = useToast();
-  const [selectedNetwork, setSelectedNetwork] = useState(() => {
-    return localStorage.getItem('selectedNetwork') || DEFAULT_NETWORK;
-  });
+  const { selectedNetwork } = useNetwork();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const isMountedRef = useRef(true);
+  // Tracks the most recently requested network so a slow response for a network
+  // the user has since switched away from is ignored.
+  const requestedNetworkRef = useRef(selectedNetwork);
 
   const loadAnalytics = useCallback(async (network, silent = false) => {
     if (!isMountedRef.current) return;
+    requestedNetworkRef.current = network;
 
     try {
       if (!silent) setLoading(true);
@@ -85,34 +80,26 @@ function Analytics() {
 
       const result = await apiService.getAnalyticsOverview(network);
 
-      if (isMountedRef.current) {
-        if (result.success) {
-          setData(result.data);
-          setLastUpdated(new Date());
-        } else {
-          throw new Error(result.error || 'Failed to load analytics');
-        }
+      if (!isMountedRef.current || network !== requestedNetworkRef.current) return;
+      if (result.success) {
+        setData(result.data);
+        setLastUpdated(new Date());
+      } else {
+        throw new Error(result.error || 'Failed to load analytics');
       }
     } catch (err) {
-      if (isMountedRef.current) {
+      if (isMountedRef.current && network === requestedNetworkRef.current) {
         console.error('Error loading analytics:', err);
         setError(err.message || 'Failed to load analytics');
         if (!silent) toast.error('Failed to load analytics data');
       }
     } finally {
-      if (isMountedRef.current) {
+      if (isMountedRef.current && network === requestedNetworkRef.current) {
         setLoading(false);
         setRefreshing(false);
       }
     }
   }, [toast]);
-
-  const handleNetworkChange = (network) => {
-    setSelectedNetwork(network);
-    localStorage.setItem('selectedNetwork', network);
-    setData(null);
-    loadAnalytics(network);
-  };
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -128,14 +115,16 @@ function Analytics() {
 
   useEffect(() => {
     isMountedRef.current = true;
-    loadAnalytics(selectedNetwork);
-
     return () => {
       isMountedRef.current = false;
     };
-    // Only run on mount; network changes go through handleNetworkChange.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // (Re)load whenever the globally-selected network changes.
+  useEffect(() => {
+    setData(null);
+    loadAnalytics(selectedNetwork);
+  }, [selectedNetwork, loadAnalytics]);
 
   // Format time ago
   const formatTimeAgo = (date) => {
@@ -148,19 +137,6 @@ function Analytics() {
     return `${hours}h ago`;
   };
 
-  const networkSelector = (
-    <select
-      value={selectedNetwork}
-      onChange={(e) => handleNetworkChange(e.target.value)}
-      className="network-selector"
-      disabled={loading || refreshing}
-    >
-      {NETWORKS.map((n) => (
-        <option key={n.value} value={n.value}>{n.label}</option>
-      ))}
-    </select>
-  );
-
   if (loading) {
     return (
       <div className="analytics">
@@ -169,7 +145,6 @@ function Analytics() {
             <h1><BarChart3 size={28} className="inline-icon" /> Analytics</h1>
             <p>Arbiter availability and system diagnostics</p>
           </div>
-          <div className="header-actions">{networkSelector}</div>
         </div>
         <div className="loading">
           <div className="spinner"></div>
@@ -187,7 +162,6 @@ function Analytics() {
             <h1><BarChart3 size={28} className="inline-icon" /> Analytics</h1>
             <p>Arbiter availability and system diagnostics</p>
           </div>
-          <div className="header-actions">{networkSelector}</div>
         </div>
         <div className="error-container">
           <AlertTriangle size={48} />
@@ -247,7 +221,6 @@ function Analytics() {
           <p>Arbiter availability and system diagnostics</p>
         </div>
         <div className="header-actions">
-          {networkSelector}
           <span className="last-updated">
             <Clock size={14} /> Updated {formatTimeAgo(lastUpdated)}
           </span>

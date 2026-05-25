@@ -53,6 +53,16 @@
   padding-left: 0.25em;
 }
 
+.network-selector {
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
 .btn-with-icon {
   display: inline-flex;
   align-items: center;
@@ -152,6 +162,16 @@
 
   .nav-link:active {
     background: var(--border);
+  }
+
+  .header-right {
+    width: 100%;
+  }
+
+  /* Network selector meets 44px touch target on mobile */
+  .network-selector {
+    width: 100%;
+    min-height: 44px;
   }
 
   .wallet-info {

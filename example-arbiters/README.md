@@ -36,5 +36,6 @@ Chosen to avoid collisions with `example-frontend` (5000/3001), `example-bounty-
 
 ## Notes
 
-- No wallet / blockchain / IPFS code yet. Keep it that way until the feature set demands it.
+- No wallet / IPFS code yet. Keep it that way until the feature set demands it.
+- Read-only blockchain access is intentional: the `/analytics` page reads arbiter/oracle data from the Verdikta aggregator + ReputationKeeper contracts via ethers (no wallet, no writes, no IPFS). A network toggle (Base mainnet / Base Sepolia) is exposed in the UI; the server reads each network over a public RPC (PublicNode), so no API keys are required. Override with `RPC_URL` / `INFURA_API_KEY` for a private endpoint.
 - Visual theme mirrors `example-bounty-program` (shared CSS variables and components). Keep in sync when the design system evolves.

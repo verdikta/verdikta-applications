@@ -15,6 +15,25 @@ export const apiService = {
     const response = await api.get('/health');
     return response.data;
   },
+
+  // Combined arbiter availability + system health for a network.
+  // `network` is the client toggle value (e.g. 'base' | 'base_sepolia');
+  // the server normalizes it. Allow extra time for the on-chain enumeration.
+  async getAnalyticsOverview(network) {
+    const response = await api.get('/api/analytics/overview', {
+      params: { network },
+      timeout: 60000,
+    });
+    return response.data;
+  },
+
+  // Invalidate the server-side cache for a network so the next read is fresh.
+  async refreshAnalytics(network) {
+    const response = await api.post('/api/analytics/refresh', null, {
+      params: { network },
+    });
+    return response.data;
+  },
 };
 
 export default apiService;

@@ -3,6 +3,7 @@ import { ToastProvider } from './components/Toast';
 import ScrollToTop from './components/ScrollToTop';
 import Header from './components/Header';
 import Home from './pages/Home';
+import Analytics from './pages/Analytics';
 import './App.css';
 
 function AppContent() {
@@ -14,6 +15,7 @@ function AppContent() {
         <main className="main-content">
           <Routes>
             <Route path="/" element={<Home />} />
+            <Route path="/analytics" element={<Analytics />} />
           </Routes>
         </main>
       </div>

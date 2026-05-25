@@ -6,6 +6,7 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 const logger = require('./utils/logger');
 const statusRoutes = require('./routes/statusRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
+const contractsRoutes = require('./routes/contractsRoutes');
 
 process.on('uncaughtException', (err) => {
   logger.error('[fatal] uncaughtException', { error: err.message, stack: err.stack });
@@ -26,6 +27,7 @@ app.get('/health', (_req, res) => {
 
 app.use('/api', statusRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/contracts', contractsRoutes);
 
 app.use((err, _req, res, _next) => {
   logger.error('[express] unhandled error', { error: err.message, stack: err.stack });

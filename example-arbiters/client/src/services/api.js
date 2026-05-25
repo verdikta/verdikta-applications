@@ -34,6 +34,24 @@ export const apiService = {
     });
     return response.data;
   },
+
+  // Core contract addresses + live on-chain configuration for a network.
+  // Allow extra time for the on-chain reads (matches analytics overview).
+  async getContractsOverview(network) {
+    const response = await api.get('/api/contracts/overview', {
+      params: { network },
+      timeout: 60000,
+    });
+    return response.data;
+  },
+
+  // Invalidate the contracts cache for a network.
+  async refreshContracts(network) {
+    const response = await api.post('/api/contracts/refresh', null, {
+      params: { network },
+    });
+    return response.data;
+  },
 };
 
 export default apiService;

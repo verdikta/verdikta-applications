@@ -68,6 +68,15 @@ const KEEPER_ABI = [
   "function verdiktaToken() view returns (address)"
 ];
 
+// Minimal ERC-20 ABI for token metadata (wVDKA, LINK). Each getter is read
+// individually and tolerated as missing — not every token implements name().
+const ERC20_ABI = [
+  "function name() view returns (string)",
+  "function symbol() view returns (string)",
+  "function decimals() view returns (uint8)",
+  "function totalSupply() view returns (uint256)"
+];
+
 class VerdiktaService {
   constructor(providerUrl, aggregatorAddress) {
     this.provider = new ethers.JsonRpcProvider(providerUrl);
@@ -475,6 +484,55 @@ class VerdiktaService {
         error: error.message
       };
     }
+  }
+
+  /**
+   * ReputationKeeper scoring thresholds. An oracle's quality/timeliness score
+   * dropping below these triggers mild (warning) or severe (block) treatment.
+   */
+  async getKeeperThresholds() {
+    const keeper = await this.getReputationKeeper();
+    const [mild, severe] = await Promise.all([
+      withRetry(() => keeper.mildThreshold()),
+      withRetry(() => keeper.severeThreshold())
+    ]);
+    return { mildThreshold: Number(mild), severeThreshold: Number(severe) };
+  }
+
+  /**
+   * Aggregator's Chainlink payment config: LINK token, job id, per-oracle fee.
+   * Returned by the legacy getContractConfig() view.
+   */
+  async getPaymentConfig() {
+    const cfg = await withRetry(() => this.aggregator.getContractConfig());
+    return {
+      linkTokenAddress: cfg.linkAddr || cfg[1],
+      jobId: cfg.jobId || cfg[2],
+      fee: ethers.formatEther(cfg.fee ?? cfg[3])
+    };
+  }
+
+  /**
+   * ERC-20 metadata for a token (e.g. wVDKA). Each field is fetched
+   * independently so a token missing one optional getter still returns the
+   * rest. totalSupply is formatted using the token's own decimals.
+   */
+  async getTokenInfo(tokenAddress) {
+    const token = new ethers.Contract(tokenAddress, ERC20_ABI, this.provider);
+    const [name, symbol, decimals, totalSupply] = await Promise.all([
+      withRetry(() => token.name()).catch(() => null),
+      withRetry(() => token.symbol()).catch(() => null),
+      withRetry(() => token.decimals()).catch(() => null),
+      withRetry(() => token.totalSupply()).catch(() => null)
+    ]);
+    const dec = decimals != null ? Number(decimals) : 18;
+    return {
+      address: tokenAddress,
+      name,
+      symbol,
+      decimals: decimals != null ? dec : null,
+      totalSupply: totalSupply != null ? ethers.formatUnits(totalSupply, dec) : null
+    };
   }
 }
 

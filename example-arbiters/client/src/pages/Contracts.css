@@ -1,0 +1,66 @@
+/* Contracts Page Styles
+ *
+ * Reuses the shared layout classes from Analytics.css (.analytics, .page-header,
+ * .analytics-section, .config-grid, .contract-addresses, .address, etc. — both
+ * pages are bundled together). Only the contract-specific additions live here.
+ */
+
+/* Contract section title: name on the left, explorer link on the right */
+.contracts .contract-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.contracts .contract-title h2 {
+  margin-bottom: 0;
+}
+
+/* Concise "what it does" prose under each title */
+.contracts .contract-description {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0 0 1.25rem 0;
+  max-width: 70ch;
+}
+
+/* Block-explorer link (title link + inline address link) */
+.contracts .explorer-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--primary);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.contracts .explorer-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Address shown alongside its inline explorer link */
+.contracts .address-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.contracts .address-line .address {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
+}
+
+@media (max-width: 768px) {
+  .contracts .contract-title {
+    align-items: flex-start;
+  }
+}

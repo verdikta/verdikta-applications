@@ -304,14 +304,16 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
             message: `Class ${classId} is not active (status: ${classInfo.status})`
           });
         } else if (classInfo.models && Array.isArray(classInfo.models)) {
-          const availableModels = classInfo.models.map(m => `${m.provider}/${m.model}`);
+          // Provider names are case-insensitive in the oracle network (AI_PROVIDER
+          // accepts both "OpenAI" and "openai"). Model IDs stay case-sensitive.
+          const availableModels = classInfo.models.map(m => `${(m.provider || '').toLowerCase()}/${m.model}`);
           for (const node of juryNodes) {
-            const modelKey = `${node.provider}/${node.model}`;
+            const modelKey = `${(node.provider || '').toLowerCase()}/${node.model}`;
             if (!availableModels.includes(modelKey)) {
               issues.push({
                 type: IssueType.MODEL_UNAVAILABLE,
                 severity: IssueSeverity.WARNING,
-                message: `Jury model ${modelKey} may not be available in class ${classId}`
+                message: `Jury model ${node.provider}/${node.model} may not be available in class ${classId}`
               });
             }
           }

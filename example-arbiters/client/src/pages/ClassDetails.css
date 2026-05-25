@@ -1,0 +1,114 @@
+.class-details {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.class-details h1 {
+  margin: 0.75rem 0 0.25rem;
+  color: var(--text);
+}
+
+.class-description {
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+}
+
+.class-details .network-note {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  margin: 0 0 1.5rem;
+}
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--primary);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.back-link:hover {
+  text-decoration: underline;
+}
+
+.class-section {
+  margin-top: 1.5rem;
+}
+
+.class-section h2 {
+  font-size: 1.1rem;
+  margin-bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+}
+
+.class-section .inline-icon {
+  vertical-align: middle;
+}
+
+.section-summary {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  margin-bottom: 0.75rem;
+}
+
+.class-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.class-table th,
+.class-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.class-table th {
+  background-color: var(--bg-secondary);
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.class-table code {
+  font-size: 0.85rem;
+  background-color: var(--bg-secondary);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.class-table td:last-child code {
+  cursor: help;
+}
+
+.class-table a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.class-table a:hover {
+  text-decoration: underline;
+}
+
+.class-table tr.group-start td {
+  border-top: 2px solid var(--text-secondary);
+}
+
+.loading-state,
+.error-state,
+.empty-state {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.error-state {
+  color: #dc2626;
+}

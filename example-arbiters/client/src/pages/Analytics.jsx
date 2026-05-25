@@ -9,6 +9,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import {
   BarChart3,
   RefreshCw,
@@ -320,7 +321,9 @@ function Analytics() {
                         <td
                           title={cls.operatorList?.length > 0 ? cls.operatorList.join('\n') : undefined}
                         >
-                          <strong>{formatClassLabel(cls)}</strong>
+                          <Link to={`/class/${cls.classId}`} className="class-link">
+                            <strong>{formatClassLabel(cls)}</strong>
+                          </Link>
                         </td>
                         <td
                           title={cls.operatorList?.length > 0 ? cls.operatorList.join('\n') : 'No operators'}

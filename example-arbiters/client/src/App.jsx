@@ -4,6 +4,7 @@ import ScrollToTop from './components/ScrollToTop';
 import Header from './components/Header';
 import Home from './pages/Home';
 import Analytics from './pages/Analytics';
+import ClassDetails from './pages/ClassDetails';
 import './App.css';
 
 function AppContent() {
@@ -16,6 +17,7 @@ function AppContent() {
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/analytics" element={<Analytics />} />
+            <Route path="/class/:classId" element={<ClassDetails />} />
           </Routes>
         </main>
       </div>

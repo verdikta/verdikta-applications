@@ -164,6 +164,17 @@
   color: var(--text);
 }
 
+.stats-table .class-link {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.stats-table .class-link:hover {
+  color: var(--primary);
+}
+
 /* Stats table title */
 .stats-table .table-title {
   font-size: 1rem;

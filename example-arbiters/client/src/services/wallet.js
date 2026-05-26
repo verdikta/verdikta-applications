@@ -70,10 +70,29 @@ class WalletService {
     }
   }
 
-  /** User-initiated connect (shows the MetaMask popup). */
+  /**
+   * User-initiated connect. Opens MetaMask's account picker every time so the
+   * user can choose / switch which account to connect.
+   *
+   * Plain eth_requestAccounts silently reuses the already-permitted account once
+   * the site is authorized, so disconnect→reconnect always returned the same
+   * address. Requesting the eth_accounts permission forces the selection dialog.
+   */
   async connect() {
     if (!this.isMetaMaskInstalled()) {
       throw new Error('MetaMask is not installed. Please install MetaMask to continue.');
+    }
+    try {
+      await window.ethereum.request({
+        method: 'wallet_requestPermissions',
+        params: [{ eth_accounts: {} }]
+      });
+    } catch (err) {
+      if (err.code === 4001) {
+        throw new Error('Connection request rejected.');
+      }
+      // Wallet doesn't support wallet_requestPermissions — fall back to the
+      // plain account request below (no picker, but still connects).
     }
     const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
     await this._hydrate(accounts[0]);

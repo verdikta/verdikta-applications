@@ -75,10 +75,10 @@ function MyArbiters() {
   const [switching, setSwitching] = useState(false);
   // The arbiter awaiting close-out confirmation ({ operator, job }), or null.
   const [confirmTarget, setConfirmTarget] = useState(null);
-  // Fund-node modal: the operator address whose node we're funding, plus inputs.
-  const [fundOperatorAddr, setFundOperatorAddr] = useState(null);
-  const [topUpTarget, setTopUpTarget] = useState('');
+  // Fund inputs: per-key amount (keyed by sender address) and per-operator
+  // "top up all to" target (keyed by operator address).
   const [keyAmounts, setKeyAmounts] = useState({});
+  const [topUpTargets, setTopUpTargets] = useState({});
   const isMountedRef = useRef(true);
 
   const onCorrectChain = isConnected && chainId === chain.chainId;
@@ -206,12 +206,6 @@ function MyArbiters() {
     if (isMountedRef.current) setConfirmTarget(null);
   };
 
-  const openFund = (operator) => {
-    setFundOperatorAddr(operator.operator);
-    setTopUpTarget('');
-    setKeyAmounts({});
-  };
-
   // Send a per-key ETH amount to one sending key, then refresh balances.
   const fundKey = async (address) => {
     const amount = keyAmounts[address];
@@ -231,9 +225,9 @@ function MyArbiters() {
     }
   };
 
-  // Top every under-funded key up to `topUpTarget` ETH (sequential transfers).
+  // Top every under-funded key up to the operator's target ETH (sequential).
   const topUpAll = async (operator) => {
-    const target = Number(topUpTarget);
+    const target = Number(topUpTargets[operator.operator]);
     const key = `topup:${operator.operator}`;
     setKeyPending(key, true);
     try {
@@ -426,25 +420,78 @@ function MyArbiters() {
               </div>
             </div>
 
-            {operator.funding && (
-              <div className={`funding-bar${operator.funding.low ? ' low' : ''}`}>
-                <div className="funding-info">
-                  <Fuel size={15} className="inline-icon" />
-                  <span><strong>{Number(operator.funding.totalEth).toFixed(4)}</strong> ETH in node keys</span>
-                  <span className="funding-sep">·</span>
-                  <span
-                    className="funding-est"
-                    title={`Estimate: balance ÷ (${operator.funding.gasPerQuery.toLocaleString()} gas/query × ${operator.funding.gasPriceGwei} gwei). Changes with gas price.`}
-                  >
-                    ~{fmtQueries(operator.funding.estQueries)} queries of gas
-                  </span>
-                  {operator.funding.low && <span className="funding-low-badge">Low</span>}
+            {operator.funding && (() => {
+              const f = operator.funding;
+              const busy = pending.has(`topup:${operator.operator}`)
+                || f.senders.some((s) => pending.has(`fund:${s.address}`));
+              return (
+                <div className={`funding-panel${f.low ? ' low' : ''}`}>
+                  <div className="funding-summary">
+                    <span className="funding-summary-main">
+                      <Fuel size={15} className="inline-icon" />
+                      <strong>{Number(f.totalEth).toFixed(4)}</strong> ETH across {f.senders.length} node keys
+                      <span className="funding-sep">·</span>
+                      <span
+                        className="funding-est"
+                        title={`Estimate: balance ÷ (${f.gasPerQuery.toLocaleString()} gas/query × ${f.gasPriceGwei} gwei). Changes with gas price.`}
+                      >
+                        ~{fmtQueries(f.estQueries)} queries of gas
+                      </span>
+                      {f.low && <span className="funding-low-badge">Low</span>}
+                    </span>
+                  </div>
+
+                  <div className="fund-topup">
+                    <label htmlFor={`topup-${operator.operator}`}>Top up all keys to (ETH each):</label>
+                    <input
+                      id={`topup-${operator.operator}`}
+                      type="number" min="0" step="0.001" placeholder="0.01"
+                      value={topUpTargets[operator.operator] || ''}
+                      onChange={(e) => setTopUpTargets((p) => ({ ...p, [operator.operator]: e.target.value }))}
+                      disabled={busy}
+                    />
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => topUpAll(operator)}
+                      disabled={busy || !(Number(topUpTargets[operator.operator]) > 0)}
+                    >
+                      {pending.has(`topup:${operator.operator}`) ? 'Funding…' : 'Top up all'}
+                    </button>
+                  </div>
+
+                  <div className="fund-keys">
+                    <div className="fund-key fund-key-head">
+                      <span>Sending key</span><span>Balance</span><span>~Queries</span><span></span><span></span>
+                    </div>
+                    {f.senders.map((s) => {
+                      const keyBusy = pending.has(`fund:${s.address}`);
+                      return (
+                        <div className="fund-key" key={s.address}>
+                          <a className="explorer-link" href={`${chain.explorer}/address/${s.address}`} target="_blank" rel="noopener noreferrer" title={s.address}>
+                            <code>{shortAddr(s.address)}</code>
+                          </a>
+                          <span>{Number(s.balanceEth).toFixed(4)} ETH</span>
+                          <span>{fmtQueries(estQueriesFor(s.balanceEth, f))}</span>
+                          <input
+                            type="number" min="0" step="0.001" placeholder="ETH"
+                            value={keyAmounts[s.address] || ''}
+                            onChange={(e) => setKeyAmounts((p) => ({ ...p, [s.address]: e.target.value }))}
+                            disabled={busy}
+                          />
+                          <button
+                            className="btn btn-secondary"
+                            onClick={() => fundKey(s.address)}
+                            disabled={busy || !(Number(keyAmounts[s.address]) > 0)}
+                          >
+                            {keyBusy ? '…' : 'Send'}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-                <button className="btn btn-secondary btn-with-icon" onClick={() => openFund(operator)}>
-                  <Fuel size={14} /> Fund node
-                </button>
-              </div>
-            )}
+              );
+            })()}
 
             <div className="stats-table">
               <table>
@@ -534,81 +581,6 @@ function MyArbiters() {
         );
       })()}
 
-      {fundOperatorAddr && (() => {
-        const op = operators.find((o) => o.operator === fundOperatorAddr);
-        if (!op || !op.funding) return null;
-        const f = op.funding;
-        const busy = [...pending].some((k) => k.startsWith('fund:') || k === `topup:${op.operator}`);
-        const closeFund = () => { if (!busy) setFundOperatorAddr(null); };
-        return (
-          <div className="modal-overlay" onClick={closeFund}>
-            <div className="modal modal-wide" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
-              <h3 className="modal-title"><Fuel size={18} /> Fund node — {shortAddr(op.operator)}</h3>
-              <p className="modal-body">
-                Send ETH to this node&rsquo;s sending keys so it can pay gas for commit/reveal
-                responses. Estimates assume ~{f.gasPerQuery.toLocaleString()} gas per query at{' '}
-                {f.gasPriceGwei} gwei (changes with gas price). You confirm each transfer in your wallet.
-              </p>
-
-              <div className="fund-topup">
-                <label htmlFor="topup-target">Top up all keys to (ETH each):</label>
-                <input
-                  id="topup-target"
-                  type="number" min="0" step="0.001" placeholder="0.05"
-                  value={topUpTarget}
-                  onChange={(e) => setTopUpTarget(e.target.value)}
-                  disabled={busy}
-                />
-                <button
-                  className="btn btn-primary"
-                  onClick={() => topUpAll(op)}
-                  disabled={busy || !(Number(topUpTarget) > 0)}
-                >
-                  {pending.has(`topup:${op.operator}`) ? 'Funding…' : 'Top up all'}
-                </button>
-              </div>
-
-              <div className="fund-keys">
-                <div className="fund-key fund-key-head">
-                  <span>Sending key</span><span>Balance</span><span>~Queries</span><span></span><span></span>
-                </div>
-                {f.senders.map((s) => {
-                  const k = `fund:${s.address}`;
-                  const keyBusy = pending.has(k);
-                  return (
-                    <div className="fund-key" key={s.address}>
-                      <a className="explorer-link" href={`${chain.explorer}/address/${s.address}`} target="_blank" rel="noopener noreferrer" title={s.address}>
-                        <code>{shortAddr(s.address)}</code>
-                      </a>
-                      <span>{Number(s.balanceEth).toFixed(4)} ETH</span>
-                      <span>{fmtQueries(estQueriesFor(s.balanceEth, f))}</span>
-                      <input
-                        type="number" min="0" step="0.001" placeholder="ETH"
-                        value={keyAmounts[s.address] || ''}
-                        onChange={(e) => setKeyAmounts((p) => ({ ...p, [s.address]: e.target.value }))}
-                        disabled={busy}
-                      />
-                      <button
-                        className="btn btn-secondary"
-                        onClick={() => fundKey(s.address)}
-                        disabled={busy || !(Number(keyAmounts[s.address]) > 0)}
-                      >
-                        {keyBusy ? '…' : 'Send'}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="modal-actions">
-                <button className="btn btn-secondary" onClick={() => setFundOperatorAddr(null)} disabled={busy}>
-                  Close
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
     </div>
   );
 }

@@ -280,7 +280,7 @@
 /* Config Grid */
 .config-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 0.75rem;
 }
 
@@ -293,10 +293,19 @@
   border-radius: 6px;
 }
 
+/* Reserve two lines for every label and bottom-align the text so the value
+   below it starts at the same offset in every card — keeps the value row flat
+   even when some labels wrap to two lines. */
 .config-label {
   font-size: 0.7rem;
   color: var(--text-secondary);
   margin-bottom: 0.25rem;
+  line-height: 1.2;
+  min-height: 2.4em;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  text-align: center;
 }
 
 .config-value {

@@ -228,20 +228,17 @@ function Analytics() {
     );
   }
 
-  // Format class label: "128 (Core)" if shortName available, otherwise just "128"
-  const formatClassLabel = (cls) => {
-    return cls.shortName ? `${cls.classId} (${cls.shortName})` : String(cls.classId);
-  };
-
-  // Prepare chart data for arbiter availability
-  const arbiterChartData = data?.arbiters?.byClass ? {
-    labels: Object.values(data.arbiters.byClass).map(formatClassLabel),
+  // Prepare chart data for arbiter availability, grouped by owner so the chart
+  // matches the table below. One stacked bar per owner; segments are statuses.
+  const chartOwners = ownersData?.owners || [];
+  const arbiterChartData = chartOwners.length ? {
+    labels: chartOwners.map(o => (o.owner ? shortAddr(o.owner) : 'Unknown')),
     datasets: [
-      { label: 'Active', data: Object.values(data.arbiters.byClass).map(c => c.active ?? 0), backgroundColor: COLORS.active },
-      { label: 'New', data: Object.values(data.arbiters.byClass).map(c => c.new ?? 0), backgroundColor: COLORS.new },
-      { label: 'Unresponsive', data: Object.values(data.arbiters.byClass).map(c => c.unresponsive ?? 0), backgroundColor: COLORS.unresponsive },
-      { label: 'Blocked', data: Object.values(data.arbiters.byClass).map(c => c.blocked ?? 0), backgroundColor: COLORS.blocked },
-      { label: 'Inactive', data: Object.values(data.arbiters.byClass).map(c => c.inactive ?? 0), backgroundColor: COLORS.inactive }
+      { label: 'Active', data: chartOwners.map(o => o.active ?? 0), backgroundColor: COLORS.active },
+      { label: 'New', data: chartOwners.map(o => o.new ?? 0), backgroundColor: COLORS.new },
+      { label: 'Unresponsive', data: chartOwners.map(o => o.unresponsive ?? 0), backgroundColor: COLORS.unresponsive },
+      { label: 'Blocked', data: chartOwners.map(o => o.blocked ?? 0), backgroundColor: COLORS.blocked },
+      { label: 'Inactive', data: chartOwners.map(o => o.inactive ?? 0), backgroundColor: COLORS.inactive }
     ]
   } : null;
 
@@ -249,7 +246,7 @@ function Analytics() {
     responsive: true,
     maintainAspectRatio: false,
     scales: {
-      x: { stacked: true, title: { display: true, text: 'Class' } },
+      x: { stacked: true, title: { display: true, text: 'Owner' } },
       y: { stacked: true, beginAtZero: true, title: { display: true, text: 'Arbiter Count' } }
     },
     plugins: {
@@ -298,7 +295,11 @@ function Analytics() {
           </div>
         )}
         <div className="section-content">
-          {arbiterChartData && Object.keys(data.arbiters.byClass).length > 0 ? (
+          {ownersLoading && !ownersData ? (
+            <div className="loading"><div className="spinner"></div><p>Loading arbiters...</p></div>
+          ) : ownersError ? (
+            <div className="info-banner"><AlertTriangle size={16} /><span>{ownersError}</span></div>
+          ) : arbiterChartData ? (
             <>
               <div className="chart-container chart-bar">
                 <Bar data={arbiterChartData} options={arbiterChartOptions} />

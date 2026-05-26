@@ -58,13 +58,41 @@ const fmtToken = (v) => (v == null ? null : `${Number(v)} wVDKA`);
 // Format a signed score delta: "+60", "0", "-60".
 const fmtDelta = (n) => (n == null ? '—' : n > 0 ? `+${n}` : `${n}`);
 const deltaColor = (n) => (n == null ? 'var(--text-secondary)' : n > 0 ? '#16a34a' : n < 0 ? '#dc2626' : 'var(--text-secondary)');
+const fmtCount = (n) => (Number.isFinite(n) ? n : '—');
 
 // Reputation score-delta rows (the rulebook behind quality/timeliness scores).
+// `count` derives how many oracles land in each outcome per evaluation from the
+// selection parameters K (commit polls) ≥ M (reveals) ≥ N (required) ≥ P (cluster);
+// `formula` is shown as the count's mouseover.
 const DELTA_ROWS = [
-  { key: 'clustered', label: 'Clustered', desc: 'Response landed in the consensus cluster (agreed with the aggregated answer).' },
-  { key: 'selected', label: 'Selected, not clustered', desc: 'Selected for aggregation but outside the consensus cluster.' },
-  { key: 'revealed', label: 'Revealed, not selected', desc: 'Revealed a response but was not selected for aggregation.' },
-  { key: 'committed', label: 'Committed, not revealed', desc: 'Committed to a response but never revealed it.' }
+  {
+    key: 'clustered',
+    label: 'Clustered',
+    desc: 'Response landed in the consensus cluster (agreed with the aggregated answer).',
+    count: (c) => c.clusterSize,
+    formula: (c) => `Cluster (P) = ${c.clusterSize}`
+  },
+  {
+    key: 'selected',
+    label: 'Selected, not clustered',
+    desc: 'Selected for aggregation but outside the consensus cluster.',
+    count: (c) => c.requiredResponses - c.clusterSize,
+    formula: (c) => `Required (N) − Cluster (P) = ${c.requiredResponses} − ${c.clusterSize} = ${c.requiredResponses - c.clusterSize}`
+  },
+  {
+    key: 'revealed',
+    label: 'Revealed, not selected',
+    desc: 'Revealed a response but was not selected for aggregation.',
+    count: (c) => c.oraclesToPoll - c.requiredResponses,
+    formula: (c) => `Reveals (M) − Required (N) = ${c.oraclesToPoll} − ${c.requiredResponses} = ${c.oraclesToPoll - c.requiredResponses}`
+  },
+  {
+    key: 'committed',
+    label: 'Committed, not revealed',
+    desc: 'Committed to a response but never revealed it.',
+    count: (c) => c.commitOraclesToPoll - c.oraclesToPoll,
+    formula: (c) => `Commit Polls (K) − Reveals (M) = ${c.commitOraclesToPoll} − ${c.oraclesToPoll} = ${c.commitOraclesToPoll - c.oraclesToPoll}`
+  }
 ];
 
 // Render an address with a copyable code block and a block-explorer link.
@@ -323,6 +351,7 @@ function Contracts() {
                 <thead>
                   <tr>
                     <th>Response outcome</th>
+                    <th className="tooltip-header" title="How many oracles fall into this outcome in a single evaluation, derived from the K/M/N/P selection parameters above">Instances / Eval</th>
                     <th className="tooltip-header" title="Change applied to the oracle's quality score">&Delta; Quality</th>
                     <th className="tooltip-header" title="Change applied to the oracle's timeliness score">&Delta; Timeliness</th>
                   </tr>
@@ -333,6 +362,7 @@ function Contracts() {
                     return (
                       <tr key={r.key}>
                         <td className="tooltip-header" title={r.desc}>{r.label}</td>
+                        <td className="tooltip-header" title={r.formula(agg.config)}>{fmtCount(r.count(agg.config))}</td>
                         <td style={{ color: deltaColor(d.quality), fontWeight: 600 }}>{fmtDelta(d.quality)}</td>
                         <td style={{ color: deltaColor(d.timeliness), fontWeight: 600 }}>{fmtDelta(d.timeliness)}</td>
                       </tr>

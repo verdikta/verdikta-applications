@@ -16,6 +16,13 @@ export const apiService = {
     return response.data;
   },
 
+  // Cross-network headline stats for the home page: total arbiters + health
+  // per network. Cheap (one oracle-count call per network); cached server-side.
+  async getSummary() {
+    const response = await api.get('/api/summary', { timeout: 30000 });
+    return response.data;
+  },
+
   // Combined arbiter availability + system health for a network.
   // `network` is the client toggle value (e.g. 'base' | 'base_sepolia');
   // the server normalizes it. Allow extra time for the on-chain enumeration.

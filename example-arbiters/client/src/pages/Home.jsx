@@ -1,44 +1,158 @@
+/**
+ * Home Page
+ * Landing page for the Verdikta Arbiters explorer: a short description of the
+ * network, headline arbiter counts per network (the network selected in the
+ * header is highlighted), a brief "how it works" strip, and links into the
+ * Analytics / Contracts / My Arbiters sections.
+ */
+
 import { useEffect, useState } from 'react';
-import { Scale, Sparkles } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import {
+  Scale,
+  Activity,
+  BarChart3,
+  FileText,
+  Wallet,
+  CheckCircle,
+  XCircle,
+  Coins,
+  Shuffle,
+  Lock,
+  Gavel,
+  ArrowRight
+} from 'lucide-react';
+import { useNetwork } from '../context/NetworkContext';
 import { apiService } from '../services/api';
 import './Home.css';
 
+// Compare a summary network key ('base-sepolia') with the header selection
+// ('base_sepolia') regardless of separator.
+const sameNetwork = (a, b) => String(a).replace(/_/g, '-') === String(b).replace(/_/g, '-');
+
+const HOW_IT_WORKS = [
+  { icon: Coins, title: 'Stake & register', text: 'Operators stake 100 wVDKA in the Reputation Keeper to register an arbiter.' },
+  { icon: Shuffle, title: 'Randomly selected', text: 'For each request a panel of arbiters is drawn at random, weighted by reputation.' },
+  { icon: Lock, title: 'Commit & reveal', text: 'Selected arbiters commit, then reveal their scored AI evaluation.' },
+  { icon: Gavel, title: 'Verdict & rewards', text: 'Responses are aggregated into one verdict; arbiters earn LINK and gain or lose reputation.' }
+];
+
+const EXPLORE = [
+  { to: '/analytics', icon: BarChart3, title: 'Analytics', text: 'Arbiter availability and reputation by owner, plus system diagnostics.' },
+  { to: '/contracts', icon: FileText, title: 'Contracts', text: 'The core Verdikta contracts and their live on-chain configuration.' },
+  { to: '/my-arbiters', icon: Wallet, title: 'My Arbiters', text: 'Connect a wallet to claim earned LINK and close out your arbiters.' }
+];
+
+function NetworkCard({ net, active }) {
+  return (
+    <div className={`network-card${active ? ' active' : ''}`}>
+      {active && <span className="active-badge">Active</span>}
+      <div className="network-card-name">{net.name}</div>
+      <div className="network-card-number">
+        {net.totalArbiters != null ? net.totalArbiters.toLocaleString() : '—'}
+      </div>
+      <div className="network-card-label">registered arbiters</div>
+      <div className={`network-card-health ${net.healthy ? 'healthy' : 'unhealthy'}`}>
+        {net.healthy ? <CheckCircle size={14} /> : <XCircle size={14} />}
+        {net.healthy ? 'Aggregator online' : 'Unreachable'}
+      </div>
+    </div>
+  );
+}
+
 function Home() {
-  const [status, setStatus] = useState(null);
+  const { selectedNetwork } = useNetwork();
+  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    apiService.getStatus()
-      .then(setStatus)
-      .catch((err) => setError(err.message));
+    let cancelled = false;
+    apiService.getSummary()
+      .then((res) => {
+        if (cancelled) return;
+        if (res.success) setSummary(res.data);
+        else setError(res.error || 'Failed to load network summary');
+      })
+      .catch((err) => { if (!cancelled) setError(err.message); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, []);
 
   return (
-    <div className="coming-soon">
-      <div className="coming-soon-icon">
-        <Scale size={64} />
-      </div>
-      <h1>Verdikta Arbiters</h1>
-      <p className="tagline">
-        <Sparkles size={16} className="inline-icon" /> Coming soon
-      </p>
-      <p className="description">
-        A scaffold for the Verdikta Arbiters application. This project is just getting started;
-        check back as the feature set grows.
-      </p>
+    <div className="home">
+      {/* Hero */}
+      <section className="hero">
+        <div className="hero-icon"><Scale size={56} /></div>
+        <h1>Verdikta Arbiters</h1>
+        <p className="hero-tagline">Trustless AI, decided by a decentralized jury.</p>
+        <p className="hero-desc">
+          Verdikta lets smart contracts request AI evaluations that are decided collectively by
+          independent <strong>arbiters</strong> — oracle operators who stake wVDKA, are chosen at
+          random for each request, and respond through a commit-reveal protocol. Their answers are
+          aggregated into a single verdict, and arbiters earn LINK while building on-chain
+          reputation for accuracy and timeliness.
+        </p>
+      </section>
 
-      {status && (
-        <div className="status-card">
-          <code>
-            {status.project} v{status.version} — {status.status}
-          </code>
+      {/* Network overview — headline arbiter counts */}
+      <section className="network-overview">
+        <h2 className="section-heading"><Activity size={18} className="inline-icon" /> Network at a glance</h2>
+        {loading ? (
+          <div className="network-cards">
+            {[0, 1].map((i) => (
+              <div className="network-card skeleton" key={i}>
+                <div className="network-card-name">&nbsp;</div>
+                <div className="network-card-number">…</div>
+                <div className="network-card-label">registered arbiters</div>
+              </div>
+            ))}
+          </div>
+        ) : error ? (
+          <div className="home-error">Couldn&rsquo;t load network stats: {error}</div>
+        ) : (
+          <div className="network-cards">
+            {summary.networks.map((net) => (
+              <NetworkCard key={net.network} net={net} active={sameNetwork(net.network, selectedNetwork)} />
+            ))}
+          </div>
+        )}
+        <p className="network-note">
+          The highlighted card is the network selected in the header. Switch networks there to
+          change what the rest of the app shows.
+        </p>
+      </section>
+
+      {/* How it works */}
+      <section className="how-it-works">
+        <h2 className="section-heading">How the arbiter system works</h2>
+        <div className="steps">
+          {HOW_IT_WORKS.map((s, i) => (
+            <div className="step" key={s.title}>
+              <div className="step-icon"><s.icon size={22} /></div>
+              <div className="step-num">Step {i + 1}</div>
+              <div className="step-title">{s.title}</div>
+              <div className="step-text">{s.text}</div>
+            </div>
+          ))}
         </div>
-      )}
-      {error && (
-        <div className="status-card status-error">
-          <code>API unreachable: {error}</code>
+      </section>
+
+      {/* Explore */}
+      <section className="explore">
+        <h2 className="section-heading">Explore</h2>
+        <div className="explore-cards">
+          {EXPLORE.map((c) => (
+            <Link to={c.to} className="explore-card" key={c.to}>
+              <div className="explore-card-icon"><c.icon size={22} /></div>
+              <div className="explore-card-body">
+                <div className="explore-card-title">{c.title} <ArrowRight size={14} /></div>
+                <div className="explore-card-text">{c.text}</div>
+              </div>
+            </Link>
+          ))}
         </div>
-      )}
+      </section>
     </div>
   );
 }

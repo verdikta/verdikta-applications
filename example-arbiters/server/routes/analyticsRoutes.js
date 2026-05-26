@@ -191,6 +191,42 @@ router.get('/system', async (req, res) => {
 });
 
 /**
+ * GET /api/analytics/owners
+ * Arbiters grouped by owner address (sorted numerically ascending), with totals
+ * for # arbiters, average reputation, claimable LINK and lifetime bonus LINK.
+ *
+ * Cached per network only once the lifetime-bonus backfill has caught up; while
+ * it's still indexing we recompute (cheap — enumeration is memoized) so the
+ * client can poll and watch the bonus column fill in.
+ */
+router.get('/owners', async (req, res) => {
+  const network = normalizeNetwork(req.query.network);
+  const cacheKey = `analytics_owners_${network}`;
+  try {
+    const cached = analyticsCache.get(cacheKey);
+    if (cached) {
+      return res.json({ success: true, data: cached.data, cached: true, cachedAt: cached.timestamp });
+    }
+
+    const verdiktaService = getVerdiktaService(network);
+    const data = await verdiktaService.getOwnersAnalytics();
+    const payload = { network, ...data };
+
+    // Only cache stable (fully-indexed) results.
+    if (data.bonusComplete) analyticsCache.set(cacheKey, payload);
+
+    return res.json({ success: true, data: payload, cached: false });
+  } catch (error) {
+    logger.error('[analytics/owners] error', { network, msg: error.message });
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to get owners analytics',
+      details: error.message
+    });
+  }
+});
+
+/**
  * POST /api/analytics/refresh
  * Invalidate the cache for a network so the next read pulls fresh contract data.
  */
@@ -199,6 +235,7 @@ router.post('/refresh', (req, res) => {
   try {
     analyticsCache.invalidate(`analytics_overview_${network}`);
     analyticsCache.invalidate(`analytics_arbiters_${network}`);
+    analyticsCache.invalidate(`analytics_owners_${network}`);
     logger.info('[analytics/refresh] cache cleared', { network });
     return res.json({ success: true, network });
   } catch (error) {

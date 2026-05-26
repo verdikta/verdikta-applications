@@ -63,6 +63,17 @@ export const apiService = {
     });
     return response.data;
   },
+
+  // Arbiters grouped by owner address for the analytics "Arbiters by Owner"
+  // table. `data.bonusComplete` is false while the lifetime-bonus event scan is
+  // still backfilling — poll until true to see that column populate.
+  async getOwnersAnalytics(network) {
+    const response = await api.get('/api/analytics/owners', {
+      params: { network },
+      timeout: 60000,
+    });
+    return response.data;
+  },
 };
 
 export default apiService;

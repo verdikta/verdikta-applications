@@ -420,3 +420,14 @@
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* Footnote under the by-owner table */
+.analytics .table-note {
+  margin-top: 0.75rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.analytics .table-note code {
+  font-family: monospace;
+  font-size: 0.78rem;
+}

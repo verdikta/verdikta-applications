@@ -28,6 +28,13 @@ const networks = {
     explorer: 'https://sepolia.basescan.org',
     verdiktaAggregatorAddress: '0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089',
     linkTokenAddress: '0xE4aB69C077896252FAFBD49EFD26B5D171A32410',
+    // Aggregator deployment block (found via archive eth_getCode binary search).
+    // Lower bound for the BonusPayment event scan behind the owners analytics.
+    aggregatorFromBlock: 30404839,
+    // Archive RPC for historical eth_getLogs. The PublicNode endpoint above
+    // prunes log history ("pruned history unavailable"), so the bonus scan uses
+    // a full-archive endpoint. Override with ARCHIVE_RPC_URL if preferred.
+    archiveRpcUrl: 'https://base-sepolia.gateway.tenderly.co',
   },
   'base': {
     key: 'base',
@@ -37,6 +44,9 @@ const networks = {
     explorer: 'https://basescan.org',
     verdiktaAggregatorAddress: '0x2f7a02298D4478213057edA5e5bEB07F20c4c054',
     linkTokenAddress: '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196',
+    // Aggregator deployment block (see base-sepolia note above).
+    aggregatorFromBlock: 35124408,
+    archiveRpcUrl: 'https://base.gateway.tenderly.co',
   },
 };
 
@@ -68,4 +78,14 @@ function getRpcUrl(networkKey) {
   return net.rpcUrl;
 }
 
-module.exports = { networks, DEFAULT_NETWORK, normalizeNetwork, getRpcUrl };
+/**
+ * Resolve the archive RPC URL (full log history) for a network's event scans.
+ * Falls back to the regular RPC if no archive endpoint is configured.
+ */
+function getArchiveRpcUrl(networkKey) {
+  const net = networks[normalizeNetwork(networkKey)];
+  if (process.env.ARCHIVE_RPC_URL) return process.env.ARCHIVE_RPC_URL;
+  return net.archiveRpcUrl || getRpcUrl(networkKey);
+}
+
+module.exports = { networks, DEFAULT_NETWORK, normalizeNetwork, getRpcUrl, getArchiveRpcUrl };

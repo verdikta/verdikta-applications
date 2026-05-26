@@ -7,3 +7,6 @@ coverage/
 *.pid
 .DS_Store
 .vite/
+
+# Generated analytics caches (bonus payment event scan)
+server/data/

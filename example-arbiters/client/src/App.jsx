@@ -7,7 +7,7 @@ import Header from './components/Header';
 import Home from './pages/Home';
 import Analytics from './pages/Analytics';
 import Contracts from './pages/Contracts';
-import ClassDetails from './pages/ClassDetails';
+import OwnerDetails from './pages/OwnerDetails';
 import MyArbiters from './pages/MyArbiters';
 import './App.css';
 
@@ -22,7 +22,7 @@ function AppContent() {
             <Route path="/" element={<Home />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/contracts" element={<Contracts />} />
-            <Route path="/class/:classId" element={<ClassDetails />} />
+            <Route path="/owner/:address" element={<OwnerDetails />} />
             <Route path="/my-arbiters" element={<MyArbiters />} />
           </Routes>
         </main>

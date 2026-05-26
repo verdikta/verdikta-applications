@@ -774,7 +774,10 @@ class VerdiktaService {
    * (Σ BonusPayment). Sorted by owner address, numerically ascending.
    */
   async getOwnersAnalytics() {
-    const oracles = await this.getAllOracles();
+    const [oracles, thresholds] = await Promise.all([
+      this.getAllOracles(),
+      this.getThresholds()
+    ]);
     const valid = oracles.filter((o) => !o.error && o.oracle);
     const operatorAddrs = [...new Set(valid.map((o) => o.oracle))];
 
@@ -784,21 +787,27 @@ class VerdiktaService {
       this.getBonusTotalsByOperator()
     ]);
     const bonusMap = bonus.totals;
+    const now = Math.floor(Date.now() / 1000);
 
-    // Roll arbiters up by owner.
+    // Roll arbiters up by owner, tallying status the same way the availability
+    // table does so the by-owner table can show Active/New/Unresponsive/Blocked.
     const byOwner = {};
     for (const o of valid) {
       const opLower = o.oracle.toLowerCase();
       const owner = ownerMap[opLower] || null;
       const key = owner ? owner.toLowerCase() : 'unknown';
       if (!byOwner[key]) {
-        byOwner[key] = { owner, operators: new Set(), arbiters: 0, qSum: 0, tSum: 0 };
+        byOwner[key] = {
+          owner, operators: new Set(), arbiters: 0, qSum: 0, tSum: 0,
+          active: 0, new: 0, unresponsive: 0, blocked: 0, inactive: 0
+        };
       }
       const b = byOwner[key];
       b.operators.add(opLower);
       b.arbiters += 1;
       b.qSum += o.qualityScore;
       b.tSum += o.timelinessScore;
+      b[this._statusFor(o, thresholds, now)] += 1;
     }
 
     const owners = Object.values(byOwner).map((b) => {
@@ -815,6 +824,11 @@ class VerdiktaService {
         owner: b.owner,
         operators: b.operators.size,
         arbiters: b.arbiters,
+        active: b.active,
+        new: b.new,
+        unresponsive: b.unresponsive,
+        blocked: b.blocked,
+        inactive: b.inactive,
         avgQualityScore: Math.round(b.qSum / b.arbiters),
         avgTimelinessScore: Math.round(b.tSum / b.arbiters),
         claimableLink: claimableKnown ? ethers.formatEther(claimable) : null,

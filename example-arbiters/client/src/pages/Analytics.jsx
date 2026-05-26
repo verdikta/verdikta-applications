@@ -21,12 +21,10 @@ import {
   XCircle,
   Zap,
   Coins,
-  UserCircle,
-  ExternalLink
+  UserCircle
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { useNetwork } from '../context/NetworkContext';
-import { chainForNetwork } from '../config/chains';
 import { apiService } from '../services/api';
 import {
   Chart as ChartJS,
@@ -267,8 +265,6 @@ function Analytics() {
     }
   };
 
-  const explorer = chainForNetwork(selectedNetwork).explorer;
-
   return (
     <div className="analytics">
       {/* Header */}
@@ -329,48 +325,6 @@ function Analytics() {
                   </span>
                 </div>
               </div>
-              <div className="stats-table">
-                <h3 className="table-title">Availability by Class</h3>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Class</th>
-                      <th title="Total number of Chainlink operator contracts used to serve the arbiters in this class" className="tooltip-header">Operators</th>
-                      <th title={ARBITER_STATUS_DESCRIPTIONS.Active} className="tooltip-header">Active</th>
-                      <th title={ARBITER_STATUS_DESCRIPTIONS.New} className="tooltip-header">New</th>
-                      <th title={ARBITER_STATUS_DESCRIPTIONS.Unresponsive} className="tooltip-header">Unresponsive</th>
-                      <th title={ARBITER_STATUS_DESCRIPTIONS.Blocked} className="tooltip-header">Blocked</th>
-                      <th>Total</th>
-                      <th>Avg Quality</th>
-                      <th>Avg Timeliness</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.values(data.arbiters.byClass).map((cls) => (
-                      <tr key={cls.classId}>
-                        <td
-                          title={cls.operatorList?.length > 0 ? cls.operatorList.join('\n') : undefined}
-                        >
-                          <Link to={`/class/${cls.classId}`} className="class-link">
-                            <strong>{formatClassLabel(cls)}</strong>
-                          </Link>
-                        </td>
-                        <td
-                          title={cls.operatorList?.length > 0 ? cls.operatorList.join('\n') : 'No operators'}
-                          style={{ cursor: cls.operatorList?.length > 0 ? 'help' : 'default' }}
-                        >{cls.operators ?? '-'}</td>
-                        <td style={{ color: COLORS.active, fontWeight: 600 }}>{cls.active ?? '-'}</td>
-                        <td style={{ color: COLORS.new, fontWeight: 600 }}>{cls.new ?? '-'}</td>
-                        <td style={{ color: COLORS.unresponsive, fontWeight: 600 }}>{cls.unresponsive ?? '-'}</td>
-                        <td style={{ color: COLORS.blocked, fontWeight: 600 }}>{cls.blocked ?? '-'}</td>
-                        <td>{cls.total ?? '-'}</td>
-                        <td>{cls.avgQualityScore ?? '-'}</td>
-                        <td>{cls.avgTimelinessScore ?? '-'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
             </>
           ) : (
             <div className="empty-state">
@@ -407,6 +361,10 @@ function Analytics() {
                   <tr>
                     <th>Owner</th>
                     <th>Arbiters</th>
+                    <th className="tooltip-header" title={ARBITER_STATUS_DESCRIPTIONS.Active}>Active</th>
+                    <th className="tooltip-header" title={ARBITER_STATUS_DESCRIPTIONS.New}>New</th>
+                    <th className="tooltip-header" title={ARBITER_STATUS_DESCRIPTIONS.Unresponsive}>Unresponsive</th>
+                    <th className="tooltip-header" title={ARBITER_STATUS_DESCRIPTIONS.Blocked}>Blocked</th>
                     <th className="tooltip-header" title="Average quality score across this owner's arbiters">Avg Quality</th>
                     <th className="tooltip-header" title="Average timeliness score across this owner's arbiters">Avg Timeliness</th>
                     <th className="tooltip-header" title="LINK currently claimable across this owner's operator contracts"><Coins size={13} className="inline-icon" /> Claimable LINK</th>
@@ -418,14 +376,18 @@ function Analytics() {
                     <tr key={o.owner || 'unknown'}>
                       <td>
                         {o.owner ? (
-                          <a className="class-link" href={`${explorer}/address/${o.owner}`} target="_blank" rel="noopener noreferrer" title={o.owner}>
-                            <code>{shortAddr(o.owner)}</code> <ExternalLink size={11} />
-                          </a>
+                          <Link className="class-link" to={`/owner/${o.owner}`} title={`View arbiters owned by ${o.owner}`}>
+                            <code>{shortAddr(o.owner)}</code>
+                          </Link>
                         ) : (
                           <span className="text-muted">Unknown</span>
                         )}
                       </td>
                       <td><strong>{o.arbiters}</strong>{o.operators > 1 ? ` (${o.operators} operators)` : ''}</td>
+                      <td style={{ color: COLORS.active, fontWeight: 600 }}>{o.active ?? '-'}</td>
+                      <td style={{ color: COLORS.new, fontWeight: 600 }}>{o.new ?? '-'}</td>
+                      <td style={{ color: COLORS.unresponsive, fontWeight: 600 }}>{o.unresponsive ?? '-'}</td>
+                      <td style={{ color: COLORS.blocked, fontWeight: 600 }}>{o.blocked ?? '-'}</td>
                       <td>{o.avgQualityScore}</td>
                       <td>{o.avgTimelinessScore}</td>
                       <td>{o.claimableLink ?? '—'}</td>

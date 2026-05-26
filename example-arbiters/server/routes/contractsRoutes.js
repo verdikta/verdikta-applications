@@ -45,11 +45,17 @@ async function getContractsOverview(network) {
   let oracleCount = null;
   let payment = null;
   let wvdka = null;
+  let keeperConfig = null;
 
   try {
     thresholds = await verdiktaService.getKeeperThresholds();
   } catch (e) {
     logger.warn('[contracts] keeper thresholds failed', { network: key, msg: e.message });
+  }
+  try {
+    keeperConfig = await verdiktaService.getKeeperConfig();
+  } catch (e) {
+    logger.warn('[contracts] keeper config failed', { network: key, msg: e.message });
   }
   try {
     oracleCount = await verdiktaService.getOracleCount();
@@ -85,7 +91,8 @@ async function getContractsOverview(network) {
         registeredOracles: oracleCount,
         mildThreshold: thresholds?.mildThreshold ?? null,
         severeThreshold: thresholds?.severeThreshold ?? null,
-        verdiktaTokenAddress: health.wvdkaAddress || null
+        verdiktaTokenAddress: health.wvdkaAddress || null,
+        config: keeperConfig // stake/penalty/selection config + selectionCounter, or null
       },
       wvdka: wvdka || (health.wvdkaAddress ? { address: health.wvdkaAddress } : null)
     },

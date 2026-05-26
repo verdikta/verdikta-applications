@@ -56,6 +56,21 @@ const AGGREGATOR_ABI = [
   "function responseTimeoutSeconds() view returns (uint256)",
   "function maxOracleFee() view returns (uint256)",
   "function getContractConfig() view returns (address oracleAddr, address linkAddr, bytes32 jobId, uint256 fee)",
+  // Extended config surfaced on the /contracts page.
+  "function maxLikelihoodLength() view returns (uint256)",
+  "function lastEntropyBlock() view returns (uint256)",
+  "function MAX_CID_COUNT() view returns (uint256)",
+  "function MAX_CID_LENGTH() view returns (uint256)",
+  "function MAX_ADDENDUM_LENGTH() view returns (uint256)",
+  // Reputation score deltas (per response outcome).
+  "function clusteredTimelinessScore() view returns (int8)",
+  "function clusteredQualityScore() view returns (int8)",
+  "function selectedTimelinessScore() view returns (int8)",
+  "function selectedQualityScore() view returns (int8)",
+  "function revealedTimelinessScore() view returns (int8)",
+  "function revealedQualityScore() view returns (int8)",
+  "function committedTimelinessScore() view returns (int8)",
+  "function committedQualityScore() view returns (int8)",
   "event BonusPayment(address indexed operator, uint256 bonusFee)"
 ];
 
@@ -69,7 +84,17 @@ const KEEPER_ABI = [
   "function getRecentScores(address _oracle, bytes32 _jobId) view returns (tuple(int256 qualityScore, int256 timelinessScore)[])",
   "function mildThreshold() view returns (int256)",
   "function severeThreshold() view returns (int256)",
-  "function verdiktaToken() view returns (address)"
+  "function verdiktaToken() view returns (address)",
+  // Extended config + live counters surfaced on the /contracts page.
+  "function selectionCounter() view returns (uint256)",
+  "function STAKE_REQUIREMENT() view returns (uint256)",
+  "function lockDurationConfig() view returns (uint256)",
+  "function slashAmountConfig() view returns (uint256)",
+  "function shortlistSize() view returns (uint256)",
+  "function minScoreForSelection() view returns (uint256)",
+  "function maxScoreForSelection() view returns (uint256)",
+  "function maxScoreHistory() view returns (uint256)",
+  "function entropyBlock() view returns (uint256)"
 ];
 
 // Minimal ERC-20 ABI for token metadata (wVDKA, LINK). Each getter is read
@@ -154,6 +179,29 @@ class VerdiktaService {
         withRetry(() => this.aggregator.maxOracleFee())
       ]);
 
+      // Extended config (newer getters). Fetched tolerantly — a deployment
+      // missing any one yields null for that field rather than failing the page.
+      const num = (fn) => withRetry(fn).then((v) => Number(v)).catch(() => null);
+      const [
+        maxLikelihoodLength, lastEntropyBlock,
+        maxCidCount, maxCidLength, maxAddendumLength,
+        cT, cQ, sT, sQ, rT, rQ, mT, mQ
+      ] = await Promise.all([
+        num(() => this.aggregator.maxLikelihoodLength()),
+        num(() => this.aggregator.lastEntropyBlock()),
+        num(() => this.aggregator.MAX_CID_COUNT()),
+        num(() => this.aggregator.MAX_CID_LENGTH()),
+        num(() => this.aggregator.MAX_ADDENDUM_LENGTH()),
+        num(() => this.aggregator.clusteredTimelinessScore()),
+        num(() => this.aggregator.clusteredQualityScore()),
+        num(() => this.aggregator.selectedTimelinessScore()),
+        num(() => this.aggregator.selectedQualityScore()),
+        num(() => this.aggregator.revealedTimelinessScore()),
+        num(() => this.aggregator.revealedQualityScore()),
+        num(() => this.aggregator.committedTimelinessScore()),
+        num(() => this.aggregator.committedQualityScore())
+      ]);
+
       return {
         commitOraclesToPoll: Number(commitOraclesToPoll),
         oraclesToPoll: Number(oraclesToPoll),
@@ -161,12 +209,51 @@ class VerdiktaService {
         clusterSize: Number(clusterSize),
         bonusMultiplier: Number(bonusMultiplier),
         responseTimeoutSeconds: Number(responseTimeoutSeconds),
-        maxOracleFee: ethers.formatEther(maxOracleFee)
+        maxOracleFee: ethers.formatEther(maxOracleFee),
+        maxLikelihoodLength,
+        lastEntropyBlock,
+        inputLimits: { maxCidCount, maxCidLength, maxAddendumLength },
+        // Per-outcome reputation score changes (timeliness/quality).
+        scoreDeltas: {
+          clustered: { timeliness: cT, quality: cQ },
+          selected: { timeliness: sT, quality: sQ },
+          revealed: { timeliness: rT, quality: rQ },
+          committed: { timeliness: mT, quality: mQ }
+        }
       };
     } catch (error) {
       logger.error('Failed to get aggregator config', { msg: error.message });
       throw error;
     }
+  }
+
+  /**
+   * Extended ReputationKeeper config + live counters for the /contracts page:
+   * stake requirement, penalty (lock/slash) config, selection-algorithm tuning,
+   * and the live selection-round counter. Each field is read tolerantly.
+   */
+  async getKeeperConfig() {
+    const keeper = await this.getReputationKeeper();
+    const num = (fn) => withRetry(fn).then((v) => Number(v)).catch(() => null);
+    const ether = (fn) => withRetry(fn).then((v) => ethers.formatEther(v)).catch(() => null);
+    const [
+      selectionCounter, stakeRequirement, lockDurationSeconds, slashAmount,
+      shortlistSize, minScoreForSelection, maxScoreForSelection, maxScoreHistory, entropyBlock
+    ] = await Promise.all([
+      num(() => keeper.selectionCounter()),
+      ether(() => keeper.STAKE_REQUIREMENT()),
+      num(() => keeper.lockDurationConfig()),
+      ether(() => keeper.slashAmountConfig()),
+      num(() => keeper.shortlistSize()),
+      num(() => keeper.minScoreForSelection()),
+      num(() => keeper.maxScoreForSelection()),
+      num(() => keeper.maxScoreHistory()),
+      num(() => keeper.entropyBlock())
+    ]);
+    return {
+      selectionCounter, stakeRequirement, lockDurationSeconds, slashAmount,
+      shortlistSize, minScoreForSelection, maxScoreForSelection, maxScoreHistory, entropyBlock
+    };
   }
 
   /**

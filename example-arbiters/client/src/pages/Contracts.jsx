@@ -44,6 +44,29 @@ const DESCRIPTIONS = {
 // A bytes32 of all zeros means "unset" — don't surface it as a real value.
 const isZeroHash = (v) => !v || /^0x0+$/i.test(v);
 
+// Format a duration in seconds as a compact human string (e.g. 86400 -> "24h").
+const formatDuration = (s) => {
+  if (s == null) return null;
+  if (s >= 3600) return `${+(s / 3600).toFixed(s % 3600 ? 1 : 0)}h`;
+  if (s >= 60) return `${Math.round(s / 60)}m`;
+  return `${s}s`;
+};
+
+// Format a token amount string ("100.0") as "100 wVDKA".
+const fmtToken = (v) => (v == null ? null : `${Number(v)} wVDKA`);
+
+// Format a signed score delta: "+60", "0", "-60".
+const fmtDelta = (n) => (n == null ? '—' : n > 0 ? `+${n}` : `${n}`);
+const deltaColor = (n) => (n == null ? 'var(--text-secondary)' : n > 0 ? '#16a34a' : n < 0 ? '#dc2626' : 'var(--text-secondary)');
+
+// Reputation score-delta rows (the rulebook behind quality/timeliness scores).
+const DELTA_ROWS = [
+  { key: 'clustered', label: 'Clustered', desc: 'Response landed in the consensus cluster (agreed with the aggregated answer).' },
+  { key: 'selected', label: 'Selected, not clustered', desc: 'Selected for aggregation but outside the consensus cluster.' },
+  { key: 'revealed', label: 'Revealed, not selected', desc: 'Revealed a response but was not selected for aggregation.' },
+  { key: 'committed', label: 'Committed, not revealed', desc: 'Committed to a response but never revealed it.' }
+];
+
 // Render an address with a copyable code block and a block-explorer link.
 function AddressRow({ label, address, explorer }) {
   if (!address) return null;
@@ -68,9 +91,10 @@ function AddressRow({ label, address, explorer }) {
 }
 
 // A single labelled config metric (reuses Analytics' .config-item styles).
-function ConfigItem({ label, value }) {
+// An optional title shows an explanatory tooltip on hover.
+function ConfigItem({ label, value, title }) {
   return (
-    <div className="config-item">
+    <div className="config-item" title={title} style={title ? { cursor: 'help' } : undefined}>
       <span className="config-label">{label}</span>
       <span className="config-value">{value ?? '—'}</span>
     </div>
@@ -268,6 +292,54 @@ function Contracts() {
               {agg.payment?.fee != null && Number(agg.payment.fee) > 0 && (
                 <ConfigItem label="Fee / Oracle" value={`${agg.payment.fee} LINK`} />
               )}
+              <ConfigItem
+                label="Max Scores / Response"
+                value={agg.config.maxLikelihoodLength}
+                title="Maximum number of likelihood scores allowed in a single oracle response"
+              />
+              <ConfigItem
+                label="Last Activity Block"
+                value={agg.config.lastEntropyBlock != null ? agg.config.lastEntropyBlock.toLocaleString() : null}
+                title="Block of the most recent aggregation that updated on-chain entropy"
+              />
+              <ConfigItem
+                label="Max CIDs / Request"
+                value={agg.config.inputLimits?.maxCidCount}
+                title="Maximum number of IPFS CIDs accepted per evaluation request"
+              />
+              <ConfigItem label="Max CID Length" value={agg.config.inputLimits?.maxCidLength} />
+              <ConfigItem
+                label="Max Addendum Length"
+                value={agg.config.inputLimits?.maxAddendumLength}
+                title="Maximum length (characters) of the addendum text per request"
+              />
+            </div>
+          )}
+
+          {agg?.config?.scoreDeltas && (
+            <div className="stats-table">
+              <h3 className="table-title">Reputation Score Deltas</h3>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Response outcome</th>
+                    <th className="tooltip-header" title="Change applied to the oracle's quality score">&Delta; Quality</th>
+                    <th className="tooltip-header" title="Change applied to the oracle's timeliness score">&Delta; Timeliness</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {DELTA_ROWS.map((r) => {
+                    const d = agg.config.scoreDeltas[r.key] || {};
+                    return (
+                      <tr key={r.key}>
+                        <td className="tooltip-header" title={r.desc}>{r.label}</td>
+                        <td style={{ color: deltaColor(d.quality), fontWeight: 600 }}>{fmtDelta(d.quality)}</td>
+                        <td style={{ color: deltaColor(d.timeliness), fontWeight: 600 }}>{fmtDelta(d.timeliness)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
 
@@ -308,8 +380,48 @@ function Contracts() {
 
           <div className="config-grid">
             <ConfigItem label="Registered Oracles" value={keeper?.registeredOracles} />
+            <ConfigItem
+              label="Required Stake"
+              value={fmtToken(keeper?.config?.stakeRequirement)}
+              title="wVDKA an oracle must stake to register"
+            />
+            <ConfigItem
+              label="Selection Rounds"
+              value={keeper?.config?.selectionCounter != null ? keeper.config.selectionCounter.toLocaleString() : null}
+              title="Cumulative oracle-selection rounds performed by the network"
+            />
             <ConfigItem label="Mild Threshold" value={keeper?.mildThreshold} />
             <ConfigItem label="Severe Threshold" value={keeper?.severeThreshold} />
+            <ConfigItem
+              label="Lock Duration"
+              value={formatDuration(keeper?.config?.lockDurationSeconds)}
+              title="How long an oracle is locked after a penalty (cannot be deregistered until it expires)"
+            />
+            <ConfigItem
+              label="Slash Amount"
+              value={fmtToken(keeper?.config?.slashAmount)}
+              title="wVDKA slashed from an oracle's stake on a severe penalty"
+            />
+            <ConfigItem
+              label="Shortlist Size"
+              value={keeper?.config?.shortlistSize}
+              title="Top-N oracles considered during selection"
+            />
+            <ConfigItem
+              label="Min Selection Score"
+              value={keeper?.config?.minScoreForSelection}
+              title="Floor applied to an oracle's score when computing its selection weight"
+            />
+            <ConfigItem
+              label="Max Selection Score"
+              value={keeper?.config?.maxScoreForSelection}
+              title="Cap applied to an oracle's score when computing its selection weight"
+            />
+            <ConfigItem
+              label="Score History"
+              value={keeper?.config?.maxScoreHistory}
+              title="Number of recent score snapshots retained per oracle"
+            />
           </div>
 
           <div className="contract-addresses">

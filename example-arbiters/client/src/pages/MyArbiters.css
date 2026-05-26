@@ -178,3 +178,104 @@
   justify-content: flex-end;
   gap: 0.75rem;
 }
+
+/* Node funding bar (operator card) */
+.my-arbiters .funding-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6rem 0.85rem;
+  margin-bottom: 1rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.875rem;
+}
+
+.my-arbiters .funding-bar.low {
+  background: var(--warning-light, #fef3c7);
+  border-color: var(--warning, #f59e0b);
+}
+
+.my-arbiters .funding-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  color: var(--text-secondary);
+}
+
+.my-arbiters .funding-info strong { color: var(--text); }
+.my-arbiters .funding-sep { color: var(--border); }
+.my-arbiters .funding-est { cursor: help; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+
+.my-arbiters .funding-low-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #92400e;
+  background: #fde68a;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+}
+
+/* Fund modal */
+.my-arbiters .modal.modal-wide { max-width: 38rem; }
+
+.my-arbiters .fund-topup {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.75rem;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+}
+
+.my-arbiters .fund-topup label { color: var(--text-secondary); }
+.my-arbiters .fund-topup input { width: 6rem; }
+
+.my-arbiters .fund-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 1.25rem;
+}
+
+.my-arbiters .fund-key {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 0.9fr 6rem auto;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.my-arbiters .fund-key-head {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+.my-arbiters .fund-key input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.my-arbiters .fund-key .btn { padding: 0.3rem 0.6rem; }
+
+/* Number inputs in the fund modal */
+.my-arbiters .fund-topup input,
+.my-arbiters .fund-key input {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.85rem;
+}

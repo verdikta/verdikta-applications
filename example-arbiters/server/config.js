@@ -88,4 +88,18 @@ function getArchiveRpcUrl(networkKey) {
   return net.archiveRpcUrl || getRpcUrl(networkKey);
 }
 
-module.exports = { networks, DEFAULT_NETWORK, normalizeNetwork, getRpcUrl, getArchiveRpcUrl };
+/**
+ * Arbiter ETH-funding estimate parameters. An arbiter's node pays gas (in ETH)
+ * from its operator's authorized-sender keys to submit commit+reveal responses.
+ * `gasPerQuery` is the assumed gas for one arbiter response (commit + reveal,
+ * ~2 txs) — an estimate, calibratable; the runway estimate also uses the live
+ * gas price. "Low" funding is flagged when EITHER the estimated remaining
+ * queries OR the absolute ETH falls below its threshold.
+ */
+const funding = {
+  gasPerQuery: parseInt(process.env.GAS_PER_QUERY, 10) || 400000,
+  lowQueriesThreshold: parseInt(process.env.LOW_QUERIES_THRESHOLD, 10) || 200,
+  lowEthThreshold: process.env.LOW_ETH_THRESHOLD || '0.01', // ETH (string)
+};
+
+module.exports = { networks, DEFAULT_NETWORK, normalizeNetwork, getRpcUrl, getArchiveRpcUrl, funding };

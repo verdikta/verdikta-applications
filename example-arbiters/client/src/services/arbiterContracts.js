@@ -77,3 +77,18 @@ export async function deregisterArbiter({ signer, keeperAddress, oracle, jobId }
     throw friendlyError(error);
   }
 }
+
+/**
+ * Send ETH from the connected wallet to `to` (used to fund an arbiter node's
+ * sending keys). `amountEth` is a decimal string/number.
+ * @returns {Promise<{txHash: string}>}
+ */
+export async function sendEth({ signer, to, amountEth }) {
+  try {
+    const tx = await signer.sendTransaction({ to, value: ethers.parseEther(String(amountEth)) });
+    const receipt = await tx.wait();
+    return { txHash: receipt.hash };
+  } catch (error) {
+    throw friendlyError(error);
+  }
+}

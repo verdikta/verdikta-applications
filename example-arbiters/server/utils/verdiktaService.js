@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const { ethers } = require('ethers');
 const logger = require('./logger');
-const { networks, normalizeNetwork, getRpcUrl, getArchiveRpcUrl } = require('../config');
+const { networks, normalizeNetwork, getRpcUrl, getArchiveRpcUrl, funding } = require('../config');
 
 /**
  * Public RPC endpoints (sepolia.base.org / mainnet.base.org) rate-limit bursts
@@ -111,7 +111,9 @@ const ERC20_ABI = [
 // LINK accrues here and is withdrawn by the owner (see client write path).
 const OPERATOR_ABI = [
   "function owner() view returns (address)",
-  "function withdrawable() view returns (uint256)"
+  "function withdrawable() view returns (uint256)",
+  // Node EOAs that submit commit/reveal txs and pay gas — the ETH-funded keys.
+  "function getAuthorizedSenders() view returns (address[])"
 ];
 
 class VerdiktaService {
@@ -136,6 +138,8 @@ class VerdiktaService {
     // share work. getAllOracles is the heavy enumeration; owner() is static.
     this._oraclesCache = null;          // { data, ts }
     this._ownerMap = {};                // { operatorLower: { owner, ts } }
+    this._senderMap = {};               // { operatorLower: { senders: [addr], ts } }
+    this._gasPrice = null;              // { value: bigint, ts }
     this._bonusScan = null;             // { lastScannedBlock, totals: {operatorLower: bigint} }
   }
 
@@ -659,6 +663,18 @@ class VerdiktaService {
       });
     }
 
+    // Attach per-operator ETH funding (node sending-key balances + estimate).
+    const ownedOps = Object.keys(byOperator);
+    if (ownedOps.length) {
+      const { perOp, gasPrice } = await this._computeFunding(ownedOps);
+      for (const opAddr of ownedOps) {
+        byOperator[opAddr].funding = this._fundingForClient(
+          perOp[opAddr.toLowerCase()] || { senders: [], totalWei: 0n },
+          gasPrice
+        );
+      }
+    }
+
     return {
       owner: ownerAddress,
       keeperAddress: this.keeperAddress,
@@ -708,6 +724,107 @@ class VerdiktaService {
   /** operator (lowercased) -> withdrawable LINK (bigint) or null. Read fresh. */
   async getWithdrawableMap(operatorAddrs) {
     return this._batchOperatorRead(operatorAddrs, 'withdrawable');
+  }
+
+  // --- ETH funding of arbiter nodes ---------------------------------------
+  //
+  // Each operator's authorized senders are the node EOAs that submit
+  // commit/reveal txs and pay gas. Funding = the ETH balance of those keys.
+  // Senders are static-ish (cached); balances + gas price are read fresh.
+
+  /** operator (lowercased) -> [sender addresses]. Cached (senders rarely change). */
+  async getSenderMap(operatorAddrs, { maxAgeMs = 600000 } = {}) {
+    const now = Date.now();
+    const stale = operatorAddrs.filter((a) => {
+      const e = this._senderMap[a.toLowerCase()];
+      return !e || now - e.ts >= maxAgeMs;
+    });
+    const batchSize = 6;
+    for (let i = 0; i < stale.length; i += batchSize) {
+      const slice = stale.slice(i, i + batchSize);
+      await Promise.all(slice.map(async (addr) => {
+        const op = new ethers.Contract(addr, OPERATOR_ABI, this.provider);
+        const senders = await withRetry(() => op.getAuthorizedSenders()).catch(() => []);
+        this._senderMap[addr.toLowerCase()] = { senders: senders.map(String), ts: now };
+      }));
+    }
+    const map = {};
+    for (const a of operatorAddrs) map[a.toLowerCase()] = this._senderMap[a.toLowerCase()]?.senders || [];
+    return map;
+  }
+
+  /** address (lowercased) -> ETH balance (bigint) or null. Read fresh, batched. */
+  async getBalances(addrs) {
+    const out = {};
+    const batchSize = 8;
+    for (let i = 0; i < addrs.length; i += batchSize) {
+      const slice = addrs.slice(i, i + batchSize);
+      await Promise.all(slice.map(async (a) => {
+        out[a.toLowerCase()] = await withRetry(() => this.provider.getBalance(a)).catch(() => null);
+      }));
+    }
+    return out;
+  }
+
+  /** Current gas price in wei (bigint), short-cached. */
+  async getGasPrice() {
+    const now = Date.now();
+    if (this._gasPrice && now - this._gasPrice.ts < 30000) return this._gasPrice.value;
+    const fee = await withRetry(() => this.provider.getFeeData());
+    const value = fee.gasPrice ?? fee.maxFeePerGas ?? 0n;
+    this._gasPrice = { value, ts: now };
+    return value;
+  }
+
+  /**
+   * Internal: per-operator funding in wei + the live gas price.
+   * Returns { perOp: { opLower: { senders:[{address, balanceWei}], totalWei } }, gasPrice }.
+   */
+  async _computeFunding(operatorAddrs) {
+    const senderMap = await this.getSenderMap(operatorAddrs);
+    const allSenders = [...new Set(Object.values(senderMap).flat().map((a) => a.toLowerCase()))];
+    const [balances, gasPrice] = await Promise.all([
+      this.getBalances(allSenders),
+      this.getGasPrice()
+    ]);
+    const perOp = {};
+    for (const op of operatorAddrs) {
+      const lower = op.toLowerCase();
+      const senders = (senderMap[lower] || []).map((a) => ({
+        address: a,
+        balanceWei: balances[a.toLowerCase()] ?? 0n
+      }));
+      const totalWei = senders.reduce((acc, s) => acc + (s.balanceWei ?? 0n), 0n);
+      perOp[lower] = { senders, totalWei };
+    }
+    return { perOp, gasPrice };
+  }
+
+  /** Estimated remaining queries for a wei balance at the given gas price. */
+  _estQueries(totalWei, gasPrice) {
+    const costPerQuery = BigInt(funding.gasPerQuery) * (gasPrice ?? 0n);
+    return costPerQuery > 0n ? Number(totalWei / costPerQuery) : null;
+  }
+
+  /** Is a wei balance "low" (below the query OR the absolute-ETH threshold)? */
+  _fundingLow(totalWei, estQueries) {
+    const lowEthWei = ethers.parseEther(String(funding.lowEthThreshold));
+    return (estQueries != null && estQueries < funding.lowQueriesThreshold) || totalWei < lowEthWei;
+  }
+
+  /** Client-safe funding object for one operator (no bigints). */
+  _fundingForClient({ senders, totalWei }, gasPrice) {
+    const estQueries = this._estQueries(totalWei, gasPrice);
+    return {
+      totalEth: ethers.formatEther(totalWei),
+      estQueries,
+      low: this._fundingLow(totalWei, estQueries),
+      senders: senders.map((s) => ({ address: s.address, balanceEth: ethers.formatEther(s.balanceWei ?? 0n) })),
+      gasPriceGwei: gasPrice != null ? ethers.formatUnits(gasPrice, 'gwei') : null,
+      gasPerQuery: funding.gasPerQuery,
+      lowQueriesThreshold: funding.lowQueriesThreshold,
+      lowEthThreshold: funding.lowEthThreshold
+    };
   }
 
   // --- Lifetime bonus LINK via incremental BonusPayment event scan ---------
@@ -868,12 +985,14 @@ class VerdiktaService {
     const valid = oracles.filter((o) => !o.error && o.oracle);
     const operatorAddrs = [...new Set(valid.map((o) => o.oracle))];
 
-    const [ownerMap, withdrawableMap, bonus] = await Promise.all([
+    const [ownerMap, withdrawableMap, bonus, fundingData] = await Promise.all([
       this.getOwnerMap(operatorAddrs),
       this.getWithdrawableMap(operatorAddrs),
-      this.getBonusTotalsByOperator()
+      this.getBonusTotalsByOperator(),
+      this._computeFunding(operatorAddrs)
     ]);
     const bonusMap = bonus.totals;
+    const { perOp: fundingPerOp, gasPrice } = fundingData;
     const now = Math.floor(Date.now() / 1000);
 
     // Roll arbiters up by owner, tallying status the same way the availability
@@ -901,12 +1020,15 @@ class VerdiktaService {
       let claimable = 0n;
       let claimableKnown = true;
       let bonus = 0n;
+      let nodeWei = 0n;
       for (const op of b.operators) {
         const w = withdrawableMap[op];
         if (w == null) claimableKnown = false;
         else claimable += w;
         bonus += bonusMap[op] || 0n;
+        nodeWei += fundingPerOp[op]?.totalWei ?? 0n;
       }
+      const estQueries = this._estQueries(nodeWei, gasPrice);
       return {
         owner: b.owner,
         operators: b.operators.size,
@@ -919,7 +1041,10 @@ class VerdiktaService {
         avgQualityScore: Math.round(b.qSum / b.arbiters),
         avgTimelinessScore: Math.round(b.tSum / b.arbiters),
         claimableLink: claimableKnown ? ethers.formatEther(claimable) : null,
-        lifetimeBonusLink: ethers.formatEther(bonus)
+        lifetimeBonusLink: ethers.formatEther(bonus),
+        nodeEth: ethers.formatEther(nodeWei),
+        estQueries,
+        fundingLow: this._fundingLow(nodeWei, estQueries)
       };
     });
 
@@ -937,6 +1062,12 @@ class VerdiktaService {
       owners,
       bonusComplete: bonus.complete,
       bonusProgress: bonus.progress,
+      funding: {
+        gasPriceGwei: gasPrice != null ? ethers.formatUnits(gasPrice, 'gwei') : null,
+        gasPerQuery: funding.gasPerQuery,
+        lowQueriesThreshold: funding.lowQueriesThreshold,
+        lowEthThreshold: funding.lowEthThreshold
+      },
       timestamp: Date.now()
     };
   }

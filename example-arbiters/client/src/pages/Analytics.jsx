@@ -21,7 +21,8 @@ import {
   XCircle,
   Zap,
   Coins,
-  UserCircle
+  UserCircle,
+  Fuel
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { useNetwork } from '../context/NetworkContext';
@@ -404,6 +405,61 @@ function Analytics() {
             </div>
           ) : (
             <div className="empty-state"><UserCircle size={32} /><p>No arbiter owners found</p></div>
+          )}
+        </div>
+      </section>
+
+      {/* Funding by Owner Section */}
+      <section className="analytics-section">
+        <h2 title="ETH held in each owner's arbiter-node sending keys, which pay gas for commit/reveal responses"><Fuel size={20} className="inline-icon" /> Funding by Owner</h2>
+        <div className="section-content">
+          {ownersLoading && !ownersData ? (
+            <div className="loading"><div className="spinner"></div><p>Loading funding...</p></div>
+          ) : ownersError ? (
+            <div className="info-banner"><AlertTriangle size={16} /><span>{ownersError}</span></div>
+          ) : ownersData && ownersData.owners.length > 0 ? (
+            <div className="stats-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Owner</th>
+                    <th className="tooltip-header" title="Total ETH across this owner's node sending keys">Node ETH</th>
+                    <th className="tooltip-header" title="Estimated queries that ETH covers at the current gas price">Est. Queries</th>
+                    <th>Funding</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ownersData.owners.map((o) => (
+                    <tr key={o.owner || 'unknown'}>
+                      <td>
+                        {o.owner ? (
+                          <Link className="class-link" to={`/owner/${o.owner}`} title={o.owner}>
+                            <code>{shortAddr(o.owner)}</code>
+                          </Link>
+                        ) : (
+                          <span className="text-muted">Unknown</span>
+                        )}
+                      </td>
+                      <td>{o.nodeEth != null ? Number(o.nodeEth).toFixed(4) : '—'}</td>
+                      <td>{o.estQueries != null ? o.estQueries.toLocaleString() : '—'}</td>
+                      <td style={{ color: o.fundingLow ? COLORS.blocked : COLORS.active, fontWeight: 600 }}>
+                        {o.fundingLow ? 'Low' : 'OK'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {ownersData.funding && (
+                <p className="table-note">
+                  Estimates assume ~{ownersData.funding.gasPerQuery.toLocaleString()} gas per query at{' '}
+                  {ownersData.funding.gasPriceGwei} gwei; &ldquo;Low&rdquo; means under{' '}
+                  {ownersData.funding.lowQueriesThreshold.toLocaleString()} queries or{' '}
+                  {ownersData.funding.lowEthThreshold} ETH. Changes with gas price.
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="empty-state"><Fuel size={32} /><p>No funding data</p></div>
           )}
         </div>
       </section>

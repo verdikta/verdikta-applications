@@ -63,6 +63,8 @@ function MyArbiters() {
   const [error, setError] = useState(null);
   const [pending, setPending] = useState(() => new Set());
   const [switching, setSwitching] = useState(false);
+  // The arbiter awaiting close-out confirmation ({ operator, job }), or null.
+  const [confirmTarget, setConfirmTarget] = useState(null);
   const isMountedRef = useRef(true);
 
   const onCorrectChain = isConnected && chainId === chain.chainId;
@@ -99,6 +101,18 @@ function MyArbiters() {
     }
     // chainId/selectedNetwork participate via onCorrectChain + load identity.
   }, [onCorrectChain, address, selectedNetwork, load]);
+
+  // Dismiss the close-out confirmation on Escape (unless a tx is in flight).
+  useEffect(() => {
+    if (!confirmTarget) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape' && !pending.has(`close:${confirmTarget.job.jobId}`)) {
+        setConfirmTarget(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [confirmTarget, pending]);
 
   const setKeyPending = (key, on) => {
     setPending((prev) => {
@@ -167,6 +181,15 @@ function MyArbiters() {
     } finally {
       setKeyPending(key, false);
     }
+  };
+
+  // Run the close-out for the arbiter awaiting confirmation, then dismiss the
+  // modal (handleClose surfaces success/failure via toast).
+  const confirmClose = async () => {
+    if (!confirmTarget) return;
+    const { operator, job } = confirmTarget;
+    await handleClose(operator, job);
+    if (isMountedRef.current) setConfirmTarget(null);
   };
 
   const header = (
@@ -373,7 +396,7 @@ function MyArbiters() {
                           ) : (
                             <button
                               className="btn btn-danger btn-with-icon"
-                              onClick={() => handleClose(operator, job)}
+                              onClick={() => setConfirmTarget({ operator, job })}
                               disabled={closing}
                               title="Deregister this arbiter and reclaim its 100 wVDKA stake"
                             >
@@ -390,6 +413,40 @@ function MyArbiters() {
           </section>
         );
       })}
+
+      {confirmTarget && (() => {
+        const busy = pending.has(`close:${confirmTarget.job.jobId}`);
+        return (
+          <div
+            className="modal-overlay"
+            onClick={() => { if (!busy) setConfirmTarget(null); }}
+          >
+            <div className="modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+              <h3 className="modal-title">
+                <AlertTriangle size={18} className="warn-icon" /> Close out this arbiter?
+              </h3>
+              <p className="modal-body">
+                This deregisters the arbiter on-chain and refunds its{' '}
+                <strong>{confirmTarget.job.stakeAmount} wVDKA</strong> stake to your wallet. To list
+                it again you would have to re-register and re-stake. You will still confirm the
+                transaction in your wallet.
+              </p>
+              <div className="modal-detail">
+                <div><span>Operator</span><code>{shortAddr(confirmTarget.operator.operator)}</code></div>
+                <div><span>Job ID</span><code>{shortHash(confirmTarget.job.jobId)}</code></div>
+              </div>
+              <div className="modal-actions">
+                <button className="btn btn-secondary" onClick={() => setConfirmTarget(null)} disabled={busy}>
+                  Cancel
+                </button>
+                <button className="btn btn-danger btn-with-icon" onClick={confirmClose} disabled={busy}>
+                  {busy ? 'Closing…' : 'Close out & reclaim wVDKA'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

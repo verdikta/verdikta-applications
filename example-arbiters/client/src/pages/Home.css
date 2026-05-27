@@ -41,14 +41,14 @@
   margin-bottom: 1.25rem;
 }
 
-.hero-desc {
+.section-intro {
   color: var(--text-secondary);
   font-size: 1.05rem;
   line-height: 1.7;
-  margin: 0;
+  margin: 0 0 1.5rem;
 }
 
-.hero-desc strong {
+.section-intro strong {
   color: var(--text);
 }
 

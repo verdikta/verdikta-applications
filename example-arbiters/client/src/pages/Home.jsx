@@ -100,13 +100,6 @@ function Home() {
         <div className="hero-icon"><Scale size={56} /></div>
         <h1>Verdikta Arbiters</h1>
         <p className="hero-tagline">Trustless AI, decided by a decentralized jury.</p>
-        <p className="hero-desc">
-          Verdikta lets smart contracts request AI evaluations that are decided collectively by
-          independent <strong>arbiters</strong> — oracle operators who stake wVDKA, are chosen at
-          random for each request, and respond through a commit-reveal protocol. Their answers are
-          aggregated into a single verdict, and arbiters earn LINK while building on-chain
-          reputation for accuracy and timeliness.
-        </p>
       </section>
 
       {/* Network overview — headline arbiter counts */}
@@ -146,6 +139,13 @@ function Home() {
       {/* How it works */}
       <section className="how-it-works">
         <h2 className="section-heading">How the arbiter system works</h2>
+        <p className="section-intro">
+          Verdikta lets smart contracts request AI evaluations that are decided collectively by
+          independent <strong>arbiters</strong> — oracle operators who stake wVDKA, are chosen at
+          random for each request, and respond through a commit-reveal protocol. Their answers are
+          aggregated into a single verdict, and arbiters earn LINK while building on-chain
+          reputation for accuracy and timeliness.
+        </p>
         <div className="steps">
           {HOW_IT_WORKS.map((s, i) => (
             <div className="step" key={s.title}>

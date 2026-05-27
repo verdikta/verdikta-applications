@@ -98,16 +98,18 @@ function MyArbiters() {
     }
   }, [address, selectedNetwork]);
 
-  // Load owned arbiters only when connected and on the selected chain.
+  // Load owned arbiters whenever a wallet is connected. The listing is a
+  // server-side read keyed by owner + the header-selected network, so it does
+  // NOT depend on which chain the wallet itself is on — only the write actions
+  // (claim/close/fund) require the wallet to be on the selected chain.
   useEffect(() => {
-    if (onCorrectChain && address) {
+    if (address) {
       load();
     } else {
       setData(null);
       setError(null);
     }
-    // chainId/selectedNetwork participate via onCorrectChain + load identity.
-  }, [onCorrectChain, address, selectedNetwork, load]);
+  }, [address, selectedNetwork, load]);
 
   // Dismiss the close-out confirmation on Escape (unless a tx is in flight).
   useEffect(() => {
@@ -251,7 +253,7 @@ function MyArbiters() {
         <h1><Wallet size={28} className="inline-icon" /> My Arbiters</h1>
         <p>Claim earned LINK and close out arbiters on {chain.name}</p>
       </div>
-      {onCorrectChain && (
+      {isConnected && (
         <div className="header-actions">
           <button onClick={load} className="btn btn-secondary btn-with-icon" disabled={loading}>
             <RefreshCw size={14} className={loading ? 'spinning' : ''} />
@@ -301,30 +303,24 @@ function MyArbiters() {
     );
   }
 
-  if (!onCorrectChain) {
-    return (
-      <div className="analytics my-arbiters">
-        {header}
-        <section className="analytics-section">
-          <div className="gate-state">
-            <AlertTriangle size={40} className="warn-icon" />
-            <h2>Wrong network</h2>
-            <p>
-              Your wallet is on a different network than the one selected
-              ({chain.name}). Switch your wallet to manage arbiters here, or change
-              the network selector in the header.
-            </p>
-            <button className="btn btn-primary btn-with-icon" onClick={handleSwitch} disabled={switching}>
-              <Server size={16} />
-              {switching ? 'Switching…' : `Switch to ${chain.name}`}
-            </button>
-          </div>
-        </section>
-      </div>
-    );
-  }
+  // --- Connected (any chain): the listing is a server read ----------------
 
-  // --- Connected + correct chain ------------------------------------------
+  // Shown above the listing when the wallet is on a different chain than the
+  // selected network: the data still displays, but write actions are disabled
+  // until the user switches.
+  const wrongChainBanner = !onCorrectChain ? (
+    <div className="wrong-chain-banner">
+      <AlertTriangle size={16} className="warn-icon" />
+      <span>
+        Your wallet is on a different network. Switch to <strong>{chain.name}</strong> to claim
+        LINK, fund keys, or close out arbiters — you can still view them below.
+      </span>
+      <button className="btn btn-primary btn-with-icon" onClick={handleSwitch} disabled={switching}>
+        <Server size={16} />
+        {switching ? 'Switching…' : `Switch to ${chain.name}`}
+      </button>
+    </div>
+  ) : null;
 
   if (loading && !data) {
     return (
@@ -375,12 +371,13 @@ function MyArbiters() {
   return (
     <div className="analytics my-arbiters">
       {header}
+      {wrongChainBanner}
 
       {operators.map((operator) => {
         const claimKey = `claim:${operator.operator}`;
         const claiming = pending.has(claimKey);
         const withdrawable = parseFloat(operator.withdrawableLink || '0');
-        const canClaim = withdrawable > 0 && !claiming;
+        const canClaim = withdrawable > 0 && !claiming && onCorrectChain;
 
         return (
           <section className="analytics-section operator-card" key={operator.operator}>
@@ -405,7 +402,9 @@ function MyArbiters() {
                   className="btn btn-primary btn-with-icon"
                   onClick={() => handleClaim(operator)}
                   disabled={!canClaim}
-                  title={withdrawable > 0 ? 'Withdraw earned LINK to your wallet' : 'No LINK available to claim'}
+                  title={!onCorrectChain
+                    ? `Switch to ${chain.name} to claim`
+                    : withdrawable > 0 ? 'Withdraw earned LINK to your wallet' : 'No LINK available to claim'}
                 >
                   <Coins size={14} />
                   {claiming ? 'Claiming…' : 'Claim LINK'}
@@ -446,7 +445,8 @@ function MyArbiters() {
                     <button
                       className="btn btn-secondary"
                       onClick={() => topUpAll(operator)}
-                      disabled={busy || !(Number(topUpTargets[operator.operator]) > 0)}
+                      disabled={busy || !(Number(topUpTargets[operator.operator]) > 0) || !onCorrectChain}
+                      title={!onCorrectChain ? `Switch to ${chain.name} to fund` : undefined}
                     >
                       {pending.has(`topup:${operator.operator}`) ? 'Funding…' : 'Top up all'}
                     </button>
@@ -474,7 +474,8 @@ function MyArbiters() {
                           <button
                             className="btn btn-secondary"
                             onClick={() => fundKey(s.address)}
-                            disabled={busy || !(Number(keyAmounts[s.address]) > 0)}
+                            disabled={busy || !(Number(keyAmounts[s.address]) > 0) || !onCorrectChain}
+                            title={!onCorrectChain ? `Switch to ${chain.name} to fund` : undefined}
                           >
                             {keyBusy ? '…' : 'Send'}
                           </button>
@@ -523,8 +524,10 @@ function MyArbiters() {
                             <button
                               className="btn btn-danger btn-with-icon"
                               onClick={() => setConfirmTarget({ operator, job })}
-                              disabled={closing}
-                              title="Deregister this arbiter and reclaim its 100 wVDKA stake"
+                              disabled={closing || !onCorrectChain}
+                              title={!onCorrectChain
+                                ? `Switch to ${chain.name} to close out`
+                                : 'Deregister this arbiter and reclaim its 100 wVDKA stake'}
                             >
                               {closing ? 'Closing…' : 'Close out & reclaim 100 wVDKA'}
                             </button>

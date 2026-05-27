@@ -23,6 +23,8 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { useNetwork } from '../context/NetworkContext';
+import { useWallet } from '../context/WalletContext';
+import { chainForNetwork } from '../config/chains';
 import { apiService } from '../services/api';
 import './Home.css';
 
@@ -76,9 +78,13 @@ function NetworkCard({ net, active, onSelect }) {
 
 function Home() {
   const { selectedNetwork, setNetwork } = useNetwork();
+  const { isConnected, address } = useWallet();
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // Number of arbiters the connected wallet owns on the selected network
+  // (null = unknown / not connected); used to acknowledge returning owners.
+  const [myArbiterCount, setMyArbiterCount] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -93,6 +99,29 @@ function Home() {
     return () => { cancelled = true; };
   }, []);
 
+  // If a returning wallet is connected, look up how many arbiters it owns on
+  // the selected network so the hero can greet the owner.
+  useEffect(() => {
+    if (!isConnected || !address) {
+      setMyArbiterCount(null);
+      return;
+    }
+    let cancelled = false;
+    apiService.getOwnedArbiters(address, selectedNetwork)
+      .then((res) => {
+        if (cancelled) return;
+        if (res.success && res.data) {
+          const count = (res.data.operators || [])
+            .reduce((n, op) => n + (op.jobs ? op.jobs.length : 0), 0);
+          setMyArbiterCount(count);
+        } else {
+          setMyArbiterCount(null);
+        }
+      })
+      .catch(() => { if (!cancelled) setMyArbiterCount(null); });
+    return () => { cancelled = true; };
+  }, [isConnected, address, selectedNetwork]);
+
   return (
     <div className="home">
       {/* Hero */}
@@ -100,6 +129,18 @@ function Home() {
         <div className="hero-icon"><Scale size={56} /></div>
         <h1>Verdikta Arbiters</h1>
         <p className="hero-tagline">Trustless AI, decided by a decentralized jury.</p>
+        <div className="hero-actions">
+          <Link to="/my-arbiters" className="hero-cta">
+            Configure My Arbiters <ArrowRight size={18} />
+          </Link>
+          {myArbiterCount > 0 && (
+            <p className="hero-ack">
+              <CheckCircle size={15} className="inline-icon" />
+              Your connected wallet owns <strong>{myArbiterCount}</strong>{' '}
+              arbiter{myArbiterCount !== 1 ? 's' : ''} on {chainForNetwork(selectedNetwork).name}.
+            </p>
+          )}
+        </div>
       </section>
 
       {/* Network overview — headline arbiter counts */}

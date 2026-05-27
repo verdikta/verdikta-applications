@@ -33,6 +33,31 @@
   color: var(--warning, #f59e0b);
 }
 
+/* Inline wrong-network notice shown above the listing (write actions are
+   disabled until the wallet is switched, but the data still displays). */
+.my-arbiters .wrong-chain-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.85rem 1rem;
+  margin-bottom: 1.25rem;
+  background: var(--warning-light, #fef3c7);
+  border: 1px solid var(--warning, #f59e0b);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.my-arbiters .wrong-chain-banner span {
+  flex: 1;
+  min-width: 14rem;
+}
+
+.my-arbiters .wrong-chain-banner .btn {
+  flex-shrink: 0;
+}
+
 /* Operator card header: address + claimable LINK + claim button */
 .my-arbiters .operator-head {
   display: flex;

@@ -193,11 +193,8 @@ router.get('/system', async (req, res) => {
 /**
  * GET /api/analytics/owners
  * Arbiters grouped by owner address (sorted numerically ascending), with totals
- * for # arbiters, average reputation, claimable LINK and lifetime bonus LINK.
- *
- * Cached per network only once the lifetime-bonus backfill has caught up; while
- * it's still indexing we recompute (cheap — enumeration is memoized) so the
- * client can poll and watch the bonus column fill in.
+ * for # arbiters, average reputation, claimable LINK and node funding.
+ * Cached per network.
  */
 router.get('/owners', async (req, res) => {
   const network = normalizeNetwork(req.query.network);
@@ -212,8 +209,7 @@ router.get('/owners', async (req, res) => {
     const data = await verdiktaService.getOwnersAnalytics();
     const payload = { network, ...data };
 
-    // Only cache stable (fully-indexed) results.
-    if (data.bonusComplete) analyticsCache.set(cacheKey, payload);
+    analyticsCache.set(cacheKey, payload);
 
     return res.json({ success: true, data: payload, cached: false });
   } catch (error) {

@@ -72,8 +72,7 @@ export const apiService = {
   },
 
   // Arbiters grouped by owner address for the analytics "Arbiters by Owner"
-  // table. `data.bonusComplete` is false while the lifetime-bonus event scan is
-  // still backfilling — poll until true to see that column populate.
+  // table (counts, reputation, claimable LINK, node funding).
   async getOwnersAnalytics(network) {
     const response = await api.get('/api/analytics/owners', {
       params: { network },

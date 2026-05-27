@@ -76,12 +76,11 @@ function Analytics() {
   const requestedNetworkRef = useRef(selectedNetwork);
 
   // "Arbiters by Owner" section — loaded independently so the heavier
-  // owner/withdrawable/bonus work doesn't block the sections above.
+  // owner/withdrawable work doesn't block the sections above.
   const [ownersData, setOwnersData] = useState(null);
   const [ownersLoading, setOwnersLoading] = useState(true);
   const [ownersError, setOwnersError] = useState(null);
   const ownersReqNetRef = useRef(selectedNetwork);
-  const ownersPollRef = useRef(null);
 
   const loadAnalytics = useCallback(async (network, silent = false) => {
     if (!isMountedRef.current) return;
@@ -114,14 +113,9 @@ function Analytics() {
     }
   }, [toast]);
 
-  // Load the by-owner table; while the lifetime-bonus scan is still indexing
-  // (bonusComplete false), poll every 8s so the column fills in live.
+  // Load the by-owner table.
   const loadOwners = useCallback(async (network) => {
     ownersReqNetRef.current = network;
-    if (ownersPollRef.current) {
-      clearTimeout(ownersPollRef.current);
-      ownersPollRef.current = null;
-    }
     try {
       const res = await apiService.getOwnersAnalytics(network);
       if (!isMountedRef.current || network !== ownersReqNetRef.current) return;
@@ -129,9 +123,6 @@ function Analytics() {
       setOwnersData(res.data);
       setOwnersError(null);
       setOwnersLoading(false);
-      if (!res.data.bonusComplete) {
-        ownersPollRef.current = setTimeout(() => loadOwners(network), 8000);
-      }
     } catch (err) {
       if (isMountedRef.current && network === ownersReqNetRef.current) {
         setOwnersError(err.message || 'Failed to load owners');
@@ -166,18 +157,12 @@ function Analytics() {
     loadAnalytics(selectedNetwork);
   }, [selectedNetwork, loadAnalytics]);
 
-  // Load the by-owner table on network change; tear down any pending poll.
+  // Load the by-owner table on network change.
   useEffect(() => {
     setOwnersData(null);
     setOwnersLoading(true);
     setOwnersError(null);
     loadOwners(selectedNetwork);
-    return () => {
-      if (ownersPollRef.current) {
-        clearTimeout(ownersPollRef.current);
-        ownersPollRef.current = null;
-      }
-    };
   }, [selectedNetwork, loadOwners]);
 
   // Format time ago
@@ -352,12 +337,6 @@ function Analytics() {
             <div className="info-banner"><AlertTriangle size={16} /><span>{ownersError}</span></div>
           ) : ownersData && ownersData.owners.length > 0 ? (
             <div className="stats-table">
-              {!ownersData.bonusComplete && (
-                <div className="info-banner">
-                  <RefreshCw size={14} className="spinning" />
-                  <span>Indexing lifetime bonus payments&hellip; this column will fill in shortly.</span>
-                </div>
-              )}
               <table>
                 <thead>
                   <tr>
@@ -370,7 +349,6 @@ function Analytics() {
                     <th className="tooltip-header" title="Average quality score across this owner's arbiters">Avg Quality</th>
                     <th className="tooltip-header" title="Average timeliness score across this owner's arbiters">Avg Timeliness</th>
                     <th className="tooltip-header" title="LINK currently claimable across this owner's operator contracts"><Coins size={13} className="inline-icon" /> Claimable LINK</th>
-                    <th className="tooltip-header" title="Total BonusPayment LINK earned over all history (excludes base request fees)"><Coins size={13} className="inline-icon" /> Lifetime Bonus LINK</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -393,15 +371,10 @@ function Analytics() {
                       <td>{o.avgQualityScore}</td>
                       <td>{o.avgTimelinessScore}</td>
                       <td>{o.claimableLink ?? '—'}</td>
-                      <td>{ownersData.bonusComplete ? o.lifetimeBonusLink : '…'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-              <p className="table-note">
-                Lifetime bonus is the total <code>BonusPayment</code> LINK over all history; base
-                request fees are not included.
-              </p>
             </div>
           ) : (
             <div className="empty-state"><UserCircle size={32} /><p>No arbiter owners found</p></div>

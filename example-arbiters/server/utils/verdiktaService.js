@@ -8,8 +8,6 @@
  * kept — the aggregation-history queries and their event ABIs are omitted.
  */
 
-const fs = require('fs');
-const path = require('path');
 const { ethers } = require('ethers');
 const logger = require('./logger');
 const { networks, normalizeNetwork, getRpcUrl, getArchiveRpcUrl, funding } = require('../config');
@@ -44,8 +42,7 @@ async function withRetry(fn, { retries = 4, delayMs = 250 } = {}) {
   throw lastErr;
 }
 
-// ReputationAggregator ABI — view functions needed for analytics, plus the
-// BonusPayment event used to total lifetime LINK bonuses per operator.
+// ReputationAggregator ABI — view functions needed for analytics.
 const AGGREGATOR_ABI = [
   "function reputationKeeper() view returns (address)",
   "function commitOraclesToPoll() view returns (uint256)",
@@ -70,8 +67,7 @@ const AGGREGATOR_ABI = [
   "function revealedTimelinessScore() view returns (int8)",
   "function revealedQualityScore() view returns (int8)",
   "function committedTimelinessScore() view returns (int8)",
-  "function committedQualityScore() view returns (int8)",
-  "event BonusPayment(address indexed operator, uint256 bonusFee)"
+  "function committedQualityScore() view returns (int8)"
 ];
 
 // ReputationKeeper ABI — oracle data.
@@ -124,15 +120,8 @@ class VerdiktaService {
     this.reputationKeeper = null;
     this.keeperAddress = null;
 
-    // Network identity + event-scan start block (for the owners section).
+    // Network identity (used in logging / data paths).
     this.networkKey = options.networkKey || 'base-sepolia';
-    this.aggregatorFromBlock = options.aggregatorFromBlock || 0;
-
-    // Separate archive provider for historical eth_getLogs (the state RPC prunes
-    // log history). Falls back to the state provider if no archive is configured.
-    const archiveUrl = options.archiveRpcUrl || providerUrl;
-    this.archiveProvider = new ethers.JsonRpcProvider(archiveUrl);
-    this.archiveAggregator = new ethers.Contract(aggregatorAddress, AGGREGATOR_ABI, this.archiveProvider);
 
     // In-memory caches that let the by-class, by-owner and My Arbiters paths
     // share work. getAllOracles is the heavy enumeration; owner() is static.
@@ -140,7 +129,6 @@ class VerdiktaService {
     this._ownerMap = {};                // { operatorLower: { owner, ts } }
     this._senderMap = {};               // { operatorLower: { senders: [addr], ts } }
     this._gasPrice = null;              // { value: bigint, ts }
-    this._bonusScan = null;             // { lastScannedBlock, totals: {operatorLower: bigint} }
   }
 
   /**
@@ -827,155 +815,11 @@ class VerdiktaService {
     };
   }
 
-  // --- Lifetime bonus LINK via incremental BonusPayment event scan ---------
-  //
-  // BonusPayment(operator, bonusFee) is the only cleanly-summable on-chain LINK
-  // payment signal. Scanning ~11M blocks of history is too slow to block a
-  // request, so we scan in the background and persist progress: the first call
-  // returns immediately (complete:false) while a background task backfills;
-  // later calls return the accumulating totals. Progress survives restarts via
-  // a small JSON cache, so the full backfill happens at most once.
-
-  _bonusCachePath() {
-    return path.join(__dirname, '..', 'data', this.networkKey, 'bonusPayments.json');
-  }
-
-  _loadBonusScan() {
-    if (this._bonusScan) return this._bonusScan;
-    try {
-      const j = JSON.parse(fs.readFileSync(this._bonusCachePath(), 'utf8'));
-      const totals = {};
-      for (const [k, v] of Object.entries(j.totals || {})) totals[k] = BigInt(v);
-      this._bonusScan = {
-        lastScannedBlock: j.lastScannedBlock ?? this.aggregatorFromBlock - 1,
-        totals
-      };
-    } catch {
-      this._bonusScan = { lastScannedBlock: this.aggregatorFromBlock - 1, totals: {} };
-    }
-    return this._bonusScan;
-  }
-
-  _saveBonusScan() {
-    try {
-      fs.mkdirSync(path.dirname(this._bonusCachePath()), { recursive: true });
-      const totals = {};
-      for (const [k, v] of Object.entries(this._bonusScan.totals)) totals[k] = v.toString();
-      fs.writeFileSync(this._bonusCachePath(), JSON.stringify({
-        lastScannedBlock: this._bonusScan.lastScannedBlock,
-        totals,
-        updatedAt: Date.now()
-      }));
-    } catch (e) {
-      logger.warn('Failed to persist bonus scan cache', { network: this.networkKey, msg: e.message });
-    }
-  }
-
-  /**
-   * Scan one [from,to] block window for BonusPayment events (via the archive
-   * provider), summing amounts into `totals`. Splits the window on RPC range
-   * errors; for a minimal window that still fails after brief retries it logs a
-   * warning and SKIPS rather than throwing, so the backfill always makes forward
-   * progress (never loops on a permanently-bad window).
-   */
-  async _scanBonusWindow(from, to, totals) {
-    const query = () => this.archiveAggregator.queryFilter(
-      this.archiveAggregator.filters.BonusPayment(), from, to
-    );
-    try {
-      for (const ev of await query()) {
-        const op = ev.args.operator.toLowerCase();
-        totals[op] = (totals[op] || 0n) + ev.args.bonusFee;
-      }
-      return;
-    } catch (e) {
-      if (to - from > 2000) {
-        const mid = Math.floor((from + to) / 2);
-        await this._scanBonusWindow(from, mid, totals);
-        await this._scanBonusWindow(mid + 1, to, totals);
-        return;
-      }
-      for (let i = 0; i < 3; i++) {
-        await new Promise(r => setTimeout(r, 300 * (i + 1)));
-        try {
-          for (const ev of await query()) {
-            const op = ev.args.operator.toLowerCase();
-            totals[op] = (totals[op] || 0n) + ev.args.bonusFee;
-          }
-          return;
-        } catch { /* retry */ }
-      }
-      logger.warn('Skipping unscannable bonus window', {
-        network: this.networkKey, from, to, msg: String(e.shortMessage || e.message).slice(0, 80)
-      });
-    }
-  }
-
-  /** Start (once) a background backfill from the cursor up to `latest`. */
-  _ensureBonusBackfill(latest) {
-    const scan = this._loadBonusScan();
-    if (scan.lastScannedBlock >= latest || this._bonusScanRunning) return;
-    this._bonusScanRunning = true;
-    (async () => {
-      const CHUNK = 45000; // under PublicNode's getLogs range cap (~50k)
-      let from = scan.lastScannedBlock + 1;
-      let sinceSave = 0;
-      try {
-        while (from <= latest) {
-          const to = Math.min(from + CHUNK - 1, latest);
-          await this._scanBonusWindow(from, to, scan.totals);
-          scan.lastScannedBlock = to;
-          from = to + 1;
-          if (++sinceSave >= 20) { this._saveBonusScan(); sinceSave = 0; }
-        }
-        this._saveBonusScan();
-        logger.info('Bonus backfill complete', { network: this.networkKey, lastBlock: scan.lastScannedBlock });
-      } catch (e) {
-        this._saveBonusScan(); // checkpoint progress; resume on a later call
-        logger.warn('Bonus backfill paused on error; will resume', { network: this.networkKey, msg: e.message });
-      } finally {
-        this._bonusScanRunning = false;
-      }
-    })();
-  }
-
-  /**
-   * operator (lowercased) -> lifetime BonusPayment total (bigint), plus whether
-   * the historical scan has caught up to chain head. Non-blocking: kicks off /
-   * advances the background backfill and returns the totals known so far.
-   */
-  async getBonusTotalsByOperator() {
-    const scan = this._loadBonusScan();
-    let latest;
-    try {
-      // Use the archive provider so "latest" matches the log source.
-      latest = await withRetry(() => this.archiveProvider.getBlockNumber());
-    } catch {
-      latest = scan.lastScannedBlock; // can't advance now; report what we have
-    }
-    // "Complete" means caught up to within a small lag of chain head — the deep
-    // historical backfill is done. An exact equality never latches because the
-    // chain keeps advancing (~2s/block) between the scan and the next read.
-    const HEAD_LAG_TOLERANCE = 150;
-    const complete = latest - scan.lastScannedBlock <= HEAD_LAG_TOLERANCE;
-    // Keep nudging the cursor toward head whenever behind (cheap once caught up).
-    if (scan.lastScannedBlock < latest) this._ensureBonusBackfill(latest);
-    return {
-      totals: { ...scan.totals },
-      complete,
-      progress: {
-        fromBlock: this.aggregatorFromBlock,
-        scannedThrough: scan.lastScannedBlock,
-        latest
-      }
-    };
-  }
-
   /**
    * Arbiters grouped by owner address (the ArbiterOperator owner), with totals
    * for the analytics "Arbiters by Owner" table: arbiter/operator counts,
-   * average reputation, claimable LINK (Σ withdrawable) and lifetime bonus LINK
-   * (Σ BonusPayment). Sorted by owner address, numerically ascending.
+   * average reputation, claimable LINK (Σ withdrawable) and node funding.
+   * Sorted by owner address, numerically ascending.
    */
   async getOwnersAnalytics() {
     const [oracles, thresholds] = await Promise.all([
@@ -985,13 +829,11 @@ class VerdiktaService {
     const valid = oracles.filter((o) => !o.error && o.oracle);
     const operatorAddrs = [...new Set(valid.map((o) => o.oracle))];
 
-    const [ownerMap, withdrawableMap, bonus, fundingData] = await Promise.all([
+    const [ownerMap, withdrawableMap, fundingData] = await Promise.all([
       this.getOwnerMap(operatorAddrs),
       this.getWithdrawableMap(operatorAddrs),
-      this.getBonusTotalsByOperator(),
       this._computeFunding(operatorAddrs)
     ]);
-    const bonusMap = bonus.totals;
     const { perOp: fundingPerOp, gasPrice } = fundingData;
     const now = Math.floor(Date.now() / 1000);
 
@@ -1019,13 +861,11 @@ class VerdiktaService {
     const owners = Object.values(byOwner).map((b) => {
       let claimable = 0n;
       let claimableKnown = true;
-      let bonus = 0n;
       let nodeWei = 0n;
       for (const op of b.operators) {
         const w = withdrawableMap[op];
         if (w == null) claimableKnown = false;
         else claimable += w;
-        bonus += bonusMap[op] || 0n;
         nodeWei += fundingPerOp[op]?.totalWei ?? 0n;
       }
       const estQueries = this._estQueries(nodeWei, gasPrice);
@@ -1041,7 +881,6 @@ class VerdiktaService {
         avgQualityScore: Math.round(b.qSum / b.arbiters),
         avgTimelinessScore: Math.round(b.tSum / b.arbiters),
         claimableLink: claimableKnown ? ethers.formatEther(claimable) : null,
-        lifetimeBonusLink: ethers.formatEther(bonus),
         nodeEth: ethers.formatEther(nodeWei),
         estQueries,
         fundingLow: this._fundingLow(nodeWei, estQueries)
@@ -1060,8 +899,6 @@ class VerdiktaService {
 
     return {
       owners,
-      bonusComplete: bonus.complete,
-      bonusProgress: bonus.progress,
       funding: {
         gasPriceGwei: gasPrice != null ? ethers.formatUnits(gasPrice, 'gwei') : null,
         gasPerQuery: funding.gasPerQuery,

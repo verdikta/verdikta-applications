@@ -87,6 +87,21 @@
   box-shadow: 0 0 0 2px var(--primary);
 }
 
+.network-card.clickable {
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.network-card.clickable:hover {
+  border-color: var(--primary);
+  transform: translateY(-2px);
+}
+
+.network-card.clickable:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 .active-badge {
   position: absolute;
   top: 0.75rem;
@@ -137,10 +152,8 @@
   opacity: 0.5;
 }
 
-.network-note {
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  margin-top: 0.75rem;
+.section-heading.has-tooltip {
+  cursor: help;
 }
 
 .home-error {

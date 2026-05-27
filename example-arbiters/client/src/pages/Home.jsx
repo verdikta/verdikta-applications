@@ -43,9 +43,23 @@ const EXPLORE = [
   { to: '/my-arbiters', icon: Wallet, title: 'My Arbiters', text: 'Connect a wallet to claim earned LINK and close out your arbiters.' }
 ];
 
-function NetworkCard({ net, active }) {
+function NetworkCard({ net, active, onSelect }) {
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onSelect();
+    }
+  };
   return (
-    <div className={`network-card${active ? ' active' : ''}`}>
+    <div
+      className={`network-card clickable${active ? ' active' : ''}`}
+      role="button"
+      tabIndex={0}
+      aria-pressed={active}
+      onClick={onSelect}
+      onKeyDown={handleKeyDown}
+      title={active ? `${net.name} is the active network` : `Switch to ${net.name}`}
+    >
       {active && <span className="active-badge">Active</span>}
       <div className="network-card-name">{net.name}</div>
       <div className="network-card-number">
@@ -61,7 +75,7 @@ function NetworkCard({ net, active }) {
 }
 
 function Home() {
-  const { selectedNetwork } = useNetwork();
+  const { selectedNetwork, setNetwork } = useNetwork();
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -97,7 +111,12 @@ function Home() {
 
       {/* Network overview — headline arbiter counts */}
       <section className="network-overview">
-        <h2 className="section-heading"><Activity size={18} className="inline-icon" /> Network at a glance</h2>
+        <h2
+          className="section-heading has-tooltip"
+          title="The highlighted card is the active network. Click a card to switch the network for the whole app (same as the selector in the header)."
+        >
+          <Activity size={18} className="inline-icon" /> Network at a glance
+        </h2>
         {loading ? (
           <div className="network-cards">
             {[0, 1].map((i) => (
@@ -113,14 +132,15 @@ function Home() {
         ) : (
           <div className="network-cards">
             {summary.networks.map((net) => (
-              <NetworkCard key={net.network} net={net} active={sameNetwork(net.network, selectedNetwork)} />
+              <NetworkCard
+                key={net.network}
+                net={net}
+                active={sameNetwork(net.network, selectedNetwork)}
+                onSelect={() => setNetwork(String(net.network).replace(/-/g, '_'))}
+              />
             ))}
           </div>
         )}
-        <p className="network-note">
-          The highlighted card is the network selected in the header. Switch networks there to
-          change what the rest of the app shows.
-        </p>
       </section>
 
       {/* How it works */}

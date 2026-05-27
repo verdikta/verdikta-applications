@@ -39,7 +39,7 @@ const networks = {
   'base': {
     key: 'base',
     chainId: 8453,
-    name: 'Base',
+    name: 'Base Mainnet',
     rpcUrl: 'https://base-rpc.publicnode.com',
     explorer: 'https://basescan.org',
     verdiktaAggregatorAddress: '0x2f7a02298D4478213057edA5e5bEB07F20c4c054',

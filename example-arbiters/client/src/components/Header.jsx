@@ -33,9 +33,9 @@ function Header() {
           </Link>
           <nav className="nav">
             <Link to="/" className="nav-link">Home</Link>
+            <Link to="/my-arbiters" className="nav-link">My Arbiters</Link>
             <Link to="/analytics" className="nav-link">Analytics</Link>
             <Link to="/contracts" className="nav-link">Contracts</Link>
-            <Link to="/my-arbiters" className="nav-link">My Arbiters</Link>
           </nav>
         </div>
         <div className="header-right">

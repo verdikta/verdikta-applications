@@ -1,86 +1,11 @@
 #!/bin/bash
-# Stop server for specified network(s)
-# Usage: ./stopServer.sh [base|base-sepolia|both]
-# Default: both
-
-cd "$(dirname "$0")"
-
+# example-bounty-program backends (systemd). Usage: ./stopServer.sh [base|base-sepolia|both]
 NETWORK="${1:-both}"
-
-stop_network() {
-    local net="$1"
-    local port pid_file
-
-    if [ "$net" = "base" ]; then
-        port=5005
-    elif [ "$net" = "base-sepolia" ]; then
-        port=5006
-    fi
-
-    pid_file="server-${net}.pid"
-
-    if [ -f "$pid_file" ]; then
-        PID=$(cat "$pid_file")
-        if kill -0 "$PID" 2>/dev/null; then
-            pkill -P "$PID" 2>/dev/null
-            kill "$PID" 2>/dev/null
-            echo "Server ($net) stopped (PID $PID)"
-        else
-            echo "Server ($net) was not running (stale PID file removed)"
-        fi
-        rm -f "$pid_file"
-    else
-        echo "Server ($net) is not running (no PID file)"
-    fi
-
-    # Safety net: kill anything still listening on the expected port
-    if [ -n "$port" ]; then
-        local stragglers
-        stragglers=$(lsof -t -i:"$port" 2>/dev/null)
-        if [ -n "$stragglers" ]; then
-            echo "Cleaning up orphaned process(es) on port $port: $stragglers"
-            echo "$stragglers" | xargs kill 2>/dev/null
-            sleep 1
-            stragglers=$(lsof -t -i:"$port" 2>/dev/null)
-            if [ -n "$stragglers" ]; then
-                echo "$stragglers" | xargs kill -9 2>/dev/null
-            fi
-        fi
-    fi
-}
-
-# Also stop legacy server (old single-network setup)
-stop_legacy() {
-    if [ -f "server.pid" ]; then
-        PID=$(cat "server.pid")
-        if kill -0 "$PID" 2>/dev/null; then
-            pkill -P "$PID" 2>/dev/null
-            kill "$PID" 2>/dev/null
-            echo "Legacy server stopped (PID $PID)"
-        fi
-        rm -f "server.pid"
-    fi
-}
-
 case "$NETWORK" in
-    base)
-        stop_legacy
-        stop_network "base"
-        ;;
-    base-sepolia)
-        stop_legacy
-        stop_network "base-sepolia"
-        ;;
-    both)
-        stop_legacy
-        stop_network "base"
-        stop_network "base-sepolia"
-        ;;
-    *)
-        echo "Usage: $0 [base|base-sepolia|both]"
-        echo "  base        - Stop mainnet server"
-        echo "  base-sepolia - Stop testnet server"
-        echo "  both        - Stop both (default)"
-        exit 1
-        ;;
+  base)         UNITS="verdikta-bounty-base.service" ;;
+  base-sepolia) UNITS="verdikta-bounty-testnet.service" ;;
+  both)         UNITS="verdikta-bounty-base.service verdikta-bounty-testnet.service" ;;
+  *) echo "Usage: $0 [base|base-sepolia|both]"; exit 1 ;;
 esac
+echo "Stopping: $UNITS"
+systemctl stop $UNITS && echo "Stopped."

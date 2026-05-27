@@ -1,3 +1,3 @@
 #!/bin/bash
-cd "$(dirname "$0")"
-tail -f server.log
+# Follow example-arbiters backend logs (systemd journal).
+exec journalctl -u verdikta-arbiters-server.service -n 100 -f

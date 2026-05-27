@@ -31,6 +31,8 @@ import { useWallet } from '../context/WalletContext';
 import { chainForNetwork } from '../config/chains';
 import { apiService } from '../services/api';
 import { claimLink, deregisterArbiter, sendEth } from '../services/arbiterContracts';
+import { estQueriesFor, fmtQueries } from '../utils/funding';
+import '../styles/funding.css';
 import './MyArbiters.css';
 
 const STATUS_LABELS = {
@@ -43,15 +45,6 @@ const STATUS_LABELS = {
 
 const shortHash = (h) => (h ? `${h.slice(0, 10)}…${h.slice(-6)}` : '');
 const shortAddr = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
-
-// Estimated queries a key's ETH balance covers, from the funding metadata.
-const estQueriesFor = (balanceEth, f) => {
-  if (!f || f.gasPriceGwei == null) return null;
-  const costPerQueryEth = f.gasPerQuery * Number(f.gasPriceGwei) * 1e-9;
-  if (!(costPerQueryEth > 0)) return null;
-  return Math.floor(Number(balanceEth) / costPerQueryEth);
-};
-const fmtQueries = (n) => (n == null ? '—' : n.toLocaleString());
 
 function MyArbiters() {
   const toast = useToast();
@@ -460,13 +453,13 @@ function MyArbiters() {
                   </div>
 
                   <div className="fund-keys">
-                    <div className="fund-key fund-key-head">
+                    <div className="fund-key fund-key-rw fund-key-head">
                       <span>Sending key</span><span>Balance</span><span>~Queries</span><span></span><span></span>
                     </div>
                     {f.senders.map((s) => {
                       const keyBusy = pending.has(`fund:${s.address}`);
                       return (
-                        <div className="fund-key" key={s.address}>
+                        <div className="fund-key fund-key-rw" key={s.address}>
                           <a className="explorer-link" href={`${chain.explorer}/address/${s.address}`} target="_blank" rel="noopener noreferrer" title={s.address}>
                             <code>{shortAddr(s.address)}</code>
                           </a>

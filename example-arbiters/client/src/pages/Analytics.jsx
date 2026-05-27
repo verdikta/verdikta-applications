@@ -440,7 +440,15 @@ function Analytics() {
                           <span className="text-muted">Unknown</span>
                         )}
                       </td>
-                      <td>{o.nodeEth != null ? Number(o.nodeEth).toFixed(4) : '—'}</td>
+                      <td>
+                        {o.owner && o.nodeEth != null ? (
+                          <Link className="class-link" to={`/owner/${o.owner}#funding`} title="View per-key funding breakdown">
+                            {Number(o.nodeEth).toFixed(4)}
+                          </Link>
+                        ) : (
+                          o.nodeEth != null ? Number(o.nodeEth).toFixed(4) : '—'
+                        )}
+                      </td>
                       <td>{o.estQueries != null ? o.estQueries.toLocaleString() : '—'}</td>
                       <td style={{ color: o.fundingLow ? COLORS.blocked : COLORS.active, fontWeight: 600 }}>
                         {o.fundingLow ? 'Low' : 'OK'}

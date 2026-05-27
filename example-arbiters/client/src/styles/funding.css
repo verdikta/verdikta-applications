@@ -1,0 +1,106 @@
+/*
+ * Shared node-funding panel styles, used by both My Arbiters (interactive,
+ * 5-column key rows: add `fund-key-rw`) and Owner Details (read-only,
+ * 3-column key rows: add `fund-key-ro`). Class names are intentionally
+ * unscoped so both pages share one source of truth.
+ */
+
+.funding-panel {
+  padding: 0.85rem;
+  margin-bottom: 1rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.875rem;
+}
+
+.funding-panel.low {
+  background: var(--warning-light, #fef3c7);
+  border-color: var(--warning, #f59e0b);
+}
+
+.funding-summary {
+  margin-bottom: 0.75rem;
+}
+
+.funding-summary-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  color: var(--text-secondary);
+}
+
+.funding-summary-main strong { color: var(--text); }
+.funding-sep { color: var(--border); }
+.funding-est { cursor: help; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+
+.funding-low-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #92400e;
+  background: #fde68a;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+}
+
+.fund-topup {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0 0.75rem;
+  margin-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.fund-topup label { color: var(--text-secondary); }
+.fund-topup input { width: 6rem; }
+
+.fund-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 1.25rem;
+}
+
+.fund-key {
+  display: grid;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+/* Interactive (My Arbiters): address · balance · queries · amount input · send */
+.fund-key-rw { grid-template-columns: 1.4fr 1fr 0.9fr 6rem auto; }
+
+/* Read-only (Owner Details): address · balance · queries */
+.fund-key-ro { grid-template-columns: 1.4fr 1fr 0.9fr; }
+
+.fund-key-head {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+.fund-key input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.fund-key .btn { padding: 0.3rem 0.6rem; }
+
+/* Number inputs in the fund panel */
+.fund-topup input,
+.fund-key input {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.85rem;
+}

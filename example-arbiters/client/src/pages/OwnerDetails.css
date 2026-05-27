@@ -68,6 +68,22 @@
   margin-bottom: 0.75rem;
 }
 
+/* Read-only node-funding section (panel styles come from styles/funding.css) */
+.owner-funding-op {
+  margin-bottom: 1.25rem;
+}
+
+.owner-funding-op-head {
+  margin-bottom: 0.4rem;
+  font-size: 0.9rem;
+}
+
+.owner-funding-op-head a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .owner-table {
   width: 100%;
   border-collapse: collapse;

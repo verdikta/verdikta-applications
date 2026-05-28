@@ -102,6 +102,10 @@
   white-space: nowrap;
 }
 
+.my-arbiters .muted {
+  color: var(--text-secondary);
+}
+
 .my-arbiters .locked-note {
   display: inline-flex;
   align-items: center;

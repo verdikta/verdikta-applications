@@ -112,6 +112,14 @@ const OPERATOR_ABI = [
   "function getAuthorizedSenders() view returns (address[])"
 ];
 
+// Chainlink Operator request/response events. Used to derive the per-jobId
+// sending key from on-chain fulfillment history (the assignment lives off-chain
+// in the node's job spec; on-chain we read it from the fulfillment tx's sender).
+const ORACLE_EVENTS_ABI = [
+  "event OracleRequest(bytes32 indexed specId, address requester, bytes32 requestId, uint256 payment, address callbackAddr, bytes4 callbackFunctionId, uint256 cancelExpiration, uint256 dataVersion, bytes data)",
+  "event OracleResponse(bytes32 indexed requestId)"
+];
+
 class VerdiktaService {
   constructor(providerUrl, aggregatorAddress, options = {}) {
     this.provider = new ethers.JsonRpcProvider(providerUrl);
@@ -123,12 +131,27 @@ class VerdiktaService {
     // Network identity (used in logging / data paths).
     this.networkKey = options.networkKey || 'base-sepolia';
 
+    // Archive RPC for historical eth_getLogs (per-jobId sender derivation).
+    // Lazy-init: only opened when an archive scan is requested.
+    this.archiveRpcUrl = options.archiveRpcUrl || null;
+    this._archiveProvider = null;
+
     // In-memory caches that let the by-class, by-owner and My Arbiters paths
     // share work. getAllOracles is the heavy enumeration; owner() is static.
     this._oraclesCache = null;          // { data, ts }
     this._ownerMap = {};                // { operatorLower: { owner, ts } }
     this._senderMap = {};               // { operatorLower: { senders: [addr], ts } }
     this._gasPrice = null;              // { value: bigint, ts }
+    this._jobSenderCache = {};          // { operatorLower: { map, ts } }
+  }
+
+  /** Archive provider for log scans (Tenderly). Falls back to the read RPC. */
+  _getArchiveProvider() {
+    if (!this._archiveProvider) {
+      const url = this.archiveRpcUrl;
+      this._archiveProvider = url ? new ethers.JsonRpcProvider(url) : this.provider;
+    }
+    return this._archiveProvider;
   }
 
   /**
@@ -663,6 +686,25 @@ class VerdiktaService {
       }
     }
 
+    // Attach per-jobId sender (derived from fulfillment-history log scan via
+    // the archive RPC; null for never-used arbiters). Operators are scanned in
+    // parallel; failures are logged and leave job.sender = null without
+    // breaking the listing.
+    if (ownedOps.length) {
+      await Promise.all(ownedOps.map(async (opAddr) => {
+        const opData = byOperator[opAddr];
+        try {
+          const senderMap = await this.getJobSenderMap(opAddr, opData.jobs.map((j) => j.jobId));
+          for (const job of opData.jobs) {
+            job.sender = senderMap[String(job.jobId).toLowerCase()] || null;
+          }
+        } catch (err) {
+          logger.warn('per-jobId sender scan failed', { operator: opAddr, msg: err.message });
+          for (const job of opData.jobs) job.sender = null;
+        }
+      }));
+    }
+
     return {
       owner: ownerAddress,
       keeperAddress: this.keeperAddress,
@@ -813,6 +855,124 @@ class VerdiktaService {
       lowQueriesThreshold: funding.lowQueriesThreshold,
       lowEthThreshold: funding.lowEthThreshold
     };
+  }
+
+  // --- Per-jobId sender derivation -----------------------------------------
+  //
+  // On-chain there's no `(jobId → sending key)` mapping — the operator
+  // contract just has one global `authorizedSenders` list. The 1:1 a node
+  // operator configures (job spec `fromAddress`) is off-chain. We recover it
+  // by scanning fulfillment history: each `OracleResponse(requestId)` event's
+  // transaction was sent by the key that fulfilled it; the matching
+  // `OracleRequest(specId, ..., requestId, ...)` ties that requestId to a
+  // jobId. We walk back chunked through the archive RPC with an early-exit
+  // when all requested jobIds have a hit. Unused arbiters → null (no history).
+
+  /**
+   * Operator (lowercased) → { jobIdLower: senderAddress }. Cached per operator
+   * (30 min). On any failure returns the best-effort partial map; never throws.
+   */
+  async getJobSenderMap(operatorAddress, jobIds) {
+    const opLower = operatorAddress.toLowerCase();
+    const wantLower = (jobIds || []).map((j) => String(j).toLowerCase());
+    const cached = this._jobSenderCache[opLower];
+    // Cache hit only if it's fresh AND has already attempted every requested
+    // jobId (otherwise a newly-registered arbiter would stay "—" until TTL).
+    if (cached && Date.now() - cached.ts < 30 * 60 * 1000 &&
+        wantLower.every((j) => cached.attempted.has(j))) {
+      return cached.map;
+    }
+
+    const provider = this._getArchiveProvider();
+    const iface = new ethers.Interface(ORACLE_EVENTS_ABI);
+    const reqTopic = iface.getEvent('OracleRequest').topicHash;
+    const respTopic = iface.getEvent('OracleResponse').topicHash;
+
+    const needed = new Set((jobIds || []).map((j) => String(j).toLowerCase()));
+    const reqIdToSpec = {};        // requestId(lower) → specId(lower), accumulated
+    let pendingResp = [];          // responses whose matching request isn't seen yet
+    const senderByJob = {};
+
+    let latest;
+    try {
+      latest = await withRetry(() => provider.getBlockNumber());
+    } catch (err) {
+      logger.warn('archive getBlockNumber failed', { operator: operatorAddress, msg: err.message });
+      // Don't poison the cache with a failure — let the next request retry.
+      return senderByJob;
+    }
+
+    // Chunk size sits just under Tenderly's 100k-block per-query cap. The
+    // total look-back covers infrequent arbiters (testnet activity can lag by
+    // weeks); cached for 30 min after, so this is paid at most rarely.
+    const CHUNK = 90_000;     // ≤ 100k per-query (Tenderly free-tier cap)
+    const MAX_CHUNKS = 25;    // ≈ 2.25M blocks (~52 days on Base) of look-back
+
+    let toBlock = latest;
+    for (let i = 0; i < MAX_CHUNKS && needed.size > 0; i++) {
+      const fromBlock = Math.max(0, toBlock - CHUNK + 1);
+      let reqLogs = [];
+      let respLogs = [];
+      try {
+        [reqLogs, respLogs] = await Promise.all([
+          withRetry(() => provider.getLogs({ address: operatorAddress, topics: [reqTopic], fromBlock, toBlock })),
+          withRetry(() => provider.getLogs({ address: operatorAddress, topics: [respTopic], fromBlock, toBlock })),
+        ]);
+      } catch (err) {
+        logger.warn('archive getLogs failed', { operator: operatorAddress, fromBlock, toBlock, msg: err.message });
+        break;
+      }
+
+      for (const log of reqLogs) {
+        try {
+          const parsed = iface.parseLog({ topics: log.topics, data: log.data });
+          reqIdToSpec[String(parsed.args.requestId).toLowerCase()] = String(parsed.args.specId).toLowerCase();
+        } catch { /* skip malformed */ }
+      }
+
+      // Add new responses to the pending pool (newer first).
+      for (const log of respLogs) {
+        pendingResp.push({
+          requestId: log.topics[1].toLowerCase(),
+          txHash: log.transactionHash,
+          blockNumber: log.blockNumber,
+          logIndex: log.index,
+        });
+      }
+      pendingResp.sort((a, b) => (b.blockNumber - a.blockNumber) || (b.logIndex - a.logIndex));
+
+      // Try to resolve any pending response whose request we now know about,
+      // for jobs we care about that aren't yet resolved. Keep the rest pending.
+      const stillPending = [];
+      for (const r of pendingResp) {
+        if (needed.size === 0) break;
+        const specId = reqIdToSpec[r.requestId];
+        if (!specId) { stillPending.push(r); continue; }
+        if (!needed.has(specId)) continue; // request we don't care about — drop
+        if (senderByJob[specId]) continue; // already have it
+        try {
+          const tx = await withRetry(() => provider.getTransaction(r.txHash));
+          if (tx?.from) {
+            senderByJob[specId] = ethers.getAddress(tx.from);
+            needed.delete(specId);
+          }
+        } catch (err) {
+          // transient; keep it pending so we can retry next chunk
+          stillPending.push(r);
+        }
+      }
+      pendingResp = stillPending;
+
+      if (fromBlock === 0) break;
+      toBlock = fromBlock - 1;
+    }
+
+    this._jobSenderCache[opLower] = {
+      map: senderByJob,
+      attempted: new Set(wantLower),
+      ts: Date.now(),
+    };
+    return senderByJob;
   }
 
   /**

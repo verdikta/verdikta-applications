@@ -593,6 +593,7 @@ function MyArbiters() {
                     <th>Job ID</th>
                     <th>Classes</th>
                     <th>Status</th>
+                    <th>Sending key</th>
                     <th>Stake</th>
                     <th></th>
                   </tr>
@@ -604,6 +605,10 @@ function MyArbiters() {
                     const lockedDate = job.lockedUntil
                       ? new Date(job.lockedUntil * 1000).toLocaleString()
                       : null;
+                    // The per-arbiter sending key isn't on-chain (it lives in
+                    // the node's job spec). The server derives it by scanning
+                    // OracleResponse fulfillment txs for this jobId via the
+                    // archive RPC; null when the arbiter has never been used.
                     return (
                       <tr key={job.jobId}>
                         <td><code title={job.jobId}>{shortHash(job.jobId)}</code></td>
@@ -612,6 +617,24 @@ function MyArbiters() {
                           <span className={`status-badge status-${job.status}`}>
                             {STATUS_LABELS[job.status] || job.status}
                           </span>
+                        </td>
+                        <td>
+                          {job.sender ? (
+                            <a
+                              className="explorer-link"
+                              href={`${chain.explorer}/address/${job.sender}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title={job.sender}
+                            >
+                              <code>{shortAddr(job.sender)}</code>
+                            </a>
+                          ) : (
+                            <span
+                              className="muted"
+                              title="No fulfillment history found in the recent archive window — never used, or last used outside the scan range."
+                            >—</span>
+                          )}
                         </td>
                         <td>{job.stakeAmount} wVDKA</td>
                         <td className="job-action">

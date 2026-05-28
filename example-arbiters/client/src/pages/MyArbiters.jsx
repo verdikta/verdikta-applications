@@ -355,8 +355,8 @@ function MyArbiters() {
           <span>
             Arbiter <code>{shortHash(entry.jobId)}</code> on operator{' '}
             <code>{shortAddr(entry.oracle)}</code> was closed out but{' '}
-            <strong>not yet re-registered</strong> — it is offline. Finish to restore it with a
-            fresh reputation.
+            <strong>not yet re-registered</strong> — it is offline. Finish the restart to bring it
+            back with a fresh reputation.
           </span>
           <button
             className="btn btn-danger btn-with-icon"
@@ -369,7 +369,7 @@ function MyArbiters() {
             disabled={!onCorrectChain}
             title={!onCorrectChain ? `Switch to ${chain.name} to re-register` : undefined}
           >
-            <RefreshCw size={14} /> Finish re-registering
+            <RefreshCw size={14} /> Finish restart
           </button>
           <button className="btn btn-secondary" onClick={() => dismissReset(entry)}>
             Dismiss
@@ -597,10 +597,10 @@ function MyArbiters() {
                                 onClick={() => setResetTarget({ oracle: operator.operator, job, resume: false })}
                                 disabled={closing || !onCorrectChain}
                                 title={!onCorrectChain
-                                  ? `Switch to ${chain.name} to reset`
-                                  : 'Close out and re-register to reset this arbiter’s reputation to zero'}
+                                  ? `Switch to ${chain.name} to restart`
+                                  : 'Re-register this arbiter (optionally with a new fee/classes); resets reputation to zero'}
                               >
-                                <RotateCcw size={14} /> Reset reputation
+                                <RotateCcw size={14} /> Restart
                               </button>
                             </div>
                           )}

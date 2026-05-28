@@ -277,6 +277,64 @@
   color: var(--text);
 }
 
+/* Editable fee + classes fields */
+.my-arbiters .reset-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.85rem;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  margin-bottom: 0.85rem;
+}
+
+.my-arbiters .reset-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.my-arbiters .reset-field input {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.my-arbiters .reset-field input[aria-invalid='true'] {
+  border-color: var(--danger, #ef4444);
+}
+
+.my-arbiters .reset-field input:disabled {
+  opacity: 0.6;
+}
+
+.my-arbiters .reset-edit-error {
+  font-size: 0.8rem;
+  color: var(--danger, #ef4444);
+}
+
+.my-arbiters .reset-edit-changed {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--warning-dark, #d97706);
+}
+
+.my-arbiters .reset-edit-changed strong {
+  color: var(--text);
+}
+
+.my-arbiters .reset-edit-unchanged {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
 .my-arbiters .reset-steps {
   list-style: none;
   margin: 0 0 1rem;

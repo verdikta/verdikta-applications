@@ -1,21 +1,22 @@
 /**
- * Reset Arbiter Reputation — guided multi-step modal.
+ * Restart Arbiter — guided multi-step modal.
  *
- * Resetting wipes an arbiter's on-chain reputation by closing it out and
- * re-registering the SAME (oracle, jobId). Because the jobId is unchanged, the
- * node's Chainlink job keeps running as-is — only the reputation record is
- * rewritten to zero. This is a rehabilitation tool for penalized/blocked
- * arbiters; a healthy arbiter would lose its accumulated score.
+ * "Restart" re-registers the SAME (oracle, jobId), optionally with a new fee
+ * and/or set of classes. Because re-registration is the only way to change
+ * those on-chain, and deregister deletes the reputation record, a restart also
+ * resets the arbiter's reputation (quality/timeliness/history/locks) to zero —
+ * whether or not the params change. The jobId is unchanged, so the node's
+ * Chainlink job keeps running as-is.
  *
- * The flow is three wallet transactions, run in this order so the only step
- * AFTER the arbiter goes offline (deregister) is the single re-register tx:
+ * Three wallet transactions, in this order so the only step AFTER the arbiter
+ * goes offline (deregister) is the single re-register tx:
  *   1. Approve  — let the keeper pull 100 wVDKA (skipped if already approved)
  *   2. Close out — deregisterOracle: refunds 100 wVDKA, deletes the record
- *   3. Re-register — registerOracle: re-stakes 100 wVDKA, fresh reputation
+ *   3. Re-register — registerOracle(fee, classes): re-stakes, fresh reputation
  *
  * On failure the completed steps stay done and the user can retry from where it
- * stopped. If they close after step 2, resetRegistry keeps a resume entry so My
- * Arbiters can offer to finish step 3 later.
+ * stopped. If they close after step 2, resetRegistry keeps a resume entry (with
+ * the chosen fee/classes) so My Arbiters can offer to finish step 3 later.
  */
 
 import { useState, useEffect, useCallback } from 'react';
@@ -41,9 +42,33 @@ const shortHash = (h) => (h ? `${h.slice(0, 10)}…${h.slice(-6)}` : '');
 const shortAddr = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
 const STEP_ORDER = ['approve', 'deregister', 'register'];
 
+// Parse the classes text field ("128, 129") into a validated number[] (1–5
+// unique non-negative ints, matching registerOracle's `_classes` constraints).
+function parseClasses(text) {
+  const parts = String(text).split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+  const nums = [];
+  for (const p of parts) {
+    if (!/^\d+$/.test(p)) return { error: `"${p}" is not a whole number` };
+    const n = Number(p);
+    if (!Number.isSafeInteger(n)) return { error: `"${p}" is out of range` };
+    if (!nums.includes(n)) nums.push(n);
+  }
+  if (nums.length === 0) return { error: 'Enter at least one class' };
+  if (nums.length > 5) return { error: 'At most 5 classes are allowed' };
+  return { classes: nums };
+}
+
+const sameSet = (a, b) => {
+  if (!a || !b || a.length !== b.length) return false;
+  const x = [...a].sort((m, n) => m - n);
+  const y = [...b].sort((m, n) => m - n);
+  return x.every((v, i) => v === y[i]);
+};
+
 /**
  * Props:
- *  - oracle, jobId, fee (formatEther string), classes (number[]): the arbiter
+ *  - oracle, jobId, fee (formatEther string), classes (number[]): the arbiter;
+ *    fee/classes seed the editable fields (the defaults).
  *  - keeperAddress, network, owner, chain: context for the writes/links
  *  - qualityScore, timelinessScore, callCount: shown in the warning (optional)
  *  - resume: true when deregister already happened (start at re-register)
@@ -75,6 +100,28 @@ function ResetArbiterModal({
   const [stepError, setStepError] = useState(null);
   const [finished, setFinished] = useState(false);
 
+  // Editable registration params, defaulting to the arbiter's current values.
+  const [feeInput, setFeeInput] = useState(fee != null ? String(fee) : '');
+  const [classesInput, setClassesInput] = useState((classes || []).join(', '));
+
+  // --- Validation (recomputed each render) --------------------------------
+  const classParse = parseClasses(classesInput);
+  let feeWei = null;
+  let feeError = null;
+  if (feeInput.trim() === '') {
+    feeError = 'Enter a fee';
+  } else {
+    try {
+      feeWei = ethers.parseEther(feeInput.trim());
+      if (feeWei <= 0n) feeError = 'Fee must be greater than 0';
+    } catch {
+      feeError = 'Invalid fee amount';
+    }
+  }
+  const formValid = !feeError && !classParse.error;
+  const feeChanged = !feeError && fee != null && feeWei !== ethers.parseEther(String(fee));
+  const classesChanged = !classParse.error && !sameSet(classParse.classes, classes);
+
   // Load stake context, then derive which steps are needed.
   useEffect(() => {
     let alive = true;
@@ -102,6 +149,21 @@ function ResetArbiterModal({
 
   const run = useCallback(async () => {
     if (!ctx || !status) return;
+    // Re-parse the (possibly edited) params and bail before any tx if invalid.
+    const cls = parseClasses(classesInput);
+    if (cls.error) {
+      setStepError(`Classes: ${cls.error}`);
+      return;
+    }
+    let feeAmount;
+    try {
+      feeAmount = ethers.parseEther(feeInput.trim());
+      if (feeAmount <= 0n) throw new Error('Fee must be greater than 0');
+    } catch (err) {
+      setStepError(err.message || 'Invalid fee amount');
+      return;
+    }
+
     setRunning(true);
     setStepError(null);
 
@@ -135,8 +197,12 @@ function ResetArbiterModal({
         const { txHash } = await deregisterArbiter({ signer, keeperAddress, oracle, jobId });
         setTxHashes((h) => ({ ...h, deregister: txHash }));
         apply({ deregister: 'done' });
-        // Arbiter is now delisted — persist so step 3 can be resumed if needed.
-        markDeregistered({ network, owner, keeperAddress, oracle, jobId, fee, classes });
+        // Arbiter is now delisted — persist the chosen params so step 3 can be
+        // resumed (defaults reflect the user's edits, not the originals).
+        markDeregistered({
+          network, owner, keeperAddress, oracle, jobId,
+          fee: feeInput.trim(), classes: cls.classes,
+        });
       }
 
       if (st.register === 'pending') {
@@ -146,8 +212,8 @@ function ResetArbiterModal({
           keeperAddress,
           oracle,
           jobId,
-          fee: ethers.parseEther(String(fee)),
-          classes,
+          fee: feeAmount,
+          classes: cls.classes,
         });
         setTxHashes((h) => ({ ...h, register: txHash }));
         apply({ register: 'done' });
@@ -155,16 +221,16 @@ function ResetArbiterModal({
       }
 
       setFinished(true);
-      toast.success('Arbiter reputation reset · re-registered fresh');
+      toast.success('Arbiter restarted · re-registered with fresh reputation');
     } catch (err) {
       const errored = {};
       for (const k of STEP_ORDER) if (st[k] === 'active') errored[k] = 'error';
       apply(errored);
-      setStepError(err.message || 'Reset failed');
+      setStepError(err.message || 'Restart failed');
     } finally {
       setRunning(false);
     }
-  }, [ctx, status, getSigner, keeperAddress, oracle, jobId, fee, classes, network, owner, toast]);
+  }, [ctx, status, classesInput, feeInput, getSigner, keeperAddress, oracle, jobId, network, owner, toast]);
 
   const handleClose = () => {
     if (running) return;
@@ -174,13 +240,14 @@ function ResetArbiterModal({
 
   const started = status && STEP_ORDER.some((k) => txHashes[k]);
   const deregistered = status?.deregister === 'done';
-  const balanceShort =
-    ctx && ctx.balance < ctx.stakeRequired && status?.deregister !== 'done';
+  // Params are only consumed at re-register, so editing stays open until then.
+  const inputsLocked = running || status?.register === 'done';
+  const balanceShort = ctx && ctx.balance < ctx.stakeRequired && status?.deregister !== 'done';
 
   const stepMeta = {
     approve: { label: 'Approve 100 wVDKA stake', note: 'Lets the keeper pull your stake' },
     deregister: { label: 'Close out (deregister & refund)', note: 'Deletes the reputation record' },
-    register: { label: 'Re-register with fresh reputation', note: 'Re-stakes 100 wVDKA, score = 0' },
+    register: { label: 'Re-register', note: 'Re-stakes 100 wVDKA · fresh reputation · new fee/classes' },
   };
 
   const StepIcon = ({ s }) => {
@@ -195,25 +262,26 @@ function ResetArbiterModal({
     <div className="modal-overlay" onClick={handleClose}>
       <div className="modal reset-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <h3 className="modal-title">
-          <AlertTriangle size={18} className="warn-icon" />
-          {resume ? 'Finish re-registering this arbiter' : 'Reset this arbiter’s reputation?'}
+          <RotateCcw size={18} className="warn-icon" />
+          {resume ? 'Finish restarting this arbiter' : 'Restart this arbiter'}
         </h3>
 
         <p className="modal-body">
           {resume ? (
             <>
               This arbiter was <strong>closed out but not re-registered</strong>, so it is currently
-              offline and delisted. Finish the re-registration below to restore it with a fresh
-              reputation (score reset to zero).
+              offline and delisted. Finish re-registering below — you can still adjust the fee and
+              classes. Its reputation starts fresh at zero.
             </>
           ) : (
             <>
-              This permanently <strong>wipes the arbiter’s reputation</strong> — quality and
-              timeliness scores, history, and any penalty/block — by closing it out and
-              re-registering the same Job&nbsp;ID. The node keeps running the same Chainlink job;
-              only the on-chain score resets to zero. The 100&nbsp;wVDKA stake is refunded on
-              close-out and re-staked on re-register (net zero, minus gas). There is a brief window
-              between close-out and re-register where the arbiter is offline.
+              Restart re-registers this arbiter, optionally with a <strong>new fee and/or
+              classes</strong> (defaults below are the current values). Because changing those
+              on-chain requires re-registration, restarting also <strong>resets the reputation</strong>{' '}
+              — scores, history, and any penalty/block reset to zero. The node keeps running the same
+              Chainlink job (Job&nbsp;ID unchanged). The 100&nbsp;wVDKA stake is refunded on
+              close-out and re-staked on re-register (net zero, minus gas), with a brief offline
+              window in between.
             </>
           )}
         </p>
@@ -226,11 +294,47 @@ function ResetArbiterModal({
           </div>
         )}
 
+        <div className="reset-edit">
+          <label className="reset-field">
+            <span>Fee (LINK)</span>
+            <input
+              type="number" min="0" step="0.001"
+              value={feeInput}
+              onChange={(e) => setFeeInput(e.target.value)}
+              disabled={inputsLocked}
+              aria-invalid={!!feeError}
+            />
+          </label>
+          <label className="reset-field">
+            <span>Classes (1–5, comma-separated)</span>
+            <input
+              type="text"
+              value={classesInput}
+              onChange={(e) => setClassesInput(e.target.value)}
+              disabled={inputsLocked}
+              placeholder="e.g. 128, 129"
+              aria-invalid={!!classParse.error}
+            />
+          </label>
+          {(feeError || classParse.error) && (
+            <div className="reset-edit-error">{feeError || classParse.error}</div>
+          )}
+          {formValid && (feeChanged || classesChanged) && (
+            <div className="reset-edit-changed">
+              <AlertTriangle size={13} /> Changing
+              {feeChanged && <> fee → <strong>{feeInput.trim()} LINK</strong></>}
+              {feeChanged && classesChanged && ' and'}
+              {classesChanged && <> classes → <strong>{classParse.classes.join(', ')}</strong></>}
+            </div>
+          )}
+          {formValid && !feeChanged && !classesChanged && (
+            <div className="reset-edit-unchanged">Keeping current fee and classes (reputation still resets).</div>
+          )}
+        </div>
+
         <div className="modal-detail">
           <div><span>Operator</span><code>{shortAddr(oracle)}</code></div>
           <div><span>Job ID</span><code title={jobId}>{shortHash(jobId)}</code></div>
-          <div><span>Fee</span><code>{fee} LINK</code></div>
-          <div><span>Classes</span><code>{classes?.join(', ') || '—'}</code></div>
           {ctx && (
             <div>
               <span>Your wVDKA</span>
@@ -297,16 +401,16 @@ function ResetArbiterModal({
             <button
               className="btn btn-danger btn-with-icon"
               onClick={run}
-              disabled={running || !ctx || !!ctxError}
+              disabled={running || !ctx || !!ctxError || !formValid}
             >
-              {stepError ? <RotateCcw size={14} /> : <AlertTriangle size={14} />}
+              <RotateCcw size={14} />
               {running
                 ? 'Working…'
                 : stepError
                   ? 'Retry'
                   : resume
-                    ? 'Re-register arbiter'
-                    : 'Reset reputation'}
+                    ? 'Finish restart'
+                    : 'Restart arbiter'}
             </button>
           )}
         </div>

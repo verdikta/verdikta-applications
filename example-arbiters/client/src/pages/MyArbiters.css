@@ -410,5 +410,86 @@
   margin-bottom: 0.85rem;
 }
 
+/* Register-an-arbiter section (collapsible) */
+.my-arbiters .register-section {
+  padding-top: 0.5rem;
+}
+
+.my-arbiters .register-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0.5rem 0;
+  cursor: pointer;
+  color: var(--text);
+  text-align: left;
+}
+
+.my-arbiters .register-toggle h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.my-arbiters .register-toggle-hint {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  margin-left: auto;
+}
+
+.my-arbiters .register-body {
+  padding-top: 0.75rem;
+}
+
+.my-arbiters .register-intro {
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  margin: 0 0 1rem;
+}
+
+.my-arbiters .register-import {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.my-arbiters .register-import-note {
+  font-size: 0.82rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.my-arbiters .register-import-note.ok { color: var(--text-secondary); }
+.my-arbiters .register-import-note.warn { color: var(--warning-dark, #d97706); }
+
+.my-arbiters .register-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+  margin-bottom: 0.75rem;
+}
+
+@media (max-width: 640px) {
+  .my-arbiters .register-fields { grid-template-columns: 1fr; }
+}
+
+.my-arbiters .register-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.my-arbiters .register-chain-hint {
+  font-size: 0.82rem;
+  color: var(--warning-dark, #d97706);
+}
+
 /* Node funding panel styles now live in ../styles/funding.css (shared with
  * Owner Details). My Arbiters' interactive key rows use `fund-key-rw`. */

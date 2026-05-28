@@ -25,6 +25,7 @@ import {
   Inbox,
   Fuel,
   RotateCcw,
+  Download,
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { useNetwork } from '../context/NetworkContext';
@@ -34,6 +35,8 @@ import { apiService } from '../services/api';
 import { claimLink, deregisterArbiter, sendEth } from '../services/arbiterContracts';
 import { getPendingResets, clearPendingReset } from '../services/resetRegistry';
 import ResetArbiterModal from '../components/ResetArbiterModal';
+import RegisterArbiterSection from '../components/RegisterArbiterSection';
+import { buildDescriptor, downloadJson } from '../utils/arbiterRegistration';
 import { estQueriesFor, fmtQueries } from '../utils/funding';
 import '../styles/funding.css';
 import './MyArbiters.css';
@@ -264,6 +267,28 @@ function MyArbiters() {
     }
   };
 
+  // Download a JSON descriptor with everything needed to re-register this
+  // arbiter (a backup, and the input to the "Register an arbiter" section).
+  const downloadArbiterJson = (operator, job) => {
+    const descriptor = buildDescriptor({
+      network: selectedNetwork,
+      keeperAddress: data?.keeperAddress,
+      operator: operator.operator,
+      owner: operator.owner,
+      jobId: job.jobId,
+      fee: job.fee,
+      classes: job.classes,
+      reputation: {
+        qualityScore: job.qualityScore,
+        timelinessScore: job.timelinessScore,
+        callCount: job.callCount,
+      },
+    });
+    const shortJob = job.jobId ? job.jobId.slice(2, 10) : 'arbiter';
+    downloadJson(`arbiter-${shortJob}.json`, descriptor);
+    toast.success('Arbiter backup downloaded');
+  };
+
   const header = (
     <div className="page-header">
       <div className="header-content">
@@ -379,6 +404,19 @@ function MyArbiters() {
     </div>
   ) : null;
 
+  const registerSection = data?.keeperAddress ? (
+    <RegisterArbiterSection
+      keeperAddress={data.keeperAddress}
+      network={selectedNetwork}
+      owner={address}
+      chain={chain}
+      onCorrectChain={onCorrectChain}
+      getSigner={getSigner}
+      toast={toast}
+      onComplete={() => { load(); refreshPendingResets(); }}
+    />
+  ) : null;
+
   if (loading && !data) {
     return (
       <div className="analytics my-arbiters">
@@ -423,6 +461,7 @@ function MyArbiters() {
             </p>
           </div>
         </section>
+        {registerSection}
       </div>
     );
   }
@@ -576,34 +615,43 @@ function MyArbiters() {
                         </td>
                         <td>{job.stakeAmount} wVDKA</td>
                         <td className="job-action">
-                          {job.locked ? (
-                            <span className="locked-note" title={`Locked until ${lockedDate}`}>
-                              <Lock size={13} /> Locked until {lockedDate}
-                            </span>
-                          ) : (
-                            <div className="job-action-buttons">
-                              <button
-                                className="btn btn-danger btn-with-icon"
-                                onClick={() => setConfirmTarget({ operator, job })}
-                                disabled={closing || !onCorrectChain}
-                                title={!onCorrectChain
-                                  ? `Switch to ${chain.name} to close out`
-                                  : 'Deregister this arbiter and reclaim its 100 wVDKA stake'}
-                              >
-                                {closing ? 'Closing…' : 'Close out & reclaim 100 wVDKA'}
-                              </button>
-                              <button
-                                className="btn btn-warning btn-with-icon"
-                                onClick={() => setResetTarget({ oracle: operator.operator, job, resume: false })}
-                                disabled={closing || !onCorrectChain}
-                                title={!onCorrectChain
-                                  ? `Switch to ${chain.name} to restart`
-                                  : 'Re-register this arbiter (optionally with a new fee/classes); resets reputation to zero'}
-                              >
-                                <RotateCcw size={14} /> Restart
-                              </button>
-                            </div>
-                          )}
+                          <div className="job-action-buttons">
+                            {job.locked ? (
+                              <span className="locked-note" title={`Locked until ${lockedDate}`}>
+                                <Lock size={13} /> Locked until {lockedDate}
+                              </span>
+                            ) : (
+                              <>
+                                <button
+                                  className="btn btn-danger btn-with-icon"
+                                  onClick={() => setConfirmTarget({ operator, job })}
+                                  disabled={closing || !onCorrectChain}
+                                  title={!onCorrectChain
+                                    ? `Switch to ${chain.name} to close out`
+                                    : 'Deregister this arbiter and reclaim its 100 wVDKA stake'}
+                                >
+                                  {closing ? 'Closing…' : 'Close out & reclaim 100 wVDKA'}
+                                </button>
+                                <button
+                                  className="btn btn-warning btn-with-icon"
+                                  onClick={() => setResetTarget({ oracle: operator.operator, job, resume: false })}
+                                  disabled={closing || !onCorrectChain}
+                                  title={!onCorrectChain
+                                    ? `Switch to ${chain.name} to restart`
+                                    : 'Re-register this arbiter (optionally with a new fee/classes); resets reputation to zero'}
+                                >
+                                  <RotateCcw size={14} /> Restart
+                                </button>
+                              </>
+                            )}
+                            <button
+                              className="btn btn-secondary btn-with-icon"
+                              onClick={() => downloadArbiterJson(operator, job)}
+                              title="Download a JSON backup with everything needed to re-register this arbiter"
+                            >
+                              <Download size={13} /> Backup JSON
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -614,6 +662,8 @@ function MyArbiters() {
           </section>
         );
       })}
+
+      {registerSection}
 
       {confirmTarget && (() => {
         const busy = pending.has(`close:${confirmTarget.job.jobId}`);

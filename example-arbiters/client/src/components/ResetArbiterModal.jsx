@@ -37,33 +37,11 @@ import {
   registerArbiter,
 } from '../services/arbiterContracts';
 import { markDeregistered, clearPendingReset } from '../services/resetRegistry';
+import { parseClasses, sameSet } from '../utils/arbiterRegistration';
 
 const shortHash = (h) => (h ? `${h.slice(0, 10)}…${h.slice(-6)}` : '');
 const shortAddr = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
 const STEP_ORDER = ['approve', 'deregister', 'register'];
-
-// Parse the classes text field ("128, 129") into a validated number[] (1–5
-// unique non-negative ints, matching registerOracle's `_classes` constraints).
-function parseClasses(text) {
-  const parts = String(text).split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-  const nums = [];
-  for (const p of parts) {
-    if (!/^\d+$/.test(p)) return { error: `"${p}" is not a whole number` };
-    const n = Number(p);
-    if (!Number.isSafeInteger(n)) return { error: `"${p}" is out of range` };
-    if (!nums.includes(n)) nums.push(n);
-  }
-  if (nums.length === 0) return { error: 'Enter at least one class' };
-  if (nums.length > 5) return { error: 'At most 5 classes are allowed' };
-  return { classes: nums };
-}
-
-const sameSet = (a, b) => {
-  if (!a || !b || a.length !== b.length) return false;
-  const x = [...a].sort((m, n) => m - n);
-  const y = [...b].sort((m, n) => m - n);
-  return x.every((v, i) => v === y[i]);
-};
 
 /**
  * Props:

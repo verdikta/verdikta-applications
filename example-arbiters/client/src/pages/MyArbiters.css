@@ -204,5 +204,153 @@
   gap: 0.75rem;
 }
 
+/* Warning button (reset reputation) — amber, between secondary and danger. */
+.btn-warning {
+  background: var(--warning, #f59e0b);
+  color: #fff;
+  border: 1px solid var(--warning, #f59e0b);
+}
+
+.btn-warning:hover:not(:disabled) {
+  background: var(--warning-dark, #d97706);
+  border-color: var(--warning-dark, #d97706);
+}
+
+.btn-warning:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Per-job action cell: stack close-out + reset buttons. */
+.my-arbiters .job-action-buttons {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  align-items: stretch;
+}
+
+/* Resume banners for resets interrupted after close-out. */
+.my-arbiters .resume-resets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.my-arbiters .resume-reset-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.85rem 1rem;
+  background: var(--danger-light, #fee2e2);
+  border: 1px solid var(--danger, #ef4444);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.my-arbiters .resume-reset-banner span {
+  flex: 1;
+  min-width: 16rem;
+}
+
+.my-arbiters .resume-reset-banner code {
+  font-family: monospace;
+}
+
+/* Reset wizard modal */
+.my-arbiters .reset-modal {
+  max-width: 34rem;
+}
+
+.my-arbiters .reset-current-score {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  padding: 0.5rem 0.75rem;
+  background: var(--warning-light, #fef3c7);
+  border-radius: 8px;
+  margin-bottom: 0.85rem;
+}
+
+.my-arbiters .reset-current-score strong {
+  color: var(--text);
+}
+
+.my-arbiters .reset-steps {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.my-arbiters .reset-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.my-arbiters .reset-step-active {
+  border-color: var(--primary, #3b82f6);
+  background: var(--bg-secondary);
+}
+
+.my-arbiters .reset-step-done,
+.my-arbiters .reset-step-skip { color: #16a34a; }
+.my-arbiters .reset-step-error { color: var(--danger, #ef4444); }
+.my-arbiters .reset-step-pending { color: var(--text-secondary); opacity: 0.6; }
+
+.my-arbiters .reset-step .reset-step-label {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 0.1rem;
+}
+
+.my-arbiters .reset-step-label small {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.my-arbiters .reset-step-label em {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.my-arbiters .reset-step svg { flex-shrink: 0; margin-top: 0.15rem; }
+
+.my-arbiters .reset-error {
+  font-size: 0.85rem;
+  color: var(--danger, #ef4444);
+  background: var(--danger-light, #fee2e2);
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.my-arbiters .reset-success {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  color: #16a34a;
+  margin-bottom: 0.85rem;
+}
+
+.my-arbiters .reset-warn-note {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  color: var(--warning-dark, #d97706);
+  margin-bottom: 0.85rem;
+}
+
 /* Node funding panel styles now live in ../styles/funding.css (shared with
  * Owner Details). My Arbiters' interactive key rows use `fund-key-rw`. */

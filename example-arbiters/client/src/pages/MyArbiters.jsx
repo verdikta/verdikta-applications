@@ -24,6 +24,7 @@ import {
   Server,
   Inbox,
   Fuel,
+  RotateCcw,
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { useNetwork } from '../context/NetworkContext';
@@ -31,6 +32,8 @@ import { useWallet } from '../context/WalletContext';
 import { chainForNetwork } from '../config/chains';
 import { apiService } from '../services/api';
 import { claimLink, deregisterArbiter, sendEth } from '../services/arbiterContracts';
+import { getPendingResets, clearPendingReset } from '../services/resetRegistry';
+import ResetArbiterModal from '../components/ResetArbiterModal';
 import { estQueriesFor, fmtQueries } from '../utils/funding';
 import '../styles/funding.css';
 import './MyArbiters.css';
@@ -68,6 +71,10 @@ function MyArbiters() {
   const [switching, setSwitching] = useState(false);
   // The arbiter awaiting close-out confirmation ({ operator, job }), or null.
   const [confirmTarget, setConfirmTarget] = useState(null);
+  // The arbiter being reset ({ oracle, job, resume }), or null.
+  const [resetTarget, setResetTarget] = useState(null);
+  // Reset flows interrupted after deregister (from localStorage), for resume.
+  const [pendingResets, setPendingResets] = useState([]);
   // Fund inputs: per-key amount (keyed by sender address) and per-operator
   // "top up all to" target (keyed by operator address).
   const [keyAmounts, setKeyAmounts] = useState({});
@@ -110,6 +117,16 @@ function MyArbiters() {
       setError(null);
     }
   }, [address, selectedNetwork, load]);
+
+  // Refresh the list of interrupted resets (closed out but not yet re-registered)
+  // whenever the wallet, network, or listing changes.
+  const refreshPendingResets = useCallback(() => {
+    setPendingResets(getPendingResets(selectedNetwork, address));
+  }, [selectedNetwork, address]);
+
+  useEffect(() => {
+    refreshPendingResets();
+  }, [refreshPendingResets, data]);
 
   // Dismiss the close-out confirmation on Escape (unless a tx is in flight).
   useEffect(() => {
@@ -322,6 +339,46 @@ function MyArbiters() {
     </div>
   ) : null;
 
+  // Resets that stopped after close-out leave the arbiter delisted and offline.
+  // Surface them so the owner can finish re-registering (note: when the reset
+  // emptied the listing, this is the only on-page trace of the arbiter).
+  const dismissReset = (entry) => {
+    clearPendingReset({ network: selectedNetwork, oracle: entry.oracle, jobId: entry.jobId });
+    refreshPendingResets();
+  };
+
+  const resumeBanner = pendingResets.length > 0 ? (
+    <div className="resume-resets">
+      {pendingResets.map((entry) => (
+        <div className="resume-reset-banner" key={`${entry.oracle}:${entry.jobId}`}>
+          <AlertTriangle size={16} className="warn-icon" />
+          <span>
+            Arbiter <code>{shortHash(entry.jobId)}</code> on operator{' '}
+            <code>{shortAddr(entry.oracle)}</code> was closed out but{' '}
+            <strong>not yet re-registered</strong> — it is offline. Finish to restore it with a
+            fresh reputation.
+          </span>
+          <button
+            className="btn btn-danger btn-with-icon"
+            onClick={() => setResetTarget({
+              oracle: entry.oracle,
+              keeperAddress: entry.keeperAddress,
+              job: { jobId: entry.jobId, fee: entry.fee, classes: entry.classes },
+              resume: true,
+            })}
+            disabled={!onCorrectChain}
+            title={!onCorrectChain ? `Switch to ${chain.name} to re-register` : undefined}
+          >
+            <RefreshCw size={14} /> Finish re-registering
+          </button>
+          <button className="btn btn-secondary" onClick={() => dismissReset(entry)}>
+            Dismiss
+          </button>
+        </div>
+      ))}
+    </div>
+  ) : null;
+
   if (loading && !data) {
     return (
       <div className="analytics my-arbiters">
@@ -354,6 +411,8 @@ function MyArbiters() {
     return (
       <div className="analytics my-arbiters">
         {header}
+        {wrongChainBanner}
+        {resumeBanner}
         <section className="analytics-section">
           <div className="gate-state">
             <Inbox size={40} />
@@ -372,6 +431,7 @@ function MyArbiters() {
     <div className="analytics my-arbiters">
       {header}
       {wrongChainBanner}
+      {resumeBanner}
 
       {operators.map((operator) => {
         const claimKey = `claim:${operator.operator}`;
@@ -521,16 +581,28 @@ function MyArbiters() {
                               <Lock size={13} /> Locked until {lockedDate}
                             </span>
                           ) : (
-                            <button
-                              className="btn btn-danger btn-with-icon"
-                              onClick={() => setConfirmTarget({ operator, job })}
-                              disabled={closing || !onCorrectChain}
-                              title={!onCorrectChain
-                                ? `Switch to ${chain.name} to close out`
-                                : 'Deregister this arbiter and reclaim its 100 wVDKA stake'}
-                            >
-                              {closing ? 'Closing…' : 'Close out & reclaim 100 wVDKA'}
-                            </button>
+                            <div className="job-action-buttons">
+                              <button
+                                className="btn btn-danger btn-with-icon"
+                                onClick={() => setConfirmTarget({ operator, job })}
+                                disabled={closing || !onCorrectChain}
+                                title={!onCorrectChain
+                                  ? `Switch to ${chain.name} to close out`
+                                  : 'Deregister this arbiter and reclaim its 100 wVDKA stake'}
+                              >
+                                {closing ? 'Closing…' : 'Close out & reclaim 100 wVDKA'}
+                              </button>
+                              <button
+                                className="btn btn-warning btn-with-icon"
+                                onClick={() => setResetTarget({ oracle: operator.operator, job, resume: false })}
+                                disabled={closing || !onCorrectChain}
+                                title={!onCorrectChain
+                                  ? `Switch to ${chain.name} to reset`
+                                  : 'Close out and re-register to reset this arbiter’s reputation to zero'}
+                              >
+                                <RotateCcw size={14} /> Reset reputation
+                              </button>
+                            </div>
                           )}
                         </td>
                       </tr>
@@ -576,6 +648,27 @@ function MyArbiters() {
           </div>
         );
       })()}
+
+      {resetTarget && (
+        <ResetArbiterModal
+          oracle={resetTarget.oracle}
+          jobId={resetTarget.job.jobId}
+          fee={resetTarget.job.fee}
+          classes={resetTarget.job.classes}
+          qualityScore={resetTarget.job.qualityScore}
+          timelinessScore={resetTarget.job.timelinessScore}
+          callCount={resetTarget.job.callCount}
+          keeperAddress={resetTarget.keeperAddress || data?.keeperAddress}
+          network={selectedNetwork}
+          owner={address}
+          chain={chain}
+          resume={resetTarget.resume}
+          getSigner={getSigner}
+          toast={toast}
+          onClose={() => { setResetTarget(null); refreshPendingResets(); }}
+          onComplete={() => { setResetTarget(null); load(); refreshPendingResets(); }}
+        />
+      )}
 
     </div>
   );

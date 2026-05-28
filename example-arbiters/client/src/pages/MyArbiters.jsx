@@ -278,11 +278,6 @@ function MyArbiters() {
       jobId: job.jobId,
       fee: job.fee,
       classes: job.classes,
-      reputation: {
-        qualityScore: job.qualityScore,
-        timelinessScore: job.timelinessScore,
-        callCount: job.callCount,
-      },
     });
     const shortJob = job.jobId ? job.jobId.slice(2, 10) : 'arbiter';
     downloadJson(`arbiter-${shortJob}.json`, descriptor);

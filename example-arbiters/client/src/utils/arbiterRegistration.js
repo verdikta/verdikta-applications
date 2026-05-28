@@ -59,14 +59,14 @@ export const sameSet = (a, b) => {
 };
 
 /** Build the portable descriptor object for one arbiter. */
-export function buildDescriptor({ network, keeperAddress, operator, owner, jobId, fee, classes, reputation }) {
+export function buildDescriptor({ network, keeperAddress, operator, owner, jobId, fee, classes }) {
   return {
     type: 'verdikta-arbiter-registration',
     version: 1,
     _readme:
       'Editable fields: operator, jobId, fee (LINK decimal), classes (1–5 integers). ' +
       'Importing this on the My Arbiters "Register an arbiter" section re-registers it. ' +
-      'Re-registering resets on-chain reputation to zero; reputationSnapshot is informational only.',
+      'Re-registering resets on-chain reputation to zero.',
     network,
     keeperAddress,
     operator,
@@ -74,7 +74,6 @@ export function buildDescriptor({ network, keeperAddress, operator, owner, jobId
     jobId,
     fee, // LINK decimal string
     classes, // number[]
-    reputationSnapshot: reputation || null,
     exportedAt: new Date().toISOString(),
   };
 }

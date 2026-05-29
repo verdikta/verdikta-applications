@@ -590,6 +590,7 @@ function MyArbiters() {
                     <th>Status</th>
                     <th>Sending key</th>
                     <th>Stake</th>
+                    <th>Stats</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -632,6 +633,13 @@ function MyArbiters() {
                           )}
                         </td>
                         <td>{job.stakeAmount} wVDKA</td>
+                        <td>
+                          <div className="job-stats">
+                            <span><span className="job-stat-label">Calls</span> {job.callCount ?? '—'}</span>
+                            <span><span className="job-stat-label">Quality</span> {job.qualityScore ?? '—'}</span>
+                            <span><span className="job-stat-label">Timeliness</span> {job.timelinessScore ?? '—'}</span>
+                          </div>
+                        </td>
                         <td className="job-action">
                           <div className="job-action-buttons">
                             {job.locked ? (

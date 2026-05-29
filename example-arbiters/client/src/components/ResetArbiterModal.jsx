@@ -303,12 +303,10 @@ function ResetArbiterModal({
           ) : (
             <>
               Restart re-registers this arbiter, optionally with a <strong>new fee and/or
-              classes</strong> (defaults below are the current values). Because changing those
-              on-chain requires re-registration, restarting also <strong>resets the reputation</strong>{' '}
-              — scores, history, and any penalty/block reset to zero. The node keeps running the same
-              Chainlink job (Job&nbsp;ID unchanged). The 100&nbsp;wVDKA stake is refunded on
-              close-out and re-staked on re-register (net zero, minus gas), with a brief offline
-              window in between.
+              classes</strong> (defaults below are the current values). This <strong>resets the
+              reputation</strong> — scores, history, and any penalty/block reset to zero. The node
+              keeps running the same Chainlink job (Job&nbsp;ID unchanged). The wVDKA stake is
+              refunded then re-staked (net zero, minus gas), with a brief offline window in between.
             </>
           )}
         </p>

@@ -41,6 +41,7 @@ import { parseClasses, sameSet } from '../utils/arbiterRegistration';
 
 const shortHash = (h) => (h ? `${h.slice(0, 10)}…${h.slice(-6)}` : '');
 const shortAddr = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
+const fmtWvdka = (wei) => Number(ethers.formatEther(wei)).toFixed(2);
 const STEP_ORDER = ['approve', 'deregister', 'register'];
 
 /**
@@ -107,7 +108,7 @@ function ResetArbiterModal({
       try {
         const signer = getSigner();
         if (!signer) throw new Error('Wallet signer unavailable. Reconnect your wallet.');
-        const c = await getStakeContext({ signer, keeperAddress, owner });
+        const c = await getStakeContext({ signer, keeperAddress, owner, oracle, jobId });
         if (!alive) return;
         setCtx(c);
         const approveNeeded = c.allowance < c.stakeRequired;
@@ -123,7 +124,7 @@ function ResetArbiterModal({
     return () => {
       alive = false;
     };
-  }, [getSigner, keeperAddress, owner, resume]);
+  }, [getSigner, keeperAddress, owner, oracle, jobId, resume]);
 
   const run = useCallback(async () => {
     if (!ctx || !status) return;
@@ -158,13 +159,31 @@ function ResetArbiterModal({
       const signer = getSigner();
       if (!signer) throw new Error('Wallet signer unavailable. Reconnect your wallet.');
 
+      // Re-read stake state live so this guard uses fresh numbers (and adding
+      // wVDKA + retrying actually clears a prior shortfall). Re-register always
+      // stakes a full STAKE_REQUIREMENT; deregister refunds only the current
+      // stake (normally 100, but a future slash could be less). currentStake
+      // reads 0 once the record is gone, so on a post-deregister retry the
+      // refund is already counted in `balance`. We check BEFORE deregister so a
+      // shortfall can never strand the arbiter offline mid-flow.
+      const live = await getStakeContext({ signer, keeperAddress, owner, oracle, jobId });
+      setCtx(live);
+      const deficit = live.stakeRequired - live.balance - live.currentStake;
+      if (deficit > 0n) {
+        throw new Error(
+          `Re-registering stakes ${fmtWvdka(live.stakeRequired)} wVDKA. After the ` +
+            `${fmtWvdka(live.currentStake)} wVDKA refund your wallet would still be ` +
+            `${fmtWvdka(deficit)} wVDKA short — add wVDKA to ${shortAddr(owner)} and retry.`
+        );
+      }
+
       if (st.approve === 'pending') {
         apply({ approve: 'active' });
         const { txHash } = await approveStake({
           signer,
-          tokenAddress: ctx.tokenAddress,
+          tokenAddress: live.tokenAddress,
           keeperAddress,
-          amount: ctx.stakeRequired,
+          amount: live.stakeRequired,
         });
         setTxHashes((h) => ({ ...h, approve: txHash }));
         apply({ approve: 'done' });
@@ -220,7 +239,15 @@ function ResetArbiterModal({
   const deregistered = status?.deregister === 'done';
   // Params are only consumed at re-register, so editing stays open until then.
   const inputsLocked = running || status?.register === 'done';
-  const balanceShort = ctx && ctx.balance < ctx.stakeRequired && status?.deregister !== 'done';
+  // Funding preview (open-time read; run() re-checks live before any tx). The
+  // wallet must cover whatever the deregister refund won't: re-register stakes a
+  // full STAKE_REQUIREMENT, deregister refunds only currentStake. currentStake
+  // reads 0 once the record is gone (resume / post-deregister), where the refund
+  // is already in `balance`. A positive deficit means restarting would strand
+  // the arbiter offline, so we surface it and block until it's covered.
+  const refundPending = ctx ? ctx.currentStake : 0n;
+  const stakeDeficitWei = ctx ? ctx.stakeRequired - ctx.balance - refundPending : 0n;
+  const stakeShortfall = ctx != null && stakeDeficitWei > 0n && status?.register !== 'done';
 
   const stepMeta = {
     approve: { label: 'Approve 100 wVDKA stake', note: 'Lets the keeper pull your stake' },
@@ -323,10 +350,24 @@ function ResetArbiterModal({
 
         {ctxError && <div className="reset-error">{ctxError}</div>}
 
-        {balanceShort && (
+        {stakeShortfall && (
           <div className="reset-error">
-            Your wVDKA balance is below the 100 stake. The close-out refund should cover it, but if
-            the stake was slashed you may need additional wVDKA before re-registering.
+            {refundPending > 0n ? (
+              <>
+                This arbiter's on-chain stake is <strong>{fmtWvdka(ctx.currentStake)}</strong> wVDKA
+                and your wallet holds {fmtWvdka(ctx.balance)} — after the refund you'd still be{' '}
+                <strong>{fmtWvdka(stakeDeficitWei)}</strong> wVDKA short of the{' '}
+                {fmtWvdka(ctx.stakeRequired)} needed to re-register. Add the difference and reopen
+                this dialog, or the arbiter would be left offline after close-out.
+              </>
+            ) : (
+              <>
+                Your wVDKA balance ({fmtWvdka(ctx.balance)}) is below the{' '}
+                {fmtWvdka(ctx.stakeRequired)} needed to re-register. Add at least{' '}
+                <strong>{fmtWvdka(stakeDeficitWei)}</strong> wVDKA and reopen this dialog to finish
+                the restart.
+              </>
+            )}
           </div>
         )}
 
@@ -379,7 +420,7 @@ function ResetArbiterModal({
             <button
               className="btn btn-danger btn-with-icon"
               onClick={run}
-              disabled={running || !ctx || !!ctxError || !formValid}
+              disabled={running || !ctx || !!ctxError || !formValid || stakeShortfall}
             >
               <RotateCcw size={14} />
               {running

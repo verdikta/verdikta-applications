@@ -23,6 +23,7 @@ const KEEPER_ABI = [
   'function registerOracle(address _oracle, bytes32 _jobId, uint256 fee, uint64[] _classes)',
   'function verdiktaToken() view returns (address)',
   'function STAKE_REQUIREMENT() view returns (uint256)',
+  'function getOracleInfo(address _oracle, bytes32 _jobId) view returns (bool isActive, int256 qualityScore, int256 timelinessScore, uint256 callCount, bytes32 jobId, uint256 fee, uint256 stakeAmount, uint256 lockedUntil, bool blocked)',
 ];
 
 // wVDKA (stake token) — only the bits the re-register flow needs.
@@ -93,11 +94,17 @@ export async function deregisterArbiter({ signer, keeperAddress, oracle, jobId }
  * required and whether the owner can cover the stake:
  *  - tokenAddress: the wVDKA stake token the keeper pulls from (transferFrom)
  *  - stakeRequired: STAKE_REQUIREMENT (bigint, normally 100e18)
+ *  - currentStake: the (oracle, jobId)'s on-chain stake, i.e. the amount that
+ *    will be refunded on deregister. Normally == stakeRequired, but a future
+ *    slashing path could leave it lower. Reads 0 when the record no longer
+ *    exists (already deregistered) — callers treat that as "refund already
+ *    received". Defaults to stakeRequired if the read throws (RPC hiccup) so a
+ *    transient failure never false-blocks the flow. 0n when oracle/jobId absent.
  *  - allowance: current owner→keeper allowance (bigint)
  *  - balance: owner's wVDKA balance (bigint)
- * @returns {Promise<{tokenAddress: string, stakeRequired: bigint, allowance: bigint, balance: bigint}>}
+ * @returns {Promise<{tokenAddress: string, stakeRequired: bigint, currentStake: bigint, allowance: bigint, balance: bigint}>}
  */
-export async function getStakeContext({ signer, keeperAddress, owner }) {
+export async function getStakeContext({ signer, keeperAddress, owner, oracle, jobId }) {
   const keeper = new ethers.Contract(keeperAddress, KEEPER_ABI, signer);
   let tokenAddress;
   let stakeRequired;
@@ -109,12 +116,21 @@ export async function getStakeContext({ signer, keeperAddress, owner }) {
   } catch (error) {
     throw friendlyError(error);
   }
+  let currentStake = 0n;
+  if (oracle && jobId) {
+    // Index 6 is stakeAmount; default to stakeRequired only on read error so a
+    // transient RPC failure preserves the historical (no-slash) behaviour.
+    currentStake = await keeper
+      .getOracleInfo(oracle, jobId)
+      .then((info) => info.stakeAmount)
+      .catch(() => stakeRequired);
+  }
   const token = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
   const [allowance, balance] = await Promise.all([
     token.allowance(owner, keeperAddress).catch(() => 0n),
     token.balanceOf(owner).catch(() => 0n),
   ]);
-  return { tokenAddress, stakeRequired, allowance, balance };
+  return { tokenAddress, stakeRequired, currentStake, allowance, balance };
 }
 
 /**

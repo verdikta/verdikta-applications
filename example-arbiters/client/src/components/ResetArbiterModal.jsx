@@ -395,10 +395,13 @@ function ResetArbiterModal({
 
         {gasShort && (
           <div className="reset-warn-note">
-            <AlertTriangle size={14} /> Your wallet holds <strong>{fmtEth(ctx.ethBalance)}</strong> ETH
-            — possibly too little for gas on the {remainingSteps.length} remaining
-            transaction{remainingSteps.length === 1 ? '' : 's'} (~{fmtEth(estGasWei)} ETH at the
-            current gas price). It's only a warning — add ETH if a step fails for lack of gas.
+            <span>
+              Warning: your wallet holds only <strong>{fmtEth(ctx.ethBalance)}</strong> ETH, which
+              may be too little to cover gas for the {remainingSteps.length} remaining
+              transaction{remainingSteps.length === 1 ? '' : 's'} of this restart
+              (~{fmtEth(estGasWei)} ETH total at the current gas price). Add ETH if a step fails for
+              lack of gas.
+            </span>
           </div>
         )}
 

@@ -102,7 +102,12 @@ export async function deregisterArbiter({ signer, keeperAddress, oracle, jobId }
  *    transient failure never false-blocks the flow. 0n when oracle/jobId absent.
  *  - allowance: current owner→keeper allowance (bigint)
  *  - balance: owner's wVDKA balance (bigint)
- * @returns {Promise<{tokenAddress: string, stakeRequired: bigint, currentStake: bigint, allowance: bigint, balance: bigint}>}
+ *  - ethBalance: owner's native ETH balance (bigint) — for the gas-sufficiency
+ *    warning; 0n if it can't be read.
+ *  - gasPrice: current gas price in wei (bigint, maxFeePerGas ?? gasPrice), or
+ *    null if unavailable. The caller turns these two into a "may not have enough
+ *    ETH for gas" warning.
+ * @returns {Promise<{tokenAddress: string, stakeRequired: bigint, currentStake: bigint, allowance: bigint, balance: bigint, ethBalance: bigint, gasPrice: (bigint|null)}>}
  */
 export async function getStakeContext({ signer, keeperAddress, owner, oracle, jobId }) {
   const keeper = new ethers.Contract(keeperAddress, KEEPER_ABI, signer);
@@ -126,11 +131,17 @@ export async function getStakeContext({ signer, keeperAddress, owner, oracle, jo
       .catch(() => stakeRequired);
   }
   const token = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
-  const [allowance, balance] = await Promise.all([
+  const provider = signer?.provider ?? null;
+  // ETH balance + gas price feed a best-effort gas-sufficiency warning; all
+  // .catch-guarded so a read failure degrades to "no warning", never an error.
+  const [allowance, balance, ethBalance, feeData] = await Promise.all([
     token.allowance(owner, keeperAddress).catch(() => 0n),
     token.balanceOf(owner).catch(() => 0n),
+    provider ? provider.getBalance(owner).catch(() => 0n) : Promise.resolve(0n),
+    provider ? provider.getFeeData().catch(() => null) : Promise.resolve(null),
   ]);
-  return { tokenAddress, stakeRequired, currentStake, allowance, balance };
+  const gasPrice = feeData ? (feeData.maxFeePerGas ?? feeData.gasPrice ?? null) : null;
+  return { tokenAddress, stakeRequired, currentStake, allowance, balance, ethBalance, gasPrice };
 }
 
 /**

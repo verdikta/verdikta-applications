@@ -42,7 +42,17 @@ import { parseClasses, sameSet } from '../utils/arbiterRegistration';
 const shortHash = (h) => (h ? `${h.slice(0, 10)}…${h.slice(-6)}` : '');
 const shortAddr = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
 const fmtWvdka = (wei) => Number(ethers.formatEther(wei)).toFixed(2);
+// ETH amounts here are tiny (Base gas); show 3 significant figures, no trailing zeros.
+const fmtEth = (wei) => {
+  const n = Number(ethers.formatEther(wei));
+  return n === 0 ? '0' : `${parseFloat(n.toPrecision(3))}`;
+};
 const STEP_ORDER = ['approve', 'deregister', 'register'];
+// Generous per-tx gas-unit upper bounds, only for the "enough ETH for gas?"
+// warning (deregister loops over the global oracle list; register does the
+// interface checks + transferFrom + several storage writes). Erring high makes
+// the warning fire a little early rather than too late.
+const GAS_UNITS = { approve: 80000n, deregister: 300000n, register: 450000n };
 
 /**
  * Props:
@@ -249,6 +259,18 @@ function ResetArbiterModal({
   const stakeDeficitWei = ctx ? ctx.stakeRequired - ctx.balance - refundPending : 0n;
   const stakeShortfall = ctx != null && stakeDeficitWei > 0n && status?.register !== 'done';
 
+  // Gas-sufficiency warning (best-effort, non-blocking — gas estimates are
+  // approximate and registerOracle can't be estimateGas'd before deregister).
+  // Sum the still-to-run steps (not done / not skipped) and price them at the
+  // current gas price, with a 1.5x buffer for price movement across the flow.
+  const remainingSteps = status
+    ? STEP_ORDER.filter((k) => status[k] !== 'done' && status[k] !== 'skipped')
+    : [];
+  const remainingGasUnits = remainingSteps.reduce((sum, k) => sum + GAS_UNITS[k], 0n);
+  const estGasWei = ctx?.gasPrice != null ? remainingGasUnits * ctx.gasPrice : null;
+  const gasShort =
+    estGasWei != null && estGasWei > 0n && ctx.ethBalance < (estGasWei * 3n) / 2n && !finished;
+
   const stepMeta = {
     approve: { label: 'Approve 100 wVDKA stake', note: 'Lets the keeper pull your stake' },
     deregister: { label: 'Close out (deregister & refund)', note: 'Deletes the reputation record' },
@@ -368,6 +390,15 @@ function ResetArbiterModal({
                 the restart.
               </>
             )}
+          </div>
+        )}
+
+        {gasShort && (
+          <div className="reset-warn-note">
+            <AlertTriangle size={14} /> Your wallet holds <strong>{fmtEth(ctx.ethBalance)}</strong> ETH
+            — possibly too little for gas on the {remainingSteps.length} remaining
+            transaction{remainingSteps.length === 1 ? '' : 's'} (~{fmtEth(estGasWei)} ETH at the
+            current gas price). It's only a warning — add ETH if a step fails for lack of gas.
           </div>
         )}
 

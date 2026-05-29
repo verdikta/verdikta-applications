@@ -25,7 +25,6 @@ import {
   AlertTriangle,
   Check,
   Loader,
-  Circle,
   X,
   ExternalLink,
   RotateCcw,
@@ -272,17 +271,18 @@ function ResetArbiterModal({
     estGasWei != null && estGasWei > 0n && ctx.ethBalance < (estGasWei * 3n) / 2n && !finished;
 
   const stepMeta = {
-    approve: { label: 'Approve 100 wVDKA stake', note: 'Lets the keeper pull your stake' },
-    deregister: { label: 'Close out (deregister & refund)', note: 'Deletes the reputation record' },
-    register: { label: 'Re-register', note: 'Re-stakes 100 wVDKA · fresh reputation · new fee/classes' },
+    approve: { label: 'Approve 100 wVDKA stake' },
+    deregister: { label: 'Close out (deregister & refund)' },
+    register: { label: 'Re-register (fresh reputation, new fee/classes)' },
   };
 
-  const StepIcon = ({ s }) => {
+  // Pending steps show their number; the rest show their status icon.
+  const StepIcon = ({ s, n }) => {
     if (s === 'done') return <Check size={16} className="reset-step-done" />;
     if (s === 'active') return <Loader size={16} className="spinning" />;
     if (s === 'error') return <X size={16} className="reset-step-error" />;
     if (s === 'skipped') return <Check size={16} className="reset-step-skip" />;
-    return <Circle size={16} className="reset-step-pending" />;
+    return <span className="reset-step-num">{n}</span>;
   };
 
   return (
@@ -364,7 +364,7 @@ function ResetArbiterModal({
           <div><span>Job ID</span><code title={jobId}>{shortHash(jobId)}</code></div>
           {ctx && (
             <div>
-              <span>Your wVDKA</span>
+              <span>Your Wallet's wVDKA</span>
               <code>{Number(ethers.formatEther(ctx.balance)).toFixed(2)}</code>
             </div>
           )}
@@ -406,31 +406,33 @@ function ResetArbiterModal({
         )}
 
         {status && (
-          <ol className="reset-steps">
-            {STEP_ORDER.map((k) => (
-              <li key={k} className={`reset-step reset-step-${status[k]}`}>
-                <StepIcon s={status[k]} />
-                <span className="reset-step-label">
-                  {stepMeta[k].label}
-                  {status[k] === 'skipped' && <em> · already approved</em>}
-                  {status[k] === 'done' && k === 'deregister' && resume && !txHashes.deregister && (
-                    <em> · done previously</em>
+          <div className="reset-steps-box">
+            <div className="reset-steps-heading">Steps</div>
+            <ol className="reset-steps">
+              {STEP_ORDER.map((k, i) => (
+                <li key={k} className={`reset-step reset-step-${status[k]}`}>
+                  <StepIcon s={status[k]} n={i + 1} />
+                  <span className="reset-step-label">
+                    {stepMeta[k].label}
+                    {status[k] === 'skipped' && <em> · already approved</em>}
+                    {status[k] === 'done' && k === 'deregister' && resume && !txHashes.deregister && (
+                      <em> · done previously</em>
+                    )}
+                  </span>
+                  {txHashes[k] && (
+                    <a
+                      className="explorer-link"
+                      href={`${chain.explorer}/tx/${txHashes[k]}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {shortHash(txHashes[k])} <ExternalLink size={11} />
+                    </a>
                   )}
-                  <small>{stepMeta[k].note}</small>
-                </span>
-                {txHashes[k] && (
-                  <a
-                    className="explorer-link"
-                    href={`${chain.explorer}/tx/${txHashes[k]}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    {shortHash(txHashes[k])} <ExternalLink size={11} />
-                  </a>
-                )}
-              </li>
-            ))}
-          </ol>
+                </li>
+              ))}
+            </ol>
+          </div>
         )}
 
         {stepError && <div className="reset-error">{stepError}</div>}

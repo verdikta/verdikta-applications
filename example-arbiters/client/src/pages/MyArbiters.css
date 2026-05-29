@@ -358,45 +358,50 @@
   color: var(--text-secondary);
 }
 
+.my-arbiters .reset-steps-box {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  margin: 0 0 1rem;
+}
+
+.my-arbiters .reset-steps-heading {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin-bottom: 0.35rem;
+}
+
 .my-arbiters .reset-steps {
   list-style: none;
-  margin: 0 0 1rem;
+  margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.1rem;
 }
 
 .my-arbiters .reset-step {
   display: flex;
-  align-items: flex-start;
-  gap: 0.6rem;
-  padding: 0.6rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
   font-size: 0.9rem;
 }
 
-.my-arbiters .reset-step-active {
-  border-color: var(--primary, #3b82f6);
-  background: var(--bg-secondary);
-}
-
+.my-arbiters .reset-step-active { color: var(--primary, #3b82f6); font-weight: 600; }
 .my-arbiters .reset-step-done,
 .my-arbiters .reset-step-skip { color: #16a34a; }
 .my-arbiters .reset-step-error { color: var(--danger, #ef4444); }
-.my-arbiters .reset-step-pending { color: var(--text-secondary); opacity: 0.6; }
+.my-arbiters .reset-step-pending { color: var(--text-secondary); }
 
 .my-arbiters .reset-step .reset-step-label {
-  display: flex;
-  flex-direction: column;
   flex: 1;
-  gap: 0.1rem;
-}
-
-.my-arbiters .reset-step-label small {
-  color: var(--text-secondary);
-  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .my-arbiters .reset-step-label em {
@@ -404,7 +409,23 @@
   font-style: italic;
 }
 
-.my-arbiters .reset-step svg { flex-shrink: 0; margin-top: 0.15rem; }
+/* Numbered badge shown for steps not yet run (replaces the old empty circle). */
+.my-arbiters .reset-step-num {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-secondary);
+  color: var(--text-secondary);
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.my-arbiters .reset-step svg { flex-shrink: 0; }
 
 .my-arbiters .reset-error {
   font-size: 0.85rem;

@@ -512,6 +512,7 @@ function MyArbiters() {
                 || f.senders.some((s) => pending.has(`fund:${s.address}`));
               return (
                 <div className={`funding-panel${f.low ? ' low' : ''}`}>
+                  <h3 className="subtable-title">Node Key Funding</h3>
                   <div className="funding-summary">
                     <span className="funding-summary-main">
                       <Fuel size={15} className="inline-icon" />
@@ -582,6 +583,7 @@ function MyArbiters() {
             })()}
 
             <div className="stats-table">
+              <h3 className="subtable-title">Registered Arbiters</h3>
               <table>
                 <thead>
                   <tr>

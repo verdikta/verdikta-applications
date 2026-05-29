@@ -97,6 +97,19 @@
   font-size: 1.05rem;
 }
 
+.my-arbiters .subtable-title {
+  margin: 0 0 0.6rem;
+  font-size: 1rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.my-arbiters .stats-table {
+  margin-top: 2rem;
+}
+
 .my-arbiters .job-action {
   text-align: right;
   white-space: nowrap;

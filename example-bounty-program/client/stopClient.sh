@@ -11,6 +11,30 @@ stop_network() {
     local net="$1"
     local pid_file="client-${net}.pid"
 
+    # systemd-managed mode: the real watcher lives in the service, so stop that.
+    local unit=""
+    [ "$net" = "base" ]         && unit="verdikta-bounty-client-base.service"
+    [ "$net" = "base-sepolia" ] && unit="verdikta-bounty-client-testnet.service"
+    if [ -n "$unit" ] && command -v systemctl >/dev/null 2>&1 && systemctl cat "$unit" >/dev/null 2>&1; then
+        if systemctl is-active --quiet "$unit"; then
+            systemctl stop "$unit" && echo "Client ($net) stopped via systemd ($unit)"
+            echo "  (It is 'enabled', so it returns on reboot. To keep it off: systemctl disable $unit)"
+        else
+            echo "Client ($net) is managed by systemd and already stopped ($unit)"
+        fi
+        # Reap any stray legacy nohup watcher that might still be lingering.
+        if [ -f "$pid_file" ]; then
+            local oldpid; oldpid=$(cat "$pid_file")
+            if kill -0 "$oldpid" 2>/dev/null; then
+                pkill -P "$oldpid" 2>/dev/null
+                kill "$oldpid" 2>/dev/null
+                echo "Also stopped a stray legacy watcher (PID $oldpid)"
+            fi
+            rm -f "$pid_file"
+        fi
+        return 0
+    fi
+
     if [ -f "$pid_file" ]; then
         PID=$(cat "$pid_file")
         if kill -0 "$PID" 2>/dev/null; then

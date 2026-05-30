@@ -5,6 +5,7 @@ import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react
 import { walletService } from './services/wallet';
 import { ToastProvider, useToast } from './components/Toast';
 import Header from './components/Header';
+import ErrorBoundary from './components/ErrorBoundary';
 import Home from './pages/Home';
 import CreateBounty from './pages/CreateBounty';
 import BountyDetails from './pages/BountyDetails';
@@ -108,6 +109,7 @@ function AppContent() {
       />
 
       <main className="main-content">
+        <ErrorBoundary>
         <Routes>
           <Route path="/" element={<Home walletState={walletState} />} />
           <Route path="/create" element={<CreateBounty walletState={walletState} />} />
@@ -123,6 +125,7 @@ function AppContent() {
           <Route path="/class/:classId" element={<ClassDetails />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
+        </ErrorBoundary>
       </main>
       </div>
     </>

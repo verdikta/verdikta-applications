@@ -86,6 +86,13 @@ const isPendingStatus = isSubmissionPending;
  * Copy text to clipboard with fallback for HTTP (non-secure) contexts.
  * navigator.clipboard requires HTTPS, so we fall back to execCommand.
  */
+// Safe unix-seconds → Date: tolerates BigInt / string / null from on-chain reads.
+// Module-scoped so both BountyDetails and SubmissionCard can use it.
+const tsToDate = (ts) => {
+  const n = Number(ts);
+  return Number.isFinite(n) ? new Date(n * 1000) : null;
+};
+
 function copyToClipboard(text, toast) {
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(text);
@@ -912,9 +919,15 @@ function BountyDetails({ walletState }) {
   // HELPERS
   // ============================================================================
 
-  // Use currentTime state for live updates instead of Date.now()
+  // Use currentTime state for live updates instead of Date.now().
+  // `submittedAt` can arrive as a BigInt from an on-chain read (which happens
+  // once a wallet/signer connects). `currentTime - bigint` throws
+  // "Cannot mix BigInt and other types" — that uncaught render throw is what
+  // blanked the whole page on wallet connect. Coerce to Number first.
   const getSubmissionAge = useCallback((submittedAt) => {
-    return (currentTime - submittedAt) / 60;
+    const ts = Number(submittedAt);
+    if (!Number.isFinite(ts)) return 0;
+    return (currentTime - ts) / 60;
   }, [currentTime]);
 
   // ============================================================================
@@ -2035,6 +2048,8 @@ function BountyDetails({ walletState }) {
                 <PendingSubmissionsPanel
                   pendingSubmissions={pendingSubmissions}
                   getSubmissionAge={getSubmissionAge}
+                  onPreview={handlePreviewSubmission}
+                  isPreviewing={previewingSubmissions.size > 0}
                   onFinalize={handleFinalizeSubmission}
                   onFailTimeout={handleFailTimedOutSubmission}
                   onCancel={handleCancelSubmission}
@@ -2486,6 +2501,7 @@ function BountyDetails({ walletState }) {
                 juryNodes={job?.juryNodes}
                 bountyStatus={status}
                 job={job}
+                toast={toast}
               />
             ))}
           </div>
@@ -2837,7 +2853,7 @@ function DiagnosticPanel({
           submissions.map(s => (
             <div key={s.submissionId} style={{ marginLeft: '0.5rem' }}>
               #{s.submissionId}: {s.status} 
-              {s.submittedAt && ` (${((now - s.submittedAt) / 60).toFixed(1)}min ago)`}
+              {s.submittedAt && ` (${((now - Number(s.submittedAt)) / 60).toFixed(1)}min ago)`}
             </div>
           ))
         )}
@@ -2885,6 +2901,8 @@ function DiagnosticPanel({
 function PendingSubmissionsPanel({
   pendingSubmissions,
   getSubmissionAge,
+  onPreview,
+  isPreviewing,
   onFinalize,
   onFailTimeout,
   onCancel,
@@ -3302,6 +3320,7 @@ function SubmissionCard({
   juryNodes,
   bountyStatus,
   job,
+  toast,
 }) {
   const bountyTerminal = bountyStatus === 'CLOSED' || bountyStatus === 'AWARDED';
   const isPending = isPendingStatus(submission.status);
@@ -3398,7 +3417,7 @@ function SubmissionCard({
       })()}
 
       <div className="submission-meta">
-        <span>Submitted: {submission.submittedAt ? new Date(submission.submittedAt * 1000).toLocaleString(undefined, { timeZoneName: 'short' }) : 'Just now'}</span>
+        <span>Submitted: {submission.submittedAt ? (tsToDate(submission.submittedAt)?.toLocaleString(undefined, { timeZoneName: 'short' }) ?? 'Just now') : 'Just now'}</span>
 
         {isPaidWinner && (
           <div style={{ marginTop: '0.6rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>

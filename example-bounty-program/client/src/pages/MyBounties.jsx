@@ -578,6 +578,31 @@ function MyBounties({ walletState }) {
                       {action.canClose ? 'Reclaim funds' : 'Resolve & close'}
                     </Link>
                   )}
+                  {(bounty.status === 'EXPIRED' || bounty.status === 'CLOSED') && (
+                    <Link
+                      to={`/create?clone=${bounty.jobId}`}
+                      className="reissue-pill"
+                      onClick={(e) => e.stopPropagation()}
+                      title="Launch a fresh copy of this bounty with the same settings and a new submission window"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.25rem',
+                        padding: '0.2rem 0.6rem',
+                        borderRadius: '999px',
+                        fontSize: '0.75rem',
+                        fontWeight: 600,
+                        lineHeight: 1.2,
+                        textDecoration: 'none',
+                        color: '#1c4e80',
+                        background: '#eef6ff',
+                        border: '1px solid #b6d8ff',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      <RefreshCw size={12} className="inline-icon" /> Re-issue
+                    </Link>
+                  )}
                 </div>
                 <div className="bounty-meta">
                   <span className="meta-item">
@@ -719,6 +744,15 @@ function MyBounties({ walletState }) {
                     <Link to={`/bounty/${bounty.jobId}`} className="btn btn-sm btn-secondary">
                       View Bounty Details →
                     </Link>
+                    {(bounty.status === 'EXPIRED' || bounty.status === 'CLOSED') && (
+                      <Link
+                        to={`/create?clone=${bounty.jobId}`}
+                        className="btn btn-sm btn-primary"
+                        title="Launch a fresh copy of this bounty with the same settings and a new submission window"
+                      >
+                        <RefreshCw size={14} className="inline-icon" /> Re-issue
+                      </Link>
+                    )}
                   </div>
                 </div>
               )}

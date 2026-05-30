@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   PlusCircle,
   Check,
@@ -12,6 +12,7 @@ import {
   ChevronRight,
   X,
   Eye,
+  RefreshCw,
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
@@ -28,6 +29,9 @@ import './CreateBounty.css';
 function CreateBounty({ walletState }) {
   const toast = useToast();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const reissueId = searchParams.get('clone');
+  const [reissueFrom, setReissueFrom] = useState(null);
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [loadingText, setLoadingText] = useState('');
@@ -166,6 +170,115 @@ function CreateBounty({ walletState }) {
     fetchEthPrice();
   }, []);
 
+  // Re-issue: pre-fill the form from an existing bounty (?clone=<jobId>)
+  // Carries over everything (title, description, rubric, jury, payout, approval
+  // window) but recomputes a fresh submission window so the new bounty starts now.
+  // The user reviews/tweaks and submits through the normal create flow, so the
+  // counter-alignment guarantees (one /jobs/create → on-chain createBounty → link)
+  // are preserved and the original bounty is left untouched.
+  useEffect(() => {
+    if (!reissueId) return;
+    let cancelled = false;
+
+    const loadSource = async () => {
+      try {
+        setLoading(true);
+        setLoadingText('Loading bounty to re-issue…');
+        const resp = await apiService.getJob(reissueId, true);
+        const job = resp?.job;
+        if (!job) throw new Error('Source bounty not found');
+        if (cancelled) return;
+
+        // Basic info — recompute the original submission-window duration fresh from now
+        const windowHours =
+          job.submissionOpenTime && job.submissionCloseTime
+            ? Math.max(1, Math.round((job.submissionCloseTime - job.submissionOpenTime) / 3600))
+            : 1;
+        const windowSecs = Number(job.creatorAssessmentWindowSize) || 0;
+        const hasApprovalWindow = windowSecs > 0;
+
+        setFormData((prev) => ({
+          ...prev,
+          title: job.title || '',
+          description: job.description || '',
+          workProductType: job.workProductType || 'Work Product',
+          payoutAmount: job.bountyAmount != null ? String(job.bountyAmount) : prev.payoutAmount,
+          submissionWindowHours: windowHours,
+          targetHunter:
+            job.targetHunter && /^0x[a-fA-F0-9]{40}$/.test(job.targetHunter) ? job.targetHunter : '',
+          publicSubmissions: !!job.publicSubmissions,
+          enableApprovalWindow: hasApprovalWindow,
+          creatorPaymentEth:
+            job.creatorDeterminationPayment != null
+              ? String(job.creatorDeterminationPayment)
+              : prev.creatorPaymentEth,
+          arbiterPaymentEth:
+            job.arbiterDeterminationPayment != null
+              ? String(job.arbiterDeterminationPayment)
+              : prev.arbiterPaymentEth,
+          approvalWindowHours: hasApprovalWindow
+            ? String(Math.max(1, Math.round(windowSecs / 3600)))
+            : prev.approvalWindowHours,
+        }));
+
+        // Rubric — fetched from IPFS by the server (job.rubricContent). The pinned
+        // rubric stores per-criterion instructions under `description`.
+        const rc = job.rubricContent;
+        if (rc) {
+          setRubric({
+            version: rc.version || RUBRIC_DEFAULTS.version,
+            title: rc.title || job.title || '',
+            description: rc.description || '',
+            criteria: (rc.criteria || []).map((c, i) => ({
+              id: c.id || `criterion_${i}_${Date.now()}`,
+              label: c.label || '',
+              must: !!c.must,
+              weight: Number(c.weight ?? 0),
+              instructions: c.instructions || c.description || '',
+            })),
+            forbiddenContent: rc.forbiddenContent || rc.forbidden_content || [],
+          });
+          if (rc.threshold != null) setThreshold(rc.threshold);
+        } else if (job.threshold != null) {
+          setThreshold(job.threshold);
+          toast.warning('Could not load the original rubric criteria — please review the Rubric step.');
+        }
+
+        // Class + jury. Setting the class triggers the model-load effect, which now
+        // preserves each jury node's model when it is still valid for the class.
+        if (job.classId != null) setSelectedClassId(job.classId);
+        if (Array.isArray(job.juryNodes) && job.juryNodes.length > 0) {
+          setJuryNodes(
+            job.juryNodes.map((n, i) => ({
+              provider: n.provider,
+              model: n.model,
+              runs: n.runs ?? 1,
+              weight: Number(n.weight ?? 0),
+              id: `reissue_${i}_${Date.now()}`,
+            }))
+          );
+        }
+        if (job.iterations != null) setIterations(job.iterations);
+
+        setReissueFrom(job.jobId ?? reissueId);
+      } catch (err) {
+        console.error('[Re-issue] Failed to load source bounty:', err);
+        toast.error(`Could not load bounty to re-issue: ${err?.message || err}`);
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+          setLoadingText('');
+        }
+      }
+    };
+
+    loadSource();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reissueId]);
+
   // Load models when class changes
   useEffect(() => {
     const loadModels = async () => {
@@ -206,8 +319,14 @@ function CreateBounty({ walletState }) {
             // Try to keep the same provider if it exists in the new class
             const providerExists = providers.includes(node.provider);
             const newProvider = providerExists ? node.provider : providers[0];
-            const newModel = providerModels[newProvider]?.[0] || '';
-            
+            // Keep the node's current model if it's still valid for this class
+            // (e.g. when re-issuing a bounty on the same class); otherwise fall
+            // back to the provider's first available model.
+            const newModel =
+              providerExists && providerModels[newProvider]?.includes(node.model)
+                ? node.model
+                : providerModels[newProvider]?.[0] || '';
+
             return {
               ...node,
               provider: newProvider,
@@ -634,9 +753,34 @@ function CreateBounty({ walletState }) {
   return (
     <div className="create-bounty">
       <div className="page-header">
-        <h1><PlusCircle size={28} className="inline-icon" /> Create New Bounty</h1>
+        <h1>
+          {reissueFrom != null
+            ? <><RefreshCw size={28} className="inline-icon" /> Re-issue Bounty</>
+            : <><PlusCircle size={28} className="inline-icon" /> Create New Bounty</>}
+        </h1>
         <p>Define evaluation criteria and lock ETH in escrow</p>
       </div>
+
+      {reissueFrom != null && (
+        <div
+          className="alert"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+            background: '#eef6ff',
+            border: '1px solid #b6d8ff',
+            color: '#1c4e80',
+          }}
+        >
+          <RefreshCw size={16} className="inline-icon" />
+          <span>
+            Re-issuing <strong>bounty #{reissueFrom}</strong> — all settings were copied over with a
+            fresh submission window. Review the details below and launch a new bounty. The original
+            bounty is unchanged.
+          </span>
+        </div>
+      )}
 
       {error && (
         <div className="alert alert-error">

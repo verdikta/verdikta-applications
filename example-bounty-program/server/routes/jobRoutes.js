@@ -4530,10 +4530,39 @@ router.patch('/:jobId/bountyId', async (req, res) => {
         j !== job && j.jobId === Number(bountyId)
       );
       if (collisionIdx !== -1) {
+        const colliding = storage.jobs[collisionIdx];
+        // Only remove a colliding record if it's genuinely a removable
+        // phantom/duplicate of THIS bounty. A colliding job that is itself
+        // on-chain/synced with a DIFFERENT evaluationCid is a separate, REAL
+        // bounty — deleting it and stealing its id is the data-corruption bug
+        // that clobbered bounty #245 (a wrong bountyId in the PATCH body made
+        // the reconcile delete an unrelated live bounty). When that's the case
+        // the claimed bountyId cannot belong to this job, so refuse the
+        // reconcile and change nothing.
+        const sameEvalCid = colliding.evaluationCid && job.evaluationCid &&
+          colliding.evaluationCid === job.evaluationCid;
+        const collidingIsRealDistinct =
+          (colliding.syncedFromBlockchain || colliding.onChain) && !sameEvalCid;
+        if (collidingIsRealDistinct) {
+          logger.error('[jobs/bountyId] refusing reconcile: claimed bountyId belongs to a different on-chain bounty', {
+            jobId: job.jobId,
+            claimedBountyId: Number(bountyId),
+            jobEvaluationCid: job.evaluationCid,
+            collidingEvaluationCid: colliding.evaluationCid,
+            collidingTitle: colliding.title
+          });
+          return res.status(409).json({
+            success: false,
+            error: 'bountyId already linked to a different bounty',
+            details: `On-chain bounty #${Number(bountyId)} is already tracked by a different bounty (evaluationCid ${colliding.evaluationCid}). This job's evaluationCid is ${job.evaluationCid}. You likely passed the wrong bountyId.`,
+            fix: 'Use the bountyId from your own createBounty receipt (the BountyCreated event), or GET /api/jobs/lookup?txHash=<your-createBounty-tx> to find the correct on-chain bountyId for this job.'
+          });
+        }
         logger.warn('[jobs/bountyId] removing colliding job', {
-          collidingJobId: storage.jobs[collisionIdx].jobId,
-          collidingTitle: storage.jobs[collisionIdx].title,
-          collidingStatus: storage.jobs[collisionIdx].status
+          collidingJobId: colliding.jobId,
+          collidingTitle: colliding.title,
+          collidingStatus: colliding.status,
+          reason: sameEvalCid ? 'same_evaluationCid_duplicate' : 'unsynced_phantom'
         });
         storage.jobs.splice(collisionIdx, 1);
       }

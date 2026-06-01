@@ -904,6 +904,9 @@ class SyncService {
 
         const pendingJob = storage.jobs.find(j => {
           if (j.syncedFromBlockchain) return false;
+          // Skip ORPHANED tombstones — don't revive/renumber a dead record onto
+          // a live on-chain id (mirrors the route dedup guard in jobRoutes.js).
+          if (j.status === 'ORPHANED') return false;
           if (evaluationCid && j.evaluationCid === evaluationCid) return true;
           if (j.creator?.toLowerCase() === creator?.toLowerCase() &&
               Math.abs((j.submissionCloseTime || 0) - deadline) < 60) return true;
@@ -1263,8 +1266,13 @@ class SyncService {
     // (e.g. the PATCH /api/jobs/:id/bountyId step was skipped).
     if (bounty.evaluationCid) {
       // First try: unsynced pending job (same logic as _processEvent BountyCreated)
+      // Exclude ORPHANED tombstones: a never-deployed/old-contract record that
+      // happens to share an evaluationCid must not be revived and renumbered onto
+      // this on-chain id (that resurrection is how two records collide on jobId).
+      // Mirrors the route dedup guard in jobRoutes.js POST /jobs/create.
       const pendingJob = storage.jobs.find(j =>
         !j.syncedFromBlockchain &&
+        j.status !== 'ORPHANED' &&
         j.evaluationCid === bounty.evaluationCid
       );
 

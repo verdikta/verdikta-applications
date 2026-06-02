@@ -1,0 +1,127 @@
+/* JuryModels — self-contained styles so the component renders correctly on any
+ * page (BountyDetails, SubmitWork, …) regardless of which page CSS is loaded.
+ * Class names intentionally match the original BountyDetails jury markup. */
+
+.jury-section {
+  background-color: var(--bg);
+  padding: 2rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06);
+  margin-bottom: 2rem;
+}
+
+.jury-section h2 {
+  margin-bottom: 1rem;
+}
+
+.jury-description {
+  color: var(--text-secondary);
+  margin-bottom: 1.5rem;
+}
+
+.jury-status {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.jury-status-error {
+  color: var(--color-danger, #b91c1c);
+}
+
+.jury-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.jury-card {
+  background: linear-gradient(135deg, var(--primary-50, #eef2ff) 0%, var(--bg-secondary) 100%);
+  padding: 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  text-align: center;
+}
+
+.jury-provider {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--primary);
+  margin-bottom: 0.25rem;
+}
+
+.jury-model {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 0.5rem;
+  word-break: break-word;
+}
+
+.jury-details {
+  display: flex;
+  justify-content: center;
+  gap: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.jury-weight {
+  background: var(--primary);
+  color: white;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+  font-weight: 500;
+}
+
+.jury-runs {
+  background: var(--gray-200);
+  color: var(--gray-700);
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+}
+
+.eval-details-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 1.25rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--primary);
+  text-decoration: none;
+  font-size: 0.875rem;
+  transition: all 0.2s;
+}
+
+.eval-details-link:hover {
+  background: var(--bg-secondary);
+  border-color: var(--primary);
+}
+
+/* Icon utilities (also defined in BountyDetails.css; duplicated here so the
+ * component is usable on pages that don't load that stylesheet). */
+.jury-section .spin {
+  animation: spin 1s linear infinite;
+}
+
+.jury-section .inline-icon {
+  vertical-align: middle;
+  margin-right: 0.25rem;
+}
+
+@media (max-width: 640px) {
+  .jury-section {
+    padding: 1.25rem;
+  }
+
+  .jury-grid {
+    grid-template-columns: 1fr;
+  }
+}

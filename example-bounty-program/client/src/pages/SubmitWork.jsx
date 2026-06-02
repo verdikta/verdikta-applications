@@ -18,6 +18,7 @@ import {
   Hourglass,
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
+import JuryModels from '../components/JuryModels';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
 import { config, currentNetwork } from '../config';
@@ -706,6 +707,16 @@ function SubmitWork({ walletState }) {
             <strong>You will not be asked to spend LINK at submit time.</strong> Only ETH for gas is needed right now.
           </p>
         </div>
+      )}
+
+      {job && (
+        <JuryModels
+          bountyId={bountyId}
+          juryNodes={job.juryNodes}
+          evaluationCid={job.evaluationCid}
+          title="Who will evaluate your submission"
+          description="These AI models will independently score your work; the final score is a weighted average. Review them before you submit."
+        />
       )}
 
       <form onSubmit={handleSubmit} className="submit-form">

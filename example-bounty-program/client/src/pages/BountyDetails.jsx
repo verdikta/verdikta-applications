@@ -22,6 +22,7 @@ import {
   Minimize2,
 } from 'lucide-react';
 import { renderMarkdownSafe } from '../utils/markdownPreview';
+import JuryModels from '../components/JuryModels';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
 import { walletService } from '../services/wallet';
@@ -2313,30 +2314,15 @@ function BountyDetails({ walletState }) {
         </section>
       )}
 
-      {/* Jury Configuration Section - AI Models */}
-      {job?.juryNodes && job.juryNodes.length > 0 && (
-        <section className="jury-section">
-          <h2>AI Jury Configuration</h2>
-          <p className="jury-description">
-            Submissions are evaluated by multiple AI models. Each model scores independently,
-            and the final score is a weighted average.
-          </p>
-          <div className="jury-grid">
-            {job.juryNodes.map((node, index) => (
-              <div key={index} className="jury-card">
-                <div className="jury-provider">{node.provider}</div>
-                <div className="jury-model">{node.model}</div>
-                <div className="jury-details">
-                  <span className="jury-weight">Weight: {Math.round(node.weight * 100)}%</span>
-                  {node.runs > 1 && <span className="jury-runs">{node.runs} runs</span>}
-                </div>
-              </div>
-            ))}
-          </div>
-          <Link to={`/bounty/${bountyId}/evaluation`} className="eval-details-link">
-            <FileText size={16} /> View Full Evaluation Details
-          </Link>
-        </section>
+      {/* Jury Configuration Section - AI Models.
+          Prefers job.juryNodes; falls back to the evaluation package on IPFS
+          for blockchain-synced bounties where juryNodes is empty. */}
+      {job && (
+        <JuryModels
+          bountyId={bountyId}
+          juryNodes={job.juryNodes}
+          evaluationCid={job.evaluationCid}
+        />
       )}
 
       {/* Actions Section */}

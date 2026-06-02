@@ -58,14 +58,29 @@ async function fetchEvaluationMetadata(evaluationCid) {
       let title = null;
       let description = null;
       let workProductType = null;
+      let juryNodes = [];
 
-      // Parse manifest.json for title
+      // Parse manifest.json for title + jury models
       const manifestEntry = zip.getEntry('manifest.json');
       if (manifestEntry) {
         try {
           const manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
           if (manifest.name) {
             title = manifest.name.replace(/ - Evaluation(?: for Payment Release)?$/, '');
+          }
+          // Capture the AI jury models so they can be persisted onto the job
+          // record (immutable per evaluationCid — content-addressed). Shape
+          // matches API-created juryNodes: { provider, model, runs, weight }.
+          const aiNodes = manifest?.juryParameters?.AI_NODES;
+          if (Array.isArray(aiNodes)) {
+            juryNodes = aiNodes
+              .filter(n => n && n.AI_MODEL)
+              .map(n => ({
+                provider: n.AI_PROVIDER,
+                model: n.AI_MODEL,
+                runs: n.NO_COUNTS || 1,
+                weight: typeof n.WEIGHT === 'number' ? n.WEIGHT : 1,
+              }));
           }
         } catch (e) {
           logger.debug('Failed to parse manifest.json', { cid: evaluationCid, error: e.message });
@@ -113,9 +128,9 @@ async function fetchEvaluationMetadata(evaluationCid) {
         }
       }
 
-      if (title || description) {
-        logger.debug('Fetched evaluation metadata', { cid: evaluationCid, title, hasDescription: !!description });
-        return { title, description, workProductType };
+      if (title || description || juryNodes.length > 0) {
+        logger.debug('Fetched evaluation metadata', { cid: evaluationCid, title, hasDescription: !!description, juryNodeCount: juryNodes.length });
+        return { title, description, workProductType, juryNodes };
       }
 
     } catch (error) {
@@ -1317,6 +1332,7 @@ class SyncService {
     let title = bounty.title || `Bounty #${bounty.jobId}`;
     let description = bounty.description || 'Fetched from blockchain';
     let workProductType = bounty.workProductType || 'Work Product';
+    let juryNodes = [];
 
     try {
       const metadata = await fetchEvaluationMetadata(bounty.evaluationCid);
@@ -1324,6 +1340,7 @@ class SyncService {
         if (metadata.title) title = metadata.title;
         if (metadata.description) description = metadata.description;
         if (metadata.workProductType) workProductType = metadata.workProductType;
+        if (Array.isArray(metadata.juryNodes)) juryNodes = metadata.juryNodes;
       }
     } catch (error) {
       logger.warn('Failed to fetch evaluation metadata, using defaults', {
@@ -1343,7 +1360,7 @@ class SyncService {
       threshold: bounty.threshold,
       evaluationCid: bounty.evaluationCid,
       classId: bounty.classId,
-      juryNodes: [],
+      juryNodes,
       submissionOpenTime: bounty.createdAt,
       submissionCloseTime: bounty.submissionCloseTime,
       status: bounty.status,

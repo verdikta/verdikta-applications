@@ -5,7 +5,7 @@ import App from './App.jsx'
 import { config } from './config'
 
 // Set page title based on network
-document.title = config.network === 'base-sepolia' ? 'Bounties - Testnet' : 'Bounties'
+document.title = config.network === 'base-sepolia' ? 'Verdikta Bounties - Testnet' : 'Verdikta Bounties'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

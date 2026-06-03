@@ -425,6 +425,7 @@ function Analytics() {
                 <thead>
                   <tr>
                     <th>Operator</th>
+                    <th className="tooltip-header" title="Number of arbiters (registered jobIds) currently backed by this operator contract">Arbiters</th>
                     <th className="tooltip-header" title="Times this operator was polled (OracleSelected) across the window">Polled</th>
                     <th className="tooltip-header" title="Commits received, and commits ÷ times polled">Commits</th>
                     <th className="tooltip-header" title="Reveals recorded, and reveals ÷ commits. Low here despite commits = the node commits but doesn't reveal.">Reveals</th>
@@ -434,6 +435,7 @@ function Analytics() {
                   {healthData.operators.map((o) => (
                     <tr key={o.operator}>
                       <td><code>{shortAddr(o.operator)}</code></td>
+                      <td>{o.arbiters == null ? '—' : o.arbiters}</td>
                       <td><strong>{o.timesSelected}</strong></td>
                       <td style={{ color: rateColor(o.commitRatePct), fontWeight: 600 }}>
                         {o.commits}{o.commitRatePct == null ? '' : ` (${o.commitRatePct}%)`}

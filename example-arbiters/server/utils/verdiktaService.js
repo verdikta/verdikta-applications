@@ -1064,10 +1064,27 @@ class VerdiktaService {
       toBlock = fromBlock - 1;
     }
 
+    // Count currently-registered arbiters (jobId registrations) per operator
+    // contract, for context next to the reliability numbers. Independent of the
+    // event scan — if the enumeration fails, counts are simply omitted (null).
+    let arbiterCountByOp = {};
+    try {
+      const oracles = await this.getAllOracles();
+      for (const o of oracles) {
+        if (o.error || !o.oracle) continue;
+        const k = o.oracle.toLowerCase();
+        arbiterCountByOp[k] = (arbiterCountByOp[k] || 0) + 1;
+      }
+    } catch (err) {
+      logger.warn('oracle-health: getAllOracles failed (arbiter counts omitted)', { network: this.networkKey, msg: err.message });
+      arbiterCountByOp = null;
+    }
+
     const pct = (n, d) => (d > 0 ? Math.round((n / d) * 1000) / 10 : null);
     const operators = Object.values(ops)
       .map((o) => ({
         operator: o.operator,
+        arbiters: arbiterCountByOp ? (arbiterCountByOp[o.operator.toLowerCase()] || 0) : null,
         timesSelected: o.selected,
         commits: o.commits,
         commitRatePct: pct(o.commits, o.selected),

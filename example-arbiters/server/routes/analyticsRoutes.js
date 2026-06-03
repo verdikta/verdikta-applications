@@ -223,6 +223,37 @@ router.get('/owners', async (req, res) => {
 });
 
 /**
+ * GET /api/analytics/oracle-health
+ * Per-operator commit/reveal reliability + network eval success rate, derived
+ * from aggregator lifecycle events over a recent window (cached per network).
+ * Optional ?days= (1..60, default 14) sizes the look-back window.
+ */
+router.get('/oracle-health', async (req, res) => {
+  const network = normalizeNetwork(req.query.network);
+  const days = Math.min(60, Math.max(1, parseInt(req.query.days, 10) || 14));
+  const cacheKey = `analytics_oracle_health_${network}_${days}`;
+  try {
+    const cached = analyticsCache.get(cacheKey);
+    if (cached) {
+      return res.json({ success: true, data: cached.data, cached: true, cachedAt: cached.timestamp });
+    }
+
+    const verdiktaService = getVerdiktaService(network);
+    const data = await verdiktaService.getOracleHealth({ days });
+    analyticsCache.set(cacheKey, data);
+
+    return res.json({ success: true, data, cached: false });
+  } catch (error) {
+    logger.error('[analytics/oracle-health] error', { network, msg: error.message });
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to get oracle health',
+      details: error.message
+    });
+  }
+});
+
+/**
  * POST /api/analytics/refresh
  * Invalidate the cache for a network so the next read pulls fresh contract data.
  */
@@ -232,6 +263,8 @@ router.post('/refresh', (req, res) => {
     analyticsCache.invalidate(`analytics_overview_${network}`);
     analyticsCache.invalidate(`analytics_arbiters_${network}`);
     analyticsCache.invalidate(`analytics_owners_${network}`);
+    // oracle-health keys are suffixed by window size; clear the common ones.
+    for (const d of [7, 14, 30, 60]) analyticsCache.invalidate(`analytics_oracle_health_${network}_${d}`);
     logger.info('[analytics/refresh] cache cleared', { network });
     return res.json({ success: true, network });
   } catch (error) {

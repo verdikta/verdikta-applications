@@ -80,6 +80,17 @@ export const apiService = {
     });
     return response.data;
   },
+
+  // Oracle health for a network: network eval success rate + per-operator
+  // commit/reveal reliability, derived from aggregator events over a recent
+  // window. Heavy archive-log scan — allow generous time.
+  async getOracleHealth(network, days) {
+    const response = await api.get('/api/analytics/oracle-health', {
+      params: { network, ...(days ? { days } : {}) },
+      timeout: 90000,
+    });
+    return response.data;
+  },
 };
 
 export default apiService;

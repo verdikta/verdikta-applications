@@ -20,7 +20,14 @@ const AGGREGATOR_ABI = [
   "function getContractConfig() view returns (address oracleAddr, address linkAddr, bytes32 jobId, uint256 fee)",
   // Agg history view functions
   "function maxLikelihoodLength() view returns (uint256)",
-  "function aggregatedEvaluations(bytes32) view returns (bool isComplete, bool failed, bool commitPhaseComplete, uint256 commitCount, uint256 responseCount, uint256 requestBlock)",
+  // NOTE: Solidity's auto-getter for this struct omits its mappings and dynamic
+  // arrays, returning the remaining members (incl. one embedded string) in
+  // declaration order. The first six fields below are CONFIRMED by triangulating
+  // the raw getter return against on-chain commit/reveal events for known
+  // aggregations; the trailing flags (isComplete/failed) are decoded for
+  // completeness but are NOT relied upon (the aggregator leaves `failed` unset and
+  // times out silently — outcome is derived from events + elapsed time instead).
+  "function aggregatedEvaluations(bytes32) view returns (bool commitPhaseComplete, uint256 commitExpected, uint256 commitReceived, uint256 responseCount, uint256 requiredResponses, uint256 clusterSize, uint256 isComplete, address requester, uint256 startTimestamp, string justificationCIDs, uint256 failed, uint256 flag2)",
   "function requestIdToAggregatorId(bytes32) view returns (bytes32)",
   // Agg history events — signatures must match the actual contract exactly
   "event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)",
@@ -460,33 +467,56 @@ class VerdiktaService {
     try {
       const raw = await this.aggregator.aggregatedEvaluations(aggId);
       aggStatus = {
-        isComplete: raw.isComplete,
-        failed: raw.failed,
         commitPhaseComplete: raw.commitPhaseComplete,
-        commitCount: Number(raw.commitCount),
-        responseCount: Number(raw.responseCount),
-        requestBlock: Number(raw.requestBlock)
+        commitExpected: Number(raw.commitExpected),    // K
+        commitCount: Number(raw.commitReceived),       // commits received
+        responseCount: Number(raw.responseCount),      // reveals recorded
+        requiredResponses: Number(raw.requiredResponses), // N
+        clusterSize: Number(raw.clusterSize),          // P
+        requester: raw.requester,
+        startTimestamp: Number(raw.startTimestamp),    // unix secs
+        isComplete: Number(raw.isComplete) > 0,        // aggregator-finished flag
+        failed: Number(raw.failed) > 0                 // unreliable — see ABI note; not used for outcome
       };
     } catch (err) {
       logger.warn('Failed to fetch aggregatedEvaluations', { aggId, msg: err.message });
       aggStatus = null;
     }
 
-    // 3. Find RequestAIEvaluation event
-    // Use requestBlock from on-chain storage when available for precise search
+    // 3. Find RequestAIEvaluation event.
+    // The struct stores startTimestamp (unix secs), not a block number. When it's
+    // set, narrow the search to a window around the implied block (~2s/block on
+    // Base, with a generous safety margin). Otherwise fall back to a full-history
+    // search — the query is topic-filtered by the indexed aggId, so it stays cheap
+    // on an indexing RPC even over a wide range.
     const aggIdTopic = aggId;
     const reqEventSig = this.aggregator.interface.getEvent('RequestAIEvaluation').topicHash;
     let requestEvent = null;
-    const searchFrom = aggStatus?.requestBlock
-      ? Math.max(0, aggStatus.requestBlock - 1)
-      : Math.max(0, currentBlock - 50000);
+    let searchFrom = 0;
+    if (aggStatus?.startTimestamp > 0) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const ageBlocks = Math.floor((nowSec - aggStatus.startTimestamp) / 2);
+      searchFrom = Math.max(0, currentBlock - ageBlocks - 5000); // ~2.7h margin
+    }
 
-    const logs = await this.provider.getLogs({
+    let logs = await this.provider.getLogs({
       address: this.aggregatorAddress,
       topics: [reqEventSig, aggIdTopic],
       fromBlock: searchFrom,
       toBlock: currentBlock
     });
+
+    // Fallback: if the narrowed window missed it (e.g. clock skew, or startTimestamp
+    // was 0), retry over full history. Topic-filtered by the indexed aggId, so cheap
+    // on an archive RPC.
+    if (logs.length === 0 && searchFrom > 0) {
+      logs = await this.provider.getLogs({
+        address: this.aggregatorAddress,
+        topics: [reqEventSig, aggIdTopic],
+        fromBlock: 0,
+        toBlock: currentBlock
+      });
+    }
 
     if (logs.length > 0) {
       const parsed = this.aggregator.interface.parseLog(logs[0]);
@@ -637,37 +667,39 @@ class VerdiktaService {
     const uniqueOracles = new Set(slots.map(s => s.oracle)).size;
 
     // Determine outcome
-    // If still early (< 10 min since request), show IN PROCESS instead of FAILED
-    // Prefer the event block (reliable) over aggStatus.requestBlock (may be an internal index, not a block number)
-    const requestBlock = requestEvent?.block
-      || (aggStatus?.requestBlock > 1000 ? aggStatus.requestBlock : null);
+    // If still early (< 10 min since request), show IN PROCESS instead of FAILED.
+    // Prefer the RequestAIEvaluation event block; fall back to the struct's
+    // startTimestamp (unix secs) when the event wasn't found.
+    const requestBlock = requestEvent?.block || null;
     let elapsedMinutes = null;
     if (requestBlock) {
       // ~2 seconds per block on Base
       const blocksSinceRequest = currentBlock - requestBlock;
       elapsedMinutes = Math.round(blocksSinceRequest * 2 / 60);
+    } else if (aggStatus?.startTimestamp > 0) {
+      elapsedMinutes = Math.round((Math.floor(Date.now() / 1000) - aggStatus.startTimestamp) / 60);
     }
     const IN_PROCESS_WINDOW_MINUTES = 10;
     const isEarly = elapsedMinutes !== null && elapsedMinutes < IN_PROCESS_WINDOW_MINUTES;
 
+    // Outcome is derived from events + elapsed time, NOT the aggregator's `failed`
+    // flag (which it leaves unset on timeouts — see ABI note). Phase of death:
+    //   commit  → fewer than M commits, so it never entered the reveal phase
+    //   reveal  → reached M commits but fewer than N reveals
+    const failPhase = committedSlots.length < contractParams.M ? 'commit'
+      : (revealedSlots.length < contractParams.N ? 'reveal' : 'aggregation');
     let outcome;
     if (fulfillment) {
       outcome = 'COMPLETED';
-    } else if (failLogs.length > 0 || (aggStatus && aggStatus.failed)) {
-      let failPhase = 'unknown';
-      if (committedSlots.length < contractParams.M) failPhase = 'commit';
-      else if (revealedSlots.length < contractParams.N) failPhase = 'reveal';
-      if (isEarly) {
-        outcome = `IN PROCESS (${failPhase} phase, ${elapsedMinutes}m elapsed)`;
-      } else {
-        outcome = `FAILED (${failPhase} phase)`;
-      }
+    } else if (isEarly) {
+      // Within the in-process window (> the 5-min response timeout) — still settling.
+      outcome = `IN PROCESS (${failPhase} phase, ${elapsedMinutes}m elapsed)`;
+    } else if (elapsedMinutes === null) {
+      // No request event and no timestamp — can't place it in time.
+      outcome = 'RUNNING';
     } else {
-      if (elapsedMinutes !== null) {
-        outcome = `RUNNING (${elapsedMinutes}m elapsed)`;
-      } else {
-        outcome = 'RUNNING';
-      }
+      // Past the window with no FulfillAIEvaluation → it failed / timed out.
+      outcome = `FAILED (${failPhase} phase)`;
     }
 
     const analysis = {

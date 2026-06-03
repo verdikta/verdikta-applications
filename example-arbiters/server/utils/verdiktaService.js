@@ -120,6 +120,17 @@ const ORACLE_EVENTS_ABI = [
   "event OracleResponse(bytes32 indexed requestId)"
 ];
 
+// ReputationAggregator lifecycle events — used by the oracle-health panel to
+// derive per-operator commit/reveal reliability and the network eval success
+// rate from log history (no view function exposes these aggregate stats).
+const AGG_EVENT_ABI = [
+  "event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)",
+  "event OracleSelected(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address oracle, bytes32 jobId)",
+  "event CommitReceived(bytes32 indexed aggRequestId, uint256 pollIndex, address operator, bytes16 commitHash)",
+  "event NewOracleResponseRecorded(bytes32 requestId, uint256 pollIndex, bytes32 indexed aggRequestId, address operator)",
+  "event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] likelihoods, string justificationCID)"
+];
+
 class VerdiktaService {
   constructor(providerUrl, aggregatorAddress, options = {}) {
     this.provider = new ethers.JsonRpcProvider(providerUrl);
@@ -130,6 +141,9 @@ class VerdiktaService {
 
     // Network identity (used in logging / data paths).
     this.networkKey = options.networkKey || 'base-sepolia';
+
+    // Aggregator deployment block — lower bound for event scans.
+    this.aggregatorFromBlock = options.aggregatorFromBlock || 0;
 
     // Archive RPC for historical eth_getLogs (per-jobId sender derivation).
     // Lazy-init: only opened when an archive scan is requested.
@@ -973,6 +987,111 @@ class VerdiktaService {
       ts: Date.now(),
     };
     return senderByJob;
+  }
+
+  // --- Oracle health (commit/reveal reliability + eval success rate) -------
+  //
+  // No view function exposes aggregate commit/reveal stats, so we derive them
+  // from the aggregator's lifecycle events over a recent block window via the
+  // archive RPC. Per request the protocol polls K oracles (OracleSelected),
+  // waits for M commits (CommitReceived) to enter the reveal phase, then needs
+  // N reveals (NewOracleResponseRecorded) to fulfill (FulfillAIEvaluation).
+  // Tallying selected→committed→revealed per operator surfaces nodes that
+  // commit but never reveal — the failure mode that silently sinks evaluations.
+
+  /**
+   * @param {{ days?: number }} [opts] look-back window in days (default 14).
+   * @returns {Promise<object>} success-rate + per-operator reliability, plus a
+   *   `partial` flag if a chunk error cut the scan short.
+   */
+  async getOracleHealth({ days = 14 } = {}) {
+    const provider = this._getArchiveProvider();
+    const iface = new ethers.Interface(AGG_EVENT_ABI);
+    const topic = (name) => iface.getEvent(name).topicHash;
+    const T = {
+      request: topic('RequestAIEvaluation'),
+      selected: topic('OracleSelected'),
+      commit: topic('CommitReceived'),
+      reveal: topic('NewOracleResponseRecorded'),
+      fulfill: topic('FulfillAIEvaluation'),
+    };
+
+    const latest = await withRetry(() => provider.getBlockNumber());
+    const windowBlocks = Math.max(1, Math.round(days * 43200)); // ~2s/block on Base
+    const floor = Math.max(this.aggregatorFromBlock || 0, latest - windowBlocks);
+
+    const CHUNK = 90_000; // ≤ Tenderly's 100k per-query cap
+    const parse = (log) => iface.parseLog({ topics: log.topics, data: log.data });
+    const ops = {}; // operatorLower → { operator, selected, commits, reveals }
+    const bump = (addr, field) => {
+      if (!addr) return;
+      const lower = addr.toLowerCase();
+      if (!ops[lower]) ops[lower] = { operator: ethers.getAddress(addr), selected: 0, commits: 0, reveals: 0 };
+      ops[lower][field]++;
+    };
+
+    // Fetch all five event types in ONE getLogs per chunk via an OR'd topic0
+    // filter (the free archive gateway is slow/rate-limited, so 1 call/chunk
+    // beats 5), then dispatch each log by its decoded event name.
+    const topic0Or = [Object.values(T)];
+    let requests = 0, fulfilled = 0, scannedChunks = 0, partial = false;
+    let toBlock = latest;
+    while (toBlock >= floor) {
+      const fromBlock = Math.max(floor, toBlock - CHUNK + 1);
+      let logs;
+      try {
+        logs = await withRetry(() => provider.getLogs({
+          address: this.aggregatorAddress, topics: topic0Or, fromBlock, toBlock
+        }));
+      } catch (err) {
+        logger.warn('oracle-health getLogs failed', { network: this.networkKey, fromBlock, toBlock, msg: err.message });
+        partial = true;
+        break;
+      }
+      for (const log of logs) {
+        let p;
+        try { p = parse(log); } catch { continue; }
+        switch (p.name) {
+          case 'RequestAIEvaluation': requests++; break;
+          case 'FulfillAIEvaluation': fulfilled++; break;
+          case 'OracleSelected': bump(p.args.oracle, 'selected'); break;
+          case 'CommitReceived': bump(p.args.operator, 'commits'); break;
+          case 'NewOracleResponseRecorded': bump(p.args.operator, 'reveals'); break;
+        }
+      }
+      scannedChunks++;
+      if (fromBlock === floor) break;
+      toBlock = fromBlock - 1;
+    }
+
+    const pct = (n, d) => (d > 0 ? Math.round((n / d) * 1000) / 10 : null);
+    const operators = Object.values(ops)
+      .map((o) => ({
+        operator: o.operator,
+        timesSelected: o.selected,
+        commits: o.commits,
+        commitRatePct: pct(o.commits, o.selected),
+        reveals: o.reveals,
+        revealRatePct: pct(o.reveals, o.commits), // reveals per commit — exposes commit-but-no-reveal
+      }))
+      .sort((a, b) => b.timesSelected - a.timesSelected || b.commits - a.commits);
+
+    return {
+      network: this.networkKey,
+      windowDays: days,
+      fromBlock: Math.max(floor, 0),
+      toBlock: latest,
+      scannedChunks,
+      partial,
+      success: {
+        requests,
+        fulfilled,
+        unfulfilled: Math.max(0, requests - fulfilled),
+        successRatePct: pct(fulfilled, requests),
+      },
+      operators,
+      generatedAt: Date.now(),
+    };
   }
 
   /**

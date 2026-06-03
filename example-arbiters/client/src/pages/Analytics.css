@@ -440,3 +440,42 @@
   font-family: monospace;
   font-size: 0.78rem;
 }
+
+/* Oracle Eval Success Rate — stat cards */
+.analytics .health-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.analytics .health-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 7rem;
+  flex: 1 1 7rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 10px;
+  background: var(--bg-subtle, #f9fafb);
+}
+.analytics .health-stat-value {
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+.analytics .health-stat-label {
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--text-muted, #6b7280);
+  text-align: center;
+}
+.analytics .health-footnote {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-muted, #6b7280);
+}
+@media (max-width: 480px) {
+  .analytics .health-stat { min-width: 5.5rem; padding: 0.75rem; }
+  .analytics .health-stat-value { font-size: 1.4rem; }
+}

@@ -22,7 +22,8 @@ import {
   Zap,
   Coins,
   UserCircle,
-  Fuel
+  Fuel,
+  Activity
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { useNetwork } from '../context/NetworkContext';
@@ -62,6 +63,14 @@ const ARBITER_STATUS_DESCRIPTIONS = {
 
 const shortAddr = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
 
+// Green / amber / red for a reliability percentage (null → muted grey).
+const rateColor = (pct) => {
+  if (pct == null) return COLORS.inactive;
+  if (pct >= 80) return COLORS.active;
+  if (pct >= 40) return COLORS.unresponsive;
+  return COLORS.blocked;
+};
+
 function Analytics() {
   const toast = useToast();
   const { selectedNetwork } = useNetwork();
@@ -81,6 +90,13 @@ function Analytics() {
   const [ownersLoading, setOwnersLoading] = useState(true);
   const [ownersError, setOwnersError] = useState(null);
   const ownersReqNetRef = useRef(selectedNetwork);
+
+  // "Oracle Health" sections (eval success rate + per-operator reliability) —
+  // a heavy archive-log scan, loaded independently like the owner tables.
+  const [healthData, setHealthData] = useState(null);
+  const [healthLoading, setHealthLoading] = useState(true);
+  const [healthError, setHealthError] = useState(null);
+  const healthReqNetRef = useRef(selectedNetwork);
 
   const loadAnalytics = useCallback(async (network, silent = false) => {
     if (!isMountedRef.current) return;
@@ -131,12 +147,31 @@ function Analytics() {
     }
   }, []);
 
+  // Load the oracle-health sections (network success rate + operator reliability).
+  const loadHealth = useCallback(async (network) => {
+    healthReqNetRef.current = network;
+    try {
+      const res = await apiService.getOracleHealth(network);
+      if (!isMountedRef.current || network !== healthReqNetRef.current) return;
+      if (!res.success) throw new Error(res.error || 'Failed to load oracle health');
+      setHealthData(res.data);
+      setHealthError(null);
+      setHealthLoading(false);
+    } catch (err) {
+      if (isMountedRef.current && network === healthReqNetRef.current) {
+        setHealthError(err.message || 'Failed to load oracle health');
+        setHealthLoading(false);
+      }
+    }
+  }, []);
+
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
       await apiService.refreshAnalytics(selectedNetwork);
       await loadAnalytics(selectedNetwork, true);
       loadOwners(selectedNetwork);
+      loadHealth(selectedNetwork);
       toast.success('Analytics refreshed');
     } catch {
       toast.error('Failed to refresh analytics');
@@ -164,6 +199,14 @@ function Analytics() {
     setOwnersError(null);
     loadOwners(selectedNetwork);
   }, [selectedNetwork, loadOwners]);
+
+  // Load the oracle-health sections on network change.
+  useEffect(() => {
+    setHealthData(null);
+    setHealthLoading(true);
+    setHealthError(null);
+    loadHealth(selectedNetwork);
+  }, [selectedNetwork, loadHealth]);
 
   // Format time ago
   const formatTimeAgo = (date) => {
@@ -323,6 +366,88 @@ function Analytics() {
             <div className="stat-highlight">
               <strong>{data.arbiters.totalOracles}</strong> total registered oracles
             </div>
+          )}
+        </div>
+      </section>
+
+      {/* Oracle Eval Success Rate Section */}
+      <section className="analytics-section">
+        <h2 title="Share of oracle evaluation requests that completed successfully (a FulfillAIEvaluation event) over the look-back window. The rest failed or timed out without enough commits/reveals."><Activity size={20} className="inline-icon" /> Oracle Eval Success Rate</h2>
+        <div className="section-content">
+          {healthLoading && !healthData ? (
+            <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
+          ) : healthError ? (
+            <div className="info-banner"><AlertTriangle size={16} /><span>{healthError}</span></div>
+          ) : healthData ? (
+            <>
+              <div className="health-stats">
+                <div className="health-stat">
+                  <span className="health-stat-value" style={{ color: rateColor(healthData.success.successRatePct) }}>
+                    {healthData.success.successRatePct == null ? '—' : `${healthData.success.successRatePct}%`}
+                  </span>
+                  <span className="health-stat-label">Success rate</span>
+                </div>
+                <div className="health-stat">
+                  <span className="health-stat-value">{healthData.success.requests}</span>
+                  <span className="health-stat-label">Requests</span>
+                </div>
+                <div className="health-stat">
+                  <span className="health-stat-value" style={{ color: COLORS.active }}>{healthData.success.fulfilled}</span>
+                  <span className="health-stat-label">Fulfilled</span>
+                </div>
+                <div className="health-stat">
+                  <span className="health-stat-value" style={{ color: COLORS.blocked }}>{healthData.success.unfulfilled}</span>
+                  <span className="health-stat-label">Failed / timed out</span>
+                </div>
+              </div>
+              <p className="health-footnote">
+                Last {healthData.windowDays} days (blocks {healthData.fromBlock.toLocaleString()}–{healthData.toBlock.toLocaleString()}).
+                {healthData.partial ? ' Partial scan — some history could not be read.' : ''} Very recent requests may still be in progress.
+              </p>
+            </>
+          ) : (
+            <div className="empty-state"><Activity size={32} /><p>No oracle health data</p></div>
+          )}
+        </div>
+      </section>
+
+      {/* Operator Reliability Section */}
+      <section className="analytics-section">
+        <h2 title="Per-operator commit and reveal reliability across recent evaluations. Commit rate = commits ÷ times polled; reveal rate = reveals ÷ commits. A healthy commit rate but a low reveal rate means the node commits then fails to reveal — starving evaluations of the reveals they need to finalize."><Server size={20} className="inline-icon" /> Operator Reliability</h2>
+        <div className="section-content">
+          {healthLoading && !healthData ? (
+            <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
+          ) : healthError ? (
+            <div className="info-banner"><AlertTriangle size={16} /><span>{healthError}</span></div>
+          ) : healthData && healthData.operators.length > 0 ? (
+            <div className="stats-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Operator</th>
+                    <th className="tooltip-header" title="Times this operator was polled (OracleSelected) across the window">Polled</th>
+                    <th className="tooltip-header" title="Commits received, and commits ÷ times polled">Commits</th>
+                    <th className="tooltip-header" title="Reveals recorded, and reveals ÷ commits. Low here despite commits = the node commits but doesn't reveal.">Reveals</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {healthData.operators.map((o) => (
+                    <tr key={o.operator}>
+                      <td><code>{shortAddr(o.operator)}</code></td>
+                      <td><strong>{o.timesSelected}</strong></td>
+                      <td style={{ color: rateColor(o.commitRatePct), fontWeight: 600 }}>
+                        {o.commits}{o.commitRatePct == null ? '' : ` (${o.commitRatePct}%)`}
+                      </td>
+                      <td style={{ color: rateColor(o.revealRatePct), fontWeight: 600 }}>
+                        {o.reveals}{o.revealRatePct == null ? '' : ` (${o.revealRatePct}%)`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="empty-state"><Server size={32} /><p>No oracle activity in the window</p></div>
           )}
         </div>
       </section>

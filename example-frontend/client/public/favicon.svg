@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
   <!-- Outer circle -->
   <circle cx="32" cy="32" r="28" stroke="#667eea" stroke-width="4" fill="none"/>
-  <!-- Slide: S-shaped swoop -->
-  <path d="M41 16 C43 30 27 28 26 40 C25 49 34 50 40 45" stroke="#667eea" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Slide: centered, symmetric S-swoop -->
+  <path d="M41 14 C48 20 22 30 32 32 C42 34 16 44 23 50" stroke="#667eea" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

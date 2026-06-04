@@ -71,6 +71,16 @@ const rateColor = (pct) => {
   return COLORS.blocked;
 };
 
+// Gas-tracking display helpers (commit vs reveal gas per arbiter response).
+const GAS_COLORS = { commit: '#3b82f6', reveal: '#8b5cf6' };
+const fmtGas = (n) => (n == null ? '—' : Math.round(n).toLocaleString());
+// Costs are tiny on Base (sub-gwei) — show compact ETH, scientific below 0.1 mETH.
+const fmtEth = (v) => (v == null ? '—' : `${v < 1e-4 ? v.toExponential(2) : v.toFixed(5)} ETH`);
+// min · median · max of gas units, median emphasized (the robust central value).
+const gasTriple = (s) => (s
+  ? <span className="gas-triple">{fmtGas(s.gasUsed.min)} · <strong className="med">{fmtGas(s.gasUsed.median)}</strong> · {fmtGas(s.gasUsed.max)}</span>
+  : <span className="gas-muted">—</span>);
+
 function Analytics() {
   const toast = useToast();
   const { selectedNetwork } = useNetwork();
@@ -288,6 +298,42 @@ function Analytics() {
     }
   };
 
+  // Gas-per-response: daily avg gas (commit vs reveal) over the window, and the
+  // per-operator min/median/max table data. Built from the same health scan.
+  const gasTrend = healthData?.gas?.daily || [];
+  const gasHasData = gasTrend.some(d => d.avgGasCommit != null || d.avgGasReveal != null);
+  const gasChartData = gasHasData ? {
+    labels: gasTrend.map(d => (d.daysAgo === 0 ? 'now' : `${d.daysAgo}d`)),
+    datasets: [
+      { label: 'Commit', data: gasTrend.map(d => d.avgGasCommit), backgroundColor: GAS_COLORS.commit },
+      { label: 'Reveal', data: gasTrend.map(d => d.avgGasReveal), backgroundColor: GAS_COLORS.reveal }
+    ]
+  } : null;
+  const gasChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      x: { grid: { display: false }, ticks: { font: { size: 9 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+      // Gas units abbreviated (e.g. 100k) to keep the axis narrow.
+      y: { beginAtZero: true, ticks: { font: { size: 9 }, callback: (v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v) } }
+    },
+    plugins: {
+      legend: { display: true, position: 'bottom', labels: { font: { size: 10 }, boxWidth: 10 } },
+      tooltip: {
+        callbacks: {
+          title: (items) => {
+            const d = gasTrend[items[0].dataIndex];
+            return d.daysAgo === 0 ? 'Today' : `${d.daysAgo} day${d.daysAgo === 1 ? '' : 's'} ago`;
+          },
+          label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y == null ? '—' : ctx.parsed.y.toLocaleString()} gas`
+        }
+      }
+    }
+  };
+  const gasFinal = healthData?.gas?.finalization || null;
+  const gasScan = healthData?.gas?.scan || null;
+  const operatorsWithGas = (healthData?.operators || []).filter(o => o.gas && (o.gas.commit || o.gas.reveal));
+
   // Prepare chart data for arbiter availability, grouped by owner so the chart
   // matches the table below. One stacked bar per owner; segments are statuses.
   const chartOwners = ownersData?.owners || [];
@@ -487,6 +533,59 @@ function Analytics() {
             </div>
           ) : (
             <div className="empty-state"><Server size={32} /><p>No oracle activity in the window</p></div>
+          )}
+        </div>
+      </section>
+
+      {/* Gas per Commit / Reveal Section */}
+      <section className="analytics-section">
+        <h2 title="Gas each arbiter spends per response. A commit and a reveal are two separate transactions; their gas varies, so min · median · max is shown. The transaction that completes a round also runs the aggregation, so its (much higher) gas is reported separately as finalization and excluded from the per-operator reveal stats."><Fuel size={20} className="inline-icon" /> Gas per Commit / Reveal</h2>
+        <div className="section-content">
+          {healthLoading && !healthData ? (
+            <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
+          ) : healthError ? (
+            <div className="info-banner"><AlertTriangle size={16} /><span>{healthError}</span></div>
+          ) : healthData && operatorsWithGas.length > 0 ? (
+            <>
+              {gasChartData && (
+                <div className="gas-chart">
+                  <div className="gas-chart-title">Average gas per response · last {healthData.windowDays} days</div>
+                  <div className="gas-chart-canvas"><Bar data={gasChartData} options={gasChartOptions} /></div>
+                </div>
+              )}
+              <div className="stats-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Operator</th>
+                      <th className="tooltip-header" title="Gas used by commit transactions: minimum · median · max over the window. Median is the robust typical value.">Commit gas (min · med · max)</th>
+                      <th className="tooltip-header" title="Gas used by reveal transactions (excludes round-completing finalization txs, whose gas is inflated by aggregation): min · median · max.">Reveal gas (min · med · max)</th>
+                      <th className="tooltip-header" title="Average ETH cost per commit / reveal transaction (gas × effective gas price actually paid).">Avg cost (commit / reveal)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {operatorsWithGas.map((o) => (
+                      <tr key={o.operator}>
+                        <td><code>{shortAddr(o.operator)}</code></td>
+                        <td>{gasTriple(o.gas?.commit)}</td>
+                        <td>{gasTriple(o.gas?.reveal)}</td>
+                        <td>{fmtEth(o.gas?.commit?.costEth?.avg)} <span className="gas-muted">/</span> {fmtEth(o.gas?.reveal?.costEth?.avg)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="health-footnote">
+                Gas units (price-independent across runs); reveals cost more than commits.
+                {gasFinal ? ` Reveal stats exclude ${gasFinal.count} round-completing finalization tx${gasFinal.count === 1 ? '' : 's'} (median ${fmtGas(gasFinal.gasUsed.median)} gas — inflated by the aggregation they trigger).` : ''}
+                {gasScan?.partial ? ' Receipt backfill incomplete — some gas data is still being collected; refresh shortly.' : ''}
+              </p>
+            </>
+          ) : healthData && healthData.operators.length > 0 ? (
+            // Reliability data exists but receipts not yet backfilled (or none in window).
+            <div className="empty-state"><Fuel size={32} /><p>{gasScan?.partial ? 'Collecting gas receipts — refresh shortly.' : 'No gas data for this window yet.'}</p></div>
+          ) : (
+            <div className="empty-state"><Fuel size={32} /><p>No oracle activity in the window</p></div>
           )}
         </div>
       </section>

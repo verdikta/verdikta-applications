@@ -2,6 +2,11 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
+// Shared Verdikta secrets (INFURA_API_KEY, etc.) live outside the app tree at
+// ~/verdikta/secrets — referenced relatively from __dirname so the path stays
+// portable across hosts/users. Loaded after .env so it only fills in vars that
+// .env didn't already set (dotenv does not override existing process.env).
+require('dotenv').config({ path: path.join(__dirname, '..', '..', '..', 'secrets', '.env.secrets') });
 
 const logger = require('./utils/logger');
 const statusRoutes = require('./routes/statusRoutes');
@@ -40,4 +45,13 @@ app.use((err, _req, res, _next) => {
 
 app.listen(PORT, () => {
   logger.info(`example-arbiters server listening on port ${PORT}`);
+  // Confirm which endpoint reads resolve to. Log the host ONLY — never the full
+  // URL, which carries the Infura API key in its path.
+  try {
+    const { getRpcUrl } = require('./config');
+    logger.info('Resolved read RPC hosts', {
+      base: new URL(getRpcUrl('base')).host,
+      'base-sepolia': new URL(getRpcUrl('base-sepolia')).host,
+    });
+  } catch (_) { /* diagnostic only — never block startup */ }
 });

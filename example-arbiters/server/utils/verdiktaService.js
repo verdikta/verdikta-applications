@@ -10,7 +10,8 @@
 
 const { ethers } = require('ethers');
 const logger = require('./logger');
-const { networks, normalizeNetwork, getRpcUrl, getArchiveRpcUrl, funding } = require('../config');
+const { networks, normalizeNetwork, getRpcUrl, getArchiveRpcUrl, getReceiptRpcUrl, funding } = require('../config');
+const GasReceiptStore = require('./gasReceiptStore');
 
 /**
  * Public RPC endpoints (sepolia.base.org / mainnet.base.org) rate-limit bursts
@@ -40,6 +41,50 @@ async function withRetry(fn, { retries = 4, delayMs = 250 } = {}) {
     }
   }
   throw lastErr;
+}
+
+/**
+ * Run `fn` over `items` with at most `limit` in flight at once. Used to throttle
+ * the per-tx receipt fetches behind gas tracking so the backfill doesn't burst
+ * the RPC. Results are returned in input order; a per-item rejection propagates
+ * (callers wrap fn to swallow what they want to tolerate).
+ */
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * Summarize a set of gas-receipt records (all one kind) into the shape the
+ * analytics UI renders: min/median/max of gas units (the stable, gas-price-
+ * independent measure) plus avg/total ETH cost. Returns null for an empty set.
+ *
+ * gasUsed fits in a JS Number (< 2^53); wei costs are summed as BigInt to avoid
+ * precision loss, then formatted to ETH.
+ */
+function summarizeGas(records) {
+  if (!records || !records.length) return null;
+  const gas = records.map((r) => Number(r.gasUsed)).sort((a, b) => a - b);
+  const n = gas.length;
+  const median = n % 2
+    ? gas[(n - 1) / 2]
+    : Math.round((gas[n / 2 - 1] + gas[n / 2]) / 2);
+  const totalCostWei = records.reduce((s, r) => s + BigInt(r.gasCostWei), 0n);
+  const totalCostEth = Number(ethers.formatEther(totalCostWei));
+  return {
+    count: n,
+    gasUsed: { min: gas[0], median, max: gas[n - 1] },
+    costEth: { avg: totalCostEth / n, total: totalCostEth },
+  };
 }
 
 // ReputationAggregator ABI — view functions needed for analytics.
@@ -150,6 +195,12 @@ class VerdiktaService {
     this.archiveRpcUrl = options.archiveRpcUrl || null;
     this._archiveProvider = null;
 
+    // RPC for per-tx receipt fetches (gas tracking). Defaults to the read RPC
+    // (Infura), overridable via RECEIPT_RPC_URL. Receipts are point lookups, so
+    // this need not be the archive endpoint. Lazy-init.
+    this.receiptRpcUrl = options.receiptRpcUrl || null;
+    this._receiptProvider = null;
+
     // In-memory caches that let the by-class, by-owner and My Arbiters paths
     // share work. getAllOracles is the heavy enumeration; owner() is static.
     this._oraclesCache = null;          // { data, ts }
@@ -166,6 +217,15 @@ class VerdiktaService {
       this._archiveProvider = url ? new ethers.JsonRpcProvider(url) : this.provider;
     }
     return this._archiveProvider;
+  }
+
+  /** Provider for receipt fetches (gas tracking). Falls back to the read RPC. */
+  _getReceiptProvider() {
+    if (!this._receiptProvider) {
+      const url = this.receiptRpcUrl;
+      this._receiptProvider = url ? new ethers.JsonRpcProvider(url) : this.provider;
+    }
+    return this._receiptProvider;
   }
 
   /**
@@ -1035,6 +1095,12 @@ class VerdiktaService {
     // beats 5), then dispatch each log by its decoded event name.
     const topic0Or = [Object.values(T)];
     let requests = 0, fulfilled = 0, scannedChunks = 0, partial = false;
+    // Gas tracking: collect the commit/reveal tx references seen during the scan
+    // so we can fetch their receipts afterward (gasUsed lives on the receipt, not
+    // the log). `fulfillTxHashes` flags reveal txs that also completed the round
+    // (emitted FulfillAIEvaluation) — their gas is inflated by aggregation work.
+    const commitRevealLogs = []; // { kind, txHash, operator, blockNumber }
+    const fulfillTxHashes = new Set();
     // Daily buckets for the trend sparkline — one per day of the scan window.
     // Index = days ago (0 = most recent ~24h). Bucketed by block offset
     // (~43200 blocks/day on Base) so no per-event timestamp lookups are needed.
@@ -1059,10 +1125,10 @@ class VerdiktaService {
         try { p = parse(log); } catch { continue; }
         switch (p.name) {
           case 'RequestAIEvaluation': { requests++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].requests++; break; }
-          case 'FulfillAIEvaluation': { fulfilled++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].fulfilled++; break; }
+          case 'FulfillAIEvaluation': { fulfilled++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].fulfilled++; fulfillTxHashes.add(log.transactionHash.toLowerCase()); break; }
           case 'OracleSelected': bump(p.args.oracle, 'selected'); break;
-          case 'CommitReceived': bump(p.args.operator, 'commits'); break;
-          case 'NewOracleResponseRecorded': bump(p.args.operator, 'reveals'); break;
+          case 'CommitReceived': bump(p.args.operator, 'commits'); commitRevealLogs.push({ kind: 'commit', txHash: log.transactionHash, operator: p.args.operator, blockNumber: log.blockNumber }); break;
+          case 'NewOracleResponseRecorded': bump(p.args.operator, 'reveals'); commitRevealLogs.push({ kind: 'reveal', txHash: log.transactionHash, operator: p.args.operator, blockNumber: log.blockNumber }); break;
         }
       }
       scannedChunks++;
@@ -1086,6 +1152,128 @@ class VerdiktaService {
       arbiterCountByOp = null;
     }
 
+    // ---- Gas tracking (step 2): fetch & persist receipts for new commit/reveal
+    // txs. Receipts are immutable, so we only fetch tx hashes not already cached
+    // (write-once store) — the first run backfills, later runs touch only new
+    // txs. Throttled and capped so the backfill can't hang the request. Best
+    // effort: any failure here leaves the success/reliability stats intact.
+    const RECEIPT_CONCURRENCY = 5;  // simultaneous getTransactionReceipt calls
+    const MAX_NEW_PER_SCAN = 750;   // bound the per-request backfill; rest spill to next scan
+    let gasSummary = null;          // scan/backfill meta
+    let gasByOp = {};               // operatorLower → { commit, reveal } stat summaries
+    let gasDaily = [];              // network daily avg gas series (for the trend chart)
+    let gasFinalization = null;     // round-completing reveal cost (the aggregation outlier)
+    try {
+      const store = GasReceiptStore.forNetwork(this.networkKey).load();
+      const receiptProvider = this._getReceiptProvider();
+      // Anchor block timestamp once; approximate per-tx timestamps from block
+      // offset (~2s/block on Base) so we store an absolute time without a
+      // getBlock per receipt. Good enough for daily bucketing in step 3.
+      const head = await withRetry(() => provider.getBlock(latest));
+      const anchorTs = head ? Number(head.timestamp) : Math.floor(Date.now() / 1000);
+
+      // Unique, not-yet-cached tx hashes (a tx carries one commit OR one reveal).
+      const seen = new Set();
+      const toFetch = [];
+      for (const e of commitRevealLogs) {
+        const h = e.txHash.toLowerCase();
+        if (seen.has(h)) continue;
+        seen.add(h);
+        if (store.has(h)) {
+          // Already cached — but the round-completing flag may only be knowable
+          // now (the fulfill log might land in a later-scanned chunk).
+          if (e.kind === 'reveal' && fulfillTxHashes.has(h)) store.markCompletedRound(h);
+          continue;
+        }
+        toFetch.push(e);
+      }
+
+      const batch = toFetch.slice(0, MAX_NEW_PER_SCAN);
+      let gasFetched = 0, gasFailed = 0;
+      await mapWithConcurrency(batch, RECEIPT_CONCURRENCY, async (e) => {
+        try {
+          const rcpt = await withRetry(() => receiptProvider.getTransactionReceipt(e.txHash));
+          if (!rcpt || rcpt.gasUsed == null) { gasFailed++; return; }
+          // ethers v6: the effective gas price paid is exposed as receipt.gasPrice.
+          const effectiveGasPrice = rcpt.gasPrice ?? rcpt.effectiveGasPrice ?? 0n;
+          const ts = anchorTs - (latest - e.blockNumber) * 2;
+          store.set(e.txHash, {
+            kind: e.kind,
+            operator: e.operator,
+            gasUsed: rcpt.gasUsed,
+            effectiveGasPrice,
+            blockNumber: e.blockNumber,
+            timestamp: ts,
+            completedRound: e.kind === 'reveal' && fulfillTxHashes.has(e.txHash.toLowerCase()),
+          });
+          gasFetched++;
+        } catch (err) {
+          gasFailed++;
+        }
+      });
+      store.flush();
+
+      const gasCapped = toFetch.length > batch.length;
+      gasSummary = {
+        storeSize: store.size,        // total receipts cached for this network
+        candidates: toFetch.length,   // new (uncached) txs found this scan
+        fetched: gasFetched,
+        failed: gasFailed,
+        capped: gasCapped,            // true if backfill spilled to a later scan
+        partial: gasCapped || gasFailed > 0,
+      };
+      if (gasCapped || gasFailed > 0) {
+        logger.info('oracle-health: gas backfill incomplete this scan', {
+          network: this.networkKey, ...gasSummary,
+        });
+      }
+
+      // ---- Aggregate the cached receipts within the display window. The store
+      // accumulates across scans, so filter to the current window by timestamp.
+      // Reveal stats EXCLUDE round-completing txs — their gas is inflated by the
+      // aggregation work, which would skew the per-operator medians; that cost is
+      // reported separately as `finalization`.
+      const windowStartTs = anchorTs - days * 86400;
+      const inWindow = store.all().filter((r) => r.timestamp >= windowStartTs);
+      const isRevealStat = (r) => r.kind === 'reveal' && !r.completedRound;
+
+      const byOp = {};
+      for (const r of inWindow) {
+        if (!r.operator) continue;
+        if (!byOp[r.operator]) byOp[r.operator] = { commit: [], reveal: [] };
+        if (r.kind === 'commit') byOp[r.operator].commit.push(r);
+        else if (isRevealStat(r)) byOp[r.operator].reveal.push(r);
+      }
+      gasByOp = {};
+      for (const [op, g] of Object.entries(byOp)) {
+        gasByOp[op] = { commit: summarizeGas(g.commit), reveal: summarizeGas(g.reveal) };
+      }
+
+      gasFinalization = summarizeGas(inWindow.filter((r) => r.kind === 'reveal' && r.completedRound));
+
+      // Network-wide daily average gas (commit + reveal), bucketed by day offset
+      // from the anchor timestamp, oldest → newest to match `dailyTrend`.
+      const buckets = Array.from({ length: days }, () => ({ cSum: 0, cN: 0, rSum: 0, rN: 0 }));
+      for (const r of inWindow) {
+        const idx = Math.floor((anchorTs - r.timestamp) / 86400);
+        if (idx < 0 || idx >= days) continue;
+        if (r.kind === 'commit') { buckets[idx].cSum += Number(r.gasUsed); buckets[idx].cN++; }
+        else if (isRevealStat(r)) { buckets[idx].rSum += Number(r.gasUsed); buckets[idx].rN++; }
+      }
+      gasDaily = buckets
+        .map((b, i) => ({
+          daysAgo: i,
+          avgGasCommit: b.cN ? Math.round(b.cSum / b.cN) : null,
+          avgGasReveal: b.rN ? Math.round(b.rSum / b.rN) : null,
+          commits: b.cN,
+          reveals: b.rN,
+        }))
+        .reverse();
+    } catch (err) {
+      logger.warn('oracle-health: gas receipt collection failed', { network: this.networkKey, msg: err.message });
+      gasSummary = { error: err.message };
+    }
+
     const pct = (n, d) => (d > 0 ? Math.round((n / d) * 1000) / 10 : null);
     const operators = Object.values(ops)
       .map((o) => ({
@@ -1096,6 +1284,7 @@ class VerdiktaService {
         commitRatePct: pct(o.commits, o.selected),
         reveals: o.reveals,
         revealRatePct: pct(o.reveals, o.commits), // reveals per commit — exposes commit-but-no-reveal
+        gas: gasByOp[o.operator.toLowerCase()] || null, // per-op gas stats (null until receipts cached)
       }))
       .sort((a, b) => b.timesSelected - a.timesSelected || b.commits - a.commits);
 
@@ -1120,6 +1309,11 @@ class VerdiktaService {
       },
       dailyTrend,
       operators,
+      gas: {
+        scan: gasSummary,            // receipt-collection/backfill meta
+        daily: gasDaily,             // network daily avg gas (commit + reveal) for the trend chart
+        finalization: gasFinalization, // round-completing reveal cost (aggregation outlier), network-wide
+      },
       generatedAt: Date.now(),
     };
   }
@@ -1328,7 +1522,8 @@ function getVerdiktaService(networkKey) {
     const service = new VerdiktaService(getRpcUrl(key), net.verdiktaAggregatorAddress, {
       networkKey: key,
       aggregatorFromBlock: net.aggregatorFromBlock || 0,
-      archiveRpcUrl: getArchiveRpcUrl(key)
+      archiveRpcUrl: getArchiveRpcUrl(key),
+      receiptRpcUrl: getReceiptRpcUrl(key)
     });
     instances.set(key, service);
     logger.info('Verdikta service initialized', { network: key, aggregatorAddress: net.verdiktaAggregatorAddress });

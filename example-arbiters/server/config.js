@@ -89,6 +89,20 @@ function getArchiveRpcUrl(networkKey) {
 }
 
 /**
+ * Resolve the RPC URL for per-transaction receipt fetches (the gas-tracking
+ * scan reads `gasUsed` / `effectiveGasPrice` off receipts). Defaults to the
+ * ARCHIVE endpoint (Tenderly): empirically, Base's Infura and PublicNode
+ * endpoints return NULL for historical `getTransactionReceipt` (even hours-old
+ * txs) — only the archive node reliably has them. Override with RECEIPT_RPC_URL
+ * to point receipts at a dedicated/paid archive endpoint, e.g. if Tenderly
+ * rate-limits the initial backfill.
+ */
+function getReceiptRpcUrl(networkKey) {
+  if (process.env.RECEIPT_RPC_URL) return process.env.RECEIPT_RPC_URL;
+  return getArchiveRpcUrl(networkKey);
+}
+
+/**
  * Arbiter ETH-funding estimate parameters. An arbiter's node pays gas (in ETH)
  * from its operator's authorized-sender keys to submit commit+reveal responses.
  * `gasPerQuery` is the assumed gas for one arbiter response (commit + reveal,
@@ -102,4 +116,4 @@ const funding = {
   lowEthThreshold: process.env.LOW_ETH_THRESHOLD || '0.01', // ETH (string)
 };
 
-module.exports = { networks, DEFAULT_NETWORK, normalizeNetwork, getRpcUrl, getArchiveRpcUrl, funding };
+module.exports = { networks, DEFAULT_NETWORK, normalizeNetwork, getRpcUrl, getArchiveRpcUrl, getReceiptRpcUrl, funding };

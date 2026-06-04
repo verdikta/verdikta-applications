@@ -504,7 +504,12 @@
   border-radius: 10px;
   background: var(--bg-subtle, #f9fafb);
   padding: 0.9rem 1rem;
-  margin-bottom: 1rem;
+}
+/* Halve the gap to the table below: the .section-content flex `gap` (1.5rem)
+ * already separates them, so cancel the table's default 2.5rem top margin in
+ * this context and add back just 1rem (total 2.5rem ≈ half the prior 5rem). */
+.analytics .gas-chart + .stats-table {
+  margin-top: 1rem;
 }
 .analytics .gas-chart-title {
   font-size: 0.8rem;

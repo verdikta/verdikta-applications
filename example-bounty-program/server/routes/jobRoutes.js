@@ -2833,20 +2833,19 @@ router.get('/:jobId', async (req, res) => {
     if (req.query.includeRubric === 'true') {
       const ipfsClient = req.app.locals.ipfsClient;
 
-      // Try fetching from rubricCid first (legacy format)
-      if (job.rubricCid) {
-        try {
-          const rawRubric = await ipfsClient.fetchFromIPFS(job.rubricCid);
-          rubricContent = JSON.parse(rawRubric);
-        } catch (err) {
-          logger.warn('[jobs/details] failed to fetch rubric from rubricCid', { msg: err.message });
-        }
-      }
+      // Hash of the gradingRubric referenced INSIDE the evaluationCid package.
+      // This is the authoritative rubric pointer — the package is content-
+      // addressed/immutable and is exactly what the oracle grades against.
+      let packageRubricHash = null;
 
-      // Fall back to opening the evaluationCid ZIP only when the direct rubric
-      // fetch didn't succeed. The task spec is served lazily by a separate
-      // endpoint (GET /:jobId/task-spec) so the common case is one IPFS read.
-      if (!rubricContent && job.evaluationCid) {
+      // AUTHORITATIVE SOURCE: open the evaluationCid package FIRST and derive the
+      // rubric (and jury) from it. The loose job.rubricCid field is only a
+      // fallback because it can drift out of sync with the package — e.g. after
+      // an ID-renumber/heal that repaired the package + title but not rubricCid.
+      // Re-issue (?clone=) prefills the create form from this response, so
+      // trusting the drift-prone pointer here silently mints new bounties whose
+      // graded criteria don't match the task.
+      if (job.evaluationCid) {
         try {
           const archiveBuffer = await ipfsClient.fetchFromIPFS(job.evaluationCid);
           const AdmZip = require('adm-zip');
@@ -2873,19 +2872,18 @@ router.get('/:jobId', async (req, res) => {
             }
 
             // Look for grading rubric reference in manifest.additional
-            if (!rubricContent) {
-              const gradingRubricRef = manifest.additional?.find(a => a.name === 'gradingRubric');
-              if (gradingRubricRef?.hash) {
-                try {
-                  const rubricBuffer = await ipfsClient.fetchFromIPFS(gradingRubricRef.hash);
-                  const rubricText = rubricBuffer.toString('utf8');
-                  rubricContent = JSON.parse(rubricText);
-                } catch (err) {
-                  logger.warn('[jobs/details] failed to fetch grading rubric from IPFS', {
-                    hash: gradingRubricRef.hash,
-                    msg: err.message
-                  });
-                }
+            const gradingRubricRef = manifest.additional?.find(a => a.name === 'gradingRubric');
+            if (gradingRubricRef?.hash) {
+              packageRubricHash = gradingRubricRef.hash;
+              try {
+                const rubricBuffer = await ipfsClient.fetchFromIPFS(gradingRubricRef.hash);
+                const rubricText = rubricBuffer.toString('utf8');
+                rubricContent = JSON.parse(rubricText);
+              } catch (err) {
+                logger.warn('[jobs/details] failed to fetch grading rubric from IPFS', {
+                  hash: gradingRubricRef.hash,
+                  msg: err.message
+                });
               }
             }
           }
@@ -2908,6 +2906,28 @@ router.get('/:jobId', async (req, res) => {
 
         } catch (err) {
           logger.warn('[jobs/details] failed to extract from evaluationCid', { msg: err.message });
+        }
+      }
+
+      // Cross-check + last-resort fallback to the loose rubricCid pointer.
+      // If it disagrees with the package's gradingRubric, the stored pointer is
+      // stale — surface it loudly but keep serving the authoritative package
+      // rubric. Only fetch from the loose pointer when the package gave nothing.
+      if (job.rubricCid) {
+        if (packageRubricHash && job.rubricCid !== packageRubricHash) {
+          logger.warn('[jobs/details] rubricCid drift: stored rubricCid disagrees with evaluationCid package gradingRubric — using package (authoritative)', {
+            jobId: job.jobId,
+            storedRubricCid: job.rubricCid,
+            packageRubricHash
+          });
+        }
+        if (!rubricContent) {
+          try {
+            const rawRubric = await ipfsClient.fetchFromIPFS(job.rubricCid);
+            rubricContent = JSON.parse(rawRubric);
+          } catch (err) {
+            logger.warn('[jobs/details] failed to fetch rubric from rubricCid (fallback)', { msg: err.message });
+          }
         }
       }
     }

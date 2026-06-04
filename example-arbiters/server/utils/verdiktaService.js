@@ -1230,35 +1230,43 @@ class VerdiktaService {
 
       // ---- Aggregate the cached receipts within the display window. The store
       // accumulates across scans, so filter to the current window by timestamp.
-      // Reveal stats EXCLUDE round-completing txs — their gas is inflated by the
-      // aggregation work, which would skew the per-operator medians; that cost is
-      // reported separately as `finalization`.
+      // The Reveal min/median/max EXCLUDES round-completing txs (their gas is
+      // inflated by aggregation and would skew the distribution); finalizing
+      // reveals get their own summary. AVERAGES (`revealAll` + the daily chart)
+      // BLEND both, since finalizing reveals are a real recurring cost (~1/4 of
+      // reveals) and the true per-reveal average must include them.
       const windowStartTs = anchorTs - days * 86400;
       const inWindow = store.all().filter((r) => r.timestamp >= windowStartTs);
-      const isRevealStat = (r) => r.kind === 'reveal' && !r.completedRound;
 
       const byOp = {};
       for (const r of inWindow) {
         if (!r.operator) continue;
-        if (!byOp[r.operator]) byOp[r.operator] = { commit: [], reveal: [] };
+        if (!byOp[r.operator]) byOp[r.operator] = { commit: [], reveal: [], finalizing: [] };
         if (r.kind === 'commit') byOp[r.operator].commit.push(r);
-        else if (isRevealStat(r)) byOp[r.operator].reveal.push(r);
+        else if (r.kind === 'reveal' && r.completedRound) byOp[r.operator].finalizing.push(r);
+        else if (r.kind === 'reveal') byOp[r.operator].reveal.push(r);
       }
       gasByOp = {};
       for (const [op, g] of Object.entries(byOp)) {
-        gasByOp[op] = { commit: summarizeGas(g.commit), reveal: summarizeGas(g.reveal) };
+        gasByOp[op] = {
+          commit: summarizeGas(g.commit),         // commit txs
+          reveal: summarizeGas(g.reveal),         // normal reveals only (for the distribution column)
+          finalizing: summarizeGas(g.finalizing), // reveals that also ran aggregation (one per completed round)
+          revealAll: summarizeGas([...g.reveal, ...g.finalizing]), // all reveals — blended true per-reveal cost
+        };
       }
 
       gasFinalization = summarizeGas(inWindow.filter((r) => r.kind === 'reveal' && r.completedRound));
 
-      // Network-wide daily average gas (commit + reveal), bucketed by day offset
-      // from the anchor timestamp, oldest → newest to match `dailyTrend`.
+      // Network-wide daily average gas. Commit = all commits; reveal = ALL
+      // reveals incl. finalizing (true blended avg). Bucketed by day offset from
+      // the anchor timestamp, oldest → newest to match `dailyTrend`.
       const buckets = Array.from({ length: days }, () => ({ cSum: 0, cN: 0, rSum: 0, rN: 0 }));
       for (const r of inWindow) {
         const idx = Math.floor((anchorTs - r.timestamp) / 86400);
         if (idx < 0 || idx >= days) continue;
         if (r.kind === 'commit') { buckets[idx].cSum += Number(r.gasUsed); buckets[idx].cN++; }
-        else if (isRevealStat(r)) { buckets[idx].rSum += Number(r.gasUsed); buckets[idx].rN++; }
+        else if (r.kind === 'reveal') { buckets[idx].rSum += Number(r.gasUsed); buckets[idx].rN++; }
       }
       gasDaily = buckets
         .map((b, i) => ({

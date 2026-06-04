@@ -76,10 +76,18 @@ const GAS_COLORS = { commit: '#3b82f6', reveal: '#8b5cf6' };
 const fmtGas = (n) => (n == null ? '—' : Math.round(n).toLocaleString());
 // Costs are tiny on Base (sub-gwei) — show compact ETH, scientific below 0.1 mETH.
 const fmtEth = (v) => (v == null ? '—' : `${v < 1e-4 ? v.toExponential(2) : v.toFixed(5)} ETH`);
-// min · median · max of gas units, median emphasized (the robust central value).
-const gasTriple = (s) => (s
-  ? <span className="gas-triple">{fmtGas(s.gasUsed.min)} · <strong className="med">{fmtGas(s.gasUsed.median)}</strong> · {fmtGas(s.gasUsed.max)}</span>
-  : <span className="gas-muted">—</span>);
+// min · median · max of gas units. `emph` bolds the relevant value: 'median'
+// (the robust central value) for typical-cost columns, or 'max' for the
+// finalizing column, where the worst case drives the Chainlink job gasLimit.
+const gasTriple = (s, emph = 'median') => {
+  if (!s) return <span className="gas-muted">—</span>;
+  const cell = (v, on) => (on ? <strong className="med">{fmtGas(v)}</strong> : fmtGas(v));
+  return (
+    <span className="gas-triple">
+      {cell(s.gasUsed.min, false)} · {cell(s.gasUsed.median, emph === 'median')} · {cell(s.gasUsed.max, emph === 'max')}
+    </span>
+  );
+};
 
 function Analytics() {
   const toast = useToast();
@@ -306,7 +314,7 @@ function Analytics() {
     labels: gasTrend.map(d => (d.daysAgo === 0 ? 'now' : `${d.daysAgo}d`)),
     datasets: [
       { label: 'Commit', data: gasTrend.map(d => d.avgGasCommit), backgroundColor: GAS_COLORS.commit },
-      { label: 'Reveal', data: gasTrend.map(d => d.avgGasReveal), backgroundColor: GAS_COLORS.reveal }
+      { label: 'Reveal (all)', data: gasTrend.map(d => d.avgGasReveal), backgroundColor: GAS_COLORS.reveal }
     ]
   } : null;
   const gasChartOptions = {
@@ -332,7 +340,7 @@ function Analytics() {
   };
   const gasFinal = healthData?.gas?.finalization || null;
   const gasScan = healthData?.gas?.scan || null;
-  const operatorsWithGas = (healthData?.operators || []).filter(o => o.gas && (o.gas.commit || o.gas.reveal));
+  const operatorsWithGas = (healthData?.operators || []).filter(o => o.gas && (o.gas.commit || o.gas.reveal || o.gas.finalizing));
 
   // Prepare chart data for arbiter availability, grouped by owner so the chart
   // matches the table below. One stacked bar per owner; segments are statuses.
@@ -559,8 +567,9 @@ function Analytics() {
                     <tr>
                       <th>Operator</th>
                       <th className="tooltip-header" title="Gas used by commit transactions: minimum · median · max over the window. Median is the robust typical value.">Commit gas (min · med · max)</th>
-                      <th className="tooltip-header" title="Gas used by reveal transactions (excludes round-completing finalization txs, whose gas is inflated by aggregation): min · median · max.">Reveal gas (min · med · max)</th>
-                      <th className="tooltip-header" title="Average ETH cost per commit / reveal transaction (gas × effective gas price actually paid).">Avg cost (commit / reveal)</th>
+                      <th className="tooltip-header" title="Gas used by normal reveal transactions — the response did not complete the round. min · median · max.">Reveal gas (min · med · max)</th>
+                      <th className="tooltip-header" title="Gas for the reveal that also runs the aggregation (one per completed round) — far higher than a normal reveal. Its MAX (bold) is the worst case a node's Chainlink job-spec gasLimit must exceed, or finalization runs out of gas.">Finalizing reveal (min · med · max)</th>
+                      <th className="tooltip-header" title="Average ETH cost per commit / per reveal (gas × effective gas price actually paid). The reveal figure blends normal AND finalizing reveals — the true average an operator pays, since ~1 in 4 reveals is an expensive finalizing one.">Avg cost (commit / reveal)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -569,15 +578,16 @@ function Analytics() {
                         <td><code>{shortAddr(o.operator)}</code></td>
                         <td>{gasTriple(o.gas?.commit)}</td>
                         <td>{gasTriple(o.gas?.reveal)}</td>
-                        <td>{fmtEth(o.gas?.commit?.costEth?.avg)} <span className="gas-muted">/</span> {fmtEth(o.gas?.reveal?.costEth?.avg)}</td>
+                        <td>{gasTriple(o.gas?.finalizing, 'max')}</td>
+                        <td>{fmtEth(o.gas?.commit?.costEth?.avg)} <span className="gas-muted">/</span> {fmtEth(o.gas?.revealAll?.costEth?.avg)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
               <p className="health-footnote">
-                Gas units (price-independent across runs); reveals cost more than commits.
-                {gasFinal ? ` Reveal stats exclude ${gasFinal.count} round-completing finalization tx${gasFinal.count === 1 ? '' : 's'} (median ${fmtGas(gasFinal.gasUsed.median)} gas — inflated by the aggregation they trigger).` : ''}
+                Gas units (price-independent across runs). A <em>finalizing reveal</em> is the response that also runs the aggregation (one per completed round), costing far more than a normal one. The <strong>Reveal</strong> and <strong>Finalizing</strong> columns show them separately; the bar chart and avg cost <strong>blend both</strong> (≈¼ of reveals are finalizing) for the true per-reveal figure.
+                {gasFinal ? <> <strong>Highest finalizing reveal seen: {fmtGas(gasFinal.gasUsed.max)} gas</strong> — a node's Chainlink job-spec <code>gasLimit</code> must exceed this to avoid an out-of-gas failure during finalization.</> : ''}
                 {gasScan?.partial ? ' Receipt backfill incomplete — some gas data is still being collected; refresh shortly.' : ''}
               </p>
             </>

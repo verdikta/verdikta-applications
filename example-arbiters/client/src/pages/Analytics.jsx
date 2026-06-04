@@ -257,6 +257,37 @@ function Analytics() {
     );
   }
 
+  // Daily fulfilled/failed trend over the full scan window (small stacked bars
+  // in the success block).
+  const trend = healthData?.dailyTrend || [];
+  const dailyChartData = trend.length ? {
+    labels: trend.map(d => (d.daysAgo === 0 ? 'now' : `${d.daysAgo}d`)),
+    datasets: [
+      { label: 'Fulfilled', data: trend.map(d => d.fulfilled), backgroundColor: COLORS.active, stack: 's' },
+      { label: 'Failed', data: trend.map(d => d.failed), backgroundColor: COLORS.blocked, stack: 's' }
+    ]
+  } : null;
+  const dailyChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      // autoSkip thins the labels so a ~14-day window stays legible.
+      x: { stacked: true, grid: { display: false }, ticks: { font: { size: 9 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+      y: { stacked: true, beginAtZero: true, display: false, ticks: { precision: 0 } }
+    },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          title: (items) => {
+            const d = trend[items[0].dataIndex];
+            return d.daysAgo === 0 ? 'Today' : `${d.daysAgo} day${d.daysAgo === 1 ? '' : 's'} ago`;
+          }
+        }
+      }
+    }
+  };
+
   // Prepare chart data for arbiter availability, grouped by owner so the chart
   // matches the table below. One stacked bar per owner; segments are statuses.
   const chartOwners = ownersData?.owners || [];
@@ -399,6 +430,12 @@ function Analytics() {
                   <span className="health-stat-value" style={{ color: COLORS.blocked }}>{healthData.success.unfulfilled}</span>
                   <span className="health-stat-label">Failed / timed out</span>
                 </div>
+                {dailyChartData && (
+                  <div className="health-chart" title={`Fulfilled (green) vs failed (red) evaluations per day — last ${healthData.windowDays} days`}>
+                    <div className="health-chart-canvas"><Bar data={dailyChartData} options={dailyChartOptions} /></div>
+                    <span className="health-stat-label">{healthData.windowDays}-day trend</span>
+                  </div>
+                )}
               </div>
               <p className="health-footnote">
                 Last {healthData.windowDays} days (blocks {healthData.fromBlock.toLocaleString()}–{healthData.toBlock.toLocaleString()}).

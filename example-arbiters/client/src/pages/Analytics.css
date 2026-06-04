@@ -475,7 +475,25 @@
   font-size: 0.8rem;
   color: var(--text-muted, #6b7280);
 }
+/* 7-day fulfilled/failed trend — a stat-card-sized stacked bar chart */
+.analytics .health-chart {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 16rem;
+  flex: 2 1 18rem;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 10px;
+  background: var(--bg-subtle, #f9fafb);
+}
+.analytics .health-chart-canvas {
+  width: 100%;
+  height: 66px;
+}
 @media (max-width: 480px) {
   .analytics .health-stat { min-width: 5.5rem; padding: 0.75rem; }
   .analytics .health-stat-value { font-size: 1.4rem; }
+  .analytics .health-chart { flex-basis: 100%; }
 }

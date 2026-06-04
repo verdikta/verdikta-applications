@@ -1035,6 +1035,12 @@ class VerdiktaService {
     // beats 5), then dispatch each log by its decoded event name.
     const topic0Or = [Object.values(T)];
     let requests = 0, fulfilled = 0, scannedChunks = 0, partial = false;
+    // Daily buckets for the trend sparkline — one per day of the scan window.
+    // Index = days ago (0 = most recent ~24h). Bucketed by block offset
+    // (~43200 blocks/day on Base) so no per-event timestamp lookups are needed.
+    const BLOCKS_PER_DAY = 43200;
+    const daily = Array.from({ length: days }, () => ({ requests: 0, fulfilled: 0 }));
+    const dayOff = (blk) => Math.floor((latest - blk) / BLOCKS_PER_DAY);
     let toBlock = latest;
     while (toBlock >= floor) {
       const fromBlock = Math.max(floor, toBlock - CHUNK + 1);
@@ -1052,8 +1058,8 @@ class VerdiktaService {
         let p;
         try { p = parse(log); } catch { continue; }
         switch (p.name) {
-          case 'RequestAIEvaluation': requests++; break;
-          case 'FulfillAIEvaluation': fulfilled++; break;
+          case 'RequestAIEvaluation': { requests++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].requests++; break; }
+          case 'FulfillAIEvaluation': { fulfilled++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].fulfilled++; break; }
           case 'OracleSelected': bump(p.args.oracle, 'selected'); break;
           case 'CommitReceived': bump(p.args.operator, 'commits'); break;
           case 'NewOracleResponseRecorded': bump(p.args.operator, 'reveals'); break;
@@ -1093,6 +1099,12 @@ class VerdiktaService {
       }))
       .sort((a, b) => b.timesSelected - a.timesSelected || b.commits - a.commits);
 
+    // Daily trend, oldest → newest (today last). failed ≈ requests not fulfilled
+    // that day (request→fulfill happens within minutes, so same-day).
+    const dailyTrend = daily
+      .map((d, i) => ({ daysAgo: i, fulfilled: d.fulfilled, failed: Math.max(0, d.requests - d.fulfilled) }))
+      .reverse();
+
     return {
       network: this.networkKey,
       windowDays: days,
@@ -1106,6 +1118,7 @@ class VerdiktaService {
         unfulfilled: Math.max(0, requests - fulfilled),
         successRatePct: pct(fulfilled, requests),
       },
+      dailyTrend,
       operators,
       generatedAt: Date.now(),
     };

@@ -8,9 +8,9 @@ describe("BountyEscrow", function () {
   const CLASS_ID = 128;
   const THRESHOLD = 70;
   const BOUNTY_WEI = ethers.parseEther("1");
-  const MAX_ORACLE_FEE = ethers.parseEther("0.1");
+  const MAX_ORACLE_FEE = ethers.parseEther("0.0001");
   const ALPHA = 50;
-  const EST_BASE_COST = ethers.parseEther("0.01");
+  const EST_BASE_COST = ethers.parseEther("0.00001");
   const MAX_FEE_SCALING = 2;
   const ADDENDUM = "";
 
@@ -22,27 +22,17 @@ describe("BountyEscrow", function () {
   async function deployBountyEscrowFixture() {
     const [owner, creator, hunter, hunter2, other] = await ethers.getSigners();
 
-    const MockLinkToken = await ethers.getContractFactory("MockLinkToken");
-    const linkToken = await MockLinkToken.deploy();
-
     const MockAgg = await ethers.getContractFactory("MockVerdiktaAggregator");
     const verdiktaAggregator = await MockAgg.deploy();
 
     const BountyEscrow = await ethers.getContractFactory("BountyEscrow");
     const bountyEscrow = await BountyEscrow.deploy(
-      await linkToken.getAddress(),
       await verdiktaAggregator.getAddress()
     );
-
-    // Mint LINK to hunters for submissions
-    const linkBudget = ethers.parseEther("10");
-    await linkToken.mint(hunter.address, linkBudget);
-    await linkToken.mint(hunter2.address, linkBudget);
 
     return {
       bountyEscrow,
       verdiktaAggregator,
-      linkToken,
       owner,
       creator,
       hunter,
@@ -73,7 +63,7 @@ describe("BountyEscrow", function () {
     return { bountyId: event.args.bountyId, deadline, tx };
   }
 
-  // Helper: prepare a submission and return submissionId + evalWallet
+  // Helper: prepare a submission and return submissionId + evalWallet + ethMaxBudget
   async function prepareDefaultSubmission(
     bountyEscrow,
     hunter,
@@ -97,41 +87,36 @@ describe("BountyEscrow", function () {
     return {
       submissionId: event.args.submissionId,
       evalWallet: event.args.evalWallet,
-      linkMaxBudget: event.args.linkMaxBudget,
+      ethMaxBudget: event.args.ethMaxBudget,
       tx,
     };
   }
 
-  // Helper: approve LINK from hunter to evalWallet and start submission
+  // Helper: start a prepared submission by attaching the ETH prepay (no approval step)
   async function startSubmission(
     bountyEscrow,
-    linkToken,
-    hunter,
+    funder,
     bountyId,
     submissionId,
-    evalWallet,
-    linkMaxBudget
+    ethMaxBudget
   ) {
-    await linkToken.connect(hunter).approve(evalWallet, linkMaxBudget);
     const tx = await bountyEscrow
-      .connect(hunter)
-      .startPreparedSubmission(bountyId, submissionId);
+      .connect(funder)
+      .startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
     return tx;
   }
 
   // Helper: full flow — prepare + start, return aggId
-  async function submitFull(bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId) {
-    const { submissionId, evalWallet, linkMaxBudget } =
+  async function submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId) {
+    const { submissionId, evalWallet, ethMaxBudget } =
       await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
 
     const startTx = await startSubmission(
       bountyEscrow,
-      linkToken,
       hunter,
       bountyId,
       submissionId,
-      evalWallet,
-      linkMaxBudget
+      ethMaxBudget
     );
     const startReceipt = await startTx.wait();
     const workEvent = startReceipt.logs.find(
@@ -139,37 +124,25 @@ describe("BountyEscrow", function () {
     );
     const aggId = workEvent.args.verdiktaAggId;
 
-    return { submissionId, evalWallet, linkMaxBudget, aggId };
+    return { submissionId, evalWallet, ethMaxBudget, aggId };
   }
 
   // =========================================================================
   describe("Deployment", function () {
-    it("Should deploy with correct Verdikta and LINK addresses", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken } =
+    it("Should deploy with correct Verdikta address", async function () {
+      const { bountyEscrow, verdiktaAggregator } =
         await loadFixture(deployBountyEscrowFixture);
 
-      expect(await bountyEscrow.link()).to.equal(await linkToken.getAddress());
       expect(await bountyEscrow.verdikta()).to.equal(
         await verdiktaAggregator.getAddress()
       );
     });
 
-    it("Should reject zero addresses in constructor", async function () {
-      const { linkToken, verdiktaAggregator } = await loadFixture(
-        deployBountyEscrowFixture
-      );
+    it("Should reject zero aggregator address in constructor", async function () {
       const BountyEscrow = await ethers.getContractFactory("BountyEscrow");
 
       await expect(
-        BountyEscrow.deploy(ethers.ZeroAddress, await verdiktaAggregator.getAddress())
-      ).to.be.revertedWith("zero addr");
-
-      await expect(
-        BountyEscrow.deploy(await linkToken.getAddress(), ethers.ZeroAddress)
-      ).to.be.revertedWith("zero addr");
-
-      await expect(
-        BountyEscrow.deploy(ethers.ZeroAddress, ethers.ZeroAddress)
+        BountyEscrow.deploy(ethers.ZeroAddress)
       ).to.be.revertedWith("zero addr");
     });
   });
@@ -298,16 +271,16 @@ describe("BountyEscrow", function () {
       );
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
 
-      const { submissionId, evalWallet, linkMaxBudget, tx } =
+      const { submissionId, evalWallet, ethMaxBudget, tx } =
         await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
 
       expect(submissionId).to.equal(0);
       expect(evalWallet).to.not.equal(ethers.ZeroAddress);
-      expect(linkMaxBudget).to.be.gt(0);
+      expect(ethMaxBudget).to.be.gt(0);
 
       await expect(tx)
         .to.emit(bountyEscrow, "SubmissionPrepared")
-        .withArgs(bountyId, 0, hunter.address, evalWallet, EVAL_CID, linkMaxBudget);
+        .withArgs(bountyId, 0, hunter.address, evalWallet, EVAL_CID, ethMaxBudget);
 
       const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
       expect(sub.hunter).to.equal(hunter.address);
@@ -372,13 +345,13 @@ describe("BountyEscrow", function () {
     });
 
     it("Should reject submission to awarded bounty", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter, hunter2 } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
 
       // First hunter submits and wins
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
       await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
       await bountyEscrow.finalizeSubmission(bountyId, submissionId);
@@ -392,18 +365,18 @@ describe("BountyEscrow", function () {
 
   // =========================================================================
   describe("Starting Submissions", function () {
-    it("Should start a prepared submission with LINK approval", async function () {
-      const { bountyEscrow, linkToken, creator, hunter } = await loadFixture(
+    it("Should start a prepared submission with ETH payment", async function () {
+      const { bountyEscrow, creator, hunter } = await loadFixture(
         deployBountyEscrowFixture
       );
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-      const { submissionId, evalWallet, linkMaxBudget } =
+      const { submissionId, ethMaxBudget } =
         await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
 
-      await linkToken.connect(hunter).approve(evalWallet, linkMaxBudget);
-
       await expect(
-        bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId)
+        bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+          value: ethMaxBudget,
+        })
       ).to.emit(bountyEscrow, "WorkSubmitted");
 
       const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
@@ -411,7 +384,7 @@ describe("BountyEscrow", function () {
       expect(sub.verdiktaAggId).to.not.equal(ethers.ZeroHash);
     });
 
-    it("Should reject start without LINK approval", async function () {
+    it("Should reject start with wrong ETH amount", async function () {
       const { bountyEscrow, creator, hunter } = await loadFixture(
         deployBountyEscrowFixture
       );
@@ -422,41 +395,46 @@ describe("BountyEscrow", function () {
         bountyId
       );
 
-      // No LINK approval — transferFrom will fail
+      // No ETH attached — should revert with wrong amount
       await expect(
-        bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId)
-      ).to.be.revertedWith("not approved");
+        bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+          value: 0,
+        })
+      ).to.be.revertedWith("wrong eth amount");
     });
 
     it("Should reject start by non-hunter", async function () {
-      const { bountyEscrow, linkToken, creator, hunter, other } = await loadFixture(
+      const { bountyEscrow, creator, hunter, other } = await loadFixture(
         deployBountyEscrowFixture
       );
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-      const { submissionId, evalWallet, linkMaxBudget } =
+      const { submissionId, ethMaxBudget } =
         await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
 
-      await linkToken.connect(hunter).approve(evalWallet, linkMaxBudget);
-
       await expect(
-        bountyEscrow.connect(other).startPreparedSubmission(bountyId, submissionId)
+        bountyEscrow.connect(other).startPreparedSubmission(bountyId, submissionId, {
+          value: ethMaxBudget,
+        })
       ).to.be.revertedWith("only hunter");
     });
 
     it("Should reject starting an already-started submission", async function () {
-      const { bountyEscrow, linkToken, creator, hunter } = await loadFixture(
+      const { bountyEscrow, creator, hunter } = await loadFixture(
         deployBountyEscrowFixture
       );
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-      const { submissionId, evalWallet, linkMaxBudget } =
+      const { submissionId, ethMaxBudget } =
         await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
 
-      await linkToken.connect(hunter).approve(evalWallet, linkMaxBudget);
-      await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId);
+      await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+        value: ethMaxBudget,
+      });
 
       // Try starting again
       await expect(
-        bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId)
+        bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+          value: ethMaxBudget,
+        })
       ).to.be.revertedWith("not prepared");
     });
   });
@@ -464,11 +442,11 @@ describe("BountyEscrow", function () {
   // =========================================================================
   describe("Evaluation Finalization", function () {
     it("Should process passing evaluation and pay winner", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
       await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
@@ -481,6 +459,8 @@ describe("BountyEscrow", function () {
         .and.to.emit(bountyEscrow, "PayoutSent")
         .withArgs(bountyId, hunter.address, BOUNTY_WEI);
 
+      // finalize is called by the default signer (not hunter), and the mock leaves no
+      // refund by default, so the hunter's balance increases by exactly the payout.
       const hunterBalAfter = await ethers.provider.getBalance(hunter.address);
       expect(hunterBalAfter - hunterBalBefore).to.equal(BOUNTY_WEI);
 
@@ -496,11 +476,11 @@ describe("BountyEscrow", function () {
     });
 
     it("Should process failing evaluation correctly", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
       await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
@@ -519,11 +499,11 @@ describe("BountyEscrow", function () {
     });
 
     it("Should revert finalization when Verdikta is not ready", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
       // Don't set evaluation — exists=false by default
@@ -533,7 +513,7 @@ describe("BountyEscrow", function () {
     });
 
     it("Should reject finalization of non-pending submission", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+      const { bountyEscrow, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
 
@@ -548,13 +528,13 @@ describe("BountyEscrow", function () {
     });
 
     it("Should handle exact threshold score as passing", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
         threshold: 70,
       });
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
       // Exactly 70% acceptance: 700000 / 10000 = 70
@@ -569,13 +549,13 @@ describe("BountyEscrow", function () {
     });
 
     it("Should handle score just below threshold as failing", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
         threshold: 70,
       });
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
       // 69% acceptance: 690000 / 10000 = 69
@@ -588,13 +568,13 @@ describe("BountyEscrow", function () {
     });
 
     it("Should mark second passing submission as PassedUnpaid", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter, hunter2 } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
 
       // First hunter submits and passes
       const sub1 = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
       await verdiktaAggregator.setEvaluation(sub1.aggId, PASSING_SCORES, JUST_CIDS, true);
       await bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId);
@@ -605,16 +585,16 @@ describe("BountyEscrow", function () {
     });
 
     it("Should mark late finalizer as PassedUnpaid when another already won", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter, hunter2 } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
 
       // Both hunters prepare and start before either finalizes
       const sub1 = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
       const sub2 = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter2, bountyId
+        bountyEscrow, verdiktaAggregator, hunter2, bountyId
       );
 
       // First completes evaluation on Verdikta and finalizes — wins payout
@@ -634,11 +614,11 @@ describe("BountyEscrow", function () {
   // =========================================================================
   describe("Timeout Handling", function () {
     it("Should allow timeout marking after 10 minutes", async function () {
-      const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
       // Fast-forward 10+ minutes
@@ -660,11 +640,11 @@ describe("BountyEscrow", function () {
     });
 
     it("Should reject timeout marking before timeout period", async function () {
-      const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
       // Only 5 minutes — too early
@@ -676,11 +656,11 @@ describe("BountyEscrow", function () {
     });
 
     it("Should reject timeout on non-pending submission", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
       // Finalize it first
@@ -695,11 +675,11 @@ describe("BountyEscrow", function () {
     });
 
     it("Should allow anyone to call timeout (not just hunter)", async function () {
-      const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter, other } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
       await time.increase(601);
@@ -723,8 +703,6 @@ describe("BountyEscrow", function () {
       const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
 
       await time.increaseTo(deadline);
-
-      const creatorBalBefore = await ethers.provider.getBalance(creator.address);
 
       await expect(bountyEscrow.closeExpiredBounty(bountyId))
         .to.emit(bountyEscrow, "BountyClosed")
@@ -760,12 +738,12 @@ describe("BountyEscrow", function () {
     });
 
     it("Should reject closing with active evaluations", async function () {
-      const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
 
       // Submit and start evaluation (PendingVerdikta)
-      await submitFull(bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId);
+      await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
 
       await time.increaseTo(deadline);
 
@@ -775,11 +753,11 @@ describe("BountyEscrow", function () {
     });
 
     it("Should reject closing an already-awarded bounty", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
       await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
       await bountyEscrow.finalizeSubmission(bountyId, submissionId);
@@ -792,13 +770,13 @@ describe("BountyEscrow", function () {
     });
 
     it("Should allow closing after failed submissions are finalized", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
 
       // Submit, fail, finalize
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
       await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
       await bountyEscrow.finalizeSubmission(bountyId, submissionId);
@@ -832,11 +810,11 @@ describe("BountyEscrow", function () {
     });
 
     it("Should return AWARDED status after payout", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
       await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
       await bountyEscrow.finalizeSubmission(bountyId, submissionId);
@@ -871,11 +849,11 @@ describe("BountyEscrow", function () {
     });
 
     it("Should report canBeClosed false with active evaluations", async function () {
-      const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
 
-      await submitFull(bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId);
+      await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
       await time.increaseTo(deadline);
 
       expect(await bountyEscrow.canBeClosed(bountyId)).to.be.false;
@@ -902,15 +880,15 @@ describe("BountyEscrow", function () {
   // =========================================================================
   describe("Edge Cases", function () {
     it("Should handle multiple submissions to same bounty", async function () {
-      const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter, hunter2 } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
 
       const sub1 = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
       const sub2 = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter2, bountyId
+        bountyEscrow, verdiktaAggregator, hunter2, bountyId
       );
 
       expect(sub1.submissionId).to.equal(0);
@@ -922,12 +900,12 @@ describe("BountyEscrow", function () {
     });
 
     it("Should prevent new submissions after bounty is awarded", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter, hunter2 } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
 
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
       await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
       await bountyEscrow.finalizeSubmission(bountyId, submissionId);
@@ -953,13 +931,13 @@ describe("BountyEscrow", function () {
     });
 
     it("Should handle zero-threshold bounty (any score passes)", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
         threshold: 0,
       });
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
       // Even 0% acceptance passes with threshold 0
@@ -971,13 +949,13 @@ describe("BountyEscrow", function () {
     });
 
     it("Should handle max-threshold bounty (100 required)", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
         threshold: 100,
       });
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
       // 99% acceptance — should fail with threshold 100
@@ -991,13 +969,13 @@ describe("BountyEscrow", function () {
     });
 
     it("Should handle max-threshold bounty with 100% acceptance as passing", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
         threshold: 100,
       });
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
       const scores100 = [0n, 1000000n];
@@ -1008,24 +986,25 @@ describe("BountyEscrow", function () {
     });
 
     it("Should block starting submission when another already passed on Verdikta", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter, hunter2 } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
 
       // First hunter submits and Verdikta returns passing result (not yet finalized)
       const sub1 = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
       await verdiktaAggregator.setEvaluation(sub1.aggId, PASSING_SCORES, JUST_CIDS, true);
 
       // Second hunter prepares...
-      const { submissionId: sub2Id, evalWallet, linkMaxBudget } =
+      const { submissionId: sub2Id, ethMaxBudget } =
         await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
-      await linkToken.connect(hunter2).approve(evalWallet, linkMaxBudget);
 
       // ...but starting should revert because sub1 already passed on Verdikta
       await expect(
-        bountyEscrow.connect(hunter2).startPreparedSubmission(bountyId, sub2Id)
+        bountyEscrow.connect(hunter2).startPreparedSubmission(bountyId, sub2Id, {
+          value: ethMaxBudget,
+        })
       ).to.be.revertedWith("another submission already passed - finalize it first");
     });
 
@@ -1047,30 +1026,42 @@ describe("BountyEscrow", function () {
       ).to.equal(0);
     });
 
-    it("Should refund leftover LINK after finalization", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+    it("Should refund leftover ETH to hunter after finalization", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-      const { submissionId, aggId, evalWallet } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
-      );
 
-      // The mock aggregator doesn't actually consume LINK, so all LINK
-      // remains in the eval wallet. Finalization should refund it.
-      const walletBal = await linkToken.balanceOf(evalWallet);
+      // Configure the mock to leave the full prepay as a refundable ethOwed credit,
+      // simulating an evaluation that cost less than the worst-case budget.
+      const { submissionId, ethMaxBudget, evalWallet } =
+        await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      await verdiktaAggregator.setRefundAmount(ethMaxBudget);
+
+      await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+        value: ethMaxBudget,
+      });
+      const startSub = await bountyEscrow.getSubmission(bountyId, submissionId);
+      const aggId = startSub.verdiktaAggId;
 
       await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
 
+      const hunterBalBefore = await ethers.provider.getBalance(hunter.address);
+
+      // finalize called by default signer (owner) — hunter pays no gas, receives the refund.
       await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
-        .to.emit(bountyEscrow, "LinkRefunded");
+        .to.emit(bountyEscrow, "EthRefunded")
+        .withArgs(bountyId, submissionId, ethMaxBudget);
+
+      const hunterBalAfter = await ethers.provider.getBalance(hunter.address);
+      expect(hunterBalAfter - hunterBalBefore).to.equal(ethMaxBudget);
     });
 
     it("Should store submission timestamps correctly", async function () {
-      const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
       const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
@@ -1138,14 +1129,14 @@ describe("BountyEscrow", function () {
     });
 
     it("Should allow full flow for targeted bounty: submit, evaluate, pay", async function () {
-      const { bountyEscrow, verdiktaAggregator, linkToken, creator, hunter } =
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
         targetHunter: hunter.address,
       });
 
       const { submissionId, aggId } = await submitFull(
-        bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
       await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
 
@@ -1444,17 +1435,18 @@ describe("BountyEscrow", function () {
 
     describe("Window Expiry and Arbitration", function () {
       it("Should allow arbitration after window expires", async function () {
-        const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter } =
+        const { bountyEscrow, creator, hunter } =
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
 
-        const { submissionId, evalWallet, linkMaxBudget } =
+        const { submissionId, ethMaxBudget } =
           await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
 
         // Can't start during window
-        await linkToken.connect(hunter).approve(evalWallet, linkMaxBudget);
         await expect(
-          bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId)
+          bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+            value: ethMaxBudget,
+          })
         ).to.be.revertedWith("creator window still open");
 
         // Advance past window
@@ -1462,7 +1454,9 @@ describe("BountyEscrow", function () {
 
         // Now can start
         await expect(
-          bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId)
+          bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+            value: ethMaxBudget,
+          })
         ).to.emit(bountyEscrow, "WorkSubmitted");
 
         const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
@@ -1470,16 +1464,17 @@ describe("BountyEscrow", function () {
       });
 
       it("Should pay arbiterDeterminationPayment and refund excess on arbiter approval", async function () {
-        const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter } =
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } =
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
 
-        const { submissionId, evalWallet, linkMaxBudget } =
+        const { submissionId, ethMaxBudget } =
           await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
 
         await time.increase(WINDOW_SIZE + 1);
-        await linkToken.connect(hunter).approve(evalWallet, linkMaxBudget);
-        const startTx = await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId);
+        const startTx = await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+          value: ethMaxBudget,
+        });
         const startReceipt = await startTx.wait();
         const workEvent = startReceipt.logs.find(
           (l) => l.fragment && l.fragment.name === "WorkSubmitted"
@@ -1489,10 +1484,6 @@ describe("BountyEscrow", function () {
         await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
 
         const hunterBalBefore = await ethers.provider.getBalance(hunter.address);
-        const creatorBalBefore = await ethers.provider.getBalance(creator.address);
-
-        const expectedRefund = MAX_PAY - ARBITER_PAY; // 1 - 1 = 0 in this case
-        // With default CREATOR_PAY=0.5, ARBITER_PAY=1, max=1, refund = 1-1 = 0
 
         await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
           .to.emit(bountyEscrow, "PayoutSent")
@@ -1503,7 +1494,7 @@ describe("BountyEscrow", function () {
       });
 
       it("Should refund excess to creator when arbiterPay < creatorPay", async function () {
-        const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter } =
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } =
           await loadFixture(deployBountyEscrowFixture);
         const highCreatorPay = ethers.parseEther("2");
         const lowArbiterPay = ethers.parseEther("1");
@@ -1513,12 +1504,13 @@ describe("BountyEscrow", function () {
           arbiterPay: lowArbiterPay,
         });
 
-        const { submissionId, evalWallet, linkMaxBudget } =
+        const { submissionId, ethMaxBudget } =
           await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
 
         await time.increase(WINDOW_SIZE + 1);
-        await linkToken.connect(hunter).approve(evalWallet, linkMaxBudget);
-        const startTx = await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId);
+        const startTx = await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+          value: ethMaxBudget,
+        });
         const startReceipt = await startTx.wait();
         const aggId = startReceipt.logs.find(
           (l) => l.fragment && l.fragment.name === "WorkSubmitted"
@@ -1536,29 +1528,27 @@ describe("BountyEscrow", function () {
       });
 
       it("Should allow anyone to fund arbitration after window expires", async function () {
-        const { bountyEscrow, linkToken, creator, hunter, other } =
+        const { bountyEscrow, creator, hunter, other } =
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
           targetHunter: hunter.address,
         });
 
-        const { submissionId, evalWallet, linkMaxBudget } =
+        const { submissionId, ethMaxBudget } =
           await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
 
         await time.increase(WINDOW_SIZE + 1);
 
-        // Fund from 'other' account (not the hunter)
-        await linkToken.mint(other.address, linkMaxBudget);
-        await linkToken.connect(other).approve(evalWallet, linkMaxBudget);
-
-        // 'other' starts arbitration — should succeed
+        // 'other' funds and starts arbitration (attaches the ETH prepay) — should succeed
         await expect(
-          bountyEscrow.connect(other).startPreparedSubmission(bountyId, submissionId)
+          bountyEscrow.connect(other).startPreparedSubmission(bountyId, submissionId, {
+            value: ethMaxBudget,
+          })
         ).to.emit(bountyEscrow, "WorkSubmitted");
       });
 
       it("Should block startPreparedSubmission on awarded bounty", async function () {
-        const { bountyEscrow, linkToken, creator, hunter, hunter2 } =
+        const { bountyEscrow, creator, hunter, hunter2 } =
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
 
@@ -1595,15 +1585,16 @@ describe("BountyEscrow", function () {
       });
 
       it("Should block approval of sub 1 while sub 0 is PendingVerdikta", async function () {
-        const { bountyEscrow, linkToken, creator, hunter, hunter2 } =
+        const { bountyEscrow, creator, hunter, hunter2 } =
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
 
         // Sub 0 submitted, window expires, goes to arbitration
         const sub0 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
         await time.increase(WINDOW_SIZE + 1);
-        await linkToken.connect(hunter).approve(sub0.evalWallet, sub0.linkMaxBudget);
-        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, sub0.submissionId);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, sub0.submissionId, {
+          value: sub0.ethMaxBudget,
+        });
 
         // Sub 1 submitted (needs to be before deadline, which it is since deadline is +24h)
         const sub1 = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
@@ -1615,15 +1606,16 @@ describe("BountyEscrow", function () {
       });
 
       it("Should allow approval of sub 1 after sub 0 fails arbitration", async function () {
-        const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter, hunter2 } =
+        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
 
         // Sub 0: goes to arbitration and fails
         const sub0 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
         await time.increase(WINDOW_SIZE + 1);
-        await linkToken.connect(hunter).approve(sub0.evalWallet, sub0.linkMaxBudget);
-        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, sub0.submissionId);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, sub0.submissionId, {
+          value: sub0.ethMaxBudget,
+        });
 
         const sub0Data = await bountyEscrow.getSubmission(bountyId, sub0.submissionId);
         await verdiktaAggregator.setEvaluation(sub0Data.verdiktaAggId, FAILING_SCORES, JUST_CIDS, true);
@@ -1638,7 +1630,7 @@ describe("BountyEscrow", function () {
       });
 
       it("Should block finalize payment of sub 1 while sub 0 is unresolved (windowed)", async function () {
-        const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter, hunter2 } =
+        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
 
@@ -1650,10 +1642,12 @@ describe("BountyEscrow", function () {
         await time.increase(WINDOW_SIZE + 1);
 
         // Both go to arbitration
-        await linkToken.connect(hunter).approve(sub0.evalWallet, sub0.linkMaxBudget);
-        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, sub0.submissionId);
-        await linkToken.connect(hunter2).approve(sub1.evalWallet, sub1.linkMaxBudget);
-        await bountyEscrow.connect(hunter2).startPreparedSubmission(bountyId, sub1.submissionId);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, sub0.submissionId, {
+          value: sub0.ethMaxBudget,
+        });
+        await bountyEscrow.connect(hunter2).startPreparedSubmission(bountyId, sub1.submissionId, {
+          value: sub1.ethMaxBudget,
+        });
 
         const sub0Data = await bountyEscrow.getSubmission(bountyId, sub0.submissionId);
         const sub1Data = await bountyEscrow.getSubmission(bountyId, sub1.submissionId);
@@ -1676,13 +1670,13 @@ describe("BountyEscrow", function () {
       });
 
       it("Should maintain first-to-complete behavior for non-windowed bounties", async function () {
-        const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter, hunter2 } =
+        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
 
         // Both submit (non-windowed — Prepared status)
-        const sub1 = await submitFull(bountyEscrow, linkToken, verdiktaAggregator, hunter, bountyId);
-        const sub2 = await submitFull(bountyEscrow, linkToken, verdiktaAggregator, hunter2, bountyId);
+        const sub1 = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+        const sub2 = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
 
         // First completes and gets paid
         await verdiktaAggregator.setEvaluation(sub1.aggId, PASSING_SCORES, JUST_CIDS, true);
@@ -1715,17 +1709,18 @@ describe("BountyEscrow", function () {
       });
 
       it("Should block closing with PendingVerdikta submissions on windowed bounty", async function () {
-        const { bountyEscrow, linkToken, creator, hunter } =
+        const { bountyEscrow, creator, hunter } =
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId, deadline } = await createWindowedBounty(bountyEscrow, creator);
 
-        const { submissionId, evalWallet, linkMaxBudget } =
+        const { submissionId, ethMaxBudget } =
           await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
 
         // Window expires, start arbitration
         await time.increase(WINDOW_SIZE + 1);
-        await linkToken.connect(hunter).approve(evalWallet, linkMaxBudget);
-        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+          value: ethMaxBudget,
+        });
 
         await time.increaseTo(deadline);
 
@@ -1752,21 +1747,22 @@ describe("BountyEscrow", function () {
       });
 
       it("Should work end-to-end: targeted bounty with arbiter approval after window", async function () {
-        const { bountyEscrow, linkToken, verdiktaAggregator, creator, hunter } =
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } =
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
           targetHunter: hunter.address,
         });
 
-        const { submissionId, evalWallet, linkMaxBudget } =
+        const { submissionId, ethMaxBudget } =
           await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
 
         // Window expires
         await time.increase(WINDOW_SIZE + 1);
 
-        // Hunter starts arbitration
-        await linkToken.connect(hunter).approve(evalWallet, linkMaxBudget);
-        const startTx = await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId);
+        // Hunter starts arbitration (attaches the ETH prepay)
+        const startTx = await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+          value: ethMaxBudget,
+        });
         const startReceipt = await startTx.wait();
         const aggId = startReceipt.logs.find(
           (l) => l.fragment && l.fragment.name === "WorkSubmitted"

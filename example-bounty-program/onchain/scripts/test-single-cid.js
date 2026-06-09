@@ -6,8 +6,7 @@ const hre = require("hardhat");
 const { ethers } = hre;
 const pause = ms => new Promise(r => setTimeout(r, ms));
 
-const AGGREGATOR = "0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089"; // Base Sepolia
-const LINK_TOKEN = "0xE4aB69C077896252FAFBD49EFD26B5D171A32410"; // Base Sepolia
+const AGGREGATOR = "0xe8a385E473EA710c5a88Cc72681a16a26fe380e4"; // Base Sepolia (ETH-funded)
 
 // Test with just your deliverable CID
 const CIDS     = ["QmRLB6LYe6VER6UQDoX7wt4LmKATHbGA81ny5vgRMbfrtX","QmXv5UDj9Sj7KBdet5375sEUFptKPsdjp345v1ztRUq4Tj"];
@@ -22,7 +21,7 @@ const JOB_CLASS = 717;
 // const JOB_CLASS = 3030;
 // const JOB_CLASS = 128;
 // const JOB_CLASS = 2020;
-const MAX_ORACLE_FEE = ethers.parseUnits("0.01", 18);
+const MAX_ORACLE_FEE = ethers.parseUnits("0.0001", 18); // ETH wei (clamped on-chain to 0.0004 ceiling)
 const ESTIMATE_BASE_FEE = ethers.parseUnits("0.000001", 18);
 const MAX_FEE_SCALING = 5;
 const ALPHA = 500;
@@ -44,39 +43,30 @@ async function getSigner() {
   console.log("Network:", hre.network.name);
 
 const aggAbi = [
-  "function requestAIEvaluationWithApproval(string[] memory cids, string memory addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseFee, uint256 maxFeeScaling, uint64 jobClass) public returns (bytes32)",
+  "function requestAIEvaluationWithApproval(string[] memory cids, string memory addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseFee, uint256 maxFeeScaling, uint64 jobClass) public payable returns (bytes32)",
+  "function maxTotalFee(uint256 requestedMaxOracleFee) external view returns (uint256)",
+  "function ethOwed(address account) external view returns (uint256)",
   "function getEvaluation(bytes32 reqId) public view returns (uint256[] memory, string memory, bool)",
   "function isFailed(bytes32 aggId) external view returns (bool)",
   "event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)"
 ];
 
-const linkAbi = [
-  "function balanceOf(address account) external view returns (uint256)",
-  "function allowance(address owner, address spender) external view returns (uint256)",
-  "function approve(address spender, uint256 amount) external returns (bool)"
-];
-
 
   const agg = new hre.ethers.Contract(AGGREGATOR, aggAbi, signer);
-  const link = new hre.ethers.Contract(LINK_TOKEN, linkAbi, signer);
 
   const me = await signer.getAddress();
 
-  // Check balance
-  const [linkBal, allowance] = await Promise.all([
-    link.balanceOf(me),
-    link.allowance(me, AGGREGATOR),
+  // Size the ETH prepay: worst-case fee minus any existing pull-payment credit.
+  const [ethBal, maxTotal, credit] = await Promise.all([
+    hre.ethers.provider.getBalance(me),
+    agg.maxTotalFee(MAX_ORACLE_FEE),
+    agg.ethOwed(me),
   ]);
-  console.log(`LINK balance: ${ethers.formatEther(linkBal)} LINK`);
-  console.log(`LINK allowance: ${ethers.formatEther(allowance)} LINK`);
-
-  // Approve if needed
-  if (allowance < ethers.parseUnits("1", 18)) {
-    console.log("Approving LINK...");
-    const tx = await link.approve(AGGREGATOR, ethers.parseUnits("1", 18));
-    await tx.wait(1);
-    console.log("✓ Approved");
-  }
+  const value = maxTotal > credit ? maxTotal - credit : 0n;
+  console.log(`ETH balance: ${ethers.formatEther(ethBal)} ETH`);
+  console.log(`Worst-case prepay (maxTotalFee): ${ethers.formatEther(maxTotal)} ETH`);
+  console.log(`Existing ethOwed credit: ${ethers.formatEther(credit)} ETH`);
+  console.log(`Attaching msg.value: ${ethers.formatEther(value)} ETH`);
 
   // Send request
   console.log("\nSending request...");
@@ -90,7 +80,8 @@ const linkAbi = [
     MAX_ORACLE_FEE,
     ESTIMATE_BASE_FEE,
     MAX_FEE_SCALING,
-    JOB_CLASS
+    JOB_CLASS,
+    { value }
   );
   console.log("Transaction:", tx.hash);
   

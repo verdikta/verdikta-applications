@@ -8,11 +8,14 @@ pragma solidity ^0.8.20;
  */
 interface IVerdiktaAggregator {
     /**
-     * @notice Request an AI evaluation with LINK token approval
+     * @notice Request an AI evaluation, funded with ETH
+     * @dev Payable: the caller prepays the worst-case cost (maxTotalFee(_maxFee)) via
+     *      msg.value and/or an existing ethOwed credit. Unspent ETH is refunded to the
+     *      caller as an ethOwed credit at settlement (recover via withdrawEth()).
      * @param cids Array of IPFS CIDs containing query data
      * @param addendumText Optional additional text to append to query
      * @param _alpha Aggregation parameter for arbiter selection
-     * @param _maxFee Maximum fee willing to pay for evaluation
+     * @param _maxFee Maximum fee per oracle in ETH wei (clamped on-chain to maxOracleFee)
      * @param _estimatedBaseCost Estimated base cost for the evaluation
      * @param _maxFeeBasedScalingFactor Scaling factor for fee calculation
      * @param _requestedClass Class ID determining which AI models to use (e.g., 128 for frontier models)
@@ -26,7 +29,7 @@ interface IVerdiktaAggregator {
         uint256 _estimatedBaseCost,
         uint256 _maxFeeBasedScalingFactor,
         uint64 _requestedClass
-    ) external returns (bytes32 requestId);
+    ) external payable returns (bytes32 requestId);
 
     /**
      * @notice Get the evaluation result for a given request ID
@@ -47,12 +50,25 @@ interface IVerdiktaAggregator {
     /**
      * @notice Calculate the maximum total fee for an evaluation
      * @param requestedMaxOracleFee The requested maximum oracle fee
-     * @return Maximum total fee in LINK tokens
+     * @return Maximum total fee in ETH wei
      */
     function maxTotalFee(uint256 requestedMaxOracleFee)
         external
         view
         returns (uint256);
+
+    /**
+     * @notice ETH (wei) owed to an address via the pull-payment ledger
+     * @dev For a requester, this is the unspent prepay refunded at settlement.
+     * @param account The address to query
+     * @return Amount of ETH (wei) withdrawable by `account`
+     */
+    function ethOwed(address account) external view returns (uint256);
+
+    /**
+     * @notice Withdraw the caller's entire ethOwed balance to msg.sender
+     */
+    function withdrawEth() external;
 
     /**
      * @notice Get the response timeout in seconds

@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
 
-import {IERC20} from "./interfaces/ILinkToken.sol";
 import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 
-/// @notice One-per-submission wallet that holds the hunter's LINK.
-///         Verdikta pulls LINK from *this* wallet (msg.sender to Verdikta is this contract).
+/// @notice One-per-submission wallet that funds a single Verdikta evaluation with ETH.
+///         The wallet is msg.sender to Verdikta, so any unspent prepay is refunded to
+///         ethOwed[this] and recovered via withdrawEth() before being returned to the hunter.
 contract EvaluationWallet {
     address public immutable bountyContract;   // only this can operate
-    address public immutable hunter;           // leftover LINK refund address
-    IERC20  public immutable link;
+    address public immutable hunter;           // leftover ETH refund address
     IVerdiktaAggregator public immutable verdikta;
 
     bytes32 public aggId;
@@ -20,32 +19,14 @@ contract EvaluationWallet {
         _;
     }
 
-    constructor(address _bounty, address _hunter, IERC20 _link, IVerdiktaAggregator _verdikta) {
+    constructor(address _bounty, address _hunter, IVerdiktaAggregator _verdikta) {
         bountyContract = _bounty;
         hunter = _hunter;
-        link = _link;
         verdikta = _verdikta;
     }
 
-    /// @dev Pull LINK from hunter into this wallet (hunter must have approved this wallet).
-    function pullLinkFromHunter(uint256 amount) external onlyBounty {
-        require(link.transferFrom(hunter, address(this), amount), "LINK pull failed");
-    }
-
-    /// @dev Pull LINK from an arbitrary funder into this wallet (funder must have approved this wallet).
-    /// @dev Used when anyone funds arbitration after a creator approval window expires.
-    function pullLinkFrom(address funder, uint256 amount) external onlyBounty {
-        require(link.transferFrom(funder, address(this), amount), "LINK pull failed");
-    }
-
-    /// @dev Approve Verdikta for up to `amount` LINK.
-    function approveVerdikta(uint256 amount) external onlyBounty {
-        // reset allowance first (safer for some ERC-20 implementations)
-        require(link.approve(address(verdikta), 0), "approve reset failed");
-        require(link.approve(address(verdikta), amount), "approve failed");
-    }
-
-    /// @dev Start the Verdikta evaluation. This wallet becomes msg.sender to Verdikta.
+    /// @dev Start the Verdikta evaluation, funding the request with the attached ETH.
+    ///      This wallet becomes msg.sender to Verdikta, so refunds accrue to ethOwed[this].
     function startEvaluation(
         string[] calldata cids,
         string calldata addendumText,
@@ -54,11 +35,11 @@ contract EvaluationWallet {
         uint256 estimatedBaseCost,
         uint256 maxFeeBasedScaling,
         uint64  requestedClass
-    ) external onlyBounty returns (bytes32) {
+    ) external payable onlyBounty returns (bytes32) {
         require(!started, "Already started");
         started = true;
 
-        bytes32 id = verdikta.requestAIEvaluationWithApproval(
+        bytes32 id = verdikta.requestAIEvaluationWithApproval{value: msg.value}(
             cids,
             addendumText,
             alpha,
@@ -71,12 +52,19 @@ contract EvaluationWallet {
         return id;
     }
 
-    /// @dev Refund leftover LINK back to hunter.
-    function refundLeftoverLink() external onlyBounty {
-        uint256 bal = link.balanceOf(address(this));
-        if (bal > 0) {
-            require(link.transfer(hunter, bal), "refund failed");
+    /// @dev Recover any ETH refund credited to this wallet (ethOwed) from Verdikta,
+    ///      then forward the wallet's full ETH balance back to the hunter.
+    /// @return refunded The amount of ETH (wei) returned to the hunter.
+    function refundLeftoverEth() external onlyBounty returns (uint256 refunded) {
+        if (verdikta.ethOwed(address(this)) > 0) {
+            verdikta.withdrawEth();
+        }
+        refunded = address(this).balance;
+        if (refunded > 0) {
+            (bool ok,) = payable(hunter).call{value: refunded}("");
+            require(ok, "refund failed");
         }
     }
-}
 
+    receive() external payable {}
+}

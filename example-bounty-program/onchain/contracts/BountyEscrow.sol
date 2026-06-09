@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
 
-import {IERC20} from "./interfaces/ILinkToken.sol";
 import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 import "./EvaluationWallet.sol";
 
@@ -17,7 +16,7 @@ contract BountyEscrow {
     }
 
     enum SubmissionStatus {
-        Prepared,               // 0: Wallet created, awaiting LINK and start
+        Prepared,               // 0: Wallet created, awaiting ETH funding and start
         PendingVerdikta,        // 1: Evaluation in progress
         Failed,                 // 2: Did not meet threshold
         PassedPaid,             // 3: Met threshold and was paid
@@ -54,7 +53,7 @@ contract BountyEscrow {
         string  justificationCids;  // Verdikta result, if any
         uint256 submittedAt;
         uint256 finalizedAt;
-        uint256 linkMaxBudget;      // LINK budget computed from maxOracleFee
+        uint256 ethMaxBudget;       // ETH wei budget computed from maxOracleFee
         uint256 maxOracleFee;       // echo
         uint256 alpha;              // echo
         uint256 estimatedBaseCost;  // echo
@@ -63,7 +62,6 @@ contract BountyEscrow {
         uint64  creatorWindowEnd;   // Timestamp when creator window expires (0 if no window)
     }
 
-    IERC20 public immutable link;
     IVerdiktaAggregator public immutable verdikta;
 
     Bounty[] public bounties;
@@ -92,7 +90,7 @@ contract BountyEscrow {
         address indexed hunter,
         address evalWallet,
         string evaluationCid,
-        uint256 linkMaxBudget
+        uint256 ethMaxBudget
     );
 
     event WorkSubmitted(
@@ -116,7 +114,7 @@ contract BountyEscrow {
         uint256 amountWei
     );
 
-    event LinkRefunded(
+    event EthRefunded(
         uint256 indexed bountyId,
         uint256 indexed submissionId,
         uint256 amount
@@ -135,9 +133,8 @@ contract BountyEscrow {
         uint256 amountRefunded
     );
 
-    constructor(IERC20 _link, IVerdiktaAggregator _verdikta) {
-        require(address(_link) != address(0) && address(_verdikta) != address(0), "zero addr");
-        link = _link;
+    constructor(IVerdiktaAggregator _verdikta) {
+        require(address(_verdikta) != address(0), "zero addr");
         verdikta = _verdikta;
     }
 
@@ -265,7 +262,7 @@ contract BountyEscrow {
     // ------------- Submissions & Verdikta -------------
 
     /// @notice STEP 1: Prepare a submission. Deploys an EvaluationWallet and records parameters.
-    /// @dev The wallet address is emitted so the hunter can approve LINK to it.
+    /// @dev The ethMaxBudget is emitted so the funder knows how much ETH to attach when starting.
     /// @dev If the bounty has a creator assessment window, status starts as PendingCreatorApproval.
     /// @dev Otherwise, status starts as Prepared (classic behavior).
     /// @dev Can only be called before the submission deadline
@@ -286,7 +283,7 @@ contract BountyEscrow {
         uint256 maxOracleFee,
         uint256 estimatedBaseCost,
         uint256 maxFeeBasedScaling
-    ) external returns (uint256 submissionId, address evalWallet, uint256 linkMaxBudget) {
+    ) external returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget) {
         Bounty storage b = _mustBounty(bountyId);
         require(b.status == BountyStatus.Open, "bounty not open");
         require(block.timestamp < b.submissionDeadline, "deadline passed");
@@ -302,13 +299,12 @@ contract BountyEscrow {
             "evaluationCid mismatch"
         );
 
-        linkMaxBudget = verdikta.maxTotalFee(maxOracleFee);
-        require(linkMaxBudget > 0, "bad budget");
+        ethMaxBudget = verdikta.maxTotalFee(maxOracleFee);
+        require(ethMaxBudget > 0, "bad budget");
 
         EvaluationWallet wallet = new EvaluationWallet(
             address(this),
             msg.sender,
-            link,
             verdikta
         );
 
@@ -328,7 +324,7 @@ contract BountyEscrow {
             justificationCids: "",
             submittedAt: block.timestamp,
             finalizedAt: 0,
-            linkMaxBudget: linkMaxBudget,
+            ethMaxBudget: ethMaxBudget,
             maxOracleFee: maxOracleFee,
             alpha: alpha,
             estimatedBaseCost: estimatedBaseCost,
@@ -349,10 +345,10 @@ contract BountyEscrow {
             msg.sender,
             address(wallet),
             evaluationCid,
-            linkMaxBudget
+            ethMaxBudget
         );
 
-        return (submissionId, address(wallet), linkMaxBudget);
+        return (submissionId, address(wallet), ethMaxBudget);
     }
 
     /// @notice Creator approves a submission during the assessment window
@@ -393,13 +389,14 @@ contract BountyEscrow {
         }
     }
 
-    /// @notice STEP 2: After LINK is approved to the EvaluationWallet,
-    ///         start the Verdikta evaluation (pulls LINK, approves Verdikta, starts).
-    /// @dev For Prepared submissions (no window): only the hunter can call, LINK from hunter.
-    /// @dev For PendingCreatorApproval submissions (window expired): anyone can call, LINK from caller.
+    /// @notice STEP 2: Fund and start the Verdikta evaluation by attaching ETH.
+    /// @dev The caller attaches msg.value == ethMaxBudget; it is forwarded to the
+    ///      EvaluationWallet, which prepays Verdikta. No ERC20 approval is needed.
+    /// @dev For Prepared submissions (no window): only the hunter can call.
+    /// @dev For PendingCreatorApproval submissions (window expired): anyone can call and fund.
     /// @dev Can be called after deadline as long as submission was prepared before deadline
     /// @dev Reverts if any existing submission has already passed evaluation (first-to-pass wins)
-    function startPreparedSubmission(uint256 bountyId, uint256 submissionId) external {
+    function startPreparedSubmission(uint256 bountyId, uint256 submissionId) external payable {
         Bounty storage b = _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);
 
@@ -408,7 +405,7 @@ contract BountyEscrow {
         bool fromCreatorWindow = s.status == SubmissionStatus.PendingCreatorApproval;
 
         if (fromCreatorWindow) {
-            // After window expires, anyone can start arbitration and fund LINK
+            // After window expires, anyone can start arbitration and fund the evaluation
             require(block.timestamp > s.creatorWindowEnd, "creator window still open");
         } else {
             require(s.status == SubmissionStatus.Prepared, "not prepared");
@@ -418,20 +415,13 @@ contract BountyEscrow {
         require(s.submittedAt < b.submissionDeadline, "submitted too late");
 
         // Check if any existing submission has already passed on Verdikta
-        // This prevents wasting LINK when someone else already won
+        // This prevents wasting the prepay when someone else already won
         _requireNoPassingSubmission(bountyId, b.threshold);
 
-        EvaluationWallet wallet = EvaluationWallet(s.evalWallet);
+        // Funder attaches the worst-case prepay as ETH (no ERC20 approval needed).
+        require(msg.value == s.ethMaxBudget, "wrong eth amount");
 
-        // Pull LINK: from hunter for Prepared, from msg.sender for PendingCreatorApproval
-        if (fromCreatorWindow) {
-            wallet.pullLinkFrom(msg.sender, s.linkMaxBudget);
-        } else {
-            wallet.pullLinkFromHunter(s.linkMaxBudget);
-        }
-
-        // Approve Verdikta and start evaluation
-        wallet.approveVerdikta(s.linkMaxBudget);
+        EvaluationWallet wallet = EvaluationWallet(payable(s.evalWallet));
 
         // CID array for Verdikta:
         // cids[0] = Evaluation package (contains jury config, rubric reference via 'additional', instructions)
@@ -441,7 +431,7 @@ contract BountyEscrow {
         cids[0] = s.evaluationCid;
         cids[1] = s.hunterCid;
 
-        bytes32 aggId = wallet.startEvaluation(
+        bytes32 aggId = wallet.startEvaluation{value: msg.value}(
             cids,
             s.addendum,
             s.alpha,
@@ -488,7 +478,7 @@ contract BountyEscrow {
         if (!passed) {
             s.status = SubmissionStatus.Failed;
             emit SubmissionFinalized(bountyId, submissionId, false, acceptance, rejection, justCids);
-            _refundLeftoverLink(bountyId, submissionId);
+            _refundLeftoverEth(bountyId, submissionId);
             return;
         }
 
@@ -534,7 +524,7 @@ contract BountyEscrow {
             s.status = SubmissionStatus.PassedUnpaid;
         }
 
-        _refundLeftoverLink(bountyId, submissionId);
+        _refundLeftoverEth(bountyId, submissionId);
     }
 
     /// @notice Force-fail a submission that's been stuck in PendingVerdikta too long
@@ -560,8 +550,8 @@ contract BountyEscrow {
             "TIMED_OUT"
         );
 
-        // Refund any LINK left in the wallet
-        _refundLeftoverLink(bountyId, submissionId);
+        // Refund any ETH prepay left in the wallet
+        _refundLeftoverEth(bountyId, submissionId);
     }
 
     // ------------- Views -------------
@@ -719,13 +709,10 @@ contract BountyEscrow {
         return false;
     }
 
-    function _refundLeftoverLink(uint256 bountyId, uint256 submissionId) private {
+    function _refundLeftoverEth(uint256 bountyId, uint256 submissionId) private {
         Submission storage s = subs[bountyId][submissionId];
-        uint256 before = IERC20(link).balanceOf(s.evalWallet);
-        EvaluationWallet(s.evalWallet).refundLeftoverLink();
-        uint256 afterBal = IERC20(link).balanceOf(s.evalWallet);
-        uint256 delta = before > afterBal ? before - afterBal : 0;
-        emit LinkRefunded(bountyId, submissionId, delta);
+        uint256 refunded = EvaluationWallet(payable(s.evalWallet)).refundLeftoverEth();
+        emit EthRefunded(bountyId, submissionId, refunded);
     }
 
     function _mustBounty(uint256 bountyId) internal view returns (Bounty storage) {

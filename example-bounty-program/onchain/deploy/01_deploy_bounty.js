@@ -7,38 +7,31 @@ async function main() {
   const chainId = (await hre.ethers.provider.getNetwork()).chainId;
   
   const {
-    LINK_TOKEN_BASE,
-    LINK_TOKEN_BASE_SEPOLIA,
-    VERDIKTA_AGGREGATOR_BASE,         
-    VERDIKTA_AGGREGATOR_BASE_SEPOLIA  
+    VERDIKTA_AGGREGATOR_BASE,
+    VERDIKTA_AGGREGATOR_BASE_SEPOLIA
   } = process.env;
 
-  // Pick LINK by network
-  let link;
-  let verdikta;  
-  
+  // Pick the ETH-funded aggregator by network
+  let verdikta;
+
   if (network === "base") {
-    link = LINK_TOKEN_BASE;
-    verdikta = VERDIKTA_AGGREGATOR_BASE; 
+    verdikta = VERDIKTA_AGGREGATOR_BASE;
   } else if (network === "base_sepolia") {
-    link = LINK_TOKEN_BASE_SEPOLIA;
-    verdikta = VERDIKTA_AGGREGATOR_BASE_SEPOLIA;  
+    verdikta = VERDIKTA_AGGREGATOR_BASE_SEPOLIA;
   } else {
     throw new Error(`Unsupported network ${network}. Use base or base_sepolia.`);
   }
 
-  if (!link) throw new Error("Set LINK address in .env for this network");
-  if (!verdikta) throw new Error("Set VERDIKTA_AGGREGATOR address in .env for this network");  
+  if (!verdikta) throw new Error("Set VERDIKTA_AGGREGATOR address in .env for this network");
 
   const [deployer] = await hre.ethers.getSigners();
   console.log(`Deployer: ${deployer.address}`);
   console.log(`Network : ${network} (${chainId})`);
-  console.log(`LINK    : ${link}`);
-  console.log(`Verdikta Aggregator: ${verdikta}`);  
+  console.log(`Verdikta Aggregator (ETH): ${verdikta}`);
 
   // Deploy BountyEscrow
   const Escrow = await hre.ethers.getContractFactory("BountyEscrow");
-  const escrow = await Escrow.deploy(link, verdikta);  
+  const escrow = await Escrow.deploy(verdikta);
   await escrow.waitForDeployment();
   const escrowAddr = await escrow.getAddress();
 
@@ -51,8 +44,7 @@ async function main() {
     deployedAt: new Date().toISOString(),
     contracts: {
       BountyEscrow: escrowAddr,
-      LINK: link,
-      VerdiktaAggregator: verdikta  // Changed from VERDIKTA_AGGREGATOR
+      VerdiktaAggregator: verdikta
     }
   });
 
@@ -70,7 +62,7 @@ if (process.env.BASESCAN_API_KEY) {
     try {
       await hre.run("verify:verify", {
         address: escrowAddr,
-        constructorArguments: [link, verdikta]
+        constructorArguments: [verdikta]
       });
       console.log("Verified successfully!");
       break; // Success! Exit the loop
@@ -89,7 +81,7 @@ if (process.env.BASESCAN_API_KEY) {
         console.log(`Verify failed (attempt ${attempt}/${maxAttempts}):`, errorMsg);
         if (attempt === maxAttempts) {
           console.log("Try verifying manually later with:");
-          console.log(`  npx hardhat verify --network ${network} ${escrowAddr} "${link}" "${verdikta}"`);
+          console.log(`  npx hardhat verify --network ${network} ${escrowAddr} "${verdikta}"`);
         } else {
           await new Promise(resolve => setTimeout(resolve, delayMs));
         }

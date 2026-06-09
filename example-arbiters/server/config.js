@@ -26,11 +26,18 @@ const networks = {
     name: 'Base Sepolia',
     rpcUrl: 'https://base-sepolia-rpc.publicnode.com',
     explorer: 'https://sepolia.basescan.org',
-    verdiktaAggregatorAddress: '0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089',
+    // ETH-funded ReputationAggregator (arbiters earn ETH via ethOwed, claimed with
+    // withdrawEth — no LINK). Same ReputationKeeper + operator contracts as before
+    // (derived on-chain from the aggregator), so registrations/stakes/reputation carry over.
+    verdiktaAggregatorAddress: '0xe8a385E473EA710c5a88Cc72681a16a26fe380e4',
+    // Chainlink transport token for the 0-juel request rail. Vestigial for payment
+    // (arbiters are paid in ETH); retained only for the legacy-LINK claim path and
+    // informational display on the Contracts page.
     linkTokenAddress: '0xE4aB69C077896252FAFBD49EFD26B5D171A32410',
-    // Aggregator deployment block (found via archive eth_getCode binary search).
-    // Lower bound for the BonusPayment event scan behind the owners analytics.
-    aggregatorFromBlock: 30404839,
+    // New ETH aggregator deployment block (archive eth_getCode binary search, verified
+    // exact). Lower bound for the lifecycle event scans (oracle health / eval success /
+    // gas). Analytics intentionally start fresh from the new aggregator (no old-agg union).
+    aggregatorFromBlock: 42598251,
     // Archive RPC for historical eth_getLogs. The PublicNode endpoint above
     // prunes log history ("pruned history unavailable"), so the bonus scan uses
     // a full-archive endpoint. Override with ARCHIVE_RPC_URL if preferred.
@@ -42,10 +49,12 @@ const networks = {
     name: 'Base Mainnet',
     rpcUrl: 'https://base-rpc.publicnode.com',
     explorer: 'https://basescan.org',
-    verdiktaAggregatorAddress: '0x2f7a02298D4478213057edA5e5bEB07F20c4c054',
+    // ETH-funded ReputationAggregator (see base-sepolia note above).
+    verdiktaAggregatorAddress: '0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a',
+    // Chainlink transport token (0-juel rail); vestigial for payment. See note above.
     linkTokenAddress: '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196',
-    // Aggregator deployment block (see base-sepolia note above).
-    aggregatorFromBlock: 35124408,
+    // New ETH aggregator deployment block (verified exact). See base-sepolia note above.
+    aggregatorFromBlock: 47087827,
     archiveRpcUrl: 'https://base.gateway.tenderly.co',
   },
 };

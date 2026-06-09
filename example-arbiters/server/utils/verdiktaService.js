@@ -90,6 +90,10 @@ function summarizeGas(records) {
 // ReputationAggregator ABI — view functions needed for analytics.
 const AGGREGATOR_ABI = [
   "function reputationKeeper() view returns (address)",
+  // ETH pull-payment ledger: arbiter owners' earned ETH (base + bonus), claimed via
+  // withdrawEth(). Replaces per-operator LINK (operator.withdrawable) as the live
+  // "claimable" figure under the ETH-funded aggregator.
+  "function ethOwed(address) view returns (uint256)",
   "function commitOraclesToPoll() view returns (uint256)",
   "function oraclesToPoll() view returns (uint256)",
   "function requiredResponses() view returns (uint256)",
@@ -147,9 +151,10 @@ const ERC20_ABI = [
   "function totalSupply() view returns (uint256)"
 ];
 
-// ArbiterOperator (Chainlink Operator) ABI — owner + claimable LINK balance.
-// An operator contract serves one owner and may back several jobIds; earned
-// LINK accrues here and is withdrawn by the owner (see client write path).
+// ArbiterOperator (Chainlink Operator) ABI — owner + legacy LINK balance.
+// An operator serves one owner and may back several jobIds. Under the ETH aggregator
+// (0-juel dispatch) operators accrue NO new LINK — earnings go to ethOwed on the
+// aggregator — so withdrawable() reflects only leftover LINK from the old aggregator.
 const OPERATOR_ABI = [
   "function owner() view returns (address)",
   "function withdrawable() view returns (uint256)",
@@ -676,11 +681,13 @@ class VerdiktaService {
    * Arbiters owned by a given wallet, grouped by operator contract.
    *
    * Ownership is the operator contract's own `owner()` (Chainlink ConfirmedOwner)
-   * — the address allowed to withdraw earned LINK and to deregister. One operator
-   * may back several jobIds, so claimable LINK is reported once per operator while
-   * stake/lock state is reported per (oracle, jobId).
+   * — the address that earns ETH (ethOwed on the aggregator) and may deregister.
+   * Claimable ETH is per-owner (returned once at the top level as claimableEth); the
+   * per-operator withdrawableLink is LEGACY (leftover old-aggregator LINK). Stake/lock
+   * state is reported per (oracle, jobId).
    *
-   * The keeper address is returned so the client can build the deregister tx.
+   * The keeper + aggregator addresses are returned so the client can build the
+   * deregister and withdrawEth txs.
    */
   async getOwnedArbiters(ownerAddress) {
     const target = String(ownerAddress).toLowerCase();
@@ -779,9 +786,16 @@ class VerdiktaService {
       }));
     }
 
+    // Live claimable ETH is per-OWNER (ethOwed on the aggregator), aggregated across all
+    // the owner's operators — unlike the legacy per-operator LINK (withdrawableLink),
+    // which is retained on each operator card only for draining old-aggregator LINK.
+    const ethOwedWei = await this.getEthOwed(ownerAddress);
+
     return {
       owner: ownerAddress,
       keeperAddress: this.keeperAddress,
+      aggregatorAddress: this.aggregatorAddress,
+      claimableEth: ethOwedWei != null ? ethers.formatEther(ethOwedWei) : null,
       operators: Object.values(byOperator),
       timestamp: Date.now()
     };
@@ -825,9 +839,33 @@ class VerdiktaService {
     return map;
   }
 
-  /** operator (lowercased) -> withdrawable LINK (bigint) or null. Read fresh. */
+  /**
+   * operator (lowercased) -> legacy withdrawable LINK (bigint) or null. Read fresh.
+   * Under the ETH aggregator operators no longer accrue LINK (0-juel dispatch), so this
+   * is normally 0; it survives only to let owners drain LINK left over from the old
+   * aggregator (the secondary "legacy LINK" claim path in My Arbiters).
+   */
   async getWithdrawableMap(operatorAddrs) {
     return this._batchOperatorRead(operatorAddrs, 'withdrawable');
+  }
+
+  /**
+   * ETH (wei) owed to `owner` on the aggregator's pull-payment ledger, or null on read
+   * error. This is the live "claimable" figure under the ETH aggregator — earnings are
+   * credited per OWNER (aggregated across all their operators), not per operator.
+   */
+  async getEthOwed(ownerAddress) {
+    if (!ownerAddress) return null;
+    return withRetry(() => this.aggregator.ethOwed(ownerAddress)).catch(() => null);
+  }
+
+  /** owner (lowercased) -> ethOwed (bigint) or null. Batched with bounded concurrency. */
+  async getEthOwedMap(ownerAddrs) {
+    const out = {};
+    await mapWithConcurrency(ownerAddrs, 6, async (addr) => {
+      out[addr.toLowerCase()] = await this.getEthOwed(addr);
+    });
+    return out;
   }
 
   // --- ETH funding of arbiter nodes ---------------------------------------
@@ -1329,7 +1367,8 @@ class VerdiktaService {
   /**
    * Arbiters grouped by owner address (the ArbiterOperator owner), with totals
    * for the analytics "Arbiters by Owner" table: arbiter/operator counts,
-   * average reputation, claimable LINK (Σ withdrawable) and node funding.
+   * average reputation, claimable ETH (ethOwed on the aggregator, per owner) and
+   * node funding.
    * Sorted by owner address, numerically ascending.
    */
   async getOwnersAnalytics() {
@@ -1340,9 +1379,8 @@ class VerdiktaService {
     const valid = oracles.filter((o) => !o.error && o.oracle);
     const operatorAddrs = [...new Set(valid.map((o) => o.oracle))];
 
-    const [ownerMap, withdrawableMap, fundingData] = await Promise.all([
+    const [ownerMap, fundingData] = await Promise.all([
       this.getOwnerMap(operatorAddrs),
-      this.getWithdrawableMap(operatorAddrs),
       this._computeFunding(operatorAddrs)
     ]);
     const { perOp: fundingPerOp, gasPrice } = fundingData;
@@ -1369,16 +1407,17 @@ class VerdiktaService {
       b[this._statusFor(o, thresholds, now)] += 1;
     }
 
+    // Per-owner claimable ETH (ethOwed on the aggregator), read once per distinct owner.
+    // The unknown-owner bucket has no address and gets null.
+    const ownerAddrs = Object.values(byOwner).map((b) => b.owner).filter(Boolean);
+    const ethOwedMap = await this.getEthOwedMap(ownerAddrs);
+
     const owners = Object.values(byOwner).map((b) => {
-      let claimable = 0n;
-      let claimableKnown = true;
       let nodeWei = 0n;
       for (const op of b.operators) {
-        const w = withdrawableMap[op];
-        if (w == null) claimableKnown = false;
-        else claimable += w;
         nodeWei += fundingPerOp[op]?.totalWei ?? 0n;
       }
+      const owedWei = b.owner ? ethOwedMap[b.owner.toLowerCase()] : null;
       const estQueries = this._estQueries(nodeWei, gasPrice);
       return {
         owner: b.owner,
@@ -1391,7 +1430,7 @@ class VerdiktaService {
         inactive: b.inactive,
         avgQualityScore: Math.round(b.qSum / b.arbiters),
         avgTimelinessScore: Math.round(b.tSum / b.arbiters),
-        claimableLink: claimableKnown ? ethers.formatEther(claimable) : null,
+        claimableEth: owedWei != null ? ethers.formatEther(owedWei) : null,
         nodeEth: ethers.formatEther(nodeWei),
         estQueries,
         fundingLow: this._fundingLow(nodeWei, estQueries)
@@ -1428,14 +1467,15 @@ class VerdiktaService {
       const keeperAddress = await withRetry(() => this.aggregator.reputationKeeper());
       const config = await this.getAggregatorConfig();
 
-      // Get LINK token address from aggregator's getContractConfig (legacy)
+      // Chainlink transport-token address from getContractConfig (legacy view). This is
+      // the 0-juel request rail's token, NOT a payment token — arbiters are paid in ETH.
       let linkTokenAddress = null;
       try {
         const contractConfig = await withRetry(() => this.aggregator.getContractConfig());
         linkTokenAddress = contractConfig.linkAddr || contractConfig[1];
       } catch (err) {
         // May fail if getContractConfig is removed in future versions
-        logger.debug('Could not get LINK token address', { msg: err.message });
+        logger.debug('Could not get transport-token address', { msg: err.message });
       }
 
       // Get wVDKA token address from ReputationKeeper
@@ -1478,15 +1518,18 @@ class VerdiktaService {
   }
 
   /**
-   * Aggregator's Chainlink payment config: LINK token, job id, per-oracle fee.
-   * Returned by the legacy getContractConfig() view.
+   * Legacy getContractConfig() view. Under the ETH aggregator this returns the Chainlink
+   * transport token (0-juel rail) and zero placeholders for jobId/fee — there is no single
+   * per-oracle LINK fee anymore (each arbiter's fee lives in the keeper, and maxOracleFee
+   * is the ETH ceiling). `fee` is therefore a 0 placeholder; the Contracts page shows the
+   * live ETH ceiling from getAggregatorConfig().maxOracleFee instead.
    */
   async getPaymentConfig() {
     const cfg = await withRetry(() => this.aggregator.getContractConfig());
     return {
-      linkTokenAddress: cfg.linkAddr || cfg[1],
+      transportTokenAddress: cfg.linkAddr || cfg[1],
       jobId: cfg.jobId || cfg[2],
-      fee: ethers.formatEther(cfg.fee ?? cfg[3])
+      fee: ethers.formatEther(cfg.fee ?? cfg[3]) // legacy placeholder (0 on ETH contract)
     };
   }
 

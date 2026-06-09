@@ -621,7 +621,7 @@ function Analytics() {
                     <th className="tooltip-header" title={ARBITER_STATUS_DESCRIPTIONS.Blocked}>Blocked</th>
                     <th className="tooltip-header" title="Average quality score across this owner's arbiters">Avg Quality</th>
                     <th className="tooltip-header" title="Average timeliness score across this owner's arbiters">Avg Timeliness</th>
-                    <th className="tooltip-header" title="LINK currently claimable across this owner's operator contracts"><Coins size={13} className="inline-icon" /> Claimable LINK</th>
+                    <th className="tooltip-header" title="ETH currently claimable by this owner (ethOwed on the aggregator, aggregated across their operators)"><Coins size={13} className="inline-icon" /> Claimable ETH</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -643,7 +643,7 @@ function Analytics() {
                       <td style={{ color: COLORS.blocked, fontWeight: 600 }}>{o.blocked ?? '-'}</td>
                       <td>{o.avgQualityScore}</td>
                       <td>{o.avgTimelinessScore}</td>
-                      <td>{o.claimableLink ?? '—'}</td>
+                      <td>{o.claimableEth ?? '—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -748,7 +748,7 @@ function Analytics() {
                     )}
                     {data.system.verdikta.linkTokenAddress && (
                       <div className="contract-row">
-                        <span className="contract-label">LINK Token:</span>
+                        <span className="contract-label">Transport Token (0-juel):</span>
                         <code className="address">{data.system.verdikta.linkTokenAddress}</code>
                       </div>
                     )}

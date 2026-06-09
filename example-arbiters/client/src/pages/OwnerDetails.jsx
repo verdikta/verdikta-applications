@@ -151,7 +151,7 @@ function OwnerDetails() {
                         `Call Count: ${arb.callCount ?? 'N/A'}`,
                         `Quality Score: ${arb.qualityScore ?? 'N/A'}`,
                         `Timeliness Score: ${arb.timelinessScore ?? 'N/A'}`,
-                        `Fee: ${arb.fee != null ? `${arb.fee} LINK` : 'N/A'}`
+                        `Fee: ${arb.fee != null ? `${arb.fee} ETH` : 'N/A'}`
                       ].filter(Boolean).join('\n')}>
                         {arb.jobId}
                       </code>

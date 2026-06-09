@@ -26,7 +26,7 @@ export function parseClasses(text) {
   return { classes: nums };
 }
 
-/** Parse a LINK fee decimal string into { wei (bigint), display } or { error }. */
+/** Parse an ETH fee decimal string into { wei (bigint), display } or { error }. */
 export function parseFee(text) {
   const t = String(text ?? '').trim();
   if (t === '') return { error: 'Enter a fee' };
@@ -64,7 +64,7 @@ export function buildDescriptor({ network, keeperAddress, operator, owner, jobId
     type: 'verdikta-arbiter-registration',
     version: 1,
     _readme:
-      'Editable fields: operator, jobId, fee (LINK decimal), classes (1–5 integers). ' +
+      'Editable fields: operator, jobId, fee (ETH decimal), classes (1–5 integers). ' +
       'Importing this on the My Arbiters "Register an arbiter" section re-registers it. ' +
       'Re-registering resets on-chain reputation to zero.',
     network,
@@ -72,7 +72,7 @@ export function buildDescriptor({ network, keeperAddress, operator, owner, jobId
     operator,
     owner,
     jobId,
-    fee, // LINK decimal string
+    fee, // ETH decimal string
     classes, // number[]
     exportedAt: new Date().toISOString(),
   };

@@ -84,7 +84,7 @@ async function getContractsOverview(network) {
       aggregator: {
         address: health.aggregatorAddress,
         config: health.config,
-        payment // { linkTokenAddress, jobId, fee } or null
+        payment // { transportTokenAddress, jobId, fee } or null (fee is a 0 placeholder under ETH)
       },
       keeper: {
         address: health.keeperAddress,

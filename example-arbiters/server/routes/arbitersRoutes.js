@@ -3,8 +3,8 @@
  *
  * Read-only lookup that backs the wallet-gated "My Arbiters" page: given a
  * connected owner address, return the arbiters that wallet controls on a
- * network, grouped by operator contract, with claimable LINK and per-job stake
- * / lock state. The actual claim + deregister transactions are sent client-side
+ * network, grouped by operator contract, with claimable ETH (per owner) and per-job
+ * stake / lock state. The actual claim + deregister transactions are sent client-side
  * via the user's wallet; this endpoint only supplies what to show and the
  * keeper address needed to build the deregister tx.
  */

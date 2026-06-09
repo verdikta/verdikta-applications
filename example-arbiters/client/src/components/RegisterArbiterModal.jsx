@@ -23,7 +23,7 @@ const STEP_ORDER = ['approve', 'register'];
 function RegisterArbiterModal({
   operator,
   jobId,
-  fee, // LINK decimal string
+  fee, // ETH decimal string
   classes, // number[]
   keeperAddress,
   owner,
@@ -160,7 +160,7 @@ function RegisterArbiterModal({
         <div className="modal-detail">
           <div><span>Operator</span><code title={operator}>{shortAddr(operator)}</code></div>
           <div><span>Job ID</span><code title={jobId}>{shortHash(jobId)}</code></div>
-          <div><span>Fee</span><code>{fee} LINK</code></div>
+          <div><span>Fee</span><code>{fee} ETH</code></div>
           <div><span>Classes</span><code>{classes?.join(', ') || '—'}</code></div>
           {ctx && (
             <div>

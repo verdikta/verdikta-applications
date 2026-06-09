@@ -193,7 +193,7 @@ router.get('/system', async (req, res) => {
 /**
  * GET /api/analytics/owners
  * Arbiters grouped by owner address (sorted numerically ascending), with totals
- * for # arbiters, average reputation, claimable LINK and node funding.
+ * for # arbiters, average reputation, claimable ETH and node funding.
  * Cached per network.
  */
 router.get('/owners', async (req, res) => {

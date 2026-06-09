@@ -61,7 +61,7 @@ export const apiService = {
   },
 
   // Arbiters owned by `owner` on `network`, grouped by operator contract, with
-  // claimable LINK and per-job stake/lock state. Backs the My Arbiters page.
+  // claimable ETH (per owner) and per-job stake/lock state. Backs the My Arbiters page.
   // Allows extra time for the on-chain enumeration.
   async getOwnedArbiters(owner, network) {
     const response = await api.get('/api/arbiters/owned', {
@@ -72,7 +72,7 @@ export const apiService = {
   },
 
   // Arbiters grouped by owner address for the analytics "Arbiters by Owner"
-  // table (counts, reputation, claimable LINK, node funding).
+  // table (counts, reputation, claimable ETH, node funding).
   async getOwnersAnalytics(network) {
     const response = await api.get('/api/analytics/owners', {
       params: { network },

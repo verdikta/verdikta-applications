@@ -316,9 +316,9 @@ function Contracts() {
               <ConfigItem label="Cluster (P)" value={agg.config.clusterSize} />
               <ConfigItem label="Bonus Multiplier" value={agg.config.bonusMultiplier != null ? `${agg.config.bonusMultiplier}x` : null} />
               <ConfigItem label="Timeout" value={agg.config.responseTimeoutSeconds != null ? `${agg.config.responseTimeoutSeconds}s` : null} />
-              <ConfigItem label="Max Oracle Fee" value={agg.config.maxOracleFee != null ? `${agg.config.maxOracleFee} LINK` : null} />
+              <ConfigItem label="Max Oracle Fee" value={agg.config.maxOracleFee != null ? `${agg.config.maxOracleFee} ETH` : null} />
               {agg.payment?.fee != null && Number(agg.payment.fee) > 0 && (
-                <ConfigItem label="Fee / Oracle" value={`${agg.payment.fee} LINK`} />
+                <ConfigItem label="Fee / Oracle" value={`${agg.payment.fee} ETH`} />
               )}
               <ConfigItem
                 label="Max Scores / Response"
@@ -375,7 +375,7 @@ function Contracts() {
 
           {agg?.payment && (
             <div className="contract-addresses">
-              <AddressRow label="LINK Token (payment)" address={agg.payment.linkTokenAddress} explorer={explorer} />
+              <AddressRow label="Transport Token (0-juel rail)" address={agg.payment.transportTokenAddress} explorer={explorer} />
               {!isZeroHash(agg.payment.jobId) && (
                 <div className="contract-row">
                   <span className="contract-label">Chainlink Job ID</span>

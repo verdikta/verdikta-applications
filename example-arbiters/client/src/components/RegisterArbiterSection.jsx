@@ -140,12 +140,12 @@ function RegisterArbiterSection({
               />
             </label>
             <label className="reset-field">
-              <span>Fee (LINK)</span>
+              <span>Fee (ETH)</span>
               <input
-                type="number" min="0" step="0.001"
+                type="number" min="0" step="0.00001"
                 value={fee}
                 onChange={(e) => setFee(e.target.value)}
-                placeholder="0.1"
+                placeholder="0.0001"
                 aria-invalid={fee !== '' && !!feeP.error}
               />
             </label>

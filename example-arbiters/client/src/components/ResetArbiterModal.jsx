@@ -321,9 +321,9 @@ function ResetArbiterModal({
 
         <div className="reset-edit">
           <label className="reset-field">
-            <span>Fee (LINK)</span>
+            <span>Fee (ETH)</span>
             <input
-              type="number" min="0" step="0.001"
+              type="number" min="0" step="0.00001"
               value={feeInput}
               onChange={(e) => setFeeInput(e.target.value)}
               disabled={inputsLocked}
@@ -347,7 +347,7 @@ function ResetArbiterModal({
           {formValid && (feeChanged || classesChanged) && (
             <div className="reset-edit-changed">
               <AlertTriangle size={13} /> Changing
-              {feeChanged && <> fee → <strong>{feeInput.trim()} LINK</strong></>}
+              {feeChanged && <> fee → <strong>{feeInput.trim()} ETH</strong></>}
               {feeChanged && classesChanged && ' and'}
               {classesChanged && <> classes → <strong>{classParse.classes.join(', ')}</strong></>}
             </div>

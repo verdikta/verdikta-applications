@@ -36,11 +36,11 @@ const HOW_IT_WORKS = [
   { icon: Coins, title: 'Stake & register', text: 'Operators stake 100 wVDKA in the Reputation Keeper to register an arbiter.' },
   { icon: Shuffle, title: 'Randomly selected', text: 'For each request a panel of arbiters is drawn at random, weighted by reputation.' },
   { icon: Lock, title: 'Commit & reveal', text: 'Selected arbiters commit, then reveal their scored AI evaluation.' },
-  { icon: Gavel, title: 'Verdict & rewards', text: 'Responses are aggregated into one verdict; arbiters earn LINK and gain or lose reputation.' }
+  { icon: Gavel, title: 'Verdict & rewards', text: 'Responses are aggregated into one verdict; arbiters earn ETH and gain or lose reputation.' }
 ];
 
 const EXPLORE = [
-  { to: '/my-arbiters', icon: Wallet, title: 'My Arbiters', text: 'Connect a wallet to claim earned LINK and close out your arbiters.' },
+  { to: '/my-arbiters', icon: Wallet, title: 'My Arbiters', text: 'Connect a wallet to claim earned ETH and close out your arbiters.' },
   { to: '/analytics', icon: BarChart3, title: 'Analytics', text: 'Arbiter availability and reputation by owner, plus system diagnostics.' },
   { to: '/contracts', icon: FileText, title: 'Contracts', text: 'The core Verdikta contracts and their live on-chain configuration.' }
 ];
@@ -184,7 +184,7 @@ function Home() {
           Verdikta lets smart contracts request AI evaluations that are decided collectively by
           independent <strong>arbiters</strong> — oracle operators who stake wVDKA, are chosen at
           random for each request, and respond through a commit-reveal protocol. Their answers are
-          aggregated into a single verdict, and arbiters earn LINK while building on-chain
+          aggregated into a single verdict, and arbiters earn ETH while building on-chain
           reputation for accuracy and timeliness.
         </p>
         <div className="steps">

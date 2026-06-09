@@ -3,7 +3,9 @@
  *
  * Lets an arbiter owner manage the arbiters their connected wallet controls on
  * the header-selected network:
- *  - Claim earned LINK (per operator contract → ArbiterOperator.withdraw)
+ *  - Claim earned ETH (per owner → ReputationAggregator.withdrawEth, from the ethOwed
+ *    pull-payment ledger). A secondary per-operator "legacy LINK" claim
+ *    (ArbiterOperator.withdraw) appears only when LINK lingers from the old aggregator.
  *  - Close out an arbiter and reclaim the 100 wVDKA stake (per oracle+jobId →
  *    ReputationKeeper.deregisterOracle)
  *
@@ -32,7 +34,7 @@ import { useNetwork } from '../context/NetworkContext';
 import { useWallet } from '../context/WalletContext';
 import { chainForNetwork } from '../config/chains';
 import { apiService } from '../services/api';
-import { claimLink, deregisterArbiter, sendEth } from '../services/arbiterContracts';
+import { withdrawEth, claimLink, deregisterArbiter, sendEth } from '../services/arbiterContracts';
 import { getPendingResets, clearPendingReset } from '../services/resetRegistry';
 import ResetArbiterModal from '../components/ResetArbiterModal';
 import RegisterArbiterSection from '../components/RegisterArbiterSection';
@@ -171,6 +173,28 @@ function MyArbiters() {
     }
   };
 
+  // Primary claim: withdraw the owner's earned ETH from the aggregator's ethOwed ledger.
+  // Per-owner (aggregated across all their operators), not per operator.
+  const handleWithdrawEth = async () => {
+    const key = 'withdrawEth';
+    setKeyPending(key, true);
+    try {
+      const signer = getSigner();
+      if (!signer) throw new Error('Wallet signer unavailable. Reconnect your wallet.');
+      const { txHash } = await withdrawEth({
+        signer,
+        aggregatorAddress: data?.aggregatorAddress,
+      });
+      toast.success(`ETH claimed · tx ${shortHash(txHash)}`);
+      await load();
+    } catch (err) {
+      toast.error(err.message || 'Failed to claim ETH');
+    } finally {
+      setKeyPending(key, false);
+    }
+  };
+
+  // Legacy claim: drain LINK left in an operator contract from the old LINK aggregator.
   const handleClaim = async (operator) => {
     const key = `claim:${operator.operator}`;
     setKeyPending(key, true);
@@ -182,10 +206,10 @@ function MyArbiters() {
         operatorAddress: operator.operator,
         recipient: address,
       });
-      toast.success(`LINK claimed · tx ${shortHash(txHash)}`);
+      toast.success(`Legacy LINK claimed · tx ${shortHash(txHash)}`);
       await load();
     } catch (err) {
-      toast.error(err.message || 'Failed to claim LINK');
+      toast.error(err.message || 'Failed to claim legacy LINK');
     } finally {
       setKeyPending(key, false);
     }
@@ -288,7 +312,7 @@ function MyArbiters() {
     <div className="page-header">
       <div className="header-content">
         <h1><Wallet size={28} className="inline-icon" /> My Arbiters</h1>
-        <p>Claim earned LINK and close out arbiters on {chain.name}</p>
+        <p>Claim earned ETH and close out arbiters on {chain.name}</p>
       </div>
       {isConnected && (
         <div className="header-actions">
@@ -329,7 +353,7 @@ function MyArbiters() {
           <div className="gate-state">
             <Wallet size={40} />
             <h2>Connect your wallet</h2>
-            <p>Connect the wallet that owns your arbiters to claim LINK and reclaim stake.</p>
+            <p>Connect the wallet that owns your arbiters to claim earned ETH and reclaim stake.</p>
             <button className="btn btn-primary btn-with-icon" onClick={handleConnect} disabled={connecting}>
               <Wallet size={16} />
               {connecting ? 'Connecting…' : 'Connect Wallet'}
@@ -350,7 +374,7 @@ function MyArbiters() {
       <AlertTriangle size={16} className="warn-icon" />
       <span>
         Your wallet is on a different network. Switch to <strong>{chain.name}</strong> to claim
-        LINK, fund keys, or close out arbiters — you can still view them below.
+        ETH, fund keys, or close out arbiters — you can still view them below.
       </span>
       <button className="btn btn-primary btn-with-icon" onClick={handleSwitch} disabled={switching}>
         <Server size={16} />
@@ -358,6 +382,38 @@ function MyArbiters() {
       </button>
     </div>
   ) : null;
+
+  // Primary, per-owner ETH earnings claim. Earnings (base + bonus) accrue to ethOwed on the
+  // aggregator aggregated across ALL the owner's operators, so this is a single claim — not
+  // per operator. Withdraws the full ethOwed balance to the connected wallet.
+  const claimableEth = parseFloat(data?.claimableEth || '0');
+  const withdrawingEth = pending.has('withdrawEth');
+  const canWithdrawEth = claimableEth > 0 && !withdrawingEth && onCorrectChain;
+  const ethClaimPanel = (
+    <section className="analytics-section eth-claim-panel">
+      <div className="operator-claim">
+        <div className="claim-balance">
+          <Coins size={16} className="inline-icon" />
+          <strong>{data?.claimableEth ?? '—'}</strong> ETH claimable
+        </div>
+        <button
+          className="btn btn-primary btn-with-icon"
+          onClick={handleWithdrawEth}
+          disabled={!canWithdrawEth}
+          title={!onCorrectChain
+            ? `Switch to ${chain.name} to claim`
+            : claimableEth > 0 ? 'Withdraw your earned ETH to your wallet' : 'No ETH available to claim'}
+        >
+          <Coins size={14} />
+          {withdrawingEth ? 'Withdrawing…' : 'Withdraw earned ETH'}
+        </button>
+      </div>
+      <p className="claim-note muted">
+        Earnings are paid in ETH and accrue per owner across all your operators. Unwithdrawn
+        ETH stays credited on the aggregator and can be claimed any time.
+      </p>
+    </section>
+  );
 
   // Resets that stopped after close-out leave the arbiter delisted and offline.
   // Surface them so the owner can finish re-registering (note: when the reset
@@ -446,6 +502,7 @@ function MyArbiters() {
         {header}
         {wrongChainBanner}
         {resumeBanner}
+        {claimableEth > 0 && ethClaimPanel}
         <section className="analytics-section">
           <div className="gate-state">
             <Inbox size={40} />
@@ -466,10 +523,12 @@ function MyArbiters() {
       {header}
       {wrongChainBanner}
       {resumeBanner}
+      {ethClaimPanel}
 
       {operators.map((operator) => {
         const claimKey = `claim:${operator.operator}`;
         const claiming = pending.has(claimKey);
+        // Legacy LINK left over from the old aggregator; normally 0 under 0-juel dispatch.
         const withdrawable = parseFloat(operator.withdrawableLink || '0');
         const canClaim = withdrawable > 0 && !claiming && onCorrectChain;
 
@@ -487,23 +546,25 @@ function MyArbiters() {
                   <code>{shortAddr(operator.operator)}</code> <ExternalLink size={12} />
                 </a>
               </div>
-              <div className="operator-claim">
-                <div className="claim-balance">
-                  <Coins size={16} className="inline-icon" />
-                  <strong>{operator.withdrawableLink ?? '—'}</strong> LINK claimable
+              {withdrawable > 0 && (
+                <div className="operator-claim legacy-link-claim">
+                  <div className="claim-balance">
+                    <Coins size={16} className="inline-icon" />
+                    <strong>{operator.withdrawableLink}</strong> legacy LINK
+                  </div>
+                  <button
+                    className="btn btn-secondary btn-with-icon"
+                    onClick={() => handleClaim(operator)}
+                    disabled={!canClaim}
+                    title={!onCorrectChain
+                      ? `Switch to ${chain.name} to claim`
+                      : 'Drain leftover LINK from the old aggregator to your wallet'}
+                  >
+                    <Coins size={14} />
+                    {claiming ? 'Claiming…' : 'Claim legacy LINK'}
+                  </button>
                 </div>
-                <button
-                  className="btn btn-primary btn-with-icon"
-                  onClick={() => handleClaim(operator)}
-                  disabled={!canClaim}
-                  title={!onCorrectChain
-                    ? `Switch to ${chain.name} to claim`
-                    : withdrawable > 0 ? 'Withdraw earned LINK to your wallet' : 'No LINK available to claim'}
-                >
-                  <Coins size={14} />
-                  {claiming ? 'Claiming…' : 'Claim LINK'}
-                </button>
-              </div>
+              )}
             </div>
 
             {operator.funding && (() => {

@@ -1,17 +1,28 @@
 /**
  * Arbiter contract write helpers (client-side, via the user's wallet signer).
  *
- * Two owner-gated actions:
- *  - claimLink: withdraw earned LINK from an ArbiterOperator (Chainlink Operator)
- *    contract to the connected owner. Balance is per operator contract.
+ * Owner-gated actions:
+ *  - withdrawEth: claim earned ETH from the ReputationAggregator's pull-payment
+ *    ledger (ethOwed) to the connected owner. Earnings are credited PER OWNER
+ *    (aggregated across all of that owner's operators on this aggregator), so this
+ *    is a single per-owner claim — not per operator.
+ *  - claimLink: LEGACY — withdraw any LINK still sitting in an ArbiterOperator
+ *    (Chainlink Operator) contract from the old LINK aggregator. Per operator.
+ *    Vestigial under the ETH aggregator (0-juel dispatch accrues no new LINK);
+ *    retained only to drain leftover balances.
  *  - deregisterArbiter: deregister an (oracle, jobId) on the ReputationKeeper,
  *    which refunds the 100 wVDKA stake to the operator's owner.
  *
  * Each write does a staticCall dry-run first so on-chain require() reasons
- * ("Oracle is locked…", "Not authorized…") surface before we spend gas.
+ * ("Oracle is locked…", "Not authorized…", "NothingOwed") surface before we spend gas.
  */
 
 import { ethers } from 'ethers';
+
+const AGGREGATOR_ABI = [
+  'function ethOwed(address) view returns (uint256)',
+  'function withdrawEth()',
+];
 
 const OPERATOR_ABI = [
   'function withdrawable() view returns (uint256)',
@@ -57,8 +68,37 @@ function friendlyError(error) {
 }
 
 /**
- * Withdraw all currently-claimable LINK from an operator contract to `recipient`
- * (the connected owner). Reads the live withdrawable balance first.
+ * Withdraw the connected owner's earned ETH from the aggregator's pull-payment ledger
+ * (ethOwed). withdrawEth() always pays msg.sender its entire ethOwed balance — there is no
+ * recipient/amount to pass. Reverts with NothingOwed if the balance is zero (surfaced by
+ * the staticCall dry-run before spending gas).
+ * @returns {Promise<{txHash: string, amount: bigint}>}
+ */
+export async function withdrawEth({ signer, aggregatorAddress }) {
+  const aggregator = new ethers.Contract(aggregatorAddress, AGGREGATOR_ABI, signer);
+  let amount = 0n;
+  try {
+    amount = await aggregator.ethOwed(await signer.getAddress());
+  } catch {
+    // Non-fatal: the withdraw staticCall below is the authoritative guard.
+  }
+  if (amount === 0n) throw new Error('No ETH is currently available to claim.');
+
+  try {
+    await aggregator.withdrawEth.staticCall();
+    const tx = await aggregator.withdrawEth();
+    const receipt = await tx.wait();
+    return { txHash: receipt.hash, amount };
+  } catch (error) {
+    throw friendlyError(error);
+  }
+}
+
+/**
+ * LEGACY: withdraw all currently-claimable LINK from an operator contract to `recipient`
+ * (the connected owner). Reads the live withdrawable balance first. Under the ETH
+ * aggregator operators accrue no new LINK; this only drains balances left from the old
+ * LINK aggregator.
  * @returns {Promise<{txHash: string, amount: bigint}>}
  */
 export async function claimLink({ signer, operatorAddress, recipient }) {

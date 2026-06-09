@@ -185,7 +185,11 @@ function App() {
 
   // Default aggregator parameters
   const ALPHA = 500;
-  const MAX_FEE = parseEther("0.01"); // returns a bigint
+  // Max per-oracle fee, in ETH (arbiters are now paid in ETH, not LINK). A typical
+  // arbiter fee is ~0.0001 ETH; the on-chain ReputationAggregator.maxOracleFee ceiling
+  // (0.0004 ETH) clamps anything higher, so this sits safely under it. Worst-case prepay
+  // for a query is maxTotalFee = effFee * (K + B*P) = 0.0001 * 12 = 0.0012 ETH.
+  const MAX_FEE = parseEther("0.0001"); // returns a bigint
   const BASE_FEE_PCT = 1; // 1%
   const ESTIMATED_BASE_COST = MAX_FEE * BigInt(BASE_FEE_PCT) / 100n; // Using native BigInt arithmetic
   const MAX_FEE_SCALING_FACTOR = 10;
@@ -271,7 +275,16 @@ function App() {
       setContractOptions(contractOptions);
 
       if (contractOptions.length > 0) {
-        if (!contractAddress || contractAddress === "manage") {
+        const isManage = contractAddress === "manage";
+        const stillValid = contractOptions.some(
+          o => o.address.toLowerCase() === (contractAddress || '').toLowerCase()
+        );
+        // Re-select the first contract when nothing is chosen OR the current selection
+        // isn't valid for the selected network (e.g. right after a network switch, when
+        // a mainnet address would otherwise linger while only testnet contracts apply).
+        // "manage" is intentionally left untouched here — the dedicated reset effect
+        // handles it so Contract-Management navigation isn't interrupted.
+        if (!contractAddress || (!isManage && !stillValid)) {
           setContractAddress(contractOptions[0].address);
         }
       } else {

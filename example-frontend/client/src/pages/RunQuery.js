@@ -1,8 +1,8 @@
 /* global BigInt */
 // src/pages/RunQuery.js
-import React, { useState, useEffect } from 'react';
-// Import ethers along with parseEther from ethers v6 (we no longer import BigNumber)
-import { ethers, parseEther, parseUnits } from 'ethers';
+import React, { useState, useEffect, useCallback } from 'react';
+// Import ethers from ethers v6 (we no longer import BigNumber)
+import { ethers, parseUnits } from 'ethers';
 import { getNetworkConfig } from '../utils/contractUtils';
 import { PAGES } from '../App';
 import { fetchWithRetry, tryParseJustification } from '../utils/fetchUtils';
@@ -16,9 +16,6 @@ import {
 import { modelProviderService } from '../services/modelProviderService';
 import { waitForFulfilOrTimeout } from '../utils/timeoutUtils';
 import { ContractDebugger } from '../utils/contractDebugger';
-
-// Import the LINK token ABI (make sure this file exists at src/utils/LINKTokenABI.json)
-import LINK_TOKEN_ABI from '../utils/LINKTokenABI.json';
 
 // Default query package CID for example/testing
 const DEFAULT_QUERY_CID = 'QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH';
@@ -115,78 +112,29 @@ async function pollForEvaluationResults(
 }
 
 /**
- * Grow or replace LINK allowance according to age of last Approval event.
+ * Compute the ETH (wei) the caller must attach to a request, given the contract's
+ * worst-case requirement and the caller's existing on-chain ethOwed credit.
  *
- * requiredExtra – bigint (fee for this new request)
+ * The ETH-funded ReputationAggregator funds a round from the caller's existing
+ * ethOwed credit FIRST, then requires msg.value to cover the remaining shortfall.
+ * So value = max(0, required - credit). Mirrors _fundFromCredit() on-chain.
+ *
+ * @param {ethers.Contract} readContract - aggregator bound to a read provider
+ * @param {bigint} maxFee   - per-oracle max fee (ETH wei) passed to the request
+ * @param {string} owner    - the requester address (msg.sender)
+ * @returns {Promise<{required: bigint, credit: bigint, value: bigint}>}
  */
-async function topUpLinkAllowance({
-  requiredExtra,
-  provider,
-  owner,
-  spender,
-  linkTokenAddress,
-  setTransactionStatus,
-  STALE_SECONDS   = 1800,      // 1/2 hour, after this approval is considered stale
-  SEARCH_WINDOW   = 7_200,     // look back this many blocks seeking last approval (~4 hours on Base Sepolia)
-  PAYMENT_MULTIPLIER = 1.5,    // modest margin for overlapping calls; actual fee is ~0.03 LINK
-  PAYMENT_MIN = parseUnits("5", 15), // 0.005 LINK floor (safety only, not a buffer)
-  PAYMENT_MAX = parseUnits("2", 17)  // 0.2 LINK ceiling (sanity cap)
-}) {
-  const signer = await provider.getSigner();
-  const link   = new ethers.Contract(linkTokenAddress, LINK_TOKEN_ABI, signer);
-
-  // 1.  Find the age of the last Approval(owner, spender, …) 
-  const filter       = link.filters.Approval(owner, spender);
-  const latestBlock  = await provider.getBlockNumber();
-  const fromBlock    = Math.max(0, latestBlock - SEARCH_WINDOW);
-  const events       = await link.queryFilter(filter, fromBlock, latestBlock);
-
-  let hasHistory = false;
-  let ageSecs    = 0;
-
-  if (events.length > 0) {
-    hasHistory = true;
-    const lastBlock = await provider.getBlock(events[events.length - 1].blockNumber);
-    ageSecs = Math.floor(Date.now() / 1000) - lastBlock.timestamp;
+async function computeEthFunding(readContract, maxFee, owner) {
+  const required = await readContract.maxTotalFee(maxFee); // worst case, ETH wei
+  let credit = 0n;
+  try {
+    credit = await readContract.ethOwed(owner);
+  } catch (e) {
+    // ethOwed is a simple mapping getter; a failure here just means "assume no credit".
+    console.warn('Could not read ethOwed credit; assuming 0:', e?.message || e);
   }
-
-  // 2.  Current allowance 
-  const current = await link.allowance(owner, spender); 
-
-  // 3.  Decide newTotal 
-  let newTotal;
-  const requiredExtraWithMargin = requiredExtra * 3n / 2n; // 1.5× margin
-  if (!hasHistory) {
-    // First approval over window 
-    newTotal = requiredExtraWithMargin;
-    newTotal<BigInt(PAYMENT_MIN) && (newTotal=BigInt(PAYMENT_MIN));
-    setTransactionStatus?.(`Approving LINK to begin (using ${PAYMENT_MULTIPLIER}× margin with a minimum)…`);
-  } else if (ageSecs > STALE_SECONDS) {
-    // Old approval exists → replace with just this fee
-    newTotal = requiredExtraWithMargin;
-    newTotal<BigInt(PAYMENT_MIN) && (newTotal=BigInt(PAYMENT_MIN));
-    setTransactionStatus?.('Replacing stale LINK allowance…');
-  } else {
-    // Recent approval → add on top
-    newTotal = current + requiredExtraWithMargin;
-    newTotal<BigInt(PAYMENT_MIN) && (newTotal=BigInt(PAYMENT_MIN));
-    if(newTotal>BigInt(PAYMENT_MAX))
-    {
-      newTotal = BigInt(PAYMENT_MAX);
-      setTransactionStatus?.('Topping-up active LINK allowance to maximum…');
-    }
-    else
-    {
-      setTransactionStatus?.('Topping-up active LINK allowance…');
-    }
-  }
-
-  // 4.  Send approve() 
-  console.log( `Allowance ${ethers.formatUnits(current, 18)} → `
-    + `${ethers.formatUnits(newTotal, 18)} LINK`);
-  const tx = await link.approve(spender, newTotal);
-  await tx.wait();
-  console.log('LINK approval confirmed:', tx.hash);
+  const value = required > credit ? required - credit : 0n;
+  return { required, credit, value };
 }
 
 function RunQuery({
@@ -261,6 +209,73 @@ function RunQuery({
     }
   }, [selectedMethod, queryPackageCid]);
 
+  // ----- ETH prepay credit (ethOwed) widget -----
+  // Unspent prepay from past queries is held on-chain as a withdrawable credit that is
+  // also auto-applied to the next query. Surface it so users can see and reclaim it.
+  const [ethCredit, setEthCredit] = useState(0n);
+  const [withdrawing, setWithdrawing] = useState(false);
+  // Worst-case prepay shown in the banner. Default to maxFee * (K + B*P) with the live
+  // defaults (K=6, B=3, P=2 => 12); refined to the contract's exact maxTotalFee() below.
+  const [maxTotalFeeEstimate, setMaxTotalFeeEstimate] = useState(() => (maxFee || 0n) * 12n);
+
+  const refreshEthCredit = useCallback(async () => {
+    if (!isConnected || !walletAddress || !contractAddress) {
+      setEthCredit(0n);
+      return;
+    }
+    try {
+      const networkToUse = selectedNetwork || 'base_sepolia';
+      const roProvider = getReadOnlyProvider(networkToUse);
+      // Skip if there is no contract at this address on the selected network.
+      if ((await roProvider.getCode(contractAddress)) === '0x') {
+        setEthCredit(0n);
+        return;
+      }
+      const readContract = new ethers.Contract(contractAddress, CONTRACT_ABI, roProvider);
+      const [owed, worstCase] = await Promise.all([
+        readContract.ethOwed(walletAddress),
+        readContract.maxTotalFee(maxFee).catch(() => null),
+      ]);
+      setEthCredit(owed);
+      if (worstCase != null) setMaxTotalFeeEstimate(worstCase);
+    } catch (err) {
+      console.warn('Could not read ETH prepay credit:', err?.message || err);
+      setEthCredit(0n);
+    }
+  }, [isConnected, walletAddress, contractAddress, selectedNetwork, maxFee]);
+
+  useEffect(() => {
+    refreshEthCredit();
+  }, [refreshEthCredit]);
+
+  const handleWithdrawCredit = async () => {
+    try {
+      setWithdrawing(true);
+      const networkToUse = selectedNetwork || 'base_sepolia';
+      const ethereum = window.ethereum?.providers?.find(p => p.isMetaMask) ?? window.ethereum;
+      if (!ethereum) throw new Error('No Ethereum wallet detected. Please install MetaMask.');
+      let provider = new ethers.BrowserProvider(ethereum);
+      provider = await ensureCorrectNetwork(provider, networkToUse);
+      const signer = await provider.getSigner();
+      const contract = new ethers.Contract(contractAddress, CONTRACT_ABI, signer);
+      const tx = await contract.withdrawEth();
+      await tx.wait();
+      await refreshEthCredit();
+      alert('Prepay credit withdrawn to your wallet.');
+    } catch (err) {
+      console.error('Withdraw credit error:', err);
+      const reason = err?.reason || err?.shortMessage || err?.message || 'Unknown error';
+      // NothingOwed simply means the credit was already 0 / withdrawn.
+      if (String(reason).includes('NothingOwed')) {
+        await refreshEthCredit();
+      } else {
+        alert(`Failed to withdraw credit: ${reason}`);
+      }
+    } finally {
+      setWithdrawing(false);
+    }
+  };
+
   const handleFileUpload = (event) => {
     const file = event.target.files[0];
     if (file && (file.type === 'application/zip' || file.name.endsWith('.zip'))) {
@@ -293,8 +308,8 @@ const debugContractIssues = async () => {
       [getFirstCid(currentCid)], // Use actual CID from current state
       textAddendum.trim(),
       alpha || 500, // Use actual alpha value
-      maxFee || parseUnits("0.01", 18), // Use actual maxFee
-      estimatedBaseCost || parseUnits("0.0001", 18), // Use actual estimatedBaseCost
+      maxFee || parseUnits("0.0001", 18), // Use actual maxFee (ETH)
+      estimatedBaseCost || parseUnits("0.000001", 18), // Use actual estimatedBaseCost (ETH)
       maxFeeBasedScalingFactor || 10, // Use actual scaling factor
       selectedClassId || 128
     );
@@ -370,14 +385,9 @@ const handleRunQuery = async () => {
     const readContract  = new ethers.Contract(
        contractAddress, CONTRACT_ABI, roProvider);
 
-    // 2) Check contract funding
-    // setTransactionStatus?.('Checking contract funding...');
-    // await checkContractFunding(contract, provider);
-    const config = await readContract.getContractConfig();
-    const linkTokenAddress = config.linkAddr;
-    if ((await roProvider.getCode(linkTokenAddress)) === '0x') {
-      throw new Error(`LINK token not found at ${linkTokenAddress} on ${getNetworkConfig(networkToUse).name}`);
-    }
+    // 2) (ETH payment) No LINK funding/allowance check is needed: arbiters are paid in
+    //    ETH from the requester's escrowed msg.value. The requester's own ETH balance is
+    //    verified against the worst-case prepay in step 4 below.
 
     // Read the on-chain responseTimeoutSeconds so UI stays in sync
     const responseTimeoutSeconds = Number(
@@ -459,28 +469,44 @@ const handleRunQuery = async () => {
         setCurrentCid?.(cid);
       }
 
-    // 4) Make sure the contract has enough LINK allowance
+    // 4) Compute the ETH to attach (msg.value). Worst-case prepay is maxTotalFee(maxFee);
+    //    any existing ethOwed credit is applied first, and unspent ETH is refunded as a
+    //    fresh ethOwed credit after the round settles.
+    let ethValue;
     try {
-      console.log('💰 Checking LINK allowance - walletAddress:', walletAddress);
+      console.log('💰 Computing ETH funding - walletAddress:', walletAddress);
       if (!walletAddress) {
-        throw new Error('Wallet address is not available for LINK allowance check');
+        throw new Error('Wallet address is not available for funding calculation');
       }
-      
-      const feeForThisRequest = await readContract.maxTotalFee(maxFee);
-      await topUpLinkAllowance({
-        requiredExtra:     feeForThisRequest,
-        provider,
-        owner:             walletAddress,
-        spender:           contractAddress,
-        linkTokenAddress,
-        setTransactionStatus
-      });
+
+      const { required, credit, value } = await computeEthFunding(readContract, maxFee, walletAddress);
+      ethValue = value;
+      console.log(
+        `ETH funding — required: ${ethers.formatEther(required)} ETH, ` +
+        `credit: ${ethers.formatEther(credit)} ETH, attaching: ${ethers.formatEther(value)} ETH`
+      );
+
+      // Pre-flight: ensure the wallet can cover the ETH value (gas is on top).
+      const walletBalance = await roProvider.getBalance(walletAddress);
+      if (walletBalance < ethValue) {
+        throw new Error(
+          `Insufficient ETH. This query needs ${ethers.formatEther(ethValue)} ETH ` +
+          `(worst case ${ethers.formatEther(required)} ETH minus ${ethers.formatEther(credit)} ETH credit), ` +
+          `but your wallet holds ${ethers.formatEther(walletBalance)} ETH (plus gas).`
+        );
+      }
+
+      if (value === 0n) {
+        setTransactionStatus?.('Fully covered by your existing prepay credit — no ETH needed beyond gas…');
+      } else if (credit > 0n) {
+        setTransactionStatus?.(`Applying ${ethers.formatEther(credit)} ETH credit; attaching ${ethers.formatEther(value)} ETH…`);
+      }
     } catch (err) {
-      console.error('LINK approval error:', err);
+      console.error('ETH funding error:', err);
       // Set error state for debug functionality
       setHasError(true);
       setLastError(err);
-      // Bail out early; the main tx will fail without allowance
+      // Bail out early; the main tx would revert without sufficient value
       setTransactionStatus(`Error: ${err.message}`);
       await new Promise(resolve => setTimeout(resolve, 2000));
       setLoadingResults(false);
@@ -539,7 +565,8 @@ const handleRunQuery = async () => {
         estimatedBaseCost,
         maxFeeBasedScalingFactor,
 	selectedClassId === undefined ? 128 : selectedClassId,
-        { 
+        {
+          value: ethValue, // ETH prepay (msg.value); unspent portion refunded as ethOwed credit
           gasLimit: 4500000, // high current gas limit
           maxFeePerGas: adjustedMaxFee,
           maxPriorityFeePerGas: adjustedPriorityFee
@@ -655,11 +682,17 @@ if (result.status === 'timed-out') {
       }
       const msg = decoded || error.reason || error.message || '';
 
-      if (msg.includes('Insufficient LINK tokens') || msg.toLowerCase().includes('insufficientlink')) {
-        const errorMessage = `Contract doesn't have enough LINK tokens to perform this operation.
+      if (msg.includes('InsufficientPayment') || msg.toLowerCase().includes('insufficient funds') || msg.toLowerCase().includes('insufficient eth')) {
+        const errorMessage = `Not enough ETH was attached to pay for this AI jury request.
 
-This blockchain operation requires LINK tokens to pay for the AI jury service. Please contact the administrator to fund the contract.`;
-        setTransactionStatus(`Error: Insufficient LINK tokens`);
+Each query prepays the worst-case arbiter fees in ETH (refunded if unused). Please ensure your wallet has enough ETH and try again.`;
+        setTransactionStatus(`Error: Insufficient ETH for payment`);
+        alert(errorMessage);
+      } else if (msg.includes('InactiveOracle') || msg.includes('BadSelectionCount')) {
+        const errorMessage = `No eligible arbiters could be selected for this request (class ${selectedClassId === undefined ? 128 : selectedClassId}).
+
+This usually means too few active oracles serve the selected class, or the per-oracle fee ceiling excluded them. Try a different class or contact the administrator.`;
+        setTransactionStatus(`Error: ${decoded || 'No eligible arbiters'}`);
         alert(errorMessage);
       } else if (msg.includes('User rejected')) {
         setTransactionStatus(`Error: Transaction rejected`);
@@ -670,6 +703,9 @@ This blockchain operation requires LINK tokens to pay for the AI jury service. P
       }
     } finally {
       setLoadingResults(false);
+      // A settled (or failed/timed-out) round may have refunded unspent prepay as an
+      // ethOwed credit — refresh the widget so the user sees their reclaimable balance.
+      refreshEthCredit();
     }
   };
 
@@ -694,6 +730,42 @@ This blockchain operation requires LINK tokens to pay for the AI jury service. P
           <p style={{ color: '#666', fontSize: '14px', margin: '10px 0 0 0' }}>
             The oracle did not respond within the timeout period. Please try again or contact support if this persists.
           </p>
+        </div>
+      )}
+
+      {/* ETH payment notice + prepay credit */}
+      {isConnected && (
+        <div style={{
+          backgroundColor: '#eef6ff',
+          border: '1px solid #bcd8f5',
+          borderRadius: '8px',
+          padding: '12px 16px',
+          margin: '12px 0',
+          fontSize: '14px',
+          color: '#234',
+        }}>
+          <div>
+            💧 Queries are paid in <strong>ETH</strong>. Each run prepays the worst-case arbiter
+            fees (about <strong>{ethers.formatEther(maxTotalFeeEstimate)} ETH</strong>); any unused
+            amount is returned as on-chain <em>prepay credit</em> that is automatically applied to
+            your next query.
+          </div>
+          {ethCredit > 0n && (
+            <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <span>
+                Your prepay credit: <strong>{ethers.formatEther(ethCredit)} ETH</strong>
+              </span>
+              <button
+                className="secondary"
+                onClick={handleWithdrawCredit}
+                disabled={withdrawing}
+                style={{ padding: '2px 10px', fontSize: '13px', cursor: 'pointer' }}
+                title="Withdraw your unused prepay credit back to your wallet"
+              >
+                {withdrawing ? 'Withdrawing…' : 'Withdraw credit'}
+              </button>
+            </div>
+          )}
         </div>
       )}
       <div className="method-selector">

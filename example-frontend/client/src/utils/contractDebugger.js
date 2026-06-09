@@ -1,20 +1,17 @@
-// Browser-based contract debugging utility
-// Add this to the RunQuery component for advanced debugging
+// Browser-based contract debugging utility for the ETH-funded ReputationAggregator.
+// Fired on-demand from RunQuery when a request errors. Arbiters are paid in ETH, so the
+// diagnostics check the requester's ETH balance vs. the worst-case prepay and dry-run the
+// payable request — there is no LINK allowance/balance to inspect anymore.
 
 import { ethers } from 'ethers';
 
 const CONTRACT_ABI = [
-  "function getContractConfig() view returns (tuple(address linkAddr, uint256 fee, uint256 baseFee, uint256 requestTimeoutSeconds))",
+  "function getContractConfig() view returns (address oracleAddr, address linkAddr, bytes32 jobId, uint256 currentFee)",
   "function responseTimeoutSeconds() view returns (uint256)",
   "function maxTotalFee(uint256 maxFee) view returns (uint256)",
-  "function getRegisteredOracles(uint256 class) view returns (address[])",
-  "function getOracleInfo(address oracle) view returns (tuple(string jobId, bool isActive, uint256 class, address node))",
-  "function requestAIEvaluationWithApproval(string[] memory cidArray, string memory textAddendum, uint256 alpha, uint256 maxFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScalingFactor, uint256 class) payable returns (bytes32)"
-];
-
-const LINK_ABI = [
-  "function balanceOf(address account) view returns (uint256)",
-  "function allowance(address owner, address spender) view returns (uint256)"
+  "function maxOracleFee() view returns (uint256)",
+  "function ethOwed(address) view returns (uint256)",
+  "function requestAIEvaluationWithApproval(string[] memory cidArray, string memory textAddendum, uint256 alpha, uint256 maxFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScalingFactor, uint64 class) payable returns (bytes32)"
 ];
 
 export class ContractDebugger {
@@ -36,112 +33,79 @@ export class ContractDebugger {
 
     try {
       console.group('🔍 Contract Debug Analysis');
-      
-      // 1. Contract Configuration
+
+      // 1. Contract presence
+      const code = await this.provider.getCode(this.contractAddress);
+      debug.checks.contract = { success: code !== '0x', codeExists: code !== '0x' };
+      if (code === '0x') {
+        console.error('❌ No contract code at address (wrong network or address?)');
+      }
+
+      // 2. Contract configuration (legacy view; linkAddr is informational only now)
       console.log('📋 Checking contract configuration...');
       try {
         const config = await this.contract.getContractConfig();
         debug.checks.config = {
           success: true,
+          oracleAddr: config.oracleAddr,
           linkAddr: config.linkAddr,
-          fee: ethers.formatUnits(config.fee, 18),
-          baseFee: ethers.formatUnits(config.baseFee, 18),
-          timeout: config.requestTimeoutSeconds.toString()
+          jobId: config.jobId,
+          currentFee: ethers.formatUnits(config.currentFee, 18)
         };
+      } catch (err) {
+        debug.checks.config = { success: false, error: err.message };
+      }
 
-        const linkContract = new ethers.Contract(config.linkAddr, LINK_ABI, this.provider);
+      // 3. Requester ETH balance + on-chain prepay credit
+      console.log('💰 Checking ETH balance & prepay credit...');
+      try {
+        const [ethBalance, credit] = await Promise.all([
+          this.provider.getBalance(this.walletAddress),
+          this.contract.ethOwed(this.walletAddress).catch(() => 0n)
+        ]);
+        debug.checks.eth = {
+          success: true,
+          userBalance: ethers.formatEther(ethBalance),
+          prepayCredit: ethers.formatEther(credit),
+          _userBalanceWei: ethBalance,
+          _creditWei: credit
+        };
+      } catch (err) {
+        debug.checks.eth = { success: false, error: err.message };
+      }
 
-        // 2. LINK Token Status
-        console.log('💰 Checking LINK token status...');
-        const [userBalance, allowance, contractBalance] = await Promise.all([
-          linkContract.balanceOf(this.walletAddress),
-          linkContract.allowance(this.walletAddress, this.contractAddress),
-          linkContract.balanceOf(this.contractAddress)
+      // 4. Fee ceiling + worst-case prepay vs. wallet ETH
+      console.log('💸 Checking fee calculation...');
+      try {
+        const testMaxFee = ethers.parseUnits("0.0001", 18); // typical arbiter fee (ETH)
+        const [totalFee, ceiling] = await Promise.all([
+          this.contract.maxTotalFee(testMaxFee),
+          this.contract.maxOracleFee().catch(() => null)
         ]);
 
-        debug.checks.link = {
+        const creditWei = debug.checks.eth?._creditWei ?? 0n;
+        const balanceWei = debug.checks.eth?._userBalanceWei ?? 0n;
+        const valueNeeded = totalFee > creditWei ? totalFee - creditWei : 0n;
+
+        debug.checks.fees = {
           success: true,
-          userBalance: ethers.formatUnits(userBalance, 18),
-          allowance: ethers.formatUnits(allowance, 18),
-          contractBalance: ethers.formatUnits(contractBalance, 18)
+          maxFeeInput: ethers.formatUnits(testMaxFee, 18),
+          maxOracleFeeCeiling: ceiling != null ? ethers.formatEther(ceiling) : 'unknown',
+          worstCasePrepay: ethers.formatEther(totalFee),
+          ethToAttach: ethers.formatEther(valueNeeded),
+          balanceSufficient: balanceWei >= valueNeeded
         };
 
-        // 3. Oracle Registration for Class
-        console.log(`🎯 Checking oracles for class ${contractClass}...`);
-        try {
-          const oracles = await this.contract.getRegisteredOracles(contractClass);
-          debug.checks.oracles = {
-            success: true,
-            count: oracles.length,
-            addresses: oracles
-          };
-
-          if (oracles.length === 0) {
-            debug.checks.oracles.error = `No oracles registered for class ${contractClass}`;
-            console.error(`❌ CRITICAL: No oracles registered for class ${contractClass}`);
-          } else {
-            // Check first few oracle details
-            const oracleDetails = [];
-            for (let i = 0; i < Math.min(3, oracles.length); i++) {
-              try {
-                const info = await this.contract.getOracleInfo(oracles[i]);
-                oracleDetails.push({
-                  address: oracles[i],
-                  jobId: info.jobId,
-                  isActive: info.isActive,
-                  class: info.class.toString(),
-                  node: info.node
-                });
-              } catch (err) {
-                oracleDetails.push({
-                  address: oracles[i],
-                  error: err.message
-                });
-              }
-            }
-            debug.checks.oracles.details = oracleDetails;
-          }
-        } catch (err) {
-          debug.checks.oracles = {
-            success: false,
-            error: err.message
-          };
+        if (balanceWei < valueNeeded) {
+          debug.checks.fees.shortfall = ethers.formatEther(valueNeeded - balanceWei);
+          console.error(`❌ INSUFFICIENT ETH: need ${ethers.formatEther(valueNeeded)} ETH, have ${ethers.formatEther(balanceWei)} ETH`);
         }
-
-        // 4. Fee Calculation
-        console.log('💸 Checking fee calculation...');
-        try {
-          const testMaxFee = ethers.parseUnits("0.01", 18);
-          const totalFee = await this.contract.maxTotalFee(testMaxFee);
-          
-          debug.checks.fees = {
-            success: true,
-            maxFeeInput: ethers.formatUnits(testMaxFee, 18),
-            totalFeeRequired: ethers.formatUnits(totalFee, 18),
-            allowanceSufficient: allowance >= totalFee
-          };
-
-          if (allowance < totalFee) {
-            debug.checks.fees.shortfall = ethers.formatUnits(totalFee - allowance, 18);
-            console.error(`❌ INSUFFICIENT ALLOWANCE: Need ${ethers.formatUnits(totalFee, 18)} LINK, have ${ethers.formatUnits(allowance, 18)} LINK`);
-          }
-        } catch (err) {
-          debug.checks.fees = {
-            success: false,
-            error: err.message
-          };
-        }
-
       } catch (err) {
-        debug.checks.config = {
-          success: false,
-          error: err.message
-        };
+        debug.checks.fees = { success: false, error: err.message };
       }
 
       console.groupEnd();
       return debug;
-
     } catch (err) {
       debug.error = err.message;
       console.error('❌ Debug analysis failed:', err);
@@ -152,8 +116,20 @@ export class ContractDebugger {
   async dryRunTransaction(cidArray, textAddendum, alpha, maxFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass) {
     try {
       console.log('🧪 Performing dry run...');
-      
-      // Use staticCall to simulate the transaction without executing
+
+      // Size msg.value the same way the live request does: worst case minus existing credit.
+      let value = 0n;
+      try {
+        const [total, credit] = await Promise.all([
+          this.contract.maxTotalFee(maxFee),
+          this.contract.ethOwed(this.walletAddress).catch(() => 0n)
+        ]);
+        value = total > credit ? total - credit : 0n;
+      } catch (e) {
+        console.warn('Could not size dry-run value; using 0:', e?.message || e);
+      }
+
+      // Use staticCall to simulate the payable transaction without executing
       await this.contract.requestAIEvaluationWithApproval.staticCall(
         cidArray,
         textAddendum,
@@ -161,12 +137,13 @@ export class ContractDebugger {
         maxFee,
         estimatedBaseCost,
         maxFeeBasedScalingFactor,
-        contractClass
+        contractClass,
+        { value, from: this.walletAddress }
       );
-      
+
       console.log('✅ Dry run successful - transaction should work');
       return { success: true };
-      
+
     } catch (err) {
       console.error('❌ Dry run failed:', err.message);
 
@@ -210,45 +187,9 @@ export class ContractDebugger {
     }
   }
 
-  /**
-   * Check oracle registration across multiple classes
-   * @param {Array<number>} classesToCheck - Array of class numbers to check
-   * @returns {Promise<Object>} - Object mapping class to oracle info
-   */
-  async checkMultipleClasses(classesToCheck = [0, 1, 128, 256, 512, 600, 1000]) {
-    const results = {};
-    
-    console.log(`🔍 Checking oracle registration across classes: ${classesToCheck.join(', ')}`);
-    
-    for (const classNum of classesToCheck) {
-      try {
-        const oracles = await this.contract.getRegisteredOracles(classNum);
-        results[classNum] = {
-          count: oracles.length,
-          oracles: oracles,
-          hasOracles: oracles.length > 0
-        };
-        
-        if (oracles.length > 0) {
-          console.log(`✅ Class ${classNum}: ${oracles.length} oracles registered`);
-        } else {
-          console.log(`❌ Class ${classNum}: No oracles registered`);
-        }
-      } catch (err) {
-        results[classNum] = {
-          error: err.message,
-          hasOracles: false
-        };
-        console.log(`⚠️ Class ${classNum}: Error checking - ${err.message}`);
-      }
-    }
-    
-    return results;
-  }
-
   async generateDebugReport(cidArray, textAddendum, alpha, maxFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass) {
     console.log('🔍 Generating comprehensive debug report...');
-    
+
     const report = {
       timestamp: new Date().toISOString(),
       parameters: {
@@ -266,10 +207,6 @@ export class ContractDebugger {
     report.stateAnalysis = await this.debugContractState(contractClass);
     report.dryRun = await this.dryRunTransaction(cidArray, textAddendum, alpha, maxFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass);
 
-    // Add multi-class check to the debug report
-    const multiClassCheck = await this.checkMultipleClasses();
-    report.multiClassAnalysis = multiClassCheck;
-
     // Generate recommendations
     report.recommendations = this.generateRecommendations(report);
 
@@ -280,54 +217,30 @@ export class ContractDebugger {
   generateRecommendations(report) {
     const recommendations = [];
 
-    // Check for common issues
-    if (!report.stateAnalysis.checks.oracles?.success || report.stateAnalysis.checks.oracles?.count === 0) {
-      // Check if other classes have oracles available
-      const availableClasses = [];
-      if (report.multiClassAnalysis) {
-        for (const [classNum, info] of Object.entries(report.multiClassAnalysis)) {
-          if (info.hasOracles) {
-            availableClasses.push(classNum);
-          }
-        }
-      }
-
-      if (availableClasses.length > 0) {
-        recommendations.push({
-          priority: 'HIGH',
-          issue: 'No oracles registered',
-          solution: `No oracles registered for class ${report.parameters.contractClass}. Try using one of these classes instead: ${availableClasses.join(', ')}`
-        });
-      } else {
-        recommendations.push({
-          priority: 'HIGH',
-          issue: 'No oracles registered',
-          solution: `Register oracles for class ${report.parameters.contractClass} before submitting requests`
-        });
-      }
-    }
-
-    if (report.stateAnalysis.checks.fees?.success && !report.stateAnalysis.checks.fees?.allowanceSufficient) {
+    // Wrong network / no contract at address
+    if (report.stateAnalysis.checks.contract && !report.stateAnalysis.checks.contract.success) {
       recommendations.push({
-        priority: 'HIGH',
-        issue: 'Insufficient LINK allowance',
-        solution: `Approve ${report.stateAnalysis.checks.fees.totalFeeRequired} LINK for the contract`
+        priority: 'CRITICAL',
+        issue: 'No contract at this address',
+        solution: 'The selected aggregator address has no code on this network. Pick the address that matches the selected network.'
       });
     }
 
+    // Insufficient ETH to cover the worst-case prepay
+    if (report.stateAnalysis.checks.fees?.success && !report.stateAnalysis.checks.fees?.balanceSufficient) {
+      recommendations.push({
+        priority: 'HIGH',
+        issue: 'Insufficient ETH for prepay',
+        solution: `This query needs ${report.stateAnalysis.checks.fees.ethToAttach} ETH attached (plus gas). Add ETH to your wallet and retry.`
+      });
+    }
+
+    // The dry run reverted — surface the decoded reason.
     if (!report.dryRun.success) {
       recommendations.push({
         priority: 'CRITICAL',
         issue: 'Transaction will revert',
-        solution: 'Fix the underlying contract validation issues before retrying'
-      });
-    }
-
-    if (report.stateAnalysis.checks.link?.userBalance && parseFloat(report.stateAnalysis.checks.link.userBalance) < 0.1) {
-      recommendations.push({
-        priority: 'MEDIUM',
-        issue: 'Low LINK balance',
-        solution: 'Consider getting more LINK tokens from faucet or bridge'
+        solution: `Dry run reverted: ${report.dryRun.revertReason}. Common causes: no active arbiters for the selected class, or the per-oracle fee ceiling excluded them.`
       });
     }
 
@@ -336,5 +249,5 @@ export class ContractDebugger {
 }
 
 // Usage example:
-// const debugger = new ContractDebugger(provider, contractAddress, walletAddress);
-// const report = await debugger.generateDebugReport(cidArray, textAddendum, alpha, maxFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass); 
+// const dbg = new ContractDebugger(provider, contractAddress, walletAddress);
+// const report = await dbg.generateDebugReport(cidArray, textAddendum, alpha, maxFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass);

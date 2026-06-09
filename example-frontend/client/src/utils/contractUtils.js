@@ -54,18 +54,23 @@ export const CHAIN_PARAMS = {
 // ------------------
 // Contract Constants
 // ------------------
+// ETH-funded ReputationAggregator ABI. Arbiters are paid in ETH (not LINK):
+// requestAIEvaluationWithApproval is now `payable` and funded by msg.value and/or the
+// caller's existing on-chain ethOwed credit. Unspent prepay is refunded as an ethOwed
+// credit (pull-payment) — withdrawn via withdrawEth() or auto-applied to the next request.
 export const CONTRACT_ABI = [
-  'function evaluations(bytes32 requestId) public view returns (uint256[] likelihoods, string justificationCID)',
-  'function setChainlinkToken(address _link)',
-  'function setChainlinkOracle(address _oracle)',
   'event RequestAIEvaluation(bytes32 indexed requestId, string[] cids)',
   'event FulfillAIEvaluation(bytes32 indexed requestId, uint256[] likelihoods, string justificationCID)',
   'event ChainlinkRequested(bytes32 indexed id)',
   'event ChainlinkFulfilled(bytes32 indexed id)',
   'function getContractConfig() public view returns (address oracleAddr, address linkAddr, bytes32 jobId, uint256 currentFee)',
   'function getEvaluation(bytes32 _requestId) public view returns (uint256[] memory likelihoods, string memory justificationCID, bool exists)',
-  'function requestAIEvaluationWithApproval(string[] memory cids, string memory addendumText, uint256 _alpha, uint256 _maxFee, uint256 _estimatedBaseCost, uint256 _maxFeeBasedScalingFactor, uint64 _requestedClass) public returns (bytes32 requestId)',
+  'function requestAIEvaluationWithApproval(string[] memory cids, string memory addendumText, uint256 _alpha, uint256 _maxFee, uint256 _estimatedBaseCost, uint256 _maxFeeBasedScalingFactor, uint64 _requestedClass) public payable returns (bytes32 requestId)',
   'function maxTotalFee(uint256 requestedMaxOracleFee) public view returns (uint256)',
+  'function maxOracleFee() public view returns (uint256)',
+  'function ethOwed(address) public view returns (uint256)',
+  'function withdrawEth() external',
+  'function isFailed(bytes32 aggId) external view returns (bool)',
   'function responseTimeoutSeconds() external view returns (uint256)',
   'function finalizeEvaluationTimeout(bytes32 aggId) external'
 ];
@@ -171,113 +176,9 @@ export function makeRpcProvider(networkKey = DEFAULT_NET_KEY) {
   return new ethers.JsonRpcProvider(network.rpcUrl);
 }
 
-export async function checkContractFunding(contract, provider, networkKey = DEFAULT_NET_KEY) {
-  try {
-    console.log('checkContractFunding called with:', {
-      contractExists: !!contract,
-      providerExists: !!provider,
-      contractAddress: contract?.target,
-      networkKey,
-    });
-
-    if (!contract || !provider) {
-      throw new Error(`Invalid parameters: contract=${!!contract}, provider=${!!provider}`);
-    }
-
-    const targetNetwork = getNetworkConfig(networkKey);
-    const network = await provider.getNetwork();
-    console.log('Current network:', network);
-    console.log('Target network:', targetNetwork.name);
-
-    if (network.chainId.toString() !== targetNetwork.chainId.toString()) {
-      console.log(`Not on ${targetNetwork.name}, attempting to switch...`);
-      try {
-        await window.ethereum.request({
-          method: 'wallet_switchEthereumChain',
-          params: [{ chainId: targetNetwork.chainIdHex }],
-        });
-      } catch (switchError) {
-        if (switchError && switchError.code === 4902) {
-          try {
-            await window.ethereum.request({
-              method: 'wallet_addEthereumChain',
-              params: [{
-                chainId: targetNetwork.chainIdHex,
-                chainName: targetNetwork.name,
-                nativeCurrency: targetNetwork.nativeCurrency,
-                rpcUrls: [targetNetwork.rpcUrl],
-                blockExplorerUrls: [targetNetwork.explorer],
-              }],
-            });
-          } catch (addError) {
-            throw new Error(`Please add ${targetNetwork.name} to MetaMask and try again`);
-          }
-        }
-        throw new Error(`Please switch to ${targetNetwork.name} in MetaMask`);
-      }
-
-      const newProvider = new ethers.BrowserProvider(window.ethereum);
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      const newContract = new ethers.Contract(contract.target, CONTRACT_ABI, await newProvider.getSigner());
-      return checkContractFunding(newContract, newProvider, networkKey);
-    }
-
-    await debugContract(contract);
-
-    const code = await provider.getCode(contract.target);
-    console.log('Contract code at address:', {
-      address: contract.target,
-      codeExists: code !== '0x',
-      codeLength: code.length,
-    });
-    if (code === '0x') throw new Error(`No contract found at address ${contract.target}`);
-
-    console.log('Calling getContractConfig...');
-    const config = await contract.getContractConfig();
-    console.log('Contract config received:', config);
-
-    const linkToken = new ethers.Contract(
-      config.linkAddr,
-      ['function balanceOf(address) view returns (uint256)'],
-      provider
-    );
-
-    const balance = await linkToken.balanceOf(contract.target);
-    const fee = config.currentFee;
-
-    console.log('Contract LINK balance:', ethers.formatEther(balance));
-    console.log('Required fee:', ethers.formatEther(fee));
-
-    if (balance < fee) {
-      throw new Error(
-        `Insufficient LINK tokens. Contract needs at least ${ethers.formatEther(fee)} LINK but has ${ethers.formatEther(balance)} LINK`
-      );
-    }
-
-    return config;
-  } catch (error) {
-    // Try custom error decoding
-    let decoded = null;
-    if (error.data && contract) {
-      try {
-        const parsed = contract.interface.parseError(error.data);
-        if (parsed) {
-          const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
-          decoded = parsed.name + args;
-        }
-      } catch {}
-    }
-    console.error('Detailed error in checkContractFunding:', {
-      message: error.message,
-      code: error.code,
-      data: error.data,
-      decoded,
-      name: error.name,
-      stack: error.stack,
-      contract: contract?.target,
-      provider: provider?.connection?.url,
-    });
-    throw error;
-  }
-}
+// NOTE: The former checkContractFunding() helper was removed in the ETH-payment
+// migration. It gated requests on the aggregator's LINK balance, but the ETH-funded
+// ReputationAggregator holds no LINK for routine operation (arbiters are paid in ETH
+// from the requester's escrowed msg.value). The relevant pre-flight check now is the
+// requester's own ETH balance vs. maxTotalFee(), done inline in RunQuery.
 

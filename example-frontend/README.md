@@ -59,7 +59,7 @@ This repository contains:
 ### 1. Prerequisites
 
 * **Node.js ≥ 18** and **npm ≥ 9** (or `pnpm`/`yarn`).
-* A **MetaMask** wallet connected to **Base Sepolia** with a small amount of test ETH & LINK.
+* A **MetaMask** wallet connected to **Base Sepolia** with a small amount of test ETH (arbiters are paid in ETH; no LINK needed).
 * A **Pinata** account (or any IPFS pinning service) to obtain a JWT token.
 
 ### 2. Clone & install

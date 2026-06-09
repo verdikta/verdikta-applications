@@ -25,7 +25,7 @@ async function importContractsFromEnv() {
       const defaultNetwork = process.env.REACT_APP_NETWORK || 'base_sepolia';
       return [
         {
-          address: "0x2E67c4D565C55E31514eDd68E42bFBb50a2C49F1",
+          address: "0xe8a385E473EA710c5a88Cc72681a16a26fe380e4",
           name: "Default Contract",
           class: 128,
           network: defaultNetwork
@@ -45,7 +45,7 @@ async function importContractsFromEnv() {
       console.log('No contract addresses found in .env, using default contract');
       return [
         {
-          address: "0x2E67c4D565C55E31514eDd68E42bFBb50a2C49F1",
+          address: "0xe8a385E473EA710c5a88Cc72681a16a26fe380e4",
           name: "Default Contract",
           class: 128,
           network: currentNetwork
@@ -72,7 +72,7 @@ async function importContractsFromEnv() {
     const defaultNetwork = process.env.REACT_APP_NETWORK || 'base_sepolia';
     return [
       {
-        address: "0x2E67c4D565C55E31514eDd68E42bFBb50a2C49F1",
+        address: "0xe8a385E473EA710c5a88Cc72681a16a26fe380e4",
         name: "Default Contract",
         class: 128,
         network: defaultNetwork
@@ -234,7 +234,7 @@ async function loadContracts() {
     // Return default contract in case of error
     return [
       {
-        address: "0x2E67c4D565C55E31514eDd68E42bFBb50a2C49F1",
+        address: "0xe8a385E473EA710c5a88Cc72681a16a26fe380e4",
         name: "Default Contract",
         class: 128
       }

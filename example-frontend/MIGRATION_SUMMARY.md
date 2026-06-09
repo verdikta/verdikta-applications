@@ -1,110 +1,65 @@
-# Migration Summary - Enhanced LINK Token Management
+# Migration Summary — ETH Payment (LINK → ETH)
 
-This document summarizes the changes merged from the `verdikta-sandbox` repository into the `example-frontend` application.
+This document summarizes the migration of `example-frontend` from the **LINK-funded**
+aggregator to the **ETH-funded** `ReputationAggregator`. Arbiters are now paid in ETH; the
+client no longer touches LINK (no token approval, no allowance management).
 
-## Files Modified
+> Supersedes the previous "Enhanced LINK Token Management" summary. The LINK allowance
+> system described there (`topUpLinkAllowance`, on-chain `Approval` event scanning, 0.5–2
+> LINK reserves) has been **removed** — it is no longer how the app pays for evaluations.
 
-### 1. `client/src/utils/LINKTokenABI.json`
-**Changes**: Added event definitions to the LINK token ABI
-- ✅ Added `Approval` event signature
-- ✅ Added `Transfer` event signature
+## New deployed aggregators (ETH)
 
-**Impact**: Enables event-based tracking of LINK token approvals and transfers.
+| Network | Address |
+|---|---|
+| Base Mainnet | `0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a` |
+| Base Sepolia | `0xe8a385E473EA710c5a88Cc72681a16a26fe380e4` |
 
-### 2. `client/src/pages/RunQuery.js`
-**Major Enhancements**: Sophisticated LINK token allowance management system
+Same ReputationKeeper and operator/oracle contracts as before; only the aggregator's
+payment rail changed.
 
-#### Enhanced Polling Logic
-- ✅ Added pending state handling in `pollForEvaluationResults()`
-- Handles cases where `justificationCid` is not yet available
-- Returns `{status: 'pending'}` to continue polling
+## How payment works now
 
-#### Advanced LINK Allowance Management
-- ✅ Replaced simple `approveLinkSpending()` with sophisticated `topUpLinkAllowance()`
-- **Smart Approval Strategy**:
-  - Tracks approval history using on-chain events
-  - Age-based approval management (stale after 30 minutes)
-  - Payment multiplier (2x) for concurrent transaction support
-  - Minimum reserve (0.5 LINK) and maximum (2 LINK) limits
-  - Searches last 7,200 blocks (~4 hours on Base Sepolia)
+- `requestAIEvaluationWithApproval(...)` is **`payable`**. The requester prepays the
+  worst-case cost in `msg.value` (and/or from existing on-chain credit). No LINK approval.
+- Worst case = `maxTotalFee(maxFee)` = `effFee * (K + B*P)`. With the live params
+  (K=6, M=4, N=3, P=2, B=3) and a 0.0001 ETH fee, that is `0.0001 * 12 = 0.0012 ETH`.
+- The per-oracle fee is clamped on-chain to `maxOracleFee` (0.0004 ETH ceiling).
+- Unspent prepay is **refunded as a pull-payment credit** (`ethOwed`), not auto-returned.
+  It is auto-applied to the caller's next request, or withdrawn via `withdrawEth()`.
 
-#### Gas Price Optimizations
-- ✅ Updated fallback gas price multiplier: `1000` → `10`
-- ✅ Reduced minimum tip: `1 gwei` → `0.01 gwei`
-- Better gas price calculation for lower-cost transactions
+## Files changed
 
-#### Concurrency Improvements
-- ✅ Added deterministic random delay (10-210ms) before transaction submission
-- Uses wallet address and time window for reproducible delays
-- Reduces resource contention during simultaneous calls
+### Code
+- **`client/src/utils/contractUtils.js`** — ABI updated: `requestAIEvaluationWithApproval`
+  marked `payable`; added `maxOracleFee`, `ethOwed`, `withdrawEth`, `isFailed`. Removed the
+  dead LINK-balance `checkContractFunding()`.
+- **`client/src/pages/RunQuery.js`** — removed `topUpLinkAllowance()` and the LINK ABI
+  import. New `computeEthFunding()` sizes `value = max(0, maxTotalFee − ethOwed)` and
+  attaches it to the request; ETH-balance pre-flight; ETH custom-error messages
+  (`InsufficientPayment`, `InactiveOracle`/`BadSelectionCount`). Added a **prepay-credit
+  widget** (shows worst-case prepay + your `ethOwed` credit, with a "Withdraw credit"
+  button and auto-reuse messaging).
+- **`client/src/App.js`** — `MAX_FEE` set to `0.0001 ETH` (typical arbiter fee, under the
+  0.0004 ETH ceiling). Also fixed network↔contract selection so switching networks
+  re-selects a valid contract instead of stranding a wrong-network address.
+- **`client/src/utils/contractDebugger.js`** and **`client/debug-contract.js`** — rewritten
+  for ETH (ETH balance + `ethOwed` credit + worst-case prepay vs. balance + payable
+  dry-run); dropped all LINK allowance/balance probing.
+- **Removed** `client/src/utils/LINKTokenABI.json` (no longer used).
 
-#### Enhanced Error Handling
-- ✅ Early bailout for LINK approval failures
-- Better error messages and user feedback
-- Improved transaction status updates
+### Config / data
+- `server/data/contracts.json`, `client/.env`, `client/.env.example`, and the fallback in
+  `server/utils/contractsManager.js` updated to the new ETH aggregator addresses.
 
-### 3. `client/src/App.js`
-**Status**: No changes needed
-- Source file was older than current version
-- Already migrated to use `@verdikta/common` library
-- No new functionality to merge
-
-## Key Benefits
-
-### 1. **Improved User Experience**
-- More accurate status messages during LINK approval
-- Better handling of pending states
-- Reduced transaction failures due to insufficient allowance
-
-### 2. **Enhanced Reliability**
-- Smart allowance management prevents over-approval and under-approval
-- Event-based tracking ensures accuracy
-- Automatic handling of stale approvals
-
-### 3. **Better Performance**
-- Optimized gas prices for Base Sepolia
-- Random delays reduce network congestion
-- Support for concurrent transactions
-
-### 4. **Cost Optimization**
-- Lower minimum gas tips
-- Efficient allowance management
-- Reduced unnecessary approvals
-
-## Technical Details
-
-### LINK Allowance Strategy
-```javascript
-// Time-based allowance management
-STALE_SECONDS = 1800      // 30 minutes
-SEARCH_WINDOW = 7_200     // ~4 hours of blocks
-PAYMENT_MULTIPLIER = 2    // 2x margin for concurrency
-PAYMENT_MIN = 0.5 LINK    // Minimum reserve
-PAYMENT_MAX = 2.0 LINK    // Maximum reserve
-```
-
-### Gas Price Adjustments
-```javascript
-// More efficient for Base Sepolia
-fallbackGasPrice = gasPrice * 10  // vs 1000 before
-FLOOR_PRIORITY = 0.01 gwei        // vs 1 gwei before
-```
-
-### Random Delay Algorithm
-```javascript
-// Deterministic but distributed delays
-addressSeed = parseInt(walletAddress.slice(-4), 16)
-timeSeed = Math.floor(Date.now() / 600000)  // 10-minute windows
-delay = ((addressSeed + timeSeed) % 200) + 10  // 10-210ms
-```
+### Ops
+- Added `rebuildAndRestart.sh` (project root): rebuilds the static client bundle, then
+  restarts the services. Because the site is served from `client/build` and CRA bakes code
+  + `REACT_APP_*` in at build time, client changes require a rebuild **and** restart.
 
 ## Testing
 
-- ✅ Build test passed: `npm run build` completed successfully
-- ✅ Only minor ESLint warnings (non-blocking)
-- ✅ All imports and syntax verified
-- ✅ Enhanced LINK token ABI includes required events
-
-## Migration Complete
-
-All functionality from the sandbox repository has been successfully merged and integrated with the existing `@verdikta/common` library migration. The application maintains backward compatibility while gaining significant improvements in LINK token management and transaction reliability. 
+- ✅ Production build passes (`client/buildClient.sh` / `npm run build`), warnings only.
+- ✅ Verified on Base Sepolia: no LINK approval step; MetaMask prompts for an ETH value;
+  results render; unused prepay appears as withdrawable `ethOwed` credit.
+- The same network-agnostic bundle serves Base Mainnet when the network toggle is switched.

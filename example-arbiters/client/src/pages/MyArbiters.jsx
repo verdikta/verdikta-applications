@@ -589,6 +589,7 @@ function MyArbiters() {
                   <tr>
                     <th>Job ID</th>
                     <th>Classes</th>
+                    <th>Fee</th>
                     <th>Status</th>
                     <th>Sending key</th>
                     <th>Stake</th>
@@ -610,7 +611,16 @@ function MyArbiters() {
                     return (
                       <tr key={job.jobId}>
                         <td><code title={job.jobId}>{shortHash(job.jobId)}</code></td>
-                        <td>{job.classes?.join(', ') || '—'}</td>
+                        <td>
+                          {job.classes?.length ? (
+                            <div className="job-classes">
+                              {job.classes.map((c) => (
+                                <span key={c}>{c}</span>
+                              ))}
+                            </div>
+                          ) : '—'}
+                        </td>
+                        <td className="nowrap">{job.fee != null ? job.fee : '—'}</td>
                         <td>
                           <span className={`status-badge status-${job.status}`}>
                             {STATUS_LABELS[job.status] || job.status}

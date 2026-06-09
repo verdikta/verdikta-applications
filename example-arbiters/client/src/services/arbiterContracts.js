@@ -38,11 +38,20 @@ function friendlyError(error) {
   if (error?.code === 'ACTION_REJECTED' || error?.code === 4001) {
     return new Error('Transaction rejected in wallet.');
   }
+  if (error?.code === 'INSUFFICIENT_FUNDS') {
+    return new Error('Connected wallet has insufficient ETH to cover this transfer plus gas.');
+  }
   const reason =
     error?.reason ||
     error?.revert?.args?.[0] ||
     error?.shortMessage ||
     error?.info?.error?.message;
+  // ethers surfaces a failed gas estimate as "missing revert data", which is
+  // meaningless to the user; for a plain transfer the practical cause is a
+  // short ETH balance.
+  if (reason && /missing revert data/i.test(reason)) {
+    return new Error('Could not estimate the transaction — the connected wallet is likely short on ETH for the transfer plus gas.');
+  }
   if (reason) return new Error(reason);
   return error instanceof Error ? error : new Error(String(error));
 }
@@ -187,7 +196,15 @@ export async function registerArbiter({ signer, keeperAddress, oracle, jobId, fe
  */
 export async function sendEth({ signer, to, amountEth }) {
   try {
-    const tx = await signer.sendTransaction({ to, value: ethers.parseEther(String(amountEth)) });
+    // A plain EOA→EOA transfer always costs exactly 21000 gas. Setting the
+    // limit explicitly skips eth_estimateGas, whose failure path surfaces as
+    // the opaque "missing revert data" CALL_EXCEPTION (e.g. when the wallet
+    // is short on ETH for value + fees while topping up multiple keys).
+    const tx = await signer.sendTransaction({
+      to,
+      value: ethers.parseEther(String(amountEth)),
+      gasLimit: 21000n,
+    });
     const receipt = await tx.wait();
     return { txHash: receipt.hash };
   } catch (error) {

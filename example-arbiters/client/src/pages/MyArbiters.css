@@ -119,6 +119,17 @@
   color: var(--text-secondary);
 }
 
+.my-arbiters .job-classes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.my-arbiters .nowrap {
+  white-space: nowrap;
+}
+
 .my-arbiters .job-stats {
   display: flex;
   flex-direction: column;

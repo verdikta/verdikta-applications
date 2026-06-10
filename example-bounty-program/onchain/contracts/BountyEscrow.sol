@@ -67,6 +67,21 @@ contract BountyEscrow {
     Bounty[] public bounties;
     mapping(uint256 => Submission[]) public subs;
 
+    /// @notice Pull-payment ledger. ETH owed to an address whose direct payment couldn't be
+    ///         delivered (e.g. a contract that rejects ETH). Lets resolution/close-out never
+    ///         revert on a hostile or incompatible recipient. Claim via withdraw().
+    mapping(address => uint256) public withdrawable;
+
+    /// @notice Per-bounty count of submissions currently in PendingVerdikta. Lets
+    ///         closeExpiredBounty / canBeClosed check "no active evaluation" in O(1) instead
+    ///         of looping over every submission — an unbounded number of cheap
+    ///         prepareSubmission calls could otherwise grow the loop past the block gas limit
+    ///         and permanently lock the creator's escrow.
+    mapping(uint256 => uint256) public activeEvaluations;
+
+    // Non-reentrancy guard (1 = unlocked, 2 = locked).
+    uint256 private _lock = 1;
+
     // ----------------- Events -----------------
     event BountyCreated(
         uint256 indexed bountyId,
@@ -133,9 +148,22 @@ contract BountyEscrow {
         uint256 amountRefunded
     );
 
+    /// @notice A direct payment couldn't be delivered and was credited to the pull ledger instead.
+    event PaymentDeferred(address indexed to, uint256 amount);
+
+    /// @notice An address claimed its pull-ledger balance.
+    event Withdrawn(address indexed account, uint256 amount);
+
     constructor(IVerdiktaAggregator _verdikta) {
         require(address(_verdikta) != address(0), "zero addr");
         verdikta = _verdikta;
+    }
+
+    modifier nonReentrant() {
+        require(_lock == 1, "reentrant");
+        _lock = 2;
+        _;
+        _lock = 1;
     }
 
     // ------------- Bounty lifecycle -------------
@@ -234,29 +262,21 @@ contract BountyEscrow {
     /// @dev Can be called by ANYONE after submissionDeadline passes
     /// @dev Requires no active evaluations (PendingVerdikta submissions)
     /// @param bountyId The bounty to close
-    function closeExpiredBounty(uint256 bountyId) external {
+    function closeExpiredBounty(uint256 bountyId) external nonReentrant {
         Bounty storage b = _mustBounty(bountyId);
         require(b.status == BountyStatus.Open, "not open");
         require(block.timestamp >= b.submissionDeadline, "deadline not passed");
 
-        // Check that no submissions are actively being evaluated
-        uint256 subCount = subs[bountyId].length;
-        for (uint256 i = 0; i < subCount; i++) {
-            require(
-                subs[bountyId][i].status != SubmissionStatus.PendingVerdikta,
-                "active evaluation - finalize first"
-            );
-        }
+        // No submissions may be actively being evaluated (O(1) — see activeEvaluations).
+        require(activeEvaluations[bountyId] == 0, "active evaluation - finalize first");
 
         // All clear - return funds to creator
         b.status = BountyStatus.Closed;
         uint256 amt = b.payoutWei;
         b.payoutWei = 0;
 
-        (bool ok,) = payable(b.creator).call{value: amt}("");
-        require(ok, "eth send fail");
-
         emit BountyClosed(bountyId, b.creator, amt);
+        _payOrCredit(b.creator, amt);
     }
 
     // ------------- Submissions & Verdikta -------------
@@ -354,7 +374,7 @@ contract BountyEscrow {
     /// @notice Creator approves a submission during the assessment window
     /// @dev Pays creatorDeterminationPayment to hunter, refunds excess to creator
     /// @dev Blocked if any earlier submission is unresolved (PendingCreatorApproval or PendingVerdikta)
-    function creatorApproveSubmission(uint256 bountyId, uint256 submissionId) external {
+    function creatorApproveSubmission(uint256 bountyId, uint256 submissionId) external nonReentrant {
         Bounty storage b = _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);
 
@@ -376,16 +396,13 @@ contract BountyEscrow {
         s.status = SubmissionStatus.PassedPaid;
         s.finalizedAt = block.timestamp;
 
-        (bool okPay,) = payable(s.hunter).call{value: pay}("");
-        require(okPay, "eth payout failed");
-
         emit CreatorApproved(bountyId, submissionId, s.hunter, pay);
         emit PayoutSent(bountyId, s.hunter, pay);
+        _payOrCredit(s.hunter, pay);
 
         if (refund > 0) {
-            (bool okRefund,) = payable(b.creator).call{value: refund}("");
-            require(okRefund, "refund to creator failed");
             emit CreatorRefunded(bountyId, b.creator, refund);
+            _payOrCredit(b.creator, refund);
         }
     }
 
@@ -396,7 +413,7 @@ contract BountyEscrow {
     /// @dev For PendingCreatorApproval submissions (window expired): anyone can call and fund.
     /// @dev Can be called after deadline as long as submission was prepared before deadline
     /// @dev Reverts if any existing submission has already passed evaluation (first-to-pass wins)
-    function startPreparedSubmission(uint256 bountyId, uint256 submissionId) external payable {
+    function startPreparedSubmission(uint256 bountyId, uint256 submissionId) external payable nonReentrant {
         Bounty storage b = _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);
 
@@ -443,6 +460,7 @@ contract BountyEscrow {
 
         s.verdiktaAggId = aggId;
         s.status = SubmissionStatus.PendingVerdikta;
+        activeEvaluations[bountyId] += 1;
 
         emit WorkSubmitted(bountyId, submissionId, aggId);
     }
@@ -451,7 +469,7 @@ contract BountyEscrow {
     /// @dev If accepted and bounty still open, pay arbiterDeterminationPayment and refund excess to creator
     /// @dev For windowed bounties, payment blocked if earlier submission is unresolved
     /// @dev Can be called even after deadline (for submissions made before deadline)
-    function finalizeSubmission(uint256 bountyId, uint256 submissionId) external {
+    function finalizeSubmission(uint256 bountyId, uint256 submissionId) external nonReentrant {
         Bounty storage b = _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);
         require(s.status == SubmissionStatus.PendingVerdikta, "not pending");
@@ -466,6 +484,9 @@ contract BountyEscrow {
             } catch { /* ignore */ }
         }
         require(ok, "Verdikta not ready");
+
+        // Leaving PendingVerdikta (every branch below sets a terminal status).
+        activeEvaluations[bountyId] -= 1;
 
         (uint256 acceptance, uint256 rejection) = _interpretScores(scores);
         s.acceptance = acceptance;
@@ -503,17 +524,14 @@ contract BountyEscrow {
                 b.payoutWei = 0;
                 b.status = BountyStatus.Awarded;
                 b.winner = s.hunter;
-
-                (bool okPay,) = payable(s.hunter).call{value: pay}("");
-                require(okPay, "eth payout failed");
                 s.status = SubmissionStatus.PassedPaid;
 
                 emit PayoutSent(bountyId, s.hunter, pay);
+                _payOrCredit(s.hunter, pay);
 
                 if (refund > 0) {
-                    (bool okRefund,) = payable(b.creator).call{value: refund}("");
-                    require(okRefund, "refund to creator failed");
                     emit CreatorRefunded(bountyId, b.creator, refund);
+                    _payOrCredit(b.creator, refund);
                 }
             } else {
                 // Another submission has priority or already passed
@@ -530,12 +548,15 @@ contract BountyEscrow {
     /// @notice Force-fail a submission that's been stuck in PendingVerdikta too long
     /// @dev Can be called by anyone after 10 minutes timeout
     /// @dev Useful for submissions where Verdikta evaluation never started or oracle failed
-    function failTimedOutSubmission(uint256 bountyId, uint256 submissionId) external {
+    function failTimedOutSubmission(uint256 bountyId, uint256 submissionId) external nonReentrant {
         _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);
 
         require(s.status == SubmissionStatus.PendingVerdikta, "not pending");
         require(block.timestamp >= s.submittedAt + 10 minutes, "timeout not reached");
+
+        // Leaving PendingVerdikta (status set to Failed below).
+        activeEvaluations[bountyId] -= 1;
 
         // Best-effort: settle the evaluation on the aggregator first. A dead/failed
         // round keeps the unspent prepay escrowed (reserved) until it is settled;
@@ -563,6 +584,17 @@ contract BountyEscrow {
 
         // Refund any ETH prepay left in the wallet (now recoverable post-settlement)
         _refundLeftoverEth(bountyId, submissionId);
+    }
+
+    /// @notice Claim ETH credited to you on the pull-payment ledger (a payout, refund, or
+    ///         creator reclaim whose direct delivery failed). Pays msg.sender.
+    function withdraw() external nonReentrant {
+        uint256 amt = withdrawable[msg.sender];
+        require(amt > 0, "nothing to withdraw");
+        withdrawable[msg.sender] = 0;
+        (bool ok,) = payable(msg.sender).call{value: amt}("");
+        require(ok, "withdraw failed");
+        emit Withdrawn(msg.sender, amt);
     }
 
     // ------------- Views -------------
@@ -622,15 +654,8 @@ contract BountyEscrow {
         if (b.status != BountyStatus.Open) return false;
         if (block.timestamp < b.submissionDeadline) return false;
 
-        // Check for active evaluations
-        uint256 subCount = subs[bountyId].length;
-        for (uint256 i = 0; i < subCount; i++) {
-            if (subs[bountyId][i].status == SubmissionStatus.PendingVerdikta) {
-                return false;
-            }
-        }
-
-        return true;
+        // No active evaluations (O(1) — see activeEvaluations).
+        return activeEvaluations[bountyId] == 0;
     }
 
     // ------------- Internals -------------
@@ -720,10 +745,26 @@ contract BountyEscrow {
         return false;
     }
 
+    /// @dev Try to send `amount` to `to`. If the direct send fails (e.g. a contract that
+    ///      rejects ETH), credit it to the pull-payment ledger instead of reverting — so a
+    ///      hostile or incompatible recipient can never brick payout, refund, or bounty close.
+    ///      Callers MUST update all contract state before calling this (checks-effects-interactions).
+    function _payOrCredit(address to, uint256 amount) private {
+        if (amount == 0) return;
+        (bool ok,) = payable(to).call{value: amount}("");
+        if (!ok) {
+            withdrawable[to] += amount;
+            emit PaymentDeferred(to, amount);
+        }
+    }
+
     function _refundLeftoverEth(uint256 bountyId, uint256 submissionId) private {
         Submission storage s = subs[bountyId][submissionId];
+        // The wallet recovers its unspent prepay from the aggregator and hands it back to
+        // THIS contract (never directly to the hunter), so the hand-off cannot be reverted.
         uint256 refunded = EvaluationWallet(payable(s.evalWallet)).refundLeftoverEth();
         emit EthRefunded(bountyId, submissionId, refunded);
+        _payOrCredit(s.hunter, refunded);
     }
 
     function _mustBounty(uint256 bountyId) internal view returns (Bounty storage) {

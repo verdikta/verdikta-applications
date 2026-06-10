@@ -203,12 +203,12 @@ The UI does these in sequence inside one button. If you're scripting against the
 > **Authoritative source:** the running website's **Analytics page** (`/analytics` → System Health → Contract Addresses) displays the live BountyEscrow address pulled from the backend's runtime config. If the address below ever disagrees with the Analytics page, trust the Analytics page — these docs are a snapshot and may be stale after a redeployment.
 
 ### Base Sepolia (Testnet)
-- **BountyEscrow**: `0x3CE38643F0550EFCC9743C2439480d4f062C8B51`
+- **BountyEscrow**: `0x579863c446B9d3E1f47a8FD463c88127336bF657`
 - **Verdikta Aggregator**: `0xe8a385E473EA710c5a88Cc72681a16a26fe380e4`
 - **Explorer**: [Base Sepolia Scan](https://sepolia.basescan.org)
 
 ### Base (Mainnet)
-- **BountyEscrow**: `0x1A4a0dedDAE20C24c3cD7735a2Ab1aFDAc491770`
+- **BountyEscrow**: `0x4390820F6F18EFeF51606434d5a9ed1841CEe916`
 - **Verdikta Aggregator**: `0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a`
 - **Explorer**: [BaseScan](https://basescan.org)
 

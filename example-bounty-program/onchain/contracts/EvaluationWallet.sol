@@ -52,17 +52,20 @@ contract EvaluationWallet {
         return id;
     }
 
-    /// @dev Recover any ETH refund credited to this wallet (ethOwed) from Verdikta,
-    ///      then forward the wallet's full ETH balance back to the hunter.
-    /// @return refunded The amount of ETH (wei) returned to the hunter.
+    /// @dev Recover any ETH refund credited to this wallet (ethOwed) from Verdikta, then hand
+    ///      the wallet's full ETH balance back to the BountyEscrow, which routes it to the
+    ///      hunter (or credits it for later withdrawal). Handing it to the trusted bounty
+    ///      contract — rather than pushing to the hunter here — keeps a hunter that can't
+    ///      receive ETH from being able to revert and brick submission resolution.
+    /// @return refunded The amount of ETH (wei) returned to the BountyEscrow for the hunter.
     function refundLeftoverEth() external onlyBounty returns (uint256 refunded) {
         if (verdikta.ethOwed(address(this)) > 0) {
             verdikta.withdrawEth();
         }
         refunded = address(this).balance;
         if (refunded > 0) {
-            (bool ok,) = payable(hunter).call{value: refunded}("");
-            require(ok, "refund failed");
+            (bool ok,) = payable(bountyContract).call{value: refunded}("");
+            require(ok, "repatriate failed");
         }
     }
 

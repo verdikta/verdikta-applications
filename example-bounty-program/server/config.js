@@ -110,8 +110,8 @@ config.rpcProviderUrl = config.rpcUrl;
 // These are the blocks at or just before the BountyEscrow deployment transactions.
 // Used as the starting point for bootstrap event replay.
 const deploymentBlocks = {
-  'base-sepolia': 42_633_282,  // ETH BountyEscrow 0x3CE3…8B51, ~2026-06-09T19:54:12Z
-  'base':         47_132_201,  // ETH BountyEscrow 0x1A4a…1770, ~2026-06-10T01:09:09Z
+  'base-sepolia': 42_646_416,  // ETH BountyEscrow 0x5798…F657 (pull-payment + O(1) close + guard), ~2026-06-10T03:12:00Z
+  'base':         47_135_949,  // ETH BountyEscrow 0x4390…e916 (pull-payment + O(1) close + guard), ~2026-06-10T03:14:05Z
 };
 
 config.deploymentBlock = deploymentBlocks[networkKey] || 0;

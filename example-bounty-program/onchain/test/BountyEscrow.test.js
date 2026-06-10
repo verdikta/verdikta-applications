@@ -729,6 +729,57 @@ describe("BountyEscrow", function () {
       // Aggregator credit fully drained — nothing stranded.
       expect(await verdiktaAggregator.ethOwed(evalWallet)).to.equal(0);
     });
+
+    it("Should not let a hunter that rejects ETH brick close-out (pull-payment guard)", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, other } =
+        await loadFixture(deployBountyEscrowFixture);
+      const escrowAddr = await bountyEscrow.getAddress();
+
+      const Grief = await ethers.getContractFactory("MockRejectingHunter");
+      const grief = await Grief.deploy();
+      const griefAddr = await grief.getAddress();
+
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+
+      // Fund the grief contract so it can pay the ETH prepay (it accepts ETH while not rejecting).
+      await other.sendTransaction({ to: griefAddr, value: ethers.parseEther("0.01") });
+
+      // Prepare + start via the contract. Model a dead oracle (prepay reserved until timeout).
+      await grief.prepare(escrowAddr, bountyId, EVAL_CID, HUNTER_CID);
+      const subId = await grief.lastSubId();
+      const budget = await grief.lastBudget();
+      await verdiktaAggregator.setCreditOnTimeout(true);
+      await verdiktaAggregator.setRefundAmount(budget);
+      await grief.start(escrowAddr, bountyId, subId);
+
+      // Now the hunter rejects all incoming ETH.
+      await grief.setRejecting(true);
+      await time.increase(601);
+
+      // Force-fail must NOT revert despite the hunter rejecting the refund; it defers it.
+      await expect(
+        bountyEscrow.connect(other).failTimedOutSubmission(bountyId, subId)
+      )
+        .to.emit(bountyEscrow, "SubmissionFinalized")
+        .and.to.emit(bountyEscrow, "PaymentDeferred")
+        .withArgs(griefAddr, budget);
+
+      // Refund is parked on the pull ledger (not lost), and the submission is resolved.
+      expect(await bountyEscrow.withdrawable(griefAddr)).to.equal(budget);
+      expect((await bountyEscrow.getSubmission(bountyId, subId)).status).to.equal(2); // Failed
+
+      // Critically, the bounty is NOT bricked — the creator can still reclaim after the deadline.
+      const b = await bountyEscrow.getBounty(bountyId);
+      await time.increaseTo(Number(b.submissionDeadline) + 1);
+      await expect(bountyEscrow.closeExpiredBounty(bountyId)).to.emit(bountyEscrow, "BountyClosed");
+
+      // And the hunter can claim once it can receive ETH again.
+      await grief.setRejecting(false);
+      await expect(grief.claim(escrowAddr))
+        .to.emit(bountyEscrow, "Withdrawn")
+        .withArgs(griefAddr, budget);
+      expect(await bountyEscrow.withdrawable(griefAddr)).to.equal(0);
+    });
   });
 
   // =========================================================================
@@ -826,6 +877,48 @@ describe("BountyEscrow", function () {
       // Now close should succeed — no PendingVerdikta submissions
       await expect(bountyEscrow.closeExpiredBounty(bountyId))
         .to.emit(bountyEscrow, "BountyClosed");
+    });
+
+    it("Should close regardless of how many unstarted submissions exist (no loop DoS)", async function () {
+      const { bountyEscrow, creator, hunter, hunter2 } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
+
+      // Pile up many Prepared (never-started) submissions — the cheap spam that an
+      // unbounded loop in closeExpiredBounty would have let grow past the gas limit.
+      for (let i = 0; i < 6; i++) {
+        await prepareDefaultSubmission(bountyEscrow, i % 2 === 0 ? hunter : hunter2, bountyId);
+      }
+      expect(await bountyEscrow.submissionCount(bountyId)).to.equal(6);
+      // None are PendingVerdikta, so the active-evaluation counter is 0.
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(0);
+
+      await time.increaseTo(deadline);
+
+      // Close still works — the active-evaluation check is O(1), not a loop over the 6 subs.
+      await expect(bountyEscrow.closeExpiredBounty(bountyId)).to.emit(bountyEscrow, "BountyClosed");
+    });
+
+    it("Should track activeEvaluations across start, finalize and force-fail", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(0);
+
+      // Two starts → counter 2
+      const sub1 = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      const sub2 = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(2);
+
+      // Finalize one (failing) → counter 1
+      await verdiktaAggregator.setEvaluation(sub1.aggId, FAILING_SCORES, JUST_CIDS, true);
+      await bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId);
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(1);
+
+      // Force-fail the other → counter 0
+      await time.increase(601);
+      await bountyEscrow.failTimedOutSubmission(bountyId, sub2.submissionId);
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(0);
     });
   });
 

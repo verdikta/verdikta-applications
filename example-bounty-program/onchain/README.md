@@ -5,9 +5,9 @@ Solidity contracts for the Verdikta AI-Powered Bounty Program, built with Hardha
 ## Contracts
 
 - **`BountyEscrow.sol`** — main contract. Holds ETH escrow, manages bounty lifecycle, coordinates with VerdiktaAggregator, supports an optional creator approval window.
-- **`EvaluationWallet.sol`** — per-submission wallet that holds LINK and pays oracle fees.
-- **`interfaces/IVerdiktaAggregator.sol`** — interface to the AI oracle aggregator.
-- **`interfaces/ILinkToken.sol`** — minimal LINK ERC-677 interface.
+- **`EvaluationWallet.sol`** — per-submission wallet that holds the ETH prepay and funds the oracle evaluation (recovers the unspent ETH refund and returns it to the hunter).
+- **`interfaces/IVerdiktaAggregator.sol`** — interface to the ETH-funded AI oracle aggregator (payable `requestAIEvaluationWithApproval`, `ethOwed`/`withdrawEth`).
+- **`interfaces/ILinkToken.sol`** — legacy minimal ERC-20 interface, retained only for the unused `MockLinkToken` test stub.
 
 ## Quick start
 

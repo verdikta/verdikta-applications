@@ -19,18 +19,18 @@ const BOUNTY_ESCROW_ABI = [
   "function isAcceptingSubmissions(uint256 bountyId) view returns (bool)",
   "function canBeClosed(uint256 bountyId) view returns (bool)",
   "function submissionCount(uint256 bountyId) view returns (uint256)",
-  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
   "function verdikta() view returns (address)",
   // Events
   "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
   "event BountyClosed(uint256 indexed bountyId, address indexed creator, uint256 amountReturned)",
-  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)",
+  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)",
   "event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, bytes32 verdiktaAggId)",
   "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, bool passed, uint256 acceptance, uint256 rejection, string justificationCids)",
   "event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amount)",
   "event CreatorApproved(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, uint256 amountPaid)",
   "event CreatorRefunded(uint256 indexed bountyId, address indexed creator, uint256 amountRefunded)",
-  "event LinkRefunded(uint256 indexed bountyId, uint256 indexed submissionId, uint256 amount)"
+  "event EthRefunded(uint256 indexed bountyId, uint256 indexed submissionId, uint256 amount)"
 ];
 
 // Verdikta Aggregator ABI (for checking evaluation results)
@@ -446,7 +446,7 @@ class ContractService {
             justificationCids: sub.justificationCids,
             submittedAt: Number(sub.submittedAt),
             finalizedAt: Number(sub.finalizedAt),
-            linkMaxBudget: sub.linkMaxBudget.toString(),
+            ethMaxBudget: sub.ethMaxBudget.toString(),
             score: sub.acceptance > 0 ? Number(sub.acceptance) : null,
             creatorWindowEnd: Number(sub.creatorWindowEnd),
           });

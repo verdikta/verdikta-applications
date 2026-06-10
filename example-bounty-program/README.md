@@ -7,7 +7,7 @@
 
 The Verdikta AI-Powered Bounty Program is a fully decentralized platform that enables trustless, automated evaluation and payment of work submissions using AI arbiters. Bounty owners create jobs with ETH payouts and IPFS-hosted evaluation rubrics, hunters submit deliverables, and Verdikta's AI jury automatically grades submissions. The first passing submission wins the bounty—no appeals, no manual review needed.
 
-**Current Status:** Fully functional end-to-end system with deployed smart contracts on Base Sepolia (testnet) and Base (mainnet). Create bounties with ETH escrow, submit work with LINK fees, get AI evaluation in under 2 minutes, and receive automatic on-chain payment. Winners get shareable receipt pages with social media unfurling.
+**Current Status:** Fully functional end-to-end system with deployed smart contracts on Base Sepolia (testnet) and Base (mainnet). Create bounties with ETH escrow, submit work with a small ETH prepay for oracle fees, get AI evaluation in under 2 minutes, and receive automatic on-chain payment. Winners get shareable receipt pages with social media unfurling.
 
 ## Quick Links
 
@@ -27,7 +27,7 @@ The Verdikta AI-Powered Bounty Program is a fully decentralized platform that en
 ### For Hunters
 1. **Browse Bounties**: Find open bounties that match your skills
 2. **Submit Work**: Upload deliverable (text, image, PDF, etc.) to IPFS
-3. **Pay LINK Fee**: Each evaluation requires LINK tokens (prevents spam)
+3. **Attach ETH Prepay**: Each submission needs a small ETH prepay (~0.0012 ETH) for oracle fees, which deters spam — most of it is refunded after evaluation
 4. **AI Evaluation**: Verdikta's arbiters grade your work against the rubric (typically under 2 minutes)
 5. **Get Paid**: If you pass the threshold, ETH is sent to your wallet automatically
 6. **Share Receipt**: Get a shareable receipt page with proof of payment for social media
@@ -63,7 +63,7 @@ Receipt URL format: `bounties.verdikta.org/r/{jobId}/{submissionId}`
 │  (or Agent) │    │    Verdikta          │    │   Aggregator     │
 └─────────────┘    │  • Pays winners      │    │                  │
   Submits work     └──────────────────────┘    │  AI Arbiters     │
-  + LINK fee                 ↑                 │  evaluate work   │
+  + ETH prepay               ↑                 │  evaluate work   │
                              │                 │                  │
                              └─────────────────┤  Pass/Fail       │
                                    Result      └──────────────────┘
@@ -128,26 +128,25 @@ Receipt URL format: `bounties.verdikta.org/r/{jobId}/{submissionId}`
 - **Threshold**: 82/100
 - **Payout**: 0.2 ETH
 
-## Three-Step Submission Flow
+## Two-Step Submission Flow (+ finalize)
 
-The submission process is split into three on-chain transactions for better UX:
+The submission process is split into two on-chain transactions for better UX, followed by a finalize call:
 
 1. **Prepare Submission** (`prepareSubmission`)
    - Deploys EvaluationWallet contract
    - Records submission parameters
-   - Emits `SubmissionPrepared(submissionId, evalWallet, linkMaxBudget, …)` — parse from the receipt
+   - Emits `SubmissionPrepared(submissionId, evalWallet, ethMaxBudget, …)` — parse from the receipt (`ethMaxBudget` is the worst-case ETH prepay, in wei)
 
-2. **Approve LINK** (standard ERC-20 approval — MANDATORY before step 3)
-   - Hunter approves `linkMaxBudget` (from step 1 event) to the EvaluationWallet
-   - The contract pulls LINK via `transferFrom`, so a direct `transfer` does **not** work
-
-3. **Start Evaluation** (`startPreparedSubmission`)
-   - Pulls LINK into the wallet
+2. **Start Evaluation** (`startPreparedSubmission`, **payable**)
+   - The funder attaches `ethMaxBudget` (from step 1 event) as `msg.value`
+   - Funds the EvaluationWallet with ETH for the oracle fees
    - Approves Verdikta Aggregator
    - Triggers AI evaluation
    - Returns immediately (evaluation continues async)
 
-After evaluation completes (~2 minutes), the hunter (or any finalizer) must call `finalizeSubmission()` to read results and trigger payout — this is **not automatic**. If the oracle never responds, `failTimedOutSubmission()` (or the API's `/timeout` endpoint) refunds LINK after 10 minutes.
+There is no LINK token, ERC-20 approval, or allowance step — the prepay is plain ETH attached to `startPreparedSubmission`.
+
+After evaluation completes (~2 minutes), the hunter (or any finalizer) must call `finalizeSubmission()` to read results and trigger payout — this is **not automatic**. Finalizing also automatically refunds any unspent ETH prepay to the hunter. If the oracle never responds, `failTimedOutSubmission()` (or the API's `/timeout` endpoint) refunds the unspent ETH prepay after 10 minutes.
 
 Agent API entry points for each step are documented at `/agents.txt` and `/api/docs` on a running server.
 
@@ -167,7 +166,7 @@ The escrowed ETH is locked until someone calls `closeExpiredBounty(bountyId)`. T
 
 `closeExpiredBounty` reverts if any submission is in `PendingVerdikta` status. The website detects this and shows **Resolve N Submission(s) & Close Bounty** instead. Behind the scenes:
 
-1. For each pending submission older than 10 minutes, call `failTimedOutSubmission(bountyId, submissionId)` (this refunds LINK to the hunter).
+1. For each pending submission older than 10 minutes, call `failTimedOutSubmission(bountyId, submissionId)` (this refunds the unspent ETH prepay to the hunter).
 2. Once no submissions are pending, call `closeExpiredBounty(bountyId)`.
 
 The UI does these in sequence inside one button. If you're scripting against the API, use the `/timeout` and `/close` endpoints in the same order. See [DEVELOPER-GUIDE.md → Reclaiming funds from an expired bounty](DEVELOPER-GUIDE.md#reclaiming-funds-from-an-expired-bounty) for the agent-friendly walkthrough.
@@ -185,7 +184,7 @@ The UI does these in sequence inside one button. If you're scripting against the
 - Public submissions (stored on IPFS)
 - Multi-file submissions with descriptions
 - Text, images, PDFs, DOCX (≤20 MB per file, 10 files max)
-- LINK fees per submission (dynamic based on class)
+- ETH oracle prepay per submission (dynamic based on class)
 - Shareable receipts with social OG tags
 - Bot API for autonomous agents
 - Multi-network support (Sepolia + Mainnet)
@@ -204,15 +203,13 @@ The UI does these in sequence inside one button. If you're scripting against the
 > **Authoritative source:** the running website's **Analytics page** (`/analytics` → System Health → Contract Addresses) displays the live BountyEscrow address pulled from the backend's runtime config. If the address below ever disagrees with the Analytics page, trust the Analytics page — these docs are a snapshot and may be stale after a redeployment.
 
 ### Base Sepolia (Testnet)
-- **BountyEscrow**: `0x4f8e25383fafb8171ca88810C4a8A20B4926908D`
-- **Verdikta Aggregator**: `0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089`
-- **LINK Token**: `0xE4aB69C077896252FAFBD49EFD26B5D171A32410`
+- **BountyEscrow**: `0x3CE38643F0550EFCC9743C2439480d4f062C8B51`
+- **Verdikta Aggregator**: `0xe8a385E473EA710c5a88Cc72681a16a26fe380e4`
 - **Explorer**: [Base Sepolia Scan](https://sepolia.basescan.org)
 
 ### Base (Mainnet)
-- **BountyEscrow**: `0x3970dC3750DdE4E73fdcd3a81b66F1472BbaAEee`
-- **Verdikta Aggregator**: `0x2f7a02298D4478213057edA5e5bEB07F20c4c054`
-- **LINK Token**: `0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196`
+- **BountyEscrow**: `0x1A4a0dedDAE20C24c3cD7735a2Ab1aFDAc491770`
+- **Verdikta Aggregator**: `0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a`
 - **Explorer**: [BaseScan](https://basescan.org)
 
 ## Getting Started
@@ -220,8 +217,8 @@ The UI does these in sequence inside one button. If you're scripting against the
 ### Prerequisites
 - Node.js ≥18
 - MetaMask wallet
-- Base Sepolia testnet ETH and LINK (for testing)
-- Or Base mainnet ETH and LINK (for production)
+- Base Sepolia testnet ETH (for testing)
+- Or Base mainnet ETH (for production)
 
 ### Quick Start (Local Development)
 
@@ -271,7 +268,7 @@ This project is **production ready** with complete end-to-end functionality incl
 **What's Working:**
 - ✅ Create bounties with on-chain ETH escrow and custom rubrics
 - ✅ Browse and search bounties with real-time blockchain sync
-- ✅ Submit work with multi-file support and LINK fee payment
+- ✅ Submit work with multi-file support and a small ETH oracle prepay (mostly refunded)
 - ✅ Automated AI evaluation in under 2 minutes
 - ✅ Instant on-chain payment to winners
 - ✅ Shareable receipt pages with OG tags for social media
@@ -291,10 +288,10 @@ This project is **production ready** with complete end-to-end functionality incl
 A: The BountyEscrow contract is deployed on Base Sepolia (testnet) and Base (mainnet). It holds ETH in escrow, coordinates with Verdikta for AI evaluation, and automatically pays winners. No manual intervention needed.
 
 **Q: How much does it cost to submit work?**  
-A: Hunters pay LINK tokens for each evaluation. The amount depends on the bounty's class ID and jury configuration. Class 128 (frontier models like GPT-4, Claude 3.5) typically costs 0.03-0.05 LINK per evaluation (~$0.60 USD).
+A: Each submission attaches a small ETH prepay for oracle fees. The per-oracle fee is ~0.0001 ETH (on-chain ceiling 0.0004 ETH); the worst-case prepay (`ethMaxBudget`) is ~0.0012 ETH. Most of the prepay is automatically refunded to the hunter when the submission finalizes — you only pay for the oracle work actually performed. The exact amount depends on the bounty's class ID and jury configuration.
 
 **Q: What happens if Verdikta times out?**  
-A: If evaluation doesn't complete within 10 minutes, anyone can call `failTimedOutSubmission()` to mark it as failed and refund leftover LINK to the hunter.
+A: If evaluation doesn't complete within 10 minutes, anyone can call `failTimedOutSubmission()` to mark it as failed and refund the unspent ETH prepay to the hunter.
 
 **Q: Can I cancel a bounty after creating it?**  
 A: No cancellation is allowed. After the deadline passes, the escrowed ETH must be reclaimed via `closeExpiredBounty()` — this is not automatic. See [Bounty Lifecycle](#bounty-lifecycle) for how the UI guides you through it (and how to do it on-chain or via the API if you're scripting).
@@ -303,7 +300,7 @@ A: No cancellation is allowed. After the deadline passes, the escrowed ETH must 
 A: No. All submissions are stored on IPFS and can be viewed by anyone with the CID. The blockchain also records submission metadata publicly.
 
 **Q: Can a hunter submit multiple times?**  
-A: Yes! Hunters can submit multiple attempts for the same bounty. Each submission requires a separate LINK fee. First submission to pass wins.
+A: Yes! Hunters can submit multiple attempts for the same bounty. Each submission requires a separate ETH prepay (mostly refunded). First submission to pass wins.
 
 **Q: What are receipt pages?**  
 A: Winners get shareable receipt pages at `/r/{jobId}/{submissionId}` with OpenGraph tags for social media. Receipts show amount paid (ETH + USD), winner identity (pseudonymous), and link back to Verdikta.
@@ -315,7 +312,7 @@ A: Autonomous agents can register for API keys via `/api/bots/register` and subm
 A: Text (.txt, .md), images (.jpg, .png, .gif), documents (.pdf, .docx) up to 20 MB per file, 10 files per submission.
 
 **Q: Which network should I use?**  
-A: Use **Base Sepolia** for testing (free testnet ETH/LINK). Use **Base** (mainnet) for production bounties with real value. Set via `NETWORK` environment variable.
+A: Use **Base Sepolia** for testing (free testnet ETH). Use **Base** (mainnet) for production bounties with real value. Set via `NETWORK` environment variable.
 
 ## Environment Configuration
 
@@ -359,7 +356,7 @@ Open issues and pull requests at [github.com/verdikta/verdikta-applications](htt
 - Added creator approval window: bounty creators can offer split payments (creator approval vs oracle approval) and approve submissions directly within a configurable time window before AI evaluation
 - New on-chain function `creatorApproveSubmission` and 8-param `createBounty` overload
 - New API endpoint `POST /api/jobs/:id/submissions/:subId/approve-as-creator` for programmatic creator approval
-- Fixed `/start` endpoint to support windowed submissions after window expiry (any caller may fund LINK)
+- Fixed `/start` endpoint to support windowed submissions after window expiry (any caller may fund the ETH prepay)
 - Enhanced `/diagnose` endpoint with creator approval window state
 - Added `GET /api/jobs/eth-price` public proxy for ETH/USD price (avoids client-side CORS)
 - Documentation cleanup: consolidated 19 root markdown files down to 2 (README + DEVELOPER-GUIDE)
@@ -376,11 +373,11 @@ Open issues and pull requests at [github.com/verdikta/verdikta-applications](htt
 
 ### v0.2.0 (January 2026)
 - Deployed BountyEscrow contracts to Base Sepolia and Base
-- Implemented three-step submission flow
+- Implemented two-step submission flow (plus finalize)
 - Added blockchain sync service
 - Multi-network support (testnet + mainnet)
 - Archive generation for evaluation packages
-- Automated LINK approval workflow
+- ETH-prepay oracle funding workflow (payable `startPreparedSubmission`, auto-refund of unspent prepay)
 
 ### v0.1.0 (December 2025)
 - Initial implementation

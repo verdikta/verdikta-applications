@@ -569,36 +569,27 @@ async function submitWork(jobId, content, hunter, dryRun) {
 // Network-specific addresses
 const NETWORK_ADDRESSES = {
   'base-sepolia': {
-    link: '0xE4aB69C077896252FAFBD49EFD26B5D171A32410',
     verdikta: '0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089',
   },
   'base': {
-    link: '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196',
     verdikta: '0x2f7a02298D4478213057edA5e5bEB07F20c4c054',
   },
 };
 
 const networkAddrs = NETWORK_ADDRESSES[serverConfig.network] || NETWORK_ADDRESSES['base-sepolia'];
-const LINK_ADDRESS = networkAddrs.link;
 const VERDIKTA_ADDRESS = networkAddrs.verdikta;
 
 const VERDIKTA_ABI = [
   'function getEvaluation(bytes32 requestId) view returns (uint256[] likelihoods, string justificationCID, bool exists)',
 ];
 
-const LINK_ABI = [
-  'function approve(address spender, uint256 amount) returns (bool)',
-  'function allowance(address owner, address spender) view returns (uint256)',
-  'function balanceOf(address account) view returns (uint256)',
-];
-
 const BOUNTY_ESCROW_ABI = [
   'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)',
-  'function startPreparedSubmission(uint256 bountyId, uint256 submissionId)',
+  'function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable',
   'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize))',
   'function submissionCount(uint256 bountyId) view returns (uint256)',
-  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))',
-  'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)',
+  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))',
+  'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)',
 ];
 
 // On-chain submission status codes
@@ -735,13 +726,12 @@ async function checkOnChainWinner(provider, onChainBountyId, threshold) {
 
 async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid, isWindowed = false) {
   const contract = new ethers.Contract(CONFIG.contractAddress, BOUNTY_ESCROW_ABI, wallet);
-  const linkToken = new ethers.Contract(LINK_ADDRESS, LINK_ABI, wallet);
 
-  // Check LINK balance first (skipped for windowed bounties — LINK isn't pulled until after window expiry)
-  let linkBalance = 0n;
+  // Check ETH balance first (skipped for windowed bounties — ETH isn't attached until after window expiry)
+  let ethBalance = 0n;
   if (!isWindowed) {
-    linkBalance = await linkToken.balanceOf(wallet.address);
-    console.log(`    LINK balance: ${ethers.formatEther(linkBalance)} LINK`);
+    ethBalance = await wallet.provider.getBalance(wallet.address);
+    console.log(`    ETH balance: ${ethers.formatEther(ethBalance)} ETH`);
   }
 
   // Step 1: Prepare submission on-chain (only do this ONCE, not on retry)
@@ -758,23 +748,23 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
     hunterCid,
     '',                        // addendum
     500,                       // alpha (equal quality/timeliness blend)
-    '3000000000000000',        // maxOracleFee (0.003 LINK)
-    '1000000000000000',        // estimatedBaseCost (0.001 LINK)
+    '100000000000000',         // maxOracleFee (0.0001 ETH)
+    '10000000000000',          // estimatedBaseCost (0.00001 ETH)
     '3'                        // maxFeeBasedScaling (3x cap on fee-based boost)
   );
 
   const prepareReceipt = await prepareTx.wait();
   console.log(`    Prepare tx: ${prepareReceipt.hash}`);
 
-  // Parse the SubmissionPrepared event to get submissionId, evalWallet, linkMaxBudget
-  let submissionId, evalWallet, linkMaxBudget;
+  // Parse the SubmissionPrepared event to get submissionId, evalWallet, ethMaxBudget
+  let submissionId, evalWallet, ethMaxBudget;
   for (const log of prepareReceipt.logs) {
     try {
       const parsed = contract.interface.parseLog(log);
       if (parsed?.name === 'SubmissionPrepared') {
         submissionId = parsed.args[1];
         evalWallet = parsed.args[3];
-        linkMaxBudget = parsed.args[5];
+        ethMaxBudget = parsed.args[5];
         break;
       }
     } catch (e) {
@@ -787,12 +777,12 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
   }
 
   console.log(`    Submission ID: ${submissionId}, EvalWallet: ${evalWallet}`);
-  console.log(`    LINK budget: ${ethers.formatEther(linkMaxBudget)} LINK`);
+  console.log(`    ETH prepay: ${ethers.formatEther(ethMaxBudget)} ETH`);
 
   // For windowed bounties, stop here. The submission is in PendingCreatorApproval status.
   // The creator may approve directly, or after window expires anyone can call
-  // startPreparedSubmission (which will pull LINK then). Submitting LINK approval and
-  // calling startPreparedSubmission now would revert with "creator window still open".
+  // startPreparedSubmission (which attaches the ETH prepay then). Calling
+  // startPreparedSubmission now would revert with "creator window still open".
   if (isWindowed) {
     return {
       submissionId: submissionId.toString(),
@@ -803,42 +793,19 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
     };
   }
 
-  // Check if we have enough LINK
-  if (linkBalance < linkMaxBudget) {
-    throw new Error(`Insufficient LINK balance. Need ${ethers.formatEther(linkMaxBudget)} LINK, have ${ethers.formatEther(linkBalance)} LINK`);
+  // Check if we have enough ETH to cover the prepay (plus gas headroom is the caller's concern)
+  if (ethBalance < ethMaxBudget) {
+    throw new Error(`Insufficient ETH: need ${ethers.formatEther(ethMaxBudget)} ETH, have ${ethers.formatEther(ethBalance)} ETH`);
   }
 
-  // Step 2: Approve LINK tokens to the EvaluationWallet
-  console.log('    Approving LINK tokens...');
-  const approveTx = await linkToken.approve(evalWallet, linkMaxBudget);
-  const approveReceipt = await approveTx.wait();
-  console.log(`    Approval tx: ${approveTx.hash}`);
-
-  // Wait for the approval to be indexed by the RPC (with retry)
-  console.log('    Waiting for approval to be indexed...');
-  let allowance = 0n;
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    await new Promise(resolve => setTimeout(resolve, attempt === 1 ? 2000 : 3000));
-    allowance = await linkToken.allowance(wallet.address, evalWallet);
-    if (allowance >= linkMaxBudget) {
-      break;
-    }
-    if (attempt < 5) {
-      console.log(`    Allowance not yet indexed (attempt ${attempt}/5), waiting...`);
-    }
-  }
-
-  // Verify allowance before proceeding
-  if (allowance < linkMaxBudget) {
-    throw new Error(`Allowance not set correctly after 5 attempts. Expected ${ethers.formatEther(linkMaxBudget)}, got ${ethers.formatEther(allowance)}. Try running again.`);
-  }
-
-  // Step 3: Start the prepared submission with retry logic for transient failures
+  // Step 2: Start the prepared submission, attaching the ETH prepay as msg.value.
+  // Unspent ETH is refunded to the hunter automatically when the submission finalizes.
+  // Retry logic handles transient failures.
   console.log('    Starting evaluation...');
   let startReceipt;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const startTx = await contract.startPreparedSubmission(bountyId, submissionId);
+      const startTx = await contract.startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
       startReceipt = await startTx.wait();
       console.log(`    Start tx: ${startReceipt.hash}`);
       break;

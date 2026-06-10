@@ -1165,7 +1165,7 @@ function BountyDetails({ walletState }) {
       `This submission has been stuck in evaluation for over ${CONFIG.SUBMISSION_TIMEOUT_MINUTES} minutes.\n` +
       'This action will:\n' +
       '• Mark the submission as Failed (timeout)\n' +
-      '• Refund LINK tokens to the submitter\n' +
+      '• Refund the unspent ETH prepay to the submitter\n' +
       '• Allow the bounty to be closed\n\n' +
       'This requires a blockchain transaction that you must sign.'
     );
@@ -1191,7 +1191,7 @@ function BountyDetails({ walletState }) {
         { maxAttempts: 10 }
       );
 
-      toast.success(`Submission #${submissionId} marked as failed (timeout). LINK tokens refunded.`);
+      toast.success(`Submission #${submissionId} marked as failed (timeout). ETH prepay refunded.`);
 
       setRetryCount(0);
       await loadJobDetails();
@@ -1294,7 +1294,7 @@ function BountyDetails({ walletState }) {
       const contractService = getContractService();
       if (!contractService.isConnected()) await contractService.connect();
 
-      // Read on-chain submission to verify hunter and get LINK requirements
+      // Read on-chain submission to verify hunter and get the ETH prepay requirement
       const chainSub = await contractService.getSubmission(onChainId, submissionId);
 
       const isFromCreatorWindow = chainSub.status === 'PendingCreatorApproval';
@@ -1319,45 +1319,20 @@ function BountyDetails({ walletState }) {
         return;
       }
 
-      // Check LINK allowance — the contract will pull LINK from the hunter via evalWallet
-      const evalWallet = chainSub.evalWallet;
-      const linkMaxBudget = chainSub.linkMaxBudget;
-      let needsApproval = false;
+      // The evaluation is funded by attaching ETH (msg.value = ethMaxBudget). No ERC20 approval;
+      // any unspent prepay is refunded to the hunter when the result finalizes.
+      const ethMaxBudget = chainSub.ethMaxBudget;
+      const ethAmount = (Number(ethMaxBudget) / 1e18).toFixed(4);
 
-      try {
-        const allowanceOk = await contractService.verifyAllowanceOnChain(
-          walletState.address, evalWallet, linkMaxBudget, 1, 0
-        );
-        needsApproval = !allowanceOk;
-      } catch {
-        needsApproval = true;
-      }
-
-      const linkAmount = (Number(linkMaxBudget) / 1e18).toFixed(4);
-      const confirmMsg = needsApproval
-        ? `Start evaluation for submission #${submissionId}?\n\n` +
-          `LINK approval is missing. You will be asked to:\n` +
-          `1. Approve ${linkAmount} LINK to the EvaluationWallet\n` +
-          `2. Start the evaluation\n\n` +
-          'Both require blockchain transactions that you must sign.'
-        : `Start evaluation for submission #${submissionId}?\n\n` +
-          'This will trigger the Verdikta oracle evaluation on-chain.\n\n' +
-          'This action requires a blockchain transaction that you must sign.';
+      const confirmMsg =
+        `Start evaluation for submission #${submissionId}?\n\n` +
+        `You will attach a prepay of ${ethAmount} ETH to fund the Verdikta oracle evaluation ` +
+        `(unspent ETH is refunded to the hunter when it finalizes).\n\n` +
+        'This action requires a blockchain transaction that you must sign.';
 
       if (!window.confirm(confirmMsg)) return;
 
-      // Approve LINK if needed
-      if (needsApproval) {
-        toast.info(`Approving ${linkAmount} LINK...`);
-        await contractService.approveLink(evalWallet, linkMaxBudget);
-
-        // Verify allowance propagated
-        await contractService.verifyAllowanceOnChain(
-          walletState.address, evalWallet, linkMaxBudget, 15, 1000
-        );
-      }
-
-      const result = await contractService.startPreparedSubmission(onChainId, submissionId);
+      const result = await contractService.startPreparedSubmission(onChainId, submissionId, ethMaxBudget);
 
       // Sync backend status
       const currentJobId = jobRef.current?.jobId || job?.jobId;
@@ -1376,8 +1351,8 @@ function BountyDetails({ walletState }) {
       const msg = err.message || 'Failed to start submission';
       if (msg.includes('submitted too late') || msg.includes('deadline')) {
         toast.error('Cannot start: the bounty submission deadline has passed.');
-      } else if (msg.includes('LINK pull failed') || msg.includes('insufficient allowance')) {
-        toast.error('LINK approval failed. Please ensure you have enough LINK tokens and try again.');
+      } else if (msg.includes('insufficient funds') || msg.includes('wrong eth amount') || msg.includes('Incorrect ETH')) {
+        toast.error('Could not fund the evaluation. Ensure you have enough ETH for the prepay and gas, then try again.');
       } else if (msg.includes('ACTION_REJECTED') || msg.includes('rejected')) {
         toast.warning('Transaction was rejected.');
       } else {
@@ -1919,10 +1894,10 @@ function BountyDetails({ walletState }) {
                 <>
                   The creator has <strong>{minsLeft}m {secsLeft.toString().padStart(2, '0')}s</strong>
                   {' '}left to approve directly. If they don't, you'll be able to trigger AI evaluation
-                  from the submission card below once the window expires. No LINK was spent.
+                  from the submission card below once the window expires. No evaluation fee was spent.
                 </>
               ) : isWindowedBounty && windowExpired ? (
-                <>The creator approval window has expired. You can trigger AI evaluation from the submission card below — that's when LINK will be requested.</>
+                <>The creator approval window has expired. You can trigger AI evaluation from the submission card below — that's when the ETH evaluation prepay will be requested.</>
               ) : (
                 <>Waiting for the bounty data to load…</>
               )}
@@ -3825,7 +3800,7 @@ function SubmissionCard({
                 marginBottom: '0.25rem'
               }}>
                 ⚠️ Oracle hasn't responded after {ageMinutes.toFixed(0)} min.
-                Use the button below to mark as failed and refund LINK.
+                Use the button below to mark as failed and refund the ETH prepay.
               </div>
               <button
                 onClick={() => onFailTimeout(submission.submissionId)}
@@ -3867,7 +3842,7 @@ function SubmissionCard({
           }}>
             {isAcceptedPendingClaim
               ? '🎉 This submission passed! Claim your bounty below.'
-              : 'Evaluation complete. Finalize to update on-chain status and refund LINK.'}
+              : 'Evaluation complete. Finalize to update on-chain status and refund the unspent ETH prepay.'}
           </div>
           <button
             onClick={() => onFinalize(submission.submissionId)}

@@ -578,7 +578,7 @@ router.get('/admin/stuck', async (req, res) => {
       recommendations.push(`${canTimeoutCount} submission(s) can be timed out via failTimedOutSubmission`);
     }
     if (neverStartedCount > 0) {
-      recommendations.push(`${neverStartedCount} submission(s) were never started - check LINK funding and startPreparedSubmission`);
+      recommendations.push(`${neverStartedCount} submission(s) were never started - check ETH funding (msg.value on start) and startPreparedSubmission`);
     }
     if (alreadyFinalizedCount > 0) {
       recommendations.push(`${alreadyFinalizedCount} submission(s) are finalized on-chain but local status is stale - run sync`);
@@ -1261,8 +1261,8 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
     const {
       hunter, hunterCid, addendum = '',
       alpha = 500,
-      maxOracleFee = '0.003',
-      estimatedBaseCost = '0.001',
+      maxOracleFee = '0.0001',      // ETH per oracle (under the 0.0004 ETH on-chain ceiling)
+      estimatedBaseCost = '0.00001', // ETH
       maxFeeBasedScaling = '3'
     } = req.body || {};
 
@@ -1298,7 +1298,7 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
     }
 
     const iface = new ethers.Interface([
-      'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256 submissionId, address evalWallet, uint256 linkMaxBudget)'
+      'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)'
     ]);
 
     const calldata = iface.encodeFunctionData('prepareSubmission', [
@@ -1329,7 +1329,7 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
         evaluationCid,
         hunterCid
       },
-      nextStep: 'After tx confirms, parse SubmissionPrepared event for submissionId, evalWallet, linkMaxBudget. Then call /submit/approve.'
+      nextStep: 'After tx confirms, parse SubmissionPrepared event for submissionId, evalWallet, ethMaxBudget. Then call /submissions/:submissionId/start and attach ethMaxBudget as the ETH value (msg.value). No LINK approval is needed.'
     });
 
   } catch (error) {
@@ -1341,52 +1341,19 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
   }
 });
 
-// POST /api/jobs/:jobId/submit/approve
-// Encodes LINK.approve() calldata for the EvaluationWallet
+// POST /api/jobs/:jobId/submit/approve  (DEPRECATED)
+// The oracle is ETH-funded now: there is no LINK approval step. Fund the
+// evaluation by attaching ethMaxBudget as msg.value on /submissions/:submissionId/start.
 router.post('/:jobId/submit/approve', async (req, res) => {
   const { jobId } = req.params;
-
-  try {
-    logger.info('[submit/approve] request', { jobId });
-
-    const { evalWallet, linkAmount } = req.body || {};
-
-    if (!evalWallet || !/^0x[a-fA-F0-9]{40}$/.test(evalWallet)) {
-      return res.status(400).json({ success: false, error: 'Invalid or missing evalWallet address' });
-    }
-    if (!linkAmount || isNaN(Number(linkAmount)) || Number(linkAmount) <= 0) {
-      return res.status(400).json({ success: false, error: 'Invalid linkAmount — must be a positive number as string (e.g., "0.6")' });
-    }
-
-    const linkTokenAddress = config.linkTokenAddress;
-    if (!linkTokenAddress) {
-      return res.status(500).json({ success: false, error: 'LINK token address not configured' });
-    }
-
-    const iface = new ethers.Interface([
-      'function approve(address spender, uint256 amount) returns (bool)'
-    ]);
-
-    const amountWei = ethers.parseEther(linkAmount);
-    const calldata = iface.encodeFunctionData('approve', [evalWallet, amountWei]);
-
-    logger.info('[submit/approve] encoded', { jobId, evalWallet, linkAmount });
-
-    return res.json({
-      success: true,
-      transaction: {
-        to: linkTokenAddress,
-        data: calldata,
-        value: '0',
-        chainId: config.chainId
-      },
-      nextStep: 'After tx confirms, call /submissions/:submissionId/start'
-    });
-
-  } catch (error) {
-    logger.error('[submit/approve] error', { jobId, msg: error.message });
-    return res.status(500).json({ success: false, error: 'Failed to encode approve', details: error.message });
-  }
+  logger.info('[submit/approve] called (deprecated, ETH migration)', { jobId });
+  return res.status(410).json({
+    success: false,
+    error: 'LINK approval is no longer required',
+    code: 'APPROVE_DEPRECATED_ETH',
+    details: 'The oracle is now ETH-funded. Skip this step. Call /submissions/:submissionId/start and attach the ethMaxBudget (from the SubmissionPrepared event) as the transaction value (msg.value).',
+    nextStep: 'POST /submissions/:submissionId/start'
+  });
 });
 
 // POST /api/jobs/:jobId/submissions/:submissionId/start
@@ -1439,7 +1406,7 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
     }
 
     // For Prepared submissions, only the original hunter can start.
-    // For PendingCreatorApproval (expired window), anyone can fund LINK and start.
+    // For PendingCreatorApproval (expired window), anyone can fund (ETH) and start.
     if (isPrepared && submission.hunter && submission.hunter.toLowerCase() !== hunter.toLowerCase()) {
       return res.status(403).json({ success: false, error: 'Hunter address does not match submission hunter' });
     }
@@ -1449,24 +1416,36 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
       return res.status(500).json({ success: false, error: 'Contract not configured' });
     }
 
+    // The evaluation is funded by attaching ethMaxBudget as msg.value (no LINK approval).
+    // Prefer an explicit body override; otherwise use the synced submission value.
+    const ethMaxBudget = req.body?.ethMaxBudget ?? submission.ethMaxBudget;
+    if (ethMaxBudget == null) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing ethMaxBudget — pass it (in wei) from the SubmissionPrepared event, or wait for the submission to sync',
+        code: 'ETH_BUDGET_UNKNOWN'
+      });
+    }
+    const valueWei = BigInt(ethMaxBudget).toString();
+
     const onChainSubmissionId = submission.onChainSubmissionId ?? submission.submissionId;
 
     const iface = new ethers.Interface([
-      'function startPreparedSubmission(uint256 bountyId, uint256 submissionId)'
+      'function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable'
     ]);
     const calldata = iface.encodeFunctionData('startPreparedSubmission', [
       onChainBountyId,
       onChainSubmissionId
     ]);
 
-    logger.info('[submit/start] encoded', { jobId, submissionId, onChainBountyId, onChainSubmissionId });
+    logger.info('[submit/start] encoded', { jobId, submissionId, onChainBountyId, onChainSubmissionId, valueWei });
 
     return res.json({
       success: true,
       transaction: {
         to: contractAddress,
         data: calldata,
-        value: '0',
+        value: valueWei,   // ETH prepay (== ethMaxBudget); unspent ETH is refunded to the hunter
         chainId: config.chainId,
         gasLimit: '4000000'
       },
@@ -2795,8 +2774,8 @@ router.get('/:jobId', async (req, res) => {
               if (chainSub.hunterCid && !sub.hunterCid) {
                 sub.hunterCid = chainSub.hunterCid;
               }
-              if (chainSub.linkMaxBudget != null) {
-                sub.linkMaxBudget = chainSub.linkMaxBudget.toString();
+              if (chainSub.ethMaxBudget != null) {
+                sub.ethMaxBudget = chainSub.ethMaxBudget.toString();
               }
               if (chainSub.submittedAt != null) {
                 sub.submittedAt = Number(chainSub.submittedAt) || sub.submittedAt;
@@ -3261,7 +3240,7 @@ const upload = multer({
  *
  * Validates a submission against bounty requirements WITHOUT submitting on-chain.
  * Read-only — nothing is written to IPFS, database, or blockchain.
- * Agents can test their work before paying gas + LINK.
+ * Agents can test their work before paying gas + the ETH evaluation prepay.
  *
  * Request: same multipart/form-data as regular submit (files + hunter).
  * Response: { valid, checks[], errors[], warnings[], nextStep, estimatedCost }
@@ -3410,7 +3389,7 @@ router.post('/:jobId/submit/dry-run', async (req, res) => {
           });
           if (pending.length > 0) {
             warnings.push(
-              `You have ${pending.length} unresolved prior submission(s) to this bounty. Resubmission is allowed, but each submission costs LINK — consider waiting for the pending one(s) to resolve first.`
+              `You have ${pending.length} unresolved prior submission(s) to this bounty. Resubmission is allowed, but each submission costs an ETH evaluation prepay (mostly refunded) plus gas — consider waiting for the pending one(s) to resolve first.`
             );
           }
         } else {
@@ -3844,7 +3823,7 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
         submission.onChainStatus = chainOnChainStatus;
       }
       submission.creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
-      submission.linkMaxBudget = chainSub.linkMaxBudget?.toString() || submission.linkMaxBudget;
+      submission.ethMaxBudget = chainSub.ethMaxBudget?.toString() || submission.ethMaxBudget;
       submission.submittedAt = Number(chainSub.submittedAt) || submission.submittedAt;
       if (chainSub.evalWallet && chainSub.evalWallet !== '0x0000000000000000000000000000000000000000') {
         submission.evalWallet = chainSub.evalWallet;
@@ -3887,19 +3866,16 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
 
 /**
  * ABI fragments for encoding transaction calldata.
- * These mirror the on-chain BountyEscrow and ERC-20 (LINK) interfaces.
+ * Mirrors the on-chain BountyEscrow interface. The oracle is ETH-funded now —
+ * startPreparedSubmission is payable and there is no LINK/ERC-20 approval.
  */
 const BUNDLE_ESCROW_ABI = [
   "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
-  "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
+  "function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
-  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)"
-];
-const BUNDLE_LINK_ABI = [
-  "function approve(address spender, uint256 amount) returns (bool)"
+  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)"
 ];
 const bundleEscrowIface = new ethers.Interface(BUNDLE_ESCROW_ABI);
-const bundleLinkIface = new ethers.Interface(BUNDLE_LINK_ABI);
 
 /**
  * POST /api/jobs/:jobId/submit/bundle
@@ -3917,16 +3893,16 @@ const bundleLinkIface = new ethers.Interface(BUNDLE_LINK_ABI);
  *   alpha           - timeliness-vs-quality blend (0-1000), default 500.
  *                     ReputationKeeper: weighted = ((1000 - alpha) * quality + alpha * timeliness) / 1000.
  *                     0 = pure quality; 1000 = pure timeliness; 500 = equal blend.
- *   maxOracleFee    - max LINK per oracle in wei, default "50000000000000000" (0.05 LINK)
- *   estimatedBaseCost   - default "30000000000000000" (0.03 LINK)
+ *   maxOracleFee    - max ETH per oracle in wei, default "100000000000000" (0.0001 ETH)
+ *   estimatedBaseCost   - default "10000000000000" (0.00001 ETH)
  *   maxFeeBasedScaling  - plain integer N (x-factor), default "3". Cap on fee-boost
  *                         multiplier applied to oracles whose fee is below maxOracleFee.
  *                         Contract multiplies by 1e18 internally — pass the x-factor itself, not a scaled value.
  *                         Must be >= 1.
  *
- * Response: step-1 transaction (prepareSubmission) + templates for steps 2-4.
+ * Response: step-1 transaction (prepareSubmission) + templates for steps 2-3.
  * After broadcasting step 1, call POST /submit/bundle/complete with the txHash
- * to get exact calldata for steps 2-4.
+ * to get exact calldata for the remaining steps (start funded with ETH, then finalize).
  */
 router.post('/:jobId/submit/bundle', async (req, res) => {
   let uploadedFiles = [];
@@ -3943,8 +3919,8 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
     let { hunterCid } = req.body;
     const addendum    = req.body.addendum || '';
     const alpha       = parseInt(req.body.alpha) || 500;
-    const maxOracleFee       = req.body.maxOracleFee       || '50000000000000000';
-    const estimatedBaseCost  = req.body.estimatedBaseCost  || '30000000000000000';
+    const maxOracleFee       = req.body.maxOracleFee       || '100000000000000';
+    const estimatedBaseCost  = req.body.estimatedBaseCost  || '10000000000000';
     // maxFeeBasedScaling: plain x-factor integer (contract scales by 1e18 internally).
     const maxFeeBasedScaling = req.body.maxFeeBasedScaling || '3';
 
@@ -4032,7 +4008,6 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
 
     // ---- Build transaction calldata ----
     const escrowAddress = config.bountyEscrowAddress;
-    const linkAddress   = config.linkTokenAddress;
     const chainId       = config.chainId;
     const bountyIdNum   = parseInt(jobId);
 
@@ -4055,7 +4030,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         {
           step: 1,
           name: 'prepareSubmission',
-          description: 'Creates submission record on-chain. Parse SubmissionPrepared event from tx receipt to get evalWallet, submissionId, and linkMaxBudget.',
+          description: 'Creates submission record on-chain. Parse SubmissionPrepared event from tx receipt to get evalWallet, submissionId, and ethMaxBudget.',
           to: escrowAddress,
           data: prepareData,
           value: '0',
@@ -4064,31 +4039,19 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         },
         {
           step: 2,
-          name: 'approveLINK',
-          description: 'Approve LINK tokens to evalWallet. Replace {EVAL_WALLET} and {LINK_MAX_BUDGET} from step 1 event.',
-          to: linkAddress,
-          data: null,
-          dataTemplate: 'approve({EVAL_WALLET}, {LINK_MAX_BUDGET})',
-          value: '0',
-          chainId,
-          gasLimit: 100000,
-          note: 'Use POST /api/jobs/:id/submit/bundle/complete with step 1 txHash to get exact calldata'
-        },
-        {
-          step: 3,
           name: 'startPreparedSubmission',
-          description: 'Triggers oracle evaluation. Replace {SUBMISSION_ID} from step 1 event.',
+          description: 'Triggers oracle evaluation. Replace {SUBMISSION_ID} from step 1 event, and attach {ETH_MAX_BUDGET} (from step 1 event) as the transaction value (msg.value). No LINK approval needed.',
           to: escrowAddress,
           data: null,
           dataTemplate: 'startPreparedSubmission({BOUNTY_ID}, {SUBMISSION_ID})',
-          value: '0',
+          value: '{ETH_MAX_BUDGET}',
           chainId,
           gasLimit: 4000000,
-          note: 'Use POST /api/jobs/:id/submit/bundle/complete with step 1 txHash to get exact calldata'
+          note: 'Use POST /api/jobs/:id/submit/bundle/complete with step 1 txHash to get exact calldata + value'
         }
       ],
       postEvaluation: {
-        step: 4,
+        step: 3,
         name: 'finalizeSubmission',
         description: 'Call after oracle completes to claim reward (if passed) or close submission (if failed). Replace {SUBMISSION_ID}.',
         to: escrowAddress,
@@ -4100,38 +4063,37 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         note: 'Only call after GET /api/jobs/:id/submissions/:submissionId shows EVALUATED_PASSED or EVALUATED_FAILED'
       },
       contracts: {
-        escrow: escrowAddress,
-        link: linkAddress
+        escrow: escrowAddress
       },
       requirements: {
-        ethForGas: '~0.005 ETH (estimate for all 3 transactions)',
-        linkForOracle: `${ethers.formatEther(maxOracleFee)} LINK per oracle node (linkMaxBudget returned in step 1 event)`
+        ethForGas: '~0.005 ETH (estimate for both transactions)',
+        ethForOracle: `attach ethMaxBudget (from step 1 event) as msg.value on step 2 — worst case ~${ethers.formatEther(BigInt(maxOracleFee) * 12n)} ETH; unspent ETH is refunded to the hunter when finalized`
       },
       abis: {
-        SubmissionPrepared: 'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)',
+        SubmissionPrepared: 'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)',
         prepareSubmission: 'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)',
-        startPreparedSubmission: 'function startPreparedSubmission(uint256 bountyId, uint256 submissionId)',
+        startPreparedSubmission: 'function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable',
         finalizeSubmission: 'function finalizeSubmission(uint256 bountyId, uint256 submissionId)',
-        failTimedOutSubmission: 'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)',
-        approveLINK: 'function approve(address spender, uint256 amount) returns (bool)'
+        failTimedOutSubmission: 'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)'
       },
       nextStep: `POST /api/jobs/${jobId}/submit/bundle/complete with { "txHash": "0x..." } after broadcasting step 1`,
       tips: [
         'Execute step 1 first, then call /submit/bundle/complete with the txHash',
-        '/submit/bundle/complete parses step 1 logs and returns exact calldata for steps 2, 3, and 4',
-        'If you can parse event logs yourself, extract evalWallet + submissionId + linkMaxBudget from SubmissionPrepared',
+        '/submit/bundle/complete parses step 1 logs and returns exact calldata + the ETH value for steps 2 and 3',
+        'If you can parse event logs yourself, extract evalWallet + submissionId + ethMaxBudget from SubmissionPrepared',
+        'Step 2 (startPreparedSubmission) is payable — attach ethMaxBudget as msg.value. There is NO LINK approval step anymore.',
         `Confirm submission with POST /api/jobs/${jobId}/submissions/confirm after step 1`,
-        `Poll GET /api/jobs/${jobId}/submissions after step 3 until evaluation completes, then execute step 4`,
-        'Step 4 (finalizeSubmission) is REQUIRED — oracle completion does NOT trigger payment automatically',
+        `Poll GET /api/jobs/${jobId}/submissions after step 2 until evaluation completes, then execute step 3`,
+        'Step 3 (finalizeSubmission) is REQUIRED — oracle completion does NOT trigger payment automatically',
         'If finalizeSubmission reverts with "Verdikta not ready", the oracle timed out — call failTimedOutSubmission instead (available after 10 min)',
         ...(job.creatorAssessmentWindowSize > 0 ? [
-          `WINDOWED BOUNTY: After step 1, the submission enters PendingCreatorApproval for ${job.creatorAssessmentWindowSize}s. The creator may approve directly. If the window expires, proceed with steps 2-4.`,
-          `Poll GET /api/jobs/${jobId}/submissions/:subId/diagnose to check window status before executing step 3.`
+          `WINDOWED BOUNTY: After step 1, the submission enters PendingCreatorApproval for ${job.creatorAssessmentWindowSize}s. The creator may approve directly. If the window expires, proceed with steps 2-3.`,
+          `Poll GET /api/jobs/${jobId}/submissions/:subId/diagnose to check window status before executing step 2.`
         ] : [])
       ],
       ...(job.creatorAssessmentWindowSize > 0 ? {
         windowedBounty: {
-          note: 'This bounty has a creator approval window. After step 1, the submission enters PendingCreatorApproval status. The creator may approve directly during the window. If the window expires without approval, proceed with steps 2-4 to start oracle evaluation.',
+          note: 'This bounty has a creator approval window. After step 1, the submission enters PendingCreatorApproval status. The creator may approve directly during the window. If the window expires without approval, proceed with steps 2-3 to start (ETH-funded) oracle evaluation.',
           creatorAssessmentWindowSize: job.creatorAssessmentWindowSize,
           creatorDeterminationPayment: job.creatorDeterminationPayment || null,
           arbiterDeterminationPayment: job.arbiterDeterminationPayment || null,
@@ -4167,7 +4129,8 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
  *
  * After the agent broadcasts the prepareSubmission transaction (step 1),
  * this endpoint parses the transaction receipt to extract evalWallet,
- * submissionId, and linkMaxBudget, then returns exact calldata for steps 2-4.
+ * submissionId, and ethMaxBudget, then returns exact calldata for steps 2-3
+ * (the ETH-funded start, then finalize).
  *
  * Request body: { "txHash": "0x..." }
  */
@@ -4197,7 +4160,7 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
         code: ErrorCodes.ONCHAIN_NOT_AVAILABLE,
         message: 'Blockchain service not available',
         details: 'Server cannot access blockchain to parse transaction receipt',
-        fix: 'Parse the SubmissionPrepared event yourself using the ABI from /submit/bundle response. Extract: evalWallet, submissionId, linkMaxBudget.'
+        fix: 'Parse the SubmissionPrepared event yourself using the ABI from /submit/bundle response. Extract: evalWallet, submissionId, ethMaxBudget.'
       });
     }
 
@@ -4223,16 +4186,16 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
 
     // Parse SubmissionPrepared event from logs
     const escrowAddress = config.bountyEscrowAddress;
-    let evalWallet, submissionId, linkMaxBudget;
+    let evalWallet, submissionId, ethMaxBudget;
 
     for (const log of receipt.logs) {
       if ((log.address || '').toLowerCase() !== (escrowAddress || '').toLowerCase()) continue;
       try {
         const parsed = bundleEscrowIface.parseLog({ topics: log.topics, data: log.data });
         if (parsed && parsed.name === 'SubmissionPrepared') {
-          submissionId   = parsed.args[1]; // indexed submissionId
-          evalWallet     = parsed.args[3]; // evalWallet (non-indexed)
-          linkMaxBudget  = parsed.args[5]; // linkMaxBudget (non-indexed)
+          submissionId  = parsed.args[1]; // indexed submissionId
+          evalWallet    = parsed.args[3]; // evalWallet (non-indexed)
+          ethMaxBudget  = parsed.args[5]; // ethMaxBudget (non-indexed)
           break;
         }
       } catch { /* skip non-matching logs */ }
@@ -4249,14 +4212,9 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
 
     const bountyIdNum = parseInt(jobId);
     const chainId     = config.chainId;
-    const linkAddress = config.linkTokenAddress;
+    const startValue  = BigInt(ethMaxBudget).toString();
 
-    // Encode exact calldata for steps 2, 3, and 4
-    const approveData = bundleLinkIface.encodeFunctionData('approve', [
-      evalWallet,
-      linkMaxBudget
-    ]);
-
+    // Encode exact calldata for steps 2 (ETH-funded start) and 3 (finalize)
     const startData = bundleEscrowIface.encodeFunctionData('startPreparedSubmission', [
       bountyIdNum,
       submissionId
@@ -4272,33 +4230,23 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
       parsed: {
         submissionId: Number(submissionId),
         evalWallet,
-        linkMaxBudget: linkMaxBudget.toString(),
-        linkMaxBudgetFormatted: ethers.formatEther(linkMaxBudget) + ' LINK'
+        ethMaxBudget: ethMaxBudget.toString(),
+        ethMaxBudgetFormatted: ethers.formatEther(ethMaxBudget) + ' ETH'
       },
       transactions: [
         {
           step: 2,
-          name: 'approveLINK',
-          description: `Approve ${ethers.formatEther(linkMaxBudget)} LINK to evalWallet ${evalWallet}`,
-          to: linkAddress,
-          data: approveData,
-          value: '0',
-          chainId,
-          gasLimit: 100000
-        },
-        {
-          step: 3,
           name: 'startPreparedSubmission',
-          description: `Start oracle evaluation for submission #${Number(submissionId)}`,
+          description: `Start oracle evaluation for submission #${Number(submissionId)}, attaching ${ethers.formatEther(ethMaxBudget)} ETH as msg.value (no LINK approval; unspent ETH is refunded to the hunter)`,
           to: escrowAddress,
           data: startData,
-          value: '0',
+          value: startValue,
           chainId,
           gasLimit: 4000000
         }
       ],
       postEvaluation: {
-        step: 4,
+        step: 3,
         name: 'finalizeSubmission',
         description: `Finalize submission #${Number(submissionId)} after oracle completes`,
         to: escrowAddress,
@@ -4319,9 +4267,9 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
         }
       },
       tips: [
-        'Execute step 2 (approve LINK), then step 3 (start evaluation)',
-        `After step 3, poll GET /api/jobs/${jobId}/submissions until status is EVALUATED_PASSED or EVALUATED_FAILED`,
-        'Then execute step 4 (finalize) to claim reward or close submission',
+        'Execute step 2 (start evaluation) — it is payable; attach the value field (ethMaxBudget) as msg.value. No LINK approval is needed.',
+        `After step 2, poll GET /api/jobs/${jobId}/submissions until status is EVALUATED_PASSED or EVALUATED_FAILED`,
+        'Then execute step 3 (finalize) to claim reward or close submission',
         `Also call POST /api/jobs/${jobId}/submissions/confirm to register the submission for API tracking`
       ]
     });
@@ -5369,7 +5317,7 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
         // Analyze on-chain state
         if (chainStatus === 'Prepared') {
           diagnosis.issues.push('Submission is still in Prepared state - startPreparedSubmission was never called');
-          diagnosis.recommendations.push('Call startPreparedSubmission to begin evaluation, or check if LINK was transferred to evalWallet');
+          diagnosis.recommendations.push('Call startPreparedSubmission (payable — attach ethMaxBudget as msg.value) to begin evaluation');
         } else if (chainStatus === 'PendingVerdikta') {
           if (!chainSub.verdiktaAggId || chainSub.verdiktaAggId === '0x0000000000000000000000000000000000000000000000000000000000000000') {
             diagnosis.issues.push('PendingVerdikta but no verdiktaAggId - evaluation may not have started properly');
@@ -5440,7 +5388,7 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
             );
           } else {
             diagnosis.recommendations.push(
-              `Creator approval window has expired. Call POST /api/jobs/${jobId}/submissions/${subId}/start to begin oracle evaluation (requires LINK funding).`
+              `Creator approval window has expired. Call POST /api/jobs/${jobId}/submissions/${subId}/start to begin oracle evaluation (attach ethMaxBudget as msg.value to fund it).`
             );
           }
         } else if (chainStatus === 'Failed' || chainStatus === 'PassedPaid' || chainStatus === 'PassedUnpaid') {
@@ -5966,7 +5914,7 @@ router.get('/:jobId/submissions/:submissionId/content', async (req, res) => {
  * GET /api/jobs/:jobId/estimate-fee
  * POST /api/jobs/estimate-fee (with custom jury config)
  *
- * Estimates the LINK token cost for submitting to a bounty.
+ * Estimates the ETH cost for submitting to a bounty (the oracle prepay).
  * This helps agents budget before committing to a submission.
  *
  * The fee depends on:
@@ -5976,7 +5924,7 @@ router.get('/:jobId/submissions/:submissionId/content', async (req, res) => {
  * - Current max oracle fee from Verdikta aggregator
  *
  * Response includes:
- * - estimatedLinkCost: Estimated LINK tokens needed
+ * - estimatedEthCost: Estimated ETH prepay needed (mostly refunded after the eval)
  * - breakdown: How the estimate was calculated
  * - parameters: Fee parameters to use in prepareSubmission
  */
@@ -6061,7 +6009,7 @@ router.post('/estimate-fee', async (req, res) => {
 async function calculateFeeEstimate(juryNodes, iterations) {
   // Default fee parameters (fallback values)
   // These are conservative estimates based on typical Verdikta pricing
-  let maxOracleFeeWei = BigInt('3000000000000000'); // 0.003 LINK per oracle call
+  let maxOracleFeeWei = BigInt('100000000000000'); // 0.0001 ETH per oracle call
   let aggregatorConfigAvailable = false;
 
   // Try to get actual maxOracleFee from Verdikta aggregator
@@ -6070,7 +6018,7 @@ async function calculateFeeEstimate(juryNodes, iterations) {
       const verdiktaService = getVerdiktaService();
       const aggConfig = await verdiktaService.getAggregatorConfig();
       if (aggConfig.maxOracleFee) {
-        // Convert from LINK string to wei
+        // Convert from ETH string to wei
         const parsed = parseFloat(aggConfig.maxOracleFee);
         if (parsed > 0) {
           maxOracleFeeWei = BigInt(Math.floor(parsed * 1e18));
@@ -6092,7 +6040,7 @@ async function calculateFeeEstimate(juryNodes, iterations) {
   totalCalls *= iterations;
 
   // Base cost estimate (fixed overhead per evaluation)
-  const baseCostWei = BigInt('1000000000000000'); // 0.001 LINK
+  const baseCostWei = BigInt('10000000000000'); // 0.00001 ETH
 
   // Calculate raw cost: baseCost + (totalCalls × maxOracleFee)
   const oracleCostWei = BigInt(totalCalls) * maxOracleFeeWei;
@@ -6102,10 +6050,10 @@ async function calculateFeeEstimate(juryNodes, iterations) {
   const safetyMargin = BigInt(120); // 120%
   const estimatedCostWei = (rawCostWei * safetyMargin) / BigInt(100);
 
-  // Convert to LINK (human-readable)
-  const estimatedLinkCost = Number(estimatedCostWei) / 1e18;
-  const rawLinkCost = Number(rawCostWei) / 1e18;
-  const maxOracleFeeLINK = Number(maxOracleFeeWei) / 1e18;
+  // Convert to ETH (human-readable)
+  const estimatedEthCost = Number(estimatedCostWei) / 1e18;
+  const rawEthCost = Number(rawCostWei) / 1e18;
+  const maxOracleFeeEth = Number(maxOracleFeeWei) / 1e18;
 
   // Recommended prepareSubmission parameters
   // These are the values agents should use when calling prepareSubmission.
@@ -6124,16 +6072,16 @@ async function calculateFeeEstimate(juryNodes, iterations) {
   };
 
   return {
-    estimatedLinkCost: Math.round(estimatedLinkCost * 10000) / 10000, // 4 decimal places
-    estimatedLinkCostWei: estimatedCostWei.toString(),
+    estimatedEthCost: Math.round(estimatedEthCost * 1000000) / 1000000, // 6 decimal places
+    estimatedEthCostWei: estimatedCostWei.toString(),
     breakdown: {
       baseCost: Number(baseCostWei) / 1e18,
       oracleCalls: totalCalls,
-      maxOracleFeePerCall: maxOracleFeeLINK,
+      maxOracleFeePerCall: maxOracleFeeEth,
       oracleCostTotal: Number(oracleCostWei) / 1e18,
-      rawCost: rawLinkCost,
+      rawCost: rawEthCost,
       safetyMarginPercent: 20,
-      finalEstimate: estimatedLinkCost
+      finalEstimate: estimatedEthCost
     },
     recommendedParams,
     aggregatorConfigAvailable,

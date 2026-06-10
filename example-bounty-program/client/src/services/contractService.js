@@ -16,38 +16,28 @@
 import { ethers } from 'ethers';
 import { config, currentNetwork } from '../config';
 
-// LINK token address from config (supports both Base Sepolia and Base Mainnet)
-const LINK_ADDRESS = config.linkTokenAddress;
-
 // BountyEscrow ABI - only the functions we need to call
 const BOUNTY_ESCROW_ABI = [
   // Events
   "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
-  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)",
+  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)",
 
   // Write Functions
   "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)",
   "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize) payable returns (uint256)",
   "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
-  "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
+  "function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
   "function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)",
   "function closeExpiredBounty(uint256 bountyId)",
   "function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)",
-  
+
   // View Functions (used sparingly)
   "function getEffectiveBountyStatus(uint256) view returns (string)",
-  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
   "function bountyCount() view returns (uint256)",
   "function getBounty(uint256) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize))",
   "function verdikta() view returns (address)"
-];
-
-// LINK token ABI (minimal)
-const LINK_ABI = [
-  "function approve(address spender, uint256 amount) returns (bool)",
-  "function allowance(address owner, address spender) view returns (uint256)",
-  "function balanceOf(address account) view returns (uint256)"
 ];
 
 // ============================================================================
@@ -100,7 +90,6 @@ class ContractService {
     this.userAddress = null;
     
     // Cached contract instances
-    this._linkContract = null;
     this._readOnlyProvider = null;
     
     // Connection state
@@ -164,25 +153,6 @@ class ContractService {
       }
     }
     return this._readOnlyProvider;
-  }
-
-  /**
-   * Get cached LINK contract instance
-   */
-  getLinkContract(signerOrProvider) {
-    // For write operations, create with signer
-    if (signerOrProvider) {
-      return new ethers.Contract(LINK_ADDRESS, LINK_ABI, signerOrProvider);
-    }
-    
-    // For read operations, use cached instance
-    if (!this._linkContract) {
-      const provider = this.getReadOnlyProvider();
-      if (provider) {
-        this._linkContract = new ethers.Contract(LINK_ADDRESS, LINK_ABI, provider);
-      }
-    }
-    return this._linkContract;
   }
 
   /**
@@ -410,8 +380,8 @@ class ContractService {
    *   internally — pass the x-factor itself (e.g. 3 = up to 3x). Must be >= 1.
    */
   async prepareSubmission(bountyId, evaluationCid, hunterCid, addendum = "", alpha = 500,
-                          maxOracleFee = "50000000000000000",
-                          estimatedBaseCost = "30000000000000000",
+                          maxOracleFee = "100000000000000",     // 0.0001 ETH (under the 0.0004 ETH ceiling)
+                          estimatedBaseCost = "10000000000000",  // 0.00001 ETH
                           maxFeeBasedScaling = "3") {
     if (!this.contract) {
       throw new Error('Contract not initialized. Call connect() first.');
@@ -448,7 +418,7 @@ class ContractService {
             result = {
               submissionId: Number(parsed.args.submissionId),
               evalWallet: parsed.args.evalWallet,
-              linkMaxBudget: parsed.args.linkMaxBudget.toString(),
+              ethMaxBudget: parsed.args.ethMaxBudget.toString(),
               txHash: receipt.hash
             };
             break;
@@ -472,55 +442,45 @@ class ContractService {
   }
 
   /**
-   * STEP 2: Approve LINK tokens to the EvaluationWallet
+   * STEP 2: Start the prepared submission (triggers Verdikta evaluation).
+   *
+   * Funds the oracle evaluation with ETH: msg.value must equal the ethMaxBudget
+   * returned by prepareSubmission (or read from getSubmission). No ERC20 approval.
+   * Unspent prepay is refunded to the hunter automatically at finalization.
+   *
+   * @param {string|number} bountyId
+   * @param {string|number} submissionId
+   * @param {string|bigint} ethMaxBudget - worst-case prepay in wei (== msg.value)
    */
-  async approveLink(evalWallet, linkAmount) {
-    if (!this.signer) {
-      throw new Error('Signer not initialized. Call connect() first.');
-    }
-
-    try {
-      console.log('🔍 Approving LINK to EvaluationWallet...', {
-        spender: evalWallet,
-        linkAmount: ethers.formatUnits(linkAmount, 18) + ' LINK'
-      });
-
-      // Use signer for write operation
-      const linkContract = this.getLinkContract(this.signer);
-      const tx = await linkContract.approve(evalWallet, linkAmount);
-
-      console.log('📤 LINK approval transaction sent:', tx.hash);
-      const receipt = await tx.wait();
-      console.log('✅ LINK approved:', receipt.hash);
-
-      return {
-        success: true,
-        txHash: receipt.hash,
-        blockNumber: receipt.blockNumber,
-        gasUsed: receipt.gasUsed.toString()
-      };
-
-    } catch (error) {
-      console.error('Error approving LINK:', error);
-      if (error.code === 'ACTION_REJECTED') {
-        throw new Error('LINK approval rejected by user');
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * STEP 3: Start the prepared submission (triggers Verdikta evaluation)
-   */
-  async startPreparedSubmission(bountyId, submissionId) {
+  async startPreparedSubmission(bountyId, submissionId, ethMaxBudget) {
     if (!this.contract) {
       throw new Error('Contract not initialized. Call connect() first.');
     }
+    if (ethMaxBudget == null) {
+      throw new Error('ethMaxBudget is required to fund the evaluation');
+    }
+
+    const value = BigInt(ethMaxBudget);
 
     try {
-      console.log('🔍 Starting submission evaluation...', { bountyId, submissionId });
+      console.log('🔍 Starting submission evaluation...', {
+        bountyId, submissionId, valueEth: ethers.formatEther(value)
+      });
 
-      const tx = await this.contract.startPreparedSubmission(bountyId, submissionId);
+      // Dry-run to surface revert reasons before prompting MetaMask
+      try {
+        await this.contract.startPreparedSubmission.staticCall(bountyId, submissionId, { value });
+      } catch (e) {
+        const decoded = this._decodeRevertReason(e, [this.contract]);
+        const msg = (decoded || e?.message || '').toLowerCase();
+        if (msg.includes('wrong eth amount')) throw new Error('Incorrect ETH amount for the evaluation prepay');
+        if (msg.includes('only hunter')) throw new Error('Only the submitting hunter can start this evaluation');
+        if (msg.includes('creator window still open')) throw new Error('The creator approval window is still open');
+        if (msg.includes('already passed')) throw new Error('Another submission already passed — finalize it first');
+        throw e;
+      }
+
+      const tx = await this.contract.startPreparedSubmission(bountyId, submissionId, { value });
       console.log('📤 Transaction sent:', tx.hash);
 
       const receipt = await tx.wait();
@@ -849,7 +809,7 @@ class ContractService {
           submittedAt: Number(sub.submittedAt),
           acceptance: Number(sub.acceptance),
           rejection: Number(sub.rejection),
-          linkMaxBudget: sub.linkMaxBudget.toString(),
+          ethMaxBudget: sub.ethMaxBudget.toString(),
           creatorWindowEnd: Number(sub.creatorWindowEnd),
         };
 
@@ -882,7 +842,7 @@ class ContractService {
     try {
       // Use the CORRECT 18-field Submission struct ABI (matches actual BountyEscrow.sol)
       const submissionAbi = [
-        'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))'
+        'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))'
       ];
 
       const tempContract = new ethers.Contract(this.contractAddress, submissionAbi, provider);
@@ -971,63 +931,6 @@ class ContractService {
   }
 
   // ==========================================================================
-  // ALLOWANCE VERIFICATION (OPTIMIZED)
-  // ==========================================================================
-
-  /**
-   * Verify LINK allowance is visible on-chain before proceeding
-   * OPTIMIZED: Uses cached LINK contract, exponential backoff
-   */
-  async verifyAllowanceOnChain(ownerAddress, spenderAddress, requiredAmount, maxAttempts = 12, initialIntervalMs = 500) {
-    const linkContract = this.getLinkContract();
-    if (!linkContract) {
-      throw new Error('Could not initialize LINK contract');
-    }
-
-    const requiredBigInt = BigInt(requiredAmount);
-    let intervalMs = initialIntervalMs;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        const currentAllowance = await linkContract.allowance(ownerAddress, spenderAddress);
-        
-        if (BigInt(currentAllowance) >= requiredBigInt) {
-          console.log('✅ Allowance verified on-chain');
-          return true;
-        }
-      } catch (err) {
-        // Silently retry
-      }
-
-      // Exponential backoff: 500ms, 750ms, 1125ms, 1687ms, etc.
-      if (attempt < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, intervalMs));
-        intervalMs = Math.min(intervalMs * 1.5, 3000); // Cap at 3 seconds
-      }
-    }
-
-    return false;
-  }
-
-  /**
-   * Check LINK balance (debounced)
-   */
-  async getLinkBalance(address) {
-    return debounceRpcCall(`link-balance-${address}`, async () => {
-      const linkContract = this.getLinkContract();
-      if (!linkContract) {
-        throw new Error('Could not initialize LINK contract');
-      }
-
-      const balance = await linkContract.balanceOf(address);
-      return {
-        raw: balance.toString(),
-        formatted: ethers.formatUnits(balance, 18)
-      };
-    });
-  }
-
-  // ==========================================================================
   // CONNECTION STATE
   // ==========================================================================
 
@@ -1060,7 +963,6 @@ class ContractService {
     this.signer = null;
     this.contract = null;
     this.userAddress = null;
-    this._linkContract = null;
     this._readOnlyProvider = null;
     this.clearCache();
   }

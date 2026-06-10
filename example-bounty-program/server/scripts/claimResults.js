@@ -64,18 +64,12 @@ const BOUNTY_ESCROW_ABI = [
   'function bountyCount() view returns (uint256)',
   'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize))',
   'function submissionCount(uint256 bountyId) view returns (uint256)',
-  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))',
+  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))',
   'function finalizeSubmission(uint256 bountyId, uint256 submissionId)',
   'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)',
   'function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)',
-  'function startPreparedSubmission(uint256 bountyId, uint256 submissionId)',
+  'function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable',
   'function verdikta() view returns (address)',
-];
-
-const LINK_ABI = [
-  'function approve(address spender, uint256 amount) returns (bool)',
-  'function allowance(address owner, address spender) view returns (uint256)',
-  'function balanceOf(address account) view returns (uint256)',
 ];
 
 const VERDIKTA_ABI = [
@@ -144,8 +138,9 @@ Two extra modes for windowed bounties (creator approval window):
                     determination amount to each hunter.
   --start-expired   For ANY caller: bulk-call startPreparedSubmission on
                     PendingCreatorApproval submissions whose window has
-                    expired. Requires LINK in the calling wallet (LINK is
-                    pulled from the caller, not the original hunter).
+                    expired. Requires ETH in the calling wallet to fund the
+                    evaluation prepay (ETH is attached as msg.value by the
+                    caller, not the original hunter; unspent ETH is refunded).
 
 Usage:
   node scripts/claimResults.js [options]
@@ -165,7 +160,7 @@ Examples:
   node scripts/claimResults.js --passed-only
   node scripts/claimResults.js --approve            # approve open creator windows
   node scripts/claimResults.js --approve --dry-run
-  node scripts/claimResults.js --start-expired      # start expired windows (uses your LINK)
+  node scripts/claimResults.js --start-expired      # start expired windows (uses your ETH)
 `);
 }
 
@@ -396,47 +391,29 @@ async function creatorApproveSubmission(contract, bountyId, submissionId, dryRun
   }
 }
 
-async function startExpiredSubmission(contract, linkToken, wallet, bountyId, submissionId, dryRun) {
+async function startExpiredSubmission(contract, wallet, bountyId, submissionId, dryRun) {
   if (dryRun) {
     console.log(`    [DRY RUN] Would call startPreparedSubmission(${bountyId}, ${submissionId})`);
     return { success: true, dryRun: true };
   }
 
   try {
-    // Read the submission to get the evalWallet and required LINK budget
+    // Read the submission to get the required ETH prepay budget
     const sub = await contract.getSubmission(bountyId, submissionId);
-    const evalWallet = sub.evalWallet;
-    const linkMaxBudget = sub.linkMaxBudget;
+    const ethMaxBudget = sub.ethMaxBudget;
 
-    // Check LINK balance
-    const linkBalance = await linkToken.balanceOf(wallet.address);
-    if (linkBalance < linkMaxBudget) {
+    // Check ETH balance covers the prepay
+    const ethBalance = await wallet.provider.getBalance(wallet.address);
+    if (ethBalance < ethMaxBudget) {
       return {
         success: false,
-        error: `Insufficient LINK: need ${ethers.formatEther(linkMaxBudget)}, have ${ethers.formatEther(linkBalance)}`,
+        error: `Insufficient ETH: need ${ethers.formatEther(ethMaxBudget)}, have ${ethers.formatEther(ethBalance)}`,
       };
     }
 
-    // Check current allowance
-    let allowance = await linkToken.allowance(wallet.address, evalWallet);
-    if (allowance < linkMaxBudget) {
-      console.log(`    Approving ${ethers.formatEther(linkMaxBudget)} LINK to evalWallet...`);
-      const approveTx = await linkToken.approve(evalWallet, linkMaxBudget);
-      await approveTx.wait();
-
-      // Wait for indexing
-      for (let attempt = 1; attempt <= 5; attempt++) {
-        await new Promise(r => setTimeout(r, 2000));
-        allowance = await linkToken.allowance(wallet.address, evalWallet);
-        if (allowance >= linkMaxBudget) break;
-      }
-      if (allowance < linkMaxBudget) {
-        return { success: false, error: 'LINK allowance not indexed after 5 attempts' };
-      }
-    }
-
-    console.log(`    Sending startPreparedSubmission tx...`);
-    const tx = await contract.startPreparedSubmission(bountyId, submissionId);
+    // Attach the ETH prepay as msg.value; unspent ETH is refunded when the submission finalizes.
+    console.log(`    Sending startPreparedSubmission tx (${ethers.formatEther(ethMaxBudget)} ETH prepay)...`);
+    const tx = await contract.startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
     console.log(`    Tx hash: ${tx.hash}`);
     const receipt = await tx.wait();
     console.log(`    Confirmed in block ${receipt.blockNumber}`);
@@ -608,10 +585,7 @@ async function runApproveMode(contract, wallet, options) {
 
 async function runStartExpiredMode(contract, wallet, options) {
   console.log('Mode: Start expired creator-approval windows\n');
-  console.log(`Caller: ${wallet.address} (LINK will be pulled from this wallet)\n`);
-
-  const linkAddr = LINK_ADDRESSES[CONFIG.network] || LINK_ADDRESSES['base-sepolia'];
-  const linkToken = new ethers.Contract(linkAddr, LINK_ABI, wallet);
+  console.log(`Caller: ${wallet.address} (ETH prepay attached from this wallet; refunded if unspent)\n`);
 
   const all = await findPendingCreatorApproval(contract, wallet.address, options.bountyId);
   const expired = all.filter(s => !s.windowOpen);
@@ -638,7 +612,7 @@ async function runStartExpiredMode(contract, wallet, options) {
     console.log(`  Creator:   ${sub.creator}`);
     console.log(`  Will pay:  ${sub.arbiterPayEth} ETH if oracle approves (after AI evaluation)`);
 
-    const result = await startExpiredSubmission(contract, linkToken, wallet, sub.bountyId, sub.submissionId, options.dryRun);
+    const result = await startExpiredSubmission(contract, wallet, sub.bountyId, sub.submissionId, options.dryRun);
 
     if (result.success) {
       if (!options.dryRun) console.log(`  ✅ Started! Gas: ${result.gasUsed}`);
@@ -662,12 +636,6 @@ async function runStartExpiredMode(contract, wallet, options) {
 
   return failed;
 }
-
-// Network LINK token addresses (used by --start-expired mode)
-const LINK_ADDRESSES = {
-  'base-sepolia': '0xE4aB69C077896252FAFBD49EFD26B5D171A32410',
-  'base': '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196',
-};
 
 async function main() {
   const options = parseArgs();

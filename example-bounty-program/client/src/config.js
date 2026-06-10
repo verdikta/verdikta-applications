@@ -17,8 +17,6 @@ const bountyEscrowAddress = network === 'base'
   ? requireEnv('VITE_BOUNTY_ESCROW_ADDRESS_BASE')
   : requireEnv('VITE_BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA');
 
-const linkTokenAddress = requireEnv('VITE_LINK_TOKEN_ADDRESS_' + (network === 'base' ? 'BASE' : 'BASE_SEPOLIA'));
-
 const verdiktaAggregatorAddress = requireEnv('VITE_VERDIKTA_AGGREGATOR_ADDRESS_' + (network === 'base' ? 'BASE' : 'BASE_SEPOLIA'));
 
 export const config = {
@@ -38,7 +36,6 @@ export const config = {
 
   // Contract addresses (from env vars, no defaults)
   bountyEscrowAddress,
-  linkTokenAddress,
   verdiktaAggregatorAddress,
 
   // Network Details
@@ -54,7 +51,6 @@ export const config = {
       currency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
       bountyEscrowAddress: network === 'base-sepolia' ? bountyEscrowAddress : null,
       verdiktaAggregatorAddress: network === 'base-sepolia' ? verdiktaAggregatorAddress : null,
-      linkTokenAddress: network === 'base-sepolia' ? linkTokenAddress : null,
     },
     'base': {
       name: 'Base Mainnet',
@@ -65,7 +61,6 @@ export const config = {
       currency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
       bountyEscrowAddress: network === 'base' ? bountyEscrowAddress : null,
       verdiktaAggregatorAddress: network === 'base' ? verdiktaAggregatorAddress : null,
-      linkTokenAddress: network === 'base' ? linkTokenAddress : null,
     }
   },
 };
@@ -73,7 +68,6 @@ export const config = {
 // Get current network config
 export const currentNetwork = {
   ...(config.networks[config.network] || config.networks['base-sepolia']),
-  linkTokenAddress,
   bountyEscrowAddress,
   verdiktaAggregatorAddress,
 };
@@ -85,7 +79,6 @@ if (config.enableDebug) {
     network: config.network,
     chainId: config.chainId,
     bountyEscrowAddress: config.bountyEscrowAddress,
-    linkTokenAddress: config.linkTokenAddress,
     verdiktaAggregatorAddress: config.verdiktaAggregatorAddress,
   });
 }

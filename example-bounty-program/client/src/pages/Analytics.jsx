@@ -750,12 +750,6 @@ function Analytics() {
                         <code className="address">{data.system.bountyContract}</code>
                       </div>
                     )}
-                    {data.system.verdikta.linkTokenAddress && (
-                      <div className="contract-row">
-                        <span className="contract-label">LINK Token:</span>
-                        <code className="address">{data.system.verdikta.linkTokenAddress}</code>
-                      </div>
-                    )}
                     {data.system.verdikta.wvdkaAddress && (
                       <div className="contract-row">
                         <span className="contract-label">wVDKA Token:</span>
@@ -826,7 +820,7 @@ function Analytics() {
                   </div>
                   <div className="config-item">
                     <span className="config-label">Max Oracle Fee</span>
-                    <span className="config-value">{data.system.aggregatorConfig.maxOracleFee} LINK</span>
+                    <span className="config-value">{data.system.aggregatorConfig.maxOracleFee} ETH</span>
                   </div>
                 </div>
               </div>

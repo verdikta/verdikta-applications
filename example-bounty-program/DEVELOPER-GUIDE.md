@@ -95,7 +95,7 @@ Start from `client/.env.example` and fill in the values. Required:
 - `VITE_NETWORK` — `base-sepolia` or `base`
 - `VITE_CLIENT_KEY` — must match `FRONTEND_CLIENT_KEY` on the server
 - `VITE_BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA` and `VITE_BOUNTY_ESCROW_ADDRESS_BASE` — **current values from the Analytics page** (`/analytics` → System Health → Contract Addresses)
-- `VITE_LINK_TOKEN_ADDRESS_*` and `VITE_VERDIKTA_AGGREGATOR_ADDRESS_*` — available from the Analytics page, from `onchain/deployments/*.json`, or from the [Contract Addresses](../README.md#contract-addresses) section of the README
+- `VITE_VERDIKTA_AGGREGATOR_ADDRESS_*` — the ETH-funded Verdikta aggregator address per network; available from the Analytics page, from `onchain/deployments/*.json`, or from the [Contract Addresses](../README.md#contract-addresses) section of the README
 
 ### Contracts (`onchain/.env`)
 
@@ -159,7 +159,7 @@ npm run build              # production bundle must build clean
 1. Start backend pointing at Base Sepolia (`NETWORK=base-sepolia`)
 2. Start frontend with matching network env vars
 3. Connect MetaMask to Base Sepolia
-4. Get test ETH and LINK from a faucet
+4. Get test ETH from a faucet
 5. Create a bounty, submit work, finalize, verify payout
 
 ---
@@ -286,7 +286,7 @@ For each entry in `pendingSubmissions` where `timeoutEligible: true`:
 POST /api/jobs/:jobId/submissions/:submissionId/timeout
 ```
 
-Returns calldata for `failTimedOutSubmission(bountyId, submissionId)`. Sign and submit from any wallet (anyone may call). LINK is refunded to the original hunter.
+Returns calldata for `failTimedOutSubmission(bountyId, submissionId)`. Sign and submit from any wallet (anyone may call). The unspent ETH prepay is refunded to the original hunter.
 
 If a submission is younger than 10 minutes, wait — the on-chain check enforces it.
 
@@ -359,10 +359,10 @@ The `linkage` field is a structured verdict — `state` is one of:
 
 **3. Do NOT compensate by spending more on-chain.** Creating an additional bounty to "fix" the alignment makes it worse, not better. The fix is always either the lookup endpoint (find the right jobId) or the PATCH endpoint (link the existing one).
 
-### LINK approval errors at startPreparedSubmission
-- The contract pulls LINK via `transferFrom` using the allowance set in step 2 — never `transfer` LINK directly to the EvaluationWallet
-- Confirm allowance with `link.allowance(hunter, evalWallet)` before calling start
-- To generate the `LINK.approve` calldata use `POST /api/jobs/:id/submit/approve` with `{ evalWallet, linkAmount }` — note `linkAmount` is a **decimal LINK** string (e.g. `"0.6"`), not the raw wei `linkMaxBudget` from the `SubmissionPrepared` event. Convert first with `ethers.formatEther(linkMaxBudget)`.
+### ETH prepay errors at startPreparedSubmission
+- `startPreparedSubmission(uint256 bountyId, uint256 submissionId)` is **payable** — the funder attaches `ethMaxBudget` as `msg.value`. There is no LINK token, ERC-20 approval, or allowance step.
+- Attach exactly the `ethMaxBudget` (raw wei) from the `SubmissionPrepared` event as `msg.value`. Too little ETH and the call reverts; any unspent prepay is automatically refunded when the submission finalizes (or on `failTimedOutSubmission`).
+- Per-oracle fee is ~0.0001 ETH (on-chain ceiling 0.0004 ETH); the worst-case prepay (`ethMaxBudget` = maxTotalFee) is ~0.0012 ETH.
 
 ### Hot tips
 - The `/blockchain` and `/agents` in-app pages are the canonical reference for contract ABIs and endpoint shapes — they're tested every time the page renders

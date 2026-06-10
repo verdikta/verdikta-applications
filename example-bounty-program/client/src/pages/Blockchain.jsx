@@ -15,7 +15,6 @@ import {
   ExternalLink,
   Code,
   FileCode,
-  Link as LinkIcon,
   ArrowRight,
   Bot,
   AlertTriangle,
@@ -51,7 +50,6 @@ function Blockchain() {
     sepolia: {
       bountyEscrow: sepoliaConfig.bountyEscrowAddress,
       verdiktaAggregator: sepoliaConfig.verdiktaAggregatorAddress,
-      linkToken: sepoliaConfig.linkTokenAddress,
       chainId: sepoliaConfig.chainId,
       rpcUrl: sepoliaConfig.rpcUrl,
       explorer: sepoliaConfig.explorer
@@ -59,7 +57,6 @@ function Blockchain() {
     mainnet: {
       bountyEscrow: mainnetConfig.bountyEscrowAddress,
       verdiktaAggregator: mainnetConfig.verdiktaAggregatorAddress,
-      linkToken: mainnetConfig.linkTokenAddress,
       chainId: mainnetConfig.chainId,
       rpcUrl: mainnetConfig.rpcUrl,
       explorer: mainnetConfig.explorer
@@ -99,7 +96,7 @@ function Blockchain() {
   const bountyEscrowABI = `const BOUNTY_ESCROW_ABI = [
   // Events
   "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
-  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)",
+  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)",
   "event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, bytes32 verdiktaAggId)",
   "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, bool passed, uint256 acceptance, uint256 rejection, string justificationCids)",
   "event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amount)",
@@ -109,9 +106,9 @@ function Blockchain() {
   // Write Functions
   "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)",
   "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize) payable returns (uint256)",
-  "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256 submissionId, address evalWallet, uint256 linkMaxBudget)",
+  "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)",
   "function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)",
-  "function startPreparedSubmission(uint256 bountyId, uint256 submissionId)",
+  "function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
   "function closeExpiredBounty(uint256 bountyId)",
   "function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)",
@@ -119,22 +116,14 @@ function Blockchain() {
   // View Functions
   "function bountyCount() view returns (uint256)",
   "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize))",
-  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
   "function getEffectiveBountyStatus(uint256 bountyId) view returns (string)",
   "function isAcceptingSubmissions(uint256 bountyId) view returns (bool)",
   "function verdikta() view returns (address)"
 ];`;
 
-  const linkABI = `const LINK_ABI = [
-  "function approve(address spender, uint256 amount) returns (bool)",
-  "function allowance(address owner, address spender) view returns (uint256)",
-  "function balanceOf(address account) view returns (uint256)",
-  "function transfer(address to, uint256 amount) returns (bool)"
-];`;
-
   // For code samples, use the active network's addresses (or placeholders if unavailable)
   const sampleEscrow = activeContract.bountyEscrow || '0xYOUR_BOUNTY_ESCROW_ADDRESS';
-  const sampleLink = activeContract.linkToken || '0xYOUR_LINK_TOKEN_ADDRESS';
   const sampleRpc = activeContract.rpcUrl;
 
   const ethersExample = `import { ethers } from 'ethers';
@@ -144,11 +133,9 @@ const provider = new ethers.JsonRpcProvider('${sampleRpc}');
 const signer = new ethers.Wallet(PRIVATE_KEY, provider);
 
 const ESCROW_ADDRESS = '${sampleEscrow}';
-const LINK_ADDRESS = '${sampleLink}';
 
-// Initialize contracts
+// Initialize contract
 const escrow = new ethers.Contract(ESCROW_ADDRESS, BOUNTY_ESCROW_ABI, signer);
-const link = new ethers.Contract(LINK_ADDRESS, LINK_ABI, signer);
 
 // Create a bounty with 0.1 ETH payout
 async function createBounty() {
@@ -176,7 +163,7 @@ async function createBounty() {
   }
 }
 
-// Submit work to a bounty (3-step process)
+// Submit work to a bounty (2-step process)
 async function submitWork(bountyId, hunterCid) {
   // Step 1: Prepare submission (deploys EvaluationWallet)
   const bounty = await escrow.getBounty(bountyId);
@@ -188,33 +175,30 @@ async function submitWork(bountyId, hunterCid) {
     hunterCid,                            // Your work's IPFS CID
     'Please evaluate carefully',          // Addendum
     500n,                                 // Alpha: timeliness-vs-quality blend (0-1000). 500 = equal blend; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
-    ethers.parseEther('0.003'),           // maxOracleFee (per oracle call cap)
-    ethers.parseEther('0.001'),           // estimatedBaseCost (base cost per evaluation)
+    ethers.parseEther('0.0001'),          // maxOracleFee (per oracle call cap, in ETH)
+    ethers.parseEther('0.0001'),          // estimatedBaseCost (base cost per evaluation, in ETH)
     BigInt('3')                           // maxFeeBasedScaling: x-factor cap on fee-based boost (contract scales by 1e18 internally; must be >= 1)
   );
 
   const prepareReceipt = await prepareTx.wait();
 
-  let submissionId, evalWallet, linkBudget;
+  let submissionId, evalWallet, ethMaxBudget;
   for (const log of prepareReceipt.logs) {
     const parsed = escrow.interface.parseLog(log);
     if (parsed?.name === 'SubmissionPrepared') {
       submissionId = Number(parsed.args.submissionId);
       evalWallet = parsed.args.evalWallet;
-      linkBudget = parsed.args.linkMaxBudget;
+      ethMaxBudget = parsed.args.ethMaxBudget;
       break;
     }
   }
 
-  console.log(\`Submission #\${submissionId} prepared, need \${ethers.formatEther(linkBudget)} LINK\`);
+  console.log(\`Submission #\${submissionId} prepared, prepay \${ethers.formatEther(ethMaxBudget)} ETH (unspent amount is refunded on finalize)\`);
 
-  // Step 2: Approve LINK to EvaluationWallet
-  const approveTx = await link.approve(evalWallet, linkBudget);
-  await approveTx.wait();
-  console.log('LINK approved');
-
-  // Step 3: Start evaluation
-  const startTx = await escrow.startPreparedSubmission(bountyId, submissionId);
+  // Step 2: Start evaluation — attach the ETH prepay as msg.value (no approval needed)
+  const startTx = await escrow.startPreparedSubmission(bountyId, submissionId, {
+    value: ethMaxBudget
+  });
   await startTx.wait();
   console.log('Evaluation started!');
 
@@ -291,11 +275,9 @@ w3 = Web3(Web3.HTTPProvider('${sampleRpc}'))
 account = Account.from_key(PRIVATE_KEY)
 
 ESCROW_ADDRESS = '${sampleEscrow}'
-LINK_ADDRESS = '${sampleLink}'
 
-# Load contracts (use full ABI in production)
+# Load contract (use full ABI in production)
 escrow = w3.eth.contract(address=ESCROW_ADDRESS, abi=BOUNTY_ESCROW_ABI)
-link = w3.eth.contract(address=LINK_ADDRESS, abi=LINK_ABI)
 
 def create_bounty(evaluation_cid, class_id, threshold, hours_window, payout_eth):
     """Create a new bounty with ETH payout"""
@@ -388,10 +370,49 @@ def creator_approve_submission(bounty_id, submission_id):
     tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
     return w3.eth.wait_for_transaction_receipt(tx_hash)
 
-def check_link_balance(address):
-    """Check LINK token balance"""
-    balance = link.functions.balanceOf(address).call()
-    return w3.from_wei(balance, 'ether')`;
+def submit_work(bounty_id, hunter_cid):
+    """Submit work (2-step process): prepare, then start with ETH prepay attached"""
+    bounty = escrow.functions.getBounty(bounty_id).call()
+    evaluation_cid = bounty[1]
+
+    # Step 1: prepareSubmission (deploys EvaluationWallet)
+    prepare_tx = escrow.functions.prepareSubmission(
+        bounty_id,
+        evaluation_cid,
+        hunter_cid,                               # your work's IPFS CID
+        'Please evaluate carefully',              # addendum
+        500,                                      # alpha: timeliness-vs-quality blend (0-1000)
+        w3.to_wei(0.0001, 'ether'),               # maxOracleFee (per oracle call cap)
+        w3.to_wei(0.0001, 'ether'),               # estimatedBaseCost (base cost per evaluation)
+        3,                                        # maxFeeBasedScaling (>= 1)
+    ).build_transaction({
+        'from': account.address,
+        'nonce': w3.eth.get_transaction_count(account.address),
+        'gas': 1500000,
+    })
+    signed = account.sign_transaction(prepare_tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+
+    # Parse SubmissionPrepared to get the submissionId and ETH prepay budget
+    event = escrow.events.SubmissionPrepared().process_receipt(receipt)[0]
+    submission_id = event['args']['submissionId']
+    eth_max_budget = event['args']['ethMaxBudget']
+    print(f'Prepared #{submission_id}, prepay {w3.from_wei(eth_max_budget, "ether")} ETH '
+          f'(unspent amount refunded on finalize)')
+
+    # Step 2: startPreparedSubmission — attach the ETH prepay as value (no approval needed)
+    start_tx = escrow.functions.startPreparedSubmission(bounty_id, submission_id).build_transaction({
+        'from': account.address,
+        'value': eth_max_budget,
+        'nonce': w3.eth.get_transaction_count(account.address),
+        'gas': 500000,
+    })
+    signed = account.sign_transaction(start_tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+    w3.eth.wait_for_transaction_receipt(tx_hash)
+    print('Evaluation started!')
+    return submission_id`;
 
   const ipfsStructure = `# Evaluation Package (evaluationCid)
 # Format: ZIP archive uploaded to IPFS
@@ -484,8 +505,8 @@ submission-package.zip
               <span className="stat-label">Compatible</span>
             </div>
             <div className="stat-item">
-              <span className="stat-value">LINK</span>
-              <span className="stat-label">Oracle Token</span>
+              <span className="stat-value">ETH</span>
+              <span className="stat-label">Oracle Payment</span>
             </div>
           </div>
           <div className="hero-actions">
@@ -619,18 +640,6 @@ submission-package.zip
                   <AddressCell address={contracts.mainnet.verdiktaAggregator} explorer={contracts.mainnet.explorer} copyId="verdikta-mainnet" />
                 </td>
               </tr>
-              <tr>
-                <td>
-                  <strong>LINK Token</strong>
-                  <span className="contract-desc">Oracle payment token</span>
-                </td>
-                <td>
-                  <AddressCell address={contracts.sepolia.linkToken} explorer={contracts.sepolia.explorer} copyId="link-sepolia" />
-                </td>
-                <td>
-                  <AddressCell address={contracts.mainnet.linkToken} explorer={contracts.mainnet.explorer} copyId="link-mainnet" />
-                </td>
-              </tr>
             </tbody>
           </table>
         </div>
@@ -676,27 +685,15 @@ submission-package.zip
           </div>
           <pre><code>{bountyEscrowABI}</code></pre>
         </div>
-
-        <div className="code-block" style={{ marginTop: '1.5rem' }}>
-          <div className="code-header">
-            <span>LINK Token ABI (JavaScript)</span>
-            <button
-              className="btn-icon"
-              onClick={() => copyToClipboard(linkABI, 'link-abi')}
-            >
-              {copiedCode === 'link-abi' ? <Check size={16} /> : <Copy size={16} />}
-            </button>
-          </div>
-          <pre><code>{linkABI}</code></pre>
-        </div>
       </section>
 
       {/* Workflow Section */}
       <section className="blockchain-section">
         <h2>Submission Workflow</h2>
         <p className="section-intro">
-          Submitting work requires a 3-step process to ensure LINK tokens are properly allocated
-          for the AI evaluation.
+          Submitting work requires a 2-step process. You fund the AI evaluation by attaching
+          ETH (as <code>msg.value</code>) when you start the prepared submission — no token
+          approval is needed. Any unspent prepay is refunded to you when the submission finalizes.
         </p>
         <div className="workflow-steps">
           <div className="workflow-step">
@@ -705,11 +702,11 @@ submission-package.zip
               <h3>prepareSubmission()</h3>
               <p>
                 Deploys an EvaluationWallet contract specifically for this submission.
-                Returns the wallet address and required LINK budget.
+                Returns the wallet address and the worst-case ETH prepay budget.
               </p>
               <div className="step-detail">
                 <ArrowRight size={16} />
-                <span>Emits <code>SubmissionPrepared</code> event with <code>evalWallet</code> and <code>linkMaxBudget</code></span>
+                <span>Emits <code>SubmissionPrepared</code> event with <code>evalWallet</code> and <code>ethMaxBudget</code></span>
               </div>
             </div>
           </div>
@@ -722,8 +719,8 @@ submission-package.zip
   hunterCid,          // string - your submission's IPFS CID
   addendum,           // string - usually ""
   alpha,              // uint256 - timeliness-vs-quality blend (0-1000). 500 = equal; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
-  maxOracleFee,       // uint256 - "3000000000000000" (0.003 LINK per oracle call)
-  estimatedBaseCost,  // uint256 - "1000000000000000" (0.001 LINK base cost)
+  maxOracleFee,       // uint256 - "100000000000000" (0.0001 ETH per oracle call, ceiling 0.0004 ETH)
+  estimatedBaseCost,  // uint256 - "100000000000000" (0.0001 ETH base cost)
   maxFeeBasedScaling  // uint256 - x-factor cap on fee-based boost, "3" = up to 3x (contract scales by 1e18 internally; must be >= 1)
 )`}</pre>
             </div>
@@ -738,7 +735,7 @@ submission-package.zip
                 The bounty creator can then call <code>creatorApproveSubmission(bountyId, submissionId)</code>
                 during the window to pay the hunter directly (skipping oracle evaluation).
                 If the window expires, anyone can call <code>startPreparedSubmission</code> to begin the
-                normal AI evaluation flow (steps 2-4).
+                normal AI evaluation flow (steps 2-3).
               </p>
             </div>
           </div>
@@ -746,38 +743,26 @@ submission-package.zip
           <div className="workflow-step">
             <div className="step-number">2</div>
             <div className="step-content">
-              <h3>LINK.approve()</h3>
+              <h3>startPreparedSubmission()</h3>
               <p>
-                Approve the EvaluationWallet to spend your LINK tokens. The exact amount
-                is returned from step 1.
+                Triggers the evaluation. Attach <code>msg.value = ethMaxBudget</code> (the ETH
+                prepay returned in step 1) and Verdikta oracles begin evaluating your work.
+                No token approval is required.
               </p>
               <div className="step-detail">
                 <ArrowRight size={16} />
-                <span>Call on LINK token contract: <code>approve(evalWallet, linkMaxBudget)</code></span>
+                <span>Call <code>startPreparedSubmission(bountyId, submissionId)</code> with <code>{`{ value: ethMaxBudget }`}</code>; emits <code>WorkSubmitted</code> event with <code>verdiktaAggId</code></span>
               </div>
             </div>
           </div>
           <div className="workflow-step">
             <div className="step-number">3</div>
             <div className="step-content">
-              <h3>startPreparedSubmission()</h3>
-              <p>
-                Triggers the evaluation. LINK is pulled from your wallet, and Verdikta
-                oracles begin evaluating your work.
-              </p>
-              <div className="step-detail">
-                <ArrowRight size={16} />
-                <span>Emits <code>WorkSubmitted</code> event with <code>verdiktaAggId</code></span>
-              </div>
-            </div>
-          </div>
-          <div className="workflow-step">
-            <div className="step-number">4</div>
-            <div className="step-content">
               <h3>finalizeSubmission()</h3>
               <p>
                 After evaluation completes, call this to read results and trigger payout
-                if your score meets the threshold.
+                if your score meets the threshold. Any unspent ETH prepay is refunded to you
+                here (you only pay for what the evaluation actually costs).
               </p>
               <div className="step-detail">
                 <ArrowRight size={16} />
@@ -791,8 +776,9 @@ submission-package.zip
             <strong>API-Assisted Submission</strong>
             <p style={{ margin: '0.5rem 0 0 0' }}>
               Instead of encoding contract calls yourself, the API can return pre-encoded calldata
-              for each step: <code>/submit/prepare</code>, <code>/submit/approve</code>,{' '}
-              <code>/submissions/:id/start</code>, and <code>/submissions/:id/finalize</code>.
+              for each step: <code>/submit/prepare</code>,{' '}
+              <code>/submissions/:id/start</code> (attach the returned ETH value), and{' '}
+              <code>/submissions/:id/finalize</code>.
               Just sign and broadcast the returned transaction. See the{' '}
               <Link to="/agents">Agent API</Link> documentation for details.
             </p>
@@ -846,7 +832,7 @@ submission-package.zip
               <div className="submission-state">
                 <span className="state-code">2</span>
                 <span className="state-name">Failed</span>
-                <span className="state-desc">Below threshold or oracle timeout, LINK refunded to hunter</span>
+                <span className="state-desc">Below threshold or oracle timeout, unspent ETH prepay refunded to hunter</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">3</span>
@@ -947,11 +933,11 @@ submission-package.zip
         </div>
       </section>
 
-      {/* LINK Token Guide */}
+      {/* Oracle Payment Guide */}
       <section className="blockchain-section">
         <h2>
-          <LinkIcon size={24} />
-          LINK Token Guide
+          <DollarSign size={24} />
+          Oracle Payment Guide (ETH)
         </h2>
         <div className="info-cards">
           <div className="info-card">
@@ -960,8 +946,11 @@ submission-package.zip
             </div>
             <h3>Fee Estimation</h3>
             <p>
-              LINK costs depend on jury configuration. Typical range: <strong>0.03 - 0.05 LINK</strong> per submission.
-              Use the API's <code>/estimate-fee</code> endpoint or check the Verdikta contract's <code>maxTotalFee()</code>.
+              The oracle is ETH-funded. Per-oracle <code>maxOracleFee</code> is ~<strong>0.0001 ETH</strong>{' '}
+              (on-chain ceiling 0.0004 ETH); the worst-case prepay returned as <code>ethMaxBudget</code>{' '}
+              is ~<strong>0.0012 ETH</strong>. You only pay for what the evaluation actually costs —
+              the rest comes back. Use the API's <code>/estimate-fee</code> endpoint or check the
+              Verdikta contract's <code>maxTotalFee()</code>.
             </p>
           </div>
           <div className="info-card">
@@ -970,8 +959,9 @@ submission-package.zip
             </div>
             <h3>Refunds</h3>
             <p>
-              Unused LINK is automatically refunded when calling <code>finalizeSubmission()</code>.
-              The EvaluationWallet sends leftover tokens back to your address.
+              You attach the ETH prepay as <code>msg.value</code> when calling{' '}
+              <code>startPreparedSubmission()</code> — there is no token approval. Any unspent prepay
+              is automatically refunded to you when calling <code>finalizeSubmission()</code>.
             </p>
           </div>
           <div className="info-card">
@@ -981,17 +971,17 @@ submission-package.zip
             <h3>Timeouts</h3>
             <p>
               Submissions stuck in <code>PendingVerdikta</code> for 10+ minutes can be failed by anyone
-              using <code>failTimedOutSubmission()</code>. This refunds LINK to the hunter.
+              using <code>failTimedOutSubmission()</code>. This refunds the unspent ETH prepay to the hunter.
             </p>
           </div>
         </div>
         <div className="callout callout-warning">
           <AlertTriangle size={20} />
           <div>
-            <strong>Get Testnet LINK:</strong> On Base Sepolia, get test LINK from{' '}
-            <a href="https://faucets.chain.link/" target="_blank" rel="noopener noreferrer">
-              Chainlink Faucets
-            </a>. Bridge testnet ETH from Sepolia using the{' '}
+            <strong>Get Testnet ETH:</strong> On Base Sepolia, get test ETH from a{' '}
+            <a href="https://docs.base.org/chain/network-faucets" target="_blank" rel="noopener noreferrer">
+              Base Sepolia ETH faucet
+            </a>. You can also bridge testnet ETH from Ethereum Sepolia using the{' '}
             <a href="https://bridge.base.org/" target="_blank" rel="noopener noreferrer">
               Base Bridge
             </a>.
@@ -1019,7 +1009,7 @@ submission-package.zip
             <p>
               Submissions stuck in <code>PendingVerdikta</code> for <strong>10+ minutes</strong> can be
               marked as failed using <code>failTimedOutSubmission(bountyId, submissionId)</code>.
-              This refunds LINK to the hunter and frees up the bounty for other submissions.
+              This refunds the unspent ETH prepay to the hunter and frees up the bounty for other submissions.
             </p>
           </div>
           <div className="info-card">
@@ -1812,18 +1802,19 @@ curl -H "X-Bot-API-Key: YOUR_KEY" \\
               className="faq-question"
               onClick={() => toggleSection('trouble2')}
             >
-              <span>startPreparedSubmission fails with "insufficient allowance"</span>
+              <span>startPreparedSubmission reverts with "wrong eth amount"</span>
               {expandedSection === 'trouble2' ? <ChevronDown size={20} /> : <ChevronRight size={20} />}
             </button>
             {expandedSection === 'trouble2' && (
               <div className="faq-answer">
                 <p>
-                  You haven't approved enough LINK to the EvaluationWallet. Make sure you:
+                  The oracle is ETH-funded, so you must attach the ETH prepay as <code>msg.value</code>{' '}
+                  (there is no token approval). Make sure you:
                 </p>
                 <ol>
-                  <li>Approve LINK to the <code>evalWallet</code> address (not the BountyEscrow)</li>
-                  <li>Approve the full <code>linkMaxBudget</code> amount returned from prepareSubmission</li>
-                  <li>Wait for the approval transaction to confirm before calling startPreparedSubmission</li>
+                  <li>Attach <code>msg.value</code> exactly equal to the <code>ethMaxBudget</code> returned from prepareSubmission (the <code>SubmissionPrepared</code> event's last field)</li>
+                  <li>Send the ETH with the <code>startPreparedSubmission</code> call itself (e.g. <code>{`{ value: ethMaxBudget }`}</code> in ethers, <code>'value': eth_max_budget</code> in web3.py)</li>
+                  <li>Have enough ETH in your wallet to cover both the prepay and gas</li>
                 </ol>
               </div>
             )}
@@ -1841,7 +1832,7 @@ curl -H "X-Bot-API-Key: YOUR_KEY" \\
                 <p>
                   AI evaluations take some time. Normal evaluation time is ~30 seconds to 2 minutes.
                   If stuck longer than 10 minutes, you can call <code>failTimedOutSubmission()</code>
-                  to mark it as failed and recover your LINK.
+                  to mark it as failed and recover your unspent ETH prepay.
                 </p>
               </div>
             )}

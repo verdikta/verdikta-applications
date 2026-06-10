@@ -12,16 +12,16 @@ const networks = {
     name: 'Base Sepolia',
     rpcUrl: 'https://sepolia.base.org',
     explorer: 'https://sepolia.basescan.org',
-    verdiktaAggregatorAddress: '0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089',
-    linkTokenAddress: '0xE4aB69C077896252FAFBD49EFD26B5D171A32410',
+    // ETH-funded ReputationAggregator (LINK rail retired)
+    verdiktaAggregatorAddress: '0xe8a385E473EA710c5a88Cc72681a16a26fe380e4',
   },
   'base': {
     chainId: 8453,
     name: 'Base',
     rpcUrl: 'https://mainnet.base.org',
     explorer: 'https://basescan.org',
-    verdiktaAggregatorAddress: '0x2f7a02298D4478213057edA5e5bEB07F20c4c054',
-    linkTokenAddress: '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196',
+    // ETH-funded ReputationAggregator (LINK rail retired)
+    verdiktaAggregatorAddress: '0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a',
   },
 };
 
@@ -65,8 +65,6 @@ const config = {
   bountyEscrowAddress: bountyEscrowAddresses[networkKey] || '',
   // Verdikta aggregator from network config (determined by NETWORK)
   verdiktaAggregatorAddress: networkDefaults.verdiktaAggregatorAddress,
-  // LINK token address for oracle payments
-  linkTokenAddress: networkDefaults.linkTokenAddress,
 
   // Server settings
   port: parseInt(process.env.PORT) || 5005,
@@ -112,8 +110,8 @@ config.rpcProviderUrl = config.rpcUrl;
 // These are the blocks at or just before the BountyEscrow deployment transactions.
 // Used as the starting point for bootstrap event replay.
 const deploymentBlocks = {
-  'base-sepolia': 20_290_000,  // ~2026-01-07T19:42:34Z
-  'base':         26_800_000,  // ~2026-01-21T04:01:15Z
+  'base-sepolia': 42_633_282,  // ETH BountyEscrow 0x3CE3…8B51, ~2026-06-09T19:54:12Z
+  'base':         47_132_201,  // ETH BountyEscrow 0x1A4a…1770, ~2026-06-10T01:09:09Z
 };
 
 config.deploymentBlock = deploymentBlocks[networkKey] || 0;

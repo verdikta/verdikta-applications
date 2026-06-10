@@ -727,8 +727,8 @@ class SyncService {
               if (chainSub.hunterCid && !sub.hunterCid) {
                 sub.hunterCid = chainSub.hunterCid;
               }
-              if (chainSub.linkMaxBudget != null) {
-                sub.linkMaxBudget = chainSub.linkMaxBudget.toString();
+              if (chainSub.ethMaxBudget != null) {
+                sub.ethMaxBudget = chainSub.ethMaxBudget.toString();
               }
               if (chainSub.submittedAt != null) {
                 sub.submittedAt = Number(chainSub.submittedAt) || sub.submittedAt;
@@ -1014,7 +1014,7 @@ class SyncService {
             evalWallet: args.evalWallet,
             evaluationCid: args.evaluationCid,
             hunterCid: hunterCidFromChain,
-            linkMaxBudget: args.linkMaxBudget?.toString(),
+            ethMaxBudget: args.ethMaxBudget?.toString(),
             status: chainStatusString,
             onChainStatus: chainStatusString,
             creatorWindowEnd,
@@ -1174,11 +1174,11 @@ class SyncService {
         break;
       }
 
-      case 'LinkRefunded': {
+      case 'EthRefunded': {
         const bountyId = Number(args.bountyId);
         const submissionId = Number(args.submissionId);
         const amount = args.amount?.toString();
-        logger.info('[event] LinkRefunded', { bountyId, submissionId, amount });
+        logger.info('[event] EthRefunded', { bountyId, submissionId, amount });
         break;
       }
 

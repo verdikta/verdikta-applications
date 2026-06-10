@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ethers } from 'ethers';
 import {
   Upload,
   Lightbulb,
@@ -31,9 +30,6 @@ import {
   isBountyOpen,
 } from '../utils/statusDisplay';
 import './SubmitWork.css';
-
-// LINK token address from config (supports both Base Sepolia and Base Mainnet)
-const LINK_ADDRESS = config.linkTokenAddress;
 
 function SubmitWork({ walletState }) {
   const toast = useToast();
@@ -205,91 +201,6 @@ function SubmitWork({ walletState }) {
     return submissionNarrative.trim().split(/\s+/).filter(w => w.length > 0).length;
   };
 
-  /**
-   * Verify LINK allowance is visible on-chain before proceeding.
-   * This handles RPC propagation delays that can cause "insufficient allowance" errors.
-   * 
-   * @param {object} provider - ethers provider (unused, we create fresh one)
-   * @param {string} ownerAddress - Address that approved (hunter)
-   * @param {string} spenderAddress - Address that was approved (evalWallet)
-   * @param {string|bigint} requiredAmount - Minimum allowance required
-   * @param {number} maxAttempts - Maximum polling attempts (default 15)
-   * @param {number} intervalMs - Milliseconds between attempts (default 1000)
-   * @returns {Promise<boolean>} - True if allowance verified, false if timed out
-   */
-  const verifyAllowanceOnChain = async (
-    _provider, // Unused - we try multiple sources
-    ownerAddress, 
-    spenderAddress, 
-    requiredAmount,
-    maxAttempts = 15,
-    intervalMs = 1000
-  ) => {
-    const requiredBigInt = BigInt(requiredAmount);
-    
-    console.log('🔍 Starting allowance verification:', {
-      owner: ownerAddress,
-      spender: spenderAddress,
-      required: ethers.formatUnits(requiredBigInt, 18) + ' LINK',
-      linkContract: LINK_ADDRESS
-    });
-
-    // Try public RPC first (avoids MetaMask caching), fall back to MetaMask
-    const PUBLIC_RPC = currentNetwork.rpcUrl;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      // Try both providers on each attempt
-      const providers = [];
-
-      // Try public RPC first
-      try {
-        providers.push(new ethers.JsonRpcProvider(PUBLIC_RPC));
-      } catch (e) {
-        console.log('Could not create public RPC provider');
-      }
-      
-      // Also try MetaMask
-      if (window.ethereum) {
-        try {
-          providers.push(new ethers.BrowserProvider(window.ethereum));
-        } catch (e) {
-          console.log('Could not create MetaMask provider');
-        }
-      }
-
-      for (const provider of providers) {
-        try {
-          const linkContract = new ethers.Contract(
-            LINK_ADDRESS,
-            ["function allowance(address,address) view returns (uint256)"],
-            provider
-          );
-
-          const currentAllowance = await linkContract.allowance(ownerAddress, spenderAddress);
-          console.log(`🔍 Allowance check ${attempt}/${maxAttempts}: ${ethers.formatUnits(currentAllowance, 18)} LINK (need ${ethers.formatUnits(requiredBigInt, 18)})`);
-          
-          if (BigInt(currentAllowance) >= requiredBigInt) {
-            console.log('✅ Allowance verified on-chain');
-            return true;
-          }
-          
-          // If we got a response but allowance is 0, break inner loop and wait before retry
-          break;
-        } catch (err) {
-          console.warn(`⚠️ Allowance check ${attempt} failed with provider:`, err.message);
-          // Try next provider
-        }
-      }
-
-      // Wait before next attempt (except on last attempt)
-      if (attempt < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, intervalMs));
-      }
-    }
-
-    return false;
-  };
-
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -395,22 +306,22 @@ function SubmitWork({ walletState }) {
       // STEP 2: Prepare submission on-chain (deploys EvaluationWallet)
       // Pass both CIDs: evaluationCid (must match bounty's stored CID) and hunterCid (work product)
       setLoadingMessage('Preparing submission on blockchain...');
-      const { submissionId, evalWallet, linkMaxBudget } = await contractService.prepareSubmission(
+      const { submissionId, evalWallet, ethMaxBudget } = await contractService.prepareSubmission(
         onChainId,           // Use on-chain ID, not URL parameter
         evaluationCid,       // Evaluation package CID (must match bounty's stored evaluationCid)
         hunterCid,           // Hunter's work product CID
         submissionNarrative || "",  // addendum
         500,                  // alpha: timeliness-vs-quality blend (0-1000). 500 = equal; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
-        "3000000000000000",   // maxOracleFee (0.003 LINK) - more than the currently charged 0.002 LINK
-        "1000000000000000",   // estimatedBaseCost (Cheapest Arbiter, 0.001 LINK)
+        "100000000000000",    // maxOracleFee (0.0001 ETH) — under the 0.0004 ETH on-chain ceiling
+        "10000000000000",     // estimatedBaseCost (0.00001 ETH)
         "3"                   // maxFeeBasedScaling: x-factor cap on fee-based boost (contract scales by 1e18 internally; must be >= 1)
       );
 
       console.log('✅ Submission prepared:', {
         submissionId,
         evalWallet,
-        linkMaxBudget,
-        linkMaxBudgetFormatted: `${Number(linkMaxBudget) / 1e18} LINK`
+        ethMaxBudget,
+        ethMaxBudgetFormatted: `${Number(ethMaxBudget) / 1e18} ETH`
       });
 
       // STEP 2.5: Confirm submission in backend (now that we have the on-chain submissionId)
@@ -439,12 +350,12 @@ function SubmitWork({ walletState }) {
       // until the window expires ("creator window still open" revert).
       //
       // The correct flow is:
-      //   1. Stop here — do NOT approve LINK or call startPreparedSubmission.
+      //   1. Stop here — do NOT call startPreparedSubmission.
       //   2. Sync the backend so the new submission shows up.
       //   3. Hand off to BountyDetails, where:
       //      - the creator can approve directly (handleCreatorApprove), or
       //      - after the window expires anyone can call handleStartSubmission,
-      //        which itself approves LINK + calls startPreparedSubmission.
+      //        which funds and calls startPreparedSubmission with ETH.
       // ============================================================
       if (isWindowed) {
         setLoadingMessage('Syncing submission status...');
@@ -461,7 +372,7 @@ function SubmitWork({ walletState }) {
           blockchainData: {
             submissionId,
             evalWallet,
-            linkMaxBudget,
+            ethMaxBudget,
             txHash: null,
             blockNumber: null,
             // creatorWindowEnd is set by the contract to
@@ -476,36 +387,12 @@ function SubmitWork({ walletState }) {
         return;
       }
 
-      // STEP 3: Approve LINK tokens to the EvaluationWallet
-      setLoadingMessage(`Approving ${(Number(linkMaxBudget) / 1e18).toFixed(4)} LINK tokens...`);
-      console.log('🔄 Approving LINK to EvaluationWallet:', evalWallet, 'amount:', linkMaxBudget);
-      const approvalResult = await contractService.approveLink(evalWallet, linkMaxBudget);
-      console.log('✅ LINK approved:', approvalResult);
-
-      // STEP 3.5: CRITICAL - Verify allowance is visible on-chain before proceeding
-      // This handles RPC propagation delays that can cause "insufficient allowance" errors
-      setLoadingMessage('Verifying LINK approval on-chain...');
-      
-      const allowanceVerified = await verifyAllowanceOnChain(
-        contractService.provider,
-        walletState.address,
-        evalWallet,
-        linkMaxBudget,
-        15,   // maxAttempts (15 seconds max)
-        1000  // intervalMs (check every 1 second)
-      );
-
-      if (!allowanceVerified) {
-        console.warn('⚠️ Allowance verification timed out - proceeding anyway (contract will revert if insufficient)');
-        // Don't throw - just proceed. The contract will revert if allowance is actually insufficient.
-        // This handles cases where RPC caching causes false negatives.
-      }
-
-      // STEP 4: Start the Verdikta evaluation
+      // STEP 3: Start the Verdikta evaluation, funding it with ETH (msg.value = ethMaxBudget).
+      // No ERC20 approval is needed; unspent prepay is refunded to the hunter at finalization.
       // hunterCid was already stored in prepareSubmission, no need to pass again
-      setLoadingMessage('Starting AI evaluation...');
-      console.log('🔄 Starting evaluation for bountyId:', onChainId, 'submissionId:', submissionId);
-      const evalResult = await contractService.startPreparedSubmission(onChainId, submissionId);
+      setLoadingMessage(`Starting AI evaluation (${(Number(ethMaxBudget) / 1e18).toFixed(4)} ETH prepay)...`);
+      console.log('🔄 Starting evaluation for bountyId:', onChainId, 'submissionId:', submissionId, 'value:', ethMaxBudget);
+      const evalResult = await contractService.startPreparedSubmission(onChainId, submissionId, ethMaxBudget);
       console.log('✅ Evaluation started:', evalResult);
 
       // STEP 5: Sync backend status from blockchain
@@ -525,7 +412,7 @@ function SubmitWork({ walletState }) {
         blockchainData: {
           submissionId,
           evalWallet,
-          linkMaxBudget,
+          ethMaxBudget,
           txHash: evalResult.txHash,
           blockNumber: evalResult.blockNumber
         }
@@ -539,24 +426,20 @@ function SubmitWork({ walletState }) {
       let errorMessage = err.message || 'Failed to submit work';
       const originalError = errorMessage; // Keep original for logging
 
-      if (errorMessage.includes('insufficient funds for gas') || 
-          errorMessage.toLowerCase().includes('insufficient link balance')) {
-        errorMessage = '💰 Insufficient LINK tokens. Get testnet LINK from: https://faucets.chain.link/base-sepolia';
-      } else if (errorMessage.includes('user rejected') || errorMessage.includes('User denied') || 
+      if (errorMessage.includes('insufficient funds for gas') ||
+          errorMessage.toLowerCase().includes('insufficient funds')) {
+        errorMessage = '💰 Insufficient ETH to fund the evaluation. Get testnet ETH from a Base Sepolia faucet.';
+      } else if (errorMessage.includes('user rejected') || errorMessage.includes('User denied') ||
                  errorMessage.includes('ACTION_REJECTED')) {
         errorMessage = '🚫 Transaction cancelled by user';
-      } else if (errorMessage.includes('LINK approval rejected')) {
-        errorMessage = '🚫 LINK approval was cancelled';
+      } else if (errorMessage.includes('Incorrect ETH amount') || errorMessage.includes('wrong eth amount')) {
+        errorMessage = '⚠️ Incorrect ETH prepay amount for the evaluation. Please refresh and try again.';
       } else if (errorMessage.includes('bounty is targeted')) {
         errorMessage = 'This bounty is restricted to a specific address. Only the targeted wallet can submit.';
       } else if (errorMessage.includes('deadline passed')) {
         errorMessage = 'Submission deadline has passed';
       } else if (errorMessage.includes('not open')) {
         errorMessage = 'Bounty is not accepting submissions';
-      } else if (errorMessage.includes('insufficient allowance')) {
-        errorMessage = '⚠️ LINK approval issue. The approval transaction succeeded but the state was not visible on-chain in time. Please try again.';
-      } else if (errorMessage.includes('Could not initialize LINK contract')) {
-        errorMessage = '⚠️ Could not connect to LINK token contract. Please ensure MetaMask is connected to Base Sepolia.';
       }
 
       // Log original error for debugging
@@ -701,10 +584,11 @@ function SubmitWork({ walletState }) {
           </p>
           <p>
             If they don't approve within the window, AI evaluation becomes available. You (or anyone) can trigger it
-            from this bounty's details page after the window expires. Triggering AI evaluation requires LINK in your wallet.
+            from this bounty's details page after the window expires. Triggering AI evaluation requires a small ETH
+            prepay (refunded if unspent).
           </p>
           <p>
-            <strong>You will not be asked to spend LINK at submit time.</strong> Only ETH for gas is needed right now.
+            <strong>You will not be asked to fund the evaluation at submit time.</strong> Only ETH for gas is needed right now.
           </p>
         </div>
       )}
@@ -840,7 +724,7 @@ function SubmitWork({ walletState }) {
             <li>Hunter Submission CID is generated with your work and narrative</li>
             <li>Smart contract creates an EvaluationWallet and records your submission as <em>Pending Creator Approval</em></li>
             <li>The creator has <strong>{windowMinutes} minute{windowMinutes === 1 ? '' : 's'}</strong> to approve directly. If they approve, you receive <strong>{creatorPaymentEth} ETH</strong> immediately and the bounty closes 🎉</li>
-            <li>If the window expires without creator approval, you'll see a <em>Start AI Evaluation</em> button on the bounty details page. Clicking it will request a LINK approval and start oracle evaluation</li>
+            <li>If the window expires without creator approval, you'll see a <em>Start AI Evaluation</em> button on the bounty details page. Clicking it attaches a small ETH prepay and starts oracle evaluation</li>
             <li>Oracle results are written back on-chain within 1-5 minutes after evaluation starts</li>
           </ol>
         ) : (
@@ -848,8 +732,7 @@ function SubmitWork({ walletState }) {
             <li>Your files are uploaded to IPFS (permanent storage)</li>
             <li>Hunter Submission CID is generated with your work and narrative</li>
             <li>Smart contract creates an EvaluationWallet for your submission</li>
-            <li>You approve LINK tokens to pay for AI evaluation (~0.04 LINK)</li>
-            <li>Approval is verified on-chain before proceeding</li>
+            <li>You attach a small ETH prepay (~0.0012 ETH) to fund AI evaluation — unspent ETH is refunded to you when the result finalizes</li>
             <li>Evaluation starts with your Hunter CID + the bounty's evaluation package</li>
             <li>Results are written back on-chain within 1-5 minutes</li>
             <li>If you pass, bounty is awarded automatically! 🎉</li>
@@ -858,14 +741,14 @@ function SubmitWork({ walletState }) {
 
         <h3><Coins size={18} className="inline-icon" /> Required Tokens</h3>
         <p>
-          Each submission requires:
+          Each submission requires only <strong>ETH</strong>:
         </p>
         <ul>
           <li><strong>ETH</strong> for gas fees (~0.005 ETH on Base Sepolia)</li>
-          <li><strong>LINK</strong> for AI evaluation (~0.04 LINK)</li>
+          <li><strong>ETH</strong> prepay for AI evaluation (~0.0012 ETH worst case, mostly refunded)</li>
         </ul>
         <p>
-          Get testnet tokens: <a href="https://faucets.chain.link/base-sepolia" target="_blank" rel="noopener noreferrer">Base Sepolia Faucet</a>
+          Get testnet ETH from a <a href="https://docs.base.org/chain/network-faucets" target="_blank" rel="noopener noreferrer">Base Sepolia faucet</a>.
         </p>
 
         <h3><MessageSquare size={18} className="inline-icon" /> About Your Submission Narrative</h3>
@@ -884,14 +767,14 @@ function SubmitWork({ walletState }) {
         <h3><AlertTriangle size={18} className="inline-icon" /> Important Notes</h3>
         <ul>
           {isWindowed ? (
-            <li>You'll need to approve <strong>1 transaction</strong> in MetaMask right now (the on-chain submission). LINK approval and AI evaluation only happen later, if the creator doesn't approve within the window.</li>
+            <li>You'll need to approve <strong>1 transaction</strong> in MetaMask right now (the on-chain submission). Funding the AI evaluation only happens later, if the creator doesn't approve within the window.</li>
           ) : (
-            <li>You'll need to approve 3 transactions in MetaMask</li>
+            <li>You'll need to approve <strong>2 transactions</strong> in MetaMask (the submission, then the ETH-funded evaluation start)</li>
           )}
           <li>Evaluation is final (no appeals in MVP)</li>
           <li>First passing submission wins the bounty</li>
           <li>Your submission becomes public once uploaded</li>
-          <li>Make sure you have enough LINK and ETH before submitting</li>
+          <li>Make sure you have enough ETH before submitting</li>
           {!isWindowed && (
             <li>
               <strong>Creator approval window:</strong> Some bounties give the creator a time window to approve
@@ -942,7 +825,7 @@ function SubmitWork({ walletState }) {
                         <strong>Creator payout if approved:</strong> {creatorPaymentEth} ETH
                       </p>
                       <p className="success-note">
-                        <Hourglass size={14} className="inline-icon" /> No LINK was spent. You'll only be asked to approve LINK if you trigger AI evaluation later.
+                        <Hourglass size={14} className="inline-icon" /> No evaluation fee was spent. You'll only fund the AI evaluation (a small ETH prepay) if you trigger it later.
                       </p>
                     </>
                   ) : (

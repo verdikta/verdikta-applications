@@ -131,10 +131,10 @@ Four recurring anti-patterns that produce false errors:
 
 4. Read revert reasons, not the ethers formatted error. When a submission transaction
    reverts, ethers' stringified error often shows data: "" even when the real revert
-   reason is on the receipt. During submission, the most common real cause is LINK
-   balance below linkMaxBudget — startPreparedSubmission pulls LINK via transferFrom,
-   so an under-funded wallet fails with "ERC20: transfer amount exceeds balance".
-   Check wallet balance before debugging calldata.
+   reason is on the receipt. During submission, the most common real cause is the
+   wallet's ETH balance being below ethMaxBudget (the prepay) + gas —
+   startPreparedSubmission is payable and you must attach ethMaxBudget as msg.value,
+   so an under-funded wallet fails. Check wallet balance before debugging calldata.
 
 ## List Open Bounties
 GET /api/jobs?status=OPEN
@@ -261,7 +261,7 @@ Content-Type: multipart/form-data
 - files: your submission file(s)
 - hunter: your wallet address (0x...)
 Returns: { submission: { hunterCid, ... } }. hunterCid is the IPFS CID you'll carry into /submit/prepare.
-NOTE: This endpoint ONLY pins files — it does not create an on-chain submission or a backend record. You still need prepare → (confirm + approve LINK) → start → finalize.
+NOTE: This endpoint ONLY pins files — it does not create an on-chain submission or a backend record. You still need prepare → confirm → start (funded with ETH) → finalize.
 
 ## Submission File Formats (CRITICAL — read before submitting)
 
@@ -312,20 +312,20 @@ wasn't seen. A clean evaluation has warnings: [].
 
 ## Submit Work (full bundle — pre-encoded transactions)
 POST /api/jobs/:id/submit/bundle
-Returns step-1 (prepareSubmission) calldata + templates for steps 2-4.
+Returns step-1 (prepareSubmission) calldata + templates for steps 2-3.
 
 Flow:
  1. Broadcast step 1 yourself.
  2. POST /api/jobs/:id/submit/bundle/complete with { "txHash": "0x..." }
-    → returns exact step-2 (LINK.approve), step-3 (start), step-4 (finalize) calldata,
-      plus a "parsed" object with submissionId, evalWallet, linkMaxBudget extracted from the receipt.
+    → returns exact step-2 (start) and step-3 (finalize) calldata,
+      plus a "parsed" object with submissionId, evalWallet, ethMaxBudget extracted from the receipt.
  3. POST /api/jobs/:id/submissions/confirm with { submissionId, hunter, hunterCid, evalWallet }
     so the backend tracks the submission.
- 4. Broadcast step 2 (LINK.approve — MANDATORY: contract uses transferFrom).
- 5. Broadcast step 3 (startPreparedSubmission).
- 6. Wait for oracle (~2 min). Poll GET /api/jobs/:id/submissions/:subId until
+ 4. Broadcast step 2 (startPreparedSubmission — payable: attach ethMaxBudget as msg.value).
+    No LINK approval is needed — the oracle is ETH-funded.
+ 5. Wait for oracle (~2 min). Poll GET /api/jobs/:id/submissions/:subId until
     status is ACCEPTED_PENDING_CLAIM or REJECTED_PENDING_FINALIZATION.
- 7. Broadcast step 4 (finalizeSubmission) — payment is NOT automatic.
+ 6. Broadcast step 3 (finalizeSubmission) — payment is NOT automatic.
 
 ## List Submissions for a Bounty
 GET /api/jobs/:id/submissions
@@ -472,7 +472,7 @@ Some bounties have a creator approval window. When a submission is prepared on s
 2. The bounty CREATOR can call creatorApproveSubmission(bountyId, submissionId) during the window
 3. If approved: hunter receives creatorDeterminationPayment, bounty is awarded
 4. If window expires without approval: anyone can call startPreparedSubmission to begin oracle evaluation
-   (caller must fund LINK — does not have to be the hunter)
+   (caller must attach ethMaxBudget as msg.value to fund it — does not have to be the hunter)
 5. If oracle approves: hunter receives arbiterDeterminationPayment
 
 Creator approval calldata: POST /api/jobs/:id/submissions/:subId/approve-as-creator
@@ -483,29 +483,24 @@ To detect windowed bounties: check creatorAssessmentWindowSize > 0 in the bounty
 To check window status: check creatorWindowEnd on the submission (unix timestamp when window closes).
 
 ### Full Submission Flow (Individual Calldata Endpoints)
-The complete flow uses four calldata endpoints. Each returns calldata only; you sign and broadcast the tx yourself. Payment is NOT automatic — step 4 is required even after the oracle passes.
+The complete flow uses three calldata endpoints. Each returns calldata only; you sign and broadcast the tx yourself. Payment is NOT automatic — step 3 is required even after the oracle passes. (There is no separate "approve LINK" step — the oracle is ETH-funded; you attach ethMaxBudget as msg.value on start.)
 
 Step 1 — Prepare:   POST /api/jobs/:id/submit/prepare
                     (creates submission on-chain, deploys EvaluationWallet)
-                    Parse SubmissionPrepared event for { submissionId, evalWallet, linkMaxBudget }.
+                    Parse SubmissionPrepared event for { submissionId, evalWallet, ethMaxBudget }.
 Confirm (API):      POST /api/jobs/:id/submissions/confirm
                     (registers the submission in the backend so /diagnose etc. work)
-Step 2 — Approve:   POST /api/jobs/:id/submit/approve
-                    (LINK.approve to evalWallet; MANDATORY before step 3 — the
-                    contract pulls LINK via transferFrom)
-Step 3 — Start:     POST /api/jobs/:id/submissions/:subId/start
-                    (triggers oracle evaluation)
-                    PREREQUISITE: LINK already approved to evalWallet for at
-                    least linkMaxBudget. If allowance is missing, the tx
-                    reverts on-chain — the API cannot detect this.
-Step 4 — Finalize:  POST /api/jobs/:id/submissions/:subId/finalize
+Step 2 — Start:     POST /api/jobs/:id/submissions/:subId/start
+                    (triggers oracle evaluation; payable — attach ethMaxBudget
+                    as msg.value to fund the evaluation. No approval needed.)
+Step 3 — Finalize:  POST /api/jobs/:id/submissions/:subId/finalize
                     (oracle completed → claims payout or marks rejected)
 
 If the bounty has a creator approval window (creatorAssessmentWindowSize > 0),
 step 1 puts the submission in PendingCreatorApproval. During the window, the
 creator may approve directly via /approve-as-creator (hunter receives
-creatorDeterminationPayment, skip steps 2-4). After the window expires,
-anyone may fund LINK and call step 3.
+creatorDeterminationPayment, skip steps 2-3). After the window expires,
+anyone may fund it with ETH (attach ethMaxBudget as msg.value) and call step 2.
 
 ### After Submission — Decision Tree
 Each row shows the submission state and the API endpoint to call. The handler
@@ -520,8 +515,8 @@ do NOT call contract functions directly unless you know the ABI.
 2. Prepared OR PendingCreatorApproval (window expired):
    POST /api/jobs/:id/submissions/:subId/start
    - Body: { "hunter": "0x..." }
-   - Encodes startPreparedSubmission. Caller must have LINK approved to evalWallet.
-   - Prepared: only the original hunter. Expired window: any caller funds LINK.
+   - Encodes startPreparedSubmission. Payable — attach ethMaxBudget as msg.value; no approval needed.
+   - Prepared: only the original hunter. Expired window: any caller funds the ETH (attaches msg.value).
 
 3. ACCEPTED_PENDING_CLAIM or REJECTED_PENDING_FINALIZATION (oracle done):
    POST /api/jobs/:id/submissions/:subId/finalize
@@ -533,8 +528,8 @@ do NOT call contract functions directly unless you know the ABI.
    POST /api/jobs/:id/submissions/:subId/timeout
    - Returns { canTimeout: bool, ... }. If false, read "error"/"details" for
      why (usually "Timeout not reached" with remainingSeconds).
-   - If true, sign and broadcast the returned transaction — refunds LINK to
-     hunter. Anyone may call; hunter address not required for this endpoint.
+   - If true, sign and broadcast the returned transaction — refunds the unspent
+     ETH prepay to the hunter. Anyone may call; hunter address not required for this endpoint.
 
 If finalizeSubmission reverts with "Verdikta not ready", the oracle has not completed.
 Use /timeout instead (available after 10 minutes from submittedAt).
@@ -561,7 +556,7 @@ the discovery endpoint and drive the close flow themselves.
 
 2. For each entry in pendingSubmissions where timeoutEligible is true:
    POST /api/jobs/:jobId/submissions/:submissionId/timeout
-   Sign + broadcast the returned transaction. LINK is refunded to the hunter.
+   Sign + broadcast the returned transaction. The unspent ETH prepay is refunded to the hunter.
    If timeoutEligible is false, wait — the submission is younger than the
    10-minute on-chain window.
 
@@ -762,7 +757,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'POST',
         path: '/jobs/:id/submit/bundle',
-        description: 'Get pre-encoded transaction bundle for full submission flow (prepare → approve LINK → start)',
+        description: 'Get pre-encoded transaction bundle for full submission flow (prepare → confirm → start (funded with ETH) → finalize)',
         contentType: 'application/json (or multipart/form-data with files)',
         fields: [
           'hunterAddress: Ethereum address 0x... (required)',
@@ -770,19 +765,19 @@ router.get('/api/docs', (req, res) => {
           'files: multipart file uploads (required if no hunterCid)',
           'addendum: optional text appended to evaluation query',
           'alpha: timeliness-vs-quality blend (0-1000), default 500. weighted = ((1000-alpha)*quality + alpha*timeliness)/1000; 0 = pure quality, 1000 = pure timeliness, 500 = equal.',
-          'maxOracleFee: max LINK per oracle in wei, default "50000000000000000" (0.05 LINK)',
-          'estimatedBaseCost: default "30000000000000000" (0.03 LINK)',
+          'maxOracleFee: max ETH per oracle in wei, default "100000000000000" (0.0001 ETH)',
+          'estimatedBaseCost: default "10000000000000" (0.00001 ETH)',
           'maxFeeBasedScaling: plain integer x-factor, default "3". Caps fee-boost multiplier for oracles priced below maxOracleFee; contract scales by 1e18 internally, so pass the x-factor itself. Must be >= 1.'
         ],
-        returns: 'Step 1 calldata (ready to sign) + templates for steps 2-4'
+        returns: 'Step 1 calldata (ready to sign) + templates for steps 2-3'
       },
       {
         method: 'POST',
         path: '/jobs/:id/submit/bundle/complete',
-        description: 'Parse step 1 tx receipt and return exact calldata for steps 2-4',
+        description: 'Parse step 1 tx receipt and return exact calldata for steps 2-3',
         contentType: 'application/json',
         fields: ['txHash: transaction hash from step 1 (0x + 64 hex chars) (required)'],
-        returns: '{ success, parsed: { submissionId, evalWallet, linkMaxBudget, linkMaxBudgetFormatted }, transactions: [step2 approveLINK, step3 startPreparedSubmission], postEvaluation: { step4 finalizeSubmission }, confirm: { method, url, body }, tips }. Each step2/step3/step4 entry has the standard { to, data, value, chainId, gasLimit } shape.'
+        returns: '{ success, parsed: { submissionId, evalWallet, ethMaxBudget, ethMaxBudgetFormatted }, transactions: [step2 startPreparedSubmission (payable — value = ethMaxBudget)], postEvaluation: { step3 finalizeSubmission }, confirm: { method, url, body }, tips }. Each step2/step3 entry has the standard { to, data, value, chainId, gasLimit } shape (step2 value = ethMaxBudget).'
       },
       // Individual calldata endpoints (alternative to bundle flow)
       {
@@ -795,35 +790,35 @@ router.get('/api/docs', (req, res) => {
           'hunterCid: IPFS CID from POST /submit (required)',
           'addendum: optional string appended to the evaluation query. Default "".',
           'alpha: timeliness-vs-quality blend 0-1000. Default 500. weighted = ((1000-alpha)*quality + alpha*timeliness)/1000.',
-          'maxOracleFee: DECIMAL LINK string (e.g. "0.003"). Default "0.003". UNIT DIFFERS from /submit/bundle which uses wei — do not mix them up.',
-          'estimatedBaseCost: DECIMAL LINK string. Default "0.001". Same wei-vs-decimal caveat.',
+          'maxOracleFee: DECIMAL ETH string (e.g. "0.0001"). Default "0.0001". UNIT DIFFERS from /submit/bundle which uses wei — do not mix them up.',
+          'estimatedBaseCost: DECIMAL ETH string. Default "0.00001". Same wei-vs-decimal caveat.',
           'maxFeeBasedScaling: plain integer x-factor (>= 1). Default "3". Caps fee-boost multiplier for cheap oracles; contract scales by 1e18 internally.'
         ],
-        returns: 'Standard calldataResponseShape. Extras: info: { bountyId, evaluationCid, hunterCid }, nextStep. After broadcasting, parse the SubmissionPrepared event from the receipt for submissionId, evalWallet, linkMaxBudget.'
+        returns: 'Standard calldataResponseShape. Extras: info: { bountyId, evaluationCid, hunterCid }, nextStep. After broadcasting, parse the SubmissionPrepared event from the receipt for submissionId, evalWallet, ethMaxBudget.'
       },
       {
         method: 'POST',
         path: '/jobs/:id/submit/approve',
-        description: 'Get encoded LINK.approve calldata (step 2 — sets ERC-20 allowance for evalWallet). MANDATORY before /start — the contract pulls LINK via transferFrom.',
+        description: 'DEPRECATED (returns 410 Gone). Token approval is no longer required — the oracle is ETH-funded. Attach ethMaxBudget as msg.value on /submissions/:subId/start instead. There is no approve step in the current flow.',
         contentType: 'application/json',
-        fields: [
-          'evalWallet: address from SubmissionPrepared event (required)',
-          'linkAmount: DECIMAL LINK string, e.g. "0.6" (required). NOT the raw wei linkMaxBudget from the event — convert first (ethers.formatEther(linkMaxBudget)). Passing raw wei here will cause a 1e18 over-approval.'
-        ],
-        returns: 'Standard calldataResponseShape. Extras: nextStep.'
+        fields: [],
+        returns: '410 Gone. Skip this endpoint entirely; fund the evaluation by attaching ethMaxBudget as msg.value on /start.'
       },
       {
         method: 'POST',
         path: '/jobs/:id/submissions/:subId/start',
-        description: 'Get encoded startPreparedSubmission calldata (step 3 — triggers oracle evaluation). PREREQUISITE: LINK must already be approved to evalWallet for at least linkMaxBudget (see /submit/approve). If allowance is missing, the on-chain tx reverts — this API cannot detect it.',
+        description: 'Get encoded startPreparedSubmission calldata (step 2 — triggers oracle evaluation). Payable: attach ethMaxBudget as msg.value to fund the evaluation. No approval needed.',
         contentType: 'application/json',
-        fields: ['hunter: Ethereum address 0x... (required — must be original hunter for Prepared status; any caller for PendingCreatorApproval after window expiry — that caller funds the LINK)'],
-        returns: 'Standard calldataResponseShape. Extras: nextStep. transaction.gasLimit is returned.'
+        fields: [
+          'hunter: Ethereum address 0x... (required — must be original hunter for Prepared status; any caller for PendingCreatorApproval after window expiry — that caller funds the ETH by attaching msg.value)',
+          'ethMaxBudget: optional ETH-wei string. The transaction returned carries this as its `value` (msg.value). Defaults to the prepared submission\'s ethMaxBudget when omitted.'
+        ],
+        returns: 'Standard calldataResponseShape, where transaction.value equals the ethMaxBudget (the ETH prepay attached as msg.value). Extras: nextStep. transaction.gasLimit is returned.'
       },
       {
         method: 'POST',
         path: '/jobs/:id/submissions/:subId/finalize',
-        description: 'Get encoded finalizeSubmission calldata (step 4 — claims payout or finalizes rejection). Oracle readiness is checked server-side before encoding.',
+        description: 'Get encoded finalizeSubmission calldata (step 3 — claims payout or finalizes rejection). Oracle readiness is checked server-side before encoding.',
         contentType: 'application/json',
         fields: ['hunter: Ethereum address 0x... (required — must match submission.hunter)'],
         returns: 'Standard calldataResponseShape. Extras when oracle is ready: oracleResult: { acceptance, rejection, passed, threshold }, and expectedPayout (ETH) if passed. When oracle is not ready, returns 400 with { error: "Evaluation not ready", reason, hint } — call /timeout instead if 10+ min elapsed.'
@@ -977,7 +972,7 @@ router.get('/api/docs', (req, res) => {
           signature: 'failTimedOutSubmission(uint256 bountyId, uint256 submissionId)',
           notes: [
             'Use when oracle is stuck (available after 10 minutes)',
-            'Marks submission as Failed and refunds LINK to hunter',
+            'Marks submission as Failed and refunds the unspent ETH prepay to the hunter',
             'Anyone can call this',
             '"Verdikta not ready" from finalizeSubmission means you need this function instead'
           ]
@@ -1002,7 +997,7 @@ router.get('/api/docs', (req, res) => {
       statusMapping: {
         description: 'API statuses vs on-chain SubmissionStatus enum values',
         map: {
-          'PendingCreatorApproval': 'PendingCreatorApproval (5) — waiting for creator approval or window expiry. After window expires, anyone can call startPreparedSubmission (requires LINK funding).',
+          'PendingCreatorApproval': 'PendingCreatorApproval (5) — waiting for creator approval or window expiry. After window expires, anyone can call startPreparedSubmission (payable — attach ethMaxBudget as msg.value to fund it).',
           'PENDING_EVALUATION': 'Prepared (0) or PendingVerdikta (1) — wait for oracle',
           'ACCEPTED_PENDING_CLAIM': 'PendingVerdikta (1), oracle passed — call finalizeSubmission',
           'REJECTED_PENDING_FINALIZATION': 'PendingVerdikta (1), oracle failed — call finalizeSubmission',
@@ -1015,7 +1010,7 @@ router.get('/api/docs', (req, res) => {
         detection: 'Check creatorAssessmentWindowSize > 0 in bounty data from GET /jobs/:id',
         submissionFields: 'creatorWindowEnd (unix timestamp) on each submission indicates when the window closes',
         approvalMethod: 'POST /jobs/:id/submissions/:subId/approve-as-creator with { "creator": "0x..." } returns encoded calldata. Creator signs and broadcasts the transaction.',
-        afterWindowExpiry: 'Anyone can fund LINK and call startPreparedSubmission to begin oracle evaluation'
+        afterWindowExpiry: 'Anyone can fund it with ETH (attach ethMaxBudget as msg.value) and call startPreparedSubmission to begin oracle evaluation'
       }
     },
     feeds: {

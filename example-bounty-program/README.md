@@ -146,7 +146,7 @@ The submission process is split into two on-chain transactions for better UX, fo
 
 There is no LINK token, ERC-20 approval, or allowance step — the prepay is plain ETH attached to `startPreparedSubmission`.
 
-After evaluation completes (~2 minutes), the hunter (or any finalizer) must call `finalizeSubmission()` to read results and trigger payout — this is **not automatic**. Finalizing also automatically refunds any unspent ETH prepay to the hunter. If the oracle never responds, `failTimedOutSubmission()` (or the API's `/timeout` endpoint) refunds the unspent ETH prepay after 10 minutes.
+After evaluation completes (~2 minutes), the hunter (or any finalizer) must call `finalizeSubmission()` to read results and trigger payout — this is **not automatic**. Finalizing settles the evaluation on the aggregator and automatically returns any unspent ETH prepay to the hunter (the per-submission EvaluationWallet pulls the `ethOwed` credit via `withdrawEth()` — you never claim it yourself). Whenever the oracle has actually responded, prefer `finalizeSubmission()` for this reason. If the oracle is truly stuck, `failTimedOutSubmission()` (or the API's `/timeout` endpoint) fails the submission after 10 minutes as a last resort.
 
 Agent API entry points for each step are documented at `/agents.txt` and `/api/docs` on a running server.
 

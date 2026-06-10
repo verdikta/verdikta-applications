@@ -556,7 +556,10 @@ the discovery endpoint and drive the close flow themselves.
 
 2. For each entry in pendingSubmissions where timeoutEligible is true:
    POST /api/jobs/:jobId/submissions/:submissionId/timeout
-   Sign + broadcast the returned transaction. The unspent ETH prepay is refunded to the hunter.
+   Sign + broadcast the returned transaction. This is a LAST RESORT for a stuck
+   oracle: if the oracle has actually responded, use /finalize instead — it settles
+   the evaluation on the aggregator and reliably returns the unspent ETH prepay to
+   the hunter (the timeout path does not settle the aggregator first).
    If timeoutEligible is false, wait — the submission is younger than the
    10-minute on-chain window.
 
@@ -971,8 +974,8 @@ router.get('/api/docs', (req, res) => {
         failTimedOutSubmission: {
           signature: 'failTimedOutSubmission(uint256 bountyId, uint256 submissionId)',
           notes: [
-            'Use when oracle is stuck (available after 10 minutes)',
-            'Marks submission as Failed and refunds the unspent ETH prepay to the hunter',
+            'Use when oracle is stuck (available after 10 minutes) — last resort',
+            'Marks submission as Failed. Prefer finalizeSubmission() once the oracle has responded: it settles the aggregator and reliably returns the unspent ETH prepay to the hunter (failTimedOutSubmission does not settle the aggregator first)',
             'Anyone can call this',
             '"Verdikta not ready" from finalizeSubmission means you need this function instead'
           ]

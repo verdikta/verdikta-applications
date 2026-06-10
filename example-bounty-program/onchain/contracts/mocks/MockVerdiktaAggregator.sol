@@ -6,7 +6,10 @@ pragma solidity ^0.8.23;
 ///      simulate the ethOwed refund credit / withdrawEth pull-payment ledger.
 contract MockVerdiktaAggregator {
     uint256 public feeMultiplier = 3; // maxTotalFee = input * multiplier
-    uint256 public refundAmount;      // ETH (wei) credited to ethOwed[caller] per request (default 0)
+    uint256 public refundAmount;      // ETH (wei) credited to ethOwed[requester] (default 0)
+    bool    public creditOnTimeout;   // if true, the refund is credited at finalizeEvaluationTimeout
+                                      // (settlement) rather than at request time — models a round
+                                      // whose prepay stays reserved until timed out + settled.
 
     struct Result {
         uint256[] scores;
@@ -16,6 +19,8 @@ contract MockVerdiktaAggregator {
 
     mapping(bytes32 => Result) private _results;
     mapping(address => uint256) public ethOwed;
+    mapping(bytes32 => address) public requesterOf; // aggId -> requester (the EvaluationWallet)
+    mapping(bytes32 => bool) public settled;        // aggId -> already settled via timeout
     uint256 private _nonce;
 
     // --- Test helpers ---
@@ -40,6 +45,12 @@ contract MockVerdiktaAggregator {
         refundAmount = amount;
     }
 
+    /// @dev When true, the prepay refund is credited at finalizeEvaluationTimeout (settlement)
+    ///      instead of at request time — used to test the force-fail recovery path.
+    function setCreditOnTimeout(bool v) external {
+        creditOnTimeout = v;
+    }
+
     // --- IVerdiktaAggregator implementation ---
 
     function requestAIEvaluationWithApproval(
@@ -53,8 +64,10 @@ contract MockVerdiktaAggregator {
     ) external payable returns (bytes32 requestId) {
         _nonce++;
         requestId = keccak256(abi.encodePacked(_nonce, msg.sender));
-        // Simulate settlement crediting the caller an ethOwed refund for unspent prepay.
-        if (refundAmount > 0) {
+        requesterOf[requestId] = msg.sender;
+        // Default: settle at fulfillment — credit the unspent prepay refund now.
+        // With creditOnTimeout, the prepay stays "reserved" until finalizeEvaluationTimeout.
+        if (refundAmount > 0 && !creditOnTimeout) {
             ethOwed[msg.sender] += refundAmount;
         }
     }
@@ -86,8 +99,13 @@ contract MockVerdiktaAggregator {
         return 300;
     }
 
-    function finalizeEvaluationTimeout(bytes32) external {
-        // no-op in mock
+    function finalizeEvaluationTimeout(bytes32 aggId) external {
+        // Simulate the aggregator settling a timed-out round: refund the unspent prepay
+        // to the original requester's (EvaluationWallet) pull credit, exactly once.
+        if (creditOnTimeout && !settled[aggId] && refundAmount > 0) {
+            ethOwed[requesterOf[aggId]] += refundAmount;
+            settled[aggId] = true;
+        }
     }
 
     receive() external payable {}

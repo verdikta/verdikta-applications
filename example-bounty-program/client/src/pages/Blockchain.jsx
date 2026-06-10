@@ -960,8 +960,11 @@ submission-package.zip
             <h3>Refunds</h3>
             <p>
               You attach the ETH prepay as <code>msg.value</code> when calling{' '}
-              <code>startPreparedSubmission()</code> — there is no token approval. Any unspent prepay
-              is automatically refunded to you when calling <code>finalizeSubmission()</code>.
+              <code>startPreparedSubmission()</code> — there is no token approval. At settlement the
+              aggregator credits the unspent portion back as a pull-payment (<code>ethOwed</code>).
+              You never claim it manually: <code>finalizeSubmission()</code> has the per-submission
+              EvaluationWallet withdraw that credit from the aggregator (<code>withdrawEth()</code>)
+              and return it to you automatically.
             </p>
           </div>
           <div className="info-card">
@@ -971,7 +974,9 @@ submission-package.zip
             <h3>Timeouts</h3>
             <p>
               Submissions stuck in <code>PendingVerdikta</code> for 10+ minutes can be failed by anyone
-              using <code>failTimedOutSubmission()</code>. This refunds the unspent ETH prepay to the hunter.
+              using <code>failTimedOutSubmission()</code>. Whenever the oracle has actually responded, prefer{' '}
+              <code>finalizeSubmission()</code> — it settles the aggregator and reliably returns your unspent
+              prepay. <code>failTimedOutSubmission()</code> is a last resort for a truly stuck oracle.
             </p>
           </div>
         </div>

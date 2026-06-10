@@ -689,6 +689,46 @@ describe("BountyEscrow", function () {
         bountyEscrow.connect(other).failTimedOutSubmission(bountyId, submissionId)
       ).to.emit(bountyEscrow, "SubmissionFinalized");
     });
+
+    it("Should settle the aggregator and recover the ETH prepay on force-fail (dead oracle)", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+
+      // Model a dead oracle: the prepay stays RESERVED on the aggregator and is only
+      // credited to the wallet's pull-ledger when finalizeEvaluationTimeout settles it.
+      await verdiktaAggregator.setCreditOnTimeout(true);
+
+      const { submissionId, evalWallet, ethMaxBudget } =
+        await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      await verdiktaAggregator.setRefundAmount(ethMaxBudget);
+      await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+        value: ethMaxBudget,
+      });
+
+      // Pre-timeout: nothing owed to the wallet yet (prepay still reserved on aggregator).
+      expect(await verdiktaAggregator.ethOwed(evalWallet)).to.equal(0);
+
+      await time.increase(601);
+
+      const hunterBalBefore = await ethers.provider.getBalance(hunter.address);
+
+      // Force-fail by an unrelated caller (hunter pays no gas). The contract now settles
+      // the aggregator first, so the prepay is recovered and returned to the hunter —
+      // without the settle step this would emit EthRefunded(0) and strand the prepay.
+      await expect(
+        bountyEscrow.connect(other).failTimedOutSubmission(bountyId, submissionId)
+      )
+        .to.emit(bountyEscrow, "SubmissionFinalized")
+        .and.to.emit(bountyEscrow, "EthRefunded")
+        .withArgs(bountyId, submissionId, ethMaxBudget);
+
+      const hunterBalAfter = await ethers.provider.getBalance(hunter.address);
+      expect(hunterBalAfter - hunterBalBefore).to.equal(ethMaxBudget);
+
+      // Aggregator credit fully drained — nothing stranded.
+      expect(await verdiktaAggregator.ethOwed(evalWallet)).to.equal(0);
+    });
   });
 
   // =========================================================================

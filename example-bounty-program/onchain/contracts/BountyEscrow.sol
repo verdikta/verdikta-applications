@@ -537,6 +537,17 @@ contract BountyEscrow {
         require(s.status == SubmissionStatus.PendingVerdikta, "not pending");
         require(block.timestamp >= s.submittedAt + 10 minutes, "timeout not reached");
 
+        // Best-effort: settle the evaluation on the aggregator first. A dead/failed
+        // round keeps the unspent prepay escrowed (reserved) until it is settled;
+        // settlement moves it into the requester's pull credit (ethOwed[evalWallet]),
+        // which _refundLeftoverEth then recovers and returns to the hunter below.
+        // Without this, force-failing before settlement would strand the prepay on the
+        // aggregator with no way to recover it (this submission becomes terminal).
+        // Mirrors finalizeSubmission; ignore if already settled or not yet settleable.
+        if (s.verdiktaAggId != bytes32(0)) {
+            try verdikta.finalizeEvaluationTimeout(s.verdiktaAggId) {} catch { /* ignore */ }
+        }
+
         // Mark as failed
         s.status = SubmissionStatus.Failed;
         s.finalizedAt = block.timestamp;
@@ -550,7 +561,7 @@ contract BountyEscrow {
             "TIMED_OUT"
         );
 
-        // Refund any ETH prepay left in the wallet
+        // Refund any ETH prepay left in the wallet (now recoverable post-settlement)
         _refundLeftoverEth(bountyId, submissionId);
     }
 

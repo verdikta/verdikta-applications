@@ -27,7 +27,7 @@ See `.env.example` for the full list. At minimum you need:
 
 - `VITE_NETWORK` — `base-sepolia` or `base`
 - `VITE_CLIENT_KEY` — must match `FRONTEND_CLIENT_KEY` on the server
-- `VITE_BOUNTY_ESCROW_ADDRESS_*`, `VITE_LINK_TOKEN_ADDRESS_*`, `VITE_VERDIKTA_AGGREGATOR_ADDRESS_*` for the active network
+- `VITE_BOUNTY_ESCROW_ADDRESS_*`, `VITE_VERDIKTA_AGGREGATOR_ADDRESS_*` for the active network
 
 ## Project context
 

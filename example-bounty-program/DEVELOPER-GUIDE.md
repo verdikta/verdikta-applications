@@ -286,7 +286,7 @@ For each entry in `pendingSubmissions` where `timeoutEligible: true`:
 POST /api/jobs/:jobId/submissions/:submissionId/timeout
 ```
 
-Returns calldata for `failTimedOutSubmission(bountyId, submissionId)`. Sign and submit from any wallet (anyone may call). The unspent ETH prepay is refunded to the original hunter.
+Returns calldata for `failTimedOutSubmission(bountyId, submissionId)`. Sign and submit from any wallet (anyone may call). This is a last resort — whenever the oracle has actually responded, prefer `finalizeSubmission()`, which settles the evaluation on the aggregator and reliably returns the unspent ETH prepay to the hunter. `failTimedOutSubmission()` does not settle the aggregator first, so if the request never settled a small prepay can remain reserved there.
 
 If a submission is younger than 10 minutes, wait — the on-chain check enforces it.
 

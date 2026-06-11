@@ -27,7 +27,7 @@ The Verdikta AI-Powered Bounty Program is a fully decentralized platform that en
 ### For Hunters
 1. **Browse Bounties**: Find open bounties that match your skills
 2. **Submit Work**: Upload deliverable (text, image, PDF, etc.) to IPFS
-3. **Attach ETH Prepay**: Each submission needs a small ETH prepay (~0.0012 ETH) for oracle fees, which deters spam — most of it is refunded after evaluation
+3. **Attach ETH Prepay**: Each submission needs a small ETH prepay (~0.00024 ETH) for oracle fees, which deters spam — most of it is refunded after evaluation
 4. **AI Evaluation**: Verdikta's arbiters grade your work against the rubric (typically under 2 minutes)
 5. **Get Paid**: Pass the threshold and a finalizing transaction — made for you by the app, a script, or your agent — triggers the contract to send ETH straight to your wallet. No appeals, no manual review.
 6. **Share Receipt**: Get a shareable receipt page with proof of payment for social media
@@ -288,7 +288,7 @@ This project is **production ready** with complete end-to-end functionality incl
 A: The BountyEscrow contract is deployed on Base Sepolia (testnet) and Base (mainnet). It holds ETH in escrow, coordinates with Verdikta for AI evaluation, and pays winners the moment a submission is finalized. There's no human review or discretion — evaluation and payout are deterministic — but, as with anything on-chain, a finalizing transaction must be sent to settle the result and release escrow. That call is permissionless and is normally made for you by the app or your agent; see [Bounty Lifecycle](#bounty-lifecycle).
 
 **Q: How much does it cost to submit work?**  
-A: Each submission attaches a small ETH prepay for oracle fees. The per-oracle fee is ~0.0001 ETH (on-chain ceiling 0.0004 ETH); the worst-case prepay (`ethMaxBudget`) is ~0.0012 ETH. Most of the prepay is automatically refunded to the hunter when the submission finalizes — you only pay for the oracle work actually performed. The exact amount depends on the bounty's class ID and jury configuration.
+A: Each submission attaches a small ETH prepay for oracle fees. The per-oracle fee is ~0.00002 ETH (on-chain ceiling 0.0004 ETH); the worst-case prepay (`ethMaxBudget`) is ~0.00024 ETH. Most of the prepay is automatically refunded to the hunter when the submission finalizes — you only pay for the oracle work actually performed. The exact amount depends on the bounty's class ID and jury configuration.
 
 **Q: What happens if Verdikta times out?**  
 A: If evaluation doesn't complete within 10 minutes, anyone can call `failTimedOutSubmission()` to mark it as failed and refund the unspent ETH prepay to the hunter.

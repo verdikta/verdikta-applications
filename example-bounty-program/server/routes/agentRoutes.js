@@ -768,7 +768,7 @@ router.get('/api/docs', (req, res) => {
           'files: multipart file uploads (required if no hunterCid)',
           'addendum: optional text appended to evaluation query',
           'alpha: timeliness-vs-quality blend (0-1000), default 500. weighted = ((1000-alpha)*quality + alpha*timeliness)/1000; 0 = pure quality, 1000 = pure timeliness, 500 = equal.',
-          'maxOracleFee: max ETH per oracle in wei, default "100000000000000" (0.0001 ETH)',
+          'maxOracleFee: max ETH per oracle in wei, default "20000000000000" (0.00002 ETH)',
           'estimatedBaseCost: default "10000000000000" (0.00001 ETH)',
           'maxFeeBasedScaling: plain integer x-factor, default "3". Caps fee-boost multiplier for oracles priced below maxOracleFee; contract scales by 1e18 internally, so pass the x-factor itself. Must be >= 1.'
         ],
@@ -793,7 +793,7 @@ router.get('/api/docs', (req, res) => {
           'hunterCid: IPFS CID from POST /submit (required)',
           'addendum: optional string appended to the evaluation query. Default "".',
           'alpha: timeliness-vs-quality blend 0-1000. Default 500. weighted = ((1000-alpha)*quality + alpha*timeliness)/1000.',
-          'maxOracleFee: DECIMAL ETH string (e.g. "0.0001"). Default "0.0001". UNIT DIFFERS from /submit/bundle which uses wei — do not mix them up.',
+          'maxOracleFee: DECIMAL ETH string (e.g. "0.00002"). Default "0.00002". UNIT DIFFERS from /submit/bundle which uses wei — do not mix them up.',
           'estimatedBaseCost: DECIMAL ETH string. Default "0.00001". Same wei-vs-decimal caveat.',
           'maxFeeBasedScaling: plain integer x-factor (>= 1). Default "3". Caps fee-boost multiplier for cheap oracles; contract scales by 1e18 internally.'
         ],

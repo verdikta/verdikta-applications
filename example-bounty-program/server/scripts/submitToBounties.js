@@ -748,7 +748,7 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
     hunterCid,
     '',                        // addendum
     500,                       // alpha (equal quality/timeliness blend)
-    '100000000000000',         // maxOracleFee (0.0001 ETH)
+    '20000000000000',          // maxOracleFee (0.00002 ETH)
     '10000000000000',          // estimatedBaseCost (0.00001 ETH)
     '3'                        // maxFeeBasedScaling (3x cap on fee-based boost)
   );

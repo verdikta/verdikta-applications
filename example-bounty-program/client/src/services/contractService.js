@@ -380,7 +380,7 @@ class ContractService {
    *   internally — pass the x-factor itself (e.g. 3 = up to 3x). Must be >= 1.
    */
   async prepareSubmission(bountyId, evaluationCid, hunterCid, addendum = "", alpha = 500,
-                          maxOracleFee = "100000000000000",     // 0.0001 ETH (under the 0.0004 ETH ceiling)
+                          maxOracleFee = "20000000000000",      // 0.00002 ETH (under the 0.0004 ETH ceiling)
                           estimatedBaseCost = "10000000000000",  // 0.00001 ETH
                           maxFeeBasedScaling = "3") {
     if (!this.contract) {

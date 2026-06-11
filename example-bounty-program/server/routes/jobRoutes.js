@@ -1261,7 +1261,7 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
     const {
       hunter, hunterCid, addendum = '',
       alpha = 500,
-      maxOracleFee = '0.0001',      // ETH per oracle (under the 0.0004 ETH on-chain ceiling)
+      maxOracleFee = '0.00002',     // ETH per oracle (under the 0.0004 ETH on-chain ceiling)
       estimatedBaseCost = '0.00001', // ETH
       maxFeeBasedScaling = '3'
     } = req.body || {};
@@ -3893,7 +3893,7 @@ const bundleEscrowIface = new ethers.Interface(BUNDLE_ESCROW_ABI);
  *   alpha           - timeliness-vs-quality blend (0-1000), default 500.
  *                     ReputationKeeper: weighted = ((1000 - alpha) * quality + alpha * timeliness) / 1000.
  *                     0 = pure quality; 1000 = pure timeliness; 500 = equal blend.
- *   maxOracleFee    - max ETH per oracle in wei, default "100000000000000" (0.0001 ETH)
+ *   maxOracleFee    - max ETH per oracle in wei, default "20000000000000" (0.00002 ETH)
  *   estimatedBaseCost   - default "10000000000000" (0.00001 ETH)
  *   maxFeeBasedScaling  - plain integer N (x-factor), default "3". Cap on fee-boost
  *                         multiplier applied to oracles whose fee is below maxOracleFee.
@@ -3919,7 +3919,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
     let { hunterCid } = req.body;
     const addendum    = req.body.addendum || '';
     const alpha       = parseInt(req.body.alpha) || 500;
-    const maxOracleFee       = req.body.maxOracleFee       || '100000000000000';
+    const maxOracleFee       = req.body.maxOracleFee       || '20000000000000';
     const estimatedBaseCost  = req.body.estimatedBaseCost  || '10000000000000';
     // maxFeeBasedScaling: plain x-factor integer (contract scales by 1e18 internally).
     const maxFeeBasedScaling = req.body.maxFeeBasedScaling || '3';
@@ -6009,7 +6009,7 @@ router.post('/estimate-fee', async (req, res) => {
 async function calculateFeeEstimate(juryNodes, iterations) {
   // Default fee parameters (fallback values)
   // These are conservative estimates based on typical Verdikta pricing
-  let maxOracleFeeWei = BigInt('100000000000000'); // 0.0001 ETH per oracle call
+  let maxOracleFeeWei = BigInt('20000000000000'); // 0.00002 ETH per oracle call
   let aggregatorConfigAvailable = false;
 
   // Try to get actual maxOracleFee from Verdikta aggregator

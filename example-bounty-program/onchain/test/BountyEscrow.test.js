@@ -8,7 +8,7 @@ describe("BountyEscrow", function () {
   const CLASS_ID = 128;
   const THRESHOLD = 70;
   const BOUNTY_WEI = ethers.parseEther("1");
-  const MAX_ORACLE_FEE = ethers.parseEther("0.0001");
+  const MAX_ORACLE_FEE = ethers.parseEther("0.00002");
   const ALPHA = 50;
   const EST_BASE_COST = ethers.parseEther("0.00001");
   const MAX_FEE_SCALING = 2;

@@ -312,7 +312,7 @@ function SubmitWork({ walletState }) {
         hunterCid,           // Hunter's work product CID
         submissionNarrative || "",  // addendum
         500,                  // alpha: timeliness-vs-quality blend (0-1000). 500 = equal; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
-        "100000000000000",    // maxOracleFee (0.0001 ETH) — under the 0.0004 ETH on-chain ceiling
+        "20000000000000",     // maxOracleFee (0.00002 ETH) — under the 0.0004 ETH on-chain ceiling
         "10000000000000",     // estimatedBaseCost (0.00001 ETH)
         "3"                   // maxFeeBasedScaling: x-factor cap on fee-based boost (contract scales by 1e18 internally; must be >= 1)
       );
@@ -732,7 +732,7 @@ function SubmitWork({ walletState }) {
             <li>Your files are uploaded to IPFS (permanent storage)</li>
             <li>Hunter Submission CID is generated with your work and narrative</li>
             <li>Smart contract creates an EvaluationWallet for your submission</li>
-            <li>You attach a small ETH prepay (~0.0012 ETH) to fund AI evaluation — unspent ETH is refunded to you when the result finalizes</li>
+            <li>You attach a small ETH prepay (~0.00024 ETH) to fund AI evaluation — unspent ETH is refunded to you when the result finalizes</li>
             <li>Evaluation starts with your Hunter CID + the bounty's evaluation package</li>
             <li>Results are written back on-chain within 1-5 minutes</li>
             <li>If you pass, bounty is awarded automatically! 🎉</li>
@@ -745,7 +745,7 @@ function SubmitWork({ walletState }) {
         </p>
         <ul>
           <li><strong>ETH</strong> for gas fees (~0.005 ETH on Base Sepolia)</li>
-          <li><strong>ETH</strong> prepay for AI evaluation (~0.0012 ETH worst case, mostly refunded)</li>
+          <li><strong>ETH</strong> prepay for AI evaluation (~0.00024 ETH worst case, mostly refunded)</li>
         </ul>
         <p>
           Get testnet ETH from a <a href="https://docs.base.org/chain/network-faucets" target="_blank" rel="noopener noreferrer">Base Sepolia faucet</a>.

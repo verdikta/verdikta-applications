@@ -175,7 +175,7 @@ async function submitWork(bountyId, hunterCid) {
     hunterCid,                            // Your work's IPFS CID
     'Please evaluate carefully',          // Addendum
     500n,                                 // Alpha: timeliness-vs-quality blend (0-1000). 500 = equal blend; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
-    ethers.parseEther('0.0001'),          // maxOracleFee (per oracle call cap, in ETH)
+    ethers.parseEther('0.00002'),         // maxOracleFee (per oracle call cap, in ETH)
     ethers.parseEther('0.0001'),          // estimatedBaseCost (base cost per evaluation, in ETH)
     BigInt('3')                           // maxFeeBasedScaling: x-factor cap on fee-based boost (contract scales by 1e18 internally; must be >= 1)
   );
@@ -382,7 +382,7 @@ def submit_work(bounty_id, hunter_cid):
         hunter_cid,                               # your work's IPFS CID
         'Please evaluate carefully',              # addendum
         500,                                      # alpha: timeliness-vs-quality blend (0-1000)
-        w3.to_wei(0.0001, 'ether'),               # maxOracleFee (per oracle call cap)
+        w3.to_wei(0.00002, 'ether'),              # maxOracleFee (per oracle call cap)
         w3.to_wei(0.0001, 'ether'),               # estimatedBaseCost (base cost per evaluation)
         3,                                        # maxFeeBasedScaling (>= 1)
     ).build_transaction({
@@ -719,7 +719,7 @@ submission-package.zip
   hunterCid,          // string - your submission's IPFS CID
   addendum,           // string - usually ""
   alpha,              // uint256 - timeliness-vs-quality blend (0-1000). 500 = equal; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
-  maxOracleFee,       // uint256 - "100000000000000" (0.0001 ETH per oracle call, ceiling 0.0004 ETH)
+  maxOracleFee,       // uint256 - "20000000000000" (0.00002 ETH per oracle call, ceiling 0.0004 ETH)
   estimatedBaseCost,  // uint256 - "100000000000000" (0.0001 ETH base cost)
   maxFeeBasedScaling  // uint256 - x-factor cap on fee-based boost, "3" = up to 3x (contract scales by 1e18 internally; must be >= 1)
 )`}</pre>
@@ -946,9 +946,9 @@ submission-package.zip
             </div>
             <h3>Fee Estimation</h3>
             <p>
-              The oracle is ETH-funded. Per-oracle <code>maxOracleFee</code> is ~<strong>0.0001 ETH</strong>{' '}
+              The oracle is ETH-funded. Per-oracle <code>maxOracleFee</code> is ~<strong>0.00002 ETH</strong>{' '}
               (on-chain ceiling 0.0004 ETH); the worst-case prepay returned as <code>ethMaxBudget</code>{' '}
-              is ~<strong>0.0012 ETH</strong>. You only pay for what the evaluation actually costs —
+              is ~<strong>0.00024 ETH</strong>. You only pay for what the evaluation actually costs —
               the rest comes back. Use the API's <code>/estimate-fee</code> endpoint or check the
               Verdikta contract's <code>maxTotalFee()</code>.
             </p>

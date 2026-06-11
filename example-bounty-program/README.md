@@ -7,7 +7,7 @@
 
 The Verdikta AI-Powered Bounty Program is a fully decentralized platform that enables trustless, automated evaluation and payment of work submissions using AI arbiters. Bounty owners create jobs with ETH payouts and IPFS-hosted evaluation rubrics, hunters submit deliverables, and Verdikta's AI jury automatically grades submissions. The first passing submission wins the bounty—no appeals, no manual review needed.
 
-**Current Status:** Fully functional end-to-end system with deployed smart contracts on Base Sepolia (testnet) and Base (mainnet). Create bounties with ETH escrow, submit work with a small ETH prepay for oracle fees, get AI evaluation in under 2 minutes, and receive automatic on-chain payment. Winners get shareable receipt pages with social media unfurling.
+**Current Status:** Fully functional end-to-end system with deployed smart contracts on Base Sepolia (testnet) and Base (mainnet). Create bounties with ETH escrow, submit work with a small ETH prepay for oracle fees, get AI evaluation in under 2 minutes, and — once a one-transaction settlement step (handled for you by the app or your agent) finalizes the verdict — automatic on-chain payment to the winner. Winners get shareable receipt pages with social media unfurling.
 
 ## Quick Links
 
@@ -22,14 +22,14 @@ The Verdikta AI-Powered Bounty Program is a fully decentralized platform that en
 1. **Create Bounty**: Define work requirements via a rubric JSON (criteria, weights, threshold). Optionally enable a creator approval window with split payments.
 2. **Lock ETH**: Deposit payout amount on-chain in escrow
 3. **Wait**: Hunters submit work. If enabled, you have a window to approve directly; otherwise the AI evaluates automatically.
-4. **Winner Paid**: First passing submission gets ETH instantly
+4. **Winner Paid**: The first passing submission is paid as soon as its result is finalized on-chain — a single settlement call the app or agent makes for you, not a transaction you have to think about.
 
 ### For Hunters
 1. **Browse Bounties**: Find open bounties that match your skills
 2. **Submit Work**: Upload deliverable (text, image, PDF, etc.) to IPFS
 3. **Attach ETH Prepay**: Each submission needs a small ETH prepay (~0.0012 ETH) for oracle fees, which deters spam — most of it is refunded after evaluation
 4. **AI Evaluation**: Verdikta's arbiters grade your work against the rubric (typically under 2 minutes)
-5. **Get Paid**: If you pass the threshold, ETH is sent to your wallet automatically
+5. **Get Paid**: Pass the threshold and a finalizing transaction — made for you by the app, a script, or your agent — triggers the contract to send ETH straight to your wallet. No appeals, no manual review.
 6. **Share Receipt**: Get a shareable receipt page with proof of payment for social media
 
 ## Receipts-as-Memes
@@ -285,7 +285,7 @@ This project is **production ready** with complete end-to-end functionality incl
 ## FAQ
 
 **Q: How do smart contracts work in this system?**  
-A: The BountyEscrow contract is deployed on Base Sepolia (testnet) and Base (mainnet). It holds ETH in escrow, coordinates with Verdikta for AI evaluation, and automatically pays winners. No manual intervention needed.
+A: The BountyEscrow contract is deployed on Base Sepolia (testnet) and Base (mainnet). It holds ETH in escrow, coordinates with Verdikta for AI evaluation, and pays winners the moment a submission is finalized. There's no human review or discretion — evaluation and payout are deterministic — but, as with anything on-chain, a finalizing transaction must be sent to settle the result and release escrow. That call is permissionless and is normally made for you by the app or your agent; see [Bounty Lifecycle](#bounty-lifecycle).
 
 **Q: How much does it cost to submit work?**  
 A: Each submission attaches a small ETH prepay for oracle fees. The per-oracle fee is ~0.0001 ETH (on-chain ceiling 0.0004 ETH); the worst-case prepay (`ethMaxBudget`) is ~0.0012 ETH. Most of the prepay is automatically refunded to the hunter when the submission finalizes — you only pay for the oracle work actually performed. The exact amount depends on the bounty's class ID and jury configuration.

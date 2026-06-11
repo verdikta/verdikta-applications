@@ -17,7 +17,7 @@ const { config } = require('../config');
 const archiveGenerator = require('../utils/archiveGenerator');
 const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE,
         oracleUnreadableReason, detectBinaryContainer, ALLOWED_ZIP_BASED_EXTENSIONS,
-        parseFeeToWei } = require('../utils/validation');
+        parseFeeToWei, extractEvaluationWarnings } = require('../utils/validation');
 const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
 const { validateBounty, IssueSeverity, IssueType } = require('../utils/bountyValidator');
 const { getContractService } = require('../utils/contractService');
@@ -1590,6 +1590,32 @@ router.post('/:jobId/submissions/:submissionId/finalize', async (req, res) => {
 
     logger.info('[submit/finalize] encoded', { jobId, submissionId, onChainBountyId, onChainSubmissionId });
 
+    // Best-effort: surface oracle warnings (esp. attachment_skipped — a file the models
+    // never saw) at finalize time, so the agent sees WHY a score may be low rather than
+    // just recording it. Non-blocking — never fails the finalize on an IPFS hiccup.
+    let oracleWarnings = [];
+    try {
+      const ipfsClient = req.app.locals.ipfsClient;
+      if (ipfsClient && submission.justificationCids) {
+        const cids = submission.justificationCids.split(',').map(c => c.trim()).filter(Boolean);
+        // Bounded best-effort: warnings are a bonus, so a slow IPFS gateway must never
+        // delay the finalize calldata. Short per-fetch timeout + overall deadline.
+        const deadline = Date.now() + 6000;
+        for (const cid of cids) {
+          if (Date.now() >= deadline) break;
+          try {
+            const raw = await withTimeout(ipfsClient.fetchFromIPFS(cid), 4000, 'IPFS warnings fetch');
+            let parsed = null;
+            try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
+            if (parsed) oracleWarnings.push(...extractEvaluationWarnings(parsed));
+          } catch { /* ignore per-CID fetch errors (timeout/unavailable) */ }
+        }
+        oracleWarnings = [...new Set(oracleWarnings)];
+      }
+    } catch (warnErr) {
+      logger.debug('[submit/finalize] warnings fetch skipped', { msg: warnErr.message });
+    }
+
     const response = {
       success: true,
       transaction: {
@@ -1605,6 +1631,11 @@ router.post('/:jobId/submissions/:submissionId/finalize', async (req, res) => {
       if (oracleResult.passed && job.bountyAmount) {
         response.expectedPayout = job.bountyAmount;
       }
+    }
+
+    if (oracleWarnings.length > 0) {
+      response.warnings = oracleWarnings;
+      response.warningsNote = 'The oracle reported warnings for this submission (e.g. attachment_skipped = a file the models never saw). These often explain a low/zero score — log them, do not just record the score. Full report: GET /api/jobs/' + jobId + '/submissions/' + submissionId + '/evaluation';
     }
 
     return res.json(response);
@@ -3341,6 +3372,40 @@ async function findOracleUnreadableFiles(files) {
 }
 
 /**
+ * Names of any 0-byte attachments. An empty file means the oracle sees no content
+ * for it → must-pass-override → score 0, with no error today. This is the reported
+ * silent failure: a fiddly multipart client uploads an empty body and the API still
+ * returns a CID.
+ * @param {Array<{originalname?:string, size?:number}>} files
+ * @returns {string[]}
+ */
+function emptyFileNames(files) {
+  return (files || []).filter(f => !f || !f.size).map(f => (f && f.originalname) || '(unnamed)');
+}
+
+/**
+ * Best-effort check that a just-pinned archive is retrievable and non-empty. Pinata
+ * (our pinning service, first in the gateway list) serves pinned content immediately,
+ * so a confirmed-empty readback is a real corruption signal worth failing on. A gateway
+ * hiccup (fetch throws) is NOT fatal — the pinning service already confirmed the pin —
+ * so we degrade to a non-blocking note rather than reject a good upload.
+ * @returns {Promise<{verified:boolean, empty:boolean, reason:(string|null)}>}
+ */
+async function verifyPinnedArchive(ipfsClient, cid) {
+  if (!ipfsClient || !cid) return { verified: false, empty: false, reason: 'no ipfs client or cid' };
+  try {
+    const bytes = await withTimeout(ipfsClient.fetchFromIPFS(cid), PIN_TIMEOUT_MS, 'IPFS readback');
+    const len = bytes == null ? 0 : (bytes.length ?? String(bytes).length);
+    if (len === 0) return { verified: false, empty: true, reason: 'pinned content reads back empty (0 bytes)' };
+    return { verified: true, empty: false, reason: null };
+  } catch (err) {
+    // Gateway/propagation hiccup — the pin itself was already confirmed.
+    return { verified: false, empty: false, reason: `readback unavailable: ${err.message}` };
+  }
+}
+
+
+/**
  * POST /api/jobs/:jobId/submit/dry-run
  *
  * Validates a submission against bounty requirements WITHOUT submitting on-chain.
@@ -3390,6 +3455,20 @@ router.post('/:jobId/submit/dry-run', async (req, res) => {
       checks.push({ name: 'file_size', passed: true, details: `Total size ${(totalSize / 1024).toFixed(1)}KB is under ${maxSizeMB}MB limit` });
     }
 
+    // ---- 2b. non_empty (0-byte files are silently skipped by the oracle → score 0) ----
+    const emptyNames = emptyFileNames(uploadedFiles);
+    if (emptyNames.length > 0) {
+      checks.push({ name: 'non_empty', passed: false, details: `${emptyNames.join(', ')} ${emptyNames.length > 1 ? 'are' : 'is'} 0 bytes` });
+      errors.push({
+        code: 'SUBMISSION_EMPTY_FILE',
+        message: 'One or more attachments are empty (0 bytes)',
+        details: `${emptyNames.join(', ')} — the oracle would see no content and score the submission 0.`,
+        fix: 'Re-create the file(s) with content. An empty file usually means a multipart upload didn\'t attach the body (curl -F "files=@path" is reliable).'
+      });
+    } else if (uploadedFiles.length > 0) {
+      checks.push({ name: 'non_empty', passed: true, details: 'All attachments have content' });
+    }
+
     // ---- 3. file_type / file_readable ----
     for (const f of uploadedFiles) {
       const ext = f.originalname.toLowerCase().split('.').pop();
@@ -3397,11 +3476,9 @@ router.post('/:jobId/submit/dry-run', async (req, res) => {
         'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'rb', 'go', 'rs', 'php', 'sol', 'html', 'css', 'sh', 'sql',
         'toml', 'bat', 'ps1', 'swift', 'kt', 'r', 'm', 'scss', 'sass'];
       if (textExts.includes(ext)) {
+        // (0-byte files are caught by the non_empty check above.)
         try {
-          const content = await fs.readFile(f.path, 'utf8');
-          if (content.length === 0) {
-            warnings.push(`File "${f.originalname}" is empty (0 bytes of content)`);
-          }
+          await fs.readFile(f.path, 'utf8');
         } catch {
           warnings.push(`File "${f.originalname}" could not be read as UTF-8 text — may be binary`);
         }
@@ -3748,6 +3825,18 @@ router.post('/:jobId/submit', async (req, res) => {
       });
     }
 
+    // Reject 0-byte attachments BEFORE pinning — an empty file means the oracle sees
+    // no content and scores 0, but the upload would otherwise "succeed" silently.
+    const emptyNames = emptyFileNames(uploadedFiles);
+    if (emptyNames.length > 0) {
+      return sendError(res, 400, {
+        code: ErrorCodes.SUBMISSION_EMPTY_FILE,
+        message: 'Empty attachment in submission',
+        details: `${emptyNames.join(', ')} ${emptyNames.length > 1 ? 'are' : 'is'} 0 bytes — the oracle would see no content and score the submission 0. This usually means a multipart upload didn't attach the file body.`,
+        fix: 'Re-upload with non-empty content. With a programmatic multipart client, verify the file stream is attached (curl -F "files=@path" is reliable). Pre-check with POST /api/jobs/:id/submit/dry-run.'
+      });
+    }
+
     // Reject archive/binary attachments BEFORE pinning to IPFS — the oracle silently
     // skips them, scoring the submission 0, and the ETH prepay would be wasted.
     const unreadable = await findOracleUnreadableFiles(uploadedFiles);
@@ -3788,6 +3877,22 @@ router.post('/:jobId/submit', async (req, res) => {
       );
     }
 
+    // Read the pinned archive back to confirm it stored non-empty — catches a silent
+    // empty/corrupt pin BEFORE the agent spends gas. A confirmed-empty readback fails;
+    // a transient gateway miss is non-fatal (the pin was already confirmed).
+    const pinCheck = await verifyPinnedArchive(ipfsClient, hunterCid);
+    if (pinCheck.empty) {
+      return sendError(res, 502, {
+        code: ErrorCodes.INTERNAL_ERROR,
+        message: 'Pinned submission reads back empty',
+        details: `Work product pinned as ${hunterCid} but ${pinCheck.reason}. The submission was not stored correctly.`,
+        fix: 'Re-submit. Verify your files have content; if this persists, the IPFS pinning service may be failing.'
+      });
+    }
+    if (!pinCheck.verified) {
+      logger.warn('[jobs/submit] hunterCid readback not confirmed', { hunterCid, reason: pinCheck.reason });
+    }
+
     // Note: We no longer create an "updated primary" archive at submission time.
     // The evaluation package (evaluationCid) was created at bounty creation and is stored in the contract.
     // The hunterCid is passed to startPreparedSubmission() and sent to Verdikta along with
@@ -3804,6 +3909,9 @@ router.post('/:jobId/submit', async (req, res) => {
       submission: {
         hunter,
         hunterCid,
+        // Confirms the pinned archive read back non-empty (true), or that the readback
+        // couldn't be reached (false — the pin is still confirmed by the pinning service).
+        hunterCidVerified: pinCheck.verified,
         // Note: evaluationCid is stored in the bounty on-chain (job.evaluationCid)
         fileCount: uploadedFiles.length,
         files: uploadedFiles.map(f => ({ filename: f.originalname, size: f.size, description: fileDescriptions[f.originalname] })),
@@ -4052,6 +4160,8 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
     const { jobId } = req.params;
     const hunterAddress = req.body.hunterAddress || req.body.hunter;
     let { hunterCid } = req.body;
+    // null = no upload happened here (hunterCid supplied directly); true/false = readback result.
+    let hunterCidVerified = null;
     const addendum    = req.body.addendum || '';
     const alpha       = parseInt(req.body.alpha) || config.submissionDefaults.alpha;
     const maxOracleFee       = req.body.maxOracleFee       || config.submissionDefaults.maxOracleFeeWei;
@@ -4120,6 +4230,18 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
 
     // ---- Upload files to IPFS if provided (no hunterCid yet) ----
     if (!hunterCid && uploadedFiles.length > 0) {
+      // Reject 0-byte attachments before pinning — empty content scores 0 but would
+      // otherwise pin and return a CID silently.
+      const emptyNames = emptyFileNames(uploadedFiles);
+      if (emptyNames.length > 0) {
+        return sendError(res, 400, {
+          code: ErrorCodes.SUBMISSION_EMPTY_FILE,
+          message: 'Empty attachment in submission',
+          details: `${emptyNames.join(', ')} ${emptyNames.length > 1 ? 'are' : 'is'} 0 bytes — the oracle would see no content and score the submission 0. This usually means a multipart upload didn't attach the file body.`,
+          fix: 'Re-upload with non-empty content. With a programmatic multipart client, verify the file stream is attached (curl -F "files=@path" is reliable). Pre-check with POST /api/jobs/:id/submit/dry-run.'
+        });
+      }
+
       // Reject archive/binary attachments before pinning — the oracle silently skips
       // them (score 0), wasting the ETH prepay on a doomed submission.
       const unreadable = await findOracleUnreadableFiles(uploadedFiles);
@@ -4151,6 +4273,22 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         logger.info('[bundle] hunter submission pinned', { hunterCid, fileCount: uploadedFiles.length });
       } finally {
         await fs.unlink(hunterArchive.archivePath).catch(() => {});
+      }
+
+      // Read the pinned archive back to confirm non-empty before returning calldata
+      // (catches a silent empty/corrupt pin before the agent spends gas).
+      const pinCheck = await verifyPinnedArchive(ipfsClient, hunterCid);
+      if (pinCheck.empty) {
+        return sendError(res, 502, {
+          code: ErrorCodes.INTERNAL_ERROR,
+          message: 'Pinned submission reads back empty',
+          details: `Work product pinned as ${hunterCid} but ${pinCheck.reason}. The submission was not stored correctly.`,
+          fix: 'Re-submit. Verify your files have content; if this persists, the IPFS pinning service may be failing.'
+        });
+      }
+      hunterCidVerified = pinCheck.verified;
+      if (!pinCheck.verified) {
+        logger.warn('[bundle] hunterCid readback not confirmed', { hunterCid, reason: pinCheck.reason });
       }
     }
 
@@ -4187,6 +4325,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
     return res.json({
       success: true,
       hunterCid,
+      hunterCidVerified,
       transactions: [
         {
           step: 1,
@@ -5885,11 +6024,19 @@ router.get('/:jobId/submissions/:submissionId/evaluation', async (req, res) => {
       });
     }
 
+    // Surface any oracle warnings (esp. attachment_skipped — a file the models never
+    // saw) at the top level so agents don't have to dig through the raw report.
+    const oracleWarnings = extractEvaluationWarnings(evaluationContent);
+
     return res.json({
       success: true,
       scores,
       evaluation: evaluationContent,
       evaluationAvailable: true,
+      warnings: oracleWarnings,
+      ...(oracleWarnings.length > 0 ? {
+        warningsNote: 'The oracle reported warnings for this submission. An "attachment_skipped" entry means a file was NOT seen by the models — a common cause of an unexpectedly low/zero score.'
+      } : {}),
       fetchedFrom,
       meta: {
         jobId: job.jobId,

@@ -336,8 +336,39 @@ function parseFeeToWei(value, fieldName = 'fee') {
   return wei;
 }
 
+/**
+ * Defensively pull oracle warnings out of a parsed evaluation report. The report
+ * shape varies (object, or array of per-justification objects); collect any `warnings`
+ * arrays and `attachment_skipped`-style fields wherever they appear. An
+ * `attachment_skipped` warning means a file was NOT seen by the models (→ likely score 0).
+ * @param {*} content - parsed evaluation/justification JSON
+ * @returns {string[]} de-duplicated warning strings (empty if none)
+ */
+function extractEvaluationWarnings(content) {
+  const out = [];
+  const WARN_KEYS = new Set(['warnings', 'attachment_skipped', 'attachmentskipped', 'skipped_attachments', 'skippedattachments']);
+  const visit = (node, depth) => {
+    if (!node || typeof node !== 'object' || depth > 6) return;
+    if (Array.isArray(node)) { node.forEach(n => visit(n, depth + 1)); return; }
+    for (const [key, val] of Object.entries(node)) {
+      if (WARN_KEYS.has(key.toLowerCase())) {
+        const items = Array.isArray(val) ? val : [val];
+        for (const w of items) {
+          if (w == null || w === false) continue;
+          out.push(typeof w === 'string' ? w : JSON.stringify(w));
+        }
+      } else if (val && typeof val === 'object') {
+        visit(val, depth + 1);
+      }
+    }
+  };
+  visit(content, 0);
+  return [...new Set(out)];
+}
+
 module.exports = {
   isValidCid,
+  extractEvaluationWarnings,
   isValidFileType,
   isValidFileSize,
   validateRubric,

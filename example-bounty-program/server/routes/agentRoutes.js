@@ -768,7 +768,7 @@ router.get('/api/docs', (req, res) => {
         fields: [
           'hunterAddress: Ethereum address 0x... (required)',
           'hunterCid: IPFS CID of pre-uploaded work (required if no files)',
-          'files: multipart file uploads (required if no hunterCid)',
+          'files: multipart file uploads (required if no hunterCid). Must be oracle-readable (text/code/markdown, PDF, .docx, images). Do NOT zip/archive — archive & binary attachments are rejected (HTTP 400); the oracle skips them and the submission scores 0. Pre-check with POST /api/jobs/:id/submit/dry-run.',
           'addendum: optional text appended to evaluation query',
           'alpha: timeliness-vs-quality blend (0-1000), default 500. weighted = ((1000-alpha)*quality + alpha*timeliness)/1000; 0 = pure quality, 1000 = pure timeliness, 500 = equal.',
           'maxOracleFee: max ETH per oracle in wei, default "20000000000000" (0.00002 ETH)',

@@ -640,6 +640,7 @@ function SubmitWork({ walletState }) {
             />
             <small>
               Allowed formats: Code files (.py, .sol, .cpp, .js, .ts, .java, .c, .h, .go, .rs, etc.), documents (.txt, .md, .pdf, .docx), images (.jpg, .png, .bmp), and data files (.json, .xml, .yaml, .csv)<br />
+              Do <strong>not</strong> zip or archive your deliverable — the AI oracle skips archive/binary files and scores the submission 0. Attach the individual files instead.<br />
               Maximum size per file: 20 MB | You can add up to 10 files
             </small>
           </div>

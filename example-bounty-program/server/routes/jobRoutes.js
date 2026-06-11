@@ -15,7 +15,8 @@ const logger = require('../utils/logger');
 const jobStorage = require('../utils/jobStorage');
 const { config } = require('../config');
 const archiveGenerator = require('../utils/archiveGenerator');
-const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE } = require('../utils/validation');
+const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE,
+        oracleUnreadableReason, detectBinaryContainer, ALLOWED_ZIP_BASED_EXTENSIONS } = require('../utils/validation');
 const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
 const { validateBounty, IssueSeverity, IssueType } = require('../utils/bountyValidator');
 const { getContractService } = require('../utils/contractService');
@@ -3297,6 +3298,37 @@ const upload = multer({
 }).array('files', 10);
 
 /**
+ * Flag work-product files the oracle would silently skip (archives/binaries),
+ * which yields a score of 0 with no upload-time error. Checks extension + mimetype,
+ * then sniffs leading bytes to catch renamed/generic-mimetype archives (e.g. a .zip
+ * sent as application/octet-stream — the exact gap that lets it past isValidFileType).
+ * @param {Array<{path:string, originalname:string, mimetype:string}>} files
+ * @returns {Promise<string[]>} human-readable reasons (empty if all evaluable)
+ */
+async function findOracleUnreadableFiles(files) {
+  const problems = [];
+  for (const f of files || []) {
+    const reason = oracleUnreadableReason(f.mimetype, f.originalname);
+    if (reason) { problems.push(reason); continue; }
+    // Content sniff for renamed/generic-mimetype archives.
+    const ext = '.' + (f.originalname || '').toLowerCase().split('.').pop();
+    let fh;
+    try {
+      fh = await fs.open(f.path, 'r');
+      const buf = Buffer.alloc(8);
+      await fh.read(buf, 0, 8, 0);
+      const container = detectBinaryContainer(buf);
+      if (container && !(container === 'ZIP archive' && ALLOWED_ZIP_BASED_EXTENSIONS.includes(ext))) {
+        problems.push(`${f.originalname} is actually a ${container} (detected by content) — the oracle skips it and evaluates no content (score 0)`);
+      }
+    } catch { /* head unreadable — other checks cover it */ } finally {
+      if (fh) await fh.close().catch(() => {});
+    }
+  }
+  return problems;
+}
+
+/**
  * POST /api/jobs/:jobId/submit/dry-run
  *
  * Validates a submission against bounty requirements WITHOUT submitting on-chain.
@@ -3369,6 +3401,22 @@ router.post('/:jobId/submit/dry-run', async (req, res) => {
     }
     if (uploadedFiles.length > 0) {
       checks.push({ name: 'file_readable', passed: true, details: 'File content is accessible' });
+    }
+
+    // ---- 3b. oracle_readable (archives/binaries are silently skipped → score 0) ----
+    if (uploadedFiles.length > 0) {
+      const unreadable = await findOracleUnreadableFiles(uploadedFiles);
+      if (unreadable.length > 0) {
+        checks.push({ name: 'oracle_readable', passed: false, details: unreadable.join('; ') });
+        errors.push({
+          code: 'SUBMISSION_ORACLE_UNREADABLE',
+          message: 'One or more attachments are archives/binaries the oracle cannot read',
+          details: unreadable.join('; '),
+          fix: 'Submit the work as readable files (text/code/markdown, PDF, .docx, or images). Do NOT zip or archive the deliverable — the oracle skips archive/binary attachments and scores the submission 0. Unpack the contents and attach the individual files instead.'
+        });
+      } else {
+        checks.push({ name: 'oracle_readable', passed: true, details: 'All attachments are in oracle-readable formats' });
+      }
     }
 
     // ---- 4. hunter_address ----
@@ -3572,8 +3620,9 @@ router.post('/:jobId/submit/dry-run', async (req, res) => {
     if (valid && job) {
       response.nextStep = `Ready to submit. Use POST /api/jobs/${job.jobId}/submit with the same files, or POST /api/jobs/${job.jobId}/submit/bundle for pre-encoded transactions.`;
       response.estimatedCost = {
-        eth: '~0.005 (gas for 3 transactions)',
-        link: '~2.0 (oracle evaluation fee, actual amount depends on jury config)'
+        gasEth: '~0.005 (gas for the on-chain transactions)',
+        oraclePrepayEth: '~0.00024 worst case (ethMaxBudget, attached as msg.value on start; mostly refunded after evaluation — actual amount depends on jury config)',
+        note: `ETH-funded — there is no LINK. Use GET /api/jobs/${job.jobId}/estimate-fee for a jury-config-specific prepay estimate.`
       };
     } else {
       response.nextStep = 'Fix the errors above and try dry-run again';
@@ -3684,6 +3733,18 @@ router.post('/:jobId/submit', async (req, res) => {
         message: 'Submission window closed',
         details: `Bounty #${jobId} deadline was ${deadline}`,
         fix: 'Check open bounties with GET /api/jobs?status=OPEN'
+      });
+    }
+
+    // Reject archive/binary attachments BEFORE pinning to IPFS — the oracle silently
+    // skips them, scoring the submission 0, and the ETH prepay would be wasted.
+    const unreadable = await findOracleUnreadableFiles(uploadedFiles);
+    if (unreadable.length > 0) {
+      return sendError(res, 400, {
+        code: ErrorCodes.VALIDATION_INVALID_FORMAT,
+        message: 'Attachment is an archive/binary the oracle cannot read',
+        details: unreadable.join('; '),
+        fix: 'Do NOT zip or archive the deliverable — the oracle skips archive/binary attachments and scores the submission 0. Submit readable files (text/code/markdown, PDF, .docx, images); unpack archives and attach the individual files. Use POST /api/jobs/:id/submit/dry-run to pre-check.'
       });
     }
 
@@ -4032,6 +4093,17 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
 
     // ---- Upload files to IPFS if provided (no hunterCid yet) ----
     if (!hunterCid && uploadedFiles.length > 0) {
+      // Reject archive/binary attachments before pinning — the oracle silently skips
+      // them (score 0), wasting the ETH prepay on a doomed submission.
+      const unreadable = await findOracleUnreadableFiles(uploadedFiles);
+      if (unreadable.length > 0) {
+        return sendError(res, 400, {
+          code: ErrorCodes.VALIDATION_INVALID_FORMAT,
+          message: 'Attachment is an archive/binary the oracle cannot read',
+          details: unreadable.join('; '),
+          fix: 'Do NOT zip or archive the deliverable — the oracle skips archive/binary attachments and scores the submission 0. Submit readable files (text/code/markdown, PDF, .docx, images); unpack archives and attach the individual files. Use POST /api/jobs/:id/submit/dry-run to pre-check.'
+        });
+      }
       const fileDescriptions = (() => {
         try { return req.body.fileDescriptions ? JSON.parse(req.body.fileDescriptions) : {}; }
         catch { return {}; }

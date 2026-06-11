@@ -231,6 +231,70 @@ function validateJuryNodes(juryNodes) {
   };
 }
 
+// --- Oracle-readability guards ---------------------------------------------
+// The Verdikta oracle pipeline silently SKIPS archive/binary attachments it can't
+// read: the models see no content, a must-pass-override kicks in, and the score is
+// 0 — with NO error at upload time. Detect these up front so a hunter never burns
+// the ETH prepay on a submission that can't actually be evaluated.
+//
+// Note: application/octet-stream is an allowed mimetype (many code files arrive
+// with it), which is exactly why a .zip can slip past isValidFileType — these
+// checks are extension/mimetype/magic-byte based and do not rely on octet-stream.
+const ORACLE_UNREADABLE_EXTENSIONS = [
+  '.zip', '.tar', '.gz', '.tgz', '.tbz2', '.bz2', '.7z', '.rar', '.xz', '.zst', '.lz', '.lzma',
+  '.jar', '.war', '.apk', '.exe', '.dll', '.so', '.dylib', '.bin', '.o', '.a',
+  '.iso', '.dmg', '.class', '.wasm', '.pyc'
+];
+const ORACLE_UNREADABLE_MIMETYPES = [
+  'application/zip', 'application/x-zip-compressed', 'application/x-tar',
+  'application/gzip', 'application/x-gzip', 'application/x-7z-compressed',
+  'application/x-rar-compressed', 'application/vnd.rar', 'application/x-bzip2',
+  'application/x-xz', 'application/java-archive', 'application/x-msdownload',
+  'application/wasm', 'application/x-iso9660-image'
+];
+// OOXML documents (.docx) are ZIP-based but ARE oracle-readable, so they must be
+// exempt from magic-byte ZIP detection.
+const ALLOWED_ZIP_BASED_EXTENSIONS = ['.docx'];
+
+/**
+ * Detect an archive/binary container from its leading bytes. Catches files whose
+ * extension or mimetype was renamed/generic (e.g. a .zip sent as octet-stream, or
+ * renamed to .txt). Callers must exempt ALLOWED_ZIP_BASED_EXTENSIONS for ZIP hits.
+ * @param {Buffer} buffer - the first bytes of the file (>= 8 recommended)
+ * @returns {string|null} - human label of the detected container, or null
+ */
+function detectBinaryContainer(buffer) {
+  if (!buffer || buffer.length < 4) return null;
+  const b = buffer;
+  if (b[0] === 0x50 && b[1] === 0x4B && (b[2] === 0x03 || b[2] === 0x05 || b[2] === 0x07)) return 'ZIP archive'; // PK..
+  if (b[0] === 0x1F && b[1] === 0x8B) return 'gzip archive';
+  if (b[0] === 0x37 && b[1] === 0x7A && b[2] === 0xBC && b[3] === 0xAF) return '7z archive';
+  if (b[0] === 0x52 && b[1] === 0x61 && b[2] === 0x72 && b[3] === 0x21) return 'RAR archive';
+  if (b[0] === 0x42 && b[1] === 0x5A && b[2] === 0x68) return 'bzip2 archive';
+  if (b.length >= 6 && b[0] === 0xFD && b[1] === 0x37 && b[2] === 0x7A && b[3] === 0x58 && b[4] === 0x5A && b[5] === 0x00) return 'xz archive';
+  if (b[0] === 0x7F && b[1] === 0x45 && b[2] === 0x4C && b[3] === 0x46) return 'ELF binary';
+  if (b[0] === 0x4D && b[1] === 0x5A) return 'Windows executable'; // MZ
+  return null;
+}
+
+/**
+ * Reason string if this attachment would be skipped by the oracle (archive/binary),
+ * based on extension + mimetype. Returns null if it looks evaluable.
+ * @param {string} mimeType
+ * @param {string} filename
+ * @returns {string|null}
+ */
+function oracleUnreadableReason(mimeType, filename) {
+  const ext = '.' + (filename || '').toLowerCase().split('.').pop();
+  if (ORACLE_UNREADABLE_EXTENSIONS.includes(ext)) {
+    return `${filename} is a ${ext.slice(1).toUpperCase()} archive/binary — the oracle skips it and evaluates no content (score 0)`;
+  }
+  if (ORACLE_UNREADABLE_MIMETYPES.includes((mimeType || '').toLowerCase())) {
+    return `${filename} has archive/binary type "${mimeType}" — the oracle skips it and evaluates no content (score 0)`;
+  }
+  return null;
+}
+
 module.exports = {
   isValidCid,
   isValidFileType,
@@ -240,7 +304,11 @@ module.exports = {
   isValidAddress,
   MAX_FILE_SIZE,
   ALLOWED_FILE_TYPES,
-  ALLOWED_EXTENSIONS
+  ALLOWED_EXTENSIONS,
+  ORACLE_UNREADABLE_EXTENSIONS,
+  ALLOWED_ZIP_BASED_EXTENSIONS,
+  detectBinaryContainer,
+  oracleUnreadableReason
 };
 
 

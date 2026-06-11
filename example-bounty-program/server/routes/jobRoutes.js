@@ -1382,34 +1382,79 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
       return res.status(404).json({ success: false, error: `Submission ${submissionId} not found for job ${jobId}` });
     }
 
-    const status = (submission.status || '').toLowerCase();
-    const isPrepared = status === 'prepared';
-    const isPendingCreatorApproval = status === 'pendingcreatorapproval';
+    const onChainSubmissionId = submission.onChainSubmissionId ?? submission.submissionId;
 
-    if (!isPrepared && !isPendingCreatorApproval) {
-      return res.status(400).json({
-        success: false,
-        error: `Submission not in a startable state (current: ${submission.status}). Must be Prepared or PendingCreatorApproval (with expired window).`
-      });
+    // Authoritative gate: trust live on-chain status over the cached `submission.status`,
+    // which lags prepareSubmission by a sync cycle. For windowed bounties a freshly
+    // prepared submission is PendingCreatorApproval on-chain while the cache may still
+    // read PENDING_EVALUATION/Prepared — handing out startPreparedSubmission calldata
+    // then would revert. On RPC failure we fall back to the cached-status guard.
+    let liveStatusIndex = null, liveWindowEnd = 0, liveEthMaxBudget = null;
+    try {
+      const chainSub = await getContractService().contract.getSubmission(onChainBountyId, onChainSubmissionId);
+      liveStatusIndex = Number(chainSub.status);
+      liveWindowEnd = Number(chainSub.creatorWindowEnd) || 0;
+      liveEthMaxBudget = chainSub.ethMaxBudget?.toString() || null;
+    } catch (e) {
+      logger.warn('[submit/start] live status read failed; using cached status', { jobId, submissionId, msg: e.message });
     }
 
-    // For windowed bounties, check that the creator approval window has expired
-    if (isPendingCreatorApproval) {
-      const now = Math.floor(Date.now() / 1000);
-      const windowEnd = submission.creatorWindowEnd || 0;
-      if (windowEnd > now) {
+    const now = Math.floor(Date.now() / 1000);
+    let effectiveIsPrepared;
+
+    if (liveStatusIndex !== null) {
+      // 0 Prepared · 1 PendingVerdikta · 2 Failed · 3 PassedPaid · 4 PassedUnpaid · 5 PendingCreatorApproval
+      if (liveStatusIndex === 5 && liveWindowEnd > now) {
         return res.status(400).json({
           success: false,
-          error: `Creator approval window is still open (expires ${new Date(windowEnd * 1000).toISOString()}). Cannot start evaluation until window closes.`,
-          creatorWindowEnd: windowEnd,
-          secondsRemaining: windowEnd - now
+          code: 'CREATOR_WINDOW_OPEN',
+          error: `Submission is in the creator-approval window (expires ${new Date(liveWindowEnd * 1000).toISOString()}). startPreparedSubmission reverts until the window closes.`,
+          creatorWindowEnd: liveWindowEnd,
+          secondsRemaining: liveWindowEnd - now,
+          nextStep: `Creator can approve now: POST /api/jobs/${jobId}/submissions/${submissionId}/approve-as-creator. Otherwise wait for the window to expire, then retry this endpoint.`
         });
       }
+      if (liveStatusIndex !== 0 && liveStatusIndex !== 5) {
+        const names = { 1: 'PendingVerdikta', 2: 'Failed', 3: 'PassedPaid', 4: 'PassedUnpaid' };
+        return res.status(400).json({
+          success: false,
+          code: 'SUBMISSION_ALREADY_STARTED',
+          error: `Submission is past the start step (on-chain status: ${names[liveStatusIndex] || liveStatusIndex}). startPreparedSubmission would revert.`,
+          nextStep: liveStatusIndex === 1
+            ? `Oracle evaluation is in progress — poll GET /api/jobs/${jobId}/submissions, then POST /api/jobs/${jobId}/submissions/${submissionId}/finalize`
+            : `This submission is finalized — GET /api/jobs/${jobId}/submissions for its result.`
+        });
+      }
+      // Prepared (0), or PendingCreatorApproval (5) with an expired window → startable.
+      effectiveIsPrepared = liveStatusIndex === 0;
+    } else {
+      // Fallback: chain unreachable — gate on the cached status as before.
+      const status = (submission.status || '').toLowerCase();
+      const isPrepared = status === 'prepared';
+      const isPendingCreatorApproval = status === 'pendingcreatorapproval';
+      if (!isPrepared && !isPendingCreatorApproval) {
+        return res.status(400).json({
+          success: false,
+          error: `Submission not in a startable state (current: ${submission.status}). Must be Prepared or PendingCreatorApproval (with expired window).`
+        });
+      }
+      if (isPendingCreatorApproval) {
+        const windowEnd = submission.creatorWindowEnd || 0;
+        if (windowEnd > now) {
+          return res.status(400).json({
+            success: false,
+            error: `Creator approval window is still open (expires ${new Date(windowEnd * 1000).toISOString()}). Cannot start evaluation until window closes.`,
+            creatorWindowEnd: windowEnd,
+            secondsRemaining: windowEnd - now
+          });
+        }
+      }
+      effectiveIsPrepared = isPrepared;
     }
 
     // For Prepared submissions, only the original hunter can start.
     // For PendingCreatorApproval (expired window), anyone can fund (ETH) and start.
-    if (isPrepared && submission.hunter && submission.hunter.toLowerCase() !== hunter.toLowerCase()) {
+    if (effectiveIsPrepared && submission.hunter && submission.hunter.toLowerCase() !== hunter.toLowerCase()) {
       return res.status(403).json({ success: false, error: 'Hunter address does not match submission hunter' });
     }
 
@@ -1419,8 +1464,8 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
     }
 
     // The evaluation is funded by attaching ethMaxBudget as msg.value (no LINK approval).
-    // Prefer an explicit body override; otherwise use the synced submission value.
-    const ethMaxBudget = req.body?.ethMaxBudget ?? submission.ethMaxBudget;
+    // Prefer an explicit body override; then the synced value; then the live chain read.
+    const ethMaxBudget = req.body?.ethMaxBudget ?? submission.ethMaxBudget ?? liveEthMaxBudget;
     if (ethMaxBudget == null) {
       return res.status(400).json({
         success: false,
@@ -1429,8 +1474,6 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
       });
     }
     const valueWei = BigInt(ethMaxBudget).toString();
-
-    const onChainSubmissionId = submission.onChainSubmissionId ?? submission.submissionId;
 
     const iface = new ethers.Interface([
       'function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable'
@@ -2259,6 +2302,8 @@ router.get('/', async (req, res) => {
  * Public endpoint - no authentication required.
  *
  * Statuses:
+ * - PENDING_CREATOR_APPROVAL: Windowed bounty — in the creator-approval window.
+ *     Do NOT call startPreparedSubmission yet (it reverts until the window closes).
  * - PENDING_EVALUATION: Submitted, awaiting AI evaluation
  * - EVALUATED_PASSED: Evaluation complete, passed threshold (but didn't win)
  * - EVALUATED_FAILED: Evaluation complete, failed threshold
@@ -2315,6 +2360,14 @@ router.get('/:jobId/submissions', async (req, res) => {
         return 'EVALUATED_FAILED';
       }
 
+      // Windowed bounty: submission sits in the creator-approval window. This is
+      // NOT PENDING_EVALUATION — the hunter must not call startPreparedSubmission
+      // while the window is open (the contract reverts). The creator may approve
+      // directly; once the window expires, anyone can fund + start the oracle.
+      if (status === 'pendingcreatorapproval') {
+        return 'PENDING_CREATOR_APPROVAL';
+      }
+
       // Check pending states
       if (status === 'pending' || status === 'pendingverdikta' || status === 'pending_evaluation') {
         // If has score, evaluation completed but status wasn't updated
@@ -2346,7 +2399,7 @@ router.get('/:jobId/submissions', async (req, res) => {
         // to 0 on-chain, which is misleading (looks like 0% instead of "not yet scored")
         const rawAcceptance = sub.acceptance ?? sub.score ?? null;
         const rawRejection = sub.rejection ?? null;
-        const suppressScore = mappedStatus === 'PENDING_EVALUATION' || mappedStatus === 'TIMED_OUT';
+        const suppressScore = mappedStatus === 'PENDING_EVALUATION' || mappedStatus === 'TIMED_OUT' || mappedStatus === 'PENDING_CREATOR_APPROVAL';
         const score = suppressScore ? null : rawAcceptance;
         const rejection = suppressScore ? null : rawRejection;
 
@@ -2367,7 +2420,13 @@ router.get('/:jobId/submissions', async (req, res) => {
             ? `/api/jobs/${job.jobId}/submissions/${sub.submissionId}/evaluation`
             : null,
           submittedAt: sub.submittedAt || null,
-          evaluatedAt: sub.finalizedAt || null
+          evaluatedAt: sub.finalizedAt || null,
+          // Surfaced for windowed bounties so agents can see how long the creator
+          // window has left before startPreparedSubmission becomes valid.
+          creatorWindowEnd: sub.creatorWindowEnd || null,
+          creatorWindowSecondsRemaining: (mappedStatus === 'PENDING_CREATOR_APPROVAL' && sub.creatorWindowEnd)
+            ? Math.max(0, sub.creatorWindowEnd - Math.floor(Date.now() / 1000))
+            : null
         };
       })
       .filter(Boolean); // Remove nulls (PREPARED submissions)
@@ -3875,6 +3934,7 @@ const BUNDLE_ESCROW_ABI = [
   "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
+  "function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)",
   "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)"
 ];
 const bundleEscrowIface = new ethers.Interface(BUNDLE_ESCROW_ABI);
@@ -4227,6 +4287,94 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
       submissionId
     ]);
 
+    const confirmBlock = {
+      description: 'Register this submission with the API server for status tracking',
+      method: 'POST',
+      url: `/api/jobs/${jobId}/submissions/confirm`,
+      body: {
+        submissionId: Number(submissionId),
+        hunter: receipt.from,
+        hunterCid: '(the hunterCid from /submit/bundle response)',
+        evalWallet
+      }
+    };
+
+    // Windowed-bounty guard: after prepareSubmission a windowed submission is in
+    // PendingCreatorApproval on-chain, and startPreparedSubmission reverts until the
+    // creator approves or the window expires. Detect that here so we don't hand back
+    // step-2 start calldata that's guaranteed to revert (the reported failure mode).
+    let windowHold = null;
+    try {
+      const chainSub = await cs.contract.getSubmission(bountyIdNum, submissionId);
+      if (Number(chainSub.status) === 5) {
+        const windowEnd = Number(chainSub.creatorWindowEnd) || 0;
+        const nowSec = Math.floor(Date.now() / 1000);
+        if (windowEnd > nowSec) windowHold = { windowEnd, secondsRemaining: windowEnd - nowSec };
+      }
+    } catch (e) {
+      logger.warn('[bundle/complete] live status read failed; returning start calldata unguarded', { jobId, msg: e.message });
+    }
+
+    if (windowHold) {
+      const creatorApproveData = bundleEscrowIface.encodeFunctionData('creatorApproveSubmission', [
+        bountyIdNum,
+        submissionId
+      ]);
+      return res.json({
+        success: true,
+        parsed: {
+          submissionId: Number(submissionId),
+          evalWallet,
+          ethMaxBudget: ethMaxBudget.toString(),
+          ethMaxBudgetFormatted: ethers.formatEther(ethMaxBudget) + ' ETH'
+        },
+        // No step-2 transaction yet: the submission is in the creator-approval window,
+        // so startPreparedSubmission would revert. Do NOT broadcast a start tx now.
+        transactions: [],
+        pendingCreatorApproval: {
+          status: 'PENDING_CREATOR_APPROVAL',
+          note: `This bounty has a creator-approval window. Submission #${Number(submissionId)} is awaiting the creator's decision; startPreparedSubmission reverts until the creator approves or the window expires.`,
+          creatorWindowEnd: windowHold.windowEnd,
+          secondsRemaining: windowHold.secondsRemaining,
+          creatorApprove: {
+            name: 'creatorApproveSubmission',
+            description: 'Creator-only: approve and pay this submission directly, skipping oracle evaluation. Reverts if called by anyone other than the bounty creator.',
+            to: escrowAddress,
+            data: creatorApproveData,
+            value: '0',
+            chainId,
+            gasLimit: 300000
+          },
+          deferredStart: {
+            name: 'startPreparedSubmission',
+            description: `Only valid AFTER the window expires (or if the creator declines). Attach ${ethers.formatEther(ethMaxBudget)} ETH as msg.value.`,
+            to: escrowAddress,
+            data: startData,
+            value: startValue,
+            chainId,
+            gasLimit: 4000000
+          }
+        },
+        postEvaluation: {
+          step: 3,
+          name: 'finalizeSubmission',
+          description: `Finalize submission #${Number(submissionId)} after oracle completes (only reached if the window expires and you start evaluation)`,
+          to: escrowAddress,
+          data: finalizeData,
+          value: '0',
+          chainId,
+          gasLimit: 300000
+        },
+        confirm: confirmBlock,
+        tips: [
+          'WINDOWED BOUNTY: do NOT broadcast a start transaction yet — the submission is in the creator-approval window and startPreparedSubmission would revert.',
+          `Register the submission now: POST /api/jobs/${jobId}/submissions/confirm`,
+          `Poll GET /api/jobs/${jobId}/submissions — when submission #${Number(submissionId)} leaves PENDING_CREATOR_APPROVAL, the creator either approved (done) or the window expired (then broadcast pendingCreatorApproval.deferredStart).`,
+          'The creator can approve + pay directly with pendingCreatorApproval.creatorApprove (creator wallet only).'
+        ]
+      });
+    }
+
     return res.json({
       success: true,
       parsed: {
@@ -4257,17 +4405,7 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
         chainId,
         gasLimit: 300000
       },
-      confirm: {
-        description: 'Register this submission with the API server for status tracking',
-        method: 'POST',
-        url: `/api/jobs/${jobId}/submissions/confirm`,
-        body: {
-          submissionId: Number(submissionId),
-          hunter: receipt.from,
-          hunterCid: '(the hunterCid from /submit/bundle response)',
-          evalWallet
-        }
-      },
+      confirm: confirmBlock,
       tips: [
         'Execute step 2 (start evaluation) — it is payable; attach the value field (ethMaxBudget) as msg.value. No LINK approval is needed.',
         `After step 2, poll GET /api/jobs/${jobId}/submissions until status is EVALUATED_PASSED or EVALUATED_FAILED`,

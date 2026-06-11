@@ -3384,23 +3384,20 @@ function emptyFileNames(files) {
 }
 
 /**
- * Best-effort check that a just-pinned archive is retrievable and non-empty. Pinata
- * (our pinning service, first in the gateway list) serves pinned content immediately,
- * so a confirmed-empty readback is a real corruption signal worth failing on. A gateway
- * hiccup (fetch throws) is NOT fatal — the pinning service already confirmed the pin —
- * so we degrade to a non-blocking note rather than reject a good upload.
- * @returns {Promise<{verified:boolean, empty:boolean, reason:(string|null)}>}
+ * Confirm the archive we're about to pin is non-empty. We check the LOCAL archive byte
+ * size rather than reading the CID back from a gateway: a post-pin IPFS readback proved
+ * unreliable (a freshly-pinned binary archive can take >20s to propagate to public
+ * gateways, adding latency and false negatives). Because CIDs are content-addressed, a
+ * non-empty local archive guarantees non-empty pinned content. Returns bytes on disk.
+ * @param {string} archivePath
+ * @returns {Promise<number>} archive size in bytes (0 if missing/empty/unstattable)
  */
-async function verifyPinnedArchive(ipfsClient, cid) {
-  if (!ipfsClient || !cid) return { verified: false, empty: false, reason: 'no ipfs client or cid' };
+async function pinnedArchiveSize(archivePath) {
   try {
-    const bytes = await withTimeout(ipfsClient.fetchFromIPFS(cid), PIN_TIMEOUT_MS, 'IPFS readback');
-    const len = bytes == null ? 0 : (bytes.length ?? String(bytes).length);
-    if (len === 0) return { verified: false, empty: true, reason: 'pinned content reads back empty (0 bytes)' };
-    return { verified: true, empty: false, reason: null };
-  } catch (err) {
-    // Gateway/propagation hiccup — the pin itself was already confirmed.
-    return { verified: false, empty: false, reason: `readback unavailable: ${err.message}` };
+    const { size } = await fs.stat(archivePath);
+    return size || 0;
+  } catch {
+    return 0;
   }
 }
 
@@ -3866,32 +3863,31 @@ router.post('/:jobId/submit', async (req, res) => {
       submissionNarrative: submissionNarrative || undefined
     });
 
+    // Confirm the archive is non-empty (locally, before pinning) — catches a silent
+    // empty/corrupt archive without the latency/false-negatives of a post-pin gateway
+    // readback. CID is content-addressed, so non-empty archive ⟹ non-empty pinned content.
+    const archiveSize = await pinnedArchiveSize(hunterArchive.archivePath);
+
     const ipfsClient = req.app.locals.ipfsClient;
     let hunterCid;
     try {
       hunterCid = await ipfsClient.uploadToIPFS(hunterArchive.archivePath);
-      logger.info('[jobs/submit] hunter submission pinned', { hunterCid, fileCount: uploadedFiles.length });
+      logger.info('[jobs/submit] hunter submission pinned', { hunterCid, fileCount: uploadedFiles.length, archiveSize });
     } finally {
       await fs.unlink(hunterArchive.archivePath).catch(err =>
         logger.warn('[jobs/submit] failed to clean hunter archive', { msg: err.message })
       );
     }
 
-    // Read the pinned archive back to confirm it stored non-empty — catches a silent
-    // empty/corrupt pin BEFORE the agent spends gas. A confirmed-empty readback fails;
-    // a transient gateway miss is non-fatal (the pin was already confirmed).
-    const pinCheck = await verifyPinnedArchive(ipfsClient, hunterCid);
-    if (pinCheck.empty) {
+    if (archiveSize === 0) {
       return sendError(res, 502, {
         code: ErrorCodes.INTERNAL_ERROR,
-        message: 'Pinned submission reads back empty',
-        details: `Work product pinned as ${hunterCid} but ${pinCheck.reason}. The submission was not stored correctly.`,
-        fix: 'Re-submit. Verify your files have content; if this persists, the IPFS pinning service may be failing.'
+        message: 'Built submission archive is empty',
+        details: `The work product archive for ${hunterCid} came out empty (0 bytes) — it was not stored correctly.`,
+        fix: 'Re-submit. Verify your files have content; if this persists, the IPFS/archive pipeline may be failing.'
       });
     }
-    if (!pinCheck.verified) {
-      logger.warn('[jobs/submit] hunterCid readback not confirmed', { hunterCid, reason: pinCheck.reason });
-    }
+    const hunterCidVerified = archiveSize > 0;
 
     // Note: We no longer create an "updated primary" archive at submission time.
     // The evaluation package (evaluationCid) was created at bounty creation and is stored in the contract.
@@ -3909,9 +3905,8 @@ router.post('/:jobId/submit', async (req, res) => {
       submission: {
         hunter,
         hunterCid,
-        // Confirms the pinned archive read back non-empty (true), or that the readback
-        // couldn't be reached (false — the pin is still confirmed by the pinning service).
-        hunterCidVerified: pinCheck.verified,
+        // True once the pinned archive is confirmed non-empty (verified locally before pinning).
+        hunterCidVerified,
         // Note: evaluationCid is stored in the bounty on-chain (job.evaluationCid)
         fileCount: uploadedFiles.length,
         files: uploadedFiles.map(f => ({ filename: f.originalname, size: f.size, description: fileDescriptions[f.originalname] })),
@@ -4267,29 +4262,27 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         workProducts,
         submissionNarrative: req.body.submissionNarrative || undefined
       });
+      // Confirm the archive is non-empty (locally, before pinning) — deterministic, no
+      // gateway-readback latency/false-negatives. CID is content-addressed, so a non-empty
+      // archive ⟹ non-empty pinned content.
+      const archiveSize = await pinnedArchiveSize(hunterArchive.archivePath);
       const ipfsClient = req.app.locals.ipfsClient;
       try {
         hunterCid = await ipfsClient.uploadToIPFS(hunterArchive.archivePath);
-        logger.info('[bundle] hunter submission pinned', { hunterCid, fileCount: uploadedFiles.length });
+        logger.info('[bundle] hunter submission pinned', { hunterCid, fileCount: uploadedFiles.length, archiveSize });
       } finally {
         await fs.unlink(hunterArchive.archivePath).catch(() => {});
       }
 
-      // Read the pinned archive back to confirm non-empty before returning calldata
-      // (catches a silent empty/corrupt pin before the agent spends gas).
-      const pinCheck = await verifyPinnedArchive(ipfsClient, hunterCid);
-      if (pinCheck.empty) {
+      if (archiveSize === 0) {
         return sendError(res, 502, {
           code: ErrorCodes.INTERNAL_ERROR,
-          message: 'Pinned submission reads back empty',
-          details: `Work product pinned as ${hunterCid} but ${pinCheck.reason}. The submission was not stored correctly.`,
-          fix: 'Re-submit. Verify your files have content; if this persists, the IPFS pinning service may be failing.'
+          message: 'Built submission archive is empty',
+          details: `The work product archive for ${hunterCid} came out empty (0 bytes) — it was not stored correctly.`,
+          fix: 'Re-submit. Verify your files have content; if this persists, the IPFS/archive pipeline may be failing.'
         });
       }
-      hunterCidVerified = pinCheck.verified;
-      if (!pinCheck.verified) {
-        logger.warn('[bundle] hunterCid readback not confirmed', { hunterCid, reason: pinCheck.reason });
-      }
+      hunterCidVerified = archiveSize > 0;
     }
 
     if (!hunterCid) {

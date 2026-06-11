@@ -746,11 +746,11 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
     bountyId,
     evaluationCid,
     hunterCid,
-    '',                        // addendum
-    500,                       // alpha (equal quality/timeliness blend)
-    '20000000000000',          // maxOracleFee (0.00002 ETH)
-    '10000000000000',          // estimatedBaseCost (0.00001 ETH)
-    '3'                        // maxFeeBasedScaling (3x cap on fee-based boost)
+    '',                                                   // addendum
+    serverConfig.submissionDefaults.alpha,                // alpha (equal quality/timeliness blend)
+    serverConfig.submissionDefaults.maxOracleFeeWei,      // maxOracleFee
+    serverConfig.submissionDefaults.estimatedBaseCostWei, // estimatedBaseCost
+    serverConfig.submissionDefaults.maxFeeBasedScaling    // maxFeeBasedScaling (x-factor cap on fee-based boost)
   );
 
   const prepareReceipt = await prepareTx.wait();

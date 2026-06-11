@@ -38,6 +38,18 @@ export const config = {
   bountyEscrowAddress,
   verdiktaAggregatorAddress,
 
+  // Default parameters for prepareSubmission — single source of truth shared by
+  // SubmitWork and the contractService default args. Canonical unit is WEI.
+  // maxOracleFee is a product decision (per-oracle pay), kept under the
+  // aggregator's on-chain 0.0004 ETH ceiling. Mirror of server config's
+  // submissionDefaults (the two codebases can't share a module).
+  submissionDefaults: {
+    maxOracleFeeWei: '20000000000000',      // 0.00002 ETH per oracle call
+    estimatedBaseCostWei: '10000000000000', // 0.00001 ETH base cost per evaluation
+    maxFeeBasedScaling: '3',                // x-factor cap on fee-based boost (>= 1)
+    alpha: 500,                             // timeliness-vs-quality blend (0-1000)
+  },
+
   // Network Details
   // Contract addresses are only available for the active network (from env vars).
   // The inactive network will have null addresses.

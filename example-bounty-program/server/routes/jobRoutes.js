@@ -1260,10 +1260,12 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
 
     const {
       hunter, hunterCid, addendum = '',
-      alpha = 500,
-      maxOracleFee = '0.00002',     // ETH per oracle (under the 0.0004 ETH on-chain ceiling)
-      estimatedBaseCost = '0.00001', // ETH
-      maxFeeBasedScaling = '3'
+      // Defaults from config.submissionDefaults (canonical wei) — this endpoint
+      // takes decimal ETH strings, so convert with formatEther.
+      alpha = config.submissionDefaults.alpha,
+      maxOracleFee = ethers.formatEther(config.submissionDefaults.maxOracleFeeWei),       // ETH per oracle (under the 0.0004 ETH on-chain ceiling)
+      estimatedBaseCost = ethers.formatEther(config.submissionDefaults.estimatedBaseCostWei), // ETH
+      maxFeeBasedScaling = config.submissionDefaults.maxFeeBasedScaling
     } = req.body || {};
 
     if (!hunter || !/^0x[a-fA-F0-9]{40}$/.test(hunter)) {
@@ -3918,11 +3920,11 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
     const hunterAddress = req.body.hunterAddress || req.body.hunter;
     let { hunterCid } = req.body;
     const addendum    = req.body.addendum || '';
-    const alpha       = parseInt(req.body.alpha) || 500;
-    const maxOracleFee       = req.body.maxOracleFee       || '20000000000000';
-    const estimatedBaseCost  = req.body.estimatedBaseCost  || '10000000000000';
+    const alpha       = parseInt(req.body.alpha) || config.submissionDefaults.alpha;
+    const maxOracleFee       = req.body.maxOracleFee       || config.submissionDefaults.maxOracleFeeWei;
+    const estimatedBaseCost  = req.body.estimatedBaseCost  || config.submissionDefaults.estimatedBaseCostWei;
     // maxFeeBasedScaling: plain x-factor integer (contract scales by 1e18 internally).
-    const maxFeeBasedScaling = req.body.maxFeeBasedScaling || '3';
+    const maxFeeBasedScaling = req.body.maxFeeBasedScaling || config.submissionDefaults.maxFeeBasedScaling;
 
     // ---- Validate inputs ----
     if (!hunterAddress || !/^0x[a-fA-F0-9]{40}$/.test(hunterAddress)) {
@@ -6009,7 +6011,7 @@ router.post('/estimate-fee', async (req, res) => {
 async function calculateFeeEstimate(juryNodes, iterations) {
   // Default fee parameters (fallback values)
   // These are conservative estimates based on typical Verdikta pricing
-  let maxOracleFeeWei = BigInt('20000000000000'); // 0.00002 ETH per oracle call
+  let maxOracleFeeWei = BigInt(config.submissionDefaults.maxOracleFeeWei); // default per-oracle fee (fallback)
   let aggregatorConfigAvailable = false;
 
   // Try to get actual maxOracleFee from Verdikta aggregator
@@ -6040,7 +6042,7 @@ async function calculateFeeEstimate(juryNodes, iterations) {
   totalCalls *= iterations;
 
   // Base cost estimate (fixed overhead per evaluation)
-  const baseCostWei = BigInt('10000000000000'); // 0.00001 ETH
+  const baseCostWei = BigInt(config.submissionDefaults.estimatedBaseCostWei);
 
   // Calculate raw cost: baseCost + (totalCalls × maxOracleFee)
   const oracleCostWei = BigInt(totalCalls) * maxOracleFeeWei;
@@ -6065,10 +6067,10 @@ async function calculateFeeEstimate(juryNodes, iterations) {
   //   internally. Caps the fee-boost multiplier for oracles priced below maxOracleFee.
   //   Must be >= 1. 3 = up to 3x boost for the cheapest eligible oracles.
   const recommendedParams = {
-    alpha: '500',
+    alpha: String(config.submissionDefaults.alpha),
     maxOracleFee: maxOracleFeeWei.toString(),
     estimatedBaseCost: baseCostWei.toString(),
-    maxFeeBasedScaling: '3'
+    maxFeeBasedScaling: config.submissionDefaults.maxFeeBasedScaling
   };
 
   return {

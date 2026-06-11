@@ -311,10 +311,10 @@ function SubmitWork({ walletState }) {
         evaluationCid,       // Evaluation package CID (must match bounty's stored evaluationCid)
         hunterCid,           // Hunter's work product CID
         submissionNarrative || "",  // addendum
-        500,                  // alpha: timeliness-vs-quality blend (0-1000). 500 = equal; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
-        "20000000000000",     // maxOracleFee (0.00002 ETH) — under the 0.0004 ETH on-chain ceiling
-        "10000000000000",     // estimatedBaseCost (0.00001 ETH)
-        "3"                   // maxFeeBasedScaling: x-factor cap on fee-based boost (contract scales by 1e18 internally; must be >= 1)
+        config.submissionDefaults.alpha,                // alpha: timeliness-vs-quality blend (0-1000). 500 = equal; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
+        config.submissionDefaults.maxOracleFeeWei,      // maxOracleFee — under the 0.0004 ETH on-chain ceiling
+        config.submissionDefaults.estimatedBaseCostWei, // estimatedBaseCost
+        config.submissionDefaults.maxFeeBasedScaling    // maxFeeBasedScaling: x-factor cap on fee-based boost (contract scales by 1e18 internally; must be >= 1)
       );
 
       console.log('✅ Submission prepared:', {

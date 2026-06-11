@@ -106,6 +106,22 @@ const config = {
 // Alias for backwards compatibility
 config.rpcProviderUrl = config.rpcUrl;
 
+// Default parameters for prepareSubmission / startPreparedSubmission.
+// Single source of truth for the values that travel together on every submission,
+// shared by the /submit/prepare and /submit/bundle endpoints, the fee estimator,
+// and the bot script. Canonical unit is WEI — convert with ethers.formatEther at
+// the decimal-ETH call sites rather than re-typing the number (this is what kept
+// the two /submit endpoints from drifting apart).
+//
+// maxOracleFee is a product decision (how much we pay per oracle), deliberately
+// kept well under the aggregator's on-chain 0.0004 ETH ceiling.
+config.submissionDefaults = {
+  maxOracleFeeWei: '20000000000000',      // 0.00002 ETH per oracle call
+  estimatedBaseCostWei: '10000000000000', // 0.00001 ETH base cost per evaluation
+  maxFeeBasedScaling: '3',                // x-factor cap on fee-based boost (>= 1)
+  alpha: 500,                             // timeliness-vs-quality blend (0-1000)
+};
+
 // Deployment block numbers per network.
 // These are the blocks at or just before the BountyEscrow deployment transactions.
 // Used as the starting point for bootstrap event replay.

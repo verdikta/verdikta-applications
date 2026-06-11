@@ -16,7 +16,8 @@ const jobStorage = require('../utils/jobStorage');
 const { config } = require('../config');
 const archiveGenerator = require('../utils/archiveGenerator');
 const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE,
-        oracleUnreadableReason, detectBinaryContainer, ALLOWED_ZIP_BASED_EXTENSIONS } = require('../utils/validation');
+        oracleUnreadableReason, detectBinaryContainer, ALLOWED_ZIP_BASED_EXTENSIONS,
+        parseFeeToWei } = require('../utils/validation');
 const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
 const { validateBounty, IssueSeverity, IssueType } = require('../utils/bountyValidator');
 const { getContractService } = require('../utils/contractService');
@@ -1261,11 +1262,12 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
 
     const {
       hunter, hunterCid, addendum = '',
-      // Defaults from config.submissionDefaults (canonical wei) — this endpoint
-      // takes decimal ETH strings, so convert with formatEther.
+      // Defaults from config.submissionDefaults (canonical wei). maxOracleFee/
+      // estimatedBaseCost accept either decimal ETH or integer wei (parseFeeToWei
+      // normalizes below); the default is rendered as decimal ETH for readability.
       alpha = config.submissionDefaults.alpha,
-      maxOracleFee = ethers.formatEther(config.submissionDefaults.maxOracleFeeWei),       // ETH per oracle (under the 0.0004 ETH on-chain ceiling)
-      estimatedBaseCost = ethers.formatEther(config.submissionDefaults.estimatedBaseCostWei), // ETH
+      maxOracleFee = ethers.formatEther(config.submissionDefaults.maxOracleFeeWei),       // ETH or wei (under the 0.0004 ETH on-chain ceiling)
+      estimatedBaseCost = ethers.formatEther(config.submissionDefaults.estimatedBaseCostWei), // ETH or wei
       maxFeeBasedScaling = config.submissionDefaults.maxFeeBasedScaling
     } = req.body || {};
 
@@ -1300,6 +1302,16 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
       return res.status(500).json({ success: false, error: 'Contract not configured' });
     }
 
+    // maxOracleFee / estimatedBaseCost accept EITHER decimal ETH or integer wei
+    // (same as /submit/bundle) — normalize to wei so units never depend on the endpoint.
+    let maxOracleFeeWei, estimatedBaseCostWei;
+    try {
+      maxOracleFeeWei      = parseFeeToWei(maxOracleFee, 'maxOracleFee');
+      estimatedBaseCostWei = parseFeeToWei(estimatedBaseCost, 'estimatedBaseCost');
+    } catch (feeErr) {
+      return res.status(400).json({ success: false, code: 'INVALID_FEE_UNIT', error: feeErr.message });
+    }
+
     const iface = new ethers.Interface([
       'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)'
     ]);
@@ -1310,8 +1322,8 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
       hunterCid,
       addendum,
       alpha,
-      ethers.parseEther(maxOracleFee),
-      ethers.parseEther(estimatedBaseCost),
+      maxOracleFeeWei,
+      estimatedBaseCostWei,
       // maxFeeBasedScaling is a raw x-factor — do NOT parseEther it.
       // The contract multiplies by 1e18 internally.
       maxFeeBasedScaling
@@ -4016,8 +4028,8 @@ const bundleEscrowIface = new ethers.Interface(BUNDLE_ESCROW_ABI);
  *   alpha           - timeliness-vs-quality blend (0-1000), default 500.
  *                     ReputationKeeper: weighted = ((1000 - alpha) * quality + alpha * timeliness) / 1000.
  *                     0 = pure quality; 1000 = pure timeliness; 500 = equal blend.
- *   maxOracleFee    - max ETH per oracle in wei, default "20000000000000" (0.00002 ETH)
- *   estimatedBaseCost   - default "10000000000000" (0.00001 ETH)
+ *   maxOracleFee    - max fee per oracle; accepts decimal ETH ("0.00002") OR integer wei ("20000000000000"). Default "20000000000000".
+ *   estimatedBaseCost   - base cost per evaluation; decimal ETH or integer wei. Default "10000000000000" (0.00001 ETH).
  *   maxFeeBasedScaling  - plain integer N (x-factor), default "3". Cap on fee-boost
  *                         multiplier applied to oracles whose fee is below maxOracleFee.
  *                         Contract multiplies by 1e18 internally — pass the x-factor itself, not a scaled value.
@@ -4046,6 +4058,21 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
     const estimatedBaseCost  = req.body.estimatedBaseCost  || config.submissionDefaults.estimatedBaseCostWei;
     // maxFeeBasedScaling: plain x-factor integer (contract scales by 1e18 internally).
     const maxFeeBasedScaling = req.body.maxFeeBasedScaling || config.submissionDefaults.maxFeeBasedScaling;
+
+    // maxOracleFee / estimatedBaseCost accept EITHER decimal ETH or integer wei
+    // (same as /submit/prepare) — normalize to wei so units never depend on the endpoint.
+    let maxOracleFeeWei, estimatedBaseCostWei;
+    try {
+      maxOracleFeeWei      = parseFeeToWei(maxOracleFee, 'maxOracleFee');
+      estimatedBaseCostWei = parseFeeToWei(estimatedBaseCost, 'estimatedBaseCost');
+    } catch (feeErr) {
+      return sendError(res, 400, {
+        code: ErrorCodes.VALIDATION_INVALID_FORMAT,
+        message: 'Invalid fee value',
+        details: feeErr.message,
+        fix: 'Pass maxOracleFee/estimatedBaseCost as decimal ETH (e.g. "0.00002") OR integer wei (e.g. "20000000000000"). Both forms are accepted.'
+      });
+    }
 
     // ---- Validate inputs ----
     if (!hunterAddress || !/^0x[a-fA-F0-9]{40}$/.test(hunterAddress)) {
@@ -4152,8 +4179,8 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
       hunterCid,
       addendum,
       alpha,
-      maxOracleFee,
-      estimatedBaseCost,
+      maxOracleFeeWei,
+      estimatedBaseCostWei,
       maxFeeBasedScaling
     ]);
 
@@ -4201,7 +4228,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
       },
       requirements: {
         ethForGas: '~0.005 ETH (estimate for both transactions)',
-        ethForOracle: `attach ethMaxBudget (from step 1 event) as msg.value on step 2 — worst case ~${ethers.formatEther(BigInt(maxOracleFee) * 12n)} ETH; unspent ETH is refunded to the hunter when finalized`
+        ethForOracle: `attach ethMaxBudget (from step 1 event) as msg.value on step 2 — worst case ~${ethers.formatEther(maxOracleFeeWei * 12n)} ETH; unspent ETH is refunded to the hunter when finalized`
       },
       abis: {
         SubmissionPrepared: 'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)',

@@ -771,8 +771,8 @@ router.get('/api/docs', (req, res) => {
           'files: multipart file uploads (required if no hunterCid). Must be oracle-readable (text/code/markdown, PDF, .docx, images). Do NOT zip/archive — archive & binary attachments are rejected (HTTP 400); the oracle skips them and the submission scores 0. Pre-check with POST /api/jobs/:id/submit/dry-run.',
           'addendum: optional text appended to evaluation query',
           'alpha: timeliness-vs-quality blend (0-1000), default 500. weighted = ((1000-alpha)*quality + alpha*timeliness)/1000; 0 = pure quality, 1000 = pure timeliness, 500 = equal.',
-          'maxOracleFee: max ETH per oracle in wei, default "20000000000000" (0.00002 ETH)',
-          'estimatedBaseCost: default "10000000000000" (0.00001 ETH)',
+          'maxOracleFee: max fee per oracle. Accepts decimal ETH (e.g. "0.00002") OR integer wei (e.g. "20000000000000") — a value with a decimal point is ETH, a bare integer is wei. Default "20000000000000" (0.00002 ETH).',
+          'estimatedBaseCost: base cost per evaluation. Same dual-unit rule (decimal ETH or integer wei). Default "10000000000000" (0.00001 ETH).',
           'maxFeeBasedScaling: plain integer x-factor, default "3". Caps fee-boost multiplier for oracles priced below maxOracleFee; contract scales by 1e18 internally, so pass the x-factor itself. Must be >= 1.'
         ],
         returns: 'Step 1 calldata (ready to sign) + templates for steps 2-3'
@@ -796,8 +796,8 @@ router.get('/api/docs', (req, res) => {
           'hunterCid: IPFS CID from POST /submit (required)',
           'addendum: optional string appended to the evaluation query. Default "".',
           'alpha: timeliness-vs-quality blend 0-1000. Default 500. weighted = ((1000-alpha)*quality + alpha*timeliness)/1000.',
-          'maxOracleFee: DECIMAL ETH string (e.g. "0.00002"). Default "0.00002". UNIT DIFFERS from /submit/bundle which uses wei — do not mix them up.',
-          'estimatedBaseCost: DECIMAL ETH string. Default "0.00001". Same wei-vs-decimal caveat.',
+          'maxOracleFee: max fee per oracle. Accepts decimal ETH (e.g. "0.00002") OR integer wei (e.g. "20000000000000") — same as /submit/bundle, so units are interchangeable across endpoints. A value with a decimal point is ETH, a bare integer is wei. Default "0.00002".',
+          'estimatedBaseCost: base cost per evaluation. Same dual-unit rule (decimal ETH or integer wei). Default "0.00001".',
           'maxFeeBasedScaling: plain integer x-factor (>= 1). Default "3". Caps fee-boost multiplier for cheap oracles; contract scales by 1e18 internally.'
         ],
         returns: 'Standard calldataResponseShape. Extras: info: { bountyId, evaluationCid, hunterCid }, nextStep. After broadcasting, parse the SubmissionPrepared event (full ABI) for submissionId, evalWallet, ethMaxBudget — ethMaxBudget is the LAST field, after the dynamic string evaluationCid; a truncated ABI returns 96 (the string offset). Simplest: use the transaction.value that /start returns.'

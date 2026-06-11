@@ -2,6 +2,8 @@
  * Validation utilities for bounty program
  */
 
+const { ethers } = require('ethers');
+
 const CID_REGEX = /^Qm[1-9A-HJ-NP-Za-km-z]{44}|b[A-Za-z2-7]{58}|B[A-Z2-7]{58}|z[1-9A-HJ-NP-Za-km-z]{48}|F[0-9A-F]{50}$/i;
 
 const ALLOWED_FILE_TYPES = [
@@ -295,6 +297,45 @@ function oracleUnreadableReason(mimeType, filename) {
   return null;
 }
 
+// --- Fee unit normalization -------------------------------------------------
+// `maxOracleFee` and `estimatedBaseCost` are accepted as EITHER decimal ETH
+// ("0.00002") or integer wei ("20000000000000") on every submit endpoint, so the
+// unit no longer depends on which endpoint you call (the historical footgun: the
+// same param meant ETH on /submit/prepare but wei on /submit/bundle). Rule: a value
+// containing a decimal point (or exponent) is ETH; a bare integer is wei.
+//
+// ~25x the on-chain 0.0004 ETH maxOracleFee ceiling — anything above this is almost
+// certainly a units mistake (e.g. pasting an ETH amount where wei was meant).
+const FEE_SANITY_MAX_WEI = ethers.parseEther('0.01');
+
+/**
+ * Normalize a fee value (maxOracleFee / estimatedBaseCost) to BigInt wei, accepting
+ * either decimal ETH or integer wei. Throws an Error with an actionable message on
+ * malformed or implausibly-large input.
+ * @param {string|number|bigint} value
+ * @param {string} fieldName - for error messages
+ * @returns {bigint} wei
+ */
+function parseFeeToWei(value, fieldName = 'fee') {
+  const s = String(value === undefined || value === null ? '' : value).trim();
+  if (s === '') throw new Error(`${fieldName} is empty`);
+  let wei;
+  if (s.includes('.')) {
+    // decimal ETH, e.g. "0.00002"
+    try { wei = ethers.parseEther(s); }
+    catch { throw new Error(`${fieldName} "${s}" is not a valid decimal-ETH amount`); }
+  } else if (/^\d+$/.test(s)) {
+    wei = BigInt(s); // integer wei
+  } else {
+    throw new Error(`${fieldName} "${s}" must be a decimal-ETH string (e.g. "0.00002") or an integer-wei value (e.g. "20000000000000")`);
+  }
+  if (wei < 0n) throw new Error(`${fieldName} must be non-negative`);
+  if (wei > FEE_SANITY_MAX_WEI) {
+    throw new Error(`${fieldName} resolves to ${ethers.formatEther(wei)} ETH, which is implausibly high (the on-chain maxOracleFee ceiling is 0.0004 ETH). Did you mix up units? Pass decimal ETH (e.g. "0.00002") OR integer wei (e.g. "20000000000000") — both are accepted on every submit endpoint.`);
+  }
+  return wei;
+}
+
 module.exports = {
   isValidCid,
   isValidFileType,
@@ -308,7 +349,9 @@ module.exports = {
   ORACLE_UNREADABLE_EXTENSIONS,
   ALLOWED_ZIP_BASED_EXTENSIONS,
   detectBinaryContainer,
-  oracleUnreadableReason
+  oracleUnreadableReason,
+  parseFeeToWei,
+  FEE_SANITY_MAX_WEI
 };
 
 

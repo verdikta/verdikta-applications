@@ -488,6 +488,9 @@ The complete flow uses three calldata endpoints. Each returns calldata only; you
 Step 1 — Prepare:   POST /api/jobs/:id/submit/prepare
                     (creates submission on-chain, deploys EvaluationWallet)
                     Parse SubmissionPrepared event for { submissionId, evalWallet, ethMaxBudget }.
+                    (ethMaxBudget is the LAST field, after a dynamic string — decode with the
+                    full event ABI; a truncated ABI returns 96, the string's offset word. Or just
+                    use the transaction.value returned by /start, which reads the budget from chain.)
 Confirm (API):      POST /api/jobs/:id/submissions/confirm
                     (registers the submission in the backend so /diagnose etc. work)
 Step 2 — Start:     POST /api/jobs/:id/submissions/:subId/start
@@ -797,7 +800,7 @@ router.get('/api/docs', (req, res) => {
           'estimatedBaseCost: DECIMAL ETH string. Default "0.00001". Same wei-vs-decimal caveat.',
           'maxFeeBasedScaling: plain integer x-factor (>= 1). Default "3". Caps fee-boost multiplier for cheap oracles; contract scales by 1e18 internally.'
         ],
-        returns: 'Standard calldataResponseShape. Extras: info: { bountyId, evaluationCid, hunterCid }, nextStep. After broadcasting, parse the SubmissionPrepared event from the receipt for submissionId, evalWallet, ethMaxBudget.'
+        returns: 'Standard calldataResponseShape. Extras: info: { bountyId, evaluationCid, hunterCid }, nextStep. After broadcasting, parse the SubmissionPrepared event (full ABI) for submissionId, evalWallet, ethMaxBudget — ethMaxBudget is the LAST field, after the dynamic string evaluationCid; a truncated ABI returns 96 (the string offset). Simplest: use the transaction.value that /start returns.'
       },
       {
         method: 'POST',

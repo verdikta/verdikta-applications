@@ -186,6 +186,9 @@ async function submitWork(bountyId, hunterCid) {
   for (const log of prepareReceipt.logs) {
     const parsed = escrow.interface.parseLog(log);
     if (parsed?.name === 'SubmissionPrepared') {
+      // Use named access with the FULL event ABI (above). ethMaxBudget is the last
+      // field, after the dynamic 'string evaluationCid' — a truncated/misordered ABI
+      // would return 96 (0x60, the string's offset word) instead of the real budget.
       submissionId = Number(parsed.args.submissionId);
       evalWallet = parsed.args.evalWallet;
       ethMaxBudget = parsed.args.ethMaxBudget;

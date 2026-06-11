@@ -135,7 +135,7 @@ The submission process is split into two on-chain transactions for better UX, fo
 1. **Prepare Submission** (`prepareSubmission`)
    - Deploys EvaluationWallet contract
    - Records submission parameters
-   - Emits `SubmissionPrepared(submissionId, evalWallet, ethMaxBudget, …)` — parse from the receipt (`ethMaxBudget` is the worst-case ETH prepay, in wei)
+   - Emits `SubmissionPrepared(bountyId, submissionId, hunter, evalWallet, evaluationCid, ethMaxBudget)` — `ethMaxBudget` is the worst-case ETH prepay (wei) and is the **last** field, after the dynamic `string evaluationCid`. Decode with the full event ABI; a truncated/misordered ABI returns `96` (`0x60`, the string's offset word), not the budget. Simplest: use the `transaction.value` returned by the `/start` calldata endpoint.
 
 2. **Start Evaluation** (`startPreparedSubmission`, **payable**)
    - The funder attaches `ethMaxBudget` (from step 1 event) as `msg.value`

@@ -387,7 +387,7 @@ curl -X POST "https://bounties.verdikta.org/api/jobs/123/submit/prepare" \\
 
 # 13. Start evaluation (get startPreparedSubmission calldata)
 #     startPreparedSubmission is payable — attach msg.value = ethMaxBudget (the ETH prepay,
-#     typically ~0.0012 ETH). Unspent ETH is auto-refunded when the submission finalizes.
+#     typically ~0.00024 ETH). Unspent ETH is auto-refunded when the submission finalizes.
 #     No LINK, no ERC-20 approve, no allowance — just fund the tx with ETH.
 curl -X POST "https://bounties.verdikta.org/api/jobs/123/submissions/0/start" \\
   -H "Content-Type: application/json" \\
@@ -1005,7 +1005,7 @@ def finalize_submission(w3, account, job_id, sub_id):
             <p style={{ margin: '0.5rem 0 0 0' }}>
               <strong>Important:</strong> <code>startPreparedSubmission</code> is <em>payable</em> — attach{' '}
               <code>msg.value = ethMaxBudget</code> (the ETH prepay from the <code>SubmissionPrepared</code>{' '}
-              event, ~0.0012 ETH) when you call <code>/start</code>. There is no LINK and no ERC-20
+              event, ~0.00024 ETH) when you call <code>/start</code>. There is no LINK and no ERC-20
               approve. Unspent ETH is auto-refunded when the submission finalizes.
             </p>
           </div>
@@ -1213,7 +1213,7 @@ def finalize_submission(w3, account, job_id, sub_id):
                   The cost depends on the jury configuration (number of models, iterations).
                   Use the <code>/api/jobs/:id/estimate-fee</code> endpoint to get an estimate
                   before committing. You attach an ETH prepay (<code>ethMaxBudget</code>, typically
-                  ~0.0012 ETH) when you start the evaluation, and any unspent ETH is automatically
+                  ~0.00024 ETH) when you start the evaluation, and any unspent ETH is automatically
                   refunded to your wallet when the submission finalizes.
                 </p>
               </div>

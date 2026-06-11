@@ -362,6 +362,7 @@ The `linkage` field is a structured verdict — `state` is one of:
 ### ETH prepay errors at startPreparedSubmission
 - `startPreparedSubmission(uint256 bountyId, uint256 submissionId)` is **payable** — the funder attaches `ethMaxBudget` as `msg.value`. There is no LINK token, ERC-20 approval, or allowance step.
 - Attach exactly the `ethMaxBudget` (raw wei) from the `SubmissionPrepared` event as `msg.value`. Too little ETH and the call reverts; any unspent prepay is automatically refunded when the submission finalizes (or on `failTimedOutSubmission`).
+- **Decoding gotcha:** `ethMaxBudget` is the **last** event field, after the dynamic `string evaluationCid`. Decode with the full event ABI — a truncated/misordered ABI (e.g. dropping the string, or putting `ethMaxBudget` before it) returns `96` (`0x60`, the string's offset word) instead of the real value, and the start tx then reverts for insufficient funds. The robust path is to use the value the API hands back (`/submit/bundle/complete` → `parsed.ethMaxBudget`, or the `/start` calldata endpoint's `transaction.value`), which the server reads straight from chain.
 - Per-oracle fee is ~0.00002 ETH (on-chain ceiling 0.0004 ETH); the worst-case prepay (`ethMaxBudget` = maxTotalFee) is ~0.00024 ETH.
 
 ### Hot tips

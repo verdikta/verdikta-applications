@@ -1331,7 +1331,7 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
         evaluationCid,
         hunterCid
       },
-      nextStep: 'After tx confirms, parse SubmissionPrepared event for submissionId, evalWallet, ethMaxBudget. Then call /submissions/:submissionId/start and attach ethMaxBudget as the ETH value (msg.value). No LINK approval is needed.'
+      nextStep: 'After tx confirms, parse SubmissionPrepared (full ABI) for submissionId, evalWallet, ethMaxBudget. ethMaxBudget is the LAST field, after the dynamic `string evaluationCid` — a truncated ABI returns 96 (the string offset), not the budget. Simplest: call /submissions/:submissionId/start and use the `transaction.value` it returns as msg.value (the server reads the real budget from chain). No LINK approval is needed.'
     });
 
   } catch (error) {
@@ -1469,7 +1469,7 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
     if (ethMaxBudget == null) {
       return res.status(400).json({
         success: false,
-        error: 'Missing ethMaxBudget — pass it (in wei) from the SubmissionPrepared event, or wait for the submission to sync',
+        error: 'Missing ethMaxBudget — pass it (in wei) from the SubmissionPrepared event (the LAST field, after the dynamic string; a truncated ABI yields 96, the string offset), or wait for the submission to sync so the server can read it from chain',
         code: 'ETH_BUDGET_UNKNOWN'
       });
     }
@@ -4142,7 +4142,9 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
       tips: [
         'Execute step 1 first, then call /submit/bundle/complete with the txHash',
         '/submit/bundle/complete parses step 1 logs and returns exact calldata + the ETH value for steps 2 and 3',
-        'If you can parse event logs yourself, extract evalWallet + submissionId + ethMaxBudget from SubmissionPrepared',
+        'PREFER the ethMaxBudget that /submit/bundle/complete returns (parsed.ethMaxBudget) — do not hand-decode the event for the budget.',
+        'If you DO parse SubmissionPrepared yourself: ethMaxBudget is the LAST field, AFTER the dynamic `string evaluationCid`. Use the full event ABI above — a truncated/misordered ABI returns 96 (0x60, the string\'s offset word), not the real budget, and the start tx then reverts for insufficient funds.',
+        'If you can parse event logs yourself, extract evalWallet + submissionId + ethMaxBudget from SubmissionPrepared (full ABI)',
         'Step 2 (startPreparedSubmission) is payable — attach ethMaxBudget as msg.value. There is NO LINK approval step anymore.',
         `Confirm submission with POST /api/jobs/${jobId}/submissions/confirm after step 1`,
         `Poll GET /api/jobs/${jobId}/submissions after step 2 until evaluation completes, then execute step 3`,
@@ -4222,7 +4224,7 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
         code: ErrorCodes.ONCHAIN_NOT_AVAILABLE,
         message: 'Blockchain service not available',
         details: 'Server cannot access blockchain to parse transaction receipt',
-        fix: 'Parse the SubmissionPrepared event yourself using the ABI from /submit/bundle response. Extract: evalWallet, submissionId, ethMaxBudget.'
+        fix: 'Parse the SubmissionPrepared event yourself using the FULL ABI from /submit/bundle response. Extract: evalWallet, submissionId, ethMaxBudget. NOTE: ethMaxBudget is the LAST field, after the dynamic `string evaluationCid` — a truncated/misordered ABI returns 96 (the string offset word), not the real budget.'
       });
     }
 

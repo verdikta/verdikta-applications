@@ -99,6 +99,19 @@ contract BountyEscrow {
         uint256 amountReturned
     );
 
+    // QUEUED FOR NEXT CONTRACT REVISION — do NOT reorder in isolation.
+    // `ethMaxBudget` currently sits AFTER the dynamic `string evaluationCid`, so a
+    // consumer that decodes the log with a truncated/misordered ABI reads the string's
+    // offset word (96 / 0x60) instead of the real budget and then under-funds the start
+    // tx. Moving `string evaluationCid` to LAST (static fields first: evalWallet,
+    // ethMaxBudget, then the string) makes even a naive `(address,uint256)` decode read
+    // ethMaxBudget correctly. This is an event-signature change: when it ships it MUST be
+    // deployed and flipped atomically with every off-chain ABI copy that decodes this
+    // event (server/utils/contractService.js, server/routes/jobRoutes.js BUNDLE_ESCROW_ABI,
+    // server/scripts/submitToBounties.js, client/src/services/contractService.js,
+    // client/src/pages/Blockchain.jsx) plus config.deploymentBlock + a re-sync, or the
+    // running system will mis-decode live logs. Until then the order below is correct and
+    // matches the deployed contracts on Base + Base Sepolia.
     event SubmissionPrepared(
         uint256 indexed bountyId,
         uint256 indexed submissionId,

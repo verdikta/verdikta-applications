@@ -20,8 +20,8 @@ export const ERC20_ABI = [
 // ---- BountyEscrow contract addresses (canonical, from Blockchain docs) ----
 
 export const ESCROW = {
-  'base': process.env.BOUNTY_ESCROW_ADDRESS_BASE || '0x3970dC3750DdE4E73fdcd3a81b66F1472BbaAEee',
-  'base-sepolia': process.env.BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA || '0x0520b15Ee61C4E2A1B00bA260d8B1FBD015D2780',
+  'base': process.env.BOUNTY_ESCROW_ADDRESS_BASE || '0x2ae271f5e86bee449a36b943414b7c1a7b39772d',
+  'base-sepolia': process.env.BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA || '0xAA67686Bb09F569C2C3b663BB3679dD9f9F60BDC',
 };
 
 // ---- BountyEscrow ABI (subset needed by scripts) ----

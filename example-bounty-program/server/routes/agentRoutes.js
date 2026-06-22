@@ -7,6 +7,7 @@
  * - GET /agents.txt        - Plain text agent access guide (the deep operating manual)
  * - GET /api/docs          - JSON API documentation
  * - GET /api/jobs.txt      - Plain text bounty listing
+ * - GET /sitemap.xml       - XML sitemap (static pages + bounties)
  * - GET /feed.xml          - Atom feed of bounties
  *
  * REMINDER: Update /agents.txt content when API endpoints change.
@@ -1103,6 +1104,66 @@ router.get('/api/jobs.txt', async (req, res) => {
 });
 
 /* ==========================
+   GET /sitemap.xml
+   Static pages + one URL per non-orphaned bounty.
+   ========================== */
+
+router.get('/sitemap.xml', async (req, res) => {
+  try {
+    const base = getBaseUrl(req);
+
+    const escXml = (s) => String(s || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+    // Static, publicly-meaningful routes (mirrors client/src/App.jsx).
+    const staticPaths = [
+      { loc: '/', changefreq: 'hourly', priority: '1.0' },
+      { loc: '/create', changefreq: 'monthly', priority: '0.7' },
+      { loc: '/my-bounties', changefreq: 'daily', priority: '0.5' },
+      { loc: '/analytics', changefreq: 'daily', priority: '0.6' },
+      { loc: '/agents', changefreq: 'weekly', priority: '0.5' },
+      { loc: '/skills', changefreq: 'monthly', priority: '0.4' },
+      { loc: '/blockchain', changefreq: 'monthly', priority: '0.4' },
+    ];
+
+    const allJobs = await jobStorage.listJobs({ includeOrphans: false });
+    const bounties = allJobs.filter(j => j.status !== 'ORPHANED');
+
+    const urlEntry = (loc, lastmod, changefreq, priority) => {
+      const parts = [`    <loc>${escXml(`${base}${loc}`)}</loc>`];
+      if (lastmod) parts.push(`    <lastmod>${lastmod}</lastmod>`);
+      if (changefreq) parts.push(`    <changefreq>${changefreq}</changefreq>`);
+      if (priority) parts.push(`    <priority>${priority}</priority>`);
+      return `  <url>\n${parts.join('\n')}\n  </url>`;
+    };
+
+    const staticEntries = staticPaths.map(p =>
+      urlEntry(p.loc, null, p.changefreq, p.priority)
+    );
+
+    const bountyEntries = bounties.map(job => {
+      const lastmod = job.createdAt
+        ? new Date((job.createdAt || 0) * 1000).toISOString()
+        : null;
+      return urlEntry(`/bounty/${job.jobId}`, lastmod, 'daily', '0.8');
+    });
+
+    const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${[...staticEntries, ...bountyEntries].join('\n')}
+</urlset>`;
+
+    res.type('application/xml').send(sitemap);
+  } catch (error) {
+    logger.error('[agent/sitemap.xml] error', { msg: error.message });
+    res.status(500).type('text/plain').send('Error generating sitemap.');
+  }
+});
+
+/* ==========================
    GET /feed.xml (Atom)
    ========================== */
 
@@ -1250,7 +1311,7 @@ User-agent: *
 Allow: /
 Disallow: /api/bots/
 
-Sitemap: ${base}/feed.xml
+Sitemap: ${base}/sitemap.xml
 `;
 
   res.type('text/plain').send(text);

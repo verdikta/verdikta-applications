@@ -239,7 +239,7 @@ app.use('/api/analytics', analyticsRoutes); // Analytics dashboard endpoints
 app.use('/api/verdikta', verdiktaRoutes); // Verdikta aggregator endpoints
 app.use('/api/bots', botRoutes); // Bot registration and management
 
-// Agent discovery routes (llms.txt, robots.txt, agents.txt, /api/docs, /api/jobs.txt, /feed.xml)
+// Agent discovery routes (llms.txt, robots.txt, agents.txt, /api/docs, /api/jobs.txt, /sitemap.xml, /feed.xml)
 app.use(agentRoutes);
 
 // Public (non-API) routes for shareable receipts + OG images

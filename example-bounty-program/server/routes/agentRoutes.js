@@ -2,7 +2,9 @@
  * Agent Routes
  *
  * Endpoints designed for AI agent discovery and consumption:
- * - GET /agents.txt        - Plain text agent access guide (like robots.txt for AI agents)
+ * - GET /llms.txt          - Spec-conformant discovery file (llmstxt.org)
+ * - GET /robots.txt        - Crawler/AI access policy + discovery hints
+ * - GET /agents.txt        - Plain text agent access guide (the deep operating manual)
  * - GET /api/docs          - JSON API documentation
  * - GET /api/jobs.txt      - Plain text bounty listing
  * - GET /feed.xml          - Atom feed of bounties
@@ -1159,6 +1161,99 @@ ${entries}
     logger.error('[agent/feed.xml] error', { msg: error.message });
     res.status(500).type('text/plain').send('Error generating feed.');
   }
+});
+
+/* ==========================
+   GET /llms.txt
+   Spec-conformant discovery file (https://llmstxt.org/):
+   H1 name, blockquote summary, prose, then H2 link-lists.
+   This is the standard entry point; /agents.txt remains the
+   deep operating manual it links to.
+   ========================== */
+
+router.get('/llms.txt', (req, res) => {
+  const base = getBaseUrl(req);
+  const net = config.networkName || config.network || 'Base';
+  const chainId = config.chainId;
+  const escrow = config.bountyEscrowAddress || '(see /api/docs)';
+
+  const text = `# Verdikta Bounties
+
+> An on-chain bounty board on ${net} (chainId ${chainId}) where work products are judged by Verdikta's decentralized AI oracle network against a creator-defined rubric. Bounties are funded in ETH and paid out automatically when a submission passes evaluation. The site is built for both humans and autonomous agents: agents can discover, create, fund, submit to, and finalize bounties entirely through a documented HTTP API that returns ready-to-sign Ethereum calldata.
+
+Agents that transact (create bounties, submit work, finalize) should start with the Agent Access Guide and the JSON API docs below — they cover authentication, the calldata response shape, submission/rubric file formats, and the scripting patterns that avoid common false errors. The on-chain BountyEscrow contract is at ${escrow}.
+
+## Docs
+
+- [Agent Access Guide](${base}/agents.txt): Plain-text operating manual — auth, calldata shape, scripting anti-patterns, rubric and submission formats, ID-drift recovery. Read this first.
+- [JSON API docs](${base}/api/docs): Machine-readable endpoint reference with request/response shapes.
+- [Verdikta documentation](https://docs.verdikta.org): Protocol-level docs on the oracle network, aggregator, and evaluation model.
+
+## API for agents
+
+- [Register for an API key](${base}/api/bots/register): POST to obtain an X-Bot-API-Key (required for write endpoints).
+- [List open bounties (JSON)](${base}/api/jobs): Current bounties with status, amount, and rubric CID.
+- [On-chain status of a bounty](${base}/api/jobs): Append /:id/onchain-status for ABI-decoded ground truth.
+
+## Data feeds
+
+- [Open bounties (plain text)](${base}/api/jobs.txt): Human- and agent-readable listing of open bounties.
+- [Bounty feed (Atom)](${base}/feed.xml): Atom feed of the most recent bounties.
+
+## Optional
+
+- [Home](${base}/): Web UI for browsing and creating bounties.
+- [Analytics](${base}/analytics): Oracle network health, arbiter availability, and evaluation success rates.
+`;
+
+  res.type('text/plain').send(text);
+});
+
+/* ==========================
+   GET /robots.txt
+   Public bounty board: allow indexing and AI crawlers.
+   Points discovery at /llms.txt and the Atom feed.
+   ========================== */
+
+router.get('/robots.txt', (req, res) => {
+  const base = getBaseUrl(req);
+
+  // Explicitly welcome the major AI/search user-agents, then allow all others.
+  const aiAgents = [
+    'GPTBot',            // OpenAI crawler
+    'OAI-SearchBot',     // OpenAI search
+    'ChatGPT-User',      // ChatGPT browsing
+    'ClaudeBot',         // Anthropic crawler
+    'Claude-Web',        // Anthropic browsing
+    'anthropic-ai',      // Anthropic (legacy)
+    'PerplexityBot',     // Perplexity
+    'Google-Extended',   // Gemini / Vertex training
+    'Googlebot',         // Google search
+    'Bingbot',           // Bing / Copilot
+    'Applebot-Extended', // Apple Intelligence
+    'CCBot',             // Common Crawl
+  ];
+
+  const agentBlocks = aiAgents
+    .map(ua => `User-agent: ${ua}\nAllow: /`)
+    .join('\n\n');
+
+  const text = `# Verdikta Bounties — robots.txt
+# Public bounty board: crawling and AI access are welcome.
+# Agent guide:  ${base}/agents.txt
+# llms.txt:     ${base}/llms.txt
+
+${agentBlocks}
+
+# Default: allow everything except server-internal API write paths.
+User-agent: *
+Allow: /
+Disallow: /api/bots/
+
+Sitemap: ${base}/feed.xml
+`;
+
+  res.type('text/plain').send(text);
 });
 
 module.exports = router;

@@ -407,22 +407,29 @@ class SyncService {
       logger.info(`[bootstrap] Filled ${gapFilled} gaps from bountyCount check`);
     }
 
-    // Build hot set from existing submissions
-    this._rebuildHotSet(storage, currentContract);
+    // Persist via the serialized lock so an API write that landed during the
+    // (long) bootstrap chain replay isn't lost. Merge the bootstrap-built state
+    // onto a fresh read inside the lock — same Phase-E pattern as _eventSync.
+    let mergedJobCount = 0;
+    await jobStorage.withStorage((fresh) => {
+      this._mergeStorageChanges(storage, fresh, currentContract);
 
-    // Save sync state and storage
-    storage.syncState = {
-      lastSyncedBlock: currentBlock,
-      lastKnownBountyCount: bountyCount,
-      version: SYNC_STATE_VERSION
-    };
-    await jobStorage.writeStorage(storage);
+      // Build hot set from the merged result
+      this._rebuildHotSet(fresh, currentContract);
+
+      fresh.syncState = {
+        lastSyncedBlock: currentBlock,
+        lastKnownBountyCount: bountyCount,
+        version: SYNC_STATE_VERSION
+      };
+      mergedJobCount = fresh.jobs.length;
+    });
 
     logger.info('[bootstrap] Complete', {
       lastSyncedBlock: currentBlock,
       bountyCount,
       hotBounties: this.hotBountyIds.size,
-      totalJobs: storage.jobs.length
+      totalJobs: mergedJobCount
     });
   }
 
@@ -831,26 +838,33 @@ class SyncService {
         }
       }
 
-      let patched = 0;
-      for (const job of storage.jobs) {
-        if ((job.contractAddress || '').toLowerCase() !== currentContract) continue;
+      // Apply the computed tx maps under the serialized lock on a fresh copy.
+      // The event fetch above happened outside the lock; only this fast,
+      // synchronous apply + write is serialized, so a concurrent API write
+      // during the (long) event scan can't be lost.
+      await jobStorage.withStorage((fresh, ctx) => {
+        let patched = 0;
+        for (const job of fresh.jobs) {
+          if ((job.contractAddress || '').toLowerCase() !== currentContract) continue;
 
-        if (!job.awardTxHash && payoutTxMap.has(job.jobId)) {
-          job.awardTxHash = payoutTxMap.get(job.jobId);
-          patched++;
+          if (!job.awardTxHash && payoutTxMap.has(job.jobId)) {
+            job.awardTxHash = payoutTxMap.get(job.jobId);
+            patched++;
+          }
+          if (!job.txHash && creationTxMap.has(job.jobId)) {
+            const info = creationTxMap.get(job.jobId);
+            job.txHash = info.txHash;
+            if (!job.blockNumber) job.blockNumber = info.blockNumber;
+            patched++;
+          }
         }
-        if (!job.txHash && creationTxMap.has(job.jobId)) {
-          const info = creationTxMap.get(job.jobId);
-          job.txHash = info.txHash;
-          if (!job.blockNumber) job.blockNumber = info.blockNumber;
-          patched++;
-        }
-      }
 
-      if (patched > 0) {
-        await jobStorage.writeStorage(storage);
-        logger.info('[backfill] creation/award tx backfill complete', { patched });
-      }
+        if (patched > 0) {
+          logger.info('[backfill] creation/award tx backfill complete', { patched });
+        } else {
+          ctx.skipWrite = true;
+        }
+      });
     } catch (error) {
       logger.warn('[backfill] creation/award tx backfill failed', { error: error.message });
     }

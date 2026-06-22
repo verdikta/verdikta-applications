@@ -4887,100 +4887,128 @@ router.patch('/:jobId/bountyId', async (req, res) => {
       }
     }
 
-    job.txHash      = txHash;
-    job.blockNumber = blockNumber;
-    job.onChain     = true;
-
-    // Reconcile jobId to match on-chain ID (aligned ID system)
-    if (job.jobId !== Number(bountyId)) {
-      logger.info('[jobs/bountyId] reconciling jobId to match on-chain ID', {
-        oldJobId: job.jobId, newJobId: Number(bountyId)
-      });
-
-      // Remove any existing job with the target ID to avoid duplicates
-      const collisionIdx = storage.jobs.findIndex(j =>
-        j !== job && j.jobId === Number(bountyId)
-      );
-      if (collisionIdx !== -1) {
-        const colliding = storage.jobs[collisionIdx];
-        // Only remove a colliding record if it's genuinely a removable
-        // phantom/duplicate of THIS bounty. A colliding job that is itself
-        // on-chain/synced with a DIFFERENT evaluationCid is a separate, REAL
-        // bounty — deleting it and stealing its id is the data-corruption bug
-        // that clobbered bounty #245 (a wrong bountyId in the PATCH body made
-        // the reconcile delete an unrelated live bounty). When that's the case
-        // the claimed bountyId cannot belong to this job, so refuse the
-        // reconcile and change nothing.
-        const sameEvalCid = colliding.evaluationCid && job.evaluationCid &&
-          colliding.evaluationCid === job.evaluationCid;
-        const collidingIsRealDistinct =
-          (colliding.syncedFromBlockchain || colliding.onChain) && !sameEvalCid;
-        if (collidingIsRealDistinct) {
-          logger.error('[jobs/bountyId] refusing reconcile: claimed bountyId belongs to a different on-chain bounty', {
-            jobId: job.jobId,
-            claimedBountyId: Number(bountyId),
-            jobEvaluationCid: job.evaluationCid,
-            collidingEvaluationCid: colliding.evaluationCid,
-            collidingTitle: colliding.title
-          });
-          return res.status(409).json({
-            success: false,
-            error: 'bountyId already linked to a different bounty',
-            details: `On-chain bounty #${Number(bountyId)} is already tracked by a different bounty (evaluationCid ${colliding.evaluationCid}). This job's evaluationCid is ${job.evaluationCid}. You likely passed the wrong bountyId.`,
-            fix: 'Use the bountyId from your own createBounty receipt (the BountyCreated event), or GET /api/jobs/lookup?txHash=<your-createBounty-tx> to find the correct on-chain bountyId for this job.'
-          });
-        }
-        logger.warn('[jobs/bountyId] removing colliding job', {
-          collidingJobId: colliding.jobId,
-          collidingTitle: colliding.title,
-          collidingStatus: colliding.status,
-          reason: sameEvalCid ? 'same_evaluationCid_duplicate' : 'unsynced_phantom'
-        });
-        storage.jobs.splice(collisionIdx, 1);
-      }
-
-      job.jobId = Number(bountyId);
-    }
-
-    // Track which contract this job was created on
-    if (currentContract && !job.contractAddress) {
-      job.contractAddress = currentContract;
-    }
-
-    // Backfill chain-authoritative fields (targetHunter, creator approval window
-    // payments and duration) directly from the contract. The local pending job
-    // may have been created without these — for example by an older client, or
-    // because the dedup branch in POST /jobs/create reused a stale pending row.
-    // Pulling them here ensures the GUI sees a windowed/targeted bounty as such
-    // immediately, instead of relying on the sync service to backfill later.
-    // Non-fatal: if the chain call fails (transient RPC error), the sync service
-    // will heal it on its next pass.
+    // Pre-fetch chain-authoritative backfill fields OUTSIDE the storage lock —
+    // network I/O must never be held under the lock. The pure mapping
+    // (applyChainBountyFields) is applied to the fresh job inside the critical
+    // section below. Non-fatal: on RPC failure the sync service heals later.
+    let chainBounty = null;
     try {
-      const { applyChainBountyFields } = require('../utils/syncService');
       const cs = getContractService();
-      const chainBounty = await cs.getBounty(Number(bountyId));
-      const changed = applyChainBountyFields(job, chainBounty);
-      if (changed) {
-        logger.info('[jobs/bountyId] backfilled chain fields', {
-          bountyId: Number(bountyId),
-          targetHunter: job.targetHunter,
-          creatorAssessmentWindowSize: job.creatorAssessmentWindowSize
-        });
-      }
-      // We've now read chain truth — mark the job as synced so the sync
-      // service's stale-check doesn't redundantly hit the chain for it.
-      job.syncedFromBlockchain = true;
-      job.lastSyncedAt = Math.floor(Date.now() / 1000);
+      chainBounty = await cs.getBounty(Number(bountyId));
     } catch (chainErr) {
-      logger.warn('[jobs/bountyId] chain backfill failed (non-fatal, sync will heal later)', {
+      logger.warn('[jobs/bountyId] chain backfill fetch failed (non-fatal, sync will heal later)', {
         bountyId: Number(bountyId), error: chainErr.message
       });
     }
 
-    await jobStorage.writeStorage(storage);
+    // Apply the field updates, jobId reconcile + collision-splice, and chain
+    // backfill as ONE serialized critical section on a FRESH storage copy, so
+    // the linked job (and the splice) can't be lost to — or clobber — a
+    // concurrent sync/API write. All chain I/O happened above, outside the lock.
+    const { applyChainBountyFields } = require('../utils/syncService');
+    const nowSec = Math.floor(Date.now() / 1000);
+    const outcome = await jobStorage.withStorage((store, ctx) => {
+      const freshJob = store.jobs.find(j => j.jobId === parseInt(jobId));
+      if (!freshJob) { ctx.skipWrite = true; return { notFound: true }; }
 
-    logger.info('[jobs/bountyId] updated', { jobId, bountyId, contractAddress: job.contractAddress });
-    return res.json({ success: true, job });
+      freshJob.txHash      = txHash;
+      freshJob.blockNumber = blockNumber;
+      freshJob.onChain     = true;
+
+      // Reconcile jobId to match on-chain ID (aligned ID system)
+      if (freshJob.jobId !== Number(bountyId)) {
+        logger.info('[jobs/bountyId] reconciling jobId to match on-chain ID', {
+          oldJobId: freshJob.jobId, newJobId: Number(bountyId)
+        });
+
+        // Remove any existing job with the target ID to avoid duplicates
+        const collisionIdx = store.jobs.findIndex(j =>
+          j !== freshJob && j.jobId === Number(bountyId)
+        );
+        if (collisionIdx !== -1) {
+          const colliding = store.jobs[collisionIdx];
+          // Only remove a colliding record if it's genuinely a removable
+          // phantom/duplicate of THIS bounty. A colliding job that is itself
+          // on-chain/synced with a DIFFERENT evaluationCid is a separate, REAL
+          // bounty — deleting it and stealing its id is the data-corruption bug
+          // that clobbered bounty #245 (a wrong bountyId in the PATCH body made
+          // the reconcile delete an unrelated live bounty). When that's the case
+          // the claimed bountyId cannot belong to this job, so refuse the
+          // reconcile and change nothing.
+          const sameEvalCid = colliding.evaluationCid && freshJob.evaluationCid &&
+            colliding.evaluationCid === freshJob.evaluationCid;
+          const collidingIsRealDistinct =
+            (colliding.syncedFromBlockchain || colliding.onChain) && !sameEvalCid;
+          if (collidingIsRealDistinct) {
+            logger.error('[jobs/bountyId] refusing reconcile: claimed bountyId belongs to a different on-chain bounty', {
+              jobId: freshJob.jobId,
+              claimedBountyId: Number(bountyId),
+              jobEvaluationCid: freshJob.evaluationCid,
+              collidingEvaluationCid: colliding.evaluationCid,
+              collidingTitle: colliding.title
+            });
+            ctx.skipWrite = true;
+            return {
+              conflict: {
+                collidingEvaluationCid: colliding.evaluationCid,
+                jobEvaluationCid: freshJob.evaluationCid
+              }
+            };
+          }
+          logger.warn('[jobs/bountyId] removing colliding job', {
+            collidingJobId: colliding.jobId,
+            collidingTitle: colliding.title,
+            collidingStatus: colliding.status,
+            reason: sameEvalCid ? 'same_evaluationCid_duplicate' : 'unsynced_phantom'
+          });
+          store.jobs.splice(collisionIdx, 1);
+        }
+
+        freshJob.jobId = Number(bountyId);
+      }
+
+      // Track which contract this job was created on
+      if (currentContract && !freshJob.contractAddress) {
+        freshJob.contractAddress = currentContract;
+      }
+
+      // Backfill chain-authoritative fields (targetHunter, creator approval
+      // window payments and duration) from the contract read above. The local
+      // pending job may lack these (older client, or the dedup branch in POST
+      // /jobs/create reused a stale pending row); applying them here makes the
+      // GUI see a windowed/targeted bounty as such immediately.
+      if (chainBounty) {
+        const changed = applyChainBountyFields(freshJob, chainBounty);
+        if (changed) {
+          logger.info('[jobs/bountyId] backfilled chain fields', {
+            bountyId: Number(bountyId),
+            targetHunter: freshJob.targetHunter,
+            creatorAssessmentWindowSize: freshJob.creatorAssessmentWindowSize
+          });
+        }
+        // We've read chain truth — mark synced so the sync service's stale-check
+        // doesn't redundantly hit the chain for it.
+        freshJob.syncedFromBlockchain = true;
+        freshJob.lastSyncedAt = nowSec;
+      }
+
+      return { ok: true, job: freshJob };
+    });
+
+    if (outcome.notFound) {
+      return res.status(404).json({ success: false, error: 'Job not found' });
+    }
+    if (outcome.conflict) {
+      return res.status(409).json({
+        success: false,
+        error: 'bountyId already linked to a different bounty',
+        details: `On-chain bounty #${Number(bountyId)} is already tracked by a different bounty (evaluationCid ${outcome.conflict.collidingEvaluationCid}). This job's evaluationCid is ${outcome.conflict.jobEvaluationCid}. You likely passed the wrong bountyId.`,
+        fix: 'Use the bountyId from your own createBounty receipt (the BountyCreated event), or GET /api/jobs/lookup?txHash=<your-createBounty-tx> to find the correct on-chain bountyId for this job.'
+      });
+    }
+
+    logger.info('[jobs/bountyId] updated', { jobId, bountyId, contractAddress: outcome.job.contractAddress });
+    return res.json({ success: true, job: outcome.job });
   } catch (error) {
     logger.error('[jobs/bountyId] error', { msg: error.message });
     return res.status(500).json({ success: false, error: error.message });
@@ -5015,27 +5043,33 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
     }
     const ESCROW = config.bountyEscrowAddress;
 
-    // Helper: backfill chain-authoritative fields after we've resolved a bountyId.
-    // Mirrors the same logic in PATCH /:jobId/bountyId. Non-fatal on RPC failure.
-    const backfillChainFields = async (resolvedBountyId) => {
+    // Backfill chain-authoritative fields after we've resolved a bountyId.
+    // Mirrors PATCH /:jobId/bountyId: fetch OUTSIDE the storage lock
+    // (fetchChainBounty), apply to the fresh job INSIDE it (applyBackfill).
+    // Non-fatal on RPC failure.
+    const { applyChainBountyFields } = require('../utils/syncService');
+    const fetchChainBounty = async (resolvedBountyId) => {
       try {
-        const { applyChainBountyFields } = require('../utils/syncService');
-        const chainBounty = await cs.getBounty(resolvedBountyId);
-        const changed = applyChainBountyFields(job, chainBounty);
-        if (changed) {
-          logger.info('[resolve] backfilled chain fields', {
-            bountyId: resolvedBountyId,
-            targetHunter: job.targetHunter,
-            creatorAssessmentWindowSize: job.creatorAssessmentWindowSize
-          });
-        }
-        job.syncedFromBlockchain = true;
-        job.lastSyncedAt = Math.floor(Date.now() / 1000);
+        return await cs.getBounty(resolvedBountyId);
       } catch (chainErr) {
-        logger.warn('[resolve] chain backfill failed (non-fatal, sync will heal later)', {
+        logger.warn('[resolve] chain backfill fetch failed (non-fatal, sync will heal later)', {
           bountyId: resolvedBountyId, error: chainErr.message
         });
+        return null;
       }
+    };
+    const applyBackfill = (freshJob, chainBounty, resolvedBountyId) => {
+      if (!chainBounty) return;
+      const changed = applyChainBountyFields(freshJob, chainBounty);
+      if (changed) {
+        logger.info('[resolve] backfilled chain fields', {
+          bountyId: resolvedBountyId,
+          targetHunter: freshJob.targetHunter,
+          creatorAssessmentWindowSize: freshJob.creatorAssessmentWindowSize
+        });
+      }
+      freshJob.syncedFromBlockchain = true;
+      freshJob.lastSyncedAt = Math.floor(Date.now() / 1000);
     };
 
     if (txHash) {
@@ -5045,21 +5079,33 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
           const iface = new ethers.Interface([
             "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)"
           ]);
+          let resolvedBountyId = null;
           for (const log of receipt.logs) {
             if ((log.address || '').toLowerCase() !== (ESCROW || '').toLowerCase()) continue;
             try {
               const ev = iface.parseLog(log);
-              const bountyId = Number(ev.args.bountyId);
-              job.jobId = bountyId;
-              job.onChain = true;
-              job.txHash = job.txHash ?? txHash;
-              const currentContract = jobStorage.getCurrentContractAddress();
-              if (currentContract) job.contractAddress = currentContract;
-              await backfillChainFields(bountyId);
-              await jobStorage.writeStorage(storage);
-              logger.info('[resolve] via tx', { jobId: jobIdParam, bountyId });
-              return res.json({ success: true, method: 'tx', bountyId, job });
+              resolvedBountyId = Number(ev.args.bountyId);
+              break;
             } catch {}
+          }
+          if (resolvedBountyId != null) {
+            // Chain I/O outside the lock, then apply to the fresh job inside it.
+            const chainBounty = await fetchChainBounty(resolvedBountyId);
+            const updated = await jobStorage.withStorage((store, ctx) => {
+              const freshJob = store.jobs.find(j => j.jobId === parseInt(jobIdParam));
+              if (!freshJob) { ctx.skipWrite = true; return null; }
+              freshJob.jobId = resolvedBountyId;
+              freshJob.onChain = true;
+              freshJob.txHash = freshJob.txHash ?? txHash;
+              const currentContract = jobStorage.getCurrentContractAddress();
+              if (currentContract) freshJob.contractAddress = currentContract;
+              applyBackfill(freshJob, chainBounty, resolvedBountyId);
+              return freshJob;
+            });
+            if (updated) {
+              logger.info('[resolve] via tx', { jobId: jobIdParam, bountyId: resolvedBountyId });
+              return res.json({ success: true, method: 'tx', bountyId: resolvedBountyId, job: updated });
+            }
           }
         }
       } catch (txErr) {
@@ -5110,17 +5156,28 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
       }
 
       if (best != null) {
-        job.jobId = best;
-        job.onChain = true;
-        const currentContract = jobStorage.getCurrentContractAddress();
-        if (currentContract) job.contractAddress = currentContract;
-        await backfillChainFields(best);
-        await jobStorage.writeStorage(storage);
+        // Chain I/O outside the lock, then apply to the fresh job inside it.
+        const chainBounty = await fetchChainBounty(best);
+        const updated = await jobStorage.withStorage((store, ctx) => {
+          const freshJob = store.jobs.find(j => j.jobId === parseInt(jobIdParam));
+          if (!freshJob) { ctx.skipWrite = true; return null; }
+          freshJob.jobId = best;
+          freshJob.onChain = true;
+          const currentContract = jobStorage.getCurrentContractAddress();
+          if (currentContract) freshJob.contractAddress = currentContract;
+          applyBackfill(freshJob, chainBounty, best);
+          return freshJob;
+        });
+        if (!updated) return res.status(404).json({ success: false, error: `Job ${jobIdParam} not found` });
         logger.info('[resolve] via event query', { jobId: jobIdParam, resolvedId: best, delta: bestDelta });
-        return res.json({ success: true, method: 'event', bountyId: best, delta: bestDelta, job });
+        return res.json({ success: true, method: 'event', bountyId: best, delta: bestDelta, job: updated });
       }
 
-      job.onChain = false; await jobStorage.writeStorage(storage);
+      await jobStorage.withStorage((store, ctx) => {
+        const freshJob = store.jobs.find(j => j.jobId === parseInt(jobIdParam));
+        if (!freshJob) { ctx.skipWrite = true; return; }
+        freshJob.onChain = false;
+      });
       return res.status(404).json({ success: false, error: 'No matching on-chain bounty', onChain: false });
     } catch (scanErr) {
       logger.error('[resolve] event query error', { msg: scanErr?.message });

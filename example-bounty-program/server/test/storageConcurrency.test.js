@@ -122,6 +122,47 @@ describe('jobs.json concurrency / orphan-race', () => {
     expect(result.jobs.find(j => j.title === 'existing').lastSyncedAt).toBe(12345);
   });
 
+  it('a bountyId relink+collision-splice is serialized with a concurrent create', async () => {
+    // Mirrors the critical section of PATCH /:jobId/bountyId: a pending job
+    // (id 50) is relinked to its on-chain id (3), splicing an unsynced phantom
+    // that squats id 3. This must not lose — nor be lost to — a concurrent
+    // createJob of an unrelated job.
+    mockStorageData = {
+      jobs: [
+        { jobId: 50, evaluationCid: 'QmReal', submissions: [], syncedFromBlockchain: false, onChain: false },
+        { jobId: 3, evaluationCid: 'QmPhantom', submissions: [], syncedFromBlockchain: false, onChain: false },
+      ],
+      nextId: 51,
+    };
+
+    const relink = jobStorage.withStorage(async (store, ctx) => {
+      await tick();
+      const job = store.jobs.find(j => j.jobId === 50);
+      const collisionIdx = store.jobs.findIndex(j => j !== job && j.jobId === 3);
+      const colliding = store.jobs[collisionIdx];
+      // phantom (not synced, different CID) → removable
+      const realDistinct = (colliding.syncedFromBlockchain || colliding.onChain) &&
+        colliding.evaluationCid !== job.evaluationCid;
+      expect(realDistinct).toBe(false);
+      store.jobs.splice(collisionIdx, 1);
+      job.jobId = 3;
+      job.onChain = true;
+      ctx; // (skipWrite stays false)
+    });
+
+    const create = jobStorage.createJob({ title: 'unrelated new', creator: '0xc', bountyAmount: 1 });
+
+    await Promise.all([relink, create]);
+
+    const result = await jobStorage.readStorage();
+    const byTitle = result.jobs.map(j => j.title || `id:${j.jobId}`).sort();
+    // Phantom gone; relinked job present as id 3; new job survived.
+    expect(result.jobs.some(j => j.jobId === 3 && j.evaluationCid === 'QmReal')).toBe(true);
+    expect(result.jobs.some(j => j.evaluationCid === 'QmPhantom')).toBe(false);
+    expect(byTitle).toContain('unrelated new');
+    expect(result.jobs).toHaveLength(2);
+  });
+
   it('withStorage propagates mutator errors without breaking the lock', async () => {
     await expect(
       jobStorage.withStorage(async () => { throw new Error('boom'); })

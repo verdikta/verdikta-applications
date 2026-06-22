@@ -54,6 +54,16 @@ const getExplorerUrl = () => {
   return network.explorer;
 };
 
+// Format a positive USD amount with thousands separators and 2 decimals.
+// Returns null for non-positive/invalid values so callers can hide the USD note.
+const formatUsd = (value) => {
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+};
+
 function Home({ walletState }) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -65,6 +75,8 @@ function Home({ walletState }) {
   });
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(15);
+  // Recent ETH/USD price (CoinGecko, 1-min server cache) for approximate payout values
+  const [ethPrice, setEthPrice] = useState(0);
 
   // Refs for auto-refresh and scroll
   const autoRefreshIntervalRef = useRef(null);
@@ -108,6 +120,23 @@ function Home({ walletState }) {
       if (isMountedRef.current && !silent) setLoading(false);
     }
   }, [filters]);
+
+  // Fetch a recent ETH/USD price once on mount so cards can show approximate
+  // USD payout values. One rate applies to all cards; degrades gracefully to
+  // ETH-only if the price feed is unavailable (price stays 0).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch('/api/jobs/eth-price');
+        const data = await response.json();
+        if (!cancelled && data?.usd > 0) setEthPrice(data.usd);
+      } catch (err) {
+        console.warn('Failed to fetch ETH price:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Initial load and filter changes
   useEffect(() => {
@@ -227,6 +256,14 @@ function Home({ walletState }) {
                 {jobs.length}
               </span>
             )}
+            {ethPrice > 0 && (
+              <span
+                className="eth-rate-note"
+                title="Approximate USD values use a recent ETH price from CoinGecko"
+              >
+                ETH ≈ ${formatUsd(ethPrice)}
+              </span>
+            )}
           </h2>
           <div className="filters">
             <input
@@ -298,7 +335,7 @@ function Home({ walletState }) {
           <>
             <div className="bounty-grid">
               {paginatedJobs.map(job => (
-                <JobCard key={job.jobId} job={job} />
+                <JobCard key={job.jobId} job={job} ethPrice={ethPrice} />
               ))}
             </div>
             <div className="pagination">
@@ -396,7 +433,7 @@ function Home({ walletState }) {
 }
 
 // Job Card Component
-function JobCard({ job }) {
+function JobCard({ job, ethPrice }) {
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
 
@@ -652,8 +689,10 @@ function JobCard({ job }) {
           <span className="label">Payout:</span>
           <span className="amount">
             {job.bountyAmount} ETH
-            {job.bountyAmountUSD > 0 && (
-              <small className="usd-amount"> (${job.bountyAmountUSD})</small>
+            {ethPrice > 0 && formatUsd(Number(job.bountyAmount) * ethPrice) && (
+              <small className="usd-amount">
+                {' '}(~${formatUsd(Number(job.bountyAmount) * ethPrice)})
+              </small>
             )}
           </span>
         </div>

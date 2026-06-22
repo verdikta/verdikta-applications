@@ -55,6 +55,17 @@
   color: var(--text-secondary);
 }
 
+.eth-rate-note {
+  font-size: 0.8125rem;
+  font-weight: var(--font-medium, 500);
+  line-height: 1;
+  padding: 0.25rem 0.625rem;
+  border-radius: 999px;
+  background-color: var(--gray-100);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
 .empty-state {
   text-align: center;
   padding: 4rem 2rem;

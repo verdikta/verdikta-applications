@@ -103,9 +103,9 @@ async function readSyncState() {
  */
 async function writeSyncState(syncState) {
   try {
-    const storage = await readStorage();
-    storage.syncState = syncState;
-    await writeStorage(storage);
+    await withStorage((storage) => {
+      storage.syncState = syncState;
+    });
   } catch (error) {
     logger.error('Error writing sync state:', error);
     throw error;
@@ -128,34 +128,81 @@ async function writeStorage(data) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Write serialization (orphan-race fix)
+//
+// jobs.json is a whole-file store: every mutation is read → modify → write,
+// with `await` points in between. The blockchain sync worker runs in the SAME
+// process as the API route handlers (it is started in-process via setInterval
+// in server.js), so two read-modify-write cycles can interleave at those awaits
+// and the second writeStorage() renames its whole-file copy over the first —
+// silently dropping the first writer's changes. That is the "orphan race"
+// (sync wiping an API-created job; a creator PATCH clobbered by sync; etc.).
+// The temp-file+rename in writeStorage prevents *corruption* but not this
+// *lost update*.
+//
+// withStorage() serializes the ENTIRE critical section behind a promise-chain
+// lock, so each mutator's readStorage() observes the previous mutator's
+// committed write. Everything runs on one event loop, so this chain is a
+// sufficient mutex — no OS file locking needed.
+//
+// CORRECTNESS REQUIRES SINGLE-PROCESS OWNERSHIP of each data/<network>/jobs.json.
+// Today every network runs its own process against its own file, so that holds.
+// If two processes ever share one data dir, this in-process lock is insufficient
+// and OS-level file locking (flock) would be required.
+//
+// Keep the work inside the mutator FAST — the lock is held for its whole
+// duration. Long blockchain/network I/O belongs OUTSIDE the lock: compute the
+// result first, then apply it inside a short synchronous mutator.
+//
+// The mutator receives (storage, ctx). Set ctx.skipWrite = true to return data
+// without writing (used by the read paths that only persist a lazy migration
+// when one is actually pending).
+// ---------------------------------------------------------------------------
+let _storageLock = Promise.resolve();
+
+async function withStorage(mutator) {
+  const run = _storageLock.then(async () => {
+    const storage = await readStorage();
+    const ctx = { skipWrite: false };
+    const result = await mutator(storage, ctx);
+    if (!ctx.skipWrite) {
+      await writeStorage(storage);
+    }
+    return result;
+  });
+  // Keep the chain alive even if this mutator rejects; the rejection still
+  // propagates to THIS caller via `run`, but must not poison later mutators.
+  _storageLock = run.then(() => {}, () => {});
+  return run;
+}
+
 /**
  * Create a new job
  */
 async function createJob(jobData) {
   try {
-    const storage = await readStorage();
     const contractAddress = getCurrentContractAddress();
+    return await withStorage((storage) => {
+      const job = {
+        jobId: storage.nextId,
+        ...jobData,
+        status: 'OPEN',
+        createdAt: Math.floor(Date.now() / 1000),
+        submissionCount: 0,
+        submissions: [],
+        winner: null,
+        // Track which contract this job belongs to
+        contractAddress: contractAddress || null
+      };
 
-    const job = {
-      jobId: storage.nextId,
-      ...jobData,
-      status: 'OPEN',
-      createdAt: Math.floor(Date.now() / 1000),
-      submissionCount: 0,
-      submissions: [],
-      winner: null,
-      // Track which contract this job belongs to
-      contractAddress: contractAddress || null
-    };
+      storage.jobs.push(job);
+      storage.nextId += 1;
 
-    storage.jobs.push(job);
-    storage.nextId += 1;
+      logger.info('Job created', { jobId: job.jobId, title: job.title, contractAddress });
 
-    await writeStorage(storage);
-
-    logger.info('Job created', { jobId: job.jobId, title: job.title, contractAddress });
-
-    return job;
+      return job;
+    });
   } catch (error) {
     logger.error('Error creating job:', error);
     throw error;
@@ -169,8 +216,12 @@ async function createJob(jobData) {
 async function getJob(jobId) {
   try {
     const storage = await readStorage();
+    // Lazy one-time migration. Reads stay lock-free in steady state; only when a
+    // migration is actually pending do we take the lock to persist it (re-running
+    // the migration on a fresh copy) so the normalize-write can't clobber a
+    // concurrent mutation.
     if (normalizeJobs(storage.jobs)) {
-      await writeStorage(storage);
+      await withStorage((s) => { normalizeJobs(s.jobs); });
     }
     const id = parseInt(jobId);
     const currentContract = getCurrentContractAddress();
@@ -194,18 +245,18 @@ async function getJob(jobId) {
  */
 async function updateJob(jobId, updates) {
   try {
-    const storage = await readStorage();
-    const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
+    return await withStorage((storage) => {
+      const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
 
-    if (!job) {
-      throw new Error(`Job ${jobId} not found`);
-    }
+      if (!job) {
+        throw new Error(`Job ${jobId} not found`);
+      }
 
-    Object.assign(job, updates);
-    await writeStorage(storage);
+      Object.assign(job, updates);
 
-    logger.info('Job updated', { jobId, updates: Object.keys(updates) });
-    return job;
+      logger.info('Job updated', { jobId, updates: Object.keys(updates) });
+      return job;
+    });
   } catch (error) {
     logger.error('Error updating job:', error);
     throw error;
@@ -230,9 +281,11 @@ async function listJobs(filters = {}) {
     let jobs = storage.jobs;
     const currentContract = getCurrentContractAddress();
 
-    // Lazy data migrations (status normalization, primaryCid -> evaluationCid)
+    // Lazy data migrations (status normalization, primaryCid -> evaluationCid).
+    // Persist under the lock only when something actually changed, so this
+    // normalize-write can't clobber a concurrent mutation (see getJob).
     if (normalizeJobs(jobs)) {
-      await writeStorage(storage);
+      await withStorage((s) => { normalizeJobs(s.jobs); });
       logger.info('Normalized job data');
     }
 
@@ -326,19 +379,19 @@ async function listJobs(filters = {}) {
  */
 async function updateJobStatus(jobId, status) {
   try {
-    const storage = await readStorage();
-    const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
+    return await withStorage((storage) => {
+      const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
 
-    if (!job) {
-      throw new Error(`Job ${jobId} not found`);
-    }
+      if (!job) {
+        throw new Error(`Job ${jobId} not found`);
+      }
 
-    job.status = String(status).toUpperCase();
-    await writeStorage(storage);
+      job.status = String(status).toUpperCase();
 
-    logger.info('Job status updated', { jobId, status });
+      logger.info('Job status updated', { jobId, status });
 
-    return job;
+      return job;
+    });
   } catch (error) {
     logger.error('Error updating job status:', error);
     throw error;
@@ -350,42 +403,41 @@ async function updateJobStatus(jobId, status) {
  */
 async function addSubmission(jobId, submissionData) {
   try {
-    const storage = await readStorage();
-    const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
+    return await withStorage((storage) => {
+      const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
 
-    if (!job) {
-      throw new Error(`Job ${jobId} not found`);
-    }
+      if (!job) {
+        throw new Error(`Job ${jobId} not found`);
+      }
 
-    // Check if job is still open
-    // NOTE: We check cached status, but frontend also verifies on-chain before submitting
-    if (job.status !== 'OPEN') {
-      throw new Error(`Job ${jobId} is not accepting submissions (status: ${job.status})`);
-    }
+      // Check if job is still open
+      // NOTE: We check cached status, but frontend also verifies on-chain before submitting
+      if (job.status !== 'OPEN') {
+        throw new Error(`Job ${jobId} is not accepting submissions (status: ${job.status})`);
+      }
 
-    // Use 0-based indexing to match on-chain submission IDs
-    // The contract uses 0-based array indices for submissions
-    const submission = {
-      submissionId: job.submissions.length,  // 0-based to match contract
-      ...submissionData,
-      submittedAt: Math.floor(Date.now() / 1000),
-      // Start as "Prepared" - not on-chain yet. Status changes to "PendingVerdikta"
-      // when startPreparedSubmission() is called on-chain
-      status: 'Prepared'
-    };
+      // Use 0-based indexing to match on-chain submission IDs
+      // The contract uses 0-based array indices for submissions
+      const submission = {
+        submissionId: job.submissions.length,  // 0-based to match contract
+        ...submissionData,
+        submittedAt: Math.floor(Date.now() / 1000),
+        // Start as "Prepared" - not on-chain yet. Status changes to "PendingVerdikta"
+        // when startPreparedSubmission() is called on-chain
+        status: 'Prepared'
+      };
 
-    job.submissions.push(submission);
-    job.submissionCount += 1;
+      job.submissions.push(submission);
+      job.submissionCount += 1;
 
-    await writeStorage(storage);
+      logger.info('Submission added to job', {
+        jobId,
+        submissionId: submission.submissionId,
+        hunter: submissionData.hunter
+      });
 
-    logger.info('Submission added to job', {
-      jobId,
-      submissionId: submission.submissionId,
-      hunter: submissionData.hunter
+      return job;
     });
-
-    return job;
   } catch (error) {
     logger.error('Error adding submission:', error);
     throw error;
@@ -397,34 +449,33 @@ async function addSubmission(jobId, submissionData) {
  */
 async function cancelSubmission(jobId, submissionId) {
   try {
-    const storage = await readStorage();
-    const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
+    return await withStorage((storage) => {
+      const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
 
-    if (!job) {
-      throw new Error(`Job ${jobId} not found`);
-    }
+      if (!job) {
+        throw new Error(`Job ${jobId} not found`);
+      }
 
-    const subIndex = job.submissions.findIndex(s => s.submissionId === parseInt(submissionId));
-    if (subIndex === -1) {
-      throw new Error(`Submission ${submissionId} not found`);
-    }
+      const subIndex = job.submissions.findIndex(s => s.submissionId === parseInt(submissionId));
+      if (subIndex === -1) {
+        throw new Error(`Submission ${submissionId} not found`);
+      }
 
-    const submission = job.submissions[subIndex];
+      const submission = job.submissions[subIndex];
 
-    // Only allow canceling Prepared submissions (not on-chain yet)
-    if (submission.status !== 'Prepared' && submission.status !== 'PREPARED') {
-      throw new Error(`Cannot cancel submission with status ${submission.status}. Only Prepared submissions can be cancelled.`);
-    }
+      // Only allow canceling Prepared submissions (not on-chain yet)
+      if (submission.status !== 'Prepared' && submission.status !== 'PREPARED') {
+        throw new Error(`Cannot cancel submission with status ${submission.status}. Only Prepared submissions can be cancelled.`);
+      }
 
-    // Remove the submission
-    job.submissions.splice(subIndex, 1);
-    job.submissionCount = Math.max(0, (job.submissionCount || 1) - 1);
+      // Remove the submission
+      job.submissions.splice(subIndex, 1);
+      job.submissionCount = Math.max(0, (job.submissionCount || 1) - 1);
 
-    await writeStorage(storage);
+      logger.info('Submission cancelled', { jobId, submissionId });
 
-    logger.info('Submission cancelled', { jobId, submissionId });
-
-    return job;
+      return job;
+    });
   } catch (error) {
     logger.error('Error cancelling submission:', error);
     throw error;
@@ -436,38 +487,37 @@ async function cancelSubmission(jobId, submissionId) {
  */
 async function updateSubmissionResult(jobId, submissionId, result) {
   try {
-    const storage = await readStorage();
-    const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
+    return await withStorage((storage) => {
+      const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
 
-    if (!job) {
-      throw new Error(`Job ${jobId} not found`);
-    }
+      if (!job) {
+        throw new Error(`Job ${jobId} not found`);
+      }
 
-    const submission = job.submissions.find(s => s.submissionId === submissionId);
+      const submission = job.submissions.find(s => s.submissionId === submissionId);
 
-    if (!submission) {
-      throw new Error(`Submission ${submissionId} not found`);
-    }
+      if (!submission) {
+        throw new Error(`Submission ${submissionId} not found`);
+      }
 
-    submission.result = result;
-    submission.status = result.outcome === 'FUND' ? 'PASSED' : 'FAILED';
-    submission.evaluatedAt = Math.floor(Date.now() / 1000);
+      submission.result = result;
+      submission.status = result.outcome === 'FUND' ? 'PASSED' : 'FAILED';
+      submission.evaluatedAt = Math.floor(Date.now() / 1000);
 
-    // If this submission passed and no winner yet, mark as winner
-    if (result.outcome === 'FUND' && !job.winner) {
-      job.winner = submission.hunter;
-      job.status = 'AWARDED'; // Use AWARDED not COMPLETED
-    }
+      // If this submission passed and no winner yet, mark as winner
+      if (result.outcome === 'FUND' && !job.winner) {
+        job.winner = submission.hunter;
+        job.status = 'AWARDED'; // Use AWARDED not COMPLETED
+      }
 
-    await writeStorage(storage);
+      logger.info('Submission result updated', {
+        jobId,
+        submissionId,
+        outcome: result.outcome
+      });
 
-    logger.info('Submission result updated', {
-      jobId,
-      submissionId,
-      outcome: result.outcome
+      return job;
     });
-
-    return job;
   } catch (error) {
     logger.error('Error updating submission result:', error);
     throw error;
@@ -508,36 +558,38 @@ async function findOrphanedJobs() {
  */
 async function markOrphanedJobs() {
   try {
-    const storage = await readStorage();
     const currentContract = getCurrentContractAddress();
-    
+
     if (!currentContract) {
       logger.warn('No current contract address set');
       return { marked: 0 };
     }
 
-    let marked = 0;
-    for (const job of storage.jobs) {
-      const jobContract = (job.contractAddress || '').toLowerCase();
-      if (jobContract && jobContract !== currentContract && job.status !== 'ORPHANED') {
-        logger.info('Marking job as orphaned', { 
-          jobId: job.jobId, 
-          jobContract,
-          currentContract 
-        });
-        job.status = 'ORPHANED';
-        job.orphanedAt = Math.floor(Date.now() / 1000);
-        job.previousStatus = job.status;
-        marked++;
+    return await withStorage((storage, ctx) => {
+      let marked = 0;
+      for (const job of storage.jobs) {
+        const jobContract = (job.contractAddress || '').toLowerCase();
+        if (jobContract && jobContract !== currentContract && job.status !== 'ORPHANED') {
+          logger.info('Marking job as orphaned', {
+            jobId: job.jobId,
+            jobContract,
+            currentContract
+          });
+          job.status = 'ORPHANED';
+          job.orphanedAt = Math.floor(Date.now() / 1000);
+          job.previousStatus = job.status;
+          marked++;
+        }
       }
-    }
 
-    if (marked > 0) {
-      await writeStorage(storage);
-      logger.info(`Marked ${marked} orphaned jobs`);
-    }
+      if (marked > 0) {
+        logger.info(`Marked ${marked} orphaned jobs`);
+      } else {
+        ctx.skipWrite = true;
+      }
 
-    return { marked };
+      return { marked };
+    });
   } catch (error) {
     logger.error('Error marking orphaned jobs:', error);
     throw error;
@@ -550,27 +602,29 @@ async function markOrphanedJobs() {
  */
 async function deleteOrphanedJobs() {
   try {
-    const storage = await readStorage();
     const currentContract = getCurrentContractAddress();
-    
+
     if (!currentContract) {
       throw new Error('No current contract address set');
     }
 
-    const before = storage.jobs.length;
-    storage.jobs = storage.jobs.filter(j => {
-      const jobContract = (j.contractAddress || '').toLowerCase();
-      // Keep if: no contract set (legacy) OR matches current contract
-      return !jobContract || jobContract === currentContract;
+    return await withStorage((storage, ctx) => {
+      const before = storage.jobs.length;
+      storage.jobs = storage.jobs.filter(j => {
+        const jobContract = (j.contractAddress || '').toLowerCase();
+        // Keep if: no contract set (legacy) OR matches current contract
+        return !jobContract || jobContract === currentContract;
+      });
+      const deleted = before - storage.jobs.length;
+
+      if (deleted > 0) {
+        logger.info(`Deleted ${deleted} orphaned jobs`);
+      } else {
+        ctx.skipWrite = true;
+      }
+
+      return { deleted, remaining: storage.jobs.length };
     });
-    const deleted = before - storage.jobs.length;
-
-    if (deleted > 0) {
-      await writeStorage(storage);
-      logger.info(`Deleted ${deleted} orphaned jobs`);
-    }
-
-    return { deleted, remaining: storage.jobs.length };
   } catch (error) {
     logger.error('Error deleting orphaned jobs:', error);
     throw error;
@@ -583,32 +637,32 @@ async function deleteOrphanedJobs() {
  */
 async function deleteJob(jobId) {
   try {
-    const storage = await readStorage();
-    const index = storage.jobs.findIndex(j => String(j.jobId) === String(jobId));
+    return await withStorage((storage) => {
+      const index = storage.jobs.findIndex(j => String(j.jobId) === String(jobId));
 
-    if (index === -1) {
-      throw new Error(`Job ${jobId} not found`);
-    }
+      if (index === -1) {
+        throw new Error(`Job ${jobId} not found`);
+      }
 
-    const job = storage.jobs[index];
+      const job = storage.jobs[index];
 
-    // Safety check: don't delete jobs that are on-chain (they have real escrow)
-    if (job.onChain === true) {
-      throw new Error(`Job ${jobId} exists on-chain and cannot be deleted. Use close instead.`);
-    }
+      // Safety check: don't delete jobs that are on-chain (they have real escrow)
+      if (job.onChain === true) {
+        throw new Error(`Job ${jobId} exists on-chain and cannot be deleted. Use close instead.`);
+      }
 
-    // Grace period: don't delete jobs created in the last 5 minutes
-    // (creator may still be completing the on-chain step)
-    const ageSeconds = Math.floor(Date.now() / 1000) - (job.createdAt || 0);
-    if (ageSeconds < 300) {
-      throw new Error(`Job ${jobId} was created ${ageSeconds}s ago. Wait 5 minutes before deleting (on-chain creation may still be in progress).`);
-    }
+      // Grace period: don't delete jobs created in the last 5 minutes
+      // (creator may still be completing the on-chain step)
+      const ageSeconds = Math.floor(Date.now() / 1000) - (job.createdAt || 0);
+      if (ageSeconds < 300) {
+        throw new Error(`Job ${jobId} was created ${ageSeconds}s ago. Wait 5 minutes before deleting (on-chain creation may still be in progress).`);
+      }
 
-    storage.jobs.splice(index, 1);
-    await writeStorage(storage);
-    logger.info(`Deleted job ${jobId}`, { title: job.title });
+      storage.jobs.splice(index, 1);
+      logger.info(`Deleted job ${jobId}`, { title: job.title });
 
-    return { deleted: true, job };
+      return { deleted: true, job };
+    });
   } catch (error) {
     logger.error('Error deleting job:', error);
     throw error;
@@ -621,13 +675,16 @@ async function deleteJob(jobId) {
  */
 async function migrateLegacyJobs(verifyOnChain = null) {
   try {
-    const storage = await readStorage();
     const currentContract = getCurrentContractAddress();
-    
+
     if (!currentContract) {
       throw new Error('No current contract address set');
     }
 
+    // Manual/rare migration. Held under the lock for its whole duration
+    // (including verifyOnChain calls) so it can't clobber a concurrent mutation;
+    // acceptable because this is an admin operation, not a hot path.
+    return await withStorage(async (storage, ctx) => {
     let migrated = 0;
     let orphaned = 0;
 
@@ -659,11 +716,13 @@ async function migrateLegacyJobs(verifyOnChain = null) {
     }
 
     if (migrated > 0 || orphaned > 0) {
-      await writeStorage(storage);
       logger.info('Legacy job migration complete', { migrated, orphaned });
+    } else {
+      ctx.skipWrite = true;
     }
 
     return { migrated, orphaned };
+    });
   } catch (error) {
     logger.error('Error migrating legacy jobs:', error);
     throw error;
@@ -719,6 +778,7 @@ module.exports = {
   initStorage,
   readStorage,
   writeStorage,
+  withStorage,
   readSyncState,
   writeSyncState,
   createJob,

@@ -759,21 +759,28 @@ class SyncService {
     }
 
     // Phase E: Persist
-    // Re-read storage to merge with any concurrent PATCH updates
-    const freshStorage = await jobStorage.readStorage();
-    this._mergeStorageChanges(storage, freshStorage, currentContract);
+    // Run the fresh-read → merge → orphan-handling → write as ONE serialized
+    // critical section via withStorage(). withStorage re-reads fresh inside the
+    // lock (merging any concurrent PATCH/createJob that landed during the heavy
+    // phases above) and holds the lock through the write, so an API write can no
+    // longer be lost between our read and our write — this is the orphan-race
+    // fix on the sync side. The lock is held across _handleOrphanedJobs, whose
+    // chain calls touch only the few expiring on-chain bounties per cycle, so
+    // the hold is short.
+    await jobStorage.withStorage(async (freshStorage) => {
+      this._mergeStorageChanges(storage, freshStorage, currentContract);
 
-    // Handle orphaned/expired off-chain jobs + reconcile on-chain status
-    // before writing, so there is a single atomic write per cycle (no
-    // intermediate state where the API can serve stale data).
-    await this._handleOrphanedJobs(freshStorage, currentContract, contractService);
+      // Handle orphaned/expired off-chain jobs + reconcile on-chain status
+      // before writing, so there is a single atomic write per cycle (no
+      // intermediate state where the API can serve stale data).
+      await this._handleOrphanedJobs(freshStorage, currentContract, contractService);
 
-    freshStorage.syncState = {
-      lastSyncedBlock: currentBlock,
-      lastKnownBountyCount: bountyCount,
-      version: SYNC_STATE_VERSION
-    };
-    await jobStorage.writeStorage(freshStorage);
+      freshStorage.syncState = {
+        lastSyncedBlock: currentBlock,
+        lastKnownBountyCount: bountyCount,
+        version: SYNC_STATE_VERSION
+      };
+    });
   }
 
   // ==========================================================================

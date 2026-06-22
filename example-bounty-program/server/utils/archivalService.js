@@ -39,28 +39,28 @@ const ARCHIVAL_SUBMISSION_FIELDS = [
 ];
 
 /**
- * Re-read storage and copy only archival-specific submission fields from the
- * working in-memory copy onto the fresh on-disk copy, then write. This avoids
- * the read-modify-write race where a PATCH endpoint updates a field (like
- * publicSubmissions) between our initial read and our writeStorage call —
- * a plain writeStorage would silently clobber the PATCH.
+ * Copy only archival-specific submission fields from the working in-memory copy
+ * onto a fresh storage copy, then write — all inside jobStorage.withStorage() so
+ * the read-modify-write is serialized against every other writer. This avoids the
+ * race where a PATCH endpoint or the sync worker updates a field between our read
+ * and our write; a plain writeStorage would silently clobber that change.
  */
 async function writeArchivalChanges(modifiedStorage) {
-  const freshStorage = await jobStorage.readStorage();
-  for (const modifiedJob of modifiedStorage.jobs) {
-    const freshJob = freshStorage.jobs.find(j => j.jobId === modifiedJob.jobId);
-    if (!freshJob) continue;
-    for (const modifiedSub of modifiedJob.submissions || []) {
-      const freshSub = (freshJob.submissions || []).find(s => s.submissionId === modifiedSub.submissionId);
-      if (!freshSub) continue;
-      for (const field of ARCHIVAL_SUBMISSION_FIELDS) {
-        if (modifiedSub[field] !== undefined) {
-          freshSub[field] = modifiedSub[field];
+  await jobStorage.withStorage((freshStorage) => {
+    for (const modifiedJob of modifiedStorage.jobs) {
+      const freshJob = freshStorage.jobs.find(j => j.jobId === modifiedJob.jobId);
+      if (!freshJob) continue;
+      for (const modifiedSub of modifiedJob.submissions || []) {
+        const freshSub = (freshJob.submissions || []).find(s => s.submissionId === modifiedSub.submissionId);
+        if (!freshSub) continue;
+        for (const field of ARCHIVAL_SUBMISSION_FIELDS) {
+          if (modifiedSub[field] !== undefined) {
+            freshSub[field] = modifiedSub[field];
+          }
         }
       }
     }
-  }
-  await jobStorage.writeStorage(freshStorage);
+  });
 }
 
 /**

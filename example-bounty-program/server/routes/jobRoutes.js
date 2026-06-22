@@ -4078,10 +4078,33 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
       });
     }
 
-    job.submissions.push(submission);
-    job.submissionCount = job.submissions.length;
+    // Apply under the storage lock: re-find the job in a fresh copy and re-check
+    // idempotency before appending, so a concurrent sync/confirm write can't be
+    // lost and two racing confirms can't double-insert. The chain read above
+    // built `submission` without touching storage, so the lock is held only for
+    // the append + write.
+    const applyResult = await jobStorage.withStorage((s, ctx) => {
+      const freshJob = s.jobs.find(j => j.jobId === parseInt(jobId));
+      if (!freshJob) { ctx.skipWrite = true; return { notFound: true }; }
+      const dup = freshJob.submissions.find(x => x.submissionId === Number(submissionId));
+      if (dup) { ctx.skipWrite = true; return { existing: dup }; }
+      freshJob.submissions.push(submission);
+      freshJob.submissionCount = freshJob.submissions.length;
+      return { added: true };
+    });
 
-    await jobStorage.writeStorage(storage);
+    if (applyResult.notFound) {
+      return sendError(res, 404, {
+        code: ErrorCodes.BOUNTY_NOT_FOUND,
+        message: 'Bounty not found',
+        details: `No bounty exists with ID ${jobId}`,
+        fix: 'List available bounties with GET /api/jobs?status=OPEN'
+      });
+    }
+    if (applyResult.existing) {
+      logger.info('[submissions/confirm] Submission already exists (raced)', { jobId, submissionId });
+      return res.json({ success: true, submission: applyResult.existing, alreadyExists: true });
+    }
 
     logger.info('[submissions/confirm] Submission confirmed', { jobId, submissionId, hunter });
     return res.json({ success: true, submission });
@@ -4754,15 +4777,23 @@ router.patch('/:jobId/public-submissions', async (req, res) => {
       return res.status(400).json({ success: false, error: 'body.publicSubmissions does not match signed message' });
     }
 
-    job.publicSubmissions = publicSubmissions;
-    job.publicSubmissionsUpdatedAt = Math.floor(Date.now() / 1000);
-    await jobStorage.writeStorage(storage);
+    // Apply under the storage lock (re-find the job in a fresh copy) so this
+    // PATCH can't be lost to a concurrent sync/mutation write.
+    const updatedAt = Math.floor(Date.now() / 1000);
+    const applied = await jobStorage.withStorage((s) => {
+      const freshJob = s.jobs.find(j => j.jobId === parseInt(jobId, 10));
+      if (!freshJob) return false;
+      freshJob.publicSubmissions = publicSubmissions;
+      freshJob.publicSubmissionsUpdatedAt = updatedAt;
+      return true;
+    });
+    if (!applied) return res.status(404).json({ success: false, error: 'Job not found' });
 
     logger.info('[public-submissions] updated', { jobId, publicSubmissions, creator: job.creator });
 
     return res.json({
       success: true,
-      job: { jobId: job.jobId, publicSubmissions: job.publicSubmissions }
+      job: { jobId: parseInt(jobId, 10), publicSubmissions }
     });
   } catch (err) {
     logger.error('[public-submissions] fatal', { msg: err.message });

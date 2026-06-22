@@ -135,6 +135,10 @@ function BountyDetails({ walletState }) {
   // Core state
   const [job, setJob] = useState(null);
   const [rubric, setRubric] = useState(null);
+  // The rubric lives on IPFS (1–3 gateway round-trips server-side), so it's
+  // loaded off the critical path — see loadRubric. This tracks that fetch so the
+  // Evaluation Criteria section can show a placeholder while it streams in.
+  const [rubricLoading, setRubricLoading] = useState(false);
   const [submissions, setSubmissions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -369,6 +373,31 @@ function BountyDetails({ walletState }) {
   // DATA LOADING (with on-chain status verification)
   // ============================================================================
 
+  // Fetch the grading rubric separately from the main job load so the initial
+  // page render isn't blocked on IPFS. loadJobDetails() below uses
+  // includeRubric=false and is served entirely from local jobs.json (no IPFS),
+  // so the page paints immediately; this call re-runs the authoritative
+  // includeRubric=true path server-side (which opens the evaluationCid package —
+  // 1–3 IPFS round-trips) and the Evaluation Criteria section appears when it
+  // returns. We deliberately reuse getJob(includeRubric=true) rather than the
+  // /:jobId/rubric endpoint: the latter reads the drift-prone loose rubricCid,
+  // whereas the package is authoritative and matches what the oracle grades.
+  const loadRubric = useCallback(async () => {
+    setRubricLoading(true);
+    // Clear any rubric from a previously-viewed bounty while the new one loads.
+    setRubric(null);
+    try {
+      const response = await apiService.getJob(bountyId, true);
+      if (isMountedRef.current && response.job?.rubricContent) {
+        setRubric(response.job.rubricContent);
+      }
+    } catch (err) {
+      console.warn('[Rubric] background load failed:', err.message);
+    } finally {
+      if (isMountedRef.current) setRubricLoading(false);
+    }
+  }, [bountyId]);
+
   const loadJobDetails = useCallback(async (silent = false) => {
     if (!isMountedRef.current) return null;
 
@@ -376,7 +405,9 @@ function BountyDetails({ walletState }) {
       if (!silent) setLoading(true);
       setError(null);
 
-      const response = await apiService.getJob(bountyId, true);
+      // includeRubric=false → served entirely from local storage (no IPFS), so
+      // first paint is instant. The rubric is fetched separately via loadRubric.
+      const response = await apiService.getJob(bountyId, false);
 
       if (!isMountedRef.current) return null;
 
@@ -464,14 +495,15 @@ function BountyDetails({ walletState }) {
       setJob(finalJob);
       jobRef.current = finalJob;
 
-      if (response.job?.rubricContent) {
-        setRubric(response.job.rubricContent);
-      }
       if (response.job) {
         const subs = response.job.submissions || [];
         setSubmissions(subs);
         submissionsRef.current = subs;
       }
+
+      // Stream the rubric in off the critical path. Only on the foreground load —
+      // silent auto-refreshes shouldn't re-hit IPFS for content that never changes.
+      if (!silent) loadRubric();
 
       return finalJob;
     } catch (err) {
@@ -494,7 +526,7 @@ function BountyDetails({ walletState }) {
     } finally {
       if (isMountedRef.current && !silent) setLoading(false);
     }
-  }, [bountyId, retryCount, resolvedBountyId]);
+  }, [bountyId, retryCount, resolvedBountyId, loadRubric]);
 
   // Initial load - only runs on mount and when bountyId/retryCount changes
   // Note: We intentionally do NOT include loadJobDetails in deps to avoid
@@ -2262,7 +2294,15 @@ function BountyDetails({ walletState }) {
         </section>
       )}
 
-      {/* Rubric Section */}
+      {/* Rubric Section — rubric streams in from IPFS after first paint (loadRubric) */}
+      {!rubric && rubricLoading && (
+        <section className="rubric-section rubric-loading">
+          <h2>Evaluation Criteria</h2>
+          <p className="rubric-description">
+            <RefreshCw size={14} className="inline-icon spin" /> Loading evaluation criteria…
+          </p>
+        </section>
+      )}
       {rubric && (
         <section className="rubric-section">
           <h2>Evaluation Criteria</h2>

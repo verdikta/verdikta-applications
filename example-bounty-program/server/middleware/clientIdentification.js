@@ -37,6 +37,9 @@ const PUBLIC_PATHS = [
   '/r/',    // Receipt pages - must be public for social media crawlers (OG tags)
   '/og/',   // OG images for receipts - must be public for social media unfurling
   '/agents.txt',          // Agent access guide
+  '/llms.txt',            // llms.txt discovery file (llmstxt.org)
+  '/robots.txt',          // Crawler/AI access policy
+  '/sitemap.xml',         // XML sitemap
   '/api/docs',            // API documentation
   '/api/jobs.txt',        // Plain text bounty list
   '/api/jobs/eth-price',  // ETH price proxy (public utility, no sensitive data)

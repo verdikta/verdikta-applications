@@ -204,6 +204,14 @@ The production hosts behind nginx are `bounties.verdikta.org` (mainnet) and `bou
 3. If it returns or accepts new data fields, update `client/src/services/api.js`
 4. Test with curl before wiring it up to the UI
 
+### Add a new root-level discovery file (e.g. `llms.txt`, `ai.txt`, `humans.txt`)
+Serving a file at the domain root crosses **three independent layers**, each of which rejects the request differently if missed. All three are required — fixing one at a time is misleading because the symptoms overlap (a missing route returns `401`, not `404`, because it falls through to the auth catch-all; only the missing nginx rule returns `404`).
+1. **Route** — add the handler in `server/routes/agentRoutes.js` (alongside `/agents.txt`, `/feed.xml`), then restart the backend.
+2. **Auth allowlist** — add the path to `PUBLIC_PATHS` in `server/middleware/clientIdentification.js`. The global `clientIdentification` middleware blocks anything not listed with a `401 AUTH_MISSING`, *before* the request reaches the route.
+3. **nginx** — add an exact-match `location = /yourfile.ext { proxy_pass http://localhost:<5005|5006>/yourfile.ext; ... }` block to **both** active configs in `/etc/nginx/sites-available/` (`bounties.verdikta.org` → 5005, `bounties-testnet.verdikta.org` → 5006), then `nginx -t && systemctl reload nginx`. Without it, nginx's `location ~* \.[a-z0-9]+$` rule tries to serve the file from the static SPA build and 404s — the request never reaches the backend. Note: these nginx files live outside the repo (the `deploy/nginx/` copies are stale and not authoritative).
+
+Verify against the **public** URL, not just `localhost:5005` — they exercise different layers (`curl localhost` skips nginx entirely).
+
 ### Add a new submission status
 1. Update `client/src/utils/statusDisplay.js` (`SubmissionStatus` enum, `PENDING_STATUSES`, status config, helpers)
 2. Update `client/src/services/contractService.js` `statusMap` array in `getSubmission()`

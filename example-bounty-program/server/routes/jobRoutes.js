@@ -2915,6 +2915,19 @@ router.get('/:jobId', async (req, res) => {
     let extractedJuryNodes = job.juryNodes || [];
 
     if (req.query.includeRubric === 'true') {
+      // Source identity for the persisted-rubric cache. evaluationCid is the
+      // authoritative, immutable on-chain pointer (the package determines the
+      // gradingRubric); fall back to the loose rubricCid for legacy jobs.
+      const rubricSource = job.evaluationCid || job.rubricCid || null;
+
+      // Fast path (Option B): a rubric persisted on a previous load is still
+      // valid as long as its source CID matches — serve it with NO IPFS round
+      // trips. This is the bounty-detail load-time optimization.
+      const cacheHit = !!(job.rubricContent && rubricSource && job.rubricSourceCid === rubricSource);
+      if (cacheHit) {
+        rubricContent = job.rubricContent;
+      }
+
       const ipfsClient = req.app.locals.ipfsClient;
 
       // Hash of the gradingRubric referenced INSIDE the evaluationCid package.
@@ -2929,7 +2942,7 @@ router.get('/:jobId', async (req, res) => {
       // Re-issue (?clone=) prefills the create form from this response, so
       // trusting the drift-prone pointer here silently mints new bounties whose
       // graded criteria don't match the task.
-      if (job.evaluationCid) {
+      if (!cacheHit && job.evaluationCid) {
         try {
           const archiveBuffer = await ipfsClient.fetchFromIPFS(job.evaluationCid);
           const AdmZip = require('adm-zip');
@@ -2997,7 +3010,7 @@ router.get('/:jobId', async (req, res) => {
       // If it disagrees with the package's gradingRubric, the stored pointer is
       // stale — surface it loudly but keep serving the authoritative package
       // rubric. Only fetch from the loose pointer when the package gave nothing.
-      if (job.rubricCid) {
+      if (!cacheHit && job.rubricCid) {
         if (packageRubricHash && job.rubricCid !== packageRubricHash) {
           logger.warn('[jobs/details] rubricCid drift: stored rubricCid disagrees with evaluationCid package gradingRubric — using package (authoritative)', {
             jobId: job.jobId,
@@ -3012,6 +3025,20 @@ router.get('/:jobId', async (req, res) => {
           } catch (err) {
             logger.warn('[jobs/details] failed to fetch rubric from rubricCid (fallback)', { msg: err.message });
           }
+        }
+      }
+
+      // Persist the authoritative rubric (+ jury) onto the job so future loads
+      // serve it locally with zero IPFS. Keyed on the immutable source CID and
+      // race-safe via jobStorage.updateJob -> withStorage. Best-effort: a failed
+      // write just means the next load re-fetches and retries the persist.
+      if (!cacheHit && rubricContent && rubricSource) {
+        const updates = { rubricContent, rubricSourceCid: rubricSource };
+        if (extractedJuryNodes.length > 0) updates.juryNodes = extractedJuryNodes;
+        try {
+          await jobStorage.updateJob(job.jobId, updates);
+        } catch (persistErr) {
+          logger.warn('[jobs/details] failed to persist rubric cache', { jobId: job.jobId, error: persistErr.message });
         }
       }
     }

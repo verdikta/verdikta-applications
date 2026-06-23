@@ -1,42 +1,143 @@
+# Production nginx for bounties.verdikta.org (Base Mainnet).
+#
+# HTTP-only base config — after installing, run
+#   certbot --nginx -d bounties.verdikta.org
+# and certbot rewrites `listen 80` into the 443/SSL block + HTTP->HTTPS redirect.
+# See README.md.
+#
+# SERVING MODEL: the client is served as a STATIC Vite build (`vite build
+# --watch` -> client/dist-base/). nginx serves those files directly; only the
+# explicit allow-list below is proxied to the Express backend (localhost:5005).
+#
+# !!! MAINTENANCE RULE !!!
+# Every backend-served path MUST have a location here, or it falls through to the
+# SPA and renders React's NotFound. When you add an Express route that browsers
+# or crawlers hit directly (a share page, an OG image, an SEO file), add a
+# matching location below AND mirror it to the live /etc/nginx config. Keep this
+# in sync with server/routes/*. (This is exactly how /r/ and /og/ got dropped
+# and started 404'ing.) See README.md "Backend allow-list".
+#
+# The `include .../snippets/verdikta-*.conf` lines are host-side files on the
+# live box (hardening + security headers). Provide equivalents or remove those
+# include lines when recreating on a host that doesn't have them.
+
 server {
     listen 80;
     server_name bounties.verdikta.org;
 
-    # Public receipt URLs + OG images (served by backend so crawlers get OG tags)
-    location /r/ {
-        proxy_pass http://localhost:5005;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+    # Defense-in-depth hardening (block hidden-file probes, /@fs, scanner paths)
+    include /etc/nginx/snippets/verdikta-hardening.conf;
+
+    # Static client (Base). `vite build --watch` keeps dist-base/ fresh.
+    root /root/verdikta/applications/example-bounty-program/client/dist-base;
+    index index.html;
+
+    # Long-cache hashed Vite assets (content-hashed filenames).
+    location ^~ /assets/ {
+        access_log off;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        include /etc/nginx/snippets/verdikta-security-headers.conf;
+        try_files $uri =404;
     }
 
-    location /og/ {
-        proxy_pass http://localhost:5005;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+    # Anything with a file extension must exist on disk (don't let the SPA
+    # fallback mask 404s on /foo.bak etc). NOTE: this is a REGEX location, so any
+    # backend path ending in an extension (e.g. /og/<id>.png) MUST use `^~`
+    # below to take precedence over it.
+    location ~* \.[a-z0-9]+$ {
+        try_files $uri =404;
     }
 
-    # Mainnet client (Base)
+    # SPA fallback for clean (extensionless) React Router routes.
     location / {
-        proxy_pass http://localhost:5173;
+        try_files $uri $uri/ /index.html;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+        include /etc/nginx/snippets/verdikta-security-headers.conf;
+    }
+
+    # ======================================================================
+    # Backend allow-list — Express @ localhost:5005. Keep in sync with
+    # server/routes/*. Anything not listed here is served by the static SPA.
+    # ======================================================================
+
+    # SEO / agent-discovery files (server/routes/agentRoutes.js, server.js)
+    location = /agents.txt {
+        proxy_pass http://localhost:5005/agents.txt;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
+    }
+    location = /feed.xml {
+        proxy_pass http://localhost:5005/feed.xml;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location = /llms.txt {
+        proxy_pass http://localhost:5005/llms.txt;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location = /robots.txt {
+        proxy_pass http://localhost:5005/robots.txt;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location = /sitemap.xml {
+        proxy_pass http://localhost:5005/sitemap.xml;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location = /health {
+        proxy_pass http://localhost:5005/health;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Mainnet API (Base)
+    # Server-rendered share/receipt pages + OG card images
+    # (server/routes/receiptRoutes.js: /r/:jobId/:submissionId[/share],
+    #  /og/receipt/:jobId/:submissionId.{svg,png}). `^~` so the extension regex
+    # above does NOT grab /og/<...>.png first.
+    location ^~ /r/ {
+        proxy_pass http://localhost:5005/r/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location ^~ /og/ {
+        proxy_pass http://localhost:5005/og/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # JSON API
     location /api/ {
-        client_max_body_size 200M;
+        client_max_body_size 25m;
         proxy_pass http://localhost:5005/api/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;

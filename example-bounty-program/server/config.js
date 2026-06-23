@@ -14,6 +14,7 @@ const networks = {
     explorer: 'https://sepolia.basescan.org',
     // ETH-funded ReputationAggregator (LINK rail retired)
     verdiktaAggregatorAddress: '0xe8a385E473EA710c5a88Cc72681a16a26fe380e4',
+    verdiktaAggregatorDeployBlock: 42_598_251, // lower bound for event scans
   },
   'base': {
     chainId: 8453,
@@ -22,6 +23,7 @@ const networks = {
     explorer: 'https://basescan.org',
     // ETH-funded ReputationAggregator (LINK rail retired)
     verdiktaAggregatorAddress: '0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a',
+    verdiktaAggregatorDeployBlock: 47_087_827, // lower bound for event scans
   },
 };
 
@@ -65,6 +67,7 @@ const config = {
   bountyEscrowAddress: bountyEscrowAddresses[networkKey] || '',
   // Verdikta aggregator from network config (determined by NETWORK)
   verdiktaAggregatorAddress: networkDefaults.verdiktaAggregatorAddress,
+  verdiktaAggregatorDeployBlock: networkDefaults.verdiktaAggregatorDeployBlock || 0,
 
   // Server settings
   port: parseInt(process.env.PORT) || 5005,

@@ -170,7 +170,8 @@ const initializeBlockchainSync = () => {
       if (config.verdiktaAggregatorAddress) {
         initializeVerdiktaService(
           config.rpcUrl,
-          config.verdiktaAggregatorAddress
+          config.verdiktaAggregatorAddress,
+          config.verdiktaAggregatorDeployBlock
         );
         logger.info('✅ Verdikta analytics service initialized', {
           aggregatorAddress: config.verdiktaAggregatorAddress

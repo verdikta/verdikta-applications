@@ -7,6 +7,14 @@
 const { ethers } = require('ethers');
 const logger = require('./logger');
 
+// Event-scan tuning. Public RPCs (e.g. mainnet.base.org) reject eth_getLogs over
+// a >10,000-block range, so every scan is chunked and bounded to a window around
+// the aggregation instead of running to the chain head.
+const MAX_LOG_RANGE = 9000;          // < 10k RPC cap, per getLogs chunk
+const REQ_SEARCH_MARGIN = 7500;      // ± window (blocks) around the estimated request block
+const EVENT_WINDOW = 15000;          // blocks after the request to collect lifecycle events
+const RECENT_FALLBACK_BLOCKS = 250000; // bounded look-back when the timestamp anchor is unavailable
+
 // ReputationAggregator ABI (functions needed for analytics + agg history)
 const AGGREGATOR_ABI = [
   "function reputationKeeper() view returns (address)",
@@ -26,7 +34,10 @@ const AGGREGATOR_ABI = [
   // aggregations; the trailing flags (isComplete/failed) are decoded for
   // completeness but are NOT relied upon (the aggregator leaves `failed` unset and
   // times out silently — outcome is derived from events + elapsed time instead).
-  "function aggregatedEvaluations(bytes32) view returns (bool commitPhaseComplete, uint256 commitExpected, uint256 commitReceived, uint256 responseCount, uint256 requiredResponses, uint256 clusterSize, uint256 isComplete, address requester, uint256 startTimestamp, string justificationCIDs, uint256 failed, uint256 flag2)",
+  // The ETH-funded ReputationAggregator exposes a dedicated, named status view
+  // (the old contract's auto-getter `aggregatedEvaluations(bytes32)` does NOT
+  // exist on the new contract — calling it reverts with "missing revert data").
+  "function getAggregationStatus(bytes32 aggId) view returns (bool isComplete, bool failed, bool commitPhaseComplete, uint256 commitExpected, uint256 commitReceived, uint256 responseCount, uint256 requiredN, uint256 clusterP, address requester, uint256 startTimestamp)",
   "function requestIdToAggregatorId(bytes32) view returns (bytes32)",
   // Agg history events — signatures must match the actual contract exactly
   "event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)",
@@ -57,12 +68,32 @@ const KEEPER_ABI = [
 ];
 
 class VerdiktaService {
-  constructor(providerUrl, aggregatorAddress) {
+  constructor(providerUrl, aggregatorAddress, aggregatorDeployBlock = 0) {
     this.provider = new ethers.JsonRpcProvider(providerUrl);
     this.aggregatorAddress = aggregatorAddress;
+    // Lower bound for event scans — never scan below the aggregator's deploy block.
+    this.aggregatorDeployBlock = Number(aggregatorDeployBlock) || 0;
     this.aggregator = new ethers.Contract(aggregatorAddress, AGGREGATOR_ABI, this.provider);
     this.reputationKeeper = null;
     this.keeperAddress = null;
+  }
+
+  // Public RPCs cap eth_getLogs at a 10,000-block range. Split a scan into
+  // windows under that cap and concatenate (ascending block order preserved).
+  async _getLogsChunked(topics, fromBlock, toBlock, chunkSize = MAX_LOG_RANGE) {
+    const out = [];
+    if (toBlock < fromBlock) return out;
+    for (let start = fromBlock; start <= toBlock; start += chunkSize) {
+      const end = Math.min(start + chunkSize - 1, toBlock);
+      const chunk = await this.provider.getLogs({
+        address: this.aggregatorAddress,
+        topics,
+        fromBlock: start,
+        toBlock: end,
+      });
+      out.push(...chunk);
+    }
+    return out;
   }
 
   /**
@@ -461,25 +492,32 @@ class VerdiktaService {
       maxLikelihoodLength: Number(maxLikLen)
     };
 
-    // 2. Fetch aggregation status
+    // 2. Fetch aggregation status (named view on the ETH aggregator)
     let aggStatus;
     try {
-      const raw = await this.aggregator.aggregatedEvaluations(aggId);
+      const raw = await this.aggregator.getAggregationStatus(aggId);
       aggStatus = {
         commitPhaseComplete: raw.commitPhaseComplete,
         commitExpected: Number(raw.commitExpected),    // K
         commitCount: Number(raw.commitReceived),       // commits received
         responseCount: Number(raw.responseCount),      // reveals recorded
-        requiredResponses: Number(raw.requiredResponses), // N
-        clusterSize: Number(raw.clusterSize),          // P
+        requiredResponses: Number(raw.requiredN),      // N
+        clusterSize: Number(raw.clusterP),             // P
         requester: raw.requester,
         startTimestamp: Number(raw.startTimestamp),    // unix secs
-        isComplete: Number(raw.isComplete) > 0,        // aggregator-finished flag
-        failed: Number(raw.failed) > 0                 // unreliable — see ABI note; not used for outcome
+        isComplete: raw.isComplete,                    // aggregator-finished flag (bool)
+        failed: raw.failed                             // bool; outcome still derived from events
       };
     } catch (err) {
-      logger.warn('Failed to fetch aggregatedEvaluations', { aggId, msg: err.message });
+      logger.warn('Failed to fetch getAggregationStatus', { aggId, msg: err.message });
       aggStatus = null;
+    }
+
+    // A successful read with startTimestamp 0 means the aggregator has no record
+    // of this aggId — definitively not found. Return now instead of falling
+    // through to an expensive (and potentially RPC-rate-limited) log scan.
+    if (aggStatus && !(aggStatus.startTimestamp > 0)) {
+      return { found: false, aggId, message: 'No aggregation found on-chain for this ID' };
     }
 
     // 3. Find RequestAIEvaluation event.
@@ -490,31 +528,29 @@ class VerdiktaService {
     // on an indexing RPC even over a wide range.
     const aggIdTopic = aggId;
     const reqEventSig = this.aggregator.interface.getEvent('RequestAIEvaluation').topicHash;
+    const reqTopics = [reqEventSig, aggIdTopic];
+    const deployBlock = this.aggregatorDeployBlock || 0;
     let requestEvent = null;
-    let searchFrom = 0;
+    let searchFrom = deployBlock;
+    let logs = [];
+
     if (aggStatus?.startTimestamp > 0) {
+      // startTimestamp pinpoints when the request landed (~2s/block on Base);
+      // scan a narrow window around the estimated block, not to the chain head.
       const nowSec = Math.floor(Date.now() / 1000);
       const ageBlocks = Math.floor((nowSec - aggStatus.startTimestamp) / 2);
-      searchFrom = Math.max(0, currentBlock - ageBlocks - 5000); // ~2.7h margin
+      const estReqBlock = Math.max(deployBlock, currentBlock - ageBlocks);
+      searchFrom = Math.max(deployBlock, estReqBlock - REQ_SEARCH_MARGIN);
+      const searchTo = Math.min(currentBlock, estReqBlock + REQ_SEARCH_MARGIN);
+      logs = await this._getLogsChunked(reqTopics, searchFrom, searchTo);
     }
 
-    let logs = await this.provider.getLogs({
-      address: this.aggregatorAddress,
-      topics: [reqEventSig, aggIdTopic],
-      fromBlock: searchFrom,
-      toBlock: currentBlock
-    });
-
-    // Fallback: if the narrowed window missed it (e.g. clock skew, or startTimestamp
-    // was 0), retry over full history. Topic-filtered by the indexed aggId, so cheap
-    // on an archive RPC.
-    if (logs.length === 0 && searchFrom > 0) {
-      logs = await this.provider.getLogs({
-        address: this.aggregatorAddress,
-        topics: [reqEventSig, aggIdTopic],
-        fromBlock: 0,
-        toBlock: currentBlock
-      });
+    // Fallback: no timestamp anchor (status read failed) or the window missed it.
+    // Scan a BOUNDED recent look-back — never an unbounded full-history scan,
+    // which the public RPC rejects (eth_getLogs 10k-range limit).
+    if (logs.length === 0) {
+      searchFrom = Math.max(deployBlock, currentBlock - RECENT_FALLBACK_BLOCKS);
+      logs = await this._getLogsChunked(reqTopics, searchFrom, currentBlock);
     }
 
     if (logs.length > 0) {
@@ -530,16 +566,15 @@ class VerdiktaService {
       return { found: false, aggId, message: 'No matching aggregation found on-chain' };
     }
 
+    // All lifecycle events land within the aggregation's lifetime (commit +
+    // reveal + fulfill/timeout), so collect them in a bounded window after the
+    // request rather than scanning to the chain head.
     const eventFromBlock = requestEvent ? requestEvent.block : searchFrom;
+    const eventToBlock = Math.min(currentBlock, eventFromBlock + EVENT_WINDOW);
 
     // 4. Fetch OracleSelected events
     const oracleSelectedSig = this.aggregator.interface.getEvent('OracleSelected').topicHash;
-    const oracleLogs = await this.provider.getLogs({
-      address: this.aggregatorAddress,
-      topics: [oracleSelectedSig, aggIdTopic],
-      fromBlock: eventFromBlock,
-      toBlock: currentBlock
-    });
+    const oracleLogs = await this._getLogsChunked([oracleSelectedSig, aggIdTopic], eventFromBlock, eventToBlock);
 
     logger.info('AggHistory debug', {
       oracleSelectedSig,
@@ -580,12 +615,7 @@ class VerdiktaService {
     const lifecycleLogs = await Promise.all(
       eventNames.map(name => {
         const sig = this.aggregator.interface.getEvent(name).topicHash;
-        return this.provider.getLogs({
-          address: this.aggregatorAddress,
-          topics: [sig, aggIdTopic],
-          fromBlock: eventFromBlock,
-          toBlock: currentBlock
-        });
+        return this._getLogsChunked([sig, aggIdTopic], eventFromBlock, eventToBlock);
       })
     );
 
@@ -610,12 +640,7 @@ class VerdiktaService {
 
     // 6. Fetch NewOracleResponseRecorded events
     const responseSig = this.aggregator.interface.getEvent('NewOracleResponseRecorded').topicHash;
-    const responseLogs = await this.provider.getLogs({
-      address: this.aggregatorAddress,
-      topics: [responseSig, aggIdTopic],
-      fromBlock: eventFromBlock,
-      toBlock: currentBlock
-    });
+    const responseLogs = await this._getLogsChunked([responseSig, aggIdTopic], eventFromBlock, eventToBlock);
 
     logger.info('NewOracleResponseRecorded', { logsFound: responseLogs.length });
     for (const log of responseLogs) {
@@ -631,18 +656,8 @@ class VerdiktaService {
     const fulfillSig = this.aggregator.interface.getEvent('FulfillAIEvaluation').topicHash;
 
     const [failLogs, fulfillLogs] = await Promise.all([
-      this.provider.getLogs({
-        address: this.aggregatorAddress,
-        topics: [failSig, aggIdTopic],
-        fromBlock: eventFromBlock,
-        toBlock: currentBlock
-      }),
-      this.provider.getLogs({
-        address: this.aggregatorAddress,
-        topics: [fulfillSig, aggIdTopic],
-        fromBlock: eventFromBlock,
-        toBlock: currentBlock
-      })
+      this._getLogsChunked([failSig, aggIdTopic], eventFromBlock, eventToBlock),
+      this._getLogsChunked([fulfillSig, aggIdTopic], eventFromBlock, eventToBlock)
     ]);
 
     let fulfillment = null;
@@ -767,13 +782,13 @@ class VerdiktaService {
 // Singleton instance
 let verdiktaService = null;
 
-function initializeVerdiktaService(providerUrl, aggregatorAddress) {
+function initializeVerdiktaService(providerUrl, aggregatorAddress, aggregatorDeployBlock = 0) {
   if (!aggregatorAddress) {
     logger.warn('Verdikta service not initialized: VERDIKTA_AGGREGATOR_ADDRESS not set');
     return null;
   }
 
-  verdiktaService = new VerdiktaService(providerUrl, aggregatorAddress);
+  verdiktaService = new VerdiktaService(providerUrl, aggregatorAddress, aggregatorDeployBlock);
   logger.info('Verdikta service initialized', { aggregatorAddress });
   return verdiktaService;
 }

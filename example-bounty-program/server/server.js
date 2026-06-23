@@ -169,12 +169,13 @@ const initializeBlockchainSync = () => {
       // Initialize Verdikta service for analytics
       if (config.verdiktaAggregatorAddress) {
         initializeVerdiktaService(
-          config.rpcUrl,
+          config.verdiktaRpcUrl,
           config.verdiktaAggregatorAddress,
           config.verdiktaAggregatorDeployBlock
         );
         logger.info('✅ Verdikta analytics service initialized', {
-          aggregatorAddress: config.verdiktaAggregatorAddress
+          aggregatorAddress: config.verdiktaAggregatorAddress,
+          rpc: config.verdiktaRpcUrl.replace(/\/v3\/.*$/, '/v3/***') // mask Infura key
         });
       } else {
         logger.info('ℹ️  Verdikta analytics disabled - no aggregator address configured');

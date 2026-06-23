@@ -45,6 +45,15 @@ function getRpcUrl() {
   return networkDefaults.rpcUrl;
 }
 
+// RPC for Verdikta aggregator reads (status view + wide getLogs scans for
+// agg-history). Defaults to the main RPC (Infura/RPC_URL when configured), but
+// can be pointed independently at an archive/higher-limit endpoint via
+// VERDIKTA_RPC_URL — keyless public RPCs (base.org, PublicNode, llama/drpc/1rpc)
+// are either flaky or block datacenter IPs for this workload.
+function getVerdiktaRpcUrl() {
+  return process.env.VERDIKTA_RPC_URL || getRpcUrl();
+}
+
 // Select BountyEscrow address based on network
 const bountyEscrowAddresses = {
   'base-sepolia': process.env.BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA || '',
@@ -68,6 +77,7 @@ const config = {
   // Verdikta aggregator from network config (determined by NETWORK)
   verdiktaAggregatorAddress: networkDefaults.verdiktaAggregatorAddress,
   verdiktaAggregatorDeployBlock: networkDefaults.verdiktaAggregatorDeployBlock || 0,
+  verdiktaRpcUrl: getVerdiktaRpcUrl(),
 
   // Server settings
   port: parseInt(process.env.PORT) || 5005,

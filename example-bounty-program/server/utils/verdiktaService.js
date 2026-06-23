@@ -12,7 +12,7 @@ const logger = require('./logger');
 // the aggregation instead of running to the chain head.
 const MAX_LOG_RANGE = 9000;          // < 10k RPC cap, per getLogs chunk
 const REQ_SEARCH_MARGIN = 7500;      // ± window (blocks) around the estimated request block
-const EVENT_WINDOW = 15000;          // blocks after the request to collect lifecycle events
+const EVENT_WINDOW = 8000;           // blocks after the request to collect lifecycle events (one getLogs chunk; an agg's full commit→reveal→fulfill/timeout lifecycle is well under this)
 const RECENT_FALLBACK_BLOCKS = 250000; // bounded look-back when the timestamp anchor is unavailable
 
 // ReputationAggregator ABI (functions needed for analytics + agg history)
@@ -78,19 +78,44 @@ class VerdiktaService {
     this.keeperAddress = null;
   }
 
+  // Retry a read against transient RPC errors (the public/load-balanced Base
+  // endpoints intermittently return "missing revert data" / "could not coalesce
+  // error" on otherwise-valid calls). Short linear backoff; re-throws the last
+  // error if all attempts fail.
+  async _withRetry(fn, label, tries = 3) {
+    let lastErr;
+    for (let attempt = 1; attempt <= tries; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastErr = err;
+        logger.warn('[verdikta] RPC read failed, retrying', {
+          label, attempt, tries, msg: (err.shortMessage || err.message || '').slice(0, 80)
+        });
+        if (attempt < tries) await new Promise(r => setTimeout(r, 300 * attempt));
+      }
+    }
+    throw lastErr;
+  }
+
   // Public RPCs cap eth_getLogs at a 10,000-block range. Split a scan into
   // windows under that cap and concatenate (ascending block order preserved).
+  // Each chunk is retried independently so one transient failure doesn't abort
+  // the whole scan.
   async _getLogsChunked(topics, fromBlock, toBlock, chunkSize = MAX_LOG_RANGE) {
     const out = [];
     if (toBlock < fromBlock) return out;
     for (let start = fromBlock; start <= toBlock; start += chunkSize) {
       const end = Math.min(start + chunkSize - 1, toBlock);
-      const chunk = await this.provider.getLogs({
-        address: this.aggregatorAddress,
-        topics,
-        fromBlock: start,
-        toBlock: end,
-      });
+      const chunk = await this._withRetry(
+        () => this.provider.getLogs({
+          address: this.aggregatorAddress,
+          topics,
+          fromBlock: start,
+          toBlock: end,
+        }),
+        `getLogs[${start}-${end}]`
+      );
       out.push(...chunk);
     }
     return out;
@@ -479,12 +504,12 @@ class VerdiktaService {
 
     // 1. Fetch contract params
     // K = oracles polled, M = commits required, N = reveals required
-    const [K, M, N, maxLikLen] = await Promise.all([
+    const [K, M, N, maxLikLen] = await this._withRetry(() => Promise.all([
       this.aggregator.commitOraclesToPoll(),
       this.aggregator.oraclesToPoll(),
       this.aggregator.requiredResponses(),
       this.aggregator.maxLikelihoodLength()
-    ]);
+    ]), 'contract-params');
     const contractParams = {
       K: Number(K),
       M: Number(M),
@@ -495,7 +520,7 @@ class VerdiktaService {
     // 2. Fetch aggregation status (named view on the ETH aggregator)
     let aggStatus;
     try {
-      const raw = await this.aggregator.getAggregationStatus(aggId);
+      const raw = await this._withRetry(() => this.aggregator.getAggregationStatus(aggId), 'getAggregationStatus');
       aggStatus = {
         commitPhaseComplete: raw.commitPhaseComplete,
         commitExpected: Number(raw.commitExpected),    // K

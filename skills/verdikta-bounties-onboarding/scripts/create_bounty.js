@@ -224,6 +224,15 @@ if (!contractAddress) {
   process.exit(1);
 }
 
+const apiContractAddress = apiData.job?.contractAddress;
+if (apiContractAddress && apiContractAddress.toLowerCase() !== contractAddress.toLowerCase()) {
+  console.error('Escrow contract mismatch; refusing to spend gas.');
+  console.error(`  Script escrow: ${contractAddress}`);
+  console.error(`  API expects:   ${apiContractAddress}`);
+  console.error('Update BOUNTY_ESCROW_ADDRESS_BASE or scripts/_lib.js, then retry.');
+  process.exit(1);
+}
+
 const contract = escrowContract(network, signer);
 const deadline = Math.floor(Date.now() / 1000) + (Number(submissionWindowHours) * 3600);
 const value = ethers.parseEther(String(bountyAmount));

@@ -91,6 +91,17 @@ export const apiService = {
     });
     return response.data;
   },
+
+  // Full blow-by-blow of a single oracle aggregation (the drill-down behind a
+  // blameworthy aggId): requirements, per-slot commit/reveal outcome, failures,
+  // and final fulfillment. Bounded on-chain log scan — allow generous time.
+  async getAggHistory(aggId, network) {
+    const response = await api.get(`/api/analytics/agg-history/${aggId}`, {
+      params: { network },
+      timeout: 90000,
+    });
+    return response.data;
+  },
 };
 
 export default apiService;

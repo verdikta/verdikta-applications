@@ -254,6 +254,33 @@ router.get('/oracle-health', async (req, res) => {
 });
 
 /**
+ * GET /api/analytics/agg-history/:aggId
+ * Full blow-by-blow of a single oracle aggregation (the drill-down behind a
+ * blameworthy aggId). ?network=base|base-sepolia selects the chain.
+ */
+router.get('/agg-history/:aggId', async (req, res) => {
+  const network = normalizeNetwork(req.query.network);
+  const { aggId } = req.params;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(aggId)) {
+    return res.status(400).json({ success: false, error: 'Invalid aggId format' });
+  }
+  const cacheKey = `analytics_agg_history_${network}_${aggId.toLowerCase()}`;
+  try {
+    const cached = analyticsCache.get(cacheKey);
+    if (cached) {
+      return res.json({ success: true, data: cached.data, cached: true, cachedAt: cached.timestamp });
+    }
+    const verdiktaService = getVerdiktaService(network);
+    const data = await verdiktaService.getAggHistory(aggId);
+    analyticsCache.set(cacheKey, data);
+    return res.json({ success: true, data, cached: false });
+  } catch (error) {
+    logger.error('[analytics/agg-history] error', { network, aggId, msg: error.message });
+    return res.status(500).json({ success: false, error: 'Failed to get agg history', details: error.message });
+  }
+});
+
+/**
  * POST /api/analytics/refresh
  * Invalidate the cache for a network so the next read pulls fresh contract data.
  */

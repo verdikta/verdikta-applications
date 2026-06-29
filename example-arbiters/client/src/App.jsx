@@ -9,6 +9,7 @@ import Analytics from './pages/Analytics';
 import Contracts from './pages/Contracts';
 import OwnerDetails from './pages/OwnerDetails';
 import MyArbiters from './pages/MyArbiters';
+import AggHistory from './pages/AggHistory';
 import './App.css';
 
 function AppContent() {
@@ -24,6 +25,7 @@ function AppContent() {
             <Route path="/contracts" element={<Contracts />} />
             <Route path="/owner/:address" element={<OwnerDetails />} />
             <Route path="/my-arbiters" element={<MyArbiters />} />
+            <Route path="/agg-history/:aggId" element={<AggHistory />} />
           </Routes>
         </main>
       </div>

@@ -181,6 +181,36 @@ const AGG_EVENT_ABI = [
   "event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] likelihoods, string justificationCID)"
 ];
 
+// Full per-aggregation lifecycle surface, for the agg-history drill-down (the
+// blow-by-blow of one evaluation: requirements, per-slot commit/reveal outcome,
+// failure reasons, and final fulfillment). Mirrors example-bounty-program's
+// agg-history so the same picture renders here. The getAggregationStatus view is
+// the ETH aggregator's named status getter (the legacy auto-getter is gone).
+const AGG_HISTORY_ABI = [
+  "function commitOraclesToPoll() view returns (uint256)",
+  "function oraclesToPoll() view returns (uint256)",
+  "function requiredResponses() view returns (uint256)",
+  "function maxLikelihoodLength() view returns (uint256)",
+  "function getAggregationStatus(bytes32 aggId) view returns (bool isComplete, bool failed, bool commitPhaseComplete, uint256 commitExpected, uint256 commitReceived, uint256 responseCount, uint256 requiredN, uint256 clusterP, address requester, uint256 startTimestamp)",
+  "event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)",
+  "event OracleSelected(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address oracle, bytes32 jobId)",
+  "event CommitReceived(bytes32 indexed aggRequestId, uint256 pollIndex, address operator, bytes16 commitHash)",
+  "event RevealRequestDispatched(bytes32 indexed aggRequestId, uint256 pollIndex, bytes16 commitHash)",
+  "event NewOracleResponseRecorded(bytes32 requestId, uint256 pollIndex, bytes32 indexed aggRequestId, address operator)",
+  "event RevealHashMismatch(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, bytes16 expectedHash, bytes16 gotHash)",
+  "event InvalidRevealFormat(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, string badCid)",
+  "event RevealTooManyScores(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, uint256 responseLength, uint256 maxAllowed)",
+  "event RevealWrongScoreCount(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, uint256 responseLength, uint256 expectedLength)",
+  "event RevealTooFewScores(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, uint256 responseLength)",
+  "event EvaluationFailed(bytes32 indexed aggRequestId, string phase)",
+  "event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] likelihoods, string justificationCID)"
+];
+// Agg-history scan tuning (blocks). Windows are bounded so a drill-down never
+// runs an unbounded full-history scan.
+const AGGH_REQ_SEARCH_MARGIN = 7500;     // ± window around the estimated request block
+const AGGH_EVENT_WINDOW = 8000;          // blocks after the request to collect lifecycle events
+const AGGH_RECENT_FALLBACK_BLOCKS = 250000; // bounded look-back when the timestamp anchor is unavailable
+
 class VerdiktaService {
   constructor(providerUrl, aggregatorAddress, options = {}) {
     this.provider = new ethers.JsonRpcProvider(providerUrl);
@@ -1202,24 +1232,30 @@ class VerdiktaService {
     // backing several slots in one round is docked once per blameworthy slot.
     const COMMITS_REQUIRED = 4;
     const REVEALS_REQUIRED = 3;
-    const blameByOp = {}; // operatorLower → count
-    const dockBlame = (operator) => {
+    // operatorLower → { count, evals: { aggId → { stage, slots } } }. `count` is
+    // the total blameworthy slot instances (the Blameworthy column); `evals` lists
+    // the distinct failed aggIds this operator is responsible for (for the drill-down).
+    const blameByOp = {};
+    const dockBlame = (operator, aggId, stage) => {
       if (!operator) return;
       const k = operator.toLowerCase();
-      blameByOp[k] = (blameByOp[k] || 0) + 1;
+      if (!blameByOp[k]) blameByOp[k] = { count: 0, evals: {} };
+      blameByOp[k].count++;
+      const e = blameByOp[k].evals[aggId] || (blameByOp[k].evals[aggId] = { stage, slots: 0 });
+      e.slots++;
     };
-    for (const ev of Object.values(evals)) {
+    for (const [aggId, ev] of Object.entries(evals)) {
       if (ev.fulfilled) continue; // succeeded — no blame
       const slots = Object.values(ev.slots);
       const commitCount = slots.filter((s) => s.committed).length;
       if (commitCount < COMMITS_REQUIRED) {
         // Failed at the commit stage: blame every selected slot that didn't commit.
-        for (const s of slots) if (!s.committed) dockBlame(s.operator);
+        for (const s of slots) if (!s.committed) dockBlame(s.operator, aggId, 'commit');
       } else {
         const revealCount = slots.filter((s) => s.revealed).length;
         if (revealCount < REVEALS_REQUIRED) {
           // Reached the reveal stage but fell short: blame committers that didn't reveal.
-          for (const s of slots) if (s.committed && !s.revealed) dockBlame(s.operator);
+          for (const s of slots) if (s.committed && !s.revealed) dockBlame(s.operator, aggId, 'reveal');
         }
       }
     }
@@ -1380,7 +1416,11 @@ class VerdiktaService {
         commitRatePct: pct(o.commits, o.selected),
         reveals: o.reveals,
         revealRatePct: pct(o.reveals, o.commits), // reveals per commit — exposes commit-but-no-reveal
-        blameworthy: blameByOp[o.operator.toLowerCase()] || 0, // failed-eval slots charged to this operator
+        blameworthy: (blameByOp[o.operator.toLowerCase()] || {}).count || 0, // failed-eval slots charged to this operator
+        // Distinct failed aggIds this operator is responsible for (drill-down list).
+        blameAggIds: blameByOp[o.operator.toLowerCase()]
+          ? Object.entries(blameByOp[o.operator.toLowerCase()].evals).map(([aggId, d]) => ({ aggId, stage: d.stage, slots: d.slots }))
+          : [],
         gas: gasByOp[o.operator.toLowerCase()] || null, // per-op gas stats (null until receipts cached)
       }))
       .sort((a, b) => b.timesSelected - a.timesSelected || b.commits - a.commits);
@@ -1412,6 +1452,224 @@ class VerdiktaService {
         finalization: gasFinalization, // round-completing reveal cost (aggregation outlier), network-wide
       },
       generatedAt: Date.now(),
+    };
+  }
+
+  /**
+   * Full blow-by-blow of a single aggregation (aggId), for the agg-history
+   * drill-down: contract requirements (K/M/N), the named on-chain status, the
+   * request event + CIDs, a per-slot commit/reveal/failure breakdown, the final
+   * fulfillment (likelihoods + justification CID), and a derived outcome.
+   * Mirrors example-bounty-program's getAggHistory so the same picture renders
+   * here. Reads go through the read RPC; log scans use the archive provider and
+   * are bounded to a window around the request (never a full-history scan).
+   */
+  async getAggHistory(aggId) {
+    const provider = this.provider;
+    const logProvider = this._getArchiveProvider();
+    const aggr = new ethers.Contract(this.aggregatorAddress, AGG_HISTORY_ABI, provider);
+    const iface = aggr.interface;
+    const deployBlock = this.aggregatorFromBlock || 0;
+
+    // Chunked log scan over the archive provider (bounded ranges → single chunk).
+    const CHUNK = 90_000;
+    const getLogsChunked = async (topics, fromBlock, toBlock) => {
+      const out = [];
+      if (toBlock < fromBlock) return out;
+      for (let start = fromBlock; start <= toBlock; start += CHUNK) {
+        const end = Math.min(start + CHUNK - 1, toBlock);
+        const chunk = await withRetry(() => logProvider.getLogs({
+          address: this.aggregatorAddress, topics, fromBlock: start, toBlock: end,
+        }));
+        out.push(...chunk);
+      }
+      return out;
+    };
+
+    const currentBlock = await withRetry(() => logProvider.getBlockNumber());
+
+    // 1. Contract params: K = oracles polled, M = commits required, N = reveals required.
+    const [K, M, N, maxLikLen] = await withRetry(() => Promise.all([
+      aggr.commitOraclesToPoll(),
+      aggr.oraclesToPoll(),
+      aggr.requiredResponses(),
+      aggr.maxLikelihoodLength(),
+    ]));
+    const contractParams = { K: Number(K), M: Number(M), N: Number(N), maxLikelihoodLength: Number(maxLikLen) };
+
+    // 2. Named on-chain aggregation status.
+    let aggStatus;
+    try {
+      const raw = await withRetry(() => aggr.getAggregationStatus(aggId));
+      aggStatus = {
+        commitPhaseComplete: raw.commitPhaseComplete,
+        commitExpected: Number(raw.commitExpected),   // K
+        commitCount: Number(raw.commitReceived),      // commits received
+        responseCount: Number(raw.responseCount),     // reveals recorded
+        requiredResponses: Number(raw.requiredN),     // N
+        clusterSize: Number(raw.clusterP),            // P
+        requester: raw.requester,
+        startTimestamp: Number(raw.startTimestamp),   // unix secs
+        isComplete: raw.isComplete,
+        failed: raw.failed,
+      };
+    } catch (err) {
+      logger.warn('agg-history: getAggregationStatus failed', { network: this.networkKey, aggId, msg: err.message });
+      aggStatus = null;
+    }
+
+    // A clean read with startTimestamp 0 means the aggregator has no record of
+    // this aggId — definitively not found; skip the (costly) log scan.
+    if (aggStatus && !(aggStatus.startTimestamp > 0)) {
+      return { found: false, aggId, network: this.networkKey, message: 'No aggregation found on-chain for this ID' };
+    }
+
+    // 3. Find the RequestAIEvaluation event, narrowing via startTimestamp when set.
+    const aggIdTopic = aggId;
+    const reqTopics = [iface.getEvent('RequestAIEvaluation').topicHash, aggIdTopic];
+    let requestEvent = null;
+    let searchFrom = deployBlock;
+    let logs = [];
+    if (aggStatus?.startTimestamp > 0) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const ageBlocks = Math.floor((nowSec - aggStatus.startTimestamp) / 2); // ~2s/block on Base
+      const estReqBlock = Math.max(deployBlock, currentBlock - ageBlocks);
+      searchFrom = Math.max(deployBlock, estReqBlock - AGGH_REQ_SEARCH_MARGIN);
+      const searchTo = Math.min(currentBlock, estReqBlock + AGGH_REQ_SEARCH_MARGIN);
+      logs = await getLogsChunked(reqTopics, searchFrom, searchTo);
+    }
+    if (logs.length === 0) {
+      // Fallback: bounded recent look-back (never unbounded full history).
+      searchFrom = Math.max(deployBlock, currentBlock - AGGH_RECENT_FALLBACK_BLOCKS);
+      logs = await getLogsChunked(reqTopics, searchFrom, currentBlock);
+    }
+    if (logs.length > 0) {
+      const parsed = iface.parseLog(logs[0]);
+      requestEvent = { block: logs[0].blockNumber, txHash: logs[0].transactionHash, cids: parsed.args.cids };
+    }
+    if (!requestEvent && !aggStatus) {
+      return { found: false, aggId, network: this.networkKey, message: 'No matching aggregation found on-chain' };
+    }
+
+    const eventFromBlock = requestEvent ? requestEvent.block : searchFrom;
+    const eventToBlock = Math.min(currentBlock, eventFromBlock + AGGH_EVENT_WINDOW);
+
+    // 4. OracleSelected → the per-slot roster.
+    const oracleLogs = await getLogsChunked([iface.getEvent('OracleSelected').topicHash, aggIdTopic], eventFromBlock, eventToBlock);
+    const slotMap = {};
+    for (const log of oracleLogs) {
+      const parsed = iface.parseLog(log);
+      const slot = Number(parsed.args.pollIndex);
+      slotMap[slot] = {
+        slot, oracle: parsed.args.oracle, jobId: parsed.args.jobId,
+        committed: false, revealRequested: false, revealOK: false,
+        hashMismatch: false, invalidFormat: false, tooManyScores: false,
+        wrongScoreCount: false, tooFewScores: false, scores: null,
+      };
+    }
+
+    // 5. Commit / reveal-request / failure events (indexed by aggRequestId).
+    const eventNames = [
+      'CommitReceived', 'RevealRequestDispatched',
+      'RevealHashMismatch', 'InvalidRevealFormat',
+      'RevealTooManyScores', 'RevealWrongScoreCount', 'RevealTooFewScores',
+    ];
+    // Sequential, NOT Promise.all: concurrent getLogs get batched into one
+    // JSON-RPC call by ethers, and the Tenderly archive gateway hangs on batched
+    // eth_getLogs. Each scan is a sub-second single-chunk query, so serial is fine.
+    const lifecycleLogs = [];
+    for (const name of eventNames) {
+      lifecycleLogs.push(await getLogsChunked([iface.getEvent(name).topicHash, aggIdTopic], eventFromBlock, eventToBlock));
+    }
+    for (let i = 0; i < eventNames.length; i++) {
+      for (const log of lifecycleLogs[i]) {
+        const parsed = iface.parseLog(log);
+        const slot = Number(parsed.args.pollIndex);
+        if (!slotMap[slot]) continue;
+        switch (eventNames[i]) {
+          case 'CommitReceived': slotMap[slot].committed = true; break;
+          case 'RevealRequestDispatched': slotMap[slot].revealRequested = true; break;
+          case 'RevealHashMismatch': slotMap[slot].hashMismatch = true; break;
+          case 'InvalidRevealFormat': slotMap[slot].invalidFormat = true; break;
+          case 'RevealTooManyScores': slotMap[slot].tooManyScores = true; break;
+          case 'RevealWrongScoreCount': slotMap[slot].wrongScoreCount = true; break;
+          case 'RevealTooFewScores': slotMap[slot].tooFewScores = true; break;
+        }
+      }
+    }
+
+    // 6. Successful reveals.
+    const responseLogs = await getLogsChunked([iface.getEvent('NewOracleResponseRecorded').topicHash, aggIdTopic], eventFromBlock, eventToBlock);
+    for (const log of responseLogs) {
+      const parsed = iface.parseLog(log);
+      const slot = Number(parsed.args.pollIndex);
+      if (slotMap[slot]) slotMap[slot].revealOK = true;
+    }
+
+    // 7. Fulfillment (final scores + justification CID).
+    const fulfillLogs = await getLogsChunked([iface.getEvent('FulfillAIEvaluation').topicHash, aggIdTopic], eventFromBlock, eventToBlock);
+    let fulfillment = null;
+    if (fulfillLogs.length > 0) {
+      const parsed = iface.parseLog(fulfillLogs[0]);
+      fulfillment = {
+        likelihoods: parsed.args.likelihoods.map((s) => Number(s)),
+        justificationCID: parsed.args.justificationCID,
+        block: fulfillLogs[0].blockNumber,
+        txHash: fulfillLogs[0].transactionHash,
+      };
+    }
+
+    // 8. Build slots + analysis + derived outcome.
+    const slots = Object.values(slotMap).sort((a, b) => a.slot - b.slot);
+    const committedSlots = slots.filter((s) => s.committed);
+    const revealedSlots = slots.filter((s) => s.revealOK);
+    const nonRespondingSlots = slots.filter((s) => !s.committed);
+    const uniqueOracles = new Set(slots.map((s) => s.oracle)).size;
+
+    const requestBlock = requestEvent?.block || null;
+    let elapsedMinutes = null;
+    if (requestBlock) elapsedMinutes = Math.round((currentBlock - requestBlock) * 2 / 60);
+    else if (aggStatus?.startTimestamp > 0) elapsedMinutes = Math.round((Math.floor(Date.now() / 1000) - aggStatus.startTimestamp) / 60);
+    const IN_PROCESS_WINDOW_MINUTES = 10;
+    const isEarly = elapsedMinutes !== null && elapsedMinutes < IN_PROCESS_WINDOW_MINUTES;
+
+    // Outcome from events + elapsed time (the aggregator leaves `failed` unset on
+    // timeouts). Phase of death: commit (< M commits) or reveal (< N reveals).
+    const failPhase = committedSlots.length < contractParams.M ? 'commit'
+      : (revealedSlots.length < contractParams.N ? 'reveal' : 'aggregation');
+    let outcome;
+    if (fulfillment) outcome = 'COMPLETED';
+    else if (isEarly) outcome = `IN PROCESS (${failPhase} phase, ${elapsedMinutes}m elapsed)`;
+    else if (elapsedMinutes === null) outcome = 'RUNNING';
+    else outcome = `FAILED (${failPhase} phase)`;
+
+    const analysis = {
+      totalSlots: slots.length,
+      committed: committedSlots.length,
+      revealed: revealedSlots.length,
+      nonResponding: nonRespondingSlots.length,
+      nonRespondingSlotIds: nonRespondingSlots.map((s) => s.slot),
+      uniqueOracles,
+      failures: {
+        hashMismatch: slots.filter((s) => s.hashMismatch).length,
+        invalidFormat: slots.filter((s) => s.invalidFormat).length,
+        tooManyScores: slots.filter((s) => s.tooManyScores).length,
+        wrongScoreCount: slots.filter((s) => s.wrongScoreCount).length,
+        tooFewScores: slots.filter((s) => s.tooFewScores).length,
+      },
+    };
+
+    return {
+      found: true,
+      aggId,
+      network: this.networkKey,
+      contractParams,
+      aggregationStatus: aggStatus,
+      requestEvent,
+      slots,
+      fulfillment,
+      outcome,
+      analysis,
     };
   }
 

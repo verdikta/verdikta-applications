@@ -71,6 +71,65 @@ const rateColor = (pct) => {
   return COLORS.blocked;
 };
 
+// One operator row in the reliability table. The Blameworthy count, when
+// nonzero, is a toggle that expands the list of failed aggIds this operator is
+// responsible for — each a link to that evaluation's full agg-history page.
+const blameAggLabel = (id) => `${id.slice(0, 18)}…${id.slice(-6)}`;
+function OperatorRow({ o }) {
+  const [open, setOpen] = useState(false);
+  const blame = o.blameworthy || 0;
+  const aggIds = o.blameAggIds || [];
+  return (
+    <>
+      <tr>
+        <td><code>{shortAddr(o.operator)}</code></td>
+        <td>{o.arbiters == null ? '—' : o.arbiters}</td>
+        <td><strong>{o.timesSelected}</strong></td>
+        <td style={{ color: rateColor(o.commitRatePct), fontWeight: 600 }}>
+          {o.commits}{o.commitRatePct == null ? '' : ` (${o.commitRatePct}%)`}
+        </td>
+        <td style={{ color: rateColor(o.revealRatePct), fontWeight: 600 }}>
+          {o.reveals}{o.revealRatePct == null ? '' : ` (${o.revealRatePct}%)`}
+        </td>
+        <td>
+          {blame > 0 ? (
+            <button
+              type="button"
+              className="blame-toggle"
+              onClick={() => setOpen((v) => !v)}
+              aria-expanded={open}
+              title="Show the failed evaluations this operator is responsible for"
+            >
+              {blame} <span className="blame-caret">{open ? '▾' : '▸'}</span>
+            </button>
+          ) : 0}
+        </td>
+      </tr>
+      {open && blame > 0 && (
+        <tr className="blame-detail-row">
+          <td colSpan={6}>
+            <div className="blame-detail">
+              <span className="blame-detail-label">
+                Responsible for {aggIds.length} failed evaluation{aggIds.length === 1 ? '' : 's'}:
+              </span>
+              <ul className="blame-agg-list">
+                {aggIds.map((b) => (
+                  <li key={b.aggId}>
+                    <Link to={`/agg-history/${b.aggId}`} className="blame-agg-link" title={b.aggId}>
+                      <code>{blameAggLabel(b.aggId)}</code>
+                    </Link>
+                    <span className="blame-agg-meta"> — {b.stage} stage{b.slots > 1 ? ` · ${b.slots} arbiters` : ''}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
 // Operator Reliability section, rendered once per look-back window (the 14-day
 // and 24-hour tables share identical columns — only the data differs).
 const renderReliabilitySection = (windowLabel, hData, hLoading, hError) => (
@@ -96,20 +155,7 @@ const renderReliabilitySection = (windowLabel, hData, hLoading, hError) => (
             </thead>
             <tbody>
               {hData.operators.map((o) => (
-                <tr key={o.operator}>
-                  <td><code>{shortAddr(o.operator)}</code></td>
-                  <td>{o.arbiters == null ? '—' : o.arbiters}</td>
-                  <td><strong>{o.timesSelected}</strong></td>
-                  <td style={{ color: rateColor(o.commitRatePct), fontWeight: 600 }}>
-                    {o.commits}{o.commitRatePct == null ? '' : ` (${o.commitRatePct}%)`}
-                  </td>
-                  <td style={{ color: rateColor(o.revealRatePct), fontWeight: 600 }}>
-                    {o.reveals}{o.revealRatePct == null ? '' : ` (${o.revealRatePct}%)`}
-                  </td>
-                  <td style={{ color: o.blameworthy > 0 ? '#dc2626' : 'inherit', fontWeight: o.blameworthy > 0 ? 600 : 400 }}>
-                    {o.blameworthy || 0}
-                  </td>
-                </tr>
+                <OperatorRow key={o.operator} o={o} />
               ))}
             </tbody>
           </table>

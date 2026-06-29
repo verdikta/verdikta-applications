@@ -524,3 +524,41 @@
 .analytics .gas-triple { white-space: nowrap; }
 .analytics .gas-triple .med { color: var(--text-color, #111827); }
 .analytics .gas-muted { color: var(--text-muted, #6b7280); }
+
+/* Blameworthy drill-down: the count toggles a list of responsible aggIds. */
+.analytics .blame-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  color: #dc2626;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.analytics .blame-toggle:hover { text-decoration: underline; }
+.analytics .blame-caret { font-size: 0.7em; }
+.analytics .blame-detail-row td {
+  background: var(--bg-secondary, #f8fafc);
+  padding: 0.6rem 0.9rem;
+}
+.analytics .blame-detail-label {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #64748b);
+  display: block;
+  margin-bottom: 0.4rem;
+}
+.analytics .blame-agg-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.analytics .blame-agg-link { text-decoration: none; color: var(--primary, #667eea); }
+.analytics .blame-agg-link:hover { text-decoration: underline; }
+.analytics .blame-agg-link code { font-size: 0.8rem; }
+.analytics .blame-agg-meta { font-size: 0.78rem; color: var(--text-secondary, #64748b); }

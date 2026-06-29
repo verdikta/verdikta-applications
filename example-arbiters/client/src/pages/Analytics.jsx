@@ -75,8 +75,25 @@ const rateColor = (pct) => {
 // nonzero, is a toggle that expands the list of failed aggIds this operator is
 // responsible for — each a link to that evaluation's full agg-history page.
 const blameAggLabel = (id) => `${id.slice(0, 18)}…${id.slice(-6)}`;
-function OperatorRow({ o }) {
-  const [open, setOpen] = useState(false);
+// Which blame rows are expanded, remembered across route unmounts (keyed by
+// window + operator) so returning from an agg-history page via Back re-shows the
+// same list instead of collapsing it.
+const expandedBlame = new Set();
+
+// Oracle-health results cached across route unmounts (keyed by network) so
+// returning to Analytics (e.g. Back from an agg-history page) shows the tables
+// immediately — no spinner flash, stable page height for scroll restoration —
+// while a background refresh still runs.
+const healthCache = {};   // network → 14-day oracle-health data
+const health24Cache = {}; // network → 24-hour oracle-health data
+function OperatorRow({ o, windowLabel }) {
+  const rowKey = `${windowLabel}|${o.operator}`;
+  const [open, setOpen] = useState(() => expandedBlame.has(rowKey));
+  const toggle = () => setOpen((v) => {
+    const next = !v;
+    if (next) expandedBlame.add(rowKey); else expandedBlame.delete(rowKey);
+    return next;
+  });
   const blame = o.blameworthy || 0;
   const aggIds = o.blameAggIds || [];
   return (
@@ -96,7 +113,7 @@ function OperatorRow({ o }) {
             <button
               type="button"
               className="blame-toggle"
-              onClick={() => setOpen((v) => !v)}
+              onClick={toggle}
               aria-expanded={open}
               title="Show the failed evaluations this operator is responsible for"
             >
@@ -155,7 +172,7 @@ const renderReliabilitySection = (windowLabel, hData, hLoading, hError) => (
             </thead>
             <tbody>
               {hData.operators.map((o) => (
-                <OperatorRow key={o.operator} o={o} />
+                <OperatorRow key={o.operator} o={o} windowLabel={windowLabel} />
               ))}
             </tbody>
           </table>
@@ -207,15 +224,15 @@ function Analytics() {
 
   // "Oracle Health" sections (eval success rate + per-operator reliability) —
   // a heavy archive-log scan, loaded independently like the owner tables.
-  const [healthData, setHealthData] = useState(null);
-  const [healthLoading, setHealthLoading] = useState(true);
+  const [healthData, setHealthData] = useState(() => healthCache[selectedNetwork] || null);
+  const [healthLoading, setHealthLoading] = useState(() => !healthCache[selectedNetwork]);
   const [healthError, setHealthError] = useState(null);
   const healthReqNetRef = useRef(selectedNetwork);
 
   // Second oracle-health dataset over a 24-hour window, for the short-term
   // Operator Reliability table alongside the 14-day one.
-  const [health24Data, setHealth24Data] = useState(null);
-  const [health24Loading, setHealth24Loading] = useState(true);
+  const [health24Data, setHealth24Data] = useState(() => health24Cache[selectedNetwork] || null);
+  const [health24Loading, setHealth24Loading] = useState(() => !health24Cache[selectedNetwork]);
   const [health24Error, setHealth24Error] = useState(null);
   const health24ReqNetRef = useRef(selectedNetwork);
 
@@ -275,6 +292,7 @@ function Analytics() {
       const res = await apiService.getOracleHealth(network);
       if (!isMountedRef.current || network !== healthReqNetRef.current) return;
       if (!res.success) throw new Error(res.error || 'Failed to load oracle health');
+      healthCache[network] = res.data;
       setHealthData(res.data);
       setHealthError(null);
       setHealthLoading(false);
@@ -293,6 +311,7 @@ function Analytics() {
       const res = await apiService.getOracleHealth(network, 1);
       if (!isMountedRef.current || network !== health24ReqNetRef.current) return;
       if (!res.success) throw new Error(res.error || 'Failed to load oracle health');
+      health24Cache[network] = res.data;
       setHealth24Data(res.data);
       setHealth24Error(null);
       setHealth24Loading(false);
@@ -340,18 +359,21 @@ function Analytics() {
     loadOwners(selectedNetwork);
   }, [selectedNetwork, loadOwners]);
 
-  // Load the oracle-health sections on network change.
+  // Load the oracle-health sections on network change. Seed from the cross-mount
+  // cache (if present) so the table shows immediately while a refresh runs.
   useEffect(() => {
-    setHealthData(null);
-    setHealthLoading(true);
+    const cached = healthCache[selectedNetwork];
+    setHealthData(cached || null);
+    setHealthLoading(!cached);
     setHealthError(null);
     loadHealth(selectedNetwork);
   }, [selectedNetwork, loadHealth]);
 
-  // Load the 24-hour oracle-health dataset on network change.
+  // Load the 24-hour oracle-health dataset on network change (cache-seeded too).
   useEffect(() => {
-    setHealth24Data(null);
-    setHealth24Loading(true);
+    const cached = health24Cache[selectedNetwork];
+    setHealth24Data(cached || null);
+    setHealth24Loading(!cached);
     setHealth24Error(null);
     loadHealth24(selectedNetwork);
   }, [selectedNetwork, loadHealth24]);

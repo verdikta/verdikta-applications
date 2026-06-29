@@ -177,6 +177,7 @@ const AGG_EVENT_ABI = [
   "event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)",
   "event OracleSelected(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address oracle, bytes32 jobId)",
   "event CommitReceived(bytes32 indexed aggRequestId, uint256 pollIndex, address operator, bytes16 commitHash)",
+  "event RevealRequestDispatched(bytes32 indexed aggRequestId, uint256 pollIndex, bytes16 commitHash)",
   "event NewOracleResponseRecorded(bytes32 requestId, uint256 pollIndex, bytes32 indexed aggRequestId, address operator)",
   "event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] likelihoods, string justificationCID)"
 ];
@@ -1140,6 +1141,7 @@ class VerdiktaService {
       request: topic('RequestAIEvaluation'),
       selected: topic('OracleSelected'),
       commit: topic('CommitReceived'),
+      revealReq: topic('RevealRequestDispatched'),
       reveal: topic('NewOracleResponseRecorded'),
       fulfill: topic('FulfillAIEvaluation'),
     };
@@ -1163,7 +1165,7 @@ class VerdiktaService {
     // reveal events carry the same pollIndex, so they link back to the slot.
     // When an evaluation never reaches FulfillAIEvaluation it failed/timed out,
     // and we blame the arbiters that didn't do their part (see blame pass below).
-    const evals = {}; // aggIdLower → { fulfilled, slots: { pollIndexStr → { operator, committed, revealed } } }
+    const evals = {}; // aggIdLower → { fulfilled, slots: { pollIndexStr → { operator, committed, revealRequested, revealed } } }
     const evalFor = (aggId) => {
       const k = (aggId || '').toLowerCase();
       if (!evals[k]) evals[k] = { fulfilled: false, slots: {} };
@@ -1172,7 +1174,7 @@ class VerdiktaService {
     const slotFor = (aggId, pollIndex, operator) => {
       const ev = evalFor(aggId);
       const pk = pollIndex == null ? '?' : pollIndex.toString();
-      if (!ev.slots[pk]) ev.slots[pk] = { operator: operator || null, committed: false, revealed: false };
+      if (!ev.slots[pk]) ev.slots[pk] = { operator: operator || null, committed: false, revealRequested: false, revealed: false };
       else if (operator && !ev.slots[pk].operator) ev.slots[pk].operator = operator;
       return ev.slots[pk];
     };
@@ -1215,6 +1217,7 @@ class VerdiktaService {
           case 'FulfillAIEvaluation': { fulfilled++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].fulfilled++; fulfillTxHashes.add(log.transactionHash.toLowerCase()); evalFor(p.args.aggRequestId).fulfilled = true; break; }
           case 'OracleSelected': bump(p.args.oracle, 'selected'); slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.oracle); break;
           case 'CommitReceived': bump(p.args.operator, 'commits'); slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.operator).committed = true; commitRevealLogs.push({ kind: 'commit', txHash: log.transactionHash, operator: p.args.operator, blockNumber: log.blockNumber }); break;
+          case 'RevealRequestDispatched': slotFor(p.args.aggRequestId, p.args.pollIndex, null).revealRequested = true; break;
           case 'NewOracleResponseRecorded': bump(p.args.operator, 'reveals'); slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.operator).revealed = true; commitRevealLogs.push({ kind: 'reveal', txHash: log.transactionHash, operator: p.args.operator, blockNumber: log.blockNumber }); break;
         }
       }
@@ -1254,8 +1257,11 @@ class VerdiktaService {
       } else {
         const revealCount = slots.filter((s) => s.revealed).length;
         if (revealCount < REVEALS_REQUIRED) {
-          // Reached the reveal stage but fell short: blame committers that didn't reveal.
-          for (const s of slots) if (s.committed && !s.revealed) dockBlame(s.operator, aggId, 'reveal');
+          // Reached the reveal stage but fell short: blame only arbiters that were
+          // ASKED to reveal (RevealRequestDispatched) and didn't. A committer that
+          // was never sent a reveal request did its job — not blameworthy. (Only a
+          // subset of committers are dispatched reveal requests.)
+          for (const s of slots) if (s.revealRequested && !s.revealed) dockBlame(s.operator, aggId, 'reveal');
         }
       }
     }

@@ -71,6 +71,56 @@ const rateColor = (pct) => {
   return COLORS.blocked;
 };
 
+// Operator Reliability section, rendered once per look-back window (the 14-day
+// and 24-hour tables share identical columns — only the data differs).
+const renderReliabilitySection = (windowLabel, hData, hLoading, hError) => (
+  <section className="analytics-section">
+    <h2 title="Per-operator commit and reveal reliability across recent evaluations. Commit rate = commits ÷ times polled; reveal rate = reveals ÷ commits. A healthy commit rate but a low reveal rate means the node commits then fails to reveal — starving evaluations of the reveals they need to finalize."><Server size={20} className="inline-icon" /> Operator Reliability · {windowLabel}</h2>
+    <div className="section-content">
+      {hLoading && !hData ? (
+        <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
+      ) : hError ? (
+        <div className="info-banner"><AlertTriangle size={16} /><span>{hError}</span></div>
+      ) : hData && hData.operators.length > 0 ? (
+        <div className="stats-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Operator</th>
+                <th className="tooltip-header" title="Number of arbiters (registered jobIds) currently backed by this operator contract">Arbiters</th>
+                <th className="tooltip-header" title="Times this operator was polled (OracleSelected) across the window">Polled</th>
+                <th className="tooltip-header" title="Commits received, and commits ÷ times polled">Commits</th>
+                <th className="tooltip-header" title="Reveals recorded, and reveals ÷ commits. Low here despite commits = the node commits but doesn't reveal.">Reveals</th>
+                <th className="tooltip-header" title="Times this operator's arbiters were to blame for a failed/timed-out evaluation. An eval needs 4 commits then 3 reveals; when it fails, each (operator, jobId) slot that didn't commit — or that committed but didn't reveal — is charged here.">Blameworthy</th>
+              </tr>
+            </thead>
+            <tbody>
+              {hData.operators.map((o) => (
+                <tr key={o.operator}>
+                  <td><code>{shortAddr(o.operator)}</code></td>
+                  <td>{o.arbiters == null ? '—' : o.arbiters}</td>
+                  <td><strong>{o.timesSelected}</strong></td>
+                  <td style={{ color: rateColor(o.commitRatePct), fontWeight: 600 }}>
+                    {o.commits}{o.commitRatePct == null ? '' : ` (${o.commitRatePct}%)`}
+                  </td>
+                  <td style={{ color: rateColor(o.revealRatePct), fontWeight: 600 }}>
+                    {o.reveals}{o.revealRatePct == null ? '' : ` (${o.revealRatePct}%)`}
+                  </td>
+                  <td style={{ color: o.blameworthy > 0 ? '#dc2626' : 'inherit', fontWeight: o.blameworthy > 0 ? 600 : 400 }}>
+                    {o.blameworthy || 0}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="empty-state"><Server size={32} /><p>No oracle activity in the window</p></div>
+      )}
+    </div>
+  </section>
+);
+
 // Gas-tracking display helpers (commit vs reveal gas per arbiter response).
 const GAS_COLORS = { commit: '#3b82f6', reveal: '#8b5cf6' };
 const fmtGas = (n) => (n == null ? '—' : Math.round(n).toLocaleString());
@@ -115,6 +165,13 @@ function Analytics() {
   const [healthLoading, setHealthLoading] = useState(true);
   const [healthError, setHealthError] = useState(null);
   const healthReqNetRef = useRef(selectedNetwork);
+
+  // Second oracle-health dataset over a 24-hour window, for the short-term
+  // Operator Reliability table alongside the 14-day one.
+  const [health24Data, setHealth24Data] = useState(null);
+  const [health24Loading, setHealth24Loading] = useState(true);
+  const [health24Error, setHealth24Error] = useState(null);
+  const health24ReqNetRef = useRef(selectedNetwork);
 
   const loadAnalytics = useCallback(async (network, silent = false) => {
     if (!isMountedRef.current) return;
@@ -183,6 +240,24 @@ function Analytics() {
     }
   }, []);
 
+  // Load the 24-hour oracle-health dataset (days=1) for the short-term table.
+  const loadHealth24 = useCallback(async (network) => {
+    health24ReqNetRef.current = network;
+    try {
+      const res = await apiService.getOracleHealth(network, 1);
+      if (!isMountedRef.current || network !== health24ReqNetRef.current) return;
+      if (!res.success) throw new Error(res.error || 'Failed to load oracle health');
+      setHealth24Data(res.data);
+      setHealth24Error(null);
+      setHealth24Loading(false);
+    } catch (err) {
+      if (isMountedRef.current && network === health24ReqNetRef.current) {
+        setHealth24Error(err.message || 'Failed to load oracle health');
+        setHealth24Loading(false);
+      }
+    }
+  }, []);
+
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
@@ -190,6 +265,7 @@ function Analytics() {
       await loadAnalytics(selectedNetwork, true);
       loadOwners(selectedNetwork);
       loadHealth(selectedNetwork);
+      loadHealth24(selectedNetwork);
       toast.success('Analytics refreshed');
     } catch {
       toast.error('Failed to refresh analytics');
@@ -225,6 +301,14 @@ function Analytics() {
     setHealthError(null);
     loadHealth(selectedNetwork);
   }, [selectedNetwork, loadHealth]);
+
+  // Load the 24-hour oracle-health dataset on network change.
+  useEffect(() => {
+    setHealth24Data(null);
+    setHealth24Loading(true);
+    setHealth24Error(null);
+    loadHealth24(selectedNetwork);
+  }, [selectedNetwork, loadHealth24]);
 
   // Format time ago
   const formatTimeAgo = (date) => {
@@ -502,52 +586,9 @@ function Analytics() {
         </div>
       </section>
 
-      {/* Operator Reliability Section */}
-      <section className="analytics-section">
-        <h2 title="Per-operator commit and reveal reliability across recent evaluations. Commit rate = commits ÷ times polled; reveal rate = reveals ÷ commits. A healthy commit rate but a low reveal rate means the node commits then fails to reveal — starving evaluations of the reveals they need to finalize."><Server size={20} className="inline-icon" /> Operator Reliability</h2>
-        <div className="section-content">
-          {healthLoading && !healthData ? (
-            <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
-          ) : healthError ? (
-            <div className="info-banner"><AlertTriangle size={16} /><span>{healthError}</span></div>
-          ) : healthData && healthData.operators.length > 0 ? (
-            <div className="stats-table">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Operator</th>
-                    <th className="tooltip-header" title="Number of arbiters (registered jobIds) currently backed by this operator contract">Arbiters</th>
-                    <th className="tooltip-header" title="Times this operator was polled (OracleSelected) across the window">Polled</th>
-                    <th className="tooltip-header" title="Commits received, and commits ÷ times polled">Commits</th>
-                    <th className="tooltip-header" title="Reveals recorded, and reveals ÷ commits. Low here despite commits = the node commits but doesn't reveal.">Reveals</th>
-                    <th className="tooltip-header" title="Times this operator's arbiters were to blame for a failed/timed-out evaluation. An eval needs 4 commits then 3 reveals; when it fails, each (operator, jobId) slot that didn't commit — or that committed but didn't reveal — is charged here.">Blameworthy</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {healthData.operators.map((o) => (
-                    <tr key={o.operator}>
-                      <td><code>{shortAddr(o.operator)}</code></td>
-                      <td>{o.arbiters == null ? '—' : o.arbiters}</td>
-                      <td><strong>{o.timesSelected}</strong></td>
-                      <td style={{ color: rateColor(o.commitRatePct), fontWeight: 600 }}>
-                        {o.commits}{o.commitRatePct == null ? '' : ` (${o.commitRatePct}%)`}
-                      </td>
-                      <td style={{ color: rateColor(o.revealRatePct), fontWeight: 600 }}>
-                        {o.reveals}{o.revealRatePct == null ? '' : ` (${o.revealRatePct}%)`}
-                      </td>
-                      <td style={{ color: o.blameworthy > 0 ? '#dc2626' : 'inherit', fontWeight: o.blameworthy > 0 ? 600 : 400 }}>
-                        {o.blameworthy || 0}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="empty-state"><Server size={32} /><p>No oracle activity in the window</p></div>
-          )}
-        </div>
-      </section>
+      {/* Operator Reliability — 14-day and 24-hour windows */}
+      {renderReliabilitySection('Last 14 days', healthData, healthLoading, healthError)}
+      {renderReliabilitySection('Last 24 hours', health24Data, health24Loading, health24Error)}
 
       {/* Gas per Commit / Reveal Section */}
       <section className="analytics-section">

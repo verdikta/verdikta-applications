@@ -520,6 +520,7 @@ function Analytics() {
                     <th className="tooltip-header" title="Times this operator was polled (OracleSelected) across the window">Polled</th>
                     <th className="tooltip-header" title="Commits received, and commits ÷ times polled">Commits</th>
                     <th className="tooltip-header" title="Reveals recorded, and reveals ÷ commits. Low here despite commits = the node commits but doesn't reveal.">Reveals</th>
+                    <th className="tooltip-header" title="Times this operator's arbiters were to blame for a failed/timed-out evaluation. An eval needs 4 commits then 3 reveals; when it fails, each (operator, jobId) slot that didn't commit — or that committed but didn't reveal — is charged here.">Blameworthy</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -533,6 +534,9 @@ function Analytics() {
                       </td>
                       <td style={{ color: rateColor(o.revealRatePct), fontWeight: 600 }}>
                         {o.reveals}{o.revealRatePct == null ? '' : ` (${o.revealRatePct}%)`}
+                      </td>
+                      <td style={{ color: o.blameworthy > 0 ? '#dc2626' : 'inherit', fontWeight: o.blameworthy > 0 ? 600 : 400 }}>
+                        {o.blameworthy || 0}
                       </td>
                     </tr>
                   ))}

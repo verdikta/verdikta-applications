@@ -1128,6 +1128,25 @@ class VerdiktaService {
       ops[lower][field]++;
     };
 
+    // Per-evaluation, per-slot map for blame attribution. Each (aggRequestId,
+    // pollIndex) is one arbiter slot = an (operator, jobId) pairing. Commit and
+    // reveal events carry the same pollIndex, so they link back to the slot.
+    // When an evaluation never reaches FulfillAIEvaluation it failed/timed out,
+    // and we blame the arbiters that didn't do their part (see blame pass below).
+    const evals = {}; // aggIdLower → { fulfilled, slots: { pollIndexStr → { operator, committed, revealed } } }
+    const evalFor = (aggId) => {
+      const k = (aggId || '').toLowerCase();
+      if (!evals[k]) evals[k] = { fulfilled: false, slots: {} };
+      return evals[k];
+    };
+    const slotFor = (aggId, pollIndex, operator) => {
+      const ev = evalFor(aggId);
+      const pk = pollIndex == null ? '?' : pollIndex.toString();
+      if (!ev.slots[pk]) ev.slots[pk] = { operator: operator || null, committed: false, revealed: false };
+      else if (operator && !ev.slots[pk].operator) ev.slots[pk].operator = operator;
+      return ev.slots[pk];
+    };
+
     // Fetch all five event types in ONE getLogs per chunk via an OR'd topic0
     // filter (the free archive gateway is slow/rate-limited, so 1 call/chunk
     // beats 5), then dispatch each log by its decoded event name.
@@ -1162,16 +1181,47 @@ class VerdiktaService {
         let p;
         try { p = parse(log); } catch { continue; }
         switch (p.name) {
-          case 'RequestAIEvaluation': { requests++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].requests++; break; }
-          case 'FulfillAIEvaluation': { fulfilled++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].fulfilled++; fulfillTxHashes.add(log.transactionHash.toLowerCase()); break; }
-          case 'OracleSelected': bump(p.args.oracle, 'selected'); break;
-          case 'CommitReceived': bump(p.args.operator, 'commits'); commitRevealLogs.push({ kind: 'commit', txHash: log.transactionHash, operator: p.args.operator, blockNumber: log.blockNumber }); break;
-          case 'NewOracleResponseRecorded': bump(p.args.operator, 'reveals'); commitRevealLogs.push({ kind: 'reveal', txHash: log.transactionHash, operator: p.args.operator, blockNumber: log.blockNumber }); break;
+          case 'RequestAIEvaluation': { requests++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].requests++; evalFor(p.args.aggRequestId); break; }
+          case 'FulfillAIEvaluation': { fulfilled++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].fulfilled++; fulfillTxHashes.add(log.transactionHash.toLowerCase()); evalFor(p.args.aggRequestId).fulfilled = true; break; }
+          case 'OracleSelected': bump(p.args.oracle, 'selected'); slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.oracle); break;
+          case 'CommitReceived': bump(p.args.operator, 'commits'); slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.operator).committed = true; commitRevealLogs.push({ kind: 'commit', txHash: log.transactionHash, operator: p.args.operator, blockNumber: log.blockNumber }); break;
+          case 'NewOracleResponseRecorded': bump(p.args.operator, 'reveals'); slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.operator).revealed = true; commitRevealLogs.push({ kind: 'reveal', txHash: log.transactionHash, operator: p.args.operator, blockNumber: log.blockNumber }); break;
         }
       }
       scannedChunks++;
       if (fromBlock === floor) break;
       toBlock = fromBlock - 1;
+    }
+
+    // ---- Blame attribution. An evaluation needs 4 commits then 3 reveals to be
+    // fulfilled; one that never fulfilled (failed/timed out) is charged to the
+    // arbiter slots that fell short. The two stages are mutually exclusive: if
+    // the commit threshold wasn't met the round never reached the reveal stage,
+    // so only non-committers are blamed; otherwise the committers that failed to
+    // reveal are blamed. A slot is an (operator, jobId) arbiter, so an operator
+    // backing several slots in one round is docked once per blameworthy slot.
+    const COMMITS_REQUIRED = 4;
+    const REVEALS_REQUIRED = 3;
+    const blameByOp = {}; // operatorLower → count
+    const dockBlame = (operator) => {
+      if (!operator) return;
+      const k = operator.toLowerCase();
+      blameByOp[k] = (blameByOp[k] || 0) + 1;
+    };
+    for (const ev of Object.values(evals)) {
+      if (ev.fulfilled) continue; // succeeded — no blame
+      const slots = Object.values(ev.slots);
+      const commitCount = slots.filter((s) => s.committed).length;
+      if (commitCount < COMMITS_REQUIRED) {
+        // Failed at the commit stage: blame every selected slot that didn't commit.
+        for (const s of slots) if (!s.committed) dockBlame(s.operator);
+      } else {
+        const revealCount = slots.filter((s) => s.revealed).length;
+        if (revealCount < REVEALS_REQUIRED) {
+          // Reached the reveal stage but fell short: blame committers that didn't reveal.
+          for (const s of slots) if (s.committed && !s.revealed) dockBlame(s.operator);
+        }
+      }
     }
 
     // Count currently-registered arbiters (jobId registrations) per operator
@@ -1330,6 +1380,7 @@ class VerdiktaService {
         commitRatePct: pct(o.commits, o.selected),
         reveals: o.reveals,
         revealRatePct: pct(o.reveals, o.commits), // reveals per commit — exposes commit-but-no-reveal
+        blameworthy: blameByOp[o.operator.toLowerCase()] || 0, // failed-eval slots charged to this operator
         gas: gasByOp[o.operator.toLowerCase()] || null, // per-op gas stats (null until receipts cached)
       }))
       .sort((a, b) => b.timesSelected - a.timesSelected || b.commits - a.commits);

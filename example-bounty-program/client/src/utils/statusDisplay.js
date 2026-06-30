@@ -50,7 +50,7 @@ const BOUNTY_STATUS_CONFIG = {
   },
   [BountyStatus.AWARDED]: {
     label: 'Awarded',
-    description: 'A submission passed the evaluation threshold and the winner has been paid.',
+    description: 'A winning submission was approved and the winner has been paid.',
     badgeClass: 'status-awarded',
     icon: IconName.PARTY,
   },
@@ -145,7 +145,7 @@ const SUBMISSION_STATUS_CONFIG = {
   // Success states
   success: {
     label: 'Approved',
-    description: 'Your submission passed the evaluation threshold and met all requirements.',
+    description: 'Your submission was approved and selected as the winner.',
     badgeClass: 'status-approved',
     icon: IconName.CHECK,
   },

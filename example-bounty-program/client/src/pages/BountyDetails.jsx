@@ -3338,6 +3338,17 @@ function SubmissionCard({
   const creatorWindowOpen = isPendingCreatorApproval && creatorWindowEnd > nowSec;
   const creatorWindowExpired = isPendingCreatorApproval && creatorWindowEnd > 0 && creatorWindowEnd <= nowSec;
 
+  // Distinguish a creator-accepted submission from an oracle-passed one. The
+  // creator can approve a submission during the assessment window, BEFORE the
+  // oracle ever runs — so a creator-accepted submission never gets a Verdikta
+  // aggregation id (the agg-history link below keys off the same field). Prefer
+  // the explicit flag set by the CreatorApproved sync handler when present, and
+  // fall back to the aggId-absence inference so submissions approved before the
+  // flag existed (e.g. bounty 71) still render the right message.
+  const hasOracleAggId = submission.verdiktaAggId &&
+    submission.verdiktaAggId !== '0x0000000000000000000000000000000000000000000000000000000000000000';
+  const acceptedByCreator = isApproved && (submission.creatorApproved === true || !hasOracleAggId);
+
   // Receipts-as-memes: only show for paid winners
   const isPaidWinner = submission.paidWinner === true;
   const ageMinutes = isPending && submission.submittedAt ? getSubmissionAge(submission.submittedAt) : 0;
@@ -3916,7 +3927,9 @@ function SubmissionCard({
           fontSize: '0.85rem',
           color: '#2e7d32'
         }}>
-          🎉 This submission passed the evaluation threshold!
+          🎉 {acceptedByCreator
+            ? 'This submission was accepted by the bounty creator!'
+            : 'This submission passed the evaluation threshold!'}
         </div>
       )}
 

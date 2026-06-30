@@ -1145,6 +1145,11 @@ class SyncService {
           sub.onChainStatus = 'PassedPaid';
           sub.paidWinner = true;
           sub.finalizedAt = Math.floor(Date.now() / 1000);
+          // Record that this passed via creator approval (not an oracle
+          // evaluation) so the UI can say "accepted by the bounty creator"
+          // rather than "passed the evaluation threshold". A creator-approved
+          // submission never ran the oracle, so it has no verdiktaAggId.
+          sub.creatorApproved = true;
         }
 
         logger.info('[event] CreatorApproved', { bountyId, submissionId, hunter, amountPaid });

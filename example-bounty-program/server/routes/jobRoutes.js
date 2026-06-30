@@ -4100,6 +4100,27 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
         creatorWindowEnd: submission.creatorWindowEnd,
       });
     } catch (chainErr) {
+      // Distinguish a genuine "this submissionId does not exist on-chain" revert
+      // from a transient RPC/network error. The escrow reverts with
+      // "bad submissionId" for an out-of-range index. When that happens the
+      // client almost certainly mis-decoded the SubmissionPrepared event (e.g.
+      // passed the bountyId as the submissionId) — fail CLOSED so we never
+      // persist an un-actionable phantom submission that /start and /finalize
+      // can't touch and the sync service never cleans (see bounty 71 sub 71).
+      // For any OTHER read failure (RPC blip, timeout) keep the historical
+      // fail-open behavior: persist the skeleton and let sync heal it later.
+      const reason = (chainErr.reason || chainErr.shortMessage || chainErr.message || '').toLowerCase();
+      if (reason.includes('bad submissionid')) {
+        logger.warn('[submissions/confirm] rejecting: submissionId does not exist on-chain', {
+          jobId, submissionId, error: chainErr.message
+        });
+        return sendError(res, 400, {
+          code: ErrorCodes.SUBMISSION_BAD_ID,
+          message: `submissionId ${submissionId} does not exist on-chain for bounty ${jobId}`,
+          details: 'The escrow contract reverted with "bad submissionId" — the on-chain bounty has no submission at that index. This usually means the SubmissionPrepared event was mis-decoded and the bountyId (or another field) was passed as the submissionId.',
+          fix: 'Re-parse the SubmissionPrepared event from your prepareSubmission tx receipt and use its submissionId (submissions are 0-indexed per bounty), not the bountyId.'
+        });
+      }
       logger.warn('[submissions/confirm] chain read failed, keeping skeleton (sync will heal later)', {
         jobId, submissionId, error: chainErr.message
       });

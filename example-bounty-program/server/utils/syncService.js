@@ -195,6 +195,19 @@ function applyChainBountyFields(localJob, chainBounty) {
     set('winner', chainBounty.winner || null);
   }
 
+  // Reconcile a TERMINAL on-chain status. The award/close event handlers
+  // normally drive job.status, but if those events were missed locally (e.g. a
+  // creator-approved bounty whose CreatorApproved/PayoutSent were never applied)
+  // this heal would otherwise backfill `winner` while leaving `status: OPEN` —
+  // the contradiction that kept already-awarded bounty 91 in the open listing.
+  // Chain AWARDED/CLOSED is authoritative and terminal, so sync it. We
+  // deliberately do NOT sync the non-terminal OPEN/EXPIRED here: those are
+  // deadline-derived and we don't want a routine heal to clobber local
+  // lifecycle state.
+  if (chainBounty.status === 'AWARDED' || chainBounty.status === 'CLOSED') {
+    set('status', chainBounty.status);
+  }
+
   return changed;
 }
 

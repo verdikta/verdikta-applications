@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 import './_env.js';
 import { Contract, formatEther } from 'ethers';
-import { getNetwork, providerFor, loadWallet, LINK, linkBalance, parseEth, arg } from './_lib.js';
+import {
+  getNetwork, providerFor, loadWallet, LINK, linkBalance, parseEth, arg,
+  hasFlag, sendTx, confirmSpendOrExit, isDryRun, expectedChainId,
+} from './_lib.js';
 
 const ethAmount = arg('eth');
 if (!ethAmount) {
-  console.error('Usage: node swap_eth_to_link_0x.js --eth 0.02');
+  console.error('Usage: node swap_eth_to_link_0x.js --eth 0.02 --yes');
+  console.error('Optional: --dry-run --allow-custom-0x');
   process.exit(1);
 }
 
@@ -21,8 +25,19 @@ const buyToken = LINK[network];
 
 const zeroX = process.env.ZEROX_BASE_URL || 'https://api.0x.org';
 const apiKey = process.env.ZEROX_API_KEY;
+const zeroXUrl = new URL(zeroX);
+
+if (zeroXUrl.hostname !== 'api.0x.org' && !hasFlag('allow-custom-0x')) {
+  console.error(`Refusing custom ZEROX_BASE_URL (${zeroX}) without --allow-custom-0x.`);
+  process.exit(1);
+}
 
 const provider = providerFor(network);
+const providerNetwork = await provider.getNetwork();
+if (Number(providerNetwork.chainId) !== expectedChainId(network)) {
+  console.error(`RPC chainId mismatch: got ${providerNetwork.chainId}, expected ${expectedChainId(network)} for ${network}. Refusing to swap.`);
+  process.exit(1);
+}
 const wallet = await loadWallet();
 const signer = wallet.connect(provider);
 
@@ -47,16 +62,62 @@ if (!resp.ok) {
 }
 const quote = await resp.json();
 
-// Send tx
-const tx = await signer.sendTransaction({
+if (!quote.to || typeof quote.to !== 'string' || !/^0x[a-fA-F0-9]{40}$/.test(quote.to)) {
+  throw new Error('0x quote missing valid transaction recipient');
+}
+if (!quote.data || !/^0x([0-9a-fA-F]{2})*$/.test(quote.data)) {
+  throw new Error('0x quote missing valid calldata');
+}
+if (quote.chainId != null && Number(quote.chainId) !== chainId) {
+  throw new Error(`0x quote chainId mismatch: got ${quote.chainId}, expected ${chainId}`);
+}
+if (quote.buyTokenAddress && quote.buyTokenAddress.toLowerCase() !== buyToken.toLowerCase()) {
+  throw new Error(`0x quote buy token mismatch: got ${quote.buyTokenAddress}, expected ${buyToken}`);
+}
+
+const txValue = BigInt(quote.value || sellAmountWei.toString());
+if (txValue > sellAmountWei) {
+  throw new Error(`0x quote value ${formatEther(txValue)} ETH exceeds requested sell amount ${formatEther(sellAmountWei)} ETH`);
+}
+
+console.log('\n0x swap quote');
+console.log(`Network:       ${network}`);
+console.log(`Wallet:        ${signer.address}`);
+console.log(`Sell:          ${formatEther(sellAmountWei)} ETH`);
+console.log(`Buy token:     ${buyToken}`);
+if (quote.buyAmount) console.log(`Quoted buy:    ${quote.buyAmount} LINK base units`);
+if (quote.estimatedPriceImpact) console.log(`Price impact:  ${quote.estimatedPriceImpact}`);
+console.log(`0x endpoint:   ${zeroXUrl.origin}`);
+console.log(`Tx recipient:  ${quote.to}`);
+console.log(`Tx value:      ${formatEther(txValue)} ETH`);
+
+if (isDryRun()) {
+  console.log('\nDry run complete: quote fetched and validated. No swap transaction was signed.');
+  process.exit(0);
+}
+
+await confirmSpendOrExit([
+  `Action: swap ETH to LINK through 0x aggregator calldata`,
+  `Network: ${network}`,
+  `Wallet: ${signer.address}`,
+  `Sell amount: ${formatEther(sellAmountWei)} ETH plus gas`,
+  `Buy token: ${buyToken}`,
+  `0x endpoint: ${zeroXUrl.origin}`,
+  `Transaction recipient: ${quote.to}`,
+]);
+
+await sendTx(signer, '0x ETH→LINK swap', {
   to: quote.to,
   data: quote.data,
-  value: BigInt(quote.value || sellAmountWei.toString()),
-  gasLimit: quote.gas ? BigInt(quote.gas) : undefined
+  value: txValue,
+  gasLimit: quote.gas ? BigInt(quote.gas) : undefined,
+  chainId,
+}, {
+  useApiGasLimit: Boolean(quote.gas),
+  allowValue: true,
+  maxValueWei: sellAmountWei,
+  network,
 });
-console.log('Sent swap tx:', tx.hash);
-const receipt = await tx.wait();
-console.log('Confirmed in block:', receipt.blockNumber);
 
 const { bal, dec, linkAddr } = await linkBalance(network, provider, signer.address);
 const link = new Contract(linkAddr, ['function symbol() view returns (string)'], provider);

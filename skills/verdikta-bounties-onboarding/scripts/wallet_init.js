@@ -40,6 +40,7 @@ const out = resolvePath(outArg);
 
 await ensureDir(path.dirname(out));
 await fs.writeFile(out, json, { mode: 0o600 });
+await fs.chmod(out, 0o600);
 
 console.log(importMode ? 'Wallet imported and encrypted' : 'Bot wallet created');
 console.log('Address:', wallet.address);

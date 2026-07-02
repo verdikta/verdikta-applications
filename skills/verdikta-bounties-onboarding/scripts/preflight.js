@@ -12,8 +12,8 @@
 //   3. On-chain bounty matches API (creator, CID, classId, threshold)
 //   4. On-chain isAcceptingSubmissions returns true
 //   5. Deadline has sufficient buffer
-//   6. Bot has sufficient LINK balance (via /estimate-fee)
-//   7. Bot has sufficient ETH for gas
+//   6. Bot has sufficient ETH for gas
+//   7. Bot has sufficient LINK only when /estimate-fee reports a positive LINK requirement
 //
 // Prints a clear GO / NO-GO verdict.
 
@@ -21,11 +21,12 @@ import './_env.js';
 import { ethers } from 'ethers';
 import {
   getNetwork, providerFor, loadWallet,
-  escrowContract, linkBalance, arg, loadApiKey,
+  escrowContract, linkBalance, arg, hasFlag, loadApiKey,
 } from './_lib.js';
 
 const jobId = arg('jobId');
 const minBufferMin = Number(arg('minBuffer', '30')); // minutes before deadline
+const requireLink = hasFlag('require-link');
 
 if (!jobId) {
   console.error('Usage: node preflight.js --jobId <ID> [--minBuffer <minutes>]');
@@ -179,27 +180,33 @@ if (job?.submissionCloseTime) {
   check('Deadline buffer', true, 'no deadline set');
 }
 
-// 6. LINK balance (vs estimate-fee)
-let estimatedLink = 0.05; // fallback
+// 6. LINK balance, only when the active backend reports a LINK requirement.
+let estimatedLink = null;
 try {
   const feeRes = await fetch(`${baseUrl}/api/jobs/${jobId}/estimate-fee`, { headers });
   if (feeRes.ok) {
     const feeData = await feeRes.json();
-    estimatedLink = Number(feeData.estimatedFee || feeData.fee || feeData.linkCost || 0.05);
+    estimatedLink = Number(feeData.estimatedFee || feeData.fee || feeData.linkCost || 0);
   }
 } catch { /* use fallback */ }
 
-try {
-  const { bal, dec } = await linkBalance(network, provider, botAddress);
-  const linkHuman = Number(ethers.formatUnits(bal, dec));
-  const enough = linkHuman >= estimatedLink;
-  check('LINK balance', enough,
-    enough
-      ? `${linkHuman.toFixed(4)} LINK (need ~${estimatedLink.toFixed(4)})`
-      : `${linkHuman.toFixed(4)} LINK — need ~${estimatedLink.toFixed(4)} LINK`
-  );
-} catch (err) {
-  check('LINK balance', false, err.message);
+if (requireLink && !(estimatedLink > 0)) estimatedLink = 0.05;
+
+if (estimatedLink > 0) {
+  try {
+    const { bal, dec } = await linkBalance(network, provider, botAddress);
+    const linkHuman = Number(ethers.formatUnits(bal, dec));
+    const enough = linkHuman >= estimatedLink;
+    check('LINK balance', enough,
+      enough
+        ? `${linkHuman.toFixed(4)} LINK (need ~${estimatedLink.toFixed(4)})`
+        : `${linkHuman.toFixed(4)} LINK — need ~${estimatedLink.toFixed(4)} LINK`
+    );
+  } catch (err) {
+    check('LINK balance', false, err.message);
+  }
+} else {
+  check('LINK balance', true, 'not required by active fee endpoint');
 }
 
 // 7. ETH balance for gas

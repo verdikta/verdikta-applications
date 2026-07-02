@@ -1,8 +1,9 @@
 import './_env.js';
+import readline from 'node:readline/promises';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { JsonRpcProvider, Wallet, Contract, parseEther } from 'ethers';
+import { JsonRpcProvider, Wallet, Contract, parseEther, formatEther } from 'ethers';
 import { defaultSecretsDir } from './_paths.js';
 
 export const LINK = {
@@ -22,6 +23,11 @@ export const ERC20_ABI = [
 export const ESCROW = {
   'base': process.env.BOUNTY_ESCROW_ADDRESS_BASE || '0x2ae271f5e86bee449a36b943414b7c1a7b39772d',
   'base-sepolia': process.env.BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA || '0xAA67686Bb09F569C2C3b663BB3679dD9f9F60BDC',
+};
+
+export const CHAIN_IDS = {
+  base: 8453,
+  'base-sepolia': 84532,
 };
 
 // ---- BountyEscrow ABI (subset needed by scripts) ----
@@ -73,6 +79,12 @@ export function redactApiKey(key) {
 
 export function getNetwork() {
   return process.env.VERDIKTA_NETWORK || 'base';
+}
+
+export function expectedChainId(network = getNetwork()) {
+  const id = CHAIN_IDS[network];
+  if (!id) throw new Error(`Unsupported VERDIKTA_NETWORK: ${network}`);
+  return id;
 }
 
 export function getRpcUrl(network) {
@@ -152,6 +164,39 @@ export async function loadApiKey() {
   return j.apiKey || j.api_key || j.bot?.apiKey || j.bot?.api_key;
 }
 
+// ---- Spending confirmation helpers ----
+
+export function hasSpendConfirmationFlag() {
+  return hasFlag('yes') || hasFlag('confirm-spend');
+}
+
+export async function confirmSpendOrExit(summary, { requiredText = 'YES' } = {}) {
+  if (hasSpendConfirmationFlag()) return;
+
+  console.log('\nSPEND REVIEW');
+  for (const line of summary) console.log(`  ${line}`);
+
+  if (!process.stdin.isTTY) {
+    console.error(`\nRefusing to continue without explicit spend authorization. Re-run with --yes or --confirm-spend after reviewing the operation.`);
+    process.exit(1);
+  }
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question(`Type ${requiredText} to sign/broadcast transactions: `)).trim();
+    if (answer !== requiredText) {
+      console.error('Spend not confirmed. Aborting before signing.');
+      process.exit(1);
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+export function isDryRun() {
+  return hasFlag('dry-run') || hasFlag('dryRun');
+}
+
 // ---- Class models (supported jury nodes) ----
 
 export function normalizeProvider(p) {
@@ -217,13 +262,76 @@ export function validateAndNormalizeJuryNodes({ classId, juryNodes, supported })
  * @param {object} [opts]
  * @param {boolean} [opts.useApiGasLimit] - Use the gasLimit from txObj instead of estimating
  */
-export async function sendTx(signer, label, txObj, { useApiGasLimit = false } = {}) {
+function normalizeTxValue(v) {
+  if (v == null || v === '') return 0n;
+  return BigInt(v);
+}
+
+function requireHexData(data, label) {
+  if (data == null) return;
+  if (typeof data !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(data)) {
+    throw new Error(`${label} transaction has invalid calldata`);
+  }
+}
+
+function sameAddress(a, b) {
+  return String(a || '').toLowerCase() === String(b || '').toLowerCase();
+}
+
+/**
+ * Sign and broadcast a transaction, with recipient, chain, value, and calldata checks.
+ * Exits the process on revert to prevent wasted gas.
+ * @param {import('ethers').Signer} signer
+ * @param {string} label - Human-readable label for logging
+ * @param {object} txObj - Transaction object from API ({ to, data, value, gasLimit?, chainId? })
+ * @param {object} [opts]
+ * @param {boolean} [opts.useApiGasLimit] - Use the gasLimit from txObj instead of estimating
+ * @param {string} [opts.network] - Expected Verdikta network
+ * @param {string} [opts.expectedTo] - Required transaction recipient
+ * @param {boolean} [opts.allowValue] - Allow nonzero ETH value
+ * @param {bigint|string|number} [opts.maxValueWei] - Maximum allowed ETH value
+ */
+export async function sendTx(
+  signer,
+  label,
+  txObj,
+  { useApiGasLimit = false, network = getNetwork(), expectedTo = null, allowValue = false, maxValueWei = null } = {}
+) {
   console.log(`\n→ ${label}: sending transaction...`);
+
+  if (!txObj || typeof txObj !== 'object') {
+    throw new Error(`${label} transaction missing`);
+  }
+  if (!txObj.to) {
+    throw new Error(`${label} transaction missing recipient`);
+  }
+
+  const chainId = expectedChainId(network);
+  if (txObj.chainId != null && Number(txObj.chainId) !== chainId) {
+    throw new Error(`${label} transaction chainId mismatch: got ${txObj.chainId}, expected ${chainId} (${network})`);
+  }
+  if (expectedTo && !sameAddress(txObj.to, expectedTo)) {
+    throw new Error(`${label} transaction recipient mismatch: got ${txObj.to}, expected ${expectedTo}`);
+  }
+
+  requireHexData(txObj.data, label);
+  const valueWei = normalizeTxValue(txObj.value);
+  if (!allowValue && valueWei !== 0n) {
+    throw new Error(`${label} transaction unexpectedly includes ETH value ${formatEther(valueWei)} ETH`);
+  }
+  if (maxValueWei != null && valueWei > BigInt(maxValueWei)) {
+    throw new Error(`${label} transaction value ${formatEther(valueWei)} ETH exceeds limit ${formatEther(BigInt(maxValueWei))} ETH`);
+  }
+
   const baseTx = {
     to: txObj.to,
     data: txObj.data,
-    value: txObj.value || '0',
+    value: valueWei,
   };
+
+  console.log(`  chainId: ${chainId} (${network})`);
+  console.log(`  to:      ${baseTx.to}`);
+  console.log(`  value:   ${formatEther(valueWei)} ETH`);
 
   let gasLimit;
 

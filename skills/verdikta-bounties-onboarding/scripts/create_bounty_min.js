@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import './_env.js';
 import { ethers } from 'ethers';
-import { getNetwork, providerFor, loadWallet, parseEth, arg, loadApiKey, ESCROW } from './_lib.js';
+import {
+  getNetwork, providerFor, loadWallet, parseEth, arg, loadApiKey, ESCROW,
+  confirmSpendOrExit, isDryRun, expectedChainId,
+} from './_lib.js';
 
 // Minimal on-chain bounty creation (no IPFS upload).
 // Intended for testnet smoke tests only.
@@ -13,6 +16,10 @@ import { getNetwork, providerFor, loadWallet, parseEth, arg, loadApiKey, ESCROW 
 
 const network = getNetwork();
 const provider = providerFor(network);
+const providerNetwork = await provider.getNetwork();
+if (Number(providerNetwork.chainId) !== expectedChainId(network)) {
+  throw new Error(`RPC chainId mismatch: got ${providerNetwork.chainId}, expected ${expectedChainId(network)} for ${network}`);
+}
 const wallet = await loadWallet();
 const signer = wallet.connect(provider);
 
@@ -99,6 +106,21 @@ console.log('classId:', classId);
 console.log('threshold:', threshold);
 console.log('deadline:', deadline, `(in ${hours}h)`);
 console.log('value:', amountEth, 'ETH');
+
+if (isDryRun()) {
+  console.log('Dry run complete: smoke-test transaction was not signed.');
+  process.exit(0);
+}
+
+await confirmSpendOrExit([
+  `Action: create a minimal on-chain smoke-test bounty`,
+  `Network: ${network}`,
+  `Creator wallet: ${signer.address}`,
+  `Escrow: ${contractAddress}`,
+  `Value: ${amountEth} ETH plus gas`,
+  `CID: ${evaluationCid}`,
+  `Warning: this does not create a full API-backed/evaluable bounty`,
+]);
 
 const tx = await contract.createBounty(evaluationCid, classId, threshold, deadline, { value });
 console.log('Tx:', tx.hash);

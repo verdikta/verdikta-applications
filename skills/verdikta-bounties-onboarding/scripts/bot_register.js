@@ -31,6 +31,7 @@ if (!resp.ok) {
 
 await ensureDir(path.dirname(outPath));
 await fs.writeFile(outPath, JSON.stringify(data, null, 2), { mode: 0o600 });
+await fs.chmod(outPath, 0o600);
 
 const key = data?.apiKey || data?.api_key || data?.bot?.apiKey || data?.bot?.api_key;
 console.log('Registered bot. Saved response to:', outPath);

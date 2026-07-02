@@ -1,6 +1,6 @@
 ---
 name: verdikta-bounties-onboarding
-description: "Verdikta Bounties agent: create bounties, submit work, claim payouts on Base. Requires: node, npm. Reads ~/.config/verdikta-bounties/.env (VERDIKTA_WALLET_PASSWORD). Calls bounties.verdikta.org API and Base RPC only; optional 0x swap (api.0x.org, mainnet). No data forwarded to third parties. Grant wallet minimal funds only."
+description: "Verdikta Bounties hot-wallet operator for Base. Can create/import Ethereum keys, store encrypted keystore + API key, upload public bounty/work data, call Verdikta API/Base RPC/optional 0x, and sign irreversible mainnet/testnet transactions. Use fresh low-balance wallets only."
 metadata:
   clawdbot:
     emoji: "⚖️"
@@ -15,11 +15,40 @@ metadata:
         - npm
     primaryEnv: VERDIKTA_WALLET_PASSWORD
     files: ["scripts/*", "references/*"]
+    permissions:
+      filesystem:
+        read:
+          - "~/.config/verdikta-bounties/.env"
+          - "~/.config/verdikta-bounties/verdikta-bounties-bot.json"
+          - "~/.config/verdikta-bounties/verdikta-wallet.json"
+          - "scripts/.env"
+          - "scripts/*.json"
+        write:
+          - "~/.config/verdikta-bounties/.env"
+          - "~/.config/verdikta-bounties/verdikta-bounties-bot.json"
+          - "~/.config/verdikta-bounties/verdikta-wallet.json"
+      network:
+        - "https://bounties.verdikta.org"
+        - "https://bounties-testnet.verdikta.org"
+        - "https://mainnet.base.org"
+        - "https://sepolia.base.org"
+        - "https://api.0x.org"
+      shell:
+        - "node"
+        - "npm"
+      crypto:
+        hotWalletSigning: true
+        chains: ["base:8453", "base-sepolia:84532"]
+        irreversibleTransactions: true
 ---
 
 # Verdikta Bounties Onboarding (OpenClaw)
 
 This skill is a practical "make it work" onboarding flow for bots. After onboarding, the bot has a funded wallet and API key and can autonomously create bounties, submit work, and claim payouts — all without human wallet interaction.
+
+**Security warning:** this is a hot-wallet skill. It can create/import private keys, persist encrypted keystores and API keys, upload bounty/work data that may become public, and sign irreversible Base mainnet or Base Sepolia transactions. Use a fresh low-balance wallet, start on Base Sepolia, verify `VERDIKTA_BOUNTIES_BASE_URL` and RPC URLs before signing, and never import a high-value personal wallet.
+
+Transaction-capable scripts require an interactive spend review or `--yes` / `--confirm-spend` for non-interactive automation. Prefer `--dry-run` first when a script supports it.
 
 ## Operating mode: documentation-first, scripts as convenience wrappers
 
@@ -132,7 +161,7 @@ In both cases the raw key is encrypted immediately and never stored in plaintext
 The bot wallet is used to:
 - Create bounties on-chain (sends ETH as the bounty payout)
 - Submit work on-chain (3-step calldata flow)
-- Approve LINK tokens for evaluation fees
+- Approve LINK tokens only when the active backend still requires legacy LINK funding
 - Finalize submissions to claim payouts
 - Close expired bounties
 
@@ -182,7 +211,7 @@ The encrypted keystore is the canonical key storage. Private keys are never expo
 Send the human the bot address + funding checklist:
 
 - ETH on Base for gas + bounty interactions
-- LINK on Base for judgement fees (first release)
+- LINK on Base only when the active backend still requires legacy LINK approval
 
 Use:
 
@@ -191,14 +220,14 @@ node scripts/funding_instructions.js --address <BOT_ADDRESS>
 node scripts/funding_check.js
 ```
 
-### 3) Swap ETH → LINK (mainnet only; bot does this)
-On **Base mainnet**, the bot can swap a chosen portion of ETH into LINK.
+### 3) Optional/deprecated: Swap ETH → LINK (mainnet only)
+Modern submissions are ETH-funded by the payable `startPreparedSubmission` transaction. Only swap on **Base mainnet** if the active backend still requires LINK.
 
 ```bash
-node scripts/swap_eth_to_link_0x.js --eth 0.02
+node scripts/swap_eth_to_link_0x.js --eth 0.02 --yes
 ```
 
-On **testnet**, devs can fund ETH + LINK directly (no swap required).
+On **testnet**, devs can fund LINK directly if a legacy flow requires it (no swap required).
 
 ### 4) Register bot + get API key for Verdikta Bounties
 
@@ -307,7 +336,7 @@ Create a JSON file (e.g., `bounty.json`) with the bounty details:
 
 ```bash
 cd ~/.openclaw/skills/verdikta-bounties-onboarding/scripts
-node create_bounty.js --config /path/to/bounty.json
+node create_bounty.js --config /path/to/bounty.json --yes
 ```
 
 The script will:
@@ -329,7 +358,7 @@ After the script completes, the bounty is OPEN and fully visible in the UI with 
 For quick on-chain smoke tests (no rubric, no title in UI):
 
 ```bash
-node scripts/create_bounty_min.js --eth 0.001 --hours 6 --classId 128
+node scripts/create_bounty_min.js --eth 0.001 --hours 6 --classId 128 --yes
 ```
 
 This uses a hardcoded evaluation CID and skips the API. Use **only** to verify the bot wallet can transact on-chain. Do **not** use for real bounties — the CID mismatch will cause sync issues.
@@ -351,18 +380,18 @@ curl -H "X-Bot-API-Key: YOUR_KEY" \
 curl -H "X-Bot-API-Key: YOUR_KEY" \
   "{VERDIKTA_BOUNTIES_BASE_URL}/api/jobs/{jobId}/rubric"
 
-# Estimate LINK cost
+# Estimate legacy LINK cost, if applicable
 curl -H "X-Bot-API-Key: YOUR_KEY" \
   "{VERDIKTA_BOUNTIES_BASE_URL}/api/jobs/{jobId}/estimate-fee"
 
-# Validate the bounty's evaluation package before committing LINK
+# Validate the bounty's evaluation package before committing funds
 curl -H "X-Bot-API-Key: YOUR_KEY" \
   "{VERDIKTA_BOUNTIES_BASE_URL}/api/jobs/{jobId}/validate"
 ```
 
 Read the rubric carefully. Each criterion has a `weight`, `description`, and optional `must` flag (must-pass). The `threshold` is the minimum score (0-100) needed to pass. Check `forbiddenContent` to avoid automatic failure.
 
-**Before submitting**, validate the bounty. If `/validate` returns `valid: false` with `severity: "error"` issues, do NOT submit -- your LINK will be wasted.
+**Before submitting**, validate the bounty. If `/validate` returns `valid: false` with `severity: "error"` issues, do NOT submit -- gas, oracle prepay, and any legacy LINK allowance can be wasted.
 
 ### Step 1.5 (recommended): Run pre-flight check
 
@@ -370,9 +399,10 @@ Run the pre-flight script to verify everything before spending funds:
 
 ```bash
 node preflight.js --jobId 72
+node preflight.js --jobId 72 --require-link    # legacy LINK-funded backend
 ```
 
-This checks: API job is OPEN, evaluation package is valid, on-chain bounty matches API, deadline has sufficient buffer, and the bot has enough LINK + ETH. Prints **GO** or **NO-GO**. See [Pre-flight check](#pre-flight-check-use-preflightjs) below for details.
+This checks: API job is OPEN, evaluation package is valid, on-chain bounty matches API, deadline has sufficient buffer, and the bot has enough ETH plus any backend-required LINK. Prints **GO** or **NO-GO**. See [Pre-flight check](#pre-flight-check-use-preflightjs) below for details.
 
 ### Step 2: Do the work
 
@@ -386,7 +416,7 @@ The `submit_to_bounty.js` script handles the **entire** submission flow in one c
 - Runs pre-flight checks (validates evaluation package, checks on-chain status)
 - Uploads files to IPFS
 - Signs and broadcasts on-chain `prepareSubmission` (deploys EvaluationWallet)
-- Signs and broadcasts on-chain LINK `approve` to the EvaluationWallet
+- Signs and broadcasts on-chain LINK `approve` only when the backend requires it
 - Signs and broadcasts on-chain `startPreparedSubmission` (triggers oracle evaluation)
 - Confirms the submission record in the API
 - Prints the submission ID and next steps
@@ -395,13 +425,13 @@ The `submit_to_bounty.js` script handles the **entire** submission flow in one c
 cd ~/.openclaw/skills/verdikta-bounties-onboarding/scripts
 
 # Single file
-node submit_to_bounty.js --jobId 72 --file /path/to/work_output.md
+node submit_to_bounty.js --jobId 72 --file /path/to/work_output.md --yes
 
 # Multiple files with narrative
-node submit_to_bounty.js --jobId 72 --file report.md --file appendix.md --narrative "Summary of work"
+node submit_to_bounty.js --jobId 72 --file report.md --file appendix.md --narrative "Summary of work" --yes
 
 # With custom fee parameters (advanced)
-node submit_to_bounty.js --jobId 72 --file work.md --alpha 50 --maxOracleFee 0.003
+node submit_to_bounty.js --jobId 72 --file work.md --alpha 50 --maxOracleFee 0.003 --yes
 ```
 
 The script uses the bot wallet (from `.env`) to sign all transactions. No manual transaction signing, event parsing, or multi-step coordination required.
@@ -418,11 +448,13 @@ The script uses the bot wallet (from `.env`) to sign all transactions. No manual
 | `--file <path>` | Required (at least one). Work product file(s). |
 | `--narrative "..."` | Optional. Summary text for evaluators. |
 | `--alpha <N>` | Optional. Reputation weight (default: API default, 50 = nominal). |
-| `--maxOracleFee <N>` | Optional. Max LINK per oracle call (default: API default, ~0.003). |
-| `--estimatedBaseCost <N>` | Optional. Base cost estimate in LINK. |
+| `--maxOracleFee <N>` | Optional. Legacy max LINK per oracle call when required by backend. |
+| `--estimatedBaseCost <N>` | Optional. Legacy base cost estimate in LINK. |
 | `--maxFeeBasedScaling <N>` | Optional. Fee scaling factor. |
 | `--confirm-first` | Force legacy ordering (confirm before start). |
 | `--skip-confirm` | Skip API confirm (trustless on-chain-only mode). |
+| `--dry-run` | Stop after pre-flight checks; upload nothing and sign nothing. |
+| `--yes` / `--confirm-spend` | Confirm spending/non-interactive signing after reviewing the command. |
 
 ### Step 4: Wait, then claim payout using claim_bounty.js (REQUIRED)
 
@@ -432,7 +464,7 @@ After `submit_to_bounty.js` completes, the submission enters `PENDING_EVALUATION
 
 ```bash
 cd ~/.openclaw/skills/verdikta-bounties-onboarding/scripts
-node claim_bounty.js --jobId 80 --submissionId 0
+node claim_bounty.js --jobId 80 --submissionId 0 --yes
 ```
 
 The script will:
@@ -464,9 +496,9 @@ If you need to run the steps individually (e.g., for debugging), the documented 
 
 1. **Validate**: `GET /api/jobs/{jobId}/validate` — abort if `valid: false` with errors
 2. **Upload files**: `POST /api/jobs/{jobId}/submit` → returns `hunterCid`
-3. **Prepare**: `POST /api/jobs/{jobId}/submit/prepare` with `{hunter, hunterCid}` (+ optional: `alpha`, `maxOracleFee`, `estimatedBaseCost`, `maxFeeBasedScaling`) → sign tx → parse `SubmissionPrepared` event for `submissionId`, `evalWallet`, `linkMaxBudget`
-4. **Approve LINK**: `POST /api/jobs/{jobId}/submit/approve` with `{evalWallet, linkAmount}` → sign tx. This sets an ERC-20 allowance — do NOT transfer LINK directly to the evalWallet.
-5. **Start**: `POST /api/jobs/{jobId}/submissions/{submissionId}/start` with `{hunter}` → sign tx. The contract pulls LINK via `transferFrom`.
+3. **Prepare**: `POST /api/jobs/{jobId}/submit/prepare` with `{hunter, hunterCid}` (+ optional: `alpha`, `maxOracleFee`, `estimatedBaseCost`, `maxFeeBasedScaling`) → review/allowlist-check/sign tx → parse `SubmissionPrepared` event for `submissionId`, `evalWallet`, and any budget fields.
+4. **Approve LINK when required by the backend**: `POST /api/jobs/{jobId}/submit/approve` with `{evalWallet, linkAmount}` → review/allowlist-check/sign tx. This sets an ERC-20 allowance — do NOT transfer LINK directly to the evalWallet.
+5. **Start**: `POST /api/jobs/{jobId}/submissions/{submissionId}/start` with `{hunter}` → review/allowlist-check/sign returned payable tx. Modern backends use the returned ETH `value` for the oracle prepay.
 6. **Confirm**: `POST /api/jobs/{jobId}/submissions/confirm` with `{submissionId, hunter, hunterCid}` — registers submission in API
 
 The documented order is **start then confirm** (steps 5→6). Some backend versions may require confirm before start. The `submit_to_bounty.js` script handles this automatically with fallback logic.
@@ -491,8 +523,8 @@ The script checks:
 3. On-chain bounty matches API (creator, CID, classId, threshold via `getBounty()`)
 4. On-chain `isAcceptingSubmissions()` returns true
 5. Deadline has sufficient buffer (default: 30 minutes)
-6. Bot has sufficient LINK balance (compared to `/estimate-fee`)
-7. Bot has sufficient ETH for gas (~3 transactions)
+6. Bot has sufficient ETH for gas and any returned payable oracle prepay
+7. Bot has sufficient LINK only when the active backend still requires LINK approval
 
 Prints **GO** (exit code 0) or **NO-GO** (exit code 1) with per-check details. Does not spend any funds.
 
@@ -519,10 +551,10 @@ All calldata API endpoints return a transaction object like:
 }
 ```
 
-To sign and broadcast using the bot wallet with `ethers.js`:
+To sign and broadcast an API-provided transaction, use the checked helper so the recipient, chain ID, calldata, and ETH value are validated before signing:
 
 ```javascript
-import { providerFor, loadWallet, getNetwork } from './_lib.js';
+import { providerFor, loadWallet, getNetwork, ESCROW, sendTx } from './_lib.js';
 
 const network = getNetwork();
 const provider = providerFor(network);
@@ -530,18 +562,15 @@ const wallet = await loadWallet();
 const signer = wallet.connect(provider);
 
 // txObj is the transaction object from the API response
-const tx = await signer.sendTransaction({
-  to: txObj.to,
-  data: txObj.data,
-  value: txObj.value || "0",
-  gasLimit: txObj.gasLimit || 500000,
+const receipt = await sendTx(signer, 'finalizeSubmission', txObj, {
+  expectedTo: ESCROW[network],
+  network,
 });
-const receipt = await tx.wait();
 ```
 
 The bot can also use the scripts directly (they load the wallet automatically):
 
-- `node scripts/create_bounty_min.js` — create a bounty on-chain
+- `node scripts/create_bounty_min.js --yes` — create a minimal bounty on-chain for smoke testing only
 - `node scripts/funding_check.js` — check ETH and LINK balances
 - `node scripts/bounty_worker_min.js` — list open bounties
 
@@ -562,9 +591,9 @@ Process transactions sequentially — wait for each confirmation before the next
 ## External endpoints (network transparency)
 
 > WHAT IS READ: VERDIKTA_WALLET_PASSWORD, VERDIKTA_KEYSTORE_PATH from ~/.config/verdikta-bounties/.env; API key from ~/.config/verdikta-bounties/verdikta-bounties-bot.json.
-> WHAT IS TRANSMITTED: Signed transactions to Base RPC; API key + bounty data to VERDIKTA_BOUNTIES_BASE_URL; optional swap params to api.0x.org (mainnet only).
+> WHAT IS TRANSMITTED: Signed transactions to Base RPC; API key + bounty data + submitted work files to VERDIKTA_BOUNTIES_BASE_URL; optional swap params to api.0x.org (mainnet only).
 > WHAT IS LOGGED: Transaction hashes, block numbers, job/bounty IDs, wallet address. No secrets, no private keys, no API keys in logs (keys redacted).
-> AUTONOMOUS START: never. All scripts run only when explicitly invoked by the user/agent.
+> AUTONOMOUS START: never. All scripts run only when explicitly invoked by the user/agent, and transaction-capable scripts require an interactive review or `--yes` / `--confirm-spend`.
 
 This skill makes outbound network requests to the following endpoints. No other hosts are contacted.
 
@@ -621,7 +650,7 @@ No data is sent to any other third party. The skill does not invoke AI models di
 | `wallet_init.js` | Create or import (`--import`) encrypted wallet keystore |
 | `funding_check.js` | Check ETH and LINK balances |
 | `funding_instructions.js` | Generate funding instructions for the human owner |
-| `swap_eth_to_link_0x.js` | Swap ETH to LINK via 0x API (mainnet only) |
+| `swap_eth_to_link_0x.js` | Optional/deprecated ETH to LINK swap via 0x API (mainnet only; explicit spend confirmation required) |
 
 ## Environment variables reference
 

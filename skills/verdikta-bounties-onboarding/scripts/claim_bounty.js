@@ -3,8 +3,8 @@
 // The bot wallet signs the finalizeSubmission transaction automatically.
 //
 // Usage:
-//   node claim_bounty.js --jobId 80 --submissionId 0
-//   node claim_bounty.js --jobId 80 --submissionId 0 --maxWait 600
+//   node claim_bounty.js --jobId 80 --submissionId 0 --yes
+//   node claim_bounty.js --jobId 80 --submissionId 0 --maxWait 600 --dry-run
 //
 // Typical flow:
 //   1. Run submit_to_bounty.js → submission enters PENDING_EVALUATION
@@ -17,8 +17,8 @@
 
 import './_env.js';
 import {
-  getNetwork, providerFor, loadWallet, redactApiKey,
-  arg, loadApiKey, sendTx,
+  getNetwork, providerFor, loadWallet, redactApiKey, ESCROW,
+  arg, loadApiKey, sendTx, confirmSpendOrExit, isDryRun,
 } from './_lib.js';
 
 const jobId = arg('jobId');
@@ -137,6 +137,23 @@ while (true) {
 
 console.log('\n--- Step 2: Finalize submission (claim payout) ---');
 
+if (isDryRun()) {
+  console.log('Dry run complete: evaluation is ready for finalization.');
+  console.log('No finalize transaction was requested or signed.');
+  process.exit(0);
+}
+
+await confirmSpendOrExit([
+  `Action: finalize Verdikta submission and claim/refund on-chain funds`,
+  `Network: ${network}`,
+  `Hunter wallet: ${hunter}`,
+  `API: ${baseUrl}`,
+  `Job: #${jobId}`,
+  `Submission: #${submissionId}`,
+  `Allowed escrow recipient: ${ESCROW[network]}`,
+  `Current status: ${status}`,
+]);
+
 const finalizeRes = await fetch(
   `${baseUrl}/api/jobs/${jobId}/submissions/${submissionId}/finalize`,
   {
@@ -182,7 +199,10 @@ if (finalizeData.expectedPayout) {
   console.log(`  Expected payout: ${finalizeData.expectedPayout} ETH`);
 }
 
-const finalizeReceipt = await sendTx(signer, 'finalizeSubmission', finalizeData.transaction);
+const finalizeReceipt = await sendTx(signer, 'finalizeSubmission', finalizeData.transaction, {
+  expectedTo: ESCROW[network],
+  network,
+});
 
 // ---- Done ----
 

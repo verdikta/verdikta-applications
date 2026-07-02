@@ -2,6 +2,10 @@
   "name": "verdikta-bounties-onboarding-scripts",
   "private": true,
   "type": "module",
+  "scripts": {
+    "check": "for f in *.js; do node --check \"$f\"; done && node validate_contract_config.js",
+    "validate:contracts": "node validate_contract_config.js"
+  },
   "dependencies": {
     "dotenv": "^16.4.5",
     "ethers": "^6.15.0"

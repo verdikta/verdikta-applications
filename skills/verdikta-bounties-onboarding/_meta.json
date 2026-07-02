@@ -1,7 +1,59 @@
 {
   "ownerId": "kn70kt901qt3bjzwb1v3q90jm181xhyf",
   "slug": "verdikta-bounties-onboarding",
-  "version": "1.4.1",
+  "version": "1.4.2",
+  "description": "Hot-wallet Verdikta Bounties operator for Base. Creates/imports Ethereum keys, stores encrypted keystore and API key locally, uploads public bounty/work data, calls Verdikta API/Base RPC/optional 0x, and can sign irreversible mainnet/testnet transactions.",
+  "permissions": {
+    "shell": {
+      "binaries": ["node", "npm"],
+      "purpose": "Run local helper scripts and install JavaScript dependencies."
+    },
+    "network": {
+      "required": [
+        "https://bounties.verdikta.org",
+        "https://bounties-testnet.verdikta.org",
+        "https://mainnet.base.org",
+        "https://sepolia.base.org"
+      ],
+      "optional": [
+        "https://api.0x.org"
+      ],
+      "notes": "Configured Base RPC URLs and Verdikta API URL are read from the skill config; custom endpoints should be reviewed before signing."
+    },
+    "filesystem": {
+      "read": [
+        "~/.config/verdikta-bounties/.env",
+        "~/.config/verdikta-bounties/verdikta-bounties-bot.json",
+        "~/.config/verdikta-bounties/verdikta-wallet.json",
+        "scripts/.env",
+        "scripts/*.json",
+        "operator-selected work files for submission"
+      ],
+      "write": [
+        "~/.config/verdikta-bounties/.env",
+        "~/.config/verdikta-bounties/verdikta-bounties-bot.json",
+        "~/.config/verdikta-bounties/verdikta-wallet.json"
+      ],
+      "notes": "scripts/.env is a legacy/dev fallback. The stable config path is preferred for production."
+    },
+    "cryptoWallet": {
+      "hotWalletSigning": true,
+      "walletCreation": true,
+      "privateKeyImport": true,
+      "chains": [
+        { "name": "base", "chainId": 8453 },
+        { "name": "base-sepolia", "chainId": 84532 }
+      ],
+      "transactionTypes": [
+        "create/fund bounty",
+        "submit work",
+        "approve LINK when required",
+        "start evaluation with payable ETH prepay",
+        "finalize or claim payout",
+        "optional ETH-to-LINK swap"
+      ]
+    }
+  },
   "requiredEnvVars": [
     "VERDIKTA_WALLET_PASSWORD",
     "VERDIKTA_NETWORK",
@@ -35,12 +87,18 @@
       "OFFBOT_ADDRESS"
     ],
     "sensitive": true,
-    "notes": "Credentials read fresh from disk at runtime — never embedded as literals. VERDIKTA_WALLET_PASSWORD decrypts the keystore in-memory only when signing transactions; private keys are never written to disk or logs. API key stored separately at ~/.config/verdikta-bounties/verdikta-bounties-bot.json (chmod 600). All files permission-restricted (0o600). Grant wallet minimal funds only — hot wallet posture."
+    "notes": "Credentials read fresh from disk at runtime — never embedded as literals. VERDIKTA_WALLET_PASSWORD decrypts the keystore in-memory only when signing transactions; private keys are never written to disk or logs. API key stored separately at ~/.config/verdikta-bounties/verdikta-bounties-bot.json (chmod 600). Scripts enforce chmod 600 after credential writes. Grant wallet minimal funds only — hot wallet posture."
   },
   "credentialSetup": {
     "type": "interactive",
-    "description": "Run 'node scripts/onboard.js' for guided setup: creates encrypted wallet keystore, waits for human funding, registers bot API key. No secrets are hardcoded."
+    "description": "Run 'node scripts/onboard.js' for guided setup: creates or imports an encrypted wallet keystore, waits for human funding, registers and persists a bot API key. No secrets are hardcoded."
   },
+  "securityNotes": [
+    "Use a fresh low-balance bot wallet; do not import high-value personal wallets.",
+    "Transaction-capable scripts require interactive confirmation or --yes/--confirm-spend.",
+    "Use --dry-run where available before signing.",
+    "Bounty metadata, submitted work files, CIDs, wallet addresses, and transaction hashes may become public via IPFS, Verdikta API records, and blockchain state."
+  ],
   "requires": {
     "anyBinaries": ["node", "npm"],
     "os": ["windows", "macos", "linux"]

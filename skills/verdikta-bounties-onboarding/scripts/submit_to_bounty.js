@@ -15,6 +15,8 @@
 // Flags:
 //   --skip-confirm         Skip the API /confirm call (trustless on-chain-only mode)
 //   --confirm-first        Use old ordering: confirm before start (fallback compatibility)
+//   --dry-run              Stop after pre-flight checks; upload nothing and sign nothing
+//   --yes                  Confirm spending/non-interactive signing
 //
 // Prerequisites:
 //   - Bot onboarded (onboard.js completed)
@@ -27,8 +29,8 @@ import path from 'node:path';
 import { ethers } from 'ethers';
 import {
   getNetwork, providerFor, loadWallet,
-  escrowContract, redactApiKey, BOUNTY_ESCROW_ABI,
-  arg, hasFlag, argAll, loadApiKey, sendTx,
+  escrowContract, redactApiKey, BOUNTY_ESCROW_ABI, ESCROW, LINK,
+  arg, hasFlag, argAll, loadApiKey, sendTx, confirmSpendOrExit, isDryRun,
 } from './_lib.js';
 
 const jobId = arg('jobId');
@@ -46,7 +48,7 @@ const feeMaxFeeBasedScaling = arg('maxFeeBasedScaling');
 if (!jobId) {
   console.error('Usage: node submit_to_bounty.js --jobId <ID> --file <path> [--file <path2>] [--narrative "..."]');
   console.error('Optional: --alpha N --maxOracleFee N --estimatedBaseCost N --maxFeeBasedScaling N');
-  console.error('Flags:    --skip-confirm  --confirm-first');
+  console.error('Flags:    --skip-confirm  --confirm-first  --dry-run  --yes');
   process.exit(1);
 }
 if (files.length === 0) {
@@ -202,6 +204,24 @@ if (onChainBountyId != null) {
   console.warn(`  ⚠ Job not linked to chain (no onChain flag). Skipping on-chain pre-check.`);
 }
 
+if (isDryRun()) {
+  console.log('\nDry run complete: pre-flight checks passed.');
+  console.log('No files were uploaded and no transaction was signed.');
+  process.exit(0);
+}
+
+await confirmSpendOrExit([
+  `Action: submit work and sign Verdikta submission transactions`,
+  `Network: ${network}`,
+  `Hunter wallet: ${hunter}`,
+  `API: ${baseUrl}`,
+  `Job: #${jobId}`,
+  `Files to upload: ${files.join(', ')}`,
+  `Allowed escrow recipient: ${ESCROW[network]}`,
+  `Allowed LINK recipient: ${LINK[network]}`,
+  `Public data: uploaded work files may be pinned to IPFS and linked to on-chain submission metadata`,
+]);
+
 // ---- Step 1: Upload files to IPFS ----
 
 console.log('\n--- Step 1: Upload files to IPFS ---');
@@ -259,19 +279,23 @@ if (!prepareRes.ok || !prepareData.transaction) {
   process.exit(1);
 }
 
-const prepareReceipt = await sendTx(signer, 'prepareSubmission', prepareData.transaction);
+const prepareReceipt = await sendTx(signer, 'prepareSubmission', prepareData.transaction, {
+  expectedTo: ESCROW[network],
+  network,
+});
 
 // Parse SubmissionPrepared event (using centralized ABI)
 const escrowIface = new ethers.Interface(BOUNTY_ESCROW_ABI);
 
-let submissionId, evalWallet, linkMaxBudget;
+let submissionId, evalWallet, linkMaxBudget, linkMaxBudgetWei = null;
 for (const log of prepareReceipt.logs) {
   try {
     const parsed = escrowIface.parseLog(log);
     if (parsed?.name === 'SubmissionPrepared') {
       submissionId = Number(parsed.args.submissionId);
       evalWallet = parsed.args.evalWallet;
-      linkMaxBudget = ethers.formatEther(parsed.args.linkMaxBudget);
+      linkMaxBudgetWei = BigInt(parsed.args.linkMaxBudget);
+      linkMaxBudget = ethers.formatEther(linkMaxBudgetWei);
       break;
     }
   } catch {}
@@ -289,20 +313,28 @@ console.log(`  linkBudget:   ${linkMaxBudget} LINK`);
 
 // ---- Step 3: Approve LINK (on-chain tx 2/3) ----
 
-console.log('\n--- Step 3: Approve LINK to EvaluationWallet ---');
+if (linkMaxBudgetWei > 0n) {
+  console.log('\n--- Step 3: Approve LINK to EvaluationWallet ---');
 
-const approveRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submit/approve`, {
-  method: 'POST',
-  headers: jsonHeaders,
-  body: JSON.stringify({ evalWallet, linkAmount: linkMaxBudget }),
-});
-const approveData = await approveRes.json();
-if (!approveRes.ok || !approveData.transaction) {
-  console.error('Approve failed:', JSON.stringify(approveData));
-  process.exit(1);
+  const approveRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submit/approve`, {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ evalWallet, linkAmount: linkMaxBudget }),
+  });
+  const approveData = await approveRes.json();
+  if (!approveRes.ok || !approveData.transaction) {
+    console.error('Approve failed:', JSON.stringify(approveData));
+    process.exit(1);
+  }
+
+  await sendTx(signer, 'LINK approve', approveData.transaction, {
+    expectedTo: LINK[network],
+    network,
+  });
+} else {
+  console.log('\n--- Step 3: Skip LINK approval ---');
+  console.log('  Prepared submission reports zero LINK budget; modern ETH-funded start will use the API-provided payable transaction.');
 }
-
-await sendTx(signer, 'LINK approve', approveData.transaction);
 
 // ---- Steps 4 & 5: Start evaluation + Confirm in API ----
 //
@@ -341,7 +373,12 @@ async function doStart() {
     return { ok: false, data: startData, status: startRes.status };
   }
   // Use API-recommended gasLimit for start (typically 4M gas)
-  await sendTx(signer, 'startPreparedSubmission', startData.transaction, { useApiGasLimit: true });
+  await sendTx(signer, 'startPreparedSubmission', startData.transaction, {
+    useApiGasLimit: true,
+    expectedTo: ESCROW[network],
+    allowValue: true,
+    network,
+  });
   return { ok: true, data: startData };
 }
 

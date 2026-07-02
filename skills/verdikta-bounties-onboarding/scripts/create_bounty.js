@@ -3,7 +3,8 @@
 // The bot wallet signs the on-chain transaction automatically.
 //
 // Usage:
-//   node create_bounty.js --config bounty.json
+//   node create_bounty.js --config bounty.json --yes
+//   node create_bounty.js --config bounty.json --dry-run
 //
 // bounty.json example:
 // {
@@ -41,6 +42,7 @@ import {
   getNetwork, providerFor, loadWallet,
   ESCROW, escrowContract, arg, loadApiKey,
   getSupportedModelsForClass, validateAndNormalizeJuryNodes,
+  confirmSpendOrExit, isDryRun, expectedChainId,
 } from './_lib.js';
 
 const configPath = arg('config');
@@ -137,6 +139,11 @@ if (!baseUrl) {
 }
 
 const provider = providerFor(network);
+const providerNetwork = await provider.getNetwork();
+if (Number(providerNetwork.chainId) !== expectedChainId(network)) {
+  console.error(`RPC chainId mismatch: got ${providerNetwork.chainId}, expected ${expectedChainId(network)} for ${network}. Refusing to spend gas.`);
+  process.exit(1);
+}
 const wallet = await loadWallet();
 const signer = wallet.connect(provider);
 const creator = signer.address;
@@ -168,6 +175,23 @@ console.log(`Class:    ${classId}`);
 console.log(`Window:   ${submissionWindowHours}h`);
 console.log(`Jury:     ${juryNodes.map(n => `${n.provider}/${n.model}`).join(', ')}`);
 console.log(`API:      ${baseUrl}`);
+
+if (isDryRun()) {
+  console.log('\nDry run complete: config, wallet, API key, and jury model checks passed.');
+  console.log('No API job was created and no transaction was signed.');
+  process.exit(0);
+}
+
+await confirmSpendOrExit([
+  `Action: create Verdikta bounty and fund it on-chain`,
+  `Network: ${network}`,
+  `Creator wallet: ${creator}`,
+  `API: ${baseUrl}`,
+  `Escrow: ${ESCROW[network] || '(unknown)'}`,
+  `Bounty amount: ${bountyAmount} ETH plus gas`,
+  `Title: ${title}`,
+  `Public data: bounty metadata and evaluation package may be pinned to IPFS and written on-chain`,
+]);
 
 // ---- Step 1: Create job via API ----
 
@@ -224,9 +248,29 @@ if (!contractAddress) {
   process.exit(1);
 }
 
+const apiContractAddress = apiData.job?.contractAddress;
+if (apiContractAddress && apiContractAddress.toLowerCase() !== contractAddress.toLowerCase()) {
+  console.error('Escrow contract mismatch; refusing to spend gas.');
+  console.error(`  Script escrow: ${contractAddress}`);
+  console.error(`  API expects:   ${apiContractAddress}`);
+  console.error('Update BOUNTY_ESCROW_ADDRESS_BASE or scripts/_lib.js, then retry.');
+  process.exit(1);
+}
+
 const contract = escrowContract(network, signer);
 const deadline = Math.floor(Date.now() / 1000) + (Number(submissionWindowHours) * 3600);
 const value = ethers.parseEther(String(bountyAmount));
+
+function parseOptionalGweiEnv(name) {
+  const raw = process.env[name];
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    console.error(`${name} must be a positive number of gwei when set.`);
+    process.exit(1);
+  }
+  return ethers.parseUnits(String(raw), 'gwei');
+}
 
 console.log(`  Escrow:    ${contractAddress}`);
 console.log(`  CID:       ${primaryCid}`);
@@ -236,9 +280,10 @@ console.log(`  Deadline:  ${new Date(deadline * 1000).toISOString()}`);
 const targetHunter = ethers.ZeroAddress;
 
 // Dry-run first to catch revert reasons before spending gas
+let estimatedGas;
 try {
-  const gas = await contract.createBounty.estimateGas(primaryCid, classId, threshold, deadline, targetHunter, { value });
-  console.log(`  estimated gas: ${gas.toString()}`);
+  estimatedGas = await contract.createBounty.estimateGas(primaryCid, classId, threshold, deadline, targetHunter, { value });
+  console.log(`  estimated gas: ${estimatedGas.toString()}`);
 } catch (err) {
   const reason = err.reason || err.shortMessage || err.message || 'unknown';
   console.error(`\n✖ createBounty will revert! Reason: ${reason}`);
@@ -246,7 +291,25 @@ try {
   process.exit(1);
 }
 
-const tx = await contract.createBounty(primaryCid, classId, threshold, deadline, targetHunter, { value });
+const txOptions = {
+  value,
+  gasLimit: (estimatedGas * 120n) / 100n,
+};
+const maxFeePerGas = parseOptionalGweiEnv('VERDIKTA_CREATE_MAX_FEE_GWEI');
+const maxPriorityFeePerGas = parseOptionalGweiEnv('VERDIKTA_CREATE_MAX_PRIORITY_FEE_GWEI');
+if (maxFeePerGas != null || maxPriorityFeePerGas != null) {
+  if (maxFeePerGas == null || maxPriorityFeePerGas == null) {
+    console.error('Set both VERDIKTA_CREATE_MAX_FEE_GWEI and VERDIKTA_CREATE_MAX_PRIORITY_FEE_GWEI, or neither.');
+    process.exit(1);
+  }
+  txOptions.maxFeePerGas = maxFeePerGas;
+  txOptions.maxPriorityFeePerGas = maxPriorityFeePerGas;
+  console.log(`  maxFeePerGas override: ${ethers.formatUnits(maxFeePerGas, 'gwei')} gwei`);
+  console.log(`  maxPriorityFeePerGas override: ${ethers.formatUnits(maxPriorityFeePerGas, 'gwei')} gwei`);
+}
+console.log(`  gasLimit: ${txOptions.gasLimit.toString()}`);
+
+const tx = await contract.createBounty(primaryCid, classId, threshold, deadline, targetHunter, txOptions);
 console.log(`  tx: ${tx.hash}`);
 const receipt = await tx.wait();
 

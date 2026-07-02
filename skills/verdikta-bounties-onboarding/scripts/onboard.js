@@ -46,10 +46,12 @@ async function loadOrInitEnvFile(envPath) {
   if (await fileExists(examplePath)) {
     const ex = await fs.readFile(examplePath, 'utf8');
     await fs.writeFile(envPath, ex, { mode: 0o600 });
+    await fs.chmod(envPath, 0o600);
     return;
   }
   // Minimal fallback
   await fs.writeFile(envPath, '', { mode: 0o600 });
+  await fs.chmod(envPath, 0o600);
 }
 
 function parseEnv(text) {
@@ -117,6 +119,7 @@ async function ensureWalletKeystore({ keystorePath, password, rl }) {
         // Re-encrypt with the current config password so everything stays consistent
         const reEncrypted = await wallet.encrypt(password);
         await fs.writeFile(abs, reEncrypted, { mode: 0o600 });
+        await fs.chmod(abs, 0o600);
         console.log('  Keystore re-encrypted with current password.');
         return { wallet, abs, created: false, imported: false };
       }
@@ -127,6 +130,7 @@ async function ensureWalletKeystore({ keystorePath, password, rl }) {
         const wallet = new Wallet(key.startsWith('0x') ? key : `0x${key}`);
         const json = await wallet.encrypt(password);
         await fs.writeFile(abs, json, { mode: 0o600 });
+        await fs.chmod(abs, 0o600);
         console.log('  Imported and encrypted. Old keystore overwritten.');
         return { wallet, abs, created: true, imported: true };
       }
@@ -152,6 +156,7 @@ async function ensureWalletKeystore({ keystorePath, password, rl }) {
       const wallet = new Wallet(key.startsWith('0x') ? key : `0x${key}`);
       const json = await wallet.encrypt(password);
       await fs.writeFile(abs, json, { mode: 0o600 });
+      await fs.chmod(abs, 0o600);
       console.log('  Imported and encrypted to keystore. Raw key was NOT saved.');
       return { wallet, abs, created: true, imported: true };
     }
@@ -166,6 +171,7 @@ async function ensureWalletKeystore({ keystorePath, password, rl }) {
       // Re-encrypt with the skill's password so all scripts use a consistent credential
       const reEncrypted = await wallet.encrypt(password);
       await fs.writeFile(abs, reEncrypted, { mode: 0o600 });
+      await fs.chmod(abs, 0o600);
       console.log('  Imported and re-encrypted to skill keystore.');
       return { wallet, abs, created: true, imported: true };
     }
@@ -174,6 +180,7 @@ async function ensureWalletKeystore({ keystorePath, password, rl }) {
   const wallet = Wallet.createRandom();
   const json = await wallet.encrypt(password);
   await fs.writeFile(abs, json, { mode: 0o600 });
+  await fs.chmod(abs, 0o600);
   return { wallet, abs, created: true, imported: false };
 }
 
@@ -327,6 +334,7 @@ async function main() {
       OFFBOT_ADDRESS: sweepAddress,
     });
     await fs.writeFile(envPath, patched, { mode: 0o600 });
+    await fs.chmod(envPath, 0o600);
 
     console.log(`\nSaved config: ${envPath} (survives skill updates)`);
     console.log('Secrets dir:', secretsDir);
@@ -418,6 +426,7 @@ async function main() {
       const reg = await registerBot({ baseUrl, name: botName, ownerAddress, description: botDescription });
       apiKey = reg.apiKey;
       await fs.writeFile(botOut, JSON.stringify(reg.data, null, 2), { mode: 0o600 });
+      await fs.chmod(botOut, 0o600);
 
       console.log(`\n✅ Registered bot. Saved: ${botOut}`);
       console.log('API key: saved to file (not reprinted here).');

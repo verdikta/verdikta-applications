@@ -219,8 +219,31 @@ export async function approveStake({ signer, tokenAddress, keeperAddress, amount
  */
 export async function registerArbiter({ signer, keeperAddress, oracle, jobId, fee, classes }) {
   const keeper = new ethers.Contract(keeperAddress, KEEPER_ABI, signer);
+
+  // Dry-run first so on-chain require() reasons surface before we spend gas.
+  // BUT: right after a deregister in the restart flow, a load-balanced public
+  // RPC (sepolia.base.org / mainnet.base.org) can still serve state a block or
+  // two behind — the deregister's `delete oracles[key]` hasn't propagated to the
+  // node this eth_call lands on, so registerOracle reverts "Oracle is already
+  // registered" even though the record is gone. That is transient: retry the
+  // dry-run over a bounded window until the reading node catches up. Any other
+  // revert (bad fee, not authorized, insufficient stake) is surfaced immediately.
+  const deadline = Date.now() + 45000; // ~20 Base blocks of catch-up headroom
+  for (;;) {
+    try {
+      await keeper.registerOracle.staticCall(oracle, jobId, fee, classes);
+      break;
+    } catch (error) {
+      const friendly = friendlyError(error);
+      if (/already registered/i.test(friendly.message) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 3000));
+        continue;
+      }
+      throw friendly;
+    }
+  }
+
   try {
-    await keeper.registerOracle.staticCall(oracle, jobId, fee, classes);
     const tx = await keeper.registerOracle(oracle, jobId, fee, classes);
     const receipt = await tx.wait();
     return { txHash: receipt.hash };

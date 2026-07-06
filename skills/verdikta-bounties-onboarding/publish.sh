@@ -6,6 +6,22 @@
 # then runs clawhub publish. Excludes .env, node_modules, package-lock.json,
 # .gitignore, and other non-skill files.
 
+REQUIRED_VERSION="0.23.1"
+
+INSTALLED_VERSION=$(clawhub --cli-version)
+
+if [ "$(printf '%s\n' "$REQUIRED_VERSION" "$INSTALLED_VERSION" | sort -V | head -n1)" != "$REQUIRED_VERSION" ]; then
+
+  echo "Error: ClawHub CLI $REQUIRED_VERSION or newer is required."
+
+  echo "Installed: $INSTALLED_VERSION"
+
+  echo "Run: npm install -g clawhub@latest"
+
+  exit 1
+
+fi
+
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"

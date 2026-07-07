@@ -44,25 +44,35 @@ keyed by the node's on-chain operator address. Because healthy nodes heartbeat
 continuously, the server also flags operators whose reports **stop** ("Not
 reporting") — the only way to notice an arbiter whose whole machine went dark.
 
-Server setup (ingestion is disabled until the token is set):
+Authentication is **signature-first, zero-config**: the watchdog signs each
+event with the operator owner's key (EIP-191 personal message, computed
+locally on the node — no transaction, no gas) and sends `signer` + `sig`. The
+server recovers the signer, requires a fresh `ts` (10-minute replay bound),
+and requires the signer to equal the operator contract's on-chain `owner()`.
+Any freshly installed, registered arbiter can therefore report immediately —
+no secret to distribute, and no cross-operator spoofing.
+
+Server setup (nothing required for signed events; optional knobs):
 
 ```bash
-# server environment
-ALERTS_INGEST_TOKEN="<shared token>"      # required to enable POST /api/alerts
+# OPTIONAL fallback: enables unsigned events carrying this X-Watchdog-Token
+# header, for nodes that cannot sign. Unsigned ingestion is 503 without it.
+ALERTS_INGEST_TOKEN="<shared token>"
 ALERTS_STALE_AFTER_MINUTES=10             # optional; heartbeat staleness window
 ```
 
-Node-operator setup (in the arbiter install's `installer/.env`):
+Node-operator setup (in the arbiter install's `installer/.env`; the install
+script offers to configure this):
 
 ```bash
 WATCHDOG_ALERT_WEBHOOK="https://arbiters.verdikta.org/api/alerts"
-WATCHDOG_ALERT_TOKEN="<shared token>"
+# WATCHDOG_ALERT_TOKEN only needed if the node cannot sign
 ```
 
-Events are validated (token, operator address registered in the keeper) and
-persisted per network to `server/data/{network}/alerts.json` (same pattern as
-the gas-receipt store). The Operator Reliability tables show a colored dot for
-operators that report. Read path: `GET /api/alerts?network=`.
+Events are validated (signature or token, plus operator address registered in
+the keeper) and persisted per network to `server/data/{network}/alerts.json`
+(same pattern as the gas-receipt store). The Operator Reliability tables show
+a colored dot for operators that report. Read path: `GET /api/alerts?network=`.
 
 ## Notes
 

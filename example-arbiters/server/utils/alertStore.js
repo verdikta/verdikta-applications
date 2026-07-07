@@ -98,7 +98,7 @@ class AlertStore {
    *
    * @param {{ operator: string, hostname?: string, status: 'OK'|'ALERT'|'RECOVERED',
    *   severity?: string, subject?: string, problems?: string[], selfHeal?: string|null,
-   *   registered?: boolean|null }} event
+   *   registered?: boolean|null, authMethod?: 'signature'|'token'|null }} event
    * @returns {object} the updated operator record
    */
   ingest(event) {
@@ -122,6 +122,7 @@ class AlertStore {
     rec.lastSeen = now;
     if (event.hostname) rec.hostname = event.hostname;
     if (event.registered != null) rec.registered = event.registered;
+    if (event.authMethod) rec.authMethod = event.authMethod;
 
     const pushHistory = (entry) => {
       rec.history.unshift({ ts: now, ...entry });

@@ -5,25 +5,21 @@
  * from cron. When an operator sets:
  *
  *   WATCHDOG_ALERT_WEBHOOK="https://arbiters.verdikta.org/api/alerts"
- *   WATCHDOG_ALERT_TOKEN="<shared token>"
  *
  * in their node's installer/.env, every watchdog run POSTs one JSON event here
  * (OK heartbeat / ALERT / RECOVERED, keyed by on-chain operator address).
  * The Analytics page reads the aggregate view via GET /api/alerts.
  *
- * Ingest auth (either mechanism grants access):
- *
- * 1. SIGNATURE (preferred, self-service): the watchdog signs a canonical
- *    message with the operator owner's key (EIP-191 personal message — pure
- *    local computation on the node, no transaction/gas) and sends `signer` +
- *    `sig` in the body. We recover the signer, require a fresh `ts` (replay
- *    bound), and require the signer to equal the operator contract's
- *    on-chain owner() (cached read). No shared secret to distribute: any
- *    freshly installed, registered arbiter can report immediately.
- *
- * 2. SHARED TOKEN (fallback): X-Watchdog-Token header matching env
- *    ALERTS_INGEST_TOKEN, for nodes that cannot sign. If the env var is
- *    unset, unsigned ingestion is disabled (503) — never open by default.
+ * Ingest auth — signature only, self-service, no shared secrets: the
+ * watchdog signs a canonical message with the operator owner's key (EIP-191
+ * personal message — pure local computation on the node, no transaction/gas)
+ * and sends `signer` + `sig` in the body. We recover the signer, require a
+ * fresh `ts` (replay bound), and require the signer to equal the operator
+ * contract's on-chain owner() (cached read). Any freshly installed,
+ * registered arbiter can report immediately; unsigned events are rejected.
+ * (A shared-token fallback existed briefly and was removed deliberately: a
+ * leaked fleet-wide token would allow spoofing any operator's status,
+ * including fake "healthy" heartbeats masking a real outage.)
  *
  * As defense in depth, the reported operator address is also checked against
  * the on-chain keeper registry (cached enumeration); events for unknown
@@ -118,43 +114,30 @@ router.post('/', async (req, res) => {
   const rawNetwork = String(body.network || '').toLowerCase();
   const networkKey = normalizeNetwork(rawNetwork === 'base_mainnet' ? 'base' : rawNetwork);
 
-  // ── Authentication ────────────────────────────────────────────────────────
-  let authMethod = null;
-  if (body.sig || body.signer) {
-    // Signature path: recover + freshness, then signer must be the operator
-    // contract's on-chain owner.
-    const check = verifyEventSignature(body);
-    if (!check.ok) {
-      return res.status(401).json({ success: false, error: check.error });
-    }
-    let owner = null;
-    try {
-      const service = getVerdiktaService(networkKey);
-      const ownerMap = await service.getOwnerMap([operator]);
-      owner = ownerMap[operator.toLowerCase()] || null;
-    } catch (err) {
-      logger.warn('[alerts] owner lookup failed', { network: networkKey, operator, msg: err.message });
-    }
-    if (!owner) {
-      return res.status(503).json({ success: false, error: 'Could not verify operator owner on-chain; retry later' });
-    }
-    if (owner.toLowerCase() !== check.signer.toLowerCase()) {
-      logger.warn('[alerts] signer is not the operator owner', {
-        network: networkKey, operator, signer: check.signer, owner,
-      });
-      return res.status(403).json({ success: false, error: 'Signer is not the operator owner' });
-    }
-    authMethod = 'signature';
-  } else {
-    // Token fallback for nodes that cannot sign.
-    const ingestToken = process.env.ALERTS_INGEST_TOKEN;
-    if (!ingestToken) {
-      return res.status(503).json({ success: false, error: 'Unsigned ingestion is not enabled on this server (sign events or configure ALERTS_INGEST_TOKEN)' });
-    }
-    if (req.get('X-Watchdog-Token') !== ingestToken) {
-      return res.status(401).json({ success: false, error: 'Invalid or missing X-Watchdog-Token' });
-    }
-    authMethod = 'token';
+  // ── Authentication: owner signature required ─────────────────────────────
+  if (!body.sig || !body.signer) {
+    return res.status(401).json({ success: false, error: 'Signature required (signer + sig, signed by the operator owner key)' });
+  }
+  const check = verifyEventSignature(body);
+  if (!check.ok) {
+    return res.status(401).json({ success: false, error: check.error });
+  }
+  let owner = null;
+  try {
+    const service = getVerdiktaService(networkKey);
+    const ownerMap = await service.getOwnerMap([operator]);
+    owner = ownerMap[operator.toLowerCase()] || null;
+  } catch (err) {
+    logger.warn('[alerts] owner lookup failed', { network: networkKey, operator, msg: err.message });
+  }
+  if (!owner) {
+    return res.status(503).json({ success: false, error: 'Could not verify operator owner on-chain; retry later' });
+  }
+  if (owner.toLowerCase() !== check.signer.toLowerCase()) {
+    logger.warn('[alerts] signer is not the operator owner', {
+      network: networkKey, operator, signer: check.signer, owner,
+    });
+    return res.status(403).json({ success: false, error: 'Signer is not the operator owner' });
   }
 
   const registered = await isRegisteredOperator(networkKey, operator);
@@ -176,12 +159,11 @@ router.post('/', async (req, res) => {
         : [],
       selfHeal: typeof body.selfHeal === 'string' ? body.selfHeal.slice(0, 300) : null,
       registered,
-      authMethod,
     });
     if (status !== 'OK') {
-      logger.info('[alerts] event ingested', { network: networkKey, operator, status, auth: authMethod });
+      logger.info('[alerts] event ingested', { network: networkKey, operator, status });
     }
-    return res.json({ success: true, auth: authMethod });
+    return res.json({ success: true });
   } catch (err) {
     logger.error('[alerts] ingest failed', { network: networkKey, operator, msg: err.message });
     return res.status(500).json({ success: false, error: 'Failed to store alert event' });

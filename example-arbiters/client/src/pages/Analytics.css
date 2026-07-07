@@ -562,3 +562,50 @@
 .analytics .blame-agg-link:hover { text-decoration: underline; }
 .analytics .blame-agg-link code { font-size: 0.8rem; }
 .analytics .blame-agg-meta { font-size: 0.78rem; color: var(--text-secondary, #64748b); }
+
+/* Arbiter Alerts: live watchdog reports pushed by arbiter nodes. */
+.analytics .alert-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  margin-right: 0.45rem;
+  vertical-align: middle;
+}
+.analytics .alert-state-badge {
+  display: inline-block;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.analytics .alert-allclear {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--text-secondary, #64748b);
+  padding: 0.4rem 0;
+}
+.analytics .alert-problem-cell { max-width: 28rem; }
+.analytics .alert-problem-cell strong { font-size: 0.85rem; }
+.analytics .alert-problem-list {
+  margin: 0.3rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary, #64748b);
+}
+.analytics .alert-since {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-muted, #6b7280);
+}
+.analytics .empty-state-hint {
+  font-size: 0.8rem;
+  color: var(--text-muted, #6b7280);
+  max-width: 34rem;
+}
+.analytics .empty-state-hint code { font-size: 0.78rem; }

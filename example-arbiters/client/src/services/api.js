@@ -92,6 +92,14 @@ export const apiService = {
     return response.data;
   },
 
+  // Live arbiter watchdog reports for a network: active alerts, heartbeat
+  // freshness, and recent history per operator. Fed by arbiter nodes POSTing
+  // watchdog events to /api/alerts; cheap read (no on-chain work).
+  async getAlerts(network) {
+    const response = await api.get('/api/alerts', { params: { network } });
+    return response.data;
+  },
+
   // Full blow-by-blow of a single oracle aggregation (the drill-down behind a
   // blameworthy aggId): requirements, per-slot commit/reveal outcome, failures,
   // and final fulfillment. Bounded on-chain log scan — allow generous time.

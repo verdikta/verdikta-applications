@@ -34,8 +34,39 @@ Open http://localhost:5175.
 
 Chosen to avoid collisions with `example-frontend` (5000/3001), `example-bounty-program` (5005–5006/5173), and `example-agents` (5007/5174).
 
+## Arbiter watchdog alerts
+
+The `/analytics` page has an **Arbiter Alerts** card fed by arbiter nodes
+themselves: each node's `chainlink-health-watchdog.sh` (verdikta-arbiter repo)
+runs from cron every ~2 minutes and can POST one JSON event per run —
+`OK` heartbeat, `ALERT`, or `RECOVERED` — to this server's `POST /api/alerts`,
+keyed by the node's on-chain operator address. Because healthy nodes heartbeat
+continuously, the server also flags operators whose reports **stop** ("Not
+reporting") — the only way to notice an arbiter whose whole machine went dark.
+
+Server setup (ingestion is disabled until the token is set):
+
+```bash
+# server environment
+ALERTS_INGEST_TOKEN="<shared token>"      # required to enable POST /api/alerts
+ALERTS_STALE_AFTER_MINUTES=10             # optional; heartbeat staleness window
+```
+
+Node-operator setup (in the arbiter install's `installer/.env`):
+
+```bash
+WATCHDOG_ALERT_WEBHOOK="https://arbiters.verdikta.org/api/alerts"
+WATCHDOG_ALERT_TOKEN="<shared token>"
+```
+
+Events are validated (token, operator address registered in the keeper) and
+persisted per network to `server/data/{network}/alerts.json` (same pattern as
+the gas-receipt store). The Operator Reliability tables show a colored dot for
+operators that report. Read path: `GET /api/alerts?network=`.
+
 ## Notes
 
 - No wallet / IPFS code yet. Keep it that way until the feature set demands it.
 - Read-only blockchain access is intentional: the `/analytics` page reads arbiter/oracle data from the Verdikta aggregator + ReputationKeeper contracts via ethers (no wallet, no writes, no IPFS). A network toggle (Base mainnet / Base Sepolia) is exposed in the UI; the server reads each network over a public RPC (PublicNode), so no API keys are required. Override with `RPC_URL` / `INFURA_API_KEY` for a private endpoint.
+- The one write-ish surface is `POST /api/alerts` (arbiter watchdog webhooks, see above) — token-gated, off by default.
 - Visual theme mirrors `example-bounty-program` (shared CSS variables and components). Keep in sync when the design system evolves.

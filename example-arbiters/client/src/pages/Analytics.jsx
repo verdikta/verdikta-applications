@@ -23,7 +23,9 @@ import {
   Coins,
   UserCircle,
   Fuel,
-  Activity
+  Activity,
+  BellRing,
+  HeartPulse
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { useNetwork } from '../context/NetworkContext';
@@ -86,7 +88,43 @@ const expandedBlame = new Set();
 // while a background refresh still runs.
 const healthCache = {};   // network → 14-day oracle-health data
 const health24Cache = {}; // network → 24-hour oracle-health data
-function OperatorRow({ o, windowLabel }) {
+
+// Watchdog reporting-state palette + labels (see the Arbiter Alerts section).
+// 'ok' / 'alerting' / 'stale' come from the server; null = never reported.
+const ALERT_STATE = {
+  ok:       { color: COLORS.active,       label: 'Healthy',        desc: 'Watchdog heartbeating; all node health checks passing' },
+  alerting: { color: COLORS.blocked,      label: 'Alerting',       desc: 'The node\'s watchdog is reporting an active problem' },
+  stale:    { color: COLORS.unresponsive, label: 'Not reporting',  desc: 'Watchdog heartbeats stopped — the node or its machine may be down' },
+};
+
+// Small colored dot conveying an operator's watchdog reporting state. Renders
+// nothing when the operator has never reported (webhook not configured) so the
+// reliability tables stay uncluttered for non-participating operators.
+function AlertDot({ alert }) {
+  if (!alert) return null;
+  const meta = ALERT_STATE[alert.state] || ALERT_STATE.ok;
+  const detail = alert.state === 'alerting' && alert.activeAlert ? ` — ${alert.activeAlert.subject}` : '';
+  return (
+    <span
+      className="alert-dot"
+      style={{ backgroundColor: meta.color }}
+      title={`Node watchdog: ${meta.label}${detail}`}
+    />
+  );
+}
+
+const fmtAgoMs = (ms) => {
+  if (!ms) return '—';
+  const s = Math.floor((Date.now() - ms) / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+};
+
+function OperatorRow({ o, windowLabel, alert }) {
   const rowKey = `${windowLabel}|${o.operator}`;
   const [open, setOpen] = useState(() => expandedBlame.has(rowKey));
   const toggle = () => setOpen((v) => {
@@ -99,7 +137,7 @@ function OperatorRow({ o, windowLabel }) {
   return (
     <>
       <tr>
-        <td><code>{shortAddr(o.operator)}</code></td>
+        <td><AlertDot alert={alert} /><code>{shortAddr(o.operator)}</code></td>
         <td>{o.arbiters == null ? '—' : o.arbiters}</td>
         <td><strong>{o.timesSelected}</strong></td>
         <td style={{ color: rateColor(o.commitRatePct), fontWeight: 600 }}>
@@ -149,7 +187,9 @@ function OperatorRow({ o, windowLabel }) {
 
 // Operator Reliability section, rendered once per look-back window (the 14-day
 // and 24-hour tables share identical columns — only the data differs).
-const renderReliabilitySection = (windowLabel, hData, hLoading, hError) => (
+// `alertsByOp` (operatorLower → watchdog record) decorates rows with a live
+// node-health dot for operators that report to /api/alerts.
+const renderReliabilitySection = (windowLabel, hData, hLoading, hError, alertsByOp = {}) => (
   <section className="analytics-section">
     <h2 title="Per-operator commit and reveal reliability across recent evaluations. Commit rate = commits ÷ times polled; reveal rate = reveals ÷ commits. A healthy commit rate but a low reveal rate means the node commits then fails to reveal — starving evaluations of the reveals they need to finalize."><Server size={20} className="inline-icon" /> Operator Reliability · {windowLabel}</h2>
     <div className="section-content">
@@ -172,7 +212,12 @@ const renderReliabilitySection = (windowLabel, hData, hLoading, hError) => (
             </thead>
             <tbody>
               {hData.operators.map((o) => (
-                <OperatorRow key={o.operator} o={o} windowLabel={windowLabel} />
+                <OperatorRow
+                  key={o.operator}
+                  o={o}
+                  windowLabel={windowLabel}
+                  alert={alertsByOp[o.operator?.toLowerCase()]}
+                />
               ))}
             </tbody>
           </table>
@@ -235,6 +280,11 @@ function Analytics() {
   const [health24Loading, setHealth24Loading] = useState(() => !health24Cache[selectedNetwork]);
   const [health24Error, setHealth24Error] = useState(null);
   const health24ReqNetRef = useRef(selectedNetwork);
+
+  // Live watchdog reports pushed by arbiter nodes (POST /api/alerts). Cheap
+  // read — no on-chain work — loaded independently of the heavy sections.
+  const [alertsData, setAlertsData] = useState(null);
+  const alertsReqNetRef = useRef(selectedNetwork);
 
   const loadAnalytics = useCallback(async (network, silent = false) => {
     if (!isMountedRef.current) return;
@@ -323,6 +373,19 @@ function Analytics() {
     }
   }, []);
 
+  // Load the watchdog alerts snapshot. Best-effort: the section renders an
+  // empty state if the read fails (never blocks the rest of the page).
+  const loadAlerts = useCallback(async (network) => {
+    alertsReqNetRef.current = network;
+    try {
+      const res = await apiService.getAlerts(network);
+      if (!isMountedRef.current || network !== alertsReqNetRef.current) return;
+      setAlertsData(res.success ? res.data : null);
+    } catch {
+      if (isMountedRef.current && network === alertsReqNetRef.current) setAlertsData(null);
+    }
+  }, []);
+
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
@@ -331,6 +394,7 @@ function Analytics() {
       loadOwners(selectedNetwork);
       loadHealth(selectedNetwork);
       loadHealth24(selectedNetwork);
+      loadAlerts(selectedNetwork);
       toast.success('Analytics refreshed');
     } catch {
       toast.error('Failed to refresh analytics');
@@ -377,6 +441,16 @@ function Analytics() {
     setHealth24Error(null);
     loadHealth24(selectedNetwork);
   }, [selectedNetwork, loadHealth24]);
+
+  // Load watchdog alerts on network change, and keep them fresh with a light
+  // poll — heartbeats land every ~2 minutes, so 60s keeps the card current
+  // without meaningful load (the read is file-backed, no RPC).
+  useEffect(() => {
+    setAlertsData(null);
+    loadAlerts(selectedNetwork);
+    const timer = setInterval(() => loadAlerts(selectedNetwork), 60000);
+    return () => clearInterval(timer);
+  }, [selectedNetwork, loadAlerts]);
 
   // Format time ago
   const formatTimeAgo = (date) => {
@@ -494,6 +568,14 @@ function Analytics() {
   const gasScan = healthData?.gas?.scan || null;
   const operatorsWithGas = (healthData?.operators || []).filter(o => o.gas && (o.gas.commit || o.gas.reveal || o.gas.finalizing));
 
+  // Watchdog alerts: index by operator for the reliability-table dots, and
+  // bucket by reporting state for the Arbiter Alerts card.
+  const alertOps = alertsData?.operators || [];
+  const alertsByOp = Object.fromEntries(alertOps.map((r) => [r.operator.toLowerCase(), r]));
+  const activeAlerts = alertOps.filter((r) => r.state === 'alerting');
+  const staleReporters = alertOps.filter((r) => r.state === 'stale');
+  const okReporters = alertOps.filter((r) => r.state === 'ok');
+
   // Prepare chart data for arbiter availability, grouped by owner so the chart
   // matches the table below. One stacked bar per owner; segments are statuses.
   const chartOwners = ownersData?.owners || [];
@@ -550,6 +632,86 @@ function Analytics() {
           </button>
         </div>
       </div>
+
+      {/* Arbiter Alerts Section — live node-health reports pushed by each
+          arbiter's watchdog (cron, ~2 min). Alerting nodes and nodes whose
+          heartbeats stopped surface here; healthy reporters roll up to a count. */}
+      <section className="analytics-section">
+        <h2 title="Live health reports pushed by each arbiter node's watchdog (every ~2 minutes). Alerting = the node reported a problem (e.g. 0 live RPC nodes — it cannot submit commit/reveal transactions). Not reporting = heartbeats stopped, so the node or its machine may be down. Operators that haven't configured watchdog reporting don't appear.">
+          <BellRing size={20} className="inline-icon" /> Arbiter Alerts
+        </h2>
+        <div className="section-content">
+          {alertOps.length === 0 ? (
+            <div className="empty-state">
+              <HeartPulse size={32} />
+              <p>No arbiters are reporting watchdog health yet</p>
+              <p className="empty-state-hint">
+                Node operators opt in by pointing <code>WATCHDOG_ALERT_WEBHOOK</code> at this
+                site's <code>/api/alerts</code> endpoint (see the arbiter installer docs).
+              </p>
+            </div>
+          ) : (
+            <>
+              {activeAlerts.length === 0 && staleReporters.length === 0 && (
+                <div className="alert-allclear">
+                  <CheckCircle size={16} style={{ color: COLORS.active }} />
+                  <span>All {okReporters.length} reporting arbiter node{okReporters.length === 1 ? '' : 's'} healthy</span>
+                </div>
+              )}
+              {(activeAlerts.length > 0 || staleReporters.length > 0) && (
+                <div className="stats-table">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>State</th>
+                        <th>Operator</th>
+                        <th>Host</th>
+                        <th className="tooltip-header" title="When this node's watchdog last reported (heartbeats arrive every ~2 minutes)">Last report</th>
+                        <th>Problem</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...activeAlerts, ...staleReporters].map((r) => (
+                        <tr key={r.operator}>
+                          <td>
+                            <span className="alert-state-badge" style={{ backgroundColor: ALERT_STATE[r.state].color }}
+                                  title={ALERT_STATE[r.state].desc}>
+                              {ALERT_STATE[r.state].label}
+                            </span>
+                          </td>
+                          <td><code>{shortAddr(r.operator)}</code></td>
+                          <td>{r.hostname || '—'}</td>
+                          <td>{fmtAgoMs(r.lastSeen)}</td>
+                          <td className="alert-problem-cell">
+                            {r.state === 'alerting' && r.activeAlert ? (
+                              <>
+                                <strong>{r.activeAlert.subject}</strong>
+                                {r.activeAlert.problems?.length > 0 && (
+                                  <ul className="alert-problem-list">
+                                    {r.activeAlert.problems.slice(0, 4).map((p, i) => <li key={i}>{p}</li>)}
+                                  </ul>
+                                )}
+                                <span className="alert-since">since {fmtAgoMs(r.activeAlert.since)}</span>
+                              </>
+                            ) : (
+                              <span className="alert-since">heartbeats stopped — node or machine may be down</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {(activeAlerts.length > 0 || staleReporters.length > 0) && okReporters.length > 0 && (
+                <p className="health-footnote">
+                  {okReporters.length} other reporting node{okReporters.length === 1 ? '' : 's'} healthy.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      </section>
 
       {/* Arbiter Availability Section */}
       <section className="analytics-section">
@@ -655,8 +817,8 @@ function Analytics() {
       </section>
 
       {/* Operator Reliability — 14-day and 24-hour windows */}
-      {renderReliabilitySection('Last 14 days', healthData, healthLoading, healthError)}
-      {renderReliabilitySection('Last 24 hours', health24Data, health24Loading, health24Error)}
+      {renderReliabilitySection('Last 14 days', healthData, healthLoading, healthError, alertsByOp)}
+      {renderReliabilitySection('Last 24 hours', health24Data, health24Loading, health24Error, alertsByOp)}
 
       {/* Gas per Commit / Reveal Section */}
       <section className="analytics-section">

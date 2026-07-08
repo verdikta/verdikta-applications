@@ -651,10 +651,11 @@ function Analytics() {
       </div>
 
       {/* Arbiter Alerts Section — live node-health reports pushed by each
-          arbiter's watchdog (cron, ~2 min). Alerting nodes and nodes whose
-          heartbeats stopped surface here; healthy reporters roll up to a count. */}
+          operator node's watchdog (cron, ~2 min). Every reporting node is
+          listed (alerting first, then stale, then healthy) with its arbiter
+          count and chainlink uptime. */}
       <section className="analytics-section">
-        <h2 title="Live health reports pushed by each arbiter node's watchdog (every ~2 minutes). Alerting = the node reported a problem (e.g. 0 live RPC nodes — it cannot submit commit/reveal transactions). Not reporting = heartbeats stopped, so the node or its machine may be down. Operators that haven't configured watchdog reporting don't appear.">
+        <h2 title="Live health reports pushed by each operator node's watchdog (every ~2 minutes). Alerting = the node reported a problem (e.g. 0 live RPC nodes — it cannot submit commit/reveal transactions). Not reporting = heartbeats stopped, so the node or its machine may be down. Operators that haven't configured watchdog reporting don't appear.">
           <BellRing size={20} className="inline-icon" /> Arbiter Alerts
         </h2>
         <div className="section-content">
@@ -673,70 +674,66 @@ function Analytics() {
                 <div className="alert-allclear">
                   <CheckCircle size={16} style={{ color: COLORS.active }} />
                   <span>
-                    All {okReporters.length} reporting arbiter node{okReporters.length === 1 ? '' : 's'} healthy
+                    All {okReporters.length} operator node{okReporters.length === 1 ? '' : 's'} healthy
                     {okArbiters > 0 ? ` — backing ${okArbiters} arbiter${okArbiters === 1 ? '' : 's'}` : ''}
                   </span>
                 </div>
               )}
-              {(activeAlerts.length > 0 || staleReporters.length > 0) && (
-                <div className="stats-table">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>State</th>
-                        <th>Operator</th>
-                        <th>Host</th>
-                        <th className="tooltip-header" title="When this node's watchdog last reported (heartbeats arrive every ~2 minutes)">Last report</th>
-                        <th>Problem</th>
+              <div className="stats-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>State</th>
+                      <th>Operator</th>
+                      <th>Host</th>
+                      <th className="tooltip-header" title="How long this node's chainlink container has been running (host uptime and image in the cell tooltip)">Uptime</th>
+                      <th className="tooltip-header" title="When this node's watchdog last reported (heartbeats arrive every ~2 minutes)">Last report</th>
+                      <th>Problem</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {alertOps.map((r) => (
+                      <tr key={r.operator}>
+                        <td>
+                          <span className="alert-state-badge" style={{ backgroundColor: ALERT_STATE[r.state].color }}
+                                title={ALERT_STATE[r.state].desc}>
+                            {ALERT_STATE[r.state].label}
+                          </span>
+                        </td>
+                        <td>
+                          <code>{shortAddr(r.operator)}</code>
+                          {r.arbiters != null && <span className="alert-arbiter-count"> · {r.arbiters} arbiter{r.arbiters === 1 ? '' : 's'}</span>}
+                        </td>
+                        <td>{r.hostname || '—'}</td>
+                        <td title={[
+                          r.hostUptimeSec != null ? `host up ${fmtUptime(r.hostUptimeSec)}` : null,
+                          r.chainlinkImage || null,
+                        ].filter(Boolean).join(' — ') || undefined}>
+                          {fmtUptime(r.chainlinkUptimeSec) || '—'}
+                        </td>
+                        <td>{fmtAgoMs(r.lastSeen)}</td>
+                        <td className="alert-problem-cell">
+                          {r.state === 'alerting' && r.activeAlert ? (
+                            <>
+                              <strong>{r.activeAlert.subject}</strong>
+                              {r.activeAlert.problems?.length > 0 && (
+                                <ul className="alert-problem-list">
+                                  {r.activeAlert.problems.slice(0, 4).map((p, i) => <li key={i}>{p}</li>)}
+                                </ul>
+                              )}
+                              <span className="alert-since">since {fmtAgoMs(r.activeAlert.since)}</span>
+                            </>
+                          ) : r.state === 'stale' ? (
+                            <span className="alert-since">heartbeats stopped — node or machine may be down</span>
+                          ) : (
+                            <span className="alert-since">—</span>
+                          )}
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {[...activeAlerts, ...staleReporters].map((r) => (
-                        <tr key={r.operator}>
-                          <td>
-                            <span className="alert-state-badge" style={{ backgroundColor: ALERT_STATE[r.state].color }}
-                                  title={ALERT_STATE[r.state].desc}>
-                              {ALERT_STATE[r.state].label}
-                            </span>
-                          </td>
-                          <td>
-                            <code>{shortAddr(r.operator)}</code>
-                            {r.arbiters != null && <span className="alert-arbiter-count"> · {r.arbiters} arbiter{r.arbiters === 1 ? '' : 's'}</span>}
-                          </td>
-                          <td>
-                            {r.hostname || '—'}
-                            {fmtUptime(r.chainlinkUptimeSec) && (
-                              <span className="alert-arbiter-count"> · cl up {fmtUptime(r.chainlinkUptimeSec)}</span>
-                            )}
-                          </td>
-                          <td>{fmtAgoMs(r.lastSeen)}</td>
-                          <td className="alert-problem-cell">
-                            {r.state === 'alerting' && r.activeAlert ? (
-                              <>
-                                <strong>{r.activeAlert.subject}</strong>
-                                {r.activeAlert.problems?.length > 0 && (
-                                  <ul className="alert-problem-list">
-                                    {r.activeAlert.problems.slice(0, 4).map((p, i) => <li key={i}>{p}</li>)}
-                                  </ul>
-                                )}
-                                <span className="alert-since">since {fmtAgoMs(r.activeAlert.since)}</span>
-                              </>
-                            ) : (
-                              <span className="alert-since">heartbeats stopped — node or machine may be down</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              {(activeAlerts.length > 0 || staleReporters.length > 0) && okReporters.length > 0 && (
-                <p className="health-footnote">
-                  {okReporters.length} other reporting node{okReporters.length === 1 ? '' : 's'} healthy
-                  {okArbiters > 0 ? ` (backing ${okArbiters} arbiter${okArbiters === 1 ? '' : 's'})` : ''}.
-                </p>
-              )}
+                    ))}
+                  </tbody>
+                </table>
+              </div>
               {alertCoverage && alertCoverage.totalArbiters > 0 && (
                 <p className="health-footnote" title="Arbiters whose operator's node reports watchdog health here, vs. all arbiters registered in the ReputationKeeper. Operators enable reporting by setting WATCHDOG_ALERT_WEBHOOK on their node.">
                   Watchdog reporting covers {alertCoverage.coveredArbiters} of {alertCoverage.totalArbiters} registered arbiters.

@@ -300,8 +300,11 @@ async function listJobs(filters = {}) {
         // Jobs without a contractAddress are legacy and should not be shown
         const jobContract = (j.contractAddress || '').toLowerCase();
         const matchesContract = jobContract === currentContract;
-        const notOrphaned = j.status !== 'ORPHANED';
-        if (!matchesContract || !notOrphaned) return false;
+        // Hidden statuses: ORPHANED (old-contract) and CANCELLED (admin-cancelled,
+        // e.g. an un-funded job that was never deployed on-chain). Both are removed
+        // from the default listing; use includeOrphans/currentContractOnly=false to see them.
+        const isHiddenStatus = j.status === 'ORPHANED' || j.status === 'CANCELLED';
+        if (!matchesContract || isHiddenStatus) return false;
 
         return true;
       });

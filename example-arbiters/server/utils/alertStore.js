@@ -98,7 +98,8 @@ class AlertStore {
    *
    * @param {{ operator: string, hostname?: string, status: 'OK'|'ALERT'|'RECOVERED',
    *   severity?: string, subject?: string, problems?: string[], selfHeal?: string|null,
-   *   registered?: boolean|null }} event
+   *   registered?: boolean|null, hostUptimeSec?: number|null,
+   *   chainlinkUptimeSec?: number|null, chainlinkImage?: string|null }} event
    * @returns {object} the updated operator record
    */
   ingest(event) {
@@ -122,6 +123,10 @@ class AlertStore {
     rec.lastSeen = now;
     if (event.hostname) rec.hostname = event.hostname;
     if (event.registered != null) rec.registered = event.registered;
+    // Node telemetry (informational; sent with every event, kept current)
+    if (event.hostUptimeSec != null) rec.hostUptimeSec = event.hostUptimeSec;
+    if (event.chainlinkUptimeSec != null) rec.chainlinkUptimeSec = event.chainlinkUptimeSec;
+    if (event.chainlinkImage) rec.chainlinkImage = event.chainlinkImage;
 
     const pushHistory = (entry) => {
       rec.history.unshift({ ts: now, ...entry });

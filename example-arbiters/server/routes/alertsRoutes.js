@@ -159,6 +159,12 @@ router.post('/', async (req, res) => {
         : [],
       selfHeal: typeof body.selfHeal === 'string' ? body.selfHeal.slice(0, 300) : null,
       registered,
+      // Node telemetry (informational). Bounded to sane ranges.
+      hostUptimeSec: Number.isFinite(body.hostUptimeSec) && body.hostUptimeSec >= 0
+        ? Math.min(Math.floor(body.hostUptimeSec), 10 * 365 * 86400) : null,
+      chainlinkUptimeSec: Number.isFinite(body.chainlinkUptimeSec) && body.chainlinkUptimeSec >= 0
+        ? Math.min(Math.floor(body.chainlinkUptimeSec), 10 * 365 * 86400) : null,
+      chainlinkImage: typeof body.chainlinkImage === 'string' ? body.chainlinkImage.slice(0, 120) : null,
     });
     if (status !== 'OK') {
       logger.info('[alerts] event ingested', { network: networkKey, operator, status });
@@ -171,17 +177,61 @@ router.post('/', async (req, res) => {
 });
 
 /**
+ * Arbiter (registered jobId) counts per operator from the keeper registry,
+ * plus the network total. One chainlink node/operator typically backs many
+ * arbiters, so the UI shows "1 node — backing 10 arbiters". Best-effort:
+ * returns null when the registry cannot be read (cached 10 min otherwise).
+ * @returns {Promise<{ byOperator: Object<string, number>, total: number } | null>}
+ */
+async function getArbiterCounts(networkKey) {
+  try {
+    const service = getVerdiktaService(networkKey);
+    const oracles = await service.getAllOracles({ maxAgeMs: 10 * 60 * 1000 });
+    const byOperator = {};
+    let total = 0;
+    for (const o of oracles) {
+      if (o.error || !o.oracle) continue;
+      const k = o.oracle.toLowerCase();
+      byOperator[k] = (byOperator[k] || 0) + 1;
+      total += 1;
+    }
+    return { byOperator, total };
+  } catch (err) {
+    logger.warn('[alerts] arbiter counts unavailable', { network: networkKey, msg: err.message });
+    return null;
+  }
+}
+
+/**
  * GET /api/alerts?network=
  * Current reporting state for every operator that has ever reported, plus the
- * staleness window. Operators registered on-chain that never configured the
+ * staleness window and watchdog coverage (reporting arbiters vs. total
+ * registered). Operators registered on-chain that never configured the
  * watchdog webhook simply don't appear (the UI labels them "not reporting").
  */
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   const networkKey = normalizeNetwork(req.query.network);
   try {
     const store = AlertStore.forNetwork(networkKey).load();
     const data = store.getSnapshot({ staleAfterMs: STALE_AFTER_MS });
-    return res.json({ success: true, data: { network: networkKey, ...data } });
+
+    // Enrich with per-operator arbiter counts + network coverage (best-effort).
+    const counts = await getArbiterCounts(networkKey);
+    let coverage = null;
+    if (counts) {
+      let covered = 0;
+      for (const op of data.operators) {
+        op.arbiters = counts.byOperator[op.operator.toLowerCase()] ?? 0;
+        covered += op.arbiters;
+      }
+      coverage = {
+        reportingNodes: data.operators.length,
+        coveredArbiters: covered,
+        totalArbiters: counts.total,
+      };
+    }
+
+    return res.json({ success: true, data: { network: networkKey, ...data, coverage } });
   } catch (err) {
     logger.error('[alerts] read failed', { network: networkKey, msg: err.message });
     return res.status(500).json({ success: false, error: 'Failed to read alerts' });

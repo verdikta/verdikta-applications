@@ -97,18 +97,31 @@ const ALERT_STATE = {
   stale:    { color: COLORS.unresponsive, label: 'Not reporting',  desc: 'Watchdog heartbeats stopped — the node or its machine may be down' },
 };
 
+// Seconds → compact human uptime ("12d 4h", "3h 20m", "45m").
+const fmtUptime = (sec) => {
+  if (sec == null) return null;
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+};
+
 // Small colored dot conveying an operator's watchdog reporting state. Renders
 // nothing when the operator has never reported (webhook not configured) so the
 // reliability tables stay uncluttered for non-participating operators.
 function AlertDot({ alert }) {
   if (!alert) return null;
   const meta = ALERT_STATE[alert.state] || ALERT_STATE.ok;
-  const detail = alert.state === 'alerting' && alert.activeAlert ? ` — ${alert.activeAlert.subject}` : '';
+  const bits = [`Node watchdog: ${meta.label}`];
+  if (alert.state === 'alerting' && alert.activeAlert) bits.push(alert.activeAlert.subject);
+  if (alert.hostname) bits.push(`host ${alert.hostname}`);
+  const up = fmtUptime(alert.chainlinkUptimeSec);
+  if (up) bits.push(`chainlink up ${up}`);
   return (
     <span
       className="alert-dot"
       style={{ backgroundColor: meta.color }}
-      title={`Node watchdog: ${meta.label}${detail}`}
+      title={bits.join(' — ')}
     />
   );
 }
@@ -575,6 +588,10 @@ function Analytics() {
   const activeAlerts = alertOps.filter((r) => r.state === 'alerting');
   const staleReporters = alertOps.filter((r) => r.state === 'stale');
   const okReporters = alertOps.filter((r) => r.state === 'ok');
+  // One node/operator backs many arbiters (registered jobIds); the server
+  // enriches each reporter with its count plus network-wide coverage.
+  const alertCoverage = alertsData?.coverage || null;
+  const okArbiters = okReporters.reduce((n, r) => n + (r.arbiters || 0), 0);
 
   // Prepare chart data for arbiter availability, grouped by owner so the chart
   // matches the table below. One stacked bar per owner; segments are statuses.
@@ -655,7 +672,10 @@ function Analytics() {
               {activeAlerts.length === 0 && staleReporters.length === 0 && (
                 <div className="alert-allclear">
                   <CheckCircle size={16} style={{ color: COLORS.active }} />
-                  <span>All {okReporters.length} reporting arbiter node{okReporters.length === 1 ? '' : 's'} healthy</span>
+                  <span>
+                    All {okReporters.length} reporting arbiter node{okReporters.length === 1 ? '' : 's'} healthy
+                    {okArbiters > 0 ? ` — backing ${okArbiters} arbiter${okArbiters === 1 ? '' : 's'}` : ''}
+                  </span>
                 </div>
               )}
               {(activeAlerts.length > 0 || staleReporters.length > 0) && (
@@ -679,8 +699,16 @@ function Analytics() {
                               {ALERT_STATE[r.state].label}
                             </span>
                           </td>
-                          <td><code>{shortAddr(r.operator)}</code></td>
-                          <td>{r.hostname || '—'}</td>
+                          <td>
+                            <code>{shortAddr(r.operator)}</code>
+                            {r.arbiters != null && <span className="alert-arbiter-count"> · {r.arbiters} arbiter{r.arbiters === 1 ? '' : 's'}</span>}
+                          </td>
+                          <td>
+                            {r.hostname || '—'}
+                            {fmtUptime(r.chainlinkUptimeSec) && (
+                              <span className="alert-arbiter-count"> · cl up {fmtUptime(r.chainlinkUptimeSec)}</span>
+                            )}
+                          </td>
                           <td>{fmtAgoMs(r.lastSeen)}</td>
                           <td className="alert-problem-cell">
                             {r.state === 'alerting' && r.activeAlert ? (
@@ -705,7 +733,13 @@ function Analytics() {
               )}
               {(activeAlerts.length > 0 || staleReporters.length > 0) && okReporters.length > 0 && (
                 <p className="health-footnote">
-                  {okReporters.length} other reporting node{okReporters.length === 1 ? '' : 's'} healthy.
+                  {okReporters.length} other reporting node{okReporters.length === 1 ? '' : 's'} healthy
+                  {okArbiters > 0 ? ` (backing ${okArbiters} arbiter${okArbiters === 1 ? '' : 's'})` : ''}.
+                </p>
+              )}
+              {alertCoverage && alertCoverage.totalArbiters > 0 && (
+                <p className="health-footnote" title="Arbiters whose operator's node reports watchdog health here, vs. all arbiters registered in the ReputationKeeper. Operators enable reporting by setting WATCHDOG_ALERT_WEBHOOK on their node.">
+                  Watchdog reporting covers {alertCoverage.coveredArbiters} of {alertCoverage.totalArbiters} registered arbiters.
                 </p>
               )}
             </>

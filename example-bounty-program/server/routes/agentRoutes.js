@@ -893,6 +893,34 @@ router.get('/api/docs', (req, res) => {
         description: 'List expired bounties that can be closed to return funds to creators (system-wide).'
       },
       {
+        method: 'DELETE',
+        path: '/jobs/admin/:jobId',
+        description: 'Permanently delete a single job that was never deployed on-chain. This is how you clean up an un-funded "orphan" job left behind when POST /jobs/create was not followed by createBounty (e.g. a create+submit flow that aborted). Guards: refuses with 400 if the job is on-chain (onChain === true → "Use close instead"), and refuses with 400 during a 5-minute grace period after creation (on-chain deploy may still be in flight). Note: this does NOT roll back the auto-incremented jobId counter — the counter drift from the original /jobs/create persists.'
+      },
+      {
+        method: 'PATCH',
+        path: '/jobs/admin/:jobId/status',
+        description: 'Set a job\'s status without deleting it. Body: { status }. Valid: OPEN, EXPIRED, AWARDED, CLOSED, ORPHANED, CANCELLED. Use status=CANCELLED to hide an un-funded orphan job while preserving its record (softer alternative to DELETE /jobs/admin/:jobId).',
+        contentType: 'application/json',
+        fields: ['status: one of OPEN | EXPIRED | AWARDED | CLOSED | ORPHANED | CANCELLED (required)']
+      },
+      {
+        method: 'GET',
+        path: '/jobs/admin/orphans',
+        description: 'List "old-contract" orphans: jobs whose contractAddress is set but does NOT match the currently-configured contract. IMPORTANT: this is a DIFFERENT meaning of "orphan" than an un-funded job on the current contract — a never-deployed job carrying the current contract address is NOT returned here. To remove one of those, use DELETE /jobs/admin/:jobId.'
+      },
+      {
+        method: 'POST',
+        path: '/jobs/admin/orphans/mark',
+        description: 'Mark all old-contract orphan jobs (see GET /jobs/admin/orphans) as status ORPHANED. Hides them from listings while preserving the data. Bulk operation.'
+      },
+      {
+        method: 'DELETE',
+        path: '/jobs/admin/orphans',
+        description: 'Bulk-delete all old-contract orphan jobs (see GET /jobs/admin/orphans). Requires ?confirm=yes or returns 400. Does not touch jobs on the current contract.',
+        params: ['confirm=yes (required)']
+      },
+      {
         method: 'GET',
         path: '/jobs/mine/action-required',
         description: 'Creator-scoped list of expired bounties needing close or submission resolution. Safe to poll. Pass ?creator=0x... Returns count, readyToCloseCount, blockedCount, totalReclaimableEth, and per-bounty canClose / blockedBy / pendingSubmissions[] (each with ageMinutes and timeoutEligible).',

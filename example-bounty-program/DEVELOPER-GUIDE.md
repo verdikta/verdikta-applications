@@ -312,7 +312,7 @@ Returns calldata for `closeExpiredBounty(bountyId)`. Sign and submit from any wa
 
 - **`closeExpiredBounty` reverts with no clear message:** a submission re-entered `PendingVerdikta` between your check and the close call. Re-query the action-required endpoint and timeout anything new.
 - **`failTimedOutSubmission` reverts with "too early":** submission is younger than 10 minutes. The endpoint's `timeoutEligible` flag should have caught this — check `ageMinutes` in the response.
-- **Bounty not in the list at all:** the job is not linked on-chain (`onChain === false` and not synced). There is no escrow to reclaim; the job will be archived. See `CLAUDE.md` "Sync service orphan race" for the underlying issue.
+- **Bounty not in the list at all:** the job is not linked on-chain (`onChain === false` and not synced). There is no escrow to reclaim. Such an **un-funded orphan** (created by `POST /jobs/create` without a following `createBounty`) can be removed actively — it is not silently garbage-collected: hard-delete it with `DELETE /api/jobs/admin/:jobId`, or soft-hide it with `PATCH /api/jobs/admin/:jobId/status` `{ "status": "CANCELLED" }`. The delete is guarded (refuses on-chain jobs and jobs younger than 5 min) and does **not** roll back the auto-incremented `jobId` counter. Note this is distinct from the *old-contract* orphans handled by `GET/DELETE /api/jobs/admin/orphans`. See `CLAUDE.md` "Sync service orphan race" for the underlying issue.
 
 ## Debugging
 

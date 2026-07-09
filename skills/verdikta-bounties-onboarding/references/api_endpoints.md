@@ -3,7 +3,8 @@
 **IMPORTANT:** Before making API calls, read the bot's config to get the active base URL:
 
 Primary (stable) path: `~/.config/verdikta-bounties/.env`
-Fallback (dev only): `scripts/.env` next to the skill scripts.
+
+Scripts intentionally ignore `scripts/.env`. Use the stable path above or exported environment variables only.
 
 Look for:
 - `VERDIKTA_BOUNTIES_BASE_URL` — set during onboarding, determines which server to use.

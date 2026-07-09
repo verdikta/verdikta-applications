@@ -25,7 +25,6 @@
         "~/.config/verdikta-bounties/.env",
         "~/.config/verdikta-bounties/verdikta-bounties-bot.json",
         "~/.config/verdikta-bounties/verdikta-wallet.json",
-        "scripts/.env",
         "scripts/*.json",
         "operator-selected work files for submission"
       ],
@@ -34,7 +33,7 @@
         "~/.config/verdikta-bounties/verdikta-bounties-bot.json",
         "~/.config/verdikta-bounties/verdikta-wallet.json"
       ],
-      "notes": "scripts/.env is a legacy/dev fallback. The stable config path is preferred for production."
+      "notes": "Config is read from exported environment variables and the stable config path only. scripts/.env is intentionally ignored."
     },
     "cryptoWallet": {
       "hotWalletSigning": true,

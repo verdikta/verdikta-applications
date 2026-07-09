@@ -21,7 +21,6 @@ metadata:
           - "~/.config/verdikta-bounties/.env"
           - "~/.config/verdikta-bounties/verdikta-bounties-bot.json"
           - "~/.config/verdikta-bounties/verdikta-wallet.json"
-          - "scripts/.env"
           - "scripts/*.json"
         write:
           - "~/.config/verdikta-bounties/.env"
@@ -125,9 +124,7 @@ The bot's configuration lives at a **stable path outside the skill directory** s
 ~/.config/verdikta-bounties/.env
 ```
 
-Fallback (dev convenience only): `scripts/.env` next to the skill scripts.
-
-The scripts load the stable path first. Values set there take priority over `scripts/.env`. Run `node onboard.js` to create or migrate the config.
+Scripts load configuration only from exported environment variables and the stable path above. They intentionally ignore `scripts/.env` so credentials and endpoint overrides are not read from the skill directory. Run `node onboard.js` to create or migrate the stable config.
 
 Read the active `.env` file and look for these variables:
 
@@ -609,7 +606,7 @@ No telemetry, analytics, or tracking requests are made. The skill does not phone
 
 - **Wallet keys stay local.** The encrypted keystore never leaves the machine. Private keys are decrypted in-memory only when signing transactions. No script exports or prints raw private keys.
 - **API key is stored locally** at `~/.config/verdikta-bounties/verdikta-bounties-bot.json` with `chmod 600`. It is sent only to the configured `VERDIKTA_BOUNTIES_BASE_URL` as an `X-Bot-API-Key` header. API keys are redacted in console output.
-- **Environment loading is scoped.** Config is loaded from `~/.config/verdikta-bounties/.env` (stable, survives updates) then `scripts/.env` (dev fallback). The skill never reads `.env` files from the caller's working directory, preventing accidental exposure of unrelated secrets.
+- **Environment loading is scoped.** Config is loaded from exported environment variables and `~/.config/verdikta-bounties/.env` only. The skill intentionally ignores `scripts/.env` and never reads `.env` files from the caller's working directory, preventing accidental exposure of unrelated secrets or developer-only endpoint overrides.
 - **Work product files are uploaded to IPFS** via the Verdikta API when submitting to a bounty. These become publicly accessible on IPFS.
 - **Sensitive files use restricted permissions** (`0o600` for keystores and `.env`, `0o700` for the secrets directory).
 - **No credentials are hardcoded.** All secrets come from environment variables or the local filesystem.

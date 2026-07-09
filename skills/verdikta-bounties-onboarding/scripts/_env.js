@@ -1,11 +1,12 @@
 // Loads environment variables for the Verdikta Bounties skill.
 //
-// Load order (dotenv does NOT overwrite already-set vars, so first wins):
-//   1) ~/.config/verdikta-bounties/.env   — stable path, survives skill updates
-//   2) scripts/.env (next to this file)   — dev convenience / local override
+// Load order:
+//   1) already-exported process environment variables
+//   2) ~/.config/verdikta-bounties/.env — stable path, survives skill updates
 //
-// If only scripts/.env exists (pre-migration), a one-time notice is printed
-// directing the user to run onboard.js to migrate.
+// scripts/.env is intentionally ignored. Keeping credentials or endpoint
+// overrides in the skill directory broadens secret lookup scope and can be
+// overwritten or shipped accidentally.
 
 import os from 'node:os';
 import path from 'node:path';
@@ -26,12 +27,8 @@ if (stableExists) {
 }
 
 if (localExists) {
-  dotenv.config({ path: localEnvPath });
-}
-
-if (localExists && !stableExists) {
   console.warn(
-    `\n⚠  NOTICE: Your config is in scripts/.env which will be lost on skill updates.\n` +
-    `   Run 'node onboard.js' to migrate to ${stableEnvPath}\n`
+    `\nNOTICE: Ignoring scripts/.env for security.\n` +
+    `Move Verdikta config to ${stableEnvPath} or export variables in the shell.\n`
   );
 }

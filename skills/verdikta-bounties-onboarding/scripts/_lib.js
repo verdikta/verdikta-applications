@@ -35,22 +35,22 @@ export const CHAIN_IDS = {
 export const BOUNTY_ESCROW_ABI = [
   // Events
   'event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)',
-  'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 linkMaxBudget)',
+  'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)',
   'event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, bytes32 verdiktaAggId)',
   'event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, uint8 status, uint256 acceptance)',
   'event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amount)',
   // Write
   'function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)',
-  'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256 submissionId, address evalWallet, uint256 linkMaxBudget)',
-  'function startPreparedSubmission(uint256 bountyId, uint256 submissionId)',
+  'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)',
+  'function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable',
   'function finalizeSubmission(uint256 bountyId, uint256 submissionId)',
   'function closeExpiredBounty(uint256 bountyId)',
   'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)',
   // Read
   'function bountyCount() view returns (uint256)',
-  // getBounty returns Bounty memory (a struct) — must use tuple() for correct ABI decoding
+  // getBounty returns Bounty memory (a struct) - must use tuple() for correct ABI decoding
   'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions))',
-  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 linkMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))',
+  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))',
   'function getEffectiveBountyStatus(uint256 bountyId) view returns (string)',
   'function isAcceptingSubmissions(uint256 bountyId) view returns (bool)',
   'function verdikta() view returns (address)',
@@ -74,7 +74,7 @@ export function escrowContract(network, signerOrProvider) {
  */
 export function redactApiKey(key) {
   if (!key || key.length < 12) return '***';
-  return `${key.slice(0, 4)}…${key.slice(-4)}`;
+  return `${key.slice(0, 4)}.${key.slice(-4)}`;
 }
 
 export function getNetwork() {
@@ -297,7 +297,7 @@ export async function sendTx(
   txObj,
   { useApiGasLimit = false, network = getNetwork(), expectedTo = null, allowValue = false, maxValueWei = null } = {}
 ) {
-  console.log(`\n→ ${label}: sending transaction...`);
+  console.log(`\n? ${label}: sending transaction...`);
 
   if (!txObj || typeof txObj !== 'object') {
     throw new Error(`${label} transaction missing`);
@@ -345,7 +345,7 @@ export async function sendTx(
       console.log(`  estimated gas: ${estimated.toString()} (limit: ${gasLimit.toString()})`);
     } catch (err) {
       const reason = err.reason || err.shortMessage || err.message || 'unknown';
-      console.error(`\n✖ ${label} will revert! Reason: ${reason}`);
+      console.error(`\n? ${label} will revert! Reason: ${reason}`);
       if (err.data) console.error(`  revert data: ${err.data}`);
       process.exit(1);
     }

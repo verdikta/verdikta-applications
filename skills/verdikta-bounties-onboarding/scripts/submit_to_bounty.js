@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Complete submission flow: upload files → prepare → approve LINK → start → confirm.
-// The bot wallet signs all three on-chain transactions automatically.
+// Complete submission flow: upload files ? prepare ? start ? confirm.
+// The bot wallet signs the on-chain transactions automatically.
 //
 // Usage:
 //   node submit_to_bounty.js --jobId 72 --file work_output.md
@@ -8,7 +8,7 @@
 //
 // Optional fee parameters (forwarded to /submit/prepare):
 //   --alpha 50             Reputation weight (default: API default)
-//   --maxOracleFee 0.003   Max LINK per oracle call
+//   --maxOracleFee 0.003   Max ETH per oracle call
 //   --estimatedBaseCost 0.001
 //   --maxFeeBasedScaling 3
 //
@@ -20,7 +20,7 @@
 //
 // Prerequisites:
 //   - Bot onboarded (onboard.js completed)
-//   - Bot wallet funded with ETH (gas) and LINK (evaluation fee)
+//   - Bot wallet funded with ETH (gas + evaluation prepay)
 //   - Bot registered (API key saved)
 
 import './_env.js';
@@ -29,7 +29,7 @@ import path from 'node:path';
 import { ethers } from 'ethers';
 import {
   getNetwork, providerFor, loadWallet,
-  escrowContract, redactApiKey, BOUNTY_ESCROW_ABI, ESCROW, LINK,
+  escrowContract, redactApiKey, BOUNTY_ESCROW_ABI, ESCROW,
   arg, hasFlag, argAll, loadApiKey, sendTx, confirmSpendOrExit, isDryRun,
 } from './_lib.js';
 
@@ -111,10 +111,29 @@ async function diagnoseSubmission(subId) {
       }
       if (diag.recommendations?.length) {
         console.error('  Recommendations:');
-        diag.recommendations.forEach(r => console.error(`    → ${r}`));
+        diag.recommendations.forEach(r => console.error(`    ? ${r}`));
       }
     }
   } catch { /* best-effort */ }
+
+  try {
+    const sub = await escrow.getSubmission(jobId, subId);
+    const wallet = sub.evalWallet;
+    const [walletCode, walletBalance] = await Promise.all([
+      provider.getCode(wallet),
+      provider.getBalance(wallet),
+    ]);
+    const budgetWei = sub.ethMaxBudget ?? sub.linkMaxBudget ?? 0n;
+    console.error('\n  On-chain submission diagnostics:');
+    console.error(`    status:       ${sub.status}`);
+    console.error(`    hunter:       ${sub.hunter}`);
+    console.error(`    evalWallet:   ${wallet}`);
+    console.error(`    eval code:    ${walletCode === '0x' ? 'missing' : `${(walletCode.length - 2) / 2} bytes`}`);
+    console.error(`    eval balance: ${ethers.formatEther(walletBalance)} ETH`);
+    console.error(`    ethMaxBudget: ${ethers.formatEther(budgetWei)} ETH`);
+  } catch (err) {
+    console.error(`\n  On-chain diagnostics unavailable: ${err.shortMessage || err.message || err}`);
+  }
 }
 
 // ---- Pre-flight: verify the job is submittable ----
@@ -148,7 +167,7 @@ if (job.submissionCloseTime) {
 
 const jobCid = job.primaryCid || job.evaluationCid;
 if (!jobCid) {
-  console.error(`Job #${jobId} has no primaryCid/evaluationCid. It may have been created with create_bounty_min.js (hardcoded CID) — these bounties cannot accept submissions through the API.`);
+  console.error(`Job #${jobId} has no primaryCid/evaluationCid. It may have been created with create_bounty_min.js (hardcoded CID) - these bounties cannot accept submissions through the API.`);
   process.exit(1);
 }
 
@@ -163,22 +182,22 @@ try {
     if (valData.valid === false) {
       const errors = (valData.issues || []).filter(i => i.severity === 'error');
       if (errors.length > 0) {
-        console.error(`\n  ✖ Bounty #${jobId} evaluation package has errors:`);
+        console.error(`\n  ? Bounty #${jobId} evaluation package has errors:`);
         errors.forEach(e => console.error(`    - ${e.message}`));
         console.error('  Submitting to this bounty will likely fail. Aborting.');
         process.exit(1);
       }
       const warnings = (valData.issues || []).filter(i => i.severity === 'warning');
       if (warnings.length > 0) {
-        console.warn('  ⚠ Validation warnings:');
+        console.warn('  ? Validation warnings:');
         warnings.forEach(w => console.warn(`    - ${w.message}`));
       }
     } else {
-      console.log('  Evaluation package: valid ✓');
+      console.log('  Evaluation package: valid ?');
     }
   }
 } catch {
-  console.warn('  (Could not reach /validate endpoint — skipping format check)');
+  console.warn('  (Could not reach /validate endpoint - skipping format check)');
 }
 
 // 0c. On-chain: verify bounty is accepting submissions
@@ -193,15 +212,15 @@ if (onChainBountyId != null) {
     const readContract = escrowContract(network, provider);
     const accepting = await readContract.isAcceptingSubmissions(BigInt(onChainBountyId));
     if (!accepting) {
-      console.error(`  ✖ On-chain bounty #${onChainBountyId} is NOT accepting submissions. Aborting.`);
+      console.error(`  ? On-chain bounty #${onChainBountyId} is NOT accepting submissions. Aborting.`);
       process.exit(1);
     }
-    console.log(`  On-chain: accepting submissions ✓ (bountyId=${onChainBountyId})`);
+    console.log(`  On-chain: accepting submissions ? (bountyId=${onChainBountyId})`);
   } catch (err) {
     console.warn(`  (Could not verify on-chain status: ${err.message})`);
   }
 } else {
-  console.warn(`  ⚠ Job not linked to chain (no onChain flag). Skipping on-chain pre-check.`);
+  console.warn(`  ? Job not linked to chain (no onChain flag). Skipping on-chain pre-check.`);
 }
 
 if (isDryRun()) {
@@ -218,7 +237,7 @@ await confirmSpendOrExit([
   `Job: #${jobId}`,
   `Files to upload: ${files.join(', ')}`,
   `Allowed escrow recipient: ${ESCROW[network]}`,
-  `Allowed LINK recipient: ${LINK[network]}`,
+  `ETH evaluation prepay: attached to startPreparedSubmission and capped by the API transaction value`,
   `Public data: uploaded work files may be pinned to IPFS and linked to on-chain submission metadata`,
 ]);
 
@@ -248,7 +267,7 @@ if (!uploadRes.ok) {
   console.error('Upload failed:', JSON.stringify(uploadData));
   process.exit(1);
 }
-// API returns { submission: { hunterCid: "..." } } — also accept top-level for compat
+// API returns { submission: { hunterCid: "..." } } - also accept top-level for compat
 const hunterCid = uploadData.submission?.hunterCid || uploadData.hunterCid || uploadData.cid;
 if (!hunterCid) {
   console.error('No hunterCid in response. Expected submission.hunterCid.');
@@ -287,15 +306,15 @@ const prepareReceipt = await sendTx(signer, 'prepareSubmission', prepareData.tra
 // Parse SubmissionPrepared event (using centralized ABI)
 const escrowIface = new ethers.Interface(BOUNTY_ESCROW_ABI);
 
-let submissionId, evalWallet, linkMaxBudget, linkMaxBudgetWei = null;
+let submissionId, evalWallet, ethMaxBudget;
 for (const log of prepareReceipt.logs) {
   try {
     const parsed = escrowIface.parseLog(log);
     if (parsed?.name === 'SubmissionPrepared') {
       submissionId = Number(parsed.args.submissionId);
       evalWallet = parsed.args.evalWallet;
-      linkMaxBudgetWei = BigInt(parsed.args.linkMaxBudget);
-      linkMaxBudget = ethers.formatEther(linkMaxBudgetWei);
+      const ethMaxBudgetWei = BigInt(parsed.args.ethMaxBudget ?? parsed.args.linkMaxBudget);
+      ethMaxBudget = ethers.formatEther(ethMaxBudgetWei);
       break;
     }
   } catch {}
@@ -309,37 +328,17 @@ if (submissionId == null || !evalWallet) {
 
 console.log(`  submissionId: ${submissionId}`);
 console.log(`  evalWallet:   ${evalWallet}`);
-console.log(`  linkBudget:   ${linkMaxBudget} LINK`);
+console.log(`  ethMaxBudget: ${ethMaxBudget} ETH`);
 
-// ---- Step 3: Approve LINK (on-chain tx 2/3) ----
+// ---- Step 3: Legacy LINK approval ----
 
-if (linkMaxBudgetWei > 0n) {
-  console.log('\n--- Step 3: Approve LINK to EvaluationWallet ---');
-
-  const approveRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submit/approve`, {
-    method: 'POST',
-    headers: jsonHeaders,
-    body: JSON.stringify({ evalWallet, linkAmount: linkMaxBudget }),
-  });
-  const approveData = await approveRes.json();
-  if (!approveRes.ok || !approveData.transaction) {
-    console.error('Approve failed:', JSON.stringify(approveData));
-    process.exit(1);
-  }
-
-  await sendTx(signer, 'LINK approve', approveData.transaction, {
-    expectedTo: LINK[network],
-    network,
-  });
-} else {
-  console.log('\n--- Step 3: Skip LINK approval ---');
-  console.log('  Prepared submission reports zero LINK budget; modern ETH-funded start will use the API-provided payable transaction.');
-}
+console.log('\n--- Step 3: Skip LINK approval ---');
+console.log('  Modern submissions fund evaluation with ETH attached to startPreparedSubmission.');
 
 // ---- Steps 4 & 5: Start evaluation + Confirm in API ----
 //
-// Documented order (Agents page): start → confirm
-// Legacy order (some backends): confirm → start
+// Documented order (Agents page): start ? confirm
+// Legacy order (some backends): confirm ? start
 //
 // Default: try documented order. If /start fails with "not found",
 // auto-fallback to confirm-first, then retry start.
@@ -347,7 +346,7 @@ if (linkMaxBudgetWei > 0n) {
 // Use --skip-confirm for trustless on-chain-only mode.
 
 async function doConfirm() {
-  console.log('\n  → Confirming submission in API...');
+  console.log('\n  ? Confirming submission in API...');
   const confirmRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submissions/confirm`, {
     method: 'POST',
     headers: jsonHeaders,
@@ -355,7 +354,7 @@ async function doConfirm() {
   });
   const confirmData = await confirmRes.json();
   if (!confirmRes.ok && !confirmData?.alreadyExists) {
-    console.warn('  ⚠ Confirm failed:', JSON.stringify(confirmData));
+    console.warn('  ? Confirm failed:', JSON.stringify(confirmData));
     return false;
   }
   console.log(confirmData?.alreadyExists ? '  Already confirmed in API.' : '  Confirmed in API.');
@@ -383,7 +382,7 @@ async function doStart() {
 }
 
 if (confirmFirst) {
-  // Legacy order: confirm → start
+  // Legacy order: confirm ? start
   console.log('\n--- Step 4: Confirm submission in API (--confirm-first) ---');
   await doConfirm();
 
@@ -395,7 +394,7 @@ if (confirmFirst) {
     process.exit(1);
   }
 } else {
-  // Documented order: start → confirm (with auto-fallback)
+  // Documented order: start ? confirm (with auto-fallback)
   console.log('\n--- Step 4: Start evaluation (trigger oracle) ---');
   let startResult = await doStart();
 
@@ -405,7 +404,7 @@ if (confirmFirst) {
     const isNotFound = startResult.status === 404 || errStr.includes('not found') || errStr.includes('submission');
 
     if (isNotFound && !skipConfirm) {
-      console.warn('  ⚠ Start returned "not found" — backend may require confirm before start.');
+      console.warn('  ? Start returned "not found" - backend may require confirm before start.');
       console.warn('  Auto-fallback: confirming first, then retrying start...');
 
       const confirmed = await doConfirm();
@@ -416,7 +415,7 @@ if (confirmFirst) {
           await diagnoseSubmission(submissionId);
           process.exit(1);
         }
-        console.log('  (Used fallback ordering: confirm → start. Consider --confirm-first next time.)');
+        console.log('  (Used fallback ordering: confirm ? start. Consider --confirm-first next time.)');
       } else {
         console.error('Both start and confirm failed. Submission may be stuck.');
         await diagnoseSubmission(submissionId);
@@ -442,7 +441,7 @@ if (confirmFirst) {
 // ---- Done ----
 
 const safeKey = redactApiKey(apiKey);
-console.log('\n✅ Submission complete!');
+console.log('\n? Submission complete!');
 console.log(`   Job:          #${jobId}`);
 console.log(`   Submission:   #${submissionId}`);
 console.log(`   Hunter:       ${hunter}`);

@@ -1401,7 +1401,11 @@ function BountyDetails({ walletState }) {
   };
 
   const handlePreviewSubmission = async (submissionId) => {
-    if (!walletState.isConnected || !walletState.address) {
+    // Public submissions can be previewed by anyone — no wallet needed. The
+    // server grants walletless access when publicSubmissions === true, and the
+    // work product is an unencrypted ZIP on public IPFS. A wallet is only
+    // required for private bounties, where access is limited to the creator.
+    if (!job?.publicSubmissions && (!walletState.isConnected || !walletState.address)) {
       toast.warning('Please connect your wallet first');
       return;
     }
@@ -3050,7 +3054,9 @@ function PendingSubmissionsPanel({
               )}
 
               {/* Download work product — creator always, public viewers when the
-                  bounty has publicSubmissions enabled. */}
+                  bounty has publicSubmissions enabled. No wallet required for
+                  public submissions: walletState.address (undefined when
+                  disconnected) is treated as public access by the server. */}
               {(isCreator || job?.publicSubmissions) && s.hunterCid && (
                 <button
                   onClick={async () => {
@@ -3066,7 +3072,7 @@ function PendingSubmissionsPanel({
                       }
                     } catch (err) {
                       toast?.error?.(`Download failed: ${err.message}`);
-                      // Last-resort: open the raw IPFS gateway URL so the creator can still see the work
+                      // Last-resort: open the raw IPFS gateway URL so the viewer can still see the work
                       window.open(`https://gateway.pinata.cloud/ipfs/${s.hunterCid}`, '_blank');
                     }
                   }}
@@ -3544,7 +3550,10 @@ function SubmissionCard({
 
       {/* Download / Preview — visible to the bounty creator always, and to
           anyone when the creator has enabled publicSubmissions. CIDs are
-          public on-chain regardless; this just surfaces convenient buttons. */}
+          public on-chain regardless; this just surfaces convenient buttons.
+          No wallet is required for public submissions: walletState.address is
+          passed as-is (undefined when disconnected), which the server treats
+          as public access, and the work product is an unencrypted ZIP on IPFS. */}
       {submission.hunterCid && (isCreator || job?.publicSubmissions) && (
         <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
           {onPreview && (

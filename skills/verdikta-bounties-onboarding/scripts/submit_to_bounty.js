@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Complete submission flow: upload files ? prepare ? start ? confirm.
+// Complete submission flow: upload files → prepare → start → confirm.
 // The bot wallet signs the on-chain transactions automatically.
 //
 // Usage:
@@ -111,7 +111,7 @@ async function diagnoseSubmission(subId) {
       }
       if (diag.recommendations?.length) {
         console.error('  Recommendations:');
-        diag.recommendations.forEach(r => console.error(`    ? ${r}`));
+        diag.recommendations.forEach(r => console.error(`    → ${r}`));
       }
     }
   } catch { /* best-effort */ }
@@ -167,7 +167,7 @@ if (job.submissionCloseTime) {
 
 const jobCid = job.primaryCid || job.evaluationCid;
 if (!jobCid) {
-  console.error(`Job #${jobId} has no primaryCid/evaluationCid. It may have been created with create_bounty_min.js (hardcoded CID) - these bounties cannot accept submissions through the API.`);
+  console.error(`Job #${jobId} has no primaryCid/evaluationCid. It may have been created with create_bounty_min.js (hardcoded CID) — these bounties cannot accept submissions through the API.`);
   process.exit(1);
 }
 
@@ -182,22 +182,22 @@ try {
     if (valData.valid === false) {
       const errors = (valData.issues || []).filter(i => i.severity === 'error');
       if (errors.length > 0) {
-        console.error(`\n  ? Bounty #${jobId} evaluation package has errors:`);
+        console.error(`\n  ✖ Bounty #${jobId} evaluation package has errors:`);
         errors.forEach(e => console.error(`    - ${e.message}`));
         console.error('  Submitting to this bounty will likely fail. Aborting.');
         process.exit(1);
       }
       const warnings = (valData.issues || []).filter(i => i.severity === 'warning');
       if (warnings.length > 0) {
-        console.warn('  ? Validation warnings:');
+        console.warn('  ⚠ Validation warnings:');
         warnings.forEach(w => console.warn(`    - ${w.message}`));
       }
     } else {
-      console.log('  Evaluation package: valid ?');
+      console.log('  Evaluation package: valid ✓');
     }
   }
 } catch {
-  console.warn('  (Could not reach /validate endpoint - skipping format check)');
+  console.warn('  (Could not reach /validate endpoint — skipping format check)');
 }
 
 // 0c. On-chain: verify bounty is accepting submissions
@@ -212,15 +212,15 @@ if (onChainBountyId != null) {
     const readContract = escrowContract(network, provider);
     const accepting = await readContract.isAcceptingSubmissions(BigInt(onChainBountyId));
     if (!accepting) {
-      console.error(`  ? On-chain bounty #${onChainBountyId} is NOT accepting submissions. Aborting.`);
+      console.error(`  ✖ On-chain bounty #${onChainBountyId} is NOT accepting submissions. Aborting.`);
       process.exit(1);
     }
-    console.log(`  On-chain: accepting submissions ? (bountyId=${onChainBountyId})`);
+    console.log(`  On-chain: accepting submissions ✓ (bountyId=${onChainBountyId})`);
   } catch (err) {
     console.warn(`  (Could not verify on-chain status: ${err.message})`);
   }
 } else {
-  console.warn(`  ? Job not linked to chain (no onChain flag). Skipping on-chain pre-check.`);
+  console.warn(`  ⚠ Job not linked to chain (no onChain flag). Skipping on-chain pre-check.`);
 }
 
 if (isDryRun()) {
@@ -267,7 +267,7 @@ if (!uploadRes.ok) {
   console.error('Upload failed:', JSON.stringify(uploadData));
   process.exit(1);
 }
-// API returns { submission: { hunterCid: "..." } } - also accept top-level for compat
+// API returns { submission: { hunterCid: "..." } } — also accept top-level for compat
 const hunterCid = uploadData.submission?.hunterCid || uploadData.hunterCid || uploadData.cid;
 if (!hunterCid) {
   console.error('No hunterCid in response. Expected submission.hunterCid.');
@@ -306,14 +306,14 @@ const prepareReceipt = await sendTx(signer, 'prepareSubmission', prepareData.tra
 // Parse SubmissionPrepared event (using centralized ABI)
 const escrowIface = new ethers.Interface(BOUNTY_ESCROW_ABI);
 
-let submissionId, evalWallet, ethMaxBudget;
+let submissionId, evalWallet, ethMaxBudget, ethMaxBudgetWei;
 for (const log of prepareReceipt.logs) {
   try {
     const parsed = escrowIface.parseLog(log);
     if (parsed?.name === 'SubmissionPrepared') {
       submissionId = Number(parsed.args.submissionId);
       evalWallet = parsed.args.evalWallet;
-      const ethMaxBudgetWei = BigInt(parsed.args.ethMaxBudget ?? parsed.args.linkMaxBudget);
+      ethMaxBudgetWei = BigInt(parsed.args.ethMaxBudget ?? parsed.args.linkMaxBudget);
       ethMaxBudget = ethers.formatEther(ethMaxBudgetWei);
       break;
     }
@@ -337,8 +337,8 @@ console.log('  Modern submissions fund evaluation with ETH attached to startPrep
 
 // ---- Steps 4 & 5: Start evaluation + Confirm in API ----
 //
-// Documented order (Agents page): start ? confirm
-// Legacy order (some backends): confirm ? start
+// Documented order (Agents page): start → confirm
+// Legacy order (some backends): confirm → start
 //
 // Default: try documented order. If /start fails with "not found",
 // auto-fallback to confirm-first, then retry start.
@@ -346,7 +346,7 @@ console.log('  Modern submissions fund evaluation with ETH attached to startPrep
 // Use --skip-confirm for trustless on-chain-only mode.
 
 async function doConfirm() {
-  console.log('\n  ? Confirming submission in API...');
+  console.log('\n  → Confirming submission in API...');
   const confirmRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submissions/confirm`, {
     method: 'POST',
     headers: jsonHeaders,
@@ -354,7 +354,7 @@ async function doConfirm() {
   });
   const confirmData = await confirmRes.json();
   if (!confirmRes.ok && !confirmData?.alreadyExists) {
-    console.warn('  ? Confirm failed:', JSON.stringify(confirmData));
+    console.warn('  ⚠ Confirm failed:', JSON.stringify(confirmData));
     return false;
   }
   console.log(confirmData?.alreadyExists ? '  Already confirmed in API.' : '  Confirmed in API.');
@@ -371,18 +371,25 @@ async function doStart() {
   if (!startRes.ok || !startData.transaction) {
     return { ok: false, data: startData, status: startRes.status };
   }
+  const startValueWei = BigInt(startData.transaction.value ?? 0);
+  if (startValueWei !== ethMaxBudgetWei) {
+    throw new Error(
+      `startPreparedSubmission transaction value ${ethers.formatEther(startValueWei)} ETH does not match prepared ethMaxBudget ${ethers.formatEther(ethMaxBudgetWei)} ETH`
+    );
+  }
   // Use API-recommended gasLimit for start (typically 4M gas)
   await sendTx(signer, 'startPreparedSubmission', startData.transaction, {
     useApiGasLimit: true,
     expectedTo: ESCROW[network],
     allowValue: true,
+    maxValueWei: ethMaxBudgetWei,
     network,
   });
   return { ok: true, data: startData };
 }
 
 if (confirmFirst) {
-  // Legacy order: confirm ? start
+  // Legacy order: confirm → start
   console.log('\n--- Step 4: Confirm submission in API (--confirm-first) ---');
   await doConfirm();
 
@@ -394,7 +401,7 @@ if (confirmFirst) {
     process.exit(1);
   }
 } else {
-  // Documented order: start ? confirm (with auto-fallback)
+  // Documented order: start → confirm (with auto-fallback)
   console.log('\n--- Step 4: Start evaluation (trigger oracle) ---');
   let startResult = await doStart();
 
@@ -404,7 +411,7 @@ if (confirmFirst) {
     const isNotFound = startResult.status === 404 || errStr.includes('not found') || errStr.includes('submission');
 
     if (isNotFound && !skipConfirm) {
-      console.warn('  ? Start returned "not found" - backend may require confirm before start.');
+      console.warn('  ⚠ Start returned "not found" — backend may require confirm before start.');
       console.warn('  Auto-fallback: confirming first, then retrying start...');
 
       const confirmed = await doConfirm();
@@ -415,7 +422,7 @@ if (confirmFirst) {
           await diagnoseSubmission(submissionId);
           process.exit(1);
         }
-        console.log('  (Used fallback ordering: confirm ? start. Consider --confirm-first next time.)');
+        console.log('  (Used fallback ordering: confirm → start. Consider --confirm-first next time.)');
       } else {
         console.error('Both start and confirm failed. Submission may be stuck.');
         await diagnoseSubmission(submissionId);
@@ -441,7 +448,7 @@ if (confirmFirst) {
 // ---- Done ----
 
 const safeKey = redactApiKey(apiKey);
-console.log('\n? Submission complete!');
+console.log('\n✅ Submission complete!');
 console.log(`   Job:          #${jobId}`);
 console.log(`   Submission:   #${submissionId}`);
 console.log(`   Hunter:       ${hunter}`);

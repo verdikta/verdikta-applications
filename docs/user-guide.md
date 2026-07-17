@@ -1,6 +1,6 @@
 # Verdikta User's Guide: AI-Powered Evaluations for Smart Contracts
 
-**Version Alpha-1**
+**Version Beta-1**
 
 ## Introduction
 

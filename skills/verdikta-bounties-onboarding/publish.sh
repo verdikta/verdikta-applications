@@ -26,7 +26,7 @@ set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
 STAGE_DIR="${SKILL_DIR}/.clawhub-stage"
-VERSION="${VERSION:-1.4.2}"
+VERSION="${VERSION:-1.4.3}"
 DRY_RUN=""
 
 if [[ "${1:-}" == "--dry-run" ]]; then

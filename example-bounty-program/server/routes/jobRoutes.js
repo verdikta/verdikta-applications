@@ -13,6 +13,7 @@ const fs = require('fs').promises;
 const AdmZip = require('adm-zip');
 const logger = require('../utils/logger');
 const jobStorage = require('../utils/jobStorage');
+const { packageRubricHash } = require('../utils/rubricSource');
 const { config } = require('../config');
 const archiveGenerator = require('../utils/archiveGenerator');
 const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE,
@@ -3276,8 +3277,35 @@ router.get('/:jobId/rubric', async (req, res) => {
     logger.info('[jobs/rubric] get', { jobId });
 
     const job = await jobStorage.getJob(jobId);
+    const ipfsClient = req.app.locals.ipfsClient;
 
-    if (!job.rubricCid) {
+    // Effective rubric pointer. `job.rubricCid` is only a convenience cache:
+    // the chain-sync service never writes it, so bounties created directly
+    // on-chain arrive here with it empty even though their rubric exists in
+    // the (authoritative, immutable) evaluationCid package. When the cache is
+    // empty, derive the pointer from the package — the same direction
+    // scripts/healRubricCid.js repairs — and persist the heal so the next
+    // read is pointer-direct. (A stored pointer is served as-is; wrong-value
+    // drift remains the healer's offline job.)
+    let rubricCid = job.rubricCid || null;
+    if (!rubricCid && job.evaluationCid && ipfsClient) {
+      rubricCid = await packageRubricHash(ipfsClient, job.evaluationCid);
+      if (rubricCid) {
+        logger.info('[jobs/rubric] derived rubricCid from evaluationCid package (cache was empty)', {
+          jobId, rubricCid, evaluationCid: job.evaluationCid
+        });
+        try {
+          await jobStorage.updateJob(job.jobId, { rubricCid });
+        } catch (persistErr) {
+          // Best-effort: a failed write just means the next read re-derives.
+          logger.warn('[jobs/rubric] failed to persist healed rubricCid (still serving)', {
+            jobId, error: persistErr.message
+          });
+        }
+      }
+    }
+
+    if (!rubricCid) {
       return sendError(res, 404, {
         code: ErrorCodes.NOT_FOUND,
         message: 'No rubric available',
@@ -3286,7 +3314,6 @@ router.get('/:jobId/rubric', async (req, res) => {
       });
     }
 
-    const ipfsClient = req.app.locals.ipfsClient;
     if (!ipfsClient) {
       return sendError(res, 500, {
         code: ErrorCodes.INTERNAL_ERROR,
@@ -3299,19 +3326,19 @@ router.get('/:jobId/rubric', async (req, res) => {
     let rubricContent;
     try {
       const rawContent = await withTimeout(
-        ipfsClient.fetchFromIPFS(job.rubricCid),
+        ipfsClient.fetchFromIPFS(rubricCid),
         PIN_TIMEOUT_MS,
         'IPFS rubric fetch'
       );
       rubricContent = JSON.parse(rawContent);
     } catch (ipfsErr) {
-      logger.error('[jobs/rubric] IPFS fetch failed', { jobId, cid: job.rubricCid, msg: ipfsErr.message });
+      logger.error('[jobs/rubric] IPFS fetch failed', { jobId, cid: rubricCid, msg: ipfsErr.message });
       return sendError(res, 502, {
         code: ErrorCodes.INTERNAL_ERROR,
         message: 'Failed to fetch rubric from IPFS',
         details: ipfsErr.message,
-        fix: `You can try fetching directly from an IPFS gateway: https://ipfs.io/ipfs/${job.rubricCid}`,
-        extra: { rubricCid: job.rubricCid }
+        fix: `You can try fetching directly from an IPFS gateway: https://ipfs.io/ipfs/${rubricCid}`,
+        extra: { rubricCid }
       });
     }
 
@@ -3326,7 +3353,7 @@ router.get('/:jobId/rubric', async (req, res) => {
         workProductType: job.workProductType,
         threshold: job.threshold,
         classId: job.classId,
-        rubricCid: job.rubricCid,
+        rubricCid,
         submissionCloseTime: job.submissionCloseTime,
         status: job.status
       }

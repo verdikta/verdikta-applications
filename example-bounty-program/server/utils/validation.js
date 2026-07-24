@@ -179,6 +179,38 @@ function isValidAddress(address) {
   return /^0x[a-fA-F0-9]{40}$/.test(address);
 }
 
+// Syntax check for model ids. We reject characters that are universally
+// invalid across every Verdikta-supported provider:
+//
+// - Underscores: never used in any real provider's model id (OpenAI uses
+//   hyphens and dots, Anthropic uses only hyphens). Underscore ids always
+//   fail at jury runtime as "model not found".
+// - Uppercase letters / whitespace: real ids are lowercase and don't contain
+//   whitespace; presence of these is almost certainly a transcription bug.
+//
+// The dotted-Anthropic case (`claude-sonnet-4.6` vs `claude-sonnet-4-6`) is a
+// known-id problem that requires consulting the per-class availability list
+// (issue #15). Dots are allowed here because OpenAI uses them in legit
+// production ids (e.g. `gpt-5.2-2025-12-11`).
+const MODEL_ID_REGEX = /^[a-z0-9.-]+$/;
+
+/**
+ * Lightweight syntax check for a single model id. Returns null when ok,
+ * else a human-readable reason. We intentionally don't consult a hardcoded
+ * "known models" list here — that drifts daily and belongs to issue #15 —
+ * but a model id that doesn't even parse as the standard hyphen-separated
+ * token will never be valid, so we catch it cheaply up front.
+ */
+function validateModelIdFormat(modelId) {
+  if (typeof modelId !== 'string' || modelId.length === 0) {
+    return 'Model id must be a non-empty string';
+  }
+  if (!MODEL_ID_REGEX.test(modelId)) {
+    return `Model id "${modelId}" contains characters outside [a-z0-9.-] (underscores, uppercase, or whitespace). Underscore model ids are rejected at runtime as "model not found"; uppercase variants have never matched a real model. OpenAI models may legitimately include dots (e.g. "gpt-5.2-2025-12-11"); Anthropic models use only hyphens.`;
+  }
+  return null;
+}
+
 /**
  * Validate jury configuration
  * @param {Array} juryNodes - Array of jury node configurations
@@ -207,6 +239,11 @@ function validateJuryNodes(juryNodes) {
 
     if (!node.model || typeof node.model !== 'string') {
       errors.push(`Jury node ${index}: Missing or invalid model`);
+    } else {
+      const modelFormatError = validateModelIdFormat(node.model);
+      if (modelFormatError) {
+        errors.push(`Jury node ${index}: ${modelFormatError}`);
+      }
     }
 
     if (typeof node.runs !== 'number' || node.runs < 1) {
@@ -373,6 +410,7 @@ module.exports = {
   isValidFileSize,
   validateRubric,
   validateJuryNodes,
+  validateModelIdFormat,
   isValidAddress,
   MAX_FILE_SIZE,
   ALLOWED_FILE_TYPES,

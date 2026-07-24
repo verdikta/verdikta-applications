@@ -502,6 +502,10 @@ function JobCard({ job, ethPrice }) {
   const isExpired = status === BountyStatus.EXPIRED;
   const isAwarded = status === BountyStatus.AWARDED;
   const isClosed = status === BountyStatus.CLOSED;
+  // EXPIRED/AWARDED/CLOSED are terminal — the bounty can no longer accept
+  // submissions or pay out, so the Validate button is replaced with a neutral
+  // "Completed" badge. Mirrors TERMINAL_BOUNTY_STATUSES on the server side.
+  const isTerminal = isAwarded || isClosed || isExpired;
 
   // Pending-on-chain: API-created but not yet confirmed by the sync service
   // and not marked ORPHANED. Shown briefly (< 1h) while the creation tx is
@@ -613,6 +617,19 @@ function JobCard({ job, ethPrice }) {
                 Pending on-chain
               </span>
             )}
+            {isTerminal ? (
+              <span
+                className="badge badge-completed"
+                title={isAwarded
+                  ? 'Awarded — this bounty has been paid out and is no longer actionable.'
+                  : isClosed
+                    ? 'Closed — this bounty was cancelled without a winner; funds returned.'
+                    : 'Expired — submission window has passed.'}
+              >
+                <Check size={12} style={{ verticalAlign: 'middle', marginRight: '2px' }} />
+                Completed
+              </span>
+            ) : (
             <div className="validate-row">
               {/* Validation status indicator - next to validate button */}
               {validationResult ? (
@@ -673,6 +690,7 @@ function JobCard({ job, ethPrice }) {
                 </span>
               </button>
             </div>
+            )}
           </div>
         </div>
       </div>

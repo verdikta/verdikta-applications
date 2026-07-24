@@ -37,6 +37,56 @@ const IssueType = {
 };
 
 /**
+ * On-chain bounty states that are terminal — the contract can no longer
+ * accept submissions or pay out, regardless of whether the evaluation
+ * package itself is well-formed. Used by callers (e.g. GET /:jobId/validate)
+ * to avoid flagging a perfectly fine package as an ERROR just because the
+ * bounty has already concluded. Mirrors the BountyStatus enum exported
+ * from client/src/utils/statusDisplay.js (OPEN / EXPIRED / AWARDED / CLOSED).
+ */
+const TERMINAL_BOUNTY_STATUSES = new Set(['EXPIRED', 'AWARDED', 'CLOSED']);
+
+/**
+ * True when the given on-chain status string represents a terminal state.
+ * Anything that is not in the set (including OPEN and unknown values) is
+ * treated as non-terminal — callers should keep their stricter checks for
+ * those.
+ */
+function isTerminalBountyStatus(status) {
+  return typeof status === 'string' && TERMINAL_BOUNTY_STATUSES.has(status);
+}
+
+/**
+ * Pick the right (severity, valid) outcome for a validate-time chain-status
+ * issue. Terminal states get INFO severity and do not invalidate the
+ * package; unknown statuses keep the legacy ERROR behavior so genuinely
+ * broken bounties are still flagged. Returns null when no issue should
+ * be pushed (status === 'OPEN').
+ */
+function chainStatusIssue(status) {
+  if (status === 'OPEN' || status == null) return null;
+  if (isTerminalBountyStatus(status)) {
+    return {
+      issue: {
+        type: IssueType.CHAIN_STATUS,
+        severity: IssueSeverity.INFO,
+        message: `Bounty is "${status}" on-chain and is no longer accepting submissions or paying out.`
+      },
+      invalidatesPackage: false
+    };
+  }
+  return {
+    issue: {
+      type: IssueType.CHAIN_STATUS,
+      severity: IssueSeverity.ERROR,
+      message: `Bounty is "${status}" on-chain and cannot accept submissions or pay out.`
+    },
+    invalidatesPackage: true
+  };
+}
+
+/**
+/**
  * Check if content is a ZIP file by examining magic bytes
  * @param {Buffer} content - Content to check
  * @returns {boolean}
@@ -391,4 +441,13 @@ module.exports = {
   isZipFile,
   IssueSeverity,
   IssueType
+};
+
+module.exports = {
+  ...module.exports,
+  IssueSeverity,
+  IssueType,
+  TERMINAL_BOUNTY_STATUSES,
+  isTerminalBountyStatus,
+  chainStatusIssue,
 };

@@ -2,6 +2,14 @@
 
 A collection of reference applications demonstrating how to integrate with the Verdikta on-chain AI jury protocol. These applications showcase different approaches to building AI-powered evaluation systems using blockchain technology, IPFS, and multiple AI providers.
 
+## Backlog and contribution workflow
+
+Verdikta coordinates work across repositories through the
+[Verdikta Master Backlog](https://github.com/orgs/verdikta/projects/1).
+Humans and automated agents contributing here must read [AGENTS.md](AGENTS.md)
+and the canonical [backlog and issue workflow](https://github.com/verdikta/verdikta-docs/blob/main/docs/backlog-workflow.md)
+before creating, selecting, or changing work items.
+
 ## 🔍 What is Verdikta?
 
 Verdikta is a decentralized AI jury system that enables transparent, reliable, and consensus-driven evaluations. The protocol combines:
@@ -249,4 +257,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**Ready to build with Verdikta?** Start with our **[Getting Started Guide](docs/example-frontend/getting-started.md)** and join the future of decentralized AI evaluation! 🚀 
+**Ready to build with Verdikta?** Start with our **[Getting Started Guide](docs/example-frontend/getting-started.md)** and join the future of decentralized AI evaluation! 🚀

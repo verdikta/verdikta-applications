@@ -89,6 +89,46 @@ function stringifyErr(e) {
   return e.message || String(e);
 }
 
+function normalizeProviderName(provider) {
+  return String(provider || '').trim().toLowerCase();
+}
+
+function validateJuryModelsAgainstClass(juryNodes, classId, classMap) {
+  if (!classMap || typeof classMap.getClass !== 'function') {
+    return {
+      valid: false,
+      misconfiguration: true,
+      error: 'Class map unavailable for strict jury validation'
+    };
+  }
+
+  const classInfo = classMap.getClass(Number(classId));
+  if (!classInfo) {
+    return { valid: false, error: `Class ${classId} not found` };
+  }
+
+  if (classInfo.status !== 'ACTIVE') {
+    return { valid: false, error: `Class ${classId} is not ACTIVE (status=${classInfo.status})` };
+  }
+
+  const available = new Set((classInfo.models || []).map(m => `${normalizeProviderName(m.provider)}/${m.model}`));
+  const invalidNodes = [];
+
+  for (const node of juryNodes || []) {
+    const key = `${normalizeProviderName(node.provider)}/${node.model}`;
+    if (!available.has(key)) {
+      invalidNodes.push({ provider: node.provider, model: node.model });
+    }
+  }
+
+  return {
+    valid: invalidNodes.length === 0,
+    classInfo,
+    invalidNodes,
+    allowedModels: Array.from(available).sort()
+  };
+}
+
 // Direct, minimal JSON‑pin helper (Pinata). Expects RAW JWT in env; we add "Bearer ".
 const PIN_TIMEOUT_MS = Number(process.env.PIN_TIMEOUT_MS || 20000);
 function withTimeout(p, ms, label='operation') {
@@ -202,6 +242,41 @@ router.post('/create', async (req, res) => {
         errors: juryValidation.errors
       });
     }
+
+    // Strict: each provider/model must be currently supported by @verdikta/common class map.
+    // Fail-open on infra errors (classMap can't load) — an unavailable dependency must not
+    // take down bounty creation. Fail-closed only on an actually-unsupported jury model.
+    let classMap = null;
+    try {
+      const common = require('@verdikta/common');
+      classMap = common?.classMap;
+      if (!classMap || typeof classMap.getClass !== 'function') {
+        throw new Error('Missing or invalid classMap export from @verdikta/common');
+      }
+    } catch (e) {
+      logger.warn('[jobs/create] classMap unavailable — skipping strict jury validation', { msg: e.message });
+      classMap = null;
+    }
+
+    if (classMap) {
+      const strictJuryCheck = validateJuryModelsAgainstClass(juryNodes, classId, classMap);
+      if (strictJuryCheck.misconfiguration) {
+        // classMap present but not usable for this check — treat as infra, fail-open.
+        logger.warn('[jobs/create] strict jury validation unavailable — skipping', {
+          classId: Number(classId),
+          details: strictJuryCheck.error
+        });
+      } else if (!strictJuryCheck.valid) {
+        return res.status(400).json({
+          error: 'Invalid jury configuration',
+          details: strictJuryCheck.error || 'One or more jury models are not supported for this class',
+          classId: Number(classId),
+          invalidNodes: strictJuryCheck.invalidNodes || [],
+          allowedModels: strictJuryCheck.allowedModels || []
+        });
+      }
+    }
+
     if (!rubricJson && !rubricCidIn) {
       return res.status(400).json({ error: 'Missing rubric', details: 'Provide rubricJson or rubricCid' });
     }

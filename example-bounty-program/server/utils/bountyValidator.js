@@ -294,13 +294,13 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
         if (!classInfo) {
           issues.push({
             type: IssueType.INVALID_CLASS,
-            severity: IssueSeverity.WARNING,
+            severity: IssueSeverity.ERROR,
             message: `Class ${classId} not found in class map`
           });
         } else if (classInfo.status !== 'ACTIVE') {
           issues.push({
             type: IssueType.INVALID_CLASS,
-            severity: IssueSeverity.WARNING,
+            severity: IssueSeverity.ERROR,
             message: `Class ${classId} is not active (status: ${classInfo.status})`
           });
         } else if (classInfo.models && Array.isArray(classInfo.models)) {
@@ -312,8 +312,8 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
             if (!availableModels.includes(modelKey)) {
               issues.push({
                 type: IssueType.MODEL_UNAVAILABLE,
-                severity: IssueSeverity.WARNING,
-                message: `Jury model ${node.provider}/${node.model} may not be available in class ${classId}`
+                severity: IssueSeverity.ERROR,
+                message: `Jury model ${node.provider}/${node.model} is not available in class ${classId}`
               });
             }
           }

@@ -1911,17 +1911,60 @@ router.post('/rubric/validate', (req, res) => {
   // juryNodes still gets the rubric-only check.
   const errors = [...rubricResult.errors];
   const { juryNodes, classId } = req.body || {};
+  const tips = [];
+  let allowedModels = null;
   let juryWasChecked = false;
+
   if (juryNodes !== undefined && juryNodes !== null) {
     juryWasChecked = true;
     const juryResult = validateJuryNodes(juryNodes);
     errors.push(...juryResult.errors);
-    if (classId !== undefined && (typeof classId !== 'number' || !Number.isInteger(classId) || classId < 0)) {
+
+    const classIdProvided = classId !== undefined && classId !== null;
+    const classIdValid = typeof classId === 'number' && Number.isInteger(classId) && classId >= 0;
+    if (classIdProvided && !classIdValid) {
       errors.push(`classId must be a non-negative integer (received ${typeof classId})`);
+    }
+
+    // Availability check (issue #16 follow-up): mirror the classMap gate that
+    // /jobs/create applies, so a clean bill here means the jury is create-safe —
+    // not merely well-formed. Requires a valid classId to know which class to
+    // check against. Fail-open on infra errors (classMap can't load), exactly
+    // like /jobs/create; only a genuinely unsupported model is a hard error.
+    if (classIdValid) {
+      let classMap = null;
+      try {
+        classMap = require('@verdikta/common')?.classMap;
+        if (!classMap || typeof classMap.getClass !== 'function') {
+          throw new Error('Missing or invalid classMap export from @verdikta/common');
+        }
+      } catch (e) {
+        logger.warn('[rubric/validate] classMap unavailable — skipping availability check', { msg: e.message });
+        classMap = null;
+      }
+
+      if (!classMap) {
+        tips.push(`Could not load the class map to verify jury models against class ${classId}; /jobs/create performs this check at creation time.`);
+      } else {
+        const strict = validateJuryModelsAgainstClass(juryNodes, classId, classMap);
+        if (strict.misconfiguration) {
+          tips.push(`Could not verify jury models against class ${classId}; /jobs/create performs this check at creation time.`);
+        } else if (!strict.valid) {
+          if (strict.invalidNodes && strict.invalidNodes.length) {
+            for (const n of strict.invalidNodes) {
+              errors.push(`Jury model ${n.provider}/${n.model} is not available in class ${classId}`);
+            }
+            allowedModels = strict.allowedModels || null;
+          } else if (strict.error) {
+            errors.push(strict.error);
+          }
+        }
+      }
+    } else if (!classIdProvided) {
+      tips.push('Pass classId alongside juryNodes to also verify each jury model is supported by the class — without it, /rubric/validate only checks jury structure and /jobs/create may still reject unsupported models (issue #16).');
     }
   }
 
-  const tips = [];
   if (!juryWasChecked) {
     tips.push('Pass juryNodes (and optionally classId) to also validate the jury configuration — /rubric/validate previously ignored jury, so a clean bill here did not mean the bounty was create-safe (issue #16).');
   }
@@ -1931,6 +1974,7 @@ router.post('/rubric/validate', (req, res) => {
     errors,
     checkedAt: new Date().toISOString()
   };
+  if (allowedModels) body.allowedModels = allowedModels;
   if (tips.length) body.tips = tips;
   return res.json(body);
 });

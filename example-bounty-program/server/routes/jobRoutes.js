@@ -20,7 +20,7 @@ const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE,
         oracleUnreadableReason, detectBinaryContainer, ALLOWED_ZIP_BASED_EXTENSIONS,
         parseFeeToWei, extractEvaluationWarnings } = require('../utils/validation');
 const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
-const { validateBounty, IssueSeverity, IssueType } = require('../utils/bountyValidator');
+const { validateBounty, IssueSeverity, IssueType, chainStatusIssue } = require('../utils/bountyValidator');
 const { getContractService } = require('../utils/contractService');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
 
@@ -2179,13 +2179,12 @@ router.get('/:jobId/validate', async (req, res) => {
       const contractService = getContractService();
       const onChain = await contractService.getBounty(job.jobId);
 
-      if (onChain.status !== 'OPEN') {
-        result.issues.push({
-          type: IssueType.CHAIN_STATUS,
-          severity: IssueSeverity.ERROR,
-          message: `Bounty is "${onChain.status}" on-chain and cannot accept submissions or pay out.`
-        });
-        result.valid = false;
+      const chainCheck = chainStatusIssue(onChain.status);
+      if (chainCheck) {
+        result.issues.push(chainCheck.issue);
+        if (chainCheck.invalidatesPackage) {
+          result.valid = false;
+        }
       }
     } catch (chainErr) {
       const msg = chainErr.message || '';

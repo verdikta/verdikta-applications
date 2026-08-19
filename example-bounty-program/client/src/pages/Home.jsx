@@ -14,6 +14,7 @@ import {
   Search,
   ExternalLink,
   User,
+  Check,
   CheckCircle,
   ShieldCheck,
   ChevronLeft,

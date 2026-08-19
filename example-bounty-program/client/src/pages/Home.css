@@ -545,6 +545,18 @@
   color: white;
 }
 
+/* Terminal bounties (EXPIRED / AWARDED / CLOSED): neutral "Completed" badge
+   shown in place of the Validate button — the bounty is concluded, not broken. */
+.badge-completed {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background-color: var(--gray-500);
+  color: white;
+}
+
 /* Time Remaining States */
 .time-remaining.warning {
   color: var(--warning);

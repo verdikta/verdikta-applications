@@ -86,7 +86,6 @@ function chainStatusIssue(status) {
 }
 
 /**
-/**
  * Check if content is a ZIP file by examining magic bytes
  * @param {Buffer} content - Content to check
  * @returns {boolean}
@@ -439,12 +438,6 @@ module.exports = {
   validateBounty,
   quickFormatCheck,
   isZipFile,
-  IssueSeverity,
-  IssueType
-};
-
-module.exports = {
-  ...module.exports,
   IssueSeverity,
   IssueType,
   TERMINAL_BOUNTY_STATUSES,

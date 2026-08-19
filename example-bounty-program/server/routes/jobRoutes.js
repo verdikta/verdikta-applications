@@ -1899,12 +1899,40 @@ router.post('/rubric/validate', (req, res) => {
     });
   }
 
-  const result = validateRubric(rubricJson);
-  return res.json({
-    valid: result.valid,
-    errors: result.errors,
+  const rubricResult = validateRubric(rubricJson);
+
+  // Optional jury-node check for callers following the recommended
+  // "validate before create" flow. /rubric/validate used to ignore
+  // juryNodes entirely, which made the validator strictly less strict
+  // than /jobs/create and missed the dotted/underscore model-id failure
+  // mode (issue #16). When juryNodes is provided we run the same
+  // validator /jobs/create uses and merge errors so callers can fix
+  // everything before paying gas. Backward-compatible: a body without
+  // juryNodes still gets the rubric-only check.
+  const errors = [...rubricResult.errors];
+  const { juryNodes, classId } = req.body || {};
+  let juryWasChecked = false;
+  if (juryNodes !== undefined && juryNodes !== null) {
+    juryWasChecked = true;
+    const juryResult = validateJuryNodes(juryNodes);
+    errors.push(...juryResult.errors);
+    if (classId !== undefined && (typeof classId !== 'number' || !Number.isInteger(classId) || classId < 0)) {
+      errors.push(`classId must be a non-negative integer (received ${typeof classId})`);
+    }
+  }
+
+  const tips = [];
+  if (!juryWasChecked) {
+    tips.push('Pass juryNodes (and optionally classId) to also validate the jury configuration — /rubric/validate previously ignored jury, so a clean bill here did not mean the bounty was create-safe (issue #16).');
+  }
+
+  const body = {
+    valid: errors.length === 0,
+    errors,
     checkedAt: new Date().toISOString()
-  });
+  };
+  if (tips.length) body.tips = tips;
+  return res.json(body);
 });
 
 /* ==============

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Complete submission flow: upload files → prepare → approve LINK → start → confirm.
-// The bot wallet signs all three on-chain transactions automatically.
+// Complete submission flow: upload files → prepare → start → confirm.
+// The bot wallet signs the on-chain transactions automatically.
 //
 // Usage:
 //   node submit_to_bounty.js --jobId 72 --file work_output.md
@@ -8,7 +8,7 @@
 //
 // Optional fee parameters (forwarded to /submit/prepare):
 //   --alpha 50             Reputation weight (default: API default)
-//   --maxOracleFee 0.003   Max LINK per oracle call
+//   --maxOracleFee 0.003   Max ETH per oracle call
 //   --estimatedBaseCost 0.001
 //   --maxFeeBasedScaling 3
 //
@@ -20,7 +20,7 @@
 //
 // Prerequisites:
 //   - Bot onboarded (onboard.js completed)
-//   - Bot wallet funded with ETH (gas) and LINK (evaluation fee)
+//   - Bot wallet funded with ETH (gas + evaluation prepay)
 //   - Bot registered (API key saved)
 
 import './_env.js';
@@ -29,7 +29,7 @@ import path from 'node:path';
 import { ethers } from 'ethers';
 import {
   getNetwork, providerFor, loadWallet,
-  escrowContract, redactApiKey, BOUNTY_ESCROW_ABI, ESCROW, LINK,
+  escrowContract, redactApiKey, BOUNTY_ESCROW_ABI, ESCROW,
   arg, hasFlag, argAll, loadApiKey, sendTx, confirmSpendOrExit, isDryRun,
 } from './_lib.js';
 
@@ -115,6 +115,29 @@ async function diagnoseSubmission(subId) {
       }
     }
   } catch { /* best-effort */ }
+
+  // On-chain view of the submission: the EvaluationWallet must be deployed and
+  // funded with the ETH prepay, or startPreparedSubmission reverts. Reading it
+  // directly surfaces the common "wallet not funded / wrong eth amount" cases.
+  try {
+    const escrow = escrowContract(network, provider);
+    const sub = await escrow.getSubmission(jobId, subId);
+    const evalWallet = sub.evalWallet;
+    const [walletCode, walletBalance] = await Promise.all([
+      provider.getCode(evalWallet),
+      provider.getBalance(evalWallet),
+    ]);
+    const budgetWei = sub.ethMaxBudget ?? sub.linkMaxBudget ?? 0n;
+    console.error('\n  On-chain submission diagnostics:');
+    console.error(`    status:       ${sub.status}`);
+    console.error(`    hunter:       ${sub.hunter}`);
+    console.error(`    evalWallet:   ${evalWallet}`);
+    console.error(`    eval code:    ${walletCode === '0x' ? 'missing' : `${(walletCode.length - 2) / 2} bytes`}`);
+    console.error(`    eval balance: ${ethers.formatEther(walletBalance)} ETH`);
+    console.error(`    ethMaxBudget: ${ethers.formatEther(budgetWei)} ETH`);
+  } catch (err) {
+    console.error(`\n  On-chain diagnostics unavailable: ${err.shortMessage || err.message || err}`);
+  }
 }
 
 // ---- Pre-flight: verify the job is submittable ----
@@ -218,7 +241,7 @@ await confirmSpendOrExit([
   `Job: #${jobId}`,
   `Files to upload: ${files.join(', ')}`,
   `Allowed escrow recipient: ${ESCROW[network]}`,
-  `Allowed LINK recipient: ${LINK[network]}`,
+  `ETH evaluation prepay: attached to startPreparedSubmission and capped by the API transaction value`,
   `Public data: uploaded work files may be pinned to IPFS and linked to on-chain submission metadata`,
 ]);
 
@@ -287,15 +310,17 @@ const prepareReceipt = await sendTx(signer, 'prepareSubmission', prepareData.tra
 // Parse SubmissionPrepared event (using centralized ABI)
 const escrowIface = new ethers.Interface(BOUNTY_ESCROW_ABI);
 
-let submissionId, evalWallet, linkMaxBudget, linkMaxBudgetWei = null;
+let submissionId, evalWallet, ethMaxBudget, ethMaxBudgetWei = null;
 for (const log of prepareReceipt.logs) {
   try {
     const parsed = escrowIface.parseLog(log);
     if (parsed?.name === 'SubmissionPrepared') {
       submissionId = Number(parsed.args.submissionId);
       evalWallet = parsed.args.evalWallet;
-      linkMaxBudgetWei = BigInt(parsed.args.linkMaxBudget);
-      linkMaxBudget = ethers.formatEther(linkMaxBudgetWei);
+      // Field was renamed linkMaxBudget → ethMaxBudget with the ETH-prepay
+      // migration; accept the legacy name for receipts from older contracts.
+      ethMaxBudgetWei = BigInt(parsed.args.ethMaxBudget ?? parsed.args.linkMaxBudget);
+      ethMaxBudget = ethers.formatEther(ethMaxBudgetWei);
       break;
     }
   } catch {}
@@ -309,32 +334,14 @@ if (submissionId == null || !evalWallet) {
 
 console.log(`  submissionId: ${submissionId}`);
 console.log(`  evalWallet:   ${evalWallet}`);
-console.log(`  linkBudget:   ${linkMaxBudget} LINK`);
+console.log(`  ethMaxBudget: ${ethMaxBudget} ETH`);
 
-// ---- Step 3: Approve LINK (on-chain tx 2/3) ----
-
-if (linkMaxBudgetWei > 0n) {
-  console.log('\n--- Step 3: Approve LINK to EvaluationWallet ---');
-
-  const approveRes = await fetch(`${baseUrl}/api/jobs/${jobId}/submit/approve`, {
-    method: 'POST',
-    headers: jsonHeaders,
-    body: JSON.stringify({ evalWallet, linkAmount: linkMaxBudget }),
-  });
-  const approveData = await approveRes.json();
-  if (!approveRes.ok || !approveData.transaction) {
-    console.error('Approve failed:', JSON.stringify(approveData));
-    process.exit(1);
-  }
-
-  await sendTx(signer, 'LINK approve', approveData.transaction, {
-    expectedTo: LINK[network],
-    network,
-  });
-} else {
-  console.log('\n--- Step 3: Skip LINK approval ---');
-  console.log('  Prepared submission reports zero LINK budget; modern ETH-funded start will use the API-provided payable transaction.');
-}
+// ---- Step 3: No LINK approval (ETH prepay) ----
+//
+// Evaluation is funded with ETH attached to startPreparedSubmission below;
+// there is no separate LINK approval transaction anymore.
+console.log('\n--- Step 3: Skip LINK approval (ETH prepay) ---');
+console.log('  Modern submissions fund evaluation with ETH attached to startPreparedSubmission.');
 
 // ---- Steps 4 & 5: Start evaluation + Confirm in API ----
 //
@@ -371,6 +378,19 @@ async function doStart() {
   const startData = await startRes.json();
   if (!startRes.ok || !startData.transaction) {
     return { ok: false, data: startData, status: startRes.status };
+  }
+  // Safety: the start tx is payable and must attach exactly ethMaxBudget as
+  // msg.value (the contract reverts with "wrong eth amount" otherwise). Verify
+  // the API-provided value matches the prepared budget before signing so a
+  // mismatch fails loudly here instead of as an opaque on-chain revert.
+  const startValueWei = BigInt(startData.transaction.value ?? 0);
+  if (ethMaxBudgetWei != null && startValueWei !== ethMaxBudgetWei) {
+    console.error(
+      `\n✖ Aborting start: transaction value ${ethers.formatEther(startValueWei)} ETH does not match ` +
+      `the prepared ethMaxBudget ${ethers.formatEther(ethMaxBudgetWei)} ETH.`
+    );
+    console.error('  The API and the on-chain SubmissionPrepared event disagree on the ETH prepay; not signing.');
+    process.exit(1);
   }
   // Use API-recommended gasLimit for start (typically 4M gas)
   await sendTx(signer, 'startPreparedSubmission', startData.transaction, {

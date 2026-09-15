@@ -46,5 +46,25 @@
   },
   "devDependencies": {
     "serve": "^14.2.6"
+  },
+  "overrides": {
+    "@pmmmwh/react-refresh-webpack-plugin": {
+      "websocket-driver": "0.7.5"
+    },
+    "faye-websocket": {
+      "websocket-driver": "0.7.5"
+    },
+    "react-scripts": {
+      "websocket-driver": "0.7.5"
+    },
+    "sockjs": {
+      "websocket-driver": "0.7.5"
+    },
+    "webpack-dev-server": {
+      "websocket-driver": "0.7.5"
+    },
+    "websocket-driver": {
+      "websocket-driver": "0.7.5"
+    }
   }
 }

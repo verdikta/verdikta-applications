@@ -891,7 +891,7 @@ router.get('/api/docs', (req, res) => {
         contentType: 'application/json',
         fields: [
           'hunter: Ethereum address 0x... (required)',
-          'hunterCid: IPFS CID from POST /submit (required). Must be a bare CID (46–100 alphanumeric chars, no prefix or delimiters) or the contract reverts "bad hunterCid".',
+          'hunterCid: IPFS CID from POST /submit (required). Must be a bare CID (46–100 alphanumeric chars, no prefix or delimiters) or the contract reverts "bad hunterCid". If you pin your own archive instead of using POST /submit, it must match the shape { version, name: "submittedWork" (or absent), primary: { filename }, additional?: [...] } with the primary file valid JSON containing a "query" string (10–10,000 chars) — this is fetched and shape-checked BEFORE the transaction is built; a malformed archive returns 400 MALFORMED_HUNTER_CID naming the failed check, and a gateway/availability failure returns 502 (not reported as malformed). Prefer POST /submit — it always produces a conforming archive.',
         ],
         returns: 'Standard calldataResponseShape. Extras: info: { bountyId, evaluationCid, hunterCid }, event, nextStep. "event" is the canonical SubmissionPrepared descriptor — { name, signature, topic0, abi, indexedFields, dataFields, note }: filter the receipt logs on event.topic0 and decode with event.abi instead of deriving either. After broadcasting, parse the event for submissionId, evalWallet, ethMaxBudget — ethMaxBudget is data word 1, right after evalWallet and BEFORE the dynamic string evaluationCid (static fields first, string last); an ABI with the pre-September-2026 order (string before ethMaxBudget) reads 96 — the string offset word — instead. It is only an ESTIMATE anyway: use the transaction.value that /start returns (the live requiredPrepay).'
       },
@@ -943,7 +943,7 @@ router.get('/api/docs', (req, res) => {
           'fileCount: integer (optional)',
           'files: array of file metadata objects (optional)'
         ],
-        returns: '{ success, submission, alreadyExists? } — the endpoint reads chain truth and fills status + creatorWindowEnd before saving.'
+        returns: '{ success, submission, alreadyExists? } — the endpoint reads chain truth and fills status + creatorWindowEnd before saving. submission.archiveShape is "ok" or "malformed(<check>)": a non-blocking re-check of hunterCid\'s shape (the on-chain prepareSubmission already happened by this point, so a bad shape here can no longer be prevented — only surfaced).'
       },
       {
         method: 'GET',

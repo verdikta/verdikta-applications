@@ -16,6 +16,7 @@ const jobStorage = require('../utils/jobStorage');
 const { packageRubricHash } = require('../utils/rubricSource');
 const { config } = require('../config');
 const archiveGenerator = require('../utils/archiveGenerator');
+const archiveShapeValidator = require('../utils/archiveShapeValidator');
 const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE,
         oracleUnreadableReason, detectBinaryContainer, ALLOWED_ZIP_BASED_EXTENSIONS,
         parseFeeToWei, extractEvaluationWarnings } = require('../utils/validation');
@@ -1607,6 +1608,29 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
         success: false,
         code: 'INVALID_HUNTER_CID',
         error: 'hunterCid must be a bare IPFS CID: 46-100 alphanumeric characters, no path, comma, colon or whitespace (contract: "bad hunterCid")'
+      });
+    }
+
+    // Shape-check the archive BEFORE spending the evaluation prepay on a
+    // doomed submission (see #34 — bounties 57/58/59 each pinned a
+    // differently-malformed archive and every arbiter aborted).
+    const shapeResult = await archiveShapeValidator.fetchAndValidateArchiveShape(hunterCid);
+    if (!shapeResult.ok) {
+      if (shapeResult.gatewayFailure) {
+        return res.status(502).json({
+          success: false,
+          code: 'HUNTER_CID_UNREACHABLE',
+          error: `Could not fetch hunterCid from any IPFS gateway: ${shapeResult.message}`,
+          fix: 'Confirm the CID is pinned and retry — this is a gateway/availability issue, not a malformed archive.'
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        code: 'MALFORMED_HUNTER_CID',
+        error: `Submission archive failed shape check: ${shapeResult.check}`,
+        details: shapeResult.message,
+        conformingShape: archiveShapeValidator.CONFORMING_SHAPE_EXAMPLE,
+        fix: 'Use POST /:jobId/submit to build a conforming archive automatically, or match the shape shown in conformingShape.'
       });
     }
 
@@ -4677,10 +4701,22 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
     // succeeds and the bounty is windowed, this will already be
     // 'PendingCreatorApproval' with creatorWindowEnd set — no follow-up
     // refreshSubmission call needed from the client.
+    // Non-blocking: the on-chain submission already exists by the time /confirm
+    // is called, so a bad shape here can't be prevented — only flagged for the
+    // UI/hunter to see (see #34). /submit/prepare is the blocking check.
+    let archiveShape = 'unknown';
+    try {
+      const shapeResult = await archiveShapeValidator.fetchAndValidateArchiveShape(hunterCid);
+      archiveShape = shapeResult.ok ? 'ok' : `malformed(${shapeResult.check})`;
+    } catch (e) {
+      logger.warn('[submissions/confirm] archive shape check threw', { jobId, submissionId, error: e.message });
+    }
+
     const submission = {
       submissionId: Number(submissionId),
       hunter,
       hunterCid,
+      archiveShape,
       evalWallet: evalWallet || null,
       fileCount: fileCount || 0,
       files: files || [],

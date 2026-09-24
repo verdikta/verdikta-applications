@@ -270,6 +270,90 @@ function validateJuryNodes(juryNodes) {
   };
 }
 
+// --- Composed evaluation query length guard -------------------------------
+// The arbiters (@verdikta/common primaryFileSchema, src/utils/validator.js)
+// hard-cap the primary query at 10,000 characters. A query that exceeds this is
+// rejected with MalformedArchiveError and can never be won. We estimate the
+// composed query length from the rubric up front and refuse bounty creation
+// before any money moves, telling the creator exactly how long it is and
+// which parts dominate so they can cut.
+const ARBITER_QUERY_MAX_CHARS = 10000;
+
+// Static overhead: template scaffolding, field labels, the rubric JSON
+// wrapper, etc. — text that is always present regardless of criteria count.
+// Measured from a minimal valid primary_query.json (~250 chars of template +
+// ~50 chars of JSON structure). Add a margin so we never under-count.
+const QUERY_BASE_OVERHEAD = 500;
+
+/**
+ * Break the rubric into the text segments that become the composed query,
+ * returning each with a human-readable label and character length. This lets
+ * callers tell the creator exactly which parts to cut.
+ * @param {object} rubric
+ * @returns {{ label: string, length: number }[]}
+ */
+function estimateQueryPartLengths(rubric) {
+  const parts = [];
+  if (typeof rubric.license_template === 'string' && rubric.license_template.length > 0) {
+    parts.push({ label: 'license_template', length: rubric.license_template.length });
+  }
+  if (Array.isArray(rubric.forbidden_content)) {
+    rubric.forbidden_content.forEach((fc, i) => {
+      if (typeof fc === 'string') {
+        parts.push({ label: `forbidden_content[${i}]`, length: fc.length });
+      }
+    });
+  }
+  if (Array.isArray(rubric.criteria)) {
+    rubric.criteria.forEach((c, i) => {
+      const label = c.id || c.label || 'unknown';
+      if (typeof c.description === 'string') {
+        parts.push({ label: `criteria[${i}].description ("${label}")`, length: c.description.length });
+      }
+    });
+  }
+  return parts;
+}
+
+/**
+ * Estimate the total length of the composed primary query from the rubric.
+ * @param {object} rubric
+ * @returns {{ total: number, parts: Array }} total character length and per-part breakdown
+ */
+function computeComposedQueryLength(rubric) {
+  const parts = estimateQueryPartLengths(rubric);
+  const partsTotal = parts.reduce((sum, p) => sum + p.length, 0);
+  return { total: QUERY_BASE_OVERHEAD + partsTotal, parts };
+}
+
+/**
+ * Validate that the composed evaluation query will fit within the arbiters'
+ * 10,000-character cap. Returns { valid, total, parts, errors }. The error
+ * message reports the total length and ranks the contributing parts by size
+ * so the creator knows what to trim.
+ * @param {object} rubric
+ * @returns {{ valid: boolean, total: number, parts: Array, errors: string[] }}
+ */
+function validateComposedQueryLength(rubric) {
+  const errors = [];
+  const { total, parts } = computeComposedQueryLength(rubric);
+
+  if (total > ARBITER_QUERY_MAX_CHARS) {
+    const sortedParts = [...parts].sort((a, b) => b.length - a.length);
+    const topParts = sortedParts.slice(0, 5)
+      .map(p => `  - ${p.label}: ${p.length} chars`)
+      .join('\n');
+    errors.push(
+      `Composed evaluation query is ${total} characters, which exceeds the arbiters' ` +
+      `${ARBITER_QUERY_MAX_CHARS}-character cap (it would be rejected with MalformedArchiveError ` +
+      `and could never be won). Shorten the largest parts:\n${topParts}\n` +
+      `  - template/overhead: ${QUERY_BASE_OVERHEAD} chars`
+    );
+  }
+
+  return { valid: errors.length === 0, total, parts, errors };
+}
+
 // --- Oracle-readability guards ---------------------------------------------
 // The Verdikta oracle pipeline silently SKIPS archive/binary attachments it can't
 // read: the models see no content, a must-pass-override kicks in, and the score is
@@ -420,8 +504,10 @@ module.exports = {
   detectBinaryContainer,
   oracleUnreadableReason,
   parseFeeToWei,
-  FEE_SANITY_MAX_WEI
+  FEE_SANITY_MAX_WEI,
+  ARBITER_QUERY_MAX_CHARS,
+  QUERY_BASE_OVERHEAD,
+  estimateQueryPartLengths,
+  computeComposedQueryLength,
+  validateComposedQueryLength
 };
-
-
-

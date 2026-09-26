@@ -15,6 +15,14 @@ const REQ_SEARCH_MARGIN = 7500;      // ± window (blocks) around the estimated 
 const EVENT_WINDOW = 8000;           // blocks after the request to collect lifecycle events (one getLogs chunk; an agg's full commit→reveal→fulfill/timeout lifecycle is well under this)
 const RECENT_FALLBACK_BLOCKS = 250000; // bounded look-back when the timestamp anchor is unavailable
 
+// Outcome label for a settled round with zero commits from any polled slot.
+// Mirrors example-arbiters' getAggHistory/getOracleHealth rule (same repo, a
+// separate npm package with no shared module to import from): a request that
+// no arbiter ever committed to is most likely a malformed evaluation package,
+// not a node failure. Exported so callers (e.g. the /diagnose route) can
+// detect this outcome without re-deriving or hardcoding the label string.
+const LIKELY_MALFORMED_OUTCOME = 'LIKELY MALFORMED EVALUATION PACKAGE (no arbiter committed)';
+
 // ReputationAggregator ABI (functions needed for analytics + agg history)
 const AGGREGATOR_ABI = [
   "function reputationKeeper() view returns (address)",
@@ -930,6 +938,9 @@ class VerdiktaService {
     } else if (elapsedMinutes === null) {
       // No request event and no timestamp — can't place it in time.
       outcome = 'RUNNING';
+    } else if (committedSlots.length === 0) {
+      // No arbiter committed at all: the request itself was most likely unusable.
+      outcome = LIKELY_MALFORMED_OUTCOME;
     } else {
       // Past the window with no FulfillAIEvaluation → it failed / timed out.
       outcome = `FAILED (${failPhase} phase)`;
@@ -941,6 +952,7 @@ class VerdiktaService {
       revealed: revealedSlots.length,
       nonResponding: nonRespondingSlots.length,
       nonRespondingSlotIds: nonRespondingSlots.map(s => s.slot),
+      likelyMalformed: outcome === LIKELY_MALFORMED_OUTCOME,
       uniqueOracles,
       failures: {
         hashMismatch: slots.filter(s => s.hashMismatch).length,
@@ -1024,5 +1036,6 @@ module.exports = {
   initializeVerdiktaService,
   getVerdiktaService,
   isVerdiktaServiceAvailable,
-  VerdiktaService
+  VerdiktaService,
+  LIKELY_MALFORMED_OUTCOME
 };

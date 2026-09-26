@@ -19,7 +19,7 @@ const archiveGenerator = require('../utils/archiveGenerator');
 const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE,
         oracleUnreadableReason, detectBinaryContainer, ALLOWED_ZIP_BASED_EXTENSIONS,
         parseFeeToWei, extractEvaluationWarnings } = require('../utils/validation');
-const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
+const { getVerdiktaService, isVerdiktaServiceAvailable, LIKELY_MALFORMED_OUTCOME } = require('../utils/verdiktaService');
 const { validateBounty, IssueSeverity, IssueType, chainStatusIssue } = require('../utils/bountyValidator');
 const { getContractService, RESOLVE_GAS_LIMIT_FALLBACK, RESOLVE_GAS_NOTE } = require('../utils/contractService');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
@@ -6684,7 +6684,61 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
                 );
               } else {
                 diagnosis.checks.oracleResult = { complete: false };
-                if (timeoutEligible) {
+
+                // Zero commits from every polled slot on a settled round points at the
+                // evaluation package, not the oracle network (mirrors example-arbiters'
+                // getAggHistory/getOracleHealth "likely malformed" rule).
+                let aggHistory = null;
+                if (isVerdiktaServiceAvailable()) {
+                  try {
+                    aggHistory = await getVerdiktaService().getAggHistory(chainSub.verdiktaAggId);
+                  } catch (aggHistErr) {
+                    logger.warn('[diagnose] getAggHistory failed', { jobId, submissionId, msg: aggHistErr.message });
+                  }
+                }
+
+                if (aggHistory?.found && aggHistory.outcome === LIKELY_MALFORMED_OUTCOME) {
+                  diagnosis.checks.aggHistory = {
+                    outcome: aggHistory.outcome,
+                    totalSlots: aggHistory.analysis.totalSlots,
+                    committed: aggHistory.analysis.committed,
+                    likelyMalformed: true
+                  };
+                  diagnosis.issues.push(
+                    `${aggHistory.outcome} — none of the ${aggHistory.analysis.totalSlots} polled oracle slots committed. ` +
+                    `This points to the evaluation package, not the oracle network.`
+                  );
+
+                  // Surface the package-level failure directly instead of making the
+                  // caller chase GET /:jobId/validate separately.
+                  try {
+                    const ipfsClient = req.app.locals.ipfsClient;
+                    if (ipfsClient) {
+                      let classMap;
+                      try {
+                        classMap = require('@verdikta/common').classMap;
+                      } catch (e) {
+                        logger.warn('Could not load classMap for validation:', e.message);
+                      }
+                      const packageCheck = await validateBounty({
+                        evaluationCid: job.evaluationCid,
+                        classId: job.classId,
+                        ipfsClient,
+                        classMap
+                      });
+                      diagnosis.checks.packageValidation = packageCheck;
+                      if (!packageCheck.valid) {
+                        for (const issue of packageCheck.issues) {
+                          diagnosis.issues.push(`Evaluation package: ${issue.message}`);
+                        }
+                      }
+                    }
+                  } catch (validateErr) {
+                    logger.warn('[diagnose] validateBounty failed', { jobId, submissionId, msg: validateErr.message });
+                  }
+
+                  diagnosis.recommendations.push(`Validate the evaluation package: GET /api/jobs/${jobId}/validate`);
+                } else if (timeoutEligible) {
                   diagnosis.recommendations.push(
                     `Oracle round settled with no result — call POST /api/jobs/${jobId}/submissions/${subId}/timeout (or failTimedOutSubmission on-chain) to force-fail and refund the prepay.`
                   );
@@ -6819,6 +6873,13 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
 
       diagnosis.nextAction = null;
 
+    }
+
+    // A likely-malformed round overrides the contract's own suggestion (e.g.
+    // FORCE_FAIL): the actionable next step is to inspect the package, not
+    // resolve the on-chain submission.
+    if (diagnosis.checks.aggHistory?.likelyMalformed) {
+      diagnosis.nextAction = `GET /api/jobs/${jobId}/validate`;
     }
 
     return res.json({ success: true, diagnosis });

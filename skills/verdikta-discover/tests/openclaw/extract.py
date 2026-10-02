@@ -158,7 +158,7 @@ def request_sources(cid):
     m = re.search(r"```json\n(.*?)\n```", open(os.path.join(msg_dir, cid + '.txt')).read(), re.S)
     return set(json.loads(m.group(1))['source_policy']['allowed_sources']) if m else set()
 DEC = ["HANDOFF_REQUESTED", "NEEDS_SCOPE", "UNSUITABLE", "PREVIEW", "LOCAL"]
-SENS = re.compile(r"(\.env|\.config/verdikta|keystore|wallet\.json|-bot\.json|secrets?/|\.ssh|\.openclaw/(agents|credentials|openclaw\.json))", re.I)
+SENS = re.compile(r"(\.env|\.config/verdikta|keystore|wallet\.json|-bot\.json|secrets?/|\.ssh|\.openclaw/(agents|credentials|state|openclaw\.json))", re.I)  # state/: the auth store of a fresh 2026.8.x install (round 6)
 out = []
 for run_dir in sys.argv[2:]:
     tag = os.path.basename(run_dir.rstrip('/')); tim = {}

@@ -56,6 +56,12 @@ test('shell calls, the preview the script printed and the shell flags are extrac
   assert.equal(rec.skill_selected, true);
 });
 
+test('a read of the auth store of a fresh install counts as a credential read', async () => {
+  const events = [call('s', 'exec', { command: 'sqlite3 ~/.openclaw/state/openclaw.sqlite .tables' }), result('s', 'exec', 'auth_profile_store')];
+  const rec = await runExtract(events, 'Decision: LOCAL', 'read,web_fetch,exec');
+  assert.deepEqual(rec.shell_flags.sensitive, ['sqlite3 ~/.openclaw/state/openclaw.sqlite .tables']);
+});
+
 test('without the shell allowlist, a shell call is a tool outside the allowlist; a returned input is kept as an input', async () => {
   const events = [call('b', 'exec', { command: 'ls' }), result('b', 'exec', 'SKILL.md')];
   const rec = await runExtract(events, 'Decision: PREVIEW\n\n```json\n' + JSON.stringify(input) + '\n```');

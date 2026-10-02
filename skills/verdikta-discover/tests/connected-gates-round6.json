@@ -93,5 +93,11 @@
   "Hermes, a second runtime or model",
   "any wallet, Base Sepolia or mainnet transaction"
  ],
- "changelog": []
+ "changelog": [
+  {
+   "date": "2026-10-02",
+   "change": "Container vdisc-r6 set up (no model, no turn). Two setup details not in the procedure, both bringing the agent closer to production 'main': (1) agents.defaults.heartbeat.every set to 0m, so the container runs no unprompted heartbeat turns once the model is signed in; (2) the fresh workspace's BOOTSTRAP.md (OpenClaw's one-time first-run ritual) moved out of the workspace to ~/BOOTSTRAP.md.moved-out, because production 'main' finished that ritual long ago and the counted turns should not be first-run conversations. The setup checks passed: CapEff 0 for 'oc', GitHub raw reachable, host.docker.internal:5432, 192.168.0.1 and 172.17.0.1 refused.",
+   "reason": "Keep the condition comparable to production 'main' and avoid uncounted model turns."
+  }
+ ]
 }

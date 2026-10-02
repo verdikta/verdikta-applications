@@ -34,6 +34,80 @@ const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/s
 function readBool(v) { return /^(1|true|yes|on)$/i.test(String(v || '').trim()); }
 const DEV_ENV_FAKE = readBool(process.env.DEV_FAKE_RUBRIC_CID);
 
+// ---- Unevaluable-bounty gate (issue #39) ---------------------------------
+// A job whose evaluation package has a deterministic ERROR (see
+// utils/bountyValidator) can never produce an oracle result: every hunter who
+// starts an evaluation against it pays the arbiters' base fees for nothing.
+// ensureFreshValidation() is the single source of truth both the board
+// (GET /:jobId/validate, persisted so job.validationStatus.hasIssues drives
+// the existing "has-errors" card styling in the client) and the submission
+// endpoints (submit / submit/prepare / submit/bundle) read from, so a job
+// never looks fine on the board while still accepting doomed submissions.
+const VALIDATION_CACHE_TTL_MS = 60 * 60 * 1000; // 1h — matches admin/validate-all's cadence
+
+async function ensureFreshValidation(job, req, { force = false } = {}) {
+  const cached = job.validationStatus;
+  const isFresh = !force && cached?.checkedAt &&
+    (Date.now() - new Date(cached.checkedAt).getTime()) < VALIDATION_CACHE_TTL_MS;
+  if (isFresh) return cached;
+
+  // Fail-open: if IPFS isn't wired up (e.g. a route under test with no
+  // app.locals.ipfsClient), don't block submissions over an infra gap that
+  // has nothing to do with this bounty's own package.
+  const ipfsClient = req.app.locals.ipfsClient;
+  if (!ipfsClient) return cached || { valid: true, issues: [], checkedAt: null, unchecked: true };
+
+  let classMap;
+  try {
+    classMap = require('@verdikta/common').classMap;
+  } catch (e) {
+    logger.warn('[ensureFreshValidation] Could not load classMap:', e.message);
+  }
+
+  let result;
+  try {
+    result = await validateBounty({ evaluationCid: job.evaluationCid, classId: job.classId, ipfsClient, classMap });
+  } catch (e) {
+    // A validator crash is an infra problem, not proof the package is bad.
+    logger.warn('[ensureFreshValidation] validateBounty threw', { jobId: job.jobId, msg: e.message });
+    return cached || { valid: true, issues: [], checkedAt: null, unchecked: true };
+  }
+
+  // On-chain terminal states (EXPIRED/AWARDED/CLOSED) are already gated
+  // elsewhere by job.status — don't let a chain-read hiccup here mark an
+  // otherwise-fine package as unevaluable.
+  try {
+    const contractService = getContractService();
+    const onChain = await contractService.getBounty(job.jobId);
+    const chainCheck = chainStatusIssue(onChain.status);
+    if (chainCheck) {
+      result.issues.push(chainCheck.issue);
+      if (chainCheck.invalidatesPackage) result.valid = false;
+    }
+  } catch { /* chain read best-effort here; the route's own on-chain checks are authoritative */ }
+
+  const validationStatus = { valid: result.valid, issues: result.issues, checkedAt: new Date().toISOString() };
+  try {
+    await jobStorage.updateJob(job.jobId, { validationStatus });
+  } catch (e) {
+    logger.warn('[ensureFreshValidation] could not persist validationStatus', { jobId: job.jobId, msg: e.message });
+  }
+  return validationStatus;
+}
+
+function unevaluableGateResponse(jobId, validationStatus) {
+  const errors = (validationStatus?.issues || []).filter((i) => i.severity === IssueSeverity.ERROR);
+  const reason = errors.map((i) => i.message).join(' ') || 'Evaluation package failed validation.';
+  return {
+    success: false,
+    code: ErrorCodes.BOUNTY_UNEVALUABLE,
+    error: 'This bounty\'s evaluation package cannot be evaluated and is not accepting submissions.',
+    reason,
+    issues: errors,
+    fix: `Check GET /api/jobs/${jobId}/validate for full details. If you already started an evaluation and it timed out, use GET /api/jobs/${jobId}/submissions to find it and POST .../timeout to recover your prepay.`,
+  };
+}
+
 // ---- Bounty oracle settings (creator-chosen, per bounty) ----------------------
 // Since the September 2026 BountyEscrow revision the oracle request parameters are
 // set by the CREATOR in createBounty's `oracle` struct and used verbatim for every
@@ -1600,6 +1674,11 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
     }
     const evaluationCid = job.evaluationCid;
 
+    const validationStatus = await ensureFreshValidation(job, req);
+    if (!validationStatus.valid) {
+      return res.status(409).json(unevaluableGateResponse(jobId, validationStatus));
+    }
+
     const contractAddress = config.bountyEscrowAddress;
     if (!contractAddress) {
       return res.status(500).json({ success: false, error: 'Contract not configured' });
@@ -2607,13 +2686,25 @@ router.get('/:jobId/validate', async (req, res) => {
       }
     }
 
+    // Persist so job.validationStatus.hasIssues (GET /jobs, GET /:jobId) and
+    // the submission gate (ensureFreshValidation) see this result without
+    // waiting for the next admin/validate-all sweep — issue #39: a bounty
+    // whose package is broken must look and behave unevaluable everywhere,
+    // not just in this one-off response.
+    const checkedAt = new Date().toISOString();
+    try {
+      await jobStorage.updateJob(job.jobId, { validationStatus: { valid: result.valid, issues: result.issues, checkedAt } });
+    } catch (e) {
+      logger.warn('[validate] could not persist validationStatus', { jobId, msg: e.message });
+    }
+
     return res.json({
       success: true,
       jobId: job.jobId,
       evaluationCid,
       valid: result.valid,
       issues: result.issues,
-      checkedAt: new Date().toISOString()
+      checkedAt
     });
 
   } catch (error) {
@@ -4476,6 +4567,11 @@ router.post('/:jobId/submit', async (req, res) => {
       });
     }
 
+    const validationStatus = await ensureFreshValidation(job, req);
+    if (!validationStatus.valid) {
+      return res.status(409).json(unevaluableGateResponse(jobId, validationStatus));
+    }
+
     // Reject 0-byte attachments BEFORE pinning — an empty file means the oracle sees
     // no content and scores 0, but the upload would otherwise "succeed" silently.
     const emptyNames = emptyFileNames(uploadedFiles);
@@ -4906,6 +5002,11 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         details: `Bounty #${jobId} is missing an evaluationCid and cannot accept submissions`,
         fix: 'This bounty was not configured correctly. Try a different open bounty: GET /api/jobs?status=OPEN'
       });
+    }
+
+    const validationStatus = await ensureFreshValidation(job, req);
+    if (!validationStatus.valid) {
+      return res.status(409).json(unevaluableGateResponse(jobId, validationStatus));
     }
 
     // ---- Upload files to IPFS if provided (no hunterCid yet) ----

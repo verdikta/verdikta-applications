@@ -165,6 +165,13 @@ Returns class details with available models.
 
 ## Submit work (upload to IPFS)
 
+**Check first:** `GET /api/jobs/:jobId/validate` — if `valid` is `false`, the bounty's
+evaluation package cannot be scored by any arbiter (e.g. its query exceeds the
+class's character cap). `submit`, `submit/prepare` and `submit/bundle` all reject
+such a bounty with `409 BOUNTY_UNEVALUABLE` before you spend anything on an
+evaluation round that is guaranteed to fail. Don't submit to a bounty that
+fails `/validate`.
+
 `POST /api/jobs/:jobId/submit`
 
 Upload raw files — do NOT zip them yourself. The API packages files into the required ZIP format automatically.

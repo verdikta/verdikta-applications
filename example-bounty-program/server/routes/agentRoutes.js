@@ -1090,7 +1090,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'POST',
         path: '/jobs/:id/submit/prepare',
-        description: 'Get encoded prepareSubmission calldata (step 1 of on-chain submission). No cap on prepares for non-windowed bounties; windowed bounties cap prepares at 128 (prepareSubmission reverts "submission limit reached" once full).',
+        description: 'Get encoded prepareSubmission calldata (step 1 of on-chain submission). No cap on prepares for non-windowed bounties; windowed bounties cap prepares at 128 (prepareSubmission reverts "submission limit reached" once full). Returns 409 BOUNTY_UNEVALUABLE (with the failed check named) if the bounty\'s own evaluation package cannot be scored by any arbiter — check GET /jobs/:id/validate first; this endpoint, /submit and /submit/bundle all share the same check.',
         contentType: 'application/json',
         fields: [
           'hunter: Ethereum address 0x... (required)',

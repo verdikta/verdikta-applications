@@ -189,6 +189,15 @@ These endpoints return transaction descriptors. Independently verify chain, dest
 
 Returns a prepareSubmission(bountyId, evaluationCid, hunterCid) descriptor. It does not broadcast. Read submissionId, evalWallet and ethMaxBudget (before evaluationCid) from the matching escrow SubmissionPrepared receipt event after the verified transaction succeeds.
 
+Use `POST /api/jobs/:jobId/submit` to build the hunter archive automatically — it
+always produces a conforming one. If you pin `hunterCid` yourself instead, the
+archive is fetched and shape-checked before the transaction is built: it must be a
+ZIP containing `manifest.json` (`name` absent or `"submittedWork"`, `primary.filename`
+pointing at a file in the archive) whose primary file is valid JSON with a `query`
+string (10–10,000 chars). A malformed archive returns `400 MALFORMED_HUNTER_CID`
+naming the failed check; a gateway/availability failure returns `502`, not a
+malformed-archive error.
+
 Params: hunter and hunterCid only. Oracle settings are chosen by the creator; hunters supply no addendum or fee parameters.
 
 ### Step 2: Start evaluation when nextAction says START
@@ -213,6 +222,10 @@ Params:
 - `evalWallet` (optional)
 - `fileCount` (optional)
 - `files` (optional)
+
+The response's `submission.archiveShape` is `"ok"` or `"malformed(<check>)"` — a
+non-blocking re-check, since the on-chain `prepareSubmission` already happened by
+this point and a bad shape can no longer be prevented, only surfaced.
 
 ## Refresh status (poll chain)
 

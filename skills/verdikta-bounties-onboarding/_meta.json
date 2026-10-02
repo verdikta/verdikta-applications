@@ -1,8 +1,8 @@
 {
   "ownerId": "kn70kt901qt3bjzwb1v3q90jm181xhyf",
   "slug": "verdikta-bounties-onboarding",
-  "version": "1.5.0",
-  "description": "Hot-wallet Verdikta Bounties operator for Base. Creates/imports Ethereum keys, stores encrypted keystore and API key locally, uploads public bounty/work data, calls Verdikta API/Base RPC, and can sign irreversible mainnet/testnet transactions.",
+  "version": "1.6.0",
+  "description": "Hot-wallet Verdikta Bounties operator for Base. Creates/imports Ethereum keys into an encrypted keystore whose password is never stored (it comes from VERDIKTA_WALLET_PASSWORD via a secret store or a prompt), keeps an API key locally, uploads public bounty/work data, calls the reviewed Verdikta API and Base RPC, and can sign irreversible mainnet/testnet transactions within an owner spend policy.",
   "permissions": {
     "shell": {
       "binaries": [
@@ -18,7 +18,7 @@
         "https://mainnet.base.org",
         "https://sepolia.base.org"
       ],
-      "notes": "Configured Base RPC URLs and Verdikta API URL are read from the skill config; custom endpoints should be reviewed before signing."
+      "notes": "The Verdikta API origin is fixed per network by deployments.json; the bot API key is never sent to any other origin. Optional Base RPC overrides are subject to chain and bytecode checks."
     },
     "filesystem": {
       "read": [
@@ -71,7 +71,6 @@
   "requiredEnvVars": [
     "VERDIKTA_WALLET_PASSWORD",
     "VERDIKTA_NETWORK",
-    "VERDIKTA_BOUNTIES_BASE_URL",
     "VERDIKTA_KEYSTORE_PATH",
     "VERDIKTA_SPEND_POLICY"
   ],
@@ -83,30 +82,28 @@
     "type": "file",
     "path": "~/.config/verdikta-bounties/.env",
     "fields": [
-      "VERDIKTA_WALLET_PASSWORD",
       "VERDIKTA_NETWORK",
-      "VERDIKTA_BOUNTIES_BASE_URL",
       "VERDIKTA_KEYSTORE_PATH",
       "VERDIKTA_SPEND_POLICY"
     ],
     "required": [
-      "VERDIKTA_WALLET_PASSWORD",
       "VERDIKTA_NETWORK",
-      "VERDIKTA_BOUNTIES_BASE_URL",
       "VERDIKTA_KEYSTORE_PATH",
       "VERDIKTA_SPEND_POLICY"
     ],
     "optional": [
       "BASE_RPC_URL",
       "BASE_SEPOLIA_RPC_URL",
-      "OFFBOT_ADDRESS"
+      "OFFBOT_ADDRESS",
+      "VERDIKTA_BOUNTIES_BASE_URL",
+      "VERDIKTA_WALLET_PASSWORD_FILE"
     ],
     "sensitive": true,
-    "notes": "Credentials read fresh from disk at runtime \u2014 never embedded as literals. VERDIKTA_WALLET_PASSWORD decrypts the keystore in-memory only when signing transactions; private keys are never written to disk or logs. API key stored separately at ~/.config/verdikta-bounties/verdikta-bounties-bot.json (chmod 600). Scripts enforce chmod 600 after credential writes. Grant wallet minimal funds only \u2014 hot wallet posture."
+    "notes": "Configuration only: the .env holds no secret. VERDIKTA_WALLET_PASSWORD is never stored by the skill; it comes from the process environment (another secret manager, or an OpenClaw SecretRef on skills.entries.verdikta-bounties-onboarding.apiKey for runtimes that inject it), from a mode-600 file outside the skill named by VERDIKTA_WALLET_PASSWORD_FILE, or from a no-echo terminal prompt, and decrypts the keystore in memory only when signing. Scripts refuse to run while the .env still contains it. Private keys are never written to disk or logs. The bot API key is stored separately at ~/.config/verdikta-bounties/verdikta-bounties-bot.json (chmod 600) and sent only to the reviewed API origin. Grant the wallet minimal funds only (hot wallet posture)."
   },
   "credentialSetup": {
     "type": "interactive",
-    "description": "Run 'node scripts/onboard.js' for guided setup: creates or imports an encrypted wallet keystore, waits for human funding, registers and persists a bot API key. No secrets are hardcoded."
+    "description": "Run 'node scripts/onboard.js' for guided setup: creates or imports an encrypted wallet keystore (the password is typed without echo or taken from the environment, and never stored), waits for human funding, registers and persists a bot API key. No secrets are hardcoded."
   },
   "securityNotes": [
     "Use a fresh low-balance bot wallet; do not import high-value personal wallets.",

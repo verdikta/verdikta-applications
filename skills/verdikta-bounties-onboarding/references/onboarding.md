@@ -4,7 +4,7 @@ Use a fresh low-balance wallet. Owner approval of setup does not authorize a bou
 
 ## Guided setup
 
-Run `node onboard.js` in a human-controlled terminal. Select the network explicitly, confirm its API origin, and choose wallet creation or import. The wizard stores the encrypted keystore/password configuration locally, waits for owner funding in ETH, registers the API identity, and optionally lists jobs. Private keys and passwords must not enter agent messages or logs. Import only a separately approved low-balance wallet; never overwrite an existing wallet without approval.
+Run `node onboard.js` in a human-controlled terminal. Select the network explicitly and choose wallet creation or import; the API origin follows from the network. The wizard writes the encrypted keystore and non-secret configuration locally, never the wallet password. It waits for owner funding in ETH, registers the API identity, and prints the command for a read-only job listing. Private keys and passwords must not enter agent messages or logs. Import only a separately approved low-balance wallet; never overwrite an existing wallet without approval.
 
 ## Individual helpers
 
@@ -23,13 +23,33 @@ Scripts use exported variables and `~/.config/verdikta-bounties/.env`; they igno
 | Variable | Use |
 | --- | --- |
 | VERDIKTA_NETWORK | Required explicit `base` or `base-sepolia`; no transaction mainnet default |
-| VERDIKTA_BOUNTIES_BASE_URL | Matching reviewed origin: https://bounties.verdikta.org or https://bounties-testnet.verdikta.org |
+| VERDIKTA_BOUNTIES_BASE_URL | Optional. Only the network's reviewed origin is accepted (https://bounties.verdikta.org or https://bounties-testnet.verdikta.org); unset means that origin |
 | VERDIKTA_KEYSTORE_PATH | Encrypted wallet file |
-| VERDIKTA_WALLET_PASSWORD | Local keystore decryption credential |
+| VERDIKTA_WALLET_PASSWORD | Keystore password from the process environment. Never read from `.env`. See below |
+| VERDIKTA_WALLET_PASSWORD_FILE | Optional path to a mode-600 password file outside the skill (used when the variable above is unset). See below |
 | VERDIKTA_BOT_FILE | API identity file; stable configuration directory default |
 | VERDIKTA_SPEND_POLICY | Owner-approved per-run value/gas cap file; required for every transaction |
 | BASE_RPC_URL / BASE_SEPOLIA_RPC_URL | Optional reviewed RPC; deployment/chain/code checks still apply |
 | VERDIKTA_SECRETS_DIR | Optional stable configuration directory used by setup helpers |
+
+## Wallet password
+
+The skill never stores the keystore password, and the configuration `.env` is never a password source; a stable `.env` that still contains it makes every script stop until it is migrated ([1.6.0 notes](migration-1.6.0.md)). Each signing script takes the password from, in order:
+
+1. `VERDIKTA_WALLET_PASSWORD` in its environment, exported from a secret store;
+2. the file named by `VERDIKTA_WALLET_PASSWORD_FILE`, only when that is set. The file must be a regular file you own, mode 600, at most 1 KiB, outside this skill and not a `.env` file. `node onboard.js --migrate-password --to-file <path>` creates it and records the setting;
+3. a no-echo prompt in a human-controlled terminal.
+
+OpenClaw can also inject the password: the skill declares `VERDIKTA_WALLET_PASSWORD` as its `primaryEnv`, so `skills.entries.verdikta-bounties-onboarding.apiKey` may be a SecretRef (an `exec` provider for a password manager, or a `file` provider):
+
+```json5
+secrets: { providers: { verdikta_wallet: { source: "file", path: "/home/you/.config/verdikta-secrets/wallet-password", mode: "singleValue" } } },
+skills: { entries: { "verdikta-bounties-onboarding": { apiKey: { source: "file", provider: "verdikta_wallet", id: "value" } } } }
+```
+
+OpenClaw applies skill secrets to its own process for the length of a run. **Agents on the Codex harness run shell commands in a separate, long-lived Codex app-server, so the injected value does not reach them** (observed with OpenClaw 2026.8.33). For those agents use `VERDIKTA_WALLET_PASSWORD_FILE`. Keep the SecretRef too if you like: it also satisfies the skill's `requires.env` gate. Run `openclaw secrets audit --check` after changes.
+
+Limits to keep in mind: a password file, a file SecretRef and an injected variable all keep the password out of the skill's own files and configuration, but anything running as the same user can read them, the agent included. Keep the wallet balance low and the spend policy tight; for real isolation, run the signing scripts under a separate OS account that the agent cannot read.
 
 ## Endpoint map
 

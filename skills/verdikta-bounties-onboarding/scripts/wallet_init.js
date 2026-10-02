@@ -1,27 +1,30 @@
 #!/usr/bin/env node
 import './_env.js';
-import readline from 'node:readline/promises';
-import { stdin as input, stdout as output } from 'node:process';
 import { Wallet } from 'ethers';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { arg, hasFlag, resolvePath } from './_lib.js';
 import { defaultSecretsDir, ensureDir } from './_paths.js';
+import { createPrompt, walletPassword } from './_secret.js';
 
 const importMode = hasFlag('import');
 const outArg = arg('out', `${defaultSecretsDir()}/verdikta-wallet.json`);
-const password = process.env.VERDIKTA_WALLET_PASSWORD;
-if (!password) {
-  console.error('Missing VERDIKTA_WALLET_PASSWORD');
+// The password encrypts the keystore and is not stored: keep it in your secret store (references/onboarding.md).
+const prompt = createPrompt();
+let password;
+try {
+  password = await walletPassword({ prompt, purpose: 'encrypt the new keystore', confirm: true });
+} catch (err) {
+  prompt.close();
+  console.error(err.message);
   process.exit(1);
 }
 
 let wallet;
 
 if (importMode) {
-  const rl = readline.createInterface({ input, output });
   try {
-    const key = (await rl.question('Paste private key (hex, with or without 0x): ')).trim();
+    const key = await prompt.hidden('Paste private key (hex, with or without 0x; not echoed): ');
     const hex = key.replace(/^0x/, '');
     if (!/^[a-fA-F0-9]{64}$/.test(hex)) {
       console.error('Invalid private key format (expected 64 hex chars).');
@@ -29,9 +32,10 @@ if (importMode) {
     }
     wallet = new Wallet(`0x${hex}`);
   } finally {
-    rl.close();
+    prompt.close();
   }
 } else {
+  prompt.close();
   wallet = Wallet.createRandom();
 }
 

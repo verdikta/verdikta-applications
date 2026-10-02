@@ -8,6 +8,8 @@ import { defaultSecretsDir } from './_paths.js';
 
 // Generated escrow + lens ABI and reviewed deployment snapshots.
 import { abi, deployments } from './_transaction-guards.js';
+export { reviewedApiOrigin } from './_transaction-guards.js';
+import { walletPassword } from './_secret.js';
 import { execute, loadSpendPolicy } from './_executor.js';
 export { preflightDeployment, loadSpendPolicy } from './_executor.js';
 export const ESCROW = Object.fromEntries(Object.entries(deployments).map(([n,d]) => [n,d.address]));
@@ -64,18 +66,15 @@ export function resolvePath(p) {
   return path.isAbsolute(s) ? s : path.resolve(here, s);
 }
 
-export async function loadWallet() {
+export async function loadWallet({ password } = {}) {
   const keystorePathRaw = process.env.VERDIKTA_KEYSTORE_PATH;
-  const password = process.env.VERDIKTA_WALLET_PASSWORD;
-  if (!keystorePathRaw || !password) {
-    throw new Error(
-      'Set VERDIKTA_KEYSTORE_PATH and VERDIKTA_WALLET_PASSWORD. ' +
-      'To import an existing wallet, run: node wallet_init.js --import'
-    );
+  if (!keystorePathRaw) {
+    throw new Error('Set VERDIKTA_KEYSTORE_PATH (node onboard.js writes it). To import an existing wallet, run: node wallet_init.js --import');
   }
   const keystorePath = resolvePath(keystorePathRaw);
   const json = await fs.readFile(keystorePath, 'utf-8');
-  return Wallet.fromEncryptedJson(json, password);
+  // The password comes from the environment (a secret store) or a terminal prompt; never from a file.
+  return Wallet.fromEncryptedJson(json, password ?? await walletPassword());
 }
 
 export function providerFor(network) {

@@ -2,10 +2,10 @@
 import './_env.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { arg, resolvePath, redactApiKey } from './_lib.js';
+import { arg, resolvePath, redactApiKey, getNetwork, reviewedApiOrigin } from './_lib.js';
 import { defaultSecretsDir, ensureDir } from './_paths.js';
 
-const baseUrl = process.env.VERDIKTA_BOUNTIES_BASE_URL || 'https://bounties.verdikta.org';
+const baseUrl = reviewedApiOrigin(getNetwork(), process.env.VERDIKTA_BOUNTIES_BASE_URL);
 
 const outPathRaw = arg('out', `${defaultSecretsDir()}/verdikta-bounties-bot.json`);
 const outPath = resolvePath(outPathRaw);

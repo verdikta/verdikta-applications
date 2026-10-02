@@ -19,10 +19,7 @@
 
 import './_env.js';
 import { ethers } from 'ethers';
-import {
-  getNetwork, providerFor, loadWallet,
-  escrowContract, preflightDeployment, arg, hasFlag, loadApiKey,
-} from './_lib.js';
+import { getNetwork, providerFor, loadWallet, escrowContract, preflightDeployment, arg, hasFlag, loadApiKey, reviewedApiOrigin } from './_lib.js';
 
 const jobId = arg('jobId');
 const minBufferMin = Number(arg('minBuffer', '30')); // minutes before deadline
@@ -36,11 +33,7 @@ if (!jobId) {
 // ---- Setup ----
 
 const network = getNetwork();
-const baseUrl = (process.env.VERDIKTA_BOUNTIES_BASE_URL || '').replace(/\/+$/, '');
-if (!baseUrl) {
-  console.error('VERDIKTA_BOUNTIES_BASE_URL not set. Run onboard.js first.');
-  process.exit(1);
-}
+const baseUrl = reviewedApiOrigin(network, process.env.VERDIKTA_BOUNTIES_BASE_URL);
 
 const provider = providerFor(network);
 const wallet = await loadWallet();

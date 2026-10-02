@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { isMain } from './_cli.js';
 import { Contract } from 'ethers';
 
-import { creationTerms, bindCreation, verifyTransaction, iface, deployments, abi, verifyCreatedBounty, verifySignedTransaction } from './_transaction-guards.js';
+import { creationTerms, bindCreation, verifyTransaction, iface, deployments, abi, verifyCreatedBounty, verifySignedTransaction, reviewedApiOrigin } from './_transaction-guards.js';
 import { validateRubric } from './rubric.cjs';
 import { applyWorkOrder } from './_work-order.js';
 
@@ -27,7 +27,7 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
   if ('threshold' in config.rubricJson) throw new Error('Threshold belongs outside rubricJson');
   const network = getNetwork(), provider = providerFor(network);
   try {
-    const baseUrl = configuredBaseUrl.replace(/\/+$/, '');
+    const baseUrl = configuredBaseUrl ? configuredBaseUrl.replace(/\/+$/, '') : reviewedApiOrigin(network);
     await preflightDeployment(network, provider, baseUrl);
     const policy = await loadSpendPolicy();
     if (terms.value > BigInt(policy.maxValueWei) || terms.value > BigInt(policy.maxTotalWei)) throw new Error('Reward exceeds owner cap');

@@ -3,17 +3,17 @@
 // Human involvement: choose network + owner/sweep addresses + fund wallet.
 // Everything else (env setup, wallet creation, waiting for funding, bot registration) is automated.
 
-import readline from 'node:readline/promises';
-import { stdin as input, stdout as output } from 'node:process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Wallet, formatEther } from 'ethers';
+import dotenv from 'dotenv';
 
 import './_env.js';
-import { providerFor, loadWallet, resolvePath, arg, hasFlag } from './_lib.js';
+import { providerFor, loadWallet, resolvePath, arg, hasFlag, reviewedApiOrigin } from './_lib.js';
 import { defaultSecretsDir, ensureDir } from './_paths.js';
+import { createPrompt, walletPassword, removeEnvKey, PASSWORD_ENV, PASSWORD_FILE_ENV } from './_secret.js';
 
 function envNum(name, def) {
   const v = process.env[name];
@@ -95,11 +95,12 @@ function isPrivateKey(s) {
   return /^[a-fA-F0-9]{64}$/.test(hex);
 }
 
-async function ensureWalletKeystore({ keystorePath, password, rl }) {
+async function ensureWalletKeystore({ keystorePath, password, prompt }) {
+  const rl = prompt?.rl;
   const abs = resolvePath(keystorePath);
   if (await fileExists(abs)) {
     try {
-      const wallet = await loadWallet();
+      const wallet = await loadWallet({ password });
       return { wallet, abs, created: false, imported: false };
     } catch (err) {
       // Password/keystore mismatch (common after re-onboarding or migration)
@@ -113,10 +114,10 @@ async function ensureWalletKeystore({ keystorePath, password, rl }) {
       const choice = (await rl.question('Choose [1]: ')).trim();
 
       if (!choice || choice === '1') {
-        const oldPw = (await rl.question('Enter password for existing keystore: ')).trim();
+        const oldPw = await prompt.hidden('Password for the existing keystore (not echoed): ');
         const rawJson = await fs.readFile(abs, 'utf8');
         const wallet = await Wallet.fromEncryptedJson(rawJson, oldPw);
-        // Re-encrypt with the current config password so everything stays consistent
+        // Re-encrypt with the password supplied for this run so later runs use one credential
         const reEncrypted = await wallet.encrypt(password);
         await fs.writeFile(abs, reEncrypted, { mode: 0o600 });
         await fs.chmod(abs, 0o600);
@@ -125,7 +126,7 @@ async function ensureWalletKeystore({ keystorePath, password, rl }) {
       }
 
       if (choice === '3') {
-        const key = (await rl.question('Paste private key (hex, with or without 0x): ')).trim();
+        const key = await prompt.hidden('Paste private key (hex, with or without 0x; not echoed): ');
         if (!isPrivateKey(key)) throw new Error('Invalid private key format (expected 64 hex chars).');
         const wallet = new Wallet(key.startsWith('0x') ? key : `0x${key}`);
         const json = await wallet.encrypt(password);
@@ -151,7 +152,7 @@ async function ensureWalletKeystore({ keystorePath, password, rl }) {
     const walletChoice = (await rl.question('Choose [1]: ')).trim();
 
     if (walletChoice === '2') {
-      const key = (await rl.question('Paste private key (hex, with or without 0x): ')).trim();
+      const key = await prompt.hidden('Paste private key (hex, with or without 0x; not echoed): ');
       if (!isPrivateKey(key)) throw new Error('Invalid private key format (expected 64 hex chars).');
       const wallet = new Wallet(key.startsWith('0x') ? key : `0x${key}`);
       const json = await wallet.encrypt(password);
@@ -166,9 +167,9 @@ async function ensureWalletKeystore({ keystorePath, password, rl }) {
       const srcAbs = resolvePath(srcPath);
       if (!(await fileExists(srcAbs))) throw new Error(`Keystore file not found: ${srcAbs}`);
       const srcJson = await fs.readFile(srcAbs, 'utf8');
-      const srcPw = (await rl.question('Password for the existing keystore: ')).trim();
+      const srcPw = await prompt.hidden('Password for the existing keystore (not echoed): ');
       const wallet = await Wallet.fromEncryptedJson(srcJson, srcPw);
-      // Re-encrypt with the skill's password so all scripts use a consistent credential
+      // Re-encrypt with the password supplied for this run so all scripts use one credential
       const reEncrypted = await wallet.encrypt(password);
       await fs.writeFile(abs, reEncrypted, { mode: 0o600 });
       await fs.chmod(abs, 0o600);
@@ -209,7 +210,8 @@ async function registerBot({ baseUrl, name, ownerAddress, description }) {
 }
 
 async function main() {
-  const rl = readline.createInterface({ input, output });
+  const prompt = createPrompt();
+  const rl = prompt.rl;
   try {
     const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
     const secretsDir = defaultSecretsDir();
@@ -236,6 +238,9 @@ async function main() {
 
     // Write target is always the stable path
     const envPath = stableEnvPath;
+
+    if (hasFlag('migrate-password')) return await migratePassword({ envPath, envText: stableEnvText, secretsDir, prompt });
+    if (localVars[PASSWORD_ENV]) console.log(`\nNote: ${localEnvPath} still holds ${PASSWORD_ENV}. It is ignored and not copied; delete that line yourself.`);
 
     console.log('Verdikta Bounties — one-command onboarding');
 
@@ -265,23 +270,13 @@ async function main() {
     }
     console.log(`→ ${network}`);
 
-    // 2) Bounties base URL — always derive from the chosen network.
-    // On a network switch the old URL would be wrong, so we re-derive.
-    const derivedBaseUrl = (network === 'base-sepolia'
-      ? 'https://bounties-testnet.verdikta.org'
-      : 'https://bounties.verdikta.org');
-
+    // 2) Bounties API origin: always the reviewed origin for the chosen network (deployments.json).
+    // The bot API key is never sent anywhere else, so a different URL left in an older .env is replaced.
+    const baseUrl = reviewedApiOrigin(network);
     const existingBaseUrl = (current.VERDIKTA_BOUNTIES_BASE_URL || process.env.VERDIKTA_BOUNTIES_BASE_URL || '').replace(/\/+$/, '');
     const networkChanged = priorNetwork && priorNetwork !== network;
-    let baseUrl = (!networkChanged && existingBaseUrl) ? existingBaseUrl : derivedBaseUrl;
-
-    if (!networkChanged && existingBaseUrl && existingBaseUrl !== derivedBaseUrl) {
-      // Existing URL doesn't match derived — ask if they want to keep it
-      const baseUrlAns = (await rl.question(`Bounties base URL [${baseUrl}]: `)).trim();
-      baseUrl = (baseUrlAns || baseUrl).replace(/\/+$/, '');
-    } else {
-      console.log(`Bounties URL: ${baseUrl}`);
-    }
+    if (existingBaseUrl && existingBaseUrl !== baseUrl) console.log(`Replacing Bounties URL ${existingBaseUrl} with the reviewed origin for ${network}.`);
+    console.log(`Bounties URL: ${baseUrl}`);
 
     // 3) Owner/sweep
     const ownerDefault = current.OFFBOT_ADDRESS && isAddress(current.OFFBOT_ADDRESS) ? current.OFFBOT_ADDRESS : '';
@@ -292,24 +287,23 @@ async function main() {
     if (!sweepAddress) sweepAddress = ownerDefault || ownerAddress;
     if (!isAddress(sweepAddress)) throw new Error('Invalid sweep address.');
 
-    // 4) Wallet password (stored in stable .env at ~/.config/verdikta-bounties/.env)
-    const pwDefault = current.VERDIKTA_WALLET_PASSWORD || process.env.VERDIKTA_WALLET_PASSWORD || '';
-    let password = pwDefault;
-    if (!password) {
-      password = (await rl.question('Choose VERDIKTA_WALLET_PASSWORD (will be saved locally): ')).trim();
-    }
-    if (!password) throw new Error('Missing VERDIKTA_WALLET_PASSWORD');
-
-    // 5) Keystore path default in secrets dir
+    // 4) Keystore path default in secrets dir
     const keystoreDefault = current.VERDIKTA_KEYSTORE_PATH || process.env.VERDIKTA_KEYSTORE_PATH || `${secretsDir}/verdikta-wallet.json`;
 
+    // 5) Wallet password: never written to disk. From VERDIKTA_WALLET_PASSWORD (a secret store) or typed here.
+    const keystoreExisted = await fileExists(resolvePath(keystoreDefault));
+    const password = await walletPassword({
+      prompt,
+      purpose: keystoreExisted ? 'unlock the existing bot wallet' : 'encrypt the new bot wallet',
+      confirm: !keystoreExisted,
+    });
+
     // Apply env patch (idempotent)
-    const patched = upsertEnv(currentEnvText, {
+    const patched = upsertEnv(removeEnvKey(currentEnvText, PASSWORD_ENV), {
       VERDIKTA_NETWORK: network,
       VERDIKTA_BOUNTIES_BASE_URL: baseUrl,
       VERDIKTA_SECRETS_DIR: secretsDir,
       VERDIKTA_KEYSTORE_PATH: keystoreDefault,
-      VERDIKTA_WALLET_PASSWORD: password,
       OFFBOT_ADDRESS: sweepAddress,
     });
     await fs.writeFile(envPath, patched, { mode: 0o600 });
@@ -323,7 +317,6 @@ async function main() {
     process.env.VERDIKTA_BOUNTIES_BASE_URL = baseUrl;
     process.env.VERDIKTA_SECRETS_DIR = secretsDir;
     process.env.VERDIKTA_KEYSTORE_PATH = keystoreDefault;
-    process.env.VERDIKTA_WALLET_PASSWORD = password;
 
     // 6) Wallet — reuse the same keystore regardless of network.
     // EVM addresses are network-agnostic; only the configuration and funding differ.
@@ -339,7 +332,7 @@ async function main() {
     const { wallet, abs: keystoreAbs, created, imported } = await ensureWalletKeystore({
       keystorePath: keystoreDefault,
       password,
-      rl,
+      prompt,
     });
 
     const statusLabel = imported ? ' (imported)' : created ? ' (created)' : '';
@@ -426,27 +419,68 @@ async function main() {
 
     console.log(`\n✅ Smoke test OK: can list jobs (OPEN jobs returned: ${count})`);
 
-    // 10) Optional: run the worker once as a final integration test (read-only: lists open jobs)
-    const runWorker = (await rl.question('\nRun bounty_worker_min.js now (lists open bounties, read-only)? (Y/n) ')).trim().toLowerCase();
-    if (!(runWorker === 'n' || runWorker === 'no')) {
-      const { spawn } = await import('node:child_process');
-      await new Promise((resolve, reject) => {
-        const p = spawn(process.execPath, [fileURLToPath(new URL('./bounty_worker_min.js', import.meta.url))], {
-          stdio: 'inherit',
-          env: { ...process.env, VERDIKTA_BOT_FILE: botOut }
-        });
-        p.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`bounty_worker_min.js exited with ${code}`)));
-      });
-      console.log('\n✅ Worker run complete.');
-    }
+    // 10) Optional read-only check, left to the operator: onboarding starts no child process.
+    console.log(`\nTo list open bounties (read-only): VERDIKTA_BOT_FILE=${botOut} node ${fileURLToPath(new URL('./bounty_worker_min.js', import.meta.url))}`);
 
     console.log('\nKeystore:');
     console.log(`- Path: ${keystoreAbs}`);
     console.log('- Private keys are never exported or printed. Keys are decrypted in-memory only when signing.');
+    console.log(`- The wallet password was not stored. For unattended runs, supply ${PASSWORD_ENV} from a secret store`);
+    console.log('  (OpenClaw: a SecretRef on skills.entries.verdikta-bounties-onboarding.apiKey; see references/onboarding.md#wallet-password).');
 
   } finally {
-    rl.close();
+    prompt.close();
   }
+}
+
+// Removes a pre-1.6.0 plaintext password from the stable .env, but only once it is safe: the stored password must
+// unlock the keystore, and the operator must hold it elsewhere (typed back or exported), or have it moved to a file
+// they named for a file SecretRef. Nothing is removed if either check fails.
+async function migratePassword({ envPath, envText, secretsDir, prompt }) {
+  const vars = dotenv.parse(envText); // the same parsing the scripts used when they still loaded it
+  const stored = vars[PASSWORD_ENV];
+  if (!stored) {
+    console.log(`${envPath} holds no ${PASSWORD_ENV}; nothing to migrate.`);
+    return;
+  }
+  const keystore = resolvePath(vars.VERDIKTA_KEYSTORE_PATH || `${secretsDir}/verdikta-wallet.json`);
+  const wallet = await Wallet.fromEncryptedJson(await fs.readFile(keystore, 'utf8'), stored).catch(() => null);
+  if (!wallet) throw new Error(`The password in ${envPath} does not unlock ${keystore}; nothing was changed.`);
+
+  const target = arg('to-file');
+  if (target) {
+    if (!target.startsWith('/') && !target.startsWith('~/')) throw new Error('--to-file needs an absolute path or ~/...');
+    const dest = path.resolve(resolvePath(target));
+    const skillDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    if (dest === path.resolve(envPath) || dest.startsWith(skillDir + path.sep)) throw new Error('Keep the password file outside the skill directory and separate from the .env');
+    if (await fileExists(dest)) {
+      if ((await fs.readFile(dest, 'utf8')).replace(/\r?\n$/, '') !== stored) throw new Error(`${dest} already exists with other content; choose another path`);
+    } else {
+      await ensureDir(path.dirname(dest));
+      await fs.writeFile(dest, stored, { mode: 0o600, flag: 'wx' });
+    }
+    await fs.chmod(dest, 0o600);
+    console.log(`Wrote the wallet password to ${dest} (mode 600).`);
+  } else {
+    const held = process.env[PASSWORD_ENV] || await walletPassword({ prompt, purpose: 'confirm you keep it elsewhere' });
+    if (held !== stored) throw new Error('That does not match the stored password; nothing was changed. Store it in your secret manager first, or use --to-file.');
+  }
+
+  let nextEnv = removeEnvKey(envText, PASSWORD_ENV).replace(/\s+$/, '') + os.EOL;
+  // A named file is also recorded as the scripts' password source; the path is not a secret.
+  if (target) nextEnv = upsertEnv(nextEnv, { [PASSWORD_FILE_ENV]: path.resolve(resolvePath(target)) });
+  await fs.writeFile(envPath, nextEnv, { mode: 0o600 });
+  await fs.chmod(envPath, 0o600);
+  console.log(`Removed ${PASSWORD_ENV} from ${envPath}. Wallet ${wallet.address} is unchanged.`);
+  if (target) console.log(`Recorded ${PASSWORD_FILE_ENV}=${path.resolve(resolvePath(target))} in ${envPath}; the scripts read the password from that file.`);
+  console.log(`\nFor OpenClaw runtimes that inject skill secrets (not Codex-harness shells), you can also bind ${PASSWORD_ENV}:`);
+  if (target) {
+    console.log(`  secrets.providers.verdikta_wallet = { source: "file", path: "${path.resolve(resolvePath(target))}", mode: "singleValue" }`);
+    console.log('  skills.entries.verdikta-bounties-onboarding.apiKey = { source: "file", provider: "verdikta_wallet", id: "value" }');
+  } else {
+    console.log('  skills.entries.verdikta-bounties-onboarding.apiKey = a SecretRef to your secret store (references/onboarding.md#wallet-password)');
+  }
+  console.log('Run `openclaw secrets audit --check` afterwards, and delete any backup copies of the old .env.');
 }
 
 main().catch((e) => {

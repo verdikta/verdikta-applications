@@ -13,13 +13,13 @@ Recommended practices:
 ## Key storage
 This skill uses an **encrypted JSON keystore** (ethers-compatible).
 
-- The encryption password should be provided via env var (e.g., `VERDIKTA_WALLET_PASSWORD`).
+- The keystore password is never stored by this skill. Scripts take `VERDIKTA_WALLET_PASSWORD` from the process environment, read the mode-600 file named by `VERDIKTA_WALLET_PASSWORD_FILE` if the operator sets one, or prompt without echo. They refuse to run while the stable `.env` still contains the password. See [wallet password](onboarding.md#wallet-password).
 - Never hardcode private keys.
 - No script in this skill exports or prints raw private keys. Private keys are decrypted in-memory only when signing transactions and are never written to stdout, logs, or files.
 - Do not decrypt keys outside the authorized executor to bypass a guard.
 
 ## Environment variable scoping
-- The skill's `_env.js` loader reads `~/.config/verdikta-bounties/.env` only. The stable path is outside the skill directory so it survives ClawHub updates and repo pulls.
+- The skill's `_env.js` loader reads `~/.config/verdikta-bounties/.env` only, for non-secret configuration; it never takes the wallet password from it. The stable path is outside the skill directory so it survives ClawHub updates and repo pulls.
 - Already-exported environment variables also work; `dotenv` does not overwrite them.
 - It does not read `.env` from the caller's working directory (CWD).
 - It intentionally ignores `scripts/.env`. Do not store credentials or endpoint overrides in the skill directory.

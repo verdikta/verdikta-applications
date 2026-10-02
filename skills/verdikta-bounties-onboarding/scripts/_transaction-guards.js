@@ -4,6 +4,15 @@ import abi from './bounty-escrow.abi.json' with { type: 'json' };
 import deployments from './deployments.json' with { type: 'json' };
 export { abi, deployments };
 export const iface = new Interface(abi);
+// The bot API key and bounty data go only to the API origin reviewed for each network in deployments.json.
+// An unset URL means that origin; any other URL is refused, so a changed .env cannot redirect the key.
+export function reviewedApiOrigin(network, configured) {
+  const docsUrl = deployments[network]?.docsUrl;
+  if (!docsUrl) throw new Error(`No reviewed API origin for network ${network}`);
+  const origin = docsUrl.replace(/\/api\/docs$/, '');
+  if (configured && configured.trim().replace(/\/+$/, '') !== origin) throw new Error(`Use the reviewed network API origin ${origin}; refusing ${configured}`);
+  return origin;
+}
 export const uint = (value, name, max = (1n << 256n) - 1n) => {
   if (!['string', 'number', 'bigint'].includes(typeof value) || (typeof value === 'number' && !Number.isSafeInteger(value))) throw new Error(`${name} must be an exact integer`);
   if (!/^(0|[1-9][0-9]*)$/.test(String(value))) throw new Error(`${name} must be an unsigned integer`);

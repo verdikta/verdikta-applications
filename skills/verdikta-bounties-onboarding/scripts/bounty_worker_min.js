@@ -13,6 +13,7 @@ export async function listOpenJobs({baseUrl, apiKey, fetchApi = globalThis.fetch
   return data.jobs || [];
 }
 if (isMain(import.meta.url)) {
-  const {loadApiKey} = await import('./_lib.js');
-  await listOpenJobs({baseUrl:process.env.VERDIKTA_BOUNTIES_BASE_URL, apiKey:await loadApiKey()});
+  const {loadApiKey, getNetwork, reviewedApiOrigin} = await import('./_lib.js');
+  const apiKey = await loadApiKey();
+  await listOpenJobs({baseUrl:reviewedApiOrigin(getNetwork(), process.env.VERDIKTA_BOUNTIES_BASE_URL), apiKey});
 }

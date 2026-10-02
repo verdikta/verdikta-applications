@@ -2,7 +2,10 @@
 //
 // Load order:
 //   1) already-exported process environment variables
-//   2) ~/.config/verdikta-bounties/.env — stable path, survives skill updates
+//   2) ~/.config/verdikta-bounties/.env — stable path, survives skill updates (configuration only)
+//
+// The wallet password is never read from this .env (see _secret.js for its sources). If the stable .env still holds VERDIKTA_WALLET_PASSWORD
+// (installations before 1.6.0), every script refuses to run until `node onboard.js --migrate-password` removes it.
 //
 // scripts/.env is intentionally ignored. Keeping credentials or endpoint
 // overrides in the skill directory broadens secret lookup scope and can be
@@ -23,7 +26,22 @@ const stableExists = fs.existsSync(stableEnvPath);
 const localExists = fs.existsSync(localEnvPath);
 
 if (stableExists) {
-  dotenv.config({ path: stableEnvPath });
+  const values = dotenv.parse(fs.readFileSync(stableEnvPath));
+  const migrating = process.argv.includes('--migrate-password') && path.basename(process.argv[1] || '') === 'onboard.js';
+  if ('VERDIKTA_WALLET_PASSWORD' in values && !migrating) {
+    console.error(
+      `\nRefusing to run: ${stableEnvPath} stores VERDIKTA_WALLET_PASSWORD in plaintext.\n` +
+      'Since 1.6.0 the wallet password is never kept on disk by this skill. Move it to a secret store, then run:\n' +
+      '  node onboard.js --migrate-password            (you keep the password elsewhere)\n' +
+      '  node onboard.js --migrate-password --to-file <path>   (for a file SecretRef outside this config)\n' +
+      'See references/migration-1.6.0.md.\n'
+    );
+    process.exit(1);
+  }
+  // Same precedence as dotenv: an exported variable wins. The password is never taken from the file.
+  for (const [key, value] of Object.entries(values)) {
+    if (key !== 'VERDIKTA_WALLET_PASSWORD' && process.env[key] === undefined) process.env[key] = value;
+  }
 }
 
 if (localExists) {

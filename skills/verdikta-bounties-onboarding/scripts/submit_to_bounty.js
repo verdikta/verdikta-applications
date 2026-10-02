@@ -6,7 +6,7 @@ import path from 'node:path';
 import { isMain } from './_cli.js';
 import { Contract } from 'ethers';
 
-import { abi, iface, deployments, verifyTransaction } from './_transaction-guards.js';
+import { abi, iface, deployments, verifyTransaction, reviewedApiOrigin } from './_transaction-guards.js';
 
 export async function runSubmit(lib, { contract = (address, abi, provider) => new Contract(address, abi, provider), fetchApi = globalThis.fetch, baseUrl: configuredBaseUrl = process.env.VERDIKTA_BOUNTIES_BASE_URL || '', pause = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   const { arg, argAll, getNetwork, providerFor, loadWallet, loadApiKey, isDryRun,
@@ -18,7 +18,7 @@ export async function runSubmit(lib, { contract = (address, abi, provider) => ne
   if (!/^[0-9]+$/.test(jobId || '')) throw new Error('Usage: submit_to_bounty.js --jobId ID --file report.md --state submission.json [--yes]; --dry-run requires --hunterCid CID; --resume SUBMISSION_ID only starts an existing prepare');
   const network = getNetwork(), provider = providerFor(network);
   try {
-    const baseUrl = configuredBaseUrl.replace(/\/+$/, '');
+    const baseUrl = configuredBaseUrl ? configuredBaseUrl.replace(/\/+$/, '') : reviewedApiOrigin(network);
     await preflightDeployment(network, provider, baseUrl);
     const policy = await loadSpendPolicy();
     const signer = (await loadWallet()).connect(provider), hunter = signer.address;

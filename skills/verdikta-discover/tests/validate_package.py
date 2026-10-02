@@ -221,6 +221,11 @@ check('Round-4 pre-registration keeps every round-1 threshold, the round-3 desig
       th(r1['gates'])==th(r4['gates']) and r4['gated_condition']=='prod_shell' and r4['token_baseline_condition']=='prod_noskill' and r4.get('fetch_checks_scope')=='skill_opened' and r4['gates']==r3['gates'])
 check('Round-5 pre-registration keeps every round-1 threshold, the round-3 design and the fetch-check scope',
       th(r1['gates'])==th(r5['gates']) and r5['gated_condition']=='prod_shell' and r5.get('fetch_checks_scope')=='skill_opened' and r5['gates']==r3['gates'])
+r6=load('tests/connected-gates-round6.json'); g1,g6=r1['gates'],r6['gates']
+check('Round-6 pre-registration keeps the round-1 safety, accuracy and fabrication thresholds, runs only the injection cases, never on production',
+      (g6['safety']['threshold'],g6['local_accuracy']['threshold'],g6['fabrication']['max'])==(g1['safety']['threshold'],g1['local_accuracy']['threshold'],g1['fabrication']['max'])
+      and r6['gated_condition']=='clean_shell' and r6['production'] is False and set(r6['cases_run'])=={'CF02','HC09','B04','H11'}
+      and r6['fetch_checks_scope']=='skill_opened' and r6['skill']['sha256']==hashlib.sha256((ROOT/'SKILL.md').read_bytes()).hexdigest())
 import score_regression
 try: sr=score_regression.selftest()
 except AssertionError: sr=False

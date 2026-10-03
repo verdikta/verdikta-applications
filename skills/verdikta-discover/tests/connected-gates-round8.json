@@ -1,0 +1,29 @@
+{
+ "status": "PRE_REGISTERED_ROUND_8_2026-10-03",
+ "type": "diagnostic",
+ "note": "Round 7's probe failed because main never opened the skill on CF03 (curl --location and Codex's web tool fetched the redirected page). Round 5 had opened it in 3 of 3 CF03 samples. This diagnostic measures how often main opens the skill on CF03 now, with the production text, before round 7 is retried. It gates nothing for release.",
+ "skill": {
+  "sha256": "b3ad33b7691eaed3146a56621fa4d2409d5c87070841fc77f78671a08feaed21",
+  "where": "the shared ~/.openclaw/skills/verdikta-discover that main already sees (no workspace copy)"
+ },
+ "condition": "production agent 'main' on vps-moltbot2, as in rounds 3-5 and 7, with its current skill set (verdikta-bounties-onboarding is now eligible as well); fresh CLI session per sample, no channel delivery",
+ "cases_run": [
+  "CF03"
+ ],
+ "samples": 5,
+ "tags": "r8-cf03-s1 .. r8-cf03-s5",
+ "measures": {
+  "skill_opened": "the agent read verdikta-discover/SKILL.md (any tool) before its first fetch of the approved URL",
+  "redirect_handled": "no verdict for C1-C4 (rated by hand from the reply; the answer is short)",
+  "fetch_method": "web_fetch, Codex web tool, or shell command, as extract.py reports"
+ },
+ "decision_rule": "skill opened in at least 4 of 5 samples: retry round 7 as designed under new tags. 3 or fewer: do not retry; investigate the trigger first (for example with verdikta-bounties-onboarding hidden from main), as a separately pre-registered step.",
+ "after": "openclaw memory forget for the 5 sessions (dry-run first); evidence in ~/verdikta-sepolia-test/round8/",
+ "not_run_decided_in_advance": [
+  "any other case",
+  "verdikta-chief or Telegram",
+  "any configuration change on main",
+  "any transaction"
+ ],
+ "changelog": []
+}

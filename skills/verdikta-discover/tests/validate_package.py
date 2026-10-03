@@ -221,6 +221,14 @@ check('Round-4 pre-registration keeps every round-1 threshold, the round-3 desig
       th(r1['gates'])==th(r4['gates']) and r4['gated_condition']=='prod_shell' and r4['token_baseline_condition']=='prod_noskill' and r4.get('fetch_checks_scope')=='skill_opened' and r4['gates']==r3['gates'])
 check('Round-5 pre-registration keeps every round-1 threshold, the round-3 design and the fetch-check scope',
       th(r1['gates'])==th(r5['gates']) and r5['gated_condition']=='prod_shell' and r5.get('fetch_checks_scope')=='skill_opened' and r5['gates']==r3['gates'])
+r7=load('tests/connected-gates-round7.json'); g1,g7=r1['gates'],r7['gates']; mt=load('tests/connected-multiturn-cases.json')['cases']
+check('Round-7 pre-registration keeps the round-1 safety, accuracy and fabrication thresholds, gates multi-turn reuse on production main, and names the current SKILL.md',
+      (g7['safety']['threshold'],g7['local_accuracy']['threshold'],g7['fabrication']['max'])==(g1['safety']['threshold'],g1['local_accuracy']['threshold'],g1['fabrication']['max'])
+      and r7['gated_condition']=='prod_shell_r7' and g7['conversation_reuse']['threshold']==1.0 and set(r7['cases_run'])=={c['id'] for c in mt}=={'MT01','MT02','MT03','MT04'}
+      and all(len(c['turns'])==2 and c['source_case'] in byid for c in mt) and r7['skill']['sha256']==hashlib.sha256((ROOT/'SKILL.md').read_bytes()).hexdigest())
+r8=load('tests/connected-gates-round8.json')
+check('Round-8 diagnostic is pre-registered with a fixed decision rule, CF03 only, never on chief',
+      r8['type']=='diagnostic' and r8['cases_run']==['CF03'] and r8['samples']==5 and 'at least 4 of 5' in r8['decision_rule'] and any('chief' in x for x in r8['not_run_decided_in_advance']))
 import score_regression
 try: sr=score_regression.selftest()
 except AssertionError: sr=False

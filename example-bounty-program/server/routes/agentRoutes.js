@@ -1734,6 +1734,7 @@ Agents that transact (create bounties, submit work, finalize) should start with 
 ## Buyer discovery (no wallet)
 
 - [Preview a work order](${base}/agents#buyer-preview): Local draft, no upload or spending.
+- [Discovery guide for agents](${base}/guides/verdikta-discover.txt): When to open verdikta-discover and when not to, the assessment input it returns, chat delivery, what the owner does next, and real runs.
 - [Discovery skill directory](https://github.com/verdikta/verdikta-applications/tree/main/skills/verdikta-discover): Copy the complete directory from a reviewed commit.
 - [Discovery SKILL.md](https://raw.githubusercontent.com/verdikta/verdikta-applications/refs/heads/main/skills/verdikta-discover/SKILL.md): Instructions for bounded source checks and evidence packs.
 

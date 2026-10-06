@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0.0",
+  "task_id": "fixture-review-001",
+  "fixture_only": true,
+  "data_classification": "PUBLIC_NON_SENSITIVE",
+  "artifact": {
+    "kind": "rubric",
+    "title": "Grading rubric for a technical explainer (synthetic fixture)",
+    "text": "Bounty: write a technical explainer on decentralized oracle networks. Acceptance threshold 75. No must-pass gates.\nC1 accuracy (weight 0.30): The explainer is technically accurate and contains no factual errors.\nC2 depth (weight 0.25): The explainer demonstrates deep understanding of the subject.\nC3 sources (weight 0.20): The explainer cites credible sources.\nC4 originality (weight 0.15): The content is original and not generic.\nC5 readability (weight 0.10): The writing is clear and well-structured.",
+    "as_of": "2026-10-06"
+  },
+  "items": [
+    {
+      "item_id": "R1",
+      "question": "Which criteria could a submission satisfy as written while defeating the bounty's intent? Quote each criterion you attack and propose a replacement.",
+      "type": "FINDING",
+      "wants_fix": true
+    },
+    {
+      "item_id": "R2",
+      "question": "Does any criterion depend on something the evaluator cannot check from the submission and the sources it cites? Quote it.",
+      "type": "FINDING",
+      "wants_fix": false
+    },
+    {
+      "item_id": "R3",
+      "question": "How well do the weights and the absence of must-pass gates serve the bounty's purpose? Rate 0-100.",
+      "type": "ASSESSMENT",
+      "wants_fix": false
+    }
+  ],
+  "limits": {
+    "max_findings_per_item": 3
+  }
+}

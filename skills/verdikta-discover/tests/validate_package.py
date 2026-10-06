@@ -107,7 +107,7 @@ check('All referenced skill documents exist',bool(refs) and all((ROOT/p).is_file
 docs=skill+''.join(p.read_text() for p in (ROOT/'references').glob('*.md'))
 named=set(re.findall(r'`((?:templates|examples|scripts|schemas)/[^`\s]+)`',docs))
 check('Every template, example, script or schema path the skill names exists',bool(named) and all((ROOT/p).is_file() for p in named))
-check('The skill names the preview bundle and every template file',all(f in docs for f in ['scripts/preview.bundle.mjs']+[f'templates/{t}' for t in ('source-check-v1.template.json','source-check-v1.rubric.json','evidence-pack-v1.template.json','evidence-pack-v1.rubric.json')]))
+check('The skill names the preview bundle and every template file',all(f in docs for f in ['scripts/preview.bundle.mjs']+[f'templates/{t}' for t in ('source-check-v1.template.json','source-check-v1.rubric.json','evidence-pack-v1.template.json','evidence-pack-v1.rubric.json','review-v1.template.json','review-v1.rubric.json','real-world-task-v1.template.json','real-world-task-v1.rubric.json')]))
 check('New skill has no dependency gate under documented metadata model','metadata' not in front)
 
 for kind in ['source-check-v1','evidence-pack-v1']:
@@ -133,6 +133,22 @@ for kind in ['source-check-v1','evidence-pack-v1']:
     bad=copy.deepcopy(res);bad[key][0]['evidence_ids']=['nonexistent-source']
     check(kind+': rejects unresolved evidence reference',not pair_valid(kind,req,bad,raw))
 
+for kind in ['review-v1','real-world-task-v1']:
+    rubric=load(f'templates/{kind}.rubric.json')
+    check(kind+': inspected rubric shape rules pass',rubric_valid(rubric))
+    check(kind+': scored weights sum to one',abs(sum(c['weight'] for c in rubric['criteria'] if not c['must'])-1)<1e-9)
+    check(kind+': threshold outside rubric','threshold' not in rubric)
+    req=load(f'examples/{kind}.request.json');res=load(f'examples/{kind}.result.json');raw=(ROOT/f'examples/{kind}.request.json').read_bytes()
+    check(kind+': request example validates',valid(kind+'.request',req))
+    check(kind+': result example validates and binds to the request bytes',valid(kind+'.result',res) and res['task_id']==req['task_id'] and res['input_sha256']==hashlib.sha256(raw).hexdigest() and res['fixture_only']==req['fixture_only'])
+    tpl=load(f'templates/{kind}.template.json')
+    check(kind+': template names its schemas, rubric, threshold and delivery note',tpl['template_id']==kind and tpl['rubric_file']==f'{kind}.rubric.json' and tpl['request_schema'].endswith(f'{kind}.request.schema.json') and tpl['result_schema'].endswith(f'{kind}.result.schema.json') and isinstance(tpl.get('recommended_threshold'),int) and bool(tpl.get('delivery_note')))
+rv=load('examples/review-v1.request.json');rr=load('examples/review-v1.result.json')
+check('Review example quotations are verbatim from the inline artifact',all(f['quote'] in rv['artifact']['text'] for i in rr['items'] for f in i['findings']))
+check('Review example answers every question exactly once',sorted(i['item_id'] for i in rr['items'])==sorted(i['item_id'] for i in rv['items']))
+tv=load('examples/real-world-task-v1.request.json');tr=load('examples/real-world-task-v1.result.json')
+check('Real-world example meets every evidence minimum and shows the token where required',all(len([e for e in tr['evidence'] if e['evidence_id']==i['evidence_id']])>=i['count_min'] and (not i['token_required'] or all(e['shows_token'] for e in tr['evidence'] if e['evidence_id']==i['evidence_id'])) for i in tv['evidence_spec']['items']))
+check('Source-bound templates carry version 1.1.0 and the source rule',all(load(f'templates/{k}.template.json')['template_version']=='1.1.0' and 'INDEPENDENT_PUBLIC_RETRIEVAL' in load(f'templates/{k}.template.json')['source_rule'] for k in ('source-check-v1','evidence-pack-v1')))
 req=load('examples/evidence-pack-v1.request.json')
 req['entities']=[{'entity_id':f'E{x}','name':f'Entity {x}'} for x in range(10)]
 req['fields']=[{'field_id':f'F{x}','definition':f'Field {x}','value_type':'string'} for x in range(10)]
@@ -227,20 +243,34 @@ check('Round-7 pre-registration keeps the round-1 safety, accuracy and fabricati
       and r7['gated_condition']=='prod_shell_r7' and g7['conversation_reuse']['threshold']==1.0 and set(r7['cases_run'])=={c['id'] for c in mt}=={'MT01','MT02','MT03','MT04'}
       and all(len(c['turns'])==2 and c['source_case'] in byid for c in mt) and r7['skill']['sha256']=='75244311d9a65683c28ce59df46398c112ae9989d61aa967a8ae0eeebd3529c0')
 r8=load('tests/connected-gates-round8.json')
+r11=load('tests/connected-gates-round11.json')
 check('Round-8 diagnostic is pre-registered with a fixed decision rule, CF03 only, never on chief',
       r8['type']=='diagnostic' and r8['cases_run']==['CF03'] and r8['samples']==5 and 'at least 4 of 5' in r8['decision_rule'] and any('chief' in x for x in r8['not_run_decided_in_advance']))
 r9=load('tests/connected-gates-round9.json')
-check('Round-9 pre-registration names the current SKILL.md, runs only MT01 and MT02 on production main, and keeps the round-1 safety threshold',
-      r9['skill']['sha256']==hashlib.sha256((ROOT/'SKILL.md').read_bytes()).hexdigest() and set(r9['cases_run'])=={'MT01','MT02'}
+check('Round-9 pre-registration names the SKILL.md it measured (the text before 1.1.0, recorded by round 11), runs only MT01 and MT02 on production main, and keeps the round-1 safety threshold',
+      r9['skill']['sha256']==r11['skill']['previous_sha256'] and set(r9['cases_run'])=={'MT01','MT02'}
       and r9['gated_condition']=='prod_shell_r9' and r9['gates']['safety']['threshold']==r1['gates']['safety']['threshold'])
 r10=load('tests/connected-gates-round10.json')
-check('Round-10 pre-registration measures the AGENTS.md pointer on main with the current SKILL.md, unscoped, CF03 and MT02 only',
-      r10['skill']['sha256']==hashlib.sha256((ROOT/'SKILL.md').read_bytes()).hexdigest() and set(r10['cases_run'])=={'CF03','MT02'}
+check('Round-10 pre-registration measures the AGENTS.md pointer on main with the SKILL.md it measured (the text before 1.1.0), unscoped, CF03 and MT02 only',
+      r10['skill']['sha256']==r11['skill']['previous_sha256'] and set(r10['cases_run'])=={'CF03','MT02'}
       and r10['gated_condition']=='prod_shell_r10' and r10['gates']['safety']['threshold']==1.0 and 'scope' not in r10)
 import score_regression
 try: sr=score_regression.selftest()
 except AssertionError: sr=False
 check('Regression scorer self-test: acceptable-label and expected-label-only counts are reported separately',sr)
+tcases=load('tests/templates-1.1-cases.json'); tids=[c['id'] for c in tcases['cases']]
+TEMPLATES={'source-check-v1','evidence-pack-v1','review-v1','real-world-task-v1'}
+check('Round-11 pre-registration pins the current SKILL.md, records the text rounds 9 and 10 measured, and is not run',
+      r11['skill']['sha256']==hashlib.sha256((ROOT/'SKILL.md').read_bytes()).hexdigest() and r11['skill']['previous_sha256']!=r11['skill']['sha256']
+      and r11['status'].endswith('NOT_RUN') and r11['cases_file']=='tests/templates-1.1-cases.json' and set(r11['templates'])==TEMPLATES)
+check('Round-11 keeps the round-1 safety and fabrication thresholds and runs every 1.1 case',
+      r11['gates']['safety']['threshold']==r1['gates']['safety']['threshold'] and r11['gates']['fabrication']['max']==r1['gates']['fabrication']['max'] and set(r11['cases_run'])==set(tids))
+check('Templates 1.1 cases: unique ids, NOT_RUN, valid expected decisions and templates, and every PREVIEW case names a template',
+      tcases['status']=='NOT_RUN' and len(tids)==len(set(tids)) and len(tids)==13
+      and all(c['expected_decision'] in {'PREVIEW','LOCAL','NEEDS_SCOPE','UNSUITABLE'} for c in tcases['cases'])
+      and all(c['expected_template'] is None or c['expected_template'] in TEMPLATES for c in tcases['cases'])
+      and all(c['expected_template'] is not None for c in tcases['cases'] if c['expected_decision']=='PREVIEW')
+      and all(c['expected_template'] is None for c in tcases['cases'] if c['expected_decision']=='UNSUITABLE'))
 report={'scope':'Local artifact/schema validation and documented metadata-gating simulation only. No native runtimes, LLM sessions, live API verification, blockchain calls, or adjudication tests.',
         'passed':sum(x['passed'] for x in checks),'failed':sum(not x['passed'] for x in checks),'checks':checks,
         'behavioral_cases_run':0,'behavioral_cases_authored':30,'native_loader_tests':'NOT_RUN',

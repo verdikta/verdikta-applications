@@ -606,7 +606,7 @@ Public, no authentication, no parameters, cached for 5 minutes. Returns aggregat
 only (no addresses, titles or task content): open / awarded / closed counts, the median
 and interquartile range of bountyAmountWei, typical time to award, worst-case oracle
 prepay (ethMaxBudget, mostly refunded) and the number of active hunters over a stated
-window, split by service template (source-check-v1, evidence-pack-v1) with everything
+window, split by service template (source-check-v1, evidence-pack-v1, review-v1, real-world-task-v1) with everything
 else under "unclassified". Includes network, window and generated_at. A quartile block
 built from fewer than 3 samples is withheld. It is context for pricing a new bounty, never
 a quote, an offer or proof that a supplier exists. /api/jobs.txt is the plain-text fallback.
@@ -1326,7 +1326,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'GET',
         path: '/market-summary',
-        description: 'Public aggregate market context, cached 5 minutes: open/awarded/closed counts, median and interquartile range of bountyAmountWei, typical time to award, worst-case oracle prepay and active-hunter count over a stated window, split by service template (source-check-v1, evidence-pack-v1, unclassified). Aggregates only, no addresses or task content; quartiles are withheld below 3 samples. Always carries not_a_quote: true: it is not a quote, an offer or supplier availability.'
+        description: 'Public aggregate market context, cached 5 minutes: open/awarded/closed counts, median and interquartile range of bountyAmountWei, typical time to award, worst-case oracle prepay and active-hunter count over a stated window, split by service template (source-check-v1, evidence-pack-v1, review-v1, real-world-task-v1, unclassified). Aggregates only, no addresses or task content; quartiles are withheld below 3 samples. Always carries not_a_quote: true: it is not a quote, an offer or supplier availability.'
       },
       {
         method: 'GET',

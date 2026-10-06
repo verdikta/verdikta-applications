@@ -1,0 +1,70 @@
+{
+  "schema_version": "1.0.0",
+  "task_id": "fixture-real-world-001",
+  "fixture_only": true,
+  "input_sha256": "29ca7e173e9c1e7d6337b28ad07402aa695e3068da05627b55ae5905d8f077af",
+  "performed": {
+    "start": "2026-10-09T10:05:00Z",
+    "end": "2026-10-09T10:25:00Z",
+    "location_note": "North side notice board, Fixture Plaza (fictional)."
+  },
+  "steps": [
+    {
+      "step_index": 1,
+      "status": "DONE",
+      "note": "Arrived 10:05 UTC; the board was accessible."
+    },
+    {
+      "step_index": 2,
+      "status": "DONE",
+      "note": "One photograph of the whole board with the token, then one of each of the two event notices posted."
+    },
+    {
+      "step_index": 3,
+      "status": "DONE",
+      "note": "Dates recorded in evidence.md: 12 October and 18 October."
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "E1",
+      "filename": "board-overview.jpg",
+      "type": "PHOTO",
+      "captured_at": "2026-10-09T10:08:00Z",
+      "description": "The whole board; the token VB-FIXTURE-7Q2K handwritten on paper, held at lower left.",
+      "shows_token": true
+    },
+    {
+      "evidence_id": "E2",
+      "filename": "notice-market-day.jpg",
+      "type": "PHOTO",
+      "captured_at": "2026-10-09T10:12:00Z",
+      "description": "Event notice: market day, 12 October.",
+      "shows_token": false
+    },
+    {
+      "evidence_id": "E2",
+      "filename": "notice-concert.jpg",
+      "type": "PHOTO",
+      "captured_at": "2026-10-09T10:14:00Z",
+      "description": "Event notice: open-air concert, 18 October.",
+      "shows_token": false
+    },
+    {
+      "evidence_id": "E3",
+      "filename": "attestation.md",
+      "type": "ATTESTATION",
+      "captured_at": "2026-10-09T10:25:00Z",
+      "description": "Statement of the visit.",
+      "shows_token": false
+    }
+  ],
+  "attestation": {
+    "statement": "I was at the north side notice board of Fixture Plaza on 9 October 2026 from 10:05 to 10:25 UTC, photographed the board and the two event notices posted, and removed or moved nothing. Synthetic example.",
+    "performer": "fixture-performer",
+    "signed_at": "2026-10-09T10:25:00Z"
+  },
+  "limitations": [
+    "Synthetic demonstration only: no place, visit or photograph exists."
+  ]
+}

@@ -3,7 +3,7 @@
 // environment or node-only imports, and hashing through @noble/hashes (already a dependency).
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
-import { preview, previewText } from './preview-core.mjs';
+import { preview, previewText, templates } from './preview-core.mjs';
 import { validateRequest } from './validation.mjs';
 
 export { previewText };
@@ -48,12 +48,14 @@ export function checkWorkOrderDraft(assessment) {
 
 /**
  * The evaluation description commits the exact request, so a supplier and the evaluator see the bytes the
- * owner approved. Only draft.request goes in: local findings and market context never do.
+ * owner approved. Only draft.request goes in: local findings and market context never do. The closing line is
+ * the template's delivery note (templates/<id>.template.json), so the supplier is told what to deliver.
  */
 export function composeEvaluationDescription({ baseDescription, draftSha256, templateId, request }) {
   const requestBytes = JSON.stringify(request);
   const requestDigest = sha256Hex(requestBytes);
-  const description = `${baseDescription}\n\nApproved work-order draft SHA-256: ${draftSha256}\nService: ${templateId}\nRequest bytes SHA-256 (result.input_sha256): ${requestDigest}\nRequest (exact UTF-8 JSON bytes, no trailing newline):\n${requestBytes}\nDeliver result.json and readable evidence.md. Documented UNRESOLVED results are valid; do not reward contradictions or fabricate cells.`;
+  const deliveryNote = templates[templateId]?.delivery_note ?? 'Deliver result.json and readable evidence.md.';
+  const description = `${baseDescription}\n\nApproved work-order draft SHA-256: ${draftSha256}\nService: ${templateId}\nRequest bytes SHA-256 (result.input_sha256): ${requestDigest}\nRequest (exact UTF-8 JSON bytes, no trailing newline):\n${requestBytes}\n${deliveryNote}`;
   if (description.length > MAX_DESCRIPTION_CHARS) throw new Error('Work-order instructions exceed the conservative description budget; reduce scope before commissioning');
   return { description, requestDigest };
 }

@@ -4,7 +4,7 @@ Read this only when the decision is a draft: `PREVIEW`, `HANDOFF_REQUESTED`, or 
 
 **Bound the task.** Name the exact item list, version/date scope, output schema, search limits, acceptance rubric and exclusions. An unresolved result is valid only with documented, honest effort against the agreed search plan. Never promise a desired finding.
 
-**Hybrid drafts.** The draft request holds only the residue (unresolved, conflicting, inaccessible or judgment items) under a new `task_id`, keeping the original approved sources. Record what you resolved in `local_summary` (see `preview-format.md`). Local findings are never independent verification and never part of the commissioned request. Never turn an unresolved, conflicting or inaccessible item into a verdict. If the owner asked for an independent review, the whole request goes out and any local pass is a labelled `NON_INDEPENDENT_PASS`.
+**Hybrid drafts** (source checks and evidence packs only; a review or a real-world task always goes out whole). The draft request holds only the residue (unresolved, conflicting, inaccessible or judgment items) under a new `task_id`, keeping the original approved sources. Record what you resolved in `local_summary` (see `preview-format.md`). Local findings are never independent verification and never part of the commissioned request. Never turn an unresolved, conflicting or inaccessible item into a verdict. If the owner asked for an independent review, the whole request goes out and any local pass is a labelled `NON_INDEPENDENT_PASS`.
 
 **Separate a draft from an offer.** A service template is not an available supplier. A bounty listing is a request for work, not proof that a provider can be hired. Never invent a supplier, quote, fee estimate, turnaround or live contract address. Without a verified supplier offer, set availability to `UNKNOWN` or `NONE`, leave monetary amounts null and label the result `DRAFT_NOT_QUOTED`.
 
@@ -12,9 +12,9 @@ Read this only when the decision is a draft: `PREVIEW`, `HANDOFF_REQUESTED`, or 
 
 **Write the assessment input.** One JSON object: `examples/assessment.json` shows a plain draft and `examples/assessment-hybrid.json` a hybrid with market context. Fields:
 
-- `request`: the bounded request in the template's schema (`schemas/source-check-v1.request.schema.json`, `schemas/evidence-pack-v1.request.schema.json`), usually the attached request with `fixture_only: false`. For a hybrid, only the open items, under a new `task_id`, keeping the approved sources.
+- `request`: the bounded request in the template's schema (`schemas/source-check-v1.request.schema.json`, `schemas/evidence-pack-v1.request.schema.json`, `schemas/review-v1.request.schema.json`, `schemas/real-world-task-v1.request.schema.json`), usually the attached request with `fixture_only: false`. For a hybrid, only the open items, under a new `task_id`, keeping the approved sources. For a review, the artifact (URL and/or inline text), its as-of date and the questions; for a real-world task, the steps, place, time window and evidence specification with a challenge token you invent for this request.
 - `sharing_authorized: true` only with explicit owner approval; `procurement_mode` (`OPEN` or `TARGETED`); `targetHunter` (TARGETED only).
-- `local_summary` for a hybrid or an informational own pass (fields in `preview-format.md`), `market_context` (fields in `api-read-only.md`), `network` (`BASE` or `BASE_SEPOLIA` when the owner selected one) and `task_summary`.
+- `local_summary` for a hybrid or an informational own pass (fields in `preview-format.md`; source checks and evidence packs only), `market_context` (fields in `api-read-only.md`), `network` (`BASE` or `BASE_SEPOLIA` when the owner selected one) and `task_summary`.
 - Optionally `handoff_requested`, `local_sufficient` and `unsuitable_reason`.
 
 These are your judgments; the script checks that they are consistent, not that they are true. Never write a `draft`, `rubric` or `threshold` yourself: they come from the templates.
@@ -25,7 +25,7 @@ These are your judgments; the script checks that they are consistent, not that t
 
 **Answer.** A short summary first: the decision line; fit; template; scope; needed owner inputs; acceptance criteria; supplier evidence or its absence; fee-estimate provenance or its absence; market context; privacy warning; next step. Then the fenced `json` block with the assessment input. A good answer may be that the owner should do the work locally.
 
-Files, all local: templates `templates/source-check-v1.template.json`, `templates/source-check-v1.rubric.json`, `templates/evidence-pack-v1.template.json` and `templates/evidence-pack-v1.rubric.json`; the preview contract `references/preview-format.md`; installation and host posture `references/install.md`.
+Files, all local: the templates and rubrics in `templates/` (`references/service-templates.md` lists them: `templates/source-check-v1.template.json`, `templates/source-check-v1.rubric.json`, `templates/evidence-pack-v1.template.json`, `templates/evidence-pack-v1.rubric.json`, `templates/review-v1.template.json`, `templates/review-v1.rubric.json`, `templates/real-world-task-v1.template.json`, `templates/real-world-task-v1.rubric.json`); the examples `examples/review-v1.request.json` and `examples/real-world-task-v1.request.json` beside the two source-bound ones; the preview contract `references/preview-format.md`; installation and host posture `references/install.md`.
 
 ## Handoff, not purchase
 

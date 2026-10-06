@@ -27,7 +27,7 @@ test('a valid draft is verified from its exact bytes and summarised', () => {
   const r = inspectDraftBytes(bytes);
   assert.equal(r.ok, true); assert.deepEqual(r.errors, []);
   assert.equal(r.sha256, createHash('sha256').update(bytes).digest('hex'));
-  assert.deepEqual(r.summary, { template_id: 'source-check-v1', template_label: 'Technical claim source check', task_id: 'import-test', items: 3, procurement: { mode: 'OPEN', targetHunter: null }, network: 'UNSELECTED', task_summary: 'Check three claims' });
+  assert.deepEqual(r.summary, { template_id: 'source-check-v1', template_label: 'Technical claim source check', task_id: 'import-test', items: 3, item_noun: 'claims', procurement: { mode: 'OPEN', targetHunter: null }, network: 'UNSELECTED', task_summary: 'Check three claims' });
 });
 
 test('the same bytes with different whitespace are a different draft', () => {

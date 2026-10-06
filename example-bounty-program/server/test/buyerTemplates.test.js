@@ -1,7 +1,7 @@
 const { validateRubric } = require('../utils/validation');
 const path = require('path');
 const root = path.resolve(__dirname, '../../../skills');
-for (const name of ['source-check-v1','evidence-pack-v1']) {
+for (const name of ['source-check-v1','evidence-pack-v1','review-v1','real-world-task-v1']) {
   test(`${name} template passes canonical rubric validation`, () => {
     const rubric = require(path.join(root, 'verdikta-discover/templates', `${name}.rubric.json`));
     expect(validateRubric(rubric)).toEqual({ valid: true, errors: [] });

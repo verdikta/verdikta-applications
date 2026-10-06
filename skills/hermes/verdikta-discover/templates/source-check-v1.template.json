@@ -1,6 +1,6 @@
 {
   "template_id": "source-check-v1",
-  "template_version": "1.0.0",
+  "template_version": "1.1.0",
   "status": "DRAFT_SERVICE_NOT_OFFER",
   "recommended_threshold": 85,
   "threshold_note": "Proposed pilot threshold; stored outside the rubric and calibrated before funded use. Not a measured performance guarantee.",
@@ -27,7 +27,9 @@
     "result.json",
     "evidence.md"
   ],
-  "source_authentication": "Compare to approved provided corpus, or independently retrieve public sources through a separately controlled verifier. Do not advertise source authentication if no such verifier exists.",
+  "delivery_note": "Deliver result.json and readable evidence.md. Documented UNRESOLVED results are valid; do not reward contradictions or fabricate cells.",
+  "source_rule": "PROVIDED_CORPUS: cite only the approved sources. INDEPENDENT_PUBLIC_RETRIEVAL: start from the approved sources, and cite any other public https source only as an independent retrieval, quoted verbatim with its locator, publisher and retrieval time, within the search budget.",
+  "source_authentication": "Compare to approved provided corpus, or independently retrieve public sources. The evaluator may open cited pages; a quoted excerpt with its locator and retrieval time is what makes a citation checkable. A hash alone is not authentication.",
   "must_pass_note": "must=true criteria have weight zero. Weighted criteria sum to 1.0. Schema validation is not proof that semantic gates will be adjudicated correctly.",
   "non_goals": [
     "guaranteed supplier",

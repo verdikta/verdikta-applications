@@ -21,6 +21,8 @@
       "enum": [
         "source-check-v1",
         "evidence-pack-v1",
+        "review-v1",
+        "real-world-task-v1",
         null
       ]
     },
@@ -198,7 +200,9 @@
             "template_id": {
               "enum": [
                 "source-check-v1",
-                "evidence-pack-v1"
+                "evidence-pack-v1",
+                "review-v1",
+                "real-world-task-v1"
               ]
             },
             "request": {
@@ -499,6 +503,8 @@
           "enum": [
             "source-check-v1",
             "evidence-pack-v1",
+            "review-v1",
+            "real-world-task-v1",
             "unclassified",
             "all"
           ]

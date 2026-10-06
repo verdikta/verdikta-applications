@@ -1,0 +1,8 @@
+Before we move our agent host from Node.js 22 to Node.js 24, I want an independent outside check of these four claims against the official Node.js release schedule, pinned here: https://raw.githubusercontent.com/nodejs/Release/72fdab20216c5f04e0a0fe72a225c2504e9f2b42/schedule.json
+
+C1. Node.js 22 (codename Jod) reaches end-of-life on 2027-04-30.
+C2. Node.js 22 entered maintenance LTS on 2025-10-21.
+C3. Node.js 24 (codename Krypton) stays in active LTS until 2027-04-30.
+C4. Node.js 26 is scheduled to become LTS on 2026-10-28.
+
+The claims and the link are public, and I approve sharing them with an outside reviewer. Target our known reviewer, 0xC4634d37DEdb0a779B81B938B412e948E5EB48b0, on the Base Sepolia testnet board. Draft the work order only: don't create, fund or sign anything. I'll review it and fund it myself.

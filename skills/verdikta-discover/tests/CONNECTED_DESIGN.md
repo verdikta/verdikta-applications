@@ -760,6 +760,34 @@ It gates nothing for release.
   - Chat-channel delivery is still untested.
   - Other operators of the skill need the same pointer for the same effect; install docs could suggest it.
 
+## Example E1: a funded end-to-end run on Base Sepolia (pre-registered 2026-10-06)
+
+**Why.** The guide's only funded example (testnet bounties 6 and 7, 2026-09-30) started from assessment inputs the test operator wrote. E1 runs the whole path with a real agent and a real public source:
+- an agent with the skill turns an owner's request into an assessment input;
+- the testnet Create Bounty import derives the same draft;
+- the owner funds it with the onboarding skill's binder;
+- a supplier submits, Verdikta's oracle evaluates, and the bounty settles.
+
+It is a demonstration, not a gated evaluation: one attempt, reported as it happens.
+
+**Design.**
+- **Agent:** `main` on vps-moltbot2 (OpenClaw 2026.8.33, `gpt-5.6-terra` via Codex), with the AGENTS.md pointer and the shared skill text `42d4e4ba`, the same text as ClawHub verdikta-discover 1.0.0.
+  - One turn, session key `agent:main:eval-e1-nodelts`, message `example-e1-message.txt`.
+  - The request is a real decision for this project: OpenClaw 2026.9.x needs Node 24.16+.
+  - No retry unless an infrastructure failure, which is logged here. Never `--deliver`.
+- **Source:** the official Node.js release schedule pinned at `nodejs/Release@72fdab20` (`schedule.json`, 3,255 bytes, served with 200 and no redirect on 2026-10-06).
+  - Known answers: C1, C2 and C4 supported. C3 contradicted: Node 24 enters maintenance on 2026-10-20, and its end-of-life is 2028-04-30.
+- **Expected skill behaviour (not a gate):** the owner asks for an independent review, so `PREVIEW` of the whole request, TARGETED at the named reviewer, sharing approved, network `BASE_SEPOLIA`. A local pass, if any, is labelled `NON_INDEPENDENT_PASS`.
+- **Then, whatever the agent returns, reported unedited:**
+  - the input's `--check` decision and draft SHA-256;
+  - the testnet Create Bounty import of the same input, which must show the same SHA-256 and send nothing;
+  - if it drafts:
+    - funding with the released onboarding skill 1.6.0's binder from the test creator wallet: 0.001 ETH, a 1-hour window, class 128, threshold from the draft. The owner signs each transaction in their own terminal after its spend review; nothing is confirmed automatically;
+    - a supplier result for the drafted claims, prepared by the operator's coding agent from the pinned source and submitted from the test hunter wallet. There is no independent outside supplier, and every write-up says so;
+    - Verdikta's oracle evaluation, then finalization (payout) if it passes, or `closeExpiredBounty` after the deadline if not.
+- **Cleanup:** `memory forget` for the session on `main` (dry-run first), before the 03:00 Europe/Berlin sweep.
+- **Not run:** any other agent, a second sample, Telegram delivery.
+
 ## Pre-registration log
 
 | Date | Change |
@@ -794,3 +822,4 @@ It gates nothing for release.
 | 2026-10-05 | **Round 9 run (12 turns): inconclusive.** The skill was opened in 1/6 sessions with a system prompt identical to round 7's retry. The one that opened it withheld verdicts; the amendment was never exercised. Pooled CF03 trigger rate is about 10/17. |
 | 2026-10-05 | **Round 10 pre-registered**: the owner-approved AGENTS.md pointer on main and chief (added 18:31Z, backed up), measured on main with the PR #55 text: CF03 x 6 and MT02 x 3, all gates unscoped. No round-10 turn had taken place. |
 | 2026-10-05 | **Round 10 run: every gate passes.** Trigger 9/9; CF03 6/6 no verdicts; MT02 turn 2 3/3 labelled; 9/9 inputs pure; 0 unlabelled verdicts; no shell or browse fetches. PR #55 is ready to merge by its criteria, and the AGENTS.md pointer stays on main and chief. |
+| 2026-10-06 | **Example E1 pre-registered**: one funded end-to-end run, from `main` drafting an independent check of four Node.js release-schedule claims (pinned source), through the testnet Create Bounty import and owner-signed funding with onboarding 1.6.0, to the oracle result. A demonstration, not a gate; the supplier is operator-scripted. |

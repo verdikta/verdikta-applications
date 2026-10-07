@@ -50,10 +50,12 @@ TEMPLATE_IDS = ("source-check-v1", "evidence-pack-v1", "review-v1", "real-world-
 
 
 def template_of(inp, info, text=None, expected_decision=None):
-    """The template a sample selected: from the returned input (its template_id or the shape of its request); for a case whose
-    expected decision is NEEDS_SCOPE, which by design returns no input, the template id named in the answer text."""
+    """The template a sample selected: from the returned input (its template_id or the shape of its request); for a sample that
+    returned no input (the agent decided NEEDS_SCOPE or UNSUITABLE), the template id named in the answer text. Round 11 read the
+    text only for cases whose expected decision is NEEDS_SCOPE; round 11b's unit ("returned input or answer") reads it for any
+    sample without an input (correction disclosed in connected-gates-round11b.json)."""
     if inp: return inp.get("template_id") or info.get("inferred_template")
-    if expected_decision == "NEEDS_SCOPE" and text:
+    if text:  # no input returned (NEEDS_SCOPE or UNSUITABLE by the agent's reading): the template id named in the answer text
         named = [t for t in TEMPLATE_IDS if t in text]
         return named[0] if len(named) == 1 else (named or [None])[0]
     return None

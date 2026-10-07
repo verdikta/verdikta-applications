@@ -104,6 +104,12 @@
       "date": "2026-10-07",
       "before_any_turn": false,
       "change": "Scorer change after the first counted turn, disclosed: score_round11.py skips gates the round's gates file does not pre-register and reads thresholds from the gates file only; this round has no source_mode gate (CO01 and CO02 are not re-run), which the scorer previously required. No threshold, case, label or message changed; the self-test still passes."
+    },
+    {
+      "date": "2026-10-07",
+      "before_any_turn": false,
+      "after_run": true,
+      "change": "Scorer correction after the run, disclosed: template_of read the template id from the answer text only for cases whose expected decision is NEEDS_SCOPE (round 11's correction). This round's template gate unit says 'returned input or answer', so the text is now read for every sample that returned no input. Effect here: the three CW01 answers that decided NEEDS_SCOPE and named real-world-task-v1 count as naming the template. No threshold, case, label or message changed."
     }
   ]
 }

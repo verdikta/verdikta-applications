@@ -315,7 +315,7 @@ check('Templates 1.1c cases: the 1.1b file with only the CW01 and CW05 prompts c
 check('Hermes round 3c pre-registration pins the regenerated Hermes copy, the unchanged extended pointer, round 3b as previous, the 1.1c cases, the trigger and no-delegation gates, and is not run',
       h3c['skill']['sha256']==r11e['skill']['hermes_copy_previous_sha256'] and h3c['pointer']['sha256']==hashlib.sha256(pointer_file.read_bytes()).hexdigest()
       and h3c['skill']['previous_sha256']==h3b['skill']['sha256'] and h3c['cases_file']=='tests/templates-1.1c-cases.json' and set(h3c['cases_run'])==set(tids_c)
-      and h3c['status'].endswith('NOT_RUN') and h3c['gates']['no_delegation']['max']==0 and h3c['gates']['trigger']['threshold']==0.9 and 'rater' in h3c['gates']['decision']['unit'])
+      and h3c['status'].startswith('PRE_REGISTERED_HERMES_ROUND_3C') and h3c['gates']['no_delegation']['max']==0 and h3c['gates']['trigger']['threshold']==0.9 and 'rater' in h3c['gates']['decision']['unit'])
 check('Hermes round 3c plan: 26 single-turn sessions, unique h3c tags, two of every 1.1c case, round 3\'s order',
       len(plan3c)==26 and len({x['tag'] for x in plan3c})==26 and all(x['tag'].startswith('h3c-') and len(x['turns'])==1 and x['turns'][0]==f"{x['case']}.txt" for x in plan3c)
       and all(sum(1 for x in plan3c if x['case']==c)==2 for c in tids_c) and [x['case'] for x in plan3c]==[x['case'] for x in plan3])

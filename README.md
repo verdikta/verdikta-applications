@@ -9,6 +9,9 @@ Verdikta coordinates work across repositories through the
 Humans and automated agents contributing here must read [AGENTS.md](AGENTS.md)
 and the canonical [backlog and issue workflow](https://github.com/verdikta/verdikta-docs/blob/main/docs/backlog-workflow.md)
 before creating, selecting, or changing work items.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines, including
+the bounty payment policy: bounties are paid only for work submitted through
+[bounties.verdikta.org](https://bounties.verdikta.org).
 
 ## 🔍 What is Verdikta?
 

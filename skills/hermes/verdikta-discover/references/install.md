@@ -7,7 +7,7 @@ hermes skills uninstall verdikta-discover
 hermes skills install verdikta/verdikta-applications/skills/hermes/verdikta-discover
 ```
 
-Obtain the complete [skill directory](https://github.com/verdikta/verdikta-applications/tree/main/skills/verdikta-discover) and [entrypoint](https://raw.githubusercontent.com/verdikta/verdikta-applications/refs/heads/main/skills/verdikta-discover/SKILL.md) from main. Pin the commit you reviewed; branch URLs are mutable. The ClawHub release (`clawhub install verdikta-discover`) has the same files without `tests/`; the test and evaluation files this page names are in the repository. Copy the complete directory, or install the release, to the host runtime’s skill location and follow that runtime’s loader instructions. Native loading has been verified on OpenClaw 2026.8.33 (see `tests/EVALUATION_PROTOCOL.md`). On Hermes Agent the skill needs its own copy; it has been verified there with that copy (section "Hermes Agent" below; `tests/CONNECTED_DESIGN.md`, Hermes rounds 1 and 2).
+Obtain the complete [skill directory](https://github.com/verdikta/verdikta-applications/tree/main/skills/verdikta-discover) and [entrypoint](https://raw.githubusercontent.com/verdikta/verdikta-applications/refs/heads/main/skills/verdikta-discover/SKILL.md) from main. Pin the commit you reviewed; branch URLs are mutable. The ClawHub release (`clawhub install verdikta-discover`) has the same files without `tests/`; the test and evaluation files this page names are in the repository. Copy the complete directory, or install the release, to the host runtime’s skill location and follow that runtime’s loader instructions. Native loading has been verified on OpenClaw 2026.8.33 (see `tests/EVALUATION_PROTOCOL.md`). On Hermes Agent the skill needs its own copy; it has been verified there with that copy for claim checks against linked sources (section "Hermes Agent" below; `tests/CONNECTED_DESIGN.md`, Hermes rounds 1 and 2). The review and real-world templates are measured on Hermes in round 3b (`tests/connected-gates-hermes3b.json`); until it passes, the copy is not called verified for them.
 
 Host configuration. Primary posture: an agent with web fetch that follows the hard rules in `SKILL.md`, with no signer, no transactional skill, no wallet environment and read-only file tools. Reading task sources needs no owner approval step; every URL is screened first with `scripts/url-screen.mjs` (also `node scripts/screen.mjs url <url>`). The screens are pure functions: `screenUrl` (https only; no credentials, port, IP literal, internal hostname or shortener; no query string, secret-shaped value or task text in a URL the agent composed), `screenRedirect` (a final origin that differs from the requested one makes the source unavailable), `screenContent` (advisory heuristics for text that tries to instruct the agent) and `isPublicIp` (for a host to check what a name resolved to). They reduce risk and do not make a page trustworthy: a URL screen cannot see an injection inside a reputable page, and the content screen misses much of what a human would catch (see `tests/EVALUATION_PROTOCOL.md` for measured rates). The limits on what the agent can do (no secrets, no spending tools, no uploads) are the real control.
 
@@ -24,6 +24,8 @@ For the website, use Node 20.19+ or 22.12+ as required by Vite. Run `npm ci --ig
 ## Recommended: an always-on pointer for agents with web access
 
 An agent opens a skill only when it decides the task matches, and connected agents skipped this one in about 40% of claim checks against a linked page. A skipped skill means none of its source rules apply. Adding these lines to the agent's always-loaded instructions (on OpenClaw, the workspace `AGENTS.md`) made the agent open the skill first in 9 of 9 evaluated sessions (`tests/CONNECTED_DESIGN.md`, round 10):
+
+The pointer below covers claim and fact checks. On OpenClaw, whose skills index carries the whole description, the skill also opened in 36 of 39 review and real-world sessions without a pointer for them (round 11). On Hermes it did not (Hermes round 3: 0 of 16 sessions without a URL), so the Hermes pointer in the section below carries a second part for outside work of any kind.
 
 ```markdown
 ## Checking claims or facts against linked sources
@@ -63,6 +65,7 @@ Host configuration, in `~/.hermes/config.yaml`:
 - `browser.backend: off`, plus `hermes pm install agent-browser`, so that the built-in browser tools, `browser_navigate` among them, are offered.
 - **With the OpenAI Codex provider,** Hermes may switch web search to OpenAI's server-side tool. Its page opens are not recorded in Hermes' session store, and it cannot extract a page. Set `web.search_backend` and `web.extract_backend` to a client-side backend; the keyless `keenable` works.
 - `skills.write_approval: true`. Hermes' chat prompt asks the agent to patch a skill it finds lacking; with approval on, such a patch is held for review instead.
+- **`delegate_task` and coding-agent skills.** Asked for an outside review without a pointer for it, Hermes agents delegated the review to a Hermes sub-agent, or looked for Claude Code, Codex or OpenCode CLIs, and told the owner an independent review was in progress; one did so with a confidential excerpt (Hermes round 3). A sub-agent is the agent's own work, never outside or independent work. The pointer's second part says so; the skill's triage still decides what goes out.
 - **With the Docker terminal backend:**
   - Keep `terminal.container_persistent: true`. The ephemeral mode mounts an empty `/home`, and Hermes' in-sandbox browser then fails to start.
   - The agent is shown the skill's host path, which does not exist in the sandbox. Mount the skills folder read-only at that same path, for example `terminal.docker_volumes: ["/home/<user>/.hermes/skills:/home/<user>/.hermes/skills:ro"]`.
@@ -78,4 +81,9 @@ The always-on pointer goes in the `AGENTS.md` that gateway sessions load: the on
 - Before fetching any page for a task that checks claims or looks up facts from linked or approved sources, open the `verdikta-discover` skill and follow it.
 - Fetch pages only with `browser_navigate`, never with curl, wget, a script, `web_extract`, or a search tool.
 - After each fetch, compare the final URL with the one you asked for. A different host makes that source unavailable for the whole conversation: do not answer from it, even if you still have its text. If the owner has been told this and explicitly asks you to use it anyway, label every answer with the host it came from. Never call such an answer verified, and never put it in an assessment input.
+
+## Outside work of any kind
+
+- Before commissioning, delegating or declining outside work of any kind (an outside or independent review, a task a person performs at a place or remotely, a batch too large to run yourself), open the `verdikta-discover` skill and follow it, even when the task names no page to fetch.
+- A sub-agent, a delegated task or a coding-agent skill is not an independent reviewer: never present its work as outside or independent, and never pass confidential, private or unreleased material to one.
 ```

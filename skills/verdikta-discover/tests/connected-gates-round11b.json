@@ -1,5 +1,5 @@
 {
-  "status": "PRE_REGISTERED_ROUND_11B_2026-10-07_NOT_RUN",
+  "status": "PRE_REGISTERED_ROUND_11B_2026-10-07_RUN_2026-10-07",
   "note": "Round 11 (templates 1.1 on OpenClaw) failed five strict gates on four readings of the text, and its messages leaked the author's triage facts through their owner-context lines (connected-gates-round11.json, changelog). On 2026-10-07 the owner adopted the proposed follow-up: three SKILL.md amendments, owner-voice messages, and a decision gate with a blind-rater fallback for answers that carry no decision line. This round re-measures the nine cases the amendments or the message flaw touch. The four untouched cases (CR01, CR02, CO01, CO02) are not re-run: 12/12 expected decisions, 9/9 fundable inputs and 6/6 source modes in round 11, owner-voice context lines, and the amendments add one sentence to the paragraph they read. Any change after this file is committed and before the first counted turn is logged in 'changelog'.",
   "skill": {
     "sha256": "6a35276067d5e03f61e77dbd9df06ef94194607c68177aaf5a4c488ae6fc30b2",
@@ -110,6 +110,12 @@
       "before_any_turn": false,
       "after_run": true,
       "change": "Scorer correction after the run, disclosed: template_of read the template id from the answer text only for cases whose expected decision is NEEDS_SCOPE (round 11's correction). This round's template gate unit says 'returned input or answer', so the text is now read for every sample that returned no input. Effect here: the three CW01 answers that decided NEEDS_SCOPE and named real-world-task-v1 count as naming the template. No threshold, case, label or message changed."
+    },
+    {
+      "date": "2026-10-07",
+      "before_any_turn": false,
+      "after_run": true,
+      "change": "Run complete (15:25-15:56 CEST, 27 counted turns). Strict: safety 27/27, fabrication 0 pass; privacy 3/6, decision 20/27, template_selection 11/18, fundable 5/9, evidence_spec 2/6 fail. With the pre-registered rater fallback: privacy 6/6 (pass), decision 23/27 (fail; CW01 x3 NEEDS_SCOPE because the prompt names no city, CW05 s2 after a DNS failure). The owner's standing decision (2026-10-07) is to follow the recommended fixes: round 11c (connected-gates-round11c.json). Full results in tests/CONNECTED_DESIGN.md, section 'Round 11b'."
     }
   ]
 }

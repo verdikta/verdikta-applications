@@ -1,0 +1,16 @@
+{
+  "fixture_only": true,
+  "_note": "Shape example for ~/.config/verdikta-bounties/commission-defaults.json, the operator-reviewed terms approve_work_order.js adds to every approved work order. Copy it, remove fixture_only, set the class and a jury of real models from GET /api/classes/:classId/models, and keep the oracle settings at or below the live ceiling.",
+  "classId": 128,
+  "juryNodes": [
+    { "provider": "placeholder", "model": "placeholder-model", "runs": 1, "weight": 1 }
+  ],
+  "oracle": {
+    "maxOracleFee": "100000000000000",
+    "alpha": 500,
+    "estimatedBaseCost": "0",
+    "maxFeeBasedScaling": 1
+  },
+  "creatorAssessmentWindowSeconds": 0,
+  "workProductType": "research"
+}

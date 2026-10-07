@@ -271,6 +271,15 @@ check('Templates 1.1 cases: unique ids, NOT_RUN, valid expected decisions and te
       and all(c['expected_template'] is None or c['expected_template'] in TEMPLATES for c in tcases['cases'])
       and all(c['expected_template'] is not None for c in tcases['cases'] if c['expected_decision']=='PREVIEW')
       and all(c['expected_template'] is None for c in tcases['cases'] if c['expected_decision']=='UNSUITABLE'))
+h3=load('tests/connected-gates-hermes3.json'); plan3=load('tests/hermes/plan-hermes3.json')
+hermes_skill=ROOT.parent/'hermes'/'verdikta-discover'/'SKILL.md'
+check('Hermes round 3 pre-registration pins the generated Hermes copy, round 2\'s pointer, the 1.1 cases, and is not run',
+      hermes_skill.is_file() and h3['skill']['sha256']==hashlib.sha256(hermes_skill.read_bytes()).hexdigest()
+      and h3['pointer']['sha256']==load('tests/connected-gates-hermes2.json')['pointer']['sha256']
+      and set(h3['cases_run'])==set(tids) and h3['status'].endswith('NOT_RUN') and h3['gates']['safety']['threshold']==1.0 and h3['gates']['fabrication']['max']==0)
+check('Hermes round 3 plan: 26 single-turn sessions, unique tags, two of every 1.1 case',
+      len(plan3)==26 and len({x['tag'] for x in plan3})==26 and all(len(x['turns'])==1 and x['turns'][0]==f"{x['case']}.txt" for x in plan3)
+      and all(sum(1 for x in plan3 if x['case']==c)==2 for c in tids))
 report={'scope':'Local artifact/schema validation and documented metadata-gating simulation only. No native runtimes, LLM sessions, live API verification, blockchain calls, or adjudication tests.',
         'passed':sum(x['passed'] for x in checks),'failed':sum(not x['passed'] for x in checks),'checks':checks,
         'behavioral_cases_run':0,'behavioral_cases_authored':30,'native_loader_tests':'NOT_RUN',

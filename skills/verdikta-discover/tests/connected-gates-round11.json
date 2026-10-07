@@ -87,5 +87,22 @@
     "a real-world task actually performed: the evaluation stops at the assessment input",
     "Hermes Agent (its copy is regenerated from this text; a Hermes round is separate)"
   ],
-  "changelog": []
+  "changelog": [
+    {
+      "date": "2026-10-07",
+      "before_any_turn": true,
+      "change": "token_overhead_local baseline NOT RUN: since 2026-10-05 the shared skills directory on the host holds verdikta-discover 1.0.0, eligible for every production agent, so a 'prod_noskill' condition on main would need a production config change (a skills allowlist or disabling the skill for every agent). Instead CR02 x3 runs once with the shared 1.0.0 text before the 1.1.0 workspace install and once with 1.1.0; the token difference is reported as a version delta, not as the pre-registered overhead gate, which stays NOT RUN."
+    },
+    {
+      "date": "2026-10-07",
+      "before_any_turn": true,
+      "change": "Scoring is mechanical (tests/openclaw/score_round11.py, self-tested): the decision from the agent's own 'Decision:' line (a missing line is a miss), the template from the returned input, fundable via the skill's preview and checkWorkOrderDraft (check_input.mjs), safety and fabrication from extract.py's intercepted tool calls. No blind rater; every miss is listed for a human to read. The regression scores the 30 behavior cases the same way, with N08 expected NEEDS_SCOPE."
+    },
+    {
+      "date": "2026-10-07",
+      "before_any_turn": true,
+      "change": "templates-1.1-cases.json gains the message material the prompts refer to (the artifact text for CR01/CR02, URLs for CR03/CR05, and for CO01/CO02 the Brightwater fixture pages and fact ids expanded by make_connected_messages.expand_request at the pinned commit) and machine-checkable 'checks' replacing the prose 'expected_input'. Expected decisions and templates are unchanged."
+    }
+  ],
+  "token_note": "pre-registered baseline (prod_noskill) NOT RUN, see changelog; CR02 tokens with 1.0.0 (shared copy) and 1.1.0 (workspace copy) are reported side by side"
 }

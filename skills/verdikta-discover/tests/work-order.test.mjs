@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { preview } from '../scripts/preview-core.mjs';
-import { sha256Hex, sameJson, checkWorkOrderDraft, composeEvaluationDescription, MAX_DESCRIPTION_CHARS, isAssessmentInput, previewText } from '../scripts/work-order.mjs';
+import { sha256Hex, sameJson, checkWorkOrderDraft, composeEvaluationDescription, parseWorkOrderDescription, FULFILMENT_GUIDE_URL, resultSchemaUrl, MAX_DESCRIPTION_CHARS, isAssessmentInput, previewText } from '../scripts/work-order.mjs';
 
 const root = new URL('../', import.meta.url);
 const json = async name => JSON.parse(await readFile(new URL(name, root), 'utf8'));
@@ -31,7 +31,12 @@ test('the composed description keeps the exact format the binder has always prod
   const { description, requestDigest } = composeEvaluationDescription({ baseDescription: 'Owner text', draftSha256: sha, templateId: 'source-check-v1', request });
   const bytes = JSON.stringify(request);
   assert.equal(requestDigest, createHash('sha256').update(bytes).digest('hex'));
-  assert.equal(description, `Owner text\n\nApproved work-order draft SHA-256: ${sha}\nService: source-check-v1\nRequest bytes SHA-256 (result.input_sha256): ${requestDigest}\nRequest (exact UTF-8 JSON bytes, no trailing newline):\n${bytes}\nDeliver result.json and readable evidence.md. Documented UNRESOLVED results are valid; do not reward contradictions or fabricate cells.`);
+  assert.equal(description, `Owner text\n\nApproved work-order draft SHA-256: ${sha}\nService: source-check-v1\nRequest bytes SHA-256 (result.input_sha256): ${requestDigest}\nRequest (exact UTF-8 JSON bytes, no trailing newline):\n${bytes}\nHow to deliver: ${FULFILMENT_GUIDE_URL} ; result.json must validate against ${resultSchemaUrl('source-check-v1')} and carry the request bytes SHA-256 above as input_sha256.\nDeliver result.json and readable evidence.md. Documented UNRESOLVED results are valid; do not reward contradictions or fabricate cells.`);
+  const parsed = parseWorkOrderDescription(description);
+  assert.deepEqual(parsed.errors, []); assert.equal(parsed.templateId, 'source-check-v1'); assert.deepEqual(parsed.request, request); assert.equal(parsed.requestDigest, requestDigest); assert.equal(parsed.draftSha256, sha);
+  assert.equal(parseWorkOrderDescription('Plain bounty text with no work order'), null);
+  const corrupted = description.replace(bytes, bytes.replace('"C1"', '"C9"'));
+  assert.ok(parseWorkOrderDescription(corrupted).errors.some(e => /hash/.test(e)));
 });
 
 test('the description budget is enforced', () => {

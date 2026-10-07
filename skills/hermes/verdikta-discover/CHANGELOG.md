@@ -9,6 +9,7 @@ Two new service templates and a wider source rule. A draft made with 1.0.x does 
 - `source-check-v1` and `evidence-pack-v1` are now 1.1.0: in `INDEPENDENT_PUBLIC_RETRIEVAL` mode a result may cite public `https` sources beyond the approved list, each as an independent retrieval quoted verbatim with its locator, publisher and retrieval time; `PROVIDED_CORPUS` is unchanged. Their rubrics say so.
 - The composed evaluation description ends with the template's delivery note. The market summary, the Create Bounty import and the Agents-page preview know the new ids. `local_summary` stays specific to source checks and evidence packs.
 - SKILL.md triage: judgment and physical-world work are no longer unsuitable in themselves; items 6 and 7 route them to the new templates. Private, confidential or regulated inputs stay unsuitable.
+- For hunters: `references/fulfilment.md` explains how to deliver a work-order bounty; `scripts/check-result.bundle.mjs` (Node only) validates a `result.json` against the request a bounty description commits to; the composed description now carries a line pointing at both, and `work-order.mjs` exports `parseWorkOrderDescription`. The onboarding skill runs the check before uploading.
 
 ## 1.0.1 (2026-10-06)
 

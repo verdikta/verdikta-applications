@@ -1,0 +1,43 @@
+{
+  "template_id": "review-v1",
+  "template_version": "1.0.0",
+  "status": "DRAFT_SERVICE_NOT_OFFER",
+  "recommended_threshold": 80,
+  "threshold_note": "Proposed pilot threshold; stored outside the rubric and calibrated before funded use. Not a measured performance guarantee.",
+  "request_schema": "../schemas/review-v1.request.schema.json",
+  "result_schema": "../schemas/review-v1.result.schema.json",
+  "rubric_file": "review-v1.rubric.json",
+  "scope_limit": {
+    "items": 15,
+    "inline_artifact_chars": 2500,
+    "findings_per_item": 10
+  },
+  "default_privacy": "public_non_sensitive_only",
+  "execution_preference": "targeted_after_supplier_agreement",
+  "supplier_status": "UNKNOWN",
+  "price": null,
+  "turnaround": null,
+  "required_owner_decisions": [
+    "the artifact (public URL, inline text or both) and its version or as-of date",
+    "the review questions, and whether fixes are wanted",
+    "whether the reviewer must be independent of the author",
+    "sharing/publishing permission",
+    "actual supplier and quote",
+    "network, reward and maximum all-in spend at transaction handoff"
+  ],
+  "delivery": [
+    "result.json",
+    "evidence.md"
+  ],
+  "delivery_note": "Deliver result.json and a readable evidence.md. Quote the artifact verbatim with a locator for every finding. A reasoned NO_ISSUE earns full credit; the number of findings is not rewarded.",
+  "evidence_rule": "Every finding quotes the artifact verbatim with a locator (line, section, heading or page). The evaluator may open the artifact URL and read attachments; quotations make the review checkable without doing so.",
+  "must_pass_note": "must=true criteria have weight zero. Weighted criteria sum to 1.0. Schema validation is not proof that semantic gates will be adjudicated correctly.",
+  "non_goals": [
+    "guaranteed supplier",
+    "guaranteed quote",
+    "review of private or confidential material",
+    "agreement with the owner's own view",
+    "automatic purchase",
+    "contract modification"
+  ]
+}

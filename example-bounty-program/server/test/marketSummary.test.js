@@ -35,6 +35,8 @@ describe('classifyService', () => {
   test('needs all three lines the onboarding composer writes', () => {
     expect(ms.classifyService(WORK_ORDER('source-check-v1'))).toBe('source-check-v1');
     expect(ms.classifyService(WORK_ORDER('evidence-pack-v1'))).toBe('evidence-pack-v1');
+    expect(ms.classifyService(WORK_ORDER('review-v1'))).toBe('review-v1');
+    expect(ms.classifyService(WORK_ORDER('real-world-task-v1'))).toBe('real-world-task-v1');
     expect(ms.classifyService('Service: source-check-v1')).toBe('unclassified');
     expect(ms.classifyService(WORK_ORDER('source-check-v1').replace(/^Approved.*\n/m, ''))).toBe('unclassified');
     expect(ms.classifyService(WORK_ORDER('source-check-v1').replace(/^Request bytes.*\n/m, ''))).toBe('unclassified');
@@ -127,7 +129,7 @@ describe('buildMarketSummary', () => {
     const empty = ms.buildMarketSummary([], { now: NOW });
     expect(empty.all).toMatchObject({ open: 0, awarded: 0, closed_unawarded: 0, sample_size: 0 });
     expect(empty.hunters.active_in_window).toBe(0);
-    expect(Object.keys(empty.by_service)).toEqual(['source-check-v1', 'evidence-pack-v1', 'unclassified']);
+    expect(Object.keys(empty.by_service)).toEqual(['source-check-v1', 'evidence-pack-v1', 'review-v1', 'real-world-task-v1', 'unclassified']);
   });
 });
 

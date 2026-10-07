@@ -19,6 +19,8 @@ A useful next action is to finish the bounded work specification or obtain a rea
 
 ## Hybrid outcome: `local_summary`
 
+Source checks and evidence packs only. A review (`review-v1`) or a real-world task (`real-world-task-v1`) has no hybrid form: the whole request is drafted, and a `local_summary` on one is sent back as `NEEDS_SCOPE`.
+
 When the agent resolves part of a request itself and drafts outside work only for the rest, the decision stays `PREVIEW` and the assessment carries an optional top-level `local_summary` beside `draft` (never inside it). State it on the decision line: `Decision: PREVIEW (hybrid: 6 resolved locally, 4 drafted)`.
 
 - `mode: "RESIDUAL"`: resolved items are removed. The draft `request` holds exactly the `residual` items, under a new `task_id`, keeping the original approved sources. `resolved + residual` must equal `original_item_count`. For an evidence pack whose residue is not a rectangle, draft the smallest entity x field grid containing it and list the already-resolved cells inside it in `grid_overlap`.

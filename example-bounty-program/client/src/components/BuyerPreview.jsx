@@ -2,10 +2,14 @@ import { useState } from 'react';
 import { preview, previewText } from '../../../../skills/verdikta-discover/scripts/preview-core.mjs';
 import claims from '../../../../skills/verdikta-discover/examples/source-check-v1.request.json';
 import pack from '../../../../skills/verdikta-discover/examples/evidence-pack-v1.request.json';
+import review from '../../../../skills/verdikta-discover/examples/review-v1.request.json';
+import task from '../../../../skills/verdikta-discover/examples/real-world-task-v1.request.json';
 import { workOrderInputKind } from '../utils/buyerPreviewInput.js';
 import { pastedJsonText } from '../utils/pastedJson.js';
 import { Link } from 'react-router-dom';
 import './BuyerPreview.css';
+
+const EXAMPLES = { 'source-check-v1': claims, 'evidence-pack-v1': pack, 'review-v1': review, 'real-world-task-v1': task };
 
 export default function BuyerPreview() {
   const [kind, setKind] = useState('source-check-v1');
@@ -34,8 +38,9 @@ export default function BuyerPreview() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   return <section className="agents-section buyer-preview" id="buyer-preview">
-    <h2>Need outside help for a bounded digital task?</h2>
-    <p>Preview a work order for up to 20 technical claims or 50 entity-field evidence cells.
+    <h2>Need outside help for a bounded task?</h2>
+    <p>Preview a work order for up to 20 technical claims, 50 entity-field evidence cells, a 15-question review of a public artifact,
+      or a real-world task performed by a person at a place with an evidence pack.
       No wallet, API key, upload or spending is required. This form runs locally in your browser.</p>
     <p>Verdikta provides independently evaluated settlement. Commissioning later requires a real supplier agreement,
       explicit funding authorization and a separate transaction review. Supplier availability, price and delivery time are unknown.</p>
@@ -43,10 +48,12 @@ export default function BuyerPreview() {
       which derives and checks the draft with the same code. If you paste it below, the preview offers to take it there.</p>
     <form onSubmit={assess}>
       <label>Service template <select value={kind} onChange={e => {
-        setKind(e.target.value); setText(JSON.stringify(e.target.value === 'source-check-v1' ? claims : pack, null, 2)); setAssessment(null);
+        setKind(e.target.value); setText(JSON.stringify(EXAMPLES[e.target.value], null, 2)); setAssessment(null);
       }}>
         <option value="source-check-v1">Technical Claim Source Check</option>
         <option value="evidence-pack-v1">Bounded Evidence Pack</option>
+        <option value="review-v1">Review of a Public Artifact</option>
+        <option value="real-world-task-v1">Real-World Task with an Evidence Pack</option>
       </select></label>
       <label>Supplier selection <select value={mode} onChange={e => { setMode(e.target.value); setAssessment(null); }}>
         <option value="UNSELECTED">Choose participation</option>

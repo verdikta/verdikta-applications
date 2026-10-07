@@ -1038,7 +1038,7 @@ function CreateBounty({ walletState }) {
               {imported && (
                 <div className="work-order-summary" aria-live="polite">
                   <p>
-                    <strong>Imported draft</strong>: {imported.summary.template_label}, {imported.summary.items} {imported.draft.template_id === 'source-check-v1' ? 'claims' : 'cells'}, task <code>{imported.summary.task_id}</code>.{' '}
+                    <strong>Imported draft</strong>: {imported.summary.template_label}, {imported.summary.items} {imported.summary.item_noun}, task <code>{imported.summary.task_id}</code>.{' '}
                     {imported.draft.procurement.mode === 'TARGETED' ? <>Targeted at <code>{imported.draft.procurement.targetHunter}</code>.</> : 'Open to all submitters.'}
                   </p>
                   <p>Draft SHA-256: <code data-testid="draft-sha256">{imported.sha256}</code></p>

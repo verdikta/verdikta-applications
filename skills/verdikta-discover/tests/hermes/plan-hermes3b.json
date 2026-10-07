@@ -1,0 +1,184 @@
+[
+ {
+  "tag": "h3b-cr01-s1",
+  "case": "CR01",
+  "turns": [
+   "CR01.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cw01-s1",
+  "case": "CW01",
+  "turns": [
+   "CW01.txt"
+  ]
+ },
+ {
+  "tag": "h3b-co01-s1",
+  "case": "CO01",
+  "turns": [
+   "CO01.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cr02-s1",
+  "case": "CR02",
+  "turns": [
+   "CR02.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cw02-s1",
+  "case": "CW02",
+  "turns": [
+   "CW02.txt"
+  ]
+ },
+ {
+  "tag": "h3b-co02-s1",
+  "case": "CO02",
+  "turns": [
+   "CO02.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cr03-s1",
+  "case": "CR03",
+  "turns": [
+   "CR03.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cw03-s1",
+  "case": "CW03",
+  "turns": [
+   "CW03.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cn01-s1",
+  "case": "CN01",
+  "turns": [
+   "CN01.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cr04-s1",
+  "case": "CR04",
+  "turns": [
+   "CR04.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cw04-s1",
+  "case": "CW04",
+  "turns": [
+   "CW04.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cr05-s1",
+  "case": "CR05",
+  "turns": [
+   "CR05.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cw05-s1",
+  "case": "CW05",
+  "turns": [
+   "CW05.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cr01-s2",
+  "case": "CR01",
+  "turns": [
+   "CR01.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cw01-s2",
+  "case": "CW01",
+  "turns": [
+   "CW01.txt"
+  ]
+ },
+ {
+  "tag": "h3b-co01-s2",
+  "case": "CO01",
+  "turns": [
+   "CO01.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cr02-s2",
+  "case": "CR02",
+  "turns": [
+   "CR02.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cw02-s2",
+  "case": "CW02",
+  "turns": [
+   "CW02.txt"
+  ]
+ },
+ {
+  "tag": "h3b-co02-s2",
+  "case": "CO02",
+  "turns": [
+   "CO02.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cr03-s2",
+  "case": "CR03",
+  "turns": [
+   "CR03.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cw03-s2",
+  "case": "CW03",
+  "turns": [
+   "CW03.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cn01-s2",
+  "case": "CN01",
+  "turns": [
+   "CN01.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cr04-s2",
+  "case": "CR04",
+  "turns": [
+   "CR04.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cw04-s2",
+  "case": "CW04",
+  "turns": [
+   "CW04.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cr05-s2",
+  "case": "CR05",
+  "turns": [
+   "CR05.txt"
+  ]
+ },
+ {
+  "tag": "h3b-cw05-s2",
+  "case": "CW05",
+  "turns": [
+   "CW05.txt"
+  ]
+ }
+]

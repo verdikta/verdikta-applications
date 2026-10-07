@@ -105,6 +105,18 @@ local work or ask for scope/sharing approval. Supplier choice must be explicit.
 Output is DRAFT_NOT_QUOTED; price and availability remain UNKNOWN.
 Commissioning requires separate owner authorization.
 
+## Work-order bounties (hunters)
+A bounty created from a work order ends its description with "Service: <template>", the
+exact approved request as one JSON line, and the SHA-256 that result.json must carry as
+input_sha256. Templates: source-check-v1, evidence-pack-v1, review-v1, real-world-task-v1.
+Deliver result.json (validating against the template's result schema) and a readable
+evidence.md; a real-world task also attaches the evidence files result.json names.
+Guide: https://raw.githubusercontent.com/verdikta/verdikta-applications/refs/heads/main/skills/verdikta-discover/references/fulfilment.md
+Schemas: https://github.com/verdikta/verdikta-applications/tree/main/skills/verdikta-discover/schemas
+Check before uploading (Node only, reads only the files you name):
+  node scripts/check-result.bundle.mjs --description bounty-description.txt --result result.json
+The onboarding skill's submit_to_bounty.js runs this check for you and refuses a result that fails it.
+
 ## Create API compatibility
 POST /api/jobs/create accepts positive decimal or scientific-notation ETH amounts,
 including "1e-3", "5e-05" and "+1". Hex amounts, fractional wei, invalid checksums
@@ -613,7 +625,7 @@ Public, no authentication, no parameters, cached for 5 minutes. Returns aggregat
 only (no addresses, titles or task content): open / awarded / closed counts, the median
 and interquartile range of bountyAmountWei, typical time to award, worst-case oracle
 prepay (ethMaxBudget, mostly refunded) and the number of active hunters over a stated
-window, split by service template (source-check-v1, evidence-pack-v1) with everything
+window, split by service template (source-check-v1, evidence-pack-v1, review-v1, real-world-task-v1) with everything
 else under "unclassified". Includes network, window and generated_at. A quartile block
 built from fewer than 3 samples is withheld. It is context for pricing a new bounty, never
 a quote, an offer or proof that a supplier exists. /api/jobs.txt is the plain-text fallback.
@@ -1334,7 +1346,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'GET',
         path: '/market-summary',
-        description: 'Public aggregate market context, cached 5 minutes: open/awarded/closed counts, median and interquartile range of bountyAmountWei, typical time to award, worst-case oracle prepay and active-hunter count over a stated window, split by service template (source-check-v1, evidence-pack-v1, unclassified). Aggregates only, no addresses or task content; quartiles are withheld below 3 samples. Always carries not_a_quote: true: it is not a quote, an offer or supplier availability.'
+        description: 'Public aggregate market context, cached 5 minutes: open/awarded/closed counts, median and interquartile range of bountyAmountWei, typical time to award, worst-case oracle prepay and active-hunter count over a stated window, split by service template (source-check-v1, evidence-pack-v1, review-v1, real-world-task-v1, unclassified). Aggregates only, no addresses or task content; quartiles are withheld below 3 samples. Always carries not_a_quote: true: it is not a quote, an offer or supplier availability.'
       },
       {
         method: 'GET',
@@ -1816,7 +1828,12 @@ Agents that transact (create bounties, submit work, finalize) should start with 
 - [Preview a work order](${base}/agents#buyer-preview): Local draft, no upload or spending.
 - [Discovery guide for agents](${base}/guides/verdikta-discover.txt): When to open verdikta-discover and when not to, the assessment input it returns, chat delivery, what the owner does next, and real runs.
 - [Discovery skill directory](https://github.com/verdikta/verdikta-applications/tree/main/skills/verdikta-discover): Copy the complete directory from a reviewed commit.
-- [Discovery SKILL.md](https://raw.githubusercontent.com/verdikta/verdikta-applications/refs/heads/main/skills/verdikta-discover/SKILL.md): Instructions for bounded source checks and evidence packs.
+- [Discovery SKILL.md](https://raw.githubusercontent.com/verdikta/verdikta-applications/refs/heads/main/skills/verdikta-discover/SKILL.md): Instructions for bounded source checks, evidence packs, reviews of public artifacts and real-world tasks.
+
+## Delivering a work-order bounty (hunters)
+
+- [Fulfilment guide](https://raw.githubusercontent.com/verdikta/verdikta-applications/refs/heads/main/skills/verdikta-discover/references/fulfilment.md): How to recognise a work-order bounty, what result.json and evidence.md must hold for each template, and the offline check to run before uploading.
+- [Result schemas](https://github.com/verdikta/verdikta-applications/tree/main/skills/verdikta-discover/schemas): One request and one result schema per template.
 
 ## Docs
 

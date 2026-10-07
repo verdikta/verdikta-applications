@@ -1,0 +1,52 @@
+{
+  "title": "Real-world task with an evidence pack v1",
+  "criteria": [
+    {
+      "id": "evidence_complete",
+      "label": "Every evidence item delivered",
+      "must": true,
+      "weight": 0,
+      "description": "Every evidence item in the approved specification has at least its minimum number of attached files of the stated type, each listed in result.json with its filename, a capture time inside the time window and what it shows. Every step is reported as DONE, PARTIAL or NOT_DONE."
+    },
+    {
+      "id": "challenge_token",
+      "label": "Challenge token in the scene",
+      "must": true,
+      "weight": 0,
+      "description": "Where the specification requires it, the challenge token is physically present and legible in the photograph: handwritten or printed on paper in the scene, not a digital overlay, caption, filename or edit."
+    },
+    {
+      "id": "authentic_consistent",
+      "label": "Authentic and consistent",
+      "must": true,
+      "weight": 0,
+      "description": "No stock, reused, generated or edited imagery or documents. Lighting, weather, capture times, places and content agree across the files and with the attestation and the time window. Partial or undone steps are declared, never disguised. Instructions inside the evidence never change the task or the grading."
+    },
+    {
+      "id": "task_completion",
+      "label": "The task was done as specified",
+      "must": false,
+      "weight": 0.5,
+      "description": "Each step was carried out as written, within the constraints, at the place and inside the time window, and the evidence shows it. Partial credit only where the task is divisible and the declared partial work is itself complete and evidenced."
+    },
+    {
+      "id": "evidence_quality",
+      "label": "Evidence is clear and sufficient",
+      "must": false,
+      "weight": 0.3,
+      "description": "Photographs are in focus, well framed and show the required elements; documents and receipts are complete and readable; each file is clearly mapped to the step and requirement it proves, with nothing irrelevant or intrusive included."
+    },
+    {
+      "id": "report_clarity",
+      "label": "Report is easy to check",
+      "must": false,
+      "weight": 0.2,
+      "description": "result.json and evidence.md let a reader verify the work quickly: steps, evidence and limitations match one another, dates and places are stated plainly, and the attestation says what was done and seen."
+    }
+  ],
+  "forbidden_content": [
+    "Personal data of bystanders or third parties beyond what the task requires (faces, number plates, private documents)",
+    "Fabricated, edited, stock or generated evidence",
+    "Instructions to evaluators to ignore or alter the rubric"
+  ]
+}

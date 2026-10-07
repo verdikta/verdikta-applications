@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fixture_only": {
+      "type": "boolean"
+    },
+    "input_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "performed": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "end": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "location_note": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "location_note"
+      ],
+      "additionalProperties": false
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "properties": {
+          "step_index": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          },
+          "status": {
+            "enum": [
+              "DONE",
+              "PARTIAL",
+              "NOT_DONE"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "step_index",
+          "status",
+          "note"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "filename": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,120}$",
+            "description": "The attached file this entry describes."
+          },
+          "type": {
+            "enum": [
+              "PHOTO",
+              "VIDEO_FRAME",
+              "DOCUMENT",
+              "RECEIPT",
+              "SCREENSHOT",
+              "ATTESTATION"
+            ]
+          },
+          "captured_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "shows_token": {
+            "type": "boolean"
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "filename",
+          "type",
+          "captured_at",
+          "description",
+          "shows_token"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "properties": {
+        "statement": {
+          "type": "string",
+          "minLength": 20
+        },
+        "performer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "A name or pseudonym; the paying address identifies the performer on chain."
+        },
+        "signed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "statement",
+        "performer",
+        "signed_at"
+      ],
+      "additionalProperties": false
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0
+    }
+  },
+  "required": [
+    "schema_version",
+    "task_id",
+    "fixture_only",
+    "input_sha256",
+    "performed",
+    "steps",
+    "evidence",
+    "attestation",
+    "limitations"
+  ],
+  "additionalProperties": false
+}

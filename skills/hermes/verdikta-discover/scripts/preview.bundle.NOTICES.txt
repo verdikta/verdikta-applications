@@ -1,4 +1,4 @@
-Third-party software bundled into preview.bundle.mjs
+Third-party software bundled into preview.bundle.mjs and check-result.bundle.mjs
 
 @noble/hashes@1.8.0 (MIT)
 

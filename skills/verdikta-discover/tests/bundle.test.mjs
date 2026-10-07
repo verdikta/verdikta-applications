@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { preview, previewText, checkSummary, templates } from '../scripts/preview-core.mjs';
-import { build, BUNDLE, NOTICES } from '../scripts/build-bundle.mjs';
+import { build, BUNDLE, CHECK_BUNDLE, NOTICES } from '../scripts/build-bundle.mjs';
+import { composeEvaluationDescription } from '../scripts/work-order.mjs';
 
 const root = new URL('../', import.meta.url);
 const json = async name => JSON.parse(await readFile(new URL(name, root), 'utf8'));
@@ -17,14 +18,17 @@ const TARGET = '0x52908400098527886E0F7030069857D2E4169EE7';
 test('the committed bundle and notices equal a fresh build (run `npm run bundle` after changing the preview code)', async () => {
   const fresh = await build();
   assert.equal(await readFile(BUNDLE, 'utf8'), fresh.bundle);
+  assert.equal(await readFile(CHECK_BUNDLE, 'utf8'), fresh.checkBundle);
   assert.equal(await readFile(NOTICES, 'utf8'), fresh.notices);
 });
 
-test('the bundle imports nothing but Node built-ins', async () => {
-  const text = await readFile(BUNDLE, 'utf8');
-  const imports = [...text.matchAll(/^import .* from ["']([^"']+)["'];?$/gm)].map(m => m[1]);
-  assert.ok(imports.length > 0);
-  assert.deepEqual(imports.filter(s => !s.startsWith('node:')), []);
+test('the bundles import nothing but Node built-ins', async () => {
+  for (const file of [BUNDLE, CHECK_BUNDLE]) {
+    const text = await readFile(file, 'utf8');
+    const imports = [...text.matchAll(/^import .* from ["']([^"']+)["'];?$/gm)].map(m => m[1]);
+    assert.ok(imports.length > 0);
+    assert.deepEqual(imports.filter(s => !s.startsWith('node:')), [], file);
+  }
 });
 
 test('alone in an empty directory, the bundle gives what preview() gives, from a file and from standard input', async () => {
@@ -85,4 +89,42 @@ test('previewText is exactly what the CLI prints, and checkSummary reports what 
   assert.equal(JSON.stringify(s).includes('rubric'), false, 'no draft fields leak into the summary');
   const none = checkSummary(preview({ ...input, sharing_authorized: undefined }), () => 'HASH');
   assert.equal(none.decision, 'NEEDS_SCOPE'); assert.equal(none.draft_sha256, null); assert.deepEqual(none.drafted_items, []); assert.ok(none.inputs_needed.includes('Obtain sharing approval'));
+});
+
+test('alone in an empty directory, the check bundle validates a result against the description the composer wrote, and against a request file', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'verdikta-check-'));
+  try {
+    const cli = join(dir, 'check-result.bundle.mjs');
+    await copyFile(CHECK_BUNDLE, cli);
+    for (const kind of ['source-check-v1', 'evidence-pack-v1', 'review-v1', 'real-world-task-v1']) {
+      const requestText = await readFile(new URL(`examples/${kind}.request.json`, root), 'utf8');
+      const result = await json(`examples/${kind}.result.json`);
+      const requestFile = join(dir, `${kind}.request.json`), resultFile = join(dir, `${kind}.result.json`);
+      await writeFile(requestFile, requestText); await writeFile(resultFile, JSON.stringify(result));
+      // --request: the digest is that of the file's exact bytes; the example results carry it. Fixtures need --allow-fixture.
+      const byRequest = spawnSync(process.execPath, [cli, '--request', requestFile, '--result', resultFile, '--allow-fixture'], { cwd: dir, encoding: 'utf8' });
+      assert.equal(byRequest.status, 0, `${kind}: ${byRequest.stdout} ${byRequest.stderr}`);
+      assert.deepEqual(JSON.parse(byRequest.stdout).errors, []);
+      const production = spawnSync(process.execPath, [cli, '--request', requestFile, '--result', resultFile], { cwd: dir, encoding: 'utf8' });
+      assert.equal(production.status, 1, `${kind}: a fixture is refused for production`);
+      // --description: a real-shaped request committed by the composer; the result must carry the digest of the committed line.
+      const request = { ...JSON.parse(requestText), fixture_only: false, task_id: `${kind}-real` };
+      const { description, requestDigest } = composeEvaluationDescription({ baseDescription: 'Owner text', draftSha256: 'a'.repeat(64), templateId: kind, request });
+      const descriptionFile = join(dir, `${kind}.description.txt`), realResult = join(dir, `${kind}.real.json`);
+      await writeFile(descriptionFile, description);
+      // A real result cannot cite synthetic fixtures: the examples' sources become buyer-provided corpus entries.
+      const realised = { ...result, fixture_only: false, task_id: request.task_id, input_sha256: requestDigest, ...(result.sources ? { sources: result.sources.map(s => ({ ...s, provenance: 'BUYER_PROVIDED' })) } : {}) };
+      await writeFile(realResult, JSON.stringify(realised));
+      const byDescription = spawnSync(process.execPath, [cli, '--description', descriptionFile, '--result', realResult], { cwd: dir, encoding: 'utf8' });
+      assert.equal(byDescription.status, 0, `${kind}: ${byDescription.stdout} ${byDescription.stderr}`);
+      const parsed = JSON.parse(byDescription.stdout);
+      assert.equal(parsed.ok, true); assert.equal(parsed.template_id, kind); assert.equal(parsed.input_sha256, requestDigest);
+      const stale = spawnSync(process.execPath, [cli, '--description', descriptionFile, '--result', resultFile, '--allow-fixture'], { cwd: dir, encoding: 'utf8' });
+      assert.equal(stale.status, 1, `${kind}: a result for another request (wrong task_id and digest) is refused`);
+    }
+    const noOrder = join(dir, 'plain.txt'); await writeFile(noOrder, 'A plain bounty with no work order.');
+    const none = spawnSync(process.execPath, [cli, '--description', noOrder, '--result', join(dir, 'review-v1.result.json')], { cwd: dir, encoding: 'utf8' });
+    assert.equal(none.status, 1); assert.match(JSON.parse(none.stdout).errors[0], /no work order/);
+    assert.equal(spawnSync(process.execPath, [cli], { cwd: dir, encoding: 'utf8' }).status, 1, 'usage error');
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

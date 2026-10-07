@@ -9,7 +9,8 @@ import { preview } from '../../../../skills/verdikta-discover/scripts/preview-co
 import { validatePreview, requestItemIds } from '../../../../skills/verdikta-discover/scripts/validation.mjs';
 
 export const MAX_DRAFT_BYTES = 256 * 1024;
-const TEMPLATE_LABEL = { 'source-check-v1': 'Technical claim source check', 'evidence-pack-v1': 'Bounded evidence pack' };
+const TEMPLATE_LABEL = { 'source-check-v1': 'Technical claim source check', 'evidence-pack-v1': 'Bounded evidence pack', 'review-v1': 'Bounded review of a public artifact', 'real-world-task-v1': 'Real-world task with an evidence pack' };
+const ITEM_NOUN = { 'source-check-v1': 'claims', 'evidence-pack-v1': 'cells', 'review-v1': 'review items', 'real-world-task-v1': 'steps' };
 const SITE_NETWORK = { base: 'BASE', 'base-sepolia': 'BASE_SEPOLIA' };
 const MISMATCH = 'Stored draft does not match a fresh scoped preview';
 
@@ -47,7 +48,7 @@ export function inspectDraftBytes(bytes) {
   result.assessment = assessment; result.draft = draft;
   result.summary = {
     template_id: draft.template_id, template_label: TEMPLATE_LABEL[draft.template_id] ?? draft.template_id, task_id: draft.request.task_id,
-    items: requestItemIds(draft.template_id, draft.request).length, procurement: draft.procurement, network: assessment.network ?? 'UNSELECTED',
+    items: requestItemIds(draft.template_id, draft.request).length, item_noun: ITEM_NOUN[draft.template_id] ?? 'items', procurement: draft.procurement, network: assessment.network ?? 'UNSELECTED',
     task_summary: typeof assessment.task_summary === 'string' ? assessment.task_summary : '',
   };
   // Local findings and market context are shown for the owner's information only. They are not part of the
@@ -70,7 +71,7 @@ export function draftToFormPatch(imported) {
       forbiddenContent: draft.rubric.forbidden_content ?? [],
     },
     targetHunter: draft.procurement.mode === 'TARGETED' ? draft.procurement.targetHunter : '',
-    suggestedTitle: `${summary.template_label}: ${summary.items} ${draft.template_id === 'source-check-v1' ? 'claims' : 'cells'}`,
+    suggestedTitle: `${summary.template_label}: ${summary.items} ${summary.item_noun}`,
     baseDescription: summary.task_summary,
   };
 }

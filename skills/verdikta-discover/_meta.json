@@ -1,8 +1,8 @@
 {
   "ownerId": "kn70kt901qt3bjzwb1v3q90jm181xhyf",
   "slug": "verdikta-discover",
-  "version": "1.0.1",
-  "description": "Read-only planning skill for Verdikta Bounties. Helps an agent decide whether a bounded digital task (a source check of up to 20 technical claims, or an evidence pack of up to 50 cells) should be done locally or scoped as outside work, and returns an assessment input from which the owner's own tools derive a work-order draft with acceptance criteria. Needs no wallet, key, account, upload or spending. Its scripts make no network requests and write no files.",
+  "version": "1.1.0",
+  "description": "Read-only planning skill for Verdikta Bounties. Helps an agent decide whether a bounded task should be done locally or scoped as outside work, and returns an assessment input from which the owner's own tools derive a work-order draft with acceptance criteria. Four service templates: a source check of up to 20 technical claims, an evidence pack of up to 50 cells, a review of a public artifact with up to 15 questions, and a real-world task performed by a person at a place with an evidence pack. Needs no wallet, key, account, upload or spending. Its scripts make no network requests and write no files.",
   "permissions": {
     "shell": {
       "required": false,

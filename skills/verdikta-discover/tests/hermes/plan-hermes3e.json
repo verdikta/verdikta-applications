@@ -1,0 +1,86 @@
+[
+ {
+  "tag": "h3e-cr01-s1",
+  "case": "CR01",
+  "turns": [
+   "CR01.txt"
+  ]
+ },
+ {
+  "tag": "h3e-cw01-s1",
+  "case": "CW01",
+  "turns": [
+   "CW01.txt"
+  ]
+ },
+ {
+  "tag": "h3e-co01-s1",
+  "case": "CO01",
+  "turns": [
+   "CO01.txt"
+  ]
+ },
+ {
+  "tag": "h3e-co02-s1",
+  "case": "CO02",
+  "turns": [
+   "CO02.txt"
+  ]
+ },
+ {
+  "tag": "h3e-cr05-s1",
+  "case": "CR05",
+  "turns": [
+   "CR05.txt"
+  ]
+ },
+ {
+  "tag": "h3e-cw05-s1",
+  "case": "CW05",
+  "turns": [
+   "CW05.txt"
+  ]
+ },
+ {
+  "tag": "h3e-cr01-s2",
+  "case": "CR01",
+  "turns": [
+   "CR01.txt"
+  ]
+ },
+ {
+  "tag": "h3e-cw01-s2",
+  "case": "CW01",
+  "turns": [
+   "CW01.txt"
+  ]
+ },
+ {
+  "tag": "h3e-co01-s2",
+  "case": "CO01",
+  "turns": [
+   "CO01.txt"
+  ]
+ },
+ {
+  "tag": "h3e-co02-s2",
+  "case": "CO02",
+  "turns": [
+   "CO02.txt"
+  ]
+ },
+ {
+  "tag": "h3e-cr05-s2",
+  "case": "CR05",
+  "turns": [
+   "CR05.txt"
+  ]
+ },
+ {
+  "tag": "h3e-cw05-s2",
+  "case": "CW05",
+  "turns": [
+   "CW05.txt"
+  ]
+ }
+]

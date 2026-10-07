@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fixture_only": {
+      "type": "boolean"
+    },
+    "data_classification": {
+      "const": "PUBLIC_NON_SENSITIVE"
+    },
+    "artifact": {
+      "type": "object",
+      "description": "The public artifact under review: a public https URL, its exact text inline (at most 2500 characters), or both. The evaluator may open the URL and read attachments; inline text lets every quotation be checked without doing so.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "code_change",
+            "rubric",
+            "specification",
+            "document",
+            "proposal",
+            "dataset",
+            "other"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2500
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the artifact bytes the owner approved, when known. A reviewer reports what it actually read in result.artifact_seen."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "as_of": {
+          "type": "string",
+          "format": "date"
+        }
+      },
+      "required": [
+        "kind",
+        "title",
+        "as_of"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "url"
+          ]
+        },
+        {
+          "required": [
+            "text"
+          ]
+        }
+      ],
+      "additionalProperties": false
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 15,
+      "items": {
+        "type": "object",
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "type": {
+            "enum": [
+              "FINDING",
+              "ASSESSMENT"
+            ],
+            "description": "FINDING: look for a stated kind of problem and answer ISSUE_FOUND or NO_ISSUE. ASSESSMENT: judge a stated quality and answer ASSESSED with a 0-100 rating."
+          },
+          "wants_fix": {
+            "type": "boolean",
+            "description": "When true, every finding carries a proposed change ready to apply."
+          }
+        },
+        "required": [
+          "item_id",
+          "question",
+          "type",
+          "wants_fix"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "max_findings_per_item": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        }
+      },
+      "required": [
+        "max_findings_per_item"
+      ],
+      "additionalProperties": false
+    },
+    "reviewer_requirements": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "maxItems": 5,
+      "description": "For example: independent of the artifact's author; no stake in the bounty it belongs to."
+    }
+  },
+  "required": [
+    "schema_version",
+    "task_id",
+    "fixture_only",
+    "data_classification",
+    "artifact",
+    "items",
+    "limits"
+  ],
+  "additionalProperties": false
+}

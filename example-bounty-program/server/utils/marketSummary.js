@@ -8,7 +8,7 @@
  */
 
 const SCHEMA_VERSION = '1.0.0';
-const SERVICE_IDS = ['source-check-v1', 'evidence-pack-v1'];
+const SERVICE_IDS = ['source-check-v1', 'evidence-pack-v1', 'review-v1', 'real-world-task-v1'];
 const UNCLASSIFIED = 'unclassified';
 // A quartile block built from fewer samples is withheld: it would describe one or two
 // bounties, not a market.
@@ -22,14 +22,14 @@ const DISCLAIMER = 'Aggregates of past and open bounties. Not a quote, an offer,
   + 'of what a new bounty will cost or attract. The service split is self-declared in each bounty description and is not verified.';
 
 /**
- * A work order committed through the onboarding skill carries these exact lines in the
- * evaluation description (see skills/verdikta-bounties-onboarding/scripts/_work-order.js).
+ * A work order committed through the onboarding skill or the website import carries these exact
+ * lines in the evaluation description (skills/verdikta-discover/scripts/work-order.mjs).
  * All three must be present; anything else is unclassified. The lines are self-declared
  * and a hostile creator could copy them, so the disclaimer says so and the summary reports
  * medians, which one bounty cannot move far.
  */
 const DRAFT_LINE = /^Approved work-order draft SHA-256: [0-9a-f]{64}$/m;
-const SERVICE_LINE = /^Service: (source-check-v1|evidence-pack-v1)$/m;
+const SERVICE_LINE = new RegExp(`^Service: (${SERVICE_IDS.join('|')})$`, 'm');
 const REQUEST_LINE = /^Request bytes SHA-256 \(result\.input_sha256\): [0-9a-f]{64}$/m;
 
 function classifyService(description) {

@@ -1,0 +1,57 @@
+{
+  "schema_version": "1.0.0",
+  "task_id": "fixture-real-world-001",
+  "fixture_only": true,
+  "data_classification": "PUBLIC_NON_SENSITIVE",
+  "task": {
+    "summary": "Visit the public notice board at Fixture Plaza (a fictional place for this synthetic example) and photograph the event notices currently posted.",
+    "steps": [
+      "Go to the notice board on the north side of Fixture Plaza during opening hours.",
+      "Photograph the whole board, then each event notice separately.",
+      "Record the date printed on each notice in evidence.md."
+    ],
+    "constraints": [
+      "Do not remove or move any notice.",
+      "Do not photograph private notices (names, phone numbers)."
+    ]
+  },
+  "location": {
+    "description": "Fixture Plaza, north side notice board (fictional)",
+    "place_name": "Fixture Plaza",
+    "remote_ok": false
+  },
+  "time_window": {
+    "start": "2026-10-08T08:00:00Z",
+    "end": "2026-10-10T18:00:00Z",
+    "timezone": "UTC"
+  },
+  "evidence_spec": {
+    "challenge_token": "VB-FIXTURE-7Q2K",
+    "items": [
+      {
+        "evidence_id": "E1",
+        "type": "PHOTO",
+        "requirement": "The whole board, with the challenge token handwritten on paper held in frame.",
+        "count_min": 1,
+        "token_required": true
+      },
+      {
+        "evidence_id": "E2",
+        "type": "PHOTO",
+        "requirement": "Each event notice, legible.",
+        "count_min": 2,
+        "token_required": false
+      },
+      {
+        "evidence_id": "E3",
+        "type": "ATTESTATION",
+        "requirement": "A short statement of when you were there and what you saw.",
+        "count_min": 1,
+        "token_required": false
+      }
+    ]
+  },
+  "performer_requirements": [
+    "Present at the board in person."
+  ]
+}

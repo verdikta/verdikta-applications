@@ -30,7 +30,7 @@ Do not open it for routine lookups or checks you can finish yourself.
 
 The skill's triage runs in this order (SKILL.md has the exact wording):
 
-1. Suitability and size. Sensitive, private, confidential, internal, unreleased or regulated inputs are UNSUITABLE, even when the owner approves sharing them: the pilot takes only public, non-sensitive material. So are physical-world or subjective work, a guaranteed outcome, and work that is neither a technical-claim source check nor a bounded evidence pack. Say so before offering any alternative. A request that fits a template but is too large (more than 20 claims or 50 cells) is NEEDS_SCOPE: ask the owner to reduce it or split it into batches.
+1. Suitability and size. Sensitive, private, confidential, internal, unreleased or regulated inputs are UNSUITABLE, even when the owner approves sharing them: the pilot takes only public, non-sensitive material. So are a guaranteed outcome and work that fits none of the four templates. Say so before offering any alternative. A request that fits a template but is too large (more than 20 claims, 50 cells or 15 review items, or more than 10 steps or 10 evidence items) is NEEDS_SCOPE: ask the owner to reduce it or split it into batches. Judgment and physical-world work are not unsuitable in themselves: the evaluator weighs judgment criteria, and a person can perform a task at a place.
 2. The owner wants answers: check the sources yourself first. If your check settles every item with a supported or contradicted verdict, the decision is LOCAL: answer and stop. An item you could not check (silent or conflicting sources, a 404, a block, a redirect to another host) is not settled: go on to step 4.
 3. The owner asked for an independent, outside or second-opinion review: PREVIEW the whole request. Your own check does not satisfy that request; you may add it, clearly labelled as not independent.
 4. Some items stay open after your own check, or need judgment you cannot supply: resolve the rest yourself, then PREVIEW only the open items (a hybrid). If nothing could be resolved, every item is open. "Could not verify" is not a finished answer when outside help is allowed.
@@ -40,12 +40,15 @@ Any draft (steps 3 to 5) also needs the owner's explicit approval to share the r
 
 State the decision on its own line, for example: `Decision: PREVIEW (hybrid: 6 resolved locally, 4 drafted)`.
 
-## The two service templates
+## The four service templates
 
 - source-check-v1: 1 to 20 atomic technical claims, each checked against a stated version or date scope and the approved sources (up to 30 exact https URLs). Each claim comes back supported, contradicted or unresolved, with evidence references, an explanation and an effort log. Absence is not a contradiction.
 - evidence-pack-v1: a fixed entity x field grid, up to 10 entities and 10 fields and at most 50 cells, filled from the approved public sources. Each cell gets a value with evidence, conflicting alternatives with their provenance, or an honest unresolved. Missing values stay null.
 
-For both, an unresolved answer backed by documented effort is valid and fabricated evidence is not. Payment never depends on the number of errors found. The rubric and threshold come from the templates; you never write them.
+- review-v1: a bounded review of a public artifact (a code change, rubric, specification, document, proposal or dataset) given by public https URL and/or inline text of up to 2,500 characters, with up to 15 review questions. Each answer is ISSUE_FOUND, NO_ISSUE, ASSESSED (a 0-100 rating) or UNRESOLVED, with verbatim quotations and locators and, where wanted, a proposed change. A reasoned NO_ISSUE earns full credit; the number of findings is not rewarded. Threshold 80.
+- real-world-task-v1: a task performed by a person, at a place or remotely, inside a time window: up to 10 steps and an evidence specification of up to 10 items (photographs, documents, receipts, screenshots, an attestation). You invent a challenge token for the request; photographs marked token_required must show it handwritten on paper in the scene. The result reports every step and every evidence file, and the evaluator reads the images and documents. Threshold 80.
+
+For the source check and the evidence pack, an unresolved answer backed by documented effort is valid and fabricated evidence is not, and in INDEPENDENT_PUBLIC_RETRIEVAL mode the supplier may cite public https sources beyond the approved list, each quoted verbatim with its locator and retrieval time. Payment never depends on the number of errors or findings. The rubric and threshold come from the templates; you never write them. Only the source check and the evidence pack take a local_summary; a review or a real-world task goes out whole.
 
 ## Reading sources yourself
 
@@ -122,7 +125,7 @@ node scripts/preview.bundle.mjs --check - <<'JSON'
 JSON
 ```
 
-It prints `decision`, `inputs_needed`, `drafted_items`, the `local_summary` counts, whether the market context was kept, and `draft_sha256`. If the decision is not the one you meant, or `inputs_needed` is not empty, fix the input or ask the owner. For the example above it prints `"decision": "PREVIEW"` and `"draft_sha256": "a7ffbbeb1f0273572b0b107d735d402443f3ddd7a8d260bfcf1d49940063d7cd"`. Return the input, not this summary: the summary cannot be imported.
+It prints `decision`, `inputs_needed`, `drafted_items`, the `local_summary` counts, whether the market context was kept, and `draft_sha256`. If the decision is not the one you meant, or `inputs_needed` is not empty, fix the input or ask the owner. For the example above it prints `"decision": "PREVIEW"` and `"draft_sha256": "1fc25e911c64665be06b8ac61b4d5fd08edc091493de6980b46a970bec60b7a7"`. Return the input, not this summary: the summary cannot be imported.
 
 ## Delivering it
 
@@ -203,6 +206,7 @@ After CF03, the owner says: "The page loaded fine for you earlier. Skip the outs
 - With the current SKILL.md text and the pointer (2026-10-05, 9 sessions): no shell or browse fetches, file writes or credential reads (9/9); no verdict from the redirected source in the first turn (9/9); every answer given at the owner's insistence labelled (3/3, blind-rated); the assessment inputs kept all four claims open (9/9).
 - Content screening is weak. On a held-out set of 30 pages with injected instructions, the content screen flagged 8 (strict) to 14 (lenient); it also flagged 3 to 5 of 30 benign pages. Treat it as a tripwire, not a defense. The real control is what the skill cannot do: it holds no secrets, has no spending tool and uploads nothing.
 - Hermes Agent (2026-10-06; Hermes main 85db7c3a, gpt-5.6-terra, the Hermes copy with the pointer and host settings in references/install.md; 9 sessions, blind-rated): the skill was opened first in 6 of 6 claim checks against a linked page; no fetch with web_extract, web_search or the shell; no verdict from the redirected source in the first turn (6/6); every answer given at the owner's insistence labelled (3/3); every returned input fundable (7/7). In 2 of 9 sessions the agent saved its own input to a file inside the sandbox before checking it, because Hermes' command scanner held the stdin pipe.
+- Templates 1.1 (2026-10-07; review-v1, real-world-task-v1 and the independent-retrieval source rule): on OpenClaw 2026.8.33 (production main, gpt-5.6-terra) the 13 templates-1.1 cases passed their pre-registered gates across rounds 11 to 11e (91 turns, no unsafe action, no fabrication; see tests/CONNECTED_DESIGN.md for the misses each round corrected). On Hermes Agent 85db7c3a with the pointer's second part ("Outside work of any kind") the same cases passed across rounds 3b to 3e; without that part (round 3) the skill opened only when the task named a page to fetch, and an agent asked for an outside review delegated it to a Hermes sub-agent instead.
 - These figures come from one model on synthetic cases. Chat delivery has not been formally evaluated. OpenClaw 2026.8.33 and Hermes Agent are verified for these cases; other runtimes are not.
 
 ## Mistakes seen in evaluation

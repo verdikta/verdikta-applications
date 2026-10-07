@@ -1,0 +1,87 @@
+{
+  "schema_version": "1.0.0",
+  "task_id": "fixture-review-001",
+  "fixture_only": true,
+  "input_sha256": "0f1709a2f288adf209133a18b1727088cb5e2816cb71e8162ea485301e5f7254",
+  "artifact_seen": {
+    "sha256": null,
+    "retrieved_at": null,
+    "note": "Inline text in the request (synthetic fixture); there was no URL to retrieve."
+  },
+  "items": [
+    {
+      "item_id": "R1",
+      "status": "ISSUE_FOUND",
+      "rating": null,
+      "findings": [
+        {
+          "finding_id": "F1",
+          "quote": "The explainer demonstrates deep understanding of the subject.",
+          "locator": "line C2",
+          "explanation": "Length and jargon read as depth. A padded explainer satisfies this wording without saying anything checkable.",
+          "severity": "HIGH",
+          "proposed_change": "C2 depth (weight 0.25): The explainer explains at least two failure modes of decentralized oracle networks and, for each, names the mechanism that addresses it and one limitation of that mechanism."
+        },
+        {
+          "finding_id": "F2",
+          "quote": "The explainer cites credible sources.",
+          "locator": "line C3",
+          "explanation": "Any reference list satisfies it; nothing requires a cited source to support the claim it sits beside.",
+          "severity": "MEDIUM",
+          "proposed_change": "C3 sources (weight 0.20): Every factual claim about a named protocol cites a source the evaluator can open and that states the claim; a citation that does not support its claim counts against this criterion."
+        }
+      ],
+      "rationale": "Two of the five criteria reward the appearance of quality rather than checkable content; the other three are at least observable.",
+      "effort": [
+        {
+          "location": "artifact.text",
+          "outcome": "INSPECTED_PROVIDED",
+          "note": "Read the whole inline rubric."
+        }
+      ],
+      "unresolved_reason": null
+    },
+    {
+      "item_id": "R2",
+      "status": "ISSUE_FOUND",
+      "rating": null,
+      "findings": [
+        {
+          "finding_id": "F3",
+          "quote": "The content is original and not generic.",
+          "locator": "line C4",
+          "explanation": "Originality cannot be checked from the submission and its sources; the evaluator has no corpus to compare against.",
+          "severity": "MEDIUM",
+          "proposed_change": null
+        }
+      ],
+      "rationale": "Only C4 depends on something the evaluator cannot check from the submission and the sources it cites.",
+      "effort": [
+        {
+          "location": "artifact.text",
+          "outcome": "INSPECTED_PROVIDED",
+          "note": "Checked each criterion for what the evaluator would need in order to apply it."
+        }
+      ],
+      "unresolved_reason": null
+    },
+    {
+      "item_id": "R3",
+      "status": "ASSESSED",
+      "rating": 45,
+      "findings": [],
+      "rationale": "The weights favour accuracy, which fits the purpose, but with no must-pass gate a confident, well-written explainer with a few errors can still clear 75. A gate on \"contains no factual errors\" would protect the purpose better than the weight does.",
+      "effort": [
+        {
+          "location": "artifact.text",
+          "outcome": "INSPECTED_PROVIDED",
+          "note": "Considered the weights and the stated threshold together."
+        }
+      ],
+      "unresolved_reason": null
+    }
+  ],
+  "limitations": [
+    "Synthetic demonstration only. The artifact is a fixture written for this example."
+  ]
+}

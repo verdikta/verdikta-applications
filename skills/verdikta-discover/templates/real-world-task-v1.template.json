@@ -1,0 +1,45 @@
+{
+  "template_id": "real-world-task-v1",
+  "template_version": "1.0.0",
+  "status": "DRAFT_SERVICE_NOT_OFFER",
+  "recommended_threshold": 80,
+  "threshold_note": "Proposed pilot threshold; stored outside the rubric and calibrated before funded use. Not a measured performance guarantee.",
+  "request_schema": "../schemas/real-world-task-v1.request.schema.json",
+  "result_schema": "../schemas/real-world-task-v1.result.schema.json",
+  "rubric_file": "real-world-task-v1.rubric.json",
+  "scope_limit": {
+    "steps": 10,
+    "evidence_items": 10,
+    "files": 40
+  },
+  "performer": "A person present at the place inside the time window. An agent can commission and check this work; it cannot perform it.",
+  "default_privacy": "public_non_sensitive_only",
+  "execution_preference": "targeted_after_supplier_agreement",
+  "supplier_status": "UNKNOWN",
+  "price": null,
+  "turnaround": null,
+  "required_owner_decisions": [
+    "the task steps, the place and the time window, all of which become public",
+    "the evidence the owner will accept, and the challenge token",
+    "performer requirements",
+    "sharing/publishing permission",
+    "actual supplier and quote",
+    "network, reward and maximum all-in spend at transaction handoff"
+  ],
+  "delivery": [
+    "result.json",
+    "evidence.md",
+    "the evidence files named in result.json"
+  ],
+  "delivery_note": "Deliver result.json, a readable evidence.md and every evidence file it names, attached to the submission. Photos the specification marks token_required must show the challenge token physically in the scene. Declare partial or undone steps; never fabricate or edit evidence.",
+  "evidence_rule": "Evidence authenticity is assessed from the files and their consistency, not proven. The challenge token in the scene, and agreement between files, capture times and the attestation, reduce the risk of reused or generated evidence without removing it.",
+  "must_pass_note": "must=true criteria have weight zero. Weighted criteria sum to 1.0. Schema validation is not proof that semantic gates will be adjudicated correctly.",
+  "non_goals": [
+    "guaranteed supplier",
+    "guaranteed quote",
+    "tasks at a private place or involving private people",
+    "proof of authenticity beyond what the evidence shows",
+    "automatic purchase",
+    "contract modification"
+  ]
+}

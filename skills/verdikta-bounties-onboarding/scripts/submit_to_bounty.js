@@ -7,6 +7,7 @@ import { isMain } from './_cli.js';
 import { Contract } from 'ethers';
 
 import { abi, iface, deployments, verifyTransaction, reviewedApiOrigin } from './_transaction-guards.js';
+import { checkWorkOrderResult } from './_work-order-result.js';
 
 export async function runSubmit(lib, { contract = (address, abi, provider) => new Contract(address, abi, provider), fetchApi = globalThis.fetch, baseUrl: configuredBaseUrl = process.env.VERDIKTA_BOUNTIES_BASE_URL || '', pause = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   const { arg, argAll, getNetwork, providerFor, loadWallet, loadApiKey, isDryRun,
@@ -51,6 +52,10 @@ export async function runSubmit(lib, { contract = (address, abi, provider) => ne
     if (submissionId == null) {
       if (!isDryRun()) {
         if (!statePath || !argAll('file').length) throw new Error('--state and --file are required; preserve the state file for recovery');
+        // A work-order bounty (the description commits a request) takes only a result.json that validates against it: the
+        // evaluator's structural gates would fail anything else, so the upload is refused here first.
+        const workOrder = await checkWorkOrderResult({ description: job.description, files: argAll('file') });
+        if (workOrder.workOrder && workOrder.errors.length) throw new Error(`Work-order result check failed (${workOrder.templateId}): ${workOrder.errors.join('; ')}`);
         await confirmSpendOrExit([`Publish files and prepare submission for bounty ${jobId}; network ${network}`, `Evaluation prepay is ETH, limited by the owner policy ${policy.maxValueWei} wei; a creator window may defer start.`]);
         state = { network, jobId, hunter, status: 'UPLOAD_PENDING' };
         await fs.writeFile(statePath, JSON.stringify(state), { flag: 'wx', mode: 0o600 });

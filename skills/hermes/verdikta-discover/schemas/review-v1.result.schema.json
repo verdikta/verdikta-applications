@@ -1,0 +1,281 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fixture_only": {
+      "type": "boolean"
+    },
+    "input_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "artifact_seen": {
+      "type": "object",
+      "description": "What the reviewer actually read: the SHA-256 of the bytes when it could compute one, when it retrieved the URL, and a note (version, page title, or 'inline text').",
+      "properties": {
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "retrieved_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sha256",
+        "retrieved_at",
+        "note"
+      ],
+      "additionalProperties": false
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 15,
+      "items": {
+        "type": "object",
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "enum": [
+              "ISSUE_FOUND",
+              "NO_ISSUE",
+              "ASSESSED",
+              "UNRESOLVED"
+            ]
+          },
+          "rating": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 100
+          },
+          "findings": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "properties": {
+                "finding_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "quote": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Verbatim text from the artifact."
+                },
+                "locator": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Where the quote is: a line, section, heading or page."
+                },
+                "explanation": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "severity": {
+                  "enum": [
+                    "LOW",
+                    "MEDIUM",
+                    "HIGH"
+                  ]
+                },
+                "proposed_change": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Replacement text or a concrete change, ready to apply; required when the item wants a fix."
+                }
+              },
+              "required": [
+                "finding_id",
+                "quote",
+                "locator",
+                "explanation",
+                "severity",
+                "proposed_change"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          },
+          "effort": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "properties": {
+                "location": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The artifact URL, 'artifact.text' for inline text, or a section of it."
+                },
+                "outcome": {
+                  "enum": [
+                    "INSPECTED_PROVIDED",
+                    "RETRIEVED",
+                    "NOT_FOUND",
+                    "ACCESS_BLOCKED",
+                    "OUT_OF_SCOPE"
+                  ]
+                },
+                "note": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "location",
+                "outcome",
+                "note"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "unresolved_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "item_id",
+          "status",
+          "rating",
+          "findings",
+          "rationale",
+          "effort",
+          "unresolved_reason"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "ISSUE_FOUND"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "findings": {
+                  "minItems": 1
+                },
+                "rating": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "NO_ISSUE"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "findings": {
+                  "maxItems": 0
+                },
+                "rating": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "ASSESSED"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "rating": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "UNRESOLVED"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unresolved_reason": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "findings": {
+                  "maxItems": 0
+                },
+                "rating": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0
+    }
+  },
+  "required": [
+    "schema_version",
+    "task_id",
+    "fixture_only",
+    "input_sha256",
+    "artifact_seen",
+    "items",
+    "limitations"
+  ],
+  "additionalProperties": false
+}

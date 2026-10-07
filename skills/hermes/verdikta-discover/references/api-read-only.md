@@ -17,7 +17,7 @@ Read-only documentation helps establish compatibility, not signing trust. A tran
 
 ## Market context (`/api/market-summary`)
 
-Read `GET /api/market-summary` on the owner-selected origin when drafting outside work, to give the owner a cost and activity signal. It is public, unauthenticated, cached for five minutes, and returns aggregates only (no addresses or task content): open, awarded and closed counts, the median and interquartile range of `bountyAmountWei`, typical time to award, worst-case oracle prepay and active hunters over a stated window, split by template (`source-check-v1`, `evidence-pack-v1`, `unclassified`). It always says `not_a_quote: true`. A quartile block with fewer than 3 samples is `null`.
+Read `GET /api/market-summary` on the owner-selected origin when drafting outside work, to give the owner a cost and activity signal. It is public, unauthenticated, cached for five minutes, and returns aggregates only (no addresses or task content): open, awarded and closed counts, the median and interquartile range of `bountyAmountWei`, typical time to award, worst-case oracle prepay and active hunters over a stated window, split by template (`source-check-v1`, `evidence-pack-v1`, `review-v1`, `real-world-task-v1`, `unclassified`). It always says `not_a_quote: true`. A quartile block with fewer than 3 samples is `null`.
 
 Read it with your fetch tool, not a shell command. Record it as `market_context` in the assessment input, field by field. Copy a null as null and add no other keys (the preview refuses unknown ones). Here `B` is the response's `by_service[<the request's template>]` block when its `sample_size` is at least 3, otherwise its `all` block:
 

@@ -35,7 +35,7 @@
       "label": "Exact scope and coverage",
       "must": true,
       "weight": 0,
-      "description": "Use the exact approved task manifest, item IDs, versions, and as-of policy. Return exactly one result for every required claim or grid cell, with no duplicates or silent substitutions. Follow the declared schema and the fixed search budget."
+      "description": "Use the exact approved task manifest, item IDs, versions, and as-of policy. Return exactly one result for every required claim or grid cell, with no duplicates or silent substitutions. Follow the declared schema and the fixed search budget. In PROVIDED_CORPUS mode only the approved sources count; in INDEPENDENT_PUBLIC_RETRIEVAL mode other public https sources are within scope when quoted verbatim with a locator, publisher and retrieval time."
     },
     {
       "id": "honest_evidence",
@@ -56,7 +56,7 @@
       "label": "Evidence relevance and authenticity limits",
       "must": false,
       "weight": 0.4,
-      "description": "Evidence precisely addresses each atomic claim, with correct primary-source identity, applicable version/date, locator, readable passage, and traceability. Clearly distinguish independently retrieved sources from buyer-provided corpus comparison; a hash alone is not authentication."
+      "description": "Evidence precisely addresses each atomic claim, with correct primary-source identity, applicable version/date, locator, readable passage, and traceability. Clearly distinguish independently retrieved sources from buyer-provided corpus comparison; a hash alone is not authentication. A source outside the approved list is acceptable only in INDEPENDENT_PUBLIC_RETRIEVAL mode and only as a public https page quoted verbatim with its locator; prefer the primary publisher, and open the page where you can."
     },
     {
       "id": "verdict_quality",
@@ -142,7 +142,7 @@
           "label": "Exact scope and coverage",
           "must": true,
           "weight": 0,
-          "description": "Use the exact approved task manifest, item IDs, versions, and as-of policy. Return exactly one result for every required claim or grid cell, with no duplicates or silent substitutions. Follow the declared schema and the fixed search budget."
+          "description": "Use the exact approved task manifest, item IDs, versions, and as-of policy. Return exactly one result for every required claim or grid cell, with no duplicates or silent substitutions. Follow the declared schema and the fixed search budget. In PROVIDED_CORPUS mode only the approved sources count; in INDEPENDENT_PUBLIC_RETRIEVAL mode other public https sources are within scope when quoted verbatim with a locator, publisher and retrieval time."
         },
         {
           "id": "honest_evidence",
@@ -163,7 +163,7 @@
           "label": "Evidence relevance and authenticity limits",
           "must": false,
           "weight": 0.4,
-          "description": "Evidence precisely addresses each atomic claim, with correct primary-source identity, applicable version/date, locator, readable passage, and traceability. Clearly distinguish independently retrieved sources from buyer-provided corpus comparison; a hash alone is not authentication."
+          "description": "Evidence precisely addresses each atomic claim, with correct primary-source identity, applicable version/date, locator, readable passage, and traceability. Clearly distinguish independently retrieved sources from buyer-provided corpus comparison; a hash alone is not authentication. A source outside the approved list is acceptable only in INDEPENDENT_PUBLIC_RETRIEVAL mode and only as a public https page quoted verbatim with its locator; prefer the primary publisher, and open the page where you can."
         },
         {
           "id": "verdict_quality",

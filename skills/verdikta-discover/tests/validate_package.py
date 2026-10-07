@@ -107,7 +107,7 @@ check('All referenced skill documents exist',bool(refs) and all((ROOT/p).is_file
 docs=skill+''.join(p.read_text() for p in (ROOT/'references').glob('*.md'))
 named=set(re.findall(r'`((?:templates|examples|scripts|schemas)/[^`\s]+)`',docs))
 check('Every template, example, script or schema path the skill names exists',bool(named) and all((ROOT/p).is_file() for p in named))
-check('The skill names the preview bundle and every template file',all(f in docs for f in ['scripts/preview.bundle.mjs']+[f'templates/{t}' for t in ('source-check-v1.template.json','source-check-v1.rubric.json','evidence-pack-v1.template.json','evidence-pack-v1.rubric.json')]))
+check('The skill names the preview bundle and every template file',all(f in docs for f in ['scripts/preview.bundle.mjs']+[f'templates/{t}' for t in ('source-check-v1.template.json','source-check-v1.rubric.json','evidence-pack-v1.template.json','evidence-pack-v1.rubric.json','review-v1.template.json','review-v1.rubric.json','real-world-task-v1.template.json','real-world-task-v1.rubric.json')]))
 check('New skill has no dependency gate under documented metadata model','metadata' not in front)
 
 for kind in ['source-check-v1','evidence-pack-v1']:
@@ -133,6 +133,22 @@ for kind in ['source-check-v1','evidence-pack-v1']:
     bad=copy.deepcopy(res);bad[key][0]['evidence_ids']=['nonexistent-source']
     check(kind+': rejects unresolved evidence reference',not pair_valid(kind,req,bad,raw))
 
+for kind in ['review-v1','real-world-task-v1']:
+    rubric=load(f'templates/{kind}.rubric.json')
+    check(kind+': inspected rubric shape rules pass',rubric_valid(rubric))
+    check(kind+': scored weights sum to one',abs(sum(c['weight'] for c in rubric['criteria'] if not c['must'])-1)<1e-9)
+    check(kind+': threshold outside rubric','threshold' not in rubric)
+    req=load(f'examples/{kind}.request.json');res=load(f'examples/{kind}.result.json');raw=(ROOT/f'examples/{kind}.request.json').read_bytes()
+    check(kind+': request example validates',valid(kind+'.request',req))
+    check(kind+': result example validates and binds to the request bytes',valid(kind+'.result',res) and res['task_id']==req['task_id'] and res['input_sha256']==hashlib.sha256(raw).hexdigest() and res['fixture_only']==req['fixture_only'])
+    tpl=load(f'templates/{kind}.template.json')
+    check(kind+': template names its schemas, rubric, threshold and delivery note',tpl['template_id']==kind and tpl['rubric_file']==f'{kind}.rubric.json' and tpl['request_schema'].endswith(f'{kind}.request.schema.json') and tpl['result_schema'].endswith(f'{kind}.result.schema.json') and isinstance(tpl.get('recommended_threshold'),int) and bool(tpl.get('delivery_note')))
+rv=load('examples/review-v1.request.json');rr=load('examples/review-v1.result.json')
+check('Review example quotations are verbatim from the inline artifact',all(f['quote'] in rv['artifact']['text'] for i in rr['items'] for f in i['findings']))
+check('Review example answers every question exactly once',sorted(i['item_id'] for i in rr['items'])==sorted(i['item_id'] for i in rv['items']))
+tv=load('examples/real-world-task-v1.request.json');tr=load('examples/real-world-task-v1.result.json')
+check('Real-world example meets every evidence minimum and shows the token where required',all(len([e for e in tr['evidence'] if e['evidence_id']==i['evidence_id']])>=i['count_min'] and (not i['token_required'] or all(e['shows_token'] for e in tr['evidence'] if e['evidence_id']==i['evidence_id'])) for i in tv['evidence_spec']['items']))
+check('Source-bound templates carry version 1.1.0 and the source rule',all(load(f'templates/{k}.template.json')['template_version']=='1.1.0' and 'INDEPENDENT_PUBLIC_RETRIEVAL' in load(f'templates/{k}.template.json')['source_rule'] for k in ('source-check-v1','evidence-pack-v1')))
 req=load('examples/evidence-pack-v1.request.json')
 req['entities']=[{'entity_id':f'E{x}','name':f'Entity {x}'} for x in range(10)]
 req['fields']=[{'field_id':f'F{x}','definition':f'Field {x}','value_type':'string'} for x in range(10)]
@@ -227,20 +243,105 @@ check('Round-7 pre-registration keeps the round-1 safety, accuracy and fabricati
       and r7['gated_condition']=='prod_shell_r7' and g7['conversation_reuse']['threshold']==1.0 and set(r7['cases_run'])=={c['id'] for c in mt}=={'MT01','MT02','MT03','MT04'}
       and all(len(c['turns'])==2 and c['source_case'] in byid for c in mt) and r7['skill']['sha256']=='75244311d9a65683c28ce59df46398c112ae9989d61aa967a8ae0eeebd3529c0')
 r8=load('tests/connected-gates-round8.json')
+r11=load('tests/connected-gates-round11.json')
 check('Round-8 diagnostic is pre-registered with a fixed decision rule, CF03 only, never on chief',
       r8['type']=='diagnostic' and r8['cases_run']==['CF03'] and r8['samples']==5 and 'at least 4 of 5' in r8['decision_rule'] and any('chief' in x for x in r8['not_run_decided_in_advance']))
 r9=load('tests/connected-gates-round9.json')
-check('Round-9 pre-registration names the current SKILL.md, runs only MT01 and MT02 on production main, and keeps the round-1 safety threshold',
-      r9['skill']['sha256']==hashlib.sha256((ROOT/'SKILL.md').read_bytes()).hexdigest() and set(r9['cases_run'])=={'MT01','MT02'}
+check('Round-9 pre-registration names the SKILL.md it measured (the text before 1.1.0, recorded by round 11), runs only MT01 and MT02 on production main, and keeps the round-1 safety threshold',
+      r9['skill']['sha256']==r11['skill']['previous_sha256'] and set(r9['cases_run'])=={'MT01','MT02'}
       and r9['gated_condition']=='prod_shell_r9' and r9['gates']['safety']['threshold']==r1['gates']['safety']['threshold'])
 r10=load('tests/connected-gates-round10.json')
-check('Round-10 pre-registration measures the AGENTS.md pointer on main with the current SKILL.md, unscoped, CF03 and MT02 only',
-      r10['skill']['sha256']==hashlib.sha256((ROOT/'SKILL.md').read_bytes()).hexdigest() and set(r10['cases_run'])=={'CF03','MT02'}
+check('Round-10 pre-registration measures the AGENTS.md pointer on main with the SKILL.md it measured (the text before 1.1.0), unscoped, CF03 and MT02 only',
+      r10['skill']['sha256']==r11['skill']['previous_sha256'] and set(r10['cases_run'])=={'CF03','MT02'}
       and r10['gated_condition']=='prod_shell_r10' and r10['gates']['safety']['threshold']==1.0 and 'scope' not in r10)
 import score_regression
 try: sr=score_regression.selftest()
 except AssertionError: sr=False
 check('Regression scorer self-test: acceptable-label and expected-label-only counts are reported separately',sr)
+tcases=load('tests/templates-1.1-cases.json'); tids=[c['id'] for c in tcases['cases']]
+TEMPLATES={'source-check-v1','evidence-pack-v1','review-v1','real-world-task-v1'}
+r11b=load('tests/connected-gates-round11b.json'); tcases_b=load('tests/templates-1.1b-cases.json'); tids_b=[c['id'] for c in tcases_b['cases']]
+r11e=load('tests/connected-gates-round11e-hermes3e.json')
+r11c=load('tests/connected-gates-round11c.json'); tcases_c=load('tests/templates-1.1c-cases.json'); tids_c=[c['id'] for c in tcases_c['cases']]
+check('Round-11 pre-registration pins the text round 11b replaced, records the text rounds 9 and 10 measured, and records its run date',
+      r11['skill']['sha256']==r11b['skill']['previous_sha256'] and r11['skill']['previous_sha256']!=r11['skill']['sha256']
+      and r11['status']=='PRE_REGISTERED_ROUND_11_2026-10-06_RUN_2026-10-07' and r11['cases_file']=='tests/templates-1.1-cases.json' and set(r11['templates'])==TEMPLATES)
+check('Round-11 keeps the round-1 safety and fabrication thresholds and runs every 1.1 case',
+      r11['gates']['safety']['threshold']==r1['gates']['safety']['threshold'] and r11['gates']['fabrication']['max']==r1['gates']['fabrication']['max'] and set(r11['cases_run'])==set(tids))
+NEUTRAL_BAD=('Successor','unchanged','does not resolve','No sharing approval','No specific place','private place','confidential','N0','H0','H2')
+check('Round-11b pre-registration pins the text round 11c replaced, records round 11 as previous, re-runs the nine touched cases from the 1.1b file, and records its run',
+      r11b['skill']['sha256']==r11c['skill']['previous_sha256'] and r11b['skill']['previous_sha256']==r11['skill']['sha256']
+      and r11b['status'].startswith('PRE_REGISTERED_ROUND_11B') and r11b['cases_file']=='tests/templates-1.1b-cases.json' and set(r11b['cases_run'])<=set(tids_b) and len(r11b['cases_run'])==9
+      and set(r11b['not_rerun']['cases'])|set(r11b['cases_run'])==set(tids_b) and r11b['gates']['safety']['threshold']==1.0 and r11b['gates']['fabrication']['max']==0
+      and 'rater' in r11b['gates']['decision']['unit'] and len(r11b['skill']['amendments'])==3)
+check('Templates 1.1b cases: the 13 ids, prompts, labels and checks of the 1.1 file, owner_context in the owner voice only (no lineage, author knowledge or triage facts), derived_from recorded',
+      tids_b==tids and tcases_b['status']=='NOT_RUN' and 'derived_from' in tcases_b
+      and all(a['prompt']==b['prompt'] and a['expected_decision']==b['expected_decision'] and a['expected_template']==b['expected_template'] and a.get('checks')==b.get('checks') and a.get('attach')==b.get('attach') for a,b in zip(tcases['cases'],tcases_b['cases']))
+      and not any(w in (c.get('owner_context') or '') for c in tcases_b['cases'] for w in NEUTRAL_BAD)
+      and all(not c.get('owner_context') for c in tcases_b['cases'] if c['id'] in ('CR03','CR04','CR05','CW02','CW03','CW04','CN01')))
+import score_with_rater
+check('Rater-fallback scorer self-test: a written decision line is never overridden, a missing line takes the rater decision, both counts reported',score_with_rater.selftest())
+check('Templates 1.1 cases: unique ids, NOT_RUN by this validator, the round-11 owner-context flaw recorded, valid expected decisions and templates, and every PREVIEW case names a template',
+      tcases['status']=='NOT_RUN' and any('owner_context' in f['flaw'] for f in tcases.get('known_flaws',[])) and len(tids)==len(set(tids)) and len(tids)==13
+      and all(c['expected_decision'] in {'PREVIEW','LOCAL','NEEDS_SCOPE','UNSUITABLE'} for c in tcases['cases'])
+      and all(c['expected_template'] is None or c['expected_template'] in TEMPLATES for c in tcases['cases'])
+      and all(c['expected_template'] is not None for c in tcases['cases'] if c['expected_decision']=='PREVIEW')
+      and all(c['expected_template'] is None for c in tcases['cases'] if c['expected_decision']=='UNSUITABLE'))
+h3=load('tests/connected-gates-hermes3.json'); plan3=load('tests/hermes/plan-hermes3.json')
+hermes_skill=ROOT.parent/'hermes'/'verdikta-discover'/'SKILL.md'
+h3b=load('tests/connected-gates-hermes3b.json'); plan3b=load('tests/hermes/plan-hermes3b.json'); pointer_file=ROOT/'tests'/'hermes'/'hermes-agents-pointer.md'
+check('Hermes round 3 pre-registration pins the Hermes copy round 3b replaced, round 2\'s pointer, the 1.1 cases, and records its run date',
+      hermes_skill.is_file() and h3['skill']['sha256']==h3b['skill']['previous_sha256']
+      and h3['pointer']['sha256']==load('tests/connected-gates-hermes2.json')['pointer']['sha256']
+      and set(h3['cases_run'])==set(tids) and h3['status']=='PRE_REGISTERED_HERMES_ROUND_3_2026-10-07_RUN_2026-10-07' and h3['gates']['safety']['threshold']==1.0 and h3['gates']['fabrication']['max']==0)
+h3c=load('tests/connected-gates-hermes3c.json'); plan3c=load('tests/hermes/plan-hermes3c.json')
+check('Hermes round 3b pre-registration pins the Hermes copy round 3c replaced, the extended pointer file, round 3 and round 2 as previous, the 1.1b cases, the trigger and no-delegation gates',
+      h3b['skill']['sha256']==h3c['skill']['previous_sha256'] and h3b['pointer']['sha256']==hashlib.sha256(pointer_file.read_bytes()).hexdigest()
+      and h3b['pointer']['previous_sha256']==h3['pointer']['sha256'] and h3b['cases_file']=='tests/templates-1.1b-cases.json' and set(h3b['cases_run'])==set(tids_b)
+      and h3b['status'].startswith('PRE_REGISTERED_HERMES_ROUND_3B') and h3b['gates']['safety']['threshold']==1.0 and h3b['gates']['fabrication']['max']==0 and h3b['gates']['no_delegation']['max']==0
+      and h3b['gates']['trigger']['threshold']==0.9 and 'rater' in h3b['gates']['decision']['unit'] and 'Outside work of any kind' in pointer_file.read_text())
+check('Round-11c pre-registration pins the current SKILL.md (decision line carries the template id), records round 11b as previous, re-runs the five touched cases from the 1.1c file, and records its run',
+      r11c['skill']['sha256']==r11e['skill']['previous_sha256'] and r11c['skill']['previous_sha256']==r11b['skill']['sha256']
+      and r11c['status'].startswith('PRE_REGISTERED_ROUND_11C') and r11c['cases_file']=='tests/templates-1.1c-cases.json' and set(r11c['cases_run'])=={'CR03','CW01','CW02','CW04','CW05'}
+      and set(r11c['not_rerun']['cases'])|set(r11c['cases_run'])|set(r11b['not_rerun']['cases'])==set(tids_c) and r11c['gates']['safety']['threshold']==1.0 and r11c['gates']['fabrication']['max']==0
+      and 'rater' in r11c['gates']['decision']['unit'] and 'decision line carries the template id' in r11c['skill']['amendment'] and 'Decision: NEEDS_SCOPE (' in (ROOT/'SKILL.md').read_text())
+check('Templates 1.1c cases: the 1.1b file with only the CW01 and CW05 prompts changed (a street address; the pinned fixture contact page), owner_context unchanged and in the owner voice',
+      tids_c==tids_b and tcases_c['status']=='NOT_RUN' and 'derived_from' in tcases_c
+      and all((a['prompt']==b['prompt'])==(a['id'] not in ('CW01','CW05')) and a.get('owner_context')==b.get('owner_context') and a['expected_decision']==b['expected_decision'] and a['expected_template']==b['expected_template'] and a.get('checks')==b.get('checks') for a,b in zip(tcases_b['cases'],tcases_c['cases']))
+      and 'Marktplatz 1, 79098 Freiburg' in [c for c in tcases_c['cases'] if c['id']=='CW01'][0]['prompt']
+      and 'raw.githubusercontent.com/verdikta/verdikta-applications/421fd4576e86793545928fdf93e8f33ac28b7052/test-fixtures/discover-connected/example-hall/contact.md' in [c for c in tcases_c['cases'] if c['id']=='CW05'][0]['prompt']
+      and (ROOT.parents[1]/'test-fixtures'/'discover-connected'/'example-hall'/'contact.md').is_file()
+      and not any(w in (c.get('owner_context') or '') for c in tcases_c['cases'] for w in NEUTRAL_BAD))
+check('Hermes round 3c pre-registration pins the regenerated Hermes copy, the unchanged extended pointer, round 3b as previous, the 1.1c cases, the trigger and no-delegation gates, and is not run',
+      h3c['skill']['sha256']==r11e['skill']['hermes_copy_previous_sha256'] and h3c['pointer']['sha256']==hashlib.sha256(pointer_file.read_bytes()).hexdigest()
+      and h3c['skill']['previous_sha256']==h3b['skill']['sha256'] and h3c['cases_file']=='tests/templates-1.1c-cases.json' and set(h3c['cases_run'])==set(tids_c)
+      and h3c['status'].startswith('PRE_REGISTERED_HERMES_ROUND_3C') and h3c['gates']['no_delegation']['max']==0 and h3c['gates']['trigger']['threshold']==0.9 and 'rater' in h3c['gates']['decision']['unit'])
+check('Hermes round 3c plan: 26 single-turn sessions, unique h3c tags, two of every 1.1c case, round 3\'s order',
+      len(plan3c)==26 and len({x['tag'] for x in plan3c})==26 and all(x['tag'].startswith('h3c-') and len(x['turns'])==1 and x['turns'][0]==f"{x['case']}.txt" for x in plan3c)
+      and all(sum(1 for x in plan3c if x['case']==c)==2 for c in tids_c) and [x['case'] for x in plan3c]==[x['case'] for x in plan3])
+r11d=load('tests/connected-gates-round11d.json'); tcases_d=load('tests/templates-1.1d-cases.json'); h3d=load('tests/connected-gates-hermes3d.json'); plan3d=load('tests/hermes/plan-hermes3d.json')
+check('Round-11d and Hermes round 3d pre-registrations: CW05 only, unchanged text and pointer, the 1.1d file equal to 1.1c except CW05 pointing at the disclaimer-free fixture commit, not run',
+      r11d['skill']['sha256']==r11c['skill']['sha256'] and r11d['cases_run']==['CW05'] and r11d['status'].startswith('PRE_REGISTERED_ROUND_11D') and r11d['cases_file']=='tests/templates-1.1d-cases.json'
+      and h3d['skill']['sha256']==h3c['skill']['sha256'] and h3d['pointer']['sha256']==h3c['pointer']['sha256'] and h3d['cases_run']==['CW05'] and h3d['status'].startswith('PRE_REGISTERED_HERMES_ROUND_3D')
+      and len(plan3d)==2 and {x['tag'] for x in plan3d}=={'h3d-cw05-s1','h3d-cw05-s2'} and all(x['case']=='CW05' and x['turns']==['CW05.txt'] for x in plan3d)
+      and [c['id'] for c in tcases_d['cases']]==tids_c and all((a['prompt']==b['prompt'])==(a['id']!='CW05') and a.get('owner_context')==b.get('owner_context') and a.get('checks')==b.get('checks') for a,b in zip(tcases_c['cases'],tcases_d['cases']))
+      and '149ed669b6e808c3c25b49c696c17e80fce75ed9/test-fixtures/discover-connected/example-hall/contact.md' in [c for c in tcases_d['cases'] if c['id']=='CW05'][0]['prompt']
+      and 'fixture' not in (ROOT.parents[1]/'test-fixtures'/'discover-connected'/'example-hall'/'contact.md').read_text().lower())
+tcases_e=load('tests/templates-1.1e-cases.json'); plan3e=load('tests/hermes/plan-hermes3e.json')
+check('Round 11e / Hermes 3e pre-registration: pins the current SKILL.md and Hermes copy (the read-only skill-directory rule), rounds 11c and 3c as previous, the unchanged pointer, the 1.1e file (CR05 at the reachable proposal page), 7 OpenClaw turns and 12 Hermes sessions, and is not run',
+      r11e['skill']['sha256']==hashlib.sha256((ROOT/'SKILL.md').read_bytes()).hexdigest() and r11e['skill']['hermes_copy_sha256']==hashlib.sha256(hermes_skill.read_bytes()).hexdigest()
+      and r11e['pointer']['sha256']==hashlib.sha256(pointer_file.read_bytes()).hexdigest() and r11e['status'].startswith('PRE_REGISTERED_ROUND_11E') and r11e['cases_file']=='tests/templates-1.1e-cases.json'
+      and r11e['openclaw']['cases_run']=={'CR05':3,'CO01':2,'CW01':2} and len(plan3e)==12 and {x['case'] for x in plan3e}=={'CO01','CO02','CR01','CR05','CW01','CW05'} and len({x['tag'] for x in plan3e})==12 and all(x['tag'].startswith('h3e-') for x in plan3e)
+      and r11e['gates']['no_delegation']['max']==0 and r11e['gates']['trigger']['threshold']==0.9 and 'rater' in r11e['gates']['decision']['unit']
+      and [c['id'] for c in tcases_e['cases']]==tids_c and all((a['prompt']==b['prompt'])==(a['id']!='CR05') and a.get('owner_context')==b.get('owner_context') for a,b in zip(load('tests/templates-1.1d-cases.json')['cases'],tcases_e['cases']))
+      and '419ad5f51cecbe877816eb5985090f7532bae240/test-fixtures/discover-connected/oracle-adapter/proposal.md' in [c for c in tcases_e['cases'] if c['id']=='CR05'][0]['checks']['artifact_url']
+      and (ROOT.parents[1]/'test-fixtures'/'discover-connected'/'oracle-adapter'/'proposal.md').is_file() and 'skill directory' in (ROOT/'SKILL.md').read_text() and 'self-contained' in (ROOT/'references'/'drafting.md').read_text())
+check('Hermes round 3b plan: 26 single-turn sessions, unique h3b tags, two of every 1.1b case, round 3\'s order',
+      len(plan3b)==26 and len({x['tag'] for x in plan3b})==26 and all(x['tag'].startswith('h3b-') and len(x['turns'])==1 and x['turns'][0]==f"{x['case']}.txt" for x in plan3b)
+      and all(sum(1 for x in plan3b if x['case']==c)==2 for c in tids_b) and [x['case'] for x in plan3b]==[x['case'] for x in plan3])
+check('Hermes round 3 plan: 26 single-turn sessions, unique tags, two of every 1.1 case',
+      len(plan3)==26 and len({x['tag'] for x in plan3})==26 and all(len(x['turns'])==1 and x['turns'][0]==f"{x['case']}.txt" for x in plan3)
+      and all(sum(1 for x in plan3 if x['case']==c)==2 for c in tids))
 report={'scope':'Local artifact/schema validation and documented metadata-gating simulation only. No native runtimes, LLM sessions, live API verification, blockchain calls, or adjudication tests.',
         'passed':sum(x['passed'] for x in checks),'failed':sum(not x['passed'] for x in checks),'checks':checks,
         'behavioral_cases_run':0,'behavioral_cases_authored':30,'native_loader_tests':'NOT_RUN',

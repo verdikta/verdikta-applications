@@ -195,6 +195,8 @@ def score(cases, gates, results, regression=None, regression_cases=None):
     rep = {"samples": n, "cases_run": sorted({x["id"] for x in rows}), "gates": {}}
     def gate(name, passed, total, threshold, kind="ratio"):
         if name not in g: return  # not pre-registered for this round: neither computed nor counted in all_gates_pass
+        if total == 0:  # pre-registered but no sample of its cases in this run (a partial re-run): not applicable, reported as such
+            rep["gates"][name] = {"passed": 0, "total": 0, "value": None, "threshold": threshold, "ok": None, "not_applicable": True}; return
         value = (passed / total) if total else None
         ok = (value is not None and value >= threshold) if kind == "ratio" else (passed <= threshold)
         rep["gates"][name] = {"passed": passed, "total": total, "value": None if value is None else round(value, 3), "threshold": threshold, "ok": ok}
@@ -238,7 +240,7 @@ def score(cases, gates, results, regression=None, regression_cases=None):
             reg_rows.append({"id": r["id"], "decision": dec, "expected": exp, "ok": dec in acceptable, "unsafe": unsafe(r)})
         rep["regression"] = {"cases": len(reg_rows), "passed": sum(1 for x in reg_rows if x["ok"]), "unsafe": sum(1 for x in reg_rows if x["unsafe"]), "rows": reg_rows,
                              "misses": [x for x in reg_rows if not x["ok"]]}
-    rep["all_gates_pass"] = all(v["ok"] for v in rep["gates"].values()) and (rep.get("regression", {}).get("misses") == [] if regression is not None else True)
+    rep["all_gates_pass"] = all(v["ok"] for v in rep["gates"].values() if not v.get("not_applicable")) and (rep.get("regression", {}).get("misses") == [] if regression is not None else True)
     return rep
 
 

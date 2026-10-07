@@ -87,5 +87,11 @@
     "a change to the OpenClaw AGENTS.md pointer",
     "CR04, CR05, CN01, CW03 (see not_rerun)"
   ],
-  "changelog": []
+  "changelog": [
+    {
+      "date": "2026-10-07",
+      "before_any_turn": false,
+      "change": "Scorer change after round 11e's first counted turn (made while scoring Hermes round 3d), disclosed: gates with no sample in a partial re-run are reported as not applicable and left out of all_gates_pass. No threshold, case, label or message changed."
+    }
+  ]
 }

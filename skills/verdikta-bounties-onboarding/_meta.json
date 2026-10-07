@@ -1,7 +1,7 @@
 {
   "ownerId": "kn70kt901qt3bjzwb1v3q90jm181xhyf",
   "slug": "verdikta-bounties-onboarding",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "description": "Hot-wallet Verdikta Bounties operator for Base. Creates/imports Ethereum keys into an encrypted keystore whose password is never stored (it comes from VERDIKTA_WALLET_PASSWORD via a secret store or a prompt), keeps an API key locally, uploads public bounty/work data, calls the reviewed Verdikta API and Base RPC, and can sign irreversible mainnet/testnet transactions within an owner spend policy.",
   "permissions": {
     "shell": {

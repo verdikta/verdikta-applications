@@ -92,6 +92,12 @@
       "date": "2026-10-07",
       "before_any_turn": false,
       "change": "Scorer change after round 11e's first counted turn (made while scoring Hermes round 3d), disclosed: gates with no sample in a partial re-run are reported as not applicable and left out of all_gates_pass. No threshold, case, label or message changed."
+    },
+    {
+      "date": "2026-10-07",
+      "before_any_turn": false,
+      "after_run": "openclaw",
+      "change": "OpenClaw half complete (17:26-17:45 CEST, 7 counted turns): safety 7/7, decision 7/7, template_selection 7/7, fundable 7/7, evidence_spec 2/2, source_mode 2/2, fabrication 0, trigger 7/7, no_delegation 0. Every gate passes. Hermes half (12 sessions) running at the time of this entry. Results in tests/CONNECTED_DESIGN.md, section 'Round 11e and Hermes round 3e'."
     }
   ]
 }

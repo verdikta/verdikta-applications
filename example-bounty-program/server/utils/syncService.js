@@ -35,6 +35,21 @@ const SYNC_STATE_VERSION = 2;
 // Max Phase D.8 chain reads per sync cycle (see that block for why it is capped)
 const PAID_HEAL_MAX_PER_CYCLE = 25;
 
+// Phase D.6b metadata heal (see needsMetadataHeal): IPFS fetches per cycle, the
+// retry budget per job, and the backoff between attempts (doubling, capped).
+const METADATA_HEAL_MAX_PER_CYCLE = 5;
+const METADATA_HEAL_MAX_ATTEMPTS = 8;
+const METADATA_HEAL_BASE_DELAY_SEC = 5 * 60;
+const METADATA_HEAL_MAX_DELAY_SEC = 6 * 60 * 60;
+
+// Per-request timeout for evaluation package / rubric fetches. Node's built-in
+// fetch ignores a `timeout` option, so this goes through AbortSignal.timeout.
+const IPFS_FETCH_TIMEOUT_MS = 15000;
+
+// Defaults addJobFromBlockchain writes when the evaluation package can't be read.
+const DEFAULT_SYNCED_DESCRIPTION = 'Fetched from blockchain';
+const DEFAULT_WORK_PRODUCT_TYPE = 'Work Product';
+
 // Contract SubmissionStatus enum → local fields, indexed by the raw uint8.
 // ON_CHAIN_STATUS keeps the low-level enum name (analytics needs PassedPaid vs
 // PassedUnpaid); LOCAL_STATUS is the collapsed form the API/UI render. Note that
@@ -48,9 +63,34 @@ const LOCAL_STATUS_BY_INDEX = [
   'Prepared', 'PENDING_EVALUATION', 'REJECTED', 'APPROVED', 'APPROVED', 'PendingCreatorApproval'
 ];
 
+/** GET a CID from one gateway; returns a Buffer, or null on any HTTP/network failure. */
+async function fetchFromGateway(gateway, cid) {
+  try {
+    const response = await fetch(`${gateway}/ipfs/${cid}`, {
+      signal: AbortSignal.timeout(IPFS_FETCH_TIMEOUT_MS),
+      headers: { 'Accept': 'application/octet-stream, application/zip, */*' }
+    });
+    if (!response.ok) {
+      logger.debug('IPFS gateway returned an error', { gateway, cid, status: response.status });
+      return null;
+    }
+    return Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    logger.debug('IPFS gateway request failed', { gateway, cid, error: error.message });
+    return null;
+  }
+}
+
 /**
- * Fetch and parse metadata from an evaluation CID (ZIP archive)
- * Extracts title and description from manifest.json and primary_query.json
+ * Fetch and parse metadata from an evaluation CID (ZIP archive).
+ * Title comes from manifest.json `name`, then primary_query.json, then the
+ * linked grading rubric's `title`. Jury models come from the manifest.
+ *
+ * Returns null when no gateway delivered a readable package ("try again
+ * later"). Once the package is read, it always returns an object, with null
+ * fields for anything the package doesn't carry. `incomplete: true` means the
+ * title could only have come from a rubric that failed to fetch, so a retry
+ * may still find it.
  */
 async function fetchEvaluationMetadata(evaluationCid) {
   if (!evaluationCid || evaluationCid.startsWith('dev-')) {
@@ -61,21 +101,18 @@ async function fetchEvaluationMetadata(evaluationCid) {
 
   for (const gateway of gateways) {
     try {
-      const url = `${gateway}/ipfs/${evaluationCid}`;
-      const response = await fetch(url, {
-        timeout: 15000,
-        headers: { 'Accept': 'application/octet-stream, application/zip, */*' }
-      });
-
-      if (!response.ok) continue;
-
-      const buffer = await response.arrayBuffer();
-      const zip = new AdmZip(Buffer.from(buffer));
+      const buffer = await fetchFromGateway(gateway, evaluationCid);
+      if (!buffer) continue;
+      // A gateway error page is not a ZIP: AdmZip throws and we try the next gateway.
+      const zip = new AdmZip(buffer);
+      zip.getEntries();
 
       let title = null;
       let description = null;
       let workProductType = null;
       let juryNodes = [];
+      let rubricHash = null;
+      let incomplete = false;
 
       // Parse manifest.json for title + jury models
       const manifestEntry = zip.getEntry('manifest.json');
@@ -85,6 +122,10 @@ async function fetchEvaluationMetadata(evaluationCid) {
           if (manifest.name) {
             title = manifest.name.replace(/ - Evaluation(?: for Payment Release)?$/, '');
           }
+          const rubricRef = Array.isArray(manifest.additional)
+            ? manifest.additional.find(a => a && a.name === 'gradingRubric')
+            : null;
+          if (rubricRef && typeof rubricRef.hash === 'string') rubricHash = rubricRef.hash;
           // Capture the AI jury models so they can be persisted onto the job
           // record (immutable per evaluationCid — content-addressed). Shape
           // matches API-created juryNodes: { provider, model, runs, weight }.
@@ -145,13 +186,35 @@ async function fetchEvaluationMetadata(evaluationCid) {
         }
       }
 
-      if (title || description || juryNodes.length > 0) {
-        logger.debug('Fetched evaluation metadata', { cid: evaluationCid, title, hasDescription: !!description, juryNodeCount: juryNodes.length });
-        return { title, description, workProductType, juryNodes };
+      // Packages built outside the API often carry neither a manifest name nor a
+      // "Task Description:" line; the linked grading rubric has both. A failed
+      // rubric fetch only matters for a retry when it was the title source.
+      if ((!title || !description) && rubricHash) {
+        let rubricBuffer = null;
+        for (const g of gateways) {
+          rubricBuffer = await fetchFromGateway(g, rubricHash);
+          if (rubricBuffer) break;
+        }
+        if (!rubricBuffer) {
+          if (!title) incomplete = true;
+        } else {
+          try {
+            const rubric = JSON.parse(rubricBuffer.toString('utf8'));
+            if (!title && typeof rubric.title === 'string' && rubric.title.trim()) title = rubric.title.trim();
+            if (!description && typeof rubric.description === 'string' && rubric.description.trim()) {
+              description = rubric.description.trim();
+            }
+          } catch (e) {
+            logger.debug('Grading rubric is not JSON', { cid: rubricHash, error: e.message });
+          }
+        }
       }
 
+      logger.debug('Fetched evaluation metadata', { cid: evaluationCid, title, hasDescription: !!description, juryNodeCount: juryNodes.length, incomplete });
+      return { title, description, workProductType, juryNodes, ...(incomplete ? { incomplete: true } : {}) };
+
     } catch (error) {
-      logger.debug('Failed to fetch from gateway', { gateway, cid: evaluationCid, error: error.message });
+      logger.debug('Evaluation package from gateway is unreadable', { gateway, cid: evaluationCid, error: error.message });
       continue;
     }
   }
@@ -219,6 +282,93 @@ function needsChainFieldHeal(job, currentContract, bountyCount) {
   // the signature of a record written from a drained payoutWei — re-read it.
   const weiMissing = job.bountyAmountWei == null || job.bountyAmountWei === '0';
   return weiMissing && !job._weiBackfillAttempted;
+}
+
+/** True while a synced job still carries the placeholder title addJobFromBlockchain writes. */
+function hasPlaceholderTitle(job) {
+  return !job.title || job.title === `Bounty #${job.jobId}`;
+}
+
+/** True while a synced job still carries the placeholder description. */
+function hasPlaceholderDescription(job) {
+  return !job.description || job.description === DEFAULT_SYNCED_DESCRIPTION;
+}
+
+/**
+ * Should Phase D.6b retry reading this job's title/description from its
+ * evaluation package? addJobFromBlockchain fetches the package once, when the
+ * bounty is discovered; if the gateways fail at that moment (they rate-limit
+ * this host) the job keeps "Bounty #N" forever. Packages built outside the API
+ * may also have put the description only in the grading rubric, which older
+ * code never read. This picks those jobs up again, with a per-job retry budget
+ * and backoff so a CID that never resolves can't cost a fetch every cycle.
+ */
+function needsMetadataHeal(job, currentContract, nowSec = Math.floor(Date.now() / 1000)) {
+  if (!job) return false;
+  if ((job.contractAddress || '').toLowerCase() !== currentContract) return false;
+  if (job.syncedFromBlockchain !== true) return false;
+  if (job.status === 'ORPHANED') return false;
+  if (!job.evaluationCid || job._metadataHealDone) return false;
+  if (!hasPlaceholderTitle(job) && !hasPlaceholderDescription(job)) return false;
+  if ((job._metadataHealAttempts || 0) >= METADATA_HEAL_MAX_ATTEMPTS) return false;
+  return !(job._metadataHealNextAt > nowSec);
+}
+
+/**
+ * Copy evaluation-package metadata onto a job whose title, description, work
+ * product type or jury are still the sync defaults. Never overwrites a value
+ * that came from somewhere else. Returns true if anything changed.
+ */
+function applyEvaluationMetadata(job, metadata) {
+  let changed = false;
+  const set = (field, value) => { if (job[field] !== value) { job[field] = value; changed = true; } };
+  if (metadata.title && hasPlaceholderTitle(job)) set('title', metadata.title);
+  if (metadata.description && hasPlaceholderDescription(job)) {
+    set('description', metadata.description);
+  }
+  if (metadata.workProductType && (!job.workProductType || job.workProductType === DEFAULT_WORK_PRODUCT_TYPE)) {
+    set('workProductType', metadata.workProductType);
+  }
+  if (Array.isArray(metadata.juryNodes) && metadata.juryNodes.length > 0 &&
+      (!Array.isArray(job.juryNodes) || job.juryNodes.length === 0)) {
+    job.juryNodes = metadata.juryNodes;
+    changed = true;
+  }
+  return changed;
+}
+
+/**
+ * One Phase D.6b attempt for a job. Uses a rubric the API already stored on the
+ * job (GET /:jobId lazy-persists rubricContent) before spending an IPFS fetch.
+ * Returns 'healed' | 'no-title' | 'retry'.
+ */
+async function healJobMetadata(job, nowSec = Math.floor(Date.now() / 1000), fetchMetadata = fetchEvaluationMetadata) {
+  const stored = job.rubricContent;
+  if (stored && typeof stored.title === 'string' && stored.title.trim()) {
+    applyEvaluationMetadata(job, {
+      title: stored.title.trim(),
+      description: typeof stored.description === 'string' && stored.description.trim() ? stored.description.trim() : null,
+    });
+    if (!hasPlaceholderTitle(job) && !hasPlaceholderDescription(job)) {
+      job._metadataHealDone = true;
+      return 'healed';
+    }
+  }
+
+  const metadata = await fetchMetadata(job.evaluationCid);
+  if (!metadata || (metadata.incomplete && !metadata.title)) {
+    const attempts = (job._metadataHealAttempts || 0) + 1;
+    job._metadataHealAttempts = attempts;
+    job._metadataHealNextAt = nowSec + Math.min(
+      METADATA_HEAL_BASE_DELAY_SEC * 2 ** (attempts - 1), METADATA_HEAL_MAX_DELAY_SEC
+    );
+    return 'retry';
+  }
+
+  const changed = applyEvaluationMetadata(job, metadata);
+  // The package was read; whatever it lacks, refetching won't add.
+  job._metadataHealDone = true;
+  return changed ? 'healed' : 'no-title';
 }
 
 function applyChainBountyFields(localJob, chainBounty) {
@@ -766,6 +916,32 @@ class SyncService {
         candidates: healCandidates.length,
         healed
       });
+    }
+
+    // Phase D.6b: Metadata heal — retry the evaluation-package read for synced
+    // jobs still titled "Bounty #N" (the gateways failed when the bounty was
+    // discovered; mainnet 137/138) or still described "Fetched from blockchain"
+    // (description only in the rubric; mainnet 117-136). See needsMetadataHeal()
+    // for the retry budget. Steady-state cost: zero (in-memory filter, empty candidate set).
+    {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const metaCandidates = storage.jobs
+        .filter(j => needsMetadataHeal(j, currentContract, nowSec))
+        .slice(0, METADATA_HEAL_MAX_PER_CYCLE);
+      for (const job of metaCandidates) {
+        try {
+          const outcome = await healJobMetadata(job, nowSec);
+          if (outcome === 'retry') {
+            logger.warn('[sync/metadata-heal] evaluation package unavailable; will retry', {
+              jobId: job.jobId, attempts: job._metadataHealAttempts, nextAt: job._metadataHealNextAt
+            });
+          } else {
+            logger.info('[sync/metadata-heal] metadata applied', { jobId: job.jobId, outcome, title: job.title });
+          }
+        } catch (err) {
+          logger.warn('[sync/metadata-heal] failed', { jobId: job.jobId, error: err.message });
+        }
+      }
     }
 
     // Phase D.7: Submission-level continuous heal — find submissions on
@@ -1556,8 +1732,8 @@ class SyncService {
 
     // Try to fetch real title/description from the evaluation package on IPFS
     let title = bounty.title || `Bounty #${bounty.jobId}`;
-    let description = bounty.description || 'Fetched from blockchain';
-    let workProductType = bounty.workProductType || 'Work Product';
+    let description = bounty.description || DEFAULT_SYNCED_DESCRIPTION;
+    let workProductType = bounty.workProductType || DEFAULT_WORK_PRODUCT_TYPE;
     let juryNodes = [];
 
     try {
@@ -1567,6 +1743,10 @@ class SyncService {
         if (metadata.description) description = metadata.description;
         if (metadata.workProductType) workProductType = metadata.workProductType;
         if (Array.isArray(metadata.juryNodes)) juryNodes = metadata.juryNodes;
+      } else if (bounty.evaluationCid && !bounty.evaluationCid.startsWith('dev-')) {
+        logger.warn('Evaluation package unavailable; using default title until the metadata heal succeeds', {
+          jobId: bounty.jobId, evaluationCid: bounty.evaluationCid
+        });
       }
     } catch (error) {
       logger.warn('Failed to fetch evaluation metadata, using defaults', {
@@ -2031,4 +2211,5 @@ module.exports = {
   initializeSyncService,
   getSyncService,
   SyncService,
-  applyChainBountyFields, findPendingJobForBountyCreated, needsChainFieldHeal };
+  applyChainBountyFields, findPendingJobForBountyCreated, needsChainFieldHeal,
+  needsMetadataHeal, applyEvaluationMetadata, healJobMetadata, fetchEvaluationMetadata };

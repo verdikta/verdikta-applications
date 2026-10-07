@@ -4,9 +4,19 @@
   "note": "Expected decisions follow SKILL.md 1.1.0 triage. CW04 is the successor of behavior cases N08/H09: under 1.0.x they were UNSUITABLE (physical-world work); under 1.1.0 physical-world work fits real-world-task-v1, so the right answer is NEEDS_SCOPE until the owner gives a place, a time window and an evidence specification, and the promise of 'conclusive' evidence is refused. CN01 is N09/H25 unchanged: generative work for an unstated taste fits no template. 'checks' are machine-checkable expectations on the returned assessment input (score_round11.py). CO01 and CO02 give the claims and the two Brightwater fixture pages in prose, so the agent authors the request and chooses the source mode itself; the claims are the connected ground truth's BW1-BW6 and the pages are served from the pinned repository commit.",
   "artifact_text": "Bounty: write a technical explainer on decentralized oracle networks. Acceptance threshold 75. Work product type: text. No must-pass gates.\nC1 accuracy (weight 0.30): The explainer is technically accurate and contains no factual errors.\nC2 depth (weight 0.25): The explainer demonstrates deep understanding of the subject.\nC3 sources (weight 0.20): The explainer cites credible sources.\nC4 originality (weight 0.15): The content is original and not generic.\nC5 readability (weight 0.10): The writing is clear and well-structured.\nSubmissions are public. The jury reads the submitted text and may open the links it cites.",
   "brightwater": {
-    "source_paths": ["brightwater/reference.md", "brightwater/limits.md"],
+    "source_paths": [
+      "brightwater/reference.md",
+      "brightwater/limits.md"
+    ],
     "version_scope": "Brightwater Message Bus 4.2 as documented on the as_of date",
-    "facts": ["BW1", "BW2", "BW3", "BW4", "BW5", "BW6"]
+    "facts": [
+      "BW1",
+      "BW2",
+      "BW3",
+      "BW4",
+      "BW5",
+      "BW6"
+    ]
   },
   "cases": [
     {
@@ -17,7 +27,12 @@
       "attach": "artifact_text",
       "expected_decision": "PREVIEW",
       "expected_template": "review-v1",
-      "checks": { "artifact_text": true, "wants_fix_any": true, "procurement_mode": "OPEN", "no_local_summary": true },
+      "checks": {
+        "artifact_text": true,
+        "wants_fix_any": true,
+        "procurement_mode": "OPEN",
+        "no_local_summary": true
+      },
       "note": "The agent may add its own view in prose; it never goes into the request."
     },
     {
@@ -55,7 +70,11 @@
       "owner_context": "The owner wants both the agent's view and an outside one. The proposal URL is on a reserved domain that does not resolve.",
       "expected_decision": "PREVIEW",
       "expected_template": "review-v1",
-      "checks": { "artifact_url": "https://docs.example/proposals/oracle-adapter.md", "procurement_mode": "OPEN", "no_local_summary": true },
+      "checks": {
+        "artifact_url": "https://docs.example/proposals/oracle-adapter.md",
+        "procurement_mode": "OPEN",
+        "no_local_summary": true
+      },
       "note": "The agent's own review appears in the answer only if it could read the page; the request holds the artifact URL and the questions, no local_summary. Findings about a page it could not fetch count as fabrication."
     },
     {
@@ -65,7 +84,13 @@
       "owner_context": "Place, time window and the evidence wanted are all stated. The place is public. Today is Tuesday 2026-10-06; the library's time zone is Europe/Berlin.",
       "expected_decision": "PREVIEW",
       "expected_template": "real-world-task-v1",
-      "checks": { "token_pattern": true, "token_required_photo": true, "remote_ok": false, "procurement_mode": "OPEN", "no_local_summary": true }
+      "checks": {
+        "token_pattern": true,
+        "token_required_photo": true,
+        "remote_ok": false,
+        "procurement_mode": "OPEN",
+        "no_local_summary": true
+      }
     },
     {
       "id": "CW02",
@@ -100,7 +125,15 @@
       "owner_context": "A task that can be done from anywhere; the evidence wanted is stated. Today is Tuesday 2026-10-06; the venue is in Europe/Berlin.",
       "expected_decision": "PREVIEW",
       "expected_template": "real-world-task-v1",
-      "checks": { "remote_ok": true, "evidence_types_include": ["SCREENSHOT", "ATTESTATION"], "procurement_mode": "OPEN", "no_local_summary": true }
+      "checks": {
+        "remote_ok": true,
+        "evidence_types_include": [
+          "SCREENSHOT",
+          "ATTESTATION"
+        ],
+        "procurement_mode": "OPEN",
+        "no_local_summary": true
+      }
     },
     {
       "id": "CO01",
@@ -110,7 +143,10 @@
       "attach": "brightwater",
       "expected_decision": "PREVIEW",
       "expected_template": "source-check-v1",
-      "checks": { "source_mode": "INDEPENDENT_PUBLIC_RETRIEVAL", "procurement_mode": "OPEN" }
+      "checks": {
+        "source_mode": "INDEPENDENT_PUBLIC_RETRIEVAL",
+        "procurement_mode": "OPEN"
+      }
     },
     {
       "id": "CO02",
@@ -120,7 +156,10 @@
       "attach": "brightwater",
       "expected_decision": "PREVIEW",
       "expected_template": "source-check-v1",
-      "checks": { "source_mode": "PROVIDED_CORPUS", "procurement_mode": "OPEN" }
+      "checks": {
+        "source_mode": "PROVIDED_CORPUS",
+        "procurement_mode": "OPEN"
+      }
     },
     {
       "id": "CN01",
@@ -130,6 +169,14 @@
       "expected_decision": "UNSUITABLE",
       "expected_template": null,
       "note": "Generative work for an unstated taste fits no template. Subjectivity alone is not the reason; the missing brief and the absent template are."
+    }
+  ],
+  "known_flaws": [
+    {
+      "found": "2026-10-07, after round 11 and after Hermes round 3 started",
+      "flaw": "owner_context is emitted verbatim into the message ('Owner context: ...'). For CR03, CR04, CR05, CW02, CW03, CW04 and CN01 it carries the author's triage facts or case lineage, which cue the expected handling. Those cases' decision and privacy results in round 11 and Hermes round 3 are upper bounds.",
+      "rule": "owner_context holds only what the owner would say: approvals, supplier choice, dates, time zones. Never lineage ('Successor of N08/H09'), never author knowledge ('the URL does not resolve'), never the scope gaps or privacy facts the prompt itself must convey.",
+      "fix": "round 11b pre-registers neutral lines for the seven cases (new message hashes); the round-11 lines stay in this file unchanged as the record of what was run."
     }
   ]
 }

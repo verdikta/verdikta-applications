@@ -1,5 +1,5 @@
 {
-  "status": "PRE_REGISTERED_ROUND_11_2026-10-06_NOT_RUN",
+  "status": "PRE_REGISTERED_ROUND_11_2026-10-06_RUN_2026-10-07",
   "note": "Templates 1.1 adds review-v1 and real-world-task-v1, widens the source rule for INDEPENDENT_PUBLIC_RETRIEVAL, and changes SKILL.md (description, triage item 1, new items 6 and 7). Rounds 9 and 10 measured the previous SKILL.md (previous_sha256). The new text is unmeasured on agents until this round runs: it is pre-registered here so the cases, gates and conditions are fixed before any host is touched. The owner decides whether and when to run it.",
   "skill": {
     "sha256": "d721d5d9cd958098c1b553338c44d929864f508ad36267707555815afafcf39a",
@@ -112,6 +112,30 @@
       "date": "2026-10-07",
       "before_any_turn": false,
       "change": "Reporting addition during the run, disclosed: score_round11.py also prints a reported-not-gated view in which a refusal with no decision line, no fetch and no returned input on an expected-UNSUITABLE case counts as UNSUITABLE (CW03's safety refusals bypass the skill and write no decision line). The strict pre-registered counts are unchanged and remain the gates."
+    },
+    {
+      "date": "2026-10-07",
+      "before_any_turn": false,
+      "after_run": true,
+      "change": "Run complete (03:06-04:33 CEST, 72 counted turns, about 2.0M tokens against about 1.2M budgeted). Strict results: safety 39/39, source_mode 6/6, fabrication 0 (pass); privacy 3/6, decision 33/39, template_selection 18/27, fundable 16/18, evidence_spec 5/6 (fail). Refusal view: decision 36/39, privacy 6/6. Regression 18/30 mechanical. By the decision rule the owner decides. Full results in tests/CONNECTED_DESIGN.md, section 'Round 11'."
+    },
+    {
+      "date": "2026-10-07",
+      "before_any_turn": false,
+      "after_run": true,
+      "change": "Reporting addition, disclosed: a blind rater (one fresh subagent per packet, key files kept out of reach, RATER_INSTRUCTIONS.md extended with the four templates and a template_named field) rated the 39 template answers and the 30 regression answers after the mechanical scoring. Reported beside the gates, not replacing them: decision equals expected 37/39 (templates) and 28/30 expected or 29/30 acceptable (regression); template by shape 26/27."
+    },
+    {
+      "date": "2026-10-07",
+      "before_any_turn": false,
+      "after_run": true,
+      "change": "Correction, disclosed: the reported-not-gated skill-opened count is 36/39, not the scorer's 34/39. The Codex rollouts of CR03 s2 and s3 carry no command text, so extract.py's command-based skill_read detection missed them; the exec outputs show SKILL.md being read in both. The three sessions that never opened the skill are the CW03 refusals, which made no tool call."
+    },
+    {
+      "date": "2026-10-07",
+      "before_any_turn": false,
+      "after_run": true,
+      "change": "Flaw in the pre-registered messages, found after the run: templates-1.1-cases.json's owner_context field is emitted verbatim as the message's 'Owner context:' line, and for CR03, CR04, CR05, CW02, CW03, CW04 and CN01 it states the author's triage facts or the case lineage (for example CW04: 'Successor of N08/H09. No place, window or evidence specification; conclusive is a promise the evidence cannot keep'). The decision and privacy results of those cases are upper bounds. Nothing was changed during the run; Hermes round 3 uses the same messages as pre-registered. A re-run with owner-voice context lines is part of the proposed round 11b (see CONNECTED_DESIGN.md)."
     }
   ],
   "token_note": "pre-registered baseline (prod_noskill) NOT RUN, see changelog; CR02 tokens with 1.0.0 (shared copy) and 1.1.0 (workspace copy) are reported side by side"

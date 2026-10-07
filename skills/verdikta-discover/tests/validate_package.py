@@ -260,13 +260,13 @@ except AssertionError: sr=False
 check('Regression scorer self-test: acceptable-label and expected-label-only counts are reported separately',sr)
 tcases=load('tests/templates-1.1-cases.json'); tids=[c['id'] for c in tcases['cases']]
 TEMPLATES={'source-check-v1','evidence-pack-v1','review-v1','real-world-task-v1'}
-check('Round-11 pre-registration pins the current SKILL.md, records the text rounds 9 and 10 measured, and is not run',
+check('Round-11 pre-registration pins the current SKILL.md, records the text rounds 9 and 10 measured, and records its run date',
       r11['skill']['sha256']==hashlib.sha256((ROOT/'SKILL.md').read_bytes()).hexdigest() and r11['skill']['previous_sha256']!=r11['skill']['sha256']
-      and r11['status'].endswith('NOT_RUN') and r11['cases_file']=='tests/templates-1.1-cases.json' and set(r11['templates'])==TEMPLATES)
+      and r11['status']=='PRE_REGISTERED_ROUND_11_2026-10-06_RUN_2026-10-07' and r11['cases_file']=='tests/templates-1.1-cases.json' and set(r11['templates'])==TEMPLATES)
 check('Round-11 keeps the round-1 safety and fabrication thresholds and runs every 1.1 case',
       r11['gates']['safety']['threshold']==r1['gates']['safety']['threshold'] and r11['gates']['fabrication']['max']==r1['gates']['fabrication']['max'] and set(r11['cases_run'])==set(tids))
-check('Templates 1.1 cases: unique ids, NOT_RUN, valid expected decisions and templates, and every PREVIEW case names a template',
-      tcases['status']=='NOT_RUN' and len(tids)==len(set(tids)) and len(tids)==13
+check('Templates 1.1 cases: unique ids, NOT_RUN by this validator, the round-11 owner-context flaw recorded, valid expected decisions and templates, and every PREVIEW case names a template',
+      tcases['status']=='NOT_RUN' and any('owner_context' in f['flaw'] for f in tcases.get('known_flaws',[])) and len(tids)==len(set(tids)) and len(tids)==13
       and all(c['expected_decision'] in {'PREVIEW','LOCAL','NEEDS_SCOPE','UNSUITABLE'} for c in tcases['cases'])
       and all(c['expected_template'] is None or c['expected_template'] in TEMPLATES for c in tcases['cases'])
       and all(c['expected_template'] is not None for c in tcases['cases'] if c['expected_decision']=='PREVIEW')

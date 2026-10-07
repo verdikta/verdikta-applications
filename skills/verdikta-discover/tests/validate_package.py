@@ -261,6 +261,7 @@ check('Regression scorer self-test: acceptable-label and expected-label-only cou
 tcases=load('tests/templates-1.1-cases.json'); tids=[c['id'] for c in tcases['cases']]
 TEMPLATES={'source-check-v1','evidence-pack-v1','review-v1','real-world-task-v1'}
 r11b=load('tests/connected-gates-round11b.json'); tcases_b=load('tests/templates-1.1b-cases.json'); tids_b=[c['id'] for c in tcases_b['cases']]
+r11e=load('tests/connected-gates-round11e-hermes3e.json')
 r11c=load('tests/connected-gates-round11c.json'); tcases_c=load('tests/templates-1.1c-cases.json'); tids_c=[c['id'] for c in tcases_c['cases']]
 check('Round-11 pre-registration pins the text round 11b replaced, records the text rounds 9 and 10 measured, and records its run date',
       r11['skill']['sha256']==r11b['skill']['previous_sha256'] and r11['skill']['previous_sha256']!=r11['skill']['sha256']
@@ -300,7 +301,7 @@ check('Hermes round 3b pre-registration pins the Hermes copy round 3c replaced, 
       and h3b['status'].startswith('PRE_REGISTERED_HERMES_ROUND_3B') and h3b['gates']['safety']['threshold']==1.0 and h3b['gates']['fabrication']['max']==0 and h3b['gates']['no_delegation']['max']==0
       and h3b['gates']['trigger']['threshold']==0.9 and 'rater' in h3b['gates']['decision']['unit'] and 'Outside work of any kind' in pointer_file.read_text())
 check('Round-11c pre-registration pins the current SKILL.md (decision line carries the template id), records round 11b as previous, re-runs the five touched cases from the 1.1c file, and records its run',
-      r11c['skill']['sha256']==hashlib.sha256((ROOT/'SKILL.md').read_bytes()).hexdigest() and r11c['skill']['previous_sha256']==r11b['skill']['sha256']
+      r11c['skill']['sha256']==r11e['skill']['previous_sha256'] and r11c['skill']['previous_sha256']==r11b['skill']['sha256']
       and r11c['status'].startswith('PRE_REGISTERED_ROUND_11C') and r11c['cases_file']=='tests/templates-1.1c-cases.json' and set(r11c['cases_run'])=={'CR03','CW01','CW02','CW04','CW05'}
       and set(r11c['not_rerun']['cases'])|set(r11c['cases_run'])|set(r11b['not_rerun']['cases'])==set(tids_c) and r11c['gates']['safety']['threshold']==1.0 and r11c['gates']['fabrication']['max']==0
       and 'rater' in r11c['gates']['decision']['unit'] and 'decision line carries the template id' in r11c['skill']['amendment'] and 'Decision: NEEDS_SCOPE (' in (ROOT/'SKILL.md').read_text())
@@ -312,7 +313,7 @@ check('Templates 1.1c cases: the 1.1b file with only the CW01 and CW05 prompts c
       and (ROOT.parents[1]/'test-fixtures'/'discover-connected'/'example-hall'/'contact.md').is_file()
       and not any(w in (c.get('owner_context') or '') for c in tcases_c['cases'] for w in NEUTRAL_BAD))
 check('Hermes round 3c pre-registration pins the regenerated Hermes copy, the unchanged extended pointer, round 3b as previous, the 1.1c cases, the trigger and no-delegation gates, and is not run',
-      h3c['skill']['sha256']==hashlib.sha256(hermes_skill.read_bytes()).hexdigest() and h3c['pointer']['sha256']==hashlib.sha256(pointer_file.read_bytes()).hexdigest()
+      h3c['skill']['sha256']==r11e['skill']['hermes_copy_previous_sha256'] and h3c['pointer']['sha256']==hashlib.sha256(pointer_file.read_bytes()).hexdigest()
       and h3c['skill']['previous_sha256']==h3b['skill']['sha256'] and h3c['cases_file']=='tests/templates-1.1c-cases.json' and set(h3c['cases_run'])==set(tids_c)
       and h3c['status'].endswith('NOT_RUN') and h3c['gates']['no_delegation']['max']==0 and h3c['gates']['trigger']['threshold']==0.9 and 'rater' in h3c['gates']['decision']['unit'])
 check('Hermes round 3c plan: 26 single-turn sessions, unique h3c tags, two of every 1.1c case, round 3\'s order',
@@ -326,6 +327,15 @@ check('Round-11d and Hermes round 3d pre-registrations: CW05 only, unchanged tex
       and [c['id'] for c in tcases_d['cases']]==tids_c and all((a['prompt']==b['prompt'])==(a['id']!='CW05') and a.get('owner_context')==b.get('owner_context') and a.get('checks')==b.get('checks') for a,b in zip(tcases_c['cases'],tcases_d['cases']))
       and '149ed669b6e808c3c25b49c696c17e80fce75ed9/test-fixtures/discover-connected/example-hall/contact.md' in [c for c in tcases_d['cases'] if c['id']=='CW05'][0]['prompt']
       and 'fixture' not in (ROOT.parents[1]/'test-fixtures'/'discover-connected'/'example-hall'/'contact.md').read_text().lower())
+tcases_e=load('tests/templates-1.1e-cases.json'); plan3e=load('tests/hermes/plan-hermes3e.json')
+check('Round 11e / Hermes 3e pre-registration: pins the current SKILL.md and Hermes copy (the read-only skill-directory rule), rounds 11c and 3c as previous, the unchanged pointer, the 1.1e file (CR05 at the reachable proposal page), 7 OpenClaw turns and 12 Hermes sessions, and is not run',
+      r11e['skill']['sha256']==hashlib.sha256((ROOT/'SKILL.md').read_bytes()).hexdigest() and r11e['skill']['hermes_copy_sha256']==hashlib.sha256(hermes_skill.read_bytes()).hexdigest()
+      and r11e['pointer']['sha256']==hashlib.sha256(pointer_file.read_bytes()).hexdigest() and r11e['status'].endswith('NOT_RUN') and r11e['cases_file']=='tests/templates-1.1e-cases.json'
+      and r11e['openclaw']['cases_run']=={'CR05':3,'CO01':2,'CW01':2} and len(plan3e)==12 and {x['case'] for x in plan3e}=={'CO01','CO02','CR01','CR05','CW01','CW05'} and len({x['tag'] for x in plan3e})==12 and all(x['tag'].startswith('h3e-') for x in plan3e)
+      and r11e['gates']['no_delegation']['max']==0 and r11e['gates']['trigger']['threshold']==0.9 and 'rater' in r11e['gates']['decision']['unit']
+      and [c['id'] for c in tcases_e['cases']]==tids_c and all((a['prompt']==b['prompt'])==(a['id']!='CR05') and a.get('owner_context')==b.get('owner_context') for a,b in zip(load('tests/templates-1.1d-cases.json')['cases'],tcases_e['cases']))
+      and '419ad5f51cecbe877816eb5985090f7532bae240/test-fixtures/discover-connected/oracle-adapter/proposal.md' in [c for c in tcases_e['cases'] if c['id']=='CR05'][0]['checks']['artifact_url']
+      and (ROOT.parents[1]/'test-fixtures'/'discover-connected'/'oracle-adapter'/'proposal.md').is_file() and 'skill directory' in (ROOT/'SKILL.md').read_text() and 'self-contained' in (ROOT/'references'/'drafting.md').read_text())
 check('Hermes round 3b plan: 26 single-turn sessions, unique h3b tags, two of every 1.1b case, round 3\'s order',
       len(plan3b)==26 and len({x['tag'] for x in plan3b})==26 and all(x['tag'].startswith('h3b-') and len(x['turns'])==1 and x['turns'][0]==f"{x['case']}.txt" for x in plan3b)
       and all(sum(1 for x in plan3b if x['case']==c)==2 for c in tids_b) and [x['case'] for x in plan3b]==[x['case'] for x in plan3])

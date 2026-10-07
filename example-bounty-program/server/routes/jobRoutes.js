@@ -2668,14 +2668,9 @@ router.get('/admin/validate-all', async (req, res) => {
           }
         }
 
-        // Store validation result in job
-        await jobStorage.updateJob(job.jobId, {
-          validationStatus: {
-            valid: result.valid,
-            issues: result.issues,
-            checkedAt: new Date().toISOString()
-          }
-        });
+        // Store validation result in job, unless it is only a fetch failure: that
+        // must not paint a red error card on the board (see persistValidationVerdict).
+        const verdict = await persistValidationVerdict(job, result);
 
         if (result.valid) {
           validCount++;
@@ -2688,7 +2683,8 @@ router.get('/admin/validate-all', async (req, res) => {
           title: job.title,
           valid: result.valid,
           errorCount: result.issues.filter(i => i.severity === 'error').length,
-          warningCount: result.issues.filter(i => i.severity === 'warning').length
+          warningCount: result.issues.filter(i => i.severity === 'warning').length,
+          ...(verdict ? {} : { unchecked: true })
         });
 
       } catch (e) {
@@ -6795,9 +6791,10 @@ async function probeCidAccessibility(cid, perGatewayTimeoutMs = 10000) {
  * Deep diagnostic for stuck submissions - checks on-chain state, CID accessibility, and Verdikta status.
  * Helps identify why a submission is stuck or why timeout is reverting.
  */
-// Run bountyValidator for /diagnose. A package that could not be fetched is
-// reported as unverifiable rather than as a package fault. Returns null when no
-// IPFS client is configured or the validator throws.
+// Run bountyValidator for /diagnose. A fetch failure (bountyValidator's transient
+// issue types) is reported as unverifiable rather than as a package fault, unless
+// what did load already shows a deterministic package error. Returns null when
+// no IPFS client is configured or the validator throws.
 async function diagnosePackage(job, req) {
   const ipfsClient = req.app.locals.ipfsClient;
   if (!ipfsClient) return null;
@@ -6809,11 +6806,11 @@ async function diagnosePackage(job, req) {
   }
   try {
     const result = await validateBounty({ evaluationCid: job.evaluationCid, classId: job.classId, ipfsClient, classMap });
-    const fetchFailure = result.issues.find(i =>
-      i.type === IssueType.CID_INACCESSIBLE ||
-      (i.type === IssueType.MISSING_RUBRIC && /^Cannot fetch/.test(i.message))
-    );
-    return fetchFailure ? { ...result, unverifiable: true, unverifiableReason: fetchFailure.message } : result;
+    const fetchFailure = result.issues.find(isTransientIssue);
+    if (fetchFailure && !result.issues.some(isGatingIssue)) {
+      return { ...result, unverifiable: true, unverifiableReason: fetchFailure.message };
+    }
+    return result;
   } catch (e) {
     logger.warn('[diagnose] validateBounty failed', { jobId: job.jobId, msg: e.message });
     return null;
@@ -6988,7 +6985,7 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
                       diagnosis.recommendations.push(`Check the evaluation package: GET /api/jobs/${jobId}/validate`);
                     } else if (packageCheck && !packageCheck.valid) {
                       diagnosis.issues.push(`${noCommits} The evaluation package fails validation, the likely cause:`);
-                      for (const issue of packageCheck.issues.filter(i => i.severity === IssueSeverity.ERROR)) {
+                      for (const issue of packageCheck.issues.filter(i => i.severity === IssueSeverity.ERROR && !isTransientIssue(i))) {
                         diagnosis.issues.push(`Evaluation package: ${issue.message}`);
                       }
                       diagnosis.recommendations.push(

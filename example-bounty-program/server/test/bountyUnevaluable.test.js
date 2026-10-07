@@ -364,3 +364,34 @@ describe('caching and fail-open', () => {
     expect(res.headers['x-verdikta-validation']).toBe('unchecked');
   });
 });
+
+// ---- GET /admin/validate-all ----------------------------------------------------
+
+describe('GET /admin/validate-all records verdicts the same way as the gate', () => {
+  const validateAll = (files) => request(buildApp(fakeIpfs(files))).get('/jobs/admin/validate-all');
+
+  it('does not record a fetch failure as the job\'s verdict', async () => {
+    setJob();
+    const res = await validateAll({ [EVAL_CID]: evaluationPackage(), [RUBRIC_CID]: gateway429() });
+    expect(res.status).toBe(200);
+    expect(storedValidation()).toBeUndefined();
+    expect(res.body.results[0].unchecked).toBe(true);
+  });
+
+  it('records a deterministic package error', async () => {
+    setJob();
+    const res = await validateAll({ [EVAL_CID]: evaluationPackage({ query: 'x'.repeat(12017) }), [RUBRIC_CID]: GOOD_RUBRIC });
+    expect(res.status).toBe(200);
+    expect(storedValidation().valid).toBe(false);
+    expect(storedValidation().issues.map((i) => i.type)).toContain('QUERY_TOO_LONG');
+    expect(res.body.results[0].unchecked).toBeUndefined();
+  });
+
+  it('records a deterministic error even when the rubric fetch also failed, without the fetch failure', async () => {
+    setJob();
+    await validateAll({ [EVAL_CID]: evaluationPackage({ query: 'x'.repeat(12017) }), [RUBRIC_CID]: gateway429() });
+    const types = storedValidation().issues.map((i) => i.type);
+    expect(types).toContain('QUERY_TOO_LONG');
+    expect(types).not.toContain('RUBRIC_FETCH_FAILED');
+  });
+});

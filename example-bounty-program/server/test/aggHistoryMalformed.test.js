@@ -231,6 +231,40 @@ describe('GET /:jobId/submissions/:submissionId/diagnose — issue #40 zero-comm
     expect(diagnosis.issues.some((i) => i.startsWith('Evaluation package:'))).toBe(false);
   });
 
+  it('reports a rubric that could not be fetched as unverified, not as malformed', async () => {
+    setStorage(makeJob({ jobId: JOBID }));
+    zeroCommitRound();
+    mockValidateBounty.mockResolvedValue({
+      valid: false,
+      issues: [{ type: 'RUBRIC_FETCH_FAILED', severity: 'error', message: 'Cannot fetch grading rubric from IPFS (QmRubric): HTTP error! status: 429' }],
+    });
+
+    const diagnosis = await diagnose();
+
+    expect(diagnosis.checks.packageValidation.unverifiable).toBe(true);
+    expect(diagnosis.issues.some((i) => i.includes('could not be fetched'))).toBe(true);
+    expect(diagnosis.issues.some((i) => i.includes('fails validation'))).toBe(false);
+  });
+
+  it('names a deterministic package error even when the rubric fetch also failed', async () => {
+    setStorage(makeJob({ jobId: JOBID }));
+    zeroCommitRound();
+    mockValidateBounty.mockResolvedValue({
+      valid: false,
+      issues: [
+        { type: 'QUERY_TOO_LONG', severity: 'error', message: 'primary_query.json "query" is 12017 characters; arbiters reject a query over 10000.' },
+        { type: 'RUBRIC_FETCH_FAILED', severity: 'error', message: 'Cannot fetch grading rubric from IPFS (QmRubric): HTTP error! status: 429' },
+      ],
+    });
+
+    const diagnosis = await diagnose();
+
+    expect(diagnosis.checks.packageValidation.unverifiable).toBeUndefined();
+    expect(diagnosis.issues.some((i) => i.includes('fails validation'))).toBe(true);
+    expect(diagnosis.issues.some((i) => i.includes('12017 characters'))).toBe(true);
+    expect(diagnosis.issues.some((i) => i.includes('Cannot fetch grading rubric'))).toBe(false);
+  });
+
   it('does not scan the aggregator while the round is still open', async () => {
     setStorage(makeJob({ jobId: JOBID }));
     mockGetForceFailEligibility.mockResolvedValue({ eligible: false, timeoutAt: NOW() + 120 });

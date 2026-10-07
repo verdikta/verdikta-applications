@@ -330,7 +330,7 @@ check('Round-11d and Hermes round 3d pre-registrations: CW05 only, unchanged tex
 tcases_e=load('tests/templates-1.1e-cases.json'); plan3e=load('tests/hermes/plan-hermes3e.json')
 check('Round 11e / Hermes 3e pre-registration: pins the current SKILL.md and Hermes copy (the read-only skill-directory rule), rounds 11c and 3c as previous, the unchanged pointer, the 1.1e file (CR05 at the reachable proposal page), 7 OpenClaw turns and 12 Hermes sessions, and is not run',
       r11e['skill']['sha256']==hashlib.sha256((ROOT/'SKILL.md').read_bytes()).hexdigest() and r11e['skill']['hermes_copy_sha256']==hashlib.sha256(hermes_skill.read_bytes()).hexdigest()
-      and r11e['pointer']['sha256']==hashlib.sha256(pointer_file.read_bytes()).hexdigest() and r11e['status'].endswith('NOT_RUN') and r11e['cases_file']=='tests/templates-1.1e-cases.json'
+      and r11e['pointer']['sha256']==hashlib.sha256(pointer_file.read_bytes()).hexdigest() and r11e['status'].startswith('PRE_REGISTERED_ROUND_11E') and r11e['cases_file']=='tests/templates-1.1e-cases.json'
       and r11e['openclaw']['cases_run']=={'CR05':3,'CO01':2,'CW01':2} and len(plan3e)==12 and {x['case'] for x in plan3e}=={'CO01','CO02','CR01','CR05','CW01','CW05'} and len({x['tag'] for x in plan3e})==12 and all(x['tag'].startswith('h3e-') for x in plan3e)
       and r11e['gates']['no_delegation']['max']==0 and r11e['gates']['trigger']['threshold']==0.9 and 'rater' in r11e['gates']['decision']['unit']
       and [c['id'] for c in tcases_e['cases']]==tids_c and all((a['prompt']==b['prompt'])==(a['id']!='CR05') and a.get('owner_context')==b.get('owner_context') for a,b in zip(load('tests/templates-1.1d-cases.json')['cases'],tcases_e['cases']))

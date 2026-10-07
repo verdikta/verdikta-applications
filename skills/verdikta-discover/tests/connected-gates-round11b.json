@@ -99,5 +99,11 @@
     "CR01, CR02, CO01, CO02 (see not_rerun)",
     "a change to the OpenClaw AGENTS.md pointer"
   ],
-  "changelog": []
+  "changelog": [
+    {
+      "date": "2026-10-07",
+      "before_any_turn": false,
+      "change": "Scorer change after the first counted turn, disclosed: score_round11.py skips gates the round's gates file does not pre-register and reads thresholds from the gates file only; this round has no source_mode gate (CO01 and CO02 are not re-run), which the scorer previously required. No threshold, case, label or message changed; the self-test still passes."
+    }
+  ]
 }

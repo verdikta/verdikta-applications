@@ -113,5 +113,11 @@
     "a second model or provider",
     "any transaction, bounty creation or submission; no real-world task is performed"
   ],
-  "changelog": []
+  "changelog": [
+    {
+      "date": "2026-10-07",
+      "before_any_turn": false,
+      "change": "Scorer change after the first counted turn, disclosed: score_round11.py skips gates the round's gates file does not pre-register and reads thresholds from the gates file only; the trigger and no_delegation gates of this round are now computed by the scorer (skill_selected per session; delegate_task calls plus terminal runs of claude, codex, opencode or himalaya). No threshold, case, label or message changed; the self-test still passes."
+    }
+  ]
 }

@@ -14,6 +14,16 @@ Protocol aggregation belongs in `verdikta-dispatcher`; arbiter-node behavior in
 agent-runtime behavior in `verdikta-agents`. Cross-repository outcomes use a
 roadmap parent and repository-owned native sub-issues.
 
+## Bounty payments
+
+Verdikta pays bounties only through
+[bounties.verdikta.org](https://bounties.verdikta.org). GitHub issues, Project
+items, and pull requests in this repository are not bounties. Work submitted
+here, or through any channel other than bounties.verdikta.org, is unpaid, even
+when it relates to a posted bounty. Do not request payment in issues or pull
+requests. To be eligible for payment, find the bounty on bounties.verdikta.org
+and submit the work there. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Verdikta backlog workflow (mandatory)
 
 - Project: [Verdikta Master Backlog](https://github.com/orgs/verdikta/projects/1)

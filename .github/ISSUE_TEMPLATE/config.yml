@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Looking for paid work? Bounties are on bounties.verdikta.org
+    url: https://bounties.verdikta.org
+    about: >-
+      GitHub issues are not bounties. Verdikta pays only for work submitted
+      through bounties.verdikta.org; work done on GitHub issues or pull
+      requests is unpaid.
+  - name: Verdikta documentation
+    url: https://docs.verdikta.org
+    about: Protocol and integration documentation.

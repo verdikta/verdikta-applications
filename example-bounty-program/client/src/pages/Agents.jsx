@@ -1588,6 +1588,8 @@ def finalize_submission(w3, account, job_id, sub_id):
                 <a href="https://github.com/verdikta/verdikta-applications/issues" target="_blank" rel="noopener noreferrer">
                   github.com/verdikta/verdikta-applications/issues
                 </a>
+                {' '}(bug reports only; GitHub issues are not bounties, and work done on them is not paid; bounties
+                are paid only through bounties.verdikta.org)
               </li>
               <li><strong>Protocol documentation:</strong>{' '}
                 <a href="https://docs.verdikta.org" target="_blank" rel="noopener noreferrer">docs.verdikta.org</a>

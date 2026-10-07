@@ -653,6 +653,9 @@ Include in a report: network (${base}), jobId, submissionId, the transaction
 hash(es) involved, the raw revert reason (from the receipt, not the ethers
 summary), and the full /diagnose JSON. There is no email or chat support
 channel; the issue tracker is the only monitored address.
+The issue tracker is for bug reports only. GitHub issues are not bounties:
+work done on them, or submitted as pull requests, is not paid. Bounties are
+paid only for work submitted through https://bounties.verdikta.org.
 
 ## On-Chain Contract Reference
 BountyEscrow: ${escrowAddress}
@@ -1578,7 +1581,8 @@ router.get('/api/docs', (req, res) => {
       docs: 'https://docs.verdikta.org',
       website: 'https://verdikta.org',
       includeInReport: ['network / base URL', 'jobId', 'submissionId', 'transaction hash(es)', 'raw revert reason from the receipt', 'full /diagnose JSON'],
-      note: 'The GitHub issue tracker is the only monitored channel; there is no email or chat support address'
+      note: 'The GitHub issue tracker is the only monitored channel; there is no email or chat support address',
+      paymentPolicy: 'The issue tracker is for bug reports only. GitHub issues are not bounties: work done on them, or submitted as pull requests, is not paid. Bounties are paid only for work submitted through https://bounties.verdikta.org'
     },
     agentGuide: '/agents.txt'
   });

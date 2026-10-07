@@ -366,6 +366,9 @@ When adding code:
 - Keep commits small and descriptive
 
 Open issues and pull requests at [github.com/verdikta/verdikta-applications](https://github.com/verdikta/verdikta-applications).
+GitHub issues and pull requests are not bounties and are not paid; bounties are
+paid only for work submitted through [bounties.verdikta.org](https://bounties.verdikta.org).
+See [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Changelog
 

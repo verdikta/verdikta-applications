@@ -33,10 +33,59 @@ const IssueType = {
   UNLISTED_CLASS: 'UNLISTED_CLASS',           // Class not in the registry (allowed; jury unverifiable)
   MODEL_UNAVAILABLE: 'MODEL_UNAVAILABLE',     // Jury model not in class
   INVALID_PRIMARY_QUERY: 'INVALID_PRIMARY_QUERY', // primary_query.json has wrong format
+  QUERY_TOO_LONG: 'QUERY_TOO_LONG',           // primary_query.json "query" is over the arbiters' cap
+  RUBRIC_FETCH_FAILED: 'RUBRIC_FETCH_FAILED', // Grading rubric could not be fetched (transient)
   MISSING_BCIDS: 'MISSING_BCIDS',             // manifest.json missing bCIDs
   NOT_ON_CHAIN: 'NOT_ON_CHAIN',               // Bounty does not exist on-chain
   CHAIN_STATUS: 'CHAIN_STATUS'                // On-chain status issue (not open, expired, etc.)
 };
+
+/**
+ * ERROR types that depend only on the bytes of the evaluation package, so they
+ * cannot change between runs and are safe to act on (e.g. to refuse a new
+ * submission). Everything else stays informational for gating purposes:
+ *  - CID_INACCESSIBLE / RUBRIC_FETCH_FAILED are IPFS gateway hiccups (rate
+ *    limits, timeouts) that say nothing about the package. See TRANSIENT_ISSUE_TYPES.
+ *  - INVALID_CLASS / MODEL_UNAVAILABLE reflect the @verdikta/common class
+ *    registry, not the package; classes are permissionless, so a registry entry
+ *    does not decide whether arbiters can serve a bounty.
+ *  - CHAIN_STATUS / NOT_ON_CHAIN are checked by the routes against the contract.
+ */
+const GATING_ISSUE_TYPES = new Set([
+  IssueType.INVALID_FORMAT,
+  IssueType.MISSING_RUBRIC,
+  IssueType.INVALID_RUBRIC,
+  IssueType.INVALID_PRIMARY_QUERY,
+  IssueType.QUERY_TOO_LONG,
+]);
+
+/** Issue types that mean "could not look", not "looked and it is bad". */
+const TRANSIENT_ISSUE_TYPES = new Set([
+  IssueType.CID_INACCESSIBLE,
+  IssueType.RUBRIC_FETCH_FAILED,
+]);
+
+/** A deterministic package error: safe to refuse a submission over. */
+function isGatingIssue(issue) {
+  return !!issue && issue.severity === IssueSeverity.ERROR && GATING_ISSUE_TYPES.has(issue.type);
+}
+
+/** A fetch failure: never a verdict on the package, never worth caching. */
+function isTransientIssue(issue) {
+  return !!issue && TRANSIENT_ISSUE_TYPES.has(issue.type);
+}
+
+/**
+ * Longest `query` string (JS String.length, i.e. UTF-16 code units, which is how
+ * the arbiters measure it) that every arbiter in the fleet accepts. @verdikta/common
+ * <= 1.7.x rejects anything over 10,000; see issues #36 / #41 before raising it.
+ */
+const DEFAULT_MAX_EVALUATION_QUERY_CHARS = 10000;
+
+function maxEvaluationQueryChars() {
+  const n = Number.parseInt(process.env.MAX_EVALUATION_QUERY_CHARS, 10);
+  return Number.isInteger(n) && n > 0 ? n : DEFAULT_MAX_EVALUATION_QUERY_CHARS;
+}
 
 /**
  * On-chain bounty states that are terminal — the contract can no longer
@@ -187,17 +236,29 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
         // Look for grading rubric reference in manifest.additional
         const gradingRubricRef = manifest.additional?.find(a => a.name === 'gradingRubric');
         if (gradingRubricRef?.hash) {
-          // Fetch the grading rubric from IPFS
+          // Fetch the grading rubric from IPFS. A failed fetch (gateway rate limit,
+          // timeout) is transient and says nothing about the package; a rubric that
+          // fetched fine but is not valid JSON is a real, repeatable package error.
+          let rubricBuffer = null;
           try {
-            const rubricBuffer = await ipfsClient.fetchFromIPFS(gradingRubricRef.hash);
-            const rubricText = rubricBuffer.toString('utf8');
-            rubric = JSON.parse(rubricText);
+            rubricBuffer = await ipfsClient.fetchFromIPFS(gradingRubricRef.hash);
           } catch (err) {
             issues.push({
-              type: IssueType.MISSING_RUBRIC,
+              type: IssueType.RUBRIC_FETCH_FAILED,
               severity: IssueSeverity.ERROR,
               message: `Cannot fetch grading rubric from IPFS (${gradingRubricRef.hash}): ${err.message}`
             });
+          }
+          if (rubricBuffer) {
+            try {
+              rubric = JSON.parse(Buffer.from(rubricBuffer).toString('utf8'));
+            } catch (err) {
+              issues.push({
+                type: IssueType.INVALID_RUBRIC,
+                severity: IssueSeverity.ERROR,
+                message: `Failed to parse grading rubric (${gradingRubricRef.hash}): ${err.message}`
+              });
+            }
           }
         } else {
           // No gradingRubric reference - check if criteria are embedded elsewhere
@@ -247,6 +308,17 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
                 type: IssueType.INVALID_PRIMARY_QUERY,
                 severity: IssueSeverity.ERROR,
                 message: 'primary_query.json missing or invalid "outcomes" field (must be an array, e.g. ["DONT_FUND", "FUND"]).'
+              });
+            }
+
+            // The arbiters reject a primary query over their cap, so every round
+            // against this package fails (bounty 100, issue #36).
+            const queryCap = maxEvaluationQueryChars();
+            if (typeof primaryQuery.query === 'string' && primaryQuery.query.length > queryCap) {
+              issues.push({
+                type: IssueType.QUERY_TOO_LONG,
+                severity: IssueSeverity.ERROR,
+                message: `primary_query.json "query" is ${primaryQuery.query.length} characters; arbiters reject a query over ${queryCap}. Shorten the title, description or criterion text.`
               });
             }
 
@@ -444,6 +516,12 @@ module.exports = {
   isZipFile,
   IssueSeverity,
   IssueType,
+  GATING_ISSUE_TYPES,
+  TRANSIENT_ISSUE_TYPES,
+  isGatingIssue,
+  isTransientIssue,
+  maxEvaluationQueryChars,
+  DEFAULT_MAX_EVALUATION_QUERY_CHARS,
   TERMINAL_BOUNTY_STATUSES,
   isTerminalBountyStatus,
   chainStatusIssue,

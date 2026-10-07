@@ -165,6 +165,16 @@ Returns class details with available models.
 
 ## Submit work (upload to IPFS)
 
+**Check first:** `GET /api/jobs/:jobId/validate`. `submit`, `submit/prepare` and
+`submit/bundle` reject a bounty with `409 BOUNTY_UNEVALUABLE` when its evaluation
+package has an error that is certain to fail every arbiter: not a ZIP, a missing
+or unparseable `manifest.json` / `primary_query.json` / rubric, a primary `query`
+over the arbiters' character cap (10,000 today), or rubric weights that are wrong.
+You then spend nothing on a round that cannot succeed. Problems that are not about
+the package never block: an IPFS gateway failure (the package could not be fetched
+at that moment, so the request goes through with `X-Verdikta-Validation: unchecked`)
+and class or model registry errors are informational only.
+
 `POST /api/jobs/:jobId/submit`
 
 Upload raw files — do NOT zip them yourself. The API packages files into the required ZIP format automatically.

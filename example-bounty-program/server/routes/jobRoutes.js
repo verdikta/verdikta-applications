@@ -24,8 +24,7 @@ const { validateRubric, validateJuryNodes, normalizeBountyPayments, validateProc
         parseFeeToWei, extractEvaluationWarnings } = require('../utils/validation');
 const { lookupClass, registryModelMatcher, checkJuryAgainstClass, checkClassCoverage } = require('../utils/classPolicy');
 const { getVerdiktaService, isVerdiktaServiceAvailable, LIKELY_MALFORMED_OUTCOME } = require('../utils/verdiktaService');
-
-const { validateBounty, IssueSeverity, IssueType, chainStatusIssue } = require('../utils/bountyValidator');
+const { validateBounty, IssueSeverity, IssueType, chainStatusIssue, isGatingIssue, isTransientIssue } = require('../utils/bountyValidator');
 const { getContractService, RESOLVE_GAS_LIMIT_FALLBACK, RESOLVE_GAS_NOTE } = require('../utils/contractService');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
 const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/submissionEvents');
@@ -36,6 +35,133 @@ const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/s
 
 function readBool(v) { return /^(1|true|yes|on)$/i.test(String(v || '').trim()); }
 const DEV_ENV_FAKE = readBool(process.env.DEV_FAKE_RUBRIC_CID);
+
+// ---- Unevaluable-bounty gate (issue #39) ---------------------------------
+// A job whose evaluation package has a deterministic ERROR (see
+// utils/bountyValidator) can never produce an oracle result: every hunter who
+// starts an evaluation against it pays the arbiters' base fees for nothing.
+// ensureFreshValidation() is the single source of truth both the board
+// (GET /:jobId/validate, persisted so job.validationStatus.hasIssues drives
+// the existing "has-errors" card styling in the client) and the submission
+// endpoints (submit / submit/prepare / submit/bundle) read from.
+//
+// Only deterministic package errors gate (bountyValidator's GATING_ISSUE_TYPES).
+// A fetch failure ("could not look") is never a verdict: it is not persisted and
+// it lets the submission through; class-registry ERRORs stay informational.
+const VALIDATION_CACHE_TTL_MS = 60 * 60 * 1000; // 1h — matches admin/validate-all's cadence
+const UNCHECKED_VALIDATION = Object.freeze({ valid: true, issues: [], checkedAt: null, unchecked: true });
+
+/**
+ * Persist a validation result as the job's verdict, unless it is only a fetch
+ * failure. Transient issues are stripped first so a gateway hiccup can neither
+ * block submissions for the cache TTL nor paint a red error card on the board.
+ * Returns the stored verdict, or null when nothing was stored.
+ */
+async function persistValidationVerdict(job, result) {
+  const sawTransient = result.issues.some(isTransientIssue);
+  const issues = result.issues.filter((i) => !isTransientIssue(i));
+  if (sawTransient && !issues.some(isGatingIssue)) return null;
+
+  const validationStatus = {
+    valid: result.valid && !issues.some((i) => i.severity === IssueSeverity.ERROR),
+    issues,
+    checkedAt: new Date().toISOString(),
+  };
+  try {
+    await jobStorage.updateJob(job.jobId, { validationStatus });
+  } catch (e) {
+    logger.warn('[validation] could not persist validationStatus', { jobId: job.jobId, msg: e.message });
+  }
+  return validationStatus;
+}
+
+async function ensureFreshValidation(job, req, { force = false } = {}) {
+  const cached = job.validationStatus;
+  const isFresh = !force && cached?.checkedAt &&
+    (Date.now() - new Date(cached.checkedAt).getTime()) < VALIDATION_CACHE_TTL_MS;
+  if (isFresh) return cached;
+
+  // Fail-open: if IPFS isn't wired up (e.g. a route under test with no
+  // app.locals.ipfsClient), don't block submissions over an infra gap that
+  // has nothing to do with this bounty's own package.
+  const ipfsClient = req.app.locals.ipfsClient;
+  if (!ipfsClient) return cached || UNCHECKED_VALIDATION;
+
+  let classMap;
+  try {
+    classMap = require('@verdikta/common').classMap;
+  } catch (e) {
+    logger.warn('[ensureFreshValidation] Could not load classMap:', e.message);
+  }
+
+  let result;
+  try {
+    result = await validateBounty({ evaluationCid: job.evaluationCid, classId: job.classId, ipfsClient, classMap });
+  } catch (e) {
+    // A validator crash is an infra problem, not proof the package is bad.
+    logger.warn('[ensureFreshValidation] validateBounty threw', { jobId: job.jobId, msg: e.message });
+    return cached || UNCHECKED_VALIDATION;
+  }
+
+  // On-chain terminal states (EXPIRED/AWARDED/CLOSED) are already gated
+  // elsewhere by job.status — don't let a chain-read hiccup here mark an
+  // otherwise-fine package as unevaluable.
+  try {
+    const contractService = getContractService();
+    const onChain = await contractService.getBounty(job.jobId);
+    const chainCheck = chainStatusIssue(onChain.status);
+    if (chainCheck) {
+      result.issues.push(chainCheck.issue);
+      if (chainCheck.invalidatesPackage) result.valid = false;
+    }
+  } catch { /* chain read best-effort here; the route's own on-chain checks are authoritative */ }
+
+  const verdict = await persistValidationVerdict(job, result);
+  if (verdict) return verdict;
+
+  // Only a fetch failure: we learned nothing about the package. It is immutable
+  // (content-addressed), so the last real verdict still holds; with none, let
+  // the submission through and say so.
+  logger.warn('[ensureFreshValidation] package could not be fetched; not recording a verdict', {
+    jobId: job.jobId,
+    issues: result.issues.map((i) => i.type),
+  });
+  return cached?.checkedAt ? cached : UNCHECKED_VALIDATION;
+}
+
+/** The deterministic package errors in a validation status (what the gate acts on). */
+function gatingErrors(validationStatus) {
+  return (validationStatus?.issues || []).filter(isGatingIssue);
+}
+
+function unevaluableGateResponse(jobId, errors) {
+  const reason = errors.map((i) => i.message).join(' ') || 'Evaluation package failed validation.';
+  return {
+    success: false,
+    code: ErrorCodes.BOUNTY_UNEVALUABLE,
+    error: 'This bounty\'s evaluation package cannot be evaluated and is not accepting submissions.',
+    reason,
+    issues: errors,
+    fix: `Check GET /api/jobs/${jobId}/validate for full details. If you already started an evaluation and it timed out, use GET /api/jobs/${jobId}/submissions to find it and POST .../timeout to recover your prepay.`,
+  };
+}
+
+/**
+ * Shared gate for submit / submit/prepare / submit/bundle. Sends the 409 and
+ * returns true when the package has a deterministic error. When the package
+ * could not be checked at all, lets the request through and flags it with an
+ * X-Verdikta-Validation: unchecked header.
+ */
+async function rejectIfUnevaluable(job, req, res, jobId) {
+  const status = await ensureFreshValidation(job, req);
+  const errors = gatingErrors(status);
+  if (errors.length > 0) {
+    res.status(409).json(unevaluableGateResponse(jobId, errors));
+    return true;
+  }
+  if (status.unchecked) res.set('X-Verdikta-Validation', 'unchecked');
+  return false;
+}
 
 // ---- Bounty oracle settings (creator-chosen, per bounty) ----------------------
 // Since the September 2026 BountyEscrow revision the oracle request parameters are
@@ -1637,6 +1763,8 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
     }
     const evaluationCid = job.evaluationCid;
 
+    if (await rejectIfUnevaluable(job, req, res, jobId)) return;
+
     const contractAddress = config.bountyEscrowAddress;
     if (!contractAddress) {
       return res.status(500).json({ success: false, error: 'Contract not configured' });
@@ -2662,13 +2790,22 @@ router.get('/:jobId/validate', async (req, res) => {
       }
     }
 
+    // Persist so job.validationStatus.hasIssues (GET /jobs, GET /:jobId) and
+    // the submission gate (ensureFreshValidation) see this result without
+    // waiting for the next admin/validate-all sweep — issue #39: a bounty
+    // whose package is broken must look and behave unevaluable everywhere,
+    // not just in this one-off response.
+    // A fetch failure is reported in the response but never persisted as a verdict.
+    await persistValidationVerdict(job, result);
+    const checkedAt = new Date().toISOString();
+
     return res.json({
       success: true,
       jobId: job.jobId,
       evaluationCid,
       valid: result.valid,
       issues: result.issues,
-      checkedAt: new Date().toISOString()
+      checkedAt
     });
 
   } catch (error) {
@@ -4540,6 +4677,8 @@ router.post('/:jobId/submit', async (req, res) => {
       });
     }
 
+    if (await rejectIfUnevaluable(job, req, res, jobId)) return;
+
     // Reject 0-byte attachments BEFORE pinning — an empty file means the oracle sees
     // no content and scores 0, but the upload would otherwise "succeed" silently.
     const emptyNames = emptyFileNames(uploadedFiles);
@@ -4996,6 +5135,8 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         fix: 'This bounty was not configured correctly. Try a different open bounty: GET /api/jobs?status=OPEN'
       });
     }
+
+    if (await rejectIfUnevaluable(job, req, res, jobId)) return;
 
     // ---- Upload files to IPFS if provided (no hunterCid yet) ----
     if (!hunterCid && uploadedFiles.length > 0) {

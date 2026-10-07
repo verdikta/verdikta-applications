@@ -1164,7 +1164,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'POST',
         path: '/jobs/:id/submit/prepare',
-        description: 'Get encoded prepareSubmission calldata (step 1 of on-chain submission). No cap on prepares for non-windowed bounties; windowed bounties cap prepares at 128 (prepareSubmission reverts "submission limit reached" once full).',
+        description: 'Get encoded prepareSubmission calldata (step 1 of on-chain submission). No cap on prepares for non-windowed bounties; windowed bounties cap prepares at 128 (prepareSubmission reverts "submission limit reached" once full). Returns 409 BOUNTY_UNEVALUABLE (with the failed check named) only when the bounty\'s own evaluation package has a deterministic error no arbiter can score (malformed package, over-length query, bad rubric weights) — check GET /jobs/:id/validate first; this endpoint, /submit and /submit/bundle share the check. IPFS fetch failures and class-registry errors never block; if the package cannot be fetched the request proceeds with an X-Verdikta-Validation: unchecked header.',
         contentType: 'application/json',
         fields: [
           'hunter: Ethereum address 0x... (required)',

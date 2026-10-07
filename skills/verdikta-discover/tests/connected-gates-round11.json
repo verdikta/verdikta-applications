@@ -102,6 +102,11 @@
       "date": "2026-10-07",
       "before_any_turn": true,
       "change": "templates-1.1-cases.json gains the message material the prompts refer to (the artifact text for CR01/CR02, URLs for CR03/CR05, and for CO01/CO02 the Brightwater fixture pages and fact ids expanded by make_connected_messages.expand_request at the pinned commit) and machine-checkable 'checks' replacing the prose 'expected_input'. Expected decisions and templates are unchanged."
+    },
+    {
+      "date": "2026-10-07",
+      "before_any_turn": false,
+      "change": "Scorer correction, disclosed: template_selection read the template only from the returned assessment input, so the three cases whose expected decision is NEEDS_SCOPE (CR03, CW02, CW04), which by design return no input, counted as misses although their answers name the template. For those cases the scorer now reads the template id from the answer text (the gate's 'by shape or template_id' intent). Found on the first interim scoring of sample 1 (6/9 before, counted again after); thresholds, labels and cases unchanged. Both counts are reported."
     }
   ],
   "token_note": "pre-registered baseline (prod_noskill) NOT RUN, see changelog; CR02 tokens with 1.0.0 (shared copy) and 1.1.0 (workspace copy) are reported side by side"

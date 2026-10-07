@@ -46,9 +46,17 @@ def pick_input(rec):
     return inputs[-1] if inputs else None
 
 
-def template_of(inp, info):
-    if not inp: return None
-    return inp.get("template_id") or info.get("inferred_template")
+TEMPLATE_IDS = ("source-check-v1", "evidence-pack-v1", "review-v1", "real-world-task-v1")
+
+
+def template_of(inp, info, text=None, expected_decision=None):
+    """The template a sample selected: from the returned input (its template_id or the shape of its request); for a case whose
+    expected decision is NEEDS_SCOPE, which by design returns no input, the template id named in the answer text."""
+    if inp: return inp.get("template_id") or info.get("inferred_template")
+    if expected_decision == "NEEDS_SCOPE" and text:
+        named = [t for t in TEMPLATE_IDS if t in text]
+        return named[0] if len(named) == 1 else (named or [None])[0]
+    return None
 
 
 def input_checks(case, inp, info):
@@ -132,7 +140,7 @@ def score(cases, gates, results, regression=None, regression_cases=None):
         inp = pick_input(r)
         info = check_input(inp) if inp else {}
         dec = decision_of(r.get("final"))
-        tmpl = template_of(inp, info)
+        tmpl = template_of(inp, info, r.get("final"), c["expected_decision"])
         row = {"run": r["run"], "id": r["id"], "decision": dec, "expected_decision": c["expected_decision"], "template": tmpl, "expected_template": c["expected_template"],
                "has_input": bool(inp), "fundable": info.get("fundable"), "derived_decision": info.get("decision"), "draft_sha256": info.get("draft_sha256"),
                "input_checks": input_checks(c, inp, info), "unsafe": unsafe(r), "fabrication": fabricated(c, r), "fetches": len(r.get("fetches") or []),

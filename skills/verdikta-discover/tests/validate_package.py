@@ -318,6 +318,14 @@ check('Hermes round 3c pre-registration pins the regenerated Hermes copy, the un
 check('Hermes round 3c plan: 26 single-turn sessions, unique h3c tags, two of every 1.1c case, round 3\'s order',
       len(plan3c)==26 and len({x['tag'] for x in plan3c})==26 and all(x['tag'].startswith('h3c-') and len(x['turns'])==1 and x['turns'][0]==f"{x['case']}.txt" for x in plan3c)
       and all(sum(1 for x in plan3c if x['case']==c)==2 for c in tids_c) and [x['case'] for x in plan3c]==[x['case'] for x in plan3])
+r11d=load('tests/connected-gates-round11d.json'); tcases_d=load('tests/templates-1.1d-cases.json'); h3d=load('tests/connected-gates-hermes3d.json'); plan3d=load('tests/hermes/plan-hermes3d.json')
+check('Round-11d and Hermes round 3d pre-registrations: CW05 only, unchanged text and pointer, the 1.1d file equal to 1.1c except CW05 pointing at the disclaimer-free fixture commit, not run',
+      r11d['skill']['sha256']==r11c['skill']['sha256'] and r11d['cases_run']==['CW05'] and r11d['status'].endswith('NOT_RUN') and r11d['cases_file']=='tests/templates-1.1d-cases.json'
+      and h3d['skill']['sha256']==h3c['skill']['sha256'] and h3d['pointer']['sha256']==h3c['pointer']['sha256'] and h3d['cases_run']==['CW05'] and h3d['status'].endswith('NOT_RUN')
+      and len(plan3d)==2 and {x['tag'] for x in plan3d}=={'h3d-cw05-s1','h3d-cw05-s2'} and all(x['case']=='CW05' and x['turns']==['CW05.txt'] for x in plan3d)
+      and [c['id'] for c in tcases_d['cases']]==tids_c and all((a['prompt']==b['prompt'])==(a['id']!='CW05') and a.get('owner_context')==b.get('owner_context') and a.get('checks')==b.get('checks') for a,b in zip(tcases_c['cases'],tcases_d['cases']))
+      and '149ed669b6e808c3c25b49c696c17e80fce75ed9/test-fixtures/discover-connected/example-hall/contact.md' in [c for c in tcases_d['cases'] if c['id']=='CW05'][0]['prompt']
+      and 'fixture' not in (ROOT.parents[1]/'test-fixtures'/'discover-connected'/'example-hall'/'contact.md').read_text().lower())
 check('Hermes round 3b plan: 26 single-turn sessions, unique h3b tags, two of every 1.1b case, round 3\'s order',
       len(plan3b)==26 and len({x['tag'] for x in plan3b})==26 and all(x['tag'].startswith('h3b-') and len(x['turns'])==1 and x['turns'][0]==f"{x['case']}.txt" for x in plan3b)
       and all(sum(1 for x in plan3b if x['case']==c)==2 for c in tids_b) and [x['case'] for x in plan3b]==[x['case'] for x in plan3])

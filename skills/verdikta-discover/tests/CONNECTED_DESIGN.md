@@ -1033,6 +1033,12 @@ If 1-3 are adopted, SKILL.md's hash changes: round 11b pre-registers the amended
 
 Pre-registered before Hermes round 3b was scored, so its design does not depend on 3b's results: the regenerated copy `bf1015ae`, the unchanged extended pointer `f94e775b`, round 11c's messages (only CW01 and CW05 differ from round 3b's), all 13 cases x 2 (`plan-hermes3c.json`), round 3b's gates including trigger and no-delegation, the rater fallback. Installed only after round 3b has finished. If round 3b's results call for a change to the pointer or the copy, it is logged in the gates file's changelog before the first counted turn. **If all pass,** `install.md` and the guide say the Hermes copy and pointer are verified for the four templates with that scope.
 
+## Round 11d and Hermes round 3d: CW05 against a plain fixture page (pre-registered 2026-10-07, not run)
+
+**Why.** Round 11c passed every gate but fundable (5/6): its third CW05 sample read the fixture contact page's first line ("Evaluation fixture for the verdikta-discover skill ... fictional ... not in service"), marked its request `fixture_only`, and the skill's `checkWorkOrderDraft` refused to commission a synthetic request, as it should. The disclaimer was the author's addition; the Brightwater fixture pages carry none. The page at commit `149ed66` is a plain contact page (the number is not a valid German number).
+
+**Design** (`connected-gates-round11d.json`, `connected-gates-hermes3d.json`, `templates-1.1d-cases.json`, `plan-hermes3d.json`). CW05 x 3 on `main` and CW05 x 2 on Hermes, text, pointer and gates unchanged; the four other 11c cases and the twelve other 3c cases keep their results. Budget 5 turns.
+
 ## Pre-registration log
 
 | Date | Change |
@@ -1091,3 +1097,4 @@ Pre-registered before Hermes round 3b was scored, so its design does not depend 
 | 2026-10-07 | **Hermes round 3c pre-registered, not run** (section above): copy `bf1015ae`, pointer unchanged, 1.1c messages, 13 x 2; pre-registered before round 3b was scored. No round-3c turn had taken place. |
 | 2026-10-07 | **Hermes round 3b run** (26 sessions, 15:27-16:11 CEST): trigger 24/26, no delegation, safety 26/26, privacy 4/4, source mode 4/4, fabrication 0 (disclosed scorer correction) pass; decision 23/26 with the rater fallback, template selection 13/18, fundable 9/12, evidence specification 1/4 fail, every miss on CW01's missing city, CW05's DNS failure or the template-naming sentence. Results in the Hermes round 3b section. |
 | 2026-10-07 | **Round 11c and Hermes round 3c started** (16:07 and about 16:12 CEST) with the 1.1c messages and the commit-`421fd45` text; the 3c copy `bf1015ae` installed after round 3b finished, pointer unchanged, guard SAFE. |
+| 2026-10-07 | **Round 11d and Hermes round 3d pre-registered, not run** (section above): CW05 only against the disclaimer-free fixture page at `149ed66`; text `3b86f360`, copy `bf1015ae`, pointer `f94e775b` unchanged. No 11d or 3d turn had taken place. |

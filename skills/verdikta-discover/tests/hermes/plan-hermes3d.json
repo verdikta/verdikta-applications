@@ -1,0 +1,16 @@
+[
+ {
+  "tag": "h3d-cw05-s1",
+  "case": "CW05",
+  "turns": [
+   "CW05.txt"
+  ]
+ },
+ {
+  "tag": "h3d-cw05-s2",
+  "case": "CW05",
+  "turns": [
+   "CW05.txt"
+  ]
+ }
+]

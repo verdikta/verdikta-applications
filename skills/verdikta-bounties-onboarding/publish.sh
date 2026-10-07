@@ -32,7 +32,7 @@ if [ "$(printf '%s\n' "$REQUIRED_VERSION" "$INSTALLED_VERSION" | sort -V | head 
 fi
 
 SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
-VERSION="${VERSION:-1.6.0}"
+VERSION="${VERSION:-1.7.0}"
 DRY_RUN=""
 
 if [[ "${1:-}" == "--dry-run" ]]; then

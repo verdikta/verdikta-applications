@@ -1,4 +1,4 @@
-# Migrating to 1.6.0 (unpublished review candidate)
+# Migrating to 1.6.0
 
 1.6.0 addresses ClawHub's security review of 1.4.3. Existing operators must migrate before any script runs again.
 

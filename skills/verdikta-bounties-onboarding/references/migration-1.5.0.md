@@ -1,4 +1,4 @@
-# Migrating to 1.5.0 (unpublished review candidate)
+# Migrating to 1.5.0
 
 Existing hunter automation must stop and review its configuration before upgrading:
 

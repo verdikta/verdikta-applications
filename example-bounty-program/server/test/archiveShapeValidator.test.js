@@ -229,6 +229,18 @@ describe('fetchAndValidateArchiveShape', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('treats a timeout of the attempt that got the rest of the budget as the deadline, whatever the clock says', async () => {
+    // The abort timer can fire a millisecond before Date.now() reaches the deadline. Rejecting
+    // with TimeoutError at once leaves the clock untouched, so a loop that re-reads the clock
+    // would try every gateway; the loop must stop after this one attempt.
+    global.fetch = jest.fn(async () => {
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    });
+    const result = await fetchAndValidateArchiveShape(CID, { perGatewayTimeoutMs: 5000, totalTimeoutMs: 300 });
+    expect(result.gatewayFailure).toBe(true);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects an archive whose content-length exceeds the cap without downloading it', async () => {
     global.fetch = jest.fn(async () => new Response(conforming, { headers: { 'content-length': '999999' } }));
     const result = await fetchAndValidateArchiveShape(CID, { maxBytes: 1000 });

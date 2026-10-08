@@ -123,9 +123,13 @@ async function fetchArchiveBuffer(cid, opts = {}) {
       lastErr = new Error(`overall ${totalTimeoutMs}ms deadline reached`);
       break;
     }
+    // When the overall deadline is nearer than the per-gateway timeout, this attempt
+    // gets the rest of the budget; if it then times out, the deadline is reached.
+    const attemptMs = Math.min(perGatewayTimeoutMs, remaining);
+    const attemptEndsAtDeadline = attemptMs === remaining;
     try {
       const res = await fetch(`${gateway}/ipfs/${cid}`, {
-        signal: AbortSignal.timeout(Math.min(perGatewayTimeoutMs, remaining)),
+        signal: AbortSignal.timeout(attemptMs),
         headers: { 'User-Agent': 'Verdikta-Bounty-Server/1.0', Accept: 'application/octet-stream, */*' },
       });
       if (!res.ok) {
@@ -140,6 +144,12 @@ async function fetchArchiveBuffer(cid, opts = {}) {
       if (e.tooLarge) throw e;
       lastErr = e;
       logger.debug('[archiveShapeValidator] gateway failed', { cid, gateway, error: e.message });
+      if (attemptEndsAtDeadline && e && e.name === 'TimeoutError') {
+        // Do not re-read the clock here: the abort timer can fire a millisecond before
+        // Date.now() reaches the deadline, which would start one more (1 ms) attempt.
+        lastErr = new Error(`overall ${totalTimeoutMs}ms deadline reached`);
+        break;
+      }
     }
   }
   const err = new Error(`Failed to fetch CID ${cid} from all gateways: ${lastErr ? lastErr.message : 'unknown error'}`);

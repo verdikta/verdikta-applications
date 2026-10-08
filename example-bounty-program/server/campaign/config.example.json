@@ -1,0 +1,102 @@
+{
+  "id": "bring-a-task-build-a-habit",
+  "communityId": "REPLACE_WITH_COMMUNITY_ID",
+  "subdomain": "REPLACE_WITH_SUBDOMAIN",
+  "start": null,
+  "minimumWei": null,
+  "stateDirectory": "/absolute/persistent/private/campaign-state",
+  "reviewFile": "/absolute/private/campaign-reviews.json",
+  "confirmations": 20,
+  "maxAgeSeconds": 3600,
+  "pollSeconds": 60,
+  "logChunkSize": 2000,
+  "teamWalletsReviewed": false,
+  "teamWallets": [],
+  "historyInventoryComplete": false,
+  "historyInventoryEvidence": "REPLACE_WITH_RECONCILED_DEPLOYMENT_INVENTORY",
+  "quests": {
+    "Q3": null,
+    "Q4": null,
+    "Q5": null,
+    "Q6": null,
+    "Q8": null,
+    "Q9": null,
+    "Q10": null,
+    "Q14": null,
+    "Q15": null
+  },
+  "approvedTemplates": [
+    {
+      "id": "source-check-v1",
+      "sha256": "899a43f93c50d1a56e6e722c8c2c78006fb0d74701c87200b84e14c177738eb2"
+    },
+    {
+      "id": "evidence-pack-v1",
+      "sha256": "5470307917a1bcdae519cbcda7ff17ad268425f119b9c00a2c80078e468fa40e"
+    },
+    {
+      "id": "review-v1",
+      "sha256": "c93d6924b3475f6b5682cbf37c0e6ccd343f78cf7eb6af73dda447aae17a8ca9"
+    },
+    {
+      "id": "real-world-task-v1",
+      "sha256": "b39616f7aa83796a23d4206365c744c91c495024876bfc63b6e3b2be8f5c0d90"
+    }
+  ],
+  "deployments": [
+    {
+      "chainId": 8453,
+      "address": "0x0a6290efa369bbd4a9886ab9f98d7fad7b0dc746",
+      "fromBlock": null,
+      "codeHash": null,
+      "adapter": "legacy-history",
+      "campaign": false,
+      "evidence": "Repository history candidate; verify creation block and runtime code hash before enabling"
+    },
+    {
+      "chainId": 8453,
+      "address": "0x3970dc3750dde4e73fdcd3a81b66f1472bbaaeee",
+      "fromBlock": null,
+      "codeHash": null,
+      "adapter": "legacy-history",
+      "campaign": false,
+      "evidence": "Repository history candidate; verify creation block and runtime code hash before enabling"
+    },
+    {
+      "chainId": 8453,
+      "address": "0x1a4a0deddae20c24c3cd7735a2ab1afdac491770",
+      "fromBlock": 47132201,
+      "codeHash": null,
+      "adapter": "legacy-history",
+      "campaign": false,
+      "evidence": "Repository history candidate; verify creation block and runtime code hash before enabling"
+    },
+    {
+      "chainId": 8453,
+      "address": "0x4390820f6f18efef51606434d5a9ed1841cee916",
+      "fromBlock": 47135949,
+      "codeHash": null,
+      "adapter": "legacy-history",
+      "campaign": false,
+      "evidence": "Repository history candidate; verify creation block and runtime code hash before enabling"
+    },
+    {
+      "chainId": 8453,
+      "address": "0x2ae271f5e86bee449a36b943414b7c1a7b39772d",
+      "fromBlock": 47136166,
+      "codeHash": null,
+      "adapter": "legacy-history",
+      "campaign": false,
+      "evidence": "Repository history candidate; verify creation block and runtime code hash before enabling"
+    },
+    {
+      "chainId": 8453,
+      "address": "0xa741eff41bcf14793e61cebb4179e05c9124d3f6",
+      "fromBlock": 51224966,
+      "codeHash": "0x37511060fbbd00c75212ac5b433c81cfce7531627809b32908bbc2f7ba2d0da3",
+      "adapter": "v0.5",
+      "campaign": true,
+      "evidence": "deploy/CUTOVER-2026-09-12.md; scripts/deployments.json observation; verify before launch"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "bounties": {
+    "8453:0xa741eff41bcf14793e61cebb4179e05c9124d3f6:REPLACE_BOUNTY_ID": {
+      "evaluationCid": "REPLACE_WITH_CHAIN_EVALUATION_CID",
+      "requestDigest": "REPLACE_WITH_VERIFIED_REQUEST_SHA256",
+      "approved": false,
+      "reviewer": "REPLACE_WITH_OPERATOR_IDENTIFIER",
+      "reviewedAt": "REPLACE_WITH_UTC_TIMESTAMP",
+      "reason": "Record why scope is useful, public, non-sensitive and not duplicate/self-dealing; do not include personal data.",
+      "independentHunters": [],
+      "distinctFrom": []
+    }
+  }
+}

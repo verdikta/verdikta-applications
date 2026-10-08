@@ -9,7 +9,9 @@
     "dev": "nodemon --ignore data/* server.js",
     "test": "jest --coverage",
     "lint": "eslint .",
-    "create-bounties": "node scripts/createBounties.js"
+    "create-bounties": "node scripts/createBounties.js",
+    "test:campaign": "node --test campaign/test/*.test.js",
+    "campaign:inspect": "node scripts/campaign-inspect.js"
   },
   "keywords": [
     "verdikta",
@@ -41,6 +43,12 @@
       "tmp/*",
       "test/*",
       "*.log"
+    ]
+  },
+  "jest": {
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/campaign/"
     ]
   }
 }

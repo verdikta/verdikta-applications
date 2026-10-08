@@ -25,9 +25,16 @@ function eligibility(config, state, quest, wallet, now) {
   const exceptions = state.exceptions || emptyExceptions();
   if (config.teamWallets.includes(wallet)) return fail('TEAM_WALLET_EXCLUDED');
   if (exceptions.holdWallets[wallet]) return fail('WALLET_HELD_FOR_REVIEW');
-  const eligibleCounterparty = (creator, hunter) =>
+  const isHouseHunter = (hunter) =>
+    config.teamWallets.includes(hunter) &&
+    (config.houseHunterWallets || []).includes(hunter);
+  const creatorPaymentQuest = ['Q4', 'Q5', 'Q6', 'Q15'].includes(quest);
+  const eligibleCounterparty = (creator, hunter, allowHouse = false) =>
     creator !== hunter &&
-    !config.teamWallets.includes(hunter) &&
+    (!config.teamWallets.includes(hunter) ||
+      (allowHouse &&
+        !config.teamWallets.includes(creator) &&
+        isHouseHunter(hunter))) &&
     !exceptions.holdWallets[hunter] &&
     !(
       state.wallets[creator] &&
@@ -70,7 +77,29 @@ function eligibility(config, state, quest, wallet, now) {
     bounty.payment &&
     timed(bounty.payment.at, config) &&
     BigInt(bounty.payment.amount) > 0n &&
-    eligibleCounterparty(bounty.creator, bounty.payment.winner);
+    eligibleCounterparty(
+      bounty.creator,
+      bounty.payment.winner,
+      creatorPaymentQuest,
+    );
+  const creatorPass = (bounties, paidBounties = bounties) => {
+    const houseAssistedEvidence = paidBounties
+      .filter((bounty) => isHouseHunter(bounty.payment.winner))
+      .map((bounty) => ({
+        bountyKey: bounty.key,
+        hunter: bounty.payment.winner,
+        amountWei: bounty.payment.amount,
+        paidAt: bounty.payment.at,
+        paymentTx: bounty.payment.tx ?? null,
+      }));
+    return {
+      ...pass(bounties),
+      creatorCompletionKind: houseAssistedEvidence.length
+        ? 'house-assisted'
+        : 'organic',
+      houseAssistedEvidence,
+    };
+  };
   const distinct = (first, second) =>
     first.key !== second.key &&
     first.evidence.scopeDigest !== second.evidence.scopeDigest;
@@ -113,15 +142,18 @@ function eligibility(config, state, quest, wallet, now) {
     return pass([created[0]]);
   if (quest === 'Q4') {
     const paidBounty = created.find(paid);
-    if (paidBounty) return pass([paidBounty]);
+    if (paidBounty) return creatorPass([paidBounty]);
   }
-  if (quest === 'Q5' && pairs.length) return pass(pairs[0]);
+  if (quest === 'Q5' && pairs.length)
+    return creatorPass(pairs[0], [pairs[0][0]]);
   if (quest === 'Q6') {
     const pair = pairs.find(
       ([first, second]) =>
-        paid(second) && first.payment.winner !== second.payment.winner,
+        paid(second) &&
+        (first.payment.winner !== second.payment.winner ||
+          isHouseHunter(first.payment.winner)),
     );
-    if (pair) return pass(pair);
+    if (pair) return creatorPass(pair);
   }
   if (quest === 'Q8' && passing.length) return pass([passing[0].bounty]);
   if (quest === 'Q9') {
@@ -153,7 +185,7 @@ function eligibility(config, state, quest, wallet, now) {
       ([first, second]) =>
         first.evidence.templateId !== second.evidence.templateId,
     );
-    if (pair) return pass(pair);
+    if (pair) return creatorPass(pair, [pair[0]]);
   }
   if (!related.length) return fail('NO_MATCHING_CHAIN_ACTIVITY');
   if (related.every((bounty) => !!exceptions.denyBounties[bounty.key]))

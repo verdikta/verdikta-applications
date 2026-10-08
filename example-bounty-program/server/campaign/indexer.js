@@ -263,6 +263,7 @@ class Indexer {
         state.eligibilityPolicy = {
           priorWallets: config.priorWallets,
           teamWallets: config.teamWallets,
+          houseHunterWallets: config.houseHunterWallets || [],
         };
         state.evidenceCache = this.cache.state;
       });

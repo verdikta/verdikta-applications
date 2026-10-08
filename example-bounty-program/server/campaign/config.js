@@ -104,6 +104,18 @@ function validateConfig(input, secret) {
     'reviewed team exclusions',
   );
   config.teamWallets = [...new Set(config.teamWallets.map(address))].sort();
+  config.houseHunterWallets ??= [];
+  requireField(Array.isArray(config.houseHunterWallets), 'houseHunterWallets');
+  config.houseHunterWallets = config.houseHunterWallets.map(address).sort();
+  requireField(
+    new Set(config.houseHunterWallets).size ===
+      config.houseHunterWallets.length &&
+      config.houseHunterWallets.every(
+        (wallet) =>
+          wallet !== ZeroAddress && config.teamWallets.includes(wallet),
+      ),
+    'unique houseHunterWallets subset of teamWallets',
+  );
   config.priorWallets ??= { creators: [], hunters: [] };
   for (const role of ['creators', 'hunters']) {
     requireField(
@@ -195,6 +207,9 @@ function validateConfig(input, secret) {
   ]) {
     policy[field] = config[field];
   }
+  // Preserve existing state when this optional relaxation is disabled.
+  if (config.houseHunterWallets.length)
+    policy.houseHunterWallets = config.houseHunterWallets;
   config.policyHash = digest(policy);
   config.snapshotSetHash = digest(
     config.approvedTemplates.map((snapshot) => snapshot.sha256).sort(),

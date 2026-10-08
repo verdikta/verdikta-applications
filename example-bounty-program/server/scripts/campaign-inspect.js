@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const { templateDigests } = require('../campaign/evidence');
 const { CASH_QUESTS } = require('../campaign/config');
+// Reward candidates are separate from the stricter cash eligibility predicates.
+const CASH_REWARD_QUESTS = [...CASH_QUESTS, 'Q9'];
 function inspect(filename) {
   const state = JSON.parse(fs.readFileSync(filename, 'utf8'));
   const claimsPath = path.join(path.dirname(filename), 'claims.json');
@@ -31,9 +33,21 @@ function inspect(filename) {
     verifiedCashClaims: verifiedClaims.filter(
       (claim) => claim.code === 'VERIFIED' && CASH_QUESTS.includes(claim.quest),
     ),
+    verifiedCashCandidateClaims: verifiedClaims
+      .filter(
+        (claim) =>
+          claim.code === 'VERIFIED' && CASH_REWARD_QUESTS.includes(claim.quest),
+      )
+      .map((claim) => ({ ...claim, rewardStatus: 'candidate-only' })),
+    verifiedHouseAssistedCreatorClaims: verifiedClaims.filter(
+      (claim) =>
+        claim.code === 'VERIFIED' &&
+        claim.creatorCompletionKind === 'house-assisted',
+    ),
     verifiedClaims,
     priorWallets: state.eligibilityPolicy?.priorWallets,
     teamWallets: state.eligibilityPolicy?.teamWallets,
+    houseHunterWallets: state.eligibilityPolicy?.houseHunterWallets || [],
     unsuccessfulAudit: state.audit || [],
     exceptions: state.exceptions,
     evidenceFailures: Object.fromEntries(

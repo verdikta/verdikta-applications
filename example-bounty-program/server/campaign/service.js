@@ -95,6 +95,10 @@ function verify(config, store, body, now) {
       snapshotSetHash: config.snapshotSetHash,
     };
     if (result.ok) {
+      if (result.creatorCompletionKind) {
+        record.creatorCompletionKind = result.creatorCompletionKind;
+        record.houseAssistedEvidence = result.houseAssistedEvidence;
+      }
       state.identities[userHash] = wallet;
       state.wallets[wallet] = userHash;
       const milestone = digest([userHash, wallet, quest]);

@@ -92,6 +92,7 @@ function verify(config, store, body, now) {
       evidence: result.evidence,
       at: now,
       generation: state.chain.generation || null,
+      snapshotSetHash: config.snapshotSetHash,
     };
     if (result.ok) {
       state.identities[userHash] = wallet;
@@ -137,6 +138,7 @@ function router(
       ready,
       code: ready ? 'READY' : chain.error || 'INDEX_NOT_READY',
       historyComplete: chain.historyComplete === true,
+      lagging: (chain.lagNotice?.at ?? 0) > chain.checkedAt,
     });
   });
   routes.post(

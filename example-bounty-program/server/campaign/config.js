@@ -190,13 +190,15 @@ function validateConfig(input, secret) {
     'maximumWindowHours',
     'teamWallets',
     'quests',
-    'approvedTemplates',
     'deployment',
     'priorWallets',
   ]) {
     policy[field] = config[field];
   }
   config.policyHash = digest(policy);
+  config.snapshotSetHash = digest(
+    config.approvedTemplates.map((snapshot) => snapshot.sha256).sort(),
+  );
   return config;
 }
 function loadConfig(environment = process.env) {

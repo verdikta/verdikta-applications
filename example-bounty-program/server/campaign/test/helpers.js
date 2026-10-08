@@ -17,6 +17,7 @@ const now = start + 10 * DAY;
 function config() {
   return {
     id: 'pilot',
+    snapshotSetHash: 'snapshots',
     communityId: 'community',
     subdomain: 'verdikta',
     startAt: start,

@@ -498,7 +498,7 @@ test('storage failure cannot return success or approve a later request', (testCo
     'VERIFICATION_UNAVAILABLE_RETRY',
   );
 });
-test('policy hash excludes operating paths and settings but includes eligibility', () => {
+test('snapshot additions preserve policy and existing state while updating evidence policy', (testContext) => {
   assert.equal(loadConfig({}), null);
   const sample = require('../config.example.json');
   assert.throws(() => validateConfig(sample, 'x'.repeat(32)));
@@ -531,6 +531,52 @@ test('policy hash excludes operating paths and settings but includes eligibility
     'y'.repeat(32),
   );
   assert.equal(original.policyHash, operational.policyHash);
+  const { snapshotDigest } = require('../config');
+  const snapshot = structuredClone(input.approvedTemplates[0]);
+  snapshot.version = 'reviewed-older-version';
+  snapshot.sha256 = snapshotDigest(snapshot);
+  const added = validateConfig(
+    { ...input, approvedTemplates: [...input.approvedTemplates, snapshot] },
+    'x'.repeat(32),
+  );
+  assert.notEqual(original.snapshotSetHash, added.snapshotSetHash);
+  assert.equal(original.policyHash, added.policyHash);
+  assert.equal(
+    added.snapshotSetHash,
+    validateConfig(
+      { ...input, approvedTemplates: [...added.approvedTemplates].reverse() },
+      'x'.repeat(32),
+    ).snapshotSetHash,
+  );
+  const store = setup(testContext);
+  const directory = path.join(path.dirname(store.file), 'snapshot-addition');
+  const originalStore = new Store(directory, original.policyHash, {
+    approvedSnapshotHashes: original.approvedTemplates.map(
+      (entry) => entry.sha256,
+    ),
+  });
+  originalStore.transact(() => {});
+  originalStore.transactClaims((state) => {
+    state.wallets[creator] = 'preserved-binding';
+  });
+  originalStore.close();
+  const reopened = new Store(directory, added.policyHash, {
+    approvedSnapshotHashes: added.approvedTemplates.map(
+      (entry) => entry.sha256,
+    ),
+  });
+  assert.equal(reopened.state.wallets[creator], 'preserved-binding');
+  reopened.transact(() => {});
+  reopened.close();
+  assert.throws(
+    () =>
+      new Store(directory, original.policyHash, {
+        approvedSnapshotHashes: original.approvedTemplates.map(
+          (entry) => entry.sha256,
+        ),
+      }),
+    /snapshot removal/,
+  );
   assert.notEqual(
     original.policyHash,
     validateConfig({ ...input, minimumWei: '101' }, 'x'.repeat(32)).policyHash,
@@ -631,6 +677,10 @@ test('inspection exports successful cash evidence and identity-release user hash
     store.file,
   );
   assert.equal(exported.verifiedCashClaims.length, 1);
+  assert.equal(
+    exported.verifiedCashClaims[0].snapshotSetHash,
+    config().snapshotSetHash,
+  );
   assert.deepEqual(exported.verifiedCashClaims[0].evidence, [
     store.state.bounties[0].key,
   ]);

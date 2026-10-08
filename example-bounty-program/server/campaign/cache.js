@@ -1,7 +1,15 @@
 'use strict';
-function evidenceError(code, terminal = true, cid) {
-  return Object.assign(new Error(code), { terminal, cid });
+class EvidenceError extends Error {
+  constructor(code, terminal, cid) {
+    super(code);
+    this.terminal = terminal;
+    this.cid = cid;
+  }
 }
+function evidenceError(code, terminal = true, cid) {
+  return new EvidenceError(code, terminal, cid);
+}
+const isEvidenceError = (error) => error instanceof EvidenceError;
 class EvidenceCache {
   constructor(state = {}, clock = () => Math.floor(Date.now() / 1000)) {
     this.state = state;
@@ -56,10 +64,10 @@ class EvidenceCache {
       record.checks[context] = { value };
       return structuredClone(value);
     } catch (error) {
-      if (error.terminal === true)
+      if (isEvidenceError(error) && error.terminal === true)
         record.checks[context] = { terminal: true, code: error.message };
       throw error;
     }
   }
 }
-module.exports = { EvidenceCache, evidenceError };
+module.exports = { EvidenceCache, evidenceError, isEvidenceError };

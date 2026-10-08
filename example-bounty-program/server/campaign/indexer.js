@@ -23,6 +23,7 @@ class Indexer {
     this.validators = validators;
     this.createContract = createContract;
     this.busy = false;
+    this.evidenceFingerprint = evidence.evidenceFingerprint();
     this.cache = new EvidenceCache(
       structuredClone(store.state.evidenceCache || {}),
     );
@@ -31,6 +32,22 @@ class Indexer {
     if (this.busy) return;
     this.busy = true;
     this.cache.clock = () => now;
+    let checkFailureLogged = false;
+    const recordEvidenceFailure = (error) => {
+      if (
+        !evidence.isEvidenceError(error) ||
+        error.message === 'EVIDENCE_CHECK_FAILED_RETRY'
+      ) {
+        if (!checkFailureLogged) {
+          console.warn(
+            'Campaign evidence check failed; retrying on the next cycle.',
+          );
+          checkFailureLogged = true;
+        }
+        return 'EVIDENCE_CHECK_FAILED_RETRY';
+      }
+      return error.message;
+    };
     try {
       const config = this.config;
       const deployment = config.deployment;
@@ -45,8 +62,16 @@ class Indexer {
         latest.number - config.confirmations,
       );
       const previous = this.store.state.chain;
-      if (previous.coverage && toBlock < previous.coverage.to)
-        throw new Error('RPC_LAGGING_RETRY');
+      if (previous.coverage && toBlock < previous.coverage.to) {
+        this.store.transact((state) => {
+          state.chain.lagNotice = {
+            at: now,
+            toBlock,
+            coverageTo: previous.coverage.to,
+          };
+        });
+        return;
+      }
       const tip = await provider.getBlock(toBlock);
       if (
         !tip ||
@@ -161,13 +186,11 @@ class Indexer {
         try {
           bounty.evidence = await this.cache.check(
             bounty.evaluationCid,
-            `bounty:${config.policyHash}:${bounty.threshold}`,
+            `bounty:${this.evidenceFingerprint}:${config.snapshotSetHash}:${bounty.threshold}`,
             () => this.validators.inspectBounty(bounty, config, fetcher),
           );
         } catch (error) {
-          bounty.evidenceError = error.terminal
-            ? error.message
-            : 'GATEWAY_UNAVAILABLE';
+          bounty.evidenceError = recordEvidenceFailure(error);
           bounty.evidence = { ok: false };
           continue;
         }
@@ -181,27 +204,31 @@ class Indexer {
           try {
             submission.packageValid = await this.cache.check(
               submission.hunterCid,
-              `submission:${config.policyHash}:${bounty.evidence.scopeDigest}`,
+              `submission:${this.evidenceFingerprint}:${config.snapshotSetHash}:${bounty.evidence.kind}:${bounty.evidence.templateId || 'custom'}:${bounty.evidence.scopeDigest}`,
               () => this.validators.submission(bounty, submission, fetcher),
             );
           } catch (error) {
             submission.packageValid = false;
-            submission.evidenceError = error.terminal
-              ? error.message
-              : 'GATEWAY_UNAVAILABLE';
+            submission.evidenceError = recordEvidenceFailure(error);
           }
         }
       }
+      const countsForDuplicates = (bounty) =>
+        bounty.evidence?.ok &&
+        !bounty.refunded &&
+        !exceptions.denyBounties[bounty.key];
       const scopeCounts = new Map();
       for (const bounty of view.bounties) {
-        if (bounty.evidence?.ok)
+        if (countsForDuplicates(bounty))
           scopeCounts.set(
             bounty.evidence.scopeDigest,
             (scopeCounts.get(bounty.evidence.scopeDigest) || 0) + 1,
           );
       }
       for (const bounty of view.bounties)
-        bounty.duplicate = scopeCounts.get(bounty.evidence?.scopeDigest) > 1;
+        bounty.duplicate =
+          !!countsForDuplicates(bounty) &&
+          scopeCounts.get(bounty.evidence.scopeDigest) > 1;
       if ((await provider.getBlock(toBlock))?.hash !== tip.hash)
         throw new Error('REORG_RETRY');
       if (exceptions.identityReleases.length)
@@ -221,7 +248,14 @@ class Indexer {
           creationChecked: true,
           finalizedBlock: toBlock,
           finalizedTimestamp: tip.timestamp,
-          generation: digest({ coverage, exceptions }),
+          evidenceFingerprint: this.evidenceFingerprint,
+          snapshotSetHash: config.snapshotSetHash,
+          generation: digest({
+            coverage,
+            exceptions,
+            evidenceFingerprint: this.evidenceFingerprint,
+            snapshotSetHash: config.snapshotSetHash,
+          }),
         };
         state.bounties = view.bounties;
         state.history = view.history;

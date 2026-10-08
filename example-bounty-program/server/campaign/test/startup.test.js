@@ -37,7 +37,9 @@ test('live PID disables only campaign, keeping the bounty API operational', asyn
   );
   app.get('/api/jobs', (incoming, response) => response.json({ ok: true }));
   assert.equal((await request(app).get('/api/jobs')).status, 200);
-  assert.equal((await request(app).get('/api/campaign/health')).status, 503);
+  const health = await request(app).get('/api/campaign/health');
+  assert.equal(health.status, 503);
+  assert.equal(health.body.reason, 'WRITER_ACTIVE');
   const result = await request(app)
     .post('/api/campaign/verify')
     .set('X-Api-Key', secret)
@@ -46,15 +48,48 @@ test('live PID disables only campaign, keeping the bounty API operational', asyn
   assert.match(result.body.message, /\[VERIFICATION_UNAVAILABLE_RETRY\]$/);
   assert.equal(fs.readFileSync(owner.lock, 'utf8'), String(process.pid));
 });
-test('invalid config, corrupt state and unwritable directory never escape installation', async () => {
-  for (const source of [
-    () => {
-      throw Error('config JSON contains secret');
-    },
-    { stateDirectory: '/dev/null/not-a-directory', policyHash: 'policy' },
+test('startup health categories distinguish invalid config, corrupt state and policy mismatch', async (testContext) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'campaign-startup-'));
+  testContext.after(() =>
+    fs.rmSync(directory, { recursive: true, force: true }),
+  );
+  fs.writeFileSync(path.join(directory, 'ledger.json'), '{');
+  for (const [source, reason] of [
+    [
+      () => {
+        throw Error('config JSON contains secret');
+      },
+      'CONFIG_INVALID',
+    ],
+    [
+      { stateDirectory: '/dev/null/not-a-directory', policyHash: 'policy' },
+      'STATE_MISMATCH',
+    ],
+    [{ stateDirectory: directory, policyHash: 'policy' }, 'STATE_MISMATCH'],
   ]) {
     const app = express();
     assert.doesNotThrow(() => install(app, source, null, 'x'.repeat(32)));
-    assert.equal((await request(app).get('/api/campaign/health')).status, 503);
+    const health = await request(app).get('/api/campaign/health');
+    assert.equal(health.status, 503);
+    assert.deepEqual(health.body, {
+      ready: false,
+      code: 'VERIFICATION_UNAVAILABLE_RETRY',
+      reason,
+    });
   }
+  fs.unlinkSync(path.join(directory, 'ledger.json'));
+  const store = new Store(directory, 'old-policy');
+  store.transact(() => {});
+  store.close();
+  const app = express();
+  install(
+    app,
+    { stateDirectory: directory, policyHash: 'different-policy' },
+    null,
+    'x'.repeat(32),
+  );
+  assert.equal(
+    (await request(app).get('/api/campaign/health')).body.reason,
+    'STATE_MISMATCH',
+  );
 });

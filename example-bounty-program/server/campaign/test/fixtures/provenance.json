@@ -36,5 +36,24 @@
       "base-0-evaluation.zip": "a665639f4f3df80430150445ae568d1c22e659b7148f1e53feeb0e8e7d684991",
       "base-0-rubric.json": "8170cf2c95c38362c1f6f273e59bf865de53c1d96e1da04f30e524c9d07bbe92"
     }
+  },
+  {
+    "network": "Base Sepolia",
+    "chainId": 84532,
+    "escrow": "0x1b4f0e43256d435dfcd5c0883799f0eb3943e08f",
+    "bountyId": 5,
+    "threshold": 85,
+    "evaluationCid": "QmVSXRH8kZvv5mD21dcZNjvAoM7Zs1r3Z13FYy8xZpT4RM",
+    "rubricCid": "QmaUBfDzyqZ6QYn3xDrP62Mp2UYSz3KoEC6QbVMEfB3e7r",
+    "files": [
+      "sepolia-5-evaluation.zip",
+      "sepolia-5-rubric.json"
+    ],
+    "retrievedDate": "2026-10-08",
+    "method": "Read-only getBounty via keyless Base RPC; raw CID bytes via https://gateway.pinata.cloud/ipfs/<CID>.",
+    "sha256": {
+      "sepolia-5-evaluation.zip": "634d349d761ef5a96f5eed551f6af0555067085bd2ac8ae2027bbf40bec9ff0d",
+      "sepolia-5-rubric.json": "d63b74cee2ceea0fd505e8a5f16a6b1fc8525cc2f3ec8826f204bb465e50cb93"
+    }
   }
 ]

@@ -26,14 +26,23 @@ function acquireLock(filename, isAlive = pidAlive) {
   }
   // Serialize stale-lock reclamation, and compare inode identity before deleting.
   const reclaimDirectory = `${filename}.reclaim`;
-  fs.mkdirSync(reclaimDirectory);
+  try {
+    fs.mkdirSync(reclaimDirectory);
+  } catch (error) {
+    if (error.code === 'EEXIST') error.code = 'WRITER_ACTIVE';
+    throw error;
+  }
   try {
     const previous = fs.statSync(filename);
     const pid = Number(fs.readFileSync(filename, 'utf8'));
     if (!Number.isSafeInteger(pid) || pid <= 0 || isAlive(pid))
-      throw new Error('CAMPAIGN_WRITER_ACTIVE');
+      throw Object.assign(new Error('Campaign writer is active'), {
+        code: 'WRITER_ACTIVE',
+      });
     if (fs.statSync(filename).ino !== previous.ino)
-      throw new Error('CAMPAIGN_WRITER_ACTIVE');
+      throw Object.assign(new Error('Campaign writer is active'), {
+        code: 'WRITER_ACTIVE',
+      });
     fs.unlinkSync(filename);
     return fs.openSync(filename, 'wx', 0o600);
   } finally {
@@ -78,6 +87,18 @@ class Store {
         throw new Error(
           'Campaign policy/state mismatch; explicit migration required',
         );
+      if (options.approvedSnapshotHashes) {
+        const previousSnapshots = this.state.approvedSnapshotHashes || [];
+        if (
+          previousSnapshots.some(
+            (hash) => !options.approvedSnapshotHashes.includes(hash),
+          )
+        )
+          throw new Error('Approved snapshot removal is unsupported');
+        this.state.approvedSnapshotHashes = [
+          ...options.approvedSnapshotHashes,
+        ].sort();
+      }
     } catch (error) {
       this.close();
       throw error;

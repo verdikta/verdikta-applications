@@ -20,6 +20,9 @@ function inspect(filename) {
     coverage: state.chain.coverage,
     error: state.chain.error,
     checkedAt: state.chain.checkedAt,
+    lagNotice: state.chain.lagNotice,
+    evidenceFingerprint: state.chain.evidenceFingerprint,
+    snapshotSetHash: state.chain.snapshotSetHash,
     historyComplete: state.chain.historyComplete,
     identities: Object.entries(state.identities || {}).map(
       ([userHash, wallet]) => ({ userHash, wallet }),
@@ -52,6 +55,7 @@ function inspect(filename) {
       refunded: bounty.refunded,
       payment: bounty.payment,
       kind: bounty.evidence?.kind,
+      classification: bounty.evidence?.classification,
       templateId: bounty.evidence?.templateId,
       scopeDigest: bounty.evidence?.scopeDigest,
       evidenceError: bounty.evidenceError,

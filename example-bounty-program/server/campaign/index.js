@@ -7,15 +7,23 @@ const { message } = require('./messages');
 function install(app, configSource, rpcUrl, secret, options = {}) {
   let store;
   let provider;
+  let reason = 'CONFIG_INVALID';
   try {
     // Configuration loading is inside the boundary: even malformed JSON cannot stop the product API.
     const config =
       typeof configSource === 'function' ? configSource() : configSource;
     if (!config) return null;
-    store = new Store(config.stateDirectory, config.policyHash, options);
+    reason = 'STATE_MISMATCH';
+    store = new Store(config.stateDirectory, config.policyHash, {
+      ...options,
+      approvedSnapshotHashes: config.approvedTemplates?.map(
+        (snapshot) => snapshot.sha256,
+      ),
+    });
     store.transact((state) => {
       state.chain.error = 'STARTUP_RECONCILIATION_REQUIRED';
     });
+    reason = 'CONFIG_INVALID';
     provider = options.provider || new ethers.JsonRpcProvider(rpcUrl);
     const indexer = new Indexer(config, store, provider);
     const reconcile = () => {
@@ -35,7 +43,8 @@ function install(app, configSource, rpcUrl, secret, options = {}) {
     app.use('/api/campaign', router(config, store, secret));
     reconcile();
     return { store, indexer, close };
-  } catch {
+  } catch (error) {
+    if (error.code === 'WRITER_ACTIVE') reason = 'WRITER_ACTIVE';
     try {
       store?.close();
       provider?.destroy?.();
@@ -48,7 +57,7 @@ function install(app, configSource, rpcUrl, secret, options = {}) {
     app.get('/api/campaign/health', (request, response) =>
       response
         .status(503)
-        .json({ ready: false, code: 'VERIFICATION_UNAVAILABLE_RETRY' }),
+        .json({ ready: false, code: 'VERIFICATION_UNAVAILABLE_RETRY', reason }),
     );
     app.post('/api/campaign/verify', (request, response) => {
       const code =

@@ -7,6 +7,12 @@ const { ethers } = require('ethers');
 const { Indexer, iface } = require('../indexer');
 const { EvidenceCache, evidenceError } = require('../cache');
 const { emptyExceptions } = require('../exceptions');
+const { eligibility } = require('../predicates');
+const { router } = require('../service');
+const express = require('express');
+const request = require('supertest');
+const evidence = require('../evidence');
+const { config: campaignConfig } = require('./helpers');
 const {
   setup,
   review,
@@ -25,6 +31,7 @@ function fixture(testContext) {
   const exceptionsFile = path.join(path.dirname(store.file), 'exceptions.json');
   fs.writeFileSync(exceptionsFile, JSON.stringify(emptyExceptions()));
   const config = {
+    ...campaignConfig(),
     startAt: start,
     endAt: now + 1000,
     confirmations: 2,
@@ -103,6 +110,7 @@ function fixture(testContext) {
     provider,
     contract,
     logs,
+    log,
     indexer,
     validators,
     logCalls: () => logCalls,
@@ -121,19 +129,41 @@ test('chunked finality reconciliation caches evidence and checks creation bounda
   assert.equal(fixtureData.evidenceCalls(), 1);
   assert.equal(fixtureData.creationChecks(), 1);
 });
-test('lagging finalized RPC holds snapshot without wiping then recovers', async (testContext) => {
-  const fixtureData = fixture(testContext);
-  await fixtureData.indexer.reconcile(now);
-  const original = fixtureData.provider.getBlock;
-  fixtureData.provider.getBlock = async (blockTag) =>
+test('lagging finalized RPC skips fresh claims, ages normally and clears health notice on recovery', async (testContext) => {
+  const data = fixture(testContext);
+  await data.indexer.reconcile(now);
+  const original = data.provider.getBlock;
+  const oldChain = structuredClone(data.store.state.chain);
+  data.provider.getBlock = async (blockTag) =>
     blockTag === 'finalized' ? { number: 15 } : original(blockTag);
-  await fixtureData.indexer.reconcile(now);
-  assert.equal(fixtureData.store.state.chain.error, 'RPC_LAGGING_RETRY');
-  assert.equal(fixtureData.store.state.chain.logs.length, 2);
-  assert.equal(fixtureData.store.state.chain.coverage.to, 20);
-  fixtureData.provider.getBlock = original;
-  await fixtureData.indexer.reconcile(now);
-  assert.equal(fixtureData.store.state.chain.error, null);
+  await data.indexer.reconcile(now + 10);
+  assert.deepEqual(data.store.state.chain, {
+    ...oldChain,
+    lagNotice: { at: now + 10, toBlock: 15, coverageTo: 20 },
+  });
+  assert.equal(
+    eligibility(data.config, data.store.state, 'Q3', creator, now + 10).code,
+    'VERIFIED',
+  );
+  let clock = now + 10;
+  const app = express();
+  app.use(router(data.config, data.store, 'secret', () => clock));
+  const fresh = await request(app).get('/health');
+  assert.equal(fresh.status, 200);
+  assert.equal(fresh.body.lagging, true);
+  clock = now + data.config.maxAgeSeconds + 1;
+  await data.indexer.reconcile(clock);
+  assert.equal(data.store.state.chain.checkedAt, now);
+  assert.equal(data.store.state.chain.error, null);
+  assert.equal(
+    eligibility(data.config, data.store.state, 'Q3', creator, clock).code,
+    'INDEX_NOT_READY_RETRY',
+  );
+  assert.equal((await request(app).get('/health')).status, 503);
+  data.provider.getBlock = original;
+  clock = now + 20;
+  await data.indexer.reconcile(clock);
+  assert.equal((await request(app).get('/health')).body.lagging, false);
 });
 test('only checkpoint hash mismatch triggers full rebuild', async (testContext) => {
   const fixtureData = fixture(testContext);
@@ -247,7 +277,7 @@ test('concurrent reconciliations publish once', async (testContext) => {
   ]);
   assert.equal(fixtureData.logCalls(), 3);
 });
-test('terminal validation failures persist and never refetch; changed policy can revalidate', async (testContext) => {
+test('terminal validation failures persist and never refetch under the same context', async (testContext) => {
   const fixtureData = fixture(testContext);
   let calls = 0;
   fixtureData.validators.inspectBounty = async () => {
@@ -266,9 +296,13 @@ test('terminal validation failures persist and never refetch; changed policy can
   ).evidenceCache;
   const restored = new EvidenceCache(persisted);
   await assert.rejects(
-    restored.check('cid', 'bounty:policy:80', () => {
-      calls++;
-    }),
+    restored.check(
+      'cid',
+      `bounty:${fixtureData.indexer.evidenceFingerprint}:${fixtureData.config.snapshotSetHash}:80`,
+      () => {
+        calls++;
+      },
+    ),
     /RUBRIC_MISMATCH/,
   );
   assert.equal(calls, 1);
@@ -309,4 +343,152 @@ test('stale finalized timestamps hold the generation', async (testContext) => {
   });
   await fixtureData.indexer.reconcile(now);
   assert.equal(fixtureData.store.state.chain.error, 'CHAIN_STALE');
+});
+
+for (const resolution of ['deny', 'refund']) {
+  test(`duplicate scopes hold both until one is ${resolution === 'deny' ? 'denied' : 'refunded'}`, async (testContext) => {
+    const data = fixture(testContext);
+    data.logs.push(
+      data.log(
+        'BountyCreated',
+        [1, creator, 'cid-2', 1, 80, 100, now + 200000],
+        12,
+      ),
+    );
+    data.contract.bountyCount = async () => 2n;
+    data.contract.submissionCount = async (id) => (id === '0' ? 1n : 0n);
+    await data.indexer.reconcile(now);
+    assert.deepEqual(
+      data.store.state.bounties.map((bounty) => bounty.duplicate),
+      [true, true],
+    );
+    assert.equal(
+      eligibility(data.config, data.store.state, 'Q3', creator, now).code,
+      'DUPLICATE_SCOPE_REVIEW',
+    );
+    const exceptions = emptyExceptions();
+    if (resolution === 'deny') {
+      exceptions.denyBounties[data.store.state.bounties[1].key] = review();
+      fs.writeFileSync(data.config.exceptionsFile, JSON.stringify(exceptions));
+    } else {
+      data.logs.push(data.log('BountyClosed', [1, creator, 100], 21));
+      const original = data.provider.getBlock;
+      data.provider.getBlock = async (blockTag) =>
+        original(
+          blockTag === 'latest' ? 24 : blockTag === 'finalized' ? 22 : blockTag,
+        );
+    }
+    await data.indexer.reconcile(now + 10);
+    assert.equal(data.store.state.chain.error, null);
+    assert.deepEqual(
+      data.store.state.bounties.map((bounty) => bounty.duplicate),
+      [false, false],
+    );
+    assert.deepEqual(
+      eligibility(data.config, data.store.state, 'Q3', creator, now + 10)
+        .evidence,
+      [data.store.state.bounties[0].key],
+    );
+  });
+}
+for (const contextChange of ['fingerprint', 'snapshots']) {
+  for (const stage of ['inspectBounty', 'submission']) {
+    test(`${contextChange} change revalidates terminal ${stage} cache entries`, async (testContext) => {
+      const data = fixture(testContext);
+      let attempts = 0;
+      const success = data.validators[stage];
+      data.validators[stage] = async () => {
+        attempts++;
+        throw evidenceError('INVALID_PACKAGE');
+      };
+      await data.indexer.reconcile(now);
+      await data.indexer.reconcile(now + 1);
+      assert.equal(attempts, 1);
+      data.indexer = new Indexer(
+        data.config,
+        data.store,
+        data.provider,
+        data.validators,
+        () => data.contract,
+      );
+      if (contextChange === 'fingerprint')
+        data.indexer.evidenceFingerprint = 'new-installed-source-fingerprint';
+      else data.config.snapshotSetHash = 'added-snapshot';
+      data.validators[stage] = async () => {
+        attempts++;
+        return success();
+      };
+      await data.indexer.reconcile(now + 2);
+      assert.equal(attempts, 2);
+      assert.equal(data.store.state.bounties[0].evidence.ok, true);
+      assert.equal(
+        data.store.state.bounties[0].submissions[0].packageValid,
+        true,
+      );
+      assert.equal(
+        data.store.state.chain.evidenceFingerprint,
+        data.indexer.evidenceFingerprint,
+      );
+      assert.equal(
+        data.store.state.chain.snapshotSetHash,
+        data.config.snapshotSetHash,
+      );
+    });
+  }
+}
+test('module import failures are retried next cycle and logged once without details', async (testContext) => {
+  const data = fixture(testContext);
+  const logged = testContext.mock.method(console, 'warn', () => {});
+  const provenance = require('./fixtures/provenance.json').find(
+    (entry) => entry.bountyId === 9,
+  );
+  const evaluation = fs.readFileSync(
+    path.join(__dirname, 'fixtures/sepolia-9-evaluation.zip'),
+  );
+  const rubric = fs.readFileSync(
+    path.join(__dirname, 'fixtures/sepolia-9-rubric.json'),
+  );
+  data.config.approvedTemplates = await evidence.templateDigests();
+  data.logs.push(
+    data.log(
+      'BountyCreated',
+      [1, creator, 'cid-2', 1, 80, 100, now + 200000],
+      12,
+    ),
+  );
+  data.contract.bountyCount = async () => 2n;
+  data.contract.submissionCount = async (id) => (id === '0' ? 1n : 0n);
+  data.validators.fetchCid = async (cid) =>
+    cid === provenance.rubricCid ? rubric : evaluation;
+  let imports = 0;
+  let failing = true;
+  const moduleLoader = async () => {
+    imports++;
+    return failing
+      ? import('./missing-private-deployment-module.mjs')
+      : evidence.loadModules();
+  };
+  data.validators.inspectBounty = (bounty, config, fetcher) =>
+    evidence.inspectBounty(bounty, config, fetcher, moduleLoader);
+  await data.indexer.reconcile(now);
+  assert.equal(logged.mock.calls.length, 1);
+  assert.equal(imports, 2);
+  assert.equal(
+    data.store.state.bounties[0].evidenceError,
+    'EVIDENCE_CHECK_FAILED_RETRY',
+  );
+  assert.doesNotMatch(
+    JSON.stringify(logged.mock.calls[0].arguments),
+    /private|module.mjs/,
+  );
+  assert.ok(
+    Object.values(data.store.state.evidenceCache).every((record) =>
+      Object.values(record.checks).every((check) => !check.terminal),
+    ),
+  );
+  failing = false;
+  await data.indexer.reconcile(now + 10);
+  assert.equal(imports, 4);
+  assert.equal(data.store.state.bounties[0].evidence.kind, 'workOrder');
+  assert.equal(logged.mock.calls.length, 1);
 });

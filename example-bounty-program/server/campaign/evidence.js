@@ -7,8 +7,45 @@ const {
   validateArchiveShape,
 } = require('../utils/archiveShapeValidator');
 const { buildEvaluationQuery } = require('../utils/archiveGenerator');
-const { sha256, canonicalRubric, snapshotDigest } = require('./config');
-const { evidenceError } = require('./cache');
+const { sha256, digest, canonicalRubric, snapshotDigest } = require('./config');
+const { evidenceError, isEvidenceError } = require('./cache');
+function evidenceFingerprint() {
+  const skillRoot = path.join(__dirname, '../../../skills/verdikta-discover');
+  const packageVersion = JSON.parse(
+    fs.readFileSync(path.join(skillRoot, 'package.json'), 'utf8'),
+  ).version;
+  const templateVersions = fs
+    .readdirSync(path.join(skillRoot, 'templates'))
+    .filter((filename) => filename.endsWith('.template.json'))
+    .sort()
+    .map((filename) => [
+      filename,
+      JSON.parse(
+        fs.readFileSync(path.join(skillRoot, 'templates', filename), 'utf8'),
+      ).template_version,
+    ]);
+  return digest({
+    generatorSource: fs.readFileSync(
+      path.join(__dirname, '../utils/archiveGenerator.js'),
+      'utf8',
+    ),
+    packageVersion,
+    templateVersions,
+  });
+}
+function packageJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    if (error instanceof SyntaxError) throw evidenceError('INVALID_PACKAGE');
+    throw error;
+  }
+}
+function checkedErrors(errors) {
+  if (!Array.isArray(errors))
+    throw new Error('Unexpected shared validator result');
+  return errors;
+}
 const CID = /^[a-zA-Z0-9]{46,100}$/;
 async function fetchCid(cid) {
   if (!CID.test(cid)) throw evidenceError('INVALID_CID');
@@ -39,21 +76,27 @@ function archive(buffer) {
     )
       throw new Error();
     const bytes = (filename) => {
+      if (typeof filename !== 'string' || !filename)
+        throw evidenceError('INVALID_PACKAGE');
       const entry = zip.getEntry(filename);
       if (!entry || entry.header.size > 1024 * 1024 || entry.isDirectory)
         throw evidenceError('INVALID_PACKAGE');
-      return entry.getData();
+      try {
+        return entry.getData();
+      } catch {
+        throw evidenceError('INVALID_PACKAGE');
+      }
     };
     return {
       bytes,
       text: (filename) => bytes(filename).toString('utf8'),
-      json: (filename) => JSON.parse(bytes(filename).toString('utf8')),
+      json: (filename) => packageJson(bytes(filename).toString('utf8')),
     };
   } catch {
     throw evidenceError('INVALID_PACKAGE');
   }
 }
-async function modules() {
+async function loadModules() {
   const [workOrder, core, validation] = await Promise.all([
     import('../../../skills/verdikta-discover/scripts/work-order.mjs'),
     import('../../../skills/verdikta-discover/scripts/preview-core.mjs'),
@@ -62,7 +105,7 @@ async function modules() {
   return { ...workOrder, ...core, ...validation };
 }
 async function templateDigests() {
-  const shared = await modules();
+  const shared = await loadModules();
   return Object.entries(shared.templates).map(([id, template]) => {
     const snapshot = {
       id,
@@ -82,39 +125,108 @@ async function templateDigests() {
     return { ...snapshot, sha256: snapshotDigest(snapshot) };
   });
 }
-async function inspectBounty(bounty, config, fetcher = fetchCid) {
-  const evaluationBytes = await fetcher(bounty.evaluationCid);
+async function inspectBounty(
+  bounty,
+  config,
+  fetcher = fetchCid,
+  moduleLoader = loadModules,
+) {
   try {
-    const shared = await modules();
+    const evaluationBytes = await fetcher(bounty.evaluationCid);
     const evaluationArchive = archive(evaluationBytes);
     const manifest = evaluationArchive.json('manifest.json');
-    const primary = evaluationArchive.json(manifest.primary?.filename);
-    if (typeof primary.query !== 'string' || !primary.query.trim())
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest))
       throw evidenceError('INVALID_PACKAGE');
-    const references = manifest.additional?.filter(
+    const primary = evaluationArchive.json(manifest.primary?.filename);
+    if (!primary || typeof primary.query !== 'string' || !primary.query.trim())
+      throw evidenceError('INVALID_PACKAGE');
+    if (
+      !Array.isArray(manifest.additional) ||
+      manifest.additional.some(
+        (reference) => !reference || typeof reference !== 'object',
+      )
+    )
+      throw evidenceError('INVALID_PACKAGE');
+    const references = manifest.additional.filter(
       (reference) => reference.name === 'gradingRubric',
     );
-    if (references?.length !== 1 || references[0].type !== 'ipfs/cid')
+    if (
+      references.length !== 1 ||
+      references[0].type !== 'ipfs/cid' ||
+      typeof references[0].hash !== 'string'
+    )
       throw evidenceError('INVALID_PACKAGE');
-    const rubric = JSON.parse(
+    const rubric = packageJson(
       (await fetcher(references[0].hash)).toString('utf8'),
     );
-    if (!Array.isArray(rubric.criteria) || !rubric.criteria.length)
+    if (
+      !rubric ||
+      !Array.isArray(rubric.criteria) ||
+      !rubric.criteria.length ||
+      rubric.criteria.some(
+        (criterion) =>
+          !criterion ||
+          typeof criterion !== 'object' ||
+          Array.isArray(criterion),
+      )
+    )
       throw evidenceError('INVALID_PACKAGE');
     const common = {
       ok: true,
       evaluationCid: bounty.evaluationCid,
       rubricCid: references[0].hash,
     };
+    const custom = (classification) => ({
+      ...common,
+      kind: 'custom',
+      scopeDigest: sha256(primary.query),
+      classification,
+    });
+    const shared = await moduleLoader();
     const parsed = shared.parseWorkOrderDescription(primary.query);
-    if (!parsed) {
-      return {
-        ...common,
-        kind: 'custom',
-        scopeDigest: sha256(primary.query),
-        classification: 'NOT_A_WORK_ORDER',
-      };
-    }
+    if (parsed === null) return custom('NOT_A_WORK_ORDER');
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      typeof parsed.templateId !== 'string' ||
+      typeof parsed.requestDigest !== 'string' ||
+      !Object.hasOwn(parsed, 'request')
+    )
+      throw new Error('Unexpected shared parser result');
+    checkedErrors(parsed.errors);
+    // Prove the query is intact against its own fetched rubric before any XP fallback.
+    const match = primary.query.match(
+      /^WORK PRODUCT EVALUATION REQUEST[\s\S]*?=== TASK DESCRIPTION ===\nWork Product Type: ([^\n]+)\nTask Title: ([^\n]+)\nTask Description: ([\s\S]*?)\n\n=== EVALUATION PROTOCOL ===/,
+    );
+    if (!match) throw evidenceError('EVALUATION_QUERY_CHANGED');
+    const forbiddenContent =
+      rubric.forbiddenContent ?? rubric.forbidden_content;
+    if (
+      (forbiddenContent !== undefined && !Array.isArray(forbiddenContent)) ||
+      rubric.criteria.some(
+        (criterion) =>
+          criterion.weight !== undefined &&
+          typeof criterion.weight !== 'number',
+      )
+    )
+      throw evidenceError('INVALID_PACKAGE');
+    const rebuilt = buildEvaluationQuery({
+      workProductType: match[1],
+      jobTitle: match[2],
+      jobDescription: match[3],
+      rubricCriteria: rubric.criteria,
+      forbiddenContent,
+    });
+    if (typeof rebuilt !== 'string')
+      throw new Error('Unexpected query builder result');
+    if (rebuilt !== primary.query)
+      throw evidenceError('EVALUATION_QUERY_CHANGED');
+    if (
+      JSON.stringify(primary.outcomes) !==
+        JSON.stringify(['DONT_FUND', 'FUND']) ||
+      JSON.stringify(primary.references) !== JSON.stringify(['gradingRubric'])
+    )
+      throw evidenceError('INVALID_PACKAGE');
     const prefixes = [
       'Service: ',
       'Request bytes SHA-256 (result.input_sha256): ',
@@ -128,41 +240,29 @@ async function inspectBounty(bounty, config, fetcher = fetchCid) {
             .length !== 1,
       )
     )
-      throw evidenceError('NOT_A_WORK_ORDER');
+      return custom('AMBIGUOUS_WORK_ORDER');
     if (
       parsed.errors.length ||
-      parsed.request.fixture_only ||
-      shared.validateRequest(parsed.templateId, parsed.request).length
+      parsed.request?.fixture_only ||
+      checkedErrors(shared.validateRequest(parsed.templateId, parsed.request))
+        .length
     )
-      throw evidenceError('WORK_ORDER_HASH_OR_REQUEST_INVALID');
-    const snapshot = config.approvedTemplates.find(
-      (candidate) =>
-        candidate.id === parsed.templateId &&
-        bounty.threshold === candidate.threshold &&
-        shared.sameJson(
-          canonicalRubric(rubric),
-          canonicalRubric(candidate.rubric),
-        ),
-    );
-    if (!snapshot) throw evidenceError('RUBRIC_MISMATCH');
-    if (
-      !shared.sameJson(primary.outcomes, ['DONT_FUND', 'FUND']) ||
-      !shared.sameJson(primary.references, ['gradingRubric'])
-    )
-      throw evidenceError('INVALID_PACKAGE');
-    const match = primary.query.match(
-      /^WORK PRODUCT EVALUATION REQUEST[\s\S]*?=== TASK DESCRIPTION ===\nWork Product Type: ([^\n]+)\nTask Title: ([^\n]+)\nTask Description: ([\s\S]*?)\n\n=== EVALUATION PROTOCOL ===/,
-    );
-    if (!match) throw evidenceError('NOT_A_WORK_ORDER');
-    const rebuilt = buildEvaluationQuery({
-      workProductType: match[1],
-      jobTitle: match[2],
-      jobDescription: match[3],
-      rubricCriteria: rubric.criteria,
-      forbiddenContent: rubric.forbiddenContent ?? rubric.forbidden_content,
+      return custom('WORK_ORDER_HASH_OR_REQUEST_INVALID');
+    const snapshot = config.approvedTemplates.find((candidate) => {
+      if (
+        candidate.id !== parsed.templateId ||
+        bounty.threshold !== candidate.threshold
+      )
+        return false;
+      const same = shared.sameJson(
+        canonicalRubric(rubric),
+        canonicalRubric(candidate.rubric),
+      );
+      if (typeof same !== 'boolean')
+        throw new Error('Unexpected rubric comparison result');
+      return same;
     });
-    if (rebuilt !== primary.query)
-      throw evidenceError('EVALUATION_QUERY_CHANGED');
+    if (!snapshot) return custom('RUBRIC_MISMATCH');
     return {
       ...common,
       kind: 'workOrder',
@@ -174,13 +274,22 @@ async function inspectBounty(bounty, config, fetcher = fetchCid) {
       scopeDigest: parsed.requestDigest,
     };
   } catch (error) {
-    if (typeof error.terminal === 'boolean') throw error;
-    throw evidenceError('INVALID_PACKAGE');
+    if (isEvidenceError(error)) throw error;
+    throw evidenceError(
+      'EVIDENCE_CHECK_FAILED_RETRY',
+      false,
+      bounty.evaluationCid,
+    );
   }
 }
-async function submission(bounty, submissionRecord, fetcher = fetchCid) {
-  const buffer = await fetcher(submissionRecord.hunterCid);
+async function submission(
+  bounty,
+  submissionRecord,
+  fetcher = fetchCid,
+  moduleLoader = loadModules,
+) {
   try {
+    const buffer = await fetcher(submissionRecord.hunterCid);
     const submissionArchive = archive(buffer);
     if (!validateArchiveShape(buffer).ok)
       throw evidenceError('INVALID_PACKAGE');
@@ -191,7 +300,19 @@ async function submission(bounty, submissionRecord, fetcher = fetchCid) {
         throw evidenceError('INVALID_PACKAGE');
       return true;
     }
-    const references = (manifest.additional || []).filter(
+    if (
+      !Array.isArray(manifest.additional) ||
+      !Array.isArray(primary.references) ||
+      manifest.additional.some(
+        (reference) =>
+          !reference ||
+          typeof reference !== 'object' ||
+          (reference.filename !== undefined &&
+            typeof reference.filename !== 'string'),
+      )
+    )
+      throw evidenceError('INVALID_PACKAGE');
+    const references = manifest.additional.filter(
       (reference) =>
         reference.filename && primary.references?.includes(reference.name),
     );
@@ -202,13 +323,16 @@ async function submission(bounty, submissionRecord, fetcher = fetchCid) {
       if (matches.length !== 1) throw evidenceError('INVALID_PACKAGE');
       return submissionArchive.text(matches[0].filename);
     };
-    const result = JSON.parse(find('result.json'));
+    const result = packageJson(find('result.json'));
+    if (!result || typeof result !== 'object' || Array.isArray(result))
+      throw evidenceError('INVALID_PACKAGE');
     if (!find('evidence.md').trim()) throw evidenceError('INVALID_PACKAGE');
     if (bounty.evidence.templateId === 'real-world-task-v1') {
       if (!Array.isArray(result.evidence))
         throw evidenceError('INVALID_PACKAGE');
       for (const item of result.evidence) {
         if (
+          !item ||
           typeof item.filename !== 'string' ||
           !item.filename ||
           /[/\\]/.test(item.filename) ||
@@ -217,25 +341,34 @@ async function submission(bounty, submissionRecord, fetcher = fetchCid) {
           throw evidenceError('INVALID_PACKAGE');
       }
     }
-    const shared = await modules();
+    const shared = await moduleLoader();
     if (
-      shared.validateResult(
-        bounty.evidence.templateId,
-        bounty.evidence.request,
-        result,
-        bounty.evidence.requestDigest,
-        { production: true },
+      checkedErrors(
+        shared.validateResult(
+          bounty.evidence.templateId,
+          bounty.evidence.request,
+          result,
+          bounty.evidence.requestDigest,
+          { production: true },
+        ),
       ).length
     )
       throw evidenceError('INVALID_PACKAGE');
     return true;
   } catch (error) {
-    if (typeof error.terminal === 'boolean') throw error;
-    throw evidenceError('INVALID_PACKAGE');
+    if (isEvidenceError(error)) throw error;
+    throw evidenceError(
+      'EVIDENCE_CHECK_FAILED_RETRY',
+      false,
+      submissionRecord.hunterCid,
+    );
   }
 }
 module.exports = {
   inspectBounty,
+  loadModules,
+  evidenceFingerprint,
+  isEvidenceError,
   submission,
   templateDigests,
   archive,

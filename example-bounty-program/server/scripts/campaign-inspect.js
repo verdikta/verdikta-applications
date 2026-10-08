@@ -1,23 +1,82 @@
 #!/usr/bin/env node
 'use strict';
-// Host access is the authorization boundary. This command never locks or writes the ledger.
 const fs = require('fs');
+const path = require('path');
 const { templateDigests } = require('../campaign/evidence');
-async function main() {
-  if (process.argv[2] === '--templates') return console.log(JSON.stringify(await templateDigests(),null,2));
-  if (!process.argv[2]) throw new Error('Usage: node scripts/campaign-inspect.js /absolute/state/ledger.json | --templates');
-  const s=JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-  const claimsPath = require('path').join(require('path').dirname(process.argv[2]), 'claims.json');
-  if (fs.existsSync(claimsPath)) Object.assign(s, JSON.parse(fs.readFileSync(claimsPath, 'utf8')));
-  s.conflicts ??= {}; s.audit ??= [];
-  // No secrets, raw Zealy IDs, social details, request bodies or package contents.
-  console.log(JSON.stringify({ version:s.version, policyHash:s.policyHash, coverage:s.chain.coverage,
-    error:s.chain.error, checkedAt:s.chain.checkedAt, historyComplete:s.chain.historyComplete,
-    conflicts:Object.keys(s.conflicts), audit:s.audit, bounties:s.bounties.map(b => ({
-      key:b.key, creator:b.creator, createdAt:b.createdAt, originalWei:b.originalWei, refunded:b.refunded,
-      payment:b.payment, templateId:b.workOrder?.templateId, requestDigest:b.workOrder?.requestDigest,
-      review:b.review, evidenceError:b.evidenceError, duplicate:b.duplicate, submissions:b.submissions,
-      newCreator:!s.history.creators[b.creator] && s.chain.historyComplete === true
-    })), transactions:[...new Set(s.chain.logs.map(l => l.tx))] },null,2));
+const { CASH_QUESTS } = require('../campaign/config');
+function inspect(filename) {
+  const state = JSON.parse(fs.readFileSync(filename, 'utf8'));
+  const claimsPath = path.join(path.dirname(filename), 'claims.json');
+  if (fs.existsSync(claimsPath)) {
+    const claims = JSON.parse(fs.readFileSync(claimsPath, 'utf8'));
+    if (claims.policyHash !== state.policyHash)
+      throw new Error('Policy mismatch');
+    Object.assign(state, claims);
+  }
+  const verifiedClaims = Object.values(state.verifiedClaims || {});
+  return {
+    version: state.version,
+    policyHash: state.policyHash,
+    coverage: state.chain.coverage,
+    error: state.chain.error,
+    checkedAt: state.chain.checkedAt,
+    historyComplete: state.chain.historyComplete,
+    identities: Object.entries(state.identities || {}).map(
+      ([userHash, wallet]) => ({ userHash, wallet }),
+    ),
+    appliedReleases: state.appliedReleases || {},
+    verifiedCashClaims: verifiedClaims.filter(
+      (claim) => claim.code === 'VERIFIED' && CASH_QUESTS.includes(claim.quest),
+    ),
+    verifiedClaims,
+    priorWallets: state.eligibilityPolicy?.priorWallets,
+    teamWallets: state.eligibilityPolicy?.teamWallets,
+    unsuccessfulAudit: state.audit || [],
+    exceptions: state.exceptions,
+    evidenceFailures: Object.fromEntries(
+      Object.entries(state.evidenceCache || {}).map(([cid, record]) => [
+        cid,
+        {
+          fetchFailure: record.fetchFailure,
+          checks: Object.fromEntries(
+            Object.entries(record.checks).filter(([, check]) => check.terminal),
+          ),
+        },
+      ]),
+    ),
+    bounties: state.bounties.map((bounty) => ({
+      key: bounty.key,
+      creator: bounty.creator,
+      createdAt: bounty.createdAt,
+      originalWei: bounty.originalWei,
+      refunded: bounty.refunded,
+      payment: bounty.payment,
+      kind: bounty.evidence?.kind,
+      templateId: bounty.evidence?.templateId,
+      scopeDigest: bounty.evidence?.scopeDigest,
+      evidenceError: bounty.evidenceError,
+      duplicate: bounty.duplicate,
+      submissions: bounty.submissions,
+      newToCurrentDeployment:
+        !state.history.creators[bounty.creator] &&
+        state.chain.historyComplete === true,
+    })),
+    transactions: [...new Set(state.chain.logs.map((log) => log.tx))],
+  };
 }
-main().catch(() => { console.error('Campaign inspection failed; check path and configuration.'); process.exitCode=1; });
+async function main() {
+  const result =
+    process.argv[2] === '--templates'
+      ? await templateDigests()
+      : inspect(process.argv[2]);
+  console.log(JSON.stringify(result, null, 2));
+}
+if (require.main === module) {
+  main().catch(() => {
+    console.error(
+      'Campaign inspection failed; check the state path and configuration.',
+    );
+    process.exitCode = 1;
+  });
+}
+module.exports = { inspect };

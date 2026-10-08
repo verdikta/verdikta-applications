@@ -1,0 +1,1 @@
+{"criteria":[{"id":"form","must":false,"weight":0.6,"description":"A haiku: exactly three lines with a 5-7-5 syllable structure."},{"id":"theme","must":false,"weight":0.4,"description":"The haiku is clearly about an autonomous software agent doing useful work."}],"version":"1.0","createdAt":"2026-09-12T19:04:00.154Z","classId":128}

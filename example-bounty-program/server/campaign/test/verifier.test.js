@@ -1,157 +1,639 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('fs'), os = require('os'), path = require('path');
-const express = require('express'), request = require('supertest');
-const { Store } = require('../store');
-const { verify, router } = require('../service');
+const express = require('express');
+const request = require('supertest');
+const path = require('path');
+const {
+  verify,
+  router,
+  trimDiagnostics,
+  ATTEMPT_LIMIT,
+  AUDIT_LIMIT,
+} = require('../service');
 const { eligibility } = require('../predicates');
-const { project, key } = require('../ledger');
-const { validateConfig, QUESTS, DAY } = require('../config');
-const A = n => `0x${String(n).padStart(40,'0')}`;
-const creator=A(1), hunter=A(2), hunter2=A(3), other=A(4), contract=A(9);
-const start=1800000000, now=start+10*DAY;
-const config = () => ({ id:'pilot', communityId:'community', subdomain:'verdikta', startAt:start,endAt:start+21*DAY,claimEndAt:start+24*DAY,
-  maxAgeSeconds:3600,minimumWei:'100',teamWallets:[],historyInventoryComplete:true,deployments:[{chainId:8453,address:contract,campaign:true}],quests:Object.fromEntries(QUESTS.map(q=>[q,q])) });
-const bounty=(id, at=start, who=creator, winner=hunter) => ({ key:key(contract,id), chainId:8453,contract,id:String(id),creator:who,createdAt:at,
-  originalWei:'100', deadline:at+3*DAY, open:true, refunded:false, workOrder:{ok:true,requestDigest:`request-${id}`,templateId:id===1?'source-check-v1':'review-v1'},
-  review:{approved:true,independentHunters:[hunter,hunter2],distinctFrom:[key(contract,1)]},
-  submissions:[{hunter:winner,id:'0',started:true,passed:true,packageValid:true,submittedAt:at+100,finalizedAt:at+200}],
-  payment:{winner,amount:'100',at:at+200,tx:`paid-${id}`} });
-const state=() => ({ chain:{error:null,checkedAt:now,historyComplete:true},conflicts:{},history:{creators:{},hunters:{}},bounties:[bounty(1),bounty(2,start+3*DAY+201,creator,hunter2)] });
-function setup(t) {
-  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'zealy-test-')); const store=new Store(dir,'policy');
-  store.transact(s=>Object.assign(s,state())); t.after(()=>{store.close();fs.rmSync(dir,{recursive:true,force:true});});
-  return store;
-}
-const body=(q='Q3',wallet=creator,user='user',id='request')=>({userId:user,communityId:'community',subdomain:'verdikta',questId:q,requestId:id,accounts:{wallet}});
-test('all creator core predicates have positive fixtures, independent of cash inventory',()=>{
-  for (const q of ['Q3','Q4','Q5','Q6','Q14','Q15']) assert.equal(eligibility(config(),state(),q,creator,now).ok,true,q);
+const {
+  validateConfig,
+  loadConfig,
+  QUESTS,
+  DAY,
+  digest,
+} = require('../config');
+const { Store } = require('../store');
+const {
+  applyIdentityReleases,
+  validateExceptions,
+  emptyExceptions,
+} = require('../exceptions');
+const { project } = require('../ledger');
+const {
+  config,
+  state,
+  bounty,
+  setup,
+  body,
+  review,
+  address,
+  creator,
+  hunter,
+  hunterTwo,
+  otherCreator,
+  escrow,
+  start,
+  now,
+} = require('./helpers');
+for (const quest of ['Q3', 'Q4', 'Q5', 'Q6', 'Q14', 'Q15'])
+  test(`${quest} automatically passes with empty exceptions`, () => {
+    assert.equal(eligibility(config(), state(), quest, creator, now).ok, true);
+  });
+for (const quest of ['Q8', 'Q9', 'Q10'])
+  test(`${quest} automatically passes with empty exceptions`, () => {
+    const snapshot = state();
+    snapshot.bounties[1] = bounty(
+      2,
+      start + 3 * DAY + 201,
+      otherCreator,
+      hunter,
+    );
+    assert.equal(eligibility(config(), snapshot, quest, hunter, now).ok, true);
+  });
+test('custom bounties pass XP, require cash exception, and cannot pass template quests', () => {
+  const snapshot = state();
+  snapshot.bounties.forEach((record) => {
+    record.evidence.kind = 'custom';
+  });
+  for (const quest of ['Q3', 'Q5'])
+    assert.equal(eligibility(config(), snapshot, quest, creator, now).ok, true);
+  for (const quest of ['Q8', 'Q9'])
+    assert.equal(eligibility(config(), snapshot, quest, hunter, now).ok, true);
+  for (const quest of ['Q4', 'Q6'])
+    assert.equal(
+      eligibility(config(), snapshot, quest, creator, now).code,
+      'CASH_ELIGIBILITY_REQUIRED',
+    );
+  for (const quest of ['Q14', 'Q15'])
+    assert.equal(
+      eligibility(config(), snapshot, quest, creator, now).code,
+      'APPROVED_WORK_ORDER_REQUIRED',
+    );
+  snapshot.exceptions.allowCashBounties[snapshot.bounties[0].key] = review();
+  assert.equal(eligibility(config(), snapshot, 'Q4', creator, now).ok, true);
+  snapshot.exceptions.allowCashBounties[snapshot.bounties[1].key] = review();
+  assert.equal(eligibility(config(), snapshot, 'Q6', creator, now).ok, true);
+  assert.equal(eligibility(config(), snapshot, 'Q14', creator, now).ok, false);
+  snapshot.bounties[1] = bounty(
+    2,
+    start + 3 * DAY + 201,
+    otherCreator,
+    hunter,
+    'custom',
+  );
+  snapshot.exceptions.allowCashBounties = {};
+  assert.equal(
+    eligibility(config(), snapshot, 'Q10', hunter, now).code,
+    'CASH_ELIGIBILITY_REQUIRED',
+  );
+  snapshot.bounties.forEach((record) => {
+    snapshot.exceptions.allowCashBounties[record.key] = review();
+  });
+  assert.equal(eligibility(config(), snapshot, 'Q10', hunter, now).ok, true);
 });
-test('Q8 passing unpaid; Q9 actual payment; Q10 distinct creators and 72h returning hunter',()=>{
-  const s=state();s.bounties[1]=bounty(2,start+3*DAY+201,other,hunter);
-  for (const q of ['Q8','Q9','Q10']) assert.equal(eligibility(config(),s,q,hunter,now).ok,true,q);
-  s.bounties[0].payment=null;s.bounties[1].payment=null;
-  assert.equal(eligibility(config(),s,'Q8',hunter,now).ok,true);
-  for (const q of ['Q9','Q10']) assert.equal(eligibility(config(),s,q,hunter,now).ok,false,q);
+for (const [name, mutate, quest = 'Q3', claimant = creator] of [
+  [
+    'testnet',
+    (snapshot) =>
+      snapshot.bounties.forEach((record) => {
+        record.chainId = 84532;
+      }),
+  ],
+  [
+    'old bounty',
+    (snapshot) =>
+      snapshot.bounties.forEach((record) => {
+        record.createdAt = start - 1;
+      }),
+  ],
+  [
+    'other escrow',
+    (snapshot) =>
+      snapshot.bounties.forEach((record) => {
+        record.contract = address(8);
+      }),
+  ],
+  [
+    'funding too low',
+    (snapshot) =>
+      snapshot.bounties.forEach((record) => {
+        record.originalWei = '99';
+      }),
+  ],
+  [
+    'targeted',
+    (snapshot) =>
+      snapshot.bounties.forEach((record) => {
+        record.open = false;
+      }),
+  ],
+  [
+    'duplicate scope',
+    (snapshot) =>
+      snapshot.bounties.forEach((record) => {
+        record.duplicate = true;
+      }),
+  ],
+  [
+    'missing evidence',
+    (snapshot) =>
+      snapshot.bounties.forEach((record) => {
+        record.evidence.ok = false;
+      }),
+  ],
+  [
+    'prepared only',
+    (snapshot) =>
+      snapshot.bounties.forEach((record) => {
+        record.submissions[0].started = false;
+      }),
+    'Q8',
+    hunter,
+  ],
+  [
+    'invalid package',
+    (snapshot) =>
+      snapshot.bounties.forEach((record) => {
+        record.submissions[0].packageValid = false;
+      }),
+    'Q8',
+    hunter,
+  ],
+  [
+    'failed evaluation',
+    (snapshot) =>
+      snapshot.bounties.forEach((record) => {
+        record.submissions[0].passed = false;
+      }),
+    'Q8',
+    hunter,
+  ],
+  [
+    'repeat before 72 hours',
+    (snapshot) => {
+      snapshot.bounties[1].createdAt = start + 3 * DAY - 1;
+    },
+    'Q5',
+  ],
+  [
+    'repeat before first payout',
+    (snapshot) => {
+      snapshot.bounties[0].payment.at = snapshot.bounties[1].createdAt + 1;
+    },
+    'Q5',
+  ],
+  [
+    'same repeat paid hunter',
+    (snapshot) => {
+      snapshot.bounties[1].payment.winner = hunter;
+    },
+    'Q6',
+  ],
+  [
+    'incomplete current coverage',
+    (snapshot) => {
+      snapshot.chain.historyComplete = false;
+    },
+    'Q4',
+  ],
+  [
+    'RPC outage',
+    (snapshot) => {
+      snapshot.chain.error = 'RPC_OUTAGE';
+    },
+  ],
+  [
+    'stale snapshot',
+    (snapshot) => {
+      snapshot.chain.checkedAt = now - 3601;
+    },
+  ],
+  [
+    'reorg',
+    (snapshot) => {
+      snapshot.chain.error = 'REORG_REBUILD_REQUIRED';
+    },
+  ],
+  [
+    'late payment',
+    (snapshot) =>
+      snapshot.bounties.forEach((record) => {
+        record.payment.at = start + 21 * DAY;
+      }),
+    'Q4',
+  ],
+])
+  test(name, () => {
+    const snapshot = state();
+    mutate(snapshot);
+    assert.equal(
+      eligibility(config(), snapshot, quest, claimant, now).ok,
+      false,
+    );
+  });
+test('refunded posting still passes Q3/Q14; unpaid passes Q8 but not Q9', () => {
+  const snapshot = state();
+  snapshot.bounties.forEach((record) => {
+    record.refunded = true;
+  });
+  for (const quest of ['Q3', 'Q14'])
+    assert.equal(eligibility(config(), snapshot, quest, creator, now).ok, true);
+  assert.equal(eligibility(config(), snapshot, 'Q4', creator, now).ok, false);
+  snapshot.bounties.forEach((record) => {
+    record.refunded = false;
+    record.payment = null;
+  });
+  assert.equal(eligibility(config(), snapshot, 'Q8', hunter, now).ok, true);
+  assert.equal(
+    eligibility(config(), snapshot, 'Q9', hunter, now).code,
+    'PAYMENT_NOT_RECEIVED_IN_WINDOW',
+  );
 });
-for (const [name,mutate,q='Q3',wallet=creator] of [
-  ['old bounty',s=>s.bounties.forEach(b=>b.createdAt=start-1)],
-  ['testnet',s=>s.bounties.forEach(b=>b.chainId=84532)],
-  ['other contract',s=>s.bounties.forEach(b=>b.contract=A(8))],
-  ['insufficient original funding',s=>s.bounties.forEach(b=>b.originalWei='99')],
-  ['refund',s=>s.bounties.forEach(b=>b.refunded=true)],
-  ['targeted',s=>s.bounties.forEach(b=>b.open=false)],
-  ['duplicate scope',s=>s.bounties.forEach(b=>b.duplicate=true)],
-  ['missing rubric',s=>s.bounties.forEach(b=>b.workOrder={ok:false})],
-  ['scope not reviewed',s=>s.bounties.forEach(b=>b.review.approved=false)],
-  ['prepared only',s=>s.bounties.forEach(b=>b.submissions.forEach(x=>x.started=false)),'Q8',hunter],
-  ['invalid work package',s=>s.bounties.forEach(b=>b.submissions.forEach(x=>x.packageValid=false)),'Q8',hunter],
-  ['failed evaluation',s=>s.bounties.forEach(b=>b.submissions.forEach(x=>x.passed=false)),'Q8',hunter],
-  ['repeat less than 72h',s=>s.bounties[1].createdAt=start+3*DAY-1,'Q5'],
-  ['repeat before payment',s=>s.bounties[0].payment.at=s.bounties[1].createdAt+1,'Q5'],
-  ['different hash not independent scope',s=>s.bounties[1].review.distinctFrom=[],'Q5'],
-  ['same paid hunter',s=>s.bounties[1].payment.winner=hunter,'Q6'],
-  ['legacy history incomplete',s=>s.chain.historyComplete=false,'Q4'],
-  ['existing creator',s=>s.history.creators[creator]=true,'Q4'],
-  ['RPC outage',s=>s.chain.error='RPC_OUTAGE'],
-  ['stale cache',s=>s.chain.checkedAt=now-3601],
-  ['reorg',s=>s.chain.error='REORG_REBUILD_REQUIRED'],
-  ['identity hold',s=>s.conflicts[creator]=true],
-  ['payment during grace',s=>s.bounties.forEach(b=>b.payment.at=start+21*DAY),'Q4']
-]) test(name,()=>{const s=state();mutate(s);assert.equal(eligibility(config(),s,q,wallet,now).ok,false);});
-test('repeat hunter rejects prehistory, same creator, insufficient interval and team second creator',()=>{
-  for (const modify of [(s,c)=>s.history.hunters[hunter]=true,(s)=>s.bounties[1].creator=creator,
-    s=>s.bounties[1].submissions[0].submittedAt=start+101,(s,c)=>c.teamWallets=[other]]) {
-    const s=state(),c=config();s.bounties[1]=bounty(2,start+3*DAY+201,other,hunter);modify(s,c);
-    assert.equal(eligibility(c,s,'Q10',hunter,now).ok,false);
+test('window endpoints are inclusive and violations have a specific reason', () => {
+  for (const hours of [4, 336, 3.99, 336.01]) {
+    const snapshot = state();
+    snapshot.bounties.forEach((record) => {
+      record.deadline = record.createdAt + hours * 3600;
+    });
+    const result = eligibility(config(), snapshot, 'Q3', creator, now);
+    assert.equal(result.ok, hours === 4 || hours === 336);
+    if (!result.ok) assert.equal(result.code, 'SUBMISSION_WINDOW_OUT_OF_RANGE');
   }
 });
-test('UTC start, activity cutoff and correction grace boundaries',()=>{
-  const c=config(),s=state();
-  s.chain.checkedAt=start-1;assert.equal(eligibility(c,s,'Q3',creator,start-1).code,'CAMPAIGN_NOT_STARTED');
-  s.chain.checkedAt=c.endAt;assert.equal(eligibility(c,s,'Q4',creator,c.endAt).ok,true);
-  s.chain.checkedAt=c.claimEndAt-1;assert.equal(eligibility(c,s,'Q4',creator,c.claimEndAt-1).ok,true);
-  assert.equal(eligibility(c,s,'Q4',creator,c.claimEndAt).code,'CLAIM_WINDOW_CLOSED');
-  s.bounties.forEach(b=>b.createdAt=c.endAt);s.chain.checkedAt=c.endAt;
-  assert.equal(eligibility(c,s,'Q3',creator,c.endAt).ok,false);
-});
-test('concurrent duplicate claims are idempotent, persist across restart, and never reserve a reward',async t=>{
-  const store=setup(t),c=config();
-  const outcomes=await Promise.all(Array.from({length:20},()=>Promise.resolve().then(()=>verify(c,store,body(),now))));
-  assert.ok(outcomes.every(r=>r.ok));assert.equal(store.state.audit.length,1);assert.equal(Object.keys(store.state.identities).length,1);
-  assert.equal(JSON.parse(fs.readFileSync(store.claimFile)).attempts[Object.keys(store.state.attempts)[0]].code,'VERIFIED');
-  assert.throws(()=>new Store(path.dirname(store.file),'policy'),/EEXIST/);
-  assert.equal(verify(c,store,body('Q4',creator,'user','request'),now).code,'REQUEST_ID_REUSED');
-  store.transact(s=>s.chain.error='REORG');assert.equal(verify(c,store,body(),now).ok,false);
-});
-test('wallet swap, reverse duplicate and both owners remain held; zero/social/pasted wallet rejected',t=>{
-  const store=setup(t),c=config();assert.equal(verify(c,store,body(),now).ok,true);
-  assert.equal(verify(c,store,body('Q3',hunter,'user','swap'),now).code,'IDENTITY_REVIEW_REQUIRED');
-  assert.equal(verify(c,store,body('Q3',creator,'second','duplicate'),now).code,'IDENTITY_REVIEW_REQUIRED');
-  assert.equal(verify(c,store,body('Q3',creator,'user','retry'),now).ok,false);
-  assert.equal(verify(c,store,body('Q3',A(0)),now).code,'AUTHENTICATED_WALLET_REQUIRED');
-  const b=body();delete b.accounts.wallet;b.wallet=creator;assert.equal(verify(c,store,b,now).code,'AUTHENTICATED_WALLET_REQUIRED');
-});
-test('wrong wallet does not claim someone else activity, contract wallets use exact authenticated address',t=>{
-  const store=setup(t),c=config();assert.equal(verify(c,store,body('Q3',A(50)),now).ok,false);
-  assert.equal(verify(c,store,body('Q3',creator,'smart-wallet-user','smart'),now).ok,true);
-});
-test('HTTP authentication, community allowlist, useful reason and secret-free response',async t=>{
-  const store=setup(t),c=config(),secret='x'.repeat(32),app=express();app.use(express.json());app.use(router(c,store,secret,()=>now));
-  assert.equal((await request(app).post('/verify').send(body())).status,400);
-  const good=await request(app).post('/verify').set('X-Api-Key',secret).send(body());assert.equal(good.status,200);assert.deepEqual(good.body,{message:'VERIFIED'});
-  const bad=await request(app).post('/verify').set('X-Api-Key',secret).send({...body(),communityId:'other'});assert.equal(bad.status,400);
-  assert.equal((await request(app).get('/health')).status,200);
-});
-test('deployment identity, original funding and deferred payment before/after withdrawal',()=>{
-  const logs=[];let index=0;
-  const emit=(name,args,tx='tx',at=start,c=contract)=>logs.push({name,args,tx,at,contract:c,index:index++});
-  const created={bountyId:'1',creator,evaluationCid:'cid',threshold:'80',payoutWei:'100',submissionDeadline:String(start+3*DAY)};
-  emit('BountyCreated',created);emit('BountyCreated',created,'other',start-1,A(8));
-  emit('PayoutSent',{bountyId:'1',winner:hunter,amountWei:'100'});
-  emit('PaymentDeferred',{to:hunter,amount:'100'});
-  let view=project(logs,start);assert.equal(view.bounties.length,2);assert.equal(view.bounties[0].payment.at,null);assert.equal(view.bounties[0].originalWei,'100');
-  emit('Withdrawn',{account:hunter,amount:'100'},'withdraw',start+500);
-  view=project(logs,start);assert.equal(view.bounties[0].payment.at,start+500);assert.equal(view.bounties[0].payment.tx,'withdraw');
-  assert.equal(view.history.creators[creator],true);
-});
-test('deferred refund is not confused with an immediate payout',()=>{
-  const logs=[{name:'BountyCreated',args:{bountyId:'1',creator,payoutWei:'100'},contract,at:start},
-    {name:'PayoutSent',args:{bountyId:'1',winner:hunter,amountWei:'90'},contract,tx:'t',at:start+1},
-    {name:'CreatorRefunded',args:{bountyId:'1',creator,amountRefunded:'10'},contract,tx:'t',at:start+1},
-    {name:'PaymentDeferred',args:{to:creator,amount:'10'},contract,tx:'t',at:start+1}];
-  assert.equal(project(logs,start).bounties[0].payment.at,start+1);
-});
-test('incomplete production configuration refuses startup',()=>{
-  assert.throws(()=>validateConfig({},'x'.repeat(32)),/configuration/);
-});
-
-test('restart preserves reverse identity binding and rejects policy changes',t=>{
-  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'campaign-restart-'));
-  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
-  let store=new Store(dir,'policy');store.transact(s=>Object.assign(s,state()));verify(config(),store,body(),now);store.close();
-  store=new Store(dir,'policy');assert.equal(verify(config(),store,body('Q3',creator,'other','new'),now).code,'IDENTITY_REVIEW_REQUIRED');store.close();
-  assert.throws(()=>new Store(dir,'different-policy'),/mismatch/i);
-});
-test('malformed and oversized JSON return sanitized 400 without binding a wallet',async t=>{
-  const store=setup(t),secret='x'.repeat(32),app=express();app.use(router(config(),store,secret,()=>now));
-  for(const text of ['{',JSON.stringify({huge:'x'.repeat(9000)})]) {
-    const r=await request(app).post('/verify').set('X-Api-Key',secret).set('Content-Type','application/json').send(text);
-    assert.equal(r.status,400);assert.deepEqual(r.body,{message:'INVALID_REQUEST'});
+test('current-deployment prehistory and optional prior-wallet snapshots exclude new claims', () => {
+  for (const quest of ['Q4', 'Q6', 'Q10']) {
+    const role = quest === 'Q10' ? 'hunters' : 'creators';
+    const wallet = quest === 'Q10' ? hunter : creator;
+    for (const useSnapshot of [false, true]) {
+      const policy = config();
+      const snapshot = state();
+      if (useSnapshot) policy.priorWallets[role] = [wallet];
+      else snapshot.history[role][wallet] = true;
+      assert.equal(
+        eligibility(policy, snapshot, quest, wallet, now).code,
+        'PRE_CAMPAIGN_ACTIVITY',
+      );
+    }
   }
-  assert.equal(Object.keys(store.state.identities).length,0);
 });
-test('disk failure refuses success and poisons subsequent verification until repaired',t=>{
-  const store=setup(t);store.writeAtomic=()=>{throw new Error('disk full');};
-  assert.throws(()=>verify(config(),store,body(),now));assert.equal(store.failed,true);
-  assert.equal(verify(config(),store,body(),now).code,'VERIFICATION_UNAVAILABLE_RETRY');
+test('deny and wallet holds override cash exceptions; bound shared identity and self payment fail', () => {
+  const snapshot = state();
+  snapshot.bounties.forEach((record) => {
+    snapshot.exceptions.denyBounties[record.key] = review();
+    snapshot.exceptions.allowCashBounties[record.key] = review();
+  });
+  assert.equal(
+    eligibility(config(), snapshot, 'Q4', creator, now).code,
+    'BOUNTY_DENIED',
+  );
+  snapshot.exceptions.denyBounties = {};
+  snapshot.exceptions.holdWallets[creator] = review();
+  assert.equal(
+    eligibility(config(), snapshot, 'Q3', creator, now).code,
+    'WALLET_HELD_FOR_REVIEW',
+  );
+  snapshot.exceptions.holdWallets = {
+    [hunter]: review(),
+    [hunterTwo]: review(),
+  };
+  assert.equal(eligibility(config(), snapshot, 'Q4', creator, now).ok, false);
+  snapshot.exceptions.holdWallets = {};
+  snapshot.wallets = {
+    [creator]: 'same-user',
+    [hunter]: 'same-user',
+    [hunterTwo]: 'same-user',
+  };
+  assert.equal(eligibility(config(), snapshot, 'Q4', creator, now).ok, false);
+  snapshot.wallets = {};
+  snapshot.bounties.forEach((record) => {
+    record.payment.winner = creator;
+  });
+  assert.equal(eligibility(config(), snapshot, 'Q4', creator, now).ok, false);
 });
-test('valid sample policy, unset opt-in, and required production fields',()=>{
-  const {loadConfig}=require('../config');assert.equal(loadConfig({}),null);
-  const sample=require('../config.example.json');assert.throws(()=>validateConfig(sample,'x'.repeat(32)));
-  const good={...sample,communityId:'community',subdomain:'verdikta',start:'2026-10-01T00:00:00Z',minimumWei:'100',teamWalletsReviewed:true,
-    historyInventoryComplete:false,deployments:[sample.deployments.at(-1)],quests:Object.fromEntries(QUESTS.map((q,i)=>[q,`00000000-0000-0000-0000-${String(i).padStart(12,'0')}`]))};
-  assert.equal(validateConfig(good,'x'.repeat(32)).endAt-Date.parse(good.start)/1000,21*DAY);
-  for(const change of [{minimumWei:'0'},{start:null},{teamWalletsReviewed:false},{historyInventoryComplete:true},{quests:{}},{confirmations:0}])assert.throws(()=>validateConfig({...good,...change},'x'.repeat(32)));
+test('repeat hunter requires different non-team second creator and 72h submission interval', () => {
+  for (const change of [
+    (snapshot) => {
+      snapshot.bounties[1].creator = creator;
+    },
+    (snapshot) => {
+      snapshot.bounties[1].submissions[0].submittedAt = start + 101;
+    },
+  ]) {
+    const snapshot = state();
+    snapshot.bounties[1] = bounty(
+      2,
+      start + 3 * DAY + 201,
+      otherCreator,
+      hunter,
+    );
+    change(snapshot);
+    assert.equal(eligibility(config(), snapshot, 'Q10', hunter, now).ok, false);
+  }
+  const snapshot = state();
+  snapshot.bounties[1] = bounty(2, start + 3 * DAY + 201, otherCreator, hunter);
+  assert.equal(
+    eligibility(
+      { ...config(), teamWallets: [otherCreator] },
+      snapshot,
+      'Q10',
+      hunter,
+      now,
+    ).ok,
+    false,
+  );
+});
+test('cutoff and grace verify timely activity only', () => {
+  const policy = config();
+  const snapshot = state();
+  snapshot.chain.checkedAt = policy.endAt;
+  assert.equal(
+    eligibility(policy, snapshot, 'Q4', creator, policy.endAt).ok,
+    true,
+  );
+  snapshot.chain.checkedAt = policy.claimEndAt - 1;
+  assert.equal(
+    eligibility(policy, snapshot, 'Q4', creator, policy.claimEndAt - 1).ok,
+    true,
+  );
+  assert.equal(
+    eligibility(policy, snapshot, 'Q4', creator, policy.claimEndAt).code,
+    'CLAIM_WINDOW_CLOSED',
+  );
+  assert.equal(
+    eligibility(policy, snapshot, 'Q3', creator, start - 1).code,
+    'CAMPAIGN_NOT_STARTED',
+  );
+});
+test('failed claims do not bind; mismatches fail only the claim; releases apply once', (testContext) => {
+  const store = setup(testContext);
+  const policy = config();
+  assert.equal(verify(policy, store, body('Q3', address(50)), now).ok, false);
+  assert.deepEqual(store.state.identities, {});
+  assert.equal(
+    verify(policy, store, body('Q3', creator, 'user', 'good'), now).ok,
+    true,
+  );
+  assert.equal(
+    verify(policy, store, body('Q3', hunter, 'user', 'swap'), now).code,
+    'IDENTITY_REVIEW_REQUIRED',
+  );
+  assert.equal(
+    verify(policy, store, body('Q3', creator, 'other', 'duplicate'), now).code,
+    'IDENTITY_REVIEW_REQUIRED',
+  );
+  assert.equal(
+    verify(policy, store, body('Q3', creator, 'user', 'again'), now).ok,
+    true,
+  );
+  const release = {
+    ...review(),
+    userHash: digest([policy.id, 'user']),
+    wallet: creator,
+  };
+  applyIdentityReleases(store, [release]);
+  assert.deepEqual(store.state.identities, {});
+  assert.equal(
+    verify(policy, store, body('Q8', hunter, 'user', 'new-wallet'), now).ok,
+    true,
+  );
+  applyIdentityReleases(store, [release]);
+  assert.equal(store.state.identities[release.userHash], hunter);
+});
+test('concurrent duplicates compact to one durable verified milestone and are re-evaluated', async (testContext) => {
+  const store = setup(testContext);
+  const outcomes = await Promise.all(
+    Array.from({ length: 20 }, () =>
+      Promise.resolve().then(() => verify(config(), store, body(), now)),
+    ),
+  );
+  assert.ok(outcomes.every((result) => result.ok));
+  assert.equal(Object.keys(store.state.verifiedClaims).length, 1);
+  assert.equal(Object.keys(store.state.attempts).length, 0);
+  store.transact((snapshot) => {
+    snapshot.chain.error = 'REORG';
+  });
+  assert.equal(verify(config(), store, body(), now).ok, false);
+});
+test('retention evicts oldest unsuccessful entries and never blocks new verified claims', (testContext) => {
+  const store = setup(testContext);
+  for (let index = 0; index <= ATTEMPT_LIMIT; index++)
+    store.state.attempts[`request-${index}`] = { code: 'PENDING', at: index };
+  for (let index = 0; index <= AUDIT_LIMIT; index++)
+    store.state.audit.push({ code: 'PENDING', at: index });
+  trimDiagnostics(store.state, store);
+  assert.equal(store.state.attempts['request-0'], undefined);
+  assert.equal(store.state.audit[0].at, 1);
+  assert.equal(verify(config(), store, body(), now).ok, true);
+  assert.equal(Object.keys(store.state.attempts).length, ATTEMPT_LIMIT);
+  assert.equal(store.state.audit.length, AUDIT_LIMIT);
+});
+test('restart preserves successful identities and rejects eligibility policy changes', (testContext) => {
+  const store = setup(testContext);
+  verify(config(), store, body(), now);
+  store.close();
+  const restarted = new Store(path.dirname(store.file), 'policy');
+  assert.equal(restarted.state.wallets[creator], digest([config().id, 'user']));
+  restarted.close();
+  assert.throws(
+    () => new Store(path.dirname(store.file), 'different'),
+    /mismatch/,
+  );
+});
+test('HTTP responses are plain sentences with codes; auth and 8kb parser fail closed', async (testContext) => {
+  const store = setup(testContext);
+  const secret = 'x'.repeat(32);
+  const app = express();
+  app.use(router(config(), store, secret, () => now));
+  const denied = await request(app).post('/verify').send(body());
+  assert.equal(denied.status, 400);
+  assert.match(denied.body.message, /\[AUTHENTICATION_FAILED\]$/);
+  const success = await request(app)
+    .post('/verify')
+    .set('X-Api-Key', secret)
+    .send(body());
+  assert.equal(success.status, 200);
+  assert.equal(
+    success.body.message,
+    'Verified: you completed this campaign milestone. [VERIFIED]',
+  );
+  for (const payload of ['{', JSON.stringify({ huge: 'x'.repeat(9000) })]) {
+    const result = await request(app)
+      .post('/verify')
+      .set('X-Api-Key', secret)
+      .set('Content-Type', 'application/json')
+      .send(payload);
+    assert.equal(result.status, 400);
+    assert.match(result.body.message, /\[INVALID_REQUEST\]$/);
+  }
+});
+test('wallet must come from authenticated accounts; zero and arbitrary pasted wallets fail', (testContext) => {
+  const store = setup(testContext);
+  const claim = body();
+  delete claim.accounts.wallet;
+  claim.wallet = creator;
+  assert.equal(
+    verify(config(), store, claim, now).code,
+    'AUTHENTICATED_WALLET_REQUIRED',
+  );
+  assert.equal(
+    verify(config(), store, body('Q3', address(0)), now).code,
+    'AUTHENTICATED_WALLET_REQUIRED',
+  );
+});
+test('storage failure cannot return success or approve a later request', (testContext) => {
+  const store = setup(testContext);
+  store.writeAtomic = () => {
+    throw new Error('disk failure');
+  };
+  assert.throws(() => verify(config(), store, body(), now));
+  assert.equal(
+    verify(config(), store, body(), now).code,
+    'VERIFICATION_UNAVAILABLE_RETRY',
+  );
+});
+test('policy hash excludes operating paths and settings but includes eligibility', () => {
+  assert.equal(loadConfig({}), null);
+  const sample = require('../config.example.json');
+  assert.throws(() => validateConfig(sample, 'x'.repeat(32)));
+  const input = {
+    ...sample,
+    communityId: 'community',
+    subdomain: 'verdikta',
+    start: '2026-10-01T00:00:00Z',
+    minimumWei: '100',
+    teamWalletsReviewed: true,
+    quests: Object.fromEntries(
+      QUESTS.map((quest, index) => [
+        quest,
+        `00000000-0000-0000-0000-${String(index).padStart(12, '0')}`,
+      ]),
+    ),
+  };
+  const original = validateConfig(input, 'x'.repeat(32));
+  const operational = validateConfig(
+    {
+      ...input,
+      stateDirectory: '/tmp/changed',
+      exceptionsFile: '/tmp/other',
+      pollSeconds: 30,
+      maxAgeSeconds: 7200,
+      logChunkSize: 1000,
+      confirmations: 30,
+      note: 'free text',
+    },
+    'y'.repeat(32),
+  );
+  assert.equal(original.policyHash, operational.policyHash);
+  assert.notEqual(
+    original.policyHash,
+    validateConfig({ ...input, minimumWei: '101' }, 'x'.repeat(32)).policyHash,
+  );
+  delete input.minimumWindowHours;
+  delete input.maximumWindowHours;
+  assert.equal(validateConfig(input, 'x'.repeat(32)).minimumWindowHours, 4);
+  assert.equal(validateConfig(input, 'x'.repeat(32)).maximumWindowHours, 336);
+});
+test('exceptions reject malformed metadata, foreign bounty keys and wallet addresses', () => {
+  for (const changes of [
+    { denyBounties: { foreign: review() } },
+    { holdWallets: { invalid: review() } },
+    { identityReleases: [{ userHash: 'bad', wallet: creator, ...review() }] },
+  ]) {
+    assert.throws(
+      () =>
+        validateExceptions(
+          { ...emptyExceptions(), ...changes },
+          config().deployment,
+        ),
+      /EXCEPTIONS_FILE_INVALID/,
+    );
+  }
+});
+test('creator-approved winners pass Q8/Q9, while deferred credit waits for withdrawal', () => {
+  const logs = [];
+  const emit = (name, args, timestamp = start + 100, transaction = 'settle') =>
+    logs.push({ name, args, at: timestamp, tx: transaction, contract: escrow });
+  emit(
+    'BountyCreated',
+    {
+      bountyId: '1',
+      creator,
+      payoutWei: '100',
+      evaluationCid: 'cid',
+      threshold: '80',
+      submissionDeadline: String(start + DAY),
+    },
+    start,
+  );
+  emit(
+    'SubmissionPrepared',
+    { bountyId: '1', submissionId: '0', hunter },
+    start + 10,
+    'prepare',
+  );
+  emit('CreatorApproved', {
+    bountyId: '1',
+    submissionId: '0',
+    hunter,
+    amountPaid: '100',
+  });
+  emit('PayoutSent', { bountyId: '1', winner: hunter, amountWei: '100' });
+  const snapshot = state();
+  const apply = () => {
+    snapshot.bounties = project(logs, start).bounties;
+    snapshot.bounties[0].evidence = {
+      ok: true,
+      kind: 'workOrder',
+      scopeDigest: 'scope',
+    };
+    snapshot.bounties[0].open = true;
+    snapshot.bounties[0].submissions[0].packageValid = true;
+  };
+  apply();
+  for (const quest of ['Q8', 'Q9'])
+    assert.equal(eligibility(config(), snapshot, quest, hunter, now).ok, true);
+  emit('PaymentDeferred', { to: hunter, amount: '100' });
+  apply();
+  assert.equal(eligibility(config(), snapshot, 'Q9', hunter, now).ok, false);
+  emit(
+    'Withdrawn',
+    { account: hunter, amount: '100' },
+    start + 500,
+    'withdraw',
+  );
+  apply();
+  assert.equal(eligibility(config(), snapshot, 'Q9', hunter, now).ok, true);
+  assert.equal(snapshot.bounties[0].originalWei, '100');
+});
+test('different numeric IDs with identical scope do not satisfy repeat eligibility', () => {
+  const snapshot = state();
+  snapshot.bounties[1].evidence.scopeDigest =
+    snapshot.bounties[0].evidence.scopeDigest;
+  assert.equal(eligibility(config(), snapshot, 'Q5', creator, now).ok, false);
+  snapshot.bounties[0].duplicate = true;
+  snapshot.bounties[1].duplicate = true;
+  assert.equal(
+    eligibility(config(), snapshot, 'Q3', creator, now).code,
+    'DUPLICATE_SCOPE_REVIEW',
+  );
+});
+test('inspection exports successful cash evidence and identity-release user hashes', (testContext) => {
+  const store = setup(testContext);
+  assert.equal(verify(config(), store, body('Q4'), now).ok, true);
+  const exported = require('../../scripts/campaign-inspect').inspect(
+    store.file,
+  );
+  assert.equal(exported.verifiedCashClaims.length, 1);
+  assert.deepEqual(exported.verifiedCashClaims[0].evidence, [
+    store.state.bounties[0].key,
+  ]);
+  assert.equal(exported.identities[0].userHash, digest([config().id, 'user']));
+  assert.equal(exported.identities[0].wallet, creator);
 });

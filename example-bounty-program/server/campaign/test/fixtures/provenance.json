@@ -1,0 +1,40 @@
+[
+  {
+    "network": "Base Sepolia",
+    "chainId": 84532,
+    "escrow": "0x1b4f0e43256d435dfcd5c0883799f0eb3943e08f",
+    "bountyId": 9,
+    "threshold": 80,
+    "evaluationCid": "Qmbbw5dXxcjJBFHbjBDzeJAXUQVEyF5YirXW6GhfE7F1Jf",
+    "rubricCid": "QmeXPci5qELZHS6Pk9nRAZqhCDnYt79vEXmSQhj8iWGsoT",
+    "files": [
+      "sepolia-9-evaluation.zip",
+      "sepolia-9-rubric.json"
+    ],
+    "retrievedDate": "2026-10-08",
+    "method": "Read-only getBounty via keyless Base RPC; raw CID bytes via https://gateway.pinata.cloud/ipfs/<CID>.",
+    "sha256": {
+      "sepolia-9-evaluation.zip": "16961acb0110516463ac2e0fa65db08d59ed76c7839cb3972d3b58506034197b",
+      "sepolia-9-rubric.json": "5b4e5d143ea328242e33c10f33d759d3e87646b58a517a1dc50e72d3892159ee"
+    }
+  },
+  {
+    "network": "Base",
+    "chainId": 8453,
+    "escrow": "0xa741eff41bcf14793e61cebb4179e05c9124d3f6",
+    "bountyId": 0,
+    "threshold": 60,
+    "evaluationCid": "QmfQGE6pJHExG6JNh8GUP8fokMoNWiKbZd8A4gde1Nnhvt",
+    "rubricCid": "Qmc17CuM8E7j2P5UUkQQZoMcWB94zrya643GqaMAsWBsvt",
+    "files": [
+      "base-0-evaluation.zip",
+      "base-0-rubric.json"
+    ],
+    "retrievedDate": "2026-10-08",
+    "method": "Read-only getBounty via keyless Base RPC; raw CID bytes via https://gateway.pinata.cloud/ipfs/<CID>.",
+    "sha256": {
+      "base-0-evaluation.zip": "a665639f4f3df80430150445ae568d1c22e659b7148f1e53feeb0e8e7d684991",
+      "base-0-rubric.json": "8170cf2c95c38362c1f6f273e59bf865de53c1d96e1da04f30e524c9d07bbe92"
+    }
+  }
+]

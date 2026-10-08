@@ -38,8 +38,6 @@ if (!process.env.INFURA_API_KEY && !process.env.RPC_URL && !process.env.RPC_PROV
 
 // Load configuration (must be after dotenv)
 const { config } = require('./config');
-// Opt-in policy is validated before crash guards so incomplete campaign settings abort startup.
-const campaignConfig = require('./campaign/config').loadConfig();
 
 // Crash guards so we never drop the socket without a body
 process.on('uncaughtException', (err) => {
@@ -219,7 +217,7 @@ app.set('trust proxy', true);
 app.use(cors());
 app.options('*', cors());
 // Campaign owns its small JSON parser and sanitized errors before general request logging.
-require('./campaign').install(app, campaignConfig, config.rpcUrl, process.env.ZEALY_API_KEY);
+require('./campaign').install(app, () => require('./campaign/config').loadConfig(), config.rpcUrl, process.env.ZEALY_API_KEY);
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 

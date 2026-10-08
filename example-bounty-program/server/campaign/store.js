@@ -1,59 +1,147 @@
 'use strict';
-// One writer per local persistent directory. No shared/NFS storage or multi-worker deployment.
-// The lock is intentionally never auto-stolen after a crash. Operator verifies the process is dead.
 const fs = require('fs');
 const path = require('path');
-const CLAIM_KEYS = ['identities','wallets','conflicts','attempts','audit'];
+const { emptyExceptions } = require('./exceptions');
+const CLAIM_KEYS = [
+  'identities',
+  'wallets',
+  'attempts',
+  'audit',
+  'verifiedClaims',
+  'appliedReleases',
+];
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== 'ESRCH';
+  }
+}
+function acquireLock(filename, isAlive = pidAlive) {
+  try {
+    return fs.openSync(filename, 'wx', 0o600);
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+  // Serialize stale-lock reclamation, and compare inode identity before deleting.
+  const reclaimDirectory = `${filename}.reclaim`;
+  fs.mkdirSync(reclaimDirectory);
+  try {
+    const previous = fs.statSync(filename);
+    const pid = Number(fs.readFileSync(filename, 'utf8'));
+    if (!Number.isSafeInteger(pid) || pid <= 0 || isAlive(pid))
+      throw new Error('CAMPAIGN_WRITER_ACTIVE');
+    if (fs.statSync(filename).ino !== previous.ino)
+      throw new Error('CAMPAIGN_WRITER_ACTIVE');
+    fs.unlinkSync(filename);
+    return fs.openSync(filename, 'wx', 0o600);
+  } finally {
+    fs.rmdirSync(reclaimDirectory);
+  }
+}
 class Store {
-  constructor(directory, policyHash) {
+  constructor(directory, policyHash, options = {}) {
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-    this.file = path.join(directory, 'ledger.json'); this.lock = path.join(directory, 'writer.lock');
+    this.file = path.join(directory, 'ledger.json');
+    this.lock = path.join(directory, 'writer.lock');
     this.claimFile = path.join(directory, 'claims.json');
-    this.fd = fs.openSync(this.lock, 'wx', 0o600);
+    this.fd = acquireLock(this.lock, options.isAlive);
+    this.lockInode = fs.fstatSync(this.fd).ino;
     fs.writeSync(this.fd, String(process.pid));
     try {
-      this.state = fs.existsSync(this.file) ? JSON.parse(fs.readFileSync(this.file, 'utf8')) : {
-        version: 1, policyHash, identities: {}, wallets: {}, conflicts: {}, attempts: {}, audit: [],
-        chain: { logs: [], coverage: {}, checkedAt: 0, error: 'NOT_INDEXED' }, bounties: [], history: { creators: {}, hunters: {} }
-      };
-      for (const k of CLAIM_KEYS) this.state[k] ??= k === 'audit' ? [] : {};
+      this.state = fs.existsSync(this.file)
+        ? JSON.parse(fs.readFileSync(this.file, 'utf8'))
+        : {
+            version: 2,
+            policyHash,
+            chain: {
+              logs: [],
+              coverage: null,
+              checkedAt: 0,
+              error: 'NOT_INDEXED',
+            },
+            bounties: [],
+            history: { creators: {}, hunters: {} },
+            exceptions: emptyExceptions(),
+            evidenceCache: {},
+          };
+      for (const field of CLAIM_KEYS)
+        this.state[field] ??= field === 'audit' ? [] : {};
       if (fs.existsSync(this.claimFile)) {
         const claims = JSON.parse(fs.readFileSync(this.claimFile, 'utf8'));
-        if (claims.policyHash !== policyHash) throw new Error('Claims policy mismatch');
-        for (const k of CLAIM_KEYS) this.state[k] = claims[k];
+        if (claims.policyHash !== policyHash)
+          throw new Error('Campaign claims policy mismatch');
+        for (const field of CLAIM_KEYS) this.state[field] = claims[field];
       }
-      if (this.state.version !== 1 || this.state.policyHash !== policyHash) throw new Error('Campaign policy/state mismatch; explicit migration required');
-    } catch (e) { this.close(); throw e; }
+      if (this.state.version !== 2 || this.state.policyHash !== policyHash)
+        throw new Error(
+          'Campaign policy/state mismatch; explicit migration required',
+        );
+    } catch (error) {
+      this.close();
+      throw error;
+    }
   }
-  transact(fn) {
+  transact(update) {
     const next = structuredClone(this.state);
-    const result = fn(next);
+    const result = update(next);
     if (result?.then) throw new Error('Store transactions must be synchronous');
-    const ledger = Object.fromEntries(Object.entries(next).filter(([k]) => !CLAIM_KEYS.includes(k)));
-    this.write(this.file, ledger);
-    this.state = next; return result;
+    this.write(
+      this.file,
+      Object.fromEntries(
+        Object.entries(next).filter(([field]) => !CLAIM_KEYS.includes(field)),
+      ),
+    );
+    this.state = next;
+    return result;
   }
-  transactClaims(fn) {
-    const claims = Object.fromEntries(CLAIM_KEYS.map(k => [k, structuredClone(this.state[k])]));
-    const view = { ...this.state, ...claims };
-    const result = fn(view);
-    this.write(this.claimFile, { policyHash:this.state.policyHash, ...claims });
+  transactClaims(update) {
+    const claims = Object.fromEntries(
+      CLAIM_KEYS.map((field) => [field, structuredClone(this.state[field])]),
+    );
+    const result = update({ ...this.state, ...claims });
+    this.write(this.claimFile, {
+      policyHash: this.state.policyHash,
+      ...claims,
+    });
     Object.assign(this.state, claims);
     return result;
   }
   write(file, value) {
-    try { this.writeAtomic(file, value); } catch (e) { this.failed=true; throw e; }
+    try {
+      this.writeAtomic(file, value);
+    } catch (error) {
+      this.failed = true;
+      throw error;
+    }
   }
   writeAtomic(file, value) {
-    const bytes = JSON.stringify(value);
-    if (file === this.claimFile && bytes.length > 16 * 1024 * 1024) throw new Error('CLAIM_STORAGE_CAPACITY');
     const temporary = `${file}.tmp`;
-    const fd = fs.openSync(temporary, 'w', 0o600);
-    try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    const descriptor = fs.openSync(temporary, 'w', 0o600);
+    try {
+      fs.writeFileSync(descriptor, JSON.stringify(value));
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
     fs.renameSync(temporary, file);
-    const dir = fs.openSync(path.dirname(file), 'r');
-    try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
+    const directory = fs.openSync(path.dirname(file), 'r');
+    try {
+      fs.fsyncSync(directory);
+    } finally {
+      fs.closeSync(directory);
+    }
   }
-  close() { if (this.fd !== null) { fs.closeSync(this.fd); fs.unlinkSync(this.lock); this.fd = null; } }
+  close() {
+    if (this.fd === null) return;
+    fs.closeSync(this.fd);
+    this.fd = null;
+    if (
+      fs.existsSync(this.lock) &&
+      fs.statSync(this.lock).ino === this.lockInode
+    )
+      fs.unlinkSync(this.lock);
+  }
 }
-module.exports = { Store };
+module.exports = { Store, acquireLock, pidAlive };

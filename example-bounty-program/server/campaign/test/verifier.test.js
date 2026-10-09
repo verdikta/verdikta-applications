@@ -57,46 +57,25 @@ for (const quest of ['Q8', 'Q9', 'Q10'])
     );
     assert.equal(eligibility(config(), snapshot, quest, hunter, now).ok, true);
   });
-test('custom bounties pass XP, require cash exception, and cannot pass template quests', () => {
+test('standard bounties automatically pass cash and XP quests but not template quests', () => {
   const snapshot = state();
   snapshot.bounties.forEach((record) => {
-    record.evidence.kind = 'custom';
+    record.evidence.kind = 'standard';
   });
-  for (const quest of ['Q3', 'Q5'])
-    assert.equal(eligibility(config(), snapshot, quest, creator, now).ok, true);
+  assert.deepEqual(snapshot.exceptions, emptyExceptions());
+  for (const quest of ['Q3', 'Q4', 'Q5', 'Q6'])
+    assert.equal(eligibility(config(), snapshot, quest, creator, now).code, 'VERIFIED');
   for (const quest of ['Q8', 'Q9'])
-    assert.equal(eligibility(config(), snapshot, quest, hunter, now).ok, true);
-  for (const quest of ['Q4', 'Q6'])
-    assert.equal(
-      eligibility(config(), snapshot, quest, creator, now).code,
-      'CASH_ELIGIBILITY_REQUIRED',
-    );
+    assert.equal(eligibility(config(), snapshot, quest, hunter, now).code, 'VERIFIED');
   for (const quest of ['Q14', 'Q15'])
-    assert.equal(
-      eligibility(config(), snapshot, quest, creator, now).code,
-      'APPROVED_WORK_ORDER_REQUIRED',
-    );
-  snapshot.exceptions.allowCashBounties[snapshot.bounties[0].key] = review();
-  assert.equal(eligibility(config(), snapshot, 'Q4', creator, now).ok, true);
-  snapshot.exceptions.allowCashBounties[snapshot.bounties[1].key] = review();
-  assert.equal(eligibility(config(), snapshot, 'Q6', creator, now).ok, true);
-  assert.equal(eligibility(config(), snapshot, 'Q14', creator, now).ok, false);
-  snapshot.bounties[1] = bounty(
-    2,
-    start + 3 * DAY + 201,
-    otherCreator,
-    hunter,
-    'custom',
-  );
-  snapshot.exceptions.allowCashBounties = {};
-  assert.equal(
-    eligibility(config(), snapshot, 'Q10', hunter, now).code,
-    'CASH_ELIGIBILITY_REQUIRED',
-  );
+    assert.equal(eligibility(config(), snapshot, quest, creator, now).code, 'APPROVED_WORK_ORDER_REQUIRED');
+  snapshot.bounties[1] = bounty(2, start + 3 * DAY + 201, otherCreator, hunter, 'standard');
+  assert.equal(eligibility(config(), snapshot, 'Q10', hunter, now).code, 'VERIFIED');
   snapshot.bounties.forEach((record) => {
-    snapshot.exceptions.allowCashBounties[record.key] = review();
+    record.payment = null;
   });
-  assert.equal(eligibility(config(), snapshot, 'Q10', hunter, now).ok, true);
+  assert.equal(eligibility(config(), snapshot, 'Q4', creator, now).code, 'PAYMENT_NOT_RECEIVED_IN_WINDOW');
+  assert.equal(eligibility(config(), snapshot, 'Q10', hunter, now).code, 'REPEAT_TIMING_SCOPE_OR_OUTCOME_NOT_MET');
 });
 for (const [name, mutate, quest = 'Q3', claimant = creator] of [
   [
@@ -283,11 +262,11 @@ test('current-deployment prehistory and optional prior-wallet snapshots exclude 
     }
   }
 });
-test('deny and wallet holds override cash exceptions; bound shared identity and self payment fail', () => {
+test('deny and wallet holds override automatic standard eligibility; bound shared identity and self payment fail', () => {
   const snapshot = state();
   snapshot.bounties.forEach((record) => {
     snapshot.exceptions.denyBounties[record.key] = review();
-    snapshot.exceptions.allowCashBounties[record.key] = review();
+    record.evidence.kind = 'standard';
   });
   assert.equal(
     eligibility(config(), snapshot, 'Q4', creator, now).code,
@@ -686,4 +665,9 @@ test('inspection exports successful cash evidence and identity-release user hash
   ]);
   assert.equal(exported.identities[0].userHash, digest([config().id, 'user']));
   assert.equal(exported.identities[0].wallet, creator);
+});
+
+test('retired cash allowlist is rejected even when empty', () => {
+  for (const allowCashBounties of [{}, { [`8453:${escrow}:1`]: review() }])
+    assert.throws(() => validateExceptions({ ...emptyExceptions(), allowCashBounties }, config().deployment), /EXCEPTIONS_FILE_INVALID/);
 });

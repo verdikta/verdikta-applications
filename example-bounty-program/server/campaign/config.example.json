@@ -14,7 +14,7 @@
   "logChunkSize": 2000,
   "teamWalletsReviewed": false,
   "teamWallets": [],
-  "houseHunterWallets": [],
+  "verdiktaAgentWallets": [],
   "priorWallets": {
     "creators": [],
     "hunters": []

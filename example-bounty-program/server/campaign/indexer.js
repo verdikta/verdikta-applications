@@ -186,7 +186,7 @@ class Indexer {
         try {
           bounty.evidence = await this.cache.check(
             bounty.evaluationCid,
-            `bounty:${this.evidenceFingerprint}:${config.snapshotSetHash}:${bounty.threshold}`,
+            `bounty:standard-v1:${this.evidenceFingerprint}:${config.snapshotSetHash}:${bounty.threshold}`,
             () => this.validators.inspectBounty(bounty, config, fetcher),
           );
         } catch (error) {
@@ -204,7 +204,7 @@ class Indexer {
           try {
             submission.packageValid = await this.cache.check(
               submission.hunterCid,
-              `submission:${this.evidenceFingerprint}:${config.snapshotSetHash}:${bounty.evidence.kind}:${bounty.evidence.templateId || 'custom'}:${bounty.evidence.scopeDigest}`,
+              `submission:standard-v1:${this.evidenceFingerprint}:${config.snapshotSetHash}:${bounty.evidence.kind}:${bounty.evidence.templateId || 'standard'}:${bounty.evidence.scopeDigest}`,
               () => this.validators.submission(bounty, submission, fetcher),
             );
           } catch (error) {
@@ -263,7 +263,7 @@ class Indexer {
         state.eligibilityPolicy = {
           priorWallets: config.priorWallets,
           teamWallets: config.teamWallets,
-          houseHunterWallets: config.houseHunterWallets || [],
+          verdiktaAgentWallets: config.verdiktaAgentWallets || [],
         };
         state.evidenceCache = this.cache.state;
       });

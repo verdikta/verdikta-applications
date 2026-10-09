@@ -104,17 +104,17 @@ function validateConfig(input, secret) {
     'reviewed team exclusions',
   );
   config.teamWallets = [...new Set(config.teamWallets.map(address))].sort();
-  config.houseHunterWallets ??= [];
-  requireField(Array.isArray(config.houseHunterWallets), 'houseHunterWallets');
-  config.houseHunterWallets = config.houseHunterWallets.map(address).sort();
+  config.verdiktaAgentWallets ??= [];
+  requireField(Array.isArray(config.verdiktaAgentWallets), 'verdiktaAgentWallets');
+  config.verdiktaAgentWallets = config.verdiktaAgentWallets.map(address).sort();
   requireField(
-    new Set(config.houseHunterWallets).size ===
-      config.houseHunterWallets.length &&
-      config.houseHunterWallets.every(
+    new Set(config.verdiktaAgentWallets).size ===
+      config.verdiktaAgentWallets.length &&
+      config.verdiktaAgentWallets.every(
         (wallet) =>
           wallet !== ZeroAddress && config.teamWallets.includes(wallet),
       ),
-    'unique houseHunterWallets subset of teamWallets',
+    'unique verdiktaAgentWallets subset of teamWallets',
   );
   config.priorWallets ??= { creators: [], hunters: [] };
   for (const role of ['creators', 'hunters']) {
@@ -208,8 +208,8 @@ function validateConfig(input, secret) {
     policy[field] = config[field];
   }
   // Preserve existing state when this optional relaxation is disabled.
-  if (config.houseHunterWallets.length)
-    policy.houseHunterWallets = config.houseHunterWallets;
+  if (config.verdiktaAgentWallets.length)
+    policy.verdiktaAgentWallets = config.verdiktaAgentWallets;
   config.policyHash = digest(policy);
   config.snapshotSetHash = digest(
     config.approvedTemplates.map((snapshot) => snapshot.sha256).sort(),

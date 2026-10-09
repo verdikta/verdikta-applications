@@ -42,8 +42,6 @@ const sentences = {
     'Not verified: the original bounty funding is below the campaign minimum.',
   EVIDENCE_UNAVAILABLE_OR_INVALID:
     'Not verified yet: the original evaluation or submission evidence could not be validated. Retry or contact support.',
-  CASH_ELIGIBILITY_REQUIRED:
-    'Not verified: this cash quest requires an approved work order or a reviewed custom-bounty exception.',
   APPROVED_WORK_ORDER_REQUIRED:
     'Not verified: this template quest requires an approved work order.',
   BOUNTY_REFUNDED:

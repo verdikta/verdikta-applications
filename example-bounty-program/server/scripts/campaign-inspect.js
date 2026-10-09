@@ -39,15 +39,15 @@ function inspect(filename) {
           claim.code === 'VERIFIED' && CASH_REWARD_QUESTS.includes(claim.quest),
       )
       .map((claim) => ({ ...claim, rewardStatus: 'candidate-only' })),
-    verifiedHouseAssistedCreatorClaims: verifiedClaims.filter(
+    verifiedAgentAssistedCreatorClaims: verifiedClaims.filter(
       (claim) =>
         claim.code === 'VERIFIED' &&
-        claim.creatorCompletionKind === 'house-assisted',
+        claim.creatorCompletionKind === 'agent-assisted',
     ),
     verifiedClaims,
     priorWallets: state.eligibilityPolicy?.priorWallets,
     teamWallets: state.eligibilityPolicy?.teamWallets,
-    houseHunterWallets: state.eligibilityPolicy?.houseHunterWallets || [],
+    verdiktaAgentWallets: state.eligibilityPolicy?.verdiktaAgentWallets || [],
     unsuccessfulAudit: state.audit || [],
     exceptions: state.exceptions,
     evidenceFailures: Object.fromEntries(

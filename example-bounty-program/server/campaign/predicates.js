@@ -25,16 +25,16 @@ function eligibility(config, state, quest, wallet, now) {
   const exceptions = state.exceptions || emptyExceptions();
   if (config.teamWallets.includes(wallet)) return fail('TEAM_WALLET_EXCLUDED');
   if (exceptions.holdWallets[wallet]) return fail('WALLET_HELD_FOR_REVIEW');
-  const isHouseHunter = (hunter) =>
+  const isVerdiktaAgent = (hunter) =>
     config.teamWallets.includes(hunter) &&
-    (config.houseHunterWallets || []).includes(hunter);
+    (config.verdiktaAgentWallets || []).includes(hunter);
   const creatorPaymentQuest = ['Q4', 'Q5', 'Q6', 'Q15'].includes(quest);
-  const eligibleCounterparty = (creator, hunter, allowHouse = false) =>
+  const eligibleCounterparty = (creator, hunter, allowAgent = false) =>
     creator !== hunter &&
     (!config.teamWallets.includes(hunter) ||
-      (allowHouse &&
+      (allowAgent &&
         !config.teamWallets.includes(creator) &&
-        isHouseHunter(hunter))) &&
+        isVerdiktaAgent(hunter))) &&
     !exceptions.holdWallets[hunter] &&
     !(
       state.wallets[creator] &&
@@ -48,8 +48,7 @@ function eligibility(config, state, quest, wallet, now) {
   const templateQuest = ['Q14', 'Q15'].includes(quest);
   const kindValid = (bounty) =>
     bounty.evidence?.kind === 'workOrder' ||
-    (!templateQuest &&
-      (!cashQuest || !!exceptions.allowCashBounties[bounty.key]));
+    (!templateQuest && bounty.evidence?.kind === 'standard');
   const campaignBounties = state.bounties.filter(
     (bounty) =>
       bounty.chainId === config.deployment.chainId &&
@@ -83,8 +82,8 @@ function eligibility(config, state, quest, wallet, now) {
       creatorPaymentQuest,
     );
   const creatorPass = (bounties, paidBounties = bounties) => {
-    const houseAssistedEvidence = paidBounties
-      .filter((bounty) => isHouseHunter(bounty.payment.winner))
+    const agentAssistedEvidence = paidBounties
+      .filter((bounty) => isVerdiktaAgent(bounty.payment.winner))
       .map((bounty) => ({
         bountyKey: bounty.key,
         hunter: bounty.payment.winner,
@@ -94,10 +93,10 @@ function eligibility(config, state, quest, wallet, now) {
       }));
     return {
       ...pass(bounties),
-      creatorCompletionKind: houseAssistedEvidence.length
-        ? 'house-assisted'
+      creatorCompletionKind: agentAssistedEvidence.length
+        ? 'agent-assisted'
         : 'organic',
-      houseAssistedEvidence,
+      agentAssistedEvidence,
     };
   };
   const distinct = (first, second) =>
@@ -151,7 +150,7 @@ function eligibility(config, state, quest, wallet, now) {
       ([first, second]) =>
         paid(second) &&
         (first.payment.winner !== second.payment.winner ||
-          isHouseHunter(first.payment.winner)),
+          isVerdiktaAgent(first.payment.winner)),
     );
     if (pair) return creatorPass(pair);
   }
@@ -200,12 +199,14 @@ function eligibility(config, state, quest, wallet, now) {
     )
   )
     return fail('MINIMUM_ORIGINAL_FUNDING_NOT_MET');
-  if (related.some((bounty) => !bounty.evidence?.ok))
+  if (
+    related.some((bounty) =>
+      !bounty.evidence?.ok || !['standard', 'workOrder'].includes(bounty.evidence.kind),
+    )
+  )
     return fail('EVIDENCE_UNAVAILABLE_OR_INVALID');
-  if (related.every((bounty) => !kindValid(bounty)))
-    return fail(
-      cashQuest ? 'CASH_ELIGIBILITY_REQUIRED' : 'APPROVED_WORK_ORDER_REQUIRED',
-    );
+  if (templateQuest && related.every((bounty) => !kindValid(bounty)))
+    return fail('APPROVED_WORK_ORDER_REQUIRED');
   if (
     related.every((bounty) => bounty.refunded) &&
     !['Q3', 'Q14'].includes(quest)

@@ -29,20 +29,20 @@ const {
   start,
   now,
 } = require('./helpers');
-const house = `0x${'ab'.repeat(20)}`;
+const agent = `0x${'ab'.repeat(20)}`;
 const otherTeam = `0x${'cd'.repeat(20)}`;
-function housePolicy() {
+function agentPolicy() {
   return {
     ...config(),
-    teamWallets: [house, otherTeam],
-    houseHunterWallets: [house],
+    teamWallets: [agent, otherTeam],
+    verdiktaAgentWallets: [agent],
   };
 }
-function houseState() {
+function agentState() {
   const snapshot = state();
   snapshot.bounties = [
-    bounty(1, start, creator, house),
-    bounty(2, start + 3 * DAY + 201, creator, house),
+    bounty(1, start, creator, agent),
+    bounty(2, start + 3 * DAY + 201, creator, agent),
   ];
   return snapshot;
 }
@@ -54,7 +54,7 @@ function configInput() {
     start: '2026-10-01T00:00:00Z',
     minimumWei: '100',
     teamWalletsReviewed: true,
-    teamWallets: [house, otherTeam],
+    teamWallets: [agent, otherTeam],
     quests: Object.fromEntries(
       QUESTS.map((quest, index) => [
         quest,
@@ -64,18 +64,18 @@ function configInput() {
   };
 }
 for (const quest of ['Q4', 'Q5', 'Q6', 'Q15']) {
-  test(`${quest} accepts a non-team creator's paid house-hunter evidence`, () => {
-    const snapshot = houseState();
-    const result = eligibility(housePolicy(), snapshot, quest, creator, now);
+  test(`${quest} accepts a non-team creator's paid agent-hunter evidence`, () => {
+    const snapshot = agentState();
+    const result = eligibility(agentPolicy(), snapshot, quest, creator, now);
     assert.equal(result.code, 'VERIFIED');
-    assert.equal(result.creatorCompletionKind, 'house-assisted');
+    assert.equal(result.creatorCompletionKind, 'agent-assisted');
     const supporting =
       quest === 'Q6' ? snapshot.bounties : [snapshot.bounties[0]];
     assert.deepEqual(
-      result.houseAssistedEvidence,
+      result.agentAssistedEvidence,
       supporting.map((record) => ({
         bountyKey: record.key,
-        hunter: house,
+        hunter: agent,
         amountWei: '100',
         paidAt: record.payment.at,
         paymentTx: record.payment.tx,
@@ -83,38 +83,38 @@ for (const quest of ['Q4', 'Q5', 'Q6', 'Q15']) {
     );
   });
 }
-test('house permission is opt-in and never extends to all team hunters', () => {
-  for (const houseHunterWallets of [undefined, [], [otherTeam]]) {
-    const policy = { ...housePolicy(), houseHunterWallets };
+test('agent permission is opt-in and never extends to all team hunters', () => {
+  for (const verdiktaAgentWallets of [undefined, [], [otherTeam]]) {
+    const policy = { ...agentPolicy(), verdiktaAgentWallets };
     assert.equal(
-      eligibility(policy, houseState(), 'Q4', creator, now).code,
+      eligibility(policy, agentState(), 'Q4', creator, now).code,
       'PAYMENT_NOT_RECEIVED_IN_WINDOW',
     );
   }
 });
-test('Q6 still requires different ordinary winners but allows mixed house and ordinary fulfillment', () => {
-  const snapshot = houseState();
+test('Q6 still requires different ordinary winners but allows mixed agent and ordinary fulfillment', () => {
+  const snapshot = agentState();
   for (const record of snapshot.bounties) record.payment.winner = hunter;
   assert.equal(
-    eligibility(housePolicy(), snapshot, 'Q6', creator, now).ok,
+    eligibility(agentPolicy(), snapshot, 'Q6', creator, now).ok,
     false,
   );
-  snapshot.bounties[0].payment.winner = house;
-  const result = eligibility(housePolicy(), snapshot, 'Q6', creator, now);
+  snapshot.bounties[0].payment.winner = agent;
+  const result = eligibility(agentPolicy(), snapshot, 'Q6', creator, now);
   assert.equal(result.code, 'VERIFIED');
-  assert.equal(result.houseAssistedEvidence.length, 1);
+  assert.equal(result.agentAssistedEvidence.length, 1);
 });
-test('every API quest excludes house and other team claimants, including creator cash', (testContext) => {
+test('every API quest excludes agent and other team claimants, including creator cash', (testContext) => {
   const store = setup(testContext);
-  store.transact((snapshot) => Object.assign(snapshot, houseState()));
-  for (const wallet of [house, otherTeam]) {
+  store.transact((snapshot) => Object.assign(snapshot, agentState()));
+  for (const wallet of [agent, otherTeam]) {
     store.transact((snapshot) => {
       for (const record of snapshot.bounties) record.creator = wallet;
     });
     for (const quest of QUESTS) {
       assert.equal(
         verify(
-          housePolicy(),
+          agentPolicy(),
           store,
           body(quest, wallet, wallet, `${wallet}-${quest}`),
           now,
@@ -135,9 +135,9 @@ for (const [name, mutate] of [
     },
   ],
   [
-    'held house hunter',
+    'held Verdikta agent',
     (snapshot) => {
-      snapshot.exceptions.holdWallets[house] = review();
+      snapshot.exceptions.holdWallets[agent] = review();
     },
   ],
   [
@@ -150,7 +150,7 @@ for (const [name, mutate] of [
     'known shared identity',
     (snapshot) => {
       snapshot.wallets[creator] = 'same-user';
-      snapshot.wallets[house] = 'same-user';
+      snapshot.wallets[agent] = 'same-user';
     },
   ],
   [
@@ -200,12 +200,12 @@ for (const [name, mutate] of [
     },
   ],
 ]) {
-  test(`house assistance does not bypass ${name}`, () => {
-    const snapshot = houseState();
+  test(`agent assistance does not bypass ${name}`, () => {
+    const snapshot = agentState();
     mutate(snapshot);
     for (const quest of ['Q4', 'Q5', 'Q6', 'Q15'])
       assert.equal(
-        eligibility(housePolicy(), snapshot, quest, creator, now).ok,
+        eligibility(agentPolicy(), snapshot, quest, creator, now).ok,
         false,
       );
   });
@@ -257,7 +257,7 @@ for (const [name, mutate] of [
   [
     'payment after campaign cutoff',
     (snapshot) => {
-      snapshot.bounties[1].payment.at = housePolicy().endAt;
+      snapshot.bounties[1].payment.at = agentPolicy().endAt;
     },
   ],
   [
@@ -269,58 +269,34 @@ for (const [name, mutate] of [
   [
     'stale chain snapshot',
     (snapshot) => {
-      snapshot.chain.checkedAt = now - housePolicy().maxAgeSeconds - 1;
+      snapshot.chain.checkedAt = now - agentPolicy().maxAgeSeconds - 1;
     },
   ],
 ]) {
-  test(`same-house Q6 preserves ${name} rejection`, () => {
-    const snapshot = houseState();
+  test(`same-agent Q6 preserves ${name} rejection`, () => {
+    const snapshot = agentState();
     mutate(snapshot);
     assert.equal(
-      eligibility(housePolicy(), snapshot, 'Q6', creator, now).ok,
+      eligibility(agentPolicy(), snapshot, 'Q6', creator, now).ok,
       false,
     );
   });
 }
-test('custom house work keeps cash exceptions and template requirements', () => {
-  const snapshot = houseState();
+test('standard Verdikta agent work automatically qualifies for creator cash but not templates', () => {
+  const snapshot = agentState();
   snapshot.bounties.forEach((record) => {
-    record.evidence.kind = 'custom';
+    record.evidence.kind = 'standard';
   });
-  assert.equal(
-    eligibility(housePolicy(), snapshot, 'Q5', creator, now).code,
-    'VERIFIED',
-  );
-  assert.equal(
-    eligibility(housePolicy(), snapshot, 'Q4', creator, now).code,
-    'CASH_ELIGIBILITY_REQUIRED',
-  );
-  assert.equal(
-    eligibility(housePolicy(), snapshot, 'Q6', creator, now).code,
-    'CASH_ELIGIBILITY_REQUIRED',
-  );
-  snapshot.exceptions.allowCashBounties[snapshot.bounties[0].key] = review();
-  assert.equal(
-    eligibility(housePolicy(), snapshot, 'Q4', creator, now).code,
-    'VERIFIED',
-  );
-  assert.equal(
-    eligibility(housePolicy(), snapshot, 'Q6', creator, now).ok,
-    false,
-  );
-  snapshot.exceptions.allowCashBounties[snapshot.bounties[1].key] = review();
-  assert.equal(
-    eligibility(housePolicy(), snapshot, 'Q6', creator, now).code,
-    'VERIFIED',
-  );
+  for (const quest of ['Q4', 'Q5', 'Q6']) {
+    const result = eligibility(agentPolicy(), snapshot, quest, creator, now);
+    assert.equal(result.code, 'VERIFIED');
+    assert.equal(result.creatorCompletionKind, 'agent-assisted');
+  }
   for (const quest of ['Q14', 'Q15'])
-    assert.equal(
-      eligibility(housePolicy(), snapshot, quest, creator, now).code,
-      'APPROVED_WORK_ORDER_REQUIRED',
-    );
+    assert.equal(eligibility(agentPolicy(), snapshot, quest, creator, now).code, 'APPROVED_WORK_ORDER_REQUIRED');
 });
-test('deferred house payout earns Q4 and Q5 only after timely withdrawal before the second creation', () => {
-  const base = houseState();
+test('deferred Verdikta agent payout earns Q4 and Q5 only after timely withdrawal before the second creation', () => {
+  const base = agentState();
   const created = (record) => ({
     name: 'BountyCreated',
     at: record.createdAt,
@@ -339,14 +315,14 @@ test('deferred house payout earns Q4 and Q5 only after timely withdrawal before 
     created(base.bounties[0]),
     {
       name: 'PayoutSent',
-      args: { bountyId: '1', winner: house, amountWei: '100' },
+      args: { bountyId: '1', winner: agent, amountWei: '100' },
       at: start + 200,
       tx: 'award',
       contract: escrow,
     },
     {
       name: 'PaymentDeferred',
-      args: { to: house, amount: '100' },
+      args: { to: agent, amount: '100' },
       at: start + 200,
       tx: 'award',
       contract: escrow,
@@ -354,7 +330,7 @@ test('deferred house payout earns Q4 and Q5 only after timely withdrawal before 
     created(base.bounties[1]),
   ];
   const apply = () => {
-    const snapshot = houseState();
+    const snapshot = agentState();
     snapshot.bounties = project(
       [...logs].sort((first, second) => first.at - second.at),
       start,
@@ -367,40 +343,40 @@ test('deferred house payout earns Q4 and Q5 only after timely withdrawal before 
   };
   for (const quest of ['Q4', 'Q5'])
     assert.equal(
-      eligibility(housePolicy(), apply(), quest, creator, now).ok,
+      eligibility(agentPolicy(), apply(), quest, creator, now).ok,
       false,
     );
   const withdrawal = {
     name: 'Withdrawn',
-    args: { account: house, amount: '100' },
+    args: { account: agent, amount: '100' },
     at: start + 500,
     tx: 'withdraw',
     contract: escrow,
   };
   logs.push(withdrawal);
   for (const quest of ['Q4', 'Q5']) {
-    const result = eligibility(housePolicy(), apply(), quest, creator, now);
+    const result = eligibility(agentPolicy(), apply(), quest, creator, now);
     assert.equal(result.code, 'VERIFIED');
-    assert.equal(result.houseAssistedEvidence[0].paymentTx, 'withdraw');
-    assert.equal(result.houseAssistedEvidence[0].paidAt, start + 500);
+    assert.equal(result.agentAssistedEvidence[0].paymentTx, 'withdraw');
+    assert.equal(result.agentAssistedEvidence[0].paidAt, start + 500);
   }
   withdrawal.at = base.bounties[1].createdAt;
   assert.equal(
-    eligibility(housePolicy(), apply(), 'Q5', creator, now).ok,
+    eligibility(agentPolicy(), apply(), 'Q5', creator, now).ok,
     false,
   );
-  withdrawal.at = housePolicy().endAt;
+  withdrawal.at = agentPolicy().endAt;
   assert.equal(
-    eligibility(housePolicy(), apply(), 'Q4', creator, now).ok,
+    eligibility(agentPolicy(), apply(), 'Q4', creator, now).ok,
     false,
   );
 });
-test('external hunters retain Q9 on team custom starters and Q10 with a later different non-team creator', () => {
+test('external hunters retain Q9 on team standard starters and Q10 with a later different non-team creator', () => {
   const snapshot = state();
-  snapshot.bounties = [bounty(1, start, house, hunter, 'custom')];
+  snapshot.bounties = [bounty(1, start, agent, hunter, 'standard')];
   snapshot.history.hunters[hunter] = true;
   assert.equal(
-    eligibility(housePolicy(), snapshot, 'Q9', hunter, now).code,
+    eligibility(agentPolicy(), snapshot, 'Q9', hunter, now).code,
     'VERIFIED',
   );
   delete snapshot.history.hunters[hunter];
@@ -409,27 +385,27 @@ test('external hunters retain Q9 on team custom starters and Q10 with a later di
     bounty(2, start + 3 * DAY + 201, otherCreator, hunter),
   );
   assert.equal(
-    eligibility(housePolicy(), snapshot, 'Q10', hunter, now).code,
+    eligibility(agentPolicy(), snapshot, 'Q10', hunter, now).code,
     'VERIFIED',
   );
   snapshot.bounties[1].creator = otherTeam;
   assert.equal(
-    eligibility(housePolicy(), snapshot, 'Q10', hunter, now).ok,
+    eligibility(agentPolicy(), snapshot, 'Q10', hunter, now).ok,
     false,
   );
   snapshot.bounties[1].creator = otherCreator;
   snapshot.history.hunters[hunter] = true;
   assert.equal(
-    eligibility(housePolicy(), snapshot, 'Q10', hunter, now).code,
+    eligibility(agentPolicy(), snapshot, 'Q10', hunter, now).code,
     'PRE_CAMPAIGN_ACTIVITY',
   );
 });
 test('allowlist normalization, subset and uniqueness validation preserve disabled policy compatibility', (testContext) => {
   const input = configInput();
-  delete input.houseHunterWallets;
+  delete input.verdiktaAgentWallets;
   const original = validateConfig(input, 'x'.repeat(32));
   const empty = validateConfig(
-    { ...input, houseHunterWallets: [] },
+    { ...input, verdiktaAgentWallets: [] },
     'x'.repeat(32),
   );
   const oldFields = [
@@ -453,25 +429,25 @@ test('allowlist normalization, subset and uniqueness validation preserve disable
   );
   assert.equal(original.policyHash, empty.policyHash);
   const enabled = validateConfig(
-    { ...input, houseHunterWallets: [getAddress(house)] },
+    { ...input, verdiktaAgentWallets: [getAddress(agent)] },
     'x'.repeat(32),
   );
-  assert.deepEqual(enabled.houseHunterWallets, [house]);
+  assert.deepEqual(enabled.verdiktaAgentWallets, [agent]);
   assert.notEqual(enabled.policyHash, original.policyHash);
   for (const allowlist of [
     [hunter],
-    [house, getAddress(house)],
+    [agent, getAddress(agent)],
     'invalid',
     ['invalid-address'],
   ])
     assert.throws(() =>
       validateConfig(
-        { ...input, houseHunterWallets: allowlist },
+        { ...input, verdiktaAgentWallets: allowlist },
         'x'.repeat(32),
       ),
     );
   const store = setup(testContext);
-  const directory = path.join(path.dirname(store.file), 'house-policy');
+  const directory = path.join(path.dirname(store.file), 'agent-policy');
   const existing = new Store(directory, original.policyHash);
   existing.transact(() => {});
   existing.transactClaims((snapshot) => {
@@ -483,16 +459,16 @@ test('allowlist normalization, subset and uniqueness validation preserve disable
   compatible.close();
   assert.throws(() => new Store(directory, enabled.policyHash), /mismatch/);
 });
-test('inspection preserves house-assisted payment evidence, ordinary claims and Q9 reward candidates', (testContext) => {
+test('inspection preserves agent-assisted payment evidence, ordinary claims and Q9 reward candidates', (testContext) => {
   const store = setup(testContext);
   store.transact((snapshot) => {
-    Object.assign(snapshot, houseState());
-    snapshot.eligibilityPolicy = housePolicy();
+    Object.assign(snapshot, agentState());
+    snapshot.eligibilityPolicy = agentPolicy();
   });
   for (const quest of ['Q4', 'Q5', 'Q6', 'Q15'])
     assert.equal(
       verify(
-        housePolicy(),
+        agentPolicy(),
         store,
         body(quest, creator, 'creator-user', quest),
         now,
@@ -500,16 +476,16 @@ test('inspection preserves house-assisted payment evidence, ordinary claims and 
       'VERIFIED',
     );
   store.transact((snapshot) => {
-    // Later ledger changes must not erase the successful house receipts in claims.
+    // Later ledger changes must not erase the successful agent receipts in claims.
     snapshot.bounties = [
-      bounty(3, start, house, hunter, 'custom'),
+      bounty(3, start, agent, hunter, 'standard'),
       bounty(4, start, otherCreator, hunter),
     ];
     snapshot.history.hunters[hunter] = true;
   });
   assert.equal(
     verify(
-      housePolicy(),
+      agentPolicy(),
       store,
       body('Q9', hunter, 'returning-hunter', 'q9'),
       now,
@@ -518,7 +494,7 @@ test('inspection preserves house-assisted payment evidence, ordinary claims and 
   );
   assert.equal(
     verify(
-      housePolicy(),
+      agentPolicy(),
       store,
       body('Q4', otherCreator, 'organic-creator', 'organic-q4'),
       now,
@@ -527,18 +503,18 @@ test('inspection preserves house-assisted payment evidence, ordinary claims and 
   );
   assert.equal(CASH_QUESTS.includes('Q9'), false);
   const exported = inspect(store.file);
-  assert.deepEqual(exported.houseHunterWallets, [house]);
-  assert.equal(exported.verifiedHouseAssistedCreatorClaims.length, 4);
-  const assisted = exported.verifiedHouseAssistedCreatorClaims.find(
+  assert.deepEqual(exported.verdiktaAgentWallets, [agent]);
+  assert.equal(exported.verifiedAgentAssistedCreatorClaims.length, 4);
+  const assisted = exported.verifiedAgentAssistedCreatorClaims.find(
     (claim) => claim.quest === 'Q6',
   );
   assert.deepEqual(
     assisted.evidence,
-    houseState().bounties.map((record) => record.key),
+    agentState().bounties.map((record) => record.key),
   );
-  assert.equal(assisted.houseAssistedEvidence.length, 2);
-  assert.equal(assisted.houseAssistedEvidence[0].hunter, house);
-  assert.equal(assisted.houseAssistedEvidence[0].paymentTx, 'paid-1');
+  assert.equal(assisted.agentAssistedEvidence.length, 2);
+  assert.equal(assisted.agentAssistedEvidence[0].hunter, agent);
+  assert.equal(assisted.agentAssistedEvidence[0].paymentTx, 'paid-1');
   assert.equal(
     exported.verifiedClaims.find((claim) => claim.wallet === otherCreator)
       .creatorCompletionKind,
@@ -568,7 +544,7 @@ test('inspection preserves house-assisted payment evidence, ordinary claims and 
   assert.equal(
     Object.values(restarted.state.verifiedClaims).find(
       (claim) => claim.quest === 'Q6',
-    ).houseAssistedEvidence.length,
+    ).agentAssistedEvidence.length,
     2,
   );
 });

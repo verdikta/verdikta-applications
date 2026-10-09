@@ -298,7 +298,7 @@ test('terminal validation failures persist and never refetch under the same cont
   await assert.rejects(
     restored.check(
       'cid',
-      `bounty:${fixtureData.indexer.evidenceFingerprint}:${fixtureData.config.snapshotSetHash}:80`,
+      `bounty:standard-v1:${fixtureData.indexer.evidenceFingerprint}:${fixtureData.config.snapshotSetHash}:80`,
       () => {
         calls++;
       },
@@ -491,4 +491,31 @@ test('module import failures are retried next cycle and logged once without deta
   assert.equal(imports, 4);
   assert.equal(data.store.state.bounties[0].evidence.kind, 'workOrder');
   assert.equal(logged.mock.calls.length, 1);
+});
+
+test('classification-version contexts revalidate previously cached bounty and submission results', async (testContext) => {
+  const data = fixture(testContext);
+  await data.indexer.reconcile(now);
+  data.store.transact((snapshot) => {
+    for (const record of Object.values(snapshot.evidenceCache)) {
+      record.checks = Object.fromEntries(Object.entries(record.checks).map(([context, result]) => [context.replace(':standard-v1:', ':'), result]));
+    }
+  });
+  let bountyChecks = 0;
+  let submissionChecks = 0;
+  data.validators.inspectBounty = async () => {
+    bountyChecks++;
+    return { ok: true, kind: 'standard', scopeDigest: 'hash' };
+  };
+  data.validators.submission = async () => {
+    submissionChecks++;
+    return true;
+  };
+  data.indexer = new Indexer(data.config, data.store, data.provider, data.validators, () => data.contract);
+  await data.indexer.reconcile(now + 1);
+  assert.equal(data.store.state.chain.error, null);
+  assert.equal(bountyChecks, 1);
+  assert.equal(submissionChecks, 1);
+  assert.equal(data.store.state.bounties[0].evidence.kind, 'standard');
+  assert.equal(data.store.state.bounties[0].submissions[0].packageValid, true);
 });

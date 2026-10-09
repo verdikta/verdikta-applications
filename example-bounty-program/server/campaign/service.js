@@ -97,7 +97,7 @@ function verify(config, store, body, now) {
     if (result.ok) {
       if (result.creatorCompletionKind) {
         record.creatorCompletionKind = result.creatorCompletionKind;
-        record.houseAssistedEvidence = result.houseAssistedEvidence;
+        record.agentAssistedEvidence = result.agentAssistedEvidence;
       }
       state.identities[userHash] = wallet;
       state.wallets[wallet] = userHash;

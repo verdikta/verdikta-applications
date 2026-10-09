@@ -176,15 +176,15 @@ async function inspectBounty(
       evaluationCid: bounty.evaluationCid,
       rubricCid: references[0].hash,
     };
-    const custom = (classification) => ({
+    const standard = (classification) => ({
       ...common,
-      kind: 'custom',
+      kind: 'standard',
       scopeDigest: sha256(primary.query),
       classification,
     });
     const shared = await moduleLoader();
     const parsed = shared.parseWorkOrderDescription(primary.query);
-    if (parsed === null) return custom('NOT_A_WORK_ORDER');
+    if (parsed === null) return standard('NOT_A_WORK_ORDER');
     if (
       !parsed ||
       typeof parsed !== 'object' ||
@@ -240,14 +240,14 @@ async function inspectBounty(
             .length !== 1,
       )
     )
-      return custom('AMBIGUOUS_WORK_ORDER');
+      return standard('AMBIGUOUS_WORK_ORDER');
     if (
       parsed.errors.length ||
       parsed.request?.fixture_only ||
       checkedErrors(shared.validateRequest(parsed.templateId, parsed.request))
         .length
     )
-      return custom('WORK_ORDER_HASH_OR_REQUEST_INVALID');
+      return standard('WORK_ORDER_HASH_OR_REQUEST_INVALID');
     const snapshot = config.approvedTemplates.find((candidate) => {
       if (
         candidate.id !== parsed.templateId ||
@@ -262,7 +262,7 @@ async function inspectBounty(
         throw new Error('Unexpected rubric comparison result');
       return same;
     });
-    if (!snapshot) return custom('RUBRIC_MISMATCH');
+    if (!snapshot) return standard('RUBRIC_MISMATCH');
     return {
       ...common,
       kind: 'workOrder',
@@ -295,7 +295,7 @@ async function submission(
       throw evidenceError('INVALID_PACKAGE');
     const manifest = submissionArchive.json('manifest.json');
     const primary = submissionArchive.json(manifest.primary.filename);
-    if (bounty.evidence.kind === 'custom') {
+    if (bounty.evidence.kind === 'standard') {
       if (typeof primary.query !== 'string' || !primary.query.trim())
         throw evidenceError('INVALID_PACKAGE');
       return true;

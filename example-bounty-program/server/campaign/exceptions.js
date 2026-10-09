@@ -4,7 +4,6 @@ const { address, digest } = require('./config');
 function emptyExceptions() {
   return {
     denyBounties: {},
-    allowCashBounties: {},
     holdWallets: {},
     identityReleases: [],
   };
@@ -29,7 +28,7 @@ function validateExceptions(input, deployment) {
       Object.keys(input).some((field) => !Object.hasOwn(result, field))
     )
       throw new Error();
-    for (const field of ['denyBounties', 'allowCashBounties', 'holdWallets']) {
+    for (const field of ['denyBounties', 'holdWallets']) {
       if (
         !input[field] ||
         typeof input[field] !== 'object' ||

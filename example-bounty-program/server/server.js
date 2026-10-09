@@ -216,6 +216,8 @@ app.set('trust proxy', true);
 // Middleware
 app.use(cors());
 app.options('*', cors());
+// Campaign owns its small JSON parser and sanitized errors before general request logging.
+require('./campaign').install(app, () => require('./campaign/config').loadConfig(), config.rpcUrl, process.env.ZEALY_API_KEY);
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 

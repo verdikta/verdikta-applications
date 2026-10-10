@@ -1143,3 +1143,10 @@
 .work-order-import textarea { width: 100%; font-family: monospace; font-size: 0.8rem; }
 .work-order-summary code { word-break: break-all; font-size: 0.8rem; }
 .work-order-block { white-space: pre-wrap; word-break: break-word; max-height: 16rem; overflow: auto; font-size: 0.75rem; }
+
+/* Campaign eligibility checklist (/create?campaign=...) */
+.campaign-checklist { margin-bottom: 1.5rem; }
+.campaign-checklist h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+.campaign-checklist-items { margin: 0 0 0.5rem; padding-left: 1.25rem; }
+.campaign-checklist-items li { margin: 0.25rem 0; }
+.campaign-checklist-fail { color: var(--error-dark, #b42318); }

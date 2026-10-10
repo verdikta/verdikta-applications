@@ -2,6 +2,7 @@ import { rubricWeights } from '../utils/rubricWeights';
 import { validateBountyWindows } from '../utils/bountyWindows';
 import { effectiveBountyAmountEth } from '../utils/effectiveBountyAmount';
 import { pastedJsonText } from '../utils/pastedJson';
+import { DEFAULT_SUBMISSION_WINDOW_HOURS, campaignFromSearch, campaignEligibility } from '../utils/campaignCreate';
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import {
@@ -74,6 +75,8 @@ function CreateBounty({ walletState }) {
   const [searchParams] = useSearchParams();
   const location = useLocation();
   const reissueId = searchParams.get('clone');
+  // /create?campaign=bring-a-task prefills the campaign reward/window and shows the eligibility checklist.
+  const campaign = campaignFromSearch(searchParams.get('campaign'));
   const [reissueFrom, setReissueFrom] = useState(null);
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -128,9 +131,9 @@ function CreateBounty({ walletState }) {
     title: '',
     description: '',
     workProductType: 'Work Product',
-    payoutAmount: '0.001',
+    payoutAmount: campaign ? campaign.payoutAmountEth : '0.001',
     ethPriceUSD: 0,
-    submissionWindowHours: 1, // Default, for development, to 1 hour.
+    submissionWindowHours: DEFAULT_SUBMISSION_WINDOW_HOURS,
     targetHunter: '',
     deliverableRequirements: {
       format: ['markdown', 'pdf']
@@ -245,7 +248,7 @@ function CreateBounty({ walletState }) {
         const windowHours =
           job.submissionOpenTime && job.submissionCloseTime
             ? Math.max(1, Math.round((job.submissionCloseTime - job.submissionOpenTime) / 3600))
-            : 1;
+            : DEFAULT_SUBMISSION_WINDOW_HOURS;
         const windowSecs = Number(job.creatorAssessmentWindowSize) || 0;
         const hasApprovalWindow = windowSecs > 0;
 
@@ -1089,6 +1092,26 @@ function CreateBounty({ walletState }) {
                 </div>
               )}
             </section>
+
+            {campaign && (
+              <section className="alert alert-info campaign-checklist" aria-labelledby="campaign-checklist-title">
+                <h3 id="campaign-checklist-title"><Check size={16} className="inline-icon" /> {campaign.label}: eligibility checklist</h3>
+                <ul className="campaign-checklist-items">
+                  {campaignEligibility(campaign, formData).map((item) => (
+                    <li key={item.id} className={item.ok === false ? 'campaign-checklist-fail' : ''}>
+                      {item.ok === true && <Check size={14} className="inline-icon" aria-label="met" />}
+                      {item.ok === false && <AlertTriangle size={14} className="inline-icon" aria-label="not met" />}
+                      {item.ok === null && <Clock size={14} className="inline-icon" aria-hidden="true" />}
+                      {' '}{item.text}
+                    </li>
+                  ))}
+                </ul>
+                <p className="helper-text">
+                  Prefilled with a {campaign.payoutAmountEth} ETH reward and a {campaign.recommendedWindowHours}-hour window. After funding, wait about
+                  30 minutes for the chain to finalize, then claim the matching quest on Zealy with this same wallet.
+                </p>
+              </section>
+            )}
 
             <div className="form-group">
               <label htmlFor="title">

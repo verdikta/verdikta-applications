@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // One-command onboarding for Verdikta Bounties bots.
-// Human involvement: choose network + owner/sweep addresses + fund wallet.
+// Human involvement: choose network + owner/withdrawal addresses + fund wallet.
 // Everything else (env setup, wallet creation, waiting for funding, bot registration) is automated.
+// `--set-owner` only shows or changes the owner withdrawal address (terminal only).
 
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -14,6 +15,7 @@ import './_env.js';
 import { providerFor, loadWallet, resolvePath, arg, hasFlag, reviewedApiOrigin } from './_lib.js';
 import { defaultSecretsDir, ensureDir } from './_paths.js';
 import { createPrompt, walletPassword, removeEnvKey, PASSWORD_ENV, PASSWORD_FILE_ENV } from './_secret.js';
+import { OWNER_ENV, SET_OWNER, ownerConfigFile, recordedOwnerAddress, confirmOwnerChange, setOwnerAddress } from './_owner.js';
 
 function envNum(name, def) {
   const v = process.env[name];
@@ -240,6 +242,7 @@ async function main() {
     const envPath = stableEnvPath;
 
     if (hasFlag('migrate-password')) return await migratePassword({ envPath, envText: stableEnvText, secretsDir, prompt });
+    if (hasFlag('set-owner')) return await setOwnerAddress({ ask: q => rl.question(q), isTTY: Boolean(process.stdin.isTTY) });
     if (localVars[PASSWORD_ENV]) console.log(`\nNote: ${localEnvPath} still holds ${PASSWORD_ENV}. It is ignored and not copied; delete that line yourself.`);
 
     console.log('Verdikta Bounties — one-command onboarding');
@@ -278,14 +281,15 @@ async function main() {
     if (existingBaseUrl && existingBaseUrl !== baseUrl) console.log(`Replacing Bounties URL ${existingBaseUrl} with the reviewed origin for ${network}.`);
     console.log(`Bounties URL: ${baseUrl}`);
 
-    // 3) Owner/sweep
-    const ownerDefault = current.OFFBOT_ADDRESS && isAddress(current.OFFBOT_ADDRESS) ? current.OFFBOT_ADDRESS : '';
-    let ownerAddress = (await rl.question('Owner address (human EOA) 0x…: ')).trim();
+    // 3) Owner and withdrawal address. OFFBOT_ADDRESS is the only destination of withdraw_to_owner.js; replacing a
+    // recorded one needs the owner in a terminal.
+    const recordedWithdrawal = recordedOwnerAddress(stableEnvText);
+    let ownerAddress = (await rl.question('Owner address (your own wallet, registered as the bot owner) 0x…: ')).trim();
     if (!isAddress(ownerAddress)) throw new Error('Invalid owner address.');
 
-    let sweepAddress = (await rl.question(`Sweep address 0x… [${ownerDefault || ownerAddress}]: `)).trim();
-    if (!sweepAddress) sweepAddress = ownerDefault || ownerAddress;
-    if (!isAddress(sweepAddress)) throw new Error('Invalid sweep address.');
+    const sweepDefault = recordedWithdrawal || recordedOwnerAddress(localEnvText) || ownerAddress;
+    const sweepAnswer = (await rl.question(`Withdrawal address, the only address withdraw_to_owner.js sends this wallet's funds to [${sweepDefault}]: `)).trim();
+    const sweepAddress = await confirmOwnerChange({ ask: q => rl.question(q), isTTY: Boolean(process.stdin.isTTY), recorded: recordedWithdrawal, next: sweepAnswer || sweepDefault });
 
     // 4) Keystore path default in secrets dir
     const keystoreDefault = current.VERDIKTA_KEYSTORE_PATH || process.env.VERDIKTA_KEYSTORE_PATH || `${secretsDir}/verdikta-wallet.json`;
@@ -304,12 +308,13 @@ async function main() {
       VERDIKTA_BOUNTIES_BASE_URL: baseUrl,
       VERDIKTA_SECRETS_DIR: secretsDir,
       VERDIKTA_KEYSTORE_PATH: keystoreDefault,
-      OFFBOT_ADDRESS: sweepAddress,
+      [OWNER_ENV]: sweepAddress,
     });
     await fs.writeFile(envPath, patched, { mode: 0o600 });
     await fs.chmod(envPath, 0o600);
 
     console.log(`\nSaved config: ${envPath} (survives skill updates)`);
+    if (path.resolve(envPath) !== path.resolve(ownerConfigFile())) console.log(`Note: withdraw_to_owner.js reads the owner address from ${ownerConfigFile()} only; record it there with \`${SET_OWNER}\`.`);
     console.log('Secrets dir:', secretsDir);
 
     // Reload env into process (dotenv was loaded before; but our helper reads process.env, not file)
@@ -338,6 +343,7 @@ async function main() {
     const statusLabel = imported ? ' (imported)' : created ? ' (created)' : '';
     console.log(`\nBot wallet: ${wallet.address}`);
     console.log(`Keystore:  ${keystoreAbs}${statusLabel}`);
+    if (sweepAddress === wallet.address) console.log(`WARNING: the withdrawal address is this bot wallet itself, so nothing can be withdrawn. Record your own wallet with \`${SET_OWNER}\`.`);
 
     // 7) Funding (human action)
     const minEth = envNum('MIN_ETH', network === 'base-sepolia' ? 0.01 : 0.005);
@@ -427,6 +433,9 @@ async function main() {
     console.log('- Private keys are never exported or printed. Keys are decrypted in-memory only when signing.');
     console.log(`- The wallet password was not stored. For unattended runs, supply ${PASSWORD_ENV} from a secret store`);
     console.log('  (OpenClaw: a SecretRef on skills.entries.verdikta-bounties-onboarding.apiKey; see references/onboarding.md#wallet-password).');
+    console.log('\nWithdrawals:');
+    console.log(`- node withdraw_to_owner.js --amount <ETH> (or --all) sends this wallet's funds to ${sweepAddress} and nowhere else.`);
+    console.log(`- To change that address, run \`${SET_OWNER}\` yourself in a terminal.`);
 
   } finally {
     prompt.close();

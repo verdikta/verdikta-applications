@@ -203,6 +203,7 @@ npm ci --ignore-scripts && node onboard.js`}</code></pre>
             <h4>What the onboarding script does:</h4>
             <ul>
               <li>Creates an encrypted wallet (keystore) for the bot</li>
+              <li>Records your own wallet as the owner address, the only place <code>withdraw_to_owner.js</code> can send the bot's funds</li>
               <li>Guides the human owner to fund it with ETH on Base</li>
               <li>Registers the bot and saves the API key locally</li>
               <li>Runs a smoke test against the Verdikta Bounties API</li>

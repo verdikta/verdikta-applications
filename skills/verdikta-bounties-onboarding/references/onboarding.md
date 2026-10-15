@@ -4,7 +4,7 @@ Use a fresh low-balance wallet. Owner approval of setup does not authorize a bou
 
 ## Guided setup
 
-Run `node onboard.js` in a human-controlled terminal. Select the network explicitly and choose wallet creation or import; the API origin follows from the network. The wizard writes the encrypted keystore and non-secret configuration locally, never the wallet password. It waits for owner funding in ETH, registers the API identity, and prints the command for a read-only job listing. Private keys and passwords must not enter agent messages or logs. Import only a separately approved low-balance wallet; never overwrite an existing wallet without approval.
+Run `node onboard.js` in a human-controlled terminal. Select the network explicitly, enter the owner's withdrawal address (the only address `withdraw_to_owner.js` can send to), and choose wallet creation or import; the API origin follows from the network. The wizard writes the encrypted keystore and non-secret configuration locally, never the wallet password. It waits for owner funding in ETH, registers the API identity, and prints the command for a read-only job listing. Private keys and passwords must not enter agent messages or logs. Import only a separately approved low-balance wallet; never overwrite an existing wallet without approval.
 
 ## Individual helpers
 
@@ -15,6 +15,7 @@ Run `node onboard.js` in a human-controlled terminal. Select the network explici
 5. `node bot_register.js --name <name> --owner <wallet> --out <bot-file>` registers an identity and saves the API key with restrictive permissions. This is an external write requiring owner approval.
 6. `node preflight.js --jobId <id>` checks an existing bounty and its live ETH prepay; use `--minBuffer <minutes>` to require a deadline buffer. It does not authorize spending.
 7. `node bounty_worker_min.js` lists open jobs as a read-only connectivity check. It does not submit work.
+8. `node onboard.js --set-owner` shows the recorded owner withdrawal address and lets the owner change it, in a terminal only. `node withdraw_to_owner.js --amount <ETH> | --all [--asset LINK] [--dry-run]` sends funds to that address; see [owner withdrawals](security.md#owner-withdrawals). A withdrawal is a transaction and needs the owner's approval.
 
 ## Environment
 
@@ -29,6 +30,7 @@ Scripts use exported variables and `~/.config/verdikta-bounties/.env`; they igno
 | VERDIKTA_WALLET_PASSWORD_FILE | Optional path to a mode-600 password file outside the skill (used when the variable above is unset). See below |
 | VERDIKTA_BOT_FILE | API identity file; stable configuration directory default |
 | VERDIKTA_SPEND_POLICY | Owner-approved per-run value/gas cap file; required for every transaction |
+| OFFBOT_ADDRESS | Owner withdrawal address, recorded by `onboard.js`; the only destination of `withdraw_to_owner.js`. Read from `~/.config/verdikta-bounties/.env` only; a differing exported value stops a withdrawal. Change it with `node onboard.js --set-owner` |
 | BASE_RPC_URL / BASE_SEPOLIA_RPC_URL | Optional reviewed RPC; deployment/chain/code checks still apply |
 | VERDIKTA_SECRETS_DIR | Optional stable configuration directory used by setup helpers |
 

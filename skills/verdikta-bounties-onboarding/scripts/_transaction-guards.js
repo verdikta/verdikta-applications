@@ -116,3 +116,47 @@ export function verifySignedTransaction(raw, expected, creator, policy, hash) {
   if (tx.value + tx.gasLimit * tx.maxFeePerGas > uint(policy.maxTotalWei, 'total cap')) throw new Error('Saved transaction exceeds total cap');
   return tx;
 }
+
+// Owner withdrawals: the only transactions not sent to the escrow. ETH goes straight to the owner address recorded at
+// onboarding; LINK (left in older wallets by the retired swap) only as an exact transfer to it from the reviewed token.
+export const ownerTransferTokens = {
+  base: { LINK: { address: '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196', decimals: 18 } },
+  'base-sepolia': { LINK: { address: '0xE4aB69C077896252FAFBD49EFD26B5D171A32410', decimals: 18 } },
+};
+export const erc20 = new Interface(['function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)', 'function transfer(address to, uint256 amount) returns (bool)']);
+export function ownerAddress(value) {
+  let address;
+  try { address = getAddress(String(value ?? '').trim()); } catch { throw new Error(`Invalid owner address: ${value}`); }
+  if (address === ZeroAddress) throw new Error('The owner address is the zero placeholder; no owner is recorded');
+  return address;
+}
+export function ownerTransferFields({ network, owner, asset, amount }) {
+  const deployment = deployments[network], recipient = ownerAddress(owner), value = uint(amount, 'withdrawal amount');
+  if (!deployment) throw new Error(`Unsupported network ${network}`);
+  if (value === 0n) throw new Error('Withdrawal amount must be positive');
+  const token = asset === 'ETH' ? null : ownerTransferTokens[network]?.[asset];
+  if (asset !== 'ETH' && !token) throw new Error(`No reviewed ${asset} token on ${network}`);
+  return token
+    ? { to: token.address, value: 0n, data: erc20.encodeFunctionData('transfer', [recipient, value]), chainId: deployment.chainId }
+    : { to: recipient, value, data: '0x', chainId: deployment.chainId };
+}
+export function verifyOwnerTransfer(tx, expected) {
+  const fields = ownerTransferFields(expected);
+  if (Number(tx?.chainId) !== fields.chainId) throw new Error('Transaction chain mismatch');
+  if (getAddress(tx.to) !== getAddress(fields.to)) throw new Error('Transaction destination mismatch');
+  if (uint(tx.value, 'transaction value') !== fields.value) throw new Error('Transaction value mismatch');
+  if ((tx.data || '0x').toLowerCase() !== fields.data.toLowerCase()) throw new Error('Transaction calldata mismatch');
+  return fields;
+}
+// No value cap: the funds return to the owner. Gas, fee and total-execution caps still apply.
+export function verifySignedOwnerTransfer(raw, expected, from, policy) {
+  const tx = Transaction.from(raw);
+  if (!tx.isSigned() || getAddress(tx.from) !== getAddress(from)) throw new Error('Signed withdrawal has the wrong signer or no signature');
+  verifyOwnerTransfer(tx, expected);
+  if (tx.type !== 2 || tx.gasLimit > uint(policy.maxGasLimit, 'gas cap') ||
+      tx.maxFeePerGas > uint(policy.maxFeePerGasWei, 'fee cap') ||
+      tx.maxPriorityFeePerGas > uint(policy.maxPriorityFeePerGasWei, 'priority cap') ||
+      tx.maxPriorityFeePerGas > tx.maxFeePerGas || tx.accessList?.length) throw new Error('Signed withdrawal exceeds gas/fee policy or changes transaction type');
+  if (tx.gasLimit * tx.maxFeePerGas > uint(policy.maxTotalWei, 'total cap')) throw new Error('Signed withdrawal exceeds total cap');
+  return tx;
+}

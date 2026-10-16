@@ -417,6 +417,13 @@ async function pinJsonToPinata(contentObj, name = 'verdikta-json') {
   return parsed.IpfsHash;
 }
 
+// The creator's USD estimate, stored in whole cents (ETH x price is a float,
+// e.g. 0.24484899999999998). Anything not a positive number is stored as 0.
+function roundUsdCents(value) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0;
+}
+
 /* ==============
    CREATE A JOB
    ============== */
@@ -793,7 +800,7 @@ router.post('/create', async (req, res) => {
       workProductType,
       creator,
       ...payments,
-      bountyAmountUSD: Number(bountyAmountUSD || 0),
+      bountyAmountUSD: roundUsdCents(bountyAmountUSD),
       threshold: Number(threshold),
       rubricCid,
       evaluationCid,

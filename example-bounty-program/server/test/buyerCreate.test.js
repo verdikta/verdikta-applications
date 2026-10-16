@@ -130,3 +130,7 @@ test('reusing a saved exact amount never encodes the rounded display number',asy
  const res=await request(app).post('/jobs/create').send(body);
  expect(res.status).toBe(200);expect(res.body.job.bountyAmountWei).toBe('123456789012345678');expect(res.body.onChain.transaction.value).toBe('123456789012345678');expect(storage.createJob).not.toHaveBeenCalled();
 });
+test.each([[0.24484899999999998,0.24],['12.345',12.35],[0,0],[-5,0],['abc',0],[undefined,0]])('bountyAmountUSD %p is stored as whole cents (%p)',async (bountyAmountUSD,stored)=>{
+ const res=await request(app).post('/jobs/create').send({...body,bountyAmountUSD});
+ expect(res.status).toBe(200);expect(storage.createJob).toHaveBeenCalledWith(expect.objectContaining({bountyAmountUSD:stored}));
+});

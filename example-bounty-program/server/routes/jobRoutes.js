@@ -29,6 +29,7 @@ const { validateBounty, IssueSeverity, IssueType, chainStatusIssue, isGatingIssu
 const { getContractService, RESOLVE_GAS_LIMIT_FALLBACK, RESOLVE_GAS_NOTE } = require('../utils/contractService');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
 const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/submissionEvents');
+const { createTtlCache } = require('../utils/ttlCache');
 
 /* ======================
    Helpers / configuration
@@ -3786,6 +3787,14 @@ router.get('/:jobId', async (req, res) => {
     // Keep `syncedFromBlockchain` — the UI needs it to render the
     // "Pending on-chain" badge on bounties that haven't been confirmed yet.
     const { lastSyncedAt: _lsa, _chainFieldsHealed: _cfh, _metadataHealDone: _mhd, _metadataHealAttempts: _mha, _metadataHealNextAt: _mhn, ...jobForClient } = job;
+    // Anonymous callers (no key: an AI juror following a link) also lose the
+    // internal attribution of who submitted through which client, and the file
+    // list of a bounty whose creator kept submissions private. Work CIDs stay:
+    // they are public on-chain regardless.
+    if (req.clientType === 'public' && Array.isArray(job.submissions)) {
+      jobForClient.submissions = job.submissions.map(({ clientId: _ci, clientType: _ct, files, ...sub }) =>
+        (job.publicSubmissions === true ? { ...sub, files } : sub));
+    }
     const jobIdVal = job.jobId;
     return res.json({
       success: true,
@@ -3848,6 +3857,12 @@ router.get('/:jobId', async (req, res) => {
  * One RPC call (getBounty); status/effectiveStatus/canBeClosed are derived
  * locally from the struct to avoid extra round trips.
  *
+ * Public: callers with no API key (e.g. an AI juror following a link) may read
+ * it (see PUBLIC_READ_ROUTES in middleware/clientIdentification.js). They share
+ * one snapshot per bounty for config.publicOnchainStatusCacheMs (default 30 s,
+ * 200s and 404s only) and get Cache-Control: public, max-age=<ttl>. Keyed
+ * callers always get a live read.
+ *
  * Response shape:
  *   {
  *     bountyId: number,
@@ -3859,7 +3874,10 @@ router.get('/:jobId', async (req, res) => {
  *     payoutEth: string,                                   // human-readable
  *     bountyAmountWei: string,                             // funded amount; constant for life
  *     bountyAmount: string,                                // human-readable
+ *     createdAt: number,                                   // unix seconds (block time of createBounty)
+ *     createdAtIso: ISO-8601 string | null,
  *     submissionDeadline: number,                          // unix seconds
+ *     submissionDeadlineIso: ISO-8601 string | null,
  *     deadlinePassed: boolean,
  *     submissionCount: number,
  *     isAcceptingSubmissions: boolean,
@@ -3872,9 +3890,20 @@ router.get('/:jobId', async (req, res) => {
  *     creatorAssessmentWindowSize: number,
  *     creatorDeterminationPaymentEth: string,
  *     arbiterDeterminationPaymentEth: string,
- *     fetchedAt: ISO-8601 string
+ *     fetchedAt: ISO-8601 string,                          // when the chain was read
+ *     cached: boolean                                      // true = shared anonymous snapshot
  *   }
  */
+const PUBLIC_ONCHAIN_STATUS_TTL_MS = config.publicOnchainStatusCacheMs || 30000;
+const publicOnchainStatusCache = createTtlCache({
+  ttlMs: PUBLIC_ONCHAIN_STATUS_TTL_MS,
+  // A missing bounty is cached too (so unknown ids are not an RPC amplifier); a
+  // failed read is not.
+  shouldCache: (r) => r.status === 200 || r.status === 404,
+});
+
+const isoFromUnix = (sec) => (Number(sec) > 0 ? new Date(Number(sec) * 1000).toISOString() : null);
+
 router.get('/:jobId/onchain-status', async (req, res) => {
   const { jobId } = req.params;
   const bountyId = parseInt(jobId, 10);
@@ -3882,6 +3911,17 @@ router.get('/:jobId/onchain-status', async (req, res) => {
     return res.status(400).json({ success: false, error: 'Invalid bountyId', details: `"${jobId}" is not a non-negative integer` });
   }
 
+  if (req.clientType === 'public') {
+    const { value, cached } = await publicOnchainStatusCache.get(bountyId, () => readOnchainStatus(bountyId));
+    res.set('Cache-Control', `public, max-age=${Math.round(PUBLIC_ONCHAIN_STATUS_TTL_MS / 1000)}`);
+    return res.status(value.status).json({ ...value.body, cached });
+  }
+  const { status, body } = await readOnchainStatus(bountyId);
+  return res.status(status).json({ ...body, cached: false });
+});
+
+// One live onchain-status read. Never throws: resolves to { status, body }.
+async function readOnchainStatus(bountyId) {
   try {
     logger.info('[jobs/onchain-status] get', { bountyId });
     const contractService = getContractService();
@@ -3940,7 +3980,7 @@ router.get('/:jobId/onchain-status', async (req, res) => {
       logger.warn('[jobs/onchain-status] requiredPrepay/prepareCutoff read failed', { bountyId, msg: e.message });
     }
 
-    return res.json({
+    return { status: 200, body: {
       success: true,
       bountyId,
       requiredPrepay,                            // wei to attach at startPreparedSubmission RIGHT NOW (null if unreadable)
@@ -3953,7 +3993,10 @@ router.get('/:jobId/onchain-status', async (req, res) => {
       payoutEth: ethers.formatEther(b.escrowWei),
       bountyAmountWei: b.bountyAmountWei,        // funded amount, unchanged by payout
       bountyAmount: b.bountyAmount,
+      createdAt: b.createdAt,                    // unix seconds: block time of createBounty
+      createdAtIso: isoFromUnix(b.createdAt),
       submissionDeadline: deadline,
+      submissionDeadlineIso: isoFromUnix(deadline),
       deadlinePassed: deadline > 0 && now > deadline,
       submissionCount: b.submissionCount,
       isAcceptingSubmissions: b.isAcceptingSubmissions,
@@ -3972,7 +4015,7 @@ router.get('/:jobId/onchain-status', async (req, res) => {
                                                  //   not-on-chain | mismatch | untracked
       fetchedAt: new Date().toISOString(),
       note: 'Live read of the BountyEscrow contract, ABI-decoded server-side as a convenience. The contract itself is the source of truth: the same read can be made with any ABI-aware library and re-checked against it. If this disagrees with GET /api/jobs/:jobId the sync service has not yet observed the change; the live read wins.'
-    });
+    } };
   } catch (err) {
     const msg = (err?.message || '').toLowerCase();
     if (msg.includes('bad bountyid') || msg.includes('badbountyid') || msg.includes('call_exception')) {
@@ -3993,7 +4036,7 @@ router.get('/:jobId/onchain-status', async (req, res) => {
         identityHint = `Local API job #${bountyId} exists and is marked on-chain, but the contract has no bounty at that id. This is a stale-link state — call GET /api/jobs/lookup?evaluationCid=${localJob.evaluationCid || '<cid>'} to find the correct on-chain id, or POST /api/jobs/sync/now to re-reconcile.`;
       }
 
-      return res.status(404).json({
+      return { status: 404, body: {
         success: false,
         error: 'Bounty not found on current contract',
         details: `Bounty #${bountyId} does not exist on the active BountyEscrow contract. Note: this endpoint's path param is the on-chain bountyId, which differs from the API jobId when there is drift.`,
@@ -4004,12 +4047,12 @@ router.get('/:jobId/onchain-status', async (req, res) => {
           lookup: '/api/jobs/lookup',
           forceSync: '/api/jobs/sync/now'
         }
-      });
+      } };
     }
     logger.error('[jobs/onchain-status] fatal', { bountyId, msg: err.message });
-    return res.status(500).json({ success: false, error: 'Failed to read on-chain status', details: err.message });
+    return { status: 500, body: { success: false, error: 'Failed to read on-chain status', details: err.message } };
   }
-});
+}
 
 /* =================
    GET JOB RUBRIC (Agent-friendly endpoint)

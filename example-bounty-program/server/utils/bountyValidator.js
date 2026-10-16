@@ -462,6 +462,7 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
       });
     } else {
       let scoredWeightSum = 0;
+      let scoredCount = 0;
       rubric.criteria.forEach((criterion, index) => {
         if (criterion.must === true && typeof criterion.weight === 'number' && criterion.weight !== 0) {
           issues.push({
@@ -470,12 +471,16 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
             message: `Criterion ${index} ("${criterion.label || criterion.id || 'unknown'}"): Must-pass criteria must have weight 0 (got ${criterion.weight})`
           });
         }
-        if (!criterion.must && typeof criterion.weight === 'number') {
-          scoredWeightSum += criterion.weight;
+        if (!criterion.must) {
+          scoredCount += 1;
+          if (typeof criterion.weight === 'number') scoredWeightSum += criterion.weight;
         }
       });
 
-      if (Math.abs(scoredWeightSum - 1.0) > 0.001) {
+      // A rubric of only must-pass criteria has no weights to sum: it passes
+      // when every gate passes (archiveGenerator scores FUND = 100), and
+      // /jobs/create accepts it (utils/validation.js).
+      if (scoredCount > 0 && Math.abs(scoredWeightSum - 1.0) > 0.001) {
         issues.push({
           type: IssueType.INVALID_RUBRIC,
           severity: IssueSeverity.ERROR,

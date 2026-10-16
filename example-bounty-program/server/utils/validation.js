@@ -115,6 +115,7 @@ function validateRubric(rubric) {
     // Validate each criterion
     let totalWeight = 0;
     const ids = new Set();
+    const hasScored = rubric.criteria.some(c => c && typeof c === 'object' && !c.must);
     rubric.criteria.forEach((criterion, index) => {
       if (!criterion || typeof criterion !== "object") { errors.push(`Criterion ${index}: invalid object`); return; }
       const cLabel = criterion.label || criterion.id || 'unknown';
@@ -151,8 +152,10 @@ function validateRubric(rubric) {
       }
     });
 
-    // Check that scored criteria weights sum to approximately 1.0 (allow small floating point errors)
-    if (Math.abs(totalWeight - 1.0) > 0.001 && totalWeight !== 0) {
+    // Scored criteria weights must sum to approximately 1.0 (allow small floating
+    // point errors). A rubric of only must-pass criteria has nothing to sum.
+    // Same rule as bountyValidator, so a bounty accepted here is not gated later.
+    if (hasScored && Math.abs(totalWeight - 1.0) > 0.001) {
       errors.push(`Rubric: Scored criteria weights must sum to 1.0 (got ${totalWeight.toFixed(3)})`);
     }
   }

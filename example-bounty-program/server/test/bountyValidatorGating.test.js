@@ -95,6 +95,33 @@ describe('rubric: a failed fetch and an unparseable rubric are different problem
   });
 });
 
+describe('rubric weights', () => {
+  const rubric = (criteria) => Buffer.from(JSON.stringify({ criteria }));
+  const weightIssue = (r) => r.issues.find((i) => i.type === IssueType.INVALID_RUBRIC && /must sum to 1.0/.test(i.message));
+
+  it('accepts a rubric of only must-pass criteria (no weights to sum; testnet bounties 14/15)', async () => {
+    const r = await validate('q'.repeat(50), rubric([
+      { id: 'a', must: true, weight: 0, description: 'gate a' },
+      { id: 'b', must: true, weight: 0, description: 'gate b' },
+    ]));
+    expect(weightIssue(r)).toBeUndefined();
+    expect(types(r)).not.toContain(IssueType.INVALID_RUBRIC);
+  });
+
+  it('still requires scored weights to sum to 1.0 when there are scored criteria', async () => {
+    const r = await validate('q'.repeat(50), rubric([
+      { id: 'a', must: true, weight: 0, description: 'gate' },
+      { id: 'b', must: false, weight: 0.4, description: 'scored' },
+    ]));
+    expect(weightIssue(r).severity).toBe(IssueSeverity.ERROR);
+  });
+
+  it('rejects scored criteria whose weights are all zero', async () => {
+    const r = await validate('q'.repeat(50), rubric([{ id: 'b', must: false, weight: 0, description: 'scored' }]));
+    expect(weightIssue(r)).toBeDefined();
+  });
+});
+
 describe('which ERROR issues are deterministic', () => {
   const error = (type) => ({ type, severity: IssueSeverity.ERROR, message: 'm' });
 

@@ -1,8 +1,8 @@
 {
   "ownerId": "kn70kt901qt3bjzwb1v3q90jm181xhyf",
   "slug": "verdikta-bounties-onboarding",
-  "version": "1.7.2",
-  "description": "Hot-wallet Verdikta Bounties operator for Base. Creates/imports Ethereum keys into an encrypted keystore whose password is never stored (it comes from VERDIKTA_WALLET_PASSWORD via a secret store or a prompt), keeps an API key locally, uploads public bounty/work data, calls the reviewed Verdikta API and Base RPC, and can sign irreversible mainnet/testnet transactions within an owner spend policy.",
+  "version": "1.8.0",
+  "description": "Hot-wallet Verdikta Bounties operator for Base. Creates/imports Ethereum keys into an encrypted keystore whose password is never stored (it comes from VERDIKTA_WALLET_PASSWORD via a secret store or a prompt), keeps an API key locally, uploads public bounty/work data, calls the reviewed Verdikta API and Base RPC, and can sign irreversible mainnet/testnet transactions within an owner spend policy. Withdraws the wallet's ETH (or leftover LINK) only to the owner address recorded at onboarding.",
   "permissions": {
     "shell": {
       "binaries": [
@@ -65,7 +65,8 @@
         "force-fail timed-out submission",
         "recover deferred ETH refund",
         "withdraw pull-ledger balance",
-        "close expired bounty"
+        "close expired bounty",
+        "withdraw ETH or leftover LINK to the owner address recorded at onboarding (the only non-escrow destination)"
       ]
     }
   },
@@ -104,14 +105,15 @@
   },
   "credentialSetup": {
     "type": "interactive",
-    "description": "Run 'node scripts/onboard.js' for guided setup: creates or imports an encrypted wallet keystore (the password is typed without echo or taken from the environment, and never stored), waits for human funding, registers and persists a bot API key. No secrets are hardcoded."
+    "description": "Run 'node scripts/onboard.js' for guided setup: records the owner withdrawal address (OFFBOT_ADDRESS), creates or imports an encrypted wallet keystore (the password is typed without echo or taken from the environment, and never stored), waits for human funding, registers and persists a bot API key. No secrets are hardcoded."
   },
   "securityNotes": [
     "Use a fresh low-balance bot wallet; do not import high-value personal wallets.",
     "Transaction-capable scripts require interactive confirmation or --yes/--confirm-spend.",
     "Use --dry-run where available before signing.",
     "Bounty metadata, submitted work files, CIDs, wallet addresses, and transaction hashes may become public via IPFS, Verdikta API records, and blockchain state.",
-    "Draft handoff executes the sibling verdikta-discover code and locked dependencies in the signing process. Install both from the same reviewed repository revision and protect them from untrusted replacement. Signed recovery state can broadcast the exact approved transaction; keep it private."
+    "Draft handoff executes the sibling verdikta-discover code and locked dependencies in the signing process. Install both from the same reviewed repository revision and protect them from untrusted replacement. Signed recovery state can broadcast the exact approved transaction; keep it private.",
+    "Withdrawals (withdraw_to_owner.js) go only to the owner address recorded at onboarding as OFFBOT_ADDRESS in ~/.config/verdikta-bounties/.env. The address is read from that file, never from an exported variable, and there is no destination argument. Only `node onboard.js --set-owner`, run in a terminal, changes it. Anything running as the same user can still rewrite the file or use the keystore directly, so keep the balance low."
   ],
   "requires": {
     "anyBinaries": [

@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { Link, useSearchParams, useLocation, useNavigationType } from 'react-router-dom';
 import {
   Plus,
   HelpCircle,
@@ -44,6 +44,10 @@ const CONFIG = {
   AUTO_REFRESH_INTERVAL_MS: 15000,
 };
 
+// Values of the status dropdown other than '' (All Active)
+const STATUS_FILTERS = ['OPEN', 'EXPIRED', 'UNCLAIMED', 'AWARDED', 'CLOSED'];
+const PAGE_SIZES = [15, 50, 100];
+
 // Helper to truncate Ethereum addresses for display
 const truncateAddress = (address) => {
   if (!address || address.length < 10) return address || '';
@@ -76,13 +80,85 @@ function Home({ walletState }) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [filters, setFilters] = useState({
-    status: '',
-    search: '',
-    minPayout: ''
-  });
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(15);
+  // Filters and pagination live in the query string (e.g. /?status=AWARDED&page=2)
+  // so the browser's Back button from a bounty returns to the same listing.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const statusParam = String(searchParams.get('status') || '').toUpperCase();
+  const searchParam = searchParams.get('q') || '';
+  const minPayoutParam = searchParams.get('min') || '';
+  const filters = useMemo(() => ({
+    status: STATUS_FILTERS.includes(statusParam) ? statusParam : '',
+    search: searchParam,
+    minPayout: minPayoutParam,
+  }), [statusParam, searchParam, minPayoutParam]);
+  const currentPage = Math.max(1, parseInt(searchParams.get('page'), 10) || 1);
+  const pageSize = PAGE_SIZES.includes(Number(searchParams.get('per')))
+    ? Number(searchParams.get('per'))
+    : PAGE_SIZES[0];
+
+  // Merge query-string updates, dropping empty/default values. replace keeps
+  // filter edits (including each keystroke in search) out of browser history.
+  const updateParams = useCallback((updates) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      for (const [key, value] of Object.entries(updates)) {
+        if (value === '' || value == null) next.delete(key);
+        else next.set(key, String(value));
+      }
+      if (next.get('page') === '1') next.delete('page');
+      if (next.get('per') === String(PAGE_SIZES[0])) next.delete('per');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+  // The text inputs keep their own state: React Router applies URL updates in a
+  // transition, and binding a text box straight to it can drop keystrokes. Pick
+  // up URL changes made elsewhere (e.g. the header logo link to "/"); our own
+  // updates are REPLACE navigations.
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  const [searchInput, setSearchInput] = useState(filters.search);
+  const [minPayoutInput, setMinPayoutInput] = useState(filters.minPayout);
+  useEffect(() => {
+    if (navigationType === 'REPLACE') return;
+    setSearchInput(filters.search);
+    setMinPayoutInput(filters.minPayout);
+  }, [location.key]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Restore the scroll position on Back/Forward. The list loads asynchronously,
+  // so the browser's own restoration finds a short page; remember each history
+  // entry's position here and reapply it once the jobs have rendered.
+  const scrollKey = `home-scroll:${location.key}`;
+  const restoreScrollKeyRef = useRef(navigationType === 'POP' ? location.key : null);
+  useEffect(() => {
+    let frame = 0;
+    const save = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        // Skip scroll events caused by leaving the page (removed or shortened
+        // DOM), and the browser's clamped restore while a restore is pending
+        if (!bountyGridRef.current?.isConnected || restoreScrollKeyRef.current) return;
+        try { sessionStorage.setItem(scrollKey, String(window.scrollY)); } catch { /* storage unavailable */ }
+      });
+    };
+    window.addEventListener('scroll', save, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('scroll', save);
+    };
+  }, [scrollKey]);
+
+  useEffect(() => {
+    if (loading || restoreScrollKeyRef.current !== location.key) return;
+    restoreScrollKeyRef.current = null;
+    let y = 0;
+    try { y = Number(sessionStorage.getItem(scrollKey)) || 0; } catch { /* storage unavailable */ }
+    if (y > 0) window.scrollTo(0, y);
+  }, [loading, location.key, scrollKey]);
+
+  const setCurrentPage = (update) => {
+    const page = typeof update === 'function' ? update(currentPage) : update;
+    updateParams({ page });
+  };
   // Recent ETH/USD price (server proxy: Coinbase, CoinGecko fallback; 1-min cache) for approximate payout values
   const [ethPrice, setEthPrice] = useState(0);
   // Class IDs in the Verdikta class registry; bounties on any other class get a
@@ -222,14 +298,18 @@ function Home({ walletState }) {
     };
   }, []);
 
+  const FILTER_PARAM = { status: 'status', search: 'q', minPayout: 'min' };
+
   const handleFilterChange = (key, value) => {
-    setFilters(prev => ({ ...prev, [key]: value }));
-    setCurrentPage(1);
+    if (key === 'search') setSearchInput(value);
+    if (key === 'minPayout') setMinPayoutInput(value);
+    updateParams({ [FILTER_PARAM[key]]: value, page: null });
   };
 
   const clearFilters = () => {
-    setFilters({ status: '', search: '', minPayout: '' });
-    setCurrentPage(1);
+    setSearchInput('');
+    setMinPayoutInput('');
+    updateParams({ status: null, q: null, min: null, page: null });
   };
 
   // Scroll to top of grid when page changes (but not on initial load).
@@ -300,7 +380,7 @@ function Home({ walletState }) {
             <input
               type="text"
               placeholder="Search jobs..."
-              value={filters.search}
+              value={searchInput}
               onChange={(e) => handleFilterChange('search', e.target.value)}
               className="filter-search"
             />
@@ -319,7 +399,7 @@ function Home({ walletState }) {
             <input
               type="number"
               placeholder="Min ETH"
-              value={filters.minPayout}
+              value={minPayoutInput}
               onChange={(e) => handleFilterChange('minPayout', e.target.value)}
               className="filter-payout"
               step="0.01"
@@ -396,11 +476,11 @@ function Home({ walletState }) {
                 <label>Per page:</label>
                 <select
                   value={pageSize}
-                  onChange={(e) => { setPageSize(Number(e.target.value)); setCurrentPage(1); }}
+                  onChange={(e) => updateParams({ per: e.target.value, page: null })}
                 >
-                  <option value={15}>15</option>
-                  <option value={50}>50</option>
-                  <option value={100}>100</option>
+                  {PAGE_SIZES.map(size => (
+                    <option key={size} value={size}>{size}</option>
+                  ))}
                 </select>
               </div>
             </div>

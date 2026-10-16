@@ -61,6 +61,12 @@ const bountyEscrowAddresses = {
 };
 
 // Export configuration with env overrides
+// "a, b/" or a list -> trimmed, slash-stripped, de-duplicated gateway URLs.
+function readGateways(env, fallback) {
+  const list = env ? env.split(',') : fallback;
+  return [...new Set(list.map((g) => String(g || '').trim().replace(/\/+$/, '')).filter(Boolean))];
+}
+
 const config = {
   // Network info
   network: networkKey,
@@ -93,6 +99,16 @@ const config = {
   ipfsPinningService: process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud',
   ipfsPinningKey: process.env.IPFS_PINNING_KEY || '',
   pinataGateway: process.env.PINATA_GATEWAY || 'https://gateway.pinata.cloud',
+  // Gateways every server-side IPFS read tries, in order. IPFS_READ_GATEWAYS
+  // (comma-separated) replaces the default. Filebase leads because, as of
+  // 2026-10-16, gateway.pinata.cloud (Cloudflare 1015), ipfs.io, dweb.link and
+  // w3s.link all answer this server with 429, and cloudflare-ipfs.com is gone.
+  ipfsReadGateways: readGateways(process.env.IPFS_READ_GATEWAYS, [
+    'https://ipfs.filebase.io',
+    process.env.PINATA_GATEWAY || 'https://gateway.pinata.cloud',
+    process.env.IPFS_GATEWAY || 'https://ipfs.io',
+    'https://dweb.link',
+  ]),
   pinTimeout: parseInt(process.env.PIN_TIMEOUT_MS) || 20000,
 
   // Rate limiting

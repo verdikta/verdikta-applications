@@ -21,12 +21,6 @@ const { config } = require('../config');
 const { MAX_FILE_SIZE } = require('./validation');
 const { QUERY_MIN_CHARS, BCID_QUERY_MAX_CHARS } = require('@verdikta/common');
 
-// Tried after the configured gateways (config.pinataGateway, config.ipfsGateway)
-// — the same pair probeCidAccessibility uses for /diagnose.
-const FALLBACK_GATEWAYS = [
-  'https://ipfs.io',
-  'https://dweb.link',
-];
 
 // Hunter (bCID) archives: the arbiters' cap stays at 10,000 even though the
 // bounty's own evaluation query may be up to 32,000 (@verdikta/common 1.8.0).
@@ -61,11 +55,9 @@ const CONFORMING_SHAPE_EXAMPLE = {
   ],
 };
 
+// The same list every server-side IPFS read uses (also /diagnose's probe).
 function gatewayList() {
-  const all = [config.pinataGateway, config.ipfsGateway, ...FALLBACK_GATEWAYS]
-    .filter(Boolean)
-    .map(g => String(g).replace(/\/+$/, ''));
-  return [...new Set(all)];
+  return config.ipfsReadGateways;
 }
 
 function tooLargeError(bytes) {

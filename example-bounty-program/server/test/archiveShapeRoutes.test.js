@@ -16,6 +16,7 @@ jest.mock('fs', () => {
     rename: jest.fn().mockResolvedValue(undefined) } };
 });
 jest.mock('../config', () => ({ config: { network: 'base-sepolia', bountyEscrowAddress: '0xabc123', chainId: 84532, explorer: 'https://sepolia.basescan.org',
+  ipfsReadGateways: ['https://ipfs.io', 'https://dweb.link'],
   submissionDefaults: { maxOracleFeeWei: '20000000000000', alpha: 500, estimatedBaseCostWei: '10000000000000', maxFeeBasedScaling: 3 } } }));
 let mockGetSubmission = jest.fn();
 jest.mock('../utils/contractService', () => ({ getContractService: () => ({ contract: { getSubmission: (...a) => mockGetSubmission(...a) } }) }));

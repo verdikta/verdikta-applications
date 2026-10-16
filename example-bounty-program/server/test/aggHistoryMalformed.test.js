@@ -42,6 +42,7 @@ jest.mock('../config', () => ({
   config: {
     network: 'base-sepolia',
     bountyEscrowAddress: '0xabc123',
+    ipfsReadGateways: [],
     chainId: 84532,
     explorer: 'https://sepolia.basescan.org',
   },

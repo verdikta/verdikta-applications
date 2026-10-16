@@ -6883,7 +6883,7 @@ router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
 // metadata for newly-pinned large objects. Returns on the first gateway that
 // answers with ok or a partial-content status; otherwise reports every attempt.
 async function probeCidAccessibility(cid, perGatewayTimeoutMs = 10000) {
-  const gateways = [config.pinataGateway, config.ipfsGateway].filter(Boolean);
+  const gateways = config.ipfsReadGateways;
   const attempts = [];
   for (const gateway of gateways) {
     const url = `${gateway}/ipfs/${cid}`;

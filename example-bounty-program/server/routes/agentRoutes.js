@@ -288,7 +288,11 @@ under Direct Blockchain Access) and you get the same data. Returns { status
 (OPEN|EXPIRED|AWARDED|CLOSED), rawStatus, payoutWei/payoutEth (live escrow, 0
 once paid out or refunded), bountyAmountWei/bountyAmount (funded amount), winner,
 createdAt/createdAtIso (block time of createBounty), submissionDeadline/
-submissionDeadlineIso, deadlinePassed, canBeClosed, linkage, cached, fetchedAt, ... }. Useful when you
+submissionDeadlineIso, deadlinePassed, canBeClosed, oracleSettings (the creator's
+bounty.oracle: maxOracleFee/maxOracleFeeEth, alpha, estimatedBaseCost/
+estimatedBaseCostEth, maxFeeBasedScaling), effectiveOracleSettings (same keys, from
+effectiveOracleParams: clamped to the aggregator's live fee ceiling), linkage, cached,
+fetchedAt, ... }. Useful when you
 want to check whether a bounty is actually closed / paid out without the API's
 cached view; if it disagrees with GET /api/jobs/:id, the sync service has not yet
 observed the change and the live read (this endpoint or your own) wins.
@@ -1077,7 +1081,7 @@ router.get('/api/docs', (req, res) => {
         method: 'GET',
         path: '/jobs/:id/onchain-status',
         description: 'Public: no key needed (see auth.publicReads). Optional convenience: a live getBounty(uint256) read, ABI-decoded server-side. The contract is the source of truth — you can perform the same read yourself with any ABI-aware library (see contracts.bountyEscrow); this endpoint is a shortcut, not an authority. Use when the cached /jobs/:id view may be stale, or to diagnose ID drift via the "linkage" field. IMPORTANT: :id is the on-chain bountyId, not the API jobId — they only match for linked jobs. Use /api/jobs/lookup first if you are not sure.',
-        returns: '{ success, bountyId, requiredPrepay (wei to attach at start, read live), prepareCutoff (last unix second prepare can succeed), status, rawStatus, creator, winner, payoutWei, payoutEth (live escrow; 0 once paid out or refunded), bountyAmountWei, bountyAmount (funded amount), createdAt (unix seconds, block time of createBounty), createdAtIso, submissionDeadline, submissionDeadlineIso, deadlinePassed, submissionCount, isAcceptingSubmissions, canBeClosed, targetHunter, evaluationCid, classId, threshold, linkage: { state, onChain, syncedFromBlockchain, detail, fix?, mismatch?, correctJobId?, idDriftWarning? }, fetchedAt, cached (true = shared anonymous snapshot), note }. linkage.state ∈ { linked | patched-not-synced | not-on-chain | mismatch | untracked }. linkage.fix is a string when present and is OMITTED (not null) when state is linked — type it as optional, not nullable. 404 responses for missing on-chain bounties include localJobExists/localJobLinked flags and a fix pointing at /api/jobs/lookup.'
+        returns: '{ success, bountyId, requiredPrepay (wei to attach at start, read live), prepareCutoff (last unix second prepare can succeed), status, rawStatus, creator, winner, payoutWei, payoutEth (live escrow; 0 once paid out or refunded), bountyAmountWei, bountyAmount (funded amount), createdAt (unix seconds, block time of createBounty), createdAtIso, submissionDeadline, submissionDeadlineIso, deadlinePassed, submissionCount, isAcceptingSubmissions, canBeClosed, targetHunter, evaluationCid, classId, threshold, creatorAssessmentWindowSize, creatorDeterminationPaymentEth, arbiterDeterminationPaymentEth, oracleSettings: { maxOracleFee (wei), maxOracleFeeEth, alpha, estimatedBaseCost (wei), estimatedBaseCostEth, maxFeeBasedScaling } (the creator\'s bounty.oracle; maxOracleFee is the per-arbiter fee ceiling, so a bounty whose class has no arbiter priced at or below it can never be evaluated), effectiveOracleSettings (same keys, from effectiveOracleParams(bountyId): clamped to the aggregator\'s live fee ceiling; null if unreadable), linkage: { state, onChain, syncedFromBlockchain, detail, fix?, mismatch?, correctJobId?, idDriftWarning? }, fetchedAt, cached (true = shared anonymous snapshot), note }. linkage.state ∈ { linked | patched-not-synced | not-on-chain | mismatch | untracked }. linkage.fix is a string when present and is OMITTED (not null) when state is linked — type it as optional, not nullable. 404 responses for missing on-chain bounties include localJobExists/localJobLinked flags and a fix pointing at /api/jobs/lookup.'
       },
       {
         method: 'GET',

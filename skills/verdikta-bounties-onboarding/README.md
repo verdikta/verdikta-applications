@@ -36,3 +36,7 @@ Smart-account wallets (Coinbase Smart Wallet and other ERC-4337 accounts) cannot
 ## Validate from a repository checkout
 
 Install dependencies in `scripts/`, `../verdikta-discover/` and `../../example-bounty-program/onchain/`. `npm test` in `scripts/` compiles contracts using the secret-free config before checking ABI compatibility and mocked lifecycle tests. Compilation may download the pinned Solidity compiler on first use; no deployment credentials are loaded. Hosted CI runs the same setup.
+
+## Campaign
+
+October 14 to November 4, 2026: the Bring a Task, Build a Habit campaign pays Zealy USDC for first paid wins and first paid tasks on Base; the operator links the agent wallet on Zealy and claims there. Details and every verifier message: https://www.verdikta.org/bounties/support

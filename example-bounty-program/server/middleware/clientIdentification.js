@@ -4,6 +4,7 @@
  * Identifies and authenticates clients accessing the API:
  * - Official frontend: X-Client-Key header + allowed Origin
  * - Registered bots: X-Bot-API-Key header
+ * - Anonymous single-bounty reads (PUBLIC_READ_ROUTES): served without a key, rate-limited per IP
  * - Unknown clients: Blocked (401)
  */
 
@@ -11,6 +12,8 @@ const fs = require('fs');
 const path = require('path');
 const logger = require('../utils/logger');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
+const { config } = require('../config');
+const { createRateLimiter, clientAddress } = require('../utils/rateLimiter');
 
 // Bot registry file path
 const BOTS_FILE = path.join(__dirname, '..', 'data', 'bots.json');
@@ -55,13 +58,52 @@ function isPublicPath(reqPath) {
   return PUBLIC_PATHS.some(p => reqPath.startsWith(p));
 }
 
+// Single-bounty reads open to callers with no key. AI jurors verify a bounty from a
+// link with their providers' web tools (OpenAI web_search, Anthropic web_fetch), which
+// send a plain GET with no custom headers. Unlike PUBLIC_PATHS these rules are
+// method-aware and anchored: only GET/HEAD of exactly /api/jobs/<number> and
+// /api/jobs/<number>/onchain-status. Every other /api/jobs path (/create,
+// /:id/submit, /:id/submissions, admin routes) still needs a key.
+const PUBLIC_READ_ROUTES = [
+  { methods: ['GET', 'HEAD'], pattern: /^\/api\/jobs\/\d+(?:\/onchain-status)?\/?$/ },
+];
+
+function isPublicRead(req) {
+  return PUBLIC_READ_ROUTES.some(r => r.methods.includes(req.method) && r.pattern.test(req.path));
+}
+
+// Anonymous reads share one per-IP budget; a registered key is never throttled here.
+const publicReadLimiter = createRateLimiter({
+  windowMs: config.publicReadRateLimitWindowMs || 60000,
+  max: config.publicReadRateLimitMax || 60,
+});
+
+function servePublicRead(req, res, next) {
+  const { allowed, remaining, retryAfterSeconds } = publicReadLimiter.hit(clientAddress(req));
+  res.set('X-RateLimit-Remaining', String(remaining));
+  if (!allowed) {
+    res.set('Retry-After', String(retryAfterSeconds));
+    return sendError(res, 429, {
+      code: ErrorCodes.RATE_LIMIT,
+      message: 'Too many anonymous requests',
+      details: `Anonymous bounty reads are limited per client address. Retry in ${retryAfterSeconds}s.`,
+      fix: 'Wait for the Retry-After interval, or send X-Bot-API-Key (register free at POST /api/bots/register); keyed requests are not limited here.',
+      tips: ['Agent guide: GET /agents.txt'],
+    });
+  }
+  req.clientType = 'public';
+  req.clientId = null;
+  return next();
+}
+
 /**
  * Client identification middleware
  *
  * Sets req.clientType and req.clientId based on authentication:
  * - 'frontend' for official web frontend
  * - 'bot' for registered bots (also sets req.botInfo)
- * - 'public' for unauthenticated public endpoints
+ * - 'public' for unauthenticated public endpoints, and for PUBLIC_READ_ROUTES
+ *   requests that carry no valid key (a valid key keeps its identity there)
  *
  * Blocks unknown clients with 401.
  */
@@ -119,6 +161,11 @@ function clientIdentification(req, res, next) {
     }
   }
 
+  // A single-bounty read without a valid key is served anonymously
+  if (isPublicRead(req)) {
+    return servePublicRead(req, res, next);
+  }
+
   // Block unknown clients
   logger.warn(`Blocked unknown client: ${req.method} ${req.path} from ${req.ip}`, {
     hasClientKey: !!clientKey,
@@ -155,3 +202,5 @@ function clientIdentification(req, res, next) {
 }
 
 module.exports = clientIdentification;
+module.exports.isPublicRead = isPublicRead;
+module.exports.publicReadLimiter = publicReadLimiter;

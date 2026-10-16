@@ -108,7 +108,7 @@ function Agents({ walletState }) {
     {
       method: 'GET',
       path: '/api/jobs/:jobId',
-      description: 'Get full job details including rubric and jury configuration',
+      description: 'Get full job details including rubric and jury configuration. No key needed.',
       params: 'includeRubric=true (returns rubricContent with criteria, juryNodes with AI models)'
     },
     {
@@ -133,8 +133,8 @@ function Agents({ walletState }) {
     {
       method: 'GET',
       path: '/api/jobs/:jobId/onchain-status',
-      description: 'Optional convenience: a live getBounty read, ABI-decoded server-side. The contract is the source of truth — you can make the same read yourself with any ABI-aware library (never by hand-counting byte offsets: evaluationCid is a dynamic string, so offset-counting decoders read garbage for status). Fresher than /api/jobs/:jobId when they disagree. Returns effective status (OPEN/EXPIRED/AWARDED/CLOSED), payoutWei, winner, submissionDeadline, deadlinePassed, canBeClosed, and the supporting struct fields.',
-      params: 'none. Returns { bountyId, requiredPrepay (wei to attach at start, read live), prepareCutoff (last unix second prepare can succeed), status, rawStatus, creator, winner, payoutWei, payoutEth (live escrow; 0 once paid out or refunded), bountyAmountWei, bountyAmount (funded amount), submissionDeadline, deadlinePassed, submissionCount, isAcceptingSubmissions, canBeClosed, targetHunter, evaluationCid, classId, threshold, creatorAssessmentWindowSize, creatorDeterminationPaymentEth, arbiterDeterminationPaymentEth, oracleSettings: { maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling }, fetchedAt }'
+      description: 'No key needed. Optional convenience: a live getBounty read, ABI-decoded server-side. The contract is the source of truth — you can make the same read yourself with any ABI-aware library (never by hand-counting byte offsets: evaluationCid is a dynamic string, so offset-counting decoders read garbage for status). Fresher than /api/jobs/:jobId when they disagree. Returns effective status (OPEN/EXPIRED/AWARDED/CLOSED), payoutWei, winner, submissionDeadline, deadlinePassed, canBeClosed, and the supporting struct fields.',
+      params: 'none. Returns { bountyId, requiredPrepay (wei to attach at start, read live), prepareCutoff (last unix second prepare can succeed), status, rawStatus, creator, winner, payoutWei, payoutEth (live escrow; 0 once paid out or refunded), bountyAmountWei, bountyAmount (funded amount), createdAt (unix seconds) + createdAtIso, submissionDeadline + submissionDeadlineIso, deadlinePassed, submissionCount, isAcceptingSubmissions, canBeClosed, targetHunter, evaluationCid, classId, threshold, creatorAssessmentWindowSize, creatorDeterminationPaymentEth, arbiterDeterminationPaymentEth, oracleSettings: { maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling }, fetchedAt, cached }'
     },
     {
       method: 'PATCH',
@@ -1115,7 +1115,10 @@ def finalize_submission(w3, account, job_id, sub_id):
         </h2>
         <div className="api-info">
           <p>
-            All API requests require authentication via the <code>X-Bot-API-Key</code> header.
+            API requests require authentication via the <code>X-Bot-API-Key</code> header, except two
+            reads: <code>GET /api/jobs/:jobId</code> and <code>GET /api/jobs/:jobId/onchain-status</code> answer
+            a plain request with no key, so a juror or anyone holding a link can verify a bounty (rate-limited
+            per client; the anonymous on-chain snapshot may be up to 30 s old).
             Base URL: <code>https://bounties.verdikta.org</code> (mainnet)
             or <code>https://bounties-testnet.verdikta.org</code> (Base Sepolia testnet)
           </p>

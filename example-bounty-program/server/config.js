@@ -98,6 +98,11 @@ const config = {
   // Rate limiting
   rateLimitWindowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 900000,
   rateLimitMaxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
+  // Anonymous single-bounty reads (GET /api/jobs/:id and /:id/onchain-status, no key):
+  // per-client-IP budget, and how long an anonymous onchain-status snapshot is reused.
+  publicReadRateLimitWindowMs: parseInt(process.env.PUBLIC_READ_RATE_LIMIT_WINDOW_MS) || 60000,
+  publicReadRateLimitMax: parseInt(process.env.PUBLIC_READ_RATE_LIMIT_MAX) || 60,
+  publicOnchainStatusCacheMs: parseInt(process.env.PUBLIC_ONCHAIN_STATUS_CACHE_MS) || 30000,
 
   // Temp directory
   tmpDir: process.env.VERDIKTA_TMP_DIR || null, // null means use os.tmpdir()

@@ -78,7 +78,11 @@ const ipfsClient = new IPFSClient({
   pinningService: config.ipfsPinningService,
   pinningKey: pinningKeyForClient,   // bare JWT only
   timeout: 8000,
-  retryOptions: { retries: 5, factor: 2 }
+  // Since @verdikta/common 1.8.0 a retry is a further sweep across every
+  // gateway, not one more gateway: 2 sweeps of the 4 below is about the
+  // 6 single-gateway attempts this used to allow.
+  retryOptions: { retries: 1, factor: 2 },
+  maxFetchMs: 60000
 }, logger);
 
 // The hardcoded gateway list inside @verdikta/common puts ipfs.io first, but

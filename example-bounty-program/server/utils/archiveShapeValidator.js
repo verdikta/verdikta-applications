@@ -19,6 +19,7 @@ const AdmZip = require('adm-zip');
 const logger = require('./logger');
 const { config } = require('../config');
 const { MAX_FILE_SIZE } = require('./validation');
+const { QUERY_MIN_CHARS, BCID_QUERY_MAX_CHARS } = require('@verdikta/common');
 
 // Tried after the configured gateways (config.pinataGateway, config.ipfsGateway)
 // — the same pair probeCidAccessibility uses for /diagnose.
@@ -27,8 +28,10 @@ const FALLBACK_GATEWAYS = [
   'https://dweb.link',
 ];
 
-const MIN_QUERY_LEN = 10;
-const MAX_QUERY_LEN = 10000;
+// Hunter (bCID) archives: the arbiters' cap stays at 10,000 even though the
+// bounty's own evaluation query may be up to 32,000 (@verdikta/common 1.8.0).
+const MIN_QUERY_LEN = QUERY_MIN_CHARS;
+const MAX_QUERY_LEN = BCID_QUERY_MAX_CHARS;
 
 // Same bare-CID rule the contract enforces ("bad hunterCid"); also keeps the
 // value from smuggling a path or query string into the gateway URL.
@@ -39,7 +42,7 @@ const BARE_CID_RE = /^[A-Za-z0-9]{46,100}$/;
 const MAX_ARCHIVE_BYTES = 11 * MAX_FILE_SIZE;
 
 // manifest.json and the primary query are small JSON files (the query itself is
-// capped at 10,000 chars). Entries declaring more than this are never inflated,
+// capped at BCID_QUERY_MAX_CHARS). Entries declaring more than this are never inflated,
 // which also bounds zip-bomb expansion (adm-zip caps output at the declared size).
 const MAX_JSON_ENTRY_BYTES = 1024 * 1024;
 

@@ -45,32 +45,35 @@ describe('QUERY_TOO_LONG', () => {
   afterEach(() => { delete process.env.MAX_EVALUATION_QUERY_CHARS; });
 
   it('accepts a query of exactly the cap and rejects one character more', async () => {
-    expect(DEFAULT_MAX_EVALUATION_QUERY_CHARS).toBe(10000);
-    expect(types(await validate('x'.repeat(10000)))).not.toContain(IssueType.QUERY_TOO_LONG);
+    // @verdikta/common 1.8.0 PRIMARY_QUERY_MAX_CHARS (issue #41); bounty 100's
+    // 12,017-character query is now within it.
+    expect(DEFAULT_MAX_EVALUATION_QUERY_CHARS).toBe(32000);
+    expect(types(await validate('x'.repeat(12017)))).not.toContain(IssueType.QUERY_TOO_LONG);
+    expect(types(await validate('x'.repeat(32000)))).not.toContain(IssueType.QUERY_TOO_LONG);
 
-    const over = await validate('x'.repeat(10001));
+    const over = await validate('x'.repeat(32001));
     expect(over.valid).toBe(false);
     const issue = over.issues.find((i) => i.type === IssueType.QUERY_TOO_LONG);
     expect(issue.severity).toBe(IssueSeverity.ERROR);
-    expect(issue.message).toContain('10001 characters');
+    expect(issue.message).toContain('32001 characters');
   });
 
   it('measures String.length (UTF-16 code units), the way the arbiters do', async () => {
-    // 5,001 emoji are 10,002 UTF-16 code units but only 5,001 code points.
-    const emoji = String.fromCodePoint(0x1f600).repeat(5001);
-    expect(emoji.length).toBe(10002);
+    // 16,001 emoji are 32,002 UTF-16 code units but only 16,001 code points.
+    const emoji = String.fromCodePoint(0x1f600).repeat(16001);
+    expect(emoji.length).toBe(32002);
     expect(types(await validate(emoji))).toContain(IssueType.QUERY_TOO_LONG);
   });
 
   it('honours MAX_EVALUATION_QUERY_CHARS, ignoring a non-positive or non-numeric value', async () => {
-    process.env.MAX_EVALUATION_QUERY_CHARS = '32000';
-    expect(maxEvaluationQueryChars()).toBe(32000);
-    expect(types(await validate('x'.repeat(12017)))).not.toContain(IssueType.QUERY_TOO_LONG);
+    process.env.MAX_EVALUATION_QUERY_CHARS = '10000';
+    expect(maxEvaluationQueryChars()).toBe(10000);
+    expect(types(await validate('x'.repeat(12017)))).toContain(IssueType.QUERY_TOO_LONG);
 
     process.env.MAX_EVALUATION_QUERY_CHARS = '0';
-    expect(maxEvaluationQueryChars()).toBe(10000);
+    expect(maxEvaluationQueryChars()).toBe(32000);
     process.env.MAX_EVALUATION_QUERY_CHARS = 'lots';
-    expect(maxEvaluationQueryChars()).toBe(10000);
+    expect(maxEvaluationQueryChars()).toBe(32000);
   });
 });
 

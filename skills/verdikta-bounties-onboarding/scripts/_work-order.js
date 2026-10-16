@@ -15,7 +15,7 @@ export async function applyWorkOrder(config) {
   if (!templates[draft.template_id] || JSON.stringify(config.rubricJson) !== JSON.stringify(draft.rubric) || config.threshold !== draft.threshold) throw new Error('Review and bind the same draft rubric and threshold');
   if (config.procurementMode !== draft.procurement.mode || (draft.procurement.mode === 'TARGETED' && config.targetHunter?.toLowerCase() !== draft.procurement.targetHunter.toLowerCase())) throw new Error('Procurement changed from the reviewed draft');
   // Commit the exact request/criteria content through the existing evaluation package.
-  // Limit is checked locally before any upload (current composed-query cap is 10k).
+  // Limit is checked locally before any upload (the server's composed-query cap is 32k).
   const { description } = composeEvaluationDescription({ baseDescription: config.description, draftSha256: digest, templateId: draft.template_id, request: draft.request });
   return { ...config, description, workOrderDraftSha256: digest };
 }

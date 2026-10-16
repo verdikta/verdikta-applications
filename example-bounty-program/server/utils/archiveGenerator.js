@@ -502,11 +502,47 @@ async function updatePrimaryArchiveWithHunterCID(primaryArchivePath, hunterSubmi
   }
 }
 
+/**
+ * Build the evaluation query exactly as createEvaluationCIDArchive will, and
+ * report its length (JS String.length, the arbiters' measure) with a breakdown
+ * of where the characters come from, so an over-cap creator knows what to cut.
+ * `template` is the fixed protocol text: everything the creator did not write.
+ */
+function measureEvaluationQuery({ workProductType = 'Work Product', jobTitle, jobDescription, rubricCriteria, forbiddenContent }) {
+  const query = buildEvaluationQuery({ workProductType, jobTitle, jobDescription, rubricCriteria, forbiddenContent });
+  const len = (v) => (typeof v === 'string' ? v.length : 0);
+  const usesCriteria = Array.isArray(rubricCriteria) && rubricCriteria.length > 0;
+  const criteria = usesCriteria
+    ? rubricCriteria.map(c => ({
+        id: c.id || c.label || null,
+        chars: len(c.label || c.id) + len(c.instructions || c.description || ''),
+      }))
+    : [];
+  const forbidden = usesCriteria && Array.isArray(forbiddenContent)
+    ? forbiddenContent.reduce((n, item) => n + len(item), 0)
+    : 0;
+  const authored = len(workProductType) + len(jobTitle) + len(jobDescription)
+    + criteria.reduce((n, c) => n + c.chars, 0) + forbidden;
+  return {
+    query,
+    composedLength: query.length,
+    breakdown: {
+      template: query.length - authored,
+      workProductType: len(workProductType),
+      title: len(jobTitle),
+      description: len(jobDescription),
+      criteria,
+      forbiddenContent: forbidden,
+    },
+  };
+}
+
 module.exports = {
   createEvaluationCIDArchive,
   createPrimaryCIDArchive,  // Backward compatibility alias
   createHunterSubmissionCIDArchive,
   updatePrimaryArchiveWithHunterCID,
-  buildEvaluationQuery      // Exported for testing
+  buildEvaluationQuery,     // Exported for testing
+  measureEvaluationQuery
 };
 

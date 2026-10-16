@@ -2,7 +2,7 @@ jest.mock('../config',()=>({config:{network:'base-sepolia',chainId:84532,bountyE
 jest.mock('../utils/verdiktaService',()=>({isVerdiktaServiceAvailable:()=>false}));
 jest.mock('../utils/contractService',()=>({getContractService:()=>({provider:{},contract:{}})}));
 jest.mock('../utils/jobStorage',()=>({readStorage:jest.fn(async()=>({jobs:[]})),createJob:jest.fn(async data=>({...data,jobId:0})),listJobs:jest.fn(async()=>[])}));
-jest.mock('../utils/archiveGenerator',()=>({createPrimaryCIDArchive:jest.fn(async()=>({archivePath:'/tmp/verdikta-mocked-archive-does-not-exist.zip'}))}));
+jest.mock('../utils/archiveGenerator',()=>({...jest.requireActual('../utils/archiveGenerator'),createPrimaryCIDArchive:jest.fn(async()=>({archivePath:'/tmp/verdikta-mocked-archive-does-not-exist.zip'}))}));
 jest.mock('@verdikta/common',()=>({...jest.requireActual('@verdikta/common'),classMap:{getClass:()=>({status:'ACTIVE',models:[{provider:'openai',model:'test-model'}]})}}));
 const express=require('express'),request=require('supertest');
 const storage=require('../utils/jobStorage'),archive=require('../utils/archiveGenerator');

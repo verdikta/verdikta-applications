@@ -7,6 +7,7 @@
 
 const logger = require('./logger');
 const { unlistedClassWarning, classMapVersion } = require('./classPolicy');
+const { PRIMARY_QUERY_MAX_CHARS } = require('@verdikta/common');
 
 // ZIP file magic bytes: PK\x03\x04
 const ZIP_MAGIC = Buffer.from([0x50, 0x4B, 0x03, 0x04]);
@@ -76,11 +77,12 @@ function isTransientIssue(issue) {
 }
 
 /**
- * Longest `query` string (JS String.length, i.e. UTF-16 code units, which is how
- * the arbiters measure it) that every arbiter in the fleet accepts. @verdikta/common
- * <= 1.7.x rejects anything over 10,000; see issues #36 / #41 before raising it.
+ * Longest evaluation (primary) `query` string (JS String.length, i.e. UTF-16 code
+ * units, which is how the arbiters measure it) that every arbiter accepts:
+ * @verdikta/common's PRIMARY_QUERY_MAX_CHARS, 32,000 since 1.8.0 (issue #41).
+ * Hunter archives keep the lower BCID_QUERY_MAX_CHARS (see archiveShapeValidator).
  */
-const DEFAULT_MAX_EVALUATION_QUERY_CHARS = 10000;
+const DEFAULT_MAX_EVALUATION_QUERY_CHARS = PRIMARY_QUERY_MAX_CHARS;
 
 function maxEvaluationQueryChars() {
   const n = Number.parseInt(process.env.MAX_EVALUATION_QUERY_CHARS, 10);

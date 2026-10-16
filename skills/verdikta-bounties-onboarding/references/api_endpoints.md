@@ -54,6 +54,8 @@ Body:
 
 Response includes `job.evaluationCid` — use this as the `evaluationCid` in the on-chain `createBounty()` call.
 
+**Query length.** The server composes one evaluation query from a fixed template (about 2,000 characters) plus `workProductType`, `title`, `description`, every rubric criterion's label and description, and `forbidden_content`. Arbiters reject a query longer than 32,000 characters (`String.length`) and never commit, so the bounty could never pay. `/jobs/create` refuses it first: `400` with `code: "QUERY_TOO_LONG"`, `composedLength`, `limit`, `over` and a `breakdown` (`template`, `workProductType`, `title`, `description`, `criteria: [{ id, chars }]`, `forbiddenContent`) showing what to shorten. Nothing is pinned. (Hunter submission archives have their own, lower cap of 10,000; see below.)
+
 After calling the API, the bot must sign an on-chain `createBounty(CreateParams)` transaction on the BountyEscrow contract with ETH as `msg.value`. Use explicit OPEN mode for address(0); TARGETED must have a nonzero supplier. Bind all fields to the reviewed config and server-persisted deadline. The descriptor is onChain.transaction; independently verify it before signing. See [commission and recovery](commission.md) and [the skill lifecycle instructions](../SKILL.md) for the current guarded CLI flow.
 
 **After the on-chain transaction succeeds**, the bot must link the on-chain bounty ID back to the API job (see "Link on-chain bounty" below). `create_bounty.js` handles all of this automatically.

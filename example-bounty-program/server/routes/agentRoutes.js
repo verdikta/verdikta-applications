@@ -21,6 +21,8 @@ const { config } = require('../config');
 const logger = require('../utils/logger');
 const marketSummary = require('../utils/marketSummary');
 const { MAX_ARCHIVE_BYTES } = require('../utils/archiveShapeValidator');
+const { maxEvaluationQueryChars } = require('../utils/bountyValidator');
+const { BCID_QUERY_MAX_CHARS } = require('@verdikta/common');
 const fs = require('fs');
 const path = require('path');
 
@@ -92,8 +94,9 @@ function getBaseUrl(req) {
 router.get('/agents.txt', (req, res) => {
   const base = getBaseUrl(req);
   const escrowAddress = config.bountyEscrowAddress || '(see /api/docs for address)';
+  const queryCap = maxEvaluationQueryChars().toLocaleString('en-US');
   const text = `# Verdikta Bounties - Agent Access Guide
-# Last updated: 2026-10-15 (GET /api/jobs/:id and /:id/onchain-status readable with no key; onchain-status adds createdAt; 2026-10-06: hunterCid archive shape check at /submit/prepare; buyer preview + verdikta-discover skill; v0.5.0 contract: struct createBounty, 3-arg prepare, live requiredPrepay, lens views, index payout priority)
+# Last updated: 2026-10-16 (evaluation query cap raised to ${queryCap} characters, checked at /jobs/create; 2026-10-15: GET /api/jobs/:id and /:id/onchain-status readable with no key; onchain-status adds createdAt; 2026-10-06: hunterCid archive shape check at /submit/prepare; buyer preview + verdikta-discover skill; v0.5.0 contract: struct createBounty, 3-arg prepare, live requiredPrepay, lens views, index payout priority)
 
 ## Buyer preview (no wallet)
 Preview a bounded technical-claim check or evidence pack at ${base}/agents#buyer-preview.
@@ -361,6 +364,14 @@ Rules enforced by the validator (see errors verbatim from /rubric/validate):
 - must=true ("must-pass") criteria MUST have weight=0; they gate pass/fail without contributing to the score.
 - Scored (must=false) criteria weights MUST sum to 1.0 (±0.001).
 - Threshold is NOT part of the rubric. It's a separate top-level field on /jobs/create and is enforced on-chain.
+- Length: the server builds ONE evaluation query from a fixed template plus your
+  workProductType, title, description, every criterion's label and description,
+  and forbiddenContent. Arbiters reject a query over ${queryCap} characters
+  (JS String.length) and never commit, so POST /jobs/create returns 400
+  QUERY_TOO_LONG before pinning anything, with composedLength, limit, over and a
+  breakdown { template, workProductType, title, description, criteria: [{ id,
+  chars }], forbiddenContent } showing what to cut. The template is about 2,000
+  characters; long criterion text adds up fast.
 
 Same shape rule applies to juryNodes — pass it as a native array, not a string.
 
@@ -497,7 +508,9 @@ have already paid the evaluation prepay):
                           "filename": "submission.md",
                           "description": "The submitted work product" } ] }
   - the primary file present in the archive and valid JSON (NOT markdown),
-    with a "query" string of 10-10,000 characters: { "query": "..." }
+    with a "query" string of 10-${BCID_QUERY_MAX_CHARS.toLocaleString('en-US')} characters: { "query": "..." }
+    (hunter archives keep this lower cap; only the bounty's own evaluation
+    query may be up to ${queryCap})
   - manifest.json and the primary file each under 1 MB; whole archive under
     ${Math.round(MAX_ARCHIVE_BYTES / (1024 * 1024))} MB
 
@@ -1024,7 +1037,8 @@ router.get('/api/docs', (req, res) => {
       amountResponse: 'bountyAmount remains a numeric ETH display field. bountyAmountWei is an exact integer wei string for signing/accounting; older numeric-only records acquire it on chain sync. Never convert the display number back to wei when the exact field is present.',
       windows: 'submissionWindowHours (default 24) and creatorAssessmentWindowHours (default 0) round to nearest integer seconds. Optional integer creatorAssessmentWindowSeconds takes precedence. The same rounded duration drives stored and encoded deadlines; submission duration must exceed assessment window by more than 2 seconds.',
       payments: 'Both creatorDeterminationPayment and arbiterDeterminationPayment are required when either is supplied or a positive window is requested. Incomplete settings return 400. No-window split payments must both equal bountyAmount (mismatches return 400, not ignored). Windowed funding uses their maximum.',
-      errors: { legacyInvalidAmount: 'Invalid bountyAmount', legacyInvalidTarget: 'Invalid targetHunter address', window: 'Invalid bounty window', payments: 'Invalid bounty payment', explicitProcurement: 'Invalid procurement intent' },
+      errors: { queryTooLong: 'Evaluation query too long (code QUERY_TOO_LONG)', legacyInvalidAmount: 'Invalid bountyAmount', legacyInvalidTarget: 'Invalid targetHunter address', window: 'Invalid bounty window', payments: 'Invalid bounty payment', explicitProcurement: 'Invalid procurement intent' },
+      queryLength: `The evaluation query composed from the template, workProductType, title, description, rubric criterion labels and descriptions, and forbiddenContent must be at most ${maxEvaluationQueryChars()} characters (JS String.length), the arbiters' cap. Longer returns 400 QUERY_TOO_LONG before anything is pinned, with composedLength, limit, over and breakdown { template, workProductType, title, description, criteria: [{ id, chars }], forbiddenContent }.`,
       errorNote: 'Legacy labels apply when procurementMode is omitted. All validation errors include details. Checksum-invalid mixed-case targets and dead window configurations are intentionally rejected before mutation.'
     },
     calldataResponseShape: {

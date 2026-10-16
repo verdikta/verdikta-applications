@@ -51,6 +51,7 @@ jest.mock('../utils/jobStorage', () => ({
   getJob: jest.fn()
 }));
 jest.mock('../utils/archiveGenerator', () => ({
+  ...jest.requireActual('../utils/archiveGenerator'),
   createPrimaryCIDArchive: jest.fn(async () => ({ archivePath: '/tmp/verdikta-mocked-archive-does-not-exist.zip' }))
 }));
 

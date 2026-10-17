@@ -201,6 +201,24 @@ export const apiService = {
   },
 
   /**
+   * Tell the server how far a website create got (POST /api/jobs/:jobId/create-attempt).
+   * Fire-and-forget: never throws, never delays the page. keepalive lets the
+   * request outlive a closing tab; it keeps the X-Client-Key header, which
+   * navigator.sendBeacon cannot send. Same-origin in production, so no preflight.
+   */
+  reportCreateAttempt(jobId, report) {
+    try {
+      const base = api.defaults.baseURL || '';
+      fetch(`${base.replace(/\/+$/, '')}/api/jobs/${encodeURIComponent(jobId)}/create-attempt`, {
+        method: 'POST',
+        keepalive: true,
+        headers: { 'Content-Type': 'application/json', 'X-Client-Key': import.meta.env.VITE_CLIENT_KEY || '' },
+        body: JSON.stringify({ at: new Date().toISOString(), ...report }),
+      }).catch(() => {});
+    } catch { /* reporting must never affect the create */ }
+  },
+
+  /**
    * Manually persist on-chain bountyId (used after createBounty tx confirms)
    * Server route: PATCH /api/jobs/:jobId/bountyId
    */

@@ -30,6 +30,8 @@ const { getContractService, normalizeOracleSettings, RESOLVE_GAS_LIMIT_FALLBACK,
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
 const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/submissionEvents');
 const { createTtlCache } = require('../utils/ttlCache');
+const { createRateLimiter, clientAddress } = require('../utils/rateLimiter');
+const { sanitizeCreateAttempt, isUnlinked, appendAttempt, attemptSummary, ADDRESS_RE } = require('../utils/createAttempts');
 
 /* ======================
    Helpers / configuration
@@ -1053,12 +1055,46 @@ router.get('/admin/orphans', async (req, res) => {
         status: j.status,
         contractAddress: j.contractAddress,
         creator: j.creator,
-        createdAt: j.createdAt
+        createdAt: j.createdAt,
+        ...attemptSummary(j)
       }))
     });
   } catch (error) {
     logger.error('[admin/orphans] error', { msg: error.message });
     return res.status(500).json({ error: 'Failed to find orphaned jobs', details: error.message });
+  }
+});
+
+/**
+ * GET /api/jobs/admin/create-attempts?limit=50
+ * Website creates that never reached the chain but reported what happened
+ * (POST /:jobId/create-attempt), newest first. The reports are hints from the
+ * browser, not evidence: see utils/createAttempts.js.
+ */
+router.get('/admin/create-attempts', async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 500);
+    const storage = await jobStorage.readStorage();
+    const jobs = storage.jobs
+      .filter((j) => isUnlinked(j) && Array.isArray(j.createAttempts) && j.createAttempts.length)
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+      .slice(0, limit);
+    return res.json({
+      success: true,
+      count: jobs.length,
+      jobs: jobs.map((j) => ({
+        jobId: j.jobId,
+        title: j.title,
+        status: j.status,
+        creator: j.creator,
+        createdAt: j.createdAt,
+        orphanReason: j.orphanReason,
+        createAttempts: j.createAttempts,
+      })),
+    });
+  } catch (error) {
+    logger.error('[admin/create-attempts] error', { msg: error.message });
+    return res.status(500).json({ error: 'Failed to list create attempts', details: error.message });
   }
 });
 
@@ -2634,6 +2670,15 @@ router.post('/validate', async (req, res) => {
   }
 });
 
+// For a bounty that is not on-chain, the website's last report of how its
+// create failed (POST /:jobId/create-attempt). Response-only: never persisted
+// into validationStatus, which public reads can return.
+function notOnChainAttempt(job, issues) {
+  if (!issues.some((i) => i.type === IssueType.NOT_ON_CHAIN)) return {};
+  const { lastCreateAttempt } = attemptSummary(job);
+  return lastCreateAttempt ? { lastCreateAttempt } : {};
+}
+
 /**
  * GET /api/jobs/admin/validate-all
  * Batch validate all open bounties for format issues.
@@ -2726,7 +2771,8 @@ router.get('/admin/validate-all', async (req, res) => {
           valid: result.valid,
           errorCount: result.issues.filter(i => i.severity === 'error').length,
           warningCount: result.issues.filter(i => i.severity === 'warning').length,
-          ...(verdict ? {} : { unchecked: true })
+          ...(verdict ? {} : { unchecked: true }),
+          ...notOnChainAttempt(job, result.issues)
         });
 
       } catch (e) {
@@ -2843,6 +2889,7 @@ router.get('/:jobId/validate', async (req, res) => {
       evaluationCid,
       valid: result.valid,
       issues: result.issues,
+      ...notOnChainAttempt(job, result.issues),
       checkedAt
     });
 
@@ -5887,6 +5934,88 @@ router.patch('/:jobId/public-submissions', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/jobs/:jobId/create-attempt
+ * The create page reports how far an on-chain create got and how it failed, so
+ * an unlinked job no longer hides why the wallet step never happened (see
+ * utils/createAttempts.js). Body: { creator, event, at, ...fields } with event
+ * sign_requested | tx_sent | failed. Accepted only for an unlinked job whose
+ * creator matches; the newest 10 events are kept on job.createAttempts.
+ * Frontend auth like every other write; never a public path.
+ */
+const createAttemptJobLimiter = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 30 });
+const createAttemptIpLimiter = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 120 });
+
+router.post('/:jobId/create-attempt', async (req, res) => {
+  const { jobId } = req.params;
+  const ip = clientAddress(req);
+  for (const limit of [createAttemptIpLimiter.hit(ip), createAttemptJobLimiter.hit(`${ip}|${jobId}`)]) {
+    if (!limit.allowed) {
+      res.set('Retry-After', String(limit.retryAfterSeconds));
+      return sendError(res, 429, {
+        code: ErrorCodes.RATE_LIMIT,
+        message: 'Too many create-attempt reports',
+        details: `Retry after ${limit.retryAfterSeconds}s`,
+      });
+    }
+  }
+
+  const id = Number(jobId);
+  const creator = req.body?.creator;
+  if (!Number.isInteger(id) || id < 0) {
+    return sendError(res, 400, { code: ErrorCodes.BAD_REQUEST, message: 'Invalid job id', details: `"${String(jobId).slice(0, 40)}" is not a job id` });
+  }
+  if (typeof creator !== 'string' || !ADDRESS_RE.test(creator)) {
+    return sendError(res, 400, { code: ErrorCodes.VALIDATION_INVALID_FORMAT, message: 'creator must be a 0x address' });
+  }
+  const { event, error } = sanitizeCreateAttempt(req.body);
+  if (error) return sendError(res, 400, { code: ErrorCodes.VALIDATION_INVALID_FORMAT, message: error });
+
+  let outcome;
+  try {
+    // Check and append under the storage lock, so a link landing at the same
+    // moment can't be overwritten and two reports can't drop each other.
+    outcome = await jobStorage.withStorage((storage, ctx) => {
+      // Same preference as jobStorage.getJob when an id exists on two contracts.
+      const current = jobStorage.getCurrentContractAddress();
+      const job = storage.jobs.find((j) => j.jobId === id && (j.contractAddress || '').toLowerCase() === current)
+        || storage.jobs.find((j) => j.jobId === id);
+      ctx.skipWrite = true;
+      if (!job) return { status: 404 };
+      if (!isUnlinked(job)) return { status: 409, reason: 'linked' };
+      if (String(job.creator || '').toLowerCase() !== creator.toLowerCase()) return { status: 409, reason: 'creator' };
+      job.createAttempts = appendAttempt(job.createAttempts, event);
+      ctx.skipWrite = false;
+      return { status: 200, count: job.createAttempts.length };
+    });
+  } catch (e) {
+    logger.error('[jobs/create-attempt] store failed', { jobId: id, msg: e.message });
+    return sendError(res, 500, { code: ErrorCodes.INTERNAL_ERROR, message: 'Could not store the report', details: e.message });
+  }
+
+  if (outcome.status === 404) {
+    return sendError(res, 404, { code: ErrorCodes.BOUNTY_NOT_FOUND, message: 'Job not found', details: `No job ${id}` });
+  }
+  if (outcome.status === 409) {
+    return sendError(res, 409, {
+      code: ErrorCodes.BAD_REQUEST,
+      message: outcome.reason === 'linked' ? 'Job is already on-chain' : 'creator does not match the job',
+      details: outcome.reason === 'linked'
+        ? 'Create-attempt reports are only kept for jobs that never reached the chain.'
+        : 'Only the job\'s creator address can report its create attempts.',
+    });
+  }
+
+  const log = event.event === 'failed' ? logger.warn : logger.info;
+  log.call(logger, '[jobs/create-attempt]', {
+    jobId: id, creator: creator.toLowerCase(), event: event.event, step: event.step,
+    category: event.category, code: event.code, rpcCode: event.rpcCode, txHash: event.txHash,
+    wallet: event.wallet, accountType: event.accountType, chainId: event.chainId,
+    message: event.message, walletMessage: event.walletMessage,
+  });
+  return res.json({ success: true, jobId: id, stored: outcome.count });
+});
+
 /* ===============================
    PATCH bountyId + resolve helper
    =============================== */
@@ -7957,6 +8086,7 @@ async function calculateFeeEstimate(juryNodes, iterations, oracleSettings = null
 
 // Exposed for unit tests only.
 router._chainHelpers = { readWithLagRetry, readChainSubmissionWithRetry, ensureLocalSubmission, submissionRecordFromChain };
+router._createAttemptLimiters = [createAttemptJobLimiter, createAttemptIpLimiter];
 
 module.exports = router;
 

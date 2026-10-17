@@ -402,10 +402,15 @@ class ContractService {
    * a non-windowed bounty passes both payments equal to the amount and window 0.
    * `oracle` (creator-chosen oracle request settings) is optional — defaults from
    * config.submissionDefaults: { maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling }.
+   *
+   * `onStep(step, data)` (optional) is told how far the create got: 'staticCall'
+   * before the pre-check, 'send' before the wallet is asked to sign, 'wait' with
+   * { txHash } once the wallet returned a hash. Errors keep the original in `cause`.
    */
   async createBounty({ evaluationCid, classId, threshold, bountyAmountEth, submissionWindowHours, targetHunter,
                        creatorDeterminationPaymentEth, arbiterDeterminationPaymentEth, creatorAssessmentWindowHours,
-                       oracle }) {
+                       oracle, onStep }) {
+    const step = (name, data) => { try { onStep?.(name, data); } catch { /* reporting never breaks the create */ } };
     if (!this.contract) throw new Error('Contract not initialized. Call connect() first.');
 
     // Quick UI validations
@@ -486,21 +491,24 @@ class ContractService {
       const callFn = this.contract.createBounty;
 
       // Dry-run to surface revert reasons
+      step('staticCall');
       try {
         await callFn.staticCall(...args);
       } catch (e) {
         const decoded = this._decodeRevertReason(e, [this.contract]);
         const msg = (decoded || e?.message || '').toLowerCase();
-        if (msg.includes('no eth') || msg.includes('noeth')) throw new Error('Bounty requires ETH value (msg.value > 0)');
-        if (msg.includes('empty evaluationcid') || msg.includes('emptyevaluationcid')) throw new Error('Evaluation CID is empty');
+        if (msg.includes('no eth') || msg.includes('noeth')) throw new Error('Bounty requires ETH value (msg.value > 0)', { cause: e });
+        if (msg.includes('empty evaluationcid') || msg.includes('emptyevaluationcid')) throw new Error('Evaluation CID is empty', { cause: e });
         const friendly = friendlyRevertMessage(msg);
-        if (friendly) throw new Error(friendly);
+        if (friendly) throw new Error(friendly, { cause: e });
         throw e;
       }
 
       // Send the tx
+      step('send');
       const tx = await callFn(...args);
       console.log('📤 Transaction sent:', tx.hash);
+      step('wait', { txHash: tx.hash });
 
       const receipt = await tx.wait();
       console.log('✅ Transaction confirmed:', receipt.hash);
@@ -527,7 +535,11 @@ class ContractService {
 
     } catch (error) {
       console.error('Error creating bounty:', error);
-      if (error.code === 'ACTION_REJECTED') throw new Error('Transaction rejected by user');
+      if (error.code === 'ACTION_REJECTED') {
+        const rejected = new Error('Transaction rejected by user', { cause: error });
+        rejected.code = 'ACTION_REJECTED';
+        throw rejected;
+      }
       throw error;
     }
   }

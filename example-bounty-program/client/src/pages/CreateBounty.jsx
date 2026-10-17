@@ -28,7 +28,9 @@ import { apiService } from '../services/api';
 import { modelProviderService } from '../services/modelProviderService';
 import { walletService } from '../services/wallet';
 import { getContractService, ORACLE_MAX_ALPHA, ORACLE_MAX_FEE_SCALING, ORACLE_FEE_CEILING_WEI } from '../services/contractService';
-import { config } from '../config';
+import { config, currentNetwork } from '../config';
+import { walletEnvironment, withTimeout } from '../services/injectedProvider';
+import { classifyCreateFailure, describeCreateFailure, accountTypeFromCode } from '../utils/createFailure';
 import * as rubricStorage from '../services/rubricStorage';
 import { getTemplateOptions, getTemplate, createBlankRubric, RUBRIC_DEFAULTS } from '../data/rubricTemplates';
 import ClassSelector from '../components/ClassSelector';
@@ -82,6 +84,8 @@ function CreateBounty({ walletState }) {
   const [loading, setLoading] = useState(false);
   const [loadingText, setLoadingText] = useState('');
   const [error, setError] = useState(null);
+  // The raw wallet/RPC text behind a create failure, shown under the message.
+  const [errorDetails, setErrorDetails] = useState(null);
   const [isSwitchingNetwork, setIsSwitchingNetwork] = useState(false);
 
   // Class and model selection state
@@ -824,16 +828,27 @@ function CreateBounty({ walletState }) {
       maxFeeBasedScaling: parseInt(formData.oracleMaxFeeBasedScaling, 10),
     };
 
+    // How far the on-chain create got, reported to the server so an unlinked
+    // job says why (POST /api/jobs/:jobId/create-attempt; 2026-10-16 incident).
+    const startedAt = Date.now();
+    let jobId = null;
+    let step = null;
+    let txHash = null;
+    let chainId = null;
+    let report = () => {};
+
     try {
       setLoading(true);
       setLoadingText('Creating job on backend…');
       setError(null);
+      setErrorDetails(null);
 
       // best-effort network info
       try {
         const provider = walletService.getProvider?.();
         const net = provider && (await provider.getNetwork());
-        console.log('[Network]', { chainId: Number(net?.chainId) });
+        chainId = net ? Number(net.chainId) : null;
+        console.log('[Network]', { chainId });
       } catch {}
 
       // 1) Create job in backend
@@ -877,12 +892,34 @@ function CreateBounty({ walletState }) {
       }
 
       const { job } = apiResponse;
+      jobId = job.jobId;
       console.log('✅ Backend job created:', { jobId: job.jobId, rubricCid: job.rubricCid });
+
+      // Context for every report: no user agent, no form contents. accountType
+      // says whether the creator is an EIP-7702 account (the 2026-10-16 poster
+      // was); it needs the connected provider, so it is read on the first report.
+      const env = walletEnvironment();
+      let contextPromise = null;
+      const reportContext = () => (contextPromise ||= (async () => {
+        const ctx = { chainId: chainId || undefined, wallet: env.selectedProvider, browser: env.browser, mobile: env.mobile };
+        const provider = getContractService().provider;
+        try {
+          if (provider) Object.assign(ctx, accountTypeFromCode(await withTimeout(provider.getCode(walletState.address), 3000, 'getCode')));
+        } catch { /* best effort */ }
+        return ctx;
+      })());
+      report = (event, fields = {}) => {
+        reportContext().then((ctx) => apiService.reportCreateAttempt(jobId, {
+          creator: walletState.address, event, ...ctx, elapsedMs: Date.now() - startedAt, ...fields,
+        }));
+      };
 
       // 2) On-chain create
       setLoadingText('Waiting for wallet / creating on-chain…');
+      step = 'connect';
       const contractService = getContractService();
       if (!contractService.isConnected()) await contractService.connect();
+      step = 'staticCall';
 
       const contractResult = await contractService.createBounty({
         evaluationCid: job.evaluationCid,
@@ -899,6 +936,14 @@ function CreateBounty({ walletState }) {
         // Prefer the settings the server persisted (already wei-normalised) so the
         // on-chain struct matches the API record exactly; fall back to the form values.
         oracle: job.oracleSettings && job.oracleSettings.maxOracleFee != null ? job.oracleSettings : oracleSettings,
+        onStep: (next, data) => {
+          step = next;
+          if (next === 'send') report('sign_requested', { step: next });
+          if (next === 'wait' && data?.txHash) {
+            txHash = data.txHash;
+            report('tx_sent', { step: next, txHash });
+          }
+        },
       });
 
       if (!contractResult?.success || contractResult?.bountyId == null) {
@@ -908,6 +953,7 @@ function CreateBounty({ walletState }) {
 
       // 3) Persist bountyId to backend
       setLoadingText('Finalizing…');
+      step = 'link';
       await apiService.updateJobBountyId(job.jobId, {
         bountyId: contractResult.bountyId,
         txHash: contractResult.txHash,
@@ -918,10 +964,21 @@ function CreateBounty({ walletState }) {
 
       navigate(`/bounty/${contractResult.bountyId}`);
     } catch (err) {
-      const msg = messageFromAxios(err);
-      console.error('❌ Create flow failed:', msg, err?.response?.data);
-      setError(msg);
-      toast.error(`Failed to create bounty: ${msg}`);
+      if (jobId == null) {
+        // The API job was never created: a content or server problem, not the wallet.
+        const msg = messageFromAxios(err);
+        console.error('❌ Create flow failed before the wallet step:', msg, err?.response?.data);
+        setError(msg);
+        toast.error(`Failed to create bounty: ${msg}`);
+      } else {
+        const failure = classifyCreateFailure(err, step || 'connect', { chainId, expectedChainId: currentNetwork.chainId });
+        const msg = describeCreateFailure(failure, { txHash, networkName: currentNetwork.name, chainId });
+        console.error('❌ Create flow failed:', failure, err);
+        report('failed', { ...failure, ...(txHash ? { txHash } : {}) });
+        setError(msg);
+        setErrorDetails(failure.walletMessage || failure.message);
+        toast.error(msg);
+      }
     } finally {
       setLoading(false);
       setLoadingText('');
@@ -963,7 +1020,8 @@ function CreateBounty({ walletState }) {
       {error && (
         <div className="alert alert-error">
           <p>{error}</p>
-          <button onClick={() => setError(null)}>Dismiss</button>
+          {errorDetails && <p><small>Details: {errorDetails}</small></p>}
+          <button onClick={() => { setError(null); setErrorDetails(null); }}>Dismiss</button>
         </div>
       )}
 

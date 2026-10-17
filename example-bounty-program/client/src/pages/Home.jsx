@@ -33,6 +33,7 @@ import {
   hasAnyPendingSubmissions,
 } from '../utils/statusDisplay';
 import { StatusIcon } from '../components/StatusIcon';
+import { formatUsd, fetchEthUsdPrice } from '../utils/usd';
 import './Home.css';
 
 // ============================================================================
@@ -66,15 +67,6 @@ const getVerifiedSourceUrl = () => {
   return `https://repo.sourcify.dev/${network.chainId}/${config.bountyEscrowAddress}`;
 };
 
-// Format a positive USD amount with thousands separators and 2 decimals.
-// Returns null for non-positive/invalid values so callers can hide the USD note.
-const formatUsd = (value) => {
-  if (!Number.isFinite(value) || value <= 0) return null;
-  return value.toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-};
 
 function Home({ walletState }) {
   const [jobs, setJobs] = useState([]);
@@ -213,15 +205,7 @@ function Home({ walletState }) {
   // ETH-only if the price feed is unavailable (price stays 0).
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const response = await fetch('/api/jobs/eth-price');
-        const data = await response.json();
-        if (!cancelled && data?.usd > 0) setEthPrice(data.usd);
-      } catch (err) {
-        console.warn('Failed to fetch ETH price:', err);
-      }
-    })();
+    fetchEthUsdPrice().then((usd) => { if (!cancelled && usd > 0) setEthPrice(usd); });
     return () => { cancelled = true; };
   }, []);
 
@@ -372,7 +356,7 @@ function Home({ walletState }) {
                 className="eth-rate-note"
                 title="Approximate USD values use a recent ETH/USD spot price"
               >
-                ETH ≈ ${formatUsd(ethPrice)}
+                ETH ≈ {formatUsd(ethPrice)}
               </span>
             )}
           </h2>
@@ -889,9 +873,9 @@ function JobCard({ job, ethPrice, registryClassIds }) {
           <span className="label">Payout</span>
           <span className="amount">
             {job.bountyAmount} ETH
-            {ethPrice > 0 && formatUsd(Number(job.bountyAmount) * ethPrice) && (
+            {formatUsd(Number(job.bountyAmount) * ethPrice) && (
               <small className="usd-amount">
-                {' '}(~${formatUsd(Number(job.bountyAmount) * ethPrice)})
+                {' '}({formatUsd(Number(job.bountyAmount) * ethPrice, { approx: true })})
               </small>
             )}
           </span>

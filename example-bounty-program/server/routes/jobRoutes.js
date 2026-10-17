@@ -25,7 +25,7 @@ const { validateRubric, validateJuryNodes, normalizeBountyPayments, validateProc
         parseFeeToWei, extractEvaluationWarnings } = require('../utils/validation');
 const { lookupClass, registryModelMatcher, checkJuryAgainstClass, checkClassCoverage } = require('../utils/classPolicy');
 const { getVerdiktaService, isVerdiktaServiceAvailable, LIKELY_MALFORMED_OUTCOME } = require('../utils/verdiktaService');
-const { validateBounty, IssueSeverity, IssueType, chainStatusIssue, isGatingIssue, isTransientIssue } = require('../utils/bountyValidator');
+const { validateBounty, IssueSeverity, IssueType, chainStatusIssue, isGatingIssue, isTransientIssue, maxEvaluationQueryChars } = require('../utils/bountyValidator');
 const { getContractService, normalizeOracleSettings, RESOLVE_GAS_LIMIT_FALLBACK, RESOLVE_GAS_NOTE } = require('../utils/contractService');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
 const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/submissionEvents');
@@ -417,6 +417,13 @@ async function pinJsonToPinata(contentObj, name = 'verdikta-json') {
   return parsed.IpfsHash;
 }
 
+// The creator's USD estimate, stored in whole cents (ETH x price is a float,
+// e.g. 0.24484899999999998). Anything not a positive number is stored as 0.
+function roundUsdCents(value) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0;
+}
+
 /* ==============
    CREATE A JOB
    ============== */
@@ -581,16 +588,91 @@ router.post('/create', async (req, res) => {
 
     await ensureTmpBase();
 
-    // ---- Resolve rubricCid ----
-    let rubricCid;
-
+    // ---- Check the rubric input (nothing is pinned until the query fits) ----
     if (rubricJson) {
-      // Validate rubric JSON
       const validation = validateRubric(rubricJson);
       if (!validation.valid) {
         return res.status(400).json({ error: 'Invalid rubric', details: 'Rubric validation failed', errors: validation.errors });
       }
+    } else {
+      if (typeof rubricCidIn !== 'string' || !CID_REGEX.test(rubricCidIn)) {
+        return res.status(400).json({ error: 'Invalid rubricCid', details: 'Provide a valid IPFS CID' });
+      }
 
+      // Optional: non-fatal HEAD check if your IPFS client supports it
+      try {
+        const ipfsClient = req.app.locals.ipfsClient;
+        if (ipfsClient?.headFromIPFS && typeof ipfsClient.headFromIPFS === 'function') {
+          await ipfsClient.headFromIPFS(rubricCidIn);
+        }
+      } catch (e) {
+        logger.warn('[jobs/create] rubricCid HEAD check failed (continuing)', { cid: rubricCidIn, msg: e.message });
+      }
+    }
+
+    // ---- Extract rubric criteria for two-phase query ----
+    let rubricCriteria = null;
+    let forbiddenContent = null;
+
+    if (rubricJson) {
+      rubricCriteria = rubricJson.criteria || null;
+      forbiddenContent = rubricJson.forbiddenContent || rubricJson.forbidden_content || null;
+    } else {
+      // rubricCid path: try to fetch rubric from IPFS to extract criteria
+      try {
+        const ipfsClient = req.app.locals.ipfsClient;
+        if (ipfsClient?.fetchFromIPFS) {
+          const rubricBuffer = await ipfsClient.fetchFromIPFS(rubricCidIn);
+          const rubricData = JSON.parse(rubricBuffer.toString('utf8'));
+          rubricCriteria = rubricData.criteria || null;
+          forbiddenContent = rubricData.forbiddenContent || rubricData.forbidden_content || null;
+          logger.info('[jobs/create] rubric criteria extracted from IPFS', {
+            criteriaCount: rubricCriteria?.length || 0,
+            mustPassCount: (rubricCriteria || []).filter(c => c.must).length
+          });
+        }
+      } catch (e) {
+        logger.warn('[jobs/create] Could not fetch rubric from IPFS for criteria extraction (continuing with fallback query)', {
+          cid: rubricCidIn, msg: e.message
+        });
+      }
+    }
+
+    // ---- Composed query length (issue #36) ----
+    // The arbiters reject an evaluation query over their cap and never commit,
+    // so a bounty built from it can never be won. Refuse it before any pinning.
+    const measured = archiveGenerator.measureEvaluationQuery({
+      workProductType,
+      jobTitle: title,
+      jobDescription: description,
+      rubricCriteria,
+      forbiddenContent
+    });
+    const queryCap = maxEvaluationQueryChars();
+    if (measured.composedLength > queryCap) {
+      const over = measured.composedLength - queryCap;
+      const longest = [...measured.breakdown.criteria].sort((a, b) => b.chars - a.chars)[0];
+      logger.info('[jobs/create] evaluation query over cap', { composedLength: measured.composedLength, limit: queryCap });
+      return res.status(400).json({
+        success: false,
+        error: 'Evaluation query too long',
+        code: ErrorCodes.QUERY_TOO_LONG,
+        details: `The evaluation query built from this bounty is ${measured.composedLength} characters; arbiters reject a query over ${queryCap}, so no submission could ever be evaluated.`,
+        fix: `Cut at least ${over} characters from the title, description or rubric criterion text (all of them are copied into the query; the template part is fixed). Nothing was pinned and no calldata was returned.`,
+        composedLength: measured.composedLength,
+        limit: queryCap,
+        over,
+        breakdown: measured.breakdown,
+        tips: longest
+          ? [`Longest criterion: "${longest.id}" (${longest.chars} characters).`, 'Check a draft first with POST /api/jobs/rubric/validate, which is free and pins nothing.']
+          : ['Check a draft first with POST /api/jobs/rubric/validate, which is free and pins nothing.']
+      });
+    }
+
+    // ---- Resolve rubricCid ----
+    let rubricCid;
+
+    if (rubricJson) {
       // Enrich and pin as JSON (no temp file needed)
       const rubricWithMeta = {
         ...rubricJson,
@@ -616,49 +698,7 @@ router.post('/create', async (req, res) => {
       }
 
     } else {
-      // rubricCid provided
-      if (typeof rubricCidIn !== 'string' || !CID_REGEX.test(rubricCidIn)) {
-        return res.status(400).json({ error: 'Invalid rubricCid', details: 'Provide a valid IPFS CID' });
-      }
-      rubricCid = rubricCidIn;
-
-      // Optional: non-fatal HEAD check if your IPFS client supports it
-      try {
-        const ipfsClient = req.app.locals.ipfsClient;
-        if (ipfsClient?.headFromIPFS && typeof ipfsClient.headFromIPFS === 'function') {
-          await ipfsClient.headFromIPFS(rubricCid);
-        }
-      } catch (e) {
-        logger.warn('[jobs/create] rubricCid HEAD check failed (continuing)', { cid: rubricCid, msg: e.message });
-      }
-    }
-
-    // ---- Extract rubric criteria for two-phase query ----
-    let rubricCriteria = null;
-    let forbiddenContent = null;
-
-    if (rubricJson) {
-      rubricCriteria = rubricJson.criteria || null;
-      forbiddenContent = rubricJson.forbiddenContent || rubricJson.forbidden_content || null;
-    } else {
-      // rubricCid path: try to fetch rubric from IPFS to extract criteria
-      try {
-        const ipfsClient = req.app.locals.ipfsClient;
-        if (ipfsClient?.fetchFromIPFS) {
-          const rubricBuffer = await ipfsClient.fetchFromIPFS(rubricCid);
-          const rubricData = JSON.parse(rubricBuffer.toString('utf8'));
-          rubricCriteria = rubricData.criteria || null;
-          forbiddenContent = rubricData.forbiddenContent || rubricData.forbidden_content || null;
-          logger.info('[jobs/create] rubric criteria extracted from IPFS', {
-            criteriaCount: rubricCriteria?.length || 0,
-            mustPassCount: (rubricCriteria || []).filter(c => c.must).length
-          });
-        }
-      } catch (e) {
-        logger.warn('[jobs/create] Could not fetch rubric from IPFS for criteria extraction (continuing with fallback query)', {
-          cid: rubricCid, msg: e.message
-        });
-      }
+      rubricCid = rubricCidIn; // checked above
     }
 
     // ---- Create Primary archive ----
@@ -760,7 +800,7 @@ router.post('/create', async (req, res) => {
       workProductType,
       creator,
       ...payments,
-      bountyAmountUSD: Number(bountyAmountUSD || 0),
+      bountyAmountUSD: roundUsdCents(bountyAmountUSD),
       threshold: Number(threshold),
       rubricCid,
       evaluationCid,
@@ -6884,7 +6924,7 @@ router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
 // metadata for newly-pinned large objects. Returns on the first gateway that
 // answers with ok or a partial-content status; otherwise reports every attempt.
 async function probeCidAccessibility(cid, perGatewayTimeoutMs = 10000) {
-  const gateways = [config.pinataGateway, config.ipfsGateway].filter(Boolean);
+  const gateways = config.ipfsReadGateways;
   const attempts = [];
   for (const gateway of gateways) {
     const url = `${gateway}/ipfs/${cid}`;

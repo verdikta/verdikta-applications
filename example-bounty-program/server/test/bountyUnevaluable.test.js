@@ -182,8 +182,8 @@ describe('deterministic package errors refuse the submission (409 BOUNTY_UNEVALU
 
   it('a primary query over the arbiters\' cap (bounty 100 / issue #36)', async () => {
     const res = await blocked(
-      { [EVAL_CID]: evaluationPackage({ query: 'x'.repeat(12017) }), [RUBRIC_CID]: GOOD_RUBRIC },
-      /12017 characters/,
+      { [EVAL_CID]: evaluationPackage({ query: 'x'.repeat(32001) }), [RUBRIC_CID]: GOOD_RUBRIC },
+      /32001 characters/,
     );
     expect(res.body.issues.map((i) => i.type)).toEqual(['QUERY_TOO_LONG']);
     expect(storedValidation().valid).toBe(false);
@@ -228,7 +228,7 @@ describe('deterministic package errors refuse the submission (409 BOUNTY_UNEVALU
   });
 
   it('is also enforced on /submit/bundle and on the /submit file upload', async () => {
-    const app = () => buildApp(fakeIpfs({ [EVAL_CID]: evaluationPackage({ query: 'x'.repeat(10001) }), [RUBRIC_CID]: GOOD_RUBRIC }));
+    const app = () => buildApp(fakeIpfs({ [EVAL_CID]: evaluationPackage({ query: 'x'.repeat(32001) }), [RUBRIC_CID]: GOOD_RUBRIC }));
 
     setJob();
     const bundle = await request(app()).post(`/jobs/${JOBID}/submit/bundle`).send({ hunterAddress: HUNTER, hunterCid: HUNTER_CID });
@@ -247,7 +247,7 @@ describe('deterministic package errors refuse the submission (409 BOUNTY_UNEVALU
 describe('a sound package', () => {
   it('passes the gate at exactly the query cap and records a clean verdict', async () => {
     setJob();
-    const res = await prepare(buildApp(fakeIpfs({ [EVAL_CID]: evaluationPackage({ query: 'x'.repeat(10000) }), [RUBRIC_CID]: GOOD_RUBRIC })));
+    const res = await prepare(buildApp(fakeIpfs({ [EVAL_CID]: evaluationPackage({ query: 'x'.repeat(32000) }), [RUBRIC_CID]: GOOD_RUBRIC })));
     expect(res.status).toBe(200);
     expect(res.headers['x-verdikta-validation']).toBeUndefined();
     expect(storedValidation().valid).toBe(true);
@@ -276,7 +276,7 @@ describe('an IPFS fetch failure is never a verdict on the package', () => {
 
   it('still refuses a deterministic error found alongside a rubric fetch failure, and keeps the fetch failure out of the stored verdict', async () => {
     setJob();
-    const res = await prepare(buildApp(fakeIpfs({ [EVAL_CID]: evaluationPackage({ query: 'x'.repeat(10001) }), [RUBRIC_CID]: gateway429() })));
+    const res = await prepare(buildApp(fakeIpfs({ [EVAL_CID]: evaluationPackage({ query: 'x'.repeat(32001) }), [RUBRIC_CID]: gateway429() })));
     expect(res.status).toBe(409);
     expect(res.body.issues.map((i) => i.type)).toEqual(['QUERY_TOO_LONG']);
     expect(storedValidation().issues.map((i) => i.type)).toEqual(['QUERY_TOO_LONG']);
@@ -380,7 +380,7 @@ describe('GET /admin/validate-all records verdicts the same way as the gate', ()
 
   it('records a deterministic package error', async () => {
     setJob();
-    const res = await validateAll({ [EVAL_CID]: evaluationPackage({ query: 'x'.repeat(12017) }), [RUBRIC_CID]: GOOD_RUBRIC });
+    const res = await validateAll({ [EVAL_CID]: evaluationPackage({ query: 'x'.repeat(32001) }), [RUBRIC_CID]: GOOD_RUBRIC });
     expect(res.status).toBe(200);
     expect(storedValidation().valid).toBe(false);
     expect(storedValidation().issues.map((i) => i.type)).toContain('QUERY_TOO_LONG');
@@ -389,7 +389,7 @@ describe('GET /admin/validate-all records verdicts the same way as the gate', ()
 
   it('records a deterministic error even when the rubric fetch also failed, without the fetch failure', async () => {
     setJob();
-    await validateAll({ [EVAL_CID]: evaluationPackage({ query: 'x'.repeat(12017) }), [RUBRIC_CID]: gateway429() });
+    await validateAll({ [EVAL_CID]: evaluationPackage({ query: 'x'.repeat(32001) }), [RUBRIC_CID]: gateway429() });
     const types = storedValidation().issues.map((i) => i.type);
     expect(types).toContain('QUERY_TOO_LONG');
     expect(types).not.toContain('RUBRIC_FETCH_FAILED');

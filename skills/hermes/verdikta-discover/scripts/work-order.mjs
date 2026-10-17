@@ -15,7 +15,7 @@ export { previewText };
 export const isAssessmentInput = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
   && Boolean(value.request) && typeof value.request === 'object' && !Array.isArray(value.request) && !Object.hasOwn(value, 'draft');
 
-// Conservative cap on the composed evaluation description (the composed-query cap is about 10k).
+// Conservative cap on the composed evaluation description (the server's composed-query cap is 32k).
 export const MAX_DESCRIPTION_CHARS = 6000;
 const encoder = new TextEncoder();
 export const sha256Hex = input => bytesToHex(sha256(typeof input === 'string' ? encoder.encode(input) : input));

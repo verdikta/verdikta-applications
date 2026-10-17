@@ -22,7 +22,7 @@
   "author": "Verdikta Team",
   "license": "MIT",
   "dependencies": {
-    "@verdikta/common": "^1.6.1",
+    "@verdikta/common": "^1.8.0",
     "adm-zip": "^0.5.10",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",

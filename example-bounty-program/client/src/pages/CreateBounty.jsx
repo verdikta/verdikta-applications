@@ -846,7 +846,7 @@ function CreateBounty({ walletState }) {
         workProductType: formData.workProductType,
         creator: walletState.address,
         bountyAmount: bountyAmountEth,
-        bountyAmountUSD: parseFloat(bountyAmountEth) * (formData.ethPriceUSD || 0),
+        bountyAmountUSD: Math.round(parseFloat(bountyAmountEth) * (formData.ethPriceUSD || 0) * 100) / 100,
         threshold,
         ...(loadedRubricCid ? { rubricCid: loadedRubricCid } : { rubricJson: rubricForBackend }),
         classId: selectedClassId,

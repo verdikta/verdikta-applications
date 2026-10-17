@@ -45,32 +45,35 @@ describe('QUERY_TOO_LONG', () => {
   afterEach(() => { delete process.env.MAX_EVALUATION_QUERY_CHARS; });
 
   it('accepts a query of exactly the cap and rejects one character more', async () => {
-    expect(DEFAULT_MAX_EVALUATION_QUERY_CHARS).toBe(10000);
-    expect(types(await validate('x'.repeat(10000)))).not.toContain(IssueType.QUERY_TOO_LONG);
+    // @verdikta/common 1.8.0 PRIMARY_QUERY_MAX_CHARS (issue #41); bounty 100's
+    // 12,017-character query is now within it.
+    expect(DEFAULT_MAX_EVALUATION_QUERY_CHARS).toBe(32000);
+    expect(types(await validate('x'.repeat(12017)))).not.toContain(IssueType.QUERY_TOO_LONG);
+    expect(types(await validate('x'.repeat(32000)))).not.toContain(IssueType.QUERY_TOO_LONG);
 
-    const over = await validate('x'.repeat(10001));
+    const over = await validate('x'.repeat(32001));
     expect(over.valid).toBe(false);
     const issue = over.issues.find((i) => i.type === IssueType.QUERY_TOO_LONG);
     expect(issue.severity).toBe(IssueSeverity.ERROR);
-    expect(issue.message).toContain('10001 characters');
+    expect(issue.message).toContain('32001 characters');
   });
 
   it('measures String.length (UTF-16 code units), the way the arbiters do', async () => {
-    // 5,001 emoji are 10,002 UTF-16 code units but only 5,001 code points.
-    const emoji = String.fromCodePoint(0x1f600).repeat(5001);
-    expect(emoji.length).toBe(10002);
+    // 16,001 emoji are 32,002 UTF-16 code units but only 16,001 code points.
+    const emoji = String.fromCodePoint(0x1f600).repeat(16001);
+    expect(emoji.length).toBe(32002);
     expect(types(await validate(emoji))).toContain(IssueType.QUERY_TOO_LONG);
   });
 
   it('honours MAX_EVALUATION_QUERY_CHARS, ignoring a non-positive or non-numeric value', async () => {
-    process.env.MAX_EVALUATION_QUERY_CHARS = '32000';
-    expect(maxEvaluationQueryChars()).toBe(32000);
-    expect(types(await validate('x'.repeat(12017)))).not.toContain(IssueType.QUERY_TOO_LONG);
+    process.env.MAX_EVALUATION_QUERY_CHARS = '10000';
+    expect(maxEvaluationQueryChars()).toBe(10000);
+    expect(types(await validate('x'.repeat(12017)))).toContain(IssueType.QUERY_TOO_LONG);
 
     process.env.MAX_EVALUATION_QUERY_CHARS = '0';
-    expect(maxEvaluationQueryChars()).toBe(10000);
+    expect(maxEvaluationQueryChars()).toBe(32000);
     process.env.MAX_EVALUATION_QUERY_CHARS = 'lots';
-    expect(maxEvaluationQueryChars()).toBe(10000);
+    expect(maxEvaluationQueryChars()).toBe(32000);
   });
 });
 
@@ -89,6 +92,33 @@ describe('rubric: a failed fetch and an unparseable rubric are different problem
     });
     expect(types(r)).toContain(IssueType.RUBRIC_FETCH_FAILED);
     expect(types(r)).not.toContain(IssueType.MISSING_RUBRIC);
+  });
+});
+
+describe('rubric weights', () => {
+  const rubric = (criteria) => Buffer.from(JSON.stringify({ criteria }));
+  const weightIssue = (r) => r.issues.find((i) => i.type === IssueType.INVALID_RUBRIC && /must sum to 1.0/.test(i.message));
+
+  it('accepts a rubric of only must-pass criteria (no weights to sum; testnet bounties 14/15)', async () => {
+    const r = await validate('q'.repeat(50), rubric([
+      { id: 'a', must: true, weight: 0, description: 'gate a' },
+      { id: 'b', must: true, weight: 0, description: 'gate b' },
+    ]));
+    expect(weightIssue(r)).toBeUndefined();
+    expect(types(r)).not.toContain(IssueType.INVALID_RUBRIC);
+  });
+
+  it('still requires scored weights to sum to 1.0 when there are scored criteria', async () => {
+    const r = await validate('q'.repeat(50), rubric([
+      { id: 'a', must: true, weight: 0, description: 'gate' },
+      { id: 'b', must: false, weight: 0.4, description: 'scored' },
+    ]));
+    expect(weightIssue(r).severity).toBe(IssueSeverity.ERROR);
+  });
+
+  it('rejects scored criteria whose weights are all zero', async () => {
+    const r = await validate('q'.repeat(50), rubric([{ id: 'b', must: false, weight: 0, description: 'scored' }]));
+    expect(weightIssue(r)).toBeDefined();
   });
 });
 

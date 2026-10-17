@@ -2,7 +2,7 @@ jest.mock('../config',()=>({config:{network:'base-sepolia',chainId:84532,bountyE
 jest.mock('../utils/verdiktaService',()=>({isVerdiktaServiceAvailable:()=>false}));
 jest.mock('../utils/contractService',()=>({getContractService:()=>({provider:{},contract:{}})}));
 jest.mock('../utils/jobStorage',()=>({readStorage:jest.fn(async()=>({jobs:[]})),createJob:jest.fn(async data=>({...data,jobId:0})),listJobs:jest.fn(async()=>[])}));
-jest.mock('../utils/archiveGenerator',()=>({createPrimaryCIDArchive:jest.fn(async()=>({archivePath:'/tmp/verdikta-mocked-archive-does-not-exist.zip'}))}));
+jest.mock('../utils/archiveGenerator',()=>({...jest.requireActual('../utils/archiveGenerator'),createPrimaryCIDArchive:jest.fn(async()=>({archivePath:'/tmp/verdikta-mocked-archive-does-not-exist.zip'}))}));
 jest.mock('@verdikta/common',()=>({...jest.requireActual('@verdikta/common'),classMap:{getClass:()=>({status:'ACTIVE',models:[{provider:'openai',model:'test-model'}]})}}));
 const express=require('express'),request=require('supertest');
 const storage=require('../utils/jobStorage'),archive=require('../utils/archiveGenerator');
@@ -129,4 +129,8 @@ test('reusing a saved exact amount never encodes the rounded display number',asy
  storage.readStorage.mockResolvedValueOnce({jobs:[{...body,jobId:7,status:'OPEN',evaluationCid:cid,classId:128,bountyAmount:0.12345678901234568,bountyAmountWei:'123456789012345678',submissionOpenTime:1000,submissionCloseTime:87400}]});
  const res=await request(app).post('/jobs/create').send(body);
  expect(res.status).toBe(200);expect(res.body.job.bountyAmountWei).toBe('123456789012345678');expect(res.body.onChain.transaction.value).toBe('123456789012345678');expect(storage.createJob).not.toHaveBeenCalled();
+});
+test.each([[0.24484899999999998,0.24],['12.345',12.35],[0,0],[-5,0],['abc',0],[undefined,0]])('bountyAmountUSD %p is stored as whole cents (%p)',async (bountyAmountUSD,stored)=>{
+ const res=await request(app).post('/jobs/create').send({...body,bountyAmountUSD});
+ expect(res.status).toBe(200);expect(storage.createJob).toHaveBeenCalledWith(expect.objectContaining({bountyAmountUSD:stored}));
 });

@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs').promises;
 const logger = require('../utils/logger');
+const { config } = require('../config');
 
 const router = express.Router();
 const TMP_DIR = path.join(__dirname, '..', 'tmp');
@@ -113,12 +114,7 @@ router.post('/rubrics', async (req, res) => {
 
 // -------------------- FETCH VIA IPFS CLIENT WITH FALLBACK --------------------
 // Public IPFS gateways to try as fallback (no auth required)
-const PUBLIC_GATEWAYS = [
-  'https://ipfs.io',
-  'https://gateway.pinata.cloud',
-  'https://cloudflare-ipfs.com',
-  'https://dweb.link'
-];
+const PUBLIC_GATEWAYS = config.ipfsReadGateways;
 
 /**
  * Fetch content from IPFS using multiple gateway fallbacks
@@ -205,7 +201,7 @@ router.get('/diagnostics/ipfs', async (req, res) => {
     ipfsClient: !!ipfs,
     hasUploadFn: !!(ipfs && typeof ipfs.uploadToIPFS === 'function'),
     tmpDirOk: true,
-    gateway: process.env.IPFS_GATEWAY || null,
+    gateways: config.ipfsReadGateways,
     pinService: process.env.IPFS_PINNING_SERVICE || null,
     keyPresent: !!PINATA_JWT
   });

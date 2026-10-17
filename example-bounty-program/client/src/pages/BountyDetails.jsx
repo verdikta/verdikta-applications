@@ -45,6 +45,7 @@ import {
   IconName,
 } from '../utils/statusDisplay';
 import JustificationDisplay from '../components/JustificationDisplay';
+import { formatUsd, fetchEthUsdPrice } from '../utils/usd';
 import './BountyDetails.css';
 
 // ============================================================================
@@ -148,6 +149,14 @@ function BountyDetails({ walletState }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [retryCount, setRetryCount] = useState(0);
+  // Current ETH/USD price for the approximate payout value (0 until loaded or
+  // if the feed is down; then the creator's stored estimate is shown instead).
+  const [ethPrice, setEthPrice] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    fetchEthUsdPrice().then((usd) => { if (!cancelled && usd > 0) setEthPrice(usd); });
+    return () => { cancelled = true; };
+  }, []);
 
   // Lazy-loaded expanded task description (extracted from the IPFS evaluation
   // package on demand). Kept out of the initial GET /:jobId response so the
@@ -2312,7 +2321,15 @@ function BountyDetails({ walletState }) {
             <span className="label">Payout</span>
             <span className="value">
               {job?.bountyAmount ?? '...'} ETH
-              {job?.bountyAmountUSD > 0 && (<small> (${job.bountyAmountUSD})</small>)}
+              {formatUsd(Number(job?.bountyAmount) * ethPrice) ? (
+                <small title="Approximate, at the current ETH/USD price">
+                  {' '}({formatUsd(Number(job.bountyAmount) * ethPrice, { approx: true })})
+                </small>
+              ) : formatUsd(Number(job?.bountyAmountUSD)) && (
+                <small title="USD value when the bounty was created">
+                  {' '}({formatUsd(Number(job.bountyAmountUSD))})
+                </small>
+              )}
             </span>
           </div>
           {job?.creatorAssessmentWindowSize > 0 && (

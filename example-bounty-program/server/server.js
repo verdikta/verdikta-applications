@@ -74,24 +74,17 @@ const app = express();
 const pinningKeyForClient = config.ipfsPinningKey.replace(/^Bearer\s+/i, '');
 
 const ipfsClient = new IPFSClient({
-  gateway: config.ipfsGateway,
+  // Tried in this order; @verdikta/common appends its own defaults after them.
+  gateways: config.ipfsReadGateways,
   pinningService: config.ipfsPinningService,
   pinningKey: pinningKeyForClient,   // bare JWT only
   timeout: 8000,
-  retryOptions: { retries: 5, factor: 2 }
+  // Since @verdikta/common 1.8.0 a retry is a further sweep across every
+  // gateway, not one more gateway: 2 sweeps of config.ipfsReadGateways is
+  // about the 6 single-gateway attempts this used to allow.
+  retryOptions: { retries: 1, factor: 2 },
+  maxFetchMs: 60000
 }, logger);
-
-// The hardcoded gateway list inside @verdikta/common puts ipfs.io first, but
-// that gateway has been intermittently returning 504s, which made every
-// bounty-detail load wait the full 30s timeout before falling back. Reorder
-// to favor Pinata (which has all our pinned content) and dweb.link, and push
-// ipfs.io to the back.
-ipfsClient.gateways = [
-  'https://gateway.pinata.cloud',
-  'https://dweb.link',
-  'https://cloudflare-ipfs.com',
-  'https://ipfs.io',
-];
 
 // CID-keyed cache for fetchFromIPFS. CIDs are content-addressed, so the bytes
 // at a given CID never change — caching is safe and turns repeat reads (every

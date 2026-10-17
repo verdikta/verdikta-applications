@@ -7,6 +7,7 @@
 
 const logger = require('./logger');
 const { unlistedClassWarning, classMapVersion } = require('./classPolicy');
+const { PRIMARY_QUERY_MAX_CHARS } = require('@verdikta/common');
 
 // ZIP file magic bytes: PK\x03\x04
 const ZIP_MAGIC = Buffer.from([0x50, 0x4B, 0x03, 0x04]);
@@ -76,11 +77,12 @@ function isTransientIssue(issue) {
 }
 
 /**
- * Longest `query` string (JS String.length, i.e. UTF-16 code units, which is how
- * the arbiters measure it) that every arbiter in the fleet accepts. @verdikta/common
- * <= 1.7.x rejects anything over 10,000; see issues #36 / #41 before raising it.
+ * Longest evaluation (primary) `query` string (JS String.length, i.e. UTF-16 code
+ * units, which is how the arbiters measure it) that every arbiter accepts:
+ * @verdikta/common's PRIMARY_QUERY_MAX_CHARS, 32,000 since 1.8.0 (issue #41).
+ * Hunter archives keep the lower BCID_QUERY_MAX_CHARS (see archiveShapeValidator).
  */
-const DEFAULT_MAX_EVALUATION_QUERY_CHARS = 10000;
+const DEFAULT_MAX_EVALUATION_QUERY_CHARS = PRIMARY_QUERY_MAX_CHARS;
 
 function maxEvaluationQueryChars() {
   const n = Number.parseInt(process.env.MAX_EVALUATION_QUERY_CHARS, 10);
@@ -460,6 +462,7 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
       });
     } else {
       let scoredWeightSum = 0;
+      let scoredCount = 0;
       rubric.criteria.forEach((criterion, index) => {
         if (criterion.must === true && typeof criterion.weight === 'number' && criterion.weight !== 0) {
           issues.push({
@@ -468,12 +471,16 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
             message: `Criterion ${index} ("${criterion.label || criterion.id || 'unknown'}"): Must-pass criteria must have weight 0 (got ${criterion.weight})`
           });
         }
-        if (!criterion.must && typeof criterion.weight === 'number') {
-          scoredWeightSum += criterion.weight;
+        if (!criterion.must) {
+          scoredCount += 1;
+          if (typeof criterion.weight === 'number') scoredWeightSum += criterion.weight;
         }
       });
 
-      if (Math.abs(scoredWeightSum - 1.0) > 0.001) {
+      // A rubric of only must-pass criteria has no weights to sum: it passes
+      // when every gate passes (archiveGenerator scores FUND = 100), and
+      // /jobs/create accepts it (utils/validation.js).
+      if (scoredCount > 0 && Math.abs(scoredWeightSum - 1.0) > 0.001) {
         issues.push({
           type: IssueType.INVALID_RUBRIC,
           severity: IssueSeverity.ERROR,

@@ -22,10 +22,6 @@ const { config } = require('../config');
 const { ethers } = require('ethers');
 const AdmZip = require('adm-zip');
 
-// IPFS gateway for fetching evaluation packages
-const IPFS_GATEWAY = process.env.IPFS_GATEWAY || 'https://ipfs.io';
-const PINATA_GATEWAY = process.env.PINATA_GATEWAY || 'https://gateway.pinata.cloud';
-
 // Bootstrap chunk size (Infura limit is typically 10K blocks per getLogs call)
 const BOOTSTRAP_CHUNK_SIZE = 10_000;
 
@@ -97,7 +93,7 @@ async function fetchEvaluationMetadata(evaluationCid) {
     return null; // Skip dev/fake CIDs
   }
 
-  const gateways = [PINATA_GATEWAY, IPFS_GATEWAY];
+  const gateways = config.ipfsReadGateways;
 
   for (const gateway of gateways) {
     try {

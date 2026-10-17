@@ -9,4 +9,10 @@ test('client weight feedback agrees with canonical server edge cases',()=>{
     const criteria=weights.map((weight,i)=>({id:String(i),description:'criterion',must:i===0,weight}));
     assert.equal(rubricWeights(criteria).valid,validateRubric({criteria}).valid);
   }
+  // Only must-pass criteria: nothing to sum, valid on both sides.
+  for(const n of [1,3]){
+    const criteria=Array.from({length:n},(_,i)=>({id:String(i),description:'criterion',must:true,weight:0}));
+    assert.equal(validateRubric({criteria}).valid,true);
+    assert.equal(rubricWeights(criteria).valid,validateRubric({criteria}).valid);
+  }
 });

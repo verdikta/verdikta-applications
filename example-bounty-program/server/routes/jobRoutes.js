@@ -26,7 +26,7 @@ const { validateRubric, validateJuryNodes, normalizeBountyPayments, validateProc
 const { lookupClass, registryModelMatcher, checkJuryAgainstClass, checkClassCoverage } = require('../utils/classPolicy');
 const { getVerdiktaService, isVerdiktaServiceAvailable, LIKELY_MALFORMED_OUTCOME } = require('../utils/verdiktaService');
 const { validateBounty, IssueSeverity, IssueType, chainStatusIssue, isGatingIssue, isTransientIssue, maxEvaluationQueryChars } = require('../utils/bountyValidator');
-const { getContractService, RESOLVE_GAS_LIMIT_FALLBACK, RESOLVE_GAS_NOTE } = require('../utils/contractService');
+const { getContractService, normalizeOracleSettings, RESOLVE_GAS_LIMIT_FALLBACK, RESOLVE_GAS_NOTE } = require('../utils/contractService');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
 const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/submissionEvents');
 const { createTtlCache } = require('../utils/ttlCache');
@@ -3894,8 +3894,9 @@ router.get('/:jobId', async (req, res) => {
  * decoding (a common source of off-by-one field offset bugs, since the tuple
  * contains a dynamic string).
  *
- * One RPC call (getBounty); status/effectiveStatus/canBeClosed are derived
- * locally from the struct to avoid extra round trips.
+ * One getBounty RPC call, plus three small views in parallel (requiredPrepay,
+ * prepareCutoff, effectiveOracleParams); status/effectiveStatus/canBeClosed are
+ * derived locally from the struct to avoid extra round trips.
  *
  * Public: callers with no API key (e.g. an AI juror following a link) may read
  * it (see PUBLIC_READ_ROUTES in middleware/clientIdentification.js). They share
@@ -3930,6 +3931,17 @@ router.get('/:jobId', async (req, res) => {
  *     creatorAssessmentWindowSize: number,
  *     creatorDeterminationPaymentEth: string,
  *     arbiterDeterminationPaymentEth: string,
+ *     oracleSettings: {                                    // creator-chosen bounty.oracle, fixed at creation
+ *       maxOracleFee: string,                              //   wei; per-arbiter fee ceiling (arbiters
+ *       maxOracleFeeEth: string,                           //   priced above it are never selected)
+ *       alpha: number,                                     //   0-1000
+ *       estimatedBaseCost: string,                         //   wei
+ *       estimatedBaseCostEth: string,
+ *       maxFeeBasedScaling: number                         //   1-1000
+ *     } | null,
+ *     effectiveOracleSettings: { ...same keys } | null,    // effectiveOracleParams(bountyId): what a
+ *                                                         //   start would forward now (clamped to the
+ *                                                         //   aggregator's live fee ceiling); null if unreadable
  *     fetchedAt: ISO-8601 string,                          // when the chain was read
  *     cached: boolean                                      // true = shared anonymous snapshot
  *   }
@@ -3943,6 +3955,17 @@ const publicOnchainStatusCache = createTtlCache({
 });
 
 const isoFromUnix = (sec) => (Number(sec) > 0 ? new Date(Number(sec) * 1000).toISOString() : null);
+
+// normalizeOracleSettings() output (the job.oracleSettings keys, wei strings) plus
+// decimal-ETH copies of the two fee amounts.
+const oracleSettingsWithEth = (o) => (o ? {
+  maxOracleFee: o.maxOracleFee,
+  maxOracleFeeEth: ethers.formatEther(o.maxOracleFee),
+  alpha: o.alpha,
+  estimatedBaseCost: o.estimatedBaseCost,
+  estimatedBaseCostEth: ethers.formatEther(o.estimatedBaseCost),
+  maxFeeBasedScaling: o.maxFeeBasedScaling
+} : null);
 
 router.get('/:jobId/onchain-status', async (req, res) => {
   const { jobId } = req.params;
@@ -4011,14 +4034,27 @@ async function readOnchainStatus(bountyId) {
       linkage = { state: 'unknown', detail: `Linkage check failed: ${linkErr.message}` };
     }
 
-    // Agent conveniences read straight from the contract's own views.
-    let requiredPrepay = null, prepareCutoff = null;
-    try {
-      const c = contractService.contract;
-      [requiredPrepay, prepareCutoff] = (await Promise.all([c.requiredPrepay(bountyId), c.prepareCutoff(bountyId)])).map(v => v.toString());
-    } catch (e) {
-      logger.warn('[jobs/onchain-status] requiredPrepay/prepareCutoff read failed', { bountyId, msg: e.message });
-    }
+    // Agent conveniences read straight from the contract's own views, in
+    // parallel. Each is best-effort: a failed read is null, not a failed response.
+    const c = contractService.contract;
+    const [[requiredPrepay, prepareCutoff], effectiveOracleSettings] = await Promise.all([
+      (async () => {
+        try {
+          return (await Promise.all([c.requiredPrepay(bountyId), c.prepareCutoff(bountyId)])).map(v => v.toString());
+        } catch (e) {
+          logger.warn('[jobs/onchain-status] requiredPrepay/prepareCutoff read failed', { bountyId, msg: e.message });
+          return [null, null];
+        }
+      })(),
+      (async () => {
+        try {
+          return oracleSettingsWithEth(normalizeOracleSettings(await c.effectiveOracleParams(bountyId)));
+        } catch (e) {
+          logger.warn('[jobs/onchain-status] effectiveOracleParams read failed', { bountyId, msg: e.message });
+          return null;
+        }
+      })()
+    ]);
 
     return { status: 200, body: {
       success: true,
@@ -4050,6 +4086,11 @@ async function readOnchainStatus(bountyId) {
       creatorAssessmentWindowSize: b.creatorAssessmentWindowSize,
       creatorDeterminationPaymentEth: b.creatorDeterminationPayment,
       arbiterDeterminationPaymentEth: b.arbiterDeterminationPayment,
+      // bounty.oracle as created. maxOracleFee is the per-arbiter fee ceiling: a
+      // bounty whose class has no arbiter priced at or below it can never be evaluated.
+      oracleSettings: oracleSettingsWithEth(b.oracleSettings),
+      effectiveOracleSettings,                   // effectiveOracleParams(bountyId): clamped to the
+                                                 //   aggregator's live ceiling (null if unreadable)
       linkage,                                   // see buildLinkageReport — state is
                                                  //   linked | patched-not-synced |
                                                  //   not-on-chain | mismatch | untracked

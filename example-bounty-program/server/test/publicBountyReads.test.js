@@ -35,13 +35,15 @@ const chainStruct = () => ({ creator: CREATOR, evaluationCid: 'QmEval', requeste
   oracle: { maxOracleFee: 20000000000000n, alpha: 500n, estimatedBaseCost: 10000000000000n, maxFeeBasedScaling: 3n } });
 
 let mockGetBounty;
+let mockEffectiveOracleParams;
 jest.mock('../utils/contractService', () => {
   const actual = jest.requireActual('../utils/contractService');
   const service = Object.create(actual.ContractService.prototype);
   service.contract = {
     getBounty: (...args) => mockGetBounty(...args),
     requiredPrepay: async () => 240000000000000n,
-    prepareCutoff: async () => 1790003590n
+    prepareCutoff: async () => 1790003590n,
+    effectiveOracleParams: (...args) => mockEffectiveOracleParams(...args)
   };
   return { ...actual, getContractService: () => service };
 });
@@ -69,11 +71,13 @@ const job = (jobId, over = {}) => ({ jobId, title: `Bounty ${jobId}`, descriptio
   status: 'OPEN', createdAt: Math.floor(Date.now() / 1000), submissionCloseTime: CREATED_AT + 3600, onChain: true,
   syncedFromBlockchain: true, submissions: [submission()], ...over });
 
-let rpcReads;
+let rpcReads, effectiveReads;
 beforeEach(() => {
   publicReadLimiter.reset();
   rpcReads = 0;
+  effectiveReads = 0;
   mockGetBounty = async () => { rpcReads += 1; return chainStruct(); };
+  mockEffectiveOracleParams = async () => { effectiveReads += 1; return chainStruct().oracle; };
   mockStorageData = { jobs: [job(5), job(6, { publicSubmissions: true })], nextId: 7 };
 });
 afterEach(() => jest.restoreAllMocks());
@@ -143,6 +147,14 @@ describe('anonymous GET /api/jobs/:id/onchain-status', () => {
     expect(res.headers['cache-control']).toBe('public, max-age=30');
   });
 
+  it('serves the bounty oracle settings with no key, so a juror can check the fee ceiling', async () => {
+    const res = await request(app).get('/api/jobs/17/onchain-status');
+    expect(res.status).toBe(200);
+    expect(res.body.oracleSettings).toEqual({ maxOracleFee: '20000000000000', maxOracleFeeEth: '0.00002', alpha: 500,
+      estimatedBaseCost: '10000000000000', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3 });
+    expect(res.body.effectiveOracleSettings).toMatchObject({ maxOracleFee: '20000000000000', maxOracleFeeEth: '0.00002' });
+  });
+
   it('reuses one snapshot per bounty for 30 s, then reads the chain again', async () => {
     const t0 = Date.now();
     const clock = jest.spyOn(Date, 'now').mockReturnValue(t0);
@@ -152,12 +164,13 @@ describe('anonymous GET /api/jobs/:id/onchain-status', () => {
     expect(first.body.cached).toBe(false);
     expect(second.body.cached).toBe(true);
     expect(second.body.fetchedAt).toBe(first.body.fetchedAt);
-    expect(rpcReads).toBe(1);
+    expect(second.body.effectiveOracleSettings).toEqual(first.body.effectiveOracleSettings);
+    expect([rpcReads, effectiveReads]).toEqual([1, 1]);
 
     clock.mockReturnValue(t0 + 31000);
     const third = await request(app).get('/api/jobs/12/onchain-status');
     expect(third.body.cached).toBe(false);
-    expect(rpcReads).toBe(2);
+    expect([rpcReads, effectiveReads]).toEqual([2, 2]);
   });
 
   it('caches per bounty id', async () => {

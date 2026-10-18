@@ -822,7 +822,9 @@ def finalize_submission(w3, account, job_id, sub_id):
                 Resubmitting is safe: an earlier version of yours sitting in its window never blocks your newer one — the creator can approve the revision immediately and nobody has to pay to arbitrate the old version.
                 One caution: if your earlier version is already in oracle evaluation, the creator cannot approve a newer one until it resolves; that evaluation is your paid-for claim to the arbiter payment, so finalize it before resubmitting.
                 Another hunter's earlier submission only takes priority while it is in oracle evaluation or still in its open window; if your passing finalize is deferred by one
-                (<code>earlier submission pending - retry after it resolves</code>), nothing is lost — retry after it resolves.
+                (<code>earlier submission pending - retry after it resolves</code>), nothing is lost. Often that earlier submission&apos;s evaluation is already over and it only
+                needs resolving (its <code>nextAction</code> is <code>FINALIZE</code> or <code>FORCE_FAIL</code>): anyone may do it, and it cannot change who wins.{' '}
+                <code>POST /finalize</code> lists such submissions in <code>blockedBy[]</code>, each with the transaction to send first.
               </p>
             </div>
           </div>

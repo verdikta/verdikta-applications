@@ -1194,6 +1194,34 @@ function BountyDetails({ walletState }) {
       const contractService = getContractService();
       if (!contractService.isConnected()) await contractService.connect();
 
+      // Payout priority: a passing result waits while an earlier submission by another
+      // hunter is still open on-chain. Often that one's evaluation ended long ago and
+      // nobody finalized it; then offer to resolve it first (anyone may — it cannot
+      // change who wins, and it refunds that hunter's unused prepay).
+      const action = await contractService.getNextAction(onChainId, submissionId).catch(() => null);
+      if (action === 'AWAIT_EARLIER') {
+        const blockers = await contractService.getFinalizeBlockers(onChainId, submissionId);
+        const ids = (list) => list.map(b => `#${b.submissionId}`).join(', ');
+        const waiting = blockers.filter(b => !b.resolvable);
+        const later = (msg) => Object.assign(new Error(msg), { retryable: true });
+        if (waiting.length) {
+          throw later(`it passed and the result is kept, but earlier submission(s) ${ids(waiting)} by another hunter are still being evaluated and are paid first if they pass. Retry after they resolve (a round times out about 5 minutes after it starts).`);
+        }
+        if (blockers.length) {
+          const resolveFirst = window.confirm(
+            `Submission #${submissionId} passed, but earlier submission(s) ${ids(blockers)} by another hunter are still open on-chain. ` +
+            'Their evaluation is over; nobody has finalized them yet, and they keep payout priority until someone does.\n\n' +
+            `Resolve them first? That is ${blockers.length} extra transaction(s) before yours. Anyone may send them: ` +
+            'the contract decides who is paid either way, and the other hunter gets their unused oracle prepay back.'
+          );
+          if (!resolveFirst) throw later('not finalized. It can be paid once the earlier submission(s) are resolved — by you or anyone else.');
+          for (const b of blockers) {
+            toast.info(`Resolving earlier submission #${b.submissionId}...`);
+            await contractService.resolveBlocker(onChainId, b);
+          }
+        }
+      }
+
       const result = await contractService.finalizeSubmission(onChainId, submissionId);
       txHash = result.txHash;
 
@@ -1690,11 +1718,24 @@ function BountyDetails({ walletState }) {
       return;
     }
 
-    // Identify pending submissions that need resolution before close
-    const pendingToResolve = submissions.filter(s => {
-      const status = (s.status || s.onChainStatus || '').toLowerCase();
-      return status === 'pendingverdikta' || status === 'pending_evaluation';
-    });
+    // Submissions that must be resolved before close: the contract's own pending list,
+    // lowest index first (an earlier submission holds payout priority, so resolving in
+    // index order never trips "earlier submission pending"). Local statuses are not
+    // enough: a finished-but-unfinalized round shows as ACCEPTED_PENDING_CLAIM or
+    // REJECTED_PENDING_FINALIZATION and is still pending on-chain.
+    const isLocallyPending = (s) => {
+      const status = (s.status || s.onChainStatus || '').toUpperCase();
+      return ['PENDINGVERDIKTA', 'PENDING_EVALUATION', 'ACCEPTED_PENDING_CLAIM', 'REJECTED_PENDING_FINALIZATION'].includes(status);
+    };
+    let pendingToResolve;
+    try {
+      const ids = await getContractService().getPendingSubmissionIds(onChainId);
+      pendingToResolve = ids.map(id => submissions.find(s => (s.onChainSubmissionId ?? s.submissionId) === id) || { submissionId: id });
+    } catch (e) {
+      console.warn('Could not read the on-chain pending list; using local statuses:', e.message);
+      pendingToResolve = submissions.filter(isLocallyPending)
+        .sort((a, b) => (a.onChainSubmissionId ?? a.submissionId) - (b.onChainSubmissionId ?? b.submissionId));
+    }
 
     // Build an informative confirmation dialog
     let confirmMessage = 'Close this expired bounty and return funds to the creator?\n\n';
@@ -1774,7 +1815,7 @@ function BountyDetails({ walletState }) {
 
             if (finalizeResult.reason === 'earlier_pending') {
               // Windowed priority — a result exists and is kept; retry after the earlier one resolves.
-              toast.warning(`Submission #${subId}: an earlier submission is still being evaluated — retry after it resolves`);
+              toast.warning(`Submission #${subId}: an earlier submission by another hunter is still unresolved — retry after it resolves`);
               unresolvedIds.push(subId);
               continue;
             }

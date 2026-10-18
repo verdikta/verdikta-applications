@@ -887,8 +887,12 @@ wait. If it reverts with "no oracle result - use failTimedOutSubmission", the ro
 settled with no result and finalize can never succeed — use /timeout (failTimedOutSubmission).
 nextAction tells you which (FINALIZE vs FORCE_FAIL).
 If finalizeSubmission reverts with "earlier submission pending - retry after it resolves"
-(windowed bounty), another hunter's earlier submission is still in evaluation; your
-submission stays PendingVerdikta — retry after that one is finalized or force-failed.
+(nextAction AWAIT_EARLIER), another hunter's earlier submission is still PendingVerdikta and
+holds payout priority; yours stays PendingVerdikta with its result kept. That earlier
+submission's evaluation is often already over (its nextAction is FINALIZE or FORCE_FAIL) and
+only waiting for someone to resolve it. Anyone may, and it cannot change who wins: the
+/finalize response lists them in blockedBy[], each with the transaction to send. Send those,
+then your own finalize. Only a blocker still in evaluation (AWAIT_ORACLE) must be waited out.
 
 ### Closing Expired Bounties
 After a bounty's deadline passes, escrowed ETH stays locked until someone calls
@@ -1467,7 +1471,7 @@ router.get('/api/docs', (req, res) => {
             'If passed threshold: triggers ETH payment to hunter',
             'If below threshold: marks submission as Failed',
             'If reverts with "Verdikta not ready": the oracle has not answered yet — wait. If reverts with "no oracle result - use failTimedOutSubmission": the round is settled with no result — force-fail instead (finalize can never succeed). nextAction says which (FINALIZE vs FORCE_FAIL)',
-            'If reverts with "earlier submission pending - retry after it resolves" (windowed bounty): another hunter\'s earlier submission is in evaluation; nothing is written — retry after it resolves',
+            'If reverts with "earlier submission pending - retry after it resolves" (nextAction AWAIT_EARLIER): another hunter\'s earlier submission is still PendingVerdikta; nothing is written. The earlier submission\'s evaluation is often already over (nextAction FINALIZE or FORCE_FAIL) and only waiting for someone to resolve it; anyone may, and it cannot change who wins. POST /finalize (and /diagnose) list them in blockedBy[], each with the transaction that resolves it: send those, then your own finalize.',
             'A malformed oracle result (score vector not exactly [DONT_FUND, FUND], or any entry above SCORE_SCALE = 1,000,000) finalizes as Failed with zero scores and refunds the prepay; it never reverts and is never clamped into a pass. The same interpreter drives the "another submission already passed" checks',
             'Emits SubmissionFinalized(bountyId, submissionId, passed, paid, acceptance, rejection, justificationCids) — paid is true only for the winner in that tx (false for Failed, PassedUnpaid, TIMED_OUT). acceptance/rejection are normalized 0..100 (getOracleResult returns the raw 0..1,000,000 likelihoods). A force-failed submission emits justificationCids "TIMED_OUT" but stores "" — read status/scores, not the string, to tell it from a failing result',
             'PayoutSent / CreatorRefunded / EthRefunded mean OWED, emitted before delivery: if the same receipt also has PaymentDeferred(to, amount) the ETH is on the pull ledger — claim with withdraw()',

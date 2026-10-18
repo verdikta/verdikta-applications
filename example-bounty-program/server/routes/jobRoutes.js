@@ -32,6 +32,7 @@ const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/s
 const { createTtlCache } = require('../utils/ttlCache');
 const { createRateLimiter, clientAddress } = require('../utils/rateLimiter');
 const { sanitizeCreateAttempt, isUnlinked, appendAttempt, attemptSummary, ADDRESS_RE } = require('../utils/createAttempts');
+const { findFinalizeBlockers, blockerCalldata, blockersHint } = require('../utils/finalizeBlockers');
 
 /* ======================
    Helpers / configuration
@@ -393,6 +394,31 @@ async function resolveGasGuidance(data, from) {
     return { gasLimit: RESOLVE_GAS_LIMIT_FALLBACK.toString(), estimatedGas: null, source: 'fallback', reason: err.message };
   }
 }
+/**
+ * When nextAction is AWAIT_EARLIER: the earlier submissions by other hunters that hold
+ * payout priority, each with the transaction that resolves it now (FINALIZE /
+ * FORCE_FAIL; anyone may send it) or none if it is still in evaluation. Never throws.
+ */
+async function finalizeBlockersFor(onChainBountyId, onChainSubmissionId, from) {
+  try {
+    const blockers = await findFinalizeBlockers(getContractService().contract, onChainBountyId, onChainSubmissionId);
+    const blockedBy = await Promise.all(blockers.map(async (b) => {
+      const data = blockerCalldata(onChainBountyId, b);
+      const entry = { submissionId: b.submissionId, hunter: b.hunter, nextAction: b.nextAction };
+      if (data) {
+        const gas = await resolveGasGuidance(data, from);
+        entry.method = b.method;
+        entry.transaction = { to: config.bountyEscrowAddress, data, value: '0', chainId: config.chainId, gasLimit: gas.gasLimit };
+      }
+      return entry;
+    }));
+    return { blockedBy, hint: blockersHint(blockers) };
+  } catch (err) {
+    logger.warn('[finalize-blockers] lookup failed', { onChainBountyId, onChainSubmissionId, msg: err.message });
+    return null;
+  }
+}
+
 async function pinJsonToPinata(contentObj, name = 'verdikta-json') {
   const PINATA_BASE = (process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud').replace(/\/+$/,'');
   const jwt = process.env.IPFS_PINNING_KEY || '';
@@ -2311,6 +2337,23 @@ router.post('/:jobId/submissions/:submissionId/finalize', async (req, res) => {
       if (oracleResult.passed && Number(job.bountyAmount) > 0) {
         response.expectedPayout = job.bountyAmount;
       }
+    }
+
+    // Payout priority: a passing finalize reverts while an earlier submission by another
+    // hunter is still PendingVerdikta, often one whose (failing) result is in and was
+    // never finalized. Say which, and hand over the calls that clear them.
+    try {
+      const action = String(await getContractService().contract.nextAction(onChainBountyId, onChainSubmissionId));
+      response.nextAction = action;
+      if (action === 'AWAIT_EARLIER') {
+        const blockers = await finalizeBlockersFor(onChainBountyId, onChainSubmissionId, hunter);
+        if (blockers) {
+          response.blockedBy = blockers.blockedBy;
+          response.hint = blockers.hint;
+        }
+      }
+    } catch (naErr) {
+      logger.debug('[submit/finalize] nextAction unavailable', { msg: naErr.message });
     }
 
     if (oracleWarnings.length > 0) {
@@ -5527,7 +5570,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         `Confirm submission with POST /api/jobs/${jobId}/submissions/confirm after step 1`,
         `Poll GET /api/jobs/${jobId}/submissions after step 2 until evaluation completes, then execute step 3`,
         'Step 3 (finalizeSubmission) is REQUIRED — oracle completion does NOT trigger payment automatically',
-        'If finalizeSubmission reverts with "Verdikta not ready", the oracle has not completed — wait; if it never responds, failTimedOutSubmission works once the aggregator round has settled with no result (it times out 300 s after step 2; before that it reverts "evaluation not settled"). It reverts "result available - use finalizeSubmission" if a result exists. On windowed bounties finalize can revert "earlier submission pending - retry after it resolves" — that is NOT a failure; retry after the earlier submission resolves. Check GET /api/jobs/:id/submissions/:subId/diagnose for the exact state.',
+        'If finalizeSubmission reverts with "Verdikta not ready", the oracle has not completed — wait; if it never responds, failTimedOutSubmission works once the aggregator round has settled with no result (it times out 300 s after step 2; before that it reverts "evaluation not settled"). It reverts "result available - use finalizeSubmission" if a result exists. Finalize can revert "earlier submission pending - retry after it resolves" (nextAction AWAIT_EARLIER) — that is NOT a failure. The earlier submission\'s evaluation is often already over (nextAction FINALIZE or FORCE_FAIL) and only waiting for someone to resolve it; anyone may, and it cannot change who wins. POST /finalize (and /diagnose) list them in blockedBy[], each with the transaction that resolves it: send those, then your own finalize. Check GET /api/jobs/:id/submissions/:subId/diagnose for the exact state.',
         ...(job.creatorAssessmentWindowSize > 0 ? [
           `WINDOWED BOUNTY: After step 1, the submission enters PendingCreatorApproval for ${job.creatorAssessmentWindowSize}s. The creator may approve directly. If the window expires, proceed with steps 2-3.`,
           `Poll GET /api/jobs/${jobId}/submissions/:subId/diagnose to check window status before executing step 2.`
@@ -7414,21 +7457,22 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
     };
 
     // The contract's own verdict on what to do next (see BountyEscrow.nextAction):
-
-    // START | AWAIT_CREATOR | AWAIT_ORACLE | FINALIZE | FORCE_FAIL | RECOVER_REFUND | DONE | DEAD.
-
+    // START | AWAIT_SLOT | AWAIT_CREATOR | AWAIT_ORACLE | AWAIT_EARLIER | FINALIZE |
+    // FORCE_FAIL | RECOVER_REFUND | DONE | DEAD. For AWAIT_EARLIER, blockedBy lists the
+    // earlier submissions holding payout priority and the calls that resolve them.
     try {
-
       if (job && job.onChain !== false && Number.isInteger(Number(job.jobId))) {
-
         diagnosis.nextAction = await getContractService().contract.nextAction(Number(job.jobId), Number(submissionId));
-
       }
-
     } catch (e) {
-
       diagnosis.nextAction = null;
-
+    }
+    if (diagnosis.nextAction === 'AWAIT_EARLIER') {
+      const blockers = await finalizeBlockersFor(Number(job.jobId), Number(submissionId), diagnosis.checks?.onChain?.hunter);
+      if (blockers) {
+        diagnosis.blockedBy = blockers.blockedBy;
+        if (blockers.hint) diagnosis.recommendations.push(blockers.hint);
+      }
     }
 
     return res.json({ success: true, diagnosis });

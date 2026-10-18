@@ -31,6 +31,7 @@ const BOUNTY_ESCROW_ABI = [
   "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))",
   "function verdikta() view returns (address)",
   "function activeEvaluations(uint256) view returns (uint256)",
+  "function pendingSubmissionIds(uint256 bountyId) view returns (uint256[])",
   "function withdrawable(address) view returns (uint256)",
   "function MAX_SUBMISSIONS_PER_BOUNTY() view returns (uint256)",
   "function recoverLeftoverEth(uint256 bountyId, uint256 submissionId)",

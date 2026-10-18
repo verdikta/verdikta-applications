@@ -56,7 +56,8 @@ const BOUNTY_ESCROW_ABI = [
   "function nextAction(uint256 bountyId, uint256 submissionId) view returns (string)",
   "function prepareCutoff(uint256 bountyId) view returns (uint256)",
   "function MAX_BATCH() view returns (uint256)",
-  "function activeEvaluations(uint256) view returns (uint256)"
+  "function activeEvaluations(uint256) view returns (uint256)",
+  "function pendingSubmissionIds(uint256 bountyId) view returns (uint256[])"
 ];
 
 // Verdikta aggregator views used for oracle results and force-fail gating.
@@ -81,7 +82,7 @@ export const ORACLE_FEE_CEILING_WEI = ethers.parseEther('0.0004');
  */
 const REVERT_MESSAGES = [
   // Retryable, NOT a failure
-  ['earlier submission pending', 'An earlier submission is still being evaluated; retry after it resolves (this is not a failure — your result is kept).'],
+  ['earlier submission pending', 'An earlier submission by another hunter has payout priority and is not resolved yet (still in evaluation, or evaluated but never finalized). This is not a failure — your result is kept; it can be paid once that submission is resolved.'],
   ['evaluation slots full', 'This bounty already has the maximum number of evaluations in flight (256). A slot frees as soon as any of them resolves — retry in a few minutes (this is not a failure; your prepared submission is kept).'],
   ['earlier submission unresolved', 'An earlier submission must be resolved first (it is still in evaluation or in its approval window).'],
   // Force-fail / finalize routing
@@ -827,6 +828,54 @@ class ContractService {
       }
       throw txErr;
     }
+  }
+
+  /**
+   * Submission ids in evaluation (PendingVerdikta) on-chain, lowest first. This is the
+   * list closeExpiredBounty requires to be empty; read it instead of local statuses,
+   * which label these PENDING_EVALUATION, ACCEPTED_PENDING_CLAIM or
+   * REJECTED_PENDING_FINALIZATION depending on what the sync has seen.
+   */
+  async getPendingSubmissionIds(bountyId) {
+    const c = new ethers.Contract(this.contractAddress, BOUNTY_ESCROW_ABI, this.getReadOnlyProvider());
+    return [...await c.pendingSubmissionIds(bountyId)].map(Number).sort((a, b) => a - b);
+  }
+
+  /** The contract's own verdict on what to do with a submission (BountyEscrow.nextAction). */
+  async getNextAction(bountyId, submissionId) {
+    const c = new ethers.Contract(this.contractAddress, BOUNTY_ESCROW_ABI, this.getReadOnlyProvider());
+    return String(await c.nextAction(bountyId, submissionId));
+  }
+
+  /**
+   * Why a passing submission cannot be paid yet: the earlier in-flight submissions by
+   * other hunters that hold payout priority (finalize reverts "earlier submission
+   * pending" while any remain). Each comes with the contract's nextAction for it —
+   * FINALIZE / FORCE_FAIL mean one transaction, which anyone may send, resolves it
+   * (it cannot change who wins and refunds that hunter's unused prepay); anything else
+   * (AWAIT_ORACLE) must be waited out. Lowest index first.
+   * @returns {Promise<Array<{ submissionId: number, hunter: string, nextAction: string, resolvable: boolean }>>}
+   */
+  async getFinalizeBlockers(bountyId, submissionId) {
+    const c = new ethers.Contract(this.contractAddress, BOUNTY_ESCROW_ABI, this.getReadOnlyProvider());
+    const subId = Number(submissionId);
+    const [pending, me] = await Promise.all([c.pendingSubmissionIds(bountyId), c.getSubmission(bountyId, subId)]);
+    const hunter = String(me.hunter).toLowerCase();
+    const earlier = [...pending].map(Number).filter((id) => id < subId).sort((a, b) => a - b);
+    const rows = await Promise.all(earlier.map(async (id) => {
+      const s = await c.getSubmission(bountyId, id);
+      if (String(s.hunter).toLowerCase() === hunter) return null;   // same hunter never blocks
+      const nextAction = String(await c.nextAction(bountyId, id));
+      return { submissionId: id, hunter: s.hunter, nextAction, resolvable: nextAction === 'FINALIZE' || nextAction === 'FORCE_FAIL' };
+    }));
+    return rows.filter(Boolean);
+  }
+
+  /** Resolve a blocker found by getFinalizeBlockers: finalize or force-fail it. */
+  async resolveBlocker(bountyId, blocker) {
+    if (blocker.nextAction === 'FINALIZE') return this.finalizeSubmission(bountyId, blocker.submissionId);
+    if (blocker.nextAction === 'FORCE_FAIL') return this.failTimedOutSubmission(bountyId, blocker.submissionId);
+    throw new Error(`Submission #${blocker.submissionId} cannot be resolved yet (${blocker.nextAction}).`);
   }
 
   /**

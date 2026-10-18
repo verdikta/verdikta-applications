@@ -149,3 +149,64 @@ describe('Scenario 4: No criteria (fallback)', () => {
     expect(scenario4Query).toContain('DONT_FUND=100, FUND=0');
   });
 });
+
+// ---------------------------------------------------------------------------
+// FUND is the weighted average (2026-10-18). Before, the rule said only "higher
+// weighted averages -> higher FUND"; models scored their confidence of clearing a
+// pass mark named in the description (mainnet bounties 242/243 recorded 17% / 26%).
+// ---------------------------------------------------------------------------
+
+describe('Weighted scoring sets FUND to the weighted average', () => {
+  const withThreshold = buildEvaluationQuery({
+    ...baseParams,
+    jobDescription: 'Write a Solidity tutorial. Submissions must score at least 80% to be paid.',
+    rubricCriteria: [
+      { id: 'safety', label: 'Content Safety', must: true, weight: 0.0, instructions: 'Reject if NSFW.' },
+      { id: 'accuracy', label: 'Technical Accuracy', must: false, weight: 0.4, instructions: 'Correct.' },
+      { id: 'quality', label: 'Overall Quality', must: false, weight: 0.6, instructions: 'Useful.' }
+    ]
+  });
+  const RULE_LINES = [
+    'Set FUND to that weighted average, to one decimal place (for example 72.4). Do not round it to a whole number and do not adjust it for any other reason.',
+    'Set DONT_FUND = 100 - FUND.',
+    'FUND is a quality score on a 0-100 scale. It is NOT a probability, and NOT your confidence that the work will pass.',
+    'Ignore any pass mark or threshold mentioned in the task description: the escrow contract compares FUND to the bounty threshold itself.',
+  ];
+
+  test.each([
+    ['must-pass + weighted', withThreshold],
+    ['weighted only', scenario2Query],
+    ['no-rubric fallback', scenario4Query],
+  ])('%s: states the exact FUND rule', (_name, query) => {
+    for (const line of RULE_LINES) expect(query).toContain(line);
+    expect(query).not.toContain('Higher weighted averages');
+  });
+
+  test('the must-pass override still comes first and wins', () => {
+    const override = withThreshold.indexOf('Rule 1 - Must-Pass Override');
+    const weightedRule = withThreshold.indexOf('Rule 2 - Weighted Scoring (only when ALL mandatory criteria pass)');
+    expect(override).toBeGreaterThan(-1);
+    expect(weightedRule).toBeGreaterThan(override);
+    expect(withThreshold).toContain('-> DONT_FUND = 100, FUND = 0');
+  });
+
+  test('the justification asks for one-decimal weighted average and scores', () => {
+    expect(withThreshold).toContain('- Weighted Average: XX.X/100');
+    expect(withThreshold).toContain('FINAL SCORES: DONT_FUND=XX.X, FUND=XX.X');
+  });
+
+  test('must-pass-only bounties keep whole-number scores (FUND is 0 or 100)', () => {
+    expect(scenario3Query).toContain('FINAL SCORES: DONT_FUND=XX, FUND=XX');
+    expect(scenario3Query).not.toContain('Set FUND to that weighted average');
+  });
+
+  test('the fallback keeps the no-weighted-criteria case at FUND=100', () => {
+    expect(scenario4Query).toContain('If the rubric has no weighted criteria, score FUND=100, DONT_FUND=0.');
+  });
+
+  test('the closing line the oracle requires is still last', () => {
+    for (const q of [withThreshold, scenario2Query, scenario3Query, scenario4Query]) {
+      expect(q.trimEnd().endsWith('The submitted work product will be provided in the next section.')).toBe(true);
+    }
+  });
+});

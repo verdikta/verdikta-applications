@@ -368,6 +368,7 @@ Rules enforced by the validator (see errors verbatim from /rubric/validate):
 - must=true ("must-pass") criteria MUST have weight=0; they gate pass/fail without contributing to the score.
 - Scored (must=false) criteria weights MUST sum to 1.0 (±0.001).
 - Threshold is NOT part of the rubric. It's a separate top-level field on /jobs/create and is enforced on-chain.
+- How the score meets the threshold: each juror sets FUND to the rubric's weighted average (one decimal; 0 if any must criterion fails), and the contract rounds the aggregated score DOWN to a whole percent before comparing it to the threshold, so 79.9 fails a threshold of 80. Jurors are told to ignore any pass mark written in the description. (Evaluation packages created before 2026-10-18 used a looser rule, under which jurors often scored their confidence of passing instead.)
 - Length: the server builds ONE evaluation query from a fixed template plus your
   workProductType, title, description, every criterion's label and description,
   and forbiddenContent. Arbiters reject a query over ${queryCap} characters

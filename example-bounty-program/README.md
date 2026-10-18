@@ -195,7 +195,7 @@ The UI does these in sequence inside one button. If you're scripting against the
 ## MVP Scope
 
 ### ✅ Currently Supported
-- Binary outcomes (Pass/Fail based on threshold)
+- Binary outcomes (Pass/Fail based on threshold). How the score meets the threshold: each juror sets FUND to the rubric's weighted average (one decimal; 0 if any must criterion fails), and the contract rounds the aggregated score DOWN to a whole percent before comparing it to the threshold, so 79.9 fails a threshold of 80. Jurors are told to ignore any pass mark written in the description. (Evaluation packages created before 2026-10-18 used a looser rule, under which jurors often scored their confidence of passing instead.)
 - ETH payouts only (automatic on-chain transfer)
 - First-past-the-post (single winner per bounty)
 - Public submissions (stored on IPFS)

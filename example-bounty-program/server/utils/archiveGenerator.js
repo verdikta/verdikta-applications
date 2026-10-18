@@ -9,6 +9,24 @@ const AdmZip = require('adm-zip');
 const logger = require('./logger');
 
 /**
+ * How FUND follows from the weighted criteria. Shared by both query templates.
+ *
+ * Before 2026-10-18 the rule said only "higher weighted averages -> higher FUND", so each
+ * model invented its own mapping and, seeing a pass mark in the task description, scored
+ * its confidence of clearing it: work the jurors called good recorded 17% and 26%
+ * (mainnet bounties 242/243). FUND is now the weighted average itself, and the threshold
+ * is left to the escrow contract, which compares FUND (rounded down to a whole percent)
+ * to the bounty's threshold.
+ */
+const WEIGHTED_FUND_RULE = [
+  'Compute the weighted average of the weighted criteria: the sum of (score x weight). The weights sum to 1.',
+  'Set FUND to that weighted average, to one decimal place (for example 72.4). Do not round it to a whole number and do not adjust it for any other reason.',
+  'Set DONT_FUND = 100 - FUND.',
+  'FUND is a quality score on a 0-100 scale. It is NOT a probability, and NOT your confidence that the work will pass.',
+  'Ignore any pass mark or threshold mentioned in the task description: the escrow contract compares FUND to the bounty threshold itself.',
+];
+
+/**
  * Build the evaluation query text for primary_query.json.
  *
  * When rubric criteria are provided, the query uses a two-phase protocol:
@@ -128,9 +146,7 @@ Provide scores for two outcomes:
     const ruleNum = hasMustPass ? '2' : '1';
     const condition = hasMustPass ? ' (only when ALL mandatory criteria pass)' : '';
     sections.push(`Rule ${ruleNum} - Weighted Scoring${condition}:
-  Compute a weighted average from the quality scores above.
-  Higher weighted averages -> higher FUND score, lower DONT_FUND score.
-  Lower weighted averages -> lower FUND score, higher DONT_FUND score.`);
+${WEIGHTED_FUND_RULE.map(line => `  ${line}`).join('\n')}`);
   }
 
   // ---- Justification Format ----
@@ -149,10 +165,10 @@ Provide scores for two outcomes:
     justificationParts.push(`${phaseLabel}
 - [Criterion Name] (weight X.XX): [score]/100 - [assessment]
   (repeat for each weighted criterion)
-- Weighted Average: XX/100`);
+- Weighted Average: XX.X/100`);
   }
 
-  justificationParts.push(`FINAL SCORES: DONT_FUND=XX, FUND=XX`);
+  justificationParts.push(hasWeighted ? `FINAL SCORES: DONT_FUND=XX.X, FUND=XX.X` : `FINAL SCORES: DONT_FUND=XX, FUND=XX`);
 
   sections.push(`=== JUSTIFICATION FORMAT ===
 
@@ -191,9 +207,10 @@ Provide scores for two outcomes:
 - FUND: The work product SHOULD receive payment
 
 Rule 1: If ANY criterion with "must": true FAILS, score DONT_FUND=100, FUND=0 immediately.
-Rule 2: Only if all "must": true criteria pass, score based on the weighted criteria quality.
+Rule 2: Only if all "must": true criteria pass, score each weighted criterion ("must": false) from 0 to 100, using its "weight" from the rubric. If the rubric has no weighted criteria, score FUND=100, DONT_FUND=0. Otherwise:
+${WEIGHTED_FUND_RULE.map(line => `  ${line}`).join('\n')}
 
-In your justification, first explicitly state PASS or FAIL for each mandatory criterion, then evaluate weighted criteria only if all mandatory criteria passed.
+In your justification, first explicitly state PASS or FAIL for each mandatory criterion, then evaluate weighted criteria only if all mandatory criteria passed, giving each criterion's score and the weighted average before the final scores.
 
 The submitted work product will be provided in the next section.`;
 }

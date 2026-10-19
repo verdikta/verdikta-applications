@@ -16,6 +16,7 @@ const logger = require('../utils/logger');
 const { getEthPriceUsd } = require('../utils/ethPrice');
 const jobStorage = require('../utils/jobStorage');
 const { packageRubricHash } = require('../utils/rubricSource');
+const { extractTaskDescription } = require('../utils/taskDescription');
 const { config } = require('../config');
 const archiveGenerator = require('../utils/archiveGenerator');
 const archiveShapeValidator = require('../utils/archiveShapeValidator');
@@ -3588,22 +3589,9 @@ router.get('/:jobId/task-spec', async (req, res) => {
       );
       if (primaryEntry) {
         const primary = JSON.parse(zip.readAsText(primaryEntry));
-        const q = typeof primary?.query === 'string' ? primary.query : '';
-        const startMarker = '=== TASK DESCRIPTION ===';
-        const endMarker = '=== EVALUATION PROTOCOL ===';
-        const startIdx = q.indexOf(startMarker);
-        if (startIdx !== -1) {
-          const blockStart = startIdx + startMarker.length;
-          const endIdx = q.indexOf(endMarker, blockStart);
-          const block = (endIdx === -1
-            ? q.slice(blockStart)
-            : q.slice(blockStart, endIdx)
-          ).trim();
-          // Drop the duplicated Work Product Type / Task Title prefix; those
-          // are already rendered as top-level fields on the bounty page.
-          const bodyMatch = block.match(/^Task Description:\s*([\s\S]*)$/m);
-          taskSpec = (bodyMatch ? bodyMatch[1] : block).trim() || null;
-        }
+        // Same reader as the chain sync, so the expanded text and a synced
+        // job's description agree.
+        taskSpec = extractTaskDescription(primary?.query);
       }
     } catch (err) {
       logger.warn('[jobs/task-spec] failed to extract', { jobId, msg: err.message });

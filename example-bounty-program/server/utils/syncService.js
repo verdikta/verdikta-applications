@@ -16,6 +16,7 @@
 
 const logger = require('./logger');
 const { bountyAmountFields } = require('./bountyAmounts');
+const { extractTaskDescription } = require('./taskDescription');
 const jobStorage = require('./jobStorage');
 const { getContractService } = require('./contractService');
 const { config } = require('../config');
@@ -159,10 +160,7 @@ async function fetchEvaluationMetadata(evaluationCid) {
 
           if (query.query) {
             if (!description) {
-              const descMatch = query.query.match(/Task Description:\s*(.+?)(?:\n\n|===|$)/s);
-              if (descMatch) {
-                description = descMatch[1].trim();
-              }
+              description = extractTaskDescription(query.query);
             }
             if (!workProductType) {
               const typeMatch = query.query.match(/Work Product Type:\s*(.+?)(?:\n|$)/);

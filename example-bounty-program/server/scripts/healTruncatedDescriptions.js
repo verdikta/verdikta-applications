@@ -144,11 +144,15 @@ async function main() {
   console.log(apply ? 'Mode:    APPLY\n' : 'Mode:    dry run (pass --apply to write)\n');
 
   const { jobs = [] } = JSON.parse(fs.readFileSync(storageFile, 'utf8'));
+  // One package read per CID, in sequence (gateways rate-limit the server):
+  // a few hundred packages take minutes, so show that it is moving.
+  let fetched = 0;
   const { scanned, heals, unreadable } = await planDescriptionHeals(jobs, {
     escrow,
     jobIds,
     fetchDescription: async (cid) => {
       const metadata = await fetchEvaluationMetadata(cid);
+      if (++fetched % 25 === 0) console.error(`  ...${fetched} packages read`);
       return metadata ? metadata.description || null : undefined;
     },
   });

@@ -65,8 +65,8 @@ cp "$SKILL_DIR/SKILL.md" "$STAGE_DIR/"
 cp "$SKILL_DIR/README.md" "$STAGE_DIR/"
 cp "$SKILL_DIR/_meta.json" "$STAGE_DIR/"
 
-# Scripts: source files, the vendored wager rubric template, package.json and the lockfile
-for f in "$SKILL_DIR"/scripts/*.js "$SKILL_DIR"/scripts/*.cjs "$SKILL_DIR"/scripts/bounty-escrow.abi.json "$SKILL_DIR"/scripts/deployments.json "$SKILL_DIR"/scripts/mutual-wager-template.json "$SKILL_DIR"/scripts/package-lock.json "$SKILL_DIR"/scripts/package.json; do
+# Scripts: source files (including the vendored _mutual-wager.cjs), package.json and the lockfile
+for f in "$SKILL_DIR"/scripts/*.js "$SKILL_DIR"/scripts/*.cjs "$SKILL_DIR"/scripts/bounty-escrow.abi.json "$SKILL_DIR"/scripts/deployments.json "$SKILL_DIR"/scripts/package-lock.json "$SKILL_DIR"/scripts/package.json; do
   case "$(basename "$f")" in
     compile-contracts.js|sync_contract_assets.js|sync_wager_assets.js) continue ;;
   esac

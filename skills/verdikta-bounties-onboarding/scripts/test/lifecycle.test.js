@@ -68,12 +68,16 @@ test('read-back mismatch blocks linking and fractional windows fail before API',
 });
 test('an exact deadline goes to the API as submissionDeadline and is bound to the second',async t=>{
  const clock=Date.now,fixed=clock(),deadline=Math.floor(fixed/1000)+86400;let f,g;
+ const wager={submissionWindowHours:null,submissionDeadline:deadline,juryNodes:[{provider:'OpenAI',model:'gpt-5.6-terra',weight:1,runs:1}],iterations:1,publicSubmissions:true};
  Date.now=()=>fixed; // the fixture's server response closes exactly 24 h after its creation second
- try {f=await creationFixture(t,{submissionWindowHours:null,submissionDeadline:deadline});g=await creationFixture(t,{submissionWindowHours:null,submissionDeadline:deadline});} finally {Date.now=clock;}
+ try {f=await creationFixture(t,wager);g=await creationFixture(t,wager);} finally {Date.now=clock;}
  const bodies=[],fetchApi=f.env.fetchApi;
  f.env.fetchApi=async(url,init)=>{bodies.push(JSON.parse(init.body));return fetchApi(url,init);};
+ // The real validator lower-cases providers for the class check; the body keeps them as written (a wager's Jury line).
+ f.lib.validateAndNormalizeJuryNodes=({juryNodes})=>juryNodes.map(n=>({...n,provider:n.provider.toLowerCase()}));
  await runCreate(f.lib,f.env);
  assert.equal(bodies[0].submissionDeadline,deadline);assert.ok(!('submissionWindowHours' in bodies[0]));
+ assert.equal(bodies[0].juryNodes[0].provider,'OpenAI');assert.equal(bodies[0].iterations,1);assert.equal(bodies[0].publicSubmissions,true);
  assert.ok(f.reviews.flat().some(x=>x?.includes('exact deadline')));
  await writeFile(g.file,JSON.stringify({...g.cfg,submissionDeadline:deadline+60}));
  await assert.rejects(runCreate(g.lib,g.env),/exact submissionDeadline/);assert.equal(g.sent.length,0);

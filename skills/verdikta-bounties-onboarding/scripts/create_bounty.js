@@ -108,7 +108,11 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
       await link(state, receipt); // Existing hash only; never creates another API job.
     } else {
       const supported = await getSupportedModelsForClass(baseUrl, apiKey, config.classId);
-      const juryNodes = validateAndNormalizeJuryNodes({ classId: config.classId, juryNodes: config.juryNodes, supported });
+      // Checked against the class case-insensitively, but sent with the providers as written: a wager's Jury line
+      // names them as the create page does ("OpenAI"), and the server compares that line with these nodes.
+      const juryNodes = validateAndNormalizeJuryNodes({ classId: config.classId, juryNodes: config.juryNodes, supported })
+        .map((node, i) => ({ ...node, provider: String(config.juryNodes[i].provider).trim() }));
+      if (config.iterations != null && (!Number.isInteger(config.iterations) || config.iterations < 1 || config.iterations > 10)) throw new Error('iterations must be an integer from 1 to 10');
       let response, state, apiCreatedAt;
       if (isDryRun()) {
         if (!arg('prepared')) throw new Error('Exact financial dry-run requires --prepared saved API response; no API job was created. For wallet-free drafting use verdikta-discover.');
@@ -127,6 +131,8 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
           classId: config.classId,
           ...(terms.submissionDeadline != null ? { submissionDeadline: Number(terms.submissionDeadline) } : { submissionWindowHours: config.submissionWindowHours }),
           procurementMode: config.procurementMode, targetHunter: terms.params.targetHunter, rubricJson: config.rubricJson, juryNodes,
+          ...(config.iterations != null ? { iterations: config.iterations } : {}),
+          ...(config.publicSubmissions != null ? { publicSubmissions: config.publicSubmissions === true } : {}),
           creatorDeterminationPayment: config.creatorDeterminationPayment ?? config.bountyAmount,
           arbiterDeterminationPayment: config.arbiterDeterminationPayment ?? config.bountyAmount,
           creatorAssessmentWindowSeconds: Number(terms.params.creatorAssessmentWindowSize),

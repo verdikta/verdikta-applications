@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Mutual wagers: two directed bounties used as a bet (the website's Mutual Wager template, mutual-wager-v3). The same
-// six verbs in every agent runtime; terms and checks are the website's own code (_mutual-wager-terms.js).
+// six verbs in every agent runtime; bodies, checks and claims are the website's shared code (_mutual-wager.cjs).
 //
 //   node wager.js propose --input proposal.json                      preview the first bounty and its approval line
 //   node wager.js propose --input proposal.json --approval "<line>" --yes   post it after the owner's line
@@ -32,7 +32,7 @@ const USAGE = `Usage:
   node wager.js answer <N> [--approval "<owner's line>" --yes]
   node wager.js check <N> [--against <your bounty number>]
   node wager.js status
-  node wager.js claim <wager> --score "<Team> <points>, <Team> <points> (Final)" --source "Name|https://...|quote" --source ...
+  node wager.js claim <wager> --score "<Team> <points>, <Team> <points> (Final)" --source "Name|https://...|quote" --source ... [--final-at <ISO>]
   node wager.js claim <wager> --approval "<owner's claim line>" --yes
   node wager.js close <wager> [--dry-run] [--yes]
 <wager> is the terms hash prefix, the Wager ID or one of the wager's bounty numbers.`;
@@ -113,7 +113,7 @@ export async function runWager(lib, {
     const oracle = { ...W.WAGER_DEFAULTS.oracle, ...(custom.oracle || {}) };
     if (!jury.length || jury.some((n) => !String(n.provider ?? '').trim() || !String(n.model ?? '').trim() || !Number.isFinite(n.weight) || n.weight <= 0 || !Number.isInteger(n.runs) || n.runs < 1 || n.runs > 10)
       || Math.abs(jury.reduce((sum, n) => sum + n.weight, 0) - 1) > 0.001) throw new Error(`${file}: jury needs provider, model, a weight (weights sum to 1) and runs 1-10 for every node`);
-    if (!W.parseOracleLine(`${W.site.formatOracle(oracle)}.`)) throw new Error(`${file}: oracle needs maxOracleFeeEth, estimatedBaseCostEth (decimal ETH), maxFeeBasedScaling and alpha`);
+    if (!W.shared.parseOracleLine(`${W.shared.formatOracle(oracle)}.`)) throw new Error(`${file}: oracle needs maxOracleFeeEth, estimatedBaseCostEth (decimal ETH), maxFeeBasedScaling and alpha`);
     return { ...W.WAGER_DEFAULTS, classId: Number(custom.classId ?? W.WAGER_DEFAULTS.classId), jury, oracle };
   }
 
@@ -166,12 +166,12 @@ export async function runWager(lib, {
     return parseEther(stake) > BigInt(policy.maxValueWei) || parseEther(stake) > BigInt(policy.maxTotalWei) ? [`The stake ${stake} ETH exceeds the owner's spend policy cap.`] : [];
   }
   async function twinProblems(me, wagerId, ownNumber) {
-    const twin = W.site.findWagerTwin((await myJobs(me)).filter((j) => String(j.jobId) !== String(ownNumber)), wagerId);
+    const twin = W.shared.findWagerTwin((await myJobs(me)).filter((j) => String(j.jobId) !== String(ownNumber)), wagerId);
     return twin ? [`Your bounty #${twin.jobId} already uses Wager ID ${wagerId}. One live bounty per Wager ID: a new pair needs a new ID.`] : [];
   }
 
   // ---- propose / answer: preview, or bind the owner's line and post through create_bounty.js ----
-  async function approveAndPost(record, offer, expect) {
+  async function approveAndPost(record, createBody) {
     if (args.flag('dry-run') || args.flag('dryRun')) throw new Error('--dry-run cannot post; run without --approval to preview');
     const approval = W.bindWagerApproval({ approvalText: args.opt('approval'), termsSha256: record.termsSha256, stake: record.stake, opponent: record.opponent, settle: record.settle });
     const dir = dirOf(record.termsSha256);
@@ -181,7 +181,7 @@ export async function runWager(lib, {
     const other = (await records()).find((r) => r.wagerId === record.wagerId && r.approved && r.termsSha256 !== record.termsSha256);
     if (other) problems.push(`You already approved wager ${other.termsSha256.slice(0, 8)} with Wager ID ${record.wagerId}.`);
     if (problems.length) throw new Error(`Not posted:\n  - ${problems.join('\n  - ')}`);
-    const configText = JSON.stringify(W.createConfig({ offer, expect, wager: { termsSha256: record.termsSha256, role: record.role, wagerId: record.wagerId, counter: record.counter } }), null, 2) + '\n';
+    const configText = JSON.stringify(W.createConfig({ createBody, wager: { termsSha256: record.termsSha256, role: record.role, wagerId: record.wagerId, counter: record.counter } }), null, 2) + '\n';
     // One wager per terms hash: the approval is claimed once. A retry is allowed only while nothing was created.
     await ensureDir(dir);
     try {
@@ -220,11 +220,11 @@ export async function runWager(lib, {
       me, opponent: built.expect.targetHunter, stake: built.expect.stake, start: built.terms.fields.start, settle: built.terms.fields.settle, counter: null, createdAt: new Date(now() * 1000).toISOString() };
     if (args.opt('approval')) {
       if (built.problems.length) throw new Error(`Not posted:\n  - ${built.problems.join('\n  - ')}`);
-      return approveAndPost(record, built.offer, built.expect);
+      return approveAndPost(record, built.createBody);
     }
     const problems = [...built.problems, ...await policyProblems(record.stake), ...await twinProblems(me, record.wagerId).catch((e) => [`Could not check your other bounties: ${e.message}`])];
     if (!problems.length && !(await exists(path.join(dirOf(record.termsSha256), 'approval.json')))) await saveRecord(record);
-    if (!preview(record, problems, [`Jury ${W.site.formatJury(built.expect.jury, built.expect.iterations)}; class ${built.expect.classId}; threshold ${built.expect.threshold}.`])) throw new Error('The proposal was refused');
+    if (!preview(record, problems, [`Jury ${W.shared.formatJury(built.expect.jury, built.expect.iterations)}; class ${built.expect.classId}; threshold ${built.expect.threshold}.`])) throw new Error('The proposal was refused');
   }
 
   async function answer() {
@@ -240,7 +240,7 @@ export async function runWager(lib, {
     const record = { version: 1, role: 'answerer', network, termsSha256: W.termsHash(offer), wagerId: report.terms.fields.wagerId, title: offer.title, description: offer.description,
       me, opponent: getAddress(report.expect.targetHunter), stake: report.expect.stake, start: report.terms.fields.start, settle: report.terms.fields.settle,
       counter: { number: n }, checks: { [n]: { ok: true, problems: [], checkedAt: new Date(now() * 1000).toISOString() } }, createdAt: new Date(now() * 1000).toISOString() };
-    if (args.opt('approval')) return approveAndPost(record, offer, report.expect);
+    if (args.opt('approval')) return approveAndPost(record, report.answer.createBody);
     const problems = [...await policyProblems(record.stake), ...await twinProblems(me, record.wagerId).catch((e) => [`Could not check your other bounties: ${e.message}`])];
     if (!problems.length && !(await exists(path.join(dirOf(record.termsSha256), 'approval.json')))) await saveRecord(record);
     if (!preview(record, problems, [`Bounty #${n} by ${status.creator} passed the full counter check (site records, escrow read, mirrored terms, template rubric, jury, oracle settings, timing).`])) throw new Error('The answer was refused');
@@ -257,7 +257,7 @@ export async function runWager(lib, {
       mine = { description: mDetails.job?.description, number: m, status: mStatus };
     } else {
       me = await walletAddress();
-      const wagerId = W.site.parseMutualWagerTerms(job?.description).fields?.wagerId;
+      const wagerId = W.shared.parseMutualWagerTerms(job?.description).fields?.wagerId;
       record = (await records()).find((r) => r.wagerId === wagerId && r.bountyId != null && status && sameAddress(r.opponent, status.creator)) || null;
       if (record) mine = { description: record.description, number: record.bountyId, status: await api(`/jobs/${record.bountyId}/onchain-status`) };
     }
@@ -296,7 +296,7 @@ export async function runWager(lib, {
       say(`  Your bounty #${r.bountyId}: ${mineStatus?.status ?? 'unknown'}${mineStatus?.winner ? `, paid to ${mineStatus.winner}` : ''}, deadline ${mineStatus?.submissionDeadlineIso ?? r.settle}`);
       let counter = r.counter?.number ?? null;
       if (counter == null) {
-        const candidates = await api(`/jobs?creator=${r.opponent}&targetHunter=${r.me}&limit=50`, { auth: true }).then((l) => (l.jobs || []).filter((j) => W.site.parseMutualWagerTerms(j.description).fields?.wagerId === r.wagerId), () => []);
+        const candidates = await api(`/jobs?creator=${r.opponent}&targetHunter=${r.me}&limit=50`, { auth: true }).then((l) => (l.jobs || []).filter((j) => W.shared.parseMutualWagerTerms(j.description).fields?.wagerId === r.wagerId), () => []);
         say(candidates.length ? `  Opponent bounties with this Wager ID: ${candidates.map((j) => `#${j.jobId}`).join(', ')}. Check now: node wager.js check ${candidates[0].jobId}` : '  No answer from the opponent yet.');
       } else {
         const last = r.checks?.[counter];
@@ -324,28 +324,31 @@ export async function runWager(lib, {
     const dir = dirOf(record.termsSha256);
     const claimPath = path.join(dir, 'claim.md'), inputPath = path.join(dir, 'claim-input.json'), submissionPath = path.join(dir, 'claim-submission.json');
     // The claim is rebuilt from the same inputs at approval, so the owner's line names exactly the bytes submitted.
-    const input = args.opt('score') ? { score: args.opt('score'), sources: args.all('source') }
+    const input = args.opt('score') ? { score: args.opt('score'), sources: args.all('source'), finalAt: args.opt('final-at') }
       : args.opt('approval') ? await fs.readFile(inputPath, 'utf8').then(JSON.parse, () => { throw new Error('No saved claim: run claim with --score and --source first'); })
         : (() => { throw new Error(`--score and two --source entries are required\n${USAGE}`); })();
     const me = await walletAddress();
     const [{ status, job }, mine] = await Promise.all([readBounty(claimedNumber), readBounty(record.bountyId)]);
     if (!status || status.status !== 'OPEN' || status.deadlinePassed) throw new Error(`Bounty #${claimedNumber} is ${status?.status || 'unreadable'}; it cannot be claimed`);
     if (mine.status?.status === 'AWARDED') throw new Error(`Your bounty #${record.bountyId} was already paid to ${mine.status.winner}: the jury found the other side won`);
-    const terms = W.site.parseMutualWagerTerms(job?.description);
+    const terms = W.shared.parseMutualWagerTerms(job?.description);
     if (terms.fields?.wagerId !== record.wagerId) throw new Error(`Bounty #${claimedNumber} is not part of wager ${record.wagerId}`);
-    const text = W.buildClaim({ claimed: { number: claimedNumber, terms }, counter: { number: record.bountyId, status: mine.status, job: mine.job }, me, ctx, score: input.score, sources: input.sources, now: now() });
-    const claimSha256 = W.sha256(text);
+    const built = W.buildClaim({ claimed: { number: claimedNumber, terms, status }, counter: { number: record.bountyId, status: mine.status, job: mine.job }, me, ctx,
+      score: input.score, sources: input.sources, finalAt: input.finalAt ?? undefined, now: now() });
+    const claimSha256 = W.sha256(built.claim);
+    const notes = built.warnings.map((w) => `  Note: ${w}`);
     if (!args.opt('approval')) {
-      await fs.writeFile(claimPath, text, { mode: 0o600 });
+      await fs.writeFile(claimPath, built.claim, { mode: 0o600 });
       await fs.writeFile(inputPath, JSON.stringify(input, null, 2) + '\n', { mode: 0o600 });
-      say(text, `claim.md SHA-256: ${claimSha256} (saved to ${claimPath})`, '',
+      say(built.claim, `claim.md SHA-256: ${claimSha256} (saved to ${claimPath})`, notes, '',
         'Show the owner this claim and ask them to reply with exactly:', `  ${W.claimLineFor({ claimSha256, bounty: claimedNumber })}`,
-        'Submitting prepays the evaluation fee. Best about 2 hours after the final whistle: earlier, the jurors\' web pages may still show the game in progress.');
+        `Submitting prepays the evaluation fee. It is refused before ${built.claimAfter} (about 2 hours after the final; pass --final-at <ISO> when you know when the game ended).`);
       return;
     }
     const approval = W.bindClaimApproval({ approvalText: args.opt('approval'), claimSha256, bounty: claimedNumber });
+    if (built.tooEarly) throw new Error(`Too early to submit: wait until ${built.claimAfter}. Right after the final, a juror's web tool can still be served an in-progress page and fail the claim`);
     if (await exists(submissionPath)) throw new Error(`This wager's claim was already submitted. Continue it with: node submit_to_bounty.js --jobId ${claimedNumber} --resume <submission id> --state ${submissionPath}`);
-    await fs.writeFile(claimPath, text, { mode: 0o600 });
+    await fs.writeFile(claimPath, built.claim, { mode: 0o600 });
     const files = { jobId: String(claimedNumber), state: submissionPath };
     await submit({ ...lib, arg: (name) => files[name] ?? null, argAll: (name) => (name === 'file' ? [claimPath] : []) });
     const saved = await fs.readFile(submissionPath, 'utf8').then(JSON.parse, () => ({}));

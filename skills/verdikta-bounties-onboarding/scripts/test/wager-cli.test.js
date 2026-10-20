@@ -39,8 +39,8 @@ async function harness(t, { me, clock = at('2026-10-20T18:00:00Z'), myJobs = [] 
   // create_bounty.js stand-in: checks the config it is handed, then writes the linked state like the real one.
   h.create = async (lib) => {
     const file = lib.arg('config'), config = JSON.parse(await readFile(file, 'utf8'));
-    creationTerms(config); created.push(config);
-    const id = h.nextId++, deadline = config.submissionDeadline;
+    const deadline = Number(creationTerms(config).submissionDeadline); created.push(config);
+    const id = h.nextId++;
     await writeFile(`${file}.state.json`, JSON.stringify({ linkedJobId: id, txHash: `0x${'ab'.repeat(32)}`, status: 'BROADCAST' }));
     records[id] = { status: { ...fx(18, 'status'), bountyId: id, creator: me, targetHunter: config.targetHunter, createdAt: h.clock, createdAtIso: new Date(h.clock * 1000).toISOString(), submissionDeadline: deadline, submissionDeadlineIso: new Date(deadline * 1000).toISOString() }, job: { ...current(fx(18, 'job').job), jobId: id, description: config.description, title: config.title } };
     chain[id] = { ...fx(18, 'rpc'), creator: me, targetHunter: config.targetHunter, createdAt: String(h.clock), submissionDeadline: String(deadline) };
@@ -59,8 +59,8 @@ async function harness(t, { me, clock = at('2026-10-20T18:00:00Z'), myJobs = [] 
 const lineFrom = (text) => /^ {2}(Approve wager .*)$/m.exec(text)[1];
 const proposal = {
   wagerId: 'VW-TEST3-BOS-DET-20261020', event: 'NBA 2026-27 regular season: Boston Celtics (BOS) at Detroit Pistons (DET), Little Caesars Arena, Detroit, Michigan.',
-  shortEvent: 'Celtics @ Pistons', start: '2026-10-20T19:00:00Z', settle: '2026-10-21T19:00:00Z', stake: '0.0001',
-  mySide: { label: 'the Boston Celtics win', short: 'the Celtics' }, opponent: { wallet: bob, label: 'the Detroit Pistons win', short: 'the Pistons' },
+  start: '2026-10-20T19:00:00Z', settle: '2026-10-21T19:00:00Z', stake: '0.0001', opponent: bob,
+  sides: { creator: 'the Boston Celtics win', opponent: 'the Detroit Pistons win' },
 };
 
 test('answer: preview, then post once with the owner\'s line; a second post is refused', async (t) => {
@@ -73,7 +73,8 @@ test('answer: preview, then post once with the owner\'s line; a second post is r
   await h.run('answer', '18', '--approval', `Yes. ${line}`, '--yes');
   assert.equal(h.created.length, 1);
   const c = h.created[0];
-  assert.equal(c.targetHunter, alice); assert.equal(c.procurementMode, 'TARGETED'); assert.equal(c.submissionDeadline, at('2026-10-21T19:00:00Z'));
+  assert.equal(c.targetHunter, alice); assert.equal(c.procurementMode, 'TARGETED'); assert.equal(c.submissionDeadline, '2026-10-21T19:00:00Z');
+  assert.equal(c.publicSubmissions, true); assert.deepEqual(c.juryNodes.map((n) => n.provider), ['OpenAI', 'Anthropic']);
   assert.match(c.description, /^Counter bounty: #18, verified/m); assert.equal(c.workProductType, 'Wager settlement claim');
   assert.match(h.text(), /Posted bounty #26/);
   await assert.rejects(h.run('answer', '18', '--approval', line, '--yes'), /already approved and posting started/);
@@ -133,12 +134,17 @@ test('propose, check the answer, status, claim and close', async (t) => {
   assert.match(h.text(), /Counter bounty #19: passed the check/); assert.match(h.text(), /claim from 2026-10-20T22:00:00Z/);
   const score = ['--score', 'Boston Celtics 110, Detroit Pistons 104 (Final)', '--source', 'NBA.com|https://www.nba.com/game/bos-vs-det|BOS 110 DET 104 FINAL', '--source', 'CBS Sports|https://www.cbssports.com/nba/gametracker/recap/x|Celtics 110 Pistons 104 Final'];
   await assert.rejects(h.run('claim', 'VW-TEST3-BOS-DET-20261020', ...score), /Too early/);
+  h.clock = at('2026-10-20T22:30:00Z'); h.logs.length = 0;
+  await h.run('claim', 'VW-TEST3-BOS-DET-20261020', ...score);
+  const earlyLine = /^ {2}(Approve claim [0-9a-f]{8}, bounty #19)$/m.exec(h.text())[1];
+  await assert.rejects(h.run('claim', 'VW-TEST3-BOS-DET-20261020', '--approval', earlyLine, '--yes'), /Too early to submit: wait until 2026-10-21T00:00:00/);
+  assert.equal(h.submitted.length, 0);
   h.clock = at('2026-10-21T00:30:00Z'); h.logs.length = 0;
   await h.run('claim', 'VW-TEST3-BOS-DET-20261020', ...score);
   const record = JSON.parse(await readFile(path.join(h.dir, 'wagers', h.created[0].wager.termsSha256.slice(0, 16), 'wager.json'), 'utf8'));
   const claim = await readFile(path.join(h.dir, 'wagers', record.termsSha256.slice(0, 16), 'claim.md'), 'utf8');
   assert.match(claim, /^MUTUAL WAGER CLAIM \(mutual-wager-v3\)\nWager ID: VW-TEST3-BOS-DET-20261020\nBounty claimed: #19\n/);
-  assert.match(claim, /^Bounty #26\nOn-chain parameters: .*\/api\/jobs\/26\/onchain-status\n {2}creator 0x7ACb/m);
+  assert.match(claim, /^3\. Counter bounty\nBounty #26\nOn-chain parameters: .*\/api\/jobs\/26\/onchain-status\nTerms, rubric and jury: .*\/api\/jobs\/26\?includeRubric=true\n$/m);
   const claimLine = /^ {2}(Approve claim [0-9a-f]{8}, bounty #19)$/m.exec(h.text())[1];
   assert.equal(claimLine, `Approve claim ${W.sha256(claim).slice(0, 8)}, bounty #19`);
   assert.equal(h.submitted.length, 0);

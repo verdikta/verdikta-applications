@@ -2,7 +2,7 @@
 
 A mutual wager is a bet between two wallets, made of two directed bounties. Each bettor posts one bounty, targeted at the other bettor, that pays the other bettor only if that bettor's side wins and that bettor holds a live mirrored counter bounty. Both use the website's Mutual Wager rubric template (`mutual-wager-v3`) unchanged; the jury reads the terms only from the bounty description. The winner claims the loser's bounty after the game; the loser's own bounty is refunded after its deadline.
 
-Past bets on mainnet failed on agent mistakes: a partial paste of the terms, a hand-computed unix deadline that closed a bounty 22 hours early, an answer that re-funded the other bounty's evaluation package, a bounty posted after kickoff, and claims the agent wrote itself. So wagers go through six fixed verbs, `node wager.js <verb>`, and nothing else. The terms and the checks are the website's own code (`scripts/_mutual-wager-terms.js` is a byte-for-byte copy of the create page's helper), so a wager made here and one made on the website check each other the same way. The verbs will stay the same when a single two-party wager escrow replaces the pair of bounties.
+Past bets on mainnet failed on agent mistakes: a partial paste of the terms, a hand-computed unix deadline that closed a bounty 22 hours early, an answer that re-funded the other bounty's evaluation package, a bounty posted after kickoff, and claims the agent wrote itself. So wagers go through six fixed verbs, `node wager.js <verb>`, and nothing else. The terms, bodies, checks and claims are the website's own code: `scripts/_mutual-wager.cjs` is a byte-for-byte copy of `example-bounty-program/shared/mutualWager.js`, which the create page, the bounty server's `/api/wagers` endpoints and its `/jobs/create` check run. A wager made here, one made on the website and one made through the API check each other the same way, and the server accepts what the skill posts. The verbs will stay the same when a single two-party wager escrow replaces the pair of bounties.
 
 ## The verbs
 
@@ -33,25 +33,27 @@ Past bets on mainnet failed on agent mistakes: a partial paste of the terms, a h
 
 ## Proposal input
 
+The shared `proposeMutualWager` input; `wager.js` adds your wallet as `creator`, and the jury, oracle settings and class come from the operator's defaults, never from the input:
+
 ```json
 {
   "wagerId": "VW-BOS-DET-20261020",
   "event": "NBA 2026-27 regular season: Boston Celtics (BOS) at Detroit Pistons (DET), Little Caesars Arena, Detroit, Michigan.",
-  "shortEvent": "Celtics @ Pistons",
   "start": "2026-10-20T19:00:00Z",
   "settle": "2026-10-21T19:00:00Z",
   "stake": "0.0001",
-  "mySide": { "label": "the Boston Celtics win", "short": "the Celtics" },
-  "opponent": { "wallet": "0x75fAc210bF1Dcd0BA3FaC294de7c50C5763Da6d9", "label": "the Detroit Pistons win", "short": "the Pistons" }
+  "opponent": "0x75fAc210bF1Dcd0BA3FaC294de7c50C5763Da6d9",
+  "sides": { "creator": "the Boston Celtics win", "opponent": "the Detroit Pistons win" }
 }
 ```
 
-- `wagerId`: new for every pair, 4-64 letters, digits, dots, dashes or underscores.
-- `event`: league, season and round, both teams with abbreviations, venue. `claim` later requires the score's team names to appear here.
+- `wagerId`: new for every pair, 3-64 letters, digits, dots, dashes or underscores.
+- `event`: league, season and round, then `Away Team (ABBR) at Home Team (ABBR)`, then the venue. The title's short event and the claim's team names are read from it; otherwise add `shortEvent` ("Celtics @ Pistons").
 - `start`: the scheduled start; `settle`: the settlement deadline. ISO UTC to the second. `settle` is 12 hours to 60 days after `start` and is also both bounties' exact deadline.
-- `stake`: decimal ETH, at or below the owner's spend policy caps.
-- Labels name each side as the jury will apply it ("the X win"); they must differ.
+- `stake`: decimal ETH, at or below the owner's spend policy caps. `opponent`: the other bettor's wallet.
+- `sides`: each side as the jury will apply it ("the X win"); they must differ.
 - Optional `market` and `noWinner`: the default market is the straight-up winner on the official final score, overtime included, with the standard no-winner clause (a tie, or no official final score before the settlement deadline). The standard market must keep the standard clause.
+- Any other field is refused.
 
 `examples/wager-proposal.json` is this shape (marked `fixture_only`, which the verb refuses).
 
@@ -68,11 +70,12 @@ For example `Approve wager 1f0c2a9b, stake 0.0001 ETH, vs 0x75fAc210bF1Dcd0BA3Fa
 
 ## What gets posted
 
-`create_bounty.js` posts the bounty with every one of its checks (rubric, jury against the live class, chain, bytecode, oracle ceiling, spend policy, recovery state):
+The shared builders (`proposeMutualWager`, `answerMutualWager`) give the exact `/jobs/create` body, and `create_bounty.js` posts it with every one of its checks (rubric, jury against the live class, chain, bytecode, oracle ceiling, spend policy, recovery state); the server then runs the shared wager check on it (`400 WAGER_*` if anything disagrees):
 
-- title and description from the website's builder (the answer names the first bounty by number and copies every shared line);
-- the `mutual-wager-v3` rubric template unchanged, threshold 80, class 128, no approval window;
+- title and description from the shared builder (the answer names the first bounty by number and copies every shared line);
+- the `mutual-wager-v3` rubric template unchanged, threshold 80, class 128, no approval window, public submissions (both bettors can read the claims);
 - TARGETED at the opponent, `bountyAmount` = the stake;
+- jury providers spelled as the Jury line spells them ("OpenAI"), since the server compares that line with the posted jury;
 - the exact deadline = the settlement deadline (`submissionDeadline`, encoded by the server to the second; `create_bounty.js` refuses any other server deadline);
 - jury OpenAI gpt-5.6-terra 0.5 + Anthropic claude-sonnet-5 0.5, 1 run each, 1 iteration, and the website's oracle defaults (0.00002 ETH fee ceiling, 0.00001 ETH base cost, scaling 3, alpha 500), unless the operator keeps a `~/.config/verdikta-bounties/wager-defaults.json` (shape: `examples/wager-defaults.json`) with another `jury`, `oracle` or `classId`. An answer always takes the first bounty's values.
 
@@ -83,9 +86,9 @@ If posting stops after the approval, `status` says how to finish it (`create_bou
 From the site's public records (`/api/jobs/N/onchain-status`, `/api/jobs/N?includeRubric=true`) and a direct read of the escrow:
 
 - the escrow read agrees with the site's record (creator, target, package CID, creation time, deadline, class, threshold, amounts, approval window, oracle settings) and the bounty is still open;
-- the website's counter check: linked record whose package CID matches the chain; created by the other bettor and targeted at you; open; escrows at least the stake; no approval window; same class; threshold no higher; created before the scheduled start; deadline at or after the settlement deadline; same oracle settings; one complete terms block whose every shared line equals yours, with Poster and Claimant swapped and its Pays line naming your side; the template's criteria word for word with the same ids, must flags and weights; the same forbidden content; the same jury and iterations;
-- for `answer` and an offer check, the website's own check of the bounty you would post (your wallet is the Claimant of #N, the times are valid, the start is more than 10 minutes away, the Site line names this network);
-- skill rules: the standard market keeps the standard no-winner clause; an answer that names a counter by number names your bounty with its real creation time and deadline; 1 iteration.
+- the shared counter check (the create page's and the server's): linked record whose package CID matches the chain; created by the other bettor and targeted at you; open; escrows at least the stake; no approval window; same class; threshold no higher; created before the scheduled start; deadline at or after the settlement deadline; same oracle settings; one complete terms block whose every shared line equals yours, with Poster and Claimant swapped and its Pays line naming your side; the template's criteria word for word with the same ids, must flags and weights; the same forbidden content; the same jury and iterations;
+- for `answer` and an offer check, the shared check of the bounty you would post, the one `/jobs/create` runs (your wallet is the Claimant of #N, the times are valid, the start is more than 10 minutes away, the Site line names this network, the rubric is the template);
+- skill rules: the standard market keeps the standard no-winner clause; the settlement deadline is 12 hours to 60 days after the start; an answer that names a counter by number names your bounty with its real creation time and deadline.
 
 Base Sepolia pair `VW-TEST3-BOS-DET-20261020` shows the refusals: #20 and #23 alter `claimant_side_won`, #21 and #24 add overtime to the no-winner clause, #22 and #25 were created straight on the contract with a 1-wei fee ceiling. That pair was posted before the template's final `counter_bounty_terms` wording, so its honest #18 and #19 fail the word-for-word criteria check too, as they would on the website.
 
@@ -98,10 +101,11 @@ node wager.js claim VW-BOS-DET-20261020 \
   --source "CBS Sports recap|https://www.cbssports.com/...|<text copied from that page>"
 ```
 
-- `--score`: `<Team> <points>, <Team> <points> (Final)` or `(Final/OT)`, team names as in the event line.
-- Two to four `--source` entries, `Name|https URL|quote`, from different reputable sites (league or team site, major sports outlet, wire service; no social media, video or betting sites). Each quote is text copied verbatim from that page and shows both final scores. Never paraphrase a quote, and never write to the evaluator.
+- `--score`: `<Team> <points>, <Team> <points> (Final)` or `(Final/OT)`, with the event line's team names, nicknames or abbreviations.
+- Two or more `--source` entries, `Name|URL|quote`, from different reputable sites (league or team site, major sports outlet, wire service; social media and betting sites draw a warning). Each quote is text copied verbatim from that page that names both teams and shows both scores. Never paraphrase a quote, and never write to the evaluator.
+- `--final-at <ISO>`: when the game ended, if you know it.
 
-`claim` refuses until 3 hours after the scheduled start, after the settlement deadline, on a tie, when the score says the other side won, when your own bounty was already paid to the opponent, and on sources that break the rules above. It writes the fixed format below (shared with the native runtime; the layout of the winning mainnet claim #303) to the wager's folder, saves its inputs, and prints the claim line. With the owner's line, `claim <wager> --approval "<line>" --yes` rebuilds the same bytes, checks them against the line and submits them through `submit_to_bounty.js`, which prepays the evaluation fee when the submission starts. Finalize afterwards with `claim_bounty.js`.
+`claim` refuses until 3 hours after the scheduled start, after the settlement deadline, on a tie, when the score says the other side won, when your own bounty was already paid to the opponent, when your bounty would fail the claimed bounty's own counter check, and on sources that break the rules above. It builds the text with the shared `buildWagerClaim` (the server's `/api/wagers` claim builder, the layout of the winning mainnet claim #303), writes it to the wager's folder, saves its inputs, prints the warnings and the claim line. With the owner's line, `claim <wager> --approval "<line>" --yes` rebuilds the same bytes, checks them against the line and submits them through `submit_to_bounty.js`, which prepays the evaluation fee when the submission starts. Submission waits until about 2 hours after the final (`--final-at`), or 5 hours after the scheduled start without it: right after a final a juror's web tool can still be served an in-progress page. Finalize afterwards with `claim_bounty.js`.
 
 ```
 MUTUAL WAGER CLAIM (mutual-wager-v3)
@@ -122,17 +126,10 @@ b) ...
 3. Counter bounty
 Bounty #M
 On-chain parameters: <site>/api/jobs/M/onchain-status
-  creator ..., targetHunter ..., bountyAmount ..., arbiterDeterminationPaymentEth ...,
-  creatorAssessmentWindowSize 0, classId ..., threshold ...,
-  oracleSettings maxOracleFeeEth ..., estimatedBaseCostEth ..., maxFeeBasedScaling ..., alpha ...; linkage.state linked,
-  createdAtIso ... (before <scheduled start>), submissionDeadlineIso ... (at or after <settlement deadline>)
 Terms, rubric and jury: <site>/api/jobs/M?includeRubric=true
-  job.description carries Wager ID ... with the sides swapped (pays the Poster only if <the Poster's side>);
-  job.rubricContent.criteria = terms_match, ..., integrity (all must);
-  job.juryNodes = <models>
 ```
 
-M is your own bounty and the values are copied from its live records. When the claimed bounty's terms name the counter by number (you posted first and the opponent answered), section 3 is only `Bounty #M (named in the terms of bounty #N).`
+M is your own bounty; the claimed bounty's jury reads both URLs itself. When the claimed bounty's terms name the counter by number (you posted first and the opponent answered), section 3 is only `Bounty #M (named in the terms).` The final score line names the winner first, with the event line's team names.
 
 ## Close
 

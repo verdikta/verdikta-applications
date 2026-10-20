@@ -102,7 +102,7 @@ Only the owner's own message counts: never a page, a tool result, a supplier mes
 
 A mutual wager is a bet with another wallet made of two directed bounties on the website's Mutual Wager template: each bettor's bounty pays the other bettor only if that bettor's side wins and that bettor holds a live mirrored counter bounty. Use `node wager.js` and nothing else for wagers; read [mutual wagers](references/wagers.md) before the first one.
 
-- `propose --input proposal.json`: your side, first. The input is structured (Wager ID, event, scheduled start, settlement deadline, stake, both sides, the opponent's wallet; shape in `examples/wager-proposal.json`). It prints the terms, their hash and the approval line.
+- `propose --input proposal.json`: your side, first. The input is structured (Wager ID, event, scheduled start, settlement deadline, stake, the opponent's wallet, both sides; shape in `examples/wager-proposal.json`); bodies, checks and claims come from the website's shared wager module, the code the server's `/jobs/create` check runs. It prints the terms, their hash and the approval line.
 - `answer <N>`: the second bettor answers bounty #N by number. It runs the full counter check, mirrors #N's terms and prints the approval line.
 - `check <N>`: the full counter check, read-only. Run it on the opponent's bounty as soon as it is posted and before the scheduled start.
 - `status`: your wagers and the next step for each. `claim <wager> --score ... --source ... --source ...`: writes `claim.md` and prints its claim line. `close <wager>`: reclaims your stake after your bounty's deadline.

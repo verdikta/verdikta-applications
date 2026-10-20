@@ -131,6 +131,16 @@ number for precision-sensitive accounting or signing.
 Fractional submissionWindowHours and creatorAssessmentWindowHours round to the
 nearest second. Exact integer creatorAssessmentWindowSeconds takes precedence
 when supplied. Storage and calldata use the same rounded submission deadline.
+For a deadline that must land on a date (terms that name one, such as a wager's
+settlement deadline), pass submissionDeadline instead of submissionWindowHours:
+whole unix seconds or ISO-8601 with a zone, e.g. "2026-10-22T00:00:00Z". It is
+encoded to the second; job.submissionCloseTimeIso echoes it. Passing both, a past
+time, milliseconds or a zone-less time returns 400. Sign onChain.transaction as
+returned rather than encoding your own deadline: PATCH /bountyId compares the
+on-chain deadline with the planned one and returns warnings[] with code
+DEADLINE_MISMATCH when they differ (exact deadlines to the second, windows by more
+than 15 minutes). The contract cannot change a deadline; a mismatched bounty has to
+be recreated.
 Both split payments are required if either payment is supplied or a positive
 assessment window is requested. Incomplete settings return 400 instead of silently
 removing the window. With no window, both payments must equal bountyAmount;
@@ -1045,6 +1055,8 @@ router.get('/api/docs', (req, res) => {
       amounts: 'Positive decimal or scientific-notation ETH (e.g. 1e-3, 5e-05, +1); strings preserve 18-decimal precision. Hex, fractional wei, zero/negative and payments >= 2^128 wei return 400 before upload/storage.',
       amountResponse: 'bountyAmount remains a numeric ETH display field. bountyAmountWei is an exact integer wei string for signing/accounting; older numeric-only records acquire it on chain sync. Never convert the display number back to wei when the exact field is present.',
       windows: 'submissionWindowHours (default 24) and creatorAssessmentWindowHours (default 0) round to nearest integer seconds. Optional integer creatorAssessmentWindowSeconds takes precedence. The same rounded duration drives stored and encoded deadlines; submission duration must exceed assessment window by more than 2 seconds.',
+      exactDeadline: 'submissionDeadline (instead of submissionWindowHours, not with it): whole unix seconds or ISO-8601 with a zone ("2026-10-22T00:00:00Z"); encoded to the second and echoed as job.submissionCloseTimeIso. Past, millisecond, zone-less or fractional values return 400 "Invalid bounty window" before anything is pinned. Use it when the description names a date.',
+      deadlineCheck: 'PATCH /bountyId returns warnings: [{ code: "DEADLINE_MISMATCH", plannedSubmissionDeadline(+Iso), onChainSubmissionDeadline(+Iso), differenceSeconds, message, fix }] when the on-chain deadline differs from the planned one (exact: any difference; window: more than 15 minutes). The link still succeeds; the deadline cannot be changed, so recreate the bounty if its terms name the planned date.',
       payments: 'Both creatorDeterminationPayment and arbiterDeterminationPayment are required when either is supplied or a positive window is requested. Incomplete settings return 400. No-window split payments must both equal bountyAmount (mismatches return 400, not ignored). Windowed funding uses their maximum.',
       errors: { queryTooLong: 'Evaluation query too long (code QUERY_TOO_LONG)', legacyInvalidAmount: 'Invalid bountyAmount', legacyInvalidTarget: 'Invalid targetHunter address', window: 'Invalid bounty window', payments: 'Invalid bounty payment', explicitProcurement: 'Invalid procurement intent' },
       queryLength: `The evaluation query composed from the template, workProductType, title, description, rubric criterion labels and descriptions, and forbiddenContent must be at most ${maxEvaluationQueryChars()} characters (JS String.length), the arbiters' cap. Longer returns 400 QUERY_TOO_LONG before anything is pinned, with composedLength, limit, over and breakdown { template, workProductType, title, description, criteria: [{ id, chars }], forbiddenContent }.`,

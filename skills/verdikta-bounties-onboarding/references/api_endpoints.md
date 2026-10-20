@@ -54,6 +54,8 @@ Body:
 
 Response includes `job.evaluationCid` — use this as the `evaluationCid` in the on-chain `createBounty()` call.
 
+**Exact deadline.** In place of `submissionWindowHours`, `submissionDeadline` sets the deadline to the second: whole unix seconds or ISO-8601 with a zone (`"2026-10-22T00:00:00Z"`). Use it when the description names a date, such as a wager's settlement deadline. The response echoes it as `job.submissionCloseTimeIso`. Both fields together, a past time, milliseconds or a zone-less time return `400 Invalid bounty window` before anything is pinned.
+
 **Query length.** The server composes one evaluation query from a fixed template (about 2,000 characters) plus `workProductType`, `title`, `description`, every rubric criterion's label and description, and `forbidden_content`. Arbiters reject a query longer than 32,000 characters (`String.length`) and never commit, so the bounty could never pay. `/jobs/create` refuses it first: `400` with `code: "QUERY_TOO_LONG"`, `composedLength`, `limit`, `over` and a `breakdown` (`template`, `workProductType`, `title`, `description`, `criteria: [{ id, chars }]`, `forbiddenContent`) showing what to shorten. Nothing is pinned. (Hunter submission archives have their own, lower cap of 10,000; see below.)
 
 After calling the API, the bot must sign an on-chain `createBounty(CreateParams)` transaction on the BountyEscrow contract with ETH as `msg.value`. Use explicit OPEN mode for address(0); TARGETED must have a nonzero supplier. Bind all fields to the reviewed config and server-persisted deadline. The descriptor is onChain.transaction; independently verify it before signing. See [commission and recovery](commission.md) and [the skill lifecycle instructions](../SKILL.md) for the current guarded CLI flow.
@@ -80,6 +82,8 @@ Body:
 ```
 
 Sets `onChain: true`, reconciles the API job ID with the on-chain bounty ID (if different), and records the contract address.
+
+If the bounty went on chain with a deadline other than the one `/jobs/create` planned, the response also carries `warnings: [{ "code": "DEADLINE_MISMATCH", "plannedSubmissionDeadlineIso", "onChainSubmissionDeadlineIso", "differenceSeconds", "message", "fix" }]`. An exact `submissionDeadline` must match to the second; a window may drift up to 15 minutes. The link still succeeds, but the contract cannot change a deadline: recreate the bounty if its terms name the planned date.
 
 ### Resolve (fallback — searches chain)
 

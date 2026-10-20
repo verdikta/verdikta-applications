@@ -452,14 +452,29 @@ function normalizeBountyPayments(body) {
   const assessmentHours = body.creatorAssessmentWindowHours ?? 0;
   const assessmentSeconds = body.creatorAssessmentWindowSeconds;
   const window = assessmentSeconds != null ? seconds(assessmentSeconds, false) : seconds(assessmentHours, true);
-  const duration = seconds(body.submissionWindowHours ?? 24, true);
+  // An exact deadline, for terms that name a date (a wager's settlement deadline).
+  // A window is relative to this request, so it can't hit a date exactly; agents
+  // that worked the unix time out by hand have got it wrong (mainnet #302 closed
+  // 22 hours before the date its terms promised).
+  const nowSec = Math.floor(Date.now() / 1000);
+  let submissionDeadline = null;
+  if (body.submissionDeadline != null) {
+    if (body.submissionWindowHours != null) throw windowError('Pass submissionDeadline or submissionWindowHours, not both');
+    submissionDeadline = parseSubmissionDeadline(body.submissionDeadline, windowError);
+    if (submissionDeadline <= nowSec) {
+      throw windowError(`submissionDeadline ${submissionDeadline} (${new Date(submissionDeadline * 1000).toISOString()}) is not in the future; the server time is ${nowSec}`);
+    }
+  }
+  const duration = submissionDeadline != null ? submissionDeadline - nowSec : seconds(body.submissionWindowHours ?? 24, true);
   const hasCreator = body.creatorDeterminationPayment != null;
   const hasArbiter = body.arbiterDeterminationPayment != null;
   if ((hasCreator !== hasArbiter) || ((Number(assessmentHours) > 0 || Number(assessmentSeconds) > 0) && !(hasCreator && hasArbiter))) {
     throw windowError('An assessment window or a split payment requires both creatorDeterminationPayment and arbiterDeterminationPayment');
   }
-  if (duration <= window + 2 || !Number.isSafeInteger(Math.floor(Date.now() / 1000) + duration)) {
-    throw windowError('Submission window must exceed the creator assessment window by more than 2 seconds');
+  if (duration <= window + 2 || !Number.isSafeInteger(nowSec + duration)) {
+    throw windowError(submissionDeadline != null
+      ? 'submissionDeadline must be more than 2 seconds after the creator assessment window would end'
+      : 'Submission window must exceed the creator assessment window by more than 2 seconds');
   }
   const creator = amount(body.creatorDeterminationPayment ?? body.bountyAmount, 'creatorDeterminationPayment');
   const arbiter = amount(body.arbiterDeterminationPayment ?? body.bountyAmount, 'arbiterDeterminationPayment');
@@ -469,8 +484,32 @@ function normalizeBountyPayments(body) {
   return {
     bountyAmount: Number(ethers.formatEther(funded)), bountyAmountWei: funded.toString(),
     creatorDeterminationPayment: ethers.formatEther(creator), arbiterDeterminationPayment: ethers.formatEther(arbiter),
-    creatorAssessmentWindowSize: window, submissionWindowSeconds: duration
+    creatorAssessmentWindowSize: window, submissionWindowSeconds: duration,
+    // Unix seconds when the caller gave an exact deadline; null for a window.
+    submissionDeadline
   };
+}
+
+// submissionDeadline: whole unix seconds (number or digit string), or ISO-8601 with
+// an explicit zone ("2026-10-22T00:00:00Z", "+02:00"). A zone-less ISO time would be
+// read in the server's zone, so it is refused rather than guessed.
+function parseSubmissionDeadline(value, windowError) {
+  const example = 'e.g. 1792627200 or "2026-10-22T00:00:00Z"';
+  if (typeof value === 'number' || (typeof value === 'string' && /^\s*\d+\s*$/.test(value))) {
+    const n = Number(value);
+    if (!Number.isSafeInteger(n) || n <= 0) throw windowError(`submissionDeadline must be whole unix seconds, ${example}`);
+    if (n >= 1e11) throw windowError(`submissionDeadline ${n} looks like milliseconds; pass unix seconds, ${example}`);
+    return n;
+  }
+  if (typeof value === 'string') {
+    const iso = value.trim();
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/i.test(iso)) {
+      const ms = Date.parse(iso);
+      if (Number.isFinite(ms) && ms % 1000 === 0) return ms / 1000;
+      if (Number.isFinite(ms)) throw windowError(`submissionDeadline must be a whole second, ${example}`);
+    }
+  }
+  throw windowError(`submissionDeadline must be unix seconds or an ISO-8601 time with a timezone, ${example}`);
 }
 
 module.exports = {

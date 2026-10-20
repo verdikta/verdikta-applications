@@ -527,7 +527,8 @@ router.post('/create', async (req, res) => {
     const procurementError = validateProcurement(req.body?.procurementMode, targetHunter);
     if (procurementError) return res.status(400).json({ error: req.body?.procurementMode == null ? 'Invalid targetHunter address' : 'Invalid procurement intent', details: procurementError });
     let payments;
-    try { payments = normalizeBountyPayments(req.body); }
+    let exactDeadline = null;
+    try { ({ submissionDeadline: exactDeadline, ...payments } = normalizeBountyPayments(req.body)); }
     catch (error) {
       const label = error.code === 'INVALID_BOUNTY_WINDOW' ? 'Invalid bounty window'
         : error.field === 'bountyAmount' && req.body?.procurementMode == null ? 'Invalid bountyAmount'
@@ -793,6 +794,17 @@ router.post('/create', async (req, res) => {
         logger.info('[jobs/create] reusing existing job with same evaluationCid', {
           jobId: existing.jobId, evaluationCid
         });
+        // A retry that names an exact deadline gets that deadline, not the first
+        // attempt's: the calldata below is built from the stored record.
+        if (exactDeadline != null && existing.submissionCloseTime !== exactDeadline) {
+          const updated = await jobStorage.updateJob(existing.jobId, {
+            submissionCloseTime: exactDeadline,
+            plannedSubmissionCloseTime: exactDeadline,
+            submissionWindowSeconds: payments.submissionWindowSeconds,
+            submissionDeadlineExact: true,
+          });
+          Object.assign(existing, updated);
+        }
         return res.json({
           success: true,
           job: {
@@ -807,6 +819,7 @@ router.post('/create', async (req, res) => {
             status: existing.status,
             submissionOpenTime: existing.submissionOpenTime,
             submissionCloseTime: existing.submissionCloseTime,
+            submissionCloseTimeIso: isoFromUnix(existing.submissionCloseTime),
             createdAt: existing.createdAt,
             oracleSettings: jobOracleSettings(existing)
           },
@@ -820,7 +833,7 @@ router.post('/create', async (req, res) => {
     // ---- Times ----
     const now = Math.floor(Date.now() / 1000);
     const submissionOpenTime = now;
-    const submissionCloseTime = now + payments.submissionWindowSeconds;
+    const submissionCloseTime = exactDeadline ?? now + payments.submissionWindowSeconds;
 
     // ---- Persist job ----
     const job = await jobStorage.createJob({
@@ -838,6 +851,12 @@ router.post('/create', async (req, res) => {
       iterations: Number(iterations),
       submissionOpenTime,
       submissionCloseTime,
+      // What onChain.transaction encodes. The sync overwrites submissionCloseTime with
+      // the chain's value, so PATCH /bountyId compares the chain against this copy.
+      plannedSubmissionCloseTime: submissionCloseTime,
+      // PATCH /bountyId holds an exact deadline to the second; a window may drift
+      // by the minutes between this call and the createBounty transaction.
+      ...(exactDeadline != null && { submissionDeadlineExact: true }),
       targetHunter: normalizedTarget,
       publicSubmissions: !!publicSubmissions,
       // Creator-chosen oracle request settings (wei strings + integers). Passed
@@ -862,6 +881,7 @@ router.post('/create', async (req, res) => {
         status: job.status,
         submissionOpenTime: job.submissionOpenTime,
         submissionCloseTime: job.submissionCloseTime,
+        submissionCloseTimeIso: isoFromUnix(job.submissionCloseTime),
         createdAt: job.createdAt,
         oracleSettings: job.oracleSettings
       },
@@ -6051,6 +6071,45 @@ router.post('/:jobId/create-attempt', async (req, res) => {
    PATCH bountyId + resolve helper
    =============================== */
 
+// A window-based deadline may drift by the time between POST /jobs/create and the
+// createBounty transaction (the website computes its own from the same window when it
+// signs); an exact one must match to the second.
+const DEADLINE_DRIFT_TOLERANCE_SEC = 15 * 60;
+
+function formatDuration(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.round((sec % 3600) / 60);
+  return h ? `${h}h${m ? ` ${m}m` : ''}` : `${m || 1}m`;
+}
+
+/**
+ * Warn when the bounty went on chain with a deadline other than the one POST /jobs/create
+ * planned. Mainnet #302 (2026-10-19): an agent hand-encoded its own deadline and the
+ * bounty closed 22 hours before the date its wager terms promised. The contract has no
+ * way to change a deadline, so the caller has to know now. Call before the chain fields
+ * are applied (that overwrites submissionCloseTime).
+ */
+function deadlineMismatchWarning(job, chainBounty) {
+  const planned = Number(job.plannedSubmissionCloseTime ?? (job.syncedFromBlockchain ? 0 : job.submissionCloseTime));
+  const onChain = Number(chainBounty.submissionCloseTime);
+  if (!(planned > 0) || !(onChain > 0)) return null;
+  const difference = onChain - planned;
+  const tolerance = job.submissionDeadlineExact ? 0 : DEADLINE_DRIFT_TOLERANCE_SEC;
+  if (Math.abs(difference) <= tolerance) return null;
+  const plannedIso = isoFromUnix(planned);
+  const onChainIso = isoFromUnix(onChain);
+  return {
+    code: 'DEADLINE_MISMATCH',
+    plannedSubmissionDeadline: planned,
+    plannedSubmissionDeadlineIso: plannedIso,
+    onChainSubmissionDeadline: onChain,
+    onChainSubmissionDeadlineIso: onChainIso,
+    differenceSeconds: difference,
+    message: `The bounty went on chain with submission deadline ${onChainIso}, ${formatDuration(Math.abs(difference))} ${difference < 0 ? 'earlier' : 'later'} than the ${plannedIso} that POST /jobs/create planned. The contract enforces the on-chain deadline and it cannot be changed.`,
+    fix: 'If the description or terms name the planned date, the bounty does not match them. Create a new bounty and sign onChain.transaction from POST /jobs/create as returned (pass submissionDeadline to /jobs/create for an exact date) instead of encoding your own deadline. An unused bounty refunds its creator through closeExpiredBounty after its deadline.'
+  };
+}
+
 router.patch('/:jobId/bountyId', async (req, res) => {
   try {
     const { jobId } = req.params;
@@ -6270,7 +6329,9 @@ router.patch('/:jobId/bountyId', async (req, res) => {
       // pending job may lack these (older client, or the dedup branch in POST
       // /jobs/create reused a stale pending row); applying them here makes the
       // GUI see a windowed/targeted bounty as such immediately.
+      let deadlineWarning = null;
       if (chainBounty) {
+        deadlineWarning = deadlineMismatchWarning(freshJob, chainBounty);
         const changed = applyChainBountyFields(freshJob, chainBounty);
         if (changed) {
           logger.info('[jobs/bountyId] backfilled chain fields', {
@@ -6285,7 +6346,7 @@ router.patch('/:jobId/bountyId', async (req, res) => {
         freshJob.lastSyncedAt = nowSec;
       }
 
-      return { ok: true, job: freshJob };
+      return { ok: true, job: freshJob, deadlineWarning };
     });
 
     if (outcome.notFound) {
@@ -6301,6 +6362,15 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     }
 
     logger.info('[jobs/bountyId] updated', { jobId, bountyId, contractAddress: outcome.job.contractAddress });
+    if (outcome.deadlineWarning) {
+      logger.warn('[jobs/bountyId] on-chain deadline differs from the planned one', {
+        bountyId: Number(bountyId),
+        planned: outcome.deadlineWarning.plannedSubmissionDeadlineIso,
+        onChain: outcome.deadlineWarning.onChainSubmissionDeadlineIso,
+        differenceSeconds: outcome.deadlineWarning.differenceSeconds
+      });
+      return res.json({ success: true, job: outcome.job, warnings: [outcome.deadlineWarning] });
+    }
     return res.json({ success: true, job: outcome.job });
   } catch (error) {
     logger.error('[jobs/bountyId] error', { msg: error.message });

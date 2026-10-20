@@ -122,7 +122,7 @@ function Agents({ walletState }) {
       method: 'POST',
       path: '/api/jobs/create',
       description: 'Create a bounty. Pins rubric to IPFS and builds evaluation package. Returns evaluationCid and jobId. Capture jobId from this response — do NOT re-query GET /api/jobs to look up a bounty you just created (the list endpoint has async indexing lag from on-chain event sync and may not include it for several seconds). IMPORTANT: After deploying on-chain, you MUST call PATCH /api/jobs/:jobId/bountyId to link the API job to the on-chain bounty. Without this step, the bounty will not appear correctly in the UI.',
-      params: 'title, description, workProductType, threshold (0-100), rubricJson ({criteria, ...}), juryNodes, classId, creator, bountyAmount, submissionWindowHours, targetHunter (optional address — restricts submissions to this wallet only), oracleMaxOracleFee / oracleAlpha / oracleEstimatedBaseCost / oracleMaxFeeBasedScaling (optional creator oracle settings, defaulted; used for every evaluation of the bounty), publicSubmissions (optional boolean — if true, surfaces preview/download of submitted work to everyone on the website; CIDs are public regardless). Either rubricJson or rubricCid required.'
+      params: 'title, description, workProductType, threshold (0-100), rubricJson ({criteria, ...}), juryNodes, classId, creator, bountyAmount, submissionWindowHours or submissionDeadline (exact: unix seconds or ISO-8601 with a zone such as "2026-10-22T00:00:00Z"; use it when the description names a date; not both), targetHunter (optional address — restricts submissions to this wallet only), oracleMaxOracleFee / oracleAlpha / oracleEstimatedBaseCost / oracleMaxFeeBasedScaling (optional creator oracle settings, defaulted; used for every evaluation of the bounty), publicSubmissions (optional boolean — if true, surfaces preview/download of submitted work to everyone on the website; CIDs are public regardless). Either rubricJson or rubricCid required.'
     },
     {
       method: 'PATCH',
@@ -139,7 +139,7 @@ function Agents({ walletState }) {
     {
       method: 'PATCH',
       path: '/api/jobs/:jobId/bountyId',
-      description: 'REQUIRED after on-chain deployment. Links the API job to the on-chain bounty by setting onChain=true and reconciling the jobId. Without this call, the bounty may be orphaned when it expires. The sync service can auto-link via evaluationCid within ~5 minutes, but calling this endpoint is instant and reliable. Send txHash: the server identifies the job by the receipt (safe with parallel creates whose on-chain ids land out of order) and retries a not-yet-indexed receipt for several seconds; a 409 or 503 with retryAfterSeconds means retry the same call, nothing changed. Read the final jobId from the response.',
+      description: 'REQUIRED after on-chain deployment. Links the API job to the on-chain bounty by setting onChain=true and reconciling the jobId. Without this call, the bounty may be orphaned when it expires. The sync service can auto-link via evaluationCid within ~5 minutes, but calling this endpoint is instant and reliable. Send txHash: the server identifies the job by the receipt (safe with parallel creates whose on-chain ids land out of order) and retries a not-yet-indexed receipt for several seconds; a 409 or 503 with retryAfterSeconds means retry the same call, nothing changed. Read the final jobId from the response. If the on-chain deadline differs from the one /jobs/create planned, the response carries warnings[] with code DEADLINE_MISMATCH: the deadline cannot be changed, so recreate the bounty if its terms name that date.',
       params: 'bountyId (on-chain ID from BountyCreated event), txHash, blockNumber (optional)'
     },
     {
@@ -378,6 +378,8 @@ curl -X POST -H "X-Bot-API-Key: YOUR_API_KEY" \\
   }'
 # Returns: { jobId, evaluationCid, rubricCid }
 # Optional: add "targetHunter": "0xAddress" to restrict submissions to one wallet.
+# Optional: replace submissionWindowHours with an exact deadline when the terms name a date:
+#   "submissionDeadline": "2026-10-22T00:00:00Z"   // or unix seconds; sign onChain.transaction as returned
 # Optional: add creator approval window (lets creator approve before oracle evaluation):
 #   "creatorDeterminationPayment": 0.005,    // ETH paid if creator approves directly
 #   "arbiterDeterminationPayment": 0.01,     // ETH paid if arbiters approve (after window)

@@ -89,7 +89,7 @@ test('a proposal builds the same bounty the site builds, with a hash over its ex
   assert.deepEqual(p.problems, []);
   assert.equal(p.offer.description, fx(18, 'job').job.description);
   assert.equal(p.offer.title, fx(18, 'job').job.title);
-  assert.equal(p.termsSha256, createHash('sha256').update(`${p.offer.title}\n\n${p.offer.description}`).digest('hex'));
+  assert.equal(p.termsSha256, createHash('sha256').update(p.offer.description).digest('hex'));
   assert.equal(W.createConfig({ offer: p.offer, expect: p.expect, wager: {} }).submissionDeadline, Date.parse(proposal.settle) / 1000);
 });
 
@@ -111,15 +111,15 @@ test('approval line: exact terms only', () => {
   const p = W.buildProposal(proposal, { me: alice, ctx, now: NOW });
   const record = { termsSha256: p.termsSha256, stake: '0.0001', opponent: bob, settle: proposal.settle };
   const line = W.approvalLineFor(record);
-  assert.equal(line, `Approve wager ${p.termsSha256.slice(0, 8)}, stake 0.0001 ETH, vs 0x75fA…a6d9, settle 2026-10-21T19:00:00Z`);
+  assert.equal(line, `Approve wager ${p.termsSha256.slice(0, 8)}, stake 0.0001 ETH, vs ${bob}, settle 2026-10-21T19:00:00Z`);
   const bind = (approvalText, r = record) => W.bindWagerApproval({ approvalText, ...r });
   assert.equal(bind(`Looks good. ${line} Thanks`).hashPrefix, p.termsSha256.slice(0, 8));
   assert.ok(bind(`approve wager ${p.termsSha256.slice(0, 12)} stake 0.00010 eth vs ${bob.toLowerCase()} settle 2026-10-21T19:00Z`));
-  assert.ok(bind(line.replace('…', '...')));
+  for (const short of ['0x75fA…a6d9', '0x75fA...a6d9', '0x75fAc210']) assert.ok(bind(line.replace(bob, short)), short);
   assert.throws(() => bind('yes, go ahead'), /No wager approval line/);
   assert.throws(() => bind(line.replace(p.termsSha256.slice(0, 8), 'deadbeef')), /They changed/);
   assert.throws(() => bind(line.replace('0.0001', '0.001')), /stake 0.001 ETH/);
-  assert.throws(() => bind(line.replace('0x75fA', '0x75fB')), /opponent/);
+  for (const wrong of [bob.replace('0x75fA', '0x75fB'), '0x75fB…a6d9', '0x75fAc211']) assert.throws(() => bind(line.replace(bob, wrong)), /opponent/);
   assert.throws(() => bind(line.replace('19:00:00Z', '20:00:00Z')), /settle/);
   assert.throws(() => bind(`Approve ${p.termsSha256.slice(0, 8)}, payout 0.0001 ETH, window 24h`), /No wager approval line/);
 });
@@ -133,14 +133,15 @@ test('jury and oracle lines read back only when they round-trip', () => {
   assert.equal(W.parseOracleLine('maxOracleFeeEth 0.000020, estimatedBaseCostEth 0.00001, maxFeeBasedScaling 3, alpha 500.'), null);
 });
 
-// Alice claims bob's #19 (pays alice if the Celtics win) citing her #18.
+// Alice claims bob's #19 (pays alice if the Celtics win; its Counter line is REQUIRED) citing her #18.
 const claimed = { number: 19, terms: W.site.parseMutualWagerTerms(fx(19, 'job').job.description) };
+const counter = { number: 18, status: fx(18, 'status'), job: fx(18, 'job').job };
 const AFTER = Date.parse('2026-10-21T00:30:00Z') / 1000;
 const score = 'Boston Celtics 110, Detroit Pistons 104 (Final)';
 const sources = ['NBA.com game page|https://www.nba.com/game/bos-vs-det-0022600031|BOS 110 DET 104 FINAL', 'CBS Sports recap|https://www.cbssports.com/nba/gametracker/recap/NBA_20261020_BOS@DET/|Celtics 110 Final Pistons 104'];
-const claim = (change = {}) => W.buildClaim({ claimed, counterNumber: 18, me: alice, ctx, score, sources, now: AFTER, ...change });
+const claim = (change = {}) => W.buildClaim({ claimed, counter, me: alice, ctx, score, sources, now: AFTER, ...change });
 
-test('claim.md has the fixed format', () => {
+test('claim.md has the fixed format shared with the native runtime', () => {
   assert.equal(claim(), [
     'MUTUAL WAGER CLAIM (mutual-wager-v3)',
     'Wager ID: VW-TEST3-BOS-DET-20261020',
@@ -161,9 +162,32 @@ test('claim.md has the fixed format', () => {
     '3. Counter bounty',
     'Bounty #18',
     'On-chain parameters: https://bounties-testnet.verdikta.org/api/jobs/18/onchain-status',
+    `  creator ${alice}, targetHunter ${bob}, bountyAmount 0.0001, arbiterDeterminationPaymentEth 0.0001,`,
+    '  creatorAssessmentWindowSize 0, classId 128, threshold 80,',
+    '  oracleSettings maxOracleFeeEth 0.00002, estimatedBaseCostEth 0.00001, maxFeeBasedScaling 3, alpha 500; linkage.state linked,',
+    '  createdAtIso 2026-10-20T16:39:00.000Z (before 2026-10-20T19:00:00Z), submissionDeadlineIso 2026-10-21T20:38:58.000Z (at or after 2026-10-21T19:00:00Z)',
     'Terms, rubric and jury: https://bounties-testnet.verdikta.org/api/jobs/18?includeRubric=true',
+    '  job.description carries Wager ID VW-TEST3-BOS-DET-20261020 with the sides swapped (pays the Poster only if the Detroit Pistons win);',
+    '  job.rubricContent.criteria = terms_match, event_final, result_sources, claimant_side_won, counter_bounty_onchain, counter_bounty_terms, integrity (all must);',
+    '  job.juryNodes = gpt-5.6-terra, claude-sonnet-5',
     '',
   ].join('\n'));
+  // A claimed bounty whose terms name the counter (the second bettor's answer) only cites the number.
+  const answer = W.counterReport({ number: 18, status: fx(18, 'status'), job: fx(18, 'job').job, rpc: fx(18, 'rpc'), me: bob, ctx, now: NOW }).answer;
+  const named = W.buildClaim({ claimed: { number: 26, terms: W.site.parseMutualWagerTerms(answer.description) }, counter: { number: 18 }, me: alice, ctx, score, sources, now: AFTER });
+  assert.ok(named.endsWith('3. Counter bounty\nBounty #18 (named in the terms of bounty #26).\n'));
+  assert.throws(() => W.buildClaim({ claimed: { number: 26, terms: W.site.parseMutualWagerTerms(answer.description) }, counter: { number: 7 }, me: alice, ctx, score, sources, now: AFTER }), /names #18 as its counter, not #7/);
+  assert.throws(() => claim({ counter: { ...counter, status: { ...counter.status, linkage: { state: 'mismatch' } } } }), /not linked/);
+});
+
+test('claim approval line: that claim.md and that bounty only', () => {
+  const text = claim(), sha = W.sha256(text), line = W.claimLineFor({ claimSha256: sha, bounty: 19 });
+  assert.equal(line, `Approve claim ${sha.slice(0, 8)}, bounty #19`);
+  assert.equal(W.bindClaimApproval({ approvalText: `ok: ${line}`, claimSha256: sha, bounty: 19 }).hashPrefix, sha.slice(0, 8));
+  assert.ok(W.bindClaimApproval({ approvalText: `approve claim ${sha.slice(0, 10)} bounty 19`, claimSha256: sha, bounty: 19 }));
+  assert.throws(() => W.bindClaimApproval({ approvalText: line, claimSha256: sha, bounty: 18 }), /Show the owner the current claim/);
+  assert.throws(() => W.bindClaimApproval({ approvalText: line.replace(sha.slice(0, 8), 'deadbeef'), claimSha256: sha, bounty: 19 }), /Show the owner/);
+  assert.throws(() => W.bindClaimApproval({ approvalText: 'submit it', claimSha256: sha, bounty: 19 }), /No claim approval line/);
 });
 
 test('claim refuses before the game can be final, after settlement, and on bad evidence', () => {

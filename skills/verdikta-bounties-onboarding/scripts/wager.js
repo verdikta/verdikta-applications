@@ -8,12 +8,14 @@
 //   node wager.js answer <N> --approval "<line>" --yes               post the answer after the owner's line
 //   node wager.js check <N> [--against <your bounty>]                full counter check of bounty #N (read-only)
 //   node wager.js status                                             your wagers and the next step for each
-//   node wager.js claim <wager> --score "..." --source "Name|URL|quote" --source ...   write claim.md
+//   node wager.js claim <wager> --score "..." --source "Name|URL|quote" --source ...   write claim.md, print its line
+//   node wager.js claim <wager> --approval "<line>" --yes            submit that claim.md after the owner's line
 //   node wager.js close <wager> [--dry-run] [--yes]                  reclaim your stake after your bounty's deadline
 //
-// <wager> is the terms hash prefix, the Wager ID or one of the wager's bounty numbers. The owner's approval line
-// (Approve wager <8 hex>, stake <X> ETH, vs <opponent>, settle <ISO>) is the only authorization for --yes on a
-// propose or answer, for those exact terms; one wager per terms hash and per Wager ID.
+// <wager> is the terms hash prefix, the Wager ID or one of the wager's bounty numbers. The owner's lines are the only
+// authorization for --yes: "Approve wager <8 hex of sha256(description)>, stake <X> ETH, vs <opponent>, settle <ISO>"
+// for a propose or answer, "Approve claim <8 hex of sha256(claim.md)>, bounty #<N>" for a claim. One wager per terms
+// hash and per Wager ID. The native verdikta-agents runtime uses the same definitions.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Contract, getAddress, parseEther } from 'ethers';
@@ -22,6 +24,7 @@ import { defaultSecretsDir, ensureDir } from './_paths.js';
 import { abi, deployments, reviewedApiOrigin } from './_transaction-guards.js';
 import { runCreate } from './create_bounty.js';
 import { runRecover } from './recover_funds.js';
+import { runSubmit } from './submit_to_bounty.js';
 import * as W from './_wager.js';
 
 const USAGE = `Usage:
@@ -30,6 +33,7 @@ const USAGE = `Usage:
   node wager.js check <N> [--against <your bounty number>]
   node wager.js status
   node wager.js claim <wager> --score "<Team> <points>, <Team> <points> (Final)" --source "Name|https://...|quote" --source ...
+  node wager.js claim <wager> --approval "<owner's claim line>" --yes
   node wager.js close <wager> [--dry-run] [--yes]
 <wager> is the terms hash prefix, the Wager ID or one of the wager's bounty numbers.`;
 
@@ -58,7 +62,7 @@ const plainBounty = (b) => ({
 
 export async function runWager(lib, {
   argv = process.argv.slice(2), fetchApi = globalThis.fetch, contract = (address, contractAbi, provider) => new Contract(address, contractAbi, provider),
-  now = () => Math.floor(Date.now() / 1000), log = console.log, secretsDir = defaultSecretsDir(), create = runCreate, recover = runRecover,
+  now = () => Math.floor(Date.now() / 1000), log = console.log, secretsDir = defaultSecretsDir(), create = runCreate, recover = runRecover, submit = runSubmit,
 } = {}) {
   const args = parseArgs(argv);
   const verb = args.positional[0];
@@ -301,11 +305,13 @@ export async function runWager(lib, {
       }
       const start = W.unix(r.start);
       let next;
-      if (mineStatus?.status === 'AWARDED' || mineStatus?.status === 'CLOSED') next = 'Settled for your side; nothing to do.';
+      if (mineStatus?.status === 'AWARDED') next = `Your bounty #${r.bountyId} paid the opponent: the jury found the other side won.`;
+      else if (mineStatus?.status === 'CLOSED') next = `Your bounty #${r.bountyId} is closed and its stake refunded.`;
+      else if (r.claim) next = `Claim submitted to #${r.claim.bounty}${r.claim.submissionId != null ? ` (submission ${r.claim.submissionId})` : ''}: after the jury, node claim_bounty.js --jobId ${r.claim.bounty} --submissionId <id>. Reclaim your own stake after ${mineStatus?.submissionDeadlineIso ?? r.settle} with node wager.js close ${r.termsSha256.slice(0, 8)}.`;
       else if (counter == null) next = t < start ? `Wait for the opponent to answer #${r.bountyId} before ${r.start}, then check it.` : `No checked counter before the start: the wager is off. Reclaim your stake after ${mineStatus?.submissionDeadlineIso ?? r.settle}: node wager.js close ${r.termsSha256.slice(0, 8)}`;
       else if (deadlinePassed) next = `The deadline passed: reclaim your stake with node wager.js close ${r.termsSha256.slice(0, 8)}`;
       else if (t < start + W.CLAIM_OPENS_AFTER_START) next = `Game not final yet. If your side wins, claim from ${W.isoOf(start + W.CLAIM_OPENS_AFTER_START)}, about 2 hours after the final.`;
-      else next = `If your side won: node wager.js claim ${r.termsSha256.slice(0, 8)} --score "..." --source "Name|URL|quote" --source "..." (about 2 hours after the final), then submit claim.md.`;
+      else next = `If your side won: node wager.js claim ${r.termsSha256.slice(0, 8)} --score "..." --source "Name|URL|quote" --source "..." (about 2 hours after the final), then submit it with the owner's claim line.`;
       say(`  Next: ${next}`);
     }
   }
@@ -315,19 +321,37 @@ export async function runWager(lib, {
     if (record.bountyId == null) throw new Error('Your side of this wager was never posted; there is nothing to claim with');
     const claimedNumber = record.counter?.number != null && record.checks?.[record.counter.number]?.ok ? record.counter.number : null;
     if (claimedNumber == null) throw new Error('No checked counter bounty: run node wager.js check <the opponent\'s bounty> first');
+    const dir = dirOf(record.termsSha256);
+    const claimPath = path.join(dir, 'claim.md'), inputPath = path.join(dir, 'claim-input.json'), submissionPath = path.join(dir, 'claim-submission.json');
+    // The claim is rebuilt from the same inputs at approval, so the owner's line names exactly the bytes submitted.
+    const input = args.opt('score') ? { score: args.opt('score'), sources: args.all('source') }
+      : args.opt('approval') ? await fs.readFile(inputPath, 'utf8').then(JSON.parse, () => { throw new Error('No saved claim: run claim with --score and --source first'); })
+        : (() => { throw new Error(`--score and two --source entries are required\n${USAGE}`); })();
     const me = await walletAddress();
-    const [{ status, job }, mineStatus] = await Promise.all([readBounty(claimedNumber), api(`/jobs/${record.bountyId}/onchain-status`)]);
+    const [{ status, job }, mine] = await Promise.all([readBounty(claimedNumber), readBounty(record.bountyId)]);
     if (!status || status.status !== 'OPEN' || status.deadlinePassed) throw new Error(`Bounty #${claimedNumber} is ${status?.status || 'unreadable'}; it cannot be claimed`);
-    if (mineStatus.status === 'AWARDED') throw new Error(`Your bounty #${record.bountyId} was already paid to ${mineStatus.winner}: the jury found the other side won`);
+    if (mine.status?.status === 'AWARDED') throw new Error(`Your bounty #${record.bountyId} was already paid to ${mine.status.winner}: the jury found the other side won`);
     const terms = W.site.parseMutualWagerTerms(job?.description);
     if (terms.fields?.wagerId !== record.wagerId) throw new Error(`Bounty #${claimedNumber} is not part of wager ${record.wagerId}`);
-    if (terms.counter && terms.counter.number !== record.bountyId) throw new Error(`Bounty #${claimedNumber} names #${terms.counter.number} as its counter, not your #${record.bountyId}`);
-    const text = W.buildClaim({ claimed: { number: claimedNumber, terms }, counterNumber: record.bountyId, me, ctx, score: args.opt('score'), sources: args.all('source'), now: now() });
-    const file = path.join(dirOf(record.termsSha256), 'claim.md');
-    await fs.writeFile(file, text, { mode: 0o600 });
-    say(text, `Wrote ${file}. Submit it unchanged, as the only file:`,
-      `  node submit_to_bounty.js --jobId ${claimedNumber} --file ${file} --state ${path.join(dirOf(record.termsSha256), 'claim-submission.json')}`,
-      'Submit about 2 hours after the final whistle: earlier, the jurors\' web pages may still show the game in progress. The evaluation fee is paid when the submission starts.');
+    const text = W.buildClaim({ claimed: { number: claimedNumber, terms }, counter: { number: record.bountyId, status: mine.status, job: mine.job }, me, ctx, score: input.score, sources: input.sources, now: now() });
+    const claimSha256 = W.sha256(text);
+    if (!args.opt('approval')) {
+      await fs.writeFile(claimPath, text, { mode: 0o600 });
+      await fs.writeFile(inputPath, JSON.stringify(input, null, 2) + '\n', { mode: 0o600 });
+      say(text, `claim.md SHA-256: ${claimSha256} (saved to ${claimPath})`, '',
+        'Show the owner this claim and ask them to reply with exactly:', `  ${W.claimLineFor({ claimSha256, bounty: claimedNumber })}`,
+        'Submitting prepays the evaluation fee. Best about 2 hours after the final whistle: earlier, the jurors\' web pages may still show the game in progress.');
+      return;
+    }
+    const approval = W.bindClaimApproval({ approvalText: args.opt('approval'), claimSha256, bounty: claimedNumber });
+    if (await exists(submissionPath)) throw new Error(`This wager's claim was already submitted. Continue it with: node submit_to_bounty.js --jobId ${claimedNumber} --resume <submission id> --state ${submissionPath}`);
+    await fs.writeFile(claimPath, text, { mode: 0o600 });
+    const files = { jobId: String(claimedNumber), state: submissionPath };
+    await submit({ ...lib, arg: (name) => files[name] ?? null, argAll: (name) => (name === 'file' ? [claimPath] : []) });
+    const saved = await fs.readFile(submissionPath, 'utf8').then(JSON.parse, () => ({}));
+    record.claim = { bounty: claimedNumber, claimSha256, approvalLine: approval.line, submissionId: saved.submissionId ?? null, submittedAt: new Date(now() * 1000).toISOString() };
+    await saveRecord(record);
+    say(`Claim submitted to bounty #${claimedNumber}${saved.submissionId != null ? ` as submission ${saved.submissionId}` : ''}. The jury takes about 5-10 minutes; then node claim_bounty.js --jobId ${claimedNumber} --submissionId <id> finalizes the payout.`);
   }
 
   async function close() {

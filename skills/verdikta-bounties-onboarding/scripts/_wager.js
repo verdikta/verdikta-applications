@@ -38,9 +38,10 @@ const sameAddress = (a, b) => { try { return getAddress(String(a)) === getAddres
 const wei = (eth) => { try { return parseEther(norm(eth)); } catch { return null; } };
 const big = (v) => { try { return BigInt(v); } catch { return null; } };
 
-/** The exact text a wager bounty carries; the owner's approval names the first 8 hex of its SHA-256. */
-export const offerText = ({ title, description }) => `${title}\n\n${description}`;
-export const termsHash = (offer) => createHash('sha256').update(offerText(offer), 'utf8').digest('hex');
+// Shared with the native runtime: the terms hash is the SHA-256 of the description exactly as sent to /jobs/create.
+// Every money term is in it; the title, rubric, target, amount and deadline are derived from it.
+export const sha256 = (text) => createHash('sha256').update(text, 'utf8').digest('hex');
+export const termsHash = (offer) => sha256(offer.description);
 
 export function siteContext({ network, origin, deployment }) {
   if (!SITE_CHAIN_NAMES[network] || !deployment) throw new Error(`No wager site for network ${network}`);
@@ -259,19 +260,20 @@ export function createConfig({ offer, expect, wager }) {
 
 // ---- The owner's approval line ----
 
-/** Approve wager <8+ hex of the terms SHA-256>, stake <X> ETH, vs <opponent address, full or 0x1234…abcd>, settle <ISO>. */
-export const WAGER_APPROVAL_LINE = /\bapprove\s+wager\s+([0-9a-f]{8,64})\b[\s,;:]*stake\s*[:=]?\s*(\d+(?:\.\d+)?)\s*eth\b[\s,;:]*(?:vs\.?|versus|against)\s*(0x[0-9a-f]{40}|0x[0-9a-f]{4,}\s*(?:…|\.{2,3})\s*[0-9a-f]{4,})[\s,;:]*settle\s*[:=]?\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?Z)/gi;
+/** Approve wager <8+ hex of the terms SHA-256>, stake <X> ETH, vs <opponent: full address, 0x + 8+ hex, or 0x1234…abcd>, settle <ISO>. */
+export const WAGER_APPROVAL_LINE = /\bapprove\s+wager\s+([0-9a-f]{8,64})\b[\s,;:]*stake\s*[:=]?\s*(\d+(?:\.\d+)?)\s*eth\b[\s,;:]*(?:vs\.?|versus|against)\s*(0x[0-9a-f]{40}|0x[0-9a-f]{4,}\s*(?:…|\.{2,3})\s*[0-9a-f]{4,}|0x[0-9a-f]{8,39})[\s,;:]*settle\s*[:=]?\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?Z)/gi;
 
 export function parseWagerApprovalLines(text) {
   if (typeof text !== 'string') return [];
   return [...text.matchAll(WAGER_APPROVAL_LINE)].map((m) => ({ hashPrefix: m[1].toLowerCase(), stake: m[2], opponent: m[3].replace(/\s+/g, ''), settle: m[4], line: m[0] }));
 }
 
-export const approvalLineFor = ({ termsSha256, stake, opponent, settle }) => `Approve wager ${termsSha256.slice(0, 8)}, stake ${stake} ETH, vs ${shortAddress(opponent)}, settle ${settle}`;
+export const approvalLineFor = ({ termsSha256, stake, opponent, settle }) => `Approve wager ${termsSha256.slice(0, 8)}, stake ${stake} ETH, vs ${getAddress(opponent)}, settle ${settle}`;
 
 function opponentMatches(written, wallet) {
   const w = written.toLowerCase(), full = String(wallet).toLowerCase();
   if (/^0x[0-9a-f]{40}$/.test(w)) return w === full;
+  if (/^0x[0-9a-f]{8,39}$/.test(w)) return full.startsWith(w);
   const m = /^0x([0-9a-f]{4,})(?:…|\.{2,3})([0-9a-f]{4,})$/.exec(w);
   return Boolean(m) && full.slice(2).startsWith(m[1]) && full.endsWith(m[2]);
 }
@@ -287,6 +289,17 @@ export function bindWagerApproval({ approvalText, termsSha256, stake, opponent, 
   if (!opponentMatches(a.opponent, opponent)) throw new Error(`The approval names opponent ${a.opponent}; the terms name ${opponent}`);
   if (Date.parse(a.settle) !== Date.parse(settle)) throw new Error(`The approval says settle ${a.settle}; the terms say ${settle}`);
   return a;
+}
+
+/** Approve claim <8+ hex of the SHA-256 of claim.md>, bounty #<N>: the owner's approval to submit that exact claim. */
+export const CLAIM_APPROVAL_LINE = /\bapprove\s+claim\s+([0-9a-f]{8,64})\b[\s,;:]*bounty\s*#?\s*(\d+)\b/gi;
+export const claimLineFor = ({ claimSha256, bounty }) => `Approve claim ${claimSha256.slice(0, 8)}, bounty #${bounty}`;
+export function bindClaimApproval({ approvalText, claimSha256, bounty }) {
+  const lines = typeof approvalText === 'string' ? [...approvalText.matchAll(CLAIM_APPROVAL_LINE)].map((m) => ({ hashPrefix: m[1].toLowerCase(), bounty: Number(m[2]), line: m[0] })) : [];
+  if (!lines.length) throw new Error('No claim approval line found. Expected: Approve claim <first 8 hex of the claim.md hash>, bounty #<N>');
+  const hit = lines.find((l) => claimSha256.startsWith(l.hashPrefix) && l.bounty === Number(bounty));
+  if (!hit) throw new Error(`The approval names claim ${lines.map((l) => `${l.hashPrefix} for #${l.bounty}`).join(', ')}; this claim.md hashes to ${claimSha256.slice(0, 16)}… for #${bounty}. Show the owner the current claim and ask again`);
+  return hit;
 }
 
 // ---- The claim ----
@@ -321,11 +334,13 @@ export function parseSources(list) {
 }
 
 /**
- * claim.md for bounty #claimed.number (the opponent's, paying this wallet), citing counterNumber (this wallet's own
- * bounty). Refuses before the game can be final, after the settlement deadline, on a tie, when the score's winner is
- * not this wallet's side (standard market), and on quotes that do not show the score.
+ * claim.md for bounty #claimed.number (the opponent's, paying this wallet), citing counter = { number, status, job }:
+ * this wallet's own bounty with its /onchain-status and ?includeRubric=true job. The layout is shared with the native
+ * runtime (the winning #303 claim, v3 header, oracle settings and linkage added). Refuses before the game can be
+ * final, after the settlement deadline, on a tie, when the score's winner is not this wallet's side (standard
+ * market), and on quotes that do not show the score.
  */
-export function buildClaim({ claimed, counterNumber, me, ctx, score, sources, now }) {
+export function buildClaim({ claimed, counter, me, ctx, score, sources, now }) {
   const t = claimed.terms;
   if (!t?.found || !t.closed || t.count !== 1) throw new Error(`Bounty #${claimed.number} has no single, complete terms block`);
   if (!sameAddress(t.claimant.wallet, me)) throw new Error(`Bounty #${claimed.number} pays ${t.claimant.wallet}, not this wallet`);
@@ -335,7 +350,16 @@ export function buildClaim({ claimed, counterNumber, me, ctx, score, sources, no
   if (now >= settle) throw new Error(`Too late: the settlement deadline ${t.fields.settle} has passed`);
   const siteUrl = /^(\S+);/.exec(norm(t.fields.site))?.[1];
   if (siteUrl !== ctx.site) throw new Error(`Bounty #${claimed.number} is on ${siteUrl}, not ${ctx.site}`);
-  if (!Number.isSafeInteger(Number(counterNumber)) || Number(counterNumber) < 0) throw new Error('The counter bounty number is unknown');
+  const m = counter?.number;
+  if (!Number.isSafeInteger(m) || m < 0) throw new Error('The counter bounty number is unknown');
+  if (t.counter && t.counter.number !== m) throw new Error(`Bounty #${claimed.number} names #${t.counter.number} as its counter, not #${m}`);
+  const st = counter.status, job = counter.job;
+  if (!t.counter) {
+    // The claimed bounty's jury reads the counter itself: copy the values it will find there.
+    if (!st || Number(st.bountyId) !== m || !job) throw new Error(`Bounty #${m} cannot be read from the site`);
+    if (st.linkage?.state !== 'linked') throw new Error(`Bounty #${m} is not linked on the site (${st.linkage?.state || 'unknown'}); its jury check would fail`);
+    if (!sameAddress(st.creator, me) || !sameAddress(st.targetHunter, t.poster.wallet)) throw new Error(`Bounty #${m} is not this wallet's bounty targeted at ${t.poster.wallet}`);
+  }
   const s = parseScore(score);
   if (s.points[0] === s.points[1]) throw new Error('A tie: under the terms nobody wins, so do not claim');
   const event = norm(t.fields.event).toLowerCase();
@@ -365,9 +389,24 @@ export function buildClaim({ claimed, counterNumber, me, ctx, score, sources, no
     ...list.flatMap((src, k) => [`${'abcd'[k]}) ${src.name}: ${src.url}`, `   Quote: "${src.quote}"`]),
     '',
     '3. Counter bounty',
-    `Bounty #${counterNumber}`,
-    `On-chain parameters: ${ctx.site}/api/jobs/${counterNumber}/onchain-status`,
-    `Terms, rubric and jury: ${ctx.site}/api/jobs/${counterNumber}?includeRubric=true`,
+    ...(t.counter ? [`Bounty #${m} (named in the terms of bounty #${claimed.number}).`] : counterValues({ m, st, job, t, ctx })),
     '',
   ].join('\n');
+}
+
+function counterValues({ m, st, job, t, ctx }) {
+  const criteria = job.rubricContent?.criteria || [];
+  const must = criteria.every((c) => c.must === true) ? 'all must' : `must-pass: ${criteria.filter((c) => c.must).map((c) => c.id).join(', ')}`;
+  return [
+    `Bounty #${m}`,
+    `On-chain parameters: ${ctx.site}/api/jobs/${m}/onchain-status`,
+    `  creator ${st.creator}, targetHunter ${st.targetHunter}, bountyAmount ${st.bountyAmount}, arbiterDeterminationPaymentEth ${st.arbiterDeterminationPaymentEth},`,
+    `  creatorAssessmentWindowSize ${st.creatorAssessmentWindowSize}, classId ${st.classId}, threshold ${st.threshold},`,
+    `  oracleSettings ${site.formatOracle(st.oracleSettings)}; linkage.state ${st.linkage.state},`,
+    `  createdAtIso ${st.createdAtIso} (before ${t.fields.start}), submissionDeadlineIso ${st.submissionDeadlineIso} (at or after ${t.fields.settle})`,
+    `Terms, rubric and jury: ${ctx.site}/api/jobs/${m}?includeRubric=true`,
+    `  job.description carries Wager ID ${t.fields.wagerId} with the sides swapped (pays the Poster only if ${t.poster.side});`,
+    `  job.rubricContent.criteria = ${criteria.map((c) => c.id).join(', ')} (${must});`,
+    `  job.juryNodes = ${(job.juryNodes || []).map((n) => n.model).join(', ')}`,
+  ];
 }

@@ -18,10 +18,10 @@ const current = (job) => ({ ...job, rubricContent: { ...job.rubricContent, crite
 
 async function harness(t, { me, clock = at('2026-10-20T18:00:00Z'), myJobs = [] } = {}) {
   const dir = await mkdtemp(`${tmpdir()}/verdikta-wager-test-`); t.after(() => rm(dir, { recursive: true, force: true }));
-  const logs = [], created = [], recovered = [];
+  const logs = [], created = [], recovered = [], submitted = [];
   const records = {}, chain = {};
   for (let n = 18; n <= 25; n++) { records[n] = { status: fx(n, 'status'), job: current(fx(n, 'job').job) }; chain[n] = fx(n, 'rpc'); }
-  const h = { dir, logs, created, recovered, records, chain, clock, myJobs, nextId: 26 };
+  const h = { dir, logs, created, recovered, submitted, records, chain, clock, myJobs, nextId: 26 };
   h.lib = {
     getNetwork: () => 'base-sepolia', walletAddress: async () => me, loadApiKey: async () => 'test-key', loadSpendPolicy: async () => policy,
     loadWallet: async () => ({ address: me }), providerFor: () => ({ getNetwork: async () => ({ chainId: 84532n }), destroy() {} }),
@@ -46,7 +46,13 @@ async function harness(t, { me, clock = at('2026-10-20T18:00:00Z'), myJobs = [] 
     chain[id] = { ...fx(18, 'rpc'), creator: me, targetHunter: config.targetHunter, createdAt: String(h.clock), submissionDeadline: String(deadline) };
   };
   h.recover = async (lib, opts) => { recovered.push(opts); return { hash: `0x${'cd'.repeat(32)}` }; };
-  h.run = (...argv) => runWager(h.lib, { argv, fetchApi: h.fetchApi, contract: h.contract, now: () => h.clock, log: (l) => logs.push(l), secretsDir: dir, create: h.create, recover: h.recover });
+  // submit_to_bounty.js stand-in: records what it would upload and writes its state like the real one (wx).
+  h.submit = async (lib) => {
+    const state = lib.arg('state');
+    await writeFile(state, JSON.stringify({ jobId: lib.arg('jobId'), submissionId: '0' }), { flag: 'wx' });
+    submitted.push({ jobId: lib.arg('jobId'), files: lib.argAll('file'), text: await readFile(lib.argAll('file')[0], 'utf8') });
+  };
+  h.run = (...argv) => runWager(h.lib, { argv, fetchApi: h.fetchApi, contract: h.contract, now: () => h.clock, log: (l) => logs.push(l), secretsDir: dir, create: h.create, recover: h.recover, submit: h.submit });
   h.text = () => logs.join('\n');
   return h;
 }
@@ -61,7 +67,7 @@ test('answer: preview, then post once with the owner\'s line; a second post is r
   const h = await harness(t, { me: bob });
   await h.run('answer', '18');
   const line = lineFrom(h.text());
-  assert.match(line, /^Approve wager [0-9a-f]{8}, stake 0\.0001 ETH, vs 0x7ACb…0e2D, settle 2026-10-21T19:00:00Z$/);
+  assert.match(line, new RegExp(`^Approve wager [0-9a-f]{8}, stake 0\\.0001 ETH, vs ${alice}, settle 2026-10-21T19:00:00Z$`));
   assert.equal(h.created.length, 0);
   await assert.rejects(h.run('answer', '18', '--approval', line.replace(/wager [0-9a-f]{8}/, 'wager deadbeef'), '--yes'), /They changed/);
   await h.run('answer', '18', '--approval', `Yes. ${line}`, '--yes');
@@ -132,8 +138,15 @@ test('propose, check the answer, status, claim and close', async (t) => {
   const record = JSON.parse(await readFile(path.join(h.dir, 'wagers', h.created[0].wager.termsSha256.slice(0, 16), 'wager.json'), 'utf8'));
   const claim = await readFile(path.join(h.dir, 'wagers', record.termsSha256.slice(0, 16), 'claim.md'), 'utf8');
   assert.match(claim, /^MUTUAL WAGER CLAIM \(mutual-wager-v3\)\nWager ID: VW-TEST3-BOS-DET-20261020\nBounty claimed: #19\n/);
-  assert.match(claim, /^Bounty #26$/m);
-  assert.match(h.text(), /node submit_to_bounty.js --jobId 19 --file .*claim\.md/);
+  assert.match(claim, /^Bounty #26\nOn-chain parameters: .*\/api\/jobs\/26\/onchain-status\n {2}creator 0x7ACb/m);
+  const claimLine = /^ {2}(Approve claim [0-9a-f]{8}, bounty #19)$/m.exec(h.text())[1];
+  assert.equal(claimLine, `Approve claim ${W.sha256(claim).slice(0, 8)}, bounty #19`);
+  assert.equal(h.submitted.length, 0);
+  await assert.rejects(h.run('claim', 'VW-TEST3-BOS-DET-20261020', '--approval', claimLine.replace('#19', '#18'), '--yes'), /Show the owner the current claim/);
+  await h.run('claim', 'VW-TEST3-BOS-DET-20261020', '--approval', claimLine, '--yes');
+  assert.deepEqual(h.submitted.map(({ jobId, text }) => [jobId, text]), [['19', claim]]);
+  await assert.rejects(h.run('claim', 'VW-TEST3-BOS-DET-20261020', '--approval', claimLine, '--yes'), /already submitted/);
+  assert.equal(h.submitted.length, 1);
 
   await assert.rejects(h.run('close', record.termsSha256.slice(0, 8)), /can be closed after its deadline 2026-10-21T19:00:00Z/);
   h.clock = at('2026-10-21T19:00:01Z');

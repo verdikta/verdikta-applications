@@ -82,6 +82,14 @@ function scenario(m) {
   };
 }
 
+test('every Vite server for this client serves shared/ through the plugin', () => {
+  // The Playwright fixture server builds its own config (configFile: false); without the plugin the
+  // browser gets raw CommonJS and every page that imports shared/ fails to load.
+  for (const file of ['../../vite.config.js', '../e2e/start-buyer-server.mjs']) {
+    assert.match(fs.readFileSync(path.resolve(here, file), 'utf8'), /plugins: \[sharedCommonJs\(\), react\(\)\]/, file);
+  }
+});
+
 test('the browser build of the shared module (vite.config.js) behaves exactly like the module the server requires', async () => {
   const { default: makeConfig } = await import('../../vite.config.js');
   const plugin = makeConfig({ mode: 'test' }).plugins.find((p) => p && p.name === 'verdikta-shared-commonjs');

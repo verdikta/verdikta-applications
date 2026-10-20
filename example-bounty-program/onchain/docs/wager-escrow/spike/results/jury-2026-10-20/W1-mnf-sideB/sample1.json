@@ -1,0 +1,40 @@
+{
+  "status": 200,
+  "ms": 24592,
+  "scores": [
+    {
+      "outcome": "NO_WINNER",
+      "score": 7525
+    },
+    {
+      "outcome": "SIDE_A",
+      "score": 5005
+    },
+    {
+      "outcome": "SIDE_B",
+      "score": 987470
+    }
+  ],
+  "justification": "Based on the aggregated decision vector [7525,5005,987470] and the justifications provided by both models, there is a strong consensus that the San Francisco 49ers defeated the Washington Commanders with a final score of 23-17.\n\n1. **Model gpt-5.6-terra:**\n   - The model assigns the highest score to SIDE_B (49ers win) at 999940, indicating robust evidence from multiple sources confirming the 49ers' victory.\n   - Official final-result pages and multiple sources, including NFL.com and Sports Illustrated, confirm the game was completed with a final score of 23-17 in favor of the 49ers.\n   - NO_WINNER is given a score of 50, reflecting the completion of the game and the availability of final results, thereby reducing uncertainty about the game's status.\n   - SIDE_A is scored minimally, 10, as it is established that Washington lost the game.\n\n2. **Model claude-sonnet-5:**\n   - This model also strongly supports a SIDE_B decision, as it emphasizes multiple independent and reputable sources (Pro-Football-Reference, FootballDB, VAVEL, and CBS Sports) confirming the game outcome.\n   - The recap from CBS Sports and other coverage states that the 49ers won the game outright, without any mention of unresolved issues or potential ties.\n   - A stale nfl.com scoreboard snapshot indicating the game as not started is noted, but it's dismissed as outdated and not in conflict with the final result.\n   - NO_WINNER is scored low enough to account for the negligible uncertainty due to the outdated source, and SIDE_A is given minimal weight due to a lack of substantial support for a Commanders win.\n\n**Comprehensive Justification:**\nThe result is heavily weighted towards the San Francisco 49ers' victory based on the consistency of credible sources reporting a final score of 23-17. These sources include NFL.com, Sports Illustrated, Pro-Football-Reference, and CBS Sports, which are recognized for their reliability in sports reporting. The residual score for NO_WINNER accounts for minor uncertainty due to outdated or stale source data, but it does not significantly impact the overall conclusion since no current and credible information contradicts the reported outcome. The minimal score for SIDE_A reflects the discrediting of any possibility of a Commander's victory given the overwhelming evidence to the contrary. Hence, the aggregated decision vector strongly supports the conclusion that SIDE_B (49ers win) is the accurate result of the game.",
+  "metadata": {
+    "models_requested": 2,
+    "models_successful": 2,
+    "models_failed": 0,
+    "success_threshold_met": true,
+    "total_duration_ms": 24567
+  },
+  "model_results": [
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-terra",
+      "status": "success",
+      "duration_ms": 7894
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-5",
+      "status": "success",
+      "duration_ms": 20723
+    }
+  ]
+}

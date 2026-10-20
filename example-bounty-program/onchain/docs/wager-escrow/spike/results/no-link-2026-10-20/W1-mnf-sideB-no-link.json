@@ -1,0 +1,40 @@
+{
+  "status": 200,
+  "ms": 7206,
+  "scores": [
+    {
+      "outcome": "NO_WINNER",
+      "score": 974950
+    },
+    {
+      "outcome": "SIDE_A",
+      "score": 12525
+    },
+    {
+      "outcome": "SIDE_B",
+      "score": 12525
+    }
+  ],
+  "justification": "In this scenario, the aggregated decision vector [974950, 12525, 12525] strongly indicates that the most probable outcome is NO_WINNER. This conclusion is justified by analyzing the individual model justifications from gpt-5.6-terra and claude-sonnet-5, both of which converge on similar reasoning:\n\n1. **Lack of Confirmed Information**: Both models highlight that there are no confirmed official sources or final results available for the specified event. Given that the game is scheduled for a future date relative to both models' knowledge cutoffs, neither model can reliably confirm if the game has occurred or what its outcome might be.\n\n2. **Timing of the Event**: The game in question is set for October 19-20, 2026, which is well into the future. Both models cannot access real-time data or future information to verify or validate future events, reinforcing the NO_WINNER conclusion since it remains an unverified event.\n\n3. **Model Constraints**: As noted by the models, they lack web access or the ability to retrieve and process real-time data to determine the outcome of the match. Therefore, any prediction about the game cannot be substantiated with concrete evidence.\n\n4. **Allocation of Probabilities**: The small probabilities assigned to SIDE_A (Washington Commanders) and SIDE_B (San Francisco 49ers) reflect an inherent uncertainty within the models' frameworks. They do not suggest any bias towards one team or the other but merely represent an acknowledgment of the possibility (albeit unverified) that either team could potentially win if the event were to occur.\n\nIn summary, the overwhelming probability assigned to NO_WINNER is a result of the absence of concrete information and established verification about this future event. Until the game is played and results are officially documented, any prediction remains speculative and subject to the limitations of the models' current capabilities and data access.",
+  "metadata": {
+    "models_requested": 2,
+    "models_successful": 2,
+    "models_failed": 0,
+    "success_threshold_met": true,
+    "total_duration_ms": 7158
+  },
+  "model_results": [
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-terra",
+      "status": "success",
+      "duration_ms": 2533
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-5",
+      "status": "success",
+      "duration_ms": 3743
+    }
+  ]
+}

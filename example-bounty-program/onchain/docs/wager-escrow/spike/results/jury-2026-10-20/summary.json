@@ -1,0 +1,102 @@
+[
+  {
+    "id": "W1-mnf-sideB",
+    "sample": 1,
+    "expect": "SIDE_B",
+    "verdict": "SIDE_B",
+    "ok": true,
+    "scores": "7525/5005/987470",
+    "perModel": "gpt-5.6-terra:success claude-sonnet-5:success",
+    "ms": 24592
+  },
+  {
+    "id": "W1-mnf-sideB",
+    "sample": 2,
+    "expect": "SIDE_B",
+    "verdict": "SIDE_B",
+    "ok": true,
+    "scores": "2550/2500/994949",
+    "perModel": "gpt-5.6-terra:success claude-sonnet-5:success",
+    "ms": 32834
+  },
+  {
+    "id": "W2-nyj-ne-sideA",
+    "sample": 1,
+    "expect": "SIDE_A",
+    "verdict": "SIDE_A",
+    "ok": true,
+    "scores": "1050/997400/1550",
+    "perModel": "gpt-5.6-terra:success claude-sonnet-5:success",
+    "ms": 23865
+  },
+  {
+    "id": "W2-nyj-ne-sideA",
+    "sample": 2,
+    "expect": "SIDE_A",
+    "verdict": "SIDE_A",
+    "ok": true,
+    "scores": "5025/989950/5025",
+    "perModel": "gpt-5.6-terra:success claude-sonnet-5:success",
+    "ms": 27804
+  },
+  {
+    "id": "W3-tie-nowinner",
+    "sample": 1,
+    "expect": "NO_WINNER",
+    "verdict": "NO_WINNER",
+    "ok": true,
+    "scores": "989950/5025/5025",
+    "perModel": "gpt-5.6-terra:success claude-sonnet-5:success",
+    "ms": 25531
+  },
+  {
+    "id": "W3-tie-nowinner",
+    "sample": 2,
+    "expect": "NO_WINNER",
+    "verdict": "NO_WINNER",
+    "ok": true,
+    "scores": "989950/5025/5025",
+    "perModel": "gpt-5.6-terra:success claude-sonnet-5:success",
+    "ms": 18641
+  },
+  {
+    "id": "W4-not-started",
+    "sample": 1,
+    "expect": "NO_WINNER",
+    "verdict": "NO_WINNER",
+    "ok": true,
+    "scores": "964900/17550/17550",
+    "perModel": "gpt-5.6-terra:success claude-sonnet-5:success",
+    "ms": 34529
+  },
+  {
+    "id": "W4-not-started",
+    "sample": 2,
+    "expect": "NO_WINNER",
+    "verdict": "NO_WINNER",
+    "ok": true,
+    "scores": "974900/12550/12550",
+    "perModel": "gpt-5.6-terra:success claude-sonnet-5:success",
+    "ms": 21208
+  },
+  {
+    "id": "W5-spread-sideA",
+    "sample": 1,
+    "expect": "SIDE_A",
+    "verdict": "SIDE_A",
+    "ok": true,
+    "scores": "10050/979900/10050",
+    "perModel": "gpt-5.6-terra:success claude-sonnet-5:success",
+    "ms": 22207
+  },
+  {
+    "id": "W5-spread-sideA",
+    "sample": 2,
+    "expect": "SIDE_A",
+    "verdict": "SIDE_A",
+    "ok": true,
+    "scores": "5250/989500/5250",
+    "perModel": "gpt-5.6-terra:success claude-sonnet-5:success",
+    "ms": 33768
+  }
+]

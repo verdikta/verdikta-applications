@@ -1,0 +1,40 @@
+{
+  "status": 200,
+  "ms": 34529,
+  "scores": [
+    {
+      "outcome": "NO_WINNER",
+      "score": 964900
+    },
+    {
+      "outcome": "SIDE_A",
+      "score": 17550
+    },
+    {
+      "outcome": "SIDE_B",
+      "score": 17550
+    }
+  ],
+  "justification": "The consensus from both models and the aggregated decision vector strongly supports a conclusion of NO_WINNER for the October 20, 2026, basketball game between the Boston Celtics and the Detroit Pistons. Here's a detailed breakdown of the reasons:\n\n1. **Data from Multiple Reputable Sources**: Both models referenced authoritative sports websites, including NBA.com, CBS Sports, ESPN, Fox Sports, and TheScore. All these sources are known to provide real-time updates and final scores for NBA games. The absence of a confirmed final result on any of these platforms strongly indicates that the game either hasn't been played or concluded, or the final result has yet to be published officially.\n\n2. **Scheduled/Preview Status**: The game listings on NBA and CBS Sports pages show the matchup as a scheduled event rather than reporting a final score or any game details that would typically follow the conclusion of a sports event. Such listings confirm pregame activities like tipoff times and betting odds but provide no concluding results. This suggests that the game has not yet occurred or was canceled/postponed without a final score being recorded.\n\n3. **Record of Scores**: All sources referenced indicate that both teams have 0-0 records. This typically implies that either the season hasn't begun, or the game in question has not affected season statistics by concluding with a final score.\n\n4. **Consistency Across Sources**: The lack of discrepancy in the data across multiple platforms further strengthens the conclusion of NO_WINNER. When reputable and independent sources consistently provide similar information regarding an event's outcome, it reinforces the reliability of that data display across the industry.\n\n5. **Residual Weight Explanation**: Both models assign minor weight to SIDE_A (Celtics win) and SIDE_B (Pistons win). This accounts for a minimal possibility that data from an extremely niche or yet-updated source might eventually reflect a completed game with an unreported final score. However, this remote chance is not sufficiently evidenced by the currently available and reviewed reputable sources.\n\nIn conclusion, the weight of evidence from reputable sources and their consistent reporting of a scheduled but not completed game leads to a strong assertion of NO_WINNER for this matchup.",
+  "metadata": {
+    "models_requested": 2,
+    "models_successful": 2,
+    "models_failed": 0,
+    "success_threshold_met": true,
+    "total_duration_ms": 34515
+  },
+  "model_results": [
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-terra",
+      "status": "success",
+      "duration_ms": 9203
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-5",
+      "status": "success",
+      "duration_ms": 31032
+    }
+  ]
+}

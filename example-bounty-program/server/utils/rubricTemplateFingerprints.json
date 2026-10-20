@@ -1,0 +1,140 @@
+{
+  "_readme": "Every version of every create-page rubric template, by fingerprint (utils/templateUsage.js rubricFingerprint). Maintained by scripts/registerRubricTemplates.js; never remove a version, or bounties built from it stop counting toward their template.",
+  "templates": {
+    "blogPost": {
+      "label": "Blog Post",
+      "criteriaIds": [
+        "safety_and_rights",
+        "originality",
+        "relevance",
+        "accuracy",
+        "structure",
+        "style",
+        "overall_quality"
+      ],
+      "versions": [
+        {
+          "version": "blogPost-v1",
+          "fingerprint": "1982b83694f46882",
+          "note": "git 4663498"
+        }
+      ]
+    },
+    "codeReview": {
+      "label": "Code Review",
+      "criteriaIds": [
+        "safety",
+        "functionality",
+        "code_quality",
+        "documentation",
+        "testing",
+        "performance"
+      ],
+      "versions": [
+        {
+          "version": "codeReview-v1",
+          "fingerprint": "bde9018bfe7d5411",
+          "note": "git 4663498"
+        }
+      ]
+    },
+    "technicalWriting": {
+      "label": "Technical Documentation",
+      "criteriaIds": [
+        "plagiarism",
+        "completeness",
+        "accuracy",
+        "clarity",
+        "examples",
+        "usability"
+      ],
+      "versions": [
+        {
+          "version": "technicalWriting-v1",
+          "fingerprint": "f7ac3fddb05ead8f",
+          "note": "git 4663498"
+        }
+      ]
+    },
+    "designWork": {
+      "label": "Design Work",
+      "criteriaIds": [
+        "originality",
+        "requirements",
+        "aesthetics",
+        "usability",
+        "creativity",
+        "technical"
+      ],
+      "versions": [
+        {
+          "version": "designWork-v1",
+          "fingerprint": "1adbe4ff718e2c75",
+          "note": "git 4663498"
+        }
+      ]
+    },
+    "videoContent": {
+      "label": "Video Content",
+      "criteriaIds": [
+        "content_safety",
+        "content_quality",
+        "production",
+        "editing",
+        "presentation",
+        "length"
+      ],
+      "versions": [
+        {
+          "version": "videoContent-v1",
+          "fingerprint": "392ec4f0b20718e4",
+          "note": "git 4663498"
+        }
+      ]
+    },
+    "general": {
+      "label": "General Submission",
+      "criteriaIds": [
+        "prohibited",
+        "requirements",
+        "quality",
+        "completeness"
+      ],
+      "versions": [
+        {
+          "version": "general-v1",
+          "fingerprint": "68a35819a080fa3f",
+          "note": "git 4663498"
+        }
+      ]
+    },
+    "mutualWager": {
+      "label": "Mutual Wager",
+      "criteriaIds": [
+        "terms_match",
+        "event_final",
+        "result_sources",
+        "claimant_side_won",
+        "counter_bounty_onchain",
+        "counter_bounty_terms",
+        "integrity"
+      ],
+      "versions": [
+        {
+          "version": "mutual-wager-v1",
+          "fingerprint": "139994c971c82be3",
+          "note": "Built by agents before the template was in the repo; mainnet #253, #298-#303"
+        },
+        {
+          "version": "mutual-wager-v2",
+          "fingerprint": "05cea72206f57d1e",
+          "note": "git 31f9e55"
+        },
+        {
+          "version": "mutual-wager-v3",
+          "fingerprint": "57db9f3b3391a6b9"
+        }
+      ]
+    }
+  }
+}

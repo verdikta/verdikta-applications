@@ -21,6 +21,7 @@ const { wagerStatus, counterProblems } = require('../utils/wagerStatus');
 const { normalizeBountyPayments, validateProcurement } = require('../utils/validation');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
 const { createRateLimiter, clientAddress } = require('../utils/rateLimiter');
+const { expandRubricTemplate } = require('../utils/rubricTemplates');
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const WAGER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/;
@@ -69,6 +70,12 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
   // Everything /jobs/create checks about a wager body, derived the way /jobs/create derives it.
   async function checkBody(body, req, counter = null) {
     const input = [];
+    // A rubric named by template key is filled in exactly as /jobs/create fills it in.
+    if (body.rubricTemplate != null) {
+      const expanded = expandRubricTemplate(body);
+      if (expanded.error) return { wager: true, issues: [{ code: 'WAGER_INPUT', message: `${expanded.error.error}: ${expanded.error.details}` }] };
+      body = expanded.body;
+    }
     const procurement = validateProcurement(body.procurementMode, body.targetHunter);
     if (procurement) input.push({ code: 'WAGER_INPUT', message: procurement });
     if (!ADDRESS.test(String(body.creator || ''))) input.push({ code: 'WAGER_INPUT', message: 'creator must be the wallet that signs createBounty (0x + 40 hex digits).' });

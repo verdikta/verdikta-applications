@@ -33,8 +33,10 @@ test('the page imports the very functions the server requires', () => {
   const names = Object.keys(page);
   assert.ok(names.length >= 15);
   for (const name of names) assert.equal(page[name], shared[name], name);
-  // The create page's template is the shared one (a fresh, editable copy of it).
-  assert.deepEqual(getTemplate('mutualWager'), JSON.parse(JSON.stringify(shared.MUTUAL_WAGER_TEMPLATE)));
+  // The create page's template (shared/rubricTemplates.json) is the one the wager module embeds.
+  for (const key of ['version', 'title', 'description', 'threshold', 'classId', 'criteria', 'forbiddenContent']) {
+    assert.deepEqual(getTemplate('mutualWager')[key], JSON.parse(JSON.stringify(shared.MUTUAL_WAGER_TEMPLATE[key])), key);
+  }
   assert.notEqual(getTemplate('mutualWager'), shared.MUTUAL_WAGER_TEMPLATE);
   assert.ok(Object.isFrozen(shared.MUTUAL_WAGER_TEMPLATE.criteria[0]));
 });

@@ -4,7 +4,7 @@
  */
 const {
   rubricFingerprint, classifyRubric, normalizeRubricSource, rubricTemplateRecord,
-  inferredRubricTemplate, summarizeTemplateUsage, templateRegistry,
+  inferredRubricTemplate, currentRubricTemplate, summarizeTemplateUsage, templateRegistry,
 } = require('../utils/templateUsage');
 const { planTemplateBackfill, applyTemplateBackfill } = require('../scripts/backfillRubricTemplates');
 
@@ -85,7 +85,7 @@ describe('rubricTemplateRecord', () => {
     expect(normalizeRubricSource({ source: 'template', templateKey: 'general' })).toEqual({ source: 'template', templateKey: 'general' });
     expect(normalizeRubricSource({ source: 'template', templateKey: 'nope' })).toEqual({ source: 'template', templateKey: null });
     expect(normalizeRubricSource({ source: 'reissue', templateKey: 'general' })).toEqual({ source: 'reissue', templateKey: null });
-    for (const hint of [undefined, null, 'template', { source: 'unknown' }, { source: 'admin' }]) {
+    for (const hint of [undefined, null, 'template', { source: 'unknown' }, { source: 'admin' }, { source: 'reference', templateKey: 'general' }]) {
       expect(normalizeRubricSource(hint)).toEqual({ source: 'api', templateKey: null });
     }
   });
@@ -99,22 +99,29 @@ describe('rubricTemplateRecord', () => {
       key: null, version: null, match: null, fingerprint: null, source: 'api', inferred: false,
     });
   });
+
+  it('marks a rubric the server filled in from a template key as reference', () => {
+    expect(rubricTemplateRecord(general(), { source: 'scratch' }, { reference: 'general' }))
+      .toMatchObject({ key: 'general', match: 'exact', source: 'reference' });
+  });
 });
 
 describe('summarizeTemplateUsage', () => {
   const jobs = [
-    { jobId: 1, createdAt: 1000, status: 'AWARDED', onChain: true, rubricTemplate: rubricTemplateRecord(general(), { source: 'template', templateKey: 'general' }) },
+    { jobId: 1, createdAt: 1000, status: 'AWARDED', onChain: true, createdByClientType: 'frontend', rubricTemplate: rubricTemplateRecord(general(), { source: 'template', templateKey: 'general' }) },
     { jobId: 2, createdAt: 2000, status: 'OPEN', syncedFromBlockchain: true, rubricContent: general() },
-    { jobId: 3, createdAt: 3000, status: 'ORPHANED', onChain: false, rubricTemplate: rubricTemplateRecord(custom(), undefined) },
+    { jobId: 3, createdAt: 3000, status: 'ORPHANED', onChain: false, createdByClientType: 'bot', rubricTemplate: rubricTemplateRecord(custom(), undefined) },
     { jobId: 4, createdAt: 4000 * 1000, status: 'CLOSED', onChain: true },
   ];
 
   it('counts each template by stage, match, version and source, inferring unlabelled jobs', () => {
     const s = summarizeTemplateUsage(jobs);
-    expect(s.totals).toEqual({ created: 4, onChain: 3, awarded: 1 });
+    expect(s.totals).toMatchObject({ created: 4, onChain: 3, awarded: 1 });
+    expect(s.totals.via).toEqual({ site: { created: 1, onChain: 1 }, agent: { created: 1, onChain: 0 }, unknown: { created: 2, onChain: 2 } });
     const row = s.templates.find((t) => t.key === 'general');
-    expect(row).toMatchObject({ label: 'General Submission', created: 2, onChain: 2, awarded: 1, exact: 2, modified: 0, inferred: 1,
-      versions: { 'general-v1': 2 }, sources: { template: 1, unknown: 1 } });
+    expect(row).toMatchObject({ kind: 'rubric', label: 'General Submission', created: 2, onChain: 2, awarded: 1, exact: 2, modified: 0, inferred: 1,
+      versions: { 'general-v1': 2 }, sources: { template: 1, unknown: 1 }, via: { site: { created: 1, onChain: 1 } } });
+    expect(s.templates.find((t) => t.key === 'source-check-v1')).toMatchObject({ kind: 'service', label: 'Source Check' });
     expect(s.templates[0].key).toBe('general');
     expect(s.templates).toHaveLength(Object.keys(templateRegistry.templates).length);
     expect(s.none).toMatchObject({ created: 1, onChain: 0, sources: { api: 1 } });
@@ -126,6 +133,24 @@ describe('summarizeTemplateUsage', () => {
     expect(s.since).toBe(new Date(3000 * 1000).toISOString());
     expect(s.totals.created).toBe(2);
     expect(s.templates.find((t) => t.key === 'general').created).toBe(0);
+  });
+});
+
+describe('currentRubricTemplate', () => {
+  it('re-infers an inferred label, so templates registered later count', () => {
+    const job = { rubricContent: general(), rubricTemplate: { key: null, version: null, match: null, fingerprint: 'stale', source: 'unknown', inferred: true } };
+    expect(currentRubricTemplate(job)).toMatchObject({ key: 'general', match: 'exact', inferred: true });
+  });
+
+  it('upgrades a recorded fingerprint that now matches a template version, keeping its source', () => {
+    const fingerprint = rubricFingerprint(general().criteria, general().forbiddenContent);
+    const job = { rubricTemplate: { key: null, version: null, match: null, fingerprint, source: 'api', inferred: false } };
+    expect(currentRubricTemplate(job)).toMatchObject({ key: 'general', version: 'general-v1', match: 'exact', source: 'api' });
+  });
+
+  it('leaves other recorded labels alone', () => {
+    const rubricTemplate = { key: 'general', version: null, match: 'modified', fingerprint: 'x', source: 'template', inferred: false };
+    expect(currentRubricTemplate({ rubricTemplate, rubricContent: custom() })).toBe(rubricTemplate);
   });
 });
 
@@ -153,6 +178,19 @@ describe('backfill', () => {
     expect(s.jobs[0].rubricTemplate).toMatchObject({ key: 'general', match: 'exact', inferred: true });
     expect(s.jobs[1].rubricTemplate).toMatchObject({ key: null, inferred: true });
     expect(s.jobs[2].rubricTemplate).toEqual({ key: 'general', source: 'template' });
+  });
+
+  it('with refresh, relabels only inferred labels that now classify differently', () => {
+    const s = storage();
+    s.jobs[0].rubricTemplate = { key: null, version: null, match: null, source: 'unknown', inferred: true };
+    s.jobs[1].rubricTemplate = inferredRubricTemplate(s.jobs[1]);
+    s.jobs[2].rubricTemplate = { key: null, source: 'api', inferred: false };
+    expect(planTemplateBackfill(s.jobs)).toEqual([]);
+    const plan = planTemplateBackfill(s.jobs, { refresh: true });
+    expect(plan.map((p) => p.jobId)).toEqual([1]);
+    expect(applyTemplateBackfill(s, plan, { refresh: true }).applied).toEqual([1]);
+    expect(s.jobs[0].rubricTemplate).toMatchObject({ key: 'general', match: 'exact', inferred: true });
+    expect(s.jobs[2].rubricTemplate).toEqual({ key: null, source: 'api', inferred: false });
   });
 
   it('skips a job labelled or changed since the plan was made', () => {

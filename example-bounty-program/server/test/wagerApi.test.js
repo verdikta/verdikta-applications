@@ -428,6 +428,14 @@ describe('POST /jobs/create enforces the full wager check, and /api/wagers/check
     expect((await request(app).get('/api/wagers/template')).status).toBe(200);
   });
 
+  it('a wager that names the template by key (rubricTemplate) passes both, like one that sends rubricJson', async () => {
+    const body = proposed();
+    delete body.rubricJson;
+    body.rubricTemplate = 'mutualWager';
+    expect((await post('/api/wagers/check', body)).body).toMatchObject({ ok: true, problems: [] });
+    expect((await post('/api/jobs/create', body)).status).toBe(200);
+  });
+
   it('a consistent wager passes both', async () => {
     const body = proposed();
     expect((await post('/api/wagers/check', body)).body).toMatchObject({ ok: true, wager: true, problems: [] });

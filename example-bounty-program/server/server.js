@@ -64,6 +64,7 @@ const botRoutes = require('./routes/botRoutes');
 const receiptRoutes = require('./routes/receiptRoutes');
 const agentRoutes = require('./routes/agentRoutes');
 const classRoutes = require('./routes/classRoutes');
+const templateRoutes = require('./routes/templateRoutes');
 const { initializeVerdiktaService } = require('./utils/verdiktaService');
 const clientIdentification = require('./middleware/clientIdentification');
 
@@ -238,6 +239,7 @@ app.use('/api/poster', posterRoutes);
 app.use('/api/analytics', analyticsRoutes); // Analytics dashboard endpoints
 app.use('/api/verdikta', verdiktaRoutes); // Verdikta aggregator endpoints
 app.use('/api/bots', botRoutes); // Bot registration and management
+app.use('/api/templates', templateRoutes); // Rubric templates for agents (public)
 
 // Agent discovery routes (llms.txt, robots.txt, agents.txt, /api/docs, /api/jobs.txt, /sitemap.xml, /feed.xml)
 app.use(agentRoutes);

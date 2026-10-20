@@ -52,6 +52,16 @@ describe('terms lines read back as they are written', () => {
 });
 
 describe('the template', () => {
+  it('is the same template the create page and GET /api/templates serve (shared/rubricTemplates.json)', () => {
+    // mutualWager.js embeds its own copy because agents vendor that one file; the two must not drift.
+    const json = require('../../shared/rubricTemplates.json').templates.mutualWager;
+    for (const key of ['version', 'title', 'description', 'threshold', 'classId', 'criteria', 'forbiddenContent']) {
+      expect([key, json[key]]).toEqual([key, JSON.parse(JSON.stringify(w.MUTUAL_WAGER_TEMPLATE[key]))]);
+    }
+    const { apiRubric } = require('../utils/rubricTemplates');
+    expect(w.mutualWagerRubricProblem(apiRubric(json))).toBeNull();
+  });
+
   it('is frozen, and its /jobs/create form carries every instruction under description', () => {
     expect(Object.isFrozen(w.MUTUAL_WAGER_TEMPLATE.criteria[6])).toBe(true);
     const json = w.mutualWagerRubricJson({ threshold: 80, classId: 128 });

@@ -33,7 +33,8 @@ const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/s
 const { createTtlCache } = require('../utils/ttlCache');
 const { createRateLimiter, clientAddress } = require('../utils/rateLimiter');
 const { sanitizeCreateAttempt, isUnlinked, appendAttempt, attemptSummary, ADDRESS_RE } = require('../utils/createAttempts');
-const { rubricTemplateRecord, summarizeTemplateUsage } = require('../utils/templateUsage');
+const { rubricTemplateRecord, summarizeTemplateUsage, classifyRubric } = require('../utils/templateUsage');
+const { expandRubricTemplate } = require('../utils/rubricTemplates');
 const { findFinalizeBlockers, blockerCalldata, blockersHint } = require('../utils/finalizeBlockers');
 const { checkWagerCreate, wagerRefusal, isLinkedWagerJob, sameAddress } = require('../utils/wagerGuard');
 const { verifyWagerPackage } = require('../utils/wagerPackage');
@@ -463,9 +464,10 @@ function roundUsdCents(value) {
 
 /**
  * POST /api/jobs/create
- * Accepts EITHER:
+ * Accepts ONE OF:
  *  - rubricJson: object (server pins & returns real rubricCid), OR
- *  - rubricCid:  string (already pinned)
+ *  - rubricCid:  string (already pinned), OR
+ *  - rubricTemplate: string (a GET /api/templates key; the server fills in its rubric)
  * Uses ipfsClient.uploadToIPFS for the Primary archive.
  */
 router.post('/create', async (req, res) => {
@@ -473,6 +475,16 @@ router.post('/create', async (req, res) => {
   logger.info('[jobs/create] incoming keys', { keys });
 
   try {
+    // A rubric named by template key becomes that template's exact rubricJson, with its
+    // recommended threshold and classId unless the caller sent their own.
+    let createBody = req.body || {};
+    let referencedTemplate = null;
+    if (createBody.rubricTemplate != null) {
+      const expanded = expandRubricTemplate(createBody);
+      if (expanded.error) return res.status(400).json(expanded.error);
+      createBody = expanded.body;
+      referencedTemplate = expanded.template.key;
+    }
     const {
       title,
       description,
@@ -493,7 +505,7 @@ router.post('/create', async (req, res) => {
       creatorAssessmentWindowHours,
       publicSubmissions,
       rubricSource,            // optional create-page hint: { source, templateKey }
-    } = req.body || {};
+    } = createBody;
 
     // ---- Oracle settings (creator-chosen, per bounty; defaults from config) ----
     let oracleSettings;
@@ -620,7 +632,7 @@ router.post('/create', async (req, res) => {
     }
 
     if (!rubricJson && !rubricCidIn) {
-      return res.status(400).json({ error: 'Missing rubric', details: 'Provide rubricJson or rubricCid' });
+      return res.status(400).json({ error: 'Missing rubric', details: 'Provide rubricJson, rubricCid or rubricTemplate (a key from GET /api/templates)' });
     }
 
     await ensureTmpBase();
@@ -686,7 +698,7 @@ router.post('/create', async (req, res) => {
     // client. POST /api/wagers/check is the free dry run of exactly this.
     if (looksLikeMutualWager(description, rubricDoc || { criteria: rubricCriteria })) {
       const wagerCheck = await checkWagerCreate({
-        body: { ...req.body, classId: classIdNum },
+        body: { ...createBody, classId: classIdNum },
         // The deadline that goes on chain: an exact one is checked as given, not re-derived from now.
         payments: { ...payments, submissionDeadline: exactDeadline },
         oracleSettings,
@@ -703,7 +715,7 @@ router.post('/create', async (req, res) => {
     }
 
     // Which template the rubric came from, for GET /admin/template-usage.
-    const rubricTemplate = rubricTemplateRecord({ criteria: rubricCriteria, forbiddenContent }, rubricSource);
+    const rubricTemplate = rubricTemplateRecord({ criteria: rubricCriteria, forbiddenContent }, rubricSource, { reference: referencedTemplate });
 
     // ---- Composed query length (issue #36) ----
     // The arbiters reject an evaluation query over their cap and never commit,
@@ -900,6 +912,9 @@ router.post('/create', async (req, res) => {
       // verbatim into createBounty's `oracle` struct and used for every evaluation.
       oracleSettings,
       rubricTemplate,
+      // Which client created it (website or an agent's key), for the template-usage report.
+      createdByClientType: req.clientType || 'unknown',
+      createdByClientId: req.clientId || null,
     });
 
     logger.info('[jobs/create] job created', { jobId: job.jobId, oracleSettings, rubricTemplate });
@@ -921,7 +936,9 @@ router.post('/create', async (req, res) => {
         submissionCloseTime: job.submissionCloseTime,
         submissionCloseTimeIso: isoFromUnix(job.submissionCloseTime),
         createdAt: job.createdAt,
-        oracleSettings: job.oracleSettings
+        oracleSettings: job.oracleSettings,
+        // Which template the rubric matched (GET /api/templates), if any.
+        rubricTemplate: { key: rubricTemplate.key, version: rubricTemplate.version, match: rubricTemplate.match, source: rubricTemplate.source }
       },
       // Exact createBounty(CreateParams) struct + calldata matching this record.
       onChain: buildCreateBountyTx(job),
@@ -2712,9 +2729,18 @@ router.post('/rubric/validate', async (req, res) => {
     tips.push('Pass juryNodes (and optionally classId) to also validate the jury configuration — /rubric/validate previously ignored jury, so a clean bill here did not mean the bounty was create-safe (issue #16).');
   }
 
+  // Which template the draft matches (GET /api/templates). A one-criterion rubric
+  // gives the jury little to judge by; a template is usually a better start.
+  const match = classifyRubric(rubricJson);
+  const templateMatch = match ? { key: match.key, version: match.version, match: match.match } : null;
+  if (Array.isArray(rubricJson.criteria) && rubricJson.criteria.length === 1 && !match?.key) {
+    tips.push('This rubric has one criterion. GET /api/templates lists ready rubrics with must-pass gates and weighted criteria; pass "rubricTemplate": "<key>" to /jobs/create to use one as is.');
+  }
+
   const body = {
     valid: errors.length === 0,
     errors,
+    templateMatch,
     checkedAt: new Date().toISOString()
   };
   if (warnings.length) body.warnings = warnings;
@@ -4000,6 +4026,10 @@ router.get('/:jobId', async (req, res) => {
     // Keep `syncedFromBlockchain` — the UI needs it to render the
     // "Pending on-chain" badge on bounties that haven't been confirmed yet.
     const { lastSyncedAt: _lsa, _chainFieldsHealed: _cfh, _metadataHealDone: _mhd, _metadataHealAttempts: _mha, _metadataHealNextAt: _mhn, ...jobForClient } = job;
+    if (req.clientType === 'public') {
+      delete jobForClient.createdByClientType;
+      delete jobForClient.createdByClientId;
+    }
     // Anonymous callers (no key: an AI juror following a link) also lose the
     // internal attribution of who submitted through which client, and the file
     // list of a bounty whose creator kept submissions private. Work CIDs stay:

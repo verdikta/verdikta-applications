@@ -4,7 +4,9 @@
  * came from (job.rubricTemplate, see utils/templateUsage.js). Each label is worked
  * out from the stored rubric (job.rubricContent) and marked inferred: true with
  * source 'unknown', because how the creator started the rubric was never recorded.
- * Jobs that already have a label, or have no stored rubric, are left alone.
+ * Jobs that already have a label, or have no stored rubric, are left alone. With
+ * --refresh, inferred labels are worked out again too, for templates registered since
+ * (a label recorded at /jobs/create is never changed).
  *
  * GET /api/jobs/admin/template-usage infers missing labels on the fly, so the report
  * is complete without this; the backfill makes the labels part of the record.
@@ -16,6 +18,7 @@
  * Usage (from example-bounty-program/server):
  *   node scripts/backfillRubricTemplates.js                        # dry run, NETWORK from .env
  *   node scripts/backfillRubricTemplates.js --network base --apply
+ *   node scripts/backfillRubricTemplates.js --network base --refresh --apply
  *   node scripts/backfillRubricTemplates.js --jobs-file copy.json  # a copy of jobs.json
  */
 
@@ -26,13 +29,22 @@ const { inferredRubricTemplate } = require('../utils/templateUsage');
 // Job ids repeat across escrow contracts, so a job is found by id, escrow and package.
 const jobKey = (j) => `${j.jobId}|${(j.contractAddress || '').toLowerCase()}|${j.evaluationCid || ''}`;
 
-/** [{ key, jobId, rubricTemplate }] for the unlabelled jobs that have a stored rubric. */
-function planTemplateBackfill(jobs) {
+const sameLabel = (a, b) => a?.key === b?.key && a?.version === b?.version && a?.match === b?.match;
+// A job the backfill may label: no label yet, or (refresh) one it inferred itself.
+const labelable = (job, refresh) => !job.rubricTemplate || (refresh && job.rubricTemplate.inferred === true);
+
+/**
+ * [{ key, jobId, rubricTemplate }] for the unlabelled jobs that have a stored rubric,
+ * and with refresh, the inferred labels that now classify differently.
+ */
+function planTemplateBackfill(jobs, { refresh = false } = {}) {
   const plan = [];
   for (const job of jobs || []) {
-    if (job.rubricTemplate) continue;
+    if (!labelable(job, refresh)) continue;
     const rubricTemplate = inferredRubricTemplate(job);
-    if (rubricTemplate) plan.push({ key: jobKey(job), jobId: job.jobId, rubricTemplate });
+    if (rubricTemplate && !sameLabel(rubricTemplate, job.rubricTemplate)) {
+      plan.push({ key: jobKey(job), jobId: job.jobId, rubricTemplate });
+    }
   }
   return plan;
 }
@@ -41,11 +53,11 @@ function planTemplateBackfill(jobs) {
  * Apply a plan to a freshly read storage object. A label lands only on a job with
  * the same id, escrow and package that still has no label and the same rubric.
  */
-function applyTemplateBackfill(storage, plan) {
+function applyTemplateBackfill(storage, plan, { refresh = false } = {}) {
   const applied = [];
   const skipped = [];
   for (const { key, jobId, rubricTemplate } of plan) {
-    const job = (storage.jobs || []).find((j) => jobKey(j) === key && !j.rubricTemplate &&
+    const job = (storage.jobs || []).find((j) => jobKey(j) === key && labelable(j, refresh) &&
       inferredRubricTemplate(j)?.fingerprint === rubricTemplate.fingerprint);
     if (!job) {
       skipped.push(jobId);
@@ -64,6 +76,7 @@ async function main() {
     return i >= 0 ? argv[i + 1] : null;
   };
   const apply = argv.includes('--apply');
+  const refresh = argv.includes('--refresh');
 
   require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
   if (getOpt('network')) process.env.NETWORK = getOpt('network');
@@ -81,7 +94,7 @@ async function main() {
   console.log(apply ? 'Mode:    APPLY\n' : 'Mode:    dry run (pass --apply to write)\n');
 
   const { jobs = [] } = JSON.parse(fs.readFileSync(storageFile, 'utf8'));
-  const plan = planTemplateBackfill(jobs);
+  const plan = planTemplateBackfill(jobs, { refresh });
   const counts = {};
   for (const { rubricTemplate: t } of plan) {
     const label = t.key ? `${t.key} (${t.match}${t.version ? `, ${t.version}` : ''})` : 'no template';
@@ -89,8 +102,8 @@ async function main() {
   }
   for (const [label, n] of Object.entries(counts).sort((a, b) => b[1] - a[1])) console.log(`${String(n).padStart(5)}  ${label}`);
   const labelled = jobs.filter((j) => j.rubricTemplate).length;
-  const noRubric = jobs.length - labelled - plan.length;
-  console.log(`\nJobs: ${jobs.length} | already labelled: ${labelled} | to label: ${plan.length} | no stored rubric: ${noRubric}`);
+  const noRubric = jobs.filter((j) => !j.rubricTemplate && !inferredRubricTemplate(j)).length;
+  console.log(`\nJobs: ${jobs.length} | already labelled: ${labelled} | to label${refresh ? ' or relabel' : ''}: ${plan.length} | no stored rubric: ${noRubric}`);
 
   if (plan.length === 0) {
     console.log('Nothing to label.');
@@ -105,7 +118,7 @@ async function main() {
   // length of this synchronous block, and only still-unlabelled jobs are touched.
   const raw = fs.readFileSync(storageFile, 'utf8');
   const storage = JSON.parse(raw);
-  const { applied, skipped } = applyTemplateBackfill(storage, plan);
+  const { applied, skipped } = applyTemplateBackfill(storage, plan, { refresh });
   if (applied.length === 0) {
     console.log(`Nothing written: every planned job changed since it was read (${skipped.join(', ')}).`);
     return;

@@ -146,6 +146,7 @@ test('the create page and the server refuse the same wagers, for the same reason
     { classId: 129 },
     { jury: [{ provider: 'OpenAI', model: 'gpt-5.6-terra', weight: 1, runs: 1 }] },
     { iterations: 2 },
+    { jury: shared.DEFAULT_WAGER_JURY.map((n) => ({ ...n, weight: n.weight === 0.5 ? 0.6 : n.weight })) },
     { oracle: { maxOracleFeeEth: '0.00003', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500' } },
     { submissionWindowHours: 24 },
     { approval: true },
@@ -164,4 +165,8 @@ test('the create page and the server refuse the same wagers, for the same reason
     assert.equal(onPage.length > 0, Object.keys(over).length > 0, `refused: ${JSON.stringify(over).slice(0, 120)}`);
   }
   assert.deepEqual(await serverIssues(pageSubmission().body), []);
+  // Lowercase providers: the same jury on both sides.
+  const lower = pageSubmission({ jury: shared.DEFAULT_WAGER_JURY.map((n) => ({ ...n, provider: n.provider.toLowerCase() })) });
+  assert.deepEqual(await serverIssues(lower.body), []);
+  assert.deepEqual(page.checkMutualWagerTerms(lower.body.description, lower.expect).issues, []);
 });

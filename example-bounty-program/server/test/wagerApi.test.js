@@ -325,6 +325,13 @@ describe('POST /jobs/create enforces the full wager check, and /api/wagers/check
     expect(app.locals.ipfsClient.uploadToIPFS).not.toHaveBeenCalled();
   });
 
+  it('a jury written with lowercase providers is the jury the terms name (onboarding create_bounty.js)', async () => {
+    const body = proposed();
+    body.juryNodes = body.juryNodes.map((n) => ({ ...n, provider: n.provider.toLowerCase() }));
+    expect((await post('/api/wagers/check', body)).body).toMatchObject({ ok: true, problems: [] });
+    expect((await post('/api/jobs/create', body)).status).toBe(200);
+  });
+
   it('a consistent wager passes both', async () => {
     const body = proposed();
     expect((await post('/api/wagers/check', body)).body).toMatchObject({ ok: true, wager: true, problems: [] });

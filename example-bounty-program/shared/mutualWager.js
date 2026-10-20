@@ -427,8 +427,16 @@ function checkMutualWagerTerms(description, expect) {
     site: siteLine(expect),
   };
   const labels = { both: 'Both bounties', jury: 'Jury', oracle: 'Oracle settings', site: 'Site' };
+  // The jury is compared as a jury, the way the counter check and the rubric compare it: a
+  // provider in any letter case ("openai" for "OpenAI"), in any node order, is the same jury.
+  const juryKey = (line) => {
+    const p = parseJuryLine(line);
+    return p && `${p.jury.map((n) => [n.provider.toLowerCase(), n.model, n.weight, n.runs].join(':')).sort().join(',')};${p.iterations}`;
+  };
+  const matches = { jury: (have, wanted) => juryKey(have) !== null && juryKey(have) === juryKey(wanted) };
   for (const key of Object.keys(want)) {
-    if (norm(f[key]) !== norm(want[key])) add('WAGER_MISMATCH', `The "${labels[key]}" line must match this bounty: ${norm(LINES.find(([k]) => k === key)[1])} ${want[key]}`);
+    const ok = matches[key] ? matches[key](f[key], want[key]) : norm(f[key]) === norm(want[key]);
+    if (!ok) add('WAGER_MISMATCH', `The "${labels[key]}" line must match this bounty: ${norm(LINES.find(([k]) => k === key)[1])} ${want[key]}`);
   }
   if (expect.approvalWindow) add('WAGER_MISMATCH', "Turn off the creator approval window: a wager pays on the jury's verdict alone.");
 

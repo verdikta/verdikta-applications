@@ -153,6 +153,11 @@ test('incomplete or stale terms are refused before funding (review P2)', () => {
   hasProblem(checkMutualWagerTerms(second, expectFor({ classId: 129 })).problems, /"Both bounties" line/);
   hasProblem(checkMutualWagerTerms(second, expectFor({ jury: [jury[0]] })).problems, /"Jury" line/);
   hasProblem(checkMutualWagerTerms(second, expectFor({ iterations: 2 })).problems, /"Jury" line/);
+  // The same jury written another way is the same jury: providers in any case, nodes in any order.
+  assert.deepEqual(checkMutualWagerTerms(second, expectFor({ jury: jury.map((n) => ({ ...n, provider: n.provider.toLowerCase() })).reverse() })).problems, []);
+  hasProblem(checkMutualWagerTerms(second, expectFor({ jury: [jury[0], { ...jury[1], model: 'Claude-Sonnet-5' }] })).problems, /"Jury" line/);
+  hasProblem(checkMutualWagerTerms(second, expectFor({ jury: [jury[0], { ...jury[1], runs: 2 }] })).problems, /"Jury" line/);
+  hasProblem(checkMutualWagerTerms(second.replace(/^Jury \(both bounties\): .*$/m, 'Jury (both bounties): the usual jury.'), expectFor()).problems, /"Jury" line/);
   hasProblem(checkMutualWagerTerms(second, expectFor({ oracle: { ...oracle, maxOracleFeeEth: '0.00003' } })).problems, /"Oracle settings" line/);
   hasProblem(checkMutualWagerTerms(second, expectFor({ site: 'https://bounties-testnet.verdikta.org' })).problems, /"Site" line/);
   hasProblem(checkMutualWagerTerms(second, expectFor({ approvalWindow: true })).problems, /approval window/);

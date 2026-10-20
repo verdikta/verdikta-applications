@@ -112,7 +112,7 @@ function pairState({ a, b, problems }, now) {
   if (now < w.start) return { state: 'VERIFIED', paid, window: w };
   if (members.some((x) => pendingSubs(x).length > 0)) return { state: 'CLAIM_PENDING', paid, window: w };
   if (now < w.claimAfter) return { state: 'EVENT_PENDING', paid, window: w };
-  if (now <= w.hardEnd && members.some((x) => x.status.status === 'OPEN' && !x.status.deadlinePassed)) return { state: 'READY_TO_CLAIM', paid, window: w };
+  if (now < w.hardEnd && members.some((x) => x.status.status === 'OPEN' && !x.status.deadlinePassed)) return { state: 'READY_TO_CLAIM', paid, window: w };
   return { state: 'REFUNDABLE', paid, window: w };
 }
 
@@ -151,12 +151,12 @@ function actionsFor(pair, members) {
       break;
     }
     case 'VERIFIED': case 'EVENT_PENDING':
-      out.push({ type: 'WAIT', actor: 'both', notBefore: pair.claimAfter, notAfter: pair.claimBy, spendsFunds: false, retryable: true });
+      out.push({ type: 'WAIT', actor: 'both', notBefore: pair.claimAfter, notAfter: pair.claimDeadline, recommendedBy: pair.claimBy, spendsFunds: false, retryable: true });
       break;
     case 'READY_TO_CLAIM':
       for (const [x, y] of [[members[0], members[1]], [members[1], members[0]]]) {
         out.push({ type: 'CLAIM', actor: x.terms.claimant.wallet, method: 'POST', path: '/api/wagers/claim', body: { bounty: x.bountyId, counter: y.bountyId },
-          notBefore: pair.claimAfter, notAfter: pair.claimBy, spendsFunds: false, retryable: true,
+          notBefore: pair.claimAfter, notAfter: pair.claimDeadline, recommendedBy: pair.claimBy, spendsFunds: false, retryable: true,
           note: `Only if ${x.terms.claimant.side}. Drafting is free; submitting the claim prepays the evaluation fee.` });
       }
       break;
@@ -219,6 +219,8 @@ function wagerStatus(bounties, { now, site, wallet } = {}) {
       answerBy: chosen.b ? null : isoOf(result.window.start - wager.MIN_START_LEAD_SECONDS),
       claimAfter: isoOf(result.window.claimAfter),
       claimBy: isoOf(result.window.claimBy),
+      // The hard cutoff for starting a claim's evaluation; claimBy is the recommended latest start.
+      claimDeadline: isoOf(result.window.hardEnd),
       deadlineConflict: result.window.conflict,
       bounties: members.map((b) => describeBounty(b, site)),
       // Other bounties of the same wager: they back nothing; their creators close them after the deadline.

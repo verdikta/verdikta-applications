@@ -994,8 +994,10 @@ function buildWagerClaim({ terms, bounty, counter, score, result = 'Final', sour
 }
 
 /**
- * Whether it is time to claim, and until when. Returns { tooEarly, claimAfter, claimBy (ISO),
- * problems, warnings }. The ~2 hour wait after the final is advice against stale cached pages;
+ * Whether it is time to claim, and until when. Returns { tooEarly, claimAfter, claimBy, claimDeadline (ISO),
+ * problems, warnings }: claimBy is the recommended latest start (15 minutes of margin), claimDeadline the
+ * hard cutoff (the escrow refuses a start at or after the bounty deadline; the jury fails a claim after
+ * the settlement deadline), so an action stays executable until claimDeadline. The ~2 hour wait after the final is advice against stale cached pages;
  * the deadlines are hard. When the wait does not fit before them, the answer is to claim now (a
  * CLAIM_DEADLINE_CONFLICT warning), never to wait past the deadline.
  * start / settle: the terms' ISO times; deadline: the claimed bounty's deadline (unix);
@@ -1013,7 +1015,7 @@ function wagerClaimTiming({ start, settle, deadline, finalAt, now }) {
   let tooEarly = false;
   if (now < startUnix) problems.push({ code: 'CLAIM_TOO_EARLY', message: `The event has not started (scheduled ${start}). Claim only after the official final.` });
   else if (finalUnix != null && finalUnix > now) problems.push({ code: 'CLAIM_TOO_EARLY', message: `finalAt ${finalAt} is in the future.` });
-  if (now > hardEnd) {
+  if (now >= hardEnd) {
     problems.push({ code: 'CLAIM_TOO_LATE', message: settleUnix != null && now > settleUnix
       ? `The settlement deadline (${settle}) has passed: the jury fails claims made after it.`
       : `The bounty's deadline (${isoOf(Number(deadline))}) has passed: the escrow refuses new evaluations.` });
@@ -1029,7 +1031,7 @@ function wagerClaimTiming({ start, settle, deadline, finalAt, now }) {
     if (now > claimBy) warnings.push({ code: 'CLAIM_DEADLINE_NEAR', message: `Less than ${CLAIM_START_MARGIN_SECONDS / 60} minutes are left before the deadline (${isoOf(hardEnd)}): submit and start the evaluation now.` });
   }
   const show = (sec) => (Number.isFinite(sec) ? isoOf(sec) : null);
-  return { tooEarly, claimAfter: show(Math.min(advised, claimBy)), claimBy: show(claimBy), problems, warnings };
+  return { tooEarly, claimAfter: show(Math.min(advised, claimBy)), claimBy: show(claimBy), claimDeadline: show(hardEnd), problems, warnings };
 }
 
 module.exports = {

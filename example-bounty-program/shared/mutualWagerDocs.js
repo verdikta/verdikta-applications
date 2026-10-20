@@ -14,11 +14,11 @@ const VERBS = [
   { verb: 'check', method: 'POST', path: '/wagers/check', who: 'either bettor',
     does: 'Runs the exact check POST /api/jobs/create runs on a wager body and lists every problem with its code. Free dry run.',
     body: '<a POST /api/jobs/create body>' },
-  { verb: 'status', method: 'GET', path: '/wagers/status?wagerId=<id> or ?wallet=<0x...>', who: 'either bettor',
-    does: 'Complete wagers (both bounties together, newest first, 10 a page; pass nextCursor back as before=): whether they match, the pair state, claimAfter/claimBy, typed actions[] and next steps; offers[] lists unanswered bounties targeted at the wallet. UNKNOWN means a bounty could not be read now: retry before acting.',
+  { verb: 'status', method: 'GET', path: '/wagers/status?wagerId=<id> or ?wallet=<0x...> or ?pair=<a>,<b>', who: 'either bettor',
+    does: 'Complete wagers (both bounties together, newest first, 10 a page; pass nextCursor back as before=): whether they match, the pair state, claimAfter, claimBy (recommended) and claimDeadline (hard), typed actions[] and next steps; offers[] lists unanswered bounties targeted at the wallet. UNKNOWN means a bounty could not be read now: retry before acting. INCOMPLETE means the wager has more bounties than one read covers: ask about your pair with pair=<a>,<b>.',
     body: null },
   { verb: 'claim', method: 'POST', path: '/wagers/claim', who: 'the winner',
-    does: 'Drafts claim.md in the fixed format (nothing addressed to the jury), lints the quotes (both teams and the score), refuses a score your side did not win, checks your counter bounty (an unreadable REQUIRED counter is a retryable problem), and gives claimAfter (advice) and claimBy (the last safe moment); ready is false until it is time.',
+    does: 'Drafts claim.md in the fixed format (nothing addressed to the jury), lints the quotes (both teams and the score), refuses a score your side did not win, checks your counter bounty (an unreadable REQUIRED counter is a retryable problem), and gives claimAfter (advice), claimBy (recommended latest start) and claimDeadline (the hard cutoff: actions stay executable until it); ready is false until it is time.',
     body: '{ bounty: <the bounty that pays you>, counter: <your own bounty>, score: [{ team, points }, { team, points }], result?: "Final" | "Final/OT", sources: [{ name, url, quote }, ...], finalAt? }' },
   { verb: 'close', method: 'POST', path: '/jobs/:id/close', who: 'anyone, after a deadline',
     does: "Refunds a bounty's creator after its deadline (closeExpiredBounty calldata): the winner's own bounty, or both bounties after a tie or a mismatch.",
@@ -48,6 +48,7 @@ const STATES = {
   REFUNDABLE: 'Nothing paid by the settlement deadline; each creator closes their own bounty.',
   CLOSED: 'Both bounties are closed.',
   UNKNOWN: 'A bounty of this wager could not be read now: an incomplete observation, not a state. Retry before acting.',
+  INCOMPLETE: 'The wager has more bounties than one status read covers, so no action is derived: ask about your pair with pair=<a>,<b>.',
 };
 
 const ERROR_CODES = {
@@ -73,7 +74,7 @@ const ERROR_CODES = {
   CLAIM_COUNTER: 'The counter bounty would fail the jury\'s check (a warning when the terms name it).',
   CLAIM_COUNTER_UNVERIFIED: 'The counter bounty could not be read now: a retryable problem when the terms say REQUIRED, a warning when they name it.',
   CLAIM_DEADLINE_CONFLICT: 'The usual wait after the final does not fit before the deadline: claim as soon as the final is out, by claimBy.',
-  CLAIM_DEADLINE_NEAR: 'Less than 15 minutes are left before the deadline: submit and start the evaluation now.',
+  CLAIM_DEADLINE_NEAR: 'Less than 15 minutes are left before the deadline (claimDeadline): submit and start the evaluation now.',
   CLAIM_PACKAGE: 'The bounty you claim runs an evaluation package that is not its terms as built (a warning).',
 };
 
@@ -98,9 +99,9 @@ ${verbs}
 Rules:
 ${RULES.map((r) => `- ${r}`).join('\n')}
 
-Pair states (status): ${Object.keys(STATES).join(', ')}. UNKNOWN is an incomplete observation (retry).
+Pair states (status): ${Object.keys(STATES).join(', ')}. UNKNOWN and INCOMPLETE are incomplete observations.
 Responses carry schemaVersion and typed actions[] ({ type, actor, method, path, body, notBefore, notAfter,
-spendsFunds, retryable }) beside the English next[] steps.
+recommendedBy, spendsFunds, retryable }) beside the English next[] steps. notAfter is the hard cutoff.
 
 POST /api/jobs/create refuses an inconsistent wager with 400 { code, problems: [{ code, message }] }
 (503 when only a record could not be read; retry). The /api/wagers endpoints allow 30 requests a

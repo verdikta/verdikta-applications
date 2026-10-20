@@ -6,15 +6,21 @@
  * while its package says something else. A counter's package is therefore rebuilt from its terms
  * (shared/mutualWager.js canonicalWagerText) and compared, part by part, with the one on chain.
  *
- * Results are cached by package CID, description and verifier version: a CID names immutable bytes.
- * A package that cannot be fetched right now throws, so callers fail closed (503 / unknown state).
+ * The rubric is the one the package itself attaches: fetched here at the gradingRubric CID its manifest
+ * names, never taken from a site record or a loader fallback, and compared with the template. The verdict
+ * carries that rubric (and the manifest's jury) so callers check exactly what the jury will read.
+ *
+ * Results are cached by package CID, description and verifier version: a CID names immutable bytes, and
+ * the attachment is fetched by the CID inside them. A package or attachment that cannot be fetched right
+ * now throws, so callers fail closed (503 / unknown state) and nothing is cached.
  */
 const crypto = require('crypto');
 const AdmZip = require('adm-zip');
 const wager = require('../../shared/mutualWager');
 const { evaluationPackageFiles } = require('./archiveGenerator');
 
-const VERIFIER_VERSION = 1;
+// 2: the rubric is fetched from the package's own attachment (version 1 trusted the caller's copy).
+const VERIFIER_VERSION = 2;
 const CACHE_MAX = 500;
 const cache = new Map();
 
@@ -22,17 +28,19 @@ const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const keysAre = (o, keys) => !!o && typeof o === 'object' && !Array.isArray(o) && sameJson(Object.keys(o).sort(), [...keys].sort());
 
 /**
- * { ok, problems: [message], verifier } for the package at `evaluationCid`, against the wager terms in
- * `description` and the rubric the package's gradingRubric names (`rubric`). Messages read after
- * "its evaluation package ". Throws when the package cannot be read now.
+ * { ok, problems: [message], verifier, rubricCid?, rubric?, juryNodes?, iterations? } for the package at
+ * `evaluationCid`, against the wager terms in `description`. rubric is the content of the attachment the
+ * package names (rubricCid), juryNodes / iterations the manifest's jury. Messages read after
+ * "its evaluation package ". Throws when the package or its rubric attachment cannot be read now.
  */
-async function verifyWagerPackage({ evaluationCid, description, rubric, ipfsClient }) {
+async function verifyWagerPackage({ evaluationCid, description, ipfsClient }) {
   const key = `${VERIFIER_VERSION}:${evaluationCid}:${crypto.createHash('sha256').update(String(description || '')).digest('hex')}`;
   if (cache.has(key)) return cache.get(key);
 
   const problems = [];
+  const found = {};   // what the package itself names: rubricCid, rubric, juryNodes, iterations
   const done = () => {
-    const result = { ok: problems.length === 0, problems, verifier: VERIFIER_VERSION };
+    const result = { ok: problems.length === 0, problems, verifier: VERIFIER_VERSION, ...found };
     if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value);
     cache.set(key, result);
     return result;
@@ -54,13 +62,33 @@ async function verifyWagerPackage({ evaluationCid, description, rubric, ipfsClie
     primary = JSON.parse(zip.getEntry('primary_query.json').getData().toString('utf8'));
   } catch { problems.push('has a manifest or primary query that is not JSON'); return done(); }
 
+  // The jury the manifest actually names, for the counter check (it compares juries with the caller's).
+  const aiNodes = manifest?.juryParameters?.AI_NODES;
+  if (Array.isArray(aiNodes)) {
+    found.juryNodes = aiNodes.filter((n) => n && typeof n === 'object').map((n) => ({ provider: n.AI_PROVIDER, model: n.AI_MODEL, runs: n.NO_COUNTS, weight: n.WEIGHT }));
+    found.iterations = manifest.juryParameters.ITERATIONS;
+  }
+
+  // The rubric the jury receives is the attachment this package names: fetch it by that CID (throws when it
+  // cannot be read now; a readable copy elsewhere is no substitute) and compare it with the template.
+  const add = manifest?.additional;
+  const rubricCid = Array.isArray(add) && add.length === 1 && add[0] && add[0].name === 'gradingRubric' && typeof add[0].hash === 'string' ? add[0].hash : null;
+  if (!rubricCid) { problems.push('does not attach exactly one grading rubric'); return done(); }
+  found.rubricCid = rubricCid;
+  const rubricBuffer = await ipfsClient.fetchFromIPFS(rubricCid);   // throws: caller fails closed
+  let rubric;
+  try { rubric = JSON.parse(Buffer.isBuffer(rubricBuffer) ? rubricBuffer.toString('utf8') : String(rubricBuffer)); }
+  catch { problems.push(`attaches a rubric (${rubricCid}) that is not JSON`); return done(); }
+  found.rubric = rubric;
+  const edited = wager.mutualWagerRubricProblem(rubric);
+  if (edited) problems.push(`attaches a rubric (${rubricCid}) that ${edited.detail}`);
+
   // What this site would have built from the bounty's terms (the same function createEvaluationCIDArchive
-  // uses), naming the rubric the package attaches. The rubric itself is compared with the template elsewhere.
+  // uses), with the attached rubric.
   const text = wager.canonicalWagerText(t);
   const jury = wager.parseJuryLine(t.fields.jury);
-  const rubricCid = Array.isArray(manifest?.additional) ? manifest.additional[0]?.hash : undefined;
   if (!jury) { problems.push('cannot be rebuilt: its Jury line cannot be read'); return done(); }
-  if (!rubric || !Array.isArray(rubric.criteria)) { problems.push('names a rubric that could not be compared'); return done(); }
+  if (!Array.isArray(rubric.criteria)) { problems.push('attaches a rubric with no criteria'); return done(); }
   const expected = evaluationPackageFiles({
     rubricCid, jobTitle: text.title, jobDescription: text.description, workProductType: text.workProductType,
     juryNodes: jury.jury, iterations: jury.iterations,

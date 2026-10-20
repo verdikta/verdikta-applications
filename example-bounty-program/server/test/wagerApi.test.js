@@ -112,9 +112,11 @@ const proposal = (over = {}) => ({
 const post = (path, body) => request(app).post(path).set(KEY).send(body);
 
 // A posted, linked bounty: the site record (as sync leaves it, rubric cached) and the escrow struct.
-function putOnChain(n, body, { createdAt = NOW() - 60, deadline = Date.parse(body.submissionDeadline) / 1000, status = 0n, winner = ethers.ZeroAddress, job = {}, chain = {}, editPackage } = {}) {
+function putOnChain(n, body, { createdAt = NOW() - 60, deadline = Date.parse(body.submissionDeadline) / 1000, status = 0n, winner = ethers.ZeroAddress, job = {}, chain = {}, editPackage, rubricAttachment } = {}) {
   const cid = `QmEval${n}`;
   mockIpfs.set(cid, packageFor(body, `QmRubric${n}`, editPackage));
+  // The rubric the package attaches, as pinned by /jobs/create.
+  mockIpfs.set(`QmRubric${n}`, Buffer.from(JSON.stringify(rubricAttachment ?? { ...body.rubricJson, createdAt: '2026-10-20T16:00:00.000Z' })));
   const wei = ethers.parseEther(String(body.bountyAmount));
   mockStorageData.jobs.push({
     jobId: n, title: body.title, description: body.description, workProductType: body.workProductType, creator: body.creator,
@@ -803,7 +805,7 @@ describe('review of #109: package, rubric aliases, required counter, status pagi
       expect((await post('/api/wagers/check', body)).body.problems.some((p) => p.code === 'WAGER_RUBRIC' && /criterion claimant_side_won/.test(p.message))).toBe(true);
       expect((await post('/api/jobs/create', body)).status).toBe(400);
       const offer = proposed();
-      putOnChain(95, offer, { job: { rubricContent: { ...offer.rubricJson, criteria: offer.rubricJson.criteria.map((c, i) => (i === 3 ? { ...c, instructions: c.description, description: 'A harmless sentinel description.' } : c)) } } });
+      putOnChain(95, offer, { rubricAttachment: { ...offer.rubricJson, criteria: offer.rubricJson.criteria.map((c, i) => (i === 3 ? { ...c, instructions: c.description, description: 'A harmless sentinel description.' } : c)) } });
       await expectCounterProblem(95, /criterion claimant_side_won/);
     });
 
@@ -923,6 +925,104 @@ describe('review of #109: package, rubric aliases, required counter, status pagi
       putOnChain(116, proposed());
       const pair = (await request(app).get(`/api/wagers/status?wallet=${BOB}`).set(KEY)).body.pairs[0];
       expect(pair.actions[0]).toMatchObject({ type: 'ANSWER', actor: BOB, path: '/api/wagers/answer', body: { counter: 116, creator: BOB }, notAfter: pair.answerBy });
+    });
+  });
+});
+
+// Review 5591556639 on #109 (nigelon11, third round).
+describe('review of #109, round 3: rubric provenance, group membership, oversized groups, late-claim bounds', () => {
+  describe('P1: the rubric checked is the one the on-chain package attaches', () => {
+    it('a readable loose rubric never stands in for an unreadable attachment, and a later read checks the real one', async () => {
+      // A record linked to a package while keeping an older, canonical loose rubric (and a cache without provenance).
+      const offer = proposed();
+      putOnChain(120, offer, { job: { rubricCid: 'QmOldLooseRubric', rubricContent: { ...offer.rubricJson }, rubricSourceCid: 'QmEval120' } });
+      mockIpfs.set('QmOldLooseRubric', Buffer.from(JSON.stringify(offer.rubricJson)));
+      mockIpfs.delete('QmRubric120');
+      const unread = await post('/api/wagers/answer', { counter: 120, creator: BOB });
+      expect(unread.status).toBe(503);
+      expect(unread.body.code).toBe('WAGER_COUNTER_UNVERIFIED');
+      // The general loader may fall back for display, but must not cache the fallback as the package's rubric.
+      await request(app).get('/api/jobs/120?includeRubric=true').set(KEY);
+      expect(mockStorageData.jobs.find((j) => j.jobId === 120).rubricProvenance).toBeUndefined();
+      // The real attachment becomes readable with a differing criterion: the next read checks it, nothing cached passes it.
+      mockIpfs.set('QmRubric120', Buffer.from(JSON.stringify({ ...offer.rubricJson, criteria: offer.rubricJson.criteria.map((c, i) => (i === 1 ? { ...c, description: 'A harmless differing sentence.' } : c)) })));
+      const res = await post('/api/wagers/answer', { counter: 120, creator: BOB });
+      expect(res.body.ok).toBe(false);
+      expect(res.body.problems.some((p) => p.code === 'WAGER_COUNTER' && /attaches a rubric \(QmRubric120\) that criterion event_final differs/.test(p.message))).toBe(true);
+    });
+
+    it('the general loader caches a rubric under the package CID only when it came from the package', async () => {
+      putOnChain(121, proposed(), { job: { rubricContent: undefined, rubricSourceCid: undefined } });
+      // The general loader reads the package from IPFS (here the test ZIP has no rubric.json, and the
+      // gradingRubric attachment is read through the manifest).
+      await request(app).get('/api/jobs/121?includeRubric=true').set(KEY);
+      expect(mockStorageData.jobs.find((j) => j.jobId === 121).rubricProvenance).toBe('package');
+    });
+  });
+
+  describe('P2: an unrelated Counter reference does not join another wager', () => {
+    it('a third-party bounty naming #130 neither joins nor poisons the pair', async () => {
+      putOnChain(130, proposed());
+      putOnChain(131, answered(130));
+      // #132 names #130 in its terms, but its creator and target are other wallets.
+      putOnChain(132, answered(130), { job: { creator: CAROL, targetHunter: '0x3333333333333333333333333333333333333333' } });
+      mockIpfs.delete('QmEval132');
+      const pairs = (await request(app).get('/api/wagers/status?wagerId=VW-TEST-BOS-DET-1').set(KEY)).body.pairs;
+      const real = pairs.find((p) => p.bounties.some((b) => b.bountyId === 130));
+      expect(real.state).toBe('VERIFIED');
+      expect(real.bounties.map((b) => b.bountyId).sort()).toEqual([130, 131]);
+      expect(pairs.find((p) => p.bounties.some((b) => b.bountyId === 132)).state).toBe('UNKNOWN');
+    });
+  });
+
+  describe('P2: an oversized group is INCOMPLETE, with no answer or claim action', () => {
+    it('a pair hidden behind 30 newer duplicates is not classified; pair= resolves it', async () => {
+      putOnChain(140, proposed());
+      putOnChain(141, answered(140));
+      for (let i = 0; i < 30; i++) putOnChain(142 + i, proposed());
+      const body = (await request(app).get('/api/wagers/status?wagerId=VW-TEST-BOS-DET-1').set(KEY)).body;
+      expect(body.pairs).toHaveLength(1);
+      expect(body.pairs[0].state).toBe('INCOMPLETE');
+      expect(body.pairs[0].memberIds).toHaveLength(32);
+      expect(body.pairs[0].memberIds).toEqual(expect.arrayContaining([140, 141]));
+      expect(body.pairs[0].actions.map((a) => a.type)).toEqual(['INSPECT']);
+      expect(body.offers).toEqual([]);
+      const resolved = (await request(app).get('/api/wagers/status?pair=140,141').set(KEY)).body.pairs;
+      expect(resolved).toHaveLength(1);
+      expect(resolved[0]).toMatchObject({ state: 'VERIFIED' });
+      expect((await request(app).get('/api/wagers/status?pair=140,999').set(KEY)).status).toBe(400);
+    });
+  });
+
+  describe('P2: in the last 15 minutes, ready claims keep executable actions', () => {
+    it('claim and status: notAfter is the hard deadline, recommendedBy the margin', async () => {
+      // Deadline 10 minutes from now, start 6 hours before it, final long past.
+      const settleAt = Math.floor(NOW() / 60) * 60 + 10 * 60;
+      const startIso = iso(settleAt - 6 * H), settleIso = iso(settleAt);
+      const a = proposed({ start: startIso, settle: settleIso });
+      putOnChain(150, a, { createdAt: settleAt - 8 * H });
+      const b = wager.proposeMutualWager(proposal({ creator: BOB, opponent: ALICE, start: startIso, settle: settleIso,
+        sides: { creator: 'the Detroit Pistons win', opponent: 'the Boston Celtics win' } }), ctx()).createBody;
+      putOnChain(151, b, { createdAt: settleAt - 7 * H });
+      const res = (await post('/api/wagers/claim', { bounty: 150, counter: 151, finalAt: iso(settleAt - 3 * H), score: [{ team: 'DET', points: 112 }, { team: 'BOS', points: 104 }],
+        sources: [{ name: 'NBA.com', url: 'https://www.nba.com/game/1', quote: 'Final Celtics 104 Pistons 112' }, { url: 'https://apnews.com/1', quote: 'Pistons beat Celtics 112-104 (final)' }] })).body;
+      expect(res).toMatchObject({ ok: true, ready: true, claimDeadline: new Date(settleAt * 1000).toISOString() });
+      expect(res.warnings.map((w) => w.code)).toContain('CLAIM_DEADLINE_NEAR');
+      for (const action of res.actions) {
+        expect(Date.parse(action.notAfter)).toBeGreaterThan(Date.now());
+        expect(Date.parse(action.recommendedBy)).toBeLessThan(Date.parse(action.notAfter));
+      }
+      const pair = (await request(app).get('/api/wagers/status?wagerId=VW-TEST-BOS-DET-1').set(KEY)).body.pairs[0];
+      expect(pair.state).toBe('READY_TO_CLAIM');
+      expect(pair.claimDeadline).toBe(new Date(settleAt * 1000).toISOString());
+      for (const action of pair.actions.filter((x) => x.type === 'CLAIM')) expect(Date.parse(action.notAfter)).toBeGreaterThan(Date.now());
+    });
+
+    it('at the deadline second itself the claim is too late (the escrow requires a start before it)', () => {
+      const settleAt = 2000000000;
+      const t = wager.wagerClaimTiming({ start: iso(settleAt - 6 * H), settle: iso(settleAt), deadline: settleAt, now: settleAt });
+      expect(t.problems.map((p) => p.code)).toContain('CLAIM_TOO_LATE');
+      expect(wager.wagerClaimTiming({ start: iso(settleAt - 6 * H), settle: iso(settleAt), deadline: settleAt, now: settleAt - 1 }).problems).toEqual([]);
     });
   });
 });

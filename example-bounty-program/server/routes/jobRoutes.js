@@ -3753,7 +3753,11 @@ async function loadJobRubric(job, ipfsClient) {
   // Fast path (Option B): a rubric persisted on a previous load is still
   // valid as long as its source CID matches — serve it with NO IPFS round
   // trips. This is the bounty-detail load-time optimization.
-  const cacheHit = !!(job.rubricContent && rubricSource && job.rubricSourceCid === rubricSource);
+  // Only a rubric read from the package itself is cached under the package CID (rubricProvenance), so a
+  // copy from the loose rubricCid fallback is never served later as the package's rubric.
+  const cacheHit = !!(job.rubricContent && rubricSource && job.rubricSourceCid === rubricSource
+    && (job.rubricProvenance === 'package' || !job.evaluationCid));
+  let fromPackage = false;
   if (cacheHit) {
     rubricContent = job.rubricContent;
   }
@@ -3804,6 +3808,7 @@ async function loadJobRubric(job, ipfsClient) {
             const rubricBuffer = await ipfsClient.fetchFromIPFS(gradingRubricRef.hash);
             const rubricText = rubricBuffer.toString('utf8');
             rubricContent = JSON.parse(rubricText);
+            fromPackage = true;
           } catch (err) {
             logger.warn('[jobs/details] failed to fetch grading rubric from IPFS', {
               hash: gradingRubricRef.hash,
@@ -3821,6 +3826,7 @@ async function loadJobRubric(job, ipfsClient) {
         if (rubricEntry) {
           const rubricText = zip.readAsText(rubricEntry);
           rubricContent = JSON.parse(rubricText);
+          fromPackage = true;
 
           // Extract jury from rubric if present
           if (rubricContent.jury && Array.isArray(rubricContent.jury) && extractedJuryNodes.length === 0) {
@@ -3860,8 +3866,8 @@ async function loadJobRubric(job, ipfsClient) {
   // serve it locally with zero IPFS. Keyed on the immutable source CID and
   // race-safe via jobStorage.updateJob -> withStorage. Best-effort: a failed
   // write just means the next load re-fetches and retries the persist.
-  if (!cacheHit && rubricContent && rubricSource) {
-    const updates = { rubricContent, rubricSourceCid: rubricSource };
+  if (!cacheHit && rubricContent && rubricSource && (fromPackage || !job.evaluationCid)) {
+    const updates = { rubricContent, rubricSourceCid: rubricSource, rubricProvenance: fromPackage ? 'package' : 'rubricCid' };
     if (extractedJuryNodes.length > 0) updates.juryNodes = extractedJuryNodes;
     try {
       await jobStorage.updateJob(job.jobId, updates);
@@ -4351,16 +4357,23 @@ async function readWagerRecords(bountyId, ipfsClient) {
   if (status !== 200) throw new Error(body?.details || body?.error || `on-chain status read failed (${status})`);
   let job;
   try { job = await jobStorage.getJob(bountyId); } catch { return { status: body, job: null }; }
+  const { lastSyncedAt: _lsa, _chainFieldsHealed: _cfh, _metadataHealDone: _mhd, _metadataHealAttempts: _mha, _metadataHealNextAt: _mhn, ...rest } = job;
+  // A wager is checked against what its jury will read: the package named on chain, rebuilt from its
+  // terms (utils/wagerPackage.js), with the rubric and jury that package attaches. Nothing from the site
+  // record's rubric cache or loose rubricCid enters the check. It throws when either cannot be read now.
+  if (looksLikeMutualWager(job.description)) {
+    const pkg = await verifyWagerPackage({ evaluationCid: body.evaluationCid, description: job.description, ipfsClient });
+    return { status: body, job: {
+      ...rest,
+      rubricContent: pkg.rubric ?? null,
+      juryNodes: pkg.juryNodes ?? rest.juryNodes,
+      iterations: pkg.iterations ?? rest.iterations,
+      wagerPackage: { ok: pkg.ok, problems: pkg.problems, verifier: pkg.verifier, rubricCid: pkg.rubricCid ?? null },
+    } };
+  }
   const { rubricContent, juryNodes } = await loadJobRubric(job, ipfsClient);
   if (!rubricContent && (job.evaluationCid || job.rubricCid)) throw new Error(`its rubric could not be read from IPFS`);
-  const { lastSyncedAt: _lsa, _chainFieldsHealed: _cfh, _metadataHealDone: _mhd, _metadataHealAttempts: _mha, _metadataHealNextAt: _mhn, ...rest } = job;
-  const record = { ...rest, rubricContent, juryNodes };
-  // The jury runs the package named on chain, not the site record: a wager's is rebuilt from its
-  // terms and compared (utils/wagerPackage.js). It throws when the package cannot be read now.
-  if (looksLikeMutualWager(record.description, rubricContent)) {
-    record.wagerPackage = await verifyWagerPackage({ evaluationCid: body.evaluationCid, description: record.description, rubric: rubricContent, ipfsClient });
-  }
-  return { status: body, job: record };
+  return { status: body, job: { ...rest, rubricContent, juryNodes } };
 }
 
 /** Linked bounties whose description carries a MUTUAL WAGER TERMS block and that pass `filter`. */

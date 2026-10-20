@@ -429,6 +429,25 @@ function validateProcurement(mode, target) {
   return null;
 }
 
+// A mutual-wager bounty (a description with a MUTUAL WAGER TERMS block) pays only its
+// Claimant, so it must be targeted at the Claimant's wallet. Otherwise the escrow accepts a
+// claim from any wallet, and a stranger citing the Claimant's real counter bounty could
+// collect. The create page checks this too; this covers agents posting through the API.
+// Returns an error message, or null when the description has no terms block or is consistent.
+function validateWagerTarget(description, creator, target) {
+  const text = String(description || '');
+  if (!text.includes('=== MUTUAL WAGER TERMS')) return null;
+  const wallet = (label) => new RegExp(`^${label}: (0x[0-9a-fA-F]{40});`, 'm').exec(text)?.[1] || null;
+  const claimant = wallet('Claimant \\(target, the only wallet that can claim\\)');
+  const poster = wallet('Poster \\(creator\\)');
+  if (!claimant || !poster) return 'The MUTUAL WAGER TERMS block must name the Poster and Claimant wallets ("Poster (creator): 0x...;" and "Claimant (target, the only wallet that can claim): 0x...;")';
+  if (!target || !ethers.isAddress(target) || target.toLowerCase() === ethers.ZeroAddress) return `A mutual-wager bounty must be targeted: set targetHunter to the Claimant, ${claimant}`;
+  if (target.toLowerCase() !== claimant.toLowerCase()) return `targetHunter ${target} is not the Claimant in the terms, ${claimant}`;
+  if (creator && creator.toLowerCase() !== poster.toLowerCase()) return `creator ${creator} is not the Poster in the terms, ${poster}`;
+  if (claimant.toLowerCase() === poster.toLowerCase()) return 'The Poster and the Claimant must be different wallets';
+  return null;
+}
+
 // Normalize before IPFS/storage writes. Numeric API display stays compatible;
 // exact wei is retained separately for transaction construction and chain sync.
 function normalizeBountyPayments(body) {
@@ -515,6 +534,7 @@ function parseSubmissionDeadline(value, windowError) {
 module.exports = {
   normalizeBountyPayments,
   validateProcurement,
+  validateWagerTarget,
   isValidCid,
   extractEvaluationWarnings,
   isValidFileType,

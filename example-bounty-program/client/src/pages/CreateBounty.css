@@ -1150,3 +1150,10 @@
 .campaign-checklist-items { margin: 0 0 0.5rem; padding-left: 1.25rem; }
 .campaign-checklist-items li { margin: 0.25rem 0; }
 .campaign-checklist-fail { color: var(--error-dark, #b42318); }
+
+/* Mutual Wager template: where the terms go */
+.mutual-wager-note { margin-bottom: 1.5rem; }
+.mutual-wager-note h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+.mutual-wager-note p { margin: 0 0 0.75rem; }
+.mutual-wager-problems ul { margin: 0.25rem 0 0; padding-left: 1.25rem; }
+.mutual-wager-problems li { margin: 0.25rem 0; }

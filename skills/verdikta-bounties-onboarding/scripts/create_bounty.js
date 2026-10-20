@@ -21,6 +21,8 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
   if (config.fixture_only) throw new Error('Synthetic config cannot commission real work; replace it with an owner-reviewed non-fixture request');
   const configHash = createHash('sha256').update(raw + (config.workOrderDraftSha256 || '')).digest('hex');
   const terms = creationTerms(config);
+  // An exact deadline (terms that name a date) goes to the API as submissionDeadline; otherwise the whole-hour window.
+  const windowText = terms.submissionDeadline != null ? `exact deadline ${new Date(Number(terms.submissionDeadline) * 1000).toISOString()}` : `original window ${config.submissionWindowHours} hours`;
   const rubric = validateRubric(config.rubricJson);
   if (!rubric.valid) throw new Error(rubric.errors.join('; '));
   if (!config.title || !config.description || !Array.isArray(config.juryNodes) || !config.juryNodes.length) throw new Error('Title, description and juryNodes required');
@@ -68,7 +70,7 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
       }
     }
     async function broadcast(state, bound) {
-      const review = [`Escrow: ${deployments[network].address}`, `Submission deadline: ${new Date(Number(bound.params.submissionDeadline) * 1000).toISOString()}`, `Remaining submission time: ${Math.floor(Number(bound.params.submissionDeadline) - Date.now() / 1000)} seconds (original window ${config.submissionWindowHours} hours)`, `Usable time before prepare cutoff: ${Math.floor(Number(bound.params.submissionDeadline - bound.params.creatorAssessmentWindowSize) - Date.now() / 1000 - 2)} seconds`, `Supplier: ${config.procurementMode} ${bound.params.targetHunter}`];
+      const review = [`Escrow: ${deployments[network].address}`, `Submission deadline: ${new Date(Number(bound.params.submissionDeadline) * 1000).toISOString()}`, `Remaining submission time: ${Math.floor(Number(bound.params.submissionDeadline) - Date.now() / 1000)} seconds (${windowText})`, `Usable time before prepare cutoff: ${Math.floor(Number(bound.params.submissionDeadline - bound.params.creatorAssessmentWindowSize) - Date.now() / 1000 - 2)} seconds`, `Supplier: ${config.procurementMode} ${bound.params.targetHunter}`];
       const receipt = await sendTx(wallet, 'createBounty', bound.transaction, {
         network, args: [bound.params], exactValueWei: bound.value, policy, review,
         onSigned: async ({ rawTransaction, hash }) => { state.rawTransaction = rawTransaction; state.txHash = hash; state.status = 'BROADCAST_PENDING'; await saveState(statePath, state); },
@@ -114,7 +116,7 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
         response = prepared.response ?? prepared;
         apiCreatedAt = prepared.apiCreatedAt; // Prefer a saved API_CREATED state for older responses.
       } else {
-        await confirmSpendOrExit([`Commission ${config.procurementMode} work for ${terms.params.targetHunter}`, `Reward: ${config.bountyAmount} ETH; chain: ${network}`, `Threshold ${config.threshold}; window ${config.submissionWindowHours} hours`, `Publish the reviewed description/rubric; then review exact transaction`, `Payout follows creator approval in its window or passing oracle evaluation; finalization is required.`]);
+        await confirmSpendOrExit([`Commission ${config.procurementMode} work for ${terms.params.targetHunter}`, `Reward: ${config.bountyAmount} ETH; chain: ${network}`, `Threshold ${config.threshold}; ${windowText}`, `Publish the reviewed description/rubric; then review exact transaction`, `Payout follows creator approval in its window or passing oracle evaluation; finalization is required.`]);
         // Reserve before mutation. Existing state always stops duplicate creation.
         state = { configHash, network, creator: wallet.address, status: 'API_CREATE_PENDING' };
         await fs.writeFile(statePath, JSON.stringify(state, null, 2), { flag: 'wx', mode: 0o600 });
@@ -122,7 +124,8 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
         response = await api('/jobs/create', {
           title: config.title, description: config.description, workProductType: config.workProductType || 'research',
           creator: wallet.address, bountyAmount: config.bountyAmount, threshold: config.threshold,
-          classId: config.classId, submissionWindowHours: config.submissionWindowHours,
+          classId: config.classId,
+          ...(terms.submissionDeadline != null ? { submissionDeadline: Number(terms.submissionDeadline) } : { submissionWindowHours: config.submissionWindowHours }),
           procurementMode: config.procurementMode, targetHunter: terms.params.targetHunter, rubricJson: config.rubricJson, juryNodes,
           creatorDeterminationPayment: config.creatorDeterminationPayment ?? config.bountyAmount,
           arbiterDeterminationPayment: config.arbiterDeterminationPayment ?? config.bountyAmount,

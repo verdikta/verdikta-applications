@@ -66,6 +66,18 @@ test('read-back mismatch blocks linking and fractional windows fail before API',
  const g=await creationFixture(t);await writeFile(g.file,JSON.stringify({...g.cfg,creatorAssessmentWindowSeconds:3900}));
  await assert.rejects(runCreate(g.lib,g.env),/whole hours/);assert.equal(g.counts().creates,0);
 });
+test('an exact deadline goes to the API as submissionDeadline and is bound to the second',async t=>{
+ const clock=Date.now,fixed=clock(),deadline=Math.floor(fixed/1000)+86400;let f,g;
+ Date.now=()=>fixed; // the fixture's server response closes exactly 24 h after its creation second
+ try {f=await creationFixture(t,{submissionWindowHours:null,submissionDeadline:deadline});g=await creationFixture(t,{submissionWindowHours:null,submissionDeadline:deadline});} finally {Date.now=clock;}
+ const bodies=[],fetchApi=f.env.fetchApi;
+ f.env.fetchApi=async(url,init)=>{bodies.push(JSON.parse(init.body));return fetchApi(url,init);};
+ await runCreate(f.lib,f.env);
+ assert.equal(bodies[0].submissionDeadline,deadline);assert.ok(!('submissionWindowHours' in bodies[0]));
+ assert.ok(f.reviews.flat().some(x=>x?.includes('exact deadline')));
+ await writeFile(g.file,JSON.stringify({...g.cfg,submissionDeadline:deadline+60}));
+ await assert.rejects(runCreate(g.lib,g.env),/exact submissionDeadline/);assert.equal(g.sent.length,0);
+});
 test('submit retries lagging confirmation; resume confirms without preparing again',async t=>{
  const dir=await mkdtemp(`${tmpdir()}/verdikta-submit-test-`);t.after(()=>rm(dir,{recursive:true,force:true}));
  const file=`${dir}/result.txt`;await writeFile(file,'test');

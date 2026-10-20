@@ -111,3 +111,19 @@ test('saved local creation timestamp permits delayed review but enforces usable 
   assert.throws(()=>bindCreation(config,response,{apiCreatedAt:opened}),/five minutes/);
  } finally {Date.now=old;}
 });
+
+test('exact submissionDeadline: unix seconds or ISO UTC, bound to the server deadline to the second',()=>{
+  const iso=new Date((opened+90000)*1000).toISOString().replace('.000Z','Z');
+  const exact={...config,submissionWindowHours:undefined,submissionDeadline:iso};
+  assert.equal(creationTerms(exact).submissionDeadline,BigInt(opened+90000));
+  assert.equal(creationTerms({...exact,submissionDeadline:opened+90000}).submissionDeadline,BigInt(opened+90000));
+  assert.equal(creationTerms(config).submissionDeadline,null);
+  const at={...response,job:{...response.job,submissionCloseTime:opened+90000}};
+  assert.equal(bindCreation(exact,at).params.submissionDeadline,BigInt(opened+90000));
+  assert.throws(()=>bindCreation(exact,{...at,job:{...at.job,submissionCloseTime:opened+90001}}),/exact submissionDeadline/);
+  assert.throws(()=>bindCreation(config,at),/window drift/);
+  for(const submissionDeadline of [(opened+90000)*1000,'2026-10-22T00:00:00','2026-10-22T00:00:00+02:00','2026-10-22T00:00:00.500Z','tomorrow',1.5]) assert.throws(()=>creationTerms({...exact,submissionDeadline}),/submissionDeadline|exact integer|unsigned/);
+  assert.throws(()=>creationTerms({...exact,submissionWindowHours:24}),/not both/);
+  const soon={...response,job:{...response.job,submissionCloseTime:opened+200}};
+  assert.throws(()=>bindCreation({...exact,submissionDeadline:opened+200},soon),/five minutes/);
+});

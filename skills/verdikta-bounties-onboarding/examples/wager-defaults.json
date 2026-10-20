@@ -1,0 +1,10 @@
+{
+  "fixture_only": true,
+  "_note": "Shape example for ~/.config/verdikta-bounties/wager-defaults.json, optional: without it wager.js propose uses class 128, OpenAI gpt-5.6-terra + Anthropic claude-sonnet-5 (weight 0.5, 1 run each) and the website's oracle defaults. Copy it, remove fixture_only, pick real models of the class from GET /api/classes/:classId/models, keep the oracle settings at or below the live ceiling. An answer always takes the first bounty's values instead.",
+  "classId": 128,
+  "jury": [
+    { "provider": "OpenAI", "model": "gpt-5.6-terra", "weight": 0.5, "runs": 1 },
+    { "provider": "Anthropic", "model": "claude-sonnet-5", "weight": 0.5, "runs": 1 }
+  ],
+  "oracle": { "maxOracleFeeEth": "0.00002", "estimatedBaseCostEth": "0.00001", "maxFeeBasedScaling": 3, "alpha": 500 }
+}

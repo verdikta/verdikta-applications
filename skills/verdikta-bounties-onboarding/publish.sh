@@ -5,9 +5,9 @@
 # Assembles only the files ClawHub needs into a temporary staging directory,
 # then runs clawhub publish. Leaves out the tests, node_modules, .gitignore,
 # scripts/.env.example (the ClawHub CLI never uploads dot-files, and nothing
-# reads it at run time) and two repository-only maintainer tools,
-# compile-contracts.js and sync_contract_assets.js, which work only inside a
-# full repository checkout.
+# reads it at run time) and three repository-only maintainer tools,
+# compile-contracts.js, sync_contract_assets.js and sync_wager_assets.js, which
+# work only inside a full repository checkout.
 #
 # --dry-run stages and lists the files, then runs `clawhub publish --dry-run`:
 # the CLI hashes the files locally and asks the registry which version it would
@@ -32,7 +32,7 @@ if [ "$(printf '%s\n' "$REQUIRED_VERSION" "$INSTALLED_VERSION" | sort -V | head 
 fi
 
 SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
-VERSION="${VERSION:-1.8.2}"
+VERSION="${VERSION:-1.9.0}"
 DRY_RUN=""
 
 if [[ "${1:-}" == "--dry-run" ]]; then
@@ -65,10 +65,10 @@ cp "$SKILL_DIR/SKILL.md" "$STAGE_DIR/"
 cp "$SKILL_DIR/README.md" "$STAGE_DIR/"
 cp "$SKILL_DIR/_meta.json" "$STAGE_DIR/"
 
-# Scripts: source files, package.json and the lockfile
-for f in "$SKILL_DIR"/scripts/*.js "$SKILL_DIR"/scripts/*.cjs "$SKILL_DIR"/scripts/bounty-escrow.abi.json "$SKILL_DIR"/scripts/deployments.json "$SKILL_DIR"/scripts/package-lock.json "$SKILL_DIR"/scripts/package.json; do
+# Scripts: source files, the vendored wager rubric template, package.json and the lockfile
+for f in "$SKILL_DIR"/scripts/*.js "$SKILL_DIR"/scripts/*.cjs "$SKILL_DIR"/scripts/bounty-escrow.abi.json "$SKILL_DIR"/scripts/deployments.json "$SKILL_DIR"/scripts/mutual-wager-template.json "$SKILL_DIR"/scripts/package-lock.json "$SKILL_DIR"/scripts/package.json; do
   case "$(basename "$f")" in
-    compile-contracts.js|sync_contract_assets.js) continue ;;
+    compile-contracts.js|sync_contract_assets.js|sync_wager_assets.js) continue ;;
   esac
   [ -f "$f" ] && cp "$f" "$STAGE_DIR/scripts/"
 done

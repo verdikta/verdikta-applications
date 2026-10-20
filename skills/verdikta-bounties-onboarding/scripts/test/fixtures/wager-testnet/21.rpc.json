@@ -1,0 +1,22 @@
+{
+  "creator": "0x7ACbdBC2bB6e4fF8b705d695F77144eA619C0e2D",
+  "evaluationCid": "QmPFS38SpDGuiUnED3B5r4oa669nFex3JTcpv1FE4WmCpp",
+  "requestedClass": "128",
+  "threshold": "80",
+  "payoutWei": "100000000000000",
+  "createdAt": "1792514400",
+  "submissionDeadline": "1792615198",
+  "status": "0",
+  "winner": "0x0000000000000000000000000000000000000000",
+  "submissions": "0",
+  "targetHunter": "0x75fAc210bF1Dcd0BA3FaC294de7c50C5763Da6d9",
+  "creatorDeterminationPayment": "100000000000000",
+  "arbiterDeterminationPayment": "100000000000000",
+  "creatorAssessmentWindowSize": "0",
+  "oracle": {
+    "maxOracleFee": "20000000000000",
+    "alpha": "500",
+    "estimatedBaseCost": "10000000000000",
+    "maxFeeBasedScaling": "3"
+  }
+}

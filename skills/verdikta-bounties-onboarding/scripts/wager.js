@@ -16,6 +16,10 @@
 // authorization for --yes: "Approve wager <8 hex of sha256(description)>, stake <X> ETH, vs <opponent>, settle <ISO>"
 // for a propose or answer, "Approve claim <8 hex of sha256(claim.md)>, bounty #<N>" for a claim. One wager per terms
 // hash and per Wager ID. The native verdikta-agents runtime uses the same definitions.
+//
+// A post that stopped after the approval is finished by the same propose/answer command with the same line, never by
+// create_bounty.js --resume: the start and the counter are checked again before anything is signed or rebroadcast.
+// A claim whose evaluation failed can be replaced before the deadline, prepared again and approved again.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Contract, getAddress, parseEther } from 'ethers';
@@ -93,6 +97,9 @@ export async function runWager(lib, {
     } finally { provider.destroy?.(); }
   }
   const rpcBounty = (n) => escrowRead(async (escrow) => { try { return plainBounty(await escrow.getBounty(n)); } catch { return null; } });
+  const rpcSubmission = (n, id) => escrowRead((escrow) => escrow.getSubmission(n, id));
+  const claimFailed = (c) => (c.submissionId == null ? Promise.resolve(false)
+    : rpcSubmission(c.bounty, c.submissionId).then((s) => W.SUBMISSION_STATUS[Number(s.status)] === 'Failed', () => false));
   async function readBounty(n) {
     const [status, details, rpc] = await Promise.all([api(`/jobs/${n}/onchain-status`).catch(() => null), api(`/jobs/${n}?includeRubric=true`).catch(() => null), rpcBounty(n)]);
     return { status, job: details?.job || null, rpc };
@@ -119,17 +126,39 @@ export async function runWager(lib, {
 
   // ---- local state: ~/.config/verdikta-bounties/wagers/<first 16 hex of the terms hash>/ ----
   const dirOf = (hash) => path.join(stateDir, hash.slice(0, 16));
+  // approved.json is the create_bounty.js config, approved.json.state.json its recovery state.
+  const pathsOf = (hash) => ({ approval: path.join(dirOf(hash), 'approval.json'), config: path.join(dirOf(hash), 'approved.json'), state: path.join(dirOf(hash), 'approved.json.state.json') });
   const exists = (file) => fs.access(file).then(() => true, () => false);
+  // Recovery state: missing is null, unreadable is an error (never mistaken for "nothing started").
+  const readState = (file) => fs.readFile(file, 'utf8').then(JSON.parse, (e) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
+  const isoNow = () => new Date(now() * 1000).toISOString();
+  // A state file is set aside (renamed, never deleted) when what it recorded allows a fresh attempt.
+  async function setAside(file, label) {
+    const kept = file.replace(/\.json$/, `.${label}-${now()}.json`);
+    await fs.rename(file, kept);
+    return kept;
+  }
   async function saveRecord({ approved, ...record }) {
     await ensureDir(dirOf(record.termsSha256));
     await fs.writeFile(path.join(dirOf(record.termsSha256), 'wager.json'), JSON.stringify(record, null, 2) + '\n', { mode: 0o600 });
+  }
+  // The bounty number is create_bounty.js's linked job id, read back whenever the post finished (here or elsewhere).
+  async function recordPost(record, state) {
+    Object.assign(record, { bountyId: state.linkedJobId, txHash: state.txHash ?? null, postedAt: record.postedAt ?? isoNow() });
+    await saveRecord(record);
   }
   async function records() {
     const names = await fs.readdir(stateDir).catch(() => []);
     const out = [];
     for (const name of names) {
       const record = await fs.readFile(path.join(stateDir, name, 'wager.json'), 'utf8').then(JSON.parse, () => null);
-      if (record?.network === network) out.push({ ...record, approved: await exists(path.join(stateDir, name, 'approval.json')) });
+      if (record?.network !== network) continue;
+      const approved = await exists(pathsOf(record.termsSha256).approval);
+      if (approved && record.bountyId == null) {
+        const state = await readState(pathsOf(record.termsSha256).state).catch(() => null);
+        if (state?.linkedJobId != null) await recordPost(record, state);
+      }
+      out.push({ ...record, approved });
     }
     return out.sort((a, b) => String(a.start).localeCompare(String(b.start)));
   }
@@ -171,12 +200,54 @@ export async function runWager(lib, {
   }
 
   // ---- propose / answer: preview, or bind the owner's line and post through create_bounty.js ----
-  async function approveAndPost(record, createBody) {
+  // wager.js owns every post, a stalled one included: the same command with the same line finishes it. Right before
+  // anything is signed or a saved transaction is rebroadcast, postProblems runs again (the scheduled start at least
+  // 10 minutes away, the counter for an answer, the spend policy, the Wager ID): a post that stalled until kickoff
+  // must never fund a one-sided bet. A transaction already sent is only linked.
+  const started = (state) => Boolean(state && (state.txHash || state.rawTransaction || state.response));
+  async function postProblems(record, ownJobId) {
+    const t = now(), late = W.startLeadProblem(record.start, t);
+    if (late) return [late];
+    const problems = [...await policyProblems(record.stake), ...await twinProblems(record.me, record.wagerId, ownJobId)];
+    if (record.role === 'answerer') {
+      const n = record.counter.number, { status, job, rpc } = await readBounty(n);
+      const report = W.counterReport({ number: n, status, job, rpc, me: record.me, ctx, now: t });
+      problems.push(...report.problems);
+      if (!report.problems.length && report.answer?.description !== record.description) problems.push(`Bounty #${n} no longer mirrors into the approved answer ${record.termsSha256.slice(0, 8)}.`);
+    } else problems.push(...W.ownTermsProblems({ description: record.description, me: record.me, ctx, now: t }));
+    return problems;
+  }
+  /** The approved wager the owner's line names, when its post started or finished: finished as saved, never rebuilt. */
+  async function startedPost(role, sameTarget) {
+    const prefixes = W.parseWagerApprovalLines(args.opt('approval')).map((l) => l.hashPrefix);
+    const hits = (await records()).filter((r) => r.approved && prefixes.some((p) => r.termsSha256.startsWith(p)));
+    if (hits.length > 1) throw new Error(`The approval matches ${hits.length} approved wagers; ask the owner for the line with more of the terms hash`);
+    const [record] = hits;
+    if (!record || (record.bountyId == null && !started(await readState(pathsOf(record.termsSha256).state)))) return null;
+    if (record.role !== role || !sameTarget(record)) {
+      throw new Error(`The approval names wager ${record.termsSha256.slice(0, 8)}, ${record.role === 'answerer' ? `the answer to bounty #${record.counter?.number}` : `the proposal ${record.wagerId}`}: finish it with that command`);
+    }
+    return record;
+  }
+  const againCommand = (record, line = '<the owner\'s line>') => (record.role === 'answerer'
+    ? `node wager.js answer ${record.counter.number} --approval "${line}" --yes` : `node wager.js propose --input <the proposal file> --approval "${line}" --yes`);
+
+  async function approveAndPost(record, createBody = null) {
     if (args.flag('dry-run') || args.flag('dryRun')) throw new Error('--dry-run cannot post; run without --approval to preview');
     const approval = W.bindWagerApproval({ approvalText: args.opt('approval'), termsSha256: record.termsSha256, stake: record.stake, opponent: record.opponent, settle: record.settle });
-    const dir = dirOf(record.termsSha256);
-    const approvalPath = path.join(dir, 'approval.json'), approvedPath = path.join(dir, 'approved.json'), statePath = `${approvedPath}.state.json`;
-    if (await exists(statePath)) throw new Error(`Wager ${record.termsSha256.slice(0, 8)} was already approved and posting started. Finish it with: node create_bounty.js --config ${approvedPath} --resume ${statePath}`);
+    const dir = dirOf(record.termsSha256), p = pathsOf(record.termsSha256);
+    const approvalPath = p.approval, approvedPath = p.config;
+    const state = await readState(p.state);
+    if (record.bountyId != null || state?.linkedJobId != null) {
+      if (record.bountyId == null) await recordPost(record, state);
+      throw new Error(`Wager ${record.termsSha256.slice(0, 8)} is already posted as bounty #${record.bountyId}: a terms hash is used once`);
+    }
+    if (started(state)) {
+      say(`Finishing the post of wager ${record.termsSha256.slice(0, 8)}: ${state.txHash ? `transaction ${state.txHash} was signed` : `API job ${state.response?.job?.jobId} was created, nothing signed`}.`);
+      return post(record, p, true);
+    }
+    if (state) say(`The last post stopped before anything was created or signed (${state.apiError?.message ?? state.status}); its state is kept as ${await setAside(p.state, 'stopped')}.`);
+    if (!createBody) throw new Error(`Wager ${record.termsSha256.slice(0, 8)} has nothing to finish; run the same command with the same line again`);
     const problems = [...await policyProblems(record.stake), ...await twinProblems(record.me, record.wagerId)];
     const other = (await records()).find((r) => r.wagerId === record.wagerId && r.approved && r.termsSha256 !== record.termsSha256);
     if (other) problems.push(`You already approved wager ${other.termsSha256.slice(0, 8)} with Wager ID ${record.wagerId}.`);
@@ -196,14 +267,33 @@ export async function runWager(lib, {
     const savedConfig = await fs.readFile(approvedPath, 'utf8').catch(() => null);
     if (savedConfig === null) await fs.writeFile(approvedPath, configText, { flag: 'wx', mode: 0o600 });
     else if (savedConfig !== configText) throw new Error(`${approvedPath} differs from these terms; inspect it instead of posting`);
+    return post(record, p, false);
+  }
+
+  // create_bounty.js posts (or, with resume, finishes) the saved config; postProblems guards every broadcast.
+  async function post(record, p, resume) {
     const wallet = await lib.loadWallet();
     if (!sameAddress(wallet.address, record.me)) throw new Error(`The keystore decrypts to ${wallet.address}, not the Poster ${record.me}`);
-    await create({ ...lib, arg: (name) => (name === 'config' ? approvedPath : null), loadWallet: async () => wallet });
-    const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
-    Object.assign(record, { bountyId: state.linkedJobId ?? null, txHash: state.txHash ?? null, postedAt: new Date(now() * 1000).toISOString() });
-    await saveRecord(record);
+    const beforeBroadcast = async ({ jobId }) => {
+      const problems = await postProblems(record, jobId);
+      if (problems.length) throw new Error(`Not funded: nothing was signed or broadcast for wager ${record.termsSha256.slice(0, 8)}.\n  - ${problems.join('\n  - ')}`);
+    };
+    const files = { config: p.config, resume: resume ? p.state : null };
+    try {
+      await create({ ...lib, arg: (name) => files[name] ?? null, loadWallet: async () => wallet }, { beforeBroadcast });
+    } catch (e) {
+      // Refused or lost before /jobs/create answered: nothing exists to finish, so the same line may try again.
+      const state = await readState(p.state).catch(() => null);
+      if (state && !started(state)) throw new Error(`${e.message}\nNothing was created or signed (state kept as ${await setAside(p.state, 'stopped')}). Re-run the same command with the same line to try again.`, { cause: e });
+      throw e;
+    }
+    const state = await readState(p.state);
+    if (state?.linkedJobId == null) throw new Error(`Posting wager ${record.termsSha256.slice(0, 8)} did not finish (${state?.status ?? 'no state'}). Finish it: ${againCommand(record)}`);
+    await recordPost(record, state);
     say('', `Posted bounty #${record.bountyId} (transaction ${record.txHash}): ${origin}/bounty/${record.bountyId}`);
-    if (record.role === 'proposer') {
+    if (record.role === 'proposer' && W.startLeadProblem(record.start, now())) {
+      say(`It was linked too close to the scheduled start ${record.start} for an answer: unless the opponent already answered, the wager is off. See node wager.js status; reclaim the stake after ${record.settle} with node wager.js close ${record.termsSha256.slice(0, 8)}.`);
+    } else if (record.role === 'proposer') {
       say(`Send the opponent: "My side of wager ${record.wagerId} is bounty #${record.bountyId} on ${origin}. Answer it by number before ${record.start}: with the Verdikta onboarding skill, node wager.js answer ${record.bountyId}; on the website, the Mutual Wager template's answer field takes #${record.bountyId}."`,
         `Then check their bounty as soon as it is posted, and before ${record.start}: node wager.js check <their bounty number>`);
     } else say(`The wager is complete: bounty #${record.counter.number} and your #${record.bountyId}. After the game, the winner claims the loser's bounty with node wager.js claim.`);
@@ -215,6 +305,10 @@ export async function runWager(lib, {
     if (input.fixture_only) throw new Error(`${args.opt('input')} is a shape example: copy it, fill in the real wager and remove fixture_only`);
     const me = await walletAddress();
     const built = W.buildProposal(input, { me, ctx, defaults: await loadDefaults(), now: now() });
+    if (args.opt('approval')) {
+      const saved = await startedPost('proposer', (r) => (built.termsSha256 ? r.termsSha256 === built.termsSha256 : r.wagerId === input.wagerId));
+      if (saved) return approveAndPost(saved);
+    }
     if (!built.offer) { say('REFUSED. Fix the proposal input:', built.problems.map((p) => `  - ${p}`)); throw new Error('The proposal input has problems; nothing was saved'); }
     const record = { version: 1, role: 'proposer', network, termsSha256: built.termsSha256, wagerId: built.terms.fields.wagerId, title: built.offer.title, description: built.offer.description,
       me, opponent: built.expect.targetHunter, stake: built.expect.stake, start: built.terms.fields.start, settle: built.terms.fields.settle, counter: null, createdAt: new Date(now() * 1000).toISOString() };
@@ -229,6 +323,10 @@ export async function runWager(lib, {
 
   async function answer() {
     const n = bountyNumber(args.positional[1]);
+    if (args.opt('approval')) {
+      const saved = await startedPost('answerer', (r) => r.counter?.number === n);
+      if (saved) return approveAndPost(saved);
+    }
     const me = await walletAddress();
     const { status, job, rpc } = await readBounty(n);
     const report = W.counterReport({ number: n, status, job, rpc, me, ctx, now: now() });
@@ -288,8 +386,12 @@ export async function runWager(lib, {
       say('', `${r.termsSha256.slice(0, 8)}  ${r.wagerId}  ${r.role}  vs ${W.shortAddress(r.opponent)}  stake ${r.stake} ETH  start ${r.start}  settle ${r.settle}`);
       if (!r.approved) { say('  Waiting for the owner\'s approval line:', `    ${W.approvalLineFor(r)}`); continue; }
       if (r.bountyId == null) {
-        const statePath = path.join(dirOf(r.termsSha256), 'approved.json.state.json');
-        say(await exists(statePath) ? `  Approved; posting started. Finish it: node create_bounty.js --config ${path.join(dirOf(r.termsSha256), 'approved.json')} --resume ${statePath}` : '  Approved, not posted: re-run the same propose/answer command with the same line.');
+        const p = pathsOf(r.termsSha256);
+        const state = await readState(p.state).catch(() => null), line = await readState(p.approval).then((a) => a?.line, () => undefined);
+        // Finishing re-checks the start before any broadcast; a signed transaction may already be on chain.
+        if (state?.txHash) say(`  Approved; transaction ${state.txHash} was signed but the bounty is not linked yet. Finish it: ${againCommand(r, line)}`);
+        else if (W.startLeadProblem(r.start, t)) say(`  Approved but never funded, and the scheduled start is too close or past: this wager is off. Nothing was spent.`);
+        else say(`  Approved, not posted${started(state) ? ` (API job ${state.response?.job?.jobId} created, nothing signed)` : ''}. Finish it: ${againCommand(r, line)}`);
         continue;
       }
       const mineStatus = await api(`/jobs/${r.bountyId}/onchain-status`).catch(() => null);
@@ -307,6 +409,7 @@ export async function runWager(lib, {
       let next;
       if (mineStatus?.status === 'AWARDED') next = `Your bounty #${r.bountyId} paid the opponent: the jury found the other side won.`;
       else if (mineStatus?.status === 'CLOSED') next = `Your bounty #${r.bountyId} is closed and its stake refunded.`;
+      else if (r.claim && await claimFailed(r.claim)) next = `The jury failed your claim to #${r.claim.bounty} (submission ${r.claim.submissionId}). Before ${r.settle} a new claim may replace it: node wager.js claim ${r.termsSha256.slice(0, 8)} --score "..." --source "Name|URL|quote" --source "...", then the owner's new claim line.`;
       else if (r.claim) next = `Claim submitted to #${r.claim.bounty}${r.claim.submissionId != null ? ` (submission ${r.claim.submissionId})` : ''}: after the jury, node claim_bounty.js --jobId ${r.claim.bounty} --submissionId <id>. Reclaim your own stake after ${mineStatus?.submissionDeadlineIso ?? r.settle} with node wager.js close ${r.termsSha256.slice(0, 8)}.`;
       else if (counter == null) next = t < start ? `Wait for the opponent to answer #${r.bountyId} before ${r.start}, then check it.` : `No checked counter before the start: the wager is off. Reclaim your stake after ${mineStatus?.submissionDeadlineIso ?? r.settle}: node wager.js close ${r.termsSha256.slice(0, 8)}`;
       else if (deadlinePassed) next = `The deadline passed: reclaim your stake with node wager.js close ${r.termsSha256.slice(0, 8)}`;
@@ -314,6 +417,36 @@ export async function runWager(lib, {
       else next = `If your side won: node wager.js claim ${r.termsSha256.slice(0, 8)} --score "..." --source "Name|URL|quote" --source "..." (about 2 hours after the final), then submit it with the owner's claim line.`;
       say(`  Next: ${next}`);
     }
+  }
+
+  // The claim submitted before, read from the escrow. In progress: finish it or wait for the jury. Failed (the jury's
+  // verdict, or a timed-out evaluation once finalized) or stopped before anything reached the chain: its state is set
+  // aside and a new claim may replace it before the deadline, prepared again and approved again by the owner.
+  async function settleEarlierClaim(record, submissionPath, me) {
+    const earlier = await readState(submissionPath);
+    if (!earlier) {
+      if (record.claim) throw new Error(`wager.json records a claim to #${record.claim.bounty}, but ${submissionPath} is missing. Restore it; never delete state files to retry`);
+      return null;
+    }
+    const n = Number(earlier.jobId ?? record.claim?.bounty), id = earlier.submissionId ?? null;
+    const resume = `node submit_to_bounty.js --jobId ${n} --resume ${id ?? '<submission id>'} --state ${submissionPath}`;
+    let outcome;
+    if (id == null) {
+      if (earlier.prepareTxHash) throw new Error(`This wager's claim was already submitted: its prepare transaction ${earlier.prepareTxHash} was sent. Continue it with: ${resume}`);
+      outcome = { result: 'NOT_PREPARED' };
+    } else {
+      const sub = await rpcSubmission(n, id), s = W.SUBMISSION_STATUS[Number(sub.status)];
+      if (!sameAddress(sub.hunter, me)) throw new Error(`Submission ${id} on bounty #${n} is not this wallet's; inspect ${submissionPath}`);
+      if (s === 'Prepared') throw new Error(`This wager's claim was already submitted as submission ${id}, but its evaluation was not started. Continue it with: ${resume}`);
+      if (s === 'PendingVerdikta') throw new Error(`This wager's claim was already submitted as submission ${id} and is being evaluated. After the jury: node claim_bounty.js --jobId ${n} --submissionId ${id}. A new claim is possible only if it fails`);
+      if (s !== 'Failed') throw new Error(`This wager's claim was already submitted as submission ${id} and is ${s ?? `in state ${sub.status}`}`);
+      outcome = { result: 'FAILED', acceptance: Number(sub.acceptance), rejection: Number(sub.rejection) };
+    }
+    const settled = { ...record.claim, bounty: n, submissionId: id, ...outcome, keptAs: await setAside(submissionPath, `attempt${(record.claims?.length ?? 0) + 1}`), settledAt: isoNow() };
+    record.claims = [...(record.claims || []), settled];
+    delete record.claim;
+    await saveRecord(record);
+    return settled;
   }
 
   async function claim() {
@@ -330,29 +463,38 @@ export async function runWager(lib, {
     const me = await walletAddress();
     const [{ status, job }, mine] = await Promise.all([readBounty(claimedNumber), readBounty(record.bountyId)]);
     if (!status || status.status !== 'OPEN' || status.deadlinePassed) throw new Error(`Bounty #${claimedNumber} is ${status?.status || 'unreadable'}; it cannot be claimed`);
-    if (mine.status?.status === 'AWARDED') throw new Error(`Your bounty #${record.bountyId} was already paid to ${mine.status.winner}: the jury found the other side won`);
+    // Fail closed: no claim without reading, on the site and on chain, that your own bounty was not paid out.
+    if (!mine.status || !mine.rpc) throw new Error(`Could not read your bounty #${record.bountyId} (${mine.status ? 'escrow' : 'site record'}); try again. A claim never goes ahead without checking that your own bounty was not already paid to the opponent`);
+    if (mine.status.status === 'AWARDED' || mine.rpc.status === '1') throw new Error(`Your bounty #${record.bountyId} was already paid to ${mine.status.winner ?? mine.rpc.winner}: the jury found the other side won`);
     const terms = W.shared.parseMutualWagerTerms(job?.description);
     if (terms.fields?.wagerId !== record.wagerId) throw new Error(`Bounty #${claimedNumber} is not part of wager ${record.wagerId}`);
+    const last = await settleEarlierClaim(record, submissionPath, me);
+    if (last) say(`Your earlier claim${last.submissionId != null ? ` (submission ${last.submissionId})` : ''} ${last.result === 'FAILED' ? `failed its evaluation (acceptance ${last.acceptance}, rejection ${last.rejection})` : 'stopped before anything reached the chain'}; its state is kept as ${last.keptAs}.`);
+    const attempt = (record.claims?.length ?? 0) + 1;
     const built = W.buildClaim({ claimed: { number: claimedNumber, terms, status }, counter: { number: record.bountyId, status: mine.status, job: mine.job }, me, ctx,
       score: input.score, sources: input.sources, finalAt: input.finalAt ?? undefined, now: now() });
     const claimSha256 = W.sha256(built.claim);
     const notes = built.warnings.map((w) => `  Note: ${w}`);
     if (!args.opt('approval')) {
       await fs.writeFile(claimPath, built.claim, { mode: 0o600 });
-      await fs.writeFile(inputPath, JSON.stringify(input, null, 2) + '\n', { mode: 0o600 });
+      await fs.writeFile(inputPath, JSON.stringify({ ...input, attempt }, null, 2) + '\n', { mode: 0o600 });
       say(built.claim, `claim.md SHA-256: ${claimSha256} (saved to ${claimPath})`, notes, '',
+        ...(attempt > 1 ? [`This is claim ${attempt} for this wager. Tell the owner why the last one failed: their approval of it does not cover this one.`] : []),
         'Show the owner this claim and ask them to reply with exactly:', `  ${W.claimLineFor({ claimSha256, bounty: claimedNumber })}`,
         `Submitting prepays the evaluation fee. It is refused before ${built.claimAfter} (about 2 hours after the final; pass --final-at <ISO> when you know when the game ended).`);
       return;
     }
+    // A new claim after a failed one needs the owner's new line for it: it must be prepared (and shown) again first.
+    if ((input.attempt ?? 1) !== attempt) {
+      throw new Error(`The last claim failed, and this one was not prepared since. Run node wager.js claim ${record.termsSha256.slice(0, 8)} --score "..." --source ... --source ... without --approval, show the owner the new claim.md and why the last one failed, and ask for a new claim line. The earlier line does not cover a new submission`);
+    }
     const approval = W.bindClaimApproval({ approvalText: args.opt('approval'), claimSha256, bounty: claimedNumber });
     if (built.tooEarly) throw new Error(`Too early to submit: wait until ${built.claimAfter}. Right after the final, a juror's web tool can still be served an in-progress page and fail the claim`);
-    if (await exists(submissionPath)) throw new Error(`This wager's claim was already submitted. Continue it with: node submit_to_bounty.js --jobId ${claimedNumber} --resume <submission id> --state ${submissionPath}`);
     await fs.writeFile(claimPath, built.claim, { mode: 0o600 });
     const files = { jobId: String(claimedNumber), state: submissionPath };
     await submit({ ...lib, arg: (name) => files[name] ?? null, argAll: (name) => (name === 'file' ? [claimPath] : []) });
     const saved = await fs.readFile(submissionPath, 'utf8').then(JSON.parse, () => ({}));
-    record.claim = { bounty: claimedNumber, claimSha256, approvalLine: approval.line, submissionId: saved.submissionId ?? null, submittedAt: new Date(now() * 1000).toISOString() };
+    record.claim = { bounty: claimedNumber, attempt, claimSha256, approvalLine: approval.line, submissionId: saved.submissionId ?? null, submittedAt: isoNow() };
     await saveRecord(record);
     say(`Claim submitted to bounty #${claimedNumber}${saved.submissionId != null ? ` as submission ${saved.submissionId}` : ''}. The jury takes about 5-10 minutes; then node claim_bounty.js --jobId ${claimedNumber} --submissionId <id> finalizes the payout.`);
   }

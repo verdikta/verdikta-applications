@@ -10,7 +10,9 @@ import { creationTerms, bindCreation, verifyTransaction, iface, deployments, abi
 import { validateRubric } from './rubric.cjs';
 import { applyWorkOrder } from './_work-order.js';
 
-export async function runCreate(lib, { contract = (address, abi, provider) => new Contract(address, abi, provider), fetchApi = globalThis.fetch, baseUrl: configuredBaseUrl = process.env.VERDIKTA_BOUNTIES_BASE_URL || '', pause = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+// beforeBroadcast (optional): awaited right before any createBounty is signed or a saved signed transaction is
+// rebroadcast, never before linking one already sent; it throws to stop. wager.js re-checks the scheduled start there.
+export async function runCreate(lib, { contract = (address, abi, provider) => new Contract(address, abi, provider), fetchApi = globalThis.fetch, baseUrl: configuredBaseUrl = process.env.VERDIKTA_BOUNTIES_BASE_URL || '', pause = ms => new Promise(resolve => setTimeout(resolve, ms)), beforeBroadcast = async () => {} } = {}) {
   const { arg, getNetwork, providerFor, loadWallet, loadApiKey, confirmSpendOrExit,
     isDryRun, preflightDeployment, loadSpendPolicy, getSupportedModelsForClass,
     validateAndNormalizeJuryNodes, sendTx } = lib;
@@ -42,7 +44,13 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
     const headers = { 'Content-Type': 'application/json', 'X-Bot-API-Key': apiKey };
     async function api(path, body, method = 'POST') {
       const res = await fetchApi(`${baseUrl}/api${path}`, { method, headers, body: JSON.stringify(body), redirect: 'error' });
-      if (!res.ok) throw new Error(`API ${path}: HTTP ${res.status}; do not create a replacement job`);
+      if (!res.ok) {
+        // The server's code and problems (a wager's WAGER_* refusal lists every one) say what to fix.
+        const data = await res.json().catch(() => ({}));
+        const problems = Array.isArray(data?.problems) ? data.problems.map(p => p?.message ?? String(p)) : [data?.details ?? data?.message ?? data?.error].filter(Boolean);
+        const error = new Error(`API ${path}: HTTP ${res.status}${data?.code ? ` ${data.code}` : ''}${problems.length ? `: ${problems.join('; ')}` : ''}; do not create a replacement job`);
+        error.status = res.status; error.code = data?.code ?? null; throw error;
+      }
       return res.json();
     }
     const statePath = arg('resume') || `${configPath}.state.json`;
@@ -70,6 +78,7 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
       }
     }
     async function broadcast(state, bound) {
+      await beforeBroadcast({ jobId: state?.response?.job?.jobId ?? null });
       const review = [`Escrow: ${deployments[network].address}`, `Submission deadline: ${new Date(Number(bound.params.submissionDeadline) * 1000).toISOString()}`, `Remaining submission time: ${Math.floor(Number(bound.params.submissionDeadline) - Date.now() / 1000)} seconds (${windowText})`, `Usable time before prepare cutoff: ${Math.floor(Number(bound.params.submissionDeadline - bound.params.creatorAssessmentWindowSize) - Date.now() / 1000 - 2)} seconds`, `Supplier: ${config.procurementMode} ${bound.params.targetHunter}`];
       const receipt = await sendTx(wallet, 'createBounty', bound.transaction, {
         network, args: [bound.params], exactValueWei: bound.value, policy, review,
@@ -83,6 +92,7 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
       const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
       if (state.configHash !== configHash || state.network !== network) throw new Error('Recovery needs the matching config/network and a saved broadcast hash; inspect chain/API before further action');
       if (!state.txHash) {
+        if (state.status === 'API_REJECTED') throw new Error(`The API refused this creation (${state.apiError?.message ?? 'no detail saved'}); nothing was created or signed, so there is nothing to resume`);
         if (state.status !== 'API_CREATED' || state.creator?.toLowerCase() !== wallet.address.toLowerCase()) throw new Error('No safe pre-broadcast recovery state; reconcile chain/API manually');
         const bound = bindCreation(config, state.response, { apiCreatedAt: state.apiCreatedAt });
         await broadcast(state, bound);
@@ -98,6 +108,7 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
       } else if (!receipt) {
         if (!state.rawTransaction) throw new Error('Saved transaction missing; reconcile its hash manually');
         bindCreation(config, state.response, { apiCreatedAt: state.apiCreatedAt });
+        await beforeBroadcast({ jobId: state.response?.job?.jobId ?? null });
         await confirmSpendOrExit([`Rebroadcast exactly the saved signed transaction ${state.txHash}. No new nonce or API job.`, `Escrow: ${deployments[network].address}; reward ${config.bountyAmount} ETH`, `Submission deadline: ${new Date(Number(saved.params.submissionDeadline) * 1000).toISOString()}`]);
         const sent = await provider.broadcastTransaction(state.rawTransaction);
         if (sent.hash !== state.txHash) throw new Error('RPC returned a different transaction hash');
@@ -125,6 +136,9 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
         state = { configHash, network, creator: wallet.address, status: 'API_CREATE_PENDING' };
         await fs.writeFile(statePath, JSON.stringify(state, null, 2), { flag: 'wx', mode: 0o600 });
         const o = terms.params.oracle;
+        // The server's own refusal (a 4xx, or an error carrying its code, such as 503 WAGER_COUNTER_UNVERIFIED) is
+        // definitive: API_REJECTED, nothing created or signed. A transport failure or a bare gateway 5xx stays
+        // API_CREATE_PENDING, since the server may have created the job.
         response = await api('/jobs/create', {
           title: config.title, description: config.description, workProductType: config.workProductType || 'research',
           creator: wallet.address, bountyAmount: config.bountyAmount, threshold: config.threshold,
@@ -138,6 +152,9 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
           creatorAssessmentWindowSeconds: Number(terms.params.creatorAssessmentWindowSize),
           oracleMaxOracleFee: o.maxOracleFee.toString(), oracleAlpha: Number(o.alpha),
           oracleEstimatedBaseCost: o.estimatedBaseCost.toString(), oracleMaxFeeBasedScaling: Number(o.maxFeeBasedScaling),
+        }).catch(async error => {
+          if (error.status != null && (error.status < 500 || error.code)) { state.status = 'API_REJECTED'; state.apiError = { status: error.status, code: error.code, message: error.message }; await saveState(statePath, state); }
+          throw error;
         });
         apiCreatedAt = Math.floor(Date.now() / 1000);
         state.response = response; state.apiCreatedAt = apiCreatedAt; state.status = 'API_CREATED';

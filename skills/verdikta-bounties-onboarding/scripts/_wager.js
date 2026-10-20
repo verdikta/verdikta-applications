@@ -94,6 +94,27 @@ export function skillTermsProblems(t) {
   return problems;
 }
 
+/**
+ * Funding needs the scheduled start at least 10 minutes away (the shared MIN_START_LEAD_SECONDS). The other side's
+ * jury rejects a counter created after the start, so a bounty funded later can lose but never win: a one-sided bet.
+ */
+export function startLeadProblem(start, now) {
+  const s = unix(start);
+  if (s != null && s - now >= shared.MIN_START_LEAD_SECONDS) return null;
+  return `The scheduled start ${norm(start)} is less than ${shared.MIN_START_LEAD_SECONDS / 60} minutes away or past: a bounty funded now could be created after it, the other side's jury would reject it as a counter, and the bet would be one-sided.`;
+}
+
+/** This wallet's approved description checked again at `now`, as /jobs/create checks it (timing included). */
+export function ownTermsProblems({ description, me, ctx, now }) {
+  const terms = shared.parseMutualWagerTerms(description);
+  const values = termsValues(terms);
+  if (values.problems.length) return values.problems;
+  return [...shared.checkMutualWagerTerms(description, expectFor({ me, target: terms.claimant.wallet, ...values, ctx, now })).problems, ...skillTermsProblems(terms)];
+}
+
+// Escrow SubmissionStatus: a claim whose evaluation ended Failed may be replaced by a new one before the deadline.
+export const SUBMISSION_STATUS = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
+
 /** The opponent's bounty read straight from the escrow must agree with the site's onchain-status for it. */
 export function chainProblems(number, status, b, now) {
   const p = (msg) => `Bounty #${number} on chain: ${msg}`;

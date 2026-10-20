@@ -186,3 +186,37 @@ test('delayed prepared-state dry-run validates without creating or altering reco
  try {await runCreate(f.lib,f.env);} finally {Date.now=clock;}
  assert.equal(reviewed,1);assert.deepEqual(f.counts(),{creates:1,links:0});assert.equal(await readFile(f.args.prepared,'utf8'),before);
 });
+
+test('beforeBroadcast runs before every signing and rebroadcast, never before linking a sent transaction',async t=>{
+ const f=await creationFixture(t),calls=[];let stop=true;
+ f.env.beforeBroadcast=async({jobId})=>{calls.push(jobId);if(stop)throw Error('scheduled start passed');};
+ await assert.rejects(runCreate(f.lib,f.env),/scheduled start passed/);assert.deepEqual(calls,[7]);assert.deepEqual(f.sent,[]);
+ f.args.resume=`${f.file}.state.json`;assert.equal(JSON.parse(await readFile(f.args.resume)).status,'API_CREATED');
+ await assert.rejects(runCreate(f.lib,f.env),/scheduled start passed/);assert.deepEqual(f.sent,[]);assert.deepEqual(f.counts(),{creates:1,links:0});
+ // Saved signed bytes: the rebroadcast is guarded too.
+ const g=await creationFixture(t),gCalls=[];let signed;
+ g.lib.sendTx=async(signer,method,tx,opts)=>{
+   const rawTransaction=await testWallet.signTransaction({...tx,nonce:3,gasLimit:400000n,type:2,maxFeePerGas:2n,maxPriorityFeePerGas:1n});
+   signed={rawTransaction,hash:Transaction.from(rawTransaction).hash};await opts.onSigned(signed);throw Error('transport lost');
+ };
+ g.env.beforeBroadcast=async({jobId})=>{gCalls.push(jobId);if(gCalls.length>1)throw Error('scheduled start passed');};
+ await assert.rejects(runCreate(g.lib,g.env),/transport lost/);
+ g.args.resume=`${g.file}.state.json`;let broadcasts=0;
+ g.provider.broadcastTransaction=async()=>{broadcasts++;throw Error('must not rebroadcast');};
+ await assert.rejects(runCreate(g.lib,g.env),/scheduled start passed/);assert.equal(broadcasts,0);assert.deepEqual(gCalls,[7,7]);
+ // The RPC already has it: linking needs no guard.
+ g.provider.getTransaction=async()=>({...g.response.onChain.transaction,from:creator});
+ g.provider.getTransactionReceipt=async()=>({status:1,hash:signed.hash,blockNumber:5,logs:[log('BountyCreated',[7,creator,cid,128,85,1000000000000000n,g.response.job.submissionCloseTime])]});
+ await runCreate(g.lib,g.env);assert.deepEqual(gCalls,[7,7]);assert.deepEqual(g.counts(),{creates:1,links:1});
+});
+test('the server refusing /jobs/create is saved as API_REJECTED with its code; a bare gateway error stays ambiguous',async t=>{
+ const f=await creationFixture(t);
+ f.env.fetchApi=async()=>new Response(JSON.stringify({success:false,error:'Inconsistent mutual wager',code:'WAGER_COUNTER_UNVERIFIED',problems:[{code:'WAGER_COUNTER_UNVERIFIED',message:'Could not read counter bounty #18 to check it.'}]}),{status:503,headers:{'content-type':'application/json'}});
+ await assert.rejects(runCreate(f.lib,f.env),/HTTP 503 WAGER_COUNTER_UNVERIFIED: Could not read counter bounty #18/);
+ f.args.resume=`${f.file}.state.json`;const state=JSON.parse(await readFile(f.args.resume));
+ assert.equal(state.status,'API_REJECTED');assert.equal(state.apiError.code,'WAGER_COUNTER_UNVERIFIED');assert.equal(state.txHash,undefined);
+ await assert.rejects(runCreate(f.lib,f.env),/API refused this creation .*nothing was created or signed/);
+ const g=await creationFixture(t);g.env.fetchApi=async()=>new Response('bad gateway',{status:502});
+ await assert.rejects(runCreate(g.lib,g.env),/HTTP 502/);
+ assert.equal(JSON.parse(await readFile(`${g.file}.state.json`)).status,'API_CREATE_PENDING');
+});

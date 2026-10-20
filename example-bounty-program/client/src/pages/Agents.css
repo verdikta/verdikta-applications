@@ -776,6 +776,55 @@
   font-family: var(--font-mono);
 }
 
+/* Mutual Wagers Section */
+.agents-page .wager-verb {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.agents-page .wager-subhead {
+  font-size: var(--font-size-lg);
+  color: var(--text);
+  margin: 1.5rem 0 0.75rem;
+}
+
+.agents-page .wager-rules {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+}
+
+.agents-page .wager-codes {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.agents-page .wager-codes > div {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+  gap: 0.75rem;
+  font-size: var(--font-size-sm);
+}
+
+.agents-page .wager-codes dt,
+.agents-page .wager-codes dd {
+  margin: 0;
+}
+
+.agents-page .wager-codes dd {
+  color: var(--text-secondary);
+}
+
+@media (max-width: 640px) {
+  .agents-page .wager-codes > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.125rem;
+  }
+}
+
 /* Human Section */
 .agents-page .human-section {
   background: var(--bg);

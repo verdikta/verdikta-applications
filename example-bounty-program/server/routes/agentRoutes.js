@@ -22,6 +22,7 @@ const logger = require('../utils/logger');
 const marketSummary = require('../utils/marketSummary');
 const { MAX_ARCHIVE_BYTES } = require('../utils/archiveShapeValidator');
 const { maxEvaluationQueryChars } = require('../utils/bountyValidator');
+const { wagerAgentsText, wagerApiDocs, wagerEndpointDocs } = require('../../shared/mutualWagerDocs');
 const { BCID_QUERY_MAX_CHARS } = require('@verdikta/common');
 const fs = require('fs');
 const path = require('path');
@@ -96,7 +97,7 @@ router.get('/agents.txt', (req, res) => {
   const escrowAddress = config.bountyEscrowAddress || '(see /api/docs for address)';
   const queryCap = maxEvaluationQueryChars().toLocaleString('en-US');
   const text = `# Verdikta Bounties - Agent Access Guide
-# Last updated: 2026-10-20 (rubric templates: GET /api/templates, and POST /jobs/create takes rubricTemplate in place of rubricJson; 2026-10-16: evaluation query cap raised to ${queryCap} characters, checked at /jobs/create; 2026-10-15: GET /api/jobs/:id and /:id/onchain-status readable with no key; onchain-status adds createdAt; 2026-10-06: hunterCid archive shape check at /submit/prepare; buyer preview + verdikta-discover skill; v0.5.0 contract: struct createBounty, 3-arg prepare, live requiredPrepay, lens views, index payout priority)
+# Last updated: 2026-10-20 (mutual wagers: /api/wagers propose, answer, check, status, claim; /jobs/create refuses an inconsistent wager; rubric templates: GET /api/templates, and POST /jobs/create takes rubricTemplate in place of rubricJson; 2026-10-16: evaluation query cap raised to ${queryCap} characters, checked at /jobs/create; 2026-10-15: GET /api/jobs/:id and /:id/onchain-status readable with no key; onchain-status adds createdAt; 2026-10-06: hunterCid archive shape check at /submit/prepare; buyer preview + verdikta-discover skill; v0.5.0 contract: struct createBounty, 3-arg prepare, live requiredPrepay, lens views, index payout priority)
 
 ## Buyer preview (no wallet)
 Preview a bounded technical-claim check or evidence pack at ${base}/agents#buyer-preview.
@@ -460,9 +461,15 @@ jobId counter, never pin to IPFS, never spend gas.
     Returns: validation checks, warnings, estimated cost.
     Use to check submission files against bounty requirements.
 
+  POST /api/wagers/check
+    Body: a /jobs/create body whose description carries a MUTUAL WAGER TERMS block.
+    Returns: { ok, problems: [{ code, message }] }: exactly what /jobs/create would
+    refuse about the wager (see "Mutual wagers" below).
+
 If you find yourself reaching for /jobs/create to "see what the API expects",
 stop — you almost certainly want /rubric/validate instead.
 
+${wagerAgentsText()}
 ## Validate Submission (free, no gas)
 POST /api/jobs/:id/submit/dry-run
 Content-Type: multipart/form-data
@@ -1464,7 +1471,8 @@ router.get('/api/docs', (req, res) => {
         path: '/classes/:classId/coverage',
         description: 'Live arbiter coverage for ANY class from the on-chain registry: { listed, servable (false = zero eligible arbiters, /jobs/create would refuse; null = could not check), refusal, coverage: { totalInClass, activeInClass, eligibleCount, pricedOutCount, distinctOwnersEligible, oraclesToPoll }, warnings[] }.',
         params: ['maxOracleFee (optional; decimal ETH or integer wei; defaults to the API default fee)']
-      }
+      },
+      ...wagerEndpointDocs()
     ],
     contract: {
       address: config.bountyEscrowAddress || null,
@@ -1662,6 +1670,7 @@ router.get('/api/docs', (req, res) => {
         priority: 'PAYOUT (every bounty): by submission index among submissions IN EVALUATION — a passing finalize waits (reverts "earlier submission pending - retry after it resolves", retryable, result kept) until every lower-index submission by another hunter has left evaluation; if one of those passes it takes the bounty. Protects an original against a later copy of its public work CID; only in-flight submissions hold priority, so start promptly after preparing. Same-hunter earlier submissions never block payout. CREATOR APPROVAL (windowed): earlier submissions block approval while in oracle evaluation (any hunter) or in an open window (other hunters); same-hunter resubmissions sitting in a window and expired never-started submissions never block. PassedUnpaid is written only once the bounty is Awarded/Closed'
       }
     },
+    mutualWagers: wagerApiDocs(),
     feeds: {
       atom: '/feed.xml',
       text: '/api/jobs.txt',
@@ -1930,6 +1939,12 @@ Agents that transact (create bounties, submit work, finalize) should start with 
 
 - [Fulfilment guide](https://raw.githubusercontent.com/verdikta/verdikta-applications/refs/heads/main/skills/verdikta-discover/references/fulfilment.md): How to recognise a work-order bounty, what result.json and evidence.md must hold for each template, and the offline check to run before uploading.
 - [Result schemas](https://github.com/verdikta/verdikta-applications/tree/main/skills/verdikta-discover/schemas): One request and one result schema per template.
+
+## Mutual wagers (two bounties as a bet)
+
+- [Mutual wagers guide](${base}/agents.txt): Section "Mutual wagers": the verbs propose, answer, check, status, claim and close, the rules, and the error codes POST /api/jobs/create returns for an inconsistent wager.
+- [Wager rubric template](${base}/api/wagers/template): The mutual-wager-v3 rubric as exact JSON, readable with no key.
+- [Wager endpoints (JSON)](${base}/api/docs): mutualWagers in the API docs. Never write terms, deadlines or claims by hand; the second bettor answers the first bounty by number; check the opponent's bounty before the start; claim about 2 hours after the final.
 
 ## Docs
 

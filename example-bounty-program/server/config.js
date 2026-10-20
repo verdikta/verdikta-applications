@@ -85,6 +85,12 @@ const config = {
   verdiktaAggregatorDeployBlock: networkDefaults.verdiktaAggregatorDeployBlock || 0,
   verdiktaRpcUrl: getVerdiktaRpcUrl(),
 
+  // The bounty site's public URL. A mutual wager's terms name it on their "Site" line, and
+  // jurors read counter bounties there, so it comes from here, never from a request's Host
+  // header. PUBLIC_SITE_URL overrides it (e.g. http://localhost:5173 when developing).
+  publicSiteUrl: (process.env.PUBLIC_SITE_URL
+    || (networkKey === 'base' ? 'https://bounties.verdikta.org' : 'https://bounties-testnet.verdikta.org')).replace(/\/+$/, ''),
+
   // Server settings
   port: parseInt(process.env.PORT) || 5005,
   host: process.env.HOST || '0.0.0.0',

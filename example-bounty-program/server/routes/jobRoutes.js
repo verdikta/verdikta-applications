@@ -36,6 +36,9 @@ const { sanitizeCreateAttempt, isUnlinked, appendAttempt, attemptSummary, ADDRES
 const { rubricTemplateRecord, summarizeTemplateUsage, classifyRubric } = require('../utils/templateUsage');
 const { expandRubricTemplate } = require('../utils/rubricTemplates');
 const { findFinalizeBlockers, blockerCalldata, blockersHint } = require('../utils/finalizeBlockers');
+const { checkWagerCreate, wagerRefusal, isLinkedWagerJob, sameAddress } = require('../utils/wagerGuard');
+const { verifyWagerPackage } = require('../utils/wagerPackage');
+const { looksLikeMutualWager } = require('../../shared/mutualWager');
 
 /* ======================
    Helpers / configuration
@@ -659,6 +662,7 @@ router.post('/create', async (req, res) => {
     // ---- Extract rubric criteria for two-phase query ----
     let rubricCriteria = null;
     let forbiddenContent = null;
+    let rubricDoc = rubricJson || null;   // the whole rubric, for the mutual-wager check
 
     if (rubricJson) {
       rubricCriteria = rubricJson.criteria || null;
@@ -670,6 +674,7 @@ router.post('/create', async (req, res) => {
         if (ipfsClient?.fetchFromIPFS) {
           const rubricBuffer = await ipfsClient.fetchFromIPFS(rubricCidIn);
           const rubricData = JSON.parse(rubricBuffer.toString('utf8'));
+          rubricDoc = rubricData;
           rubricCriteria = rubricData.criteria || null;
           forbiddenContent = rubricData.forbiddenContent || rubricData.forbidden_content || null;
           logger.info('[jobs/create] rubric criteria extracted from IPFS', {
@@ -681,6 +686,31 @@ router.post('/create', async (req, res) => {
         logger.warn('[jobs/create] Could not fetch rubric from IPFS for criteria extraction (continuing with fallback query)', {
           cid: rubricCidIn, msg: e.message
         });
+      }
+    }
+
+    // ---- Mutual wager (shared/mutualWager.js, utils/wagerGuard.js) ----
+    // A description with a MUTUAL WAGER TERMS block must describe exactly this bounty (stake,
+    // threshold, class, jury, oracle settings, a deadline that covers settlement, a start at
+    // least 10 minutes away), with the template rubric unchanged, and a counter bounty the
+    // terms name must match its live record, because the jury then skips its own counter
+    // checks. The create page runs the same check before funding; this covers every other
+    // client. POST /api/wagers/check is the free dry run of exactly this.
+    if (looksLikeMutualWager(description, rubricDoc || { criteria: rubricCriteria })) {
+      const wagerCheck = await checkWagerCreate({
+        body: { ...createBody, classId: classIdNum },
+        // The deadline that goes on chain: an exact one is checked as given, not re-derived from now.
+        payments: { ...payments, submissionDeadline: exactDeadline },
+        oracleSettings,
+        rubric: rubricDoc,
+        now: Math.floor(Date.now() / 1000),
+        readCounter: (n) => readWagerRecords(n, req.app.locals.ipfsClient),
+        listCreatorJobs: (wallet) => linkedWagerJobs((j) => sameAddress(j.creator, wallet)),
+      });
+      if (wagerCheck.issues.length) {
+        logger.info('[jobs/create] mutual wager refused', { creator, codes: wagerCheck.issues.map((i) => i.code) });
+        const refusal = wagerRefusal(wagerCheck.issues);
+        return res.status(refusal.status).json(refusal.body);
       }
     }
 
@@ -3705,6 +3735,150 @@ router.get('/eth-price', async (req, res) => {
    GET JOB DETAILS
    ================= */
 
+/**
+ * The rubric (and jury) of a job as GET /:jobId?includeRubric=true serves them: read from the
+ * evaluationCid package first (authoritative), the loose rubricCid only as a fallback, and
+ * persisted on the job so later loads need no IPFS. Never throws: rubricContent is null when
+ * nothing could be read. The mutual-wager checks read counter bounties through it too.
+ */
+async function loadJobRubric(job, ipfsClient) {
+  let rubricContent = null;
+  let extractedJuryNodes = job.juryNodes || [];
+
+  // Source identity for the persisted-rubric cache. evaluationCid is the
+  // authoritative, immutable on-chain pointer (the package determines the
+  // gradingRubric); fall back to the loose rubricCid for legacy jobs.
+  const rubricSource = job.evaluationCid || job.rubricCid || null;
+
+  // Fast path (Option B): a rubric persisted on a previous load is still
+  // valid as long as its source CID matches — serve it with NO IPFS round
+  // trips. This is the bounty-detail load-time optimization.
+  // Only a rubric read from the package itself is cached under the package CID (rubricProvenance), so a
+  // copy from the loose rubricCid fallback is never served later as the package's rubric.
+  const cacheHit = !!(job.rubricContent && rubricSource && job.rubricSourceCid === rubricSource
+    && (job.rubricProvenance === 'package' || !job.evaluationCid));
+  let fromPackage = false;
+  if (cacheHit) {
+    rubricContent = job.rubricContent;
+  }
+
+  // Hash of the gradingRubric referenced INSIDE the evaluationCid package.
+  // This is the authoritative rubric pointer — the package is content-
+  // addressed/immutable and is exactly what the oracle grades against.
+  let packageRubricHash = null;
+
+  // AUTHORITATIVE SOURCE: open the evaluationCid package FIRST and derive the
+  // rubric (and jury) from it. The loose job.rubricCid field is only a
+  // fallback because it can drift out of sync with the package — e.g. after
+  // an ID-renumber/heal that repaired the package + title but not rubricCid.
+  // Re-issue (?clone=) prefills the create form from this response, so
+  // trusting the drift-prone pointer here silently mints new bounties whose
+  // graded criteria don't match the task.
+  if (!cacheHit && job.evaluationCid) {
+    try {
+      const archiveBuffer = await ipfsClient.fetchFromIPFS(job.evaluationCid);
+      const AdmZip = require('adm-zip');
+      const zip = new AdmZip(archiveBuffer);
+      const entries = zip.getEntries();
+
+      // Look for manifest.json first (new Verdikta format)
+      const manifestEntry = entries.find(e =>
+        e.entryName === 'manifest.json' || e.entryName.endsWith('/manifest.json')
+      );
+
+      if (manifestEntry) {
+        const manifestText = zip.readAsText(manifestEntry);
+        const manifest = JSON.parse(manifestText);
+
+        // Extract jury nodes from manifest.juryParameters.AI_NODES
+        if (manifest.juryParameters?.AI_NODES && extractedJuryNodes.length === 0) {
+          extractedJuryNodes = manifest.juryParameters.AI_NODES.map(node => ({
+            provider: node.AI_PROVIDER,
+            model: node.AI_MODEL,
+            runs: node.NO_COUNTS || 1,
+            weight: node.WEIGHT || 1
+          }));
+        }
+
+        // Look for grading rubric reference in manifest.additional
+        const gradingRubricRef = manifest.additional?.find(a => a.name === 'gradingRubric');
+        if (gradingRubricRef?.hash) {
+          packageRubricHash = gradingRubricRef.hash;
+          try {
+            const rubricBuffer = await ipfsClient.fetchFromIPFS(gradingRubricRef.hash);
+            const rubricText = rubricBuffer.toString('utf8');
+            rubricContent = JSON.parse(rubricText);
+            fromPackage = true;
+          } catch (err) {
+            logger.warn('[jobs/details] failed to fetch grading rubric from IPFS', {
+              hash: gradingRubricRef.hash,
+              msg: err.message
+            });
+          }
+        }
+      }
+
+      // Fallback: look for rubric.json directly in ZIP (older format)
+      if (!rubricContent) {
+        const rubricEntry = entries.find(e =>
+          e.entryName === 'rubric.json' || e.entryName.endsWith('/rubric.json')
+        );
+        if (rubricEntry) {
+          const rubricText = zip.readAsText(rubricEntry);
+          rubricContent = JSON.parse(rubricText);
+          fromPackage = true;
+
+          // Extract jury from rubric if present
+          if (rubricContent.jury && Array.isArray(rubricContent.jury) && extractedJuryNodes.length === 0) {
+            extractedJuryNodes = rubricContent.jury;
+          }
+        }
+      }
+
+    } catch (err) {
+      logger.warn('[jobs/details] failed to extract from evaluationCid', { msg: err.message });
+    }
+  }
+
+  // Cross-check + last-resort fallback to the loose rubricCid pointer.
+  // If it disagrees with the package's gradingRubric, the stored pointer is
+  // stale — surface it loudly but keep serving the authoritative package
+  // rubric. Only fetch from the loose pointer when the package gave nothing.
+  if (!cacheHit && job.rubricCid) {
+    if (packageRubricHash && job.rubricCid !== packageRubricHash) {
+      logger.warn('[jobs/details] rubricCid drift: stored rubricCid disagrees with evaluationCid package gradingRubric — using package (authoritative)', {
+        jobId: job.jobId,
+        storedRubricCid: job.rubricCid,
+        packageRubricHash
+      });
+    }
+    if (!rubricContent) {
+      try {
+        const rawRubric = await ipfsClient.fetchFromIPFS(job.rubricCid);
+        rubricContent = JSON.parse(rawRubric);
+      } catch (err) {
+        logger.warn('[jobs/details] failed to fetch rubric from rubricCid (fallback)', { msg: err.message });
+      }
+    }
+  }
+
+  // Persist the authoritative rubric (+ jury) onto the job so future loads
+  // serve it locally with zero IPFS. Keyed on the immutable source CID and
+  // race-safe via jobStorage.updateJob -> withStorage. Best-effort: a failed
+  // write just means the next load re-fetches and retries the persist.
+  if (!cacheHit && rubricContent && rubricSource && (fromPackage || !job.evaluationCid)) {
+    const updates = { rubricContent, rubricSourceCid: rubricSource, rubricProvenance: fromPackage ? 'package' : 'rubricCid' };
+    if (extractedJuryNodes.length > 0) updates.juryNodes = extractedJuryNodes;
+    try {
+      await jobStorage.updateJob(job.jobId, updates);
+    } catch (persistErr) {
+      logger.warn('[jobs/details] failed to persist rubric cache', { jobId: job.jobId, error: persistErr.message });
+    }
+  }
+
+  return { rubricContent, juryNodes: extractedJuryNodes };
+}
+
 router.get('/:jobId', async (req, res) => {
   try {
     const { jobId } = req.params;
@@ -3851,132 +4025,7 @@ router.get('/:jobId', async (req, res) => {
     let extractedJuryNodes = job.juryNodes || [];
 
     if (req.query.includeRubric === 'true') {
-      // Source identity for the persisted-rubric cache. evaluationCid is the
-      // authoritative, immutable on-chain pointer (the package determines the
-      // gradingRubric); fall back to the loose rubricCid for legacy jobs.
-      const rubricSource = job.evaluationCid || job.rubricCid || null;
-
-      // Fast path (Option B): a rubric persisted on a previous load is still
-      // valid as long as its source CID matches — serve it with NO IPFS round
-      // trips. This is the bounty-detail load-time optimization.
-      const cacheHit = !!(job.rubricContent && rubricSource && job.rubricSourceCid === rubricSource);
-      if (cacheHit) {
-        rubricContent = job.rubricContent;
-      }
-
-      const ipfsClient = req.app.locals.ipfsClient;
-
-      // Hash of the gradingRubric referenced INSIDE the evaluationCid package.
-      // This is the authoritative rubric pointer — the package is content-
-      // addressed/immutable and is exactly what the oracle grades against.
-      let packageRubricHash = null;
-
-      // AUTHORITATIVE SOURCE: open the evaluationCid package FIRST and derive the
-      // rubric (and jury) from it. The loose job.rubricCid field is only a
-      // fallback because it can drift out of sync with the package — e.g. after
-      // an ID-renumber/heal that repaired the package + title but not rubricCid.
-      // Re-issue (?clone=) prefills the create form from this response, so
-      // trusting the drift-prone pointer here silently mints new bounties whose
-      // graded criteria don't match the task.
-      if (!cacheHit && job.evaluationCid) {
-        try {
-          const archiveBuffer = await ipfsClient.fetchFromIPFS(job.evaluationCid);
-          const AdmZip = require('adm-zip');
-          const zip = new AdmZip(archiveBuffer);
-          const entries = zip.getEntries();
-
-          // Look for manifest.json first (new Verdikta format)
-          const manifestEntry = entries.find(e =>
-            e.entryName === 'manifest.json' || e.entryName.endsWith('/manifest.json')
-          );
-
-          if (manifestEntry) {
-            const manifestText = zip.readAsText(manifestEntry);
-            const manifest = JSON.parse(manifestText);
-
-            // Extract jury nodes from manifest.juryParameters.AI_NODES
-            if (manifest.juryParameters?.AI_NODES && extractedJuryNodes.length === 0) {
-              extractedJuryNodes = manifest.juryParameters.AI_NODES.map(node => ({
-                provider: node.AI_PROVIDER,
-                model: node.AI_MODEL,
-                runs: node.NO_COUNTS || 1,
-                weight: node.WEIGHT || 1
-              }));
-            }
-
-            // Look for grading rubric reference in manifest.additional
-            const gradingRubricRef = manifest.additional?.find(a => a.name === 'gradingRubric');
-            if (gradingRubricRef?.hash) {
-              packageRubricHash = gradingRubricRef.hash;
-              try {
-                const rubricBuffer = await ipfsClient.fetchFromIPFS(gradingRubricRef.hash);
-                const rubricText = rubricBuffer.toString('utf8');
-                rubricContent = JSON.parse(rubricText);
-              } catch (err) {
-                logger.warn('[jobs/details] failed to fetch grading rubric from IPFS', {
-                  hash: gradingRubricRef.hash,
-                  msg: err.message
-                });
-              }
-            }
-          }
-
-          // Fallback: look for rubric.json directly in ZIP (older format)
-          if (!rubricContent) {
-            const rubricEntry = entries.find(e =>
-              e.entryName === 'rubric.json' || e.entryName.endsWith('/rubric.json')
-            );
-            if (rubricEntry) {
-              const rubricText = zip.readAsText(rubricEntry);
-              rubricContent = JSON.parse(rubricText);
-
-              // Extract jury from rubric if present
-              if (rubricContent.jury && Array.isArray(rubricContent.jury) && extractedJuryNodes.length === 0) {
-                extractedJuryNodes = rubricContent.jury;
-              }
-            }
-          }
-
-        } catch (err) {
-          logger.warn('[jobs/details] failed to extract from evaluationCid', { msg: err.message });
-        }
-      }
-
-      // Cross-check + last-resort fallback to the loose rubricCid pointer.
-      // If it disagrees with the package's gradingRubric, the stored pointer is
-      // stale — surface it loudly but keep serving the authoritative package
-      // rubric. Only fetch from the loose pointer when the package gave nothing.
-      if (!cacheHit && job.rubricCid) {
-        if (packageRubricHash && job.rubricCid !== packageRubricHash) {
-          logger.warn('[jobs/details] rubricCid drift: stored rubricCid disagrees with evaluationCid package gradingRubric — using package (authoritative)', {
-            jobId: job.jobId,
-            storedRubricCid: job.rubricCid,
-            packageRubricHash
-          });
-        }
-        if (!rubricContent) {
-          try {
-            const rawRubric = await ipfsClient.fetchFromIPFS(job.rubricCid);
-            rubricContent = JSON.parse(rawRubric);
-          } catch (err) {
-            logger.warn('[jobs/details] failed to fetch rubric from rubricCid (fallback)', { msg: err.message });
-          }
-        }
-      }
-
-      // Persist the authoritative rubric (+ jury) onto the job so future loads
-      // serve it locally with zero IPFS. Keyed on the immutable source CID and
-      // race-safe via jobStorage.updateJob -> withStorage. Best-effort: a failed
-      // write just means the next load re-fetches and retries the persist.
-      if (!cacheHit && rubricContent && rubricSource) {
-        const updates = { rubricContent, rubricSourceCid: rubricSource };
-        if (extractedJuryNodes.length > 0) updates.juryNodes = extractedJuryNodes;
-        try {
-          await jobStorage.updateJob(job.jobId, updates);
-        } catch (persistErr) {
-          logger.warn('[jobs/details] failed to persist rubric cache', { jobId: job.jobId, error: persistErr.message });
-        }
-      }
+      ({ rubricContent, juryNodes: extractedJuryNodes } = await loadJobRubric(job, req.app.locals.ipfsClient));
     }
 
     // Strip internal sync bookkeeping fields before sending to client.
@@ -4293,6 +4342,44 @@ async function readOnchainStatus(bountyId) {
     logger.error('[jobs/onchain-status] fatal', { bountyId, msg: err.message });
     return { status: 500, body: { success: false, error: 'Failed to read on-chain status', details: err.message } };
   }
+}
+
+/**
+ * The two records a mutual-wager check reads about a bounty, exactly as GET /:id/onchain-status
+ * (`status`, null when the escrow has no such bounty) and GET /:id?includeRubric=true (`job`,
+ * null when the site has no record) return them, plus `wagerPackage` for a wager: its on-chain
+ * evaluation package checked against its terms. Throws when any of these cannot be read right now,
+ * so a check fails closed instead of judging a bounty it could not see.
+ */
+async function readWagerRecords(bountyId, ipfsClient) {
+  const { status, body } = await readOnchainStatus(bountyId);
+  if (status === 404) return { status: null, job: null };
+  if (status !== 200) throw new Error(body?.details || body?.error || `on-chain status read failed (${status})`);
+  let job;
+  try { job = await jobStorage.getJob(bountyId); } catch { return { status: body, job: null }; }
+  const { lastSyncedAt: _lsa, _chainFieldsHealed: _cfh, _metadataHealDone: _mhd, _metadataHealAttempts: _mha, _metadataHealNextAt: _mhn, ...rest } = job;
+  // A wager is checked against what its jury will read: the package named on chain, rebuilt from its
+  // terms (utils/wagerPackage.js), with the rubric and jury that package attaches. Nothing from the site
+  // record's rubric cache or loose rubricCid enters the check. It throws when either cannot be read now.
+  if (looksLikeMutualWager(job.description)) {
+    const pkg = await verifyWagerPackage({ evaluationCid: body.evaluationCid, description: job.description, ipfsClient });
+    return { status: body, job: {
+      ...rest,
+      rubricContent: pkg.rubric ?? null,
+      juryNodes: pkg.juryNodes ?? rest.juryNodes,
+      iterations: pkg.iterations ?? rest.iterations,
+      wagerPackage: { ok: pkg.ok, problems: pkg.problems, verifier: pkg.verifier, rubricCid: pkg.rubricCid ?? null },
+    } };
+  }
+  const { rubricContent, juryNodes } = await loadJobRubric(job, ipfsClient);
+  if (!rubricContent && (job.evaluationCid || job.rubricCid)) throw new Error(`its rubric could not be read from IPFS`);
+  return { status: body, job: { ...rest, rubricContent, juryNodes } };
+}
+
+/** Linked bounties whose description carries a MUTUAL WAGER TERMS block and that pass `filter`. */
+async function linkedWagerJobs(filter = () => true) {
+  const storage = await jobStorage.readStorage();
+  return (storage.jobs || []).filter((j) => isLinkedWagerJob(j) && filter(j));
 }
 
 /* =================
@@ -8247,6 +8334,10 @@ async function calculateFeeEstimate(juryNodes, iterations, oracleSettings = null
     warning: 'This is an estimate. Actual cost may vary based on network conditions and oracle availability.'
   };
 }
+
+// What routes/wagerRoutes.js reads bounties with (server.js passes it in), so the wager
+// endpoints see a bounty exactly as GET /:id and /:id/onchain-status serve it.
+router._wagerDeps = { readWagerRecords, linkedWagerJobs, resolveOracleSettings };
 
 // Exposed for unit tests only.
 router._chainHelpers = { readWithLagRetry, readChainSubmissionWithRetry, ensureLocalSubmission, submissionRecordFromChain };

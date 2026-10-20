@@ -1,0 +1,6 @@
+{
+  "name": "@verdikta/bounty-shared",
+  "private": true,
+  "description": "Plain CommonJS modules the bounty server requires and the client imports (see client/vite.config.js). No dependencies and no require calls.",
+  "type": "commonjs"
+}

@@ -228,6 +228,8 @@ app.use(clientIdentification);
 
 // Routes
 app.use('/api/jobs', jobRoutes); // New job management routes (replaces bounty routes for MVP)
+// Mutual wagers for agents: builders, checks, claim drafts and pair status (all side-effect free)
+app.use('/api/wagers', require('./routes/wagerRoutes')(jobRoutes._wagerDeps));
 app.use('/api/bounties', bountyRoutes);
 app.use('/api/submissions', submissionRoutes);
 app.use('/api', ipfsRoutes);

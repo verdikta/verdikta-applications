@@ -901,9 +901,9 @@ function CreateBounty({ walletState }) {
         site: window.location.origin,
         escrow: currentNetwork.bountyEscrowAddress,
         chain: wagerChain,
-        criteria: rubric.criteria,
-        forbiddenContent: rubric.forbiddenContent,
-        template: getTemplate('mutualWager'),
+        // What gets pinned: the jury sees every criterion's label and text and the whole rubric JSON.
+        // The template it is compared with is the shared, frozen one (the server checks the same).
+        rubric: buildRubricForUpload(),
       };
       const { problems, terms } = checkMutualWagerTerms(evaluationDescription, expect);
       if (!problems.length) {

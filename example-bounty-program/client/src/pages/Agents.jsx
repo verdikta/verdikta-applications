@@ -22,8 +22,11 @@ import {
   Code,
   ExternalLink,
   AlertCircle,
-  Blocks
+  Blocks,
+  Handshake
 } from 'lucide-react';
+// The same verbs, rules and codes as /agents.txt and /api/docs (shared with the server).
+import { WAGER_VERBS, WAGER_RULES, WAGER_ERROR_CODES } from '../../../shared/mutualWagerDocs.js';
 import './Agents.css';
 const BuyerPreview = lazy(() => import('../components/BuyerPreview'));
 
@@ -1146,6 +1149,58 @@ def finalize_submission(w3, account, job_id, sub_id):
             </div>
           ))}
         </div>
+      </section>
+
+      {/* Mutual Wagers Section */}
+      <section className="agents-section" id="mutual-wagers">
+        <h2>
+          <Handshake size={24} />
+          Mutual Wagers
+        </h2>
+        <div className="api-info">
+          <p>
+            A mutual wager is two directed bounties, one per bettor: each pays the other bettor only if their side
+            wins and they hold the mirrored counter bounty. These calls build, check and claim them deterministically.
+            They are side-effect free (nothing is pinned, no job id is used, nothing is signed) and are your own checks
+            before funding and before claiming; the jury never depends on them. <code>GET /api/wagers/template</code> returns
+            the rubric as exact JSON with no key.
+          </p>
+        </div>
+        <div className="api-endpoints">
+          {WAGER_VERBS.map((v) => (
+            <div key={v.verb} className="endpoint-card">
+              <div className="endpoint-header">
+                <span className={`method-badge method-${v.method.toLowerCase()}`}>{v.method}</span>
+                <code className="endpoint-path">{`/api${v.path}`}</code>
+                <span className="wager-verb">{v.verb}, {v.who}</span>
+              </div>
+              <p className="endpoint-description">{v.does}</p>
+              {v.body && (
+                <div className="endpoint-params">
+                  <span className="params-label">Body:</span>
+                  <span className="params-list">{v.body}</span>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        <h3 className="wager-subhead">Rules</h3>
+        <ul className="wager-rules">
+          {WAGER_RULES.map((rule) => <li key={rule}>{rule}</li>)}
+        </ul>
+        <h3 className="wager-subhead">Error codes</h3>
+        <p className="endpoint-description">
+          <code>POST /api/jobs/create</code> refuses an inconsistent wager with HTTP 400
+          and <code>{'{ code, problems: [{ code, message }] }'}</code> (503 when only the named counter could not be read).
+        </p>
+        <dl className="wager-codes">
+          {Object.entries(WAGER_ERROR_CODES).map(([code, meaning]) => (
+            <div key={code}>
+              <dt><code>{code}</code></dt>
+              <dd>{meaning}</dd>
+            </div>
+          ))}
+        </dl>
       </section>
 
       {/* For Humans Section */}

@@ -18,6 +18,8 @@ const express = require('express');
 const request = require('supertest');
 const storage = require('../utils/jobStorage');
 const { validateWagerTarget } = require('../utils/validation');
+const { proposeMutualWager } = require('../../shared/mutualWager');
+const { wagerContext } = require('../utils/wagerGuard');
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
@@ -90,10 +92,25 @@ describe('POST /jobs/create with a mutual-wager description', () => {
     expect(res.body.code).toBe('WAGER_TARGET');
   });
 
-  it('creates a wager targeted at its Claimant', async () => {
-    const res = await request(app).post('/jobs/create').send({ ...body, targetHunter: CLAIMANT, procurementMode: 'TARGETED' });
+  it('creates a complete wager targeted at its Claimant', async () => {
+    // A bare terms block now fails the full check (test/wagerApi.test.js); build a complete one.
+    const at = (h) => new Date((Math.floor(Date.now() / 60000) * 60 + h * 3600) * 1000).toISOString().replace('.000Z', 'Z');
+    const { createBody } = proposeMutualWager({
+      creator: POSTER, opponent: CLAIMANT, wagerId: 'VW-TEST3-BOS-DET-20261020', stake: '0.0001', start: at(2), settle: at(26),
+      event: 'NBA 2026-27 regular season: Boston Celtics (BOS) at Detroit Pistons (DET), Little Caesars Arena, Detroit, Michigan.',
+      sides: { creator: 'the Boston Celtics win', opponent: 'the Detroit Pistons win' },
+      jury: [{ provider: 'openai', model: 'test-model', weight: 1, runs: 1 }],
+    }, wagerContext());
+    const res = await request(app).post('/jobs/create').send(createBody);
     expect(res.status).toBe(200);
     expect(storage.createJob).toHaveBeenCalledTimes(1);
     expect(storage.createJob.mock.calls[0][0].targetHunter).toBe(CLAIMANT);
+  });
+
+  it('refuses a bare terms block that names the right target but nothing else', async () => {
+    const res = await request(app).post('/jobs/create').send({ ...body, targetHunter: CLAIMANT, procurementMode: 'TARGETED' });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('WAGER_TERMS');
+    expect(storage.createJob).not.toHaveBeenCalled();
   });
 });

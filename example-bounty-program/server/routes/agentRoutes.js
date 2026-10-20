@@ -96,7 +96,7 @@ router.get('/agents.txt', (req, res) => {
   const escrowAddress = config.bountyEscrowAddress || '(see /api/docs for address)';
   const queryCap = maxEvaluationQueryChars().toLocaleString('en-US');
   const text = `# Verdikta Bounties - Agent Access Guide
-# Last updated: 2026-10-16 (evaluation query cap raised to ${queryCap} characters, checked at /jobs/create; 2026-10-15: GET /api/jobs/:id and /:id/onchain-status readable with no key; onchain-status adds createdAt; 2026-10-06: hunterCid archive shape check at /submit/prepare; buyer preview + verdikta-discover skill; v0.5.0 contract: struct createBounty, 3-arg prepare, live requiredPrepay, lens views, index payout priority)
+# Last updated: 2026-10-20 (rubric templates: GET /api/templates, and POST /jobs/create takes rubricTemplate in place of rubricJson; 2026-10-16: evaluation query cap raised to ${queryCap} characters, checked at /jobs/create; 2026-10-15: GET /api/jobs/:id and /:id/onchain-status readable with no key; onchain-status adds createdAt; 2026-10-06: hunterCid archive shape check at /submit/prepare; buyer preview + verdikta-discover skill; v0.5.0 contract: struct createBounty, 3-arg prepare, live requiredPrepay, lens views, index payout priority)
 
 ## Buyer preview (no wallet)
 Preview a bounded technical-claim check or evidence pack at ${base}/agents#buyer-preview.
@@ -356,6 +356,31 @@ read should be treated as unreliable.
 ## View Rubric / Evaluation Criteria
 GET /api/jobs/:id/rubric
 
+## Rubric Templates (start here when creating a bounty)
+Ready rubrics, the same ones the website's create page offers, with must-pass
+gates and weighted criteria. Public, no key needed:
+
+  GET /api/templates          list: key, label, useWhen, version, recommended
+                              threshold and classId
+  GET /api/templates/:key     one template, with a rubricJson ready for
+                              /jobs/create
+
+Use one as is by key: POST /api/jobs/create with "rubricTemplate": "<key>" in
+place of rubricJson. The server fills in the template's exact rubric, and its
+recommended threshold and classId unless you send your own. To edit one, read
+GET /api/templates/:key, change its rubricJson and send that instead. Add
+"rubricTemplateVersion": "<version>" to insist on a version (400
+TEMPLATE_VERSION_CHANGED tells you it moved on); bounties that must match each
+other word for word, such as the two sides of a mutual wager, need the same one.
+The rubric says how work is judged, not what to deliver: templates are generic,
+so the description must still name the topic, audience, format and length.
+The create response's job.rubricTemplate and /rubric/validate's templateMatch
+say which template a rubric matches. Prefer a template to a one-criterion
+rubric, which gives the jury little to judge by. Work-order templates
+(source-check-v1, evidence-pack-v1, review-v1, real-world-task-v1) are listed
+too; those bounties are built from a work-order request by the verdikta-discover
+skill, not by key.
+
 ## Rubric Format (when creating bounties)
 The rubric describes how submissions are scored. Pass it as a NATIVE JSON object
 inside the request body — never as a pre-stringified JSON string. The body is
@@ -419,7 +444,7 @@ jobId counter, never pin to IPFS, never spend gas.
 
   POST /api/jobs/rubric/validate
     Body: { "rubricJson": { "criteria": [ ... ] }, "juryNodes": [ ... ], "classId": 717 }
-    Returns: { valid, errors[], warnings[], classListed, coverage }
+    Returns: { valid, errors[], warnings[], classListed, coverage, templateMatch }
     Use BEFORE /jobs/create to check rubric shape (criteria count, weights
     sum to 1.0, must/weight rule, etc.). With juryNodes + classId it applies
     the same class rules as /jobs/create (see Classes above).
@@ -1055,6 +1080,7 @@ router.get('/api/docs', (req, res) => {
       amounts: 'Positive decimal or scientific-notation ETH (e.g. 1e-3, 5e-05, +1); strings preserve 18-decimal precision. Hex, fractional wei, zero/negative and payments >= 2^128 wei return 400 before upload/storage.',
       amountResponse: 'bountyAmount remains a numeric ETH display field. bountyAmountWei is an exact integer wei string for signing/accounting; older numeric-only records acquire it on chain sync. Never convert the display number back to wei when the exact field is present.',
       windows: 'submissionWindowHours (default 24) and creatorAssessmentWindowHours (default 0) round to nearest integer seconds. Optional integer creatorAssessmentWindowSeconds takes precedence. The same rounded duration drives stored and encoded deadlines; submission duration must exceed assessment window by more than 2 seconds.',
+      rubric: 'Exactly one of rubricJson (object), rubricCid (pinned rubric) or rubricTemplate (a key from GET /api/templates; the server fills in that template\'s exact rubric, and its recommended threshold and classId unless you send them). Optional rubricTemplateVersion must equal the current version or the request returns 400 TEMPLATE_VERSION_CHANGED. Unknown keys return 400 UNKNOWN_TEMPLATE; a key together with rubricJson or rubricCid returns 400 RUBRIC_TEMPLATE_CONFLICT. The response\'s job.rubricTemplate { key, version, match: exact|modified|null, source } says which template the rubric matches.',
       exactDeadline: 'submissionDeadline (instead of submissionWindowHours, not with it): whole unix seconds or ISO-8601 with a zone ("2026-10-22T00:00:00Z"); encoded to the second and echoed as job.submissionCloseTimeIso. Past, millisecond, zone-less or fractional values return 400 "Invalid bounty window" before anything is pinned. Use it when the description names a date.',
       deadlineCheck: 'PATCH /bountyId returns warnings: [{ code: "DEADLINE_MISMATCH", plannedSubmissionDeadline(+Iso), onChainSubmissionDeadline(+Iso), differenceSeconds, message, fix }] when the on-chain deadline differs from the planned one (exact: any difference; window: more than 15 minutes). The link still succeeds; the deadline cannot be changed, so recreate the bounty if its terms name the planned date.',
       payments: 'Both creatorDeterminationPayment and arbiterDeterminationPayment are required when either is supplied or a positive window is requested. Incomplete settings return 400. No-window split payments must both equal bountyAmount (mismatches return 400, not ignored). Windowed funding uses their maximum.',
@@ -1174,7 +1200,7 @@ router.get('/api/docs', (req, res) => {
           'juryNodes: array (optional) — also validate the jury; with classId, applies the /jobs/create class rules',
           'classId: integer (optional) — registry classes check jury models; any class checks live arbiter coverage'
         ],
-        returns: '{ valid: boolean, errors: string[], warnings?: string[], classListed?, coverage?, allowedModels?, tips?, checkedAt }. Validates: 1-10 criteria; each has unique id (string), must (boolean), weight (number 0-1), description (string); must=true criteria must have weight=0; scored (must=false) weights must sum to 1.0 (±0.001). Threshold is NOT part of the rubric — it is a top-level field on /jobs/create.'
+        returns: '{ valid: boolean, errors: string[], templateMatch: { key, version, match: exact|modified|null } | null, warnings?: string[], classListed?, coverage?, allowedModels?, tips?, checkedAt }. templateMatch names the GET /api/templates template the rubric matches (modified: same criterion ids, different text or weights). Validates: 1-10 criteria; each has unique id (string), must (boolean), weight (number 0-1), description (string); must=true criteria must have weight=0; scored (must=false) weights must sum to 1.0 (±0.001). Threshold is NOT part of the rubric — it is a top-level field on /jobs/create.'
       },
       {
         method: 'POST',
@@ -1406,6 +1432,16 @@ router.get('/api/docs', (req, res) => {
         method: 'GET',
         path: '/market-summary',
         description: 'Public aggregate market context, cached 5 minutes: open/awarded/closed counts, median and interquartile range of bountyAmountWei, typical time to award, worst-case oracle prepay and active-hunter count over a stated window, split by service template (source-check-v1, evidence-pack-v1, review-v1, real-world-task-v1, unclassified). Aggregates only, no addresses or task content; quartiles are withheld below 3 samples. Always carries not_a_quote: true: it is not a quote, an offer or supplier availability.'
+      },
+      {
+        method: 'GET',
+        path: '/templates',
+        description: 'Public, no key. The rubric templates the create page offers, for POST /jobs/create: key, kind (rubric | service), label, useWhen, version, recommendedThreshold, recommendedClassId, criteria and mustPass counts. kind "service" entries are verdikta-discover work-order templates, built by that skill from a work-order request (not usable by key).'
+      },
+      {
+        method: 'GET',
+        path: '/templates/:key',
+        description: 'Public, no key. One template with rubricJson in /jobs/create form (criterion text in description), fingerprint and previousVersions. Use it as is with "rubricTemplate": "<key>" on /jobs/create, or edit its rubricJson and send that. 404 for unknown and work-order keys.'
       },
       {
         method: 'GET',
@@ -1899,6 +1935,7 @@ Agents that transact (create bounties, submit work, finalize) should start with 
 
 - [Agent Access Guide](${base}/agents.txt): Plain-text operating manual — auth, calldata shape, scripting anti-patterns, rubric and submission formats, ID-drift recovery. Read this first.
 - [JSON API docs](${base}/api/docs): Machine-readable endpoint reference with request/response shapes.
+- [Rubric templates (JSON)](${base}/api/templates): Ready rubrics with must-pass gates and weighted criteria. Create a bounty from one with "rubricTemplate": "<key>" on POST /api/jobs/create, no rubric writing needed.
 - [Verdikta documentation](https://docs.verdikta.org): Protocol-level docs on the oracle network, aggregator, and evaluation model.
 
 ## API for agents

@@ -118,6 +118,7 @@ const RUBRIC_SOURCE_LABELS = {
   import: 'Imported draft',
   library: 'Saved rubric',
   scratch: 'From scratch',
+  reference: 'By key (API)',
   api: 'API'
 };
 
@@ -394,9 +395,28 @@ function Analytics() {
   const fundedOnChain = templateUsage?.totals?.onChain || 0;
   const formatVersions = (versions) => Object.entries(versions || {})
     .map(([version, n]) => `${version} ×${n}`).join(', ') || '-';
+  const formatVia = (via) => (via ? `${via.site.onChain} / ${via.agent.onChain}` : '-');
+  const rubricTemplateRows = templateRows.filter((t) => t.kind !== 'service');
+  const serviceTemplateRows = templateRows.filter((t) => t.kind === 'service');
   const formatSources = (sources) => Object.entries(sources || {})
     .filter(([source]) => RUBRIC_SOURCE_LABELS[source])
     .map(([source, n]) => `${RUBRIC_SOURCE_LABELS[source]} ×${n}`).join(', ') || '-';
+
+  // One row of the template table; "other" rows (no template, no rubric) have no match columns.
+  const templateRow = (t, { other = false, title } = {}) => (
+    <tr key={t.key} className={other ? 'template-row-other' : undefined} title={title}>
+      <td>{other ? t.label : <strong>{t.label}</strong>}</td>
+      <td>{t.onChain}</td>
+      <td>{percentOf(t.onChain, fundedOnChain)}</td>
+      <td>{t.awarded}</td>
+      <td>{formatVia(t.via)}</td>
+      <td>{t.created}</td>
+      <td>{other ? '-' : t.exact}</td>
+      <td>{other ? '-' : t.modified}</td>
+      <td>{other ? '-' : formatVersions(t.versions)}</td>
+      <td>{t.key === 'unclassified' ? '-' : formatSources(t.sources)}</td>
+    </tr>
+  );
 
   return (
     <div className="analytics">
@@ -603,6 +623,7 @@ function Analytics() {
                     <th title={templateUsage.stages?.onChain} className="tooltip-header">Funded</th>
                     <th title="Share of all bounties funded on chain" className="tooltip-header">Share</th>
                     <th title={templateUsage.stages?.awarded} className="tooltip-header">Awarded</th>
+                    <th title={`Funded, by who created it: ${templateUsage.stages?.via || ''}`} className="tooltip-header">Site / Agent</th>
                     <th title={templateUsage.stages?.created} className="tooltip-header">Created</th>
                     <th title="Rubric is a template version word for word" className="tooltip-header">As Is</th>
                     <th title="Template criteria with different wording, weights or forbidden content" className="tooltip-header">Edited</th>
@@ -611,48 +632,26 @@ function Analytics() {
                   </tr>
                 </thead>
                 <tbody>
-                  {templateRows.map((t) => (
-                    <tr key={t.key}>
-                      <td><strong>{t.label}</strong></td>
-                      <td>{t.onChain}</td>
-                      <td>{percentOf(t.onChain, fundedOnChain)}</td>
-                      <td>{t.awarded}</td>
-                      <td>{t.created}</td>
-                      <td>{t.exact}</td>
-                      <td>{t.modified}</td>
-                      <td>{formatVersions(t.versions)}</td>
-                      <td>{formatSources(t.sources)}</td>
+                  <tr className="template-group"><td colSpan={10}>Create page templates</td></tr>
+                  {rubricTemplateRows.map((t) => templateRow(t))}
+                  {serviceTemplateRows.length > 0 && (
+                    <tr className="template-group" title="verdikta-discover work-order templates, which agents build bounties from">
+                      <td colSpan={10}>Agent work-order templates</td>
                     </tr>
-                  ))}
-                  <tr className="template-row-other" title="Rubrics that match no template">
-                    <td>No template</td>
-                    <td>{templateUsage.none.onChain}</td>
-                    <td>{percentOf(templateUsage.none.onChain, fundedOnChain)}</td>
-                    <td>{templateUsage.none.awarded}</td>
-                    <td>{templateUsage.none.created}</td>
-                    <td>-</td>
-                    <td>-</td>
-                    <td>-</td>
-                    <td>{formatSources(templateUsage.none.sources)}</td>
-                  </tr>
-                  {templateUsage.unclassified.created > 0 && (
-                    <tr className="template-row-other" title="The site has no copy of these bounties' rubrics, so they cannot be classified">
-                      <td>No rubric stored</td>
-                      <td>{templateUsage.unclassified.onChain}</td>
-                      <td>{percentOf(templateUsage.unclassified.onChain, fundedOnChain)}</td>
-                      <td>{templateUsage.unclassified.awarded}</td>
-                      <td>{templateUsage.unclassified.created}</td>
-                      <td>-</td>
-                      <td>-</td>
-                      <td>-</td>
-                      <td>-</td>
-                    </tr>
+                  )}
+                  {serviceTemplateRows.map((t) => templateRow(t))}
+                  <tr className="template-group"><td colSpan={10}>Other rubrics</td></tr>
+                  {templateRow({ key: 'none', label: 'No template', ...templateUsage.none }, { other: true, title: 'Rubrics that match no template' })}
+                  {templateUsage.unclassified.created > 0 && templateRow(
+                    { key: 'unclassified', label: 'No rubric stored', ...templateUsage.unclassified },
+                    { other: true, title: "The site has no copy of these bounties' rubrics, so they cannot be classified" }
                   )}
                 </tbody>
               </table>
               <p className="section-note">
                 Each bounty is matched to a template by its rubric, so bounties created by agents through the
-                API and bounties from before tracking began are counted too.
+                API and bounties from before tracking began are counted too. Who created a bounty (site or agent)
+                is recorded from 20 October 2026; earlier bounties count in neither.
               </p>
             </div>
           </div>

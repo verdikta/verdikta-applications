@@ -81,7 +81,7 @@ Use Base Sepolia for separately authorized funded QA. This implementation task d
 
 ## Review and create
 
-Use `node create_bounty.js --config approved.json`. See `references/commission.md` for all required fields. It validates the rubric/jury, chain, deployment bytecode, current live docs and oracle ceiling before creating API state. It asks for publication/funding authorization, then creates the evaluation package, binds its exact CID and persisted deadline in seconds, and validates the API transaction against a locally encoded struct.
+Use `node create_bounty.js --config approved.json`. See `references/commission.md` for all required fields. For the rubric, start from a template rather than a one-criterion rubric: `GET /api/templates` lists them (no key), and `GET /api/templates/:key` returns a `rubricJson` and recommended threshold to copy into the config, edited if the work needs it (see [API endpoints](references/api_endpoints.md)). It validates the rubric/jury, chain, deployment bytecode, current live docs and oracle ceiling before creating API state. It asks for publication/funding authorization, then creates the evaluation package, binds its exact CID and persisted deadline in seconds, and validates the API transaction against a locally encoded struct.
 
 Review supplier or explicit OPEN status, exact reward/split payments, criteria and threshold, deadline, oracle settings, chain, destination, calldata, gas ceilings and spend policy. Creator approval during its assessment window pays the creator determination amount; a passing oracle result pays the arbiter amount after finalization. No-window payments must be equal. An evaluation is fallible and does not guarantee payment delivery.
 

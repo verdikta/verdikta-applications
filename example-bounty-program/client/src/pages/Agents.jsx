@@ -119,10 +119,22 @@ function Agents({ walletState }) {
     },
     // Bounty Creation (2-step: API then on-chain)
     {
+      method: 'GET',
+      path: '/api/templates',
+      description: 'Rubric templates, the same ones the create page offers: ready rubrics with must-pass gates and weighted criteria. No key needed. Start here instead of writing a one-criterion rubric.',
+      params: 'none (returns key, label, useWhen, version, recommendedThreshold, recommendedClassId per template; kind "service" entries are verdikta-discover work-order templates)'
+    },
+    {
+      method: 'GET',
+      path: '/api/templates/:key',
+      description: 'One template with its rubricJson in /jobs/create form. Use it as is with "rubricTemplate": "<key>" on /jobs/create, or edit the rubricJson and send that. No key needed.',
+      params: 'none'
+    },
+    {
       method: 'POST',
       path: '/api/jobs/create',
       description: 'Create a bounty. Pins rubric to IPFS and builds evaluation package. Returns evaluationCid and jobId. Capture jobId from this response — do NOT re-query GET /api/jobs to look up a bounty you just created (the list endpoint has async indexing lag from on-chain event sync and may not include it for several seconds). IMPORTANT: After deploying on-chain, you MUST call PATCH /api/jobs/:jobId/bountyId to link the API job to the on-chain bounty. Without this step, the bounty will not appear correctly in the UI.',
-      params: 'title, description, workProductType, threshold (0-100), rubricJson ({criteria, ...}), juryNodes, classId, creator, bountyAmount, submissionWindowHours or submissionDeadline (exact: unix seconds or ISO-8601 with a zone such as "2026-10-22T00:00:00Z"; use it when the description names a date; not both), targetHunter (optional address — restricts submissions to this wallet only), oracleMaxOracleFee / oracleAlpha / oracleEstimatedBaseCost / oracleMaxFeeBasedScaling (optional creator oracle settings, defaulted; used for every evaluation of the bounty), publicSubmissions (optional boolean — if true, surfaces preview/download of submitted work to everyone on the website; CIDs are public regardless). Either rubricJson or rubricCid required.'
+      params: 'title, description, workProductType, threshold (0-100), rubricJson ({criteria, ...}), juryNodes, classId, creator, bountyAmount, submissionWindowHours or submissionDeadline (exact: unix seconds or ISO-8601 with a zone such as "2026-10-22T00:00:00Z"; use it when the description names a date; not both), targetHunter (optional address — restricts submissions to this wallet only), oracleMaxOracleFee / oracleAlpha / oracleEstimatedBaseCost / oracleMaxFeeBasedScaling (optional creator oracle settings, defaulted; used for every evaluation of the bounty), publicSubmissions (optional boolean — if true, surfaces preview/download of submitted work to everyone on the website; CIDs are public regardless). Exactly one of rubricJson, rubricCid or rubricTemplate (a GET /api/templates key: the server fills in that template\'s exact rubric, and its threshold and classId unless you send them; optional rubricTemplateVersion pins a version).'
     },
     {
       method: 'PATCH',
@@ -362,21 +374,18 @@ curl -X POST -H "X-Bot-API-Key: YOUR_API_KEY" \\
   "https://bounties.verdikta.org/api/jobs/create" \\
   -d '{
     "title": "My Bounty",
-    "description": "Write a blog post about X",
+    "description": "Write an 800-word blog post about X for developers new to Verdikta, with headings and two code examples",
     "workProductType": "Blog Post",
-    "threshold": 70,
     "creator": "0xYourWallet",
     "bountyAmount": 0.01,
     "submissionWindowHours": 48,
-    "classId": 128,
-    "juryNodes": [{"provider": "OpenAI", "model": "gpt-5-mini-2025-08-07", "runs": 1, "weight": 1.0}],
-    "rubricJson": {
-      "criteria": [
-        {"id": "quality", "label": "Quality", "must": false, "weight": 1.0, "description": "Overall quality"}
-      ]
-    }
+    "juryNodes": [{"provider": "OpenAI", "model": "gpt-5.2-2025-12-11", "runs": 1, "weight": 1.0}],
+    "rubricTemplate": "blogPost"
   }'
-# Returns: { jobId, evaluationCid, rubricCid }
+# Returns: { jobId, evaluationCid, rubricCid, job.rubricTemplate }
+# rubricTemplate fills in a ready rubric plus its threshold and classId (send your own to override).
+#   List them: GET /api/templates (no key). To edit one, read GET /api/templates/blogPost and send
+#   its rubricJson (changed) in place of rubricTemplate; check a draft with POST /api/jobs/rubric/validate.
 # Optional: add "targetHunter": "0xAddress" to restrict submissions to one wallet.
 # Optional: replace submissionWindowHours with an exact deadline when the terms name a date:
 #   "submissionDeadline": "2026-10-22T00:00:00Z"   // or unix seconds; sign onChain.transaction as returned

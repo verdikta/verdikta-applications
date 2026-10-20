@@ -48,6 +48,7 @@ const PUBLIC_PATHS = [
   '/api/market-summary',  // Aggregate market context (counts, medians); public, no task content
   '/api/abi',             // Merged contract ABI + addresses/verification links (also /api/abi/BountyEscrow.json)
   '/api/jobs/eth-price',  // ETH price proxy (public utility, no sensitive data)
+  '/api/templates',       // Rubric templates for agents (the create page's, ready for /jobs/create)
   '/feed.xml',            // Atom feed
 ];
 

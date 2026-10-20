@@ -22,7 +22,7 @@ beforeEach(() => analyticsCache.clear());
 
 test('counts the current contract only, keeping unfunded creates and dropping cancelled ones', async () => {
   mockJobs = [
-    { jobId: 1, contractAddress: ESCROW, status: 'AWARDED', onChain: true, rubricTemplate: wager },
+    { jobId: 1, contractAddress: ESCROW, status: 'AWARDED', onChain: true, rubricTemplate: wager, createdByClientType: 'frontend' },
     { jobId: 2, contractAddress: ESCROW, status: 'ORPHANED', rubricTemplate: wager },
     { jobId: 3, contractAddress: ESCROW, status: 'CANCELLED', rubricTemplate: wager },
     { jobId: 1, contractAddress: '0x' + 'cd'.repeat(20), status: 'AWARDED', onChain: true, rubricTemplate: wager },
@@ -30,7 +30,8 @@ test('counts the current contract only, keeping unfunded creates and dropping ca
   ];
   const res = await request(app).get('/api/analytics/templates');
   expect(res.status).toBe(200);
-  expect(res.body.data.totals).toEqual({ created: 3, onChain: 2, awarded: 1 });
+  expect(res.body.data.totals).toMatchObject({ created: 3, onChain: 2, awarded: 1,
+    via: { site: { created: 1, onChain: 1 }, agent: { created: 0, onChain: 0 }, unknown: { created: 2, onChain: 1 } } });
   expect(res.body.data.templates.find((t) => t.key === 'mutualWager'))
     .toMatchObject({ created: 2, onChain: 1, awarded: 1, exact: 2, sources: { template: 2 } });
   expect(res.body.data.none).toMatchObject({ created: 1, onChain: 1 });

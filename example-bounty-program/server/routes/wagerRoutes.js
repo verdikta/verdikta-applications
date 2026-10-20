@@ -20,11 +20,20 @@ const { wagerContext, checkWagerCreate, sameAddress } = require('../utils/wagerG
 const { wagerStatus, counterProblems } = require('../utils/wagerStatus');
 const { normalizeBountyPayments, validateProcurement } = require('../utils/validation');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
+const { createRateLimiter, clientAddress } = require('../utils/rateLimiter');
+const { expandRubricTemplate } = require('../utils/rubricTemplates');
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const WAGER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/;
 // A status query reads each bounty live (chain + rubric); a wallet with more wager bounties gets its newest.
-const STATUS_LIMIT = 20;
+// Status pages through complete wagers (both bounties together); each page reads at most this many bounties live.
+const STATUS_GROUPS = 10;
+const STATUS_READS = 30;
+// Bump when a response's shape changes incompatibly.
+const SCHEMA_VERSION = 1;
+// Keys are free, and status, answer, check and claim read the chain and IPFS live: one budget per caller.
+const RATE_WINDOW_MS = 60000;
+const RATE_MAX = 30;
 
 const isoOf = (sec) => new Date(sec * 1000).toISOString();
 const asBountyNumber = (v) => (v === null || v === undefined || v === '' || !/^\d+$/.test(String(v)) ? null : Number(v));
@@ -47,10 +56,26 @@ function inputError(res, problems, message = 'Invalid wager input') {
  */
 module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs, resolveOracleSettings, clock = () => Math.floor(Date.now() / 1000) }) {
   const router = express.Router();
+  const limiter = createRateLimiter({ windowMs: RATE_WINDOW_MS, max: RATE_MAX });
+  router.use((req, res, next) => {
+    if (req.path === '/template') return next();
+    const { allowed, remaining, retryAfterSeconds } = limiter.hit(req.clientId || clientAddress(req));
+    res.set('X-RateLimit-Remaining', String(remaining));
+    if (allowed) return next();
+    res.set('Retry-After', String(retryAfterSeconds));
+    return sendError(res, 429, { code: ErrorCodes.RATE_LIMIT, message: 'Too many wager requests', details: `The wager endpoints allow ${RATE_MAX} requests a minute per key. Retry in ${retryAfterSeconds}s.`, fix: 'Wait for the Retry-After interval.' });
+  });
+  router._limiter = limiter;
 
   // Everything /jobs/create checks about a wager body, derived the way /jobs/create derives it.
   async function checkBody(body, req, counter = null) {
     const input = [];
+    // A rubric named by template key is filled in exactly as /jobs/create fills it in.
+    if (body.rubricTemplate != null) {
+      const expanded = expandRubricTemplate(body);
+      if (expanded.error) return { wager: true, issues: [{ code: 'WAGER_INPUT', message: `${expanded.error.error}: ${expanded.error.details}` }] };
+      body = expanded.body;
+    }
     const procurement = validateProcurement(body.procurementMode, body.targetHunter);
     if (procurement) input.push({ code: 'WAGER_INPUT', message: procurement });
     if (!ADDRESS.test(String(body.creator || ''))) input.push({ code: 'WAGER_INPUT', message: 'creator must be the wallet that signs createBounty (0x + 40 hex digits).' });
@@ -62,7 +87,7 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
     let rubric = body.rubricJson;
     if (!rubric && body.rubricCid) {
       try { rubric = JSON.parse((await req.app.locals.ipfsClient.fetchFromIPFS(body.rubricCid)).toString('utf8')); }
-      catch (err) { return { wager: true, issues: [{ code: 'WAGER_RUBRIC', message: `Could not read rubricCid ${body.rubricCid} (${err.message}). Pass rubricJson from GET /api/wagers/template instead.` }] }; }
+      catch (err) { return { wager: true, issues: [{ code: 'WAGER_RUBRIC_UNVERIFIED', message: `Could not read rubricCid ${body.rubricCid} (${err.message}). Try again, or pass rubricJson from GET /api/wagers/template.` }] }; }
     }
     return checkWagerCreate({
       body: { ...body, classId: Number(body.classId ?? 128) },
@@ -83,6 +108,7 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
   function builderResponse({ title, description, createBody, terms }, check, next) {
     const ok = check.issues.length === 0;
     return {
+      schemaVersion: SCHEMA_VERSION,
       success: true,
       ok,
       problems: check.issues,
@@ -92,13 +118,23 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
       // Only a body that passes is returned: post it to /jobs/create unchanged.
       createBody: ok ? createBody : null,
       next: ok ? next : ['Do not post this wager. Fix the problems (each has a code and a message); POST /api/wagers/check shows them again.'],
+      actions: ok ? postingActions(createBody) : [],
     };
   }
 
+  // Posting, and recovering a post whose outcome is unclear without starting over (the general
+  // recovery flow in /agents.txt: persist the job id and transaction hash, look up the receipt, retry the link).
   const postingSteps = (createBody, extra = []) => [
-    'POST /api/jobs/create with createBody exactly as returned (X-Bot-API-Key header). Read job.jobId and onChain.transaction from the response.',
-    `Send onChain.transaction from ${createBody.creator} with value = the stake (${createBody.bountyAmount} ETH), then PATCH /api/jobs/<jobId>/bountyId with { bountyId, txHash } to link it.`,
+    'POST /api/jobs/create with createBody exactly as returned (X-Bot-API-Key header). Save job.jobId and onChain.transaction from the response before sending anything.',
+    `Send onChain.transaction from ${createBody.creator} with value = the stake (${createBody.bountyAmount} ETH), save the transaction hash, then PATCH /api/jobs/<jobId>/bountyId with { bountyId, txHash } to link it.`,
+    'If the outcome is unclear (a timeout, a dropped connection, a failed link), do not start over: GET /api/jobs/lookup?txHash=<hash> (or ?evaluationCid=<job.evaluationCid>) finds the on-chain bounty, then retry the PATCH. Creating the bounty again posts a second stake.',
     ...extra,
+  ];
+  const postingActions = (createBody) => [
+    { type: 'CREATE_JOB', actor: createBody.creator, method: 'POST', path: '/api/jobs/create', body: createBody, spendsFunds: false, retryable: true, note: 'Save job.jobId and onChain.transaction.' },
+    { type: 'FUND', actor: createBody.creator, transaction: 'onChain.transaction from the CREATE_JOB response', valueEth: createBody.bountyAmount, spendsFunds: true, retryable: false, note: 'Send once; save the hash. On an unclear outcome use RECOVER, never FUND again.' },
+    { type: 'LINK', actor: createBody.creator, method: 'PATCH', path: '/api/jobs/<jobId>/bountyId', body: { bountyId: '<on-chain id>', txHash: '<hash>' }, spendsFunds: false, retryable: true },
+    { type: 'RECOVER', actor: createBody.creator, method: 'GET', path: '/api/jobs/lookup?txHash=<hash>', spendsFunds: false, retryable: true, note: 'Finds the bounty a FUND transaction created, so LINK can be retried.' },
   ];
 
   /* ---------- GET /api/wagers/template (public) ---------- */
@@ -106,6 +142,7 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
     const ctx = wagerContext();
     res.set('Cache-Control', 'public, max-age=300');
     return res.json({
+      schemaVersion: SCHEMA_VERSION,
       success: true,
       rubric: wager.MUTUAL_WAGER_RUBRIC,
       version: wager.MUTUAL_WAGER_TEMPLATE.version,
@@ -117,6 +154,8 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
       // The create page's template (criterion text under `instructions`).
       template: wager.MUTUAL_WAGER_TEMPLATE,
       termsLines: wager.MUTUAL_WAGER_LINES.map(([key, prefix]) => ({ key, line: prefix.trim() })),
+      // The jury reads the title, work product type and whole description: a wager's are fixed by its terms.
+      text: { workProductType: wager.WAGER_WORK_PRODUCT_TYPE, title: 'derived from the terms (see POST /api/wagers/propose)', description: 'exactly the terms as built, nothing else' },
       defaults: {
         jury: wager.DEFAULT_WAGER_JURY,
         iterations: 1,
@@ -128,6 +167,8 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
       site: { url: ctx.site, escrow: ctx.escrow, chain: ctx.chain },
       rules: {
         minStartLeadSeconds: wager.MIN_START_LEAD_SECONDS,
+        minSettleAfterStartSeconds: wager.MIN_SETTLE_AFTER_START_SECONDS,
+        claimStartMarginSeconds: wager.CLAIM_START_MARGIN_SECONDS,
         claimDelaySeconds: wager.CLAIM_DELAY_SECONDS,
         claimAfterStartSeconds: wager.CLAIM_AFTER_START_SECONDS,
       },
@@ -187,11 +228,11 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
   router.post('/check', async (req, res) => {
     try {
       const body = req.body || {};
-      if (!wager.hasMutualWagerTerms(body.description)) {
-        return res.json({ success: true, ok: false, wager: false, problems: [{ code: 'WAGER_TERMS', message: 'The description has no MUTUAL WAGER TERMS block, so this is not a wager. Build one with POST /api/wagers/propose or /answer.' }], checkedAt: isoOf(clock()) });
+      if (!wager.looksLikeMutualWager(body.description, body.rubricJson)) {
+        return res.json({ schemaVersion: SCHEMA_VERSION, success: true, ok: false, wager: false, problems: [{ code: 'WAGER_TERMS', message: 'The description has no MUTUAL WAGER TERMS block, so this is not a wager. Build one with POST /api/wagers/propose or /answer.' }], checkedAt: isoOf(clock()) });
       }
       const check = await checkBody(body, req);
-      return res.json({ success: true, ok: check.issues.length === 0, wager: true, problems: check.issues, terms: summary(check.terms), checkedAt: isoOf(clock()) });
+      return res.json({ schemaVersion: SCHEMA_VERSION, success: true, ok: check.issues.length === 0, wager: true, problems: check.issues, terms: summary(check.terms), checkedAt: isoOf(clock()) });
     } catch (err) {
       logger.error('[wagers/check] error', { msg: err.message });
       return sendError(res, 500, { code: ErrorCodes.INTERNAL_ERROR, message: 'Failed to check the wager', details: err.message });
@@ -238,20 +279,36 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
             : [`Counter bounty #${counterNo}: the site has no on-chain record of it.`];
           for (const message of found) (terms.counter ? warnings : problems).push({ code: 'CLAIM_COUNTER', message });
         } catch (err) {
-          warnings.push({ code: 'CLAIM_COUNTER_UNVERIFIED', message: `Could not read counter bounty #${counterNo} to check it (${err.message}).` });
+          // A REQUIRED counter is exactly what the jury checks, so an unread one keeps the claim from
+          // being ready (retry); a counter the terms name is taken on trust, so it stays a warning.
+          (terms.counter ? warnings : problems).push({ code: 'CLAIM_COUNTER_UNVERIFIED', retryable: true,
+            message: `Could not read counter bounty #${counterNo} to check it (${err.message}).${terms.counter ? '' : ' The jury will check it: try again shortly before submitting.'}` });
         }
       }
+      // The bounty you claim runs its own package: one that is not its terms as built can hold conditions the terms do not show.
+      if (records.job.wagerPackage && !records.job.wagerPackage.ok) {
+        warnings.push({ code: 'CLAIM_PACKAGE', message: `Bounty #${n}'s evaluation package ${records.job.wagerPackage.problems.join('; ')}: its jury may read conditions that are not in its terms.` });
+      }
       const ok = problems.length === 0;
+      const ready = ok && !timing.tooEarly;
       return res.json({
+        schemaVersion: SCHEMA_VERSION,
         success: true,
         ok,
-        ready: ok && !timing.tooEarly,
+        ready,
         tooEarly: timing.tooEarly,
         claimAfter: timing.claimAfter,
+        claimBy: timing.claimBy,
+        claimDeadline: timing.claimDeadline,
         filename: 'claim.md',
         claim: ok ? built.claim : null,
         problems,
         warnings,
+        actions: ok ? [
+          // notAfter is the hard cutoff (the escrow refuses a start at or after it); recommendedBy leaves time to prepare and start.
+          { type: 'SUBMIT_DRY_RUN', actor: terms.claimant.wallet, method: 'POST', path: `/api/jobs/${n}/submit/dry-run`, body: { files: 'claim.md', hunter: terms.claimant.wallet }, notBefore: ready ? null : timing.claimAfter, notAfter: timing.claimDeadline, recommendedBy: timing.claimBy, spendsFunds: false, retryable: true },
+          { type: 'SUBMIT', actor: terms.claimant.wallet, method: 'POST', path: `/api/jobs/${n}/submit`, body: { files: 'claim.md', hunter: terms.claimant.wallet }, notBefore: ready ? null : timing.claimAfter, notAfter: timing.claimDeadline, recommendedBy: timing.claimBy, spendsFunds: true, retryable: true, note: 'Then prepare and start the evaluation before notAfter; starting it prepays the evaluation fee.' },
+        ] : [],
         submit: ok ? {
           hunter: terms.claimant.wallet,
           steps: [
@@ -270,44 +327,113 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
   });
 
   /* ---------- GET /api/wagers/status ---------- */
+  // Complete wagers are grouped from the site's own records first (same Wager ID and wallets, or
+  // one bounty naming the other), then paged newest first with a cursor, and only then read live.
+  // A cut never splits a pair, and a member that cannot be read now makes its wager UNKNOWN.
   router.get('/status', async (req, res) => {
     try {
       const wagerId = req.query.wagerId ? String(req.query.wagerId) : null;
       const wallet = req.query.wallet ? String(req.query.wallet) : null;
+      const before = req.query.before !== undefined ? asBountyNumber(req.query.before) : null;
+      // pair=<a>,<b>: evaluate exactly these two bounties (e.g. the members of an INCOMPLETE group).
+      const pairIds = req.query.pair !== undefined ? String(req.query.pair).split(',').map(asBountyNumber) : null;
       const bad = [];
-      if (!wagerId && !wallet) bad.push({ code: 'WAGER_INPUT', message: 'Pass wagerId=<Wager ID> or wallet=<0x address> (or both).' });
+      if (!wagerId && !wallet && !pairIds) bad.push({ code: 'WAGER_INPUT', message: 'Pass wagerId=<Wager ID>, wallet=<0x address> or pair=<bounty>,<bounty>.' });
+      if (pairIds && (pairIds.length !== 2 || pairIds.includes(null) || pairIds[0] === pairIds[1])) bad.push({ code: 'WAGER_INPUT', field: 'pair', message: 'pair must be two different bounty numbers, e.g. pair=50,51.' });
       if (wagerId && !WAGER_ID.test(wagerId)) bad.push({ code: 'WAGER_INPUT', field: 'wagerId', message: 'wagerId must be 3-64 letters, digits, ".", "_" or "-".' });
       if (wallet && !ADDRESS.test(wallet)) bad.push({ code: 'WAGER_INPUT', field: 'wallet', message: 'wallet must be a 0x address.' });
+      if (req.query.before !== undefined && before === null) bad.push({ code: 'WAGER_INPUT', field: 'before', message: 'before must be the nextCursor of a previous page.' });
       if (bad.length) return inputError(res, bad);
 
-      const jobs = (await linkedWagerJobs((j) => {
-        const t = wager.parseMutualWagerTerms(j.description);
-        return (!wagerId || t.fields?.wagerId === wagerId)
-          && (!wallet || [j.creator, j.targetHunter, t.poster?.wallet, t.claimant?.wallet].some((a) => sameAddress(a, wallet)));
-      })).sort((a, b) => Number(b.jobId) - Number(a.jobId));
-      const read = await Promise.all(jobs.slice(0, STATUS_LIMIT).map(async (j) => {
-        try { return { bountyId: Number(j.jobId), ...(await readWagerRecords(Number(j.jobId), req.app.locals.ipfsClient)) }; }
-        catch (err) { return { bountyId: Number(j.jobId), error: err.message }; }
-      }));
-      const bounties = [], unreadable = [];
-      for (const r of read) {
-        const terms = r.job ? wager.parseMutualWagerTerms(r.job.description) : null;
-        if (r.error) unreadable.push({ bountyId: r.bountyId, reason: r.error });
-        else if (!r.status || !r.job) unreadable.push({ bountyId: r.bountyId, reason: 'no on-chain record on this escrow' });
-        else if (!terms.found || terms.count !== 1 || !terms.closed || !terms.poster.wallet || !terms.claimant.wallet || !terms.fields.wagerId) unreadable.push({ bountyId: r.bountyId, reason: 'no single, complete terms block' });
-        else bounties.push({ bountyId: r.bountyId, terms, status: r.status, job: r.job });
+      const local = (await linkedWagerJobs()).map((j) => ({ id: Number(j.jobId), job: j, terms: wager.parseMutualWagerTerms(j.description) }));
+      const byId = new Map(local.map((x) => [x.id, x]));
+      const parent = new Map(local.map((x) => [x.id, x.id]));
+      const find = (i) => { while (parent.get(i) !== i) i = parent.get(i); return i; };
+      const union = (i, j) => { const a = find(i), b = find(j); if (a !== b) parent.set(a, b); };
+      const firstOfKey = new Map();
+      for (const x of local) {
+        const t = x.terms;
+        // A bounty joins a wager under the wallets its terms name only if its creator is the Poster named there.
+        const key = t.found && t.fields.wagerId && t.poster.wallet && t.claimant.wallet && sameAddress(x.job.creator, t.poster.wallet)
+          ? [t.fields.wagerId, ...[t.poster.wallet.toLowerCase(), t.claimant.wallet.toLowerCase()].sort()].join('|') : null;
+        if (key) { if (firstOfKey.has(key)) union(x.id, firstOfKey.get(key)); else firstOfKey.set(key, x.id); }
+        // A Counter reference joins only a bounty created by this one's Claimant and targeted at its Poster,
+        // from a bounty created by its own Poster: an unrelated bounty naming #N stays in its own group.
+        const named = t.counter ? byId.get(t.counter.number) : null;
+        if (named && t.poster.wallet && t.claimant.wallet && sameAddress(x.job.creator, t.poster.wallet)
+          && sameAddress(named.job.creator, t.claimant.wallet) && sameAddress(named.job.targetHunter, t.poster.wallet)) union(x.id, named.id);
       }
+      const relevant = (x) => (!wagerId || x.terms.fields?.wagerId === wagerId)
+        && (!wallet || [x.job.creator, x.job.targetHunter, x.terms.poster?.wallet, x.terms.claimant?.wallet].some((a) => sameAddress(a, wallet)));
+      const groups = new Map();
+      for (const x of local) { const r = find(x.id); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(x); }
+      if (pairIds) {
+        // An explicit pair: both must be linked wager bounties; they are judged as one wager, whatever their group.
+        const missing = pairIds.filter((id) => !byId.has(id));
+        if (missing.length) return inputError(res, [{ code: 'WAGER_INPUT', field: 'pair', message: `Not a linked wager bounty: #${missing.join(', #')}.` }]);
+        groups.clear();
+        groups.set('pair', pairIds.map((id) => byId.get(id)));
+      }
+      const selected = [...groups.values()].filter((g) => pairIds || g.some(relevant))
+        .map((g) => ({ members: g.sort((p, q) => q.id - p.id), top: Math.max(...g.map((x) => x.id)) }))
+        .sort((p, q) => q.top - p.top)
+        .filter((g) => before === null || g.top < before);
+      const page = [];
+      let reads = 0;
+      for (const g of selected) {
+        if (page.length >= STATUS_GROUPS) break;
+        // A group larger than one read budget is not read at all: a partial view could hide the real pair
+        // behind duplicates, so it is reported INCOMPLETE with its members, and pair= resolves it.
+        const oversized = g.members.length > STATUS_READS;
+        const cost = oversized ? 0 : g.members.length;
+        if (page.length && reads + cost > STATUS_READS) break;
+        page.push({ ...g, oversized });
+        reads += cost;
+      }
+      const nextCursor = selected.length > page.length ? page[page.length - 1].top : null;
+
+      const invalid = [];
+      const bounties = (await Promise.all(page.filter((g) => !g.oversized).flatMap((g) => g.members.map(async (x) => {
+        const base = { bountyId: x.id, group: String(g.top), terms: x.terms };
+        let r;
+        try { r = await readWagerRecords(x.id, req.app.locals.ipfsClient); }
+        catch (err) { return { ...base, error: err.message }; }   // transient: the wager is UNKNOWN, not guessed
+        const terms = r.job ? wager.parseMutualWagerTerms(r.job.description) : null;
+        const why = !r.status || !r.job ? 'no on-chain record on this escrow'
+          : !terms.found || terms.count !== 1 || !terms.closed || !terms.poster.wallet || !terms.claimant.wallet || !terms.fields.wagerId ? 'no single, complete terms block' : null;
+        if (why) {
+          const live = r.status && !['AWARDED', 'CLOSED'].includes(r.status.status);
+          invalid.push({ bountyId: x.id, reason: why, status: r.status?.status ?? null, deadline: r.status?.submissionDeadlineIso ?? null,
+            close: live && r.status.deadlinePassed ? { method: 'POST', path: `/api/jobs/${x.id}/close` } : null });
+          return null;
+        }
+        return { ...base, terms, status: r.status, job: r.job };
+      })))).filter(Boolean);
+
       const now = clock();
       const { pairs, offers } = wagerStatus(bounties, { now, site: wagerContext().site, wallet });
+      for (const g of page.filter((x) => x.oversized)) {
+        const ids = g.members.map((m) => m.id);
+        const t = g.members.find((m) => m.terms.found)?.terms;
+        pairs.push({
+          wagerId: t?.fields?.wagerId ?? null, state: 'INCOMPLETE', event: t?.fields?.event ?? null, start: t?.fields?.start ?? null, settle: t?.fields?.settle ?? null,
+          memberIds: ids, bounties: [], extra: [], problems: [], paid: [],
+          next: [`This wager has ${ids.length} bounties, more than one status read covers (${STATUS_READS}), so no action is derived from a partial view. Ask about the pair you hold with GET /api/wagers/status?pair=<your bounty>,<theirs> (memberIds lists every member).`],
+          actions: [{ type: 'INSPECT', actor: 'caller', method: 'GET', path: '/api/wagers/status?pair=<a>,<b>', spendsFunds: false, retryable: true, note: 'Pick the two bounties of your pair from memberIds.' }],
+        });
+      }
+      pairs.sort((x, y) => Math.max(...(y.memberIds || y.bounties.map((b) => b.bountyId))) - Math.max(...(x.memberIds || x.bounties.map((b) => b.bountyId))));
       return res.json({
+        schemaVersion: SCHEMA_VERSION,
         success: true,
-        query: { wagerId, wallet },
+        query: { wagerId, wallet, before, pair: pairIds },
         checkedAt: isoOf(now),
         pairs,
         offers,
-        unreadable,
-        truncated: jobs.length > STATUS_LIMIT ? { shown: STATUS_LIMIT, total: jobs.length } : null,
-        states: 'AWAITING_COUNTERPARTY | OFFER_EXPIRED | MISMATCHED | VERIFIED | EVENT_PENDING | READY_TO_CLAIM | CLAIM_PENDING | PAID | REFUNDABLE | CLOSED',
+        invalid,
+        // Pass as before=<nextCursor> for the next page; null when this page holds the last wager.
+        nextCursor,
+        states: 'AWAITING_COUNTERPARTY | OFFER_EXPIRED | MISMATCHED | VERIFIED | EVENT_PENDING | READY_TO_CLAIM | CLAIM_PENDING | PAID | REFUNDABLE | CLOSED | UNKNOWN (a member could not be read now: retry) | INCOMPLETE (too many members to read: use pair=)',
       });
     } catch (err) {
       logger.error('[wagers/status] error', { msg: err.message });

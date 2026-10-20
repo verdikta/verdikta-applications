@@ -595,3 +595,24 @@
 .analytics .fulfilled-table td:nth-child(4) {
   white-space: nowrap;
 }
+
+/* Rubric template usage */
+.analytics .template-table .template-group td {
+  padding-top: 1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+}
+
+.analytics .template-table .template-row-other td {
+  color: var(--text-secondary);
+}
+
+.analytics .template-table .section-note {
+  margin-top: 0.75rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}

@@ -33,9 +33,12 @@ const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/s
 const { createTtlCache } = require('../utils/ttlCache');
 const { createRateLimiter, clientAddress } = require('../utils/rateLimiter');
 const { sanitizeCreateAttempt, isUnlinked, appendAttempt, attemptSummary, ADDRESS_RE } = require('../utils/createAttempts');
+const { rubricTemplateRecord, summarizeTemplateUsage, classifyRubric } = require('../utils/templateUsage');
+const { expandRubricTemplate } = require('../utils/rubricTemplates');
 const { findFinalizeBlockers, blockerCalldata, blockersHint } = require('../utils/finalizeBlockers');
 const { checkWagerCreate, wagerRefusal, isLinkedWagerJob, sameAddress } = require('../utils/wagerGuard');
-const { hasMutualWagerTerms } = require('../../shared/mutualWager');
+const { verifyWagerPackage } = require('../utils/wagerPackage');
+const { looksLikeMutualWager } = require('../../shared/mutualWager');
 
 /* ======================
    Helpers / configuration
@@ -461,9 +464,10 @@ function roundUsdCents(value) {
 
 /**
  * POST /api/jobs/create
- * Accepts EITHER:
+ * Accepts ONE OF:
  *  - rubricJson: object (server pins & returns real rubricCid), OR
- *  - rubricCid:  string (already pinned)
+ *  - rubricCid:  string (already pinned), OR
+ *  - rubricTemplate: string (a GET /api/templates key; the server fills in its rubric)
  * Uses ipfsClient.uploadToIPFS for the Primary archive.
  */
 router.post('/create', async (req, res) => {
@@ -471,6 +475,16 @@ router.post('/create', async (req, res) => {
   logger.info('[jobs/create] incoming keys', { keys });
 
   try {
+    // A rubric named by template key becomes that template's exact rubricJson, with its
+    // recommended threshold and classId unless the caller sent their own.
+    let createBody = req.body || {};
+    let referencedTemplate = null;
+    if (createBody.rubricTemplate != null) {
+      const expanded = expandRubricTemplate(createBody);
+      if (expanded.error) return res.status(400).json(expanded.error);
+      createBody = expanded.body;
+      referencedTemplate = expanded.template.key;
+    }
     const {
       title,
       description,
@@ -490,7 +504,8 @@ router.post('/create', async (req, res) => {
       arbiterDeterminationPayment,
       creatorAssessmentWindowHours,
       publicSubmissions,
-    } = req.body || {};
+      rubricSource,            // optional create-page hint: { source, templateKey }
+    } = createBody;
 
     // ---- Oracle settings (creator-chosen, per bounty; defaults from config) ----
     let oracleSettings;
@@ -617,7 +632,7 @@ router.post('/create', async (req, res) => {
     }
 
     if (!rubricJson && !rubricCidIn) {
-      return res.status(400).json({ error: 'Missing rubric', details: 'Provide rubricJson or rubricCid' });
+      return res.status(400).json({ error: 'Missing rubric', details: 'Provide rubricJson, rubricCid or rubricTemplate (a key from GET /api/templates)' });
     }
 
     await ensureTmpBase();
@@ -681,10 +696,11 @@ router.post('/create', async (req, res) => {
     // terms name must match its live record, because the jury then skips its own counter
     // checks. The create page runs the same check before funding; this covers every other
     // client. POST /api/wagers/check is the free dry run of exactly this.
-    if (hasMutualWagerTerms(description)) {
+    if (looksLikeMutualWager(description, rubricDoc || { criteria: rubricCriteria })) {
       const wagerCheck = await checkWagerCreate({
-        body: { ...req.body, classId: classIdNum },
-        payments,
+        body: { ...createBody, classId: classIdNum },
+        // The deadline that goes on chain: an exact one is checked as given, not re-derived from now.
+        payments: { ...payments, submissionDeadline: exactDeadline },
         oracleSettings,
         rubric: rubricDoc,
         now: Math.floor(Date.now() / 1000),
@@ -697,6 +713,9 @@ router.post('/create', async (req, res) => {
         return res.status(refusal.status).json(refusal.body);
       }
     }
+
+    // Which template the rubric came from, for GET /admin/template-usage.
+    const rubricTemplate = rubricTemplateRecord({ criteria: rubricCriteria, forbiddenContent }, rubricSource, { reference: referencedTemplate });
 
     // ---- Composed query length (issue #36) ----
     // The arbiters reject an evaluation query over their cap and never commit,
@@ -892,9 +911,13 @@ router.post('/create', async (req, res) => {
       // Creator-chosen oracle request settings (wei strings + integers). Passed
       // verbatim into createBounty's `oracle` struct and used for every evaluation.
       oracleSettings,
+      rubricTemplate,
+      // Which client created it (website or an agent's key), for the template-usage report.
+      createdByClientType: req.clientType || 'unknown',
+      createdByClientId: req.clientId || null,
     });
 
-    logger.info('[jobs/create] job created', { jobId: job.jobId, oracleSettings });
+    logger.info('[jobs/create] job created', { jobId: job.jobId, oracleSettings, rubricTemplate });
 
     return res.json({
       success: true,
@@ -913,7 +936,9 @@ router.post('/create', async (req, res) => {
         submissionCloseTime: job.submissionCloseTime,
         submissionCloseTimeIso: isoFromUnix(job.submissionCloseTime),
         createdAt: job.createdAt,
-        oracleSettings: job.oracleSettings
+        oracleSettings: job.oracleSettings,
+        // Which template the rubric matched (GET /api/templates), if any.
+        rubricTemplate: { key: rubricTemplate.key, version: rubricTemplate.version, match: rubricTemplate.match, source: rubricTemplate.source }
       },
       // Exact createBounty(CreateParams) struct + calldata matching this record.
       onChain: buildCreateBountyTx(job),
@@ -1172,6 +1197,30 @@ router.get('/admin/create-attempts', async (req, res) => {
   } catch (error) {
     logger.error('[admin/create-attempts] error', { msg: error.message });
     return res.status(500).json({ error: 'Failed to list create attempts', details: error.message });
+  }
+});
+
+/**
+ * GET /api/jobs/admin/template-usage?since=<unix seconds | ISO-8601>
+ * How often each rubric template is used, by stage (created, on chain, awarded),
+ * exact or modified, version and how the creator started the rubric. Jobs created
+ * before tracking are classified from their stored rubric (inferred).
+ */
+router.get('/admin/template-usage', async (req, res) => {
+  try {
+    let since = null;
+    if (req.query.since != null && req.query.since !== '') {
+      const raw = String(req.query.since);
+      since = /^\d+$/.test(raw) ? Number(raw) : Math.floor(Date.parse(raw) / 1000);
+      if (!Number.isSafeInteger(since)) {
+        return res.status(400).json({ error: 'Invalid since', details: 'Pass unix seconds or an ISO-8601 time, e.g. since=2026-10-01T00:00:00Z' });
+      }
+    }
+    const storage = await jobStorage.readStorage();
+    return res.json({ success: true, network: config.network, ...summarizeTemplateUsage(storage.jobs, { since }) });
+  } catch (error) {
+    logger.error('[admin/template-usage] error', { msg: error.message });
+    return res.status(500).json({ error: 'Failed to summarize template usage', details: error.message });
   }
 });
 
@@ -2680,9 +2729,18 @@ router.post('/rubric/validate', async (req, res) => {
     tips.push('Pass juryNodes (and optionally classId) to also validate the jury configuration — /rubric/validate previously ignored jury, so a clean bill here did not mean the bounty was create-safe (issue #16).');
   }
 
+  // Which template the draft matches (GET /api/templates). A one-criterion rubric
+  // gives the jury little to judge by; a template is usually a better start.
+  const match = classifyRubric(rubricJson);
+  const templateMatch = match ? { key: match.key, version: match.version, match: match.match } : null;
+  if (Array.isArray(rubricJson.criteria) && rubricJson.criteria.length === 1 && !match?.key) {
+    tips.push('This rubric has one criterion. GET /api/templates lists ready rubrics with must-pass gates and weighted criteria; pass "rubricTemplate": "<key>" to /jobs/create to use one as is.');
+  }
+
   const body = {
     valid: errors.length === 0,
     errors,
+    templateMatch,
     checkedAt: new Date().toISOString()
   };
   if (warnings.length) body.warnings = warnings;
@@ -3695,7 +3753,11 @@ async function loadJobRubric(job, ipfsClient) {
   // Fast path (Option B): a rubric persisted on a previous load is still
   // valid as long as its source CID matches — serve it with NO IPFS round
   // trips. This is the bounty-detail load-time optimization.
-  const cacheHit = !!(job.rubricContent && rubricSource && job.rubricSourceCid === rubricSource);
+  // Only a rubric read from the package itself is cached under the package CID (rubricProvenance), so a
+  // copy from the loose rubricCid fallback is never served later as the package's rubric.
+  const cacheHit = !!(job.rubricContent && rubricSource && job.rubricSourceCid === rubricSource
+    && (job.rubricProvenance === 'package' || !job.evaluationCid));
+  let fromPackage = false;
   if (cacheHit) {
     rubricContent = job.rubricContent;
   }
@@ -3746,6 +3808,7 @@ async function loadJobRubric(job, ipfsClient) {
             const rubricBuffer = await ipfsClient.fetchFromIPFS(gradingRubricRef.hash);
             const rubricText = rubricBuffer.toString('utf8');
             rubricContent = JSON.parse(rubricText);
+            fromPackage = true;
           } catch (err) {
             logger.warn('[jobs/details] failed to fetch grading rubric from IPFS', {
               hash: gradingRubricRef.hash,
@@ -3763,6 +3826,7 @@ async function loadJobRubric(job, ipfsClient) {
         if (rubricEntry) {
           const rubricText = zip.readAsText(rubricEntry);
           rubricContent = JSON.parse(rubricText);
+          fromPackage = true;
 
           // Extract jury from rubric if present
           if (rubricContent.jury && Array.isArray(rubricContent.jury) && extractedJuryNodes.length === 0) {
@@ -3802,8 +3866,8 @@ async function loadJobRubric(job, ipfsClient) {
   // serve it locally with zero IPFS. Keyed on the immutable source CID and
   // race-safe via jobStorage.updateJob -> withStorage. Best-effort: a failed
   // write just means the next load re-fetches and retries the persist.
-  if (!cacheHit && rubricContent && rubricSource) {
-    const updates = { rubricContent, rubricSourceCid: rubricSource };
+  if (!cacheHit && rubricContent && rubricSource && (fromPackage || !job.evaluationCid)) {
+    const updates = { rubricContent, rubricSourceCid: rubricSource, rubricProvenance: fromPackage ? 'package' : 'rubricCid' };
     if (extractedJuryNodes.length > 0) updates.juryNodes = extractedJuryNodes;
     try {
       await jobStorage.updateJob(job.jobId, updates);
@@ -3968,6 +4032,10 @@ router.get('/:jobId', async (req, res) => {
     // Keep `syncedFromBlockchain` — the UI needs it to render the
     // "Pending on-chain" badge on bounties that haven't been confirmed yet.
     const { lastSyncedAt: _lsa, _chainFieldsHealed: _cfh, _metadataHealDone: _mhd, _metadataHealAttempts: _mha, _metadataHealNextAt: _mhn, ...jobForClient } = job;
+    if (req.clientType === 'public') {
+      delete jobForClient.createdByClientType;
+      delete jobForClient.createdByClientId;
+    }
     // Anonymous callers (no key: an AI juror following a link) also lose the
     // internal attribution of who submitted through which client, and the file
     // list of a bounty whose creator kept submissions private. Work CIDs stay:
@@ -4279,7 +4347,8 @@ async function readOnchainStatus(bountyId) {
 /**
  * The two records a mutual-wager check reads about a bounty, exactly as GET /:id/onchain-status
  * (`status`, null when the escrow has no such bounty) and GET /:id?includeRubric=true (`job`,
- * null when the site has no record) return them. Throws when either cannot be read right now,
+ * null when the site has no record) return them, plus `wagerPackage` for a wager: its on-chain
+ * evaluation package checked against its terms. Throws when any of these cannot be read right now,
  * so a check fails closed instead of judging a bounty it could not see.
  */
 async function readWagerRecords(bountyId, ipfsClient) {
@@ -4288,9 +4357,22 @@ async function readWagerRecords(bountyId, ipfsClient) {
   if (status !== 200) throw new Error(body?.details || body?.error || `on-chain status read failed (${status})`);
   let job;
   try { job = await jobStorage.getJob(bountyId); } catch { return { status: body, job: null }; }
+  const { lastSyncedAt: _lsa, _chainFieldsHealed: _cfh, _metadataHealDone: _mhd, _metadataHealAttempts: _mha, _metadataHealNextAt: _mhn, ...rest } = job;
+  // A wager is checked against what its jury will read: the package named on chain, rebuilt from its
+  // terms (utils/wagerPackage.js), with the rubric and jury that package attaches. Nothing from the site
+  // record's rubric cache or loose rubricCid enters the check. It throws when either cannot be read now.
+  if (looksLikeMutualWager(job.description)) {
+    const pkg = await verifyWagerPackage({ evaluationCid: body.evaluationCid, description: job.description, ipfsClient });
+    return { status: body, job: {
+      ...rest,
+      rubricContent: pkg.rubric ?? null,
+      juryNodes: pkg.juryNodes ?? rest.juryNodes,
+      iterations: pkg.iterations ?? rest.iterations,
+      wagerPackage: { ok: pkg.ok, problems: pkg.problems, verifier: pkg.verifier, rubricCid: pkg.rubricCid ?? null },
+    } };
+  }
   const { rubricContent, juryNodes } = await loadJobRubric(job, ipfsClient);
   if (!rubricContent && (job.evaluationCid || job.rubricCid)) throw new Error(`its rubric could not be read from IPFS`);
-  const { lastSyncedAt: _lsa, _chainFieldsHealed: _cfh, _metadataHealDone: _mhd, _metadataHealAttempts: _mha, _metadataHealNextAt: _mhn, ...rest } = job;
   return { status: body, job: { ...rest, rubricContent, juryNodes } };
 }
 

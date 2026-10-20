@@ -36,7 +36,7 @@ describe('mutual wager docs', () => {
     expect(text).toMatch(/Never write terms, deadlines or claims by hand/);
     expect(text).toMatch(/about 2 hours after the final/);
     for (const code of emittedCodes().filter((c) => !['CLAIM_INPUT', 'CLAIM_TERMS', 'CLAIM_PAID', 'CLAIM_CLOSED', 'CLAIM_TARGET', 'CLAIM_UNVERIFIED',
-      'CLAIM_COUNTER_UNVERIFIED', 'CLAIM_MARKET_UNCHECKED', 'CLAIM_QUOTE_NOT_FINAL', 'CLAIM_SOURCE_UNREADABLE', 'CLAIM_SOURCE_WEAK'].includes(c))) {
+      'CLAIM_MARKET_UNCHECKED', 'CLAIM_QUOTE_NOT_FINAL', 'CLAIM_SOURCE_UNREADABLE', 'CLAIM_SOURCE_WEAK'].includes(c))) {
       expect([code, text.includes(`  ${code} `)]).toEqual([code, true]);
     }
     expect(res.text).toMatch(/POST \/api\/wagers\/check\n    Body: a \/jobs\/create body/);
@@ -65,7 +65,7 @@ describe('mutual wager docs', () => {
     const claimCodes = emittedCodes().filter((c) => c.startsWith('CLAIM_'));
     const undocumented = claimCodes.filter((c) => !documented.includes(c));
     // Self-explanatory ones carry their meaning in the message; the rest are in the table.
-    expect(undocumented.sort()).toEqual(['CLAIM_CLOSED', 'CLAIM_COUNTER_UNVERIFIED', 'CLAIM_INPUT', 'CLAIM_MARKET_UNCHECKED', 'CLAIM_PAID',
+    expect(undocumented.sort()).toEqual(['CLAIM_CLOSED', 'CLAIM_INPUT', 'CLAIM_MARKET_UNCHECKED', 'CLAIM_PAID',
       'CLAIM_QUOTE_NOT_FINAL', 'CLAIM_SOURCE_UNREADABLE', 'CLAIM_SOURCE_WEAK', 'CLAIM_TARGET', 'CLAIM_TERMS', 'CLAIM_UNVERIFIED']);
   });
 });

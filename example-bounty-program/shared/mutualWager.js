@@ -36,6 +36,10 @@ const MIN_START_LEAD_SECONDS = 10 * 60;
 const CLAIM_DELAY_SECONDS = 2 * 3600;
 // When the claimant does not say when the event ended: a typical game, plus the delay above.
 const CLAIM_AFTER_START_SECONDS = 5 * 3600;
+// Time a claimant needs before the deadline to upload claim.md and start the evaluation.
+const CLAIM_START_MARGIN_SECONDS = 15 * 60;
+// A settlement deadline earlier than this after the start leaves no safe time to claim.
+const MIN_SETTLE_AFTER_START_SECONDS = CLAIM_AFTER_START_SECONDS + 3600;
 // The jury that settled the October 2026 mainnet wagers; the template was tested with it.
 const DEFAULT_WAGER_JURY = [
   { provider: 'OpenAI', model: 'gpt-5.6-terra', weight: 0.5, runs: 1 },
@@ -326,22 +330,54 @@ function parseMutualWagerTerms(description) {
   const end = text.indexOf(TERMS_END, start);
   const block = text.slice(start, end < 0 ? undefined : end);
   const [header, ...rest] = block.split('\n');
+  // The jury reads every line of the block, so lines the template does not write, and a second
+  // line of a kind, are reported: a checker that kept only the first could be shown terms the jury
+  // reads differently.
   const fields = {};
+  const duplicates = [], unknown = [];
   for (const raw of rest) {
     const line = norm(raw);
+    if (!line) continue;
     const hit = LINES.find(([, prefix]) => line.startsWith(prefix));
-    if (hit && fields[hit[0]] === undefined) fields[hit[0]] = line.slice(hit[1].length);
+    if (!hit) unknown.push(line);
+    else if (fields[hit[0]] === undefined) fields[hit[0]] = line.slice(hit[1].length);
+    else duplicates.push(hit[0]);
   }
   const counterNumber = /^#(\d+)\b/.exec(fields.counter || '')?.[1];
   const counterTimes = /created (\S+), deadline (\S+?),/.exec(fields.counter || '');
   return {
-    found: true, count, closed: end >= 0, block,
+    found: true, count, closed: end >= 0, block, duplicates, unknown,
     rubric: /\(([^()]+)\) ===/.exec(header)?.[1] || null,
     fields,
     poster: party(fields.poster), claimant: party(fields.claimant),
     pays: fields.pays === undefined ? null : norm(fields.pays).replace(/\.$/, ''),
     counter: counterNumber ? { number: Number(counterNumber), createdAt: counterTimes?.[1], deadline: counterTimes?.[2] } : null,
   };
+}
+
+/** The Counter bounty line (after "Counter bounty: ") as buildMutualWagerBounty writes it for these terms. */
+function expectedCounterLine(t) {
+  if (t.counter) {
+    return `#${t.counter.number}, verified by the Poster before posting (created by the Claimant, targeted at the Poster, ${parseStakeLine(t.fields.stake)} ETH, created ${t.counter.createdAt}, deadline ${t.counter.deadline}, mirrored terms, same rubric, jury and oracle settings). It pays the Poster only if ${t.poster.side}.`;
+  }
+  return `REQUIRED: the Claimant's bounty targeted at the Poster that pays the Poster only if ${t.poster.side}.`;
+}
+
+/** Why a parsed block is not the template's shape (a line it does not write, a second line of a kind), or null. */
+function extraLinesProblem(t) {
+  if (t.duplicates.length) return `more than one "${norm(LINES.find(([k]) => k === t.duplicates[0])[1])}" line`;
+  if (t.unknown.length) return `a line the template does not write: "${t.unknown[0].slice(0, 80)}"`;
+  return null;
+}
+
+/**
+ * True for a bounty that is meant as a wager: a terms header in any letter case or spacing, or the
+ * wager rubric. The check then runs and refuses a block it cannot read, instead of skipping it.
+ */
+function looksLikeMutualWager(description, rubric) {
+  if (/MUTUAL\s*WAGER\s*TERMS/i.test(String(description || ''))) return true;
+  const ids = Array.isArray(rubric?.criteria) ? rubric.criteria.map((c) => c && c.id) : [];
+  return MUTUAL_WAGER_CRITERIA.every((id) => ids.includes(id));
 }
 
 // ---------- rubric ----------
@@ -357,6 +393,9 @@ const criteriaProblem = (have, want) => {
   if (!Array.isArray(have) || have.length !== want.length) return `has ${Array.isArray(have) ? have.length : 0} criteria, the template has ${want.length}`;
   const i = want.findIndex((c, k) => !have[k] || typeof have[k] !== 'object' || key(c) !== key(have[k]));
   if (i >= 0) return `criterion ${want[i].id} differs from the template`;
+  // The query shows one text, but the attached rubric shows both: every text a criterion carries is the template's.
+  const alias = want.findIndex((c, k) => ['instructions', 'description'].some((f) => have[k][f] !== undefined && norm(have[k][f]) !== norm(c.instructions)));
+  if (alias >= 0) return `criterion ${want[alias].id} carries a text that is not the template's (both instructions and description must be the template text)`;
   const extra = have.map((c) => Object.keys(c).find((k) => !CRITERION_KEYS.has(k))).find(Boolean);
   return extra ? `a criterion has a field the template does not (${extra})` : null;
 };
@@ -376,7 +415,63 @@ function mutualWagerRubricProblem(rubric, template = MUTUAL_WAGER_TEMPLATE) {
   if (extra) return { part: 'text', detail: `has a field the template does not (${extra})` };
   if (norm(rubric.title) && norm(rubric.title) !== norm(template.title)) return { part: 'text', detail: `is titled "${norm(rubric.title)}", not "${template.title}"` };
   if (norm(rubric.description) && norm(rubric.description) !== norm(template.description)) return { part: 'text', detail: 'has a description that is not the template\'s' };
+  // The rest of the attached JSON is numbers and stamps, never text the jury could read as instructions.
+  const bad = [
+    rubric.version !== undefined && ![template.version, '1.0'].includes(rubric.version) && 'version',
+    rubric.threshold !== undefined && !(Number.isInteger(rubric.threshold) && rubric.threshold >= 0 && rubric.threshold <= 100) && 'threshold',
+    rubric.classId !== undefined && !(Number.isSafeInteger(rubric.classId) && rubric.classId >= 0) && 'classId',
+    rubric.createdAt !== undefined && !(typeof rubric.createdAt === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(rubric.createdAt)) && 'createdAt',
+  ].find(Boolean);
+  if (bad) return { part: 'text', detail: `has a ${bad} value that is not the template's form` };
   return null;
+}
+
+// ---------- the canonical wager text ----------
+// The jury reads the bounty's title, work product type and whole description, not only the terms
+// block. A wager's are therefore fixed functions of its terms: nothing outside the terms can add a
+// condition, and a bounty's evaluation package can be rebuilt from its terms and compared.
+
+/** The title a wager bounty carries, derived from its terms. */
+function canonicalWagerTitle(t) {
+  const teams = parseEventTeams(t.fields.event);
+  const short = sideShort(t.claimant.side);
+  const pays = short ? `${short} win` : t.claimant.side;
+  return teams ? `Wager ${t.fields.wagerId}: ${teams.away.nickname} @ ${teams.home.nickname}, pays if ${pays}` : `Wager ${t.fields.wagerId}: pays if ${pays}`;
+}
+
+/** The whole Job Description of a wager bounty, rebuilt from its parsed terms. */
+function canonicalWagerDescription(t) {
+  const site = /^(\S+);/.exec(t.fields.site || '')?.[1];
+  const claimSteps = t.counter
+    ? `and counter bounty #${t.counter.number}.`
+    : `and the counter bounty's ${site}/api/jobs/N/onchain-status and ${site}/api/jobs/N?includeRubric=true URLs.`;
+  return [
+    'Settles one side of a two-bounty wager.',
+    '',
+    `${MUTUAL_WAGER_TERMS_HEADER} (${t.rubric}) ===`,
+    ...LINES.map(([key, prefix]) => `${prefix}${t.fields[key]}`),
+    TERMS_END,
+    '',
+    `To claim (Claimant, after the event and before the settlement deadline): submit claim.md with the final score, two sources (URL + quote) ${claimSteps}`,
+  ].join('\n');
+}
+
+/** Title, work product type and description as a wager bounty must carry them. */
+function canonicalWagerText(t) {
+  return { title: canonicalWagerTitle(t), workProductType: WORK_PRODUCT_TYPE, description: canonicalWagerDescription(t) };
+}
+
+/**
+ * How a bounty's jury-visible text differs from its canonical wager text: a list of messages.
+ * Fields left undefined in `text` are not compared.
+ */
+function wagerTextProblems(t, text) {
+  const want = canonicalWagerText(t);
+  const out = [];
+  if (text.description !== undefined && String(text.description) !== want.description) out.push('its description is not exactly the terms as built: text outside the block, a reordered line or extra spacing reaches the jury');
+  if (text.title !== undefined && String(text.title) !== want.title) out.push(`its title is not "${want.title}"`);
+  if (text.workProductType !== undefined && String(text.workProductType) !== want.workProductType) out.push(`its work product type is not "${want.workProductType}"`);
+  return out;
 }
 
 // ---------- the pre-funding check ----------
@@ -406,6 +501,8 @@ function checkMutualWagerTerms(description, expect) {
   const placeholder = /<[^<>\n]+>/.exec(t.block);
   if (placeholder) add('WAGER_TERMS', `Replace every <...> placeholder in the terms block (first: ${placeholder[0]}).`);
   for (const [key, prefix] of LINES) if (t.fields[key] === undefined) add('WAGER_TERMS', `The terms block has no "${norm(prefix)}" line.`);
+  const extra = extraLinesProblem(t);
+  if (extra) add('WAGER_TERMS', `The terms block has ${extra}. Every line inside the block is one of the template's, once.`);
   if (issues.length) return done(t);
 
   const f = t.fields;
@@ -445,11 +542,19 @@ function checkMutualWagerTerms(description, expect) {
   else if (start - expect.now < MIN_START_LEAD_SECONDS) add('WAGER_TIMING', "The scheduled start is less than 10 minutes away or past. Each bounty must exist before the start, or the other side's jury rejects it.");
   if (settle == null) add('WAGER_TERMS', 'The settlement deadline must be an ISO UTC time such as 2026-10-22T00:00:00Z.');
   else if (start != null && settle <= start) add('WAGER_TIMING', 'The settlement deadline must be after the scheduled start.');
+  else if (start != null && settle - start < MIN_SETTLE_AFTER_START_SECONDS) add('WAGER_TIMING', `The settlement deadline must be at least ${MIN_SETTLE_AFTER_START_SECONDS / 3600} hours after the scheduled start (${isoOf(start + MIN_SETTLE_AFTER_START_SECONDS)} or later): the winner claims about 2 hours after the final and needs time to start the evaluation.`);
   else if (!(expect.deadline >= settle)) {
     const hours = Math.ceil((settle - expect.now) / 3600);
     add('WAGER_TIMING', `This bounty's deadline (${Number.isFinite(expect.deadline) ? isoOf(expect.deadline) : 'none'}) is before the settlement deadline (${f.settle}). Set the submission window to at least ${hours} hours, or the deadline to ${f.settle} or later.`);
   }
-  if (!/^(REQUIRED\b|#\d+\b)/.test(f.counter)) add('WAGER_TERMS', 'The "Counter bounty" line must start with REQUIRED or #<bounty number>.');
+  if (norm(f.counter) !== norm(expectedCounterLine(t))) {
+    add('WAGER_TERMS', `The "Counter bounty" line must read exactly: Counter bounty: ${expectedCounterLine(t)}`);
+  }
+  // Everything else the jury reads is fixed by the terms (see canonicalWagerText).
+  const canonical = canonicalWagerText(t);
+  if (String(description) !== canonical.description) add('WAGER_TEXT', 'The Job Description must be exactly the terms as built, with no other text: the jury reads all of it. Build it with POST /api/wagers/propose or /answer, or "Add a terms block" on an empty description.');
+  if (expect.title !== undefined && String(expect.title) !== canonical.title) add('WAGER_TEXT', `The title must be "${canonical.title}": the jury reads it.`);
+  if (expect.workProductType !== undefined && String(expect.workProductType) !== canonical.workProductType) add('WAGER_TEXT', `The work product type must be "${canonical.workProductType}": the jury reads it.`);
 
   const rubric = expect.rubric || { criteria: expect.criteria, forbiddenContent: expect.forbiddenContent };
   const edited = mutualWagerRubricProblem(rubric, expect.template || MUTUAL_WAGER_TEMPLATE);
@@ -496,13 +601,24 @@ function checkCounterBounty({ terms, status, job, expect, number }) {
   if (!theirs.found || theirs.count !== 1 || !theirs.closed) p('its description has no single, complete terms block.');
   else {
     if (theirs.rubric !== terms.rubric) p(`its terms name rubric ${theirs.rubric}.`);
+    const extra = extraLinesProblem(theirs);
+    if (extra) p(`its terms block has ${extra}, which its jury reads and yours does not.`);
+    if (norm(theirs.fields.counter) !== norm(expectedCounterLine(theirs))) p('its "Counter bounty" line is not the template\'s, and its jury reads it.');
+    // A counter your terms name existed before your bounty, so it cannot name yours: it must be an
+    // offer (REQUIRED). One that names some other bounty is itself an answer, and its claims cite
+    // that other bounty, which your jury never checks.
+    if (terms.counter && !/^REQUIRED\b/.test(norm(theirs.fields.counter))) p(`its terms already name a counter bounty (${norm(theirs.fields.counter).split(',')[0]}), so it is an answer to another bounty, not an offer you can answer.`);
     for (const [key, prefix] of LINES) {
       if (!MIRRORED.has(key) && norm(theirs.fields[key]) !== norm(terms.fields[key])) p(`its "${norm(prefix)}" line differs from yours.`);
     }
     if (!same(theirs.poster.wallet, terms.claimant.wallet) || !same(theirs.poster.side, terms.claimant.side)) p('its Poster line is not your Claimant line.');
     if (!same(theirs.claimant.wallet, terms.poster.wallet) || !same(theirs.claimant.side, terms.poster.side)) p('its Claimant line is not your Poster line.');
     if (!same(theirs.pays, terms.poster.side)) p(`it does not pay you only if ${terms.poster.side}.`);
+    for (const message of wagerTextProblems(theirs, { description: job.description, title: job.title, workProductType: job.workProductType })) p(`${message}.`);
   }
+  // The server rebuilds the counter's evaluation package from its terms and compares it with the one
+  // on chain (server/utils/wagerPackage.js); the browser cannot, so the server repeats this check at create.
+  if (job?.wagerPackage && !job.wagerPackage.ok) for (const message of job.wagerPackage.problems) p(`its evaluation package ${message}.`);
   const edited = mutualWagerRubricProblem(job?.rubricContent || {}, expect.template || MUTUAL_WAGER_TEMPLATE);
   if (edited?.part === 'forbiddenContent') p('its rubric has different forbidden content.');
   else if (edited) p(`its rubric ${edited.detail}.`);
@@ -511,9 +627,15 @@ function checkCounterBounty({ terms, status, job, expect, number }) {
   return problems;
 }
 
-/** A still-live bounty in `jobs` (the poster's own) whose terms carry the same Wager ID, or null. */
+/**
+ * A still-live bounty in `jobs` (the poster's own) whose terms carry the same Wager ID, or null.
+ * A job created through the API but never funded on chain backs nothing, so a retry after a failed
+ * funding transaction must not count it: GET /api/jobs marks those onChain and syncedFromBlockchain
+ * false. Jobs that carry neither field are counted.
+ */
 function findWagerTwin(jobs, wagerId) {
-  return (jobs || []).find((j) => !['CLOSED', 'AWARDED', 'EXPIRED'].includes(j.status)
+  const funded = (j) => (j.onChain === undefined && j.syncedFromBlockchain === undefined) || !!(j.onChain || j.syncedFromBlockchain);
+  return (jobs || []).find((j) => !['CLOSED', 'AWARDED', 'EXPIRED', 'ORPHANED'].includes(j.status) && funded(j)
     && parseMutualWagerTerms(j.description).fields?.wagerId === norm(wagerId)) || null;
 }
 
@@ -578,6 +700,11 @@ const word = (s, flags = 'i') => new RegExp(`(^|[^A-Za-z0-9])${escapeRe(s)}($|[^
 const mentions = (text, team) => word(team.name).test(text) || word(team.nickname).test(text) || word(team.abbr, '').test(text);
 /** The side label without " win(s)": "the San Francisco 49ers win" -> "the San Francisco 49ers". */
 const sideShort = (label) => (/\swins?\.?$/i.test(norm(label)) ? norm(label).replace(/\s+wins?\.?$/i, '') : null);
+/** The one team a side label names as winning ("the Boston Celtics win"), or null when it names none, both, or not a win. */
+const sideTeam = (label, teams) => {
+  const named = [teams.away, teams.home].filter((x) => mentions(label || '', x));
+  return named.length === 1 && /\swins?\.?$/i.test(norm(label)) && !/\b(not|lose|loses|lost|fail|fails)\b/i.test(norm(label)) ? named[0] : null;
+};
 const shortEventOf = (event) => {
   const teams = parseEventTeams(event);
   return teams ? `${teams.away.nickname} @ ${teams.home.nickname}` : null;
@@ -598,7 +725,7 @@ function textProblem(field, value, { max = 400 } = {}) {
  * propose: the first bettor's bounty from structured input. Returns { problems, terms, poster,
  * claimant, title, description, createBody }; problems ([{ code: 'WAGER_INPUT', field, message }])
  * are input errors, and createBody is null while there are any.
- * input = { creator, opponent, wagerId, event, shortEvent?, start, market?, noWinner?,
+ * input = { creator, opponent, wagerId, event, start, market?, noWinner?,
  *           sides: { creator, opponent }, stake, settle, classId?, threshold?, jury?, iterations?,
  *           oracle?, submissionDeadline?, publicSubmissions? }
  * ctx = { site, escrow, chain, defaults: { oracle, jury? } }
@@ -615,12 +742,20 @@ function proposeMutualWager(input = {}, ctx = {}) {
     const msg = textProblem(field, value, { max });
     if (msg) bad(field, msg);
   }
-  for (const [field, value, max] of [['market', input.market, 300], ['noWinner', input.noWinner, 300], ['shortEvent', input.shortEvent, 60]]) {
+  if (input.shortEvent !== undefined) bad('shortEvent', 'shortEvent is not accepted: a wager\'s title is derived from its terms, because the jury reads it.');
+  for (const [field, value, max] of [['market', input.market, 300], ['noWinner', input.noWinner, 300]]) {
     if (value !== undefined && value !== null && value !== '') { const msg = textProblem(field, value, { max }); if (msg) bad(field, msg); }
   }
   if (norm(sides.creator) && same(sides.creator, sides.opponent)) bad('sides', 'sides.creator and sides.opponent must name different outcomes.');
-  const shortEvent = norm(input.shortEvent) || shortEventOf(input.event);
-  if (!shortEvent && !problems.some((x) => x.field === 'event')) bad('shortEvent', 'shortEvent (e.g. "Commanders @ 49ers") is required when the event does not read "Away Team (ABBR) at Home Team (ABBR)".');
+  // Under a straight-up market each side is one team winning, so the claim check can tell who won.
+  const eventTeams = parseEventTeams(input.event);
+  const market = norm(input.market) || DEFAULT_MARKET;
+  if (eventTeams && /^straight-up/i.test(market) && norm(sides.creator) && norm(sides.opponent)) {
+    const teamOf = (label) => sideTeam(label, eventTeams);
+    const a = teamOf(sides.creator), b = teamOf(sides.opponent);
+    if (!a || !b || a === b) bad('sides', `Under a straight-up market each side names one team and "win", e.g. "the ${eventTeams.away.name} win" and "the ${eventTeams.home.name} win".`);
+  }
+  const shortEvent = shortEventOf(input.event);
   for (const field of ['start', 'settle']) {
     if (!ISO_WHOLE_SECOND.test(String(input[field] || ''))) bad(field, `${field} must be an ISO UTC time to the second, e.g. 2026-10-20T00:15:00Z.`);
   }
@@ -698,7 +833,7 @@ function createBodyFor({ terms, poster, claimant, title, description, submission
  * onchain-status, job = its ?includeRubric=true record). Every shared line is copied from it,
  * and the create body's fields are read back from those lines, so the two bounties agree.
  * Returns { problems, terms, title, description, createBody } like proposeMutualWager.
- * input = { creator?, submissionDeadline?, shortEvent?, publicSubmissions? }
+ * input = { creator?, submissionDeadline?, publicSubmissions? }
  */
 function answerMutualWager({ number, status, job }, input = {}) {
   const problems = [];
@@ -710,6 +845,15 @@ function answerMutualWager({ number, status, job }, input = {}) {
     return { problems, createBody: null };
   }
   const t = parseMutualWagerTerms(mirrored.description);
+  // The mirror rewrites the offer's Poster, Claimant, Pays and Counter lines, so anything else its
+  // jury reads there (a second Pays line, a longer Counter line, a line of its own) would not reach
+  // yours. Refuse such an offer instead of answering a cleaned-up copy of it.
+  const offer = parseMutualWagerTerms(job.description);
+  const offered = offer.fields.counter;
+  const extra = extraLinesProblem(offer);
+  if (!/^REQUIRED\b/.test(norm(offered))) bad('WAGER_TERMS', 'counter', `Bounty #${n} already names a counter bounty (${norm(offered).split(',')[0]}): it is an answer to another bounty, not an offer. Only a bounty whose Counter bounty line says REQUIRED can be answered.`);
+  else if (norm(offered) !== norm(expectedCounterLine(offer))) bad('WAGER_TERMS', 'counter', `Bounty #${n}'s "Counter bounty" line is not the template's, and its jury reads it. Do not answer it.`);
+  if (extra) bad('WAGER_TERMS', 'counter', `Bounty #${n}'s terms block has ${extra}, which its jury reads. Do not answer it.`);
   if (input.creator !== undefined && !same(input.creator, t.poster.wallet)) bad('WAGER_TARGET', 'creator', `Bounty #${n} is targeted at ${t.poster.wallet}; only that wallet can answer it.`);
   if (status.targetHunter && !same(status.targetHunter, t.poster.wallet)) bad('WAGER_TARGET', 'counter', `Bounty #${n} is targeted on chain at ${status.targetHunter}, not at the Claimant in its terms (${t.poster.wallet}).`);
   const stake = parseStakeLine(t.fields.stake);
@@ -718,18 +862,20 @@ function answerMutualWager({ number, status, job }, input = {}) {
   const oracle = parseOracleLine(t.fields.oracle);
   const site = /^(\S+); escrow (\S+) on (.+); no cancel or edit\.?$/.exec(norm(t.fields.site));
   const unreadable = [['Stake', stake != null && toWei(stake) != null], ['Both bounties', both], ['Jury', jury], ['Oracle settings', oracle], ['Site', site],
-    ['Settlement deadline', ISO_WHOLE_SECOND.test(norm(t.fields.settle))]].filter(([, ok]) => !ok).map(([label]) => label);
+    ['Settlement deadline', unixOf(t.fields.settle) != null]].filter(([, ok]) => !ok).map(([label]) => label);
   if (unreadable.length) bad('WAGER_TERMS', 'counter', `Bounty #${n}'s terms cannot be answered as they are: unreadable ${unreadable.join(', ')} line${unreadable.length > 1 ? 's' : ''}. Do not answer it.`);
-  const deadlineIso = input.submissionDeadline ?? norm(t.fields.settle);
+  // The settlement deadline, to the whole second at or after it (a create-page block may give minutes or milliseconds).
+  const settleMs = Date.parse(norm(t.fields.settle));
+  const deadlineIso = input.submissionDeadline ?? (Number.isFinite(settleMs) ? isoOf(Math.ceil(settleMs / 1000)).replace('.000Z', 'Z') : null);
   if (input.submissionDeadline !== undefined) {
     if (!ISO_WHOLE_SECOND.test(String(input.submissionDeadline))) bad('WAGER_INPUT', 'submissionDeadline', 'submissionDeadline must be an ISO UTC time to the second; leave it out to use the settlement deadline.');
     else if (unixOf(input.submissionDeadline) < unixOf(t.fields.settle)) bad('WAGER_INPUT', 'submissionDeadline', 'submissionDeadline must be at or after the settlement deadline.');
   }
-  if (input.shortEvent !== undefined) { const msg = textProblem('shortEvent', input.shortEvent, { max: 60 }); if (msg) bad('WAGER_INPUT', 'shortEvent', msg); }
+  if (input.shortEvent !== undefined) bad('WAGER_INPUT', 'shortEvent', 'shortEvent is not accepted: a wager\'s title is derived from its terms, because the jury reads it.');
   if (problems.length) return { problems, terms: t, description: mirrored.description, createBody: null };
 
   const terms = {
-    wagerId: t.fields.wagerId, shortEvent: norm(input.shortEvent) || shortEventOf(t.fields.event), stake,
+    wagerId: t.fields.wagerId, shortEvent: shortEventOf(t.fields.event), stake,
     threshold: both.threshold, classId: both.classId, jury: jury.jury, iterations: jury.iterations, oracle,
   };
   const poster = { wallet: t.poster.wallet, label: t.poster.side };
@@ -784,7 +930,7 @@ function buildWagerClaim({ terms, bounty, counter, score, result = 'Final', sour
   }
   const scored = problems.some((x) => x.code === 'CLAIM_SCORE') ? null : [...resolved].sort((a, b) => b.points - a.points);
   if (scored) {
-    const claimantTeam = teams ? [teams.away, teams.home].find((x) => mentions(terms.claimant.side || '', x)) : null;
+    const claimantTeam = teams ? sideTeam(terms.claimant.side, teams) : null;
     if (/^straight-up/i.test(norm(f.market)) && claimantTeam) {
       if (scored[0].points === scored[1].points) bad('CLAIM_NO_WINNER', 'The score is a tie: under a straight-up market no bounty pays. Do not claim; each bettor closes their own bounty after its deadline.');
       else if (scored[0].team !== claimantTeam) bad('CLAIM_SIDE_LOST', `By this score ${scored[0].team.name} won, so the Claimant's side (${terms.claimant.side}) did not. This claim would fail and cost the evaluation fee.`);
@@ -848,7 +994,12 @@ function buildWagerClaim({ terms, bounty, counter, score, result = 'Final', sour
 }
 
 /**
- * Whether it is time to claim. Returns { tooEarly, claimAfter (ISO), problems, warnings }.
+ * Whether it is time to claim, and until when. Returns { tooEarly, claimAfter, claimBy, claimDeadline (ISO),
+ * problems, warnings }: claimBy is the recommended latest start (15 minutes of margin), claimDeadline the
+ * hard cutoff (the escrow refuses a start at or after the bounty deadline; the jury fails a claim after
+ * the settlement deadline), so an action stays executable until claimDeadline. The ~2 hour wait after the final is advice against stale cached pages;
+ * the deadlines are hard. When the wait does not fit before them, the answer is to claim now (a
+ * CLAIM_DEADLINE_CONFLICT warning), never to wait past the deadline.
  * start / settle: the terms' ISO times; deadline: the claimed bounty's deadline (unix);
  * finalAt: when the event ended (ISO), if the claimant knows; now: unix seconds.
  */
@@ -857,18 +1008,30 @@ function wagerClaimTiming({ start, settle, deadline, finalAt, now }) {
   const startUnix = unixOf(start), settleUnix = unixOf(settle);
   const finalUnix = finalAt ? unixOf(finalAt) : null;
   if (finalAt && finalUnix == null) problems.push({ code: 'CLAIM_INPUT', message: 'finalAt must be an ISO UTC time, e.g. 2026-10-20T03:30:00Z.' });
-  const after = finalUnix != null ? finalUnix + CLAIM_DELAY_SECONDS : startUnix + CLAIM_AFTER_START_SECONDS;
+  // The evaluation must start before both the settlement deadline and the bounty's deadline.
+  const hardEnd = Math.min(settleUnix ?? Infinity, deadline ? Number(deadline) : Infinity);
+  const claimBy = Number.isFinite(hardEnd) ? hardEnd - CLAIM_START_MARGIN_SECONDS : Infinity;
+  const advised = finalUnix != null ? finalUnix + CLAIM_DELAY_SECONDS : startUnix + CLAIM_AFTER_START_SECONDS;
+  let tooEarly = false;
   if (now < startUnix) problems.push({ code: 'CLAIM_TOO_EARLY', message: `The event has not started (scheduled ${start}). Claim only after the official final.` });
   else if (finalUnix != null && finalUnix > now) problems.push({ code: 'CLAIM_TOO_EARLY', message: `finalAt ${finalAt} is in the future.` });
-  const tooEarly = now < after;
-  if (tooEarly && !problems.length) {
-    warnings.push({ code: 'CLAIM_TOO_EARLY', message: finalUnix != null
-      ? `Wait until ${isoOf(after)}, about 2 hours after the final: a juror's web tool can still be served a cached in-progress page, which fails the claim.`
-      : `Claim no earlier than ${isoOf(after)} (5 hours after the scheduled start), and about 2 hours after the final: a juror's web tool can still be served a cached in-progress page. Pass finalAt if you know when it ended.` });
+  if (now >= hardEnd) {
+    problems.push({ code: 'CLAIM_TOO_LATE', message: settleUnix != null && now > settleUnix
+      ? `The settlement deadline (${settle}) has passed: the jury fails claims made after it.`
+      : `The bounty's deadline (${isoOf(Number(deadline))}) has passed: the escrow refuses new evaluations.` });
+  } else if (!problems.length) {
+    if (advised > claimBy) {
+      warnings.push({ code: 'CLAIM_DEADLINE_CONFLICT', message: `The usual wait of about 2 hours after the final does not fit before the deadline (${isoOf(hardEnd)}). Claim as soon as the official final is out, by ${isoOf(Math.max(now, claimBy))}; a juror's web tool is more likely to see a stale page this soon after the final.` });
+    } else if (now < advised) {
+      tooEarly = true;
+      warnings.push({ code: 'CLAIM_TOO_EARLY', message: finalUnix != null
+        ? `Wait until ${isoOf(advised)}, about 2 hours after the final: a juror's web tool can still be served a cached in-progress page, which fails the claim. Claim by ${isoOf(claimBy)}.`
+        : `Claim no earlier than ${isoOf(advised)} (5 hours after the scheduled start), about 2 hours after the final, and by ${isoOf(claimBy)}: a juror's web tool can still be served a cached in-progress page. Pass finalAt if you know when it ended.` });
+    }
+    if (now > claimBy) warnings.push({ code: 'CLAIM_DEADLINE_NEAR', message: `Less than ${CLAIM_START_MARGIN_SECONDS / 60} minutes are left before the deadline (${isoOf(hardEnd)}): submit and start the evaluation now.` });
   }
-  if (settleUnix != null && now > settleUnix) problems.push({ code: 'CLAIM_TOO_LATE', message: `The settlement deadline (${settle}) has passed: the jury fails claims made after it.` });
-  else if (deadline && now >= Number(deadline)) problems.push({ code: 'CLAIM_TOO_LATE', message: `The bounty's deadline (${isoOf(Number(deadline))}) has passed: the escrow refuses new evaluations.` });
-  return { tooEarly, claimAfter: Number.isFinite(after) ? isoOf(after) : null, problems, warnings };
+  const show = (sec) => (Number.isFinite(sec) ? isoOf(sec) : null);
+  return { tooEarly, claimAfter: show(Math.min(advised, claimBy)), claimBy: show(claimBy), claimDeadline: show(hardEnd), problems, warnings };
 }
 
 module.exports = {
@@ -881,6 +1044,8 @@ module.exports = {
   MIN_START_LEAD_SECONDS,
   CLAIM_DELAY_SECONDS,
   CLAIM_AFTER_START_SECONDS,
+  CLAIM_START_MARGIN_SECONDS,
+  MIN_SETTLE_AFTER_START_SECONDS,
   DEFAULT_WAGER_JURY,
   DEFAULT_WAGER_MARKET: DEFAULT_MARKET,
   DEFAULT_NO_WINNER,
@@ -901,7 +1066,10 @@ module.exports = {
   buildMutualWagerBounty,
   mutualWagerTermsSkeleton,
   hasMutualWagerTerms,
+  looksLikeMutualWager,
   parseMutualWagerTerms,
+  canonicalWagerText,
+  wagerTextProblems,
   checkMutualWagerTerms,
   checkCounterBounty,
   findWagerTwin,

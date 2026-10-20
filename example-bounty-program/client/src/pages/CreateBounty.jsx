@@ -33,7 +33,7 @@ import { walletEnvironment, withTimeout } from '../services/injectedProvider';
 import { classifyCreateFailure, describeCreateFailure, accountTypeFromCode } from '../utils/createFailure';
 import * as rubricStorage from '../services/rubricStorage';
 import { getTemplateOptions, getTemplate, createBlankRubric, RUBRIC_DEFAULTS } from '../data/rubricTemplates';
-import { mutualWagerTermsSkeleton, mirrorMutualWagerTerms, hasMutualWagerTerms, checkMutualWagerTerms, checkCounterBounty, findWagerTwin } from '../utils/mutualWagerTerms';
+import { mutualWagerTermsSkeleton, mirrorMutualWagerTerms, hasMutualWagerTerms, parseMutualWagerTerms, canonicalWagerText, checkMutualWagerTerms, checkCounterBounty, findWagerTwin } from '../utils/mutualWagerTerms';
 import ClassSelector from '../components/ClassSelector';
 import ClassCoverage from '../components/ClassCoverage';
 import CriterionEditor from '../components/CriterionEditor';
@@ -113,6 +113,9 @@ function CreateBounty({ walletState }) {
   });
   const [threshold, setThreshold] = useState(RUBRIC_DEFAULTS.threshold);
   const [selectedTemplate, setSelectedTemplate] = useState('');
+  // How the rubric was started, sent with /jobs/create for the template-usage report.
+  // The server works out the template from the rubric itself; this only labels the source.
+  const [rubricSource, setRubricSource] = useState({ source: 'scratch' });
   const [wagerProblems, setWagerProblems] = useState([]);
   const [wagerCounterNumber, setWagerCounterNumber] = useState('');
   const [showLibrary, setShowLibrary] = useState(false);
@@ -307,6 +310,7 @@ function CreateBounty({ walletState }) {
         // Rubric — fetched from IPFS by the server (job.rubricContent). The pinned
         // rubric stores per-criterion instructions under `description`.
         const rc = job.rubricContent;
+        setRubricSource({ source: 'reissue' });
         if (rc) {
           setRubric({
             version: rc.version || RUBRIC_DEFAULTS.version,
@@ -552,6 +556,7 @@ function CreateBounty({ walletState }) {
   const handleTemplateSelect = (e) => {
     const templateKey = e.target.value;
     setSelectedTemplate(templateKey);
+    setRubricSource(templateKey ? { source: 'template', templateKey } : { source: 'scratch' });
     setWagerProblems([]);
 
     if (!templateKey) {
@@ -600,7 +605,9 @@ function CreateBounty({ walletState }) {
   const wagerChain = `${currentNetwork.name} (chain ID ${currentNetwork.chainId})`;
   const addMutualWagerTerms = async () => {
     if (hasMutualWagerTerms(formData.description)) return;
-    const append = (terms) => setFormData((prev) => ({ ...prev, description: prev.description.trim() ? `${prev.description.trimEnd()}\n\n${terms}` : terms }));
+    // The jury reads the whole description, so a wager's description is its terms and nothing else.
+    if (formData.description.trim() && !window.confirm('Replace the Job Description with the wager terms? The jury reads the whole description, so a wager\'s description holds only its terms.')) return;
+    const append = (terms) => setFormData((prev) => ({ ...prev, description: terms }));
     // Answering a bettor who posted first: mirror their block line by line, so every shared
     // line matches theirs exactly; handleSubmit then checks their bounty's live record.
     if (wagerCounterNumber !== '') {
@@ -751,6 +758,7 @@ function CreateBounty({ walletState }) {
     setThreshold(loadedRubric.threshold ?? RUBRIC_DEFAULTS.threshold);
     setSelectedClassId(loadedRubric.classId ?? RUBRIC_DEFAULTS.classId);
     setLoadedRubricCid(loadedRubric.cid);
+    setRubricSource({ source: 'library' });
     setShowLibrary(false);
     
     toast.success(`Loaded rubric: ${loadedRubric.title} (Threshold: ${loadedRubric.threshold ?? RUBRIC_DEFAULTS.threshold}%)`);
@@ -771,6 +779,7 @@ function CreateBounty({ walletState }) {
       setThreshold(patch.threshold);
       setLoadedRubricCid(null);
       setSelectedTemplate('');
+      setRubricSource({ source: 'import' });
       setFormData((prev) => ({
         ...prev,
         targetHunter: patch.targetHunter,
@@ -796,6 +805,7 @@ function CreateBounty({ walletState }) {
     setRubric({ version: RUBRIC_DEFAULTS.version, ...imported.patch.rubric });
     setThreshold(imported.patch.threshold);
     setLoadedRubricCid(null);
+    setRubricSource({ source: 'import' });
     setFormData((prev) => ({ ...prev, targetHunter: imported.patch.targetHunter }));
   };
   const removeImport = () => { setImported(null); setImportErrors([]); setImportPaste(''); setImportHandoff(false); };
@@ -884,9 +894,20 @@ function CreateBounty({ walletState }) {
     // the terms name must match its live record, because the jury then skips its own counter
     // checks; and one Wager ID backs one pair, so a counter cannot stand behind two offers.
     const isWager = selectedTemplate === 'mutualWager' || hasMutualWagerTerms(evaluationDescription);
+    // The jury also reads the title and work product type, so a wager's are set from its terms.
+    const parsedWager = isWager ? parseMutualWagerTerms(evaluationDescription) : null;
+    const wagerText = parsedWager?.found && parsedWager.closed ? canonicalWagerText(parsedWager) : null;
+    const jobTitle = wagerText ? wagerText.title : formData.title;
+    const jobWorkProductType = wagerText ? wagerText.workProductType : formData.workProductType;
+    if (wagerText && (jobTitle !== formData.title || jobWorkProductType !== formData.workProductType)) {
+      setFormData((prev) => ({ ...prev, title: jobTitle, workProductType: jobWorkProductType }));
+      toast.info(`For a wager the title and work product type come from the terms: "${jobTitle}", ${jobWorkProductType}.`);
+    }
     if (isWager) {
       const now = Math.floor(Date.now() / 1000);
       const expect = {
+        title: jobTitle,
+        workProductType: jobWorkProductType,
         posterWallet: walletState.address,
         targetHunter: formData.targetHunter,
         stake: bountyAmountEth,
@@ -957,9 +978,9 @@ function CreateBounty({ walletState }) {
       const rubricForBackend = buildRubricForUpload();
 
       const apiResponse = await apiService.createJob({
-        title: formData.title,
+        title: jobTitle,
         description: evaluationDescription,
-        workProductType: formData.workProductType,
+        workProductType: jobWorkProductType,
         creator: walletState.address,
         bountyAmount: bountyAmountEth,
         bountyAmountUSD: Math.round(parseFloat(bountyAmountEth) * (formData.ethPriceUSD || 0) * 100) / 100,
@@ -988,6 +1009,7 @@ function CreateBounty({ walletState }) {
         oracleAlpha: oracleSettings.alpha,
         oracleEstimatedBaseCost: oracleSettings.estimatedBaseCost,
         oracleMaxFeeBasedScaling: oracleSettings.maxFeeBasedScaling,
+        rubricSource,
       });
 
       if (!apiResponse?.success) {

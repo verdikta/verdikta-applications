@@ -12,6 +12,7 @@ const { analyticsCache } = require('../utils/analyticsCacheService');
 const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
 const { getContractService } = require('../utils/contractService');
 const { classMap } = require('@verdikta/common');
+const { summarizeTemplateUsage } = require('../utils/templateUsage');
 
 /**
  * GET /api/analytics/overview
@@ -33,12 +34,13 @@ router.get('/overview', async (req, res) => {
     }
 
     // Gather all analytics data
-    const [arbiterData, bountyData, submissionData, systemData, fulfilledData] = await Promise.all([
+    const [arbiterData, bountyData, submissionData, systemData, fulfilledData, templateData] = await Promise.all([
       getArbiterAnalytics(),
       getBountyAnalytics(),
       getSubmissionAnalytics(),
       getSystemHealth(),
-      getFulfilledBounties()
+      getFulfilledBounties(),
+      getTemplateUsageAnalytics()
     ]);
 
     const result = {
@@ -47,6 +49,7 @@ router.get('/overview', async (req, res) => {
       submissions: submissionData,
       system: systemData,
       fulfilledBounties: fulfilledData,
+      templates: templateData,
       generatedAt: Date.now()
     };
 
@@ -166,6 +169,41 @@ router.get('/submissions', async (req, res) => {
     logger.error('[analytics/submissions] error', { msg: error.message });
     return res.status(500).json({
       error: 'Failed to get submission analytics',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/analytics/templates
+ * Returns rubric template usage
+ */
+router.get('/templates', async (req, res) => {
+  try {
+    const cacheKey = 'analytics_templates';
+    const cached = analyticsCache.get(cacheKey);
+
+    if (cached) {
+      return res.json({
+        success: true,
+        data: cached.data,
+        cached: true,
+        cachedAt: cached.timestamp
+      });
+    }
+
+    const data = await getTemplateUsageAnalytics();
+    analyticsCache.set(cacheKey, data);
+
+    return res.json({
+      success: true,
+      data,
+      cached: false
+    });
+  } catch (error) {
+    logger.error('[analytics/templates] error', { msg: error.message });
+    return res.status(500).json({
+      error: 'Failed to get template usage',
       details: error.message
     });
   }
@@ -628,6 +666,24 @@ async function getSystemHealth() {
     bountyContract: config.bountyEscrowAddress || null,
     timestamp: Date.now()
   };
+}
+
+/**
+ * Rubric template usage on the current contract (utils/templateUsage.js). Unlike
+ * listJobs, unfunded creates are kept, so the "created" stage counts them.
+ */
+async function getTemplateUsageAnalytics() {
+  try {
+    const { jobs } = await jobStorage.readStorage();
+    const current = (config.bountyEscrowAddress || '').toLowerCase();
+    const onContract = current
+      ? jobs.filter(j => (j.contractAddress || '').toLowerCase() === current && j.status !== 'CANCELLED')
+      : jobs;
+    return { ...summarizeTemplateUsage(onContract), timestamp: Date.now() };
+  } catch (error) {
+    logger.error('Failed to get template usage analytics', { msg: error.message });
+    throw error;
+  }
 }
 
 /**

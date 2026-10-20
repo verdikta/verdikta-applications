@@ -1,0 +1,229 @@
+{
+  "_readme": "Every version of every create-page rubric template, by fingerprint (utils/templateUsage.js rubricFingerprint). Maintained by scripts/registerRubricTemplates.js; never remove a version, or bounties built from it stop counting toward their template.",
+  "templates": {
+    "blogPost": {
+      "label": "Blog Post",
+      "criteriaIds": [
+        "safety_and_rights",
+        "originality",
+        "relevance",
+        "accuracy",
+        "structure",
+        "style",
+        "overall_quality"
+      ],
+      "versions": [
+        {
+          "version": "blogPost-v1",
+          "fingerprint": "1982b83694f46882",
+          "note": "git 4663498"
+        }
+      ],
+      "kind": "rubric"
+    },
+    "codeReview": {
+      "label": "Code Review",
+      "criteriaIds": [
+        "safety",
+        "functionality",
+        "code_quality",
+        "documentation",
+        "testing",
+        "performance"
+      ],
+      "versions": [
+        {
+          "version": "codeReview-v1",
+          "fingerprint": "bde9018bfe7d5411",
+          "note": "git 4663498"
+        }
+      ],
+      "kind": "rubric"
+    },
+    "technicalWriting": {
+      "label": "Technical Documentation",
+      "criteriaIds": [
+        "plagiarism",
+        "completeness",
+        "accuracy",
+        "clarity",
+        "examples",
+        "usability"
+      ],
+      "versions": [
+        {
+          "version": "technicalWriting-v1",
+          "fingerprint": "f7ac3fddb05ead8f",
+          "note": "git 4663498"
+        }
+      ],
+      "kind": "rubric"
+    },
+    "designWork": {
+      "label": "Design Work",
+      "criteriaIds": [
+        "originality",
+        "requirements",
+        "aesthetics",
+        "usability",
+        "creativity",
+        "technical"
+      ],
+      "versions": [
+        {
+          "version": "designWork-v1",
+          "fingerprint": "1adbe4ff718e2c75",
+          "note": "git 4663498"
+        }
+      ],
+      "kind": "rubric"
+    },
+    "videoContent": {
+      "label": "Video Content",
+      "criteriaIds": [
+        "content_safety",
+        "content_quality",
+        "production",
+        "editing",
+        "presentation",
+        "length"
+      ],
+      "versions": [
+        {
+          "version": "videoContent-v1",
+          "fingerprint": "392ec4f0b20718e4",
+          "note": "git 4663498"
+        }
+      ],
+      "kind": "rubric"
+    },
+    "general": {
+      "label": "General Submission",
+      "criteriaIds": [
+        "prohibited",
+        "requirements",
+        "quality",
+        "completeness"
+      ],
+      "versions": [
+        {
+          "version": "general-v1",
+          "fingerprint": "68a35819a080fa3f",
+          "note": "git 4663498"
+        }
+      ],
+      "kind": "rubric"
+    },
+    "mutualWager": {
+      "label": "Mutual Wager",
+      "criteriaIds": [
+        "terms_match",
+        "event_final",
+        "result_sources",
+        "claimant_side_won",
+        "counter_bounty_onchain",
+        "counter_bounty_terms",
+        "integrity"
+      ],
+      "versions": [
+        {
+          "version": "mutual-wager-v1",
+          "fingerprint": "139994c971c82be3",
+          "note": "Built by agents before the template was in the repo; mainnet #253, #298-#303"
+        },
+        {
+          "version": "mutual-wager-v2",
+          "fingerprint": "05cea72206f57d1e",
+          "note": "git 31f9e55"
+        },
+        {
+          "version": "mutual-wager-v3",
+          "fingerprint": "57db9f3b3391a6b9"
+        }
+      ],
+      "kind": "rubric"
+    },
+    "evidence-pack-v1": {
+      "kind": "service",
+      "label": "Evidence Pack",
+      "criteriaIds": [
+        "scope_coverage",
+        "honest_evidence",
+        "unresolved_protocol",
+        "cell_accuracy",
+        "version_time",
+        "traceability"
+      ],
+      "versions": [
+        {
+          "version": "evidence-pack-v1@1.0.0",
+          "fingerprint": "6f03b18b8d8ecacd",
+          "note": "git 97a49aa"
+        },
+        {
+          "version": "evidence-pack-v1@1.1.0",
+          "fingerprint": "cea006706959fe3b"
+        }
+      ]
+    },
+    "source-check-v1": {
+      "kind": "service",
+      "label": "Source Check",
+      "criteriaIds": [
+        "scope_coverage",
+        "honest_evidence",
+        "unresolved_protocol",
+        "evidence_fit",
+        "verdict_quality",
+        "reproducibility"
+      ],
+      "versions": [
+        {
+          "version": "source-check-v1@1.0.0",
+          "fingerprint": "8a2fcb08ac863c6e",
+          "note": "git 97a49aa"
+        },
+        {
+          "version": "source-check-v1@1.1.0",
+          "fingerprint": "66157cc46bd85210"
+        }
+      ]
+    },
+    "real-world-task-v1": {
+      "kind": "service",
+      "label": "Real World Task",
+      "criteriaIds": [
+        "evidence_complete",
+        "challenge_token",
+        "authentic_consistent",
+        "task_completion",
+        "evidence_quality",
+        "report_clarity"
+      ],
+      "versions": [
+        {
+          "version": "real-world-task-v1@1.0.0",
+          "fingerprint": "600538b62c7ea382"
+        }
+      ]
+    },
+    "review-v1": {
+      "kind": "service",
+      "label": "Review",
+      "criteriaIds": [
+        "coverage",
+        "faithful_quotes",
+        "honest_status",
+        "finding_validity",
+        "judgment_quality",
+        "actionability"
+      ],
+      "versions": [
+        {
+          "version": "review-v1@1.0.0",
+          "fingerprint": "b193711f583691c7"
+        }
+      ]
+    }
+  }
+}

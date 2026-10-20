@@ -22,6 +22,8 @@ export {
   mutualWagerTermsSkeleton,
   hasMutualWagerTerms,
   parseMutualWagerTerms,
+  canonicalWagerText,
+  looksLikeMutualWager,
   checkMutualWagerTerms,
   checkCounterBounty,
   findWagerTwin,

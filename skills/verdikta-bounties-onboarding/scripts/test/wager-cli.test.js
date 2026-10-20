@@ -14,7 +14,9 @@ const alice = '0x7ACbdBC2bB6e4fF8b705d695F77144eA619C0e2D', bob = '0x75fAc210bF1
 const at = (iso) => Date.parse(iso) / 1000;
 const policy = { maxValueWei: '1000000000000000', maxTotalWei: '2000000000000000', maxGasLimit: '900000', maxFeePerGasWei: '1000000000', maxPriorityFeePerGasWei: '1000000' };
 const template = W.wagerRubricJson();
-const current = (job) => ({ ...job, rubricContent: { ...job.rubricContent, criteria: job.rubricContent.criteria.map((c) => (c.id === 'counter_bounty_terms' ? { ...c, description: template.criteria.find((x) => x.id === c.id).description } : c)) } });
+// The pair also predates canonical titles (the jury reads the title): `current` gives it today's derived title too.
+const canonicalTitle = (job) => W.shared.canonicalWagerText(W.shared.parseMutualWagerTerms(job.description)).title;
+const current = (job) => ({ ...job, title: canonicalTitle(job), rubricContent: { ...job.rubricContent, criteria: job.rubricContent.criteria.map((c) => (c.id === 'counter_bounty_terms' ? { ...c, description: template.criteria.find((x) => x.id === c.id).description } : c)) } });
 
 async function harness(t, { me, clock = at('2026-10-20T18:00:00Z'), myJobs = [] } = {}) {
   const dir = await mkdtemp(`${tmpdir()}/verdikta-wager-test-`); t.after(() => rm(dir, { recursive: true, force: true }));

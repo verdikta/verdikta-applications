@@ -16,7 +16,9 @@ const NOW = Date.parse('2026-10-20T18:00:00Z') / 1000;
 // The pair was posted before the template's counter_bounty_terms wording was final (cfbd088). `current` swaps in
 // today's text for that one criterion, as if posted from the committed template; any other alteration stays.
 const template = W.wagerRubricJson();
-const current = (job) => ({ ...job, rubricContent: { ...job.rubricContent, criteria: job.rubricContent.criteria.map((c) => (c.id === 'counter_bounty_terms' ? { ...c, description: template.criteria.find((t) => t.id === c.id).description } : c)) } });
+// The pair also predates canonical titles (the jury reads the title): `current` gives it today's derived title too.
+const canonicalTitle = (job) => W.shared.canonicalWagerText(W.shared.parseMutualWagerTerms(job.description)).title;
+const current = (job) => ({ ...job, title: canonicalTitle(job), rubricContent: { ...job.rubricContent, criteria: job.rubricContent.criteria.map((c) => (c.id === 'counter_bounty_terms' ? { ...c, description: template.criteria.find((t) => t.id === c.id).description } : c)) } });
 function bounty(n, { fresh = true, status = {}, rpc = {} } = {}) {
   const job = fx(n, 'job').job;
   return { number: n, status: { ...fx(n, 'status'), ...status }, job: fresh ? current(job) : job, rpc: { ...fx(n, 'rpc'), ...rpc } };
@@ -39,8 +41,14 @@ test('an honest first bounty passes and the shared answer builder mirrors it, na
   assert.equal(creationTerms(config).submissionDeadline, BigInt(Date.parse('2026-10-21T19:00:00Z') / 1000));
 });
 
-test('the live pair predates the final template wording: honest #18/#19 fail only on that criterion', () => {
-  for (const [n, me] of [[18, bob], [19, alice]]) assert.deepEqual(report(bounty(n, { fresh: false }), me).problems, [`Counter bounty #${n}: its rubric criterion counter_bounty_terms differs from the template.`]);
+test('the live pair predates the final template wording and canonical titles: honest #18/#19 fail only on those', () => {
+  for (const [n, me] of [[18, bob], [19, alice]]) {
+    const job = fx(n, 'job').job;
+    assert.deepEqual(report(bounty(n, { fresh: false }), me).problems, [
+      `Counter bounty #${n}: its title is not "${canonicalTitle(job)}".`,
+      `Counter bounty #${n}: its rubric criterion counter_bounty_terms differs from the template.`,
+    ]);
+  }
 });
 
 test('check refuses every bad counter, each for its own reason, standalone', () => {

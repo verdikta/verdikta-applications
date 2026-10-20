@@ -27,7 +27,8 @@ export const WAGER_DEFAULTS = Object.freeze({
 export const CLAIM_OPENS_AFTER_START = 3 * 3600;
 const MIN_SETTLE_AFTER_START = 12 * 3600, MAX_SETTLE_AFTER_START = 60 * 86400;
 // The structured proposal fields; wager.js adds creator, and the jury, oracle and class come from operator defaults.
-export const PROPOSAL_FIELDS = ['wagerId', 'event', 'shortEvent', 'start', 'settle', 'stake', 'opponent', 'sides', 'market', 'noWinner'];
+// No shortEvent: a wager's title is derived from its terms (the jury reads it), and the shared builder refuses one.
+export const PROPOSAL_FIELDS = ['wagerId', 'event', 'start', 'settle', 'stake', 'opponent', 'sides', 'market', 'noWinner'];
 
 const norm = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
 const WHOLE_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z$/;
@@ -159,7 +160,7 @@ export function counterReport({ number, status, job, rpc, me, ctx, now, mine = n
 
 /**
  * The first bettor's bounty (shared proposeMutualWager) with every check, before any approval or spend.
- * input = { wagerId, event, shortEvent?, start, settle, stake, opponent, sides: { creator, opponent }, market?, noWinner? }.
+ * input = { wagerId, event, start, settle, stake, opponent, sides: { creator, opponent }, market?, noWinner? }.
  */
 export function buildProposal(input, { me, ctx, defaults = WAGER_DEFAULTS, now }) {
   const unknown = Object.keys(input || {}).filter((k) => !PROPOSAL_FIELDS.includes(k) && k !== '_note');

@@ -48,7 +48,7 @@ The shared `proposeMutualWager` input; `wager.js` adds your wallet as `creator`,
 ```
 
 - `wagerId`: new for every pair, 3-64 letters, digits, dots, dashes or underscores.
-- `event`: league, season and round, then `Away Team (ABBR) at Home Team (ABBR)`, then the venue. The title's short event and the claim's team names are read from it; otherwise add `shortEvent` ("Celtics @ Pistons").
+- `event`: league, season and round, then `Away Team (ABBR) at Home Team (ABBR)`, then the venue. The title ("Wager <id>: Celtics @ Pistons, pays if ...") and the claim's team names are read from it. The title, work product type and description are fixed by the terms, because the jury reads them; there is no `shortEvent` field.
 - `start`: the scheduled start; `settle`: the settlement deadline. ISO UTC to the second. `settle` is 12 hours to 60 days after `start` and is also both bounties' exact deadline.
 - `stake`: decimal ETH, at or below the owner's spend policy caps. `opponent`: the other bettor's wallet.
 - `sides`: each side as the jury will apply it ("the X win"); they must differ.

@@ -25,7 +25,10 @@ test('the create page serves the same template and terms functions', { skip }, a
   try {
     [page, templates] = await Promise.all([import(new URL('client/src/utils/mutualWagerTerms.js', repo)), import(new URL('client/src/data/rubricTemplates.js', repo))]);
   } catch (e) { if (e.code === 'ERR_MODULE_NOT_FOUND') return t.skip('client dependencies not installed'); throw e; }
-  assert.deepEqual(templates.getTemplate('mutualWager'), JSON.parse(JSON.stringify(W.template)));
+  // The page's template (shared/rubricTemplates.json) adds display fields (label, icon, useWhen); the fields the jury reads match.
+  for (const key of ['version', 'title', 'description', 'threshold', 'classId', 'criteria', 'forbiddenContent']) {
+    assert.deepEqual(templates.getTemplate('mutualWager')[key], JSON.parse(JSON.stringify(W.template[key])), key);
+  }
   const job = fx(18, 'job').job, status = fx(18, 'status');
   const mirror = { number: 18, createdAt: status.createdAtIso, deadline: status.submissionDeadlineIso };
   assert.deepEqual(page.mirrorMutualWagerTerms(job.description, mirror), W.shared.mirrorMutualWagerTerms(job.description, mirror));

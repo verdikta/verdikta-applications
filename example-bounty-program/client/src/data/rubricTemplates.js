@@ -340,11 +340,12 @@ export const rubricTemplates = {
   // Settles one side of a mutual wager: two directed bounties, each paying the other bettor
   // only if that bettor's side wins and the bettor holds a live mirrored counter bounty.
   // The terms go in the Job Description (utils/mutualWagerTerms.js builds them); every criterion
-  // is must-pass. v1 settled mainnet bounty #303 in October 2026; v2 adds the stale-page rule
-  // to integrity (a page showing the game not started or in progress is not a contradiction).
+  // is must-pass. v1 settled mainnet bounty #303 in October 2026. v2 added the stale-page rule
+  // to integrity. v3 (security review of PR #106) fails closed without web access and checks
+  // the counter's every terms line, word-for-word criteria, jury, oracle settings and package link.
   mutualWager: {
     version: "rubric-1",
-    title: "Mutual Wager Settlement (mutual-wager-v2)",
+    title: "Mutual Wager Settlement (mutual-wager-v3)",
     description: "Put the MUTUAL WAGER TERMS block in the Job Description: the jury reads the terms only there. Both bettors post a bounty with this rubric unchanged, the same terms with Poster and Claimant swapped, the other bettor as Target Hunter and no approval window.",
     threshold: 80,
     classId: 128,
@@ -368,7 +369,7 @@ export const rubricTemplates = {
         label: "Final result cited from two reputable sources and confirmed by the jury",
         must: true,
         weight: 0.0,
-        instructions: "Never FAIL because the evaluator cannot remember the result: the event may be after its training data. Both parts are required. (1) The submission cites two or more independent reputable sources (league or team site, major sports outlet, wire service), each with its full URL and a verbatim quote or screenshot showing both teams and the final score of the finished game (a scoreboard marked Final, or a recap); the sources agree. (2) An evaluator with web access opens the cited URLs, or searches the web if none opens, and passes only if a reputable page it actually retrieved shows the same final score of the finished game; quotes never replace this check. An evaluator with no web access judges (2) from the quotes and screenshots. A retrieved page showing the game not started or in progress is a stale copy: look for a current one. A cited page the evaluator cannot open is not evidence against the claim. FAIL if (1) is incomplete, if the sources are only social media, forums, blogs or betting sites, or if the sources or retrieved pages disagree with the claimed score."
+        instructions: "Never FAIL because the evaluator cannot remember the result: the event may be after its training data. Both parts are required. (1) The submission cites two or more independent reputable sources (league or team site, major sports outlet, wire service), each with its full URL and a verbatim quote or screenshot showing both teams and the final score of the finished game (a scoreboard marked Final, or a recap); the sources agree. (2) The evaluator opens the cited URLs, or searches the web if none opens, and passes only if a reputable page it actually retrieved shows the same final score of the finished game; quotes and screenshots never replace this check. A retrieved page showing the game not started or in progress is a stale copy: look for a current one. A cited page the evaluator cannot open is not evidence against the claim. FAIL if (1) is incomplete, if the evaluator retrieved no page confirming the score (for example, it has no web access), if the sources are only social media, forums, blogs or betting sites, or if the sources or retrieved pages disagree with the claimed score."
       },
       {
         id: "claimant_side_won",
@@ -382,14 +383,14 @@ export const rubricTemplates = {
         label: "Counter bounty: on-chain parameters",
         must: true,
         weight: 0.0,
-        instructions: "If the terms name the counter bounty by number, PASS when the submission cites that number, and skip the rest. Otherwise the submission gives the counter bounty's number N and the URL <bounty site>/api/jobs/N/onchain-status; an evaluator with web access reads the values there itself (without web access, use the values the submission copies). PASS only if: creator = Claimant and targetHunter = Poster (ignore letter case); bountyAmount and arbiterDeterminationPaymentEth are at least the stake; creatorAssessmentWindowSize = 0; classId = the class in the terms; threshold is at most the threshold in the terms; createdAtIso is earlier than the scheduled start; submissionDeadlineIso is at or after the settlement deadline (compare as UTC). Status, winner and submissions do not matter. FAIL if the URL or any value is missing, or any check fails."
+        instructions: "If the terms name the counter bounty by number, PASS when the submission cites that number, and skip the rest. Otherwise the submission gives the counter bounty's number N and the URL <bounty site>/api/jobs/N/onchain-status; the evaluator must read the values there itself (copied values are never evidence). PASS only if: bountyId = N; creator = Claimant and targetHunter = Poster (ignore letter case); bountyAmount and arbiterDeterminationPaymentEth are at least the stake; creatorAssessmentWindowSize = 0; classId = the class in the terms; threshold is at most the threshold in the terms; every oracleSettings value equals the oracle settings in the terms; linkage.state = linked; createdAtIso is earlier than the scheduled start; submissionDeadlineIso is at or after the settlement deadline (compare as UTC). Status, winner and submissions do not matter. FAIL if the page cannot be read, a value is missing, or any check fails."
       },
       {
         id: "counter_bounty_terms",
         label: "Counter bounty: mirrored terms, rubric and jury",
         must: true,
         weight: 0.0,
-        instructions: "If the terms name the counter bounty by number, PASS when the submission cites that number, and skip the rest. Otherwise the submission gives <bounty site>/api/jobs/N?includeRubric=true for the same N; an evaluator with web access reads it itself. PASS only if job.description has a MUTUAL WAGER TERMS block with the same Wager ID, event, scheduled start, market, stake and settlement deadline, with Poster and Claimant swapped (it pays this bounty's Poster only if the Poster's side wins); job.rubricContent.criteria are exactly the criterion ids the terms list, each must; and job.juryNodes are the jury models the terms name. FAIL if the URL is missing, anything differs, or the evaluator cannot tell."
+        instructions: "If the terms name the counter bounty by number, PASS when the submission cites that number, and skip the rest. Otherwise the evaluator reads <bounty site>/api/jobs/N?includeRubric=true for the same N itself. PASS only if: job.evaluationCid equals the evaluationCid on the onchain-status page; job.description has one MUTUAL WAGER TERMS block in which every line equals this bounty's, except that the Poster and Claimant lines are swapped, its Pays line names this bounty's Poster's side, and the Counter bounty line may differ; job.rubricContent.criteria are this rubric's criteria in the same order with the same id, must and weight, and each one's text matches this rubric's instructions word for word (compare the text, not just the ids: one changed word is a FAIL); forbiddenContent is the same; job.juryNodes and job.iterations match the jury in the terms (provider, model, weight, runs; ignore letter case). FAIL if the page cannot be read or anything else differs."
       },
       {
         id: "integrity",

@@ -21,7 +21,7 @@ const { config } = require('../config');
 const archiveGenerator = require('../utils/archiveGenerator');
 const archiveShapeValidator = require('../utils/archiveShapeValidator');
 const { findOversizedImages, OVERSIZED_IMAGE_FIX } = require('../utils/imageLimits');
-const { validateRubric, validateJuryNodes, normalizeBountyPayments, validateProcurement, isValidFileType, MAX_FILE_SIZE,
+const { validateRubric, validateJuryNodes, normalizeBountyPayments, validateProcurement, validateWagerTarget, isValidFileType, MAX_FILE_SIZE,
         oracleUnreadableReason, detectBinaryContainer, ALLOWED_ZIP_BASED_EXTENSIONS,
         parseFeeToWei, extractEvaluationWarnings } = require('../utils/validation');
 const { lookupClass, registryModelMatcher, checkJuryAgainstClass, checkClassCoverage } = require('../utils/classPolicy');
@@ -526,6 +526,8 @@ router.post('/create', async (req, res) => {
     }
     const procurementError = validateProcurement(req.body?.procurementMode, targetHunter);
     if (procurementError) return res.status(400).json({ error: req.body?.procurementMode == null ? 'Invalid targetHunter address' : 'Invalid procurement intent', details: procurementError });
+    const wagerError = validateWagerTarget(description, creator, targetHunter);
+    if (wagerError) return res.status(400).json({ error: 'Invalid mutual-wager target', code: 'WAGER_TARGET', details: wagerError });
     let payments;
     let exactDeadline = null;
     try { ({ submissionDeadline: exactDeadline, ...payments } = normalizeBountyPayments(req.body)); }

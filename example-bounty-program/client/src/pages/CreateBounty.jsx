@@ -33,7 +33,7 @@ import { walletEnvironment, withTimeout } from '../services/injectedProvider';
 import { classifyCreateFailure, describeCreateFailure, accountTypeFromCode } from '../utils/createFailure';
 import * as rubricStorage from '../services/rubricStorage';
 import { getTemplateOptions, getTemplate, createBlankRubric, RUBRIC_DEFAULTS } from '../data/rubricTemplates';
-import { mutualWagerTermsSkeleton, hasMutualWagerTerms } from '../utils/mutualWagerTerms';
+import { mutualWagerTermsSkeleton, mirrorMutualWagerTerms, hasMutualWagerTerms, checkMutualWagerTerms, checkCounterBounty, findWagerTwin } from '../utils/mutualWagerTerms';
 import ClassSelector from '../components/ClassSelector';
 import ClassCoverage from '../components/ClassCoverage';
 import CriterionEditor from '../components/CriterionEditor';
@@ -113,6 +113,8 @@ function CreateBounty({ walletState }) {
   });
   const [threshold, setThreshold] = useState(RUBRIC_DEFAULTS.threshold);
   const [selectedTemplate, setSelectedTemplate] = useState('');
+  const [wagerProblems, setWagerProblems] = useState([]);
+  const [wagerCounterNumber, setWagerCounterNumber] = useState('');
   const [showLibrary, setShowLibrary] = useState(false);
   const [loadedRubricCid, setLoadedRubricCid] = useState(null);
 
@@ -550,6 +552,7 @@ function CreateBounty({ walletState }) {
   const handleTemplateSelect = (e) => {
     const templateKey = e.target.value;
     setSelectedTemplate(templateKey);
+    setWagerProblems([]);
 
     if (!templateKey) {
       // Reset to blank
@@ -585,21 +588,49 @@ function CreateBounty({ walletState }) {
 
   // ---------- mutual wager terms ----------
   // The jury reads the wager terms only from the Job Description. Append a terms block with what
-  // the form knows (wallets, stake, threshold, class, network) and <...> placeholders for the rest;
-  // the jury stays a placeholder because it is chosen after this step.
-  const addMutualWagerTerms = () => {
+  // the form knows (wallets, stake, threshold, class, jury, oracle settings, network) and <...>
+  // placeholders for the rest. handleSubmit checks the block against the form before funding.
+  const wagerJury = () => juryNodes.map(({ provider, model, weight, runs }) => ({ provider, model, weight, runs }));
+  const wagerOracle = () => ({
+    maxOracleFeeEth: formData.oracleMaxOracleFeeEth,
+    estimatedBaseCostEth: formData.oracleEstimatedBaseCostEth,
+    maxFeeBasedScaling: formData.oracleMaxFeeBasedScaling,
+    alpha: formData.oracleAlpha,
+  });
+  const wagerChain = `${currentNetwork.name} (chain ID ${currentNetwork.chainId})`;
+  const addMutualWagerTerms = async () => {
     if (hasMutualWagerTerms(formData.description)) return;
+    const append = (terms) => setFormData((prev) => ({ ...prev, description: prev.description.trim() ? `${prev.description.trimEnd()}\n\n${terms}` : terms }));
+    // Answering a bettor who posted first: mirror their block line by line, so every shared
+    // line matches theirs exactly; handleSubmit then checks their bounty's live record.
+    if (wagerCounterNumber !== '') {
+      const n = Number(wagerCounterNumber);
+      try {
+        const [status, details] = await Promise.all([apiService.getOnchainStatus(n), apiService.getJob(n, true)]);
+        const mirrored = mirrorMutualWagerTerms(details?.job?.description, { number: n, createdAt: status.createdAtIso, deadline: status.submissionDeadlineIso });
+        if (!mirrored) { toast.warning(`Bounty #${n} has no complete MUTUAL WAGER TERMS block to answer.`); return; }
+        append(mirrored.description);
+        if (!formData.targetHunter) setFormData((prev) => ({ ...prev, targetHunter: mirrored.claimant }));
+        toast.success(`Bounty #${n}'s terms copied with the sides swapped. Set the payout to ${mirrored.stake} ETH and match its jury and oracle settings; they are checked before funding.`);
+      } catch (err) {
+        toast.warning(`Could not read bounty #${n}: ${messageFromAxios(err)}`);
+      }
+      return;
+    }
     const terms = mutualWagerTermsSkeleton({
       posterWallet: walletState.address,
       claimantWallet: formData.targetHunter,
       stake: effectiveBountyAmountEth(formData),
       threshold,
       classId: selectedClassId,
+      jury: wagerJury(),
+      iterations,
+      oracle: wagerOracle(),
       site: window.location.origin,
       escrow: currentNetwork.bountyEscrowAddress,
-      chain: `${currentNetwork.name} (chain ID ${currentNetwork.chainId})`,
+      chain: wagerChain,
     });
-    setFormData((prev) => ({ ...prev, description: prev.description.trim() ? `${prev.description.trimEnd()}\n\n${terms}` : terms }));
+    append(terms);
     toast.success('Terms block added to the Job Description. Replace every <...> placeholder before you create the bounty.');
   };
 
@@ -849,6 +880,55 @@ function CreateBounty({ walletState }) {
       maxFeeBasedScaling: parseInt(formData.oracleMaxFeeBasedScaling, 10),
     };
 
+    // A wager's terms must describe exactly the bounty this form creates. A counter bounty
+    // the terms name must match its live record, because the jury then skips its own counter
+    // checks; and one Wager ID backs one pair, so a counter cannot stand behind two offers.
+    const isWager = selectedTemplate === 'mutualWager' || hasMutualWagerTerms(evaluationDescription);
+    if (isWager) {
+      const now = Math.floor(Date.now() / 1000);
+      const expect = {
+        posterWallet: walletState.address,
+        targetHunter: formData.targetHunter,
+        stake: bountyAmountEth,
+        threshold,
+        classId: selectedClassId,
+        jury: wagerJury(),
+        iterations,
+        oracle: wagerOracle(),
+        approvalWindow: formData.enableApprovalWindow,
+        now,
+        deadline: now + Math.round(submissionWindowHours * 3600),
+        site: window.location.origin,
+        escrow: currentNetwork.bountyEscrowAddress,
+        chain: wagerChain,
+        criteria: rubric.criteria,
+        forbiddenContent: rubric.forbiddenContent,
+        template: getTemplate('mutualWager'),
+      };
+      const { problems, terms } = checkMutualWagerTerms(evaluationDescription, expect);
+      if (!problems.length) {
+        try {
+          const mine = await apiService.listJobs({ creator: walletState.address });
+          const twin = findWagerTwin(mine?.jobs, terms.fields.wagerId);
+          if (twin) problems.push(`Your bounty #${twin.jobId} already uses Wager ID ${terms.fields.wagerId}. Use a new Wager ID for every pair, so one counter bounty cannot back two offers.`);
+          if (terms.counter) {
+            const [status, details] = await Promise.all([
+              apiService.getOnchainStatus(terms.counter.number),
+              apiService.getJob(terms.counter.number, true),
+            ]);
+            problems.push(...checkCounterBounty({ terms, status, job: details?.job, expect }));
+          }
+        } catch (err) {
+          problems.push(`Could not check the wager against the site's records (${messageFromAxios(err)}). Try again.`);
+        }
+      }
+      setWagerProblems(problems);
+      if (problems.length) {
+        toast.warning(`Fix the wager terms before funding: ${problems[0]}${problems.length > 1 ? ` (${problems.length - 1} more listed above the Create button)` : ''}`);
+        return;
+      }
+    }
+
     // How far the on-chain create got, reported to the server so an unlinked
     // job says why (POST /api/jobs/:jobId/create-attempt; 2026-10-16 incident).
     const startedAt = Date.now();
@@ -895,6 +975,8 @@ function CreateBounty({ walletState }) {
         iterations,
         submissionWindowHours,
         ...(formData.targetHunter ? { targetHunter: formData.targetHunter } : {}),
+        // The server then refuses the job unless the target is a nonzero address.
+        ...(isWager ? { procurementMode: 'TARGETED' } : {}),
         ...(formData.enableApprovalWindow ? {
           creatorDeterminationPayment: parseFloat(formData.creatorPaymentEth),
           arbiterDeterminationPayment: parseFloat(formData.arbiterPaymentEth),
@@ -1587,15 +1669,33 @@ function CreateBounty({ walletState }) {
                 <p>
                   The jury reads the terms only from the Job Description, so it needs a MUTUAL WAGER TERMS block. Each bettor posts
                   a bounty with this rubric unchanged and the same terms, with Poster and Claimant swapped. Set Target Hunter to the
-                  other bettor, leave the approval window off, and name in the terms the jury models you choose in the next step.
+                  other bettor, leave the approval window off, and use a new Wager ID for every pair. Before funding, the site checks
+                  the block against this form (wallets, stake, threshold, class, jury, oracle settings, deadline) and, if the terms
+                  name a counter bounty, that bounty's live record.
                 </p>
+                <p>
+                  Money flow: your stake stays locked until your bounty's deadline, even if no counter bounty appears. If your side
+                  wins, you claim the other bettor's bounty and prepay its evaluation fee; you reclaim your own stake after its deadline.
+                </p>
+                <div className="form-group">
+                  <label htmlFor="wagerCounterNumber">Answering a bettor who posted first? Their bounty number (optional)</label>
+                  <input
+                    type="number"
+                    id="wagerCounterNumber"
+                    min="0"
+                    value={wagerCounterNumber}
+                    onChange={(e) => setWagerCounterNumber(e.target.value.trim())}
+                    placeholder="e.g. 301"
+                  />
+                </div>
                 <button
                   type="button"
                   className="btn btn-secondary"
                   onClick={addMutualWagerTerms}
                   disabled={hasMutualWagerTerms(formData.description)}
                 >
-                  {hasMutualWagerTerms(formData.description) ? 'The Job Description has a terms block' : 'Add a terms block to the Job Description'}
+                  {hasMutualWagerTerms(formData.description) ? 'The Job Description has a terms block'
+                    : wagerCounterNumber !== '' ? `Copy bounty #${wagerCounterNumber}'s terms, sides swapped` : 'Add a terms block to the Job Description'}
                 </button>
               </section>
             )}
@@ -1987,6 +2087,13 @@ function CreateBounty({ walletState }) {
               to cancel or edit it. That commitment is what lets hunters invest work in your bounty.
               If nobody wins, the funds return to you after the deadline.
             </p>
+
+            {wagerProblems.length > 0 && (
+              <div role="alert" className="alert alert-error mutual-wager-problems">
+                <p>Fix the wager terms before funding:</p>
+                <ul>{wagerProblems.map((p) => <li key={p}>{p}</li>)}</ul>
+              </div>
+            )}
 
             <div className="form-actions">
               <button type="button" onClick={() => setStep(2)} className="btn btn-secondary">

@@ -113,6 +113,9 @@ function CreateBounty({ walletState }) {
   });
   const [threshold, setThreshold] = useState(RUBRIC_DEFAULTS.threshold);
   const [selectedTemplate, setSelectedTemplate] = useState('');
+  // How the rubric was started, sent with /jobs/create for the template-usage report.
+  // The server works out the template from the rubric itself; this only labels the source.
+  const [rubricSource, setRubricSource] = useState({ source: 'scratch' });
   const [wagerProblems, setWagerProblems] = useState([]);
   const [wagerCounterNumber, setWagerCounterNumber] = useState('');
   const [showLibrary, setShowLibrary] = useState(false);
@@ -307,6 +310,7 @@ function CreateBounty({ walletState }) {
         // Rubric — fetched from IPFS by the server (job.rubricContent). The pinned
         // rubric stores per-criterion instructions under `description`.
         const rc = job.rubricContent;
+        setRubricSource({ source: 'reissue' });
         if (rc) {
           setRubric({
             version: rc.version || RUBRIC_DEFAULTS.version,
@@ -552,6 +556,7 @@ function CreateBounty({ walletState }) {
   const handleTemplateSelect = (e) => {
     const templateKey = e.target.value;
     setSelectedTemplate(templateKey);
+    setRubricSource(templateKey ? { source: 'template', templateKey } : { source: 'scratch' });
     setWagerProblems([]);
 
     if (!templateKey) {
@@ -751,6 +756,7 @@ function CreateBounty({ walletState }) {
     setThreshold(loadedRubric.threshold ?? RUBRIC_DEFAULTS.threshold);
     setSelectedClassId(loadedRubric.classId ?? RUBRIC_DEFAULTS.classId);
     setLoadedRubricCid(loadedRubric.cid);
+    setRubricSource({ source: 'library' });
     setShowLibrary(false);
     
     toast.success(`Loaded rubric: ${loadedRubric.title} (Threshold: ${loadedRubric.threshold ?? RUBRIC_DEFAULTS.threshold}%)`);
@@ -771,6 +777,7 @@ function CreateBounty({ walletState }) {
       setThreshold(patch.threshold);
       setLoadedRubricCid(null);
       setSelectedTemplate('');
+      setRubricSource({ source: 'import' });
       setFormData((prev) => ({
         ...prev,
         targetHunter: patch.targetHunter,
@@ -796,6 +803,7 @@ function CreateBounty({ walletState }) {
     setRubric({ version: RUBRIC_DEFAULTS.version, ...imported.patch.rubric });
     setThreshold(imported.patch.threshold);
     setLoadedRubricCid(null);
+    setRubricSource({ source: 'import' });
     setFormData((prev) => ({ ...prev, targetHunter: imported.patch.targetHunter }));
   };
   const removeImport = () => { setImported(null); setImportErrors([]); setImportPaste(''); setImportHandoff(false); };
@@ -988,6 +996,7 @@ function CreateBounty({ walletState }) {
         oracleAlpha: oracleSettings.alpha,
         oracleEstimatedBaseCost: oracleSettings.estimatedBaseCost,
         oracleMaxFeeBasedScaling: oracleSettings.maxFeeBasedScaling,
+        rubricSource,
       });
 
       if (!apiResponse?.success) {

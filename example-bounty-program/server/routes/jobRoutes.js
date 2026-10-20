@@ -33,6 +33,7 @@ const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/s
 const { createTtlCache } = require('../utils/ttlCache');
 const { createRateLimiter, clientAddress } = require('../utils/rateLimiter');
 const { sanitizeCreateAttempt, isUnlinked, appendAttempt, attemptSummary, ADDRESS_RE } = require('../utils/createAttempts');
+const { rubricTemplateRecord, summarizeTemplateUsage } = require('../utils/templateUsage');
 const { findFinalizeBlockers, blockerCalldata, blockersHint } = require('../utils/finalizeBlockers');
 const { checkWagerCreate, wagerRefusal, isLinkedWagerJob, sameAddress } = require('../utils/wagerGuard');
 const { hasMutualWagerTerms } = require('../../shared/mutualWager');
@@ -490,6 +491,7 @@ router.post('/create', async (req, res) => {
       arbiterDeterminationPayment,
       creatorAssessmentWindowHours,
       publicSubmissions,
+      rubricSource,            // optional create-page hint: { source, templateKey }
     } = req.body || {};
 
     // ---- Oracle settings (creator-chosen, per bounty; defaults from config) ----
@@ -698,6 +700,9 @@ router.post('/create', async (req, res) => {
       }
     }
 
+    // Which template the rubric came from, for GET /admin/template-usage.
+    const rubricTemplate = rubricTemplateRecord({ criteria: rubricCriteria, forbiddenContent }, rubricSource);
+
     // ---- Composed query length (issue #36) ----
     // The arbiters reject an evaluation query over their cap and never commit,
     // so a bounty built from it can never be won. Refuse it before any pinning.
@@ -892,9 +897,10 @@ router.post('/create', async (req, res) => {
       // Creator-chosen oracle request settings (wei strings + integers). Passed
       // verbatim into createBounty's `oracle` struct and used for every evaluation.
       oracleSettings,
+      rubricTemplate,
     });
 
-    logger.info('[jobs/create] job created', { jobId: job.jobId, oracleSettings });
+    logger.info('[jobs/create] job created', { jobId: job.jobId, oracleSettings, rubricTemplate });
 
     return res.json({
       success: true,
@@ -1172,6 +1178,30 @@ router.get('/admin/create-attempts', async (req, res) => {
   } catch (error) {
     logger.error('[admin/create-attempts] error', { msg: error.message });
     return res.status(500).json({ error: 'Failed to list create attempts', details: error.message });
+  }
+});
+
+/**
+ * GET /api/jobs/admin/template-usage?since=<unix seconds | ISO-8601>
+ * How often each rubric template is used, by stage (created, on chain, awarded),
+ * exact or modified, version and how the creator started the rubric. Jobs created
+ * before tracking are classified from their stored rubric (inferred).
+ */
+router.get('/admin/template-usage', async (req, res) => {
+  try {
+    let since = null;
+    if (req.query.since != null && req.query.since !== '') {
+      const raw = String(req.query.since);
+      since = /^\d+$/.test(raw) ? Number(raw) : Math.floor(Date.parse(raw) / 1000);
+      if (!Number.isSafeInteger(since)) {
+        return res.status(400).json({ error: 'Invalid since', details: 'Pass unix seconds or an ISO-8601 time, e.g. since=2026-10-01T00:00:00Z' });
+      }
+    }
+    const storage = await jobStorage.readStorage();
+    return res.json({ success: true, network: config.network, ...summarizeTemplateUsage(storage.jobs, { since }) });
+  } catch (error) {
+    logger.error('[admin/template-usage] error', { msg: error.message });
+    return res.status(500).json({ error: 'Failed to summarize template usage', details: error.message });
   }
 });
 

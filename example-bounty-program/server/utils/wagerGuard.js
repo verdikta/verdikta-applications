@@ -47,10 +47,15 @@ const sameAddress = (a, b) => String(a || '').toLowerCase() === String(b || '').
  *   listCreatorJobs(wallet) -> that wallet's linked bounties
  * Codes: WAGER_TERMS, WAGER_TARGET, WAGER_MISMATCH, WAGER_TIMING, WAGER_RUBRIC (the terms vs
  * this bounty), WAGER_DUPLICATE (another live bounty of the creator's has the Wager ID),
- * WAGER_COUNTER (the named counter does not match its live record), WAGER_COUNTER_UNVERIFIED.
+ * WAGER_COUNTER (the named counter does not match its live record), WAGER_COUNTER_UNVERIFIED and
+ * WAGER_RUBRIC_UNVERIFIED (a record could not be read now; 503, retry).
  */
 async function checkWagerCreate({ body, payments, oracleSettings, rubric, now, readCounter, listCreatorJobs, ctx = wagerContext() }) {
-  if (!wager.hasMutualWagerTerms(body?.description)) return { wager: false, issues: [] };
+  if (!wager.looksLikeMutualWager(body?.description, rubric)) return { wager: false, issues: [] };
+  // A rubricCid that could not be read now is not an edited rubric: say so, and let the caller retry.
+  if (!rubric && body.rubricCid) {
+    return { wager: true, issues: [{ code: 'WAGER_RUBRIC_UNVERIFIED', message: `Could not read rubric ${body.rubricCid} from IPFS to compare it with the template. Try again shortly, or pass rubricJson from GET /api/wagers/template.` }] };
+  }
   const expect = {
     posterWallet: body.creator,
     targetHunter: body.targetHunter || '',
@@ -95,11 +100,11 @@ async function checkWagerCreate({ body, payments, oracleSettings, rubric, now, r
   return { wager: true, issues, terms, expect };
 }
 
-/** The 400 (or 503 when only the counter could not be read) that create and the builders return. */
+/** The 400 (or 503 when only a record could not be read now) that create and the builders return. */
 function wagerRefusal(issues) {
   const first = issues[0];
   return {
-    status: issues.every((i) => i.code === 'WAGER_COUNTER_UNVERIFIED') ? 503 : 400,
+    status: issues.every((i) => /_UNVERIFIED$/.test(i.code)) ? 503 : 400,
     body: {
       success: false,
       error: 'Inconsistent mutual wager',

@@ -49,13 +49,14 @@ const STATES = {
 
 const ERROR_CODES = {
   WAGER_TARGET: 'Not targeted at the Claimant in the terms, or the creator is not the Poster.',
-  WAGER_TERMS: 'No terms block, two blocks, an unfinished block, a <...> placeholder, a missing line or a malformed time.',
+  WAGER_TERMS: 'No terms block, two blocks, an unfinished block, a <...> placeholder, a missing, repeated or unknown line, a Counter bounty line that is not the template\'s, or a malformed time.',
   WAGER_MISMATCH: 'The terms do not describe this bounty: stake, threshold, class, jury, oracle settings, site or an approval window.',
   WAGER_TIMING: 'The start is less than 10 minutes away or past, or the deadline is before the settlement deadline.',
   WAGER_RUBRIC: 'The rubric is not the template: criteria, labels, forbidden content, title or extra fields.',
   WAGER_DUPLICATE: 'The creator already has a live bounty with this Wager ID.',
   WAGER_COUNTER: 'The counter bounty the terms name does not match its live record.',
   WAGER_COUNTER_UNVERIFIED: 'The named counter bounty could not be read right now (HTTP 503); retry.',
+  WAGER_RUBRIC_UNVERIFIED: 'The rubricCid could not be read from IPFS right now (HTTP 503); retry, or pass rubricJson.',
   WAGER_INPUT: 'A builder field is missing or malformed (HTTP 400 from propose, answer or status).',
   CLAIM_TOO_EARLY: 'Before the start (a problem), or within about 2 hours of the final (a warning with claimAfter).',
   CLAIM_TOO_LATE: 'After the settlement deadline or the bounty\'s deadline.',
@@ -92,7 +93,8 @@ ${RULES.map((r) => `- ${r}`).join('\n')}
 Pair states (status): ${Object.keys(STATES).join(', ')}.
 
 POST /api/jobs/create refuses an inconsistent wager with 400 { code, problems: [{ code, message }] }
-(503 when only the named counter could not be read). Codes:
+(503 when only a record could not be read; retry). The /api/wagers endpoints allow 30 requests a
+minute per key (429 RATE_LIMIT_EXCEEDED with Retry-After). Codes:
 ${codes}
 `;
 }

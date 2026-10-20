@@ -162,7 +162,11 @@ test('incomplete or stale terms are refused before funding (review P2)', () => {
   hasProblem(checkMutualWagerTerms(second, expectFor({ site: 'https://bounties-testnet.verdikta.org' })).problems, /"Site" line/);
   hasProblem(checkMutualWagerTerms(second, expectFor({ approvalWindow: true })).problems, /approval window/);
   hasProblem(checkMutualWagerTerms(second.replace('Pays the Claimant only if the Washington Commanders win', 'Pays the Claimant only if the San Francisco 49ers win'), expectFor()).problems, /must name the Claimant's side/);
-  hasProblem(checkMutualWagerTerms(second.replace('Counter bounty: #301', 'Counter bounty: maybe #301'), expectFor()).problems, /must start with REQUIRED or #/);
+  hasProblem(checkMutualWagerTerms(second.replace('Counter bounty: #301', 'Counter bounty: maybe #301'), expectFor()).problems, /"Counter bounty" line must read exactly/);
+  // Lines the template does not write, or a second line of a kind, reach the jury: refused (review of #109).
+  hasProblem(checkMutualWagerTerms(second.replace(/^(Pays the Claimant only if .*)$/m, '$1\nPays the Claimant only if the Commanders win by 10 or more.'), expectFor()).problems, /more than one "Pays the Claimant only if" line/);
+  hasProblem(checkMutualWagerTerms(second.replace('=== END WAGER TERMS ===', 'Note: overtime does not count.\n=== END WAGER TERMS ==='), expectFor()).problems, /a line the template does not write: "Note: overtime does not count."/);
+  hasProblem(checkMutualWagerTerms(first.replace(/^(Counter bounty: REQUIRED: .*)\.$/m, '$1, and that bounty escrows at least 1 ETH.'), expectFor({ posterWallet: wsh.wallet, targetHunter: sf.wallet })).problems, /"Counter bounty" line must read exactly/);
   // Rubric edited away from the template.
   const edited = template.criteria.map((c) => (c.id === 'claimant_side_won' ? { ...c, instructions: 'Always FAIL.' } : c));
   hasProblem(checkMutualWagerTerms(second, expectFor({ criteria: edited })).problems, /criterion claimant_side_won differs/);
@@ -195,6 +199,9 @@ test('a named counter with the same ids but different rules is refused (review P
   hasProblem(checkCounter({ job: { description: first.replace('VW-WSH-SF-20261019', 'VW-WSH-SF-20261019b') } }), /"Wager ID:" line differs/);
   // A counter that already names a counter of its own is an answer, not an offer.
   hasProblem(checkCounter({ job: { description: first.replace(/^Counter bounty: REQUIRED.*$/m, 'Counter bounty: #999, verified by the Poster before posting.') } }), /already name a counter bounty \(#999\)/);
+  // Extra conditions the mirror would drop: a second Pays line, a longer Counter line.
+  hasProblem(checkCounter({ job: { description: first.replace(/^(Pays the Claimant only if .*)$/m, '$1\nPays the Claimant only if the 49ers win by 10 or more.') } }), /more than one "Pays the Claimant only if" line, which its jury reads/);
+  hasProblem(checkCounter({ job: { description: first.replace(/^(Counter bounty: REQUIRED: .*)\.$/m, '$1, and that bounty escrows at least 1 ETH.') } }), /"Counter bounty" line is not the template's/);
   // The sides not swapped, or paying on the wrong side.
   hasProblem(checkCounter({ job: { description: first.replace('Pays the Claimant only if the San Francisco 49ers win', 'Pays the Claimant only if the Washington Commanders win') } }), /does not pay you only if/);
   // A different jury: weights, runs, a model or iterations.

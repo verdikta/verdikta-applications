@@ -326,22 +326,54 @@ function parseMutualWagerTerms(description) {
   const end = text.indexOf(TERMS_END, start);
   const block = text.slice(start, end < 0 ? undefined : end);
   const [header, ...rest] = block.split('\n');
+  // The jury reads every line of the block, so lines the template does not write, and a second
+  // line of a kind, are reported: a checker that kept only the first could be shown terms the jury
+  // reads differently.
   const fields = {};
+  const duplicates = [], unknown = [];
   for (const raw of rest) {
     const line = norm(raw);
+    if (!line) continue;
     const hit = LINES.find(([, prefix]) => line.startsWith(prefix));
-    if (hit && fields[hit[0]] === undefined) fields[hit[0]] = line.slice(hit[1].length);
+    if (!hit) unknown.push(line);
+    else if (fields[hit[0]] === undefined) fields[hit[0]] = line.slice(hit[1].length);
+    else duplicates.push(hit[0]);
   }
   const counterNumber = /^#(\d+)\b/.exec(fields.counter || '')?.[1];
   const counterTimes = /created (\S+), deadline (\S+?),/.exec(fields.counter || '');
   return {
-    found: true, count, closed: end >= 0, block,
+    found: true, count, closed: end >= 0, block, duplicates, unknown,
     rubric: /\(([^()]+)\) ===/.exec(header)?.[1] || null,
     fields,
     poster: party(fields.poster), claimant: party(fields.claimant),
     pays: fields.pays === undefined ? null : norm(fields.pays).replace(/\.$/, ''),
     counter: counterNumber ? { number: Number(counterNumber), createdAt: counterTimes?.[1], deadline: counterTimes?.[2] } : null,
   };
+}
+
+/** The Counter bounty line (after "Counter bounty: ") as buildMutualWagerBounty writes it for these terms. */
+function expectedCounterLine(t) {
+  if (t.counter) {
+    return `#${t.counter.number}, verified by the Poster before posting (created by the Claimant, targeted at the Poster, ${parseStakeLine(t.fields.stake)} ETH, created ${t.counter.createdAt}, deadline ${t.counter.deadline}, mirrored terms, same rubric, jury and oracle settings). It pays the Poster only if ${t.poster.side}.`;
+  }
+  return `REQUIRED: the Claimant's bounty targeted at the Poster that pays the Poster only if ${t.poster.side}.`;
+}
+
+/** Why a parsed block is not the template's shape (a line it does not write, a second line of a kind), or null. */
+function extraLinesProblem(t) {
+  if (t.duplicates.length) return `more than one "${norm(LINES.find(([k]) => k === t.duplicates[0])[1])}" line`;
+  if (t.unknown.length) return `a line the template does not write: "${t.unknown[0].slice(0, 80)}"`;
+  return null;
+}
+
+/**
+ * True for a bounty that is meant as a wager: a terms header in any letter case or spacing, or the
+ * wager rubric. The check then runs and refuses a block it cannot read, instead of skipping it.
+ */
+function looksLikeMutualWager(description, rubric) {
+  if (/MUTUAL\s*WAGER\s*TERMS/i.test(String(description || ''))) return true;
+  const ids = Array.isArray(rubric?.criteria) ? rubric.criteria.map((c) => c && c.id) : [];
+  return MUTUAL_WAGER_CRITERIA.every((id) => ids.includes(id));
 }
 
 // ---------- rubric ----------
@@ -406,6 +438,8 @@ function checkMutualWagerTerms(description, expect) {
   const placeholder = /<[^<>\n]+>/.exec(t.block);
   if (placeholder) add('WAGER_TERMS', `Replace every <...> placeholder in the terms block (first: ${placeholder[0]}).`);
   for (const [key, prefix] of LINES) if (t.fields[key] === undefined) add('WAGER_TERMS', `The terms block has no "${norm(prefix)}" line.`);
+  const extra = extraLinesProblem(t);
+  if (extra) add('WAGER_TERMS', `The terms block has ${extra}. Every line inside the block is one of the template's, once.`);
   if (issues.length) return done(t);
 
   const f = t.fields;
@@ -449,7 +483,9 @@ function checkMutualWagerTerms(description, expect) {
     const hours = Math.ceil((settle - expect.now) / 3600);
     add('WAGER_TIMING', `This bounty's deadline (${Number.isFinite(expect.deadline) ? isoOf(expect.deadline) : 'none'}) is before the settlement deadline (${f.settle}). Set the submission window to at least ${hours} hours, or the deadline to ${f.settle} or later.`);
   }
-  if (!/^(REQUIRED\b|#\d+\b)/.test(f.counter)) add('WAGER_TERMS', 'The "Counter bounty" line must start with REQUIRED or #<bounty number>.');
+  if (norm(f.counter) !== norm(expectedCounterLine(t))) {
+    add('WAGER_TERMS', `The "Counter bounty" line must read exactly: Counter bounty: ${expectedCounterLine(t)}`);
+  }
 
   const rubric = expect.rubric || { criteria: expect.criteria, forbiddenContent: expect.forbiddenContent };
   const edited = mutualWagerRubricProblem(rubric, expect.template || MUTUAL_WAGER_TEMPLATE);
@@ -496,6 +532,9 @@ function checkCounterBounty({ terms, status, job, expect, number }) {
   if (!theirs.found || theirs.count !== 1 || !theirs.closed) p('its description has no single, complete terms block.');
   else {
     if (theirs.rubric !== terms.rubric) p(`its terms name rubric ${theirs.rubric}.`);
+    const extra = extraLinesProblem(theirs);
+    if (extra) p(`its terms block has ${extra}, which its jury reads and yours does not.`);
+    if (norm(theirs.fields.counter) !== norm(expectedCounterLine(theirs))) p('its "Counter bounty" line is not the template\'s, and its jury reads it.');
     // A counter your terms name existed before your bounty, so it cannot name yours: it must be an
     // offer (REQUIRED). One that names some other bounty is itself an answer, and its claims cite
     // that other bounty, which your jury never checks.
@@ -588,6 +627,11 @@ const word = (s, flags = 'i') => new RegExp(`(^|[^A-Za-z0-9])${escapeRe(s)}($|[^
 const mentions = (text, team) => word(team.name).test(text) || word(team.nickname).test(text) || word(team.abbr, '').test(text);
 /** The side label without " win(s)": "the San Francisco 49ers win" -> "the San Francisco 49ers". */
 const sideShort = (label) => (/\swins?\.?$/i.test(norm(label)) ? norm(label).replace(/\s+wins?\.?$/i, '') : null);
+/** The one team a side label names as winning ("the Boston Celtics win"), or null when it names none, both, or not a win. */
+const sideTeam = (label, teams) => {
+  const named = [teams.away, teams.home].filter((x) => mentions(label || '', x));
+  return named.length === 1 && /\swins?\.?$/i.test(norm(label)) && !/\b(not|lose|loses|lost|fail|fails)\b/i.test(norm(label)) ? named[0] : null;
+};
 const shortEventOf = (event) => {
   const teams = parseEventTeams(event);
   return teams ? `${teams.away.nickname} @ ${teams.home.nickname}` : null;
@@ -629,6 +673,14 @@ function proposeMutualWager(input = {}, ctx = {}) {
     if (value !== undefined && value !== null && value !== '') { const msg = textProblem(field, value, { max }); if (msg) bad(field, msg); }
   }
   if (norm(sides.creator) && same(sides.creator, sides.opponent)) bad('sides', 'sides.creator and sides.opponent must name different outcomes.');
+  // Under a straight-up market each side is one team winning, so the claim check can tell who won.
+  const eventTeams = parseEventTeams(input.event);
+  const market = norm(input.market) || DEFAULT_MARKET;
+  if (eventTeams && /^straight-up/i.test(market) && norm(sides.creator) && norm(sides.opponent)) {
+    const teamOf = (label) => sideTeam(label, eventTeams);
+    const a = teamOf(sides.creator), b = teamOf(sides.opponent);
+    if (!a || !b || a === b) bad('sides', `Under a straight-up market each side names one team and "win", e.g. "the ${eventTeams.away.name} win" and "the ${eventTeams.home.name} win".`);
+  }
   const shortEvent = norm(input.shortEvent) || shortEventOf(input.event);
   if (!shortEvent && !problems.some((x) => x.field === 'event')) bad('shortEvent', 'shortEvent (e.g. "Commanders @ 49ers") is required when the event does not read "Away Team (ABBR) at Home Team (ABBR)".');
   for (const field of ['start', 'settle']) {
@@ -720,8 +772,15 @@ function answerMutualWager({ number, status, job }, input = {}) {
     return { problems, createBody: null };
   }
   const t = parseMutualWagerTerms(mirrored.description);
-  const offered = parseMutualWagerTerms(job.description).fields.counter;
+  // The mirror rewrites the offer's Poster, Claimant, Pays and Counter lines, so anything else its
+  // jury reads there (a second Pays line, a longer Counter line, a line of its own) would not reach
+  // yours. Refuse such an offer instead of answering a cleaned-up copy of it.
+  const offer = parseMutualWagerTerms(job.description);
+  const offered = offer.fields.counter;
+  const extra = extraLinesProblem(offer);
   if (!/^REQUIRED\b/.test(norm(offered))) bad('WAGER_TERMS', 'counter', `Bounty #${n} already names a counter bounty (${norm(offered).split(',')[0]}): it is an answer to another bounty, not an offer. Only a bounty whose Counter bounty line says REQUIRED can be answered.`);
+  else if (norm(offered) !== norm(expectedCounterLine(offer))) bad('WAGER_TERMS', 'counter', `Bounty #${n}'s "Counter bounty" line is not the template's, and its jury reads it. Do not answer it.`);
+  if (extra) bad('WAGER_TERMS', 'counter', `Bounty #${n}'s terms block has ${extra}, which its jury reads. Do not answer it.`);
   if (input.creator !== undefined && !same(input.creator, t.poster.wallet)) bad('WAGER_TARGET', 'creator', `Bounty #${n} is targeted at ${t.poster.wallet}; only that wallet can answer it.`);
   if (status.targetHunter && !same(status.targetHunter, t.poster.wallet)) bad('WAGER_TARGET', 'counter', `Bounty #${n} is targeted on chain at ${status.targetHunter}, not at the Claimant in its terms (${t.poster.wallet}).`);
   const stake = parseStakeLine(t.fields.stake);
@@ -730,9 +789,11 @@ function answerMutualWager({ number, status, job }, input = {}) {
   const oracle = parseOracleLine(t.fields.oracle);
   const site = /^(\S+); escrow (\S+) on (.+); no cancel or edit\.?$/.exec(norm(t.fields.site));
   const unreadable = [['Stake', stake != null && toWei(stake) != null], ['Both bounties', both], ['Jury', jury], ['Oracle settings', oracle], ['Site', site],
-    ['Settlement deadline', ISO_WHOLE_SECOND.test(norm(t.fields.settle))]].filter(([, ok]) => !ok).map(([label]) => label);
+    ['Settlement deadline', unixOf(t.fields.settle) != null]].filter(([, ok]) => !ok).map(([label]) => label);
   if (unreadable.length) bad('WAGER_TERMS', 'counter', `Bounty #${n}'s terms cannot be answered as they are: unreadable ${unreadable.join(', ')} line${unreadable.length > 1 ? 's' : ''}. Do not answer it.`);
-  const deadlineIso = input.submissionDeadline ?? norm(t.fields.settle);
+  // The settlement deadline, to the whole second at or after it (a create-page block may give minutes or milliseconds).
+  const settleMs = Date.parse(norm(t.fields.settle));
+  const deadlineIso = input.submissionDeadline ?? (Number.isFinite(settleMs) ? isoOf(Math.ceil(settleMs / 1000)).replace('.000Z', 'Z') : null);
   if (input.submissionDeadline !== undefined) {
     if (!ISO_WHOLE_SECOND.test(String(input.submissionDeadline))) bad('WAGER_INPUT', 'submissionDeadline', 'submissionDeadline must be an ISO UTC time to the second; leave it out to use the settlement deadline.');
     else if (unixOf(input.submissionDeadline) < unixOf(t.fields.settle)) bad('WAGER_INPUT', 'submissionDeadline', 'submissionDeadline must be at or after the settlement deadline.');
@@ -796,7 +857,7 @@ function buildWagerClaim({ terms, bounty, counter, score, result = 'Final', sour
   }
   const scored = problems.some((x) => x.code === 'CLAIM_SCORE') ? null : [...resolved].sort((a, b) => b.points - a.points);
   if (scored) {
-    const claimantTeam = teams ? [teams.away, teams.home].find((x) => mentions(terms.claimant.side || '', x)) : null;
+    const claimantTeam = teams ? sideTeam(terms.claimant.side, teams) : null;
     if (/^straight-up/i.test(norm(f.market)) && claimantTeam) {
       if (scored[0].points === scored[1].points) bad('CLAIM_NO_WINNER', 'The score is a tie: under a straight-up market no bounty pays. Do not claim; each bettor closes their own bounty after its deadline.');
       else if (scored[0].team !== claimantTeam) bad('CLAIM_SIDE_LOST', `By this score ${scored[0].team.name} won, so the Claimant's side (${terms.claimant.side}) did not. This claim would fail and cost the evaluation fee.`);
@@ -913,6 +974,7 @@ module.exports = {
   buildMutualWagerBounty,
   mutualWagerTermsSkeleton,
   hasMutualWagerTerms,
+  looksLikeMutualWager,
   parseMutualWagerTerms,
   checkMutualWagerTerms,
   checkCounterBounty,

@@ -66,7 +66,8 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(clientIdentification);
 app.use('/api/jobs', jobRoutes);
-app.use('/api/wagers', createWagerRouter(jobRoutes._wagerDeps));
+const wagerRouter = createWagerRouter(jobRoutes._wagerDeps);
+app.use('/api/wagers', wagerRouter);
 let cidSeq = 0;
 app.locals.ipfsClient = {
   uploadToIPFS: jest.fn(async () => `Qm${String(++cidSeq).padStart(44, 'a')}`),
@@ -129,6 +130,7 @@ beforeEach(() => {
   mockStorageData = { jobs: [], nextId: 500 };
   for (const k of Object.keys(mockChain)) delete mockChain[k];
   mockChainDown = false;
+  wagerRouter._limiter.reset();
   jest.clearAllMocks();
 });
 
@@ -178,6 +180,15 @@ describe('POST /api/wagers/propose', () => {
     expect(created.status).toBe(200);
     expect(created.body.job.submissionCloseTimeIso).toBe(new Date(Date.parse(input.settle)).toISOString());
     expect(mockStorageData.jobs).toHaveLength(1);
+  });
+
+  it('refuses sides that do not each name one winning team under a straight-up market', async () => {
+    for (const sides of [{ creator: 'the Boston Celtics win', opponent: 'the Boston Celtics lose' },
+      { creator: 'the Boston Celtics win', opponent: 'the Pistons beat the Celtics' },
+      { creator: 'the Boston Celtics win', opponent: 'the Lakers win' }]) {
+      const res = await post('/api/wagers/propose', proposal({ sides }));
+      expect([JSON.stringify(sides), res.status, res.body.problems?.[0]?.field]).toEqual([JSON.stringify(sides), 400, 'sides']);
+    }
   });
 
   it('refuses malformed input with 400 WAGER_INPUT and names each field', async () => {
@@ -260,6 +271,30 @@ describe('POST /api/wagers/answer', () => {
     expect(res.body.problems.some((p) => p.code === 'WAGER_COUNTER' && re.test(p.message))).toBe(true);
   });
 
+  it.each([
+    ['a second Pays line', (d) => d.replace(/^(Pays the Claimant only if .*)$/m, '$1\nPays the Claimant only if the Detroit Pistons win by 10 or more points.'), /more than one "Pays the Claimant only if" line/],
+    ['a longer Counter line', (d) => d.replace(/^(Counter bounty: REQUIRED: .*)\.$/m, '$1, and that bounty escrows at least 1 ETH.'), /"Counter bounty" line is not the template's/],
+    ['a line of its own in the block', (d) => d.replace('=== END WAGER TERMS ===', 'Note: overtime does not count.\n=== END WAGER TERMS ==='), /a line the template does not write/],
+  ])('refuses to answer an offer with %s, which a clean mirror would drop (review of #109)', async (_name, spoil, re) => {
+    const offer = proposed();
+    offer.description = spoil(offer.description);
+    putOnChain(47, offer);
+    const res = await post('/api/wagers/answer', { counter: 47, creator: BOB });
+    expect(res.body.ok).toBe(false);
+    expect(res.body.createBody).toBeNull();
+    expect(res.body.problems.some((p) => p.code === 'WAGER_TERMS' && /Do not answer it/.test(p.message) && re.test(p.message))).toBe(true);
+  });
+
+  it('answers an offer whose settlement deadline is written to the minute, with a whole-second deadline', async () => {
+    const offer = proposed();
+    const settle = offer.description.match(/^Settlement deadline: (\S+)$/m)[1];
+    offer.description = offer.description.replace(`Settlement deadline: ${settle}`, `Settlement deadline: ${settle.replace(/:00Z$/, 'Z')}`);
+    putOnChain(48, offer);
+    const res = await post('/api/wagers/answer', { counter: 48, creator: BOB });
+    expect(res.body.problems).toEqual([]);
+    expect(res.body.createBody.submissionDeadline).toBe(settle);
+  });
+
   it('reports a counter whose terms changed a shared line (no-winner clause)', async () => {
     const counter = proposed();
     counter.description = counter.description.replace(/^No winner.*$/m, 'No winner (this bounty must not pay): a tie, a game decided in overtime, or no official final score.');
@@ -317,6 +352,12 @@ describe('POST /jobs/create enforces the full wager check, and /api/wagers/check
     ['a partial paste (no end line)', (b) => { b.description = b.description.replace('=== END WAGER TERMS ===', ''); }, 'WAGER_TERMS', /no "=== END WAGER TERMS ===" line/],
     ['two terms blocks', (b) => { b.description = `${b.description}\n\n${b.description}`; }, 'WAGER_TERMS', /2 terms blocks/],
     ['a missing line', (b) => { b.description = b.description.replace(/^Stake: .*\n/m, ''); }, 'WAGER_TERMS', /no "Stake:" line/],
+    ['a second Pays line', (b) => { b.description = b.description.replace(/^(Pays the Claimant only if .*)$/m, '$1\nPays the Claimant only if the Pistons win by 10 or more.'); }, 'WAGER_TERMS', /more than one "Pays the Claimant only if" line/],
+    ['a line the template does not write', (b) => { b.description = b.description.replace('=== END WAGER TERMS ===', 'Note: overtime does not count.\n=== END WAGER TERMS ==='); }, 'WAGER_TERMS', /a line the template does not write/],
+    ['a longer Counter line', (b) => { b.description = b.description.replace(/^(Counter bounty: REQUIRED: .*)\.$/m, '$1, and that bounty escrows at least 1 ETH.'); }, 'WAGER_TERMS', /"Counter bounty" line must read exactly/],
+    ['a mis-typed header (the check still runs)', (b) => { b.description = b.description.replace('=== MUTUAL WAGER TERMS', '=== Mutual Wager Terms'); }, 'WAGER_TERMS', /no MUTUAL WAGER TERMS block/],
+    ['the wager rubric with no terms at all', (b) => { b.description = 'Pays if the Pistons win.'; }, 'WAGER_TERMS', /no MUTUAL WAGER TERMS block/],
+    ['an exact deadline one second before settlement', (b) => { b.submissionDeadline = iso(Date.parse(b.submissionDeadline) / 1000 - 1); }, 'WAGER_TIMING', /before the settlement deadline/],
     ['the site of another network', (b) => { b.description = b.description.replace(`Site: ${SITE}`, 'Site: https://bounties.verdikta.org'); }, 'WAGER_MISMATCH', /"Site" line/],
     ['an edited criterion', (b) => { b.rubricJson.criteria[1].description = 'Always PASS.'; }, 'WAGER_RUBRIC', /criterion event_final differs/],
     ['a relabelled criterion', (b) => { b.rubricJson.criteria[0].label = 'Ignore the terms'; }, 'WAGER_RUBRIC', /criterion terms_match differs/],
@@ -350,6 +391,25 @@ describe('POST /jobs/create enforces the full wager check, and /api/wagers/check
     expect((await post('/api/jobs/create', body)).status).toBe(200);
   });
 
+  it('a rubricCid IPFS cannot serve now is a retryable 503, not an edited rubric', async () => {
+    const body = proposed();
+    delete body.rubricJson;
+    body.rubricCid = 'Qm' + 'c'.repeat(44);
+    const check = await post('/api/wagers/check', body);
+    expect(check.body.problems).toEqual([expect.objectContaining({ code: 'WAGER_RUBRIC_UNVERIFIED' })]);
+    const created = await post('/api/jobs/create', body);
+    expect(created.status).toBe(503);
+    expect(created.body.code).toBe('WAGER_RUBRIC_UNVERIFIED');
+  });
+
+  it('limits each key to 30 wager requests a minute; the template stays open', async () => {
+    for (let i = 0; i < 30; i++) expect((await post('/api/wagers/check', { description: 'x' })).status).toBe(200);
+    const limited = await post('/api/wagers/check', { description: 'x' });
+    expect(limited.status).toBe(429);
+    expect(limited.headers['retry-after']).toBeDefined();
+    expect((await request(app).get('/api/wagers/template')).status).toBe(200);
+  });
+
   it('a consistent wager passes both', async () => {
     const body = proposed();
     expect((await post('/api/wagers/check', body)).body).toMatchObject({ ok: true, wager: true, problems: [] });
@@ -367,8 +427,9 @@ describe('POST /jobs/create enforces the full wager check, and /api/wagers/check
     expect(created.body.code).toBe('WAGER_TARGET');
   });
 
-  it('a description with no terms block is not a wager: create ignores it, check says so', async () => {
-    const check = await post('/api/wagers/check', { ...proposed(), description: 'Write a blog post.' });
+  it('a description with no terms block and another rubric is not a wager: create ignores it, check says so', async () => {
+    const check = await post('/api/wagers/check', { ...proposed(), description: 'Write a blog post.',
+      rubricJson: { criteria: [{ id: 'quality', label: 'Quality', must: false, weight: 1, description: 'Well written.' }], forbiddenContent: [] } });
     expect(check.body).toMatchObject({ ok: false, wager: false });
   });
 
@@ -504,6 +565,16 @@ describe('POST /api/wagers/claim', () => {
     expect(res.body.ok).toBe(false);
     expect(res.body.claim).toBeNull();
     expect(res.body.problems.map((p) => p.code)).toContain(code);
+  });
+
+  it('does not judge the score when the Claimant\'s side does not name one winning team', async () => {
+    settledPair();
+    // A block posted straight to the escrow can carry any side text; the lint must not guess.
+    mockStorageData.jobs.find((j) => j.jobId === 60).description = mockStorageData.jobs.find((j) => j.jobId === 60).description
+      .replace(/side: the Detroit Pistons win\./, 'side: the Pistons beat the Celtics.').replace('Pays the Claimant only if the Detroit Pistons win.', 'Pays the Claimant only if the Pistons beat the Celtics.');
+    const res = await claim();
+    expect(res.body.problems.map((p) => p.code)).not.toContain('CLAIM_SIDE_LOST');
+    expect(res.body.warnings.map((w) => w.code)).toContain('CLAIM_MARKET_UNCHECKED');
   });
 
   it('warns about sources jurors could not open and quotes without "Final"', async () => {

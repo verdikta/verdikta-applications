@@ -36,7 +36,7 @@ const { sanitizeCreateAttempt, isUnlinked, appendAttempt, attemptSummary, ADDRES
 const { rubricTemplateRecord, summarizeTemplateUsage } = require('../utils/templateUsage');
 const { findFinalizeBlockers, blockerCalldata, blockersHint } = require('../utils/finalizeBlockers');
 const { checkWagerCreate, wagerRefusal, isLinkedWagerJob, sameAddress } = require('../utils/wagerGuard');
-const { hasMutualWagerTerms } = require('../../shared/mutualWager');
+const { looksLikeMutualWager } = require('../../shared/mutualWager');
 
 /* ======================
    Helpers / configuration
@@ -683,10 +683,11 @@ router.post('/create', async (req, res) => {
     // terms name must match its live record, because the jury then skips its own counter
     // checks. The create page runs the same check before funding; this covers every other
     // client. POST /api/wagers/check is the free dry run of exactly this.
-    if (hasMutualWagerTerms(description)) {
+    if (looksLikeMutualWager(description, rubricDoc || { criteria: rubricCriteria })) {
       const wagerCheck = await checkWagerCreate({
         body: { ...req.body, classId: classIdNum },
-        payments,
+        // The deadline that goes on chain: an exact one is checked as given, not re-derived from now.
+        payments: { ...payments, submissionDeadline: exactDeadline },
         oracleSettings,
         rubric: rubricDoc,
         now: Math.floor(Date.now() / 1000),

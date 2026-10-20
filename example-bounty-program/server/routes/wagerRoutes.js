@@ -20,11 +20,15 @@ const { wagerContext, checkWagerCreate, sameAddress } = require('../utils/wagerG
 const { wagerStatus, counterProblems } = require('../utils/wagerStatus');
 const { normalizeBountyPayments, validateProcurement } = require('../utils/validation');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
+const { createRateLimiter, clientAddress } = require('../utils/rateLimiter');
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const WAGER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/;
 // A status query reads each bounty live (chain + rubric); a wallet with more wager bounties gets its newest.
 const STATUS_LIMIT = 20;
+// Keys are free, and status, answer, check and claim read the chain and IPFS live: one budget per caller.
+const RATE_WINDOW_MS = 60000;
+const RATE_MAX = 30;
 
 const isoOf = (sec) => new Date(sec * 1000).toISOString();
 const asBountyNumber = (v) => (v === null || v === undefined || v === '' || !/^\d+$/.test(String(v)) ? null : Number(v));
@@ -47,6 +51,16 @@ function inputError(res, problems, message = 'Invalid wager input') {
  */
 module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs, resolveOracleSettings, clock = () => Math.floor(Date.now() / 1000) }) {
   const router = express.Router();
+  const limiter = createRateLimiter({ windowMs: RATE_WINDOW_MS, max: RATE_MAX });
+  router.use((req, res, next) => {
+    if (req.path === '/template') return next();
+    const { allowed, remaining, retryAfterSeconds } = limiter.hit(req.clientId || clientAddress(req));
+    res.set('X-RateLimit-Remaining', String(remaining));
+    if (allowed) return next();
+    res.set('Retry-After', String(retryAfterSeconds));
+    return sendError(res, 429, { code: ErrorCodes.RATE_LIMIT, message: 'Too many wager requests', details: `The wager endpoints allow ${RATE_MAX} requests a minute per key. Retry in ${retryAfterSeconds}s.`, fix: 'Wait for the Retry-After interval.' });
+  });
+  router._limiter = limiter;
 
   // Everything /jobs/create checks about a wager body, derived the way /jobs/create derives it.
   async function checkBody(body, req, counter = null) {
@@ -62,7 +76,7 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
     let rubric = body.rubricJson;
     if (!rubric && body.rubricCid) {
       try { rubric = JSON.parse((await req.app.locals.ipfsClient.fetchFromIPFS(body.rubricCid)).toString('utf8')); }
-      catch (err) { return { wager: true, issues: [{ code: 'WAGER_RUBRIC', message: `Could not read rubricCid ${body.rubricCid} (${err.message}). Pass rubricJson from GET /api/wagers/template instead.` }] }; }
+      catch (err) { return { wager: true, issues: [{ code: 'WAGER_RUBRIC_UNVERIFIED', message: `Could not read rubricCid ${body.rubricCid} (${err.message}). Try again, or pass rubricJson from GET /api/wagers/template.` }] }; }
     }
     return checkWagerCreate({
       body: { ...body, classId: Number(body.classId ?? 128) },
@@ -187,7 +201,7 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
   router.post('/check', async (req, res) => {
     try {
       const body = req.body || {};
-      if (!wager.hasMutualWagerTerms(body.description)) {
+      if (!wager.looksLikeMutualWager(body.description, body.rubricJson)) {
         return res.json({ success: true, ok: false, wager: false, problems: [{ code: 'WAGER_TERMS', message: 'The description has no MUTUAL WAGER TERMS block, so this is not a wager. Build one with POST /api/wagers/propose or /answer.' }], checkedAt: isoOf(clock()) });
       }
       const check = await checkBody(body, req);

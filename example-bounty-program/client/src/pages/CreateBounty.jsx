@@ -33,6 +33,7 @@ import { walletEnvironment, withTimeout } from '../services/injectedProvider';
 import { classifyCreateFailure, describeCreateFailure, accountTypeFromCode } from '../utils/createFailure';
 import * as rubricStorage from '../services/rubricStorage';
 import { getTemplateOptions, getTemplate, createBlankRubric, RUBRIC_DEFAULTS } from '../data/rubricTemplates';
+import { mutualWagerTermsSkeleton, hasMutualWagerTerms } from '../utils/mutualWagerTerms';
 import ClassSelector from '../components/ClassSelector';
 import ClassCoverage from '../components/ClassCoverage';
 import CriterionEditor from '../components/CriterionEditor';
@@ -580,6 +581,26 @@ function CreateBounty({ walletState }) {
       setSelectedClassId(template.classId ?? RUBRIC_DEFAULTS.classId);
       setLoadedRubricCid(null);
     }
+  };
+
+  // ---------- mutual wager terms ----------
+  // The jury reads the wager terms only from the Job Description. Append a terms block with what
+  // the form knows (wallets, stake, threshold, class, network) and <...> placeholders for the rest;
+  // the jury stays a placeholder because it is chosen after this step.
+  const addMutualWagerTerms = () => {
+    if (hasMutualWagerTerms(formData.description)) return;
+    const terms = mutualWagerTermsSkeleton({
+      posterWallet: walletState.address,
+      claimantWallet: formData.targetHunter,
+      stake: effectiveBountyAmountEth(formData),
+      threshold,
+      classId: selectedClassId,
+      site: window.location.origin,
+      escrow: currentNetwork.bountyEscrowAddress,
+      chain: `${currentNetwork.name} (chain ID ${currentNetwork.chainId})`,
+    });
+    setFormData((prev) => ({ ...prev, description: prev.description.trim() ? `${prev.description.trimEnd()}\n\n${terms}` : terms }));
+    toast.success('Terms block added to the Job Description. Replace every <...> placeholder before you create the bounty.');
   };
 
   // ---------- rubric criteria helpers ----------
@@ -1559,6 +1580,25 @@ function CreateBounty({ walletState }) {
                 </select>
               </div>
             </div>
+
+            {selectedTemplate === 'mutualWager' && (
+              <section className="alert alert-info mutual-wager-note" aria-labelledby="mutual-wager-note-title">
+                <h3 id="mutual-wager-note-title">The wager terms go in the Job Description</h3>
+                <p>
+                  The jury reads the terms only from the Job Description, so it needs a MUTUAL WAGER TERMS block. Each bettor posts
+                  a bounty with this rubric unchanged and the same terms, with Poster and Claimant swapped. Set Target Hunter to the
+                  other bettor, leave the approval window off, and name in the terms the jury models you choose in the next step.
+                </p>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={addMutualWagerTerms}
+                  disabled={hasMutualWagerTerms(formData.description)}
+                >
+                  {hasMutualWagerTerms(formData.description) ? 'The Job Description has a terms block' : 'Add a terms block to the Job Description'}
+                </button>
+              </section>
+            )}
 
             <div className="form-group">
               <label htmlFor="rubricTitle">

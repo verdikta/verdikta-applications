@@ -6,19 +6,19 @@
 
 const VERBS = [
   { verb: 'propose', method: 'POST', path: '/wagers/propose', who: 'first bettor',
-    does: 'Builds your bounty from structured terms: title, description (one MUTUAL WAGER TERMS block) and the exact POST /api/jobs/create body, with an absolute submissionDeadline and the template rubric. Post createBody unchanged.',
-    body: '{ creator, opponent, wagerId, event, start, settle, stake, sides: { creator, opponent }, market?, noWinner?, shortEvent?, classId?, threshold?, jury?, iterations?, oracle?, submissionDeadline?, publicSubmissions? }' },
+    does: 'Builds your bounty from structured terms: the canonical title, work product type and description (exactly one MUTUAL WAGER TERMS block, nothing else) and the exact POST /api/jobs/create body, with an absolute submissionDeadline and the template rubric. Post createBody unchanged; actions[] lists the typed steps, including RECOVER for an unclear funding outcome.',
+    body: '{ creator, opponent, wagerId, event, start, settle, stake, sides: { creator, opponent }, market?, noWinner?, classId?, threshold?, jury?, iterations?, oracle?, submissionDeadline?, publicSubmissions? }' },
   { verb: 'answer', method: 'POST', path: '/wagers/answer', who: 'second bettor',
-    does: 'Answers bounty #N by number: reads its live records, mirrors its terms with the sides swapped, names #N as your counter, checks #N against its records, and returns your create body. ok:false means do not answer it.',
-    body: '{ counter: <their bounty number>, creator: <your wallet>, submissionDeadline?, shortEvent? }' },
+    does: 'Answers bounty #N by number: reads its live records, rebuilds its on-chain evaluation package from its terms and compares the two, mirrors its terms with the sides swapped, names #N as your counter, and returns your create body. ok:false means do not answer it; 503 means it could not be verified now.',
+    body: '{ counter: <their bounty number>, creator: <your wallet>, submissionDeadline? }' },
   { verb: 'check', method: 'POST', path: '/wagers/check', who: 'either bettor',
     does: 'Runs the exact check POST /api/jobs/create runs on a wager body and lists every problem with its code. Free dry run.',
     body: '<a POST /api/jobs/create body>' },
   { verb: 'status', method: 'GET', path: '/wagers/status?wagerId=<id> or ?wallet=<0x...>', who: 'either bettor',
-    does: 'Both bounties of each pair, whether they match, the pair state and what to do next; offers[] lists unanswered bounties targeted at the wallet, each with its answer call.',
+    does: 'Complete wagers (both bounties together, newest first, 10 a page; pass nextCursor back as before=): whether they match, the pair state, claimAfter/claimBy, typed actions[] and next steps; offers[] lists unanswered bounties targeted at the wallet. UNKNOWN means a bounty could not be read now: retry before acting.',
     body: null },
   { verb: 'claim', method: 'POST', path: '/wagers/claim', who: 'the winner',
-    does: 'Drafts claim.md in the fixed format (nothing addressed to the jury), lints the quotes (both teams and the score), refuses a score your side did not win, checks your counter bounty, and says whether it is too early (claimAfter).',
+    does: 'Drafts claim.md in the fixed format (nothing addressed to the jury), lints the quotes (both teams and the score), refuses a score your side did not win, checks your counter bounty (an unreadable REQUIRED counter is a retryable problem), and gives claimAfter (advice) and claimBy (the last safe moment); ready is false until it is time.',
     body: '{ bounty: <the bounty that pays you>, counter: <your own bounty>, score: [{ team, points }, { team, points }], result?: "Final" | "Final/OT", sources: [{ name, url, quote }, ...], finalAt? }' },
   { verb: 'close', method: 'POST', path: '/jobs/:id/close', who: 'anyone, after a deadline',
     does: "Refunds a bounty's creator after its deadline (closeExpiredBounty calldata): the winner's own bounty, or both bounties after a tie or a mismatch.",
@@ -29,7 +29,9 @@ const RULES = [
   'The second bettor answers by number (POST /api/wagers/answer with the first bounty\'s number), never by copying text.',
   'Check the opponent\'s bounty before the start: GET /api/wagers/status?wagerId=<id> must say VERIFIED. Your jury takes a counter your terms name on trust, so answer and /jobs/create check it live before you fund.',
   'Never write terms, deadlines or claims by hand: propose and answer build the bounty, claim drafts claim.md. Hand-computed unix deadlines, partial pastes, a re-funded package and claims that skipped quotes or addressed the jury all lost real bets.',
-  'Claim about 2 hours after the final (claimAfter) and before the settlement deadline: right after a final, a juror\'s web tool can still be served a cached in-progress page.',
+  'Claim about 2 hours after the final (claimAfter) and by claimBy: right after a final, a juror\'s web tool can still be served a cached in-progress page. When that wait does not fit before the deadline, claim as soon as the final is out (CLAIM_DEADLINE_CONFLICT); never wait past claimBy.',
+  'The jury reads the title, work product type and whole description, not only the terms: a wager\'s are fixed by its terms (the title derived from them, type "Wager settlement claim", the description exactly the terms as built). The settlement deadline is at least 6 hours after the start.',
+  'Answer only a bounty whose on-chain evaluation package is its terms as built: answer and /jobs/create rebuild the package and compare it with the one on chain, because your bounty names it and its jury takes it on trust.',
   'Each bounty must exist at least 10 minutes before the scheduled start. One Wager ID per pair; one bounty per bettor per Wager ID.',
   'These endpoints are your own checks before funding and before claiming. The jury never depends on them: it reads the bounty\'s terms, the claim and the pages it opens.',
 ];
@@ -45,6 +47,7 @@ const STATES = {
   PAID: 'A bounty paid its claimant; the winner closes their own bounty after its deadline.',
   REFUNDABLE: 'Nothing paid by the settlement deadline; each creator closes their own bounty.',
   CLOSED: 'Both bounties are closed.',
+  UNKNOWN: 'A bounty of this wager could not be read now: an incomplete observation, not a state. Retry before acting.',
 };
 
 const ERROR_CODES = {
@@ -52,9 +55,10 @@ const ERROR_CODES = {
   WAGER_TERMS: 'No terms block, two blocks, an unfinished block, a <...> placeholder, a missing, repeated or unknown line, a Counter bounty line that is not the template\'s, or a malformed time.',
   WAGER_MISMATCH: 'The terms do not describe this bounty: stake, threshold, class, jury, oracle settings, site or an approval window.',
   WAGER_TIMING: 'The start is less than 10 minutes away or past, or the deadline is before the settlement deadline.',
-  WAGER_RUBRIC: 'The rubric is not the template: criteria, labels, forbidden content, title or extra fields.',
+  WAGER_RUBRIC: 'The rubric is not the template: criteria (every text a criterion carries), labels, forbidden content, title, extra fields, or text in a numeric field.',
+  WAGER_TEXT: 'The title, work product type or description is not the canonical wager text: the jury reads all three.',
   WAGER_DUPLICATE: 'The creator already has a live bounty with this Wager ID.',
-  WAGER_COUNTER: 'The counter bounty the terms name does not match its live record.',
+  WAGER_COUNTER: 'The counter bounty the terms name does not match its live record, or its on-chain evaluation package is not its terms as built.',
   WAGER_COUNTER_UNVERIFIED: 'The named counter bounty could not be read right now (HTTP 503); retry.',
   WAGER_RUBRIC_UNVERIFIED: 'The rubricCid could not be read from IPFS right now (HTTP 503); retry, or pass rubricJson.',
   WAGER_INPUT: 'A builder field is missing or malformed (HTTP 400 from propose, answer or status).',
@@ -67,6 +71,10 @@ const ERROR_CODES = {
   CLAIM_QUOTE: 'A quote is missing, too long, or does not show both teams and the score.',
   CLAIM_TO_EVALUATOR: 'Text addressed to the evaluator: it fails the integrity criterion.',
   CLAIM_COUNTER: 'The counter bounty would fail the jury\'s check (a warning when the terms name it).',
+  CLAIM_COUNTER_UNVERIFIED: 'The counter bounty could not be read now: a retryable problem when the terms say REQUIRED, a warning when they name it.',
+  CLAIM_DEADLINE_CONFLICT: 'The usual wait after the final does not fit before the deadline: claim as soon as the final is out, by claimBy.',
+  CLAIM_DEADLINE_NEAR: 'Less than 15 minutes are left before the deadline: submit and start the evaluation now.',
+  CLAIM_PACKAGE: 'The bounty you claim runs an evaluation package that is not its terms as built (a warning).',
 };
 
 function wagerAgentsText() {
@@ -90,7 +98,9 @@ ${verbs}
 Rules:
 ${RULES.map((r) => `- ${r}`).join('\n')}
 
-Pair states (status): ${Object.keys(STATES).join(', ')}.
+Pair states (status): ${Object.keys(STATES).join(', ')}. UNKNOWN is an incomplete observation (retry).
+Responses carry schemaVersion and typed actions[] ({ type, actor, method, path, body, notBefore, notAfter,
+spendsFunds, retryable }) beside the English next[] steps.
 
 POST /api/jobs/create refuses an inconsistent wager with 400 { code, problems: [{ code, message }] }
 (503 when only a record could not be read; retry). The /api/wagers endpoints allow 30 requests a

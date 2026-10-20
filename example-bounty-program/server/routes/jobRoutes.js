@@ -36,6 +36,7 @@ const { sanitizeCreateAttempt, isUnlinked, appendAttempt, attemptSummary, ADDRES
 const { rubricTemplateRecord, summarizeTemplateUsage } = require('../utils/templateUsage');
 const { findFinalizeBlockers, blockerCalldata, blockersHint } = require('../utils/finalizeBlockers');
 const { checkWagerCreate, wagerRefusal, isLinkedWagerJob, sameAddress } = require('../utils/wagerGuard');
+const { verifyWagerPackage } = require('../utils/wagerPackage');
 const { looksLikeMutualWager } = require('../../shared/mutualWager');
 
 /* ======================
@@ -4310,7 +4311,8 @@ async function readOnchainStatus(bountyId) {
 /**
  * The two records a mutual-wager check reads about a bounty, exactly as GET /:id/onchain-status
  * (`status`, null when the escrow has no such bounty) and GET /:id?includeRubric=true (`job`,
- * null when the site has no record) return them. Throws when either cannot be read right now,
+ * null when the site has no record) return them, plus `wagerPackage` for a wager: its on-chain
+ * evaluation package checked against its terms. Throws when any of these cannot be read right now,
  * so a check fails closed instead of judging a bounty it could not see.
  */
 async function readWagerRecords(bountyId, ipfsClient) {
@@ -4322,7 +4324,13 @@ async function readWagerRecords(bountyId, ipfsClient) {
   const { rubricContent, juryNodes } = await loadJobRubric(job, ipfsClient);
   if (!rubricContent && (job.evaluationCid || job.rubricCid)) throw new Error(`its rubric could not be read from IPFS`);
   const { lastSyncedAt: _lsa, _chainFieldsHealed: _cfh, _metadataHealDone: _mhd, _metadataHealAttempts: _mha, _metadataHealNextAt: _mhn, ...rest } = job;
-  return { status: body, job: { ...rest, rubricContent, juryNodes } };
+  const record = { ...rest, rubricContent, juryNodes };
+  // The jury runs the package named on chain, not the site record: a wager's is rebuilt from its
+  // terms and compared (utils/wagerPackage.js). It throws when the package cannot be read now.
+  if (looksLikeMutualWager(record.description, rubricContent)) {
+    record.wagerPackage = await verifyWagerPackage({ evaluationCid: body.evaluationCid, description: record.description, rubric: rubricContent, ipfsClient });
+  }
+  return { status: body, job: record };
 }
 
 /** Linked bounties whose description carries a MUTUAL WAGER TERMS block and that pass `filter`. */

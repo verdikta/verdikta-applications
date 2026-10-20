@@ -116,7 +116,7 @@ function pageSubmission(over = {}) {
     rubric: shared.mutualWagerRubricJson(), ...over,
   };
   const body = {
-    title: createBody.title, description: form.description, workProductType: 'Wager settlement claim', creator: form.creator, bountyAmount: form.stake,
+    title: form.title ?? createBody.title, description: form.description, workProductType: form.workProductType ?? 'Wager settlement claim', creator: form.creator, bountyAmount: form.stake,
     threshold: form.threshold, rubricJson: form.rubric, classId: form.classId, juryNodes: form.jury, iterations: form.iterations,
     submissionWindowHours: form.submissionWindowHours, targetHunter: form.targetHunter, procurementMode: 'TARGETED',
     ...(form.approval ? { creatorDeterminationPayment: form.stake, arbiterDeterminationPayment: form.stake, creatorAssessmentWindowHours: 1 } : {}),
@@ -125,7 +125,7 @@ function pageSubmission(over = {}) {
   const expect = {
     posterWallet: form.creator, targetHunter: form.targetHunter, stake: form.stake, threshold: form.threshold, classId: form.classId, jury: form.jury,
     iterations: form.iterations, oracle: form.oracle, approvalWindow: form.approval, now: NOW, deadline: NOW + Math.round(form.submissionWindowHours * 3600),
-    ...ctx, rubric: form.rubric,
+    ...ctx, rubric: form.rubric, title: body.title, workProductType: body.workProductType,
   };
   return { body, expect };
 }
@@ -162,6 +162,9 @@ test('the create page and the server refuse the same wagers, for the same reason
     { rubric: { ...shared.mutualWagerRubricJson(), title: 'My wager rubric' } },
     { rubric: { ...shared.mutualWagerRubricJson(), forbiddenContent: [] } },
     { targetHunter: '0x2222222222222222222222222222222222222222' },
+    { title: 'Wager VW-TEST-BOS-DET-1: pays only on a 10-point win' },
+    { workProductType: 'Claim' },
+    { description: `Only a 10-point win counts.\n\n${shared.proposeMutualWager(input, ctx).createBody.description}` },
     { description: shared.proposeMutualWager(input, ctx).createBody.description.replace('Scheduled start: 2026-10-20T19:00:00Z', 'Scheduled start: 2026-10-20T12:05:00Z') },
     { description: shared.mutualWagerTermsSkeleton({ posterWallet: ALICE, claimantWallet: BOB, stake: '0.0001', threshold: 80, classId: 128, jury: shared.DEFAULT_WAGER_JURY, oracle: ctx.defaults.oracle, ...ctx }) },
   ];

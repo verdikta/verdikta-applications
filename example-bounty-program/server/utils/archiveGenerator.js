@@ -216,6 +216,63 @@ The submitted work product will be provided in the next section.`;
 }
 
 /**
+ * The two files of an evaluation package (manifest.json and primary_query.json) as plain objects.
+ * createEvaluationCIDArchive writes them; utils/wagerPackage.js rebuilds them to verify a wager
+ * bounty's package, so the builder and the verifier cannot drift apart.
+ */
+function evaluationPackageFiles({ rubricCid, jobTitle, jobDescription, workProductType = 'Work Product', juryNodes = [], iterations = 1, rubricCriteria, forbiddenContent }) {
+  // Create manifest.json
+  // NOTE: bCIDs contains DESCRIPTIONS of what each bCID represents.
+  // The actual bCID values (e.g., hunter's work archive CID) are passed 
+  // separately to the Verdikta contract as additional CIDs in the array.
+  const manifest = {
+    version: '1.0',
+    name: `${jobTitle} - Evaluation for Payment Release`,
+    primary: {
+      filename: 'primary_query.json'
+    },
+    juryParameters: {
+      NUMBER_OF_OUTCOMES: 2,
+      AI_NODES: juryNodes.map(node => ({
+        AI_MODEL: node.model,
+        AI_PROVIDER: node.provider,
+        NO_COUNTS: node.runs,
+        WEIGHT: node.weight
+      })),
+      ITERATIONS: iterations
+    },
+    additional: [
+      {
+        name: 'gradingRubric',
+        type: 'ipfs/cid',
+        hash: rubricCid,
+        description: `${workProductType} grading rubric with evaluation criteria`
+      }
+    ],
+    bCIDs: {
+      submittedWork: 'The work submitted by a hunter.'
+    }
+  };
+
+  // Create primary_query.json with two-phase protocol when criteria are available
+  const queryText = buildEvaluationQuery({
+    workProductType,
+    jobTitle,
+    jobDescription,
+    rubricCriteria,
+    forbiddenContent
+  });
+
+  const primaryQuery = {
+    query: queryText,
+    references: ['gradingRubric'],
+    outcomes: ['DONT_FUND', 'FUND']
+  };
+
+  return { manifest, primaryQuery };
+}
+
+/**
  * Create Evaluation CID archive structure (also known as "Primary CID")
  * This archive contains: manifest.json + primary_query.json
  * 
@@ -268,53 +325,9 @@ async function createEvaluationCIDArchive(options) {
     
     await fs.mkdir(archiveDir, { recursive: true });
 
-    // Create manifest.json
-    // NOTE: bCIDs contains DESCRIPTIONS of what each bCID represents.
-    // The actual bCID values (e.g., hunter's work archive CID) are passed 
-    // separately to the Verdikta contract as additional CIDs in the array.
-    const manifest = {
-      version: '1.0',
-      name: `${jobTitle} - Evaluation for Payment Release`,
-      primary: {
-        filename: 'primary_query.json'
-      },
-      juryParameters: {
-        NUMBER_OF_OUTCOMES: 2,
-        AI_NODES: juryNodes.map(node => ({
-          AI_MODEL: node.model,
-          AI_PROVIDER: node.provider,
-          NO_COUNTS: node.runs,
-          WEIGHT: node.weight
-        })),
-        ITERATIONS: iterations
-      },
-      additional: [
-        {
-          name: 'gradingRubric',
-          type: 'ipfs/cid',
-          hash: rubricCid,
-          description: `${workProductType} grading rubric with evaluation criteria`
-        }
-      ],
-      bCIDs: {
-        submittedWork: 'The work submitted by a hunter.'
-      }
-    };
-
-    // Create primary_query.json with two-phase protocol when criteria are available
-    const queryText = buildEvaluationQuery({
-      workProductType,
-      jobTitle,
-      jobDescription,
-      rubricCriteria,
-      forbiddenContent
+    const { manifest, primaryQuery } = evaluationPackageFiles({
+      rubricCid, jobTitle, jobDescription, workProductType, juryNodes, iterations, rubricCriteria, forbiddenContent
     });
-
-    const primaryQuery = {
-      query: queryText,
-      references: ['gradingRubric'],
-      outcomes: ['DONT_FUND', 'FUND']
-    };
 
     // Write files to archive directory
     await fs.writeFile(
@@ -560,6 +573,7 @@ module.exports = {
   createHunterSubmissionCIDArchive,
   updatePrimaryArchiveWithHunterCID,
   buildEvaluationQuery,     // Exported for testing
+  evaluationPackageFiles,
   measureEvaluationQuery
 };
 

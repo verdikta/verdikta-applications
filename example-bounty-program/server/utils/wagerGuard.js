@@ -45,8 +45,8 @@ const sameAddress = (a, b) => String(a || '').toLowerCase() === String(b || '').
  *   readCounter(n)  -> { status, job }: GET /api/jobs/n/onchain-status's body (null if none)
  *                   and GET /api/jobs/n?includeRubric=true's job; throws if it cannot read them now
  *   listCreatorJobs(wallet) -> that wallet's linked bounties
- * Codes: WAGER_TERMS, WAGER_TARGET, WAGER_MISMATCH, WAGER_TIMING, WAGER_RUBRIC (the terms vs
- * this bounty), WAGER_DUPLICATE (another live bounty of the creator's has the Wager ID),
+ * Codes: WAGER_TERMS, WAGER_TARGET, WAGER_MISMATCH, WAGER_TIMING, WAGER_RUBRIC, WAGER_TEXT (the
+ * terms vs this bounty; WAGER_TEXT: title, type or description not the canonical wager text), WAGER_DUPLICATE (another live bounty of the creator's has the Wager ID),
  * WAGER_COUNTER (the named counter does not match its live record), WAGER_COUNTER_UNVERIFIED and
  * WAGER_RUBRIC_UNVERIFIED (a record could not be read now; 503, retry).
  */
@@ -59,6 +59,9 @@ async function checkWagerCreate({ body, payments, oracleSettings, rubric, now, r
   const expect = {
     posterWallet: body.creator,
     targetHunter: body.targetHunter || '',
+    // The jury reads the title and work product type too; /jobs/create defaults the type to 'Work Product'.
+    title: body.title,
+    workProductType: body.workProductType ?? 'Work Product',
     stake: wager.formatEthWei(BigInt(payments.bountyAmountWei)),
     threshold: Number(body.threshold),
     classId: Number(body.classId ?? 128),

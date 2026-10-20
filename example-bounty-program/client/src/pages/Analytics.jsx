@@ -22,7 +22,8 @@ import {
   FileText,
   Zap,
   Award,
-  ExternalLink
+  ExternalLink,
+  LayoutTemplate
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
@@ -107,6 +108,24 @@ const SUBMISSION_STATUS_DESCRIPTIONS = {
   Prepared: 'Submission is ready but not yet submitted to the blockchain',
   Timeout: 'Evaluation timed out before receiving enough arbiter responses',
   Unknown: 'Submission has an unrecognized status'
+};
+
+// How the creator started the rubric (job.rubricTemplate.source). Bounties labelled after
+// the fact have source 'unknown' and are left out of the "Started from" column.
+const RUBRIC_SOURCE_LABELS = {
+  template: 'Picked template',
+  reissue: 'Re-issue',
+  import: 'Imported draft',
+  library: 'Saved rubric',
+  scratch: 'From scratch',
+  api: 'API'
+};
+
+// A share that rounds to 0% but isn't zero reads "<1%", so a used template never shows 0%.
+const percentOf = (n, total) => {
+  if (!(total > 0)) return '-';
+  const pct = Math.round((n / total) * 100);
+  return n > 0 && pct === 0 ? '<1%' : `${pct}%`;
 };
 
 function Analytics() {
@@ -368,6 +387,17 @@ function Analytics() {
     }
   };
 
+  // Rubric template usage
+  const templateUsage = data?.templates || null;
+  const templateRows = templateUsage?.templates || [];
+  const templateTotal = (field) => templateRows.reduce((n, t) => n + (t[field] || 0), 0);
+  const fundedOnChain = templateUsage?.totals?.onChain || 0;
+  const formatVersions = (versions) => Object.entries(versions || {})
+    .map(([version, n]) => `${version} ×${n}`).join(', ') || '-';
+  const formatSources = (sources) => Object.entries(sources || {})
+    .filter(([source]) => RUBRIC_SOURCE_LABELS[source])
+    .map(([source, n]) => `${RUBRIC_SOURCE_LABELS[source]} ×${n}`).join(', ') || '-';
+
   return (
     <div className="analytics">
       {/* Header */}
@@ -536,6 +566,98 @@ function Analytics() {
           )}
         </div>
       </section>
+
+      {/* Rubric Template Usage Section */}
+      {templateUsage && (
+        <section className="analytics-section">
+          <h2><LayoutTemplate size={20} className="inline-icon" /> Rubric Templates</h2>
+          <div className="section-content">
+            <div className="stat-grid">
+              <div className="stat-card" title="Bounties funded on chain whose rubric came from a create-page template, as is or edited">
+                <div className="stat-icon"><LayoutTemplate size={24} /></div>
+                <div className="stat-value">{templateTotal('onChain')}</div>
+                <div className="stat-label">Funded From a Template</div>
+              </div>
+              <div className="stat-card" title="Share of all bounties funded on chain">
+                <div className="stat-icon"><TrendingUp size={24} /></div>
+                <div className="stat-value">{percentOf(templateTotal('onChain'), fundedOnChain)}</div>
+                <div className="stat-label">Of Funded Bounties</div>
+              </div>
+              <div className="stat-card success" title={`Every bounty whose rubric came from a template, funded or not: ${templateTotal('exact')} used as is, ${templateTotal('modified')} edited`}>
+                <div className="stat-icon"><CheckCircle size={24} /></div>
+                <div className="stat-value">{templateTotal('created')}</div>
+                <div className="stat-label">Created From a Template</div>
+              </div>
+              <div className="stat-card warning" title="Of the bounties created from a template: the rubric has a template's criteria with different wording, weights or forbidden content, or the creator picked a template and changed its criteria">
+                <div className="stat-icon"><FileText size={24} /></div>
+                <div className="stat-value">{templateTotal('modified')}</div>
+                <div className="stat-label">Edited Copies</div>
+              </div>
+            </div>
+            <div className="stats-table template-table">
+              <h3 className="table-title">Usage by Template</h3>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Template</th>
+                    <th title={templateUsage.stages?.onChain} className="tooltip-header">Funded</th>
+                    <th title="Share of all bounties funded on chain" className="tooltip-header">Share</th>
+                    <th title={templateUsage.stages?.awarded} className="tooltip-header">Awarded</th>
+                    <th title={templateUsage.stages?.created} className="tooltip-header">Created</th>
+                    <th title="Rubric is a template version word for word" className="tooltip-header">As Is</th>
+                    <th title="Template criteria with different wording, weights or forbidden content" className="tooltip-header">Edited</th>
+                    <th title="Template versions used word for word" className="tooltip-header">Versions</th>
+                    <th title="How the creator started the rubric, recorded since template tracking began; earlier bounties are not counted here" className="tooltip-header">Started From</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {templateRows.map((t) => (
+                    <tr key={t.key}>
+                      <td><strong>{t.label}</strong></td>
+                      <td>{t.onChain}</td>
+                      <td>{percentOf(t.onChain, fundedOnChain)}</td>
+                      <td>{t.awarded}</td>
+                      <td>{t.created}</td>
+                      <td>{t.exact}</td>
+                      <td>{t.modified}</td>
+                      <td>{formatVersions(t.versions)}</td>
+                      <td>{formatSources(t.sources)}</td>
+                    </tr>
+                  ))}
+                  <tr className="template-row-other" title="Rubrics that match no template">
+                    <td>No template</td>
+                    <td>{templateUsage.none.onChain}</td>
+                    <td>{percentOf(templateUsage.none.onChain, fundedOnChain)}</td>
+                    <td>{templateUsage.none.awarded}</td>
+                    <td>{templateUsage.none.created}</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>{formatSources(templateUsage.none.sources)}</td>
+                  </tr>
+                  {templateUsage.unclassified.created > 0 && (
+                    <tr className="template-row-other" title="The site has no copy of these bounties' rubrics, so they cannot be classified">
+                      <td>No rubric stored</td>
+                      <td>{templateUsage.unclassified.onChain}</td>
+                      <td>{percentOf(templateUsage.unclassified.onChain, fundedOnChain)}</td>
+                      <td>{templateUsage.unclassified.awarded}</td>
+                      <td>{templateUsage.unclassified.created}</td>
+                      <td>-</td>
+                      <td>-</td>
+                      <td>-</td>
+                      <td>-</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+              <p className="section-note">
+                Each bounty is matched to a template by its rubric, so bounties created by agents through the
+                API and bounties from before tracking began are counted too.
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Recently Fulfilled Bounties Section */}
       <section className="analytics-section">

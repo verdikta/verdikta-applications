@@ -193,6 +193,8 @@ test('a named counter with the same ids but different rules is refused (review P
   hasProblem(checkCounter({ job: { description: first.replace(/^No winner.*$/m, 'No winner (this bounty must not pay): any result.') } }), /"No winner \(this bounty must not pay\):" line differs/);
   hasProblem(checkCounter({ job: { description: first.replace('No point spread.', 'Commanders +3.5.') } }), /"Market:" line differs/);
   hasProblem(checkCounter({ job: { description: first.replace('VW-WSH-SF-20261019', 'VW-WSH-SF-20261019b') } }), /"Wager ID:" line differs/);
+  // A counter that already names a counter of its own is an answer, not an offer.
+  hasProblem(checkCounter({ job: { description: first.replace(/^Counter bounty: REQUIRED.*$/m, 'Counter bounty: #999, verified by the Poster before posting.') } }), /already name a counter bounty \(#999\)/);
   // The sides not swapped, or paying on the wrong side.
   hasProblem(checkCounter({ job: { description: first.replace('Pays the Claimant only if the San Francisco 49ers win', 'Pays the Claimant only if the Washington Commanders win') } }), /does not pay you only if/);
   // A different jury: weights, runs, a model or iterations.
@@ -243,6 +245,9 @@ test('one Wager ID backs one pair', () => {
   assert.equal(findWagerTwin(mine, 'VW-WSH-SF-20261019').jobId, 301);
   assert.equal(findWagerTwin(mine.slice(0, 1), 'VW-WSH-SF-20261019'), null);
   assert.equal(findWagerTwin(mine, 'VW-WSH-SF-20261019b'), null);
+  // An API job whose funding transaction never happened backs nothing: a retry is not a twin.
+  assert.equal(findWagerTwin([{ jobId: 302, status: 'OPEN', onChain: false, syncedFromBlockchain: false, description: second }], 'VW-WSH-SF-20261019'), null);
+  assert.equal(findWagerTwin([{ jobId: 303, status: 'OPEN', onChain: false, syncedFromBlockchain: true, description: second }], 'VW-WSH-SF-20261019').jobId, 303);
   assert.equal(findWagerTwin([{ jobId: 5, status: 'OPEN', description: 'Wager ID: VW-WSH-SF-20261019 in prose, no block' }], 'VW-WSH-SF-20261019'), null);
 });
 

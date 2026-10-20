@@ -496,6 +496,10 @@ function checkCounterBounty({ terms, status, job, expect, number }) {
   if (!theirs.found || theirs.count !== 1 || !theirs.closed) p('its description has no single, complete terms block.');
   else {
     if (theirs.rubric !== terms.rubric) p(`its terms name rubric ${theirs.rubric}.`);
+    // A counter your terms name existed before your bounty, so it cannot name yours: it must be an
+    // offer (REQUIRED). One that names some other bounty is itself an answer, and its claims cite
+    // that other bounty, which your jury never checks.
+    if (terms.counter && !/^REQUIRED\b/.test(norm(theirs.fields.counter))) p(`its terms already name a counter bounty (${norm(theirs.fields.counter).split(',')[0]}), so it is an answer to another bounty, not an offer you can answer.`);
     for (const [key, prefix] of LINES) {
       if (!MIRRORED.has(key) && norm(theirs.fields[key]) !== norm(terms.fields[key])) p(`its "${norm(prefix)}" line differs from yours.`);
     }
@@ -511,9 +515,15 @@ function checkCounterBounty({ terms, status, job, expect, number }) {
   return problems;
 }
 
-/** A still-live bounty in `jobs` (the poster's own) whose terms carry the same Wager ID, or null. */
+/**
+ * A still-live bounty in `jobs` (the poster's own) whose terms carry the same Wager ID, or null.
+ * A job created through the API but never funded on chain backs nothing, so a retry after a failed
+ * funding transaction must not count it: GET /api/jobs marks those onChain and syncedFromBlockchain
+ * false. Jobs that carry neither field are counted.
+ */
 function findWagerTwin(jobs, wagerId) {
-  return (jobs || []).find((j) => !['CLOSED', 'AWARDED', 'EXPIRED'].includes(j.status)
+  const funded = (j) => (j.onChain === undefined && j.syncedFromBlockchain === undefined) || !!(j.onChain || j.syncedFromBlockchain);
+  return (jobs || []).find((j) => !['CLOSED', 'AWARDED', 'EXPIRED', 'ORPHANED'].includes(j.status) && funded(j)
     && parseMutualWagerTerms(j.description).fields?.wagerId === norm(wagerId)) || null;
 }
 
@@ -710,6 +720,8 @@ function answerMutualWager({ number, status, job }, input = {}) {
     return { problems, createBody: null };
   }
   const t = parseMutualWagerTerms(mirrored.description);
+  const offered = parseMutualWagerTerms(job.description).fields.counter;
+  if (!/^REQUIRED\b/.test(norm(offered))) bad('WAGER_TERMS', 'counter', `Bounty #${n} already names a counter bounty (${norm(offered).split(',')[0]}): it is an answer to another bounty, not an offer. Only a bounty whose Counter bounty line says REQUIRED can be answered.`);
   if (input.creator !== undefined && !same(input.creator, t.poster.wallet)) bad('WAGER_TARGET', 'creator', `Bounty #${n} is targeted at ${t.poster.wallet}; only that wallet can answer it.`);
   if (status.targetHunter && !same(status.targetHunter, t.poster.wallet)) bad('WAGER_TARGET', 'counter', `Bounty #${n} is targeted on chain at ${status.targetHunter}, not at the Claimant in its terms (${t.poster.wallet}).`);
   const stake = parseStakeLine(t.fields.stake);

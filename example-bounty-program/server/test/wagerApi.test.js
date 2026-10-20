@@ -270,6 +270,24 @@ describe('POST /api/wagers/answer', () => {
     expect(wager.parseMutualWagerTerms(res.body.createBody.description).fields.noWinner).toMatch(/decided in overtime/);
   });
 
+  it('refuses to answer a bounty that already names a counter: it is an answer, not an offer (review of #108)', async () => {
+    const offer = proposed();
+    offer.description = offer.description.replace(/^Counter bounty: REQUIRED.*$/m,
+      'Counter bounty: #999, verified by the Poster before posting (created by the Claimant, targeted at the Poster, 0.0001 ETH, created 2026-10-20T10:00:00.000Z, deadline 2026-10-22T10:00:00.000Z, mirrored terms, same rubric, jury and oracle settings). It pays the Poster only if the Boston Celtics win.');
+    putOnChain(46, offer);
+    const res = await post('/api/wagers/answer', { counter: 46, creator: BOB });
+    expect(res.body.ok).toBe(false);
+    expect(res.body.createBody).toBeNull();
+    expect(res.body.problems[0]).toMatchObject({ code: 'WAGER_TERMS', message: expect.stringMatching(/already names a counter bounty \(#999\)/) });
+    // A body built by hand that names it anyway is refused at create.
+    const job = mockStorageData.jobs.find((j) => j.jobId === 46);
+    const forced = wager.answerMutualWager({ number: 46, status: { createdAtIso: new Date(Number(mockChain[46].createdAt) * 1000).toISOString(),
+      submissionDeadlineIso: new Date(Number(mockChain[46].submissionDeadline) * 1000).toISOString() }, job: { ...job, description: proposed().description } }, { creator: BOB }).createBody;
+    const created = await post('/api/jobs/create', forced);
+    expect(created.status).toBe(400);
+    expect(created.body.problems.map((p) => p.message)).toEqual(expect.arrayContaining([expect.stringMatching(/Counter bounty #46: its terms already name a counter bounty \(#999\)/)]));
+  });
+
   it('404s an unknown bounty, 503s when the chain cannot be read, 400s bad input', async () => {
     expect((await post('/api/wagers/answer', { counter: 99, creator: BOB })).status).toBe(404);
     putOnChain(45, proposed());

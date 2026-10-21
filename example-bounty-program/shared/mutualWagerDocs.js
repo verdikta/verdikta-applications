@@ -56,7 +56,7 @@ const STATES = {
 
 const ERROR_CODES = {
   WAGER_TARGET: 'Not targeted at the Claimant in the terms, or the creator is not the Poster.',
-  WAGER_TERMS: 'No terms block, two blocks, an unfinished block, a <...> placeholder, a missing, repeated or unknown line, a Counter bounty line that is not the template\'s, or a malformed time. A question wager also needs sides "YES wins" and "NO wins", different YES and NO lines, and 1 to 3 https Resolution sources.',
+  WAGER_TERMS: 'No terms block, two blocks, an unfinished block, a <...> placeholder, a missing, repeated or unknown line, a Counter bounty line that is not the template\'s, or a malformed time. A question wager also needs sides "YES wins" and "NO wins", different YES and NO lines, no text addressed to the evaluator, and 1 to 3 https Resolution sources.',
   WAGER_MISMATCH: 'The terms do not describe this bounty: stake, threshold, class, jury, oracle settings, site or an approval window.',
   WAGER_TIMING: 'The start (a question: Bets close) is less than 10 minutes away or past, or the deadline is before the settlement deadline. A question also needs Resolves at >= Bets close, Claims open >= Resolves at + 30 minutes and the settlement deadline >= Claims open + 2 hours.',
   WAGER_RUBRIC: 'The rubric is not the template: criteria (every text a criterion carries), labels, forbidden content, title, extra fields, or text in a numeric field.',

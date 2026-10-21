@@ -780,6 +780,10 @@ function deadlineBeforeSettle(f, expect) {
   return `This bounty's deadline (${Number.isFinite(expect.deadline) ? isoOf(expect.deadline) : 'none'}) is before the settlement deadline (${f.settle}). Set the submission window to at least ${hours} hours, or the deadline to ${f.settle} or later.`;
 }
 
+// Terms text the poster writes (question, YES, NO, No winner) reaches the jury: none of it may address the
+// evaluator. Narrower than the claim check's TO_EVALUATOR, so a question about a court's jury stays legal.
+const TERMS_TO_EVALUATOR = /\b(evaluators?|graders?|language models?|ignore (?:all |any |the )?(?:previous|prior|above)|disregard|DONT_FUND|FUND\s*[=:])/i;
+const QUESTION_TEXT_FIELDS = [['question', 'Question'], ['yes', 'YES wins if'], ['no', 'NO wins if'], ['noWinner', 'No winner']];
 const HTTPS_URL = /^https:\/\/[^\s<>"'`]+$/i;
 const isHttpsUrl = (u) => { if (!HTTPS_URL.test(u)) return false; try { return new URL(u).hostname.includes('.'); } catch { return false; } };
 
@@ -793,6 +797,7 @@ function questionLinesProblems(t) {
   } else if (norm(t.pays) !== norm(t.claimant.side)) out.push(`The "Pays the Claimant only if" line must name the Claimant's side: ${t.claimant.side}.`);
   for (const [key, label] of [['question', 'Question'], ['yes', 'YES wins if'], ['no', 'NO wins if']]) if (!norm(f[key])) out.push(`The "${label}" line is empty.`);
   if (norm(f.yes) && same(f.yes, f.no)) out.push('The "YES wins if" and "NO wins if" lines must say different things.');
+  for (const [key, label] of QUESTION_TEXT_FIELDS) if (TERMS_TO_EVALUATOR.test(f[key] || '')) out.push(`The "${label}" line addresses the evaluator. The terms state the question and what makes each side win, nothing else.`);
   const urls = parseSourcesLine(f.sources);
   const notUrl = urls.find((u) => !isHttpsUrl(u));
   if (!urls.length) out.push('The "Resolution sources" line must list at least one https URL: jurors get web tools only when the query carries a link.');
@@ -1125,6 +1130,7 @@ function proposeQuestionWager(input, ctx) {
   }
   if (input.noWinner !== undefined && input.noWinner !== null && input.noWinner !== '') { const msg = textProblem('noWinner', input.noWinner, { max: 300 }); if (msg) bad('noWinner', msg); }
   if (norm(input.yes) && same(input.yes, input.no)) bad('no', 'yes and no must say different things: what makes YES win and what makes NO win.');
+  for (const [field] of QUESTION_TEXT_FIELDS) if (TERMS_TO_EVALUATOR.test(String(input[field] ?? ''))) bad(field, `${field} addresses the evaluator: state the question and what makes each side win, nothing else.`);
   const side = String(input.side ?? '').trim().toUpperCase();
   if (!QUESTION_SIDES.includes(side)) bad('side', 'side must be "YES" or "NO": your side of the question. The opponent takes the other.');
   const sources = Array.isArray(input.sources) ? input.sources.map((u) => String(u ?? '').trim()) : null;

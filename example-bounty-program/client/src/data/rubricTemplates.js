@@ -17,6 +17,10 @@
  * stale-page rule to integrity. v3 (security review of PR #106) fails closed without web
  * access and checks the counter's every terms line, word-for-word criteria, jury, oracle
  * settings and package link.
+ *
+ * questionWager (mutual-wager-v4) is the same two-bounty design for any question a published
+ * value or fact settles (an official close, a reference rate, an official result): YES or NO
+ * against a line, with https Resolution sources the jurors open. Its counter criteria are v3's.
  */
 
 import templateData from '../../../shared/rubricTemplates.json' with { type: 'json' };

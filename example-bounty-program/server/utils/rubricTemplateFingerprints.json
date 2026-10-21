@@ -224,6 +224,25 @@
           "fingerprint": "b193711f583691c7"
         }
       ]
+    },
+    "questionWager": {
+      "kind": "rubric",
+      "label": "Question Wager",
+      "criteriaIds": [
+        "terms_match",
+        "resolved",
+        "resolution_sources",
+        "claimant_side_won",
+        "counter_bounty_onchain",
+        "counter_bounty_terms",
+        "integrity"
+      ],
+      "versions": [
+        {
+          "version": "mutual-wager-v4",
+          "fingerprint": "2193e5623127b8ba"
+        }
+      ]
     }
   }
 }

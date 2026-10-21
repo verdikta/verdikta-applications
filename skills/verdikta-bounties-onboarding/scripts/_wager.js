@@ -210,9 +210,14 @@ export function createConfig({ createBody: b, wager }) {
   };
 }
 
-// ---- The owner's approval lines (shared with the native runtime) ----
+// ---- The owner's approval lines (shared with the native runtime, verdikta-agents MIN_APPROVAL_HEX) ----
 
-/** Approve wager <8+ hex of the terms SHA-256>, stake <X> ETH, vs <opponent: full address, 0x + 8+ hex, or 0x1234…abcd>, settle <ISO>. */
+// A line names its terms or claim by at least 16 hex characters of the SHA-256. Shorter prefixes are still read, so
+// the refusal can give the owner the 16-hex prefix to use.
+export const MIN_APPROVAL_HEX = 16;
+const tooShort = (what, line, sha) => new Error(`The approval names the ${what} by ${line.hashPrefix.length} hex characters; it needs at least ${MIN_APPROVAL_HEX} (${sha.slice(0, MIN_APPROVAL_HEX)}). Ask the owner to reply with the line exactly as printed`);
+
+/** Approve wager <16+ hex of the terms SHA-256>, stake <X> ETH, vs <opponent: full address, 0x + 8+ hex, or 0x1234…abcd>, settle <ISO>. */
 export const WAGER_APPROVAL_LINE = /\bapprove\s+wager\s+([0-9a-f]{8,64})\b[\s,;:]*stake\s*[:=]?\s*(\d+(?:\.\d+)?)\s*eth\b[\s,;:]*(?:vs\.?|versus|against)\s*(0x[0-9a-f]{40}|0x[0-9a-f]{4,}\s*(?:…|\.{2,3})\s*[0-9a-f]{4,}|0x[0-9a-f]{8,39})[\s,;:]*settle\s*[:=]?\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?Z)/gi;
 
 export function parseWagerApprovalLines(text) {
@@ -220,7 +225,7 @@ export function parseWagerApprovalLines(text) {
   return [...text.matchAll(WAGER_APPROVAL_LINE)].map((m) => ({ hashPrefix: m[1].toLowerCase(), stake: m[2], opponent: m[3].replace(/\s+/g, ''), settle: m[4], line: m[0] }));
 }
 
-export const approvalLineFor = ({ termsSha256, stake, opponent, settle }) => `Approve wager ${termsSha256.slice(0, 8)}, stake ${stake} ETH, vs ${getAddress(opponent)}, settle ${settle}`;
+export const approvalLineFor = ({ termsSha256, stake, opponent, settle }) => `Approve wager ${termsSha256.slice(0, MIN_APPROVAL_HEX)}, stake ${stake} ETH, vs ${getAddress(opponent)}, settle ${settle}`;
 
 function opponentMatches(written, wallet) {
   const w = written.toLowerCase(), full = String(wallet).toLowerCase();
@@ -233,23 +238,26 @@ function opponentMatches(written, wallet) {
 /** The approval line that names these exact terms; throws with the reason otherwise. */
 export function bindWagerApproval({ approvalText, termsSha256, stake, opponent, settle }) {
   const lines = parseWagerApprovalLines(approvalText);
-  if (!lines.length) throw new Error('No wager approval line found. Expected: Approve wager <first 8 hex of the terms hash>, stake <X> ETH, vs <opponent address>, settle <ISO time>');
+  if (!lines.length) throw new Error('No wager approval line found. Expected: Approve wager <first 16 hex of the terms hash>, stake <X> ETH, vs <opponent address>, settle <ISO time>');
   const forTerms = lines.filter((l) => termsSha256.startsWith(l.hashPrefix));
   if (!forTerms.length) throw new Error(`The approval names terms ${lines.map((l) => l.hashPrefix).join(', ')}; these terms hash to ${termsSha256.slice(0, 16)}… They changed: show the owner the current terms and ask for a fresh approval`);
-  const a = forTerms[0];
+  const a = forTerms.find((l) => l.hashPrefix.length >= MIN_APPROVAL_HEX);
+  if (!a) throw tooShort('terms', forTerms[0], termsSha256);
   if (wei(a.stake) !== wei(stake)) throw new Error(`The approval says stake ${a.stake} ETH; the terms say ${stake} ETH`);
   if (!opponentMatches(a.opponent, opponent)) throw new Error(`The approval names opponent ${a.opponent}; the terms name ${opponent}`);
   if (Date.parse(a.settle) !== Date.parse(settle)) throw new Error(`The approval says settle ${a.settle}; the terms say ${settle}`);
   return a;
 }
 
-/** Approve claim <8+ hex of the SHA-256 of claim.md>, bounty #<N>: the owner's approval to submit that exact claim. */
+/** Approve claim <16+ hex of the SHA-256 of claim.md>, bounty #<N>: the owner's approval to submit that exact claim. */
 export const CLAIM_APPROVAL_LINE = /\bapprove\s+claim\s+([0-9a-f]{8,64})\b[\s,;:]*bounty\s*#?\s*(\d+)\b/gi;
-export const claimLineFor = ({ claimSha256, bounty }) => `Approve claim ${claimSha256.slice(0, 8)}, bounty #${bounty}`;
+export const claimLineFor = ({ claimSha256, bounty }) => `Approve claim ${claimSha256.slice(0, MIN_APPROVAL_HEX)}, bounty #${bounty}`;
 export function bindClaimApproval({ approvalText, claimSha256, bounty }) {
   const lines = typeof approvalText === 'string' ? [...approvalText.matchAll(CLAIM_APPROVAL_LINE)].map((m) => ({ hashPrefix: m[1].toLowerCase(), bounty: Number(m[2]), line: m[0] })) : [];
-  if (!lines.length) throw new Error('No claim approval line found. Expected: Approve claim <first 8 hex of the claim.md hash>, bounty #<N>');
-  const hit = lines.find((l) => claimSha256.startsWith(l.hashPrefix) && l.bounty === Number(bounty));
+  if (!lines.length) throw new Error('No claim approval line found. Expected: Approve claim <first 16 hex of the claim.md hash>, bounty #<N>');
+  const named = lines.filter((l) => claimSha256.startsWith(l.hashPrefix) && l.bounty === Number(bounty));
+  const hit = named.find((l) => l.hashPrefix.length >= MIN_APPROVAL_HEX);
+  if (named.length && !hit) throw tooShort('claim', named[0], claimSha256);
   if (!hit) throw new Error(`The approval names claim ${lines.map((l) => `${l.hashPrefix} for #${l.bounty}`).join(', ')}; this claim.md hashes to ${claimSha256.slice(0, 16)}… for #${bounty}. Show the owner the current claim and ask again`);
   return hit;
 }

@@ -124,13 +124,19 @@ test('approval line: exact terms only', () => {
   const p = W.buildProposal(proposal, { me: alice, ctx, now: NOW });
   const record = { termsSha256: p.termsSha256, stake: '0.0001', opponent: bob, settle: proposal.settle };
   const line = W.approvalLineFor(record);
-  assert.equal(line, `Approve wager ${p.termsSha256.slice(0, 8)}, stake 0.0001 ETH, vs ${bob}, settle 2026-10-21T19:00:00Z`);
+  assert.equal(line, `Approve wager ${p.termsSha256.slice(0, 16)}, stake 0.0001 ETH, vs ${bob}, settle 2026-10-21T19:00:00Z`);
   const bind = (approvalText, r = record) => W.bindWagerApproval({ approvalText, ...r });
-  assert.equal(bind(`Looks good. ${line} Thanks`).hashPrefix, p.termsSha256.slice(0, 8));
-  assert.ok(bind(`approve wager ${p.termsSha256.slice(0, 12)} stake 0.00010 eth vs ${bob.toLowerCase()} settle 2026-10-21T19:00Z`));
+  assert.equal(bind(`Looks good. ${line} Thanks`).hashPrefix, p.termsSha256.slice(0, 16));
+  assert.ok(bind(`approve wager ${p.termsSha256.slice(0, 20)} stake 0.00010 eth vs ${bob.toLowerCase()} settle 2026-10-21T19:00Z`));
+  // The native runtime's builder (verdikta-agents wagerApprovalLine): the same text, so either runtime's line binds.
+  assert.ok(bind(`Approve wager ${p.termsSha256.slice(0, W.MIN_APPROVAL_HEX)}, stake 0.0001 ETH, vs ${bob.toLowerCase()}, settle ${proposal.settle}`));
+  // Fewer than 16 hex characters are refused, naming the 16-hex prefix to ask for.
+  for (const n of [8, 12, 15]) {
+    assert.throws(() => bind(line.replace(p.termsSha256.slice(0, 16), p.termsSha256.slice(0, n))), new RegExp(`by ${n} hex characters; it needs at least 16 \\(${p.termsSha256.slice(0, 16)}\\)`));
+  }
   for (const short of ['0x75fA…a6d9', '0x75fA...a6d9', '0x75fAc210']) assert.ok(bind(line.replace(bob, short)), short);
   assert.throws(() => bind('yes, go ahead'), /No wager approval line/);
-  assert.throws(() => bind(line.replace(p.termsSha256.slice(0, 8), 'deadbeef')), /They changed/);
+  assert.throws(() => bind(line.replace(p.termsSha256.slice(0, 16), 'deadbeefdeadbeef')), /They changed/);
   assert.throws(() => bind(line.replace('0.0001', '0.001')), /stake 0.001 ETH/);
   for (const wrong of [bob.replace('0x75fA', '0x75fB'), '0x75fB…a6d9', '0x75fAc211']) assert.throws(() => bind(line.replace(bob, wrong)), /opponent/);
   assert.throws(() => bind(line.replace('19:00:00Z', '20:00:00Z')), /settle/);
@@ -203,10 +209,11 @@ test('claim refuses before the game can be final, after settlement, on bad evide
 
 test('claim approval line: that claim.md and that bounty only', () => {
   const sha = W.sha256(claim().claim), line = W.claimLineFor({ claimSha256: sha, bounty: 19 });
-  assert.equal(line, `Approve claim ${sha.slice(0, 8)}, bounty #19`);
-  assert.equal(W.bindClaimApproval({ approvalText: `ok: ${line}`, claimSha256: sha, bounty: 19 }).hashPrefix, sha.slice(0, 8));
-  assert.ok(W.bindClaimApproval({ approvalText: `approve claim ${sha.slice(0, 10)} bounty 19`, claimSha256: sha, bounty: 19 }));
+  assert.equal(line, `Approve claim ${sha.slice(0, 16)}, bounty #19`);
+  assert.equal(W.bindClaimApproval({ approvalText: `ok: ${line}`, claimSha256: sha, bounty: 19 }).hashPrefix, sha.slice(0, 16));
+  assert.ok(W.bindClaimApproval({ approvalText: `approve claim ${sha.slice(0, 24)} bounty 19`, claimSha256: sha, bounty: 19 }));
+  assert.throws(() => W.bindClaimApproval({ approvalText: `Approve claim ${sha.slice(0, 8)}, bounty #19`, claimSha256: sha, bounty: 19 }), new RegExp(`by 8 hex characters; it needs at least 16 \\(${sha.slice(0, 16)}\\)`));
   assert.throws(() => W.bindClaimApproval({ approvalText: line, claimSha256: sha, bounty: 18 }), /Show the owner the current claim/);
-  assert.throws(() => W.bindClaimApproval({ approvalText: line.replace(sha.slice(0, 8), 'deadbeef'), claimSha256: sha, bounty: 19 }), /Show the owner/);
+  assert.throws(() => W.bindClaimApproval({ approvalText: line.replace(sha.slice(0, 16), 'deadbeefdeadbeef'), claimSha256: sha, bounty: 19 }), /Show the owner/);
   assert.throws(() => W.bindClaimApproval({ approvalText: 'submit it', claimSha256: sha, bounty: 19 }), /No claim approval line/);
 });

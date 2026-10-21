@@ -99,9 +99,11 @@ test('answer: preview, then post once with the owner\'s line; a second post is r
   const h = await harness(t, { me: bob });
   await h.run('answer', '18');
   const line = lineFrom(h.text());
-  assert.match(line, new RegExp(`^Approve wager [0-9a-f]{8}, stake 0\\.0001 ETH, vs ${alice}, settle 2026-10-21T19:00:00Z$`));
+  assert.match(line, new RegExp(`^Approve wager [0-9a-f]{16}, stake 0\\.0001 ETH, vs ${alice}, settle 2026-10-21T19:00:00Z$`));
   assert.equal(h.created.length, 0);
-  await assert.rejects(h.run('answer', '18', '--approval', line.replace(/wager [0-9a-f]{8}/, 'wager deadbeef'), '--yes'), /They changed/);
+  await assert.rejects(h.run('answer', '18', '--approval', line.replace(/wager [0-9a-f]{16}/, 'wager deadbeefdeadbeef'), '--yes'), /They changed/);
+  await assert.rejects(h.run('answer', '18', '--approval', line.replace(/(wager [0-9a-f]{8})[0-9a-f]{8}/, '$1'), '--yes'), /by 8 hex characters; it needs at least 16 \([0-9a-f]{16}\)/);
+  assert.equal(h.created.length, 0);
   await h.run('answer', '18', '--approval', `Yes. ${line}`, '--yes');
   assert.equal(h.created.length, 1);
   const c = h.created[0];
@@ -168,7 +170,7 @@ test('propose, check the answer, status, claim and close', async (t) => {
   await assert.rejects(h.run('claim', 'VW-TEST3-BOS-DET-20261020', ...score), /Too early/);
   h.clock = at('2026-10-20T22:30:00Z'); h.logs.length = 0;
   await h.run('claim', 'VW-TEST3-BOS-DET-20261020', ...score);
-  const earlyLine = /^ {2}(Approve claim [0-9a-f]{8}, bounty #19)$/m.exec(h.text())[1];
+  const earlyLine = /^ {2}(Approve claim [0-9a-f]{16}, bounty #19)$/m.exec(h.text())[1];
   await assert.rejects(h.run('claim', 'VW-TEST3-BOS-DET-20261020', '--approval', earlyLine, '--yes'), /Too early to submit: wait until 2026-10-21T00:00:00/);
   assert.equal(h.submitted.length, 0);
   h.clock = at('2026-10-21T00:30:00Z'); h.logs.length = 0;
@@ -177,8 +179,8 @@ test('propose, check the answer, status, claim and close', async (t) => {
   const claim = await readFile(path.join(h.dir, 'wagers', record.termsSha256.slice(0, 16), 'claim.md'), 'utf8');
   assert.match(claim, /^MUTUAL WAGER CLAIM \(mutual-wager-v3\)\nWager ID: VW-TEST3-BOS-DET-20261020\nBounty claimed: #19\n/);
   assert.match(claim, /^3\. Counter bounty\nBounty #26\nOn-chain parameters: .*\/api\/jobs\/26\/onchain-status\nTerms, rubric and jury: .*\/api\/jobs\/26\?includeRubric=true\n$/m);
-  const claimLine = /^ {2}(Approve claim [0-9a-f]{8}, bounty #19)$/m.exec(h.text())[1];
-  assert.equal(claimLine, `Approve claim ${W.sha256(claim).slice(0, 8)}, bounty #19`);
+  const claimLine = /^ {2}(Approve claim [0-9a-f]{16}, bounty #19)$/m.exec(h.text())[1];
+  assert.equal(claimLine, `Approve claim ${W.sha256(claim).slice(0, 16)}, bounty #19`);
   assert.equal(h.submitted.length, 0);
   await assert.rejects(h.run('claim', 'VW-TEST3-BOS-DET-20261020', '--approval', claimLine.replace('#19', '#18'), '--yes'), /Show the owner the current claim/);
   await h.run('claim', 'VW-TEST3-BOS-DET-20261020', '--approval', claimLine, '--yes');
@@ -213,7 +215,7 @@ async function proposeFlow(t) {
   return { h, input, line: lineFrom(h.text()) };
 }
 const score = ['--score', 'Boston Celtics 110, Detroit Pistons 104 (Final)', '--source', 'NBA.com|https://www.nba.com/game/bos-vs-det|BOS 110 DET 104 FINAL', '--source', 'CBS Sports|https://www.cbssports.com/nba/gametracker/recap/x|Celtics 110 Pistons 104 Final'];
-const claimLineOf = (text) => /^ {2}(Approve claim [0-9a-f]{8}, bounty #19)$/m.exec(text)[1];
+const claimLineOf = (text) => /^ {2}(Approve claim [0-9a-f]{16}, bounty #19)$/m.exec(text)[1];
 async function readyToClaim(t) {
   const { h, input, line } = await proposeFlow(t);
   await h.run('propose', '--input', input, '--approval', line, '--yes');
@@ -230,7 +232,7 @@ test('finding 1: a stalled answer is finished only by wager.js and never funded 
   await assert.rejects(h.run('answer', '18', '--approval', line, '--yes'), /process stopped after the API job/);
   h.logs.length = 0;
   await h.run('status');
-  assert.match(h.text(), /API job 901 created, nothing signed\)\. Finish it: node wager\.js answer 18 --approval "Approve wager [0-9a-f]{8}, stake/);
+  assert.match(h.text(), /API job 901 created, nothing signed\)\. Finish it: node wager\.js answer 18 --approval "Approve wager [0-9a-f]{16}, stake/);
   assert.doesNotMatch(h.text(), /create_bounty\.js/);
   // Five minutes before the start the same command refuses to sign: the API job stays unfunded.
   h.clock = at('2026-10-20T18:55:00Z');

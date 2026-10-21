@@ -13,8 +13,8 @@
 //   node wager.js close <wager> [--dry-run] [--yes]                  reclaim your stake after your bounty's deadline
 //
 // <wager> is the terms hash prefix, the Wager ID or one of the wager's bounty numbers. The owner's lines are the only
-// authorization for --yes: "Approve wager <8 hex of sha256(description)>, stake <X> ETH, vs <opponent>, settle <ISO>"
-// for a propose or answer, "Approve claim <8 hex of sha256(claim.md)>, bounty #<N>" for a claim. One wager per terms
+// authorization for --yes: "Approve wager <16 hex of sha256(description)>, stake <X> ETH, vs <opponent>, settle <ISO>"
+// for a propose or answer, "Approve claim <16 hex of sha256(claim.md)>, bounty #<N>" for a claim. One wager per terms
 // hash and per Wager ID. The native verdikta-agents runtime uses the same definitions.
 //
 // A post that stopped after the approval is finished by the same propose/answer command with the same line, never by

@@ -62,11 +62,11 @@ The shared `proposeMutualWager` input; `wager.js` adds your wallet as `creator`,
 The native verdikta-agents runtime uses the same definitions.
 
 ```
-Approve wager <first 8 hex of the terms hash>, stake <X> ETH, vs <opponent address>, settle <ISO time>
-Approve claim <first 8 hex of the claim.md hash>, bounty #<N>
+Approve wager <first 16 hex of the terms hash>, stake <X> ETH, vs <opponent address>, settle <ISO time>
+Approve claim <first 16 hex of the claim.md hash>, bounty #<N>
 ```
 
-For example `Approve wager 1f0c2a9b, stake 0.0001 ETH, vs 0x75fAc210bF1Dcd0BA3FaC294de7c50C5763Da6d9, settle 2026-10-21T19:00:00Z`. The terms hash is the SHA-256 of the bounty description exactly as sent to `/api/jobs/create`; every money term is in it, and the title, rubric, target, amount and deadline are derived from it. The verbs print the opponent in full; a line may also give `0x` + at least 8 hex, or `0x1234…abcd`. The verb refuses a line whose hash, stake, opponent or settlement time differs from the terms. The claim hash is the SHA-256 of `claim.md`; the claim line also names the bounty it is submitted to.
+For example `Approve wager 1f0c2a9b7d43e815, stake 0.0001 ETH, vs 0x75fAc210bF1Dcd0BA3FaC294de7c50C5763Da6d9, settle 2026-10-21T19:00:00Z`. The terms hash is the SHA-256 of the bounty description exactly as sent to `/api/jobs/create`; every money term is in it, and the title, rubric, target, amount and deadline are derived from it. The verbs print the opponent in full; a line may also give `0x` + at least 8 hex, or `0x1234…abcd`. The verb refuses a line whose hash, stake, opponent or settlement time differs from the terms, and a line that gives fewer than 16 hex characters of the hash (it prints the 16-hex prefix to ask for). The claim hash is the SHA-256 of `claim.md`, also named by at least 16 hex characters; the claim line also names the bounty it is submitted to.
 
 ## What gets posted
 

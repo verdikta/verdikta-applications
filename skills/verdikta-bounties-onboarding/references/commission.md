@@ -7,7 +7,7 @@ For a discovery handoff, install both skill directories and run the discovery pa
 `create_bounty.js --config approved.json` requires:
 
 - title, description, rubricJson and juryNodes (validated against the selected live class).
-- classId, threshold (0–100, outside rubricJson), submissionWindowHours (whole hours).
+- classId, threshold (0–100, outside rubricJson), and either submissionWindowHours (whole hours) or submissionDeadline (an exact deadline, for terms that name a date: unix seconds or ISO-8601 UTC ending in Z, such as `"2026-10-22T00:00:00Z"`). With submissionDeadline the script sends it to `/jobs/create` instead of a window and refuses a server deadline that differs by a second; at least five usable minutes must remain. `wager.js` sets it to a wager's settlement deadline.
 - procurementMode: TARGETED with targetHunter, or deliberately OPEN.
 - bountyAmount: decimal ETH string. Optional creatorDeterminationPayment and arbiterDeterminationPayment are decimal ETH strings; bountyAmount must equal their maximum.
 - creatorAssessmentWindowSeconds: integer seconds divisible by 3600; zero requires equal payments.

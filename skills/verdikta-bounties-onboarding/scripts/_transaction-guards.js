@@ -46,20 +46,41 @@ export function creationTerms(config) {
   if (!o) throw new Error('Explicit oracle settings required');
   const oracle = { maxOracleFee: uint(o.maxOracleFee, 'oracle fee'), alpha: uint(o.alpha, 'alpha', 1000n), estimatedBaseCost: uint(o.estimatedBaseCost, 'base cost'), maxFeeBasedScaling: uint(o.maxFeeBasedScaling, 'scaling', 1000n) };
   if (!oracle.maxOracleFee || oracle.estimatedBaseCost >= oracle.maxOracleFee || !oracle.maxFeeBasedScaling) throw new Error('Invalid oracle settings');
-  const hours = Number(config.submissionWindowHours);
-  if (!Number.isSafeInteger(hours) || hours <= 0 || !Number.isSafeInteger(hours * 3600) || BigInt(hours * 3600) <= window + 2n) throw new Error('Submission window must be whole hours');
+  // A whole-hour window, or an exact deadline for terms that name a date (a wager's settlement deadline).
+  let submissionDeadline = null;
+  if (config.submissionDeadline != null) {
+    if (config.submissionWindowHours != null) throw new Error('Use submissionDeadline or submissionWindowHours, not both');
+    submissionDeadline = exactDeadline(config.submissionDeadline);
+  } else {
+    const hours = Number(config.submissionWindowHours);
+    if (!Number.isSafeInteger(hours) || hours <= 0 || !Number.isSafeInteger(hours * 3600) || BigInt(hours * 3600) <= window + 2n) throw new Error('Submission window must be whole hours');
+  }
   if (window % 3600n !== 0n) throw new Error('Creator assessment window must be whole hours');
-  return { params: { requestedClass, threshold, targetHunter, creatorDeterminationPayment: creator, arbiterDeterminationPayment: arbiter, creatorAssessmentWindowSize: window, oracle }, value };
+  return { params: { requestedClass, threshold, targetHunter, creatorDeterminationPayment: creator, arbiterDeterminationPayment: arbiter, creatorAssessmentWindowSize: window, oracle }, value, submissionDeadline };
+}
+// Unix seconds, or ISO-8601 UTC ending in Z ("2026-10-22T00:00:00Z"). The server encodes this second exactly.
+export function exactDeadline(value) {
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z$/.test(value)) {
+    const ms = Date.parse(value);
+    if (Number.isFinite(ms)) return BigInt(ms / 1000);
+  }
+  if (typeof value === 'number' || (typeof value === 'string' && /^[0-9]+$/.test(value))) {
+    const seconds = uint(value, 'submission deadline', (1n << 64n) - 1n);
+    if (seconds >= 100000000000n) throw new Error('submissionDeadline looks like milliseconds; use unix seconds');
+    return seconds;
+  }
+  throw new Error('submissionDeadline must be unix seconds or an ISO-8601 UTC time such as 2026-10-22T00:00:00Z');
 }
 export function bindCreation(config, response, { recovery = false, apiCreatedAt } = {}) {
-  const { params, value } = creationTerms(config);
+  const { params, value, submissionDeadline: exact } = creationTerms(config);
   const job = response.job;
   if (!recovery && (job?.onChain || job?.txHash || response.message?.startsWith('Reusing existing job'))) throw new Error('Existing creation detected; reconcile its identity instead of funding a duplicate');
   if (!response.success || !job || job.jobId == null || !response.onChain?.transaction) throw new Error('API creation response drift');
   if (!/^[A-Za-z0-9]{46,100}$/.test(job.evaluationCid || '')) throw new Error('Invalid evaluation CID');
   const deadline = uint(job.submissionCloseTime, 'server deadline', (1n << 64n) - 1n);
   const opened = uint(job.submissionOpenTime, 'server open time');
-  if (deadline - opened !== BigInt(Number(config.submissionWindowHours) * 3600)) throw new Error('Server deadline window drift');
+  if (exact != null) { if (deadline !== exact) throw new Error('Server deadline differs from the exact submissionDeadline'); }
+  else if (deadline - opened !== BigInt(Number(config.submissionWindowHours) * 3600)) throw new Error('Server deadline window drift');
   if (!recovery) {
     const now = BigInt(Math.floor(Date.now() / 1000));
     const drift = opened - (apiCreatedAt == null ? now : uint(apiCreatedAt, 'local API creation time'));

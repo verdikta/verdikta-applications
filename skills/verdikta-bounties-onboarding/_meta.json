@@ -1,8 +1,8 @@
 {
   "ownerId": "kn70kt901qt3bjzwb1v3q90jm181xhyf",
   "slug": "verdikta-bounties-onboarding",
-  "version": "1.8.2",
-  "description": "Hot-wallet Verdikta Bounties operator for Base. Creates/imports Ethereum keys into an encrypted keystore whose password is never stored (it comes from VERDIKTA_WALLET_PASSWORD via a secret store or a prompt), keeps an API key locally, uploads public bounty/work data, calls the reviewed Verdikta API and Base RPC, and can sign irreversible mainnet/testnet transactions within an owner spend policy. Withdraws the wallet's ETH (or leftover LINK) only to the owner address recorded at onboarding.",
+  "version": "1.9.0",
+  "description": "Hot-wallet Verdikta Bounties operator for Base. Creates/imports Ethereum keys into an encrypted keystore whose password is never stored (it comes from VERDIKTA_WALLET_PASSWORD via a secret store or a prompt), keeps an API key locally, uploads public bounty/work data, calls the reviewed Verdikta API and Base RPC, and can sign irreversible mainnet/testnet transactions within an owner spend policy. Places mutual wagers (two directed bounties as a bet) with wager.js only after the owner approves the exact terms in chat. Withdraws the wallet's ETH (or leftover LINK) only to the owner address recorded at onboarding.",
   "permissions": {
     "shell": {
       "binaries": [
@@ -32,13 +32,16 @@
         "../verdikta-discover/schemas/*",
         "../verdikta-discover/templates/*",
         "../verdikta-discover/node_modules/**",
-        "../verdikta-discover/references/fulfilment.md"
+        "../verdikta-discover/references/fulfilment.md",
+        "~/.config/verdikta-bounties/wager-defaults.json",
+        "~/.config/verdikta-bounties/wagers/**"
       ],
       "write": [
         "~/.config/verdikta-bounties/.env",
         "~/.config/verdikta-bounties/verdikta-bounties-bot.json",
         "~/.config/verdikta-bounties/verdikta-wallet.json",
-        "operator-selected commission/submission recovery state"
+        "operator-selected commission/submission recovery state",
+        "~/.config/verdikta-bounties/wagers/** (wager terms, the owner's approval line, creation state, claim.md)"
       ],
       "notes": "Config is read from exported environment variables and the stable config path only. scripts/.env is intentionally ignored."
     },

@@ -1,0 +1,11 @@
+{
+  "fixture_only": true,
+  "_note": "Shape example for node wager.js propose --input (the shared proposeMutualWager input; wager.js adds your wallet as creator). Copy it per wager, remove fixture_only and _note, use a new wagerId for every pair, the real event as 'Away Team (ABBR) at Home Team (ABBR)', the scheduled start and a settlement deadline (ISO UTC to the second), the stake, the opponent's wallet and both sides. Optional: market, noWinner.",
+  "wagerId": "VW-BOS-DET-20261020",
+  "event": "NBA 2026-27 regular season: Boston Celtics (BOS) at Detroit Pistons (DET), Little Caesars Arena, Detroit, Michigan.",
+  "start": "2026-10-20T19:00:00Z",
+  "settle": "2026-10-21T19:00:00Z",
+  "stake": "0.0001",
+  "opponent": "0x75fAc210bF1Dcd0BA3FaC294de7c50C5763Da6d9",
+  "sides": { "creator": "the Boston Celtics win", "opponent": "the Detroit Pistons win" }
+}

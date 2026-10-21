@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Mutual wagers: two directed bounties used as a bet (the website's Mutual Wager template, mutual-wager-v3). The same
-// six verbs in every agent runtime; bodies, checks and claims are the website's shared code (_mutual-wager.cjs).
+// Mutual wagers: two directed bounties used as a bet, on a game (the website's Mutual Wager template, mutual-wager-v3)
+// or on a YES/NO question (its Question Wager template, mutual-wager-v4). The same six verbs in every agent runtime;
+// bodies, checks and claims are the website's shared code (_mutual-wager.cjs). The terms pick the kind.
 //
 //   node wager.js propose --input proposal.json                      preview the first bounty and its approval line
 //   node wager.js propose --input proposal.json --approval "<line>" --yes   post it after the owner's line
@@ -9,6 +10,7 @@
 //   node wager.js check <N> [--against <your bounty>]                full counter check of bounty #N (read-only)
 //   node wager.js status                                             your wagers and the next step for each
 //   node wager.js claim <wager> --score "..." --source "Name|URL|quote" --source ...   write claim.md, print its line
+//   node wager.js claim <wager> --answer YES|NO --value "..." --as-of <ISO> --source ... --source ...   (a question)
 //   node wager.js claim <wager> --approval "<line>" --yes            submit that claim.md after the owner's line
 //   node wager.js close <wager> [--dry-run] [--yes]                  reclaim your stake after your bounty's deadline
 //
@@ -37,9 +39,11 @@ const USAGE = `Usage:
   node wager.js check <N> [--against <your bounty number>]
   node wager.js status
   node wager.js claim <wager> --score "<Team> <points>, <Team> <points> (Final)" --source "Name|https://...|quote" --source ... [--final-at <ISO>]
+  node wager.js claim <wager> --answer YES|NO --value "<as the sources show it>" --as-of <ISO UTC> --source "Name|https://...|quote" --source ...
   node wager.js claim <wager> --approval "<owner's claim line>" --yes
   node wager.js close <wager> [--dry-run] [--yes]
-<wager> is the terms hash prefix, the Wager ID or one of the wager's bounty numbers.`;
+<wager> is the terms hash prefix, the Wager ID or one of the wager's bounty numbers. A question proposal is
+{ "kind": "question", ... } (examples/wager-question.json); a question claim takes --answer, --value and --as-of.`;
 
 const FLAGS = new Set(['yes', 'confirm-spend', 'dry-run', 'dryRun']);
 function parseArgs(argv) {
@@ -54,6 +58,13 @@ function parseArgs(argv) {
   }
   return { positional, opt: (n) => values[n]?.[0] ?? null, all: (n) => values[n] || [], flag: (n) => Boolean(values[n]) };
 }
+// A record's kind is the rubric its own terms name: 'game' (mutual-wager-v3) or 'question' (mutual-wager-v4).
+const termsOf = (record) => W.shared.parseMutualWagerTerms(record.description);
+const kindOfRecord = (record) => W.kindOf(termsOf(record));
+const QUESTION_CLAIM_FLAGS = ['answer', 'value', 'as-of'];
+const claimFlags = (kind, again = false) => (kind === 'question'
+  ? (again ? '--answer ... --value ... --as-of ... --source ... --source ...' : '--answer YES|NO --value "..." --as-of <ISO> --source "Name|URL|quote" --source "..."')
+  : (again ? '--score "..." --source ... --source ...' : '--score "..." --source "Name|URL|quote" --source "..."'));
 const bountyNumber = (v, what = 'bounty number') => { if (!/^[0-9]+$/.test(String(v ?? ''))) throw new Error(`A ${what} is required\n${USAGE}`); return Number(v); };
 const sameAddress = (a, b) => { try { return getAddress(String(a)) === getAddress(String(b)); } catch { return false; } };
 const plainBounty = (b) => ({
@@ -206,7 +217,7 @@ export async function runWager(lib, {
   // must never fund a one-sided bet. A transaction already sent is only linked.
   const started = (state) => Boolean(state && (state.txHash || state.rawTransaction || state.response));
   async function postProblems(record, ownJobId) {
-    const t = now(), late = W.startLeadProblem(record.start, t);
+    const t = now(), late = W.startLeadProblem(record.start, t, kindOfRecord(record));
     if (late) return [late];
     const problems = [...await policyProblems(record.stake), ...await twinProblems(record.me, record.wagerId, ownJobId)];
     if (record.role === 'answerer') {
@@ -293,11 +304,14 @@ export async function runWager(lib, {
     if (state?.linkedJobId == null) throw new Error(`Posting wager ${record.termsSha256.slice(0, 8)} did not finish (${state?.status ?? 'no state'}). Finish it: ${againCommand(record)}`);
     await recordPost(record, state);
     say('', `Posted bounty #${record.bountyId} (transaction ${record.txHash}): ${origin}/bounty/${record.bountyId}`);
-    if (record.role === 'proposer' && W.startLeadProblem(record.start, now())) {
-      say(`It was linked too close to the scheduled start ${record.start} for an answer: unless the opponent already answered, the wager is off. See node wager.js status; reclaim the stake after ${record.settle} with node wager.js close ${record.termsSha256.slice(0, 8)}.`);
+    const terms = termsOf(record), kind = W.kindOf(terms), label = W.startLabel(kind);
+    if (record.role === 'proposer' && W.startLeadProblem(record.start, now(), kind)) {
+      say(`It was linked too close to the ${label} ${record.start} for an answer: unless the opponent already answered, the wager is off. See node wager.js status; reclaim the stake after ${record.settle} with node wager.js close ${record.termsSha256.slice(0, 8)}.`);
     } else if (record.role === 'proposer') {
-      say(`Send the opponent: "My side of wager ${record.wagerId} is bounty #${record.bountyId} on ${origin}. Answer it by number by ${answerBy(record)} (10 minutes before the scheduled start ${record.start}): with the Verdikta onboarding skill, node wager.js answer ${record.bountyId}; on the website, the Mutual Wager template's answer field takes #${record.bountyId}."`,
+      say(`Send the opponent: "My side of wager ${record.wagerId} is bounty #${record.bountyId} on ${origin}. Answer it by number by ${answerBy(record)} (10 minutes before the ${label} ${record.start}): with the Verdikta onboarding skill, node wager.js answer ${record.bountyId}; on the website, the ${kind === 'question' ? 'Question Wager' : 'Mutual Wager'} template's answer field takes #${record.bountyId}."`,
         `Then check their bounty as soon as it is posted, and before ${record.start}: node wager.js check <their bounty number>`);
+    } else if (kind === 'question') {
+      say(`The wager is complete: bounty #${record.counter.number} and your #${record.bountyId}. From Claims open (${terms.fields.claimsOpen}), the side the answer makes win claims the other bounty with node wager.js claim.`);
     } else say(`The wager is complete: bounty #${record.counter.number} and your #${record.bountyId}. After the game, the winner claims the loser's bounty with node wager.js claim.`);
   }
 
@@ -321,7 +335,8 @@ export async function runWager(lib, {
     const problems = [...built.problems, ...await policyProblems(record.stake), ...await twinProblems(me, record.wagerId).catch((e) => [`Could not check your other bounties: ${e.message}`])];
     if (!problems.length && !(await exists(path.join(dirOf(record.termsSha256), 'approval.json')))) await saveRecord(record);
     if (!preview(record, problems, [`Jury ${W.shared.formatJury(built.expect.jury, built.expect.iterations)}; class ${built.expect.classId}; threshold ${built.expect.threshold}.`,
-      `The opponent must answer by ${answerBy(record)}, 10 minutes before the scheduled start ${record.start}; without an answer the wager is off and this stake refunds after ${record.settle}.`])) throw new Error('The proposal was refused');
+      `The opponent must answer by ${answerBy(record)}, 10 minutes before the ${W.startLabel(W.kindOf(built.terms))} ${record.start}; without an answer the wager is off and this stake refunds after ${record.settle}.`,
+      ...built.warnings.map((w) => `Note: ${w}`)])) throw new Error('The proposal was refused');
   }
 
   async function answer() {
@@ -344,7 +359,8 @@ export async function runWager(lib, {
     if (args.opt('approval')) return approveAndPost(record, report.answer.createBody);
     const problems = [...await policyProblems(record.stake), ...await twinProblems(me, record.wagerId).catch((e) => [`Could not check your other bounties: ${e.message}`])];
     if (!problems.length && !(await exists(path.join(dirOf(record.termsSha256), 'approval.json')))) await saveRecord(record);
-    if (!preview(record, problems, [`Bounty #${n} by ${status.creator} passed the full counter check (site records, escrow read, mirrored terms, template rubric, jury, oracle settings, timing).`])) throw new Error('The answer was refused');
+    if (!preview(record, problems, [`Bounty #${n} by ${status.creator} passed the full counter check (site records, escrow read, mirrored terms, template rubric, jury, oracle settings, timing).`,
+      ...report.notes.map((note) => `Note: ${note}`)])) throw new Error('The answer was refused');
   }
 
   async function check() {
@@ -386,14 +402,21 @@ export async function runWager(lib, {
     const t = now();
     for (const r of all) {
       const deadlinePassed = t >= W.unix(r.settle);
-      say('', `${r.termsSha256.slice(0, 8)}  ${r.wagerId}  ${r.role}  vs ${W.shortAddress(r.opponent)}  stake ${r.stake} ETH  start ${r.start}  settle ${r.settle}`);
+      const terms = termsOf(r), kind = W.kindOf(terms), f = terms.fields || {};
+      say('', `${r.termsSha256.slice(0, 8)}  ${r.wagerId}  ${r.role}  vs ${W.shortAddress(r.opponent)}  stake ${r.stake} ETH  ${kind === 'question' ? 'bets close' : 'start'} ${r.start}  settle ${r.settle}`);
+      // A question's terms say what wins; the owner and the agent read the answer against these lines.
+      if (kind === 'question') {
+        say(`  Question: ${f.question}`, `  YES wins if: ${f.yes}`, `  NO wins if: ${f.no}`, `  No winner: ${f.noWinner}`, `  Your side: ${terms.poster.side}`,
+          `  Resolution sources: ${W.shared.parseSourcesLine(f.sources).join(' , ')}`,
+          `  Bets close ${f.start}, resolves at ${f.resolvesAt}, claims open ${f.claimsOpen}, settlement deadline ${f.settle}`);
+      }
       if (!r.approved) { say('  Waiting for the owner\'s approval line:', `    ${W.approvalLineFor(r)}`); continue; }
       if (r.bountyId == null) {
         const p = pathsOf(r.termsSha256);
         const state = await readState(p.state).catch(() => null), line = await readState(p.approval).then((a) => a?.line, () => undefined);
         // Finishing re-checks the start before any broadcast; a signed transaction may already be on chain.
         if (state?.txHash) say(`  Approved; transaction ${state.txHash} was signed but the bounty is not linked yet. Finish it: ${againCommand(r, line)}`);
-        else if (W.startLeadProblem(r.start, t)) say(`  Approved but never funded, and the scheduled start is too close or past: this wager is off. Nothing was spent.`);
+        else if (W.startLeadProblem(r.start, t, kind)) say(`  Approved but never funded, and the ${W.startLabel(kind)} is too close or past: this wager is off. Nothing was spent.`);
         else say(`  Approved, not posted${started(state) ? ` (API job ${state.response?.job?.jobId} created, nothing signed)` : ''}. Finish it: ${againCommand(r, line)}`);
         continue;
       }
@@ -412,14 +435,25 @@ export async function runWager(lib, {
       let next;
       if (mineStatus?.status === 'AWARDED') next = `Your bounty #${r.bountyId} paid the opponent: the jury found the other side won.`;
       else if (mineStatus?.status === 'CLOSED') next = `Your bounty #${r.bountyId} is closed and its stake refunded.`;
-      else if (r.claim && await claimFailed(r.claim)) next = `The jury failed your claim to #${r.claim.bounty} (submission ${r.claim.submissionId}). Before ${r.settle} a new claim may replace it: node wager.js claim ${r.termsSha256.slice(0, 8)} --score "..." --source "Name|URL|quote" --source "...", then the owner's new claim line.`;
+      else if (r.claim && await claimFailed(r.claim)) next = `The jury failed your claim to #${r.claim.bounty} (submission ${r.claim.submissionId}). Before ${r.settle} a new claim may replace it: node wager.js claim ${r.termsSha256.slice(0, 8)} ${claimFlags(kind)}, then the owner's new claim line.`;
       else if (r.claim) next = `Claim submitted to #${r.claim.bounty}${r.claim.submissionId != null ? ` (submission ${r.claim.submissionId})` : ''}: after the jury, node claim_bounty.js --jobId ${r.claim.bounty} --submissionId <id>. Reclaim your own stake after ${mineStatus?.submissionDeadlineIso ?? r.settle} with node wager.js close ${r.termsSha256.slice(0, 8)}.`;
-      else if (counter == null) next = t < start ? `Wait for the opponent to answer #${r.bountyId} by ${answerBy(r)} (10 minutes before the start), then check it.` : `No checked counter before the start: the wager is off. Reclaim your stake after ${mineStatus?.submissionDeadlineIso ?? r.settle}: node wager.js close ${r.termsSha256.slice(0, 8)}`;
-      else if (deadlinePassed) next = `The deadline passed: reclaim your stake with node wager.js close ${r.termsSha256.slice(0, 8)}`;
+      else if (counter == null) {
+        const when = kind === 'question' ? 'Bets close' : 'the start';
+        next = t < start ? `Wait for the opponent to answer #${r.bountyId} by ${answerBy(r)} (10 minutes before ${when}), then check it.` : `No checked counter before ${when}: the wager is off. Reclaim your stake after ${mineStatus?.submissionDeadlineIso ?? r.settle}: node wager.js close ${r.termsSha256.slice(0, 8)}`;
+      } else if (deadlinePassed) next = `The deadline passed: reclaim your stake with node wager.js close ${r.termsSha256.slice(0, 8)}`;
+      else if (kind === 'question') next = questionNext(r, terms, t);
       else if (t < start + W.CLAIM_OPENS_AFTER_START) next = `Game not final yet. If your side wins, claim.md can be prepared from ${W.isoOf(start + W.CLAIM_OPENS_AFTER_START)}; it is submitted about 2 hours after the final (pass --final-at), or from ${W.isoOf(start + W.shared.CLAIM_AFTER_START_SECONDS)} without it.`;
       else next = `If your side won: node wager.js claim ${r.termsSha256.slice(0, 8)} --score "..." --source "Name|URL|quote" --source "..." (about 2 hours after the final), then submit it with the owner's claim line.`;
       say(`  Next: ${next}`);
     }
+  }
+
+  // A question's next step after both bounties exist: its times, not a game's, open the claim (from Claims open).
+  function questionNext(r, terms, t) {
+    const f = terms.fields, side = terms.poster.side;
+    if (t < W.unix(f.resolvesAt)) return `Bets are closed; the question resolves at ${f.resolvesAt}. If the answer makes your side (${side}) win, claim.md can be prepared from Claims open, ${f.claimsOpen}.`;
+    if (t < W.unix(f.claimsOpen)) return `The question resolved at ${f.resolvesAt}; claims open at ${f.claimsOpen}, once the sources show the final value. If the answer makes your side (${side}) win, prepare the claim then.`;
+    return `If the answer makes your side (${side}) win: node wager.js claim ${r.termsSha256.slice(0, 8)} ${claimFlags('question')} (the value as the sources show it, and the time it is for), then submit it with the owner's claim line. If the No winner line holds, nobody claims.`;
   }
 
   // The claim submitted before, read from the escrow. In progress: finish it or wait for the jury. Failed (the jury's
@@ -459,10 +493,15 @@ export async function runWager(lib, {
     if (claimedNumber == null) throw new Error('No checked counter bounty: run node wager.js check <the opponent\'s bounty> first');
     const dir = dirOf(record.termsSha256);
     const claimPath = path.join(dir, 'claim.md'), inputPath = path.join(dir, 'claim-input.json'), submissionPath = path.join(dir, 'claim-submission.json');
-    // The claim is rebuilt from the same inputs at approval, so the owner's line names exactly the bytes submitted.
-    const input = args.opt('score') ? { score: args.opt('score'), sources: args.all('source'), finalAt: args.opt('final-at') }
-      : args.opt('approval') ? await fs.readFile(inputPath, 'utf8').then(JSON.parse, () => { throw new Error('No saved claim: run claim with --score and --source first'); })
-        : (() => { throw new Error(`--score and two --source entries are required\n${USAGE}`); })();
+    // The claim is rebuilt from the same inputs at approval, so the owner's line names exactly the bytes submitted. A
+    // game claim gives a score, a question claim an answer, a value and its time; the claimed bounty's terms decide
+    // which one applies (buildClaim refuses the other shape).
+    const kind = kindOfRecord(record), question = QUESTION_CLAIM_FLAGS.some((k) => args.opt(k) != null);
+    const given = (name, key = name) => (args.opt(name) != null ? { [key]: args.opt(name) } : {});
+    const input = question ? { answer: args.opt('answer'), value: args.opt('value'), asOf: args.opt('as-of'), sources: args.all('source'), ...given('score'), ...given('final-at', 'finalAt') }
+      : args.opt('score') ? { score: args.opt('score'), sources: args.all('source'), finalAt: args.opt('final-at') }
+        : args.opt('approval') ? await fs.readFile(inputPath, 'utf8').then(JSON.parse, () => { throw new Error(`No saved claim: run claim with ${kind === 'question' ? '--answer, --value, --as-of' : '--score'} and --source first`); })
+          : (() => { throw new Error(`${kind === 'question' ? '--answer, --value, --as-of' : '--score'} and two --source entries are required\n${USAGE}`); })();
     const me = await walletAddress();
     const [{ status, job }, mine] = await Promise.all([readBounty(claimedNumber), readBounty(record.bountyId)]);
     if (!status || status.status !== 'OPEN' || status.deadlinePassed) throw new Error(`Bounty #${claimedNumber} is ${status?.status || 'unreadable'}; it cannot be claimed`);
@@ -475,7 +514,7 @@ export async function runWager(lib, {
     if (last) say(`Your earlier claim${last.submissionId != null ? ` (submission ${last.submissionId})` : ''} ${last.result === 'FAILED' ? `failed its evaluation (acceptance ${last.acceptance}, rejection ${last.rejection})` : 'stopped before anything reached the chain'}; its state is kept as ${last.keptAs}.`);
     const attempt = (record.claims?.length ?? 0) + 1;
     const built = W.buildClaim({ claimed: { number: claimedNumber, terms, status }, counter: { number: record.bountyId, status: mine.status, job: mine.job }, me, ctx,
-      score: input.score, sources: input.sources, finalAt: input.finalAt ?? undefined, now: now() });
+      score: input.score, sources: input.sources, finalAt: input.finalAt ?? undefined, answer: input.answer, value: input.value, asOf: input.asOf, now: now() });
     const claimSha256 = W.sha256(built.claim);
     const notes = built.warnings.map((w) => `  Note: ${w}`);
     if (!args.opt('approval')) {
@@ -484,12 +523,13 @@ export async function runWager(lib, {
       say(built.claim, `claim.md SHA-256: ${claimSha256} (saved to ${claimPath})`, notes, '',
         ...(attempt > 1 ? [`This is claim ${attempt} for this wager. Tell the owner why the last one failed: their approval of it does not cover this one.`] : []),
         'Show the owner this claim and ask them to reply with exactly:', `  ${W.claimLineFor({ claimSha256, bounty: claimedNumber })}`,
-        `Submitting prepays the evaluation fee. It is refused before ${built.claimAfter} (about 2 hours after the final; pass --final-at <ISO> when you know when the game ended).`);
+        kind === 'question' ? `Submitting prepays the evaluation fee. Submit it by ${built.claimBy}, 15 minutes before the deadline.`
+          : `Submitting prepays the evaluation fee. It is refused before ${built.claimAfter} (about 2 hours after the final; pass --final-at <ISO> when you know when the game ended).`);
       return;
     }
     // A new claim after a failed one needs the owner's new line for it: it must be prepared (and shown) again first.
     if ((input.attempt ?? 1) !== attempt) {
-      throw new Error(`The last claim failed, and this one was not prepared since. Run node wager.js claim ${record.termsSha256.slice(0, 8)} --score "..." --source ... --source ... without --approval, show the owner the new claim.md and why the last one failed, and ask for a new claim line. The earlier line does not cover a new submission`);
+      throw new Error(`The last claim failed, and this one was not prepared since. Run node wager.js claim ${record.termsSha256.slice(0, 8)} ${claimFlags(kind, true)} without --approval, show the owner the new claim.md and why the last one failed, and ask for a new claim line. The earlier line does not cover a new submission`);
     }
     const approval = W.bindClaimApproval({ approvalText: args.opt('approval'), claimSha256, bounty: claimedNumber });
     if (built.tooEarly) throw new Error(`Too early to submit: wait until ${built.claimAfter}. Right after the final, a juror's web tool can still be served an in-progress page and fail the claim`);

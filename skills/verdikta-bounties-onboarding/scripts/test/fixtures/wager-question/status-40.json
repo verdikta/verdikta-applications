@@ -1,0 +1,49 @@
+{
+  "success": true,
+  "bountyId": 40,
+  "status": "OPEN",
+  "rawStatus": 0,
+  "creator": "0x7ACbdBC2bB6e4fF8b705d695F77144eA619C0e2D",
+  "winner": null,
+  "payoutWei": "100000000000000",
+  "payoutEth": "0.0001",
+  "bountyAmountWei": "100000000000000",
+  "bountyAmount": "0.0001",
+  "createdAt": 1792670400,
+  "createdAtIso": "2026-10-22T12:00:00.000Z",
+  "submissionDeadline": 1792792800,
+  "submissionDeadlineIso": "2026-10-23T22:00:00.000Z",
+  "deadlinePassed": false,
+  "submissionCount": 0,
+  "isAcceptingSubmissions": true,
+  "canBeClosed": false,
+  "targetHunter": "0x75fAc210bF1Dcd0BA3FaC294de7c50C5763Da6d9",
+  "evaluationCid": "bafkreiv4questionfixture40aaplsynthesizednotlive",
+  "classId": 128,
+  "threshold": 80,
+  "creatorAssessmentWindowSize": 0,
+  "creatorDeterminationPaymentEth": "0.0001",
+  "arbiterDeterminationPaymentEth": "0.0001",
+  "oracleSettings": {
+    "maxOracleFee": "20000000000000",
+    "alpha": 500,
+    "estimatedBaseCost": "10000000000000",
+    "maxFeeBasedScaling": 3,
+    "maxOracleFeeEth": "0.00002",
+    "estimatedBaseCostEth": "0.00001"
+  },
+  "effectiveOracleSettings": {
+    "maxOracleFee": "20000000000000",
+    "alpha": 500,
+    "estimatedBaseCost": "10000000000000",
+    "maxFeeBasedScaling": 3,
+    "maxOracleFeeEth": "0.00002",
+    "estimatedBaseCostEth": "0.00001"
+  },
+  "linkage": {
+    "state": "linked",
+    "onChain": true,
+    "syncedFromBlockchain": true,
+    "detail": "Sync service has confirmed this job matches an on-chain bounty with the same id."
+  }
+}

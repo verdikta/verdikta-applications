@@ -1,6 +1,8 @@
 // Mutual wagers, pure logic: no wallet, network, files or environment (wager.js does the I/O).
 // A wager is two directed bounties, one per bettor, each paying the other bettor only if that bettor's side wins
-// and that bettor holds a live mirrored counter bounty (the website's Mutual Wager template, mutual-wager-v3).
+// and that bettor holds a live mirrored counter bounty. Two templates, told apart by the rubric the terms name: game
+// wagers (Mutual Wager, mutual-wager-v3: a game settled on its official final score) and question wagers (Question
+// Wager, mutual-wager-v4: YES or NO on a published value or fact, settled from the Resolution sources).
 // Bodies, checks and claims come from the website's shared module (_mutual-wager.cjs, vendored byte for byte):
 // the same code the create page, the bounty server's /api/wagers and its /jobs/create check run. This module adds
 // the skill's layers: an escrow read of the opponent's bounty, the standard no-winner rule, the owner's approval
@@ -11,13 +13,15 @@ import shared from './_mutual-wager.cjs';
 export { shared };
 
 export const template = shared.MUTUAL_WAGER_TEMPLATE;
+export const questionTemplate = shared.QUESTION_WAGER_TEMPLATE;
 export const DEFAULT_MARKET = shared.DEFAULT_WAGER_MARKET;
 export const DEFAULT_NO_WINNER = shared.DEFAULT_NO_WINNER;
 // Provider display names of client/src/services/modelProviderService.js: the create page's Jury line spells
 // providers this way, and an operator's wager-defaults.json may use the lower-case API names.
 export const PROVIDER_NAMES = { openai: 'OpenAI', anthropic: 'Anthropic', ollama: 'Open-source (Ollama)', hyperbolic: 'Hyperbolic API', xai: 'xAI' };
-// The template's class and threshold, the shared default jury and the create page's oracle defaults (client config
-// submissionDefaults). An operator file can replace the jury, oracle settings and class (wager.js --defaults).
+// The template's class and threshold (the same for both templates), the shared default jury and the create page's
+// oracle defaults (client config submissionDefaults). An operator file can replace the jury, oracle settings and class
+// (wager.js --defaults).
 export const WAGER_DEFAULTS = Object.freeze({
   classId: template.classId, threshold: template.threshold, iterations: 1,
   jury: shared.DEFAULT_WAGER_JURY.map((n) => ({ ...n })),
@@ -28,7 +32,24 @@ export const CLAIM_OPENS_AFTER_START = 3 * 3600;
 const MIN_SETTLE_AFTER_START = 12 * 3600, MAX_SETTLE_AFTER_START = 60 * 86400;
 // The structured proposal fields; wager.js adds creator, and the jury, oracle and class come from operator defaults.
 // No shortEvent: a wager's title is derived from its terms (the jury reads it), and the shared builder refuses one.
+// A question wager takes the bounty server's POST /api/wagers/propose names, the same as the native runtime's.
 export const PROPOSAL_FIELDS = ['wagerId', 'event', 'start', 'settle', 'stake', 'opponent', 'sides', 'market', 'noWinner'];
+export const QUESTION_PROPOSAL_FIELDS = ['kind', 'wagerId', 'question', 'betsClose', 'resolvesAt', 'claimsOpen', 'yes', 'no', 'noWinner', 'sources', 'side', 'stake', 'settle', 'opponent'];
+const GAME_ONLY_FIELDS = ['event', 'start', 'market', 'sides', 'shortEvent'];
+/** 'game' (mutual-wager-v3) or 'question' (mutual-wager-v4) for parsed terms. */
+export const kindOf = (terms) => (terms?.kind === 'question' ? 'question' : 'game');
+/** The templates wager.js builds, answers, checks and claims (the native runtime's SUPPORTED_WAGER_RUBRICS). */
+export const SUPPORTED_WAGER_RUBRICS = Object.freeze([shared.MUTUAL_WAGER_RUBRIC, shared.QUESTION_WAGER_RUBRIC]);
+/**
+ * Any other rubric is refused by name before anything is built: the shared module reads an unknown rubric as a game,
+ * and an answer this wallet cannot claim pays only the other side.
+ */
+export function unsupportedWagerProblem(terms, number) {
+  if (!terms?.found || SUPPORTED_WAGER_RUBRICS.includes(terms.rubric)) return null;
+  return `Bounty #${number} is a ${terms.rubric ?? 'unnamed-rubric'} wager. wager.js handles game wagers (${shared.MUTUAL_WAGER_RUBRIC}) and question wagers (${shared.QUESTION_WAGER_RUBRIC}) only, so it cannot be answered or claimed with it.`;
+}
+/** The site's rule: kind "question", or a question with no kind, is a question input. */
+const isQuestionInput = (input) => input?.kind === 'question' || (input?.kind === undefined && input?.question !== undefined);
 
 const norm = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
 const WHOLE_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z$/;
@@ -51,16 +72,16 @@ export function siteContext({ network, origin, deployment }) {
 }
 
 /** The shared /jobs/create rubricJson minus threshold and classId, which create_bounty.js sends outside the rubric. */
-export function wagerRubricJson() {
-  const { threshold, classId, ...rubric } = shared.mutualWagerRubricJson();
+export function wagerRubricJson(kind = 'game') {
+  const { threshold, classId, ...rubric } = shared.mutualWagerRubricJson({ kind });
   return rubric;
 }
 
 /** What the create page (and the server) pass to checkMutualWagerTerms for the bounty `me` would post. */
-export function expectFor({ me, target, stake, classId, threshold, jury, iterations, oracle, settle, ctx, now }) {
+export function expectFor({ me, target, stake, classId, threshold, jury, iterations, oracle, settle, ctx, now, kind = 'game' }) {
   return {
     posterWallet: me, targetHunter: target, stake, threshold, classId, jury, iterations, oracle, approvalWindow: false,
-    now, deadline: unix(settle), site: ctx.site, escrow: ctx.escrow, chain: ctx.chain, rubric: wagerRubricJson(),
+    now, deadline: unix(settle), site: ctx.site, escrow: ctx.escrow, chain: ctx.chain, rubric: wagerRubricJson(kind),
   };
 }
 
@@ -72,8 +93,8 @@ export function termsValues(t) {
   if (!oracle) problems.push('The Oracle settings line cannot be read back.');
   if (!both) problems.push('The "Both bounties" line cannot be read back.');
   if (!(wei(stake) > 0n)) problems.push('The Stake line cannot be read back.');
-  if (unix(f.start) == null || unix(f.settle) == null) problems.push('The scheduled start and the settlement deadline must be ISO UTC times to the second, such as 2026-10-21T19:00:00Z.');
-  return { problems, jury: juryLine?.jury, iterations: juryLine?.iterations, oracle, classId: both?.classId, threshold: both?.threshold, stake, start: norm(f.start), settle: norm(f.settle) };
+  if (unix(f.start) == null || unix(f.settle) == null) problems.push(`${t.kind === 'question' ? 'Bets close' : 'The scheduled start'} and the settlement deadline must be ISO UTC times to the second, such as 2026-10-21T19:00:00Z.`);
+  return { problems, kind: kindOf(t), jury: juryLine?.jury, iterations: juryLine?.iterations, oracle, classId: both?.classId, threshold: both?.threshold, stake, start: norm(f.start), settle: norm(f.settle) };
 }
 
 /**
@@ -82,26 +103,35 @@ export function termsValues(t) {
  */
 export function skillTermsProblems(t) {
   const f = t.fields || {}, problems = [];
+  const start = unix(f.start), settle = unix(f.settle);
+  // A question's times are the shared check's (Claims open at least 30 minutes after Resolves at, settlement at least
+  // 2 hours after Claims open), so a close settles the same evening. The skill only caps how long a stake stays locked.
+  if (t.kind === 'question') {
+    if (start != null && settle != null && settle - start > MAX_SETTLE_AFTER_START) problems.push('The settlement deadline must be at most 60 days after Bets close.');
+    return problems;
+  }
   if (norm(f.market) === DEFAULT_MARKET && norm(f.noWinner).replace(/\.$/, '') !== DEFAULT_NO_WINNER) {
     problems.push(`The "No winner" line must be the standard clause for the standard market ("${DEFAULT_NO_WINNER}"); it says "${norm(f.noWinner)}".`);
   }
   // The settlement deadline is also both bounties' deadline: too soon and no claim fits after the final, too late and
   // the loser's stake stays locked.
-  const start = unix(f.start), settle = unix(f.settle);
   if (start != null && settle != null && (settle - start < MIN_SETTLE_AFTER_START || settle - start > MAX_SETTLE_AFTER_START)) {
     problems.push('The settlement deadline must be between 12 hours and 60 days after the scheduled start.');
   }
   return problems;
 }
 
+/** What the terms' start is called: a game's scheduled start, a question's Bets close (both bounties exist before it). */
+export const startLabel = (kind) => (kind === 'question' ? 'Bets close time' : 'scheduled start');
+
 /**
- * Funding needs the scheduled start at least 10 minutes away (the shared MIN_START_LEAD_SECONDS). The other side's
- * jury rejects a counter created after the start, so a bounty funded later can lose but never win: a one-sided bet.
+ * Funding needs the start (a question's Bets close) at least 10 minutes away (the shared MIN_START_LEAD_SECONDS). The
+ * other side's jury rejects a counter created after it, so a bounty funded later can lose but never win: a one-sided bet.
  */
-export function startLeadProblem(start, now) {
+export function startLeadProblem(start, now, kind = 'game') {
   const s = unix(start);
   if (s != null && s - now >= shared.MIN_START_LEAD_SECONDS) return null;
-  return `The scheduled start ${norm(start)} is less than ${shared.MIN_START_LEAD_SECONDS / 60} minutes away or past: a bounty funded now could be created after it, the other side's jury would reject it as a counter, and the bet would be one-sided.`;
+  return `The ${startLabel(kind)} ${norm(start)} is less than ${shared.MIN_START_LEAD_SECONDS / 60} minutes away or past: a bounty funded now could be created after it, the other side's jury would reject it as a counter, and the bet would be one-sided.`;
 }
 
 /** This wallet's approved description checked again at `now`, as /jobs/create checks it (timing included). */
@@ -147,9 +177,12 @@ export function chainProblems(number, status, b, now) {
  * (shared answerMutualWager: mirrored from #number, naming it), checked as the create page and the server check it.
  * With mine = { description, number, status } (this wallet already posted its side), the terms are this wallet's own
  * posted lines, naming #number, so every shared line is compared with what the owner approved.
- * Returns { problems, terms, values, expect, answer: { title, description, createBody } (only without mine) }.
+ * Returns { problems, terms, values, expect, answer: { title, description, createBody } (only without mine), notes }.
+ * A question offer's notes tell the owner that its question, YES/NO lines and sources are the offer poster's words.
  */
 export function counterReport({ number, status, job, rpc, me, ctx, now, mine = null }) {
+  const unsupported = unsupportedWagerProblem(shared.parseMutualWagerTerms(job?.description), number);
+  if (unsupported) return { problems: [unsupported], notes: [] };
   const named = { number, createdAt: status?.createdAtIso, deadline: status?.submissionDeadlineIso };
   const placeholder = { number: 0, createdAt: '1970-01-01T00:00:00.000Z', deadline: '1970-01-01T00:00:00.000Z' };
   // Mirroring this wallet's description twice swaps the parties back and names #number, keeping its own shared lines.
@@ -179,24 +212,44 @@ export function counterReport({ number, status, job, rpc, me, ctx, now, mine = n
     }
   }
   const answer = answered?.createBody ? { title: answered.title, description: answered.description, createBody: answered.createBody } : null;
-  return { problems, terms, values, expect, answer };
+  return { problems, terms, values, expect, answer, notes: mine ? [] : questionOfferNotes(terms, answered) };
+}
+
+/** What the owner reads before answering a question offer (the native answerWager's notes, and the source warnings). */
+function questionOfferNotes(terms, answered) {
+  if (terms.kind !== 'question') return [];
+  const f = terms.fields, notes = [
+    `The question, its "YES wins if" / "NO wins if" lines and its Resolution sources are the offer's, written by ${terms.claimant.wallet}; the jury settles on them exactly as written. Read them before approving.`,
+  ];
+  if (norm(f.noWinner).replace(/\.$/, '') !== shared.DEFAULT_QUESTION_NO_WINNER) notes.push(`The offer's no-winner clause is not the site default: "${norm(f.noWinner)}". Read it before approving.`);
+  return [...notes, ...messages(answered?.warnings)];
 }
 
 /**
  * The first bettor's bounty (shared proposeMutualWager) with every check, before any approval or spend.
- * input = { wagerId, event, start, settle, stake, opponent, sides: { creator, opponent }, market?, noWinner? }.
+ * A game: input = { wagerId, event, start, settle, stake, opponent, sides: { creator, opponent }, market?, noWinner? }.
+ * A question: input = { kind: "question", wagerId, question, betsClose, resolvesAt, claimsOpen?, yes, no, noWinner?,
+ * sources: [https URL], side: "YES" | "NO", stake, settle, opponent }. Returns { offer, createBody, terms, expect,
+ * termsSha256, problems, warnings } (warnings: the shared builder's notes on a question's sources).
  */
 export function buildProposal(input, { me, ctx, defaults = WAGER_DEFAULTS, now }) {
-  const unknown = Object.keys(input || {}).filter((k) => !PROPOSAL_FIELDS.includes(k) && k !== '_note');
   if (input && '_note' in input) input = Object.fromEntries(Object.entries(input).filter(([k]) => k !== '_note'));
+  if (input?.kind !== undefined && !['game', 'question'].includes(input.kind)) return { problems: ['kind must be "game" (a game settled on its official final score; or leave it out) or "question" (YES or NO on a published value).'] };
+  const question = isQuestionInput(input);
+  const fields = question ? QUESTION_PROPOSAL_FIELDS : [...PROPOSAL_FIELDS, ...(input?.kind === 'game' ? ['kind'] : [])];
+  const unknown = Object.keys(input || {}).filter((k) => !fields.includes(k));
+  if (unknown.length && question) {
+    const game = unknown.filter((k) => GAME_ONLY_FIELDS.includes(k));
+    return { problems: [`Not question-wager fields: ${unknown.join(', ')}.${game.length ? ` ${game.join(', ')} belong${game.length === 1 ? 's' : ''} to a game wager.` : ''} A question wager takes ${QUESTION_PROPOSAL_FIELDS.join(', ')} (see examples/wager-question.json).`] };
+  }
   if (unknown.length) return { problems: [`Not proposal fields: ${unknown.join(', ')}. Use ${PROPOSAL_FIELDS.join(', ')} (see examples/wager-proposal.json).`] };
   const built = shared.proposeMutualWager({ ...input, creator: me, classId: defaults.classId, threshold: defaults.threshold, jury: defaults.jury, iterations: defaults.iterations ?? 1, oracle: defaults.oracle }, ctx);
   if (!built.createBody) return { problems: messages(built.problems) };
-  const expect = expectFor({ me, target: built.claimant.wallet, stake: built.terms.stake, ...defaults, settle: built.terms.settle, ctx, now });
+  const expect = expectFor({ me, target: built.claimant.wallet, stake: built.terms.stake, ...defaults, settle: built.terms.settle, ctx, now, kind: question ? 'question' : 'game' });
   const checked = shared.checkMutualWagerTerms(built.description, expect);
   const problems = [...checked.problems, ...skillTermsProblems(checked.terms)];
   const offer = { title: built.title, description: built.description };
-  return { offer, createBody: built.createBody, terms: checked.terms, expect, termsSha256: termsHash(offer), problems };
+  return { offer, createBody: built.createBody, terms: checked.terms, expect, termsSha256: termsHash(offer), problems, warnings: messages(built.warnings) };
 }
 
 /** create_bounty.js config from a shared /jobs/create body: TARGETED, exact deadline, no window, public claims. */
@@ -282,31 +335,56 @@ export function parseSources(list) {
   });
 }
 
+/** The claim flags a kind takes, for the refusal of a claim given in the other kind's shape. */
+export const CLAIM_SHAPE = {
+  game: '--score "<Team> <points>, <Team> <points> (Final)" and two --source "Name|URL|quote" (--final-at <ISO> optional)',
+  question: '--answer YES|NO --value "<the value as the sources show it>" --as-of <ISO UTC time the value is for> and two --source "Name|URL|quote"',
+};
+const QUESTION_CLAIM_INPUTS = ['answer', 'value', 'asOf'];
+
 /**
  * claim.md for bounty #claimed.number (the opponent's, paying this wallet; claimed.status its /onchain-status), citing
- * counter = { number, status, job }: this wallet's own bounty. The text is the shared buildWagerClaim's. Before it the
- * skill checks that the game can be final (3 h after the start), runs the shared timing, and, when the claimed
- * bounty's jury reads the counter itself (its Counter line is REQUIRED), runs the shared counter check on this
- * wallet's bounty as that jury will. Returns { claim, warnings, tooEarly, claimAfter }; throws with every problem.
+ * counter = { number, status, job }: this wallet's own bounty. The claimed bounty's rubric picks the kind, never the
+ * input: a game takes score (and finalAt), a question answer, value and asOf; the other kind's inputs are refused with
+ * the shape the claim needs. The text is the shared builder's (buildWagerClaim for a game, buildQuestionClaim for a
+ * question). Before it the skill checks that a game can be final (3 h after the start) and that a question's Claims
+ * open has passed (the shared timing only flags it, but the terms the jury reads say a claim comes after it), runs the
+ * shared timing (wagerClaimTimingFor), and, when the claimed bounty's jury reads the counter itself (its Counter line
+ * is REQUIRED), runs the shared counter check on this wallet's bounty as that jury will.
+ * Returns { claim, warnings, tooEarly, claimAfter, claimBy }; throws with every problem.
  */
-export function buildClaim({ claimed, counter, me, ctx, score, sources, finalAt, now }) {
+export function buildClaim({ claimed, counter, me, ctx, score, sources, finalAt, answer, value, asOf, now }) {
   const t = claimed.terms;
   if (!t?.found || !t.closed || t.count !== 1) throw new Error(`Bounty #${claimed.number} has no single, complete terms block`);
+  const unsupported = unsupportedWagerProblem(t, claimed.number);
+  if (unsupported) throw new Error(unsupported);
   if (!sameAddress(t.claimant.wallet, me)) throw new Error(`Bounty #${claimed.number} pays ${t.claimant.wallet}, not this wallet`);
+  const question = t.kind === 'question', given = { answer, value, asOf };
+  if (question && (score != null || finalAt != null)) throw new Error(`Bounty #${claimed.number} is a question wager (${t.rubric}): claim it with ${CLAIM_SHAPE.question}, not --score${finalAt != null ? ' or --final-at' : ''}`);
+  if (!question && QUESTION_CLAIM_INPUTS.some((k) => given[k] != null)) throw new Error(`Bounty #${claimed.number} is a game wager (${t.rubric}): claim it with ${CLAIM_SHAPE.game}, not --answer, --value or --as-of`);
+  if (question && QUESTION_CLAIM_INPUTS.some((k) => given[k] == null)) throw new Error(`A question claim needs ${CLAIM_SHAPE.question}`);
   const start = unix(t.fields.start);
-  if (start == null) throw new Error('The claimed bounty\'s scheduled start cannot be read');
-  if (now < start + CLAIM_OPENS_AFTER_START) throw new Error(`Too early: the game cannot be final yet. Claims open at ${isoOf(start + CLAIM_OPENS_AFTER_START)}; submit about 2 hours after the final, when the jurors' web pages show it`);
+  if (start == null) throw new Error(`The claimed bounty's ${startLabel(kindOf(t))} cannot be read`);
+  if (!question && now < start + CLAIM_OPENS_AFTER_START) throw new Error(`Too early: the game cannot be final yet. Claims open at ${isoOf(start + CLAIM_OPENS_AFTER_START)}; submit about 2 hours after the final, when the jurors' web pages show it`);
   if (/^(\S+);/.exec(norm(t.fields.site))?.[1] !== ctx.site) throw new Error(`Bounty #${claimed.number} is not on ${ctx.site}`);
   const problems = [];
-  const timing = shared.wagerClaimTiming({ start: t.fields.start, settle: t.fields.settle, deadline: claimed.status?.submissionDeadline, finalAt, now });
+  const timing = shared.wagerClaimTimingFor(t, { deadline: claimed.status?.submissionDeadline, finalAt, now });
   problems.push(...messages(timing.problems));
+  // Before Resolves at the shared timing has a problem; after it and before Claims open it only sets tooEarly. The native
+  // runtime refuses both, and so does this.
+  if (question && (timing.tooEarly || timing.problems.some((p) => p.code === 'CLAIM_TOO_EARLY'))) throw new Error(`Too early: claims open at ${t.fields.claimsOpen}. The terms the jury reads say a claim comes after it, and until then a source or a juror's web cache can still show an earlier value. Prepare the claim from ${t.fields.claimsOpen}`);
   if (!t.counter) {
     const values = termsValues(t);
     problems.push(...values.problems, ...shared.checkCounterBounty({ terms: t, status: counter.status, job: counter.job, expect: values, number: counter.number }));
   }
-  const s = parseScore(score);
-  const built = shared.buildWagerClaim({ terms: t, bounty: claimed.number, counter: counter.number, score: s.rows, result: s.result, sources: parseSources(sources), site: ctx.site });
+  let built;
+  if (question) {
+    built = shared.buildQuestionClaim({ terms: t, bounty: claimed.number, counter: counter.number, answer, value, asOf, sources: parseSources(sources), site: ctx.site, now });
+  } else {
+    const s = parseScore(score);
+    built = shared.buildWagerClaim({ terms: t, bounty: claimed.number, counter: counter.number, score: s.rows, result: s.result, sources: parseSources(sources), site: ctx.site });
+  }
   problems.push(...messages(built.problems));
   if (problems.length) throw new Error(`No claim:\n  - ${problems.join('\n  - ')}`);
-  return { claim: built.claim, warnings: [...messages(timing.warnings), ...messages(built.warnings)], tooEarly: timing.tooEarly, claimAfter: timing.claimAfter };
+  return { claim: built.claim, warnings: [...messages(timing.warnings), ...messages(built.warnings)], tooEarly: timing.tooEarly, claimAfter: timing.claimAfter, claimBy: timing.claimBy };
 }

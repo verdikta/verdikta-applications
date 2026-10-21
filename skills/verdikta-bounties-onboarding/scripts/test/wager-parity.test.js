@@ -55,3 +55,31 @@ test('the uploaded rubric is the template the server accepts, in the shape the c
   assert.deepEqual(mine.criteria.map((c) => c.description), W.template.criteria.map((c) => c.instructions));
   assert.deepEqual(mine.forbiddenContent, live.forbiddenContent);
 });
+
+// Question wagers (mutual-wager-v4): the create page's Question Wager template and the rubric the skill uploads.
+const qfx = (kind, n) => JSON.parse(readFileSync(new URL(`./fixtures/wager-question/${kind}-${n}.json`, import.meta.url), 'utf8'));
+
+test('the create page serves the same question template and reads question terms the same way', { skip }, async (t) => {
+  let page, templates;
+  try {
+    [page, templates] = await Promise.all([import(new URL('client/src/utils/mutualWagerTerms.js', repo)), import(new URL('client/src/data/rubricTemplates.js', repo))]);
+  } catch (e) { if (e.code === 'ERR_MODULE_NOT_FOUND') return t.skip('client dependencies not installed'); throw e; }
+  for (const key of ['version', 'title', 'description', 'threshold', 'classId', 'criteria', 'forbiddenContent']) {
+    assert.deepEqual(templates.getTemplate('questionWager')[key], JSON.parse(JSON.stringify(W.questionTemplate[key])), key);
+  }
+  const job = qfx('job', 40), status = qfx('status', 40);
+  const mirror = { number: 40, createdAt: status.createdAtIso, deadline: status.submissionDeadlineIso };
+  assert.deepEqual(page.mirrorMutualWagerTerms(job.description, mirror), W.shared.mirrorMutualWagerTerms(job.description, mirror));
+  assert.deepEqual(page.parseMutualWagerTerms(job.description), W.shared.parseMutualWagerTerms(job.description));
+  assert.equal(page.QUESTION_WAGER_RUBRIC, W.shared.QUESTION_WAGER_RUBRIC);
+});
+
+test('the uploaded question rubric is the v4 template, as the question fixtures store it', () => {
+  const mine = W.wagerRubricJson('question'), stored = qfx('job', 40).rubricContent;
+  assert.equal(W.shared.mutualWagerRubricProblem(mine, W.questionTemplate), null);
+  assert.ok(W.shared.mutualWagerRubricProblem(mine, W.template)); // never accepted as the game template
+  assert.deepEqual(mine.criteria, stored.criteria);
+  assert.deepEqual(mine.forbiddenContent, stored.forbiddenContent);
+  assert.deepEqual(mine.criteria.map((c) => c.description), W.questionTemplate.criteria.map((c) => c.instructions));
+  assert.equal(W.questionTemplate.classId, W.WAGER_DEFAULTS.classId); assert.equal(W.questionTemplate.threshold, W.WAGER_DEFAULTS.threshold);
+});

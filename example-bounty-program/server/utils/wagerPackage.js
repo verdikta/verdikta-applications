@@ -80,7 +80,8 @@ async function verifyWagerPackage({ evaluationCid, description, ipfsClient }) {
   try { rubric = JSON.parse(Buffer.isBuffer(rubricBuffer) ? rubricBuffer.toString('utf8') : String(rubricBuffer)); }
   catch { problems.push(`attaches a rubric (${rubricCid}) that is not JSON`); return done(); }
   found.rubric = rubric;
-  const edited = wager.mutualWagerRubricProblem(rubric);
+  // Compared with the template the terms name (mutual-wager-v3 or -v4).
+  const edited = wager.mutualWagerRubricProblem(rubric, wager.wagerSpec(t).template);
   if (edited) problems.push(`attaches a rubric (${rubricCid}) that ${edited.detail}`);
 
   // What this site would have built from the bounty's terms (the same function createEvaluationCIDArchive

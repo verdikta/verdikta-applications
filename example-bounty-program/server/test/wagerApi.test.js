@@ -1026,3 +1026,116 @@ describe('review of #109, round 3: rubric provenance, group membership, oversize
     });
   });
 });
+
+describe('question wagers (mutual-wager-v4) through the API', () => {
+  const SOURCES = ['https://stockanalysis.com/stocks/msft/history/', 'https://www.investing.com/equities/microsoft-corp-historical-data'];
+  // Alice says YES, Bob says NO. Times are offsets from now: bets close, resolution, settlement.
+  const question = (over = {}) => ({
+    kind: 'question', creator: ALICE, opponent: BOB, wagerId: 'VW-Q-MSFT-1',
+    question: 'Will Microsoft (MSFT) close above $530.00 on the Nasdaq on the resolution day?',
+    betsClose: at(2 * H), resolvesAt: at(8 * H), settle: at(34 * H), stake: '0.0001', side: 'YES', sources: SOURCES,
+    yes: 'the official Nasdaq closing price of MSFT on the resolution day is above $530.00',
+    no: 'the official Nasdaq closing price of MSFT on the resolution day is below $530.00', ...over,
+  });
+  const qProposed = (over) => wager.proposeMutualWager(question(over), ctx()).createBody;
+  const status = (q) => request(app).get(`/api/wagers/status?${q}`).set(KEY);
+
+  it('GET /template?kind=question serves the v4 template; an unknown kind is a 400', async () => {
+    const res = await request(app).get('/api/wagers/template?kind=question');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ kind: 'question', rubric: 'mutual-wager-v4', criteria: wager.QUESTION_WAGER_CRITERIA, kinds: { game: 'mutual-wager-v3', question: 'mutual-wager-v4' } });
+    expect(res.body.rubricJson).toEqual(wager.mutualWagerRubricJson({ kind: 'question' }));
+    expect(validateRubric(res.body.rubricJson)).toEqual({ valid: true, errors: [] });
+    expect(res.body.termsLines.map((l) => l.line).slice(0, 9)).toEqual(['Wager ID:', 'Question:', 'Bets close:', 'Resolves at:', 'Claims open:', 'YES wins if:', 'NO wins if:',
+      'No winner (this bounty must not pay):', 'Resolution sources (start here, then search the web):']);
+    expect(res.body.rules).toMatchObject({ minSourceDelaySeconds: 1800, minClaimWindowSeconds: 7200, maxResolutionSources: 3 });
+    expect(res.body.defaults.sourceDelaySeconds).toBe(wager.DEFAULT_SOURCE_DELAY_SECONDS);
+    expect((await request(app).get('/api/wagers/template')).body).toMatchObject({ kind: 'game', rubric: 'mutual-wager-v3' });
+    expect((await request(app).get('/api/wagers/template?kind=poker')).status).toBe(400);
+  });
+
+  it('propose -> /jobs/create -> answer -> /jobs/create -> status VERIFIED', async () => {
+    const offer = await post('/api/wagers/propose', question());
+    expect(offer.status).toBe(200);
+    expect(offer.body).toMatchObject({ ok: true, problems: [], warnings: [], wager: { kind: 'question', question: question().question, sources: SOURCES } });
+    expect(offer.body.createBody.title).toBe('Wager VW-Q-MSFT-1: pays if NO wins');
+    expect(offer.body.next.join(' ')).toMatch(/Before bets close \(/);
+    expect((await post('/api/jobs/create', offer.body.createBody)).status).toBe(200);
+    putOnChain(90, offer.body.createBody, { createdAt: NOW() - 60 });
+
+    const answer = await post('/api/wagers/answer', { counter: 90, creator: BOB });
+    expect(answer.body).toMatchObject({ ok: true, problems: [] });
+    expect(answer.body.createBody).toMatchObject({ creator: BOB, targetHunter: ALICE, title: 'Wager VW-Q-MSFT-1: pays if YES wins' });
+    expect((await post('/api/jobs/create', answer.body.createBody)).status).toBe(200);
+    putOnChain(91, answer.body.createBody, { createdAt: NOW() - 30 });
+
+    const pair = (await status('wagerId=VW-Q-MSFT-1')).body.pairs[0];
+    expect(pair).toMatchObject({ state: 'VERIFIED', kind: 'question', question: question().question, resolvesAt: question().resolvesAt, sources: SOURCES, problems: [] });
+    expect(pair.claimsOpen).toBe(new Date(Date.parse(question().resolvesAt) + 2 * H * 1000).toISOString().replace('.000Z', 'Z'));
+    expect(pair.claimAfter).toBe(new Date(Date.parse(pair.claimsOpen)).toISOString());
+    expect(pair.next.join(' ')).toMatch(/The question resolves at /);
+  });
+
+  it('returns source warnings with the body, and the offer to the targeted wallet', async () => {
+    const res = await post('/api/wagers/propose', question({ sources: ['https://www.reuters.com/markets/companies/MSFT.OQ/'] }));
+    expect(res.body.ok).toBe(true);
+    expect(res.body.warnings.map((x) => x.code)).toEqual(['WAGER_SOURCE_UNREADABLE', 'WAGER_SOURCES_UNTESTED']);
+    putOnChain(92, res.body.createBody);
+    const offers = (await status(`wallet=${BOB}`)).body.offers;
+    expect(offers).toEqual([expect.objectContaining({ bountyId: 92, kind: 'question', yourSide: 'NO wins', theirSide: 'YES wins', question: question().question })]);
+  });
+
+  it('/check and /jobs/create refuse a question wager with the game rubric, or with Claims open too soon', async () => {
+    const body = qProposed();
+    const game = await post('/api/wagers/check', { ...body, rubricJson: wager.mutualWagerRubricJson() });
+    expect(game.body.ok).toBe(false);
+    expect(game.body.problems.map((p) => p.code)).toEqual(['WAGER_RUBRIC']);
+    const opens = question().resolvesAt.replace(/:00Z$/, ':00Z');
+    const soon = wager.proposeMutualWager(question({ claimsOpen: iso(Date.parse(opens) / 1000 + 10 * 60) }), ctx()).createBody;
+    const refused = await post('/api/jobs/create', soon);
+    expect(refused.status).toBe(400);
+    expect(refused.body).toMatchObject({ code: 'WAGER_TIMING', details: expect.stringMatching(/at least 30 minutes after Resolves at/) });
+    expect(mockStorageData.jobs).toHaveLength(0);
+  });
+
+  describe('claims and status after resolution', () => {
+    // Resolved 3 hours ago (Claims open 1 hour ago); Bob (NO) won and claims Alice's #93 with his #94.
+    function resolvedPair({ resolvedOffset = -3 * H } = {}) {
+      const times = { betsClose: at(resolvedOffset - 6 * H), resolvesAt: at(resolvedOffset), settle: at(resolvedOffset + 24 * H) };
+      const a = qProposed(times);
+      putOnChain(93, a, { createdAt: NOW() + resolvedOffset - 8 * H });
+      const b = qProposed({ ...times, creator: BOB, opponent: ALICE, side: 'NO' });
+      putOnChain(94, b, { createdAt: NOW() + resolvedOffset - 7 * H });
+      return times;
+    }
+    const sources = [
+      { name: 'StockAnalysis', url: SOURCES[0], quote: 'Close 529.11' },
+      { name: 'Investing.com', url: SOURCES[1], quote: 'Price 529.11' },
+    ];
+    const claim = (times, over = {}) => post('/api/wagers/claim', { bounty: 93, counter: 94, answer: 'NO', value: '$529.11', asOf: times.resolvesAt, sources, ...over });
+
+    it('drafts the v4 claim.md and lists the status as READY_TO_CLAIM', async () => {
+      const times = resolvedPair();
+      const res = await claim(times);
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ ok: true, ready: true, tooEarly: false, problems: [] });
+      expect(res.body.claim).toMatch(/^MUTUAL WAGER CLAIM \(mutual-wager-v4\)\nWager ID: VW-Q-MSFT-1\nBounty claimed: #93\n/);
+      expect(res.body.claim).toContain(`Value: $529.11, for ${times.resolvesAt}\nAnswer: NO. NO wins if: ${question().no}.\n`);
+      expect(res.body.warnings.map((x) => x.code)).toEqual(['CLAIM_QUOTE_NO_DATE', 'CLAIM_QUOTE_NO_DATE']);
+      const pair = (await status('wagerId=VW-Q-MSFT-1')).body.pairs[0];
+      expect(pair).toMatchObject({ state: 'READY_TO_CLAIM', kind: 'question' });
+      expect(pair.next.join(' ')).toMatch(/"answer": "YES" \| "NO", "value"/);
+    });
+
+    it('refuses the losing answer, and waits for Claims open', async () => {
+      const times = resolvedPair();
+      expect((await claim(times, { bounty: 94, counter: 93, answer: 'NO' })).body.problems.map((p) => p.code)).toContain('CLAIM_SIDE_LOST');
+      mockStorageData = { jobs: [], nextId: 500 };
+      const early = resolvedPair({ resolvedOffset: -H });
+      const res = await claim(early);
+      expect(res.body).toMatchObject({ ok: true, ready: false, tooEarly: true });
+      expect(res.body.warnings.map((x) => x.code)).toContain('CLAIM_TOO_EARLY');
+      expect((await status('wagerId=VW-Q-MSFT-1')).body.pairs[0].state).toBe('EVENT_PENDING');
+    });
+  });
+});

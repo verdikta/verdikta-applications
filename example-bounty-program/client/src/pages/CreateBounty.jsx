@@ -33,7 +33,7 @@ import { walletEnvironment, withTimeout } from '../services/injectedProvider';
 import { classifyCreateFailure, describeCreateFailure, accountTypeFromCode } from '../utils/createFailure';
 import * as rubricStorage from '../services/rubricStorage';
 import { getTemplateOptions, getTemplate, createBlankRubric, RUBRIC_DEFAULTS } from '../data/rubricTemplates';
-import { mutualWagerTermsSkeleton, mirrorMutualWagerTerms, hasMutualWagerTerms, parseMutualWagerTerms, canonicalWagerText, checkMutualWagerTerms, checkCounterBounty, findWagerTwin } from '../utils/mutualWagerTerms';
+import { mutualWagerTermsSkeleton, questionWagerTermsSkeleton, mirrorMutualWagerTerms, hasMutualWagerTerms, parseMutualWagerTerms, canonicalWagerText, checkMutualWagerTerms, checkCounterBounty, findWagerTwin } from '../utils/mutualWagerTerms';
 import ClassSelector from '../components/ClassSelector';
 import ClassCoverage from '../components/ClassCoverage';
 import CriterionEditor from '../components/CriterionEditor';
@@ -50,6 +50,8 @@ const ORACLE_DEFAULTS = {
   oracleMaxFeeBasedScaling: String(config.submissionDefaults.maxFeeBasedScaling),
 };
 const ORACLE_FEE_CEILING_ETH = ethers.formatEther(ORACLE_FEE_CEILING_WEI);
+// The rubric templates of a mutual wager: a game (mutual-wager-v3) or a question (mutual-wager-v4).
+const WAGER_TEMPLATES = ['mutualWager', 'questionWager'];
 
 /**
  * Validate the oracle settings form fields against the contract's bounds.
@@ -624,7 +626,9 @@ function CreateBounty({ walletState }) {
       }
       return;
     }
-    const terms = mutualWagerTermsSkeleton({
+    // A question wager (mutual-wager-v4) has its own lines: question, bets close, resolves at, sources, YES/NO sides.
+    const skeleton = selectedTemplate === 'questionWager' ? questionWagerTermsSkeleton : mutualWagerTermsSkeleton;
+    const terms = skeleton({
       posterWallet: walletState.address,
       claimantWallet: formData.targetHunter,
       stake: effectiveBountyAmountEth(formData),
@@ -893,7 +897,7 @@ function CreateBounty({ walletState }) {
     // A wager's terms must describe exactly the bounty this form creates. A counter bounty
     // the terms name must match its live record, because the jury then skips its own counter
     // checks; and one Wager ID backs one pair, so a counter cannot stand behind two offers.
-    const isWager = selectedTemplate === 'mutualWager' || hasMutualWagerTerms(evaluationDescription);
+    const isWager = WAGER_TEMPLATES.includes(selectedTemplate) || hasMutualWagerTerms(evaluationDescription);
     // The jury also reads the title and work product type, so a wager's are set from its terms.
     const parsedWager = isWager ? parseMutualWagerTerms(evaluationDescription) : null;
     const wagerText = parsedWager?.found && parsedWager.closed ? canonicalWagerText(parsedWager) : null;
@@ -1685,9 +1689,18 @@ function CreateBounty({ walletState }) {
               </div>
             </div>
 
-            {selectedTemplate === 'mutualWager' && (
+            {WAGER_TEMPLATES.includes(selectedTemplate) && (
               <section className="alert alert-info mutual-wager-note" aria-labelledby="mutual-wager-note-title">
                 <h3 id="mutual-wager-note-title">The wager terms go in the Job Description</h3>
+                {selectedTemplate === 'questionWager' && (
+                  <p>
+                    A question wager settles on a published value or fact for a stated date or time (an official closing price,
+                    a reference rate or statistic, an official result), YES or NO against the line in its terms; exactly at the
+                    line, nobody wins. List https Resolution sources the jurors can open: they get web tools only when the terms
+                    carry a link. Do not bet on minute-level intraday prices: jurors could not confirm them. Bets close before the
+                    answer can be known, and claims open some time after it resolves, once the sources show the final value.
+                  </p>
+                )}
                 <p>
                   The jury reads the terms only from the Job Description, so it needs a MUTUAL WAGER TERMS block. Each bettor posts
                   a bounty with this rubric unchanged and the same terms, with Poster and Claimant swapped. Set Target Hunter to the

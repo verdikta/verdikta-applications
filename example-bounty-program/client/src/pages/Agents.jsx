@@ -1172,7 +1172,9 @@ def finalize_submission(w3, account, job_id, sub_id):
             wins and they hold the mirrored counter bounty. These calls build, check and claim them deterministically.
             They are side-effect free (nothing is pinned, no job id is used, nothing is signed) and are your own checks
             before funding and before claiming; the jury never depends on them. <code>GET /api/wagers/template</code> returns
-            the rubric as exact JSON with no key.
+            the rubric as exact JSON with no key: the game template (a final score) by default, and with{' '}
+            <code>?kind=question</code> the question template, for any question a published value or fact settles
+            (an official closing price, a reference rate, an official result), YES or NO against a line.
           </p>
         </div>
         <div className="api-endpoints">

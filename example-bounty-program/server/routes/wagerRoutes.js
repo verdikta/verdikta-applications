@@ -2,7 +2,7 @@
  * Mutual wagers for agents: the create page's wager protections as API calls, under /api/wagers.
  * A wager is two directed bounties, one per bettor (see shared/mutualWager.js).
  *
- *   GET  /template   the rubric template, exact JSON (public, no key)
+ *   GET  /template   the rubric template, exact JSON (public, no key); ?kind=question for mutual-wager-v4
  *   POST /propose    first bettor: structured terms -> title, description and the /jobs/create body
  *   POST /answer     second bettor: bounty #N -> its terms mirrored with the sides swapped
  *   POST /check      a /jobs/create body -> every wager problem /jobs/create would refuse
@@ -101,18 +101,25 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
   }
 
   const summary = (t) => (t?.found ? {
-    wagerId: t.fields.wagerId, event: t.fields.event, market: t.fields.market, start: t.fields.start, settle: t.fields.settle,
+    wagerId: t.fields.wagerId, kind: t.kind, event: t.fields.event ?? null, market: t.fields.market ?? null,
+    ...(t.kind === 'question' ? { question: t.fields.question, resolvesAt: t.fields.resolvesAt, claimsOpen: t.fields.claimsOpen, sources: wager.parseSourcesLine(t.fields.sources) } : {}),
+    start: t.fields.start, settle: t.fields.settle,
     stakeEth: wager.parseStakeLine(t.fields.stake), poster: t.poster, claimant: t.claimant, counter: t.counter,
   } : null);
+  // "the start" of a game; "bets close" of a question: both bounties exist before it.
+  const lockOf = (t) => (t?.kind === 'question' ? 'bets close' : 'the start');
 
-  function builderResponse({ title, description, createBody, terms }, check, next) {
+  function builderResponse({ title, description, createBody, terms, warnings = [] }, check, next) {
     const ok = check.issues.length === 0;
     return {
       schemaVersion: SCHEMA_VERSION,
       success: true,
       ok,
       problems: check.issues,
-      wager: summary(terms || check.terms),
+      // Advice that does not block posting (for a question: Resolution sources a juror may not open).
+      warnings,
+      // The parsed terms (propose's builder terms are not parsed, so they would summarize as null).
+      wager: summary(check.terms?.found ? check.terms : terms),
       title,
       description,
       // Only a body that passes is returned: post it to /jobs/create unchanged.
@@ -140,10 +147,15 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
   /* ---------- GET /api/wagers/template (public) ---------- */
   router.get('/template', (req, res) => {
     const ctx = wagerContext();
+    const kind = req.query.kind === undefined ? 'game' : String(req.query.kind);
+    if (!['game', 'question'].includes(kind)) return inputError(res, [{ code: 'WAGER_INPUT', field: 'kind', message: 'kind must be "game" (mutual-wager-v3, the default) or "question" (mutual-wager-v4).' }]);
     res.set('Cache-Control', 'public, max-age=300');
+    if (kind === 'question') return res.json(questionTemplateResponse(ctx));
     return res.json({
       schemaVersion: SCHEMA_VERSION,
       success: true,
+      kind: 'game',
+      kinds: { game: wager.MUTUAL_WAGER_RUBRIC, question: wager.QUESTION_WAGER_RUBRIC },
       rubric: wager.MUTUAL_WAGER_RUBRIC,
       version: wager.MUTUAL_WAGER_TEMPLATE.version,
       threshold: wager.MUTUAL_WAGER_TEMPLATE.threshold,
@@ -176,15 +188,54 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
     });
   });
 
+  // GET /template?kind=question: the same response for mutual-wager-v4.
+  function questionTemplateResponse(ctx) {
+    const t = wager.QUESTION_WAGER_TEMPLATE;
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      success: true,
+      kind: 'question',
+      kinds: { game: wager.MUTUAL_WAGER_RUBRIC, question: wager.QUESTION_WAGER_RUBRIC },
+      rubric: wager.QUESTION_WAGER_RUBRIC,
+      version: t.version,
+      threshold: t.threshold,
+      classId: t.classId,
+      criteria: wager.QUESTION_WAGER_CRITERIA,
+      rubricJson: wager.mutualWagerRubricJson({ kind: 'question' }),
+      template: t,
+      termsLines: wager.QUESTION_WAGER_LINES.map(([key, prefix]) => ({ key, line: prefix.trim() })),
+      text: { workProductType: wager.WAGER_WORK_PRODUCT_TYPE, title: 'derived from the terms (see POST /api/wagers/propose)', description: 'exactly the terms as built, nothing else' },
+      defaults: {
+        jury: wager.DEFAULT_WAGER_JURY,
+        iterations: 1,
+        noWinner: wager.DEFAULT_QUESTION_NO_WINNER,
+        sourceDelaySeconds: wager.DEFAULT_SOURCE_DELAY_SECONDS,
+        oracle: ctx.defaults.oracle,
+        workProductType: wager.WAGER_WORK_PRODUCT_TYPE,
+      },
+      site: { url: ctx.site, escrow: ctx.escrow, chain: ctx.chain },
+      rules: {
+        minStartLeadSeconds: wager.MIN_START_LEAD_SECONDS,
+        minSourceDelaySeconds: wager.MIN_SOURCE_DELAY_SECONDS,
+        minClaimWindowSeconds: wager.MIN_CLAIM_WINDOW_SECONDS,
+        claimStartMarginSeconds: wager.CLAIM_START_MARGIN_SECONDS,
+        maxResolutionSources: wager.MAX_RESOLUTION_SOURCES,
+      },
+      settleable: 'A published value or fact for a stated date or time: an official closing price, a reference rate or statistic, an official result. Not minute-level intraday prices: jurors could not confirm them (October 2026 canary).',
+      note: 'Both bounties of a question wager use this rubric unchanged, the same terms with Poster and Claimant swapped (sides "YES wins" and "NO wins"), the other bettor as targetHunter and no approval window. Build them with POST /api/wagers/propose { "kind": "question", ... } and /answer; never write terms or claims by hand.',
+    };
+  }
+
   /* ---------- POST /api/wagers/propose ---------- */
   router.post('/propose', async (req, res) => {
     try {
       const built = wager.proposeMutualWager(req.body || {}, wagerContext());
       if (built.problems.length) return inputError(res, built.problems);
       const check = await checkBody(built.createBody, req);
+      const lock = built.terms.kind === 'question' ? 'bets close' : 'the start';
       return res.json(builderResponse(built, check, postingSteps(built.createBody, [
         `Give ${built.claimant.wallet} the new bounty number. They answer it with POST /api/wagers/answer { "counter": <number>, "creator": "${built.claimant.wallet}" } before ${isoOf(Date.parse(built.terms.start) / 1000 - wager.MIN_START_LEAD_SECONDS)}.`,
-        `Before the start (${built.terms.start}), GET /api/wagers/status?wagerId=${built.terms.wagerId} must say VERIFIED. Until their bounty matches yours, your stake backs nothing and stays locked until your deadline.`,
+        `Before ${lock} (${built.terms.start}), GET /api/wagers/status?wagerId=${built.terms.wagerId} must say VERIFIED. Until their bounty matches yours, your stake backs nothing and stays locked until your deadline.`,
       ])));
     } catch (err) {
       logger.error('[wagers/propose] error', { msg: err.message });
@@ -216,7 +267,7 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
       const check = await checkBody(built.createBody, req, { number: n, records });
       return res.json(builderResponse(built, check, postingSteps(built.createBody, [
         `Your bounty names #${n} as its counter, so its jury will not re-check #${n}: this answer and /jobs/create checked it against its live record instead.`,
-        `Then GET /api/wagers/status?wagerId=${built.terms.fields.wagerId} should say VERIFIED before the start (${built.terms.fields.start}).`,
+        `Then GET /api/wagers/status?wagerId=${built.terms.fields.wagerId} should say VERIFIED before ${lockOf(built.terms)} (${built.terms.fields.start}).`,
       ])));
     } catch (err) {
       logger.error('[wagers/answer] error', { msg: err.message });
@@ -242,7 +293,7 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
   /* ---------- POST /api/wagers/claim ---------- */
   router.post('/claim', async (req, res) => {
     try {
-      const { bounty, counter, score, result, sources, finalAt } = req.body || {};
+      const { bounty, counter, score, result, sources, finalAt, answer, value, asOf } = req.body || {};
       const n = asBountyNumber(bounty);
       if (n === null) return inputError(res, [{ code: 'CLAIM_INPUT', field: 'bounty', message: 'bounty must be the number of the bounty you claim: the one that pays you (you are its Claimant).' }], 'Invalid claim input');
       if (counter !== undefined && asBountyNumber(counter) === null) return inputError(res, [{ code: 'CLAIM_INPUT', field: 'counter', message: 'counter must be the number of your own bounty in the pair.' }], 'Invalid claim input');
@@ -260,11 +311,13 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
       if (status.status === 'AWARDED') problems.push({ code: 'CLAIM_PAID', message: `Bounty #${n} has already paid ${status.winner}.` });
       else if (status.status === 'CLOSED') problems.push({ code: 'CLAIM_CLOSED', message: `Bounty #${n} is closed: its stake went back to its creator.` });
       if (!sameAddress(status.targetHunter, terms.claimant.wallet)) problems.push({ code: 'CLAIM_TARGET', message: `Bounty #${n} is targeted on chain at ${status.targetHunter}, not at the Claimant in its terms (${terms.claimant.wallet}).` });
-      const timing = wager.wagerClaimTiming({ start: terms.fields.start, settle: terms.fields.settle, deadline: status.submissionDeadline, finalAt, now });
+      // A game claims from the start or finalAt; a question from its Claims open time.
+      const timing = wager.wagerClaimTimingFor(terms, { deadline: status.submissionDeadline, finalAt, now });
       problems.push(...timing.problems);
       warnings.push(...timing.warnings);
       const site = /^(\S+);/.exec(terms.fields.site || '')?.[1] || wagerContext().site;
-      const built = wager.buildWagerClaim({ terms, bounty: n, counter, score, result, sources, site });
+      // A game claim takes score and result; a question claim takes answer, value and asOf.
+      const built = wager.buildWagerClaim({ terms, bounty: n, counter, score, result, answer, value, asOf, sources, site, now });
       problems.push(...built.problems);
       warnings.push(...built.warnings);
 

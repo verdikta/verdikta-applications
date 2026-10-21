@@ -10,6 +10,8 @@
  * The server cannot see the event. Its timing is the terms' scheduled start and settlement deadline:
  * a claim is advised from 5 hours after the start (about 2 hours after a typical final, so juror web
  * tools no longer serve a cached in-progress page), but never later than the deadlines allow.
+ * A question wager (mutual-wager-v4) states its own times: bets close (its `start`), Resolves at and
+ * Claims open, from which a claim is advised.
  */
 const wager = require('../../shared/mutualWager');
 
@@ -89,11 +91,13 @@ function claimWindow(members, terms) {
   const deadlines = members.filter((x) => x.status.status === 'OPEN').map((x) => Number(x.status.submissionDeadline)).filter(Number.isFinite);
   const hardEnd = Math.min(settle, ...deadlines);
   const claimBy = hardEnd - wager.CLAIM_START_MARGIN_SECONDS;
-  // The usual wait (5 h after the start) is advice; when it does not fit before the deadline, the
-  // winner claims as soon as the official final is out, as POST /api/wagers/claim also says.
-  const advised = start + wager.CLAIM_AFTER_START_SECONDS;
+  // The usual wait (5 h after the start; for a question, Claims open) is advice; when it does not fit
+  // before the deadline, the winner claims as soon as the result is out, as POST /api/wagers/claim also says.
+  const question = terms.kind === 'question';
+  const advised = question ? unix(terms.fields.claimsOpen) : start + wager.CLAIM_AFTER_START_SECONDS;
   const conflict = advised > claimBy;
-  return { start, settle, hardEnd, claimBy, conflict, claimAfter: conflict ? start : advised };
+  const earliest = question ? unix(terms.fields.resolvesAt) : start;
+  return { start, settle, hardEnd, claimBy, conflict, claimAfter: conflict ? earliest : advised };
 }
 
 function pairState({ a, b, problems }, now) {
@@ -119,13 +123,21 @@ function pairState({ a, b, problems }, now) {
 const NEXT = {
   AWAITING_COUNTERPARTY: (p) => [`The Claimant (${p.bounties[0].claimant}) answers with POST /api/wagers/answer { "counter": ${p.bounties[0].bountyId}, "creator": "${p.bounties[0].claimant}" } before ${p.answerBy}.`,
     `Until then the Poster's stake is exposed: it stays locked until bounty #${p.bounties[0].bountyId}'s deadline (${p.bounties[0].deadline}) even if no counter bounty appears.`],
-  OFFER_EXPIRED: (p) => [`No counter bounty arrived in time (answers had to exist 10 minutes before the start, ${p.start}). The Poster closes #${p.bounties[0].bountyId} after its deadline (${p.bounties[0].deadline}) to get the stake back: POST /api/jobs/${p.bounties[0].bountyId}/close.`],
+  OFFER_EXPIRED: (p) => [`No counter bounty arrived in time (answers had to exist 10 minutes before ${p.kind === 'question' ? 'bets close' : 'the start'}, ${p.start}). The Poster closes #${p.bounties[0].bountyId} after its deadline (${p.bounties[0].deadline}) to get the stake back: POST /api/jobs/${p.bounties[0].bountyId}/close.`],
   MISMATCHED: () => ['The bounties do not match (see problems), so neither claim can be relied on. Do not fund more; each creator closes their own bounty after its deadline with POST /api/jobs/:id/close.'],
-  VERIFIED: (p) => [`Both bounties match. Wait for the event (scheduled ${p.start}); claim from ${p.claimAfter} and by ${p.claimBy}.`],
-  EVENT_PENDING: (p) => [`The event may still be under way. Claim from ${p.claimAfter}, about 2 hours after the final, and by ${p.claimBy}.`],
-  READY_TO_CLAIM: (p) => [...(p.deadlineConflict ? [`The usual wait of about 2 hours after the final does not fit before the deadline: claim as soon as the official final is out, by ${p.claimBy}.`] : []),
+  VERIFIED: (p) => [p.kind === 'question'
+    ? `Both bounties match. The question resolves at ${p.resolvesAt}; claim from ${p.claimAfter} and by ${p.claimBy}.`
+    : `Both bounties match. Wait for the event (scheduled ${p.start}); claim from ${p.claimAfter} and by ${p.claimBy}.`],
+  EVENT_PENDING: (p) => [p.kind === 'question'
+    ? `The question resolves at ${p.resolvesAt}, and its sources may not show the final value yet. Claim from ${p.claimAfter} (Claims open) and by ${p.claimBy}.`
+    : `The event may still be under way. Claim from ${p.claimAfter}, about 2 hours after the final, and by ${p.claimBy}.`],
+  READY_TO_CLAIM: (p) => (p.kind === 'question' ? [
+    ...(p.deadlineConflict ? [`Claims open does not leave time before the deadline: claim as soon as the sources show the final value, by ${p.claimBy}.`] : []),
+    `The winner claims the bounty that pays them (the one whose Claimant they are) by ${p.claimBy}: draft claim.md with POST /api/wagers/claim { "bounty": <that bounty>, "counter": <their own bounty>, "answer": "YES" | "NO", "value": "...", "asOf": "<ISO time the value is for>", "sources": [...] }, then submit it as the bounty's work file.`,
+    'When the No winner rule holds (for example the value is exactly at the line, or no reputable source shows the answer) nobody claims; each creator closes their own bounty after its deadline.',
+  ] : [...(p.deadlineConflict ? [`The usual wait of about 2 hours after the final does not fit before the deadline: claim as soon as the official final is out, by ${p.claimBy}.`] : []),
     `The winner claims the bounty that pays them (the one whose Claimant they are) by ${p.claimBy}: draft claim.md with POST /api/wagers/claim { "bounty": <that bounty>, "counter": <their own bounty>, "score": [...], "sources": [...] }, then submit it as the bounty's work file.`,
-    'On a tie or no official result nobody claims; each creator closes their own bounty after its deadline.'],
+    'On a tie or no official result nobody claims; each creator closes their own bounty after its deadline.']),
   CLAIM_PENDING: (p) => [`A claim is being evaluated. When the oracle answers, finalize it (see actions); a failed claim may be resubmitted by ${p.claimBy}.`],
   PAID: (p) => [`Paid: ${p.paid.map((b) => `#${b.bountyId} to ${b.winner}`).join(', ')}. The winner's own bounty pays nobody: its creator closes it after its deadline (POST /api/jobs/:id/close).`],
   REFUNDABLE: () => ['No bounty paid by the settlement deadline. Each creator closes their own bounty after its deadline (POST /api/jobs/:id/close; anyone may send it, and it refunds the creator).'],
@@ -194,8 +206,8 @@ function wagerStatus(bounties, { now, site, wallet } = {}) {
     if (readable.length < group.length || !readable.length) {
       const any = readable[0]?.terms || group.find((b) => b.terms)?.terms;
       const pair = {
-        wagerId: any?.fields?.wagerId ?? null, state: 'UNKNOWN', event: any?.fields?.event ?? null, start: any?.fields?.start ?? null,
-        settle: any?.fields?.settle ?? null, bounties: group.map((b) => describeBounty(b, site)), extra: [], problems: [], paid: [],
+        wagerId: any?.fields?.wagerId ?? null, state: 'UNKNOWN', kind: any?.kind ?? null, event: any?.fields?.event ?? null, question: any?.fields?.question ?? null,
+        start: any?.fields?.start ?? null, settle: any?.fields?.settle ?? null, bounties: group.map((b) => describeBounty(b, site)), extra: [], problems: [], paid: [],
       };
       pair.next = NEXT.UNKNOWN(pair);
       pair.actions = actionsFor(pair, []);
@@ -211,8 +223,11 @@ function wagerStatus(bounties, { now, site, wallet } = {}) {
     const pair = {
       wagerId: f.wagerId,
       state: result.state,
-      event: f.event,
-      market: f.market,
+      // 'game' (mutual-wager-v3: event, market, start) or 'question' (v4: question, start = bets close, resolvesAt, claimsOpen).
+      kind: chosen.a.terms.kind,
+      event: f.event ?? null,
+      market: f.market ?? null,
+      ...(chosen.a.terms.kind === 'question' ? { question: f.question, resolvesAt: f.resolvesAt, claimsOpen: f.claimsOpen, sources: wager.parseSourcesLine(f.sources) } : {}),
       start: f.start,
       settle: f.settle,
       stakeEth: wager.parseStakeLine(f.stake),
@@ -237,7 +252,9 @@ function wagerStatus(bounties, { now, site, wallet } = {}) {
     const b = p.bounties[0];
     const t = bounties.find((x) => x.bountyId === b.bountyId).terms;
     return {
-      bountyId: b.bountyId, wagerId: p.wagerId, from: b.poster, event: p.event, market: p.market, start: p.start, settle: p.settle,
+      bountyId: b.bountyId, wagerId: p.wagerId, kind: p.kind, from: b.poster, event: p.event, market: p.market,
+      ...(p.kind === 'question' ? { question: p.question, resolvesAt: p.resolvesAt, claimsOpen: p.claimsOpen, sources: p.sources } : {}),
+      start: p.start, settle: p.settle,
       stakeEth: p.stakeEth, yourSide: t.claimant.side, theirSide: t.poster.side, answerBy: p.answerBy,
       answer: { method: 'POST', path: '/api/wagers/answer', body: { counter: b.bountyId, creator: wallet } },
     };

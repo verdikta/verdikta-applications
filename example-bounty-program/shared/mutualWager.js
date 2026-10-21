@@ -467,7 +467,7 @@ function questionWagerTermsSkeleton({ posterWallet, claimantWallet, stake, thres
   const terms = {
     wagerId: '<Wager ID, new for every pair, e.g. VW-MSFT-CLOSE-20261022>',
     question: '<one line, e.g. Will Microsoft (MSFT) close above $530.00 on the Nasdaq on 2026-10-22?>',
-    start: '<Bets close: both bounties must exist before this, ISO UTC, e.g. 2026-10-22T13:30:00Z>',
+    start: '<ISO UTC, e.g. 2026-10-22T13:30:00Z: both bounties must exist before this>',
     resolvesAt: '<when the answer is fixed, ISO UTC, e.g. 2026-10-22T20:00:00Z for a 4 PM ET close>',
     claimsOpen: '<Resolves at plus a source delay (2 hours unless the sources need longer), ISO UTC>',
     yes: '<e.g. the official Nasdaq closing price of MSFT for 2026-10-22 is above $530.00>',

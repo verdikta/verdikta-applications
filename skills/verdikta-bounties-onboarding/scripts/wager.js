@@ -229,6 +229,8 @@ export async function runWager(lib, {
     }
     return record;
   }
+  // The last moment an answer can be funded: the server's answerBy, 10 minutes before the scheduled start.
+  const answerBy = (record) => W.isoOf(W.unix(record.start) - W.shared.MIN_START_LEAD_SECONDS);
   const againCommand = (record, line = '<the owner\'s line>') => (record.role === 'answerer'
     ? `node wager.js answer ${record.counter.number} --approval "${line}" --yes` : `node wager.js propose --input <the proposal file> --approval "${line}" --yes`);
 
@@ -294,7 +296,7 @@ export async function runWager(lib, {
     if (record.role === 'proposer' && W.startLeadProblem(record.start, now())) {
       say(`It was linked too close to the scheduled start ${record.start} for an answer: unless the opponent already answered, the wager is off. See node wager.js status; reclaim the stake after ${record.settle} with node wager.js close ${record.termsSha256.slice(0, 8)}.`);
     } else if (record.role === 'proposer') {
-      say(`Send the opponent: "My side of wager ${record.wagerId} is bounty #${record.bountyId} on ${origin}. Answer it by number before ${record.start}: with the Verdikta onboarding skill, node wager.js answer ${record.bountyId}; on the website, the Mutual Wager template's answer field takes #${record.bountyId}."`,
+      say(`Send the opponent: "My side of wager ${record.wagerId} is bounty #${record.bountyId} on ${origin}. Answer it by number by ${answerBy(record)} (10 minutes before the scheduled start ${record.start}): with the Verdikta onboarding skill, node wager.js answer ${record.bountyId}; on the website, the Mutual Wager template's answer field takes #${record.bountyId}."`,
         `Then check their bounty as soon as it is posted, and before ${record.start}: node wager.js check <their bounty number>`);
     } else say(`The wager is complete: bounty #${record.counter.number} and your #${record.bountyId}. After the game, the winner claims the loser's bounty with node wager.js claim.`);
   }
@@ -318,7 +320,8 @@ export async function runWager(lib, {
     }
     const problems = [...built.problems, ...await policyProblems(record.stake), ...await twinProblems(me, record.wagerId).catch((e) => [`Could not check your other bounties: ${e.message}`])];
     if (!problems.length && !(await exists(path.join(dirOf(record.termsSha256), 'approval.json')))) await saveRecord(record);
-    if (!preview(record, problems, [`Jury ${W.shared.formatJury(built.expect.jury, built.expect.iterations)}; class ${built.expect.classId}; threshold ${built.expect.threshold}.`])) throw new Error('The proposal was refused');
+    if (!preview(record, problems, [`Jury ${W.shared.formatJury(built.expect.jury, built.expect.iterations)}; class ${built.expect.classId}; threshold ${built.expect.threshold}.`,
+      `The opponent must answer by ${answerBy(record)}, 10 minutes before the scheduled start ${record.start}; without an answer the wager is off and this stake refunds after ${record.settle}.`])) throw new Error('The proposal was refused');
   }
 
   async function answer() {
@@ -411,9 +414,9 @@ export async function runWager(lib, {
       else if (mineStatus?.status === 'CLOSED') next = `Your bounty #${r.bountyId} is closed and its stake refunded.`;
       else if (r.claim && await claimFailed(r.claim)) next = `The jury failed your claim to #${r.claim.bounty} (submission ${r.claim.submissionId}). Before ${r.settle} a new claim may replace it: node wager.js claim ${r.termsSha256.slice(0, 8)} --score "..." --source "Name|URL|quote" --source "...", then the owner's new claim line.`;
       else if (r.claim) next = `Claim submitted to #${r.claim.bounty}${r.claim.submissionId != null ? ` (submission ${r.claim.submissionId})` : ''}: after the jury, node claim_bounty.js --jobId ${r.claim.bounty} --submissionId <id>. Reclaim your own stake after ${mineStatus?.submissionDeadlineIso ?? r.settle} with node wager.js close ${r.termsSha256.slice(0, 8)}.`;
-      else if (counter == null) next = t < start ? `Wait for the opponent to answer #${r.bountyId} before ${r.start}, then check it.` : `No checked counter before the start: the wager is off. Reclaim your stake after ${mineStatus?.submissionDeadlineIso ?? r.settle}: node wager.js close ${r.termsSha256.slice(0, 8)}`;
+      else if (counter == null) next = t < start ? `Wait for the opponent to answer #${r.bountyId} by ${answerBy(r)} (10 minutes before the start), then check it.` : `No checked counter before the start: the wager is off. Reclaim your stake after ${mineStatus?.submissionDeadlineIso ?? r.settle}: node wager.js close ${r.termsSha256.slice(0, 8)}`;
       else if (deadlinePassed) next = `The deadline passed: reclaim your stake with node wager.js close ${r.termsSha256.slice(0, 8)}`;
-      else if (t < start + W.CLAIM_OPENS_AFTER_START) next = `Game not final yet. If your side wins, claim from ${W.isoOf(start + W.CLAIM_OPENS_AFTER_START)}, about 2 hours after the final.`;
+      else if (t < start + W.CLAIM_OPENS_AFTER_START) next = `Game not final yet. If your side wins, claim.md can be prepared from ${W.isoOf(start + W.CLAIM_OPENS_AFTER_START)}; it is submitted about 2 hours after the final (pass --final-at), or from ${W.isoOf(start + W.shared.CLAIM_AFTER_START_SECONDS)} without it.`;
       else next = `If your side won: node wager.js claim ${r.termsSha256.slice(0, 8)} --score "..." --source "Name|URL|quote" --source "..." (about 2 hours after the final), then submit it with the owner's claim line.`;
       say(`  Next: ${next}`);
     }

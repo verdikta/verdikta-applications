@@ -161,8 +161,11 @@ export function counterReport({ number, status, job, rpc, me, ctx, now, mine = n
   const expect = expectFor({ me, target: terms.claimant.wallet, ...values, ctx, now });
   const problems = [...values.problems];
   if (values.problems.length) return { problems, terms, values, expect };
-  if (!mine) problems.push(...messages(answered.problems), ...shared.checkMutualWagerTerms(base, expect).problems);
-  problems.push(...shared.checkCounterBounty({ terms, status, job, expect }));
+  if (!mine) problems.push(...messages(answered.problems), ...shared.checkMutualWagerTerms(base, expect).problems, ...shared.checkCounterBounty({ terms, status, job, expect }));
+  // Against this wallet's posted bounty the counter is checked as the shared check sees an offer (Counter line
+  // unset): its rule that a counter must be REQUIRED is for the bounty being answered, and a correct answer to a
+  // REQUIRED proposal names the proposal. Their Counter line is checked against this wallet's bounty below.
+  else problems.push(...shared.checkCounterBounty({ terms: { ...terms, counter: null }, status, job, expect, number }));
   problems.push(...chainProblems(number, status, rpc, now));
   problems.push(...skillTermsProblems(terms));
   if (mine) {

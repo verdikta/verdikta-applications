@@ -24,10 +24,12 @@ async function harness(t, { me, clock = at('2026-10-20T18:00:00Z'), myJobs = [] 
   const records = {}, chain = {}, submissions = {}, mined = new Set();
   for (let n = 18; n <= 25; n++) { records[n] = { status: fx(n, 'status'), job: current(fx(n, 'job').job) }; chain[n] = fx(n, 'rpc'); }
   // stall: 'api' stops after the API job exists, 'signed' after signing (transport lost); apiRefusal: /jobs/create answers 503 with that code.
-  const h = { dir, logs, created, recovered, submitted, broadcasts, guarded, records, chain, submissions, mined, clock, myJobs, nextId: 26, nextSubmission: 0, stall: null, apiRefusal: null };
+  // me and secretsDir switch to run the other bettor against the same site and escrow (h.as).
+  const h = { dir, secretsDir: dir, me, logs, created, recovered, submitted, broadcasts, guarded, records, chain, submissions, mined, clock, myJobs, nextId: 26, nextSubmission: 0, stall: null, apiRefusal: null };
+  h.as = (wallet) => { h.me = wallet; h.secretsDir = wallet === me ? dir : path.join(dir, `wallet-${wallet}`); h.logs.length = 0; };
   h.lib = {
-    getNetwork: () => 'base-sepolia', walletAddress: async () => me, loadApiKey: async () => 'test-key', loadSpendPolicy: async () => policy,
-    loadWallet: async () => ({ address: me }), providerFor: () => ({ getNetwork: async () => ({ chainId: 84532n }), destroy() {} }),
+    getNetwork: () => 'base-sepolia', walletAddress: async () => h.me, loadApiKey: async () => 'test-key', loadSpendPolicy: async () => policy,
+    loadWallet: async () => ({ address: h.me }), providerFor: () => ({ getNetwork: async () => ({ chainId: 84532n }), destroy() {} }),
   };
   h.fetchApi = async (url, { headers }) => {
     const route = url.replace('https://bounties-testnet.verdikta.org/api', '');
@@ -72,8 +74,8 @@ async function harness(t, { me, clock = at('2026-10-20T18:00:00Z'), myJobs = [] 
     const deadline = Number(creationTerms(config).submissionDeadline), id = h.nextId++;
     Object.assign(state, { status: 'BROADCAST', linkedJobId: id });
     await save(state);
-    records[id] = { status: { ...fx(18, 'status'), bountyId: id, creator: me, targetHunter: config.targetHunter, createdAt: h.clock, createdAtIso: new Date(h.clock * 1000).toISOString(), submissionDeadline: deadline, submissionDeadlineIso: new Date(deadline * 1000).toISOString() }, job: { ...current(fx(18, 'job').job), jobId: id, description: config.description, title: config.title } };
-    chain[id] = { ...fx(18, 'rpc'), creator: me, targetHunter: config.targetHunter, createdAt: String(h.clock), submissionDeadline: String(deadline) };
+    records[id] = { status: { ...fx(18, 'status'), bountyId: id, creator: h.me, targetHunter: config.targetHunter, createdAt: h.clock, createdAtIso: new Date(h.clock * 1000).toISOString(), submissionDeadline: deadline, submissionDeadlineIso: new Date(deadline * 1000).toISOString() }, job: { ...current(fx(18, 'job').job), jobId: id, description: config.description, title: config.title } };
+    chain[id] = { ...fx(18, 'rpc'), creator: h.me, targetHunter: config.targetHunter, createdAt: String(h.clock), submissionDeadline: String(deadline) };
   };
   h.recover = async (lib, opts) => { recovered.push(opts); return { hash: `0x${'cd'.repeat(32)}` }; };
   // submit_to_bounty.js stand-in: records what it would upload and writes its state like the real one (wx); the
@@ -81,10 +83,10 @@ async function harness(t, { me, clock = at('2026-10-20T18:00:00Z'), myJobs = [] 
   h.submit = async (lib) => {
     const state = lib.arg('state'), id = String(h.nextSubmission++);
     await writeFile(state, JSON.stringify({ jobId: lib.arg('jobId'), submissionId: id }), { flag: 'wx' });
-    submissions[`${lib.arg('jobId')}/${id}`] = { hunter: me, status: 1n, acceptance: 0n, rejection: 0n };
+    submissions[`${lib.arg('jobId')}/${id}`] = { hunter: h.me, status: 1n, acceptance: 0n, rejection: 0n };
     submitted.push({ jobId: lib.arg('jobId'), files: lib.argAll('file'), text: await readFile(lib.argAll('file')[0], 'utf8') });
   };
-  h.run = (...argv) => runWager(h.lib, { argv, fetchApi: h.fetchApi, contract: h.contract, now: () => h.clock, log: (l) => logs.push(l), secretsDir: dir, create: h.create, recover: h.recover, submit: h.submit });
+  h.run = (...argv) => runWager(h.lib, { argv, fetchApi: h.fetchApi, contract: h.contract, now: () => h.clock, log: (l) => logs.push(l), secretsDir: h.secretsDir, create: h.create, recover: h.recover, submit: h.submit });
   h.text = () => logs.join('\n');
   return h;
 }
@@ -154,7 +156,7 @@ test('propose, check the answer, status, claim and close', async (t) => {
   await h.run('propose', '--input', input, '--approval', line, '--yes');
   assert.equal(h.created.length, 1);
   assert.equal(h.created[0].description, fx(18, 'job').job.description);
-  assert.match(h.text(), /Answer it by number before 2026-10-20T19:00:00Z/);
+  assert.match(h.text(), /Answer it by number by 2026-10-20T18:50:00Z \(10 minutes before the scheduled start 2026-10-20T19:00:00Z\)/);
 
   // Bob answers with #19 (REQUIRED style here); alice checks it before kickoff.
   h.logs.length = 0;
@@ -165,7 +167,7 @@ test('propose, check the answer, status, claim and close', async (t) => {
 
   h.clock = at('2026-10-20T20:00:00Z'); h.logs.length = 0;
   await h.run('status');
-  assert.match(h.text(), /Counter bounty #19: passed the check/); assert.match(h.text(), /claim from 2026-10-20T22:00:00Z/);
+  assert.match(h.text(), /Counter bounty #19: passed the check/); assert.match(h.text(), /claim\.md can be prepared from 2026-10-20T22:00:00Z; it is submitted about 2 hours after the final \(pass --final-at\), or from 2026-10-21T00:00:00Z without it/);
   const score = ['--score', 'Boston Celtics 110, Detroit Pistons 104 (Final)', '--source', 'NBA.com|https://www.nba.com/game/bos-vs-det|BOS 110 DET 104 FINAL', '--source', 'CBS Sports|https://www.cbssports.com/nba/gametracker/recap/x|Celtics 110 Pistons 104 Final'];
   await assert.rejects(h.run('claim', 'VW-TEST3-BOS-DET-20261020', ...score), /Too early/);
   h.clock = at('2026-10-20T22:30:00Z'); h.logs.length = 0;
@@ -363,4 +365,40 @@ test('finding 5: claim fails closed when your own bounty cannot be read', async 
   await assert.rejects(h.run('claim', 'VW-TEST3-BOS-DET-20261020', ...score), /Your bounty #26 was already paid/);
   assert.equal(h.submitted.length, 0);
   assert.ok(!(await readdir((await stateOf(h)).dir)).includes('claim.md'));
+});
+
+// Live testnet 2026-10-21 (#30 by the skill, answered by the native runtime with #31 naming #30): the proposer's check
+// must accept an answer that names its bounty, or it can never claim.
+test('a proposer checks an answer that names its bounty, then claims it', async (t) => {
+  const { h, input, line } = await proposeFlow(t);
+  assert.match(h.text(), /The opponent must answer by 2026-10-20T18:50:00Z, 10 minutes before the scheduled start/);
+  await h.run('propose', '--input', input, '--approval', line, '--yes'); // alice's #26, Counter line REQUIRED
+  h.as(bob);
+  await h.run('answer', '26');
+  await h.run('answer', '26', '--approval', lineFrom(h.text()), '--yes'); // bob's #27 names #26 with its real times
+  assert.match(h.records[27].job.description, /^Counter bounty: #26, verified by the Poster before posting/m);
+  h.as(alice);
+  await h.run('check', '27');
+  assert.match(h.text(), /Bounty #27 checked as the counter to bounty #26 \(0x7ACb[\s\S]*PASS/);
+  await h.run('check', '27', '--against', '26');
+  h.clock = at('2026-10-21T00:30:00Z'); h.logs.length = 0;
+  await h.run('claim', 'VW-TEST3-BOS-DET-20261020', ...score);
+  const claimLine = /^ {2}(Approve claim [0-9a-f]{16}, bounty #27)$/m.exec(h.text())[1];
+  assert.match(h.text(), /^Bounty claimed: #27$/m);
+  assert.match(h.text(), /^3\. Counter bounty\nBounty #26 \(named in the terms\)\.$/m);
+  await h.run('claim', 'VW-TEST3-BOS-DET-20261020', '--approval', claimLine, '--yes');
+  assert.deepEqual(h.submitted.map((s) => s.jobId), ['27']);
+});
+
+test('a proposer still refuses an answer that names some other bounty', async (t) => {
+  const { h, input, line } = await proposeFlow(t);
+  await h.run('propose', '--input', input, '--approval', line, '--yes'); // alice's #26
+  h.as(bob);
+  await h.run('answer', '18'); // the same terms, posted earlier as #18
+  await h.run('answer', '18', '--approval', lineFrom(h.text()), '--yes'); // bob's #27 names #18, not #26
+  h.as(alice);
+  await assert.rejects(h.run('check', '27'), /failed the counter check/);
+  assert.match(h.text(), /FAIL: Bounty #27: its Counter bounty line names #18, not your bounty #26\./);
+  await assert.rejects(h.run('check', '27', '--against', '26'), /failed the counter check/);
+  await assert.rejects(h.run('claim', 'VW-TEST3-BOS-DET-20261020', ...score), /No checked counter bounty/);
 });

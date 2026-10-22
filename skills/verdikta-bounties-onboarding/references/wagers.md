@@ -77,7 +77,7 @@ A question wager takes the bounty server's `POST /api/wagers/propose` names, the
   "betsClose": "2026-10-22T13:00:00Z",
   "resolvesAt": "2026-10-22T20:00:00Z",
   "yes": "the official closing price of AAPL on 2026-10-22 is above $250.00",
-  "no": "the official closing price of AAPL on 2026-10-22 is $250.00 or below",
+  "no": "the official closing price of AAPL on 2026-10-22 is below $250.00",
   "sources": ["https://stockanalysis.com/stocks/aapl/history/", "https://www.investing.com/equities/apple-computer-inc-historical-data"],
   "side": "NO",
   "stake": "0.0001",
@@ -87,7 +87,7 @@ A question wager takes the bounty server's `POST /api/wagers/propose` names, the
 ```
 
 - `question`: one line. Ask about a value or fact published for a stated date or time (see the settleable questions above).
-- `yes`, `no`: what makes each side win, with the line, its units and the comparison; they must differ, and together with `noWinner` they should leave no gap (above $250.00 / $250.00 or below). Optional `noWinner`: the default is exactly at the line, an ambiguous or unresolvable question, or no reputable source before the settlement deadline. None of the text may address the evaluator.
+- `yes`, `no`: what makes each side win, with the line, its units and the comparison; they must differ. Leave the line itself to the No winner rule, as the website's skeleton does: "above $250.00" and "below $250.00", so a close of exactly $250.00 pays nobody (the default `noWinner` names that case). "$250.00 or below" would give that value to NO and contradict the No winner line. Optional `noWinner`: the default is exactly at the line, an ambiguous or unresolvable question, or no reputable source before the settlement deadline. None of the text may address the evaluator.
 - `sources`: 1 to 3 https URLs where the answer will be published; jurors start there, then search the web.
 - `side`: yours, `YES` or `NO`. The opponent takes the other; the sides read "YES wins" and "NO wins".
 - Times, ISO UTC to the second: `betsClose` (both bounties must exist before it, so before the answer can be known; at least 10 minutes away when posting), `resolvesAt` (when the answer is fixed: 20:00:00Z for a 4 PM New York close; at or after `betsClose`), optional `claimsOpen` (default `resolvesAt` + 2 hours, at least 30 minutes after it), `settle` (at least 2 hours after `claimsOpen` and at most 60 days after `betsClose`; also both bounties' exact deadline). A close settles the same evening: there is no 12-hour minimum for a question.

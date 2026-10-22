@@ -28,7 +28,7 @@ async function harness(t, { me, clock = at('2026-10-20T18:00:00Z'), myJobs = [] 
   for (const n of [40, 41]) { records[n] = { status: qfx('status', n), job: qfx('job', n) }; chain[n] = qfx('chain', n); }
   // stall: 'api' stops after the API job exists, 'signed' after signing (transport lost); apiRefusal: /jobs/create answers 503 with that code.
   // me and secretsDir switch to run the other bettor against the same site and escrow (h.as).
-  const h = { dir, secretsDir: dir, me, logs, created, recovered, submitted, broadcasts, guarded, records, chain, submissions, mined, clock, myJobs, nextId: 26, nextSubmission: 0, stall: null, apiRefusal: null };
+  const h = { dir, secretsDir: dir, me, logs, created, recovered, submitted, broadcasts, guarded, records, chain, submissions, mined, clock, myJobs, nextId: 26, nextSubmission: 0, stall: null, apiRefusal: null, pending: {} };
   h.as = (wallet) => { h.me = wallet; h.secretsDir = wallet === me ? dir : path.join(dir, `wallet-${wallet}`); h.logs.length = 0; };
   h.lib = {
     getNetwork: () => 'base-sepolia', walletAddress: async () => h.me, loadApiKey: async () => 'test-key', loadSpendPolicy: async () => policy,
@@ -46,6 +46,7 @@ async function harness(t, { me, clock = at('2026-10-20T18:00:00Z'), myJobs = [] 
   h.contract = () => ({
     getBounty: async (n) => { if (!chain[n]) throw new Error('bad id'); return chain[n]; },
     getSubmission: async (n, id) => { if (!submissions[`${n}/${id}`]) throw new Error('bad submissionId'); return submissions[`${n}/${id}`]; },
+    pendingSubmissionIds: async (n) => (h.pending[n] || []).map(BigInt),
   });
   // create_bounty.js stand-in with the real one's recovery states: API_CREATE_PENDING -> API_CREATED (or API_REJECTED)
   // -> beforeBroadcast -> signed (txHash) -> broadcast -> linked. A resume of a mined transaction only links.
@@ -550,4 +551,21 @@ test('a game claim given in the question shape names the shape it needs', async 
   await assert.rejects(h.run('claim', 'VW-TEST3-BOS-DET-20261020', '--answer', 'YES', '--value', '110', '--as-of', '2026-10-21T00:00:00Z', ...score.slice(2)),
     /Bounty #19 is a game wager \(mutual-wager-v3\): claim it with --score "<Team> <points>, <Team> <points> \(Final\)"/);
   assert.equal(h.submitted.length, 0);
+});
+
+// Mainnet #253/#301: the opponent's rejected claims, never finalized, block closeExpiredBounty.
+test('status and close tell the owner a close clears pending claims first', async (t) => {
+  const { h, input, line } = await proposeFlow(t);
+  await h.run('propose', '--input', input, '--approval', line, '--yes'); // alice's #26
+  await h.run('check', '19');
+  h.clock = at('2026-10-21T19:00:01Z'); h.pending[26] = [0, 1, 2, 3, 4]; h.logs.length = 0;
+  await h.run('status');
+  assert.match(h.text(), /Next: The deadline passed: reclaim your stake with node wager\.js close [0-9a-f]{8} \(it first finalizes or fails the 5 claims still pending on your bounty #26, gas only; a claim that passed or is still being evaluated stops it\)/);
+  h.pending[26] = []; h.logs.length = 0;
+  await h.run('status');
+  assert.match(h.text(), /Next: The deadline passed: reclaim your stake with node wager\.js close [0-9a-f]{8}$/m);
+  h.logs.length = 0;
+  await h.run('close', '26');
+  assert.match(h.text(), /Claims still pending on it are finalized or failed first \(gas only, covered by this close\)/);
+  assert.deepEqual(h.recovered, [{ close: '26' }]);
 });

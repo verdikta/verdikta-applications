@@ -138,6 +138,43 @@ export function verifySignedTransaction(raw, expected, creator, policy, hash) {
   return tx;
 }
 
+// Clearing before a close. closeExpiredBounty reverts "active evaluation - finalize first" while any claim is pending,
+// and in a wager only the opponent can submit, so a rejected claim nobody finalized would hold the creator's refund.
+// The creator of an open bounty past its deadline may resolve those claims with exactly these two gas-only calls, which
+// cannot change who wins. A close never finalizes a passing result (that pays the claimant) or one not stored yet.
+export const CLEARING_METHODS = Object.freeze(['finalizeSubmission', 'failTimedOutSubmission']);
+const SCORE_SCALE = 1_000_000n, SCORE_DIVISOR = 10_000n;
+/** The escrow's pass rule (_scoreVector): scores = [DONT_FUND, FUND] on SCORE_SCALE; FUND / SCORE_DIVISOR >= threshold. */
+export function resultPasses(scores, threshold) {
+  if (!Array.isArray(scores) || scores.length !== 2) return false;
+  const [reject, accept] = scores.map((s) => BigInt(s));
+  if (reject > SCORE_SCALE || accept > SCORE_SCALE) return false;
+  return accept / SCORE_DIVISOR >= BigInt(threshold);
+}
+/** Throws unless signer created the bounty, it is open and chainNow (latest block time) is at or past its deadline. */
+export function assertClearable({ bounty, signer, chainNow }) {
+  if (getAddress(bounty.creator) !== getAddress(signer)) throw new Error(`Only the bounty's creator ${getAddress(bounty.creator)} clears its claims before a close; this wallet is ${getAddress(signer)}`);
+  if (Number(bounty.status) !== 0) throw new Error('The bounty is no longer open');
+  if (BigInt(chainNow) < BigInt(bounty.submissionDeadline)) throw new Error(`The bounty's deadline ${new Date(Number(bounty.submissionDeadline) * 1000).toISOString()} has not passed: it cannot be closed, or its claims cleared, before then`);
+}
+/**
+ * The clearing call for one pending submission: { method } (one of CLEARING_METHODS), { wait } (still being
+ * evaluated) or { stop } (the close cannot go ahead). next = nextAction(), result = getOracleResult().
+ */
+export function clearingCall({ bounty, signer, chainNow, submissionId, next, result }) {
+  assertClearable({ bounty, signer, chainNow });
+  const id = `Submission ${submissionId}`;
+  if (next === 'FORCE_FAIL') return { method: 'failTimedOutSubmission' };
+  if (next === 'AWAIT_ORACLE') return { wait: `${id} is still being evaluated` };
+  if (next === 'FINALIZE' || next === 'AWAIT_EARLIER') {
+    if (!result?.hasResult) return { stop: `${id}: its jury round timed out with enough answers but no stored result, so finalizing it would decide the claim now and pay the claimant if it passes. Finalize it only with the owner's agreement (claim_bounty.js), then close` };
+    const accept = result.scores?.length === 2 ? Number(BigInt(result.scores[1]) / SCORE_DIVISOR) : null;
+    if (resultPasses(result.scores, bounty.threshold)) return { stop: `${id} passed its evaluation (acceptance ${accept}, threshold ${bounty.threshold}): finalizing it pays the claimant, so this bounty cannot be closed` };
+    return next === 'FINALIZE' ? { method: 'finalizeSubmission' } : { wait: `${id} waits for an earlier evaluation` };
+  }
+  return { stop: `${id}: unexpected next action ${next}` };
+}
+
 // Owner withdrawals: the only transactions not sent to the escrow. ETH goes straight to the owner address recorded at
 // onboarding; LINK (left in older wallets by the retired swap) only as an exact transfer to it from the reviewed token.
 export const ownerTransferTokens = {

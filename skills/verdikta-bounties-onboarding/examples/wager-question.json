@@ -7,7 +7,7 @@
   "betsClose": "2026-10-22T13:00:00Z",
   "resolvesAt": "2026-10-22T20:00:00Z",
   "yes": "the official closing price of AAPL on 2026-10-22 is above $250.00",
-  "no": "the official closing price of AAPL on 2026-10-22 is $250.00 or below",
+  "no": "the official closing price of AAPL on 2026-10-22 is below $250.00",
   "sources": ["https://stockanalysis.com/stocks/aapl/history/", "https://www.investing.com/equities/apple-computer-inc-historical-data"],
   "side": "NO",
   "stake": "0.0001",

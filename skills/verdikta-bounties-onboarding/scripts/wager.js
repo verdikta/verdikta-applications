@@ -7,7 +7,7 @@
 //   node wager.js propose --input proposal.json --approval "<line>" --yes   post it after the owner's line
 //   node wager.js answer <N>                                         check bounty #N and preview the mirrored answer
 //   node wager.js answer <N> --approval "<line>" --yes               post the answer after the owner's line
-//   node wager.js check <N> [--against <your bounty>]                full counter check of bounty #N (read-only)
+//   node wager.js check <N> [--against <M>]                          full counter check of bounty #N (recorded in your wager)
 //   node wager.js status                                             your wagers and the next step for each
 //   node wager.js claim <wager> --score "..." --source "Name|URL|quote" --source ...   write claim.md, print its line
 //   node wager.js claim <wager> --answer YES|NO --value "..." --as-of <ISO> --source ... --source ...   (a question)
@@ -365,17 +365,21 @@ export async function runWager(lib, {
 
   async function check() {
     const n = bountyNumber(args.positional[1]);
+    const against = args.opt('against') ? bountyNumber(args.opt('against'), '--against bounty number') : null;
     const { status, job, rpc } = await readBounty(n);
-    let me, mine = null, record = null;
-    if (args.opt('against')) {
-      const m = bountyNumber(args.opt('against'), '--against bounty number');
-      const [mStatus, mDetails] = await Promise.all([api(`/jobs/${m}/onchain-status`), api(`/jobs/${m}?includeRubric=true`)]);
+    // The wager a check of #N belongs to: this wallet's posted bounty with #N's Wager ID, the opponent being #N's creator.
+    const wagerId = W.shared.parseMutualWagerTerms(job?.description).fields?.wagerId;
+    const own = (await records()).find((r) => r.wagerId === wagerId && r.bountyId != null && status && sameAddress(r.opponent, status.creator)) || null;
+    // --against your own bounty in that wager is the same check as without it, recorded the same way (claim needs it);
+    // against any other bounty it is a read-only comparison that needs no wallet.
+    const record = against == null || String(own?.bountyId) === String(against) ? own : null;
+    let me, mine = null;
+    if (against != null && !record) {
+      const [mStatus, mDetails] = await Promise.all([api(`/jobs/${against}/onchain-status`), api(`/jobs/${against}?includeRubric=true`)]);
       me = getAddress(mStatus.creator);
-      mine = { description: mDetails.job?.description, number: m, status: mStatus };
+      mine = { description: mDetails.job?.description, number: against, status: mStatus };
     } else {
       me = await walletAddress();
-      const wagerId = W.shared.parseMutualWagerTerms(job?.description).fields?.wagerId;
-      record = (await records()).find((r) => r.wagerId === wagerId && r.bountyId != null && status && sameAddress(r.opponent, status.creator)) || null;
       if (record) mine = { description: record.description, number: record.bountyId, status: await api(`/jobs/${record.bountyId}/onchain-status`) };
     }
     const report = W.counterReport({ number: n, status, job, rpc, me, ctx, now: now(), mine });
@@ -387,6 +391,9 @@ export async function runWager(lib, {
       record.checks = { ...record.checks, [n]: { ok, problems: report.problems, checkedAt: new Date(now() * 1000).toISOString() } };
       if (ok && record.role === 'proposer' && record.counter == null) record.counter = { number: n };
       await saveRecord(record);
+      say(`Recorded in wager ${record.termsSha256.slice(0, 8)} (${record.wagerId}): bounty #${n} ${ok ? 'passed' : 'failed'} the check${record.counter ? `; the wager's counter bounty is #${record.counter.number}` : ''}.`);
+    } else if (against != null) {
+      say(`Not recorded (read-only comparison): no wager of yours pairs bounty #${against} with #${n}${wagerId ? `, Wager ID ${wagerId}` : ''}.${own ? ` Your bounty in this wager is #${own.bountyId}: node wager.js check ${n} records the check.` : ''}`);
     }
     if (!ok) {
       say(mine ? 'Tell the owner now: this bounty cannot back your wager. Ask the opponent for a correct answer before the scheduled start; your own bounty cannot be cancelled and refunds after its deadline.'

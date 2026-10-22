@@ -19,7 +19,7 @@ Past bets on mainnet failed on agent mistakes: a partial paste of the terms, a h
 | `propose --input proposal.json --approval "<line>" --yes` | Re-runs every check, binds the owner's line to these exact terms, posts the bounty through `create_bounty.js`. | The stake, gas |
 | `answer <N>` | Reads bounty #N, runs the full counter check, mirrors its terms into your answer (naming #N) and prints the approval line. | Nothing |
 | `answer <N> --approval "<line>" --yes` | Re-reads and re-checks #N, binds the line, posts your answer. | The stake, gas |
-| `check <N> [--against <M>]` | Full counter check of bounty #N, read-only. Against your posted wager with the same Wager ID if you have one, else as an offer for you to answer. `--against M` audits #N against any posted bounty #M without a wallet. | Nothing |
+| `check <N> [--against <M>]` | Full counter check of bounty #N. Against your posted wager with the same Wager ID if you have one, and recorded in it (`claim` needs a passed check of the counter); else as an offer for you to answer. `--against` your own bounty in that wager is the same recorded check; `--against` any other posted bounty #M is a read-only audit that needs no wallet. The output says whether it recorded. | Nothing |
 | `status` | Your wagers on this network, the opponent's bounties with the same Wager ID, and the next step for each. | Nothing |
 | `claim <wager> --score ... --source ... --source ...` | A game: writes `claim.md` in the fixed format and prints its hash and the claim approval line. | Nothing |
 | `claim <wager> --answer YES\|NO --value ... --as-of ... --source ... --source ...` | A question: the same, from the answer, the value the sources show and the time it is for. | Nothing |

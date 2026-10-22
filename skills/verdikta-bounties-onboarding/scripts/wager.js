@@ -432,15 +432,18 @@ export async function runWager(lib, {
         say(`  Counter bounty #${counter}: ${checked}.`);
       }
       const start = W.unix(r.start);
+      // Past the deadline, claims still pending on your bounty block the close until they are finalized or failed.
+      const pending = deadlinePassed && !['AWARDED', 'CLOSED'].includes(mineStatus?.status) ? await escrowRead((e) => e.pendingSubmissionIds(r.bountyId)).then((l) => l.length, () => null) : null;
+      const closeStep = `node wager.js close ${r.termsSha256.slice(0, 8)}${pending ? ` (it first finalizes or fails the ${pending} claim${pending === 1 ? '' : 's'} still pending on your bounty #${r.bountyId}, gas only; a claim that passed or is still being evaluated stops it)` : ''}`;
       let next;
       if (mineStatus?.status === 'AWARDED') next = `Your bounty #${r.bountyId} paid the opponent: the jury found the other side won.`;
       else if (mineStatus?.status === 'CLOSED') next = `Your bounty #${r.bountyId} is closed and its stake refunded.`;
       else if (r.claim && await claimFailed(r.claim)) next = `The jury failed your claim to #${r.claim.bounty} (submission ${r.claim.submissionId}). Before ${r.settle} a new claim may replace it: node wager.js claim ${r.termsSha256.slice(0, 8)} ${claimFlags(kind)}, then the owner's new claim line.`;
-      else if (r.claim) next = `Claim submitted to #${r.claim.bounty}${r.claim.submissionId != null ? ` (submission ${r.claim.submissionId})` : ''}: after the jury, node claim_bounty.js --jobId ${r.claim.bounty} --submissionId <id>. Reclaim your own stake after ${mineStatus?.submissionDeadlineIso ?? r.settle} with node wager.js close ${r.termsSha256.slice(0, 8)}.`;
+      else if (r.claim) next = `Claim submitted to #${r.claim.bounty}${r.claim.submissionId != null ? ` (submission ${r.claim.submissionId})` : ''}: after the jury, node claim_bounty.js --jobId ${r.claim.bounty} --submissionId <id>. Reclaim your own stake after ${mineStatus?.submissionDeadlineIso ?? r.settle} with ${closeStep}.`;
       else if (counter == null) {
         const when = kind === 'question' ? 'Bets close' : 'the start';
-        next = t < start ? `Wait for the opponent to answer #${r.bountyId} by ${answerBy(r)} (10 minutes before ${when}), then check it.` : `No checked counter before ${when}: the wager is off. Reclaim your stake after ${mineStatus?.submissionDeadlineIso ?? r.settle}: node wager.js close ${r.termsSha256.slice(0, 8)}`;
-      } else if (deadlinePassed) next = `The deadline passed: reclaim your stake with node wager.js close ${r.termsSha256.slice(0, 8)}`;
+        next = t < start ? `Wait for the opponent to answer #${r.bountyId} by ${answerBy(r)} (10 minutes before ${when}), then check it.` : `No checked counter before ${when}: the wager is off. Reclaim your stake after ${mineStatus?.submissionDeadlineIso ?? r.settle}: ${closeStep}`;
+      } else if (deadlinePassed) next = `The deadline passed: reclaim your stake with ${closeStep}`;
       else if (kind === 'question') next = questionNext(r, terms, t);
       else if (t < start + W.CLAIM_OPENS_AFTER_START) next = `Game not final yet. If your side wins, claim.md can be prepared from ${W.isoOf(start + W.CLAIM_OPENS_AFTER_START)}; it is submitted about 2 hours after the final (pass --final-at), or from ${W.isoOf(start + W.shared.CLAIM_AFTER_START_SECONDS)} without it.`;
       else next = `If your side won: node wager.js claim ${r.termsSha256.slice(0, 8)} --score "..." --source "Name|URL|quote" --source "..." (about 2 hours after the final), then submit it with the owner's claim line.`;
@@ -550,7 +553,7 @@ export async function runWager(lib, {
     if (!b || !sameAddress(b.creator, me)) throw new Error(`Bounty #${record.bountyId} is not this wallet's`);
     if (b.status !== '0') throw new Error(`Bounty #${record.bountyId} is already ${b.status === '1' ? 'paid out' : 'closed'}`);
     if (now() < Number(b.submissionDeadline)) throw new Error(`Bounty #${record.bountyId} can be closed after its deadline ${W.isoOf(b.submissionDeadline)}`);
-    say(`Closing your bounty #${record.bountyId} returns its ${record.stake} ETH stake to this wallet.`);
+    say(`Closing your bounty #${record.bountyId} returns its ${record.stake} ETH stake to this wallet. Claims still pending on it are finalized or failed first (gas only, covered by this close); a claim that passed or is still being evaluated stops it.`);
     const receipt = await recover(lib, { close: String(record.bountyId) });
     if (receipt) { Object.assign(record, { closedAt: new Date(now() * 1000).toISOString(), closeTx: receipt.hash }); await saveRecord(record); say(`Closed: transaction ${receipt.hash}`); }
   }

@@ -24,7 +24,7 @@ Past bets on mainnet failed on agent mistakes: a partial paste of the terms, a h
 | `claim <wager> --score ... --source ... --source ...` | A game: writes `claim.md` in the fixed format and prints its hash and the claim approval line. | Nothing |
 | `claim <wager> --answer YES\|NO --value ... --as-of ... --source ... --source ...` | A question: the same, from the answer, the value the sources show and the time it is for. | Nothing |
 | `claim <wager> --approval "<line>" --yes` | Rebuilds the same `claim.md`, binds the owner's claim line and submits it with `submit_to_bounty.js`. | The evaluation fee, gas |
-| `close <wager>` | After your bounty's deadline, closes it and returns the stake to this wallet (`recover_funds.js --close`). | Gas |
+| `close <wager>` | After your bounty's deadline, closes it and returns the stake to this wallet (`recover_funds.js --close`), first clearing the opponent's claims still pending on it. | Gas |
 
 `<wager>` is the terms hash prefix, the Wager ID or one of the wager's bounty numbers. `status` shows a question wager's question, its YES/NO lines, the sources and its four times (Bets close, Resolves at, Claims open, settlement), and the next step from those times.
 
@@ -218,7 +218,20 @@ Section 3 is the game claim's: the two URLs when the claimed bounty's Counter li
 
 ## Close
 
-After your bounty's deadline (the settlement deadline), `close <wager>` checks on chain that the bounty is yours, still open and past its deadline, then closes it with `recover_funds.js --close`; the stake returns to this wallet. Run `--dry-run` first if the owner wants to see the transaction. An evaluation still pending blocks closing until it resolves.
+After your bounty's deadline (the settlement deadline), `close <wager>` checks on chain that the bounty is yours, still open and past its deadline, then closes it with `recover_funds.js --close`; the stake returns to this wallet. Run `--dry-run` first if the owner wants to see the transactions.
+
+Only the opponent can submit to your bounty, so a claim of theirs that the jury rejected but nobody finalized stays pending, and the escrow refuses the close ("active evaluation - finalize first"). `close` clears such claims first, on your own bounty past its deadline only:
+
+- a stored result that failed is finalized (`finalizeSubmission`);
+- a round that timed out without a result is failed (`failTimedOutSubmission`).
+
+Both are gas-only calls under the spend policy. Neither can change who wins, and both return the claim's unused prepay to whoever paid it. The owner's approval of the close covers them; there is no separate line. `close` sends nothing, and says why, when any pending claim:
+
+- passed (finalizing it pays the opponent);
+- has no stored result yet (finalizing it would decide it now);
+- is still being evaluated (it gives the time to retry).
+
+`status` says how many claims a close will clear first.
 
 ## State
 

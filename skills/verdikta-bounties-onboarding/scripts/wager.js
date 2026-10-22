@@ -451,6 +451,7 @@ export async function runWager(lib, {
   // A question's next step after both bounties exist: its times, not a game's, open the claim (from Claims open).
   function questionNext(r, terms, t) {
     const f = terms.fields, side = terms.poster.side;
+    if (t < W.unix(f.start)) return `Both bounties are posted; bets close at ${f.start} and the question resolves at ${f.resolvesAt}. If the answer makes your side (${side}) win, claim.md can be prepared from Claims open, ${f.claimsOpen}.`;
     if (t < W.unix(f.resolvesAt)) return `Bets are closed; the question resolves at ${f.resolvesAt}. If the answer makes your side (${side}) win, claim.md can be prepared from Claims open, ${f.claimsOpen}.`;
     if (t < W.unix(f.claimsOpen)) return `The question resolved at ${f.resolvesAt}; claims open at ${f.claimsOpen}, once the sources show the final value. If the answer makes your side (${side}) win, prepare the claim then.`;
     return `If the answer makes your side (${side}) win: node wager.js claim ${r.termsSha256.slice(0, 8)} ${claimFlags('question')} (the value as the sources show it, and the time it is for), then submit it with the owner's claim line. If the No winner line holds, nobody claims.`;

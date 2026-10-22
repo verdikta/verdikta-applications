@@ -470,6 +470,11 @@ test('question: propose posts the shared builder\'s bytes; the answer mirrors th
 
 test('question: status follows Bets close, Resolves at and Claims open; claim refuses before Claims open', async (t) => {
   const { h } = await questionPair(t);
+  // Both bounties posted, bets still open (testnet 2026-10-22: this said "Bets are closed").
+  h.clock = at('2026-10-22T12:00:00Z'); h.logs.length = 0;
+  await h.run('status');
+  assert.match(h.text(), /Next: Both bounties are posted; bets close at 2026-10-22T13:00:00Z and the question resolves at 2026-10-22T20:00:00Z\. If the answer makes your side \(NO wins\) win, claim\.md can be prepared from Claims open, 2026-10-22T22:00:00Z\./);
+  assert.doesNotMatch(h.text(), /Bets are closed/);
   h.clock = at('2026-10-22T14:00:00Z'); h.logs.length = 0;
   await h.run('status');
   const text = h.text();

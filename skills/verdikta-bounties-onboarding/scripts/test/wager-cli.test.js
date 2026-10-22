@@ -207,6 +207,7 @@ test('check --against audits any posted pair without a wallet', async (t) => {
   const h = await harness(t, { me: undefined });
   await h.run('check', '19', '--against', '18');
   assert.match(h.text(), /PASS/);
+  assert.match(h.text(), /^Not recorded \(read-only comparison\): no wager of yours pairs bounty #18 with #19, Wager ID VW-TEST3-BOS-DET-20261020\.$/m);
   for (const n of ['23', '24', '25']) await assert.rejects(h.run('check', n, '--against', '18'), /failed the counter check/);
 });
 
@@ -407,6 +408,40 @@ test('a proposer still refuses an answer that names some other bounty', async (t
   await assert.rejects(h.run('check', '27'), /failed the counter check/);
   assert.match(h.text(), /FAIL: Bounty #27: its Counter bounty line names #18, not your bounty #26\./);
   await assert.rejects(h.run('check', '27', '--against', '26'), /failed the counter check/);
+  assert.match(h.text(), /^Recorded in wager [0-9a-f]{8} \(VW-TEST3-BOS-DET-20261020\): bounty #27 failed the check\.$/m);
+  await assert.rejects(h.run('claim', 'VW-TEST3-BOS-DET-20261020', ...score), /No checked counter bounty/);
+});
+
+// Live testnet 2026-10-22: asked to "check #36 against your #35", an agent ran check 36 --against 35, saw PASS, and
+// its claim would have been refused. --against your own bounty in the wager now records like check N; any other
+// bounty stays a read-only comparison.
+test('check --against your own bounty records the counter, and claim finds it', async (t) => {
+  const { h, input, line } = await proposeFlow(t);
+  await h.run('propose', '--input', input, '--approval', line, '--yes'); // alice's #26
+  h.logs.length = 0;
+  await h.run('check', '19', '--against', '26');
+  assert.match(h.text(), /Bounty #19 checked as the counter to bounty #26 \(0x7ACb[\s\S]*PASS/);
+  assert.match(h.text(), /^Recorded in wager [0-9a-f]{8} \(VW-TEST3-BOS-DET-20261020\): bounty #19 passed the check; the wager's counter bounty is #19\.$/m);
+  const { record } = await stateOf(h);
+  assert.deepEqual(record.counter, { number: 19 }); assert.equal(record.checks[19].ok, true);
+  h.clock = at('2026-10-21T00:30:00Z'); h.logs.length = 0;
+  await h.run('claim', 'VW-TEST3-BOS-DET-20261020', ...score);
+  assert.match(h.text(), /^Bounty claimed: #19$/m);
+  await h.run('claim', 'VW-TEST3-BOS-DET-20261020', '--approval', claimLineOf(h.text()), '--yes');
+  assert.deepEqual(h.submitted.map((s) => s.jobId), ['19']);
+});
+
+test('check --against a bounty that is not yours in the wager records nothing', async (t) => {
+  const { h, input, line } = await proposeFlow(t);
+  await h.run('propose', '--input', input, '--approval', line, '--yes'); // alice's #26
+  h.logs.length = 0;
+  // #18 carries the same terms from the same creator, but this wallet's bounty in the wager is #26.
+  await h.run('check', '19', '--against', '18');
+  assert.match(h.text(), /Bounty #19 checked as the counter to bounty #18[\s\S]*PASS/);
+  assert.match(h.text(), /^Not recorded \(read-only comparison\): no wager of yours pairs bounty #18 with #19, Wager ID VW-TEST3-BOS-DET-20261020\. Your bounty in this wager is #26: node wager\.js check 19 records the check\.$/m);
+  const { record } = await stateOf(h);
+  assert.equal(record.counter, null); assert.equal(record.checks, undefined);
+  h.clock = at('2026-10-21T00:30:00Z');
   await assert.rejects(h.run('claim', 'VW-TEST3-BOS-DET-20261020', ...score), /No checked counter bounty/);
 });
 

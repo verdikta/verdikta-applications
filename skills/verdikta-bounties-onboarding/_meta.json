@@ -115,7 +115,7 @@
     "Transaction-capable scripts require interactive confirmation or --yes/--confirm-spend.",
     "Use --dry-run where available before signing.",
     "Bounty metadata, submitted work files, CIDs, wallet addresses, and transaction hashes may become public via IPFS, Verdikta API records, and blockchain state.",
-    "Draft handoff executes the sibling verdikta-discover code and locked dependencies in the signing process. Install both from the same reviewed repository revision and protect them from untrusted replacement. Signed recovery state can broadcast the exact approved transaction; keep it private.",
+    "Work orders (draft handoff and submissions to a work-order bounty) execute the sibling verdikta-discover code and locked dependencies in the signing process; plain bounties, other submissions and wagers never load it. Install both from the same reviewed repository revision and protect them from untrusted replacement. Signed recovery state can broadcast the exact approved transaction; keep it private.",
     "Withdrawals (withdraw_to_owner.js) go only to the owner address recorded at onboarding as OFFBOT_ADDRESS in ~/.config/verdikta-bounties/.env. The address is read from that file, never from an exported variable, and there is no destination argument. Only `node onboard.js --set-owner`, run in a terminal, changes it. Anything running as the same user can still rewrite the file or use the keystore directly, so keep the balance low."
   ],
   "requires": {

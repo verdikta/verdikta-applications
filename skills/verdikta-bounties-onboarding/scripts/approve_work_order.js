@@ -16,6 +16,7 @@ import { parseEther } from 'ethers';
 import { isMain } from './_cli.js';
 import { arg } from './_lib.js';
 import { defaultSecretsDir, ensureDir } from './_paths.js';
+import { importDiscover } from './_discover.js';
 
 /** Approval lines in an owner message: hash prefix (8+ hex), payout in ETH, submission window in hours. */
 export const APPROVAL_LINE = /\bapprove\s+([0-9a-f]{8,64})\b[\s,;:]*payout\s*[:=]?\s*(\d+(?:\.\d+)?)\s*eth\b[\s,;:]*window\s*[:=]?\s*(\d+)\s*h(?:ours?|rs?)?\b/gi;
@@ -84,10 +85,8 @@ export function bindApproval({ input, approvalText, title, notes, defaults, disc
 }
 
 export async function loadDiscover() {
-  const [core, workOrder] = await Promise.all([
-    import('../../verdikta-discover/scripts/preview-core.mjs'),
-    import('../../verdikta-discover/scripts/work-order.mjs'),
-  ]);
+  const purpose = 'Approving a verdikta-discover work-order draft';
+  const [core, workOrder] = await Promise.all([importDiscover('preview-core.mjs', purpose), importDiscover('work-order.mjs', purpose)]);
   return { preview: core.preview, previewText: core.previewText, checkWorkOrderDraft: workOrder.checkWorkOrderDraft, isAssessmentInput: workOrder.isAssessmentInput };
 }
 

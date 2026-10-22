@@ -68,7 +68,7 @@ Existing installations must read the [1.6.0 migration notes](references/migratio
 
 ## Install and configure commission mode
 
-Copy this complete skill directory from a reviewed repository revision. Draft handoff also requires the sibling `verdikta-discover` directory and its locked dependencies from the same reviewed revision. Its JavaScript executes in the financial process that later decrypts the wallet, so treat both packages as trusted signing-process dependencies; do not replace the sibling with unreviewed code. In `scripts/`, run `npm ci --ignore-scripts` (Node 20.18+). No registry publication is implied.
+Copy this complete skill directory from a reviewed repository revision. Work orders also require the sibling `verdikta-discover` directory and its locked dependencies from the same reviewed revision. That means commissioning a work-order draft (`approve_work_order.js`, or `create_bounty.js` with a `workOrderDraft`) and submitting to a work-order bounty (a description with the `Service: <template>` line, see below). Plain bounties, other submissions and wagers never load it. Without it, a work-order step stops before any upload or transaction with a message saying to install it. Its JavaScript executes in the financial process that later decrypts the wallet, so treat both packages as trusted signing-process dependencies; do not replace the sibling with unreviewed code. In `scripts/`, run `npm ci --ignore-scripts` (Node 20.18+). No registry publication is implied.
 
 Financial scripts load exported configuration and the stable `~/.config/verdikta-bounties/.env`; they ignore skill-local `.env` files. Do not expose that file to the model. Required configuration:
 

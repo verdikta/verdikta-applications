@@ -71,3 +71,19 @@ test('signed bytes persist before transport failure; persistence failure prevent
     assert.equal(attempts,1);
   } finally {d.codeHash=oldHash;globalThis.fetch=oldFetch;}
 });
+
+test('a cap refusal names the limit the call needs and the policy file',async()=>{
+  const {execute,preflightDeployment}=await import('../_executor.js?cap-message-test');
+  const oldHash=d.codeHash,oldFetch=globalThis.fetch,oldPolicy=process.env.VERDIKTA_SPEND_POLICY;d.codeHash=keccak256('0x1234');
+  globalThis.fetch=async()=>new Response(JSON.stringify(docs),{headers:{'content-type':'application/json'}});
+  process.env.VERDIKTA_SPEND_POLICY='/owner/spend-policy.json';
+  try {
+    const f=setup();await preflightDeployment('base',f.provider,d.docsUrl.replace('/api/docs',''));
+    // estimateGas 100 -> gas limit 125 (+25%)
+    await assert.rejects(execute(f.signer,'finalizeSubmission',f.tx,{...f.opts,policy:{...policy,maxGasLimit:'100'}}),
+      /^Error: Gas limit exceeds owner cap: finalizeSubmission needs a gas limit of 125, and maxGasLimit is 100 in the spend policy \/owner\/spend-policy\.json\. Nothing was signed\. Ask the owner to raise maxGasLimit to at least 125/);
+    await assert.rejects(execute(f.signer,'finalizeSubmission',f.tx,{...f.opts,policy:{...policy,maxTotalWei:'200'}}),
+      /^Error: Run total exceeds owner cap: finalizeSubmission reserves 250 wei \(value \+ gas limit 125 x maxFeePerGasWei 2\), 0 wei are already reserved in this run, and maxTotalWei is 200 in the spend policy \/owner\/spend-policy\.json\. Nothing was signed\. Ask the owner to raise maxTotalWei to at least 250/);
+    assert.deepEqual(f.counts(),{sent:0,confirmed:0});
+  } finally {d.codeHash=oldHash;globalThis.fetch=oldFetch;if(oldPolicy===undefined)delete process.env.VERDIKTA_SPEND_POLICY;else process.env.VERDIKTA_SPEND_POLICY=oldPolicy;}
+});

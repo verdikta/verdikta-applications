@@ -15,7 +15,20 @@ For a discovery handoff, install both skill directories and run the discovery pa
 
 Use `examples/creator.json` as a synthetic shape example only. Its jury entries are placeholders: select real currently available models from `/api/classes/:id/models`; the script rejects placeholders. Rubric must-pass weights are zero; scored weights sum to 1 within 0.001. Every criterion needs unique id, description, numeric weight and boolean must. The proposed template threshold 85 is uncalibrated.
 
+## Spend policy
+
 The owner-reviewed `VERDIKTA_SPEND_POLICY` JSON has integer wei fields `maxValueWei`, `maxTotalWei`, `maxGasLimit`, `maxFeePerGasWei`, `maxPriorityFeePerGasWei`. The total is a cumulative upper bound on value + execution gas for this process; limits are not a persistent daily ledger. Base's separately charged L1 data fee is not an execution-gas cap. Do not grant ongoing unattended authority through repeated CLI invocations; use the hosted runtime's durable caps for that case. Withdrawals to the recorded owner address (`withdraw_to_owner.js`) use the gas, fee and total execution caps but not the value caps, because the funds return to the owner. An owner should keep the policy outside model-writable workspace/configuration and review each commissioning intent.
+
+Size the caps for the largest transaction the wallet will sign. Starting an evaluation (`startPreparedSubmission`, the claim step of every submission, a wager claim included) is the gas-heaviest call. On Base Sepolia a class-128, two-juror start used 3,257,858 gas, and the executor's limit for it was 4,150,503: the estimate plus 25%. A `maxGasLimit` of 2,000,000 blocks every such start. Recommended:
+
+- `maxGasLimit`: `6000000`. That leaves headroom for a two-juror class; more jurors or iterations can need more.
+- `maxFeePerGasWei` and `maxPriorityFeePerGasWei`: the executor signs with exactly these values (EIP-1559 `maxFeePerGas` and `maxPriorityFeePerGas`). Set them above the network's current base fee plus tip, or a transaction waits unmined. You pay the actual base fee plus tip, not the cap.
+- `maxTotalWei`: at least the sum, over the transactions of one run, of value + gas limit × `maxFeePerGasWei`. Every transaction reserves that much before signing. For example, at `maxFeePerGasWei` `100000000` (0.1 gwei), a 4,150,503-gas start reserves 0.000415 ETH plus its evaluation prepay. A close that first clears claims reserves once per clearing call and once for the close.
+- `maxValueWei`: the largest single value, such as a reward or an evaluation prepay.
+
+When a cap stops a transaction, nothing is signed, and the refusal names the cap, the amount the call needs and the policy file (`Gas limit exceeds owner cap: startPreparedSubmission needs a gas limit of 4150503, and maxGasLimit is 2000000 in the spend policy …`). Raising a cap is the owner's decision: report the message instead of editing the policy.
+
+## Approval and recovery state
 
 Never use `--yes` or `--confirm-spend` without approval for the specific action. `--yes` suppresses the prompt only after printing the exact transaction and caps. A dry-run still validates destination, chain, code, selector, arguments, gas, and policy, but does not broadcast. To preview a new task without any financial setup, use `verdikta-discover`.
 

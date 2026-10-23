@@ -18,7 +18,7 @@
  * access and checks the counter's every terms line, word-for-word criteria, jury, oracle
  * settings and package link.
  *
- * questionWager (mutual-wager-v4) is the same two-bounty design for any question a published
+ * questionWager (mutual-wager-v5) is the same two-bounty design for any question a published
  * value or fact settles (an official close, a reference rate, an official result): YES or NO
  * against a line, with https Resolution sources the jurors open. Its counter criteria are v3's.
  */

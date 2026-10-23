@@ -1,5 +1,5 @@
 // Mutual wager terms: build, mirror and check the MUTUAL WAGER TERMS block of a wager bounty
-// (mutual-wager-v3 for a game, mutual-wager-v4 for a question).
+// (mutual-wager-v3 for a game, mutual-wager-v5 for a question; v4 questions are still read).
 // The implementation is shared with the bounty server (shared/mutualWager.js, plain CommonJS):
 // the server's /api/wagers endpoints and its POST /api/jobs/create check run the same code as
 // this page, so a wager the page accepts is one the server accepts. vite.config.js serves the

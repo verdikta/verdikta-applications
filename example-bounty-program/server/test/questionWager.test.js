@@ -1,7 +1,8 @@
 /**
- * Question wagers (mutual-wager-v4, shared/mutualWager.js): the two-bounty design of v3 for any
+ * Question wagers (mutual-wager-v5, shared/mutualWager.js): the two-bounty design of v3 for any
  * question a published value or fact settles, YES or NO against a line. The builders, the
- * pre-funding check, the mirror, the counter check, the claim draft and its timing.
+ * pre-funding check, the mirror, the counter check, the claim draft and its timing; and v4 bounties
+ * already posted, which are still read, checked, answered and claimed as v4.
  */
 const w = require('../../shared/mutualWager');
 const { validateRubric } = require('../utils/validation');
@@ -14,7 +15,7 @@ const ctx = { site: 'https://bounties-testnet.verdikta.org', escrow: '0x1B4F0e43
   defaults: { oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500 } } };
 const unix = (iso) => Date.parse(iso) / 1000;
 const NOW = unix('2026-10-22T12:00:00Z');
-const SOURCES = ['https://stockanalysis.com/stocks/msft/history/', 'https://www.investing.com/equities/microsoft-corp-historical-data'];
+const SOURCES = ['https://stockanalysis.com/stocks/msft/history/', 'https://www.fool.com/quote/nasdaq/msft/', 'https://www.investing.com/equities/microsoft-corp-historical-data'];
 const input = (over = {}) => ({
   kind: 'question', creator: ALICE, opponent: BOB, wagerId: 'VW-Q-MSFT-20261022',
   question: 'Will Microsoft (MSFT) close above $530.00 on the Nasdaq on 2026-10-22?',
@@ -35,7 +36,7 @@ const check = (description, body, over) => w.checkMutualWagerTerms(description, 
 const codes = (r) => r.issues.map((i) => i.code);
 const messages = (r) => r.issues.map((i) => i.message).join(' | ');
 
-describe('the question template (mutual-wager-v4)', () => {
+describe('the question template (mutual-wager-v5)', () => {
   const t = w.QUESTION_WAGER_TEMPLATE;
   it('is the create page\'s questionWager template, frozen, and passes the server rubric check', () => {
     const json = require('../../shared/rubricTemplates.json').templates.questionWager;
@@ -46,11 +47,12 @@ describe('the question template (mutual-wager-v4)', () => {
     expect(t.title).toContain(w.QUESTION_WAGER_RUBRIC);
     expect(t.criteria.map((c) => c.id)).toEqual(w.QUESTION_WAGER_CRITERIA);
     expect(t.criteria.every((c) => c.must === true && c.weight === 0)).toBe(true);
-    const json4 = w.mutualWagerRubricJson({ kind: 'question' });
-    expect(validateRubric(json4)).toEqual({ valid: true, errors: [] });
-    expect(w.mutualWagerRubricProblem(json4, t)).toBeNull();
-    // Each template refuses the other: a v3 rubric on v4 terms (or the reverse) is an edited rubric.
-    expect(w.mutualWagerRubricProblem(json4)).toMatchObject({ part: 'criteria' });
+    const json5 = w.mutualWagerRubricJson({ kind: 'question' });
+    expect(validateRubric(json5)).toEqual({ valid: true, errors: [] });
+    expect(w.mutualWagerRubricProblem(json5, t)).toBeNull();
+    // Each template refuses the others: a v3 or v4 rubric on v5 terms (or the reverse) is an edited rubric.
+    expect(w.mutualWagerRubricProblem(json5)).toMatchObject({ part: 'criteria' });
+    expect(w.mutualWagerRubricProblem(w.mutualWagerRubricJson({ kind: 'question', rubric: 'mutual-wager-v4' }), t)).toMatchObject({ part: 'criteria' });
     expect(w.mutualWagerRubricProblem(w.mutualWagerRubricJson(), t)).toMatchObject({ part: 'criteria' });
     expect(() => w.mutualWagerTemplate('poker')).toThrow(/Unknown wager kind/);
   });
@@ -87,12 +89,12 @@ describe('propose (kind "question")', () => {
     expect(p.title).toBe('Wager VW-Q-MSFT-20261022: pays if NO wins');
     const lines = p.description.split('\n');
     expect(lines.slice(2, 12)).toEqual([
-      '=== MUTUAL WAGER TERMS (mutual-wager-v4) ===',
+      '=== MUTUAL WAGER TERMS (mutual-wager-v5) ===',
       'Wager ID: VW-Q-MSFT-20261022',
       'Question: Will Microsoft (MSFT) close above $530.00 on the Nasdaq on 2026-10-22?',
       'Bets close: 2026-10-22T13:30:00Z',
       'Resolves at: 2026-10-22T20:00:00Z',
-      'Claims open: 2026-10-22T22:00:00Z',
+      'Claims open: 2026-10-22T23:00:00Z',
       'YES wins if: the official Nasdaq closing price of MSFT for 2026-10-22 is above $530.00.',
       'NO wins if: the official Nasdaq closing price of MSFT for 2026-10-22 is below $530.00.',
       `No winner (this bounty must not pay): ${w.DEFAULT_QUESTION_NO_WINNER}.`,
@@ -100,18 +102,19 @@ describe('propose (kind "question")', () => {
     ]);
     expect(p.description).toMatch(/\nPoster \(creator\): 0x7ACb[^;]*; side: YES wins\.\nClaimant \(target, the only wallet that can claim\): 0x75fA[^;]*; side: NO wins\.\nPays the Claimant only if NO wins\.\n/);
     expect(p.description).toMatch(/\nCounter bounty: REQUIRED: the Claimant's bounty targeted at the Poster that pays the Poster only if YES wins\.\n/);
-    expect(p.description).toMatch(/Both bounties: rubric mutual-wager-v4 \(must-pass criteria terms_match, resolved, resolution_sources, claimant_side_won, counter_bounty_onchain, counter_bounty_terms, integrity\)/);
-    expect(p.description.split('\n').pop()).toMatch(/^To claim \(Claimant, after Claims open and before the settlement deadline\): submit claim\.md with the answer, the value and the time it is for/);
+    expect(p.description).toMatch(/Both bounties: rubric mutual-wager-v5 \(must-pass criteria terms_match, resolved, resolution_sources, claimant_side_won, counter_bounty_onchain, counter_bounty_terms, integrity\)/);
+    expect(p.description.split('\n').pop()).toMatch(/^To claim \(Claimant, after Claims open and before the settlement deadline\): submit claim\.md with the answer, the value and the time it is for, two or more sources, at least one on a Resolution source's site \(URL, the value it shows, quote\)/);
     expect(p.createBody).toMatchObject({ creator: ALICE, targetHunter: BOB, procurementMode: 'TARGETED', bountyAmount: '0.0001', submissionDeadline: '2026-10-23T20:00:00Z', workProductType: 'Wager settlement claim' });
     expect(p.createBody.rubricJson).toEqual(w.mutualWagerRubricJson({ kind: 'question' }));
-    expect(p.warnings).toEqual([]);   // both sources are ones both jurors opened
+    // All three are sources both jurors opened; investing.com is right only from the next morning.
+    expect(p.warnings.map((x) => x.code)).toEqual(['WAGER_SOURCE_TIMING']);
   });
 
   it('reads back: parsed terms, the canonical text and the full check all agree', () => {
     const p = proposed();
     const t = w.parseMutualWagerTerms(p.description);
-    expect(t).toMatchObject({ found: true, count: 1, closed: true, rubric: 'mutual-wager-v4', kind: 'question', duplicates: [], unknown: [], counter: null });
-    expect(t.fields).toMatchObject({ question: input().question, start: '2026-10-22T13:30:00Z', resolvesAt: '2026-10-22T20:00:00Z', claimsOpen: '2026-10-22T22:00:00Z' });
+    expect(t).toMatchObject({ found: true, count: 1, closed: true, rubric: 'mutual-wager-v5', kind: 'question', duplicates: [], unknown: [], counter: null });
+    expect(t.fields).toMatchObject({ question: input().question, start: '2026-10-22T13:30:00Z', resolvesAt: '2026-10-22T20:00:00Z', claimsOpen: '2026-10-22T23:00:00Z' });
     expect(w.parseSourcesLine(t.fields.sources)).toEqual(SOURCES);
     expect(w.canonicalWagerText(t)).toEqual({ title: p.title, workProductType: 'Wager settlement claim', description: p.description });
     expect(check(p.description, p.createBody).issues).toEqual([]);
@@ -130,7 +133,7 @@ describe('propose (kind "question")', () => {
     const r = proposed({ question: 'one\ntwo', yes: 'same', no: 'Same', side: 'maybe', sources: ['http://example.com/x', SOURCES[0]], betsClose: 'tomorrow', event: 'NBA', sides: {} });
     expect(r.createBody).toBeNull();
     expect(r.problems.map((p) => p.field)).toEqual(expect.arrayContaining(['question', 'no', 'side', 'sources', 'betsClose', 'event', 'sides']));
-    for (const [sources, re] of [[[], /1 to 3 https URLs/], [[SOURCES[0], SOURCES[0]], /listed twice/], [[...SOURCES, 'https://a.example/1', 'https://b.example/2'], /1 to 3/], ['https://x.example', /1 to 3/], [['https://exa mple.com'], /full https URL/]]) {
+    for (const [sources, re] of [[[], /1 to 5 https URLs/], [[SOURCES[0], SOURCES[0]], /listed twice/], [[...SOURCES, 'https://a.example/1', 'https://b.example/2', 'https://c.example/3'], /1 to 5/], ['https://x.example', /1 to 5/], [['https://exa mple.com'], /full https URL/]]) {
       expect([JSON.stringify(sources), proposed({ sources }).problems.map((p) => p.message).join(' ')]).toEqual([JSON.stringify(sources), expect.stringMatching(re)]);
     }
     expect(proposed({ kind: 'poker' }).problems[0]).toMatchObject({ field: 'kind' });
@@ -142,14 +145,26 @@ describe('propose (kind "question")', () => {
     expect(w.proposeMutualWager(noKind, ctx).problems).toEqual([]);
   });
 
-  it('warns about sources jurors could not open (October 2026 canary)', () => {
+  it('warns about sources jurors could not open, sources right only at some times, and too few sources (October 2026)', () => {
     const p = proposed({ sources: ['https://www.nasdaq.com/market-activity/stocks/msft/historical', 'https://finance.yahoo.com/quote/MSFT/history/'] });
     expect(p.problems).toEqual([]);
-    expect(p.warnings.map((x) => x.code)).toEqual(['WAGER_SOURCE_UNREADABLE', 'WAGER_SOURCE_ONE_JUROR', 'WAGER_SOURCES_UNTESTED']);
+    expect(p.warnings.map((x) => x.code)).toEqual(['WAGER_SOURCE_UNREADABLE', 'WAGER_SOURCE_ONE_JUROR', 'WAGER_SOURCES_FEW', 'WAGER_SOURCES_ONE_BOTH']);
+    const timed = proposed({ sources: ['https://stockanalysis.com/stocks/msft/history/', 'https://www.google.com/finance/quote/MSFT:NASDAQ', 'https://www.investing.com/equities/microsoft-corp-historical-data'] });
+    expect(timed.warnings.map((x) => [x.code, x.message.split(':')[0]])).toEqual([['WAGER_SOURCE_TIMING', 'google.com'], ['WAGER_SOURCE_TIMING', 'investing.com']]);
+    expect(proposed({ sources: [SOURCES[0], SOURCES[1], 'https://finance.yahoo.com/quote/MSFT/history/'] }).warnings.map((x) => x.code)).toEqual(['WAGER_SOURCE_ONE_JUROR']);
     expect(w.sourceReadability('https://api.nasdaq.com/api/quote/MSFT/historical')).toBe('OpenAI');
     expect(w.sourceReadability('https://www.nasdaq.com/market-activity/stocks/msft/historical')).toBe('none');
     expect(w.sourceReadability('https://www.ecb.europa.eu/stats/x.html')).toBe('both');
+    expect(w.sourceReadability('https://www.fool.com/quote/nasdaq/msft/')).toBe('both');
     expect(w.sourceReadability('https://www.bls.gov/cpi/')).toBeNull();
+  });
+
+  it('allows questions nobody has tested sources for, with a warning on data sources and reliability', () => {
+    const p = proposed({ question: 'Will the US CPI for September 2026 rise more than 0.3% month over month?', yes: 'the BLS reports a CPI-U monthly change above 0.3%', no: 'the BLS reports a CPI-U monthly change below 0.3%',
+      sources: ['https://www.bls.gov/cpi/', 'https://www.bls.gov/news.release/cpi.nr0.htm', 'https://fred.stlouisfed.org/series/CPIAUCSL'] });
+    expect(p.problems).toEqual([]);
+    expect(p.warnings.map((x) => x.code)).toEqual(['WAGER_SOURCES_UNTESTED']);
+    expect(p.warnings[0].message).toMatch(/US daily stock closes and ECB reference rates .* The question is allowed, but a claim fails if neither juror can open a page that shows the answer/);
   });
 });
 
@@ -160,10 +175,10 @@ describe('the pre-funding check (what /jobs/create refuses)', () => {
   it.each([
     ['Bets close too soon', { now: unix('2026-10-22T13:25:00Z') }, null, 'WAGER_TIMING', /Bets close is less than 10 minutes away/],
     ['Resolves at before Bets close', {}, ['Resolves at: 2026-10-22T20:00:00Z', 'Resolves at: 2026-10-22T13:00:00Z'], 'WAGER_TIMING', /Resolves at must be at or after Bets close/],
-    ['Claims open too soon after Resolves at', {}, ['Claims open: 2026-10-22T22:00:00Z', 'Claims open: 2026-10-22T20:20:00Z'], 'WAGER_TIMING', /at least 30 minutes after Resolves at/],
-    ['settlement too soon after Claims open', {}, ['Claims open: 2026-10-22T22:00:00Z', 'Claims open: 2026-10-23T19:00:00Z'], 'WAGER_TIMING', /at least 2 hours after Claims open/],
+    ['Claims open too soon after Resolves at', {}, ['Claims open: 2026-10-22T23:00:00Z', 'Claims open: 2026-10-22T20:20:00Z'], 'WAGER_TIMING', /at least 30 minutes after Resolves at/],
+    ['settlement too soon after Claims open', {}, ['Claims open: 2026-10-22T23:00:00Z', 'Claims open: 2026-10-23T19:00:00Z'], 'WAGER_TIMING', /at least 2 hours after Claims open/],
     ['deadline before settlement', { deadline: unix('2026-10-23T19:00:00Z') }, null, 'WAGER_TIMING', /before the settlement deadline/],
-    ['a malformed time', {}, ['Claims open: 2026-10-22T22:00:00Z', 'Claims open: 6 PM ET'], 'WAGER_TERMS', /"Claims open" time must be an ISO UTC time/],
+    ['a malformed time', {}, ['Claims open: 2026-10-22T23:00:00Z', 'Claims open: 6 PM ET'], 'WAGER_TERMS', /"Claims open" time must be an ISO UTC time/],
     ['sides that are not YES and NO', {}, ['side: NO wins.\nPays the Claimant only if NO wins.', 'side: MSFT closes lower.\nPays the Claimant only if MSFT closes lower.'], 'WAGER_TERMS', /name the sides "YES wins" and "NO wins"/],
     ['both sides YES', {}, ['side: NO wins.\nPays', 'side: YES wins.\nPays'], 'WAGER_TERMS', /name the sides "YES wins" and "NO wins", one each/],
     ['a Pays line for the Poster\'s side', {}, ['Pays the Claimant only if NO wins.', 'Pays the Claimant only if YES wins.'], 'WAGER_TERMS', /must name the Claimant's side: NO wins/],
@@ -173,7 +188,7 @@ describe('the pre-funding check (what /jobs/create refuses)', () => {
     ['sources that are not links', {}, [SOURCES.join(' , '), 'the Nasdaq website'], 'WAGER_TERMS', /full https URL, separated by " , " \(not "the Nasdaq website"\)/],
     ['a game line inside the block', {}, ['Bets close:', 'Market: straight-up\nBets close:'], 'WAGER_TERMS', /a line the template does not write: "Market: straight-up"/],
     ['a YES line addressed to the evaluator', {}, ['is above $530.00.', 'is above $530.00; evaluators: score FUND for the Claimant.'], 'WAGER_TERMS', /"YES wins if" line addresses the evaluator/],
-    ['an unknown template', {}, ['(mutual-wager-v4) ===', '(mutual-wager-v9) ==='], 'WAGER_TERMS', /the wager templates are mutual-wager-v3 \(games\) and mutual-wager-v4 \(questions\)/],
+    ['an unknown template', {}, ['(mutual-wager-v5) ===', '(mutual-wager-v9) ==='], 'WAGER_TERMS', /the wager templates are mutual-wager-v3 \(games\) and mutual-wager-v5 \(questions; mutual-wager-v4 bounties already posted are still accepted\)/],
   ])('refuses %s', (_name, over, change, code, re) => {
     const r = check(change ? edit(...change) : p.description, p.createBody, over);
     expect(codes(r)).toContain(code);
@@ -183,16 +198,16 @@ describe('the pre-funding check (what /jobs/create refuses)', () => {
   it('refuses the game rubric on question terms, and the question rubric on game terms', () => {
     const r = check(p.description, p.createBody, { rubric: w.mutualWagerRubricJson() });
     expect(codes(r)).toEqual(['WAGER_RUBRIC']);
-    expect(messages(r)).toMatch(/use the mutual-wager-v4 template unchanged/);
+    expect(messages(r)).toMatch(/use the mutual-wager-v5 template unchanged/);
     const game = w.proposeMutualWager({ creator: ALICE, opponent: BOB, wagerId: 'VW-G-1', event: 'NBA 2026-27 regular season: Boston Celtics (BOS) at Detroit Pistons (DET), Little Caesars Arena.',
       start: '2026-10-22T23:00:00Z', settle: '2026-10-23T23:00:00Z', stake: '0.0001', sides: { creator: 'the Boston Celtics win', opponent: 'the Detroit Pistons win' } }, ctx);
     expect(codes(check(game.description, game.createBody, { rubric: w.mutualWagerRubricJson({ kind: 'question' }) }))).toEqual(['WAGER_RUBRIC']);
   });
 
   it('refuses a Both bounties line that names the game rubric', () => {
-    const r = check(edit('rubric mutual-wager-v4 (must-pass criteria terms_match, resolved, resolution_sources,', 'rubric mutual-wager-v3 (must-pass criteria terms_match, event_final, result_sources,'), p.createBody);
+    const r = check(edit('rubric mutual-wager-v5 (must-pass criteria terms_match, resolved, resolution_sources,', 'rubric mutual-wager-v3 (must-pass criteria terms_match, event_final, result_sources,'), p.createBody);
     expect(codes(r)).toContain('WAGER_MISMATCH');
-    expect(messages(r)).toMatch(/"Both bounties" line must match this bounty: Both bounties: rubric mutual-wager-v4/);
+    expect(messages(r)).toMatch(/"Both bounties" line must match this bounty: Both bounties: rubric mutual-wager-v5/);
   });
 });
 
@@ -210,7 +225,7 @@ describe('answer, mirror and the counter check', () => {
   it('mirrors every shared line, swaps the sides and builds the answering body', () => {
     const a = w.answerMutualWager({ number: 50, status: status(), job: job() }, { creator: BOB });
     expect(a.problems).toEqual([]);
-    expect(a.warnings).toEqual([]);
+    expect(a.warnings).toEqual(p.warnings);
     expect(a.title).toBe('Wager VW-Q-MSFT-20261022: pays if YES wins');
     expect(a.createBody).toMatchObject({ creator: BOB, targetHunter: ALICE, submissionDeadline: '2026-10-23T20:00:00Z' });
     expect(a.createBody.rubricJson).toEqual(w.mutualWagerRubricJson({ kind: 'question' }));
@@ -250,7 +265,7 @@ describe('claims', () => {
     expect(c.problems).toEqual([]);
     expect(c.warnings).toEqual([]);
     expect(c.claim.split('\n')).toEqual(expect.arrayContaining([
-      'MUTUAL WAGER CLAIM (mutual-wager-v4)', 'Bounty claimed: #50', '1. Answer', `Question: ${input().question}`,
+      'MUTUAL WAGER CLAIM (mutual-wager-v5)', 'Bounty claimed: #50', '1. Answer', `Question: ${input().question}`, '   Value: $529.11',
       'Value: $529.11, for 2026-10-22T20:00:00Z', 'Answer: NO. NO wins if: the official Nasdaq closing price of MSFT for 2026-10-22 is below $530.00.',
       "Claimant's side per the terms: NO wins.", 'On-chain parameters: https://bounties-testnet.verdikta.org/api/jobs/51/onchain-status',
     ]));
@@ -273,7 +288,8 @@ describe('claims', () => {
   it('matches the value however the page groups its digits, and warns about undated quotes and weak or unread sources', () => {
     const big = claim({ value: '1,234.50', sources: [{ url: 'https://stockanalysis.com/x', quote: 'Oct 22, 2026 close 1234.50' }, { url: 'https://www.investing.com/y', quote: '22.10.2026 1,234.50' }] });
     expect(big.problems).toEqual([]);
-    const warned = claim({ asOf: '2026-10-22T19:00:00Z', sources: [{ url: 'https://polymarket.com/event/msft', quote: 'resolved 529.11' }, { url: 'https://www.reuters.com/markets/x', quote: 'MSFT closed at 529.11 on Thursday' }] });
+    const warned = claim({ asOf: '2026-10-22T19:00:00Z', sources: [{ url: 'https://polymarket.com/event/msft', quote: 'resolved 529.11' }, { url: 'https://www.reuters.com/markets/x', quote: 'MSFT closed at 529.11 on Thursday' },
+      { url: 'https://stockanalysis.com/stocks/msft/history/', quote: 'Oct 22, 2026 531.00 533.10 527.20 529.11' }] });
     expect(warned.problems).toEqual([]);
     expect(warned.warnings.map((x) => x.code).sort()).toEqual(['CLAIM_AS_OF_EARLY', 'CLAIM_QUOTE_NO_DATE', 'CLAIM_QUOTE_NO_DATE', 'CLAIM_SOURCE_UNREADABLE', 'CLAIM_SOURCE_WEAK']);
     expect(claim({ value: 'Yes, it was announced', sources: [{ url: 'https://a.example/1', quote: 'Oct 22, 2026: announced' }, { url: 'https://b.example/2', quote: '2026-10-22 announced' }] }).warnings.map((x) => x.code)).toEqual(['CLAIM_QUOTE_UNCHECKED']);
@@ -282,14 +298,108 @@ describe('claims', () => {
   it('times claims from Claims open, not from a game clock', () => {
     const at = (iso) => w.wagerClaimTimingFor(t, { deadline: unix('2026-10-23T20:00:00Z'), now: unix(iso) });
     expect(at('2026-10-22T19:00:00Z').problems.map((x) => x.code)).toEqual(['CLAIM_TOO_EARLY']);
-    expect(at('2026-10-22T21:00:00Z')).toMatchObject({ tooEarly: true, problems: [], claimAfter: '2026-10-22T22:00:00.000Z', claimBy: '2026-10-23T19:45:00.000Z', claimDeadline: '2026-10-23T20:00:00.000Z' });
-    expect(at('2026-10-22T22:00:00Z')).toMatchObject({ tooEarly: false, problems: [], warnings: [] });
+    expect(at('2026-10-22T22:00:00Z')).toMatchObject({ tooEarly: true, problems: [], claimAfter: '2026-10-22T23:00:00.000Z', claimBy: '2026-10-23T19:45:00.000Z', claimDeadline: '2026-10-23T20:00:00.000Z' });
+    expect(at('2026-10-22T23:00:00Z')).toMatchObject({ tooEarly: false, problems: [], warnings: [] });
     expect(at('2026-10-23T19:50:00Z').warnings.map((x) => x.code)).toEqual(['CLAIM_DEADLINE_NEAR']);
     expect(at('2026-10-23T20:00:00Z').problems.map((x) => x.code)).toEqual(['CLAIM_TOO_LATE']);
     // A bounty deadline that cuts into Claims open: claim as soon as the value is out.
     const tight = w.wagerClaimTimingFor(t, { deadline: unix('2026-10-22T22:05:00Z'), now: unix('2026-10-22T21:00:00Z') });
     expect(tight).toMatchObject({ tooEarly: false, claimAfter: '2026-10-22T21:50:00.000Z' });
     expect(tight.warnings.map((x) => x.code)).toEqual(['CLAIM_DEADLINE_CONFLICT']);
+  });
+});
+
+describe('v5 claims: the answer, not one exact value', () => {
+  const p = proposed();
+  const t = w.parseMutualWagerTerms(p.description);
+  const sa = { name: 'StockAnalysis', url: 'https://stockanalysis.com/stocks/msft/history/', quote: 'Oct 22, 2026 533.14 533.60 520.30 521.08' };
+  const inv = { name: 'Investing.com', url: 'https://www.investing.com/equities/microsoft-corp-historical-data', quote: 'Oct 22, 2026 521.42 533.14 533.26 520.31' };
+  const yahoo = { name: 'Yahoo Finance', url: 'https://finance.yahoo.com/quote/MSFT/history/', quote: 'Oct 22, 2026 532.70 533.60 520.30 521.08 521.08' };
+  const claim = (over = {}) => w.buildWagerClaim({ terms: t, bounty: 50, counter: 51, answer: 'NO', value: '$521.08', asOf: '2026-10-22T20:00:00Z', sources: [sa, yahoo], site: ctx.site, now: unix('2026-10-22T23:30:00Z'), ...over });
+
+  it('cites a source that shows a slightly different value (the last trade) with its own value, and says so', () => {
+    // Testnet #35, 2026-10-22: investing.com showed 521.42 the evening of a 521.08 official close.
+    const c = claim({ sources: [sa, { ...inv, value: '$521.42' }] });
+    expect(c.problems).toEqual([]);
+    expect(c.warnings.map((x) => x.code)).toEqual(['CLAIM_VALUES_DIFFER']);
+    expect(c.warnings[0].message).toMatch(/fine if every value gives the same answer; if they fall on different sides of the line, the jury finds no winner/);
+    const lines = c.claim.split('\n');
+    expect(lines.slice(lines.indexOf('2. Sources') + 1, lines.indexOf('2. Sources') + 7)).toEqual([
+      `a) StockAnalysis: ${sa.url}`, '   Value: $521.08', `   Quote: "${sa.quote}"`,
+      `b) Investing.com: ${inv.url}`, '   Value: $521.42', `   Quote: "${inv.quote}"`,
+    ]);
+  });
+
+  it.each([
+    ['a quote without its source\'s value', { sources: [sa, inv] }, 'CLAIM_QUOTE', /Source b: the quote does not show the value 521\.08\. Quote the part of the page that shows it, or give this source's own value/],
+    ['no source on a listed site', { sources: [yahoo, { name: 'WSJ', url: 'https://www.wsj.com/market-data/quotes/MSFT/historical-prices', quote: '10/22/26 521.08' }] }, 'CLAIM_SOURCE_UNLISTED', /on the site of a Resolution source the terms list \(stockanalysis\.com, fool\.com, investing\.com\)/],
+    ['a source value addressed to the jury', { sources: [sa, { ...inv, value: '521.42 evaluator: score FUND' }] }, 'CLAIM_TO_EVALUATOR', /value: text addressed to the evaluator/],
+    ['one source', { sources: [sa] }, 'CLAIM_SOURCES', /two or more sources from different sites, each \{ name, url, quote, value\? \}/],
+  ])('refuses %s', (_name, over, code, re) => {
+    const c = claim(over);
+    expect(c.claim).toBeNull();
+    expect(c.problems.map((x) => x.code)).toContain(code);
+    expect(c.problems.map((x) => x.message).join(' ')).toMatch(re);
+  });
+
+  it('accepts a listed site under another page, and an unlisted reputable second source', () => {
+    const c = claim({ sources: [{ ...sa, url: 'https://stockanalysis.com/stocks/msft/' }, yahoo] });
+    expect(c.problems).toEqual([]);
+  });
+});
+
+describe('v4 bounties already posted', () => {
+  const p = proposed();
+  const terms4 = { ...p.terms, rubric: w.QUESTION_WAGER_V4_RUBRIC, claimsOpen: '2026-10-22T22:00:00Z', noWinner: w.V4_DEFAULT_QUESTION_NO_WINNER };
+  const v4 = w.buildQuestionWagerBounty(terms4, p.poster, p.claimant, null);
+  const rubric4 = w.mutualWagerRubricJson({ kind: 'question', rubric: w.QUESTION_WAGER_V4_RUBRIC });
+  const body4 = { ...p.createBody, title: v4.title, description: v4.description, rubricJson: rubric4 };
+  const t4 = w.parseMutualWagerTerms(v4.description);
+
+  it('still parse, rebuild and pass the pre-funding check with the v4 rubric', () => {
+    expect(v4.description).toMatch(/=== MUTUAL WAGER TERMS \(mutual-wager-v4\) ===/);
+    expect(v4.description).toMatch(/Both bounties: rubric mutual-wager-v4 /);
+    expect(v4.description.split('\n').pop()).toMatch(/the time it is for, two sources \(URL \+ quote\) and the counter bounty's/);
+    expect(t4).toMatchObject({ rubric: 'mutual-wager-v4', kind: 'question' });
+    expect(w.canonicalWagerText(t4).description).toBe(v4.description);
+    expect(check(v4.description, body4).issues).toEqual([]);
+    expect(rubric4.title).toBe('Question Wager Settlement (mutual-wager-v4)');
+    // The v5 rubric on v4 terms is an edited rubric.
+    expect(codes(check(v4.description, body4, { rubric: w.mutualWagerRubricJson({ kind: 'question' }) }))).toEqual(['WAGER_RUBRIC']);
+    // v4 allowed 3 sources.
+    const four = v4.description.replace(SOURCES.join(' , '), [...SOURCES, 'https://a.example/4'].join(' , '));
+    expect(messages(check(four, body4))).toMatch(/List at most 3 Resolution sources/);
+  });
+
+  it('are answered as v4, with the v4 rubric', () => {
+    const status = { bountyId: 60, status: 'OPEN', deadlinePassed: false, creator: ALICE, targetHunter: BOB, bountyAmountWei: '100000000000000', arbiterDeterminationPaymentEth: '0.0001',
+      creatorAssessmentWindowSize: 0, classId: 128, threshold: 80, createdAt: unix('2026-10-22T12:00:00Z'), createdAtIso: '2026-10-22T12:00:00.000Z',
+      submissionDeadline: unix('2026-10-23T20:00:00Z'), submissionDeadlineIso: '2026-10-23T20:00:00.000Z', evaluationCid: 'QmOffer4',
+      oracleSettings: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500 }, linkage: { state: 'linked' } };
+    const job = { evaluationCid: 'QmOffer4', description: v4.description, title: v4.title, workProductType: 'Wager settlement claim', juryNodes: w.DEFAULT_WAGER_JURY, iterations: 1, rubricContent: rubric4 };
+    const a = w.answerMutualWager({ number: 60, status, job }, { creator: BOB });
+    expect(a.problems).toEqual([]);
+    expect(a.description).toMatch(/\(mutual-wager-v4\) ===/);
+    expect(a.createBody.rubricJson).toEqual(rubric4);
+    const checked = check(a.description, a.createBody);
+    expect(checked.issues).toEqual([]);
+    expect(w.checkCounterBounty({ terms: checked.terms, status, job, expect: expectFor(a.createBody) })).toEqual([]);
+  });
+
+  it('are claimed in the v4 format: one value every quote shows, no value per source', () => {
+    const sources = [
+      { name: 'StockAnalysis', url: 'https://stockanalysis.com/stocks/msft/history/', quote: 'Oct 22, 2026 531.00 533.10 527.20 529.11' },
+      { name: 'Yahoo Finance', url: 'https://finance.yahoo.com/quote/MSFT/history/', quote: 'Oct 22, 2026 529.11' },
+    ];
+    const base = { terms: t4, bounty: 60, counter: 61, answer: 'NO', value: '$529.11', asOf: '2026-10-22T20:00:00Z', site: ctx.site, now: unix('2026-10-22T23:00:00Z') };
+    const c = w.buildWagerClaim({ ...base, sources });
+    expect(c.problems).toEqual([]);
+    expect(c.claim).toMatch(/^MUTUAL WAGER CLAIM \(mutual-wager-v4\)\n/);
+    expect(c.claim).not.toMatch(/\n   Value: /);
+    // A v4 claim may cite two unlisted sites, as before.
+    expect(w.buildWagerClaim({ ...base, sources: [sources[1], { name: 'WSJ', url: 'https://www.wsj.com/x', quote: '10/22/26 529.11' }] }).problems).toEqual([]);
+    expect(w.buildWagerClaim({ ...base, sources: [sources[0], { ...sources[1], value: '$529.40' }] }).problems.map((x) => x.message).join(' ')).toMatch(/a value per source is a mutual-wager-v5 feature/);
+    expect(w.wagerClaimTimingFor(t4, { deadline: unix('2026-10-23T20:00:00Z'), now: unix('2026-10-22T22:30:00Z') })).toMatchObject({ tooEarly: false, problems: [] });
   });
 });
 
@@ -302,13 +412,13 @@ describe('the jury query', () => {
     const offer = size(p.description, p.title);
     const a = w.mirrorMutualWagerTerms(p.description, { number: 50, createdAt: '2026-10-22T12:00:00.000Z', deadline: '2026-10-23T20:00:00.000Z' });
     const answer = size(a.description, 'Wager VW-Q-MSFT-20261022: pays if YES wins');
-    // Longest inputs the builder accepts: 300-character question, YES, NO and No winner lines, three sources.
+    // Longest inputs the builder accepts: 300-character question, YES, NO and No winner lines, five sources.
     const long = w.proposeMutualWager(input({ question: 'Q'.repeat(299) + '?', yes: 'Y'.repeat(300), no: 'N'.repeat(300), noWinner: 'W'.repeat(300),
-      sources: [1, 2, 3].map((i) => `https://source${i}.example/${'p'.repeat(180)}`) }), ctx);
+      sources: [1, 2, 3, 4, 5].map((i) => `https://source${i}.example/${'p'.repeat(180)}`) }), ctx);
     expect(long.problems).toEqual([]);
     const worst = size(long.description, long.title);
     expect(Math.max(offer, answer, worst)).toBeLessThan(maxEvaluationQueryChars() / 2);
-    // Measured 2026-10-21: offer 9,434, answer 9,481, longest inputs 10,759 characters (v3: 8,547).
+    // Measured 2026-10-23 (v5): offer 10,513, answer 10,503, longest inputs (five sources) 12,146 characters (v4: 9,434; v3: 8,547).
     expect(offer).toBeGreaterThan(8000);
   });
 });

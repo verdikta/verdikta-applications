@@ -1,4 +1,4 @@
-// The create page's "❓ Question Wager" template (mutual-wager-v4): offered, accepted by the server's
+// The create page's "❓ Question Wager" template (mutual-wager-v5): offered, accepted by the server's
 // rubric check, the very template the shared wager module embeds, and its "Add a terms block"
 // skeleton refused until every placeholder is filled.
 import test from 'node:test';
@@ -28,10 +28,11 @@ test('the Question Wager template is offered and passes the server rubric check'
   }
 });
 
-test('"Add a terms block" writes the v4 lines with placeholders, which the pre-funding check refuses', () => {
+test('"Add a terms block" writes the v5 lines with placeholders, which the pre-funding check refuses', () => {
   const skeleton = questionWagerTermsSkeleton(form);
-  assert.match(skeleton, /=== MUTUAL WAGER TERMS \(mutual-wager-v4\) ===\nWager ID: <[^>]+>\nQuestion: <[^>]+>\nBets close: <[^>]+>\nResolves at: <[^>]+>\nClaims open: <[^>]+>\nYES wins if: <[^>]+>\.\nNO wins if: <[^>]+>\.\n/);
-  assert.match(skeleton, /\nResolution sources \(start here, then search the web\): <https URL[^>]*> , <second https URL>\n/);
+  assert.match(skeleton, /=== MUTUAL WAGER TERMS \(mutual-wager-v5\) ===\nWager ID: <[^>]+>\nQuestion: <[^>]+>\nBets close: <[^>]+>\nResolves at: <[^>]+>\nClaims open: <[^>]+>\nYES wins if: <[^>]+>\.\nNO wins if: <[^>]+>\.\n/);
+  assert.match(skeleton, /\nResolution sources \(start here, then search the web\): <https URL[^>]*> , <second https URL[^>]*> , <third https URL: list 3 to 5[^>]*>\n/);
+  assert.match(skeleton, /\nClaims open: <Resolves at plus a source delay \(3 hours unless the sources need longer\), ISO UTC>\n/);
   assert.match(skeleton, /\nPoster \(creator\): 0x7ACbdBC2bB6e4fF8b705d695F77144eA619C0e2D; side: <YES wins or NO wins: your side>\.\n/);
   const { issues } = checkMutualWagerTerms(skeleton, { now: Date.parse('2026-10-22T12:00:00Z') / 1000, criteria: template.criteria, forbiddenContent: template.forbiddenContent });
   assert.equal(issues[0].code, 'WAGER_TERMS');

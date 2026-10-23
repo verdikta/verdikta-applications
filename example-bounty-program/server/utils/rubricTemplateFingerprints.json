@@ -241,6 +241,10 @@
         {
           "version": "mutual-wager-v4",
           "fingerprint": "2193e5623127b8ba"
+        },
+        {
+          "version": "mutual-wager-v5",
+          "fingerprint": "8a385a0b776791b2"
         }
       ]
     }

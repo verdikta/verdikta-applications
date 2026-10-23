@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Mutual wagers: two directed bounties used as a bet, on a game (the website's Mutual Wager template, mutual-wager-v3)
-// or on a YES/NO question (its Question Wager template, mutual-wager-v4). The same six verbs in every agent runtime;
+// or on a YES/NO question (its Question Wager template, mutual-wager-v5; v4 bounties already posted still work). The same six verbs in every agent runtime;
 // bodies, checks and claims are the website's shared code (_mutual-wager.cjs). The terms pick the kind.
 //
 //   node wager.js propose --input proposal.json                      preview the first bounty and its approval line
@@ -40,6 +40,7 @@ const USAGE = `Usage:
   node wager.js status
   node wager.js claim <wager> --score "<Team> <points>, <Team> <points> (Final)" --source "Name|https://...|quote" --source ... [--final-at <ISO>]
   node wager.js claim <wager> --answer YES|NO --value "<as the sources show it>" --as-of <ISO UTC> --source "Name|https://...|quote" --source ...
+      (a question: at least one source on a listed Resolution source's site; "...|quote|value=<v>" when that page shows another value)
   node wager.js claim <wager> --approval "<owner's claim line>" --yes
   node wager.js close <wager> [--dry-run] [--yes]
 <wager> is the terms hash prefix, the Wager ID or one of the wager's bounty numbers. A question proposal is
@@ -58,7 +59,7 @@ function parseArgs(argv) {
   }
   return { positional, opt: (n) => values[n]?.[0] ?? null, all: (n) => values[n] || [], flag: (n) => Boolean(values[n]) };
 }
-// A record's kind is the rubric its own terms name: 'game' (mutual-wager-v3) or 'question' (mutual-wager-v4).
+// A record's kind is the rubric its own terms name: 'game' (mutual-wager-v3) or 'question' (mutual-wager-v5, or v4).
 const termsOf = (record) => W.shared.parseMutualWagerTerms(record.description);
 const kindOfRecord = (record) => W.kindOf(termsOf(record));
 const QUESTION_CLAIM_FLAGS = ['answer', 'value', 'as-of'];

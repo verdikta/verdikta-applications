@@ -78,9 +78,9 @@ async function harness(t, { me, clock = at('2026-10-20T18:00:00Z'), myJobs = [] 
     const deadline = Number(creationTerms(config).submissionDeadline), id = h.nextId++;
     Object.assign(state, { status: 'BROADCAST', linkedJobId: id });
     await save(state);
-    // The site's records of a posted question bounty have the question fixtures' shape (and its v4 rubric).
-    const question = /\(mutual-wager-v4\) ===/.test(config.description);
-    const base = question ? { status: qfx('status', 40), job: qfx('job', 40), rpc: qfx('chain', 40) } : { status: fx(18, 'status'), job: current(fx(18, 'job').job), rpc: fx(18, 'rpc') };
+    // The site's records of a posted question bounty have the question fixtures' shape, with the rubric it was posted with.
+    const question = /\(mutual-wager-v[45]\) ===/.test(config.description);
+    const base = question ? { status: qfx('status', 40), job: { ...qfx('job', 40), rubricContent: config.rubricJson }, rpc: qfx('chain', 40) } : { status: fx(18, 'status'), job: current(fx(18, 'job').job), rpc: fx(18, 'rpc') };
     records[id] = { status: { ...base.status, bountyId: id, creator: h.me, targetHunter: config.targetHunter, createdAt: h.clock, createdAtIso: new Date(h.clock * 1000).toISOString(), submissionDeadline: deadline, submissionDeadlineIso: new Date(deadline * 1000).toISOString() }, job: { ...base.job, jobId: id, description: config.description, title: config.title } };
     chain[id] = { ...base.rpc, creator: h.me, targetHunter: config.targetHunter, createdAt: String(h.clock), submissionDeadline: String(deadline) };
   };
@@ -445,12 +445,12 @@ test('check --against a bounty that is not yours in the wager records nothing', 
   await assert.rejects(h.run('claim', 'VW-TEST3-BOS-DET-20261020', ...score), /No checked counter bounty/);
 });
 
-// ---- Question wagers (mutual-wager-v4): the same verbs, with the question's args and times ----
+// ---- Question wagers (mutual-wager-v5): the same verbs, with the question's args and times ----
 const question = {
   kind: 'question', wagerId: 'VQ-TEST-AAPL-20261022', question: 'Will Apple (AAPL) close above $250.00 on 2026-10-22?',
   betsClose: '2026-10-22T13:00:00Z', resolvesAt: '2026-10-22T20:00:00Z',
   yes: 'the official closing price of AAPL on 2026-10-22 is above $250.00', no: 'the official closing price of AAPL on 2026-10-22 is $250.00 or below',
-  sources: ['https://stockanalysis.com/stocks/aapl/history/'], side: 'NO', stake: '0.0001', settle: '2026-10-23T22:00:00Z', opponent: bob,
+  sources: ['https://stockanalysis.com/stocks/aapl/history/', 'https://www.fool.com/quote/nasdaq/aapl/', 'https://www.investing.com/equities/apple-computer-inc-historical-data'], side: 'NO', stake: '0.0001', settle: '2026-10-23T22:00:00Z', opponent: bob,
 };
 const closeSources = (value) => ['--source', `StockAnalysis|https://stockanalysis.com/stocks/aapl/history/|Oct 22, 2026 248.10 252.40 247.95 ${value}`,
   '--source', `Investing.com|https://www.investing.com/equities/apple-computer-inc-historical-data|10/22/2026 ${value} 248.10 252.40 247.95`];
@@ -481,7 +481,7 @@ test('question: propose posts the shared builder\'s bytes; the answer mirrors th
   await h.run('propose', '--input', input, '--approval', line, '--yes');
   const shared = W.shared.proposeMutualWager({ ...question, creator: alice, classId: 128, threshold: 80, jury: W.WAGER_DEFAULTS.jury, iterations: 1, oracle: W.WAGER_DEFAULTS.oracle }, W.siteContext({ network: 'base-sepolia', origin: 'https://bounties-testnet.verdikta.org', deployment: { address: '0x1B4F0e43256d435DfcD5C0883799F0Eb3943e08f', chainId: 84532 } }));
   const c = h.created[0];
-  assert.equal(c.description, shared.description); assert.equal(c.description, qfx('job', 40).description); assert.equal(c.title, shared.title);
+  assert.equal(c.description, shared.description); assert.match(c.description, /\(mutual-wager-v5\) ===/); assert.equal(c.title, shared.title);
   assert.deepEqual(c.rubricJson, W.wagerRubricJson('question')); assert.equal(c.submissionDeadline, '2026-10-23T22:00:00Z'); assert.equal(c.targetHunter, bob);
   assert.match(h.text(), /Answer it by number by 2026-10-22T12:50:00Z \(10 minutes before the Bets close time 2026-10-22T13:00:00Z\): with the Verdikta onboarding skill, node wager\.js answer 26; on the website, the Question Wager template's answer field takes #26/);
   h.as(bob);
@@ -490,7 +490,7 @@ test('question: propose posts the shared builder\'s bytes; the answer mirrors th
   await h.run('answer', '26', '--approval', lineFrom(h.text()), '--yes');
   assert.match(h.created[1].description, /^Counter bounty: #26, verified by the Poster before posting \(.*created 2026-10-22T11:00:00\.000Z, deadline 2026-10-23T22:00:00\.000Z/m);
   assert.match(h.created[1].description, /^Poster \(creator\): 0x75fAc210bF1Dcd0BA3FaC294de7c50C5763Da6d9; side: YES wins\.$/m);
-  assert.match(h.text(), /From Claims open \(2026-10-22T22:00:00Z\), the side the answer makes win claims the other bounty/);
+  assert.match(h.text(), /From Claims open \(2026-10-22T23:00:00Z\), the side the answer makes win claims the other bounty/);
   h.as(alice);
   await h.run('check', '27');
   assert.match(h.text(), /Bounty #27 checked as the counter to bounty #26[\s\S]*PASS/);
@@ -509,7 +509,7 @@ test('question: status follows Bets close, Resolves at and Claims open; claim re
   // Both bounties posted, bets still open (testnet 2026-10-22: this said "Bets are closed").
   h.clock = at('2026-10-22T12:00:00Z'); h.logs.length = 0;
   await h.run('status');
-  assert.match(h.text(), /Next: Both bounties are posted; bets close at 2026-10-22T13:00:00Z and the question resolves at 2026-10-22T20:00:00Z\. If the answer makes your side \(NO wins\) win, claim\.md can be prepared from Claims open, 2026-10-22T22:00:00Z\./);
+  assert.match(h.text(), /Next: Both bounties are posted; bets close at 2026-10-22T13:00:00Z and the question resolves at 2026-10-22T20:00:00Z\. If the answer makes your side \(NO wins\) win, claim\.md can be prepared from Claims open, 2026-10-22T23:00:00Z\./);
   assert.doesNotMatch(h.text(), /Bets are closed/);
   h.clock = at('2026-10-22T14:00:00Z'); h.logs.length = 0;
   await h.run('status');
@@ -519,18 +519,18 @@ test('question: status follows Bets close, Resolves at and Claims open; claim re
   assert.match(text, /^ {2}YES wins if: the official closing price of AAPL on 2026-10-22 is above \$250\.00\.$/m);
   assert.match(text, /^ {2}NO wins if: the official closing price of AAPL on 2026-10-22 is \$250\.00 or below\.$/m);
   assert.match(text, /^ {2}Your side: NO wins$/m);
-  assert.match(text, /^ {2}Resolution sources: https:\/\/stockanalysis\.com\/stocks\/aapl\/history\/$/m);
-  assert.match(text, /^ {2}Bets close 2026-10-22T13:00:00Z, resolves at 2026-10-22T20:00:00Z, claims open 2026-10-22T22:00:00Z, settlement deadline 2026-10-23T22:00:00Z$/m);
+  assert.match(text, /^ {2}Resolution sources: https:\/\/stockanalysis\.com\/stocks\/aapl\/history\/ , https:\/\/www\.fool\.com\/quote\/nasdaq\/aapl\/ , https:\/\/www\.investing\.com\/equities\/apple-computer-inc-historical-data$/m);
+  assert.match(text, /^ {2}Bets close 2026-10-22T13:00:00Z, resolves at 2026-10-22T20:00:00Z, claims open 2026-10-22T23:00:00Z, settlement deadline 2026-10-23T22:00:00Z$/m);
   assert.match(text, /Counter bounty #27: passed the check/);
-  assert.match(text, /Next: Bets are closed; the question resolves at 2026-10-22T20:00:00Z\. If the answer makes your side \(NO wins\) win, claim\.md can be prepared from Claims open, 2026-10-22T22:00:00Z\./);
+  assert.match(text, /Next: Bets are closed; the question resolves at 2026-10-22T20:00:00Z\. If the answer makes your side \(NO wins\) win, claim\.md can be prepared from Claims open, 2026-10-22T23:00:00Z\./);
   h.clock = at('2026-10-22T21:00:00Z'); h.logs.length = 0;
   await h.run('status');
-  assert.match(h.text(), /Next: The question resolved at 2026-10-22T20:00:00Z; claims open at 2026-10-22T22:00:00Z, once the sources show the final value/);
+  assert.match(h.text(), /Next: The question resolved at 2026-10-22T20:00:00Z; claims open at 2026-10-22T23:00:00Z, once the sources show the final value/);
   // Resolved, Claims open not yet: no claim.md, nothing saved.
-  await assert.rejects(h.run('claim', 'VQ-TEST-AAPL-20261022', ...answerNo), /Too early: claims open at 2026-10-22T22:00:00Z/);
+  await assert.rejects(h.run('claim', 'VQ-TEST-AAPL-20261022', ...answerNo), /Too early: claims open at 2026-10-22T23:00:00Z/);
   // A game's score on a question names the shape it needs.
-  h.clock = at('2026-10-22T22:30:00Z');
-  await assert.rejects(h.run('claim', 'VQ-TEST-AAPL-20261022', '--score', 'AAPL 250, LINE 249 (Final)', ...closeSources('249.80')), /Bounty #27 is a question wager \(mutual-wager-v4\): claim it with --answer YES\|NO/);
+  h.clock = at('2026-10-22T23:30:00Z');
+  await assert.rejects(h.run('claim', 'VQ-TEST-AAPL-20261022', '--score', 'AAPL 250, LINE 249 (Final)', ...closeSources('249.80')), /Bounty #27 is a question wager \(mutual-wager-v5\): claim it with --answer YES\|NO/);
   await assert.rejects(h.run('claim', 'VQ-TEST-AAPL-20261022'), /--answer, --value, --as-of and two --source entries are required/);
   const { dir } = await stateOf(h);
   assert.deepEqual((await readdir(dir)).filter((f) => f.startsWith('claim')), []);
@@ -541,7 +541,7 @@ test('question: status follows Bets close, Resolves at and Claims open; claim re
 
 test('question: claim.md is the shared buildQuestionClaim text, approved and submitted unchanged; then close', async (t) => {
   const { h } = await questionPair(t);
-  h.clock = at('2026-10-22T22:30:00Z'); h.logs.length = 0;
+  h.clock = at('2026-10-22T23:30:00Z'); h.logs.length = 0;
   await h.run('claim', 'VQ-TEST-AAPL-20261022', ...answerNo);
   const { dir, record } = await stateOf(h);
   const claim = await readFile(path.join(dir, 'claim.md'), 'utf8');
@@ -550,7 +550,8 @@ test('question: claim.md is the shared buildQuestionClaim text, approved and sub
     sources: W.parseSources([answerNo[7], answerNo[9]]), site: 'https://bounties-testnet.verdikta.org', now: h.clock });
   assert.deepEqual(shared.problems, []);
   assert.equal(claim, shared.claim);
-  assert.match(claim, /^MUTUAL WAGER CLAIM \(mutual-wager-v4\)\nWager ID: VQ-TEST-AAPL-20261022\nBounty claimed: #27\n/);
+  assert.match(claim, /^MUTUAL WAGER CLAIM \(mutual-wager-v5\)\nWager ID: VQ-TEST-AAPL-20261022\nBounty claimed: #27\n/);
+  assert.match(claim, /^a\) StockAnalysis: https:\/\/stockanalysis\.com\/stocks\/aapl\/history\/\n {3}Value: \$249\.80\n {3}Quote: "Oct 22, 2026 248\.10 252\.40 247\.95 249\.80"$/m);
   assert.match(claim, /^Value: \$249\.80, for 2026-10-22T20:00:00Z\nAnswer: NO\. NO wins if: the official closing price of AAPL on 2026-10-22 is \$250\.00 or below\.$/m);
   assert.ok(claim.endsWith('3. Counter bounty\nBounty #26 (named in the terms).\n'));
   assert.deepEqual(JSON.parse(await readFile(path.join(dir, 'claim-input.json'), 'utf8')), { answer: 'NO', value: '$249.80', asOf: '2026-10-22T20:00:00Z', sources: [answerNo[7], answerNo[9]], attempt: 1 });
@@ -575,7 +576,7 @@ test('question: claim.md is the shared buildQuestionClaim text, approved and sub
 
 test('question: the answerer claims the REQUIRED offer, citing its own bounty by URL', async (t) => {
   const { h } = await questionPair(t);
-  h.as(bob); h.clock = at('2026-10-22T22:30:00Z');
+  h.as(bob); h.clock = at('2026-10-22T23:30:00Z');
   const answerYes = ['--answer', 'YES', '--value', '$251.20', '--as-of', '2026-10-22T20:00:00Z', ...closeSources('251.20')];
   await assert.rejects(h.run('claim', 'VQ-TEST-AAPL-20261022', ...answerNo), /By your answer NO wins, so the Claimant's side \(YES wins\) did not/);
   h.logs.length = 0;

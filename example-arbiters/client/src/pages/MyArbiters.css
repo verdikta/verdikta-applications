@@ -92,6 +92,12 @@
   color: var(--text-secondary);
 }
 
+/* Multi-paragraph claim explanation (no-arbiters state) */
+.my-arbiters div.claim-note p {
+  margin: 0.6rem 0 0;
+  line-height: 1.5;
+}
+
 .my-arbiters .claim-balance strong {
   color: var(--text);
   font-size: 1.05rem;

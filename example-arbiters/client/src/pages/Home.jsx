@@ -40,7 +40,7 @@ const HOW_IT_WORKS = [
 ];
 
 const EXPLORE = [
-  { to: '/my-arbiters', icon: Wallet, title: 'My Arbiters', text: 'Connect a wallet to claim earned ETH and close out your arbiters.' },
+  { to: '/my-arbiters', icon: Wallet, title: 'My Arbiters', text: 'Connect a wallet to claim earned or refunded ETH and close out your arbiters.' },
   { to: '/analytics', icon: BarChart3, title: 'Analytics', text: 'Arbiter availability and reputation by owner, plus system diagnostics.' },
   { to: '/contracts', icon: FileText, title: 'Contracts', text: 'The core Verdikta contracts and their live on-chain configuration.' }
 ];

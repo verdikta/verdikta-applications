@@ -3,8 +3,9 @@
  *
  * Lets an arbiter owner manage the arbiters their connected wallet controls on
  * the header-selected network:
- *  - Claim earned ETH (per owner → ReputationAggregator.withdrawEth, from the ethOwed
- *    pull-payment ledger). A secondary per-operator "legacy LINK" claim
+ *  - Claim ETH (per wallet → ReputationAggregator.withdrawEth, from the ethOwed
+ *    pull-payment ledger): arbiter earnings and/or requester fee refunds. Shown even
+ *    when the wallet owns no arbiters. A secondary per-operator "legacy LINK" claim
  *    (ArbiterOperator.withdraw) appears only when LINK lingers from the old aggregator.
  *  - Close out an arbiter and reclaim the 100 wVDKA stake (per oracle+jobId →
  *    ReputationKeeper.deregisterOracle)
@@ -316,7 +317,7 @@ function MyArbiters() {
     <div className="page-header">
       <div className="header-content">
         <h1><Wallet size={28} className="inline-icon" /> My Arbiters</h1>
-        <p>Claim earned ETH and close out arbiters on {chain.name}</p>
+        <p>Claim earned or refunded ETH and close out arbiters on {chain.name}</p>
       </div>
       {isConnected && (
         <div className="header-actions">
@@ -357,7 +358,10 @@ function MyArbiters() {
           <div className="gate-state">
             <Wallet size={40} />
             <h2>Connect your wallet</h2>
-            <p>Connect the wallet that owns your arbiters to claim earned ETH and reclaim stake.</p>
+            <p>
+              Connect the wallet that owns your arbiters to claim earned ETH and reclaim stake, or
+              the wallet you requested evaluations from to withdraw refunded fees.
+            </p>
             <button className="btn btn-primary btn-with-icon" onClick={handleConnect} disabled={connecting}>
               <Wallet size={16} />
               {connecting ? 'Connecting…' : 'Connect Wallet'}
@@ -387,13 +391,15 @@ function MyArbiters() {
     </div>
   ) : null;
 
-  // Primary, per-owner ETH earnings claim. Earnings (base + bonus) accrue to ethOwed on the
-  // aggregator aggregated across ALL the owner's operators, so this is a single claim — not
-  // per operator. Withdraws the full ethOwed balance to the connected wallet.
+  // Primary, per-wallet ETH claim from the aggregator's ethOwed ledger. Two things credit
+  // it: arbiter earnings (base + bonus, aggregated across ALL the owner's operators) and
+  // requester refunds (the unspent part of a request's up-front worst-case fee, credited at
+  // settlement or timeout). Both drain through the same withdrawEth(), so this is a single
+  // claim — not per operator — and works for wallets that own no arbiters.
   const claimableEth = parseFloat(data?.claimableEth || '0');
   const withdrawingEth = pending.has('withdrawEth');
   const canWithdrawEth = claimableEth > 0 && !withdrawingEth && onCorrectChain;
-  const ethClaimPanel = (
+  const ethClaimPanel = (hasArbiters) => (
     <section className="analytics-section eth-claim-panel">
       <div className="operator-claim">
         <div className="claim-balance">
@@ -406,16 +412,42 @@ function MyArbiters() {
           disabled={!canWithdrawEth}
           title={!onCorrectChain
             ? `Switch to ${chain.name} to claim`
-            : claimableEth > 0 ? 'Withdraw your earned ETH to your wallet' : 'No ETH available to claim'}
+            : claimableEth > 0 ? 'Withdraw your claimable ETH to your wallet' : 'No ETH available to claim'}
         >
           <Coins size={14} />
-          {withdrawingEth ? 'Withdrawing…' : 'Withdraw earned ETH'}
+          {withdrawingEth ? 'Withdrawing…' : 'Withdraw ETH'}
         </button>
       </div>
-      <p className="claim-note muted">
-        Earnings are paid in ETH and accrue per owner across all your operators. Unwithdrawn
-        ETH stays credited on the aggregator and can be claimed any time.
-      </p>
+      {hasArbiters ? (
+        <p className="claim-note muted">
+          Includes your arbiter earnings, which accrue per owner across all your operators, plus
+          any refunds of unused fees from evaluations this wallet requested. Unwithdrawn ETH stays
+          credited on the aggregator and can be claimed any time.
+        </p>
+      ) : (
+        <div className="claim-note muted">
+          <p>
+            You don&rsquo;t need to run an arbiter to have ETH here. When this wallet requests an
+            evaluation (for example from the Verdikta Playground), it prepays the most the request
+            could cost: every polled arbiter&rsquo;s maximum fee plus the largest possible bonus.
+            Arbiters usually charge less, and bonuses only go to the arbiters whose answers agree,
+            so once the request settles or times out the unspent ETH is credited back to this
+            wallet on the Verdikta aggregator.
+          </p>
+          <p>
+            That credit is not sent back automatically. Withdraw it here to move it to your wallet,
+            or leave it and it will pay toward your next request.
+            {claimableEth === 0 && data?.claimableEth != null && (
+              <> This wallet has nothing to withdraw on {chain.name} right now.</>
+            )}
+          </p>
+        </div>
+      )}
+      {data?.claimableEth == null && (
+        <p className="claim-note muted">
+          Couldn&rsquo;t read your balance from the aggregator. Use Refresh to try again.
+        </p>
+      )}
     </section>
   );
 
@@ -519,7 +551,7 @@ function MyArbiters() {
         {header}
         {wrongChainBanner}
         {resumeBanner}
-        {claimableEth > 0 && ethClaimPanel}
+        {ethClaimPanel(false)}
         <section className="analytics-section">
           <div className="gate-state">
             <Inbox size={40} />
@@ -540,7 +572,7 @@ function MyArbiters() {
       {header}
       {wrongChainBanner}
       {resumeBanner}
-      {ethClaimPanel}
+      {ethClaimPanel(true)}
 
       {operators.map((operator) => {
         const claimKey = `claim:${operator.operator}`;

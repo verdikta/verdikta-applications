@@ -50,7 +50,7 @@ const ORACLE_DEFAULTS = {
   oracleMaxFeeBasedScaling: String(config.submissionDefaults.maxFeeBasedScaling),
 };
 const ORACLE_FEE_CEILING_ETH = ethers.formatEther(ORACLE_FEE_CEILING_WEI);
-// The rubric templates of a mutual wager: a game (mutual-wager-v3) or a question (mutual-wager-v4).
+// The rubric templates of a mutual wager: a game (mutual-wager-v3) or a question (mutual-wager-v5).
 const WAGER_TEMPLATES = ['mutualWager', 'questionWager'];
 
 /**
@@ -626,7 +626,7 @@ function CreateBounty({ walletState }) {
       }
       return;
     }
-    // A question wager (mutual-wager-v4) has its own lines: question, bets close, resolves at, sources, YES/NO sides.
+    // A question wager (mutual-wager-v5; v4 before it) has its own lines: question, bets close, resolves at, sources, YES/NO sides.
     const skeleton = selectedTemplate === 'questionWager' ? questionWagerTermsSkeleton : mutualWagerTermsSkeleton;
     const terms = skeleton({
       posterWallet: walletState.address,

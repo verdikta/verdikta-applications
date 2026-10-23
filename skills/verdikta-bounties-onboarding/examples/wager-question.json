@@ -1,6 +1,6 @@
 {
   "fixture_only": true,
-  "_note": "Shape example for a question wager, node wager.js propose --input (the shared proposeMutualWager input with kind question; wager.js adds your wallet as creator). Copy it per wager, remove fixture_only and _note, use a new wagerId for every pair. Ask about a value published for a stated date (an official close, a reference rate), never a minute-level intraday price. betsClose comes before the answer can be known; resolvesAt is when it is fixed (20:00Z for a 4 PM ET close); claimsOpen defaults to resolvesAt + 2 hours; settle is at least 2 hours after claimsOpen. List 1 to 3 https sources both jurors open (stockanalysis.com, investing.com, ecb.europa.eu). side is yours, YES or NO. Optional: claimsOpen, noWinner.",
+  "_note": "Shape example for a question wager, node wager.js propose --input (the shared proposeMutualWager input with kind question; wager.js adds your wallet as creator). Copy it per wager, remove fixture_only and _note, use a new wagerId for every pair. Ask about a value published for a stated date (an official close, a reference rate), never a minute-level intraday price. betsClose comes before the answer can be known; resolvesAt is when it is fixed (20:00Z for a 4 PM ET close); claimsOpen defaults to resolvesAt + 3 hours; settle is at least 2 hours after claimsOpen. List 3 to 5 https sources you have opened yourself, at least two that both jurors open (US closes, October 2026: stockanalysis.com and fool.com at any time, google.com/finance the evening of the close, investing.com from the next morning; ecb.europa.eu for euro reference rates). Other questions are allowed but their sources are untested: read the warnings. side is yours, YES or NO. Optional: claimsOpen, noWinner.",
   "kind": "question",
   "wagerId": "VQ-AAPL-CLOSE-20261022",
   "question": "Will Apple (AAPL) close above $250.00 on 2026-10-22?",
@@ -8,7 +8,7 @@
   "resolvesAt": "2026-10-22T20:00:00Z",
   "yes": "the official closing price of AAPL on 2026-10-22 is above $250.00",
   "no": "the official closing price of AAPL on 2026-10-22 is below $250.00",
-  "sources": ["https://stockanalysis.com/stocks/aapl/history/", "https://www.investing.com/equities/apple-computer-inc-historical-data"],
+  "sources": ["https://stockanalysis.com/stocks/aapl/history/", "https://www.fool.com/quote/nasdaq/aapl/", "https://www.investing.com/equities/apple-computer-inc-historical-data"],
   "side": "NO",
   "stake": "0.0001",
   "settle": "2026-10-23T22:00:00Z",

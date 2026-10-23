@@ -2,7 +2,8 @@
 // A wager is two directed bounties, one per bettor, each paying the other bettor only if that bettor's side wins
 // and that bettor holds a live mirrored counter bounty. Two templates, told apart by the rubric the terms name: game
 // wagers (Mutual Wager, mutual-wager-v3: a game settled on its official final score) and question wagers (Question
-// Wager, mutual-wager-v4: YES or NO on a published value or fact, settled from the Resolution sources).
+// Wager, mutual-wager-v5: YES or NO on a published value or fact, settled on the answer the Resolution sources give;
+// mutual-wager-v4 bounties already posted are still answered and claimed as v4).
 // Bodies, checks and claims come from the website's shared module (_mutual-wager.cjs, vendored byte for byte):
 // the same code the create page, the bounty server's /api/wagers and its /jobs/create check run. This module adds
 // the skill's layers: an escrow read of the opponent's bounty, the standard no-winner rule, the owner's approval
@@ -36,17 +37,17 @@ const MIN_SETTLE_AFTER_START = 12 * 3600, MAX_SETTLE_AFTER_START = 60 * 86400;
 export const PROPOSAL_FIELDS = ['wagerId', 'event', 'start', 'settle', 'stake', 'opponent', 'sides', 'market', 'noWinner'];
 export const QUESTION_PROPOSAL_FIELDS = ['kind', 'wagerId', 'question', 'betsClose', 'resolvesAt', 'claimsOpen', 'yes', 'no', 'noWinner', 'sources', 'side', 'stake', 'settle', 'opponent'];
 const GAME_ONLY_FIELDS = ['event', 'start', 'market', 'sides', 'shortEvent'];
-/** 'game' (mutual-wager-v3) or 'question' (mutual-wager-v4) for parsed terms. */
+/** 'game' (mutual-wager-v3) or 'question' (mutual-wager-v5, or v4) for parsed terms. */
 export const kindOf = (terms) => (terms?.kind === 'question' ? 'question' : 'game');
 /** The templates wager.js builds, answers, checks and claims (the native runtime's SUPPORTED_WAGER_RUBRICS). */
-export const SUPPORTED_WAGER_RUBRICS = Object.freeze([shared.MUTUAL_WAGER_RUBRIC, shared.QUESTION_WAGER_RUBRIC]);
+export const SUPPORTED_WAGER_RUBRICS = Object.freeze([shared.MUTUAL_WAGER_RUBRIC, ...shared.QUESTION_WAGER_RUBRICS]);
 /**
  * Any other rubric is refused by name before anything is built: the shared module reads an unknown rubric as a game,
  * and an answer this wallet cannot claim pays only the other side.
  */
 export function unsupportedWagerProblem(terms, number) {
   if (!terms?.found || SUPPORTED_WAGER_RUBRICS.includes(terms.rubric)) return null;
-  return `Bounty #${number} is a ${terms.rubric ?? 'unnamed-rubric'} wager. wager.js handles game wagers (${shared.MUTUAL_WAGER_RUBRIC}) and question wagers (${shared.QUESTION_WAGER_RUBRIC}) only, so it cannot be answered or claimed with it.`;
+  return `Bounty #${number} is a ${terms.rubric ?? 'unnamed-rubric'} wager. wager.js handles game wagers (${shared.MUTUAL_WAGER_RUBRIC}) and question wagers (${shared.QUESTION_WAGER_RUBRICS.join(', ')}) only, so it cannot be answered or claimed with it.`;
 }
 /** The site's rule: kind "question", or a question with no kind, is a question input. */
 const isQuestionInput = (input) => input?.kind === 'question' || (input?.kind === undefined && input?.question !== undefined);
@@ -71,17 +72,20 @@ export function siteContext({ network, origin, deployment }) {
   return { network, site: origin, escrow: getAddress(deployment.address), chain: shared.wagerChainLabel(deployment.chainId), defaults: { oracle: WAGER_DEFAULTS.oracle, jury: WAGER_DEFAULTS.jury } };
 }
 
-/** The shared /jobs/create rubricJson minus threshold and classId, which create_bounty.js sends outside the rubric. */
-export function wagerRubricJson(kind = 'game') {
-  const { threshold, classId, ...rubric } = shared.mutualWagerRubricJson({ kind });
-  return rubric;
+/**
+ * The shared /jobs/create rubricJson minus threshold and classId, which create_bounty.js sends outside the rubric.
+ * rubric picks a version (a v4 bounty's terms name mutual-wager-v4); otherwise the kind's current template.
+ */
+export function wagerRubricJson(kind = 'game', rubric) {
+  const { threshold, classId, ...json } = shared.mutualWagerRubricJson({ kind, rubric });
+  return json;
 }
 
 /** What the create page (and the server) pass to checkMutualWagerTerms for the bounty `me` would post. */
-export function expectFor({ me, target, stake, classId, threshold, jury, iterations, oracle, settle, ctx, now, kind = 'game' }) {
+export function expectFor({ me, target, stake, classId, threshold, jury, iterations, oracle, settle, ctx, now, kind = 'game', rubric }) {
   return {
     posterWallet: me, targetHunter: target, stake, threshold, classId, jury, iterations, oracle, approvalWindow: false,
-    now, deadline: unix(settle), site: ctx.site, escrow: ctx.escrow, chain: ctx.chain, rubric: wagerRubricJson(kind),
+    now, deadline: unix(settle), site: ctx.site, escrow: ctx.escrow, chain: ctx.chain, rubric: wagerRubricJson(kind, rubric),
   };
 }
 
@@ -94,7 +98,7 @@ export function termsValues(t) {
   if (!both) problems.push('The "Both bounties" line cannot be read back.');
   if (!(wei(stake) > 0n)) problems.push('The Stake line cannot be read back.');
   if (unix(f.start) == null || unix(f.settle) == null) problems.push(`${t.kind === 'question' ? 'Bets close' : 'The scheduled start'} and the settlement deadline must be ISO UTC times to the second, such as 2026-10-21T19:00:00Z.`);
-  return { problems, kind: kindOf(t), jury: juryLine?.jury, iterations: juryLine?.iterations, oracle, classId: both?.classId, threshold: both?.threshold, stake, start: norm(f.start), settle: norm(f.settle) };
+  return { problems, kind: kindOf(t), rubric: t.rubric, jury: juryLine?.jury, iterations: juryLine?.iterations, oracle, classId: both?.classId, threshold: both?.threshold, stake, start: norm(f.start), settle: norm(f.settle) };
 }
 
 /**
@@ -221,7 +225,7 @@ function questionOfferNotes(terms, answered) {
   const f = terms.fields, notes = [
     `The question, its "YES wins if" / "NO wins if" lines and its Resolution sources are the offer's, written by ${terms.claimant.wallet}; the jury settles on them exactly as written. Read them before approving.`,
   ];
-  if (norm(f.noWinner).replace(/\.$/, '') !== shared.DEFAULT_QUESTION_NO_WINNER) notes.push(`The offer's no-winner clause is not the site default: "${norm(f.noWinner)}". Read it before approving.`);
+  if (![shared.DEFAULT_QUESTION_NO_WINNER, shared.V4_DEFAULT_QUESTION_NO_WINNER].includes(norm(f.noWinner).replace(/\.$/, ''))) notes.push(`The offer's no-winner clause is not the site default: "${norm(f.noWinner)}". Read it before approving.`);
   return [...notes, ...messages(answered?.warnings)];
 }
 
@@ -327,18 +331,24 @@ export function parseScore(score) {
   return { rows: [{ team: m[1], points: Number(m[2]) }, { team: m[3], points: Number(m[4]) }], result: m[5] };
 }
 
-/** --source "Name|https://url|verbatim quote from that page" -> shared sources. */
+/**
+ * --source "Name|https://url|verbatim quote from that page" -> shared sources. A question claim (mutual-wager-v5) may
+ * end a source with "|value=<the value that page shows>" when it differs from --value (a last trade against the
+ * official close): the quote must then show that value.
+ */
 export function parseSources(list) {
   return (list || []).map((raw) => {
     const [name, url, ...rest] = String(raw).split('|');
-    return { name: norm(name), url: norm(url), quote: norm(rest.join('|')) };
+    const value = rest.length > 1 ? /^\s*value\s*[=:]\s*(.+)$/i.exec(rest[rest.length - 1])?.[1] : undefined;
+    const quote = norm((value !== undefined ? rest.slice(0, -1) : rest).join('|'));
+    return { name: norm(name), url: norm(url), quote, ...(value !== undefined ? { value: norm(value) } : {}) };
   });
 }
 
 /** The claim flags a kind takes, for the refusal of a claim given in the other kind's shape. */
 export const CLAIM_SHAPE = {
   game: '--score "<Team> <points>, <Team> <points> (Final)" and two --source "Name|URL|quote" (--final-at <ISO> optional)',
-  question: '--answer YES|NO --value "<the value as the sources show it>" --as-of <ISO UTC time the value is for> and two --source "Name|URL|quote"',
+  question: '--answer YES|NO --value "<the value as the sources show it>" --as-of <ISO UTC time the value is for> and two or more --source "Name|URL|quote" (at least one on a listed Resolution source\'s site; end a source with "|value=<its value>" when it shows a different one)',
 };
 const QUESTION_CLAIM_INPUTS = ['answer', 'value', 'asOf'];
 

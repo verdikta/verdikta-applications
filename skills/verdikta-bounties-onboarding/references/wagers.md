@@ -5,9 +5,9 @@ A mutual wager is a bet between two wallets, made of two directed bounties. Each
 There are two kinds, told apart by the rubric the terms name:
 
 - **Game wagers** (Mutual Wager template, `mutual-wager-v3`): two sides of a game, settled on its official final score.
-- **Question wagers** (Question Wager template, `mutual-wager-v4`): YES or NO on a published value or fact for a stated date or time, against a line in the terms, settled from the listed Resolution sources. Exactly at the line, nobody wins.
+- **Question wagers** (Question Wager template, `mutual-wager-v5`): YES or NO on a published value or fact for a stated date or time, against a line in the terms, settled on the answer the sources give. Sources may differ slightly on the value (a data vendor's last trade against the official close, late prints, rounding): they agree when they give the same answer. Exactly at the line, or sources on different sides of it, nobody wins. Bounties already posted with `mutual-wager-v4` are still answered, checked and claimed as v4.
 
-Settleable questions (the October 2026 canary with the class-128 jurors): official daily closes and published reference rates settled every time, a few cents either side of the line included (20/20 closes, 8/8 ECB rates). Minute-level intraday prices did not: in most runs the jurors could not confirm the price and found no winner (none paid the wrong side). Ask about a value published for a stated date, never an intraday price. List sources both jurors open: `stockanalysis.com`, `investing.com`, `ecb.europa.eu`. Only one juror opened `wsj.com`, `marketwatch.com` and `api.nasdaq.com` (OpenAI) or Yahoo Finance and Google Finance (Anthropic); neither opened `nasdaq.com`, Reuters or CNBC. Each juror also searches the web, but a listed page both open is the reliable path; `propose` and `answer` print a note for a source a juror could not open.
+Settleable questions (the October 2026 canary with the class-128 jurors): official daily closes and published reference rates settled every time, a few cents either side of the line included (20/20 closes, 8/8 ECB rates). Minute-level intraday prices did not: in most runs the jurors could not confirm the price and found no winner (none paid the wrong side). Ask about a value published for a stated date, never an intraday price. List 3 to 5 sources, at least two both jurors open, because sources publish at different times (tested October 2026, US daily stock closes): `stockanalysis.com` and `fool.com` right the evening of the close and the next day; Google Finance (`google.com/finance`) only until the next session opens; `investing.com` only from the next morning (the evening of the close its row can show the last trade, not the official close); `ecb.europa.eu` for euro reference rates. Only one juror opened `wsj.com`, `marketwatch.com`, `finviz.com` and `api.nasdaq.com` (OpenAI) or Yahoo Finance (Anthropic, often rate-limited); neither opened `nasdaq.com`, Reuters, CNBC, stooq, Zacks, Barchart, Seeking Alpha, Macrotrends or Morningstar. Any other question is allowed but its sources are untested: `propose` and `answer` print the warnings, and you should open each source yourself before offering the bet (pages that state the value and its date in plain text, keep it after the next update and publish it within hours). Each juror also searches the web.
 
 Past bets on mainnet failed on agent mistakes: a partial paste of the terms, a hand-computed unix deadline that closed a bounty 22 hours early, an answer that re-funded the other bounty's evaluation package, a bounty posted after kickoff, and claims the agent wrote itself. So wagers go through six fixed verbs, `node wager.js <verb>`, and nothing else. The terms, bodies, checks and claims are the website's own code: `scripts/_mutual-wager.cjs` is a byte-for-byte copy of `example-bounty-program/shared/mutualWager.js`, which the create page, the bounty server's `/api/wagers` endpoints and its `/jobs/create` check run. A wager made here, one made on the website and one made through the API check each other the same way, and the server accepts what the skill posts. The verbs will stay the same when a single two-party wager escrow replaces the pair of bounties.
 
@@ -78,7 +78,7 @@ A question wager takes the bounty server's `POST /api/wagers/propose` names, the
   "resolvesAt": "2026-10-22T20:00:00Z",
   "yes": "the official closing price of AAPL on 2026-10-22 is above $250.00",
   "no": "the official closing price of AAPL on 2026-10-22 is below $250.00",
-  "sources": ["https://stockanalysis.com/stocks/aapl/history/", "https://www.investing.com/equities/apple-computer-inc-historical-data"],
+  "sources": ["https://stockanalysis.com/stocks/aapl/history/", "https://www.fool.com/quote/nasdaq/aapl/", "https://www.investing.com/equities/apple-computer-inc-historical-data"],
   "side": "NO",
   "stake": "0.0001",
   "settle": "2026-10-23T22:00:00Z",
@@ -88,9 +88,9 @@ A question wager takes the bounty server's `POST /api/wagers/propose` names, the
 
 - `question`: one line. Ask about a value or fact published for a stated date or time (see the settleable questions above).
 - `yes`, `no`: what makes each side win, with the line, its units and the comparison; they must differ. Leave the line itself to the No winner rule, as the website's skeleton does: "above $250.00" and "below $250.00", so a close of exactly $250.00 pays nobody (the default `noWinner` names that case). "$250.00 or below" would give that value to NO and contradict the No winner line. Optional `noWinner`: the default is exactly at the line, an ambiguous or unresolvable question, or no reputable source before the settlement deadline. None of the text may address the evaluator.
-- `sources`: 1 to 3 https URLs where the answer will be published; jurors start there, then search the web.
+- `sources`: 1 to 5 https URLs where the answer will be published (list 3 to 5); jurors start there, then search the web. A claim cites two sources that show the answer when it is made, at least one of them from this list.
 - `side`: yours, `YES` or `NO`. The opponent takes the other; the sides read "YES wins" and "NO wins".
-- Times, ISO UTC to the second: `betsClose` (both bounties must exist before it, so before the answer can be known; at least 10 minutes away when posting), `resolvesAt` (when the answer is fixed: 20:00:00Z for a 4 PM New York close; at or after `betsClose`), optional `claimsOpen` (default `resolvesAt` + 2 hours, at least 30 minutes after it), `settle` (at least 2 hours after `claimsOpen` and at most 60 days after `betsClose`; also both bounties' exact deadline). A close settles the same evening: there is no 12-hour minimum for a question.
+- Times, ISO UTC to the second: `betsClose` (both bounties must exist before it, so before the answer can be known; at least 10 minutes away when posting), `resolvesAt` (when the answer is fixed: 20:00:00Z for a 4 PM New York close; at or after `betsClose`), optional `claimsOpen` (default `resolvesAt` + 3 hours, at least 30 minutes after it), `settle` (at least 2 hours after `claimsOpen` and at most 60 days after `betsClose`; also both bounties' exact deadline). A close settles the same evening: there is no 12-hour minimum for a question.
 - `stake` and `opponent` as for a game.
 - A game's fields (`event`, `start`, `market`, `sides`) are refused on a question, and any other field too. A `question` without `kind` is a question.
 
@@ -112,7 +112,7 @@ For example `Approve wager 1f0c2a9b7d43e815, stake 0.0001 ETH, vs 0x75fAc210bF1D
 The shared builders (`proposeMutualWager`, `answerMutualWager`) give the exact `/jobs/create` body, and `create_bounty.js` posts it with every one of its checks (rubric, jury against the live class, chain, bytecode, oracle ceiling, spend policy, recovery state); the server then runs the shared wager check on it (`400 WAGER_*` if anything disagrees):
 
 - title and description from the shared builder (the answer names the first bounty by number and copies every shared line);
-- the template the terms name unchanged (`mutual-wager-v3` for a game, `mutual-wager-v4` for a question), threshold 80, class 128, no approval window, public submissions (both bettors can read the claims);
+- the template the terms name unchanged (`mutual-wager-v3` for a game, `mutual-wager-v5` for a new question, `mutual-wager-v4` for a v4 question already posted), threshold 80, class 128, no approval window, public submissions (both bettors can read the claims);
 - TARGETED at the opponent, `bountyAmount` = the stake;
 - jury providers spelled as the Jury line spells them ("OpenAI"), since the server compares that line with the posted jury;
 - the exact deadline = the settlement deadline (`submissionDeadline`, encoded by the server to the second; `create_bounty.js` refuses any other server deadline);
@@ -127,7 +127,7 @@ From the site's public records (`/api/jobs/N/onchain-status`, `/api/jobs/N?inclu
 - the escrow read agrees with the site's record (creator, target, package CID, creation time, deadline, class, threshold, amounts, approval window, oracle settings) and the bounty is still open;
 - the shared counter check (the create page's and the server's): linked record whose package CID matches the chain; created by the other bettor and targeted at you; open; escrows at least the stake; no approval window; same class; threshold no higher; created before the scheduled start (a question: before Bets close); deadline at or after the settlement deadline; same oracle settings; one complete terms block whose every shared line equals yours, with Poster and Claimant swapped and its Pays line naming your side; the template's criteria word for word with the same ids, must flags and weights; the same forbidden content; the same jury and iterations;
 - for `answer` and an offer check, the shared check of the bounty you would post, the one `/jobs/create` runs (your wallet is the Claimant of #N, the times are valid, the start is more than 10 minutes away, the Site line names this network, the rubric is the template);
-- skill rules: the rubric is `mutual-wager-v3` or `mutual-wager-v4` (any other is refused by name); for a game, the standard market keeps the standard no-winner clause and the settlement deadline is 12 hours to 60 days after the start; for a question, the settlement deadline is at most 60 days after Bets close (the shared check sets the rest of its times); an answer that names a counter by number names your bounty with its real creation time and deadline.
+- skill rules: the rubric is `mutual-wager-v3`, `mutual-wager-v5` or `mutual-wager-v4` (any other is refused by name); for a game, the standard market keeps the standard no-winner clause and the settlement deadline is 12 hours to 60 days after the start; for a question, the settlement deadline is at most 60 days after Bets close (the shared check sets the rest of its times); an answer that names a counter by number names your bounty with its real creation time and deadline.
 
 Before you approve an answer to a question offer, `answer` notes that the question, its YES/NO lines and its sources are the offer poster's words, which the jury applies exactly as written, and flags a no-winner clause that is not the site default. Read them with the owner.
 
@@ -182,19 +182,19 @@ M is your own bounty; the claimed bounty's jury reads both URLs itself. When the
 node wager.js claim VQ-AAPL-CLOSE-20261022 \
   --answer NO --value "$249.80" --as-of 2026-10-22T20:00:00Z \
   --source "StockAnalysis|https://stockanalysis.com/stocks/aapl/history/|<the row copied from the page: the date and the value>" \
-  --source "Investing.com|https://www.investing.com/equities/apple-computer-inc-historical-data|<the row copied from that page>"
+  --source "Motley Fool|https://www.fool.com/quote/nasdaq/aapl/|<the line copied from that page>"
 ```
 
 - `--answer`: `YES` or `NO`, the answer the sources show. It must be your side; if the No winner line holds (for example the close is exactly at the line), nobody claims.
-- `--value`: the value or fact as the sources show it (`$249.80`, `1.1215`), one line. When it has a number, each quote must show that number.
+- `--value`: the value or fact the claim rests on (`$249.80`, `1.1215`; the official one when sources differ), one line. When it has a number, each quote must show it, unless that source carries its own value.
 - `--as-of`: the ISO UTC time the value is for (the Resolves at time for a close). A time before Resolves at draws a warning: a value from before the resolution time is not the answer.
-- Two or more `--source` entries from different sites, as for a game: the official publisher, a major outlet or a wire service, never social media, a betting site or a prediction market. Quote the row or line that shows the value with its date.
+- Two or more `--source` entries from different sites, at least one on the site of a Resolution source the terms list (the others: the official publisher, a major outlet or a wire service, never social media, a betting site or a prediction market). Quote the row or line that shows the value with its date, and leave out fields that keep changing, such as volume. A page that shows a slightly different value (a last trade against the official close) ends with `|value=<the value it shows>`: `--source "Investing.com|https://...|Oct 22, 2026 521.42 533.14|value=$521.42"`. That draws a warning, not a refusal: the jury pays on the answer, and finds no winner only if the values fall on different sides of the line. (A `mutual-wager-v4` bounty takes one value, shown by every quote.)
 - The claimed bounty's rubric decides the shape: a question claim given `--score` or `--final-at`, and a game claim given `--answer`, `--value` or `--as-of`, are refused with the shape they need.
 
 `claim` refuses before Claims open (the shared timing only flags it, but the terms the jury reads say a claim comes after it), after the settlement deadline, on an answer that is not your side, and on the same evidence rules and own-bounty checks as a game claim. It builds the text with the shared `buildQuestionClaim`, the same bytes the server's `/api/wagers` claim builder and the native runtime draft. The approval and submission are a game claim's: the owner's `Approve claim <16 hex>, bounty #<N>` line, then `claim <wager> --approval "<line>" --yes`. Submit by 15 minutes before the deadline.
 
 ```
-MUTUAL WAGER CLAIM (mutual-wager-v4)
+MUTUAL WAGER CLAIM (mutual-wager-v5)
 Wager ID: ...
 Bounty claimed: #<the opponent's bounty>
 Claimant: <you>   Poster: <the opponent>
@@ -207,6 +207,7 @@ Claimant's side per the terms: NO wins.
 
 2. Sources
 a) <name>: <url>
+   Value: $249.80
    Quote: "..."
 b) ...
 

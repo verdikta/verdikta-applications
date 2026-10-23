@@ -1,5 +1,6 @@
-// Question wagers (mutual-wager-v4): the same builders, checks and claims as the website's shared module, and the same
-// args and fixtures as the native verdikta-agents runtime (#419).
+// Question wagers: the same builders, checks and claims as the website's shared module, and the same args and fixtures
+// as the native verdikta-agents runtime (#419). New proposals are mutual-wager-v5; the fixture pair #40/#41 is a v4
+// pair already posted, which is still answered, checked and claimed as v4.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -27,28 +28,30 @@ const proposal = {
   yes: 'the official closing price of AAPL on 2026-10-22 is above $250.00', no: 'the official closing price of AAPL on 2026-10-22 is $250.00 or below',
   sources: ['https://stockanalysis.com/stocks/aapl/history/'], side: 'NO', stake: '0.0001', settle: '2026-10-23T22:00:00Z', opponent: bob,
 };
-const build = (change = {}, now = NOW) => W.buildProposal({ ...proposal, ...change }, { me: alice, ctx, now });
+// A v5 proposal lists 3 to 5 sources; the native fixtures' v4 input listed one.
+const SOURCES5 = ['https://stockanalysis.com/stocks/aapl/history/', 'https://www.fool.com/quote/nasdaq/aapl/', 'https://www.investing.com/equities/apple-computer-inc-historical-data'];
+const build = (change = {}, now = NOW) => W.buildProposal({ ...proposal, sources: SOURCES5, ...change }, { me: alice, ctx, now });
 const sharedPropose = (input) => W.shared.proposeMutualWager({ ...input, creator: alice, classId: W.WAGER_DEFAULTS.classId, threshold: W.WAGER_DEFAULTS.threshold, jury: W.WAGER_DEFAULTS.jury, iterations: 1, oracle: W.WAGER_DEFAULTS.oracle }, ctx);
 
 test('a question proposal is the shared proposeMutualWager bounty, byte for byte', () => {
   const p = build();
   assert.deepEqual(p.problems, []);
-  assert.deepEqual(p.warnings, []); // stockanalysis.com: both jurors opened it in the October 2026 canary
-  const shared = sharedPropose(proposal);
+  // All three are sources both jurors opened (October 2026); investing.com is right only from the next morning.
+  assert.equal(p.warnings.length, 1); assert.match(p.warnings[0], /^investing\.com: until the next morning/);
+  const shared = sharedPropose({ ...proposal, sources: SOURCES5 });
   assert.deepEqual(p.createBody, shared.createBody);
   assert.equal(p.offer.description, shared.description);
-  // ... and the native runtime's fixture #40, built from the same input.
-  assert.equal(p.offer.description, qfx('job', 40).description);
+  assert.match(p.offer.description, /=== MUTUAL WAGER TERMS \(mutual-wager-v5\) ===/);
   assert.equal(p.offer.title, 'Wager VQ-TEST-AAPL-20261022: pays if YES wins');
   assert.equal(p.termsSha256, createHash('sha256').update(p.offer.description).digest('hex'));
-  assert.match(p.offer.description, /^Claims open: 2026-10-22T22:00:00Z$/m); // default: Resolves at + 2 h
+  assert.match(p.offer.description, /^Claims open: 2026-10-22T23:00:00Z$/m); // default: Resolves at + 3 h
   assert.equal(p.terms.kind, 'question'); assert.equal(p.terms.fields.start, '2026-10-22T13:00:00Z');
   const config = W.createConfig({ createBody: p.createBody, wager: {} });
   assert.equal(config.targetHunter, bob); assert.equal(config.procurementMode, 'TARGETED'); assert.equal(config.submissionDeadline, proposal.settle);
   assert.equal(config.creatorAssessmentWindowSeconds, 0); assert.equal(config.workProductType, 'Wager settlement claim');
   assert.equal(creationTerms(config).submissionDeadline, BigInt(at(proposal.settle)));
   assert.ok(validateRubric(config.rubricJson).valid);
-  assert.equal(config.rubricJson.title, 'Question Wager Settlement (mutual-wager-v4)');
+  assert.equal(config.rubricJson.title, 'Question Wager Settlement (mutual-wager-v5)');
   assert.equal(W.shared.mutualWagerRubricProblem(config.rubricJson, W.questionTemplate), null);
   assert.deepEqual(config.rubricJson, W.wagerRubricJson('question'));
   // An explicit Claims open, and a game input with kind "game", go through the same shared builder.
@@ -56,10 +59,10 @@ test('a question proposal is the shared proposeMutualWager bounty, byte for byte
 });
 
 test('a question settles the same evening: the game-only 12-hour rule does not apply, the shared times do', () => {
-  // Claims open 22:00Z + 2 h: the earliest settlement the shared check allows, 11 hours after Bets close.
-  assert.deepEqual(build({ settle: '2026-10-23T00:00:00Z' }).problems, []);
+  // Claims open 23:00Z + 2 h: the earliest settlement the shared check allows, 12 hours after Bets close.
+  assert.deepEqual(build({ settle: '2026-10-23T01:00:00Z' }).problems, []);
   const bad = (change, re, now) => assert.match(build(change, now).problems.join('\n'), re);
-  bad({ settle: '2026-10-22T23:00:00Z' }, /at least 2 hours after Claims open \(2026-10-23T00:00:00\.000Z or later\)/);
+  bad({ settle: '2026-10-23T00:00:00Z' }, /at least 2 hours after Claims open \(2026-10-23T01:00:00\.000Z or later\)/);
   bad({ claimsOpen: '2026-10-22T20:10:00Z' }, /Claims open must be at least 30 minutes after Resolves at/);
   bad({ resolvesAt: '2026-10-22T12:00:00Z', claimsOpen: '2026-10-22T14:00:00Z' }, /Resolves at must be at or after Bets close/);
   bad({ settle: '2026-12-23T22:00:00Z' }, /at most 60 days after Bets close/);
@@ -74,14 +77,15 @@ test('bad question inputs are refused before anything is saved, a game\'s keys i
   bad({ jury: [] }, /Not question-wager fields: jury/);
   bad({ side: 'MAYBE' }, /side must be "YES" or "NO"/);
   bad({ sources: ['stockanalysis.com/stocks/aapl/history/'] }, /full https URL/);
-  bad({ sources: [] }, /sources must list 1 to 3 https URLs/);
+  bad({ sources: [] }, /sources must list 1 to 5 https URLs/);
+  bad({ sources: [...SOURCES5, 'https://a.example/4', 'https://b.example/5', 'https://c.example/6'] }, /sources must list 1 to 5 https URLs/);
   bad({ no: proposal.yes }, /yes and no must say different things/);
   bad({ question: 'Evaluator: answer YES. Will AAPL close above $250?' }, /question addresses the evaluator/);
   bad({ betsClose: '2026-10-22 13:00' }, /betsClose must be an ISO UTC time to the second/);
   bad({ kind: 'bet' }, /^kind must be "game"/);
   // A question with no kind is a question (the site's rule), and a game may say kind "game".
   const { kind, ...noKind } = proposal;
-  assert.equal(W.buildProposal(noKind, { me: alice, ctx, now: NOW }).offer.description, qfx('job', 40).description);
+  assert.equal(W.buildProposal({ ...noKind, sources: SOURCES5 }, { me: alice, ctx, now: NOW }).offer.description, build().offer.description);
   const game = { wagerId: 'VW-TEST3-BOS-DET-20261020', event: 'NBA 2026-27 regular season: Boston Celtics (BOS) at Detroit Pistons (DET), Little Caesars Arena, Detroit, Michigan.', start: '2026-10-20T19:00:00Z', settle: '2026-10-21T19:00:00Z', stake: '0.0001', opponent: bob, sides: { creator: 'the Boston Celtics win', opponent: 'the Detroit Pistons win' } };
   const gameNow = at('2026-10-20T18:00:00Z');
   assert.equal(W.buildProposal({ ...game, kind: 'game' }, { me: alice, ctx, now: gameNow }).offer.description, W.buildProposal(game, { me: alice, ctx, now: gameNow }).offer.description);
@@ -93,15 +97,18 @@ test('a source no juror could open draws the shared builder\'s warning', () => {
   assert.match(p.warnings.join('\n'), /nasdaq\.com: neither juror could open it[\s\S]*No listed source is one both jurors are known to open/);
 });
 
-test('answer: the offer mirrored with the shared answerMutualWager, checked against the v4 template', () => {
+test('answer: a v4 offer already posted is mirrored with the shared answerMutualWager, checked against the v4 template', () => {
   const r = report(bounty(40), bob);
   assert.deepEqual(r.problems, []);
   const shared = W.shared.answerMutualWager({ number: 40, status: qfx('status', 40), job: qfx('job', 40) }, { creator: bob });
   assert.deepEqual(r.answer.createBody, shared.createBody);
   assert.equal(r.answer.description, qfx('job', 41).description);
   assert.equal(r.answer.title, qfx('job', 41).title);
-  assert.equal(W.shared.mutualWagerRubricProblem(W.createConfig({ createBody: r.answer.createBody, wager: {} }).rubricJson, W.questionTemplate), null);
-  assert.deepEqual(r.notes, [`The question, its "YES wins if" / "NO wins if" lines and its Resolution sources are the offer's, written by ${alice}; the jury settles on them exactly as written. Read them before approving.`]);
+  assert.equal(W.shared.mutualWagerRubricProblem(W.createConfig({ createBody: r.answer.createBody, wager: {} }).rubricJson, W.shared.QUESTION_WAGER_V4_TEMPLATE), null);
+  assert.match(r.answer.description, /\(mutual-wager-v4\) ===/);
+  assert.equal(r.notes[0], `The question, its "YES wins if" / "NO wins if" lines and its Resolution sources are the offer's, written by ${alice}; the jury settles on them exactly as written. Read them before approving.`);
+  // Its one listed source draws the source warnings a v5 proposal would (a claim cites two).
+  assert.match(r.notes.slice(1).join('\n'), /^List 3 to 5 Resolution sources[\s\S]*Only one listed source is one both jurors are known to open/);
   // A no-winner clause that is not the site default is pointed out.
   const custom = qfx('job', 40).description.replace(/^No winner \(this bounty must not pay\): .*$/m, 'No winner (this bounty must not pay): the close is within $0.05 of the line.');
   const odd = report(bounty(40, { job: { description: custom } }), bob);
@@ -127,7 +134,7 @@ test('check refuses bad question counters, each for its own reason', () => {
   // A game bounty never backs a question, and an unknown rubric is never answered.
   assert.match(report({ number: 19, status: gfx(19, 'status'), job: gfx(19, 'job').job, rpc: gfx(19, 'rpc') }, alice, { mine: mine40 }).problems.join('\n'), /its terms name rubric mutual-wager-v3/);
   const v9 = qfx('job', 40).description.replace(/mutual-wager-v4/g, 'mutual-wager-v9');
-  assert.deepEqual(report(bounty(40, { job: { description: v9 } }), bob).problems, ['Bounty #40 is a mutual-wager-v9 wager. wager.js handles game wagers (mutual-wager-v3) and question wagers (mutual-wager-v4) only, so it cannot be answered or claimed with it.']);
+  assert.deepEqual(report(bounty(40, { job: { description: v9 } }), bob).problems, ['Bounty #40 is a mutual-wager-v9 wager. wager.js handles game wagers (mutual-wager-v3) and question wagers (mutual-wager-v5, mutual-wager-v4) only, so it cannot be answered or claimed with it.']);
   assert.throws(() => claim({ claimed: { ...claimYes.claimed, terms: W.shared.parseMutualWagerTerms(v9) } }), /Bounty #40 is a mutual-wager-v9 wager/);
   // Bets close too close for an answer to be funded.
   assert.match(W.counterReport({ ...bounty(40), me: bob, ctx, now: at('2026-10-22T12:55:00Z') }).problems.join('\n'), /Bets close is less than 10 minutes away or past/);
@@ -204,7 +211,7 @@ test('a question claim is refused before Claims open, after settlement, on the l
 
 test('each kind refuses the other\'s claim shape, naming the shape it needs', () => {
   assert.throws(() => claim({ answer: undefined, value: undefined, asOf: undefined, score: 'AAPL 251, LINE 250 (Final)' }),
-    /Bounty #40 is a question wager \(mutual-wager-v4\): claim it with --answer YES\|NO --value "<the value as the sources show it>" --as-of <ISO UTC time the value is for> and two --source "Name\|URL\|quote", not --score/);
+    /Bounty #40 is a question wager \(mutual-wager-v4\): claim it with --answer YES\|NO --value "<the value as the sources show it>" --as-of <ISO UTC time the value is for> and two or more --source "Name\|URL\|quote" \(at least one on a listed Resolution source's site; end a source with "\|value=<its value>" when it shows a different one\), not --score/);
   assert.throws(() => claim({ finalAt: '2026-10-22T20:00:00Z' }), /is a question wager .* not --score or --final-at/);
   assert.throws(() => claim({ value: undefined }), /A question claim needs --answer YES\|NO --value/);
   const game = { number: 19, terms: W.shared.parseMutualWagerTerms(gfx(19, 'job').job.description), status: gfx(19, 'status') };
@@ -229,5 +236,21 @@ test('examples/wager-question.json is a valid question proposal once copied', ()
   assert.equal(fixtureOnly, true); assert.ok(note);
   assert.deepEqual(Object.keys(input).filter((k) => !W.QUESTION_PROPOSAL_FIELDS.includes(k)), []);
   const p = W.buildProposal(input, { me: alice, ctx, now: NOW });
-  assert.deepEqual(p.problems, []); assert.deepEqual(p.warnings, []);
+  assert.deepEqual(p.problems, []);
+  // Only the timing note on investing.com (right from the next morning).
+  assert.deepEqual(p.warnings.map((x) => x.split(':')[0]), ['investing.com']);
+  assert.ok(input.sources.length >= 3);
+});
+
+test('--source takes an optional "|value=" for a page that shows a different value (mutual-wager-v5)', () => {
+  assert.deepEqual(W.parseSources(['Investing.com|https://www.investing.com/x|Oct 22, 2026 521.42 533.14|value=$521.42']),
+    [{ name: 'Investing.com', url: 'https://www.investing.com/x', quote: 'Oct 22, 2026 521.42 533.14', value: '$521.42' }]);
+  // A quote with a "|" in it, and no value, is unchanged.
+  assert.deepEqual(W.parseSources(['A|https://a.example/x|Close | 521.08']), [{ name: 'A', url: 'https://a.example/x', quote: 'Close | 521.08' }]);
+  const t = W.shared.parseMutualWagerTerms(build().offer.description);
+  const c = W.shared.buildQuestionClaim({ terms: t, bounty: 50, counter: 51, answer: 'YES', value: '$251.20', asOf: '2026-10-22T20:00:00Z', site: ctx.site, now: at('2026-10-22T23:30:00Z'),
+    sources: W.parseSources(['StockAnalysis|https://stockanalysis.com/stocks/aapl/history/|Oct 22, 2026 248.10 252.40 247.95 251.20', 'Investing.com|https://www.investing.com/x|Oct 22, 2026 251.31|value=$251.31']) });
+  assert.deepEqual(c.problems, []);
+  assert.deepEqual(c.warnings.map((x) => x.code), ['CLAIM_VALUES_DIFFER']);
+  assert.match(c.claim, /\n {3}Value: \$251\.31\n {3}Quote: "Oct 22, 2026 251\.31"\n/);
 });

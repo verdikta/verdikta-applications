@@ -1027,8 +1027,8 @@ describe('review of #109, round 3: rubric provenance, group membership, oversize
   });
 });
 
-describe('question wagers (mutual-wager-v4) through the API', () => {
-  const SOURCES = ['https://stockanalysis.com/stocks/msft/history/', 'https://www.investing.com/equities/microsoft-corp-historical-data'];
+describe('question wagers (mutual-wager-v5) through the API', () => {
+  const SOURCES = ['https://stockanalysis.com/stocks/msft/history/', 'https://www.fool.com/quote/nasdaq/msft/', 'https://www.investing.com/equities/microsoft-corp-historical-data'];
   // Alice says YES, Bob says NO. Times are offsets from now: bets close, resolution, settlement.
   const question = (over = {}) => ({
     kind: 'question', creator: ALICE, opponent: BOB, wagerId: 'VW-Q-MSFT-1',
@@ -1040,16 +1040,19 @@ describe('question wagers (mutual-wager-v4) through the API', () => {
   const qProposed = (over) => wager.proposeMutualWager(question(over), ctx()).createBody;
   const status = (q) => request(app).get(`/api/wagers/status?${q}`).set(KEY);
 
-  it('GET /template?kind=question serves the v4 template; an unknown kind is a 400', async () => {
+  it('GET /template?kind=question serves the v5 template and the tested-source table; an unknown kind is a 400', async () => {
     const res = await request(app).get('/api/wagers/template?kind=question');
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ kind: 'question', rubric: 'mutual-wager-v4', criteria: wager.QUESTION_WAGER_CRITERIA, kinds: { game: 'mutual-wager-v3', question: 'mutual-wager-v4' } });
+    expect(res.body).toMatchObject({ kind: 'question', rubric: 'mutual-wager-v5', criteria: wager.QUESTION_WAGER_CRITERIA, kinds: { game: 'mutual-wager-v3', question: 'mutual-wager-v5' } });
     expect(res.body.rubricJson).toEqual(wager.mutualWagerRubricJson({ kind: 'question' }));
     expect(validateRubric(res.body.rubricJson)).toEqual({ valid: true, errors: [] });
     expect(res.body.termsLines.map((l) => l.line).slice(0, 9)).toEqual(['Wager ID:', 'Question:', 'Bets close:', 'Resolves at:', 'Claims open:', 'YES wins if:', 'NO wins if:',
       'No winner (this bounty must not pay):', 'Resolution sources (start here, then search the web):']);
-    expect(res.body.rules).toMatchObject({ minSourceDelaySeconds: 1800, minClaimWindowSeconds: 7200, maxResolutionSources: 3 });
-    expect(res.body.defaults.sourceDelaySeconds).toBe(wager.DEFAULT_SOURCE_DELAY_SECONDS);
+    expect(res.body.rules).toMatchObject({ minSourceDelaySeconds: 1800, minClaimWindowSeconds: 7200, maxResolutionSources: 5, recommendedResolutionSources: 3, minClaimSources: 2 });
+    expect(res.body.defaults.sourceDelaySeconds).toBe(3 * H);
+    expect(res.body.sources.bothJurors).toEqual(expect.arrayContaining(['stockanalysis.com', 'fool.com', 'ecb.europa.eu']));
+    expect(Object.keys(res.body.sources.timing)).toEqual(['investing.com', 'google.com']);
+    expect(res.body.claims).toMatch(/at least one on a listed Resolution source's site/);
     expect((await request(app).get('/api/wagers/template')).body).toMatchObject({ kind: 'game', rubric: 'mutual-wager-v3' });
     expect((await request(app).get('/api/wagers/template?kind=poker')).status).toBe(400);
   });
@@ -1057,7 +1060,8 @@ describe('question wagers (mutual-wager-v4) through the API', () => {
   it('propose -> /jobs/create -> answer -> /jobs/create -> status VERIFIED', async () => {
     const offer = await post('/api/wagers/propose', question());
     expect(offer.status).toBe(200);
-    expect(offer.body).toMatchObject({ ok: true, problems: [], warnings: [], wager: { kind: 'question', question: question().question, sources: SOURCES } });
+    expect(offer.body).toMatchObject({ ok: true, problems: [], wager: { kind: 'question', question: question().question, sources: SOURCES } });
+    expect(offer.body.warnings.map((x) => x.code)).toEqual(['WAGER_SOURCE_TIMING']);
     expect(offer.body.createBody.title).toBe('Wager VW-Q-MSFT-1: pays if NO wins');
     expect(offer.body.next.join(' ')).toMatch(/Before bets close \(/);
     expect((await post('/api/jobs/create', offer.body.createBody)).status).toBe(200);
@@ -1071,7 +1075,7 @@ describe('question wagers (mutual-wager-v4) through the API', () => {
 
     const pair = (await status('wagerId=VW-Q-MSFT-1')).body.pairs[0];
     expect(pair).toMatchObject({ state: 'VERIFIED', kind: 'question', question: question().question, resolvesAt: question().resolvesAt, sources: SOURCES, problems: [] });
-    expect(pair.claimsOpen).toBe(new Date(Date.parse(question().resolvesAt) + 2 * H * 1000).toISOString().replace('.000Z', 'Z'));
+    expect(pair.claimsOpen).toBe(new Date(Date.parse(question().resolvesAt) + 3 * H * 1000).toISOString().replace('.000Z', 'Z'));
     expect(pair.claimAfter).toBe(new Date(Date.parse(pair.claimsOpen)).toISOString());
     expect(pair.next.join(' ')).toMatch(/The question resolves at /);
   });
@@ -1079,7 +1083,7 @@ describe('question wagers (mutual-wager-v4) through the API', () => {
   it('returns source warnings with the body, and the offer to the targeted wallet', async () => {
     const res = await post('/api/wagers/propose', question({ sources: ['https://www.reuters.com/markets/companies/MSFT.OQ/'] }));
     expect(res.body.ok).toBe(true);
-    expect(res.body.warnings.map((x) => x.code)).toEqual(['WAGER_SOURCE_UNREADABLE', 'WAGER_SOURCES_UNTESTED']);
+    expect(res.body.warnings.map((x) => x.code)).toEqual(['WAGER_SOURCE_UNREADABLE', 'WAGER_SOURCES_FEW', 'WAGER_SOURCES_ONE_BOTH']);
     putOnChain(92, res.body.createBody);
     const offers = (await status(`wallet=${BOB}`)).body.offers;
     expect(offers).toEqual([expect.objectContaining({ bountyId: 92, kind: 'question', yourSide: 'NO wins', theirSide: 'YES wins', question: question().question })]);
@@ -1099,8 +1103,8 @@ describe('question wagers (mutual-wager-v4) through the API', () => {
   });
 
   describe('claims and status after resolution', () => {
-    // Resolved 3 hours ago (Claims open 1 hour ago); Bob (NO) won and claims Alice's #93 with his #94.
-    function resolvedPair({ resolvedOffset = -3 * H } = {}) {
+    // Resolved 4 hours ago (Claims open 1 hour ago); Bob (NO) won and claims Alice's #93 with his #94.
+    function resolvedPair({ resolvedOffset = -4 * H } = {}) {
       const times = { betsClose: at(resolvedOffset - 6 * H), resolvesAt: at(resolvedOffset), settle: at(resolvedOffset + 24 * H) };
       const a = qProposed(times);
       putOnChain(93, a, { createdAt: NOW() + resolvedOffset - 8 * H });
@@ -1110,21 +1114,33 @@ describe('question wagers (mutual-wager-v4) through the API', () => {
     }
     const sources = [
       { name: 'StockAnalysis', url: SOURCES[0], quote: 'Close 529.11' },
-      { name: 'Investing.com', url: SOURCES[1], quote: 'Price 529.11' },
+      { name: 'Investing.com', url: SOURCES[2], quote: 'Price 529.11' },
     ];
     const claim = (times, over = {}) => post('/api/wagers/claim', { bounty: 93, counter: 94, answer: 'NO', value: '$529.11', asOf: times.resolvesAt, sources, ...over });
 
-    it('drafts the v4 claim.md and lists the status as READY_TO_CLAIM', async () => {
+    it('drafts the v5 claim.md and lists the status as READY_TO_CLAIM', async () => {
       const times = resolvedPair();
       const res = await claim(times);
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({ ok: true, ready: true, tooEarly: false, problems: [] });
-      expect(res.body.claim).toMatch(/^MUTUAL WAGER CLAIM \(mutual-wager-v4\)\nWager ID: VW-Q-MSFT-1\nBounty claimed: #93\n/);
+      expect(res.body.claim).toMatch(/^MUTUAL WAGER CLAIM \(mutual-wager-v5\)\nWager ID: VW-Q-MSFT-1\nBounty claimed: #93\n/);
+      expect(res.body.claim).toContain(`a) StockAnalysis: ${SOURCES[0]}\n   Value: $529.11\n   Quote: "Close 529.11"\n`);
       expect(res.body.claim).toContain(`Value: $529.11, for ${times.resolvesAt}\nAnswer: NO. NO wins if: ${question().no}.\n`);
       expect(res.body.warnings.map((x) => x.code)).toEqual(['CLAIM_QUOTE_NO_DATE', 'CLAIM_QUOTE_NO_DATE']);
       const pair = (await status('wagerId=VW-Q-MSFT-1')).body.pairs[0];
       expect(pair).toMatchObject({ state: 'READY_TO_CLAIM', kind: 'question' });
       expect(pair.next.join(' ')).toMatch(/"answer": "YES" \| "NO", "value"/);
+    });
+
+    it('takes a value per source, and refuses a claim with no source on a listed site', async () => {
+      const times = resolvedPair();
+      const differ = await claim(times, { sources: [sources[0], { ...sources[1], quote: 'Price 529.40', value: '$529.40' }] });
+      expect(differ.body).toMatchObject({ ok: true, problems: [] });
+      expect(differ.body.warnings.map((x) => x.code)).toContain('CLAIM_VALUES_DIFFER');
+      expect(differ.body.claim).toContain(`   Value: $529.40\n   Quote: "Price 529.40"`);
+      const unlisted = await claim(times, { sources: [{ name: 'Yahoo', url: 'https://finance.yahoo.com/quote/MSFT/history/', quote: 'Oct 22 529.11' }, { name: 'WSJ', url: 'https://www.wsj.com/x', quote: '529.11' }] });
+      expect(unlisted.body.ok).toBe(false);
+      expect(unlisted.body.problems.map((p) => p.code)).toContain('CLAIM_SOURCE_UNLISTED');
     });
 
     it('refuses the losing answer, and waits for Claims open', async () => {

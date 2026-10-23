@@ -2,7 +2,7 @@
  * Mutual wagers for agents: the create page's wager protections as API calls, under /api/wagers.
  * A wager is two directed bounties, one per bettor (see shared/mutualWager.js).
  *
- *   GET  /template   the rubric template, exact JSON (public, no key); ?kind=question for mutual-wager-v4
+ *   GET  /template   the rubric template, exact JSON (public, no key); ?kind=question for mutual-wager-v5
  *   POST /propose    first bettor: structured terms -> title, description and the /jobs/create body
  *   POST /answer     second bettor: bounty #N -> its terms mirrored with the sides swapped
  *   POST /check      a /jobs/create body -> every wager problem /jobs/create would refuse
@@ -148,7 +148,7 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
   router.get('/template', (req, res) => {
     const ctx = wagerContext();
     const kind = req.query.kind === undefined ? 'game' : String(req.query.kind);
-    if (!['game', 'question'].includes(kind)) return inputError(res, [{ code: 'WAGER_INPUT', field: 'kind', message: 'kind must be "game" (mutual-wager-v3, the default) or "question" (mutual-wager-v4).' }]);
+    if (!['game', 'question'].includes(kind)) return inputError(res, [{ code: 'WAGER_INPUT', field: 'kind', message: 'kind must be "game" (mutual-wager-v3, the default) or "question" (mutual-wager-v5).' }]);
     res.set('Cache-Control', 'public, max-age=300');
     if (kind === 'question') return res.json(questionTemplateResponse(ctx));
     return res.json({
@@ -188,7 +188,7 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
     });
   });
 
-  // GET /template?kind=question: the same response for mutual-wager-v4.
+  // GET /template?kind=question: the same response for mutual-wager-v5.
   function questionTemplateResponse(ctx) {
     const t = wager.QUESTION_WAGER_TEMPLATE;
     return {
@@ -220,7 +220,11 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
         minClaimWindowSeconds: wager.MIN_CLAIM_WINDOW_SECONDS,
         claimStartMarginSeconds: wager.CLAIM_START_MARGIN_SECONDS,
         maxResolutionSources: wager.MAX_RESOLUTION_SOURCES,
+        recommendedResolutionSources: wager.RECOMMENDED_RESOLUTION_SOURCES,
+        minClaimSources: wager.MIN_CLAIM_SOURCES,
       },
+      sources: wager.RESOLUTION_SOURCE_GUIDE,
+      claims: 'A claim cites two or more sources from different sites, at least one on a listed Resolution source\'s site, each with the value it shows and a quote of the row with that value and its date. Sources may differ slightly (a last trade against the official close): the jury pays on the answer, and finds no winner if sources put the value on different sides of the line.',
       settleable: 'A published value or fact for a stated date or time: an official closing price, a reference rate or statistic, an official result. Not minute-level intraday prices: jurors could not confirm them (October 2026 canary).',
       note: 'Both bounties of a question wager use this rubric unchanged, the same terms with Poster and Claimant swapped (sides "YES wins" and "NO wins"), the other bettor as targetHunter and no approval window. Build them with POST /api/wagers/propose { "kind": "question", ... } and /answer; never write terms or claims by hand.',
     };

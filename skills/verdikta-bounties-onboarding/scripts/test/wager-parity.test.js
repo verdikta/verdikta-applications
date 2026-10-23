@@ -74,12 +74,15 @@ test('the create page serves the same question template and reads question terms
   assert.equal(page.QUESTION_WAGER_RUBRIC, W.shared.QUESTION_WAGER_RUBRIC);
 });
 
-test('the uploaded question rubric is the v4 template, as the question fixtures store it', () => {
+test('the uploaded question rubric is the v5 template; a v4 bounty keeps the v4 rubric the question fixtures store', () => {
   const mine = W.wagerRubricJson('question'), stored = qfx('job', 40).rubricContent;
+  assert.equal(mine.title, 'Question Wager Settlement (mutual-wager-v5)');
   assert.equal(W.shared.mutualWagerRubricProblem(mine, W.questionTemplate), null);
   assert.ok(W.shared.mutualWagerRubricProblem(mine, W.template)); // never accepted as the game template
-  assert.deepEqual(mine.criteria, stored.criteria);
-  assert.deepEqual(mine.forbiddenContent, stored.forbiddenContent);
+  assert.ok(W.shared.mutualWagerRubricProblem(mine, W.shared.QUESTION_WAGER_V4_TEMPLATE)); // nor as v4
   assert.deepEqual(mine.criteria.map((c) => c.description), W.questionTemplate.criteria.map((c) => c.instructions));
   assert.equal(W.questionTemplate.classId, W.WAGER_DEFAULTS.classId); assert.equal(W.questionTemplate.threshold, W.WAGER_DEFAULTS.threshold);
+  const v4 = W.wagerRubricJson('question', W.shared.QUESTION_WAGER_V4_RUBRIC);
+  assert.deepEqual(v4.criteria, stored.criteria);
+  assert.deepEqual(v4.forbiddenContent, stored.forbiddenContent);
 });

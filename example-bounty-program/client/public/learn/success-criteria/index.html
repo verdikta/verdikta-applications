@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title>How to write success criteria for a bounty | Verdikta Bounties</title>
+  <meta name="description" content="A practical guide to writing bounty success criteria that a reviewer, human or AI, can apply: write the task as a spec, make every requirement checkable from the submission, keep must-pass gates for dealbreakers, weight what matters, and set a pass mark.">
+  <link rel="canonical" href="https://bounties.verdikta.org/learn/success-criteria/">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/learn/learn.css">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="How to write success criteria for a bounty">
+  <meta property="og:description" content="Write criteria a reviewer can check from the submission alone. Gates for dealbreakers, weights for quality, a pass mark for good enough.">
+  <meta property="og:url" content="https://bounties.verdikta.org/learn/success-criteria/">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    "name": "How to write success criteria for a bounty",
+    "url": "https://bounties.verdikta.org/learn/success-criteria/",
+    "dateModified": "2026-10-24",
+    "description": "Write bounty success criteria that a reviewer, human or AI, can apply consistently.",
+    "step": [
+      { "@type": "HowToStep", "name": "Write the task as a specification", "text": "State the deliverable, its format, length, audience and what is out of scope." },
+      { "@type": "HowToStep", "name": "Make every requirement checkable from the submission", "text": "The reviewer judges from the description, the criteria and the submitted files. Ask for evidence such as test output or sources inside the submission." },
+      { "@type": "HowToStep", "name": "Use must-pass gates only for dealbreakers", "text": "Gates are pass or fail. Use them for originality, required format or safety, not for quality." },
+      { "@type": "HowToStep", "name": "Weight what you care about", "text": "Three to six weighted criteria whose weights add up to 1, each with a concrete description." },
+      { "@type": "HowToStep", "name": "Set the pass mark", "text": "The score is the weighted average of the criteria, from 0 to 100. A threshold of 75 to 85 suits most work." },
+      { "@type": "HowToStep", "name": "Test before funding", "text": "Validate the rubric, then read the description as a hunter would." }
+    ],
+    "publisher": { "@type": "Organization", "name": "Verdikta", "url": "https://verdikta.org" }
+  }
+  </script>
+</head>
+<body>
+  <header class="learn-header">
+    <div class="learn-header-inner">
+      <a class="learn-brand" href="/">Verdikta Bounties</a>
+      <nav class="learn-nav" aria-label="Learn">
+        <a href="/learn/">What it is</a>
+        <a href="/learn/success-criteria/" aria-current="page">Writing success criteria</a>
+        <a href="/learn/worked-example/">Worked example</a>
+        <a href="/learn/faq/">FAQ</a>
+        <a href="/">Browse bounties</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="learn-main">
+    <h1>How to write success criteria for a bounty</h1>
+    <p class="meta">Last reviewed 24 October 2026</p>
+
+    <p class="lede">
+      Good success criteria let someone who has never met you decide whether the work is done,
+      using only the task description and what was delivered. That is true whoever judges, but on
+      <a href="/learn/">Verdikta Bounties</a> it is the whole contract: a jury of AI models applies
+      your criteria exactly as written, the terms cannot be edited after funding, and the first
+      submission that meets them is paid.
+    </p>
+
+    <div class="note">
+      <p><strong>In short:</strong> write the task as a spec; make every requirement checkable
+      from the submission alone; use pass/fail gates only for dealbreakers; give 3 to 6 quality
+      criteria concrete descriptions and weights that add up to 1; set the pass mark to what you
+      would accept, not what you would admire.</p>
+    </div>
+
+    <h2 id="how-the-criteria-are-applied">How the criteria are applied</h2>
+    <p>Each bounty has three parts that the jury reads:</p>
+    <ol>
+      <li><strong>The task description:</strong> what to produce, in plain prose.</li>
+      <li>
+        <strong>The rubric:</strong> a list of criteria. Each criterion is either a
+        <em>must-pass gate</em> (pass or fail) or a <em>weighted criterion</em> scored 0 to 100.
+      </li>
+      <li><strong>The threshold:</strong> the pass mark, from 0 to 100.</li>
+    </ol>
+    <p>The jury scores a submission in two phases:</p>
+    <ol>
+      <li><strong>Gates.</strong> If any must-pass criterion fails, the score is 0 and the evaluation stops.</li>
+      <li>
+        <strong>Weighted criteria.</strong> Each is scored from 0 to 100, and the submission's score
+        is their weighted average. Several models score independently and their results are
+        combined.
+      </li>
+    </ol>
+    <p>
+      The escrow contract compares that score, rounded down to a whole number, with the threshold.
+      At or above it, the submission passes. Any pass mark you write in the description is ignored;
+      only the threshold counts.
+    </p>
+
+    <h2 id="1-write-the-task-as-a-specification">1. Write the task as a specification</h2>
+    <p>Most failed bounties fail here. State:</p>
+    <ul>
+      <li><strong>The deliverable</strong>: a guide, a module and its tests, a sourced table, a 90-second video.</li>
+      <li><strong>The format</strong>: Markdown, a fenced code block, PNG and SVG, a single file or several.</li>
+      <li><strong>Size</strong>: word count, number of items, duration.</li>
+      <li><strong>Audience</strong>: who it is for and what they already know.</li>
+      <li><strong>Required parts, in order</strong> if order matters.</li>
+      <li><strong>Constraints</strong>: allowed libraries, sources that count, things that are forbidden.</li>
+      <li><strong>Out of scope</strong>: what you do not want, so nobody pads the work to look thorough.</li>
+    </ul>
+
+    <h2 id="2-make-every-requirement-checkable-from-the-submission">2. Make every requirement checkable from the submission</h2>
+    <p>
+      The jury reads the description, the rubric and the files submitted. Do not count on it
+      opening links, running code or knowing about events after its training data: some models
+      can open a link, many cannot. So ask for the evidence inside the submission:
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Instead of</th><th>Ask for</th></tr></thead>
+        <tbody>
+          <tr><td>"The code must work."</td><td>"Include the exact <code>pytest -q</code> output you got when you ran the tests."</td></tr>
+          <tr><td>"Use reliable sources."</td><td>"Cite a URL for every claim; at least two from official documentation."</td></tr>
+          <tr><td>"Post it on social media."</td><td>"Include the public URL of the post and the full text you published."</td></tr>
+          <tr><td>"Be accurate."</td><td>"Every claim about the API must cite agents.txt or /blockchain. Invented endpoints or field names count as inaccuracy."</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Prefer text deliverables (Markdown, code, JSON) where you can. Ask for images only when the
+      image is the work, and keep them to normal sizes: very large images can be rejected by the
+      jury models.
+    </p>
+
+    <h2 id="3-use-must-pass-gates-only-for-dealbreakers">3. Use must-pass gates only for dealbreakers</h2>
+    <p>
+      A gate turns the whole score to 0. Use one when a failure makes the work worthless to you
+      however good the rest is:
+    </p>
+    <ul>
+      <li>Original work, not copied without attribution.</li>
+      <li>No malicious code or security problems.</li>
+      <li>The required format, language or file is present.</li>
+      <li>A hard factual condition, such as "names the correct winner of the match".</li>
+    </ul>
+    <p>
+      Do not make quality a gate ("well written", "thorough"). A vague gate can fail good work
+      outright. Put quality in the weighted criteria, where it moves the score up or down.
+    </p>
+
+    <h2 id="4-weight-what-you-care-about">4. Weight what you care about</h2>
+    <ul>
+      <li>Use 3 to 6 weighted criteria. Weights must add up to 1 (for example 0.3, 0.25, 0.25, 0.2).</li>
+      <li>Give the most weight to the thing you are actually paying for.</li>
+      <li>
+        Write each description so two reviewers would agree. "Covers all five required sections,
+        in the order listed" scores more consistently than "Complete".
+      </li>
+      <li>Avoid two criteria that measure the same thing; it doubles that thing's weight.</li>
+    </ul>
+
+    <h2 id="5-set-the-pass-mark">5. Set the pass mark</h2>
+    <p>
+      Because the score is a weighted average, a threshold of 80 means "on average, 80 out of 100
+      across the criteria". The built-in templates use 75 to 82. Practical ranges:
+    </p>
+    <ul>
+      <li><strong>75 to 85</strong> for most writing, code and design work.</li>
+      <li><strong>85 to 95</strong> for short tasks with a clear right answer, such as a fact or a translation of a fixed text.</li>
+      <li>
+        Remember the first passing submission wins the whole bounty. The threshold sets
+        "good enough to pay", not "best of the entries".
+      </li>
+    </ul>
+
+    <h2 id="6-test-before-you-fund">6. Test before you fund</h2>
+    <p>The terms cannot be changed once the bounty exists, so check them first:</p>
+    <ul>
+      <li>Start from a template on the <a href="/create">create page</a>, or from <a href="/api/templates"><code>/api/templates</code></a> if you use the API.</li>
+      <li>Validate the rubric's shape with <code>POST /api/jobs/rubric/validate</code> (no side effects).</li>
+      <li>Read your description as a hunter would: could you tell, before starting, exactly what earns payment?</li>
+      <li>Size the work to the payout. Each attempt costs the hunter an oracle prepay (about 0.00024 ETH with default settings), so tiny bounties for long tasks attract few entries.</li>
+    </ul>
+
+    <h2 id="example-a-rubric-that-worked">Example: a rubric that worked</h2>
+    <p>
+      This is the rubric from <a href="/bounty/311">bounty #311</a>, "Guide: submitting to a
+      Verdikta bounty, end to end" (0.0015 ETH, threshold 80). Its description listed five
+      required sections in order, a 1,200 to 1,800 word range, at least three example API calls,
+      and said "Invented endpoints, invented field names or invented error codes will be treated
+      as inaccuracy". The winning guide scored 84.
+    </p>
+<pre><code>{
+  "criteria": [
+    { "id": "plagiarism", "label": "Originality Check", "must": true, "weight": 0,
+      "description": "Reject if plagiarized or copied without proper attribution." },
+    { "id": "completeness", "label": "Completeness", "must": false, "weight": 0.25,
+      "description": "Covers all required topics, no major gaps in coverage." },
+    { "id": "accuracy", "label": "Technical Accuracy", "must": false, "weight": 0.25,
+      "description": "Information is correct, up-to-date, and technically sound." },
+    { "id": "clarity", "label": "Clarity &amp; Structure", "must": false, "weight": 0.2,
+      "description": "Well-organized, easy to follow, logical flow." },
+    { "id": "examples", "label": "Examples &amp; Code Samples", "must": false, "weight": 0.15,
+      "description": "Includes helpful examples, code samples work as shown." },
+    { "id": "usability", "label": "Usability for Target Audience", "must": false, "weight": 0.15,
+      "description": "Appropriate level of detail for intended audience." }
+  ]
+}</code></pre>
+    <p>
+      The rubric is generic; the description does the specific work. "Completeness" became
+      checkable because the description listed the sections, and "Technical Accuracy" because it
+      named the sources that count. That split, a reusable rubric plus a precise description, is
+      the pattern to copy.
+    </p>
+
+    <h2 id="checklist">Checklist</h2>
+    <ul>
+      <li>Could a stranger say what to deliver, in what format and how long, from the description alone?</li>
+      <li>Is every requirement visible in the submission itself (output, links, sources)?</li>
+      <li>Is every gate a true dealbreaker, with a yes-or-no answer?</li>
+      <li>Do the weights add up to 1, with the most weight on what you are paying for?</li>
+      <li>Would you pay the first submission that just clears your threshold?</li>
+      <li>Is the payout fair for the work, after the hunter's oracle prepay?</li>
+    </ul>
+
+    <p class="next">
+      Next: <a href="/learn/worked-example/">follow a real bounty from criteria to payout</a> ·
+      <a href="/learn/faq/">FAQ: fees and settlement</a>
+    </p>
+  </main>
+
+  <footer class="learn-footer">
+    <div class="learn-footer-inner">
+      Verdikta Bounties · <a href="/">Home</a> · <a href="/agents.txt">Agent guide</a> ·
+      <a href="https://docs.verdikta.org">Verdikta docs</a> ·
+      <a href="https://github.com/verdikta/verdikta-applications/tree/main/example-bounty-program">Source</a> ·
+      Use at your own risk
+    </div>
+  </footer>
+</body>
+</html>

@@ -4832,7 +4832,7 @@ router.post('/:jobId/submit/dry-run', async (req, res) => {
           });
           if (pending.length > 0) {
             warnings.push(
-              `You have ${pending.length} unresolved prior submission(s) to this bounty. Resubmission is allowed, but each submission costs an ETH evaluation prepay (mostly refunded) plus gas — consider waiting for the pending one(s) to resolve first.`
+              `You have ${pending.length} unresolved prior submission(s) to this bounty. Resubmission is allowed, but each submission costs an ETH evaluation prepay (usually spent in full) plus gas — consider waiting for the pending one(s) to resolve first.`
             );
           }
         } else {
@@ -4955,7 +4955,7 @@ router.post('/:jobId/submit/dry-run', async (req, res) => {
       response.nextStep = `Ready to submit. Use POST /api/jobs/${job.jobId}/submit with the same files, or POST /api/jobs/${job.jobId}/submit/bundle for pre-encoded transactions.`;
       response.estimatedCost = {
         gasEth: '~0.005 (gas for the on-chain transactions)',
-        oraclePrepayEth: '~0.00024 worst case (ethMaxBudget, attached as msg.value on start; mostly refunded after evaluation — actual amount depends on jury config)',
+        oraclePrepayEth: '~0.00024 worst case (ethMaxBudget, attached as msg.value on start; usually spent in full on the arbiters; any unspent part is refunded after evaluation — actual amount depends on the bounty oracle fee setting)',
         note: `ETH-funded — there is no LINK. Use GET /api/jobs/${job.jobId}/estimate-fee for a jury-config-specific prepay estimate.`
       };
     } else {
@@ -8153,7 +8153,7 @@ router.get('/:jobId/submissions/:submissionId/content', async (req, res) => {
  * - Current max oracle fee from Verdikta aggregator
  *
  * Response includes:
- * - estimatedEthCost: Estimated ETH prepay needed (mostly refunded after the eval)
+ * - estimatedEthCost: Estimated ETH prepay needed (usually spent in full; any unspent part is refunded after the eval)
  * - breakdown: How the estimate was calculated
  * - parameters: Fee parameters to use in prepareSubmission
  */

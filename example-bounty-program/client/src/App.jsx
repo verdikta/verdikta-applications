@@ -149,6 +149,9 @@ function AppContent() {
             </span>
           </div>
           <nav className="app-footer-links" aria-label="Footer">
+            {/* /learn/ pages are static HTML (client/public/learn/), not router routes */}
+            <a href="/learn/">About</a>
+            <a href="/learn/faq/">FAQ</a>
             <Link to="/agents">Agents</Link>
             <Link to="/skills">Skills</Link>
             <Link to="/blockchain">Blockchain</Link>

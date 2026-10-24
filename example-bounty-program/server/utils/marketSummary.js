@@ -144,7 +144,7 @@ function buildMarketSummary(jobs, { now = Date.now(), windowDays = DEFAULT_WINDO
       scope: 'Bounties that are open now, plus bounties awarded or closed without an award inside the window.',
       bounty_amount_wei: 'The funded amount (bountyAmountWei) of the bounties in scope.',
       time_to_award_seconds: 'From bounty open time to the winning submission\'s finalization as recorded by this server; approximate to the sync interval.',
-      oracle_prepay_wei: 'Worst-case ETH prepay (ethMaxBudget) attached to submissions made inside the window; mostly refunded.',
+      oracle_prepay_wei: 'Worst-case ETH prepay (ethMaxBudget) attached to submissions made inside the window; usually spent in full on the arbiters, any unspent part refunded.',
       quartiles: `Linear interpolation, rounded down to a whole unit; withheld (null, suppressed_below_n ${MIN_SAMPLES}) when fewer than ${MIN_SAMPLES} samples exist.`,
     },
     all: finishBucket(buckets.all),

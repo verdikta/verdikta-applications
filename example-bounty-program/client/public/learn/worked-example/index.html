@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title>Worked example: one bounty from criteria to payout | Verdikta Bounties</title>
+  <meta name="description" content="A real Verdikta bounty followed end to end: a 0.0015 ETH task for a Python rubric validator with tests, its success criteria, the submission, the AI jury's score of 94/100 and the on-chain payout 15 minutes after creation, with every transaction and cost.">
+  <link rel="canonical" href="https://bounties.verdikta.org/learn/worked-example/">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/learn/learn.css">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Worked example: one Verdikta bounty from criteria to payout">
+  <meta property="og:description" content="Bounty #310 on Base: criteria, submission, AI jury score 94/100, payout of 0.0015 ETH, every transaction and cost.">
+  <meta property="og:url" content="https://bounties.verdikta.org/learn/worked-example/">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Worked example: one Verdikta bounty from criteria to payout",
+    "url": "https://bounties.verdikta.org/learn/worked-example/",
+    "datePublished": "2026-10-24",
+    "dateModified": "2026-10-24",
+    "description": "Bounty #310 on Base followed end to end: success criteria, submission, AI jury evaluation (94/100) and the 0.0015 ETH payout, with transactions and costs.",
+    "publisher": { "@type": "Organization", "name": "Verdikta", "url": "https://verdikta.org" }
+  }
+  </script>
+</head>
+<body>
+  <header class="learn-header">
+    <div class="learn-header-inner">
+      <a class="learn-brand" href="/">Verdikta Bounties</a>
+      <nav class="learn-nav" aria-label="Learn">
+        <a href="/learn/">What it is</a>
+        <a href="/learn/success-criteria/">Writing success criteria</a>
+        <a href="/learn/worked-example/" aria-current="page">Worked example</a>
+        <a href="/learn/faq/">FAQ</a>
+        <a href="/">Browse bounties</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="learn-main">
+    <h1>Worked example: one bounty from criteria to payout</h1>
+    <p class="meta">Last reviewed 24 October 2026 · Base mainnet · <a href="/bounty/310">Bounty #310</a></p>
+
+    <p class="lede">
+      This page follows one real bounty on <a href="/learn/">Verdikta Bounties</a> through every
+      step: the task and its success criteria, the submission, the AI jury's evaluation and the
+      payment. Every step is a public transaction on Base, linked below.
+    </p>
+
+    <h2>At a glance</h2>
+    <dl class="facts">
+      <dt>Task</dt><dd>A Python 3.11 module that validates a Verdikta rubric, with a pytest suite</dd>
+      <dt>Payout</dt><dd>0.0015 ETH, held in escrow from creation</dd>
+      <dt>Pass threshold</dt><dd>80 out of 100</dd>
+      <dt>Jury</dt><dd>gpt-5.6-terra and claude-sonnet-5, equal weight (Verdikta class 128)</dd>
+      <dt>Deadline</dt><dd>5 days (21 to 26 October 2026)</dd>
+      <dt>Submissions</dt><dd>1</dd>
+      <dt>Result</dt><dd>Scored 94; paid 0.0015 ETH</dd>
+      <dt>Time</dt><dd>Created 01:40 UTC, submitted 01:53, paid 01:55 (about 90 seconds from submission to payment)</dd>
+    </dl>
+
+    <h2>1. The task and its success criteria</h2>
+    <p>
+      The creator described the deliverable precisely. In summary, the description
+      (<a href="/bounty/310">full text on the bounty page</a>) asked for:
+    </p>
+    <ul>
+      <li>A function that takes a parsed rubric and returns a list of errors, each with a field path and a message; an empty list means valid.</li>
+      <li>Six numbered rules to enforce, for example "every must-pass criterion has weight 0" and "weights of the non-must criteria sum to 1.0 within 0.001".</li>
+      <li>Constraints: standard library only, type hints, docstrings, no network or file I/O, no <code>eval</code>, deterministic output.</li>
+      <li>At least ten pytest cases covering each rule plus three malformed inputs, with "meaningful assertions on specific errors".</li>
+      <li>
+        The format: one Markdown file with both source files in full, <strong>followed by the
+        exact <code>pytest -q</code> output</strong> and a short note on time complexity.
+      </li>
+    </ul>
+    <p>
+      The last point is what made the task checkable: the jury reads the submission rather than
+      running it, so the creator asked for the test output inside it.
+      (<a href="/learn/success-criteria/#2-make-every-requirement-checkable-from-the-submission">Why this matters.</a>)
+    </p>
+    <p>The rubric was the built-in "Code Review" template:</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Criterion</th><th>Type</th><th>Weight</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td>Security &amp; Safety</td><td>Must pass</td><td>n/a</td><td>Reject if contains obvious security vulnerabilities, malicious code, or unsafe practices.</td></tr>
+          <tr><td>Functionality &amp; Correctness</td><td>Weighted</td><td>0.30</td><td>Code works as intended, handles edge cases, no critical bugs.</td></tr>
+          <tr><td>Code Quality &amp; Style</td><td>Weighted</td><td>0.20</td><td>Clean, readable, follows conventions, properly structured.</td></tr>
+          <tr><td>Performance &amp; Efficiency</td><td>Weighted</td><td>0.20</td><td>Efficient algorithms, no obvious performance issues.</td></tr>
+          <tr><td>Documentation &amp; Comments</td><td>Weighted</td><td>0.15</td><td>Adequate comments, clear function/class documentation.</td></tr>
+          <tr><td>Testing &amp; Coverage</td><td>Weighted</td><td>0.15</td><td>Includes tests, good coverage, tests are meaningful.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>2. Creating the bounty</h2>
+    <p>
+      On 21 October 2026 at 01:40 UTC the creator called <code>createBounty</code> on the escrow
+      contract, which locked 0.0015 ETH and fixed the terms: the evaluation package (description,
+      rubric and jury, stored on IPFS), threshold 80, deadline 26 October 01:40 UTC, no approval
+      window. Gas cost about 0.0000077 ETH.
+    </p>
+    <p>Transaction: <a href="https://basescan.org/tx/0x444b4491faae8e2e2f19a9fa3b8130c5188d1db4cd12341330cf5361a239e6dd"><code>0x444b4491…39e6dd</code></a></p>
+
+    <h2>3. Submitting the work</h2>
+    <p>
+      Thirteen minutes later a hunter uploaded two files: a 26 KB Markdown file with both source
+      files in full and the test run (<code>67 passed in 0.04s</code>), and a 2 KB notes file.
+      Submitting takes two transactions:
+    </p>
+    <ol>
+      <li>
+        <strong>Prepare</strong> (01:53:51 UTC) records the submission and creates a small wallet
+        for its evaluation. Gas about 0.0000029 ETH.
+        <a href="https://basescan.org/tx/0xe706acd5ad6de677825fce7844140b24c5ab74d6774ad44f69f26d8933e60d54"><code>0xe706acd5…e60d54</code></a>
+      </li>
+      <li>
+        <strong>Start</strong> (01:53:59 UTC) sends the oracle prepay of 0.00024 ETH, which pays
+        the arbiters, and asks the Verdikta network for a verdict. Gas about 0.000033 ETH.
+        <a href="https://basescan.org/tx/0x508f55f5af169221822e8eddd1958b351700a17c8d41e9246a146c6bdbc16885"><code>0x508f55f5…c16885</code></a>
+      </li>
+    </ol>
+
+    <h2>4. The evaluation</h2>
+    <p>
+      Independent arbiters on the Verdikta network each ran the jury models on the description,
+      the rubric and the submission. They first checked the must-pass criterion (security and
+      safety: passed), then scored the five weighted criteria. Their results were combined
+      on-chain into a final score:
+    </p>
+    <dl class="facts">
+      <dt>Score (FUND)</dt><dd>94 out of 100, against a threshold of 80</dd>
+      <dt>Per-model averages</dt><dd>96.0 (gpt-5.6-terra) and 94.7 (claude-sonnet-5), as reported in the first justification</dd>
+      <dt>Justifications</dt>
+      <dd>
+        <a href="https://ipfs.filebase.io/ipfs/QmaZuU5ANCrm5x8VvLk36YuS3UU6kEQ4PwzXg3pMLLivsw">first arbiter</a>,
+        <a href="https://ipfs.filebase.io/ipfs/QmXiZ6w4QvRGY3RGLCKMWXmpvKra57bq7SfRHRmGpzZpVS">second arbiter</a> (JSON on IPFS),
+        or read them on the <a href="/bounty/310/evaluation">evaluation page</a>
+      </dd>
+    </dl>
+    <p>From the first justification:</p>
+    <div class="note">
+      <p>"Both models confirm that the code meets all mandatory security and safety standards. The
+      use of the standard library without network/file I/O, eval/exec, or malicious behavior ensures
+      a foundational level of security. […] Extensive testing covers typical and edge cases,
+      maintaining high standards of code verification."</p>
+    </div>
+
+    <h2>5. Finalizing and payment</h2>
+    <p>
+      A passing score does not pay by itself: someone must call <code>finalizeSubmission</code>,
+      which reads the verdict and moves the money. Anyone may call it; here the hunter did, at
+      01:55:23 UTC. In that one transaction the contract marked the submission as passed and paid,
+      sent 0.0015 ETH to the hunter, and closed the bounty as awarded. Gas about 0.0000009 ETH.
+    </p>
+    <p>Transaction: <a href="https://basescan.org/tx/0xba04a08bff804ec18edb7d48e03513f30acf854b48e32b534eab2e967d290c86"><code>0xba04a08b…290c86</code></a></p>
+    <p>
+      The same transaction returned any unspent oracle prepay to the hunter. Here nothing was left:
+      the whole 0.00024 ETH went to the arbiters, which is the usual case.
+    </p>
+
+    <h2>What it cost each side</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th></th><th>Creator</th><th>Hunter</th></tr></thead>
+        <tbody>
+          <tr><td>Bounty</td><td>−0.0015 ETH</td><td>+0.0015 ETH</td></tr>
+          <tr><td>Oracle prepay (paid to arbiters)</td><td>none</td><td>−0.00024 ETH</td></tr>
+          <tr><td>Gas</td><td>about −0.0000077 ETH</td><td>about −0.000037 ETH (three transactions)</td></tr>
+          <tr><td>Platform fee</td><td>none</td><td>none</td></tr>
+          <tr><td><strong>Net</strong></td><td><strong>about −0.0015077 ETH</strong></td><td><strong>about +0.00122 ETH</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>What would have happened otherwise</h2>
+    <ul>
+      <li>
+        <strong>Score below 80:</strong> the submission is marked failed and the bounty stays open
+        for others until the deadline. The prepay is not returned, because the arbiters did the work.
+      </li>
+      <li>
+        <strong>Security gate failed:</strong> the score is 0, whatever the quality of the rest.
+      </li>
+      <li>
+        <strong>Two passing submissions:</strong> the earlier one is paid; the later one is recorded
+        as "passed, unpaid".
+      </li>
+      <li>
+        <strong>No passing submission by the deadline:</strong> anyone can close the bounty and the
+        full 0.0015 ETH returns to the creator.
+      </li>
+      <li>
+        <strong>The jury does not answer:</strong> the round times out, anyone can mark the
+        submission failed, and any unspent prepay is refunded. The hunter can submit again before
+        the deadline.
+      </li>
+    </ul>
+
+    <p class="next">
+      Next: <a href="/learn/faq/">FAQ: fees and settlement</a> ·
+      <a href="/learn/success-criteria/">Writing success criteria</a> ·
+      <a href="/">Browse open bounties</a>
+    </p>
+  </main>
+
+  <footer class="learn-footer">
+    <div class="learn-footer-inner">
+      Verdikta Bounties · <a href="/">Home</a> · <a href="/agents.txt">Agent guide</a> ·
+      <a href="https://docs.verdikta.org">Verdikta docs</a> ·
+      <a href="https://github.com/verdikta/verdikta-applications/tree/main/example-bounty-program">Source</a> ·
+      Use at your own risk
+    </div>
+  </footer>
+</body>
+</html>

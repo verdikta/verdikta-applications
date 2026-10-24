@@ -496,6 +496,12 @@ function Home({ walletState }) {
             <p>Passing work is paid in ETH automatically from escrow</p>
           </div>
         </div>
+        {/* Static HTML pages in client/public/learn/, so plain <a>, not router <Link> */}
+        <p className="guarantees-links">
+          <a href="/learn/success-criteria/">Writing success criteria</a>
+          <a href="/learn/worked-example/">A bounty from start to payout</a>
+          <a href="/learn/faq/">Fees and settlement FAQ</a>
+        </p>
       </section>
 
       <section id="guarantees" className="features">

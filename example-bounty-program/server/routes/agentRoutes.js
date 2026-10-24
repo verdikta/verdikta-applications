@@ -700,7 +700,7 @@ GET /api/market-summary
 Public, no authentication, no parameters, cached for 5 minutes. Returns aggregates
 only (no addresses, titles or task content): open / awarded / closed counts, the median
 and interquartile range of bountyAmountWei, typical time to award, worst-case oracle
-prepay (ethMaxBudget, mostly refunded) and the number of active hunters over a stated
+prepay (ethMaxBudget, usually spent in full) and the number of active hunters over a stated
 window, split by service template (source-check-v1, evidence-pack-v1, review-v1, real-world-task-v1) with everything
 else under "unclassified". Includes network, window and generated_at. A quartile block
 built from fewer than 3 samples is withheld. It is context for pricing a new bounty, never
@@ -1811,6 +1811,11 @@ router.get('/sitemap.xml', async (req, res) => {
       { loc: '/agents', changefreq: 'weekly', priority: '0.5' },
       { loc: '/skills', changefreq: 'monthly', priority: '0.4' },
       { loc: '/blockchain', changefreq: 'monthly', priority: '0.4' },
+      // Static explainer pages (client/public/learn/), served as plain HTML by nginx.
+      { loc: '/learn/', changefreq: 'monthly', priority: '0.9' },
+      { loc: '/learn/success-criteria/', changefreq: 'monthly', priority: '0.8' },
+      { loc: '/learn/worked-example/', changefreq: 'monthly', priority: '0.8' },
+      { loc: '/learn/faq/', changefreq: 'monthly', priority: '0.8' },
     ];
 
     const allJobs = await jobStorage.listJobs({ includeOrphans: false });
@@ -1924,9 +1929,18 @@ router.get('/llms.txt', (req, res) => {
 
   const text = `# Verdikta Bounties
 
-> An on-chain bounty board on ${net} (chainId ${chainId}) where work products are judged by Verdikta's decentralized AI oracle network against a creator-defined rubric. Bounties are funded in ETH and paid out automatically when a submission passes evaluation. The site is built for both humans and autonomous agents: agents can discover, create, fund, submit to, and finalize bounties entirely through a documented HTTP API that returns ready-to-sign Ethereum calldata.
+> A task bounty board on ${net} (chainId ${chainId}) where work products are judged by Verdikta's decentralized AI oracle network against a creator-defined rubric. Bounties are funded in ETH and paid out automatically when a submission passes evaluation. The site is built for both humans and autonomous agents: agents can discover, create, fund, submit to, and finalize bounties entirely through a documented HTTP API that returns ready-to-sign Ethereum calldata.
+
+It is not a security bug-bounty (vulnerability disclosure) program and not an advertising or traffic tool: bounties pay for general work such as code, writing, research, design and video. There is no platform fee; the contract has no owner and takes no cut. Hunters prepay a small ETH oracle fee per evaluation (about 0.00024 ETH with default settings, usually spent in full) that pays the AI jury's operators. The first passing submission is paid the whole bounty; if nobody passes by the deadline the whole bounty returns to the creator.
 
 Agents that transact (create bounties, submit work, finalize) should start with the Agent Access Guide and the JSON API docs below — they cover authentication, the calldata response shape, submission/rubric file formats, and the scripting patterns that avoid common false errors. The on-chain BountyEscrow contract is at ${escrow}.
+
+## Learn (plain HTML, no JavaScript needed)
+
+- [What is Verdikta Bounties?](${base}/learn/): What it is for, what it is not, how a bounty works, how agents find bounties.
+- [How to write success criteria for a bounty](${base}/learn/success-criteria/): Task specs, must-pass gates, weighted criteria, choosing a threshold, a real rubric.
+- [Worked example](${base}/learn/worked-example/): One real mainnet bounty (#310) from criteria through submission, evaluation and payout, with every transaction and cost.
+- [FAQ: fees, payouts and refunds](${base}/learn/faq/): Exact costs for creators and hunters, payout priority, refunds, approval windows, timeouts.
 
 ## Buyer discovery (no wallet)
 

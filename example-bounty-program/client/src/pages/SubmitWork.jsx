@@ -912,7 +912,7 @@ function SubmitWork({ walletState }) {
         </p>
         <ul>
           <li><strong>ETH</strong> for gas fees (~0.005 ETH on Base Sepolia)</li>
-          <li><strong>ETH</strong> prepay for AI evaluation (~0.00024 ETH worst case, mostly refunded)</li>
+          <li><strong>ETH</strong> prepay for AI evaluation (~0.00024 ETH with default settings, usually spent in full; any unspent part is refunded)</li>
         </ul>
         <p>
           Get testnet ETH from a <a href="https://docs.base.org/chain/network-faucets" target="_blank" rel="noopener noreferrer">Base Sepolia faucet</a>.

@@ -1,0 +1,40 @@
+{
+  "status": 200,
+  "ms": 27804,
+  "scores": [
+    {
+      "outcome": "NO_WINNER",
+      "score": 5025
+    },
+    {
+      "outcome": "SIDE_A",
+      "score": 989950
+    },
+    {
+      "outcome": "SIDE_B",
+      "score": 5025
+    }
+  ],
+  "justification": "In analyzing the aggregated decision vector [5025, 989950, 5025], we can arrive at a clear conclusion for the outcome of the contest between the New England Patriots (SIDE_A) and the New York Jets (SIDE_B). The scores assigned to the different outcomes are heavily weighted in favor of SIDE_A, indicating a strong consensus that the Patriots are the winner.\n\n1. **Game Status:**\n   - Both gpt-5.6-terra and claude-sonnet-5 models confirm that the game has reached a 'Final' status. The score for NO_WINNER is minimal (50), reflecting the low possibility of any outcome disputing the game's completion.\n\n2. **Corroborative Evidence:**\n   - The justification provided by both models emphasizes the unanimity among various reputable sources about the game's result:\n     - NFL.com lists the game as 'Final' with a score of 26-19 in favor of the Patriots.\n     - Sports Illustrated, CBS Sports, ESPN, and other sources including footballdb.com, StatMuse, Boston.com, and NBC Sports Boston all report identical results.\n   - Notably, CBS Sports' gametracker and an AP recap provide further narrative details about the game, describing how Patriots quarterback Drake Maye led the team to victory.\n\n3. **Conclusion Drawing:**\n   - SIDE_A is awarded a score of 989950, significantly higher than the nominal scores for NO_WINNER and SIDE_B. This overwhelming score is reflective of the strong consensus among the sources, all consistent in reporting a Patriots victory.\n   - Given that the game is based on a straight-up win with no point spread, the determination hinges squarely on which team won, and all evidence clearly supports SIDE_A as the victor.\n\n4. **Residual Considerations:**\n   - While minimal scores are reserved for NO_WINNER and SIDE_B, these are precautionary measures aimed at considering theoretical errors or discrepancies that are not presently evident from the data.\n\nOverall, the aggregated decision strongly supports an outcome in favor of the New England Patriots, confirming SIDE_A as the winner of the game against the New York Jets. The thorough cross-verification from multiple reputable sources strengthens this conclusion, leaving little room for doubt.",
+  "metadata": {
+    "models_requested": 2,
+    "models_successful": 2,
+    "models_failed": 0,
+    "success_threshold_met": true,
+    "total_duration_ms": 27790
+  },
+  "model_results": [
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-terra",
+      "status": "success",
+      "duration_ms": 12093
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-5",
+      "status": "success",
+      "duration_ms": 22411
+    }
+  ]
+}

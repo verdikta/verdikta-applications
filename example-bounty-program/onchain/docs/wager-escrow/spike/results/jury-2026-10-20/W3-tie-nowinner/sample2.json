@@ -1,0 +1,40 @@
+{
+  "status": 200,
+  "ms": 18641,
+  "scores": [
+    {
+      "outcome": "NO_WINNER",
+      "score": 989950
+    },
+    {
+      "outcome": "SIDE_A",
+      "score": 5025
+    },
+    {
+      "outcome": "SIDE_B",
+      "score": 5025
+    }
+  ],
+  "justification": "The decision to overwhelmingly support NO_WINNER as the outcome of the NYG vs. WSH game on October 11, 2026, is well-founded based on consistent data and reliable sources indicating the game ended in a tie, 27-27, after overtime. Here's a comprehensive justification for this outcome:\n\n1. **Consistent Results Across Multiple Reputable Sources**: The information from multiple independent and reputable sports sources such as NFL, CBS Sports, ESPN, Fox Sports, FootballDB, and Covers.com all confirm that the game concluded with a final score of 27-27 after overtime. This consistent reporting across various platforms adds strong credibility to the conclusion that the game ended in a tie.\n\n2. **Detailed Game Breakdown**: The specific detail regarding the scoring progression (Giants: 3-0-10-14-0=27; Commanders: 6-6-7-8-0=27) provided by FootballDB further corroborates the final score reported as a tie. This quarter-by-quarter breakdown aligns perfectly with the final score, ensuring accuracy and eliminating room for misreporting or misinterpretation of results.\n\n3. **Interpretation of Wager Terms**: The terms of the wager clearly define that a \"No winner\" applies in situations where the game ends in a tie or a push in a straight-up winner market. Given that the game ended with the teams having identical scores after overtime, the conditions for \"No winner\" are met precisely.\n\n4. **Minimal Probability for Alternatives**: The models assign only residual probability to the outcomes of either team independently winning (SIDE_A or SIDE_B), basically accounting for any unlikely and small chance of reporting error. However, since all sources consistently report the game as a tie and there is no deviation or contradiction across the board, this residual assignment is just a formal acknowledgement rather than a suggestion of realistic doubt.\n\n5. **Absence of Contradicting Information**: Across all sources, there is no contradicting information that suggests a different result to the game outcome. The absence of such discrepancies strengthens the consensus that the game indeed ended as reported — a 27-27 tie.\n\nBased on this reasoning and the corroboration provided by extensive and reliable sources, it is rational and justified to conclude that NO_WINNER is the overwhelmingly likely outcome for this event, adhering to the agreement terms and reflecting the reported match result accurately.",
+  "metadata": {
+    "models_requested": 2,
+    "models_successful": 2,
+    "models_failed": 0,
+    "success_threshold_met": true,
+    "total_duration_ms": 18628
+  },
+  "model_results": [
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-terra",
+      "status": "success",
+      "duration_ms": 7376
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-5",
+      "status": "success",
+      "duration_ms": 13460
+    }
+  ]
+}

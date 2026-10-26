@@ -878,6 +878,13 @@ function Analytics() {
                         <code className="address">{data.system.verdikta.wvdkaAddress}</code>
                       </div>
                     )}
+                    {/* L1 token behind wVDKA via the OP standard bridge; only exists for the Base mainnet deployment */}
+                    {config.network === 'base' && (
+                      <div className="contract-row">
+                        <span className="contract-label">VDKA Token (Ethereum Mainnet / L1):</span>
+                        <code className="address">0x426a1A25166de6C58Be51DBa370F9B1f9acA9051</code>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <p className="text-muted">Not configured</p>

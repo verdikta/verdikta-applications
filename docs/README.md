@@ -4,6 +4,16 @@ This folder contains the documentation for all applications in the verdikta-appl
 
 ## Overview
 
+**Poidh Slots for Bring a Task, Build a Habit Campaign:**
+- **Slot 1/4:** [https://poidh.xyz/base/bounty/1487](https://poidh.xyz/base/bounty/1487)
+- **Slot 2/4:** [https://poidh.xyz/base/bounty/1488](https://poidh.xyz/base/bounty/1488)
+- **Slot 3/4:** [https://poidh.xyz/base/bounty/1489](https://poidh.xyz/base/bounty/1489)
+- **Slot 4/4:** [https://poidh.xyz/base/bounty/1490](https://poidh.xyz/base/bounty/1490)
+
+*Each slot pays 0.0125 ETH to the first valid claim.*
+
+
+
 The documentation is structured to work seamlessly with MkDocs and the monorepo plugin, allowing it to be integrated into the main verdikta-docs repository as a git submodule.
 
 ## Structure

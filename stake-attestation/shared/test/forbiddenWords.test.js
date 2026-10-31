@@ -51,7 +51,10 @@ test('finds either word in any case, inside longer words, with line and column',
 
 test('scanPaths walks source, UI strings and docs, skipping dependencies and build output', () => {
   const root = tmpTree({
+    'package.json': '{}',
     'src/App.jsx': `<h1>${noun}</h1>`,
+    'src/cache/notes.md': participle,
+    'pkg/node_modules/dep/index.js': participle,
     'src/strings.js': 'export const title = "Stake attestation";',
     'docs/guide.md': `A ${participle} record`,
     'node_modules/pkg/index.js': participle,
@@ -66,7 +69,8 @@ test('scanPaths walks source, UI strings and docs, skipping dependencies and bui
   });
   const result = scanPaths([root]);
   const files = result.hits.map((h) => path.relative(root, h.file)).sort();
-  assert.deepEqual(files, ['docs/guide.md', 'src/App.jsx']);
+  // Output folder names are skipped only beside a package.json; src/cache is source.
+  assert.deepEqual(files, ['docs/guide.md', 'src/App.jsx', 'src/cache/notes.md']);
   assert.ok(result.filesScanned >= 3);
 });
 

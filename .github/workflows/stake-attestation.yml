@@ -1,0 +1,94 @@
+name: Stake attestation
+on:
+  pull_request:
+    branches:
+      - main
+      - claude/stake-attestation
+    paths:
+      - 'stake-attestation/**'
+      - '.github/workflows/stake-attestation.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: stake-attestation-${{ github.ref }}
+  cancel-in-progress: true
+# No job reads a secret: contracts run on the in-process Hardhat network, the client against
+# its own production build.
+jobs:
+  shared:
+    name: Shared helper, scope and wording
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0 # the scope test diffs against the pull request's base branch
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: stake-attestation/shared
+        run: npm ci --ignore-scripts
+      - name: Helper, package, workflow, docs and scope tests
+        working-directory: stake-attestation/shared
+        run: npm test
+      - name: No banned words in source, UI strings or docs
+        run: node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .github/workflows/stake-attestation.yml
+
+  packages:
+    name: ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [server, tool]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: stake-attestation/${{ matrix.package }}
+        run: npm ci --ignore-scripts
+      - name: Test
+        working-directory: stake-attestation/${{ matrix.package }}
+        run: npm test
+
+  onchain:
+    name: Contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: stake-attestation/onchain
+        run: npm ci --ignore-scripts
+      - name: Hardhat tests
+        working-directory: stake-attestation/onchain
+        run: npx hardhat test
+
+  client:
+    name: Client
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: stake-attestation/client
+        run: npm ci --ignore-scripts
+      - name: Unit tests
+        working-directory: stake-attestation/client
+        run: npm test
+      - name: Playwright smoke test against the production build
+        working-directory: stake-attestation/client
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test

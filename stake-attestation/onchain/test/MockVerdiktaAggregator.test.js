@@ -11,6 +11,8 @@ const { anyValue } = require("@nomicfoundation/hardhat-chai-matchers/withArgs");
 const CID = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
 const MAX_ORACLE_FEE = ethers.parseEther("0.0004");
 const DEFAULT_MULTIPLIER = 3n;
+// A six-outcome vector, as the stake-attestation classes return.
+const RESULT = [0, 0, 0, 0, 1_000_000, 0];
 
 function args(overrides = {}) {
   return {
@@ -83,11 +85,10 @@ describe("MockVerdiktaAggregator", function () {
       const required = await aggregator.maxTotalFee(MAX_ORACLE_FEE);
       await aggregator.setRefundAmount(required / 2n);
 
-      // A fulfilled round. The requester's fallback and receive revert, so any call into it
-      // during settlement would revert the settlement itself.
+      // The requester counts every call and every wei it did not ask for.
       await requester.request([CID], "", 500, MAX_ORACLE_FEE, 0, 5, 133, { value: required });
       const fulfilled = await requester.lastRequestId();
-      await expect(aggregator.scriptResult(fulfilled, [1_000_000], "QmJustification"))
+      await expect(aggregator.scriptResult(fulfilled, RESULT, "QmJustification"))
         .to.emit(aggregator, "FulfillAIEvaluation");
 
       // A round that times out.
@@ -99,13 +100,20 @@ describe("MockVerdiktaAggregator", function () {
       expect(await requester.unexpectedCalls()).to.equal(0n);
       // The requester learns the result only by polling.
       const [scores, cids, exists] = await aggregator.getEvaluation(fulfilled);
-      expect(scores).to.deep.equal([1_000_000n]);
+      expect(scores.map(Number)).to.deep.equal(RESULT);
       expect(cids).to.equal("QmJustification");
       expect(exists).to.equal(true);
-      // Refunds arrive as pull credit, never pushed.
-      expect(await aggregator.ethOwed(await requester.getAddress())).to.equal(required);
+      // Refunds arrive as pull credit, never pushed. The second request drew the first refund
+      // (fund-from-credit), so what is owed now is the second round's refund.
+      expect(await aggregator.ethOwed(await requester.getAddress())).to.equal(required / 2n);
       await requester.withdraw();
       expect(await aggregator.ethOwed(await requester.getAddress())).to.equal(0n);
+      expect(await requester.unexpectedCalls()).to.equal(0n);
+    });
+
+    it("has no receive(): plain ETH is refused, as by the real aggregator", async function () {
+      const { aggregator, hunter } = await deploy();
+      await expect(hunter.sendTransaction({ to: await aggregator.getAddress(), value: 1n })).to.be.reverted;
     });
   });
 
@@ -192,7 +200,7 @@ describe("MockVerdiktaAggregator", function () {
       const credit = required / 3n;
       await aggregator.setRefundAmount(credit);
       const first = await request(aggregator, hunter);
-      await aggregator.scriptResult(first, [1_000_000], "QmJ");
+      await aggregator.scriptResult(first, RESULT, "QmJ");
       expect(await aggregator.ethOwed(hunter.address)).to.equal(credit);
 
       // Credit covers part: msg.value pays the rest, credit goes to zero.
@@ -216,7 +224,7 @@ describe("MockVerdiktaAggregator", function () {
       // Fund 3x the requirement and refund all of it: credit = 3x.
       const first = await request(aggregator, hunter, args(), required * 3n);
       await aggregator.setRefundAmount(required * 3n);
-      await aggregator.scriptResult(first, [1_000_000], "QmJ");
+      await aggregator.scriptResult(first, RESULT, "QmJ");
       expect(await aggregator.ethOwed(hunter.address)).to.equal(required * 3n);
 
       await aggregator.setRefundAmount(0);
@@ -229,7 +237,7 @@ describe("MockVerdiktaAggregator", function () {
       const required = await aggregator.maxTotalFee(MAX_ORACLE_FEE);
       const first = await request(aggregator, hunter);
       await aggregator.setRefundAmount(required);
-      await aggregator.scriptResult(first, [1_000_000], "QmJ");
+      await aggregator.scriptResult(first, RESULT, "QmJ");
       expect(await aggregator.ethOwed(hunter.address)).to.equal(required);
 
       const id = await request(aggregator, hunter, args(), required);
@@ -237,7 +245,7 @@ describe("MockVerdiktaAggregator", function () {
       expect(await aggregator.ethReceived(id)).to.equal(required * 2n);
       // The round spends `required`; the rest comes back as credit at settlement.
       await aggregator.setRefundAmount(required);
-      await aggregator.scriptResult(id, [1_000_000], "QmJ");
+      await aggregator.scriptResult(id, RESULT, "QmJ");
       expect(await aggregator.ethOwed(hunter.address)).to.equal(required);
     });
 
@@ -246,7 +254,7 @@ describe("MockVerdiktaAggregator", function () {
       const required = await aggregator.maxTotalFee(MAX_ORACLE_FEE);
       await aggregator.setRefundAmount(required);
       const id = await request(aggregator, hunter);
-      await aggregator.scriptResult(id, [1_000_000], "QmJ");
+      await aggregator.scriptResult(id, RESULT, "QmJ");
       await expect(aggregator.connect(hunter).withdrawEth()).to.changeEtherBalances(
         [hunter, aggregator], [required, -required]
       );
@@ -286,13 +294,23 @@ describe("MockVerdiktaAggregator", function () {
       expect(exists).to.equal(true);
     });
 
+    it("only scripts vector lengths a real round can produce (2..maxLikelihoodLength)", async function () {
+      const { aggregator, hunter } = await deploy();
+      const id = await request(aggregator, hunter);
+      await expect(aggregator.scriptResult(id, [1_000_000], "QmJ"))
+        .to.be.revertedWithCustomError(aggregator, "UnreachableResult").withArgs(1);
+      await expect(aggregator.scriptLateResult(id, Array(21).fill(1), "QmJ"))
+        .to.be.revertedWithCustomError(aggregator, "UnreachableResult").withArgs(21);
+      await aggregator.scriptResult(id, Array(20).fill(50_000), "QmJ");
+    });
+
     it("rejects scripting an unknown or already settled round", async function () {
       const { aggregator, hunter } = await deploy();
-      await expect(aggregator.scriptResult(ethers.ZeroHash, [1_000_000], "QmJ"))
+      await expect(aggregator.scriptResult(ethers.ZeroHash, RESULT, "QmJ"))
         .to.be.revertedWithCustomError(aggregator, "UnknownRequest");
       const id = await request(aggregator, hunter);
-      await aggregator.scriptResult(id, [1_000_000], "QmJ");
-      await expect(aggregator.scriptResult(id, [1_000_000], "QmJ"))
+      await aggregator.scriptResult(id, RESULT, "QmJ");
+      await expect(aggregator.scriptResult(id, RESULT, "QmJ"))
         .to.be.revertedWithCustomError(aggregator, "AggregationComplete");
     });
 
@@ -302,7 +320,7 @@ describe("MockVerdiktaAggregator", function () {
       await aggregator.setRefundAmount(required / 4n);
       const id = await request(aggregator, hunter);
       expect(await aggregator.ethOwed(hunter.address)).to.equal(0n);
-      await expect(aggregator.scriptResult(id, [1_000_000], "QmJ"))
+      await expect(aggregator.scriptResult(id, RESULT, "QmJ"))
         .to.emit(aggregator, "RequesterRefunded").withArgs(id, hunter.address, required / 4n);
       expect(await aggregator.ethOwed(hunter.address)).to.equal(required / 4n);
     });
@@ -312,7 +330,7 @@ describe("MockVerdiktaAggregator", function () {
       const required = await aggregator.maxTotalFee(MAX_ORACLE_FEE);
       await aggregator.setRefundAmount(required * 10n);
       const id = await request(aggregator, hunter);
-      await aggregator.scriptResult(id, [1_000_000], "QmJ");
+      await aggregator.scriptResult(id, RESULT, "QmJ");
       expect(await aggregator.ethOwed(hunter.address)).to.equal(required);
     });
   });
@@ -339,7 +357,7 @@ describe("MockVerdiktaAggregator", function () {
       expect((await aggregator.getEvaluation(id))[2]).to.equal(false);
       await expect(aggregator.finalizeEvaluationTimeout(id))
         .to.be.revertedWithCustomError(aggregator, "AggregationComplete");
-      await expect(aggregator.scriptResult(id, [1_000_000], "QmJ"))
+      await expect(aggregator.scriptResult(id, RESULT, "QmJ"))
         .to.be.revertedWithCustomError(aggregator, "AggregationComplete");
     });
 
@@ -373,7 +391,7 @@ describe("MockVerdiktaAggregator", function () {
       const { aggregator, hunter } = await deploy();
       const id = await request(aggregator, hunter);
       await time.increase(1000);
-      await aggregator.scriptResult(id, [1_000_000], "QmJ");
+      await aggregator.scriptResult(id, RESULT, "QmJ");
       expect((await aggregator.getEvaluation(id))[2]).to.equal(true);
     });
 
@@ -381,10 +399,11 @@ describe("MockVerdiktaAggregator", function () {
       const { aggregator, hunter } = await deploy();
       await aggregator.setResponseTimeout(900);
       const id = await request(aggregator, hunter);
-      await time.increase(899);
+      const start = (await aggregator.getAggregationStatus(id)).startTimestamp;
+      await time.setNextBlockTimestamp(start + 899n);
       await expect(aggregator.finalizeEvaluationTimeout(id))
         .to.be.revertedWithCustomError(aggregator, "NotTimedOut");
-      await time.increase(1);
+      await time.setNextBlockTimestamp(start + 900n);
       await aggregator.finalizeEvaluationTimeout(id);
     });
   });

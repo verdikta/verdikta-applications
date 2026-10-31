@@ -856,10 +856,18 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
       expect(mutating).to.deep.equal([
         "acceptOwnership", // Ownable2Step: the pending owner takes over; no other power
         "close", // maker only
+        "commit", // anyone allowed on the listing, for themselves (P2b)
+        "disclose", // the claim's hunter (P2b)
+        "expire", // anyone, once the claim's deadline has passed (P2b)
+        "flagBadDisclosure", // the listing's maker (P2b)
         "fund", // maker only
+        "lensDelegate", // this contract only, inside a static frame (P2b)
         "list", // anyone, for themselves
+        "release", // the listing's maker (P2b)
         "renew", // maker only
         "renounceOwnership", // owner: gives up the two powers below
+        "reveal", // the claim's hunter (P2b)
+        "rollForward", // the listing's maker (P2b)
         "setFeeRecipient", // owner
         "setListingFee", // owner
         "transferOwnership", // owner: hands over the two powers

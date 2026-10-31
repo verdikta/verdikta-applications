@@ -7,6 +7,7 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const { linkedFactory } = require("./helpers/linked");
 
 const { parseEther, ZeroAddress, ZeroHash, keccak256 } = ethers;
 const coder = ethers.AbiCoder.defaultAbiCoder();
@@ -95,8 +96,8 @@ async function deploy() {
   const [owner, maker, maker2, hunter, feeRecipient, other] = await ethers.getSigners();
   const aggregator = await (await ethers.getContractFactory("MockVerdiktaAggregator")).deploy();
   const args = [await aggregator.getAddress(), owner.address, feeRecipient.address, LISTING_FEE];
-  const sa = await (await ethers.getContractFactory("StakeAttestation")).deploy(...args);
-  const harness = await (await ethers.getContractFactory("StakeAttestationHarness")).deploy(...args);
+  const sa = await (await linkedFactory("StakeAttestation")).deploy(...args);
+  const harness = await (await linkedFactory("StakeAttestationHarness")).deploy(...args);
   return { owner, maker, maker2, hunter, feeRecipient, other, aggregator, sa, harness };
 }
 
@@ -831,7 +832,7 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
 
     it("the constructor refuses a zero aggregator, a zero fee recipient or itself as the recipient", async function () {
       const { owner, aggregator } = await loadFixture(deploy);
-      const SA = await ethers.getContractFactory("StakeAttestation");
+      const SA = await linkedFactory("StakeAttestation");
       await expect(SA.deploy(ZeroAddress, owner.address, owner.address, 0n)).to.be.revertedWith("zero aggregator");
       await expect(SA.deploy(aggregator.target, owner.address, ZeroAddress, 0n)).to.be.revertedWith("bad fee recipient");
       // The address the next deployment will get: fees credited there could never be withdrawn.
@@ -856,10 +857,18 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
       expect(mutating).to.deep.equal([
         "acceptOwnership", // Ownable2Step: the pending owner takes over; no other power
         "close", // maker only
+        "commit", // anyone allowed on the listing, for themselves (P2b)
+        "disclose", // the claim's hunter (P2b)
+        "expire", // anyone, once the claim's deadline has passed (P2b)
+        "flagBadDisclosure", // the listing's maker (P2b)
         "fund", // maker only
+        "lensDelegate", // this contract only, inside a static frame (P2b)
         "list", // anyone, for themselves
+        "release", // the listing's maker (P2b)
         "renew", // maker only
         "renounceOwnership", // owner: gives up the two powers below
+        "reveal", // the claim's hunter (P2b)
+        "rollForward", // the listing's maker (P2b)
         "setFeeRecipient", // owner
         "setListingFee", // owner
         "transferOwnership", // owner: hands over the two powers

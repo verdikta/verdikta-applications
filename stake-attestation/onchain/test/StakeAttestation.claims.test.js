@@ -12,6 +12,7 @@ const { expect } = require("chai");
 const hre = require("hardhat");
 const { ethers, network } = hre;
 const { time, loadFixture, mine } = require("@nomicfoundation/hardhat-network-helpers");
+const { linkedFactory } = require("./helpers/linked");
 
 const { parseEther, ZeroAddress, ZeroHash, sha256, toUtf8Bytes } = ethers;
 
@@ -101,8 +102,8 @@ async function deploy() {
   const [owner, maker, other, feeRecipient, ...hunters] = await ethers.getSigners();
   const aggregator = await (await ethers.getContractFactory("MockVerdiktaAggregator")).deploy();
   const args = [aggregator.target, owner.address, feeRecipient.address, LISTING_FEE];
-  const saDeployed = await (await ethers.getContractFactory("StakeAttestation")).deploy(...args);
-  const harnessDeployed = await (await ethers.getContractFactory("StakeAttestationHarness")).deploy(...args);
+  const saDeployed = await (await linkedFactory("StakeAttestation")).deploy(...args);
+  const harnessDeployed = await (await linkedFactory("StakeAttestationHarness")).deploy(...args);
   const sa = new ethers.Contract(saDeployed.target, mergedAbi("StakeAttestation"), owner);
   const harness = new ethers.Contract(harnessDeployed.target, mergedAbi("StakeAttestationHarness"), owner);
   return { owner, maker, other, feeRecipient, hunters, hunter: hunters[0], aggregator, sa, harness };
@@ -346,7 +347,8 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       await time.setNextBlockTimestamp(late.at + DISCLOSE_WINDOW);
       await expect(sa.connect(hunter).disclose(late.claimId, CT_CID)).to.be.revertedWith("disclose window over");
 
-      await time.setNextBlockTimestamp(at + DISCLOSE_WINDOW + 1n); // after the late claim's attempt
+      // The late claim's refused disclose was mined past the first claim's window too.
+      expect(late.at + DISCLOSE_WINDOW).to.be.greaterThan(at + DISCLOSE_WINDOW);
       await expect(sa.connect(hunter).disclose(claimId, CT_CID)).to.be.revertedWith("disclose window over");
       await expect(sa.connect(hunter).disclose(99n, CT_CID)).to.be.revertedWith("bad claimId");
       const fresh = await commitAs(sa, hunter, id);
@@ -458,18 +460,20 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       const undisclosed = await commitAs(sa, hunter, id);
       await expect(sa.connect(maker).flagBadDisclosure(undisclosed.claimId)).to.be.revertedWith("not disclosed");
 
-      const { claimId, disclosedAt } = await claimAs(sa, hunter, id);
+      const { claimId } = await claimAs(sa, hunter, id);
       await expect(sa.connect(other).flagBadDisclosure(claimId)).to.be.revertedWith("not maker");
       await expect(sa.connect(hunter).flagBadDisclosure(claimId)).to.be.revertedWith("not maker");
-      await time.setNextBlockTimestamp(disclosedAt + GRACE - 1n);
       await expect(sa.connect(maker).flagBadDisclosure(claimId)).to.emit(sa, "Flagged").withArgs(claimId, id);
       expect((await sa.getClaim(claimId)).flaggedBadDisclosure).to.equal(true);
       await expect(sa.connect(maker).flagBadDisclosure(claimId)).to.be.revertedWith("already flagged");
 
-      // At disclosedAt + grace the grace is over.
-      const late = await claimAs(sa, hunter, id);
-      await time.setNextBlockTimestamp(late.disclosedAt + GRACE);
-      await expect(sa.connect(maker).flagBadDisclosure(late.claimId)).to.be.revertedWith("grace over");
+      // The last second of the grace, and its end.
+      const last = await claimAs(sa, hunter, id);
+      const over = await claimAs(sa, hunter, id);
+      await time.setNextBlockTimestamp(last.disclosedAt + GRACE - 1n);
+      await expect(sa.connect(maker).flagBadDisclosure(last.claimId)).to.emit(sa, "Flagged");
+      await time.setNextBlockTimestamp(over.disclosedAt + GRACE);
+      await expect(sa.connect(maker).flagBadDisclosure(over.claimId)).to.be.revertedWith("grace over");
     });
 
     it("a flag is a statement on the record, not a verdict: the claim still reveals", async function () {
@@ -760,6 +764,19 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       expect(await aggregator.ethOwed(wallet)).to.equal(FEE - ORACLE.maxOracleFee * 2n);
     });
 
+    it("refuses a reveal when the aggregator quotes no budget (fee multiplier or ceiling at 0)", async function () {
+      const { sa, aggregator, maker, hunter } = await loadFixture(deploy);
+      const id = await openListing(sa, maker, params({ fixWindow: 0n, disclosureGrace: 0n }));
+      const { claimId } = await claimAs(sa, hunter, id);
+      await aggregator.setFeeMultiplier(0n);
+      await expect(revealTx(sa, hunter, claimId, { value: 0n })).to.be.revertedWith("bad budget");
+      await aggregator.setFeeMultiplier(3n);
+      await aggregator.setMaxOracleFee(0n); // the clamp takes the fee, and the base cost, to 0
+      await expect(revealTx(sa, hunter, claimId, { value: 0n })).to.be.revertedWith("bad budget");
+      await aggregator.setMaxOracleFee(parseEther("0.0004"));
+      await expect(revealTx(sa, hunter, claimId, { value: 0n })).to.emit(sa, "EvaluationRequested");
+    });
+
     it("a reveal with a stale, larger prepay still sends it all: excess is the aggregator's to refund", async function () {
       const { sa, aggregator, maker, hunter } = await loadFixture(deploy);
       const id = await openListing(sa, maker, params({ fixWindow: 0n, disclosureGrace: 0n }));
@@ -882,7 +899,8 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       expect(c.requestId).to.equal(ZeroHash);
       expect(c.bcid).to.equal(BCID);
       expect(c.prepayWei).to.equal(FEE);
-      expect(await ethers.provider.getBalance(sa.target)).to.equal(TOP + BOND + FEE); // escrow + bond + prepay
+      // escrow + the fee recipient's pull balance + bond + prepay
+      expect(await ethers.provider.getBalance(sa.target)).to.equal(TOP + LISTING_FEE + BOND + FEE);
       // Still unresolved: it holds its place in commit order, and it is not expirable here.
       expect((await sa.getListing(id)).headClaim).to.equal(claimId);
       expect((await sa.getListing(id)).pendingClaims).to.equal(1n);
@@ -969,6 +987,7 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       const { harness, maker, hunters } = await loadFixture(deploy);
       const id = await openListing(harness, maker);
       const a = await claimAs(harness, hunters[0], id);
+      await time.increase(DAY);
       const b = await claimAs(harness, hunters[1], id);
       // a resolves before b is revealable: b's clock starts at its revealableAt.
       await time.increaseTo(a.disclosedAt + FIX);
@@ -979,6 +998,7 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       expect(t.revealDeadline).to.equal(b.disclosedAt + FIX + REVEAL);
 
       // c is revealable long before b resolves: c's clock starts when b resolves.
+      await time.increase(HOUR);
       const c = await claimAs(harness, hunters[2], id);
       await time.increaseTo(b.disclosedAt + FIX);
       await revealAs(harness, hunters[1], b.claimId);
@@ -1095,22 +1115,31 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       expect(await sa.withdrawable(rejecting.target)).to.equal(FEE);
     });
 
-    it("re-entering expire() from the bond payment is refused and both payments land", async function () {
-      const { sa, hunters } = await loadFixture(deploy);
-      const r = await (await ethers.getContractFactory("MockReentrantRecipient")).deploy();
-      const listData = sa.interface.encodeFunctionData("list", [params(), LISTING_CID, DISPUTE_CID, []]);
-      await r.act(sa.target, listData);
-      const fee = await sa.feeDue(1n);
-      await r.act(sa.target, sa.interface.encodeFunctionData("fund", [1n, fee]), { value: fee + TOP });
-      const a = await commitAs(sa, hunters[0], 1n);
-      const b = await commitAs(sa, hunters[1], 1n);
-      await time.increase(DISCLOSE_WINDOW);
-      await r.setAttack(sa.target, sa.interface.encodeFunctionData("expire", [b.claimId]));
-      await expect(sa.expire(a.claimId)).to.changeEtherBalances([r, hunters[0]], [BOND, FEE]);
-      expect(await r.attempted()).to.equal(true);
-      expect(await r.attackOk()).to.equal(false);
-      expect((await sa.getClaim(b.claimId)).state).to.equal(ClaimState.Committed);
-    });
+    for (const entry of ["expire", "commit", "reveal"]) {
+      it(`re-entering ${entry}() from the bond payment is refused and both payments land`, async function () {
+        const { sa, hunters } = await loadFixture(deploy);
+        const r = await (await ethers.getContractFactory("MockReentrantRecipient")).deploy();
+        const listData = sa.interface.encodeFunctionData("list", [params(), LISTING_CID, DISPUTE_CID, []]);
+        await r.act(sa.target, listData);
+        const fee = await sa.feeDue(1n);
+        await r.act(sa.target, sa.interface.encodeFunctionData("fund", [1n, fee]), { value: fee + TOP });
+        const a = await commitAs(sa, hunters[0], 1n);
+        const b = await commitAs(sa, hunters[1], 1n);
+        await time.increase(DISCLOSE_WINDOW);
+        const attack = {
+          expire: ["expire", [b.claimId]],
+          commit: ["commit", [1n, ARCHIVE, CT]],
+          reveal: ["reveal", [b.claimId, BCID, CK, EK]],
+        }[entry];
+        await r.setAttack(sa.target, sa.interface.encodeFunctionData(...attack));
+        await expect(sa.expire(a.claimId)).to.changeEtherBalances([r, hunters[0]], [BOND, FEE]);
+        expect(await r.attempted()).to.equal(true);
+        expect(await r.attackOk()).to.equal(false);
+        expect(await r.attackReasonHash()).to.equal(ethers.keccak256(sa.interface.encodeErrorResult("Error", ["reentrant"])));
+        expect((await sa.getClaim(b.claimId)).state).to.equal(ClaimState.Committed);
+        expect(await sa.claimCount()).to.equal(2n);
+      });
+    }
   });
 
   // ------------------------------------------------------------------ views and events
@@ -1170,6 +1199,23 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       await expect(wallet.refundLeftoverEth()).to.changeEtherBalance(owner, 1000n);
       // Idempotent: nothing left, nothing sent.
       await expect(wallet.refundLeftoverEth()).to.changeEtherBalance(owner, 0n);
+    });
+
+    it("refundLeftoverEth reverts when the requester refuses the ETH (the requester retries later)", async function () {
+      const { aggregator } = await loadFixture(deploy);
+      const requester = await (await ethers.getContractFactory("MockRejectingHunter")).deploy();
+      const wallet = await (await ethers.getContractFactory("EvaluationWallet")).deploy(requester.target, aggregator.target);
+      const start = wallet.interface.encodeFunctionData("startEvaluation", [
+        [LISTING_CID, BCID], "", 500n, ORACLE.maxOracleFee, 0n, 1n, 133n,
+      ]);
+      await requester.act(wallet.target, start, { value: FEE });
+      await aggregator.setRefundAmount(1000n);
+      await aggregator.scriptResult(await wallet.aggId(), [0, 0, 0, 1_000_000, 0, 0], "QmJustification");
+      await requester.setRejecting(true);
+      const refund = wallet.interface.encodeFunctionData("refundLeftoverEth");
+      await expect(requester.act(wallet.target, refund)).to.be.revertedWith("repatriate failed");
+      await requester.setRejecting(false);
+      await expect(requester.act(wallet.target, refund)).to.changeEtherBalance(requester, 1000n);
     });
   });
 });

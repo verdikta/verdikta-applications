@@ -4,6 +4,10 @@ pragma solidity 0.8.23;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
+import {EvaluationWallet} from "./EvaluationWallet.sol";
+import {StakeAttestationLens} from "./StakeAttestationLens.sol";
+import {ClaimLogic} from "./libraries/ClaimLogic.sol";
+import {ClaimRules} from "./libraries/ClaimRules.sol";
 
 /// @title StakeAttestation
 /// @notice A maker stakes an award table behind one version of an artifact (a repository at a
@@ -15,18 +19,22 @@ import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 ///         Design: verdikta-arbiter docs/development/stake-attestation-design.md, §13. The
 ///         build plan's errata, assumptions and decisions (stake-attestation/docs/BUILD_PLAN.md)
 ///         override it where they differ.
-/// @dev    This revision is the LISTING half (build node P2a): list, fund, renew, close, the
-///         listing fee, the pull ledger and the listing views. The claim half arrives in later
-///         nodes and extends the types and the bookkeeping declared here:
-///         - P2b: commit, flag, release, rollForward, reveal, expire. `commit` requires
-///           acceptsCommits() and isAllowed(); claims increment Listing.pendingClaims and
-///           settled or expired ones decrement it; rollForward sets Rolled and the lineage
-///           (predecessor / successor).
-///         - P2c: finalize by polling, settlement under THRESHOLD, Depleted and owedWei.
-///         - P2d: dispute, failed rounds, re-trigger, leftover recovery. P2e: late claims and
-///           recordByHash.
-///         close() already refuses while pendingClaims or owedWei is non-zero (decision D8), so
-///         those nodes only have to keep the two fields true.
+/// @dev    Built in nodes. P2a: list, fund, renew, close, the listing fee, the pull ledger and
+///         the listing views. P2b (this revision adds it): the claim lifecycle up to the
+///         evaluation request: commit (two hashes, erratum E5), disclose, flagBadDisclosure,
+///         release, rollForward, reveal (the request, §13.3 with errata E1-E3) and expire. Later
+///         nodes extend the types and bookkeeping declared here:
+///         - P2c: finalize by polling, settlement under THRESHOLD, Depleted and owedWei. Its
+///           settle marks a claim Settled and calls ClaimLogic.resolve (which keeps
+///           pendingClaims and the commit-order queue true), and pushes a valid claim onto
+///           _validFindings.
+///         - P2d: dispute, failed rounds (a RoundFailed claim; a failed submission already
+///           enters it here), re-trigger, leftover recovery. P2e: late claims and recordByHash.
+///         close() refuses while pendingClaims or owedWei is non-zero (decision D8).
+///
+///         Size (EIP-170): the claim functions' bodies are the linked library ClaimLogic, and
+///         derived views (claim state, deadlines, quotes) live in StakeAttestationLens, served at
+///         this address through the fallback as BountyEscrow's are. Later nodes follow suit.
 ///
 ///         Program values are fixed per deployment (assumption A5): the window bounds, the
 ///         listing period, THRESHOLD, the payout gas cap. The contract owner has exactly two
@@ -130,6 +138,63 @@ contract StakeAttestation is Ownable2Step {
         uint256 pendingClaims;       // claims neither settled nor expired (P2b)
         uint256 predecessor;         // listing id this version fixed (0 = none; P2b)
         uint256 successor;           // listing id that fixed this one (0 = none; P2b)
+        // the commit-order queue (P2b, decision D5): the unresolved claims, oldest first, as a
+        // doubly linked list through Claim.prevInOrder / nextInOrder, so resolving any claim is
+        // O(1) and "every earlier claim is settled or expired" is `headClaim == claimId`.
+        uint64  rolledAt;            // when rollForward named the successor (0 = not rolled)
+        uint64  headClaim;           // the earliest claim neither settled nor expired (0 = none)
+        uint64  tailClaim;           // the latest such claim
+        uint64  headSince;           // when headClaim became the earliest: its reveal clock's floor
+        // counts for the record (P2b)
+        uint64  claimsCommitted;     // every claim ever committed here
+        uint64  undisclosedClaims;   // expired without a disclosure (erratum E5)
+        uint64  unrevealedClaims;    // expired without a reveal (design decision 15)
+    }
+
+    /// @notice A claim's life (design §13.1, erratum E5, decision D5). Order is ABI: append only.
+    ///         Stored: Committed, then Revealed (request submitted) or RoundFailed (the
+    ///         submission failed and the prepay is held; P2d re-triggers), or Expired. P2c
+    ///         adds Judged and Settled, P2d Disputed. Revealable is never stored: a fix window
+    ///         ends by time, by release or by a roll-forward of the whole listing, so the lens
+    ///         derives it (claimState).
+    enum ClaimState { Committed, Revealable, Revealed, Judged, Disputed, Settled, Expired, RoundFailed }
+
+    /// @notice Why a claim expired. The listing counts each (undisclosedClaims, unrevealedClaims).
+    enum Expiry { None, Undisclosed, Unrevealed }
+
+    /// @notice One hunter's claim against one listing (design §13.1 with erratum E5).
+    /// @dev Field order packs the small fields into five slots; P2c-P2e append fields at the end.
+    ///      bondWei and prepayWei are uint128: each is at most what one transaction carried.
+    struct Claim {
+        // slot 0
+        address hunter;
+        uint64  committedAt;         // fixes the claim's place in commit order (design §8.7)
+        ClaimState state;
+        Expiry  expiry;
+        bool    flaggedBadDisclosure;
+        bool    released;            // the maker waived the fix window
+        // slot 1
+        uint64  listingId;
+        uint64  disclosedAt;         // 0 = not disclosed; the fix window and the grace run from it
+        uint64  fixWindowEnd;        // disclosedAt + fixWindow, or the release time
+        uint64  revealedAt;
+        // slot 2
+        uint64  prevInOrder;         // the commit-order queue (Listing.headClaim); 0 once resolved
+        uint64  nextInOrder;
+        bytes16 contentKey;          // age's file key, from the reveal (erratum E1)
+        // slot 3
+        address evalWallet;          // the reveal's EvaluationWallet clone
+        bool    disclosedAfterRoll;  // disclosed after the listing rolled forward: own fix window
+        // slot 4
+        uint128 bondWei;
+        uint128 prepayWei;           // held for the evaluation; topped up at reveal (erratum E3)
+        // commitments, reveal and request
+        bytes32 archiveHash;         // sha256 of the plaintext archive
+        bytes32 ciphertextSha256;    // sha256 of the archive encrypted to the disclosure key
+        bytes32 ephemeralKey;        // the X25519 ephemeral secret, from the reveal (erratum E1)
+        bytes32 requestId;           // the aggregator's id for the reveal's request (0 if it failed)
+        string  ciphertextCid;       // from disclose
+        string  bcid;                // the plaintext archive, from the reveal
     }
 
     // ------------------------------------------------------------------
@@ -172,11 +237,38 @@ contract StakeAttestation is Ownable2Step {
     ///         `withdrawable` and claims with withdraw(), which forwards full gas.
     uint256 public constant PAYOUT_GAS_LIMIT = 120_000;
 
+    /// @notice Erratum E5: a commit carries only hashes; the hunter has this long after it to
+    ///         disclose the ciphertext CID, or anyone may expire the claim (bond to the maker,
+    ///         prepay back). The window caps how long an undisclosed claim can hold up the
+    ///         claims behind it.
+    uint256 public constant DISCLOSE_WINDOW = ClaimRules.DISCLOSE_WINDOW;
+
+    /// @notice Erratum E2: the aggregator takes at most 10 CIDs, so a request carries the
+    ///         listing, the claim and at most this many prior valid findings (the most recent).
+    uint256 public constant MAX_PRIOR_FINDINGS = ClaimRules.MAX_PRIOR_FINDINGS;
+
+    /// @notice Gas a reveal must still hold after a failed submission for the failure to stand.
+    /// @dev    An out-of-gas inside the aggregator leaves the caller 1/64 of what it forwarded
+    ///         (EIP-150). Without this floor a reveal sent with too little gas, or with a gas
+    ///         estimate that settled on the catch branch, would enter RoundFailed though the
+    ///         aggregator would have accepted it. With it, a failure only stands when the
+    ///         submission was given at least 63 x 100k (~6.3M) gas, far above what a request
+    ///         costs, so an out-of-gas reverts the whole reveal instead.
+    uint256 public constant SUBMISSION_FAILURE_MIN_GAS = ClaimRules.SUBMISSION_FAILURE_MIN_GAS;
+
     // ------------------------------------------------------------------
     //                               state
     // ------------------------------------------------------------------
 
     IVerdiktaAggregator public immutable verdikta;
+
+    /// @notice The read-only extension (StakeAttestationLens): derived views served at this
+    ///         address through the fallback. Created once, in the constructor; no setter.
+    StakeAttestationLens public immutable lens;
+
+    /// @notice The EvaluationWallet every request's wallet is an EIP-1167 clone of. Created once,
+    ///         in the constructor. Informational: nothing operates the implementation itself.
+    EvaluationWallet public immutable walletImplementation;
 
     /// @notice The fee a maker pays per LISTING_PERIOD, charged by the opening fund() and by
     ///         renew(). Owner-set; a change applies from the next fund or renew.
@@ -204,6 +296,15 @@ contract StakeAttestation is Ownable2Step {
     /// @notice Pull-payment ledger: listing fees for their recipient, and any payment whose
     ///         direct delivery failed. Claimed with withdraw().
     mapping(address => uint256) public withdrawable;
+
+    /// @notice Claim ids run 1..claimCount across all listings, in commit order.
+    uint256 public claimCount;
+
+    mapping(uint256 => Claim) internal _claims;
+
+    /// @dev listingId => the claims judged valid there, in settlement order (pushed by P2c). The
+    ///      most recent MAX_PRIOR_FINDINGS ride along in every later request (design §13.3).
+    mapping(uint256 => uint256[]) internal _validFindings;
 
     // Non-reentrancy guard (1 = unlocked, 2 = locked), as BountyEscrow's.
     uint256 private _lock = 1;
@@ -254,6 +355,41 @@ contract StakeAttestation is Ownable2Step {
     /// @notice An address claimed its pull-ledger balance.
     event Withdrawn(address indexed account, uint256 amount);
 
+    /// @notice A hunter committed: two hashes, the bond and the prepay; nothing readable (E5).
+    event Committed(
+        uint256 indexed claimId,
+        uint256 indexed listingId,
+        address indexed hunter,
+        bytes32 archiveHash,
+        bytes32 ciphertextSha256,
+        uint256 bondWei,
+        uint256 prepayWei
+    );
+
+    /// @notice The hunter published the encrypted archive's CID; the fix window runs to fixWindowEnd.
+    event Disclosed(uint256 indexed claimId, uint256 indexed listingId, string ciphertextCid, uint64 fixWindowEnd);
+
+    /// @notice The maker flagged the disclosure as bad (a statement on the record, not a verdict).
+    event Flagged(uint256 indexed claimId, uint256 indexed listingId);
+
+    /// @notice The maker waived the fix window: the claim is revealable now.
+    event Released(uint256 indexed claimId, uint256 indexed listingId);
+
+    /// @notice The stake rolled to a fixed version: every disclosed pending claim is revealable.
+    event RolledForward(uint256 indexed listingId, uint256 indexed successorListingId, bytes32 indexed successorArtifactHash);
+
+    /// @notice The hunter revealed: the plaintext archive and the two keys are public from here.
+    event Revealed(uint256 indexed claimId, uint256 indexed listingId, string bcid, bytes16 contentKey, bytes32 ephemeralKey);
+
+    /// @notice The evaluation request went out through `wallet` with `prepayWei`.
+    event EvaluationRequested(uint256 indexed claimId, address wallet, bytes32 requestId, uint256 prepayWei);
+
+    /// @notice The aggregator refused the request; the claim is RoundFailed and the prepay held.
+    event SubmissionFailed(uint256 indexed claimId, address wallet, bytes reason);
+
+    /// @notice The claim expired: its bond went to the maker and its prepay back to the hunter.
+    event Expired(uint256 indexed claimId, uint256 indexed listingId, Expiry reason);
+
     // ------------------------------------------------------------------
 
     constructor(
@@ -270,6 +406,10 @@ contract StakeAttestation is Ownable2Step {
         listingFeeWei = listingFeeWei_;
         emit FeeRecipientSet(address(0), feeRecipient_);
         emit ListingFeeSet(0, listingFeeWei_);
+        // Both creation codes live in this contract's initcode, not in the runtime bytecode
+        // that EIP-170 caps.
+        lens = new StakeAttestationLens(verdikta_);
+        walletImplementation = new EvaluationWallet(address(this), verdikta_);
     }
 
     modifier nonReentrant() {
@@ -444,6 +584,125 @@ contract StakeAttestation is Ownable2Step {
     }
 
     // ------------------------------------------------------------------
+    //                    claim lifecycle up to the request
+    // ------------------------------------------------------------------
+    // The bodies are in ClaimLogic (a linked library, for the size limit); each wrapper does the
+    // part that needs this contract's internals and documents the function.
+
+    /// @notice Commit a claim: the two commitments, the bond and the prepay (erratum E5). Nothing
+    ///         readable goes on-chain, so a maker who sees this transaction pending and lands a
+    ///         close or rollForward first learns nothing; the commit then reverts.
+    /// @param archiveHash      sha256 of the plaintext claim archive (design §8.5)
+    /// @param ciphertextSha256 sha256 of that archive encrypted to the listing's disclosure key
+    /// @dev msg.value must be at least bondWei plus the aggregator's live maxTotalFee for the
+    ///      listing's (clamped) oracle fee, which the lens quotes as commitPrice; everything above
+    ///      the bond is the prepay. The claim joins the tail of the listing's commit-order queue.
+    function commit(uint256 listingId, bytes32 archiveHash, bytes32 ciphertextSha256)
+        external payable nonReentrant returns (uint256 claimId)
+    {
+        require(acceptsCommits(listingId), "not accepting commits");
+        require(isAllowed(listingId, msg.sender), "not allowed");
+        claimId = ++claimCount;
+        ClaimLogic.commit(
+            _claims, _listings[listingId], verdikta, listingId, claimId, archiveHash, ciphertextSha256, msg.value
+        );
+    }
+
+    /// @notice Publish the encrypted archive's CID, within DISCLOSE_WINDOW of the commit
+    ///         (erratum E5). The fix window and the disclosure grace run from now. A claim
+    ///         disclosed after its listing rolled forward gets a full fix window of its own: the
+    ///         maker had not seen it when they rolled.
+    function disclose(uint256 claimId, string calldata ciphertextCid) external {
+        Claim storage c = _mustClaim(claimId);
+        require(_isValidCid(ciphertextCid), "bad ciphertextCid");
+        ClaimLogic.disclose(c, _listings[c.listingId], claimId, ciphertextCid);
+    }
+
+    /// @notice The maker says the disclosed copy does not decrypt or does not match the archive
+    ///         hash (design §14). Within disclosureGrace of the disclosure, once. A statement on
+    ///         the record, not a verdict: the claim proceeds, and the arbiters' disclosure check
+    ///         at reveal decides.
+    function flagBadDisclosure(uint256 claimId) external {
+        Claim storage c = _mustClaim(claimId);
+        ClaimLogic.flagBadDisclosure(c, _listings[c.listingId], claimId);
+    }
+
+    /// @notice The maker waives the rest of the fix window for a disclosed claim ("I believe
+    ///         this is invalid, reveal now"): it is revealable at once, and the record says
+    ///         released. Only inside the window, so the record never says released for a window
+    ///         that had already ended.
+    function release(uint256 claimId) external {
+        Claim storage c = _mustClaim(claimId);
+        ClaimLogic.release(c, _listings[c.listingId], claimId);
+    }
+
+    /// @notice Roll the stake forward to a fixed version (design §7.1): `successorListingId` is
+    ///         the maker's own listing of it, already Open (listed and funded on its own). This
+    ///         listing becomes Rolled: no new commits; every claim disclosed by now is revealable
+    ///         at once (ClaimRules.revealableAt reads rolledAt, so no claim is touched here); an
+    ///         undisclosed claim keeps its disclose deadline. The lineage links both ways.
+    function rollForward(uint256 listingId, uint256 successorListingId) external {
+        Listing storage l = _mustListing(listingId);
+        require(msg.sender == l.maker, "not maker");
+        require(l.state == ListingState.Open || l.state == ListingState.Depleted, "not rollable");
+        Listing storage s = _mustListing(successorListingId);
+        // Open and without a predecessor: never this listing, never one already in a lineage
+        // as a successor, never a Rolled one, so the lineage has no cycles.
+        require(
+            successorListingId != listingId && s.maker == msg.sender && s.state == ListingState.Open
+                && s.predecessor == 0,
+            "bad successor"
+        );
+        l.state = ListingState.Rolled;
+        l.successor = successorListingId;
+        l.rolledAt = uint64(block.timestamp);
+        s.predecessor = listingId;
+        emit RolledForward(listingId, successorListingId, s.artifactHash);
+    }
+
+    /// @notice Reveal a claim and submit its evaluation request. The hunter's, once the fix
+    ///         window has ended, every earlier claim on the listing is settled or expired, and
+    ///         the reveal window (decision D5) is still open.
+    /// @param bcid         the plaintext archive, pinned (its sha256 is archiveHash)
+    /// @param contentKey   age's 16-byte file key
+    /// @param ephemeralKey the 32-byte X25519 ephemeral secret
+    /// @dev Payable (erratum E3): msg.value tops the prepay up to the live maxTotalFee (the lens
+    ///      quotes it as revealTopUp); the whole prepay goes to the request and what the oracles
+    ///      do not spend comes back through the wallet's ethOwed. The contract alone composes
+    ///      the request (design §13.3, errata E1, E2): cids = [listingCid, bcid, up to
+    ///      MAX_PRIOR_FINDINGS prior valid bcids], addendum = the E1 disclosure line. It goes out
+    ///      through a fresh EvaluationWallet clone inside try/catch: if the aggregator refuses
+    ///      it, the reveal stands, the claim is RoundFailed and the prepay stays here (P2d).
+    function reveal(uint256 claimId, string calldata bcid, bytes16 contentKey, bytes32 ephemeralKey)
+        external payable nonReentrant
+    {
+        Claim storage c = _mustClaim(claimId);
+        require(_isValidCid(bcid), "bad bcid");
+        uint256 listingId = c.listingId;
+        ClaimLogic.reveal(
+            _claims, _listings[listingId], _validFindings[listingId], claimId, bcid, contentKey, ephemeralKey,
+            msg.value, verdikta, address(walletImplementation)
+        );
+    }
+
+    /// @notice Expire a claim nobody can advance any more. Anyone may call. Bond to the maker,
+    ///         prepay back to the hunter (the request never went out), recorded on the listing.
+    ///         - Undisclosed (erratum E5): from DISCLOSE_WINDOW after the commit. Not held back
+    ///           by earlier claims, so an undisclosed claim never blocks the queue for longer
+    ///           than the disclose window.
+    ///         - Unrevealed (design decision 15, decision D5): from revealWindow after the reveal
+    ///           clock started, which is max(revealableAt, when every earlier claim resolved).
+    ///           Reverts while an earlier claim is unresolved, so a claim never expires while
+    ///           commit order forbids its reveal.
+    function expire(uint256 claimId) external nonReentrant {
+        Claim storage c = _mustClaim(claimId);
+        Listing storage l = _listings[c.listingId];
+        (uint256 bond, uint256 prepay) = ClaimLogic.expire(_claims, l, claimId);
+        _payOrCredit(l.maker, bond);
+        _payOrCredit(c.hunter, prepay);
+    }
+
+    // ------------------------------------------------------------------
     //                 owner: the listing fee and its recipient only
     // ------------------------------------------------------------------
 
@@ -467,6 +726,12 @@ contract StakeAttestation is Ownable2Step {
 
     function getListing(uint256 listingId) external view returns (Listing memory) {
         return _mustListing(listingId);
+    }
+
+    /// @notice A claim as stored. Its state as of now (Revealable included) and its deadlines
+    ///         are the lens's claimState and claimTimes.
+    function getClaim(uint256 claimId) external view returns (Claim memory) {
+        return _mustClaim(claimId);
     }
 
     /// @notice Every listing of an artifact hash, in listing order. listingsByHashPage pages it.
@@ -515,7 +780,7 @@ contract StakeAttestation is Ownable2Step {
     }
 
     /// @notice Whether `hunter` may commit to the listing: everyone when the allowlist is empty.
-    function isAllowed(uint256 listingId, address hunter) external view returns (bool) {
+    function isAllowed(uint256 listingId, address hunter) public view returns (bool) {
         Listing storage l = _mustListing(listingId);
         return l.allowlist.length == 0 || _allowed[listingId][hunter];
     }
@@ -538,6 +803,11 @@ contract StakeAttestation is Ownable2Step {
     function _mustListing(uint256 listingId) internal view returns (Listing storage) {
         require(listingId != 0 && listingId <= listingCount, "bad listingId");
         return _listings[listingId];
+    }
+
+    function _mustClaim(uint256 claimId) internal view returns (Claim storage) {
+        require(claimId != 0 && claimId <= claimCount, "bad claimId");
+        return _claims[claimId];
     }
 
     /// @dev Credit a listing fee to the CURRENT fee recipient's pull balance. Never escrow.
@@ -661,8 +931,8 @@ contract StakeAttestation is Ownable2Step {
 
     /// @dev A full commit hash in lowercase hex: 40 characters (SHA-1) or 64 (SHA-256). One
     ///      spelling per commit, so one commit has one record key.
-    function _isValidCommit(string calldata commit) private pure returns (bool) {
-        bytes calldata b = bytes(commit);
+    function _isValidCommit(string calldata hexHash) private pure returns (bool) {
+        bytes calldata b = bytes(hexHash);
         uint256 len = b.length;
         if (len != 40 && len != 64) return false;
         for (uint256 i = 0; i < len; ) {
@@ -674,5 +944,45 @@ contract StakeAttestation is Ownable2Step {
             }
         }
         return true;
+    }
+
+    // ------------------------------------------------------------------
+    //                    read-only extension (the lens)
+    // ------------------------------------------------------------------
+
+    /// @dev As BountyEscrow's: any selector this contract does not implement is answered by the
+    ///      lens AT THIS ADDRESS, so callers keep one address and one merged ABI. A STATICCALL
+    ///      into lensDelegate(), which delegatecalls the lens; the static frame makes the EVM
+    ///      reject any state change inside the lens, so this is never a write path. Return and
+    ///      revert data are copied back verbatim. Not a proxy: `lens` is an immutable with no
+    ///      setter. Non-payable, and there is no receive(): plain ETH is refused.
+    fallback() external {
+        (bool ok, bytes memory ret) = address(this).staticcall(
+            abi.encodeWithSelector(this.lensDelegate.selector, msg.data)
+        );
+        // memory-safe: only reads `ret` (Solidity-allocated) and terminates.
+        assembly ("memory-safe") {
+            let p := add(ret, 32)
+            let n := mload(ret)
+            if iszero(ok) { revert(p, n) }
+            return(p, n)
+        }
+    }
+
+    /// @notice Plumbing for the fallback, not for external use: reverts "self only" for every
+    ///         caller but this contract, and is reached only inside a static frame, so despite
+    ///         its non-view signature it cannot change state.
+    function lensDelegate(bytes calldata data) external {
+        require(msg.sender == address(this), "self only");
+        address target = address(lens);
+        // memory-safe: scratch at the free memory pointer, and the block terminates.
+        assembly ("memory-safe") {
+            let p := mload(0x40)
+            calldatacopy(p, data.offset, data.length)
+            let ok := delegatecall(gas(), target, p, data.length, 0, 0)
+            returndatacopy(p, 0, returndatasize())
+            if iszero(ok) { revert(p, returndatasize()) }
+            return(p, returndatasize())
+        }
     }
 }

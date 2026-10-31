@@ -13,9 +13,10 @@ Build plan: [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md), the graph of one-PR node
 this application is built from; its errata, assumptions and decisions override
 the design where they differ.
 
-**Status:** scaffold, plus the listing half of the contract. The packages below
-build and test; the claim half of the contract, the site's flows and the hunter
-commands arrive with the nodes named in the plan.
+**Status:** scaffold, plus the contract's listing half and its claim lifecycle up
+to the evaluation request. The packages below build and test; settlement,
+disputes, late claims, the site's flows and the hunter commands arrive with the
+nodes named in the plan.
 
 ## A separate site
 
@@ -52,7 +53,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 
 | Folder | What | Test |
 |---|---|---|
-| `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage), `StakeAttestation` (listing half, P2a; the claim half arrives in P2b–P2e), the `IVerdiktaAggregator` interface and the mock aggregator. | `npx hardhat test` |
+| `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage), `StakeAttestation` (listings, P2a; claims up to the request, P2b; settlement, disputes and late claims arrive in P2c–P2e) with its `ClaimLogic` library, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface and the mock aggregator. | `npx hardhat test` |
 | `server/` | Express API; `GET /health` for now. Port 5009. | `npm test` |
 | `client/` | Vite + React site. Port 5176. | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI: `check`, `commit`, `reveal`, `status`, `claim` arrive in P5. | `npm test` |
@@ -109,6 +110,37 @@ escrow once no claim is pending and nothing is owed.
   part of the escrow.
 - **Payments** go through a gas-capped send that falls back to the pull
   ledger, as in `BountyEscrow`.
+
+## The contract: claims
+
+A hunter calls `commit(listingId, archiveHash, ciphertextSha256)` with the
+listing's bond plus at least the aggregator's live `maxTotalFee` (the prepay):
+two hashes, nothing readable (erratum E5). Within `DISCLOSE_WINDOW` (1 hour)
+the hunter calls `disclose(claimId, ciphertextCid)`; the fix window and the
+disclosure grace run from then. The maker may `flagBadDisclosure` within the
+grace, `release` the claim (revealable now), or `rollForward(listingId,
+successorListingId)` to a fixed version they have listed and funded, which ends
+the window of every claim disclosed so far. Once the window is over the hunter
+calls `reveal(claimId, bcid, contentKey, ephemeralKey)`, paying any rise in the
+fee (erratum E3), and the contract sends the evaluation request it composes
+itself: the listing archive, the claim and up to 8 prior valid findings, and
+the one-line disclosure addendum of erratum E1.
+
+- **Commit order** (decision D5). The unresolved claims of a listing form a
+  queue in commit order; a claim reveals only at its head, and its reveal
+  window (`revealWindow`) runs from the later of its fix window's end and the
+  moment the claim before it resolved. `expire` takes a claim that missed its
+  window (bond to the maker, prepay back), and an undisclosed claim after the
+  disclose window whatever its place in the queue.
+- **Requests** go out through a fresh `EvaluationWallet` clone each, as in
+  `BountyEscrow`, so the aggregator's refund of unspent prepay belongs to one
+  request. A request the aggregator refuses leaves the claim `RoundFailed`
+  with its prepay held.
+- **Size.** The claim functions' bodies are the linked library `ClaimLogic`
+  (deploy it and link it before `StakeAttestation`), and the derived views
+  (`claimState`, `claimTimes`, `commitPrice`, `revealTopUp`) are in
+  `StakeAttestationLens`, answered at the contract's address through its
+  fallback. Their time and fee rules are one library, `ClaimRules`.
 
 ## The mock aggregator
 

@@ -15,7 +15,9 @@ import {IVerdiktaAggregator} from "../interfaces/IVerdiktaAggregator.sol";
 ///           ethOwed at settlement, with withdrawEth. There is no receive(): plain ETH reverts.
 ///         - Fund-from-credit. A request draws min(ethOwed[caller], required) first and
 ///           msg.value must cover the rest. Everything received (credit + msg.value) belongs to
-///           the round; the part the oracles do not spend is credited back at settlement.
+///           the round; the part the oracles do not spend is credited back at settlement. The
+///           oracles never spend more than `required` (maxTotalFee at request time), so funding
+///           above it always comes back.
 ///         - The same input limits, keeper selection checks, pause gate, reentrancy guard,
 ///           request-id construction, custom errors and events.
 ///         - Settlement by a scripted result (the round finalizing once enough reveals arrive)
@@ -25,7 +27,8 @@ import {IVerdiktaAggregator} from "../interfaces/IVerdiktaAggregator.sol";
 /// @dev    Test controls stand in for the owner-only setters and for the oracles:
 ///         setMaxOracleFee, setResponseTimeout, setPaused (owner-only on the real contract),
 ///         setFeeMultiplier (the real multiplier is K + B*P from its config), setRefundAmount
-///         (how much of a round's ETH the oracles leave unspent), scriptResult, scriptLateResult.
+///         (how much of a round's worst-case cost the oracles leave unspent), scriptResult,
+///         scriptLateResult.
 ///         A scripted vector must have a length a real round can produce (2..maxLikelihoodLength,
 ///         the real reveal bounds); its values are free, so malformed vectors can be tested.
 contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausable {
@@ -62,14 +65,15 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     uint256 public override maxOracleFee = 0.0004 ether; // live value on both networks
     uint256 public override responseTimeoutSeconds = 300;
     uint256 public feeMultiplier = 3;                    // stands in for K + B*P
-    uint256 public refundAmount;                         // per round, capped at what it received
+    uint256 public refundAmount;                         // unspent part of `required`, per round
 
     mapping(address => uint256) public override ethOwed;
 
     struct Round {
         address requester;
         uint256 startTimestamp; // 0 = unknown id
-        uint256 ethReceived;    // fromCredit + msg.value
+        uint256 required;       // maxTotalFee at request time: the most the oracles can spend
+        uint256 ethReceived;    // fromCredit + msg.value, at least `required`
         bool isComplete;
         bool failed;
         uint256[] likelihoods;
@@ -176,12 +180,16 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         Round storage r = _rounds[aggId];
         r.requester = msg.sender;
         r.startTimestamp = block.timestamp;
+        r.required = required;
         r.ethReceived = fromCredit + msg.value;
         emit RequestFunded(aggId, msg.sender, fromCredit, msg.value);
 
         // ReputationKeeper.selectOracles' checks, applied to the clamped fee.
         require(_estimatedBaseCost < effMaxFee, "Base cost must be less than max fee");
         require(_maxFeeBasedScalingFactor >= 1, "Max scaling factor must be at least 1");
+        // The keeper scores each eligible oracle with weight (1000 - alpha), checked: an alpha
+        // above 1000 reverts with panic 0x11.
+        _qualityWeight(_alpha);
 
         requestParams[aggId] = RequestParams(
             addendumText, _alpha, _maxFee, _estimatedBaseCost, _maxFeeBasedScalingFactor, _requestedClass
@@ -282,6 +290,10 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         if (r.isComplete) revert AggregationComplete();
     }
 
+    function _qualityWeight(uint256 alpha) private pure returns (uint256) {
+        return 1000 - alpha;
+    }
+
     function _checkReachable(uint256 length) private view {
         if (length < MIN_LIKELIHOOD_LENGTH || length > maxLikelihoodLength) revert UnreachableResult(length);
     }
@@ -292,9 +304,12 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         emit FulfillAIEvaluation(aggId, r.likelihoods, r.justificationCids);
     }
 
-    /// @dev The unspent part of the round is credited, never pushed: the requester pulls it.
+    /// @dev The real refund is ethReceived - base - bonus, and base + bonus <= required. The
+    ///      oracles here spend required - refundAmount (at least 0), so the refund is never less
+    ///      than ethReceived - required. It is credited, never pushed: the requester pulls it.
     function _refundRequester(bytes32 aggId, Round storage r) private {
-        uint256 refund = refundAmount < r.ethReceived ? refundAmount : r.ethReceived;
+        uint256 unspent = refundAmount < r.required ? refundAmount : r.required;
+        uint256 refund = r.ethReceived - (r.required - unspent);
         if (refund > 0) {
             ethOwed[r.requester] += refund;
             emit RequesterRefunded(aggId, r.requester, refund);

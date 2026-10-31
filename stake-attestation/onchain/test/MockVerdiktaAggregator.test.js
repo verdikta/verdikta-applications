@@ -104,8 +104,9 @@ describe("MockVerdiktaAggregator", function () {
       expect(cids).to.equal("QmJustification");
       expect(exists).to.equal(true);
       // Refunds arrive as pull credit, never pushed. The second request drew the first refund
-      // (fund-from-credit), so what is owed now is the second round's refund.
-      expect(await aggregator.ethOwed(await requester.getAddress())).to.equal(required / 2n);
+      // (fund-from-credit) on top of its msg.value, and that excess came back with the second
+      // round's unspent half.
+      expect(await aggregator.ethOwed(await requester.getAddress())).to.equal(required);
       await requester.withdraw();
       expect(await aggregator.ethOwed(await requester.getAddress())).to.equal(0n);
       expect(await requester.unexpectedCalls()).to.equal(0n);
@@ -146,6 +147,21 @@ describe("MockVerdiktaAggregator", function () {
       await request(aggregator, hunter, args({ addendum: "a".repeat(1000) }));
       await expect(request(aggregator, hunter, args({ addendum: "a".repeat(1001) })))
         .to.be.revertedWithCustomError(aggregator, "AddendumTooLong");
+    });
+
+    it("rejects alpha above 1000 as the keeper's scoring does (panic 0x11), opening no round", async function () {
+      const { aggregator, hunter } = await deploy();
+      const required = await aggregator.maxTotalFee(MAX_ORACLE_FEE);
+      // Credit to show a rejected request draws none of it.
+      await aggregator.setRefundAmount(required);
+      await aggregator.scriptResult(await request(aggregator, hunter), RESULT, "QmJ");
+      expect(await aggregator.ethOwed(hunter.address)).to.equal(required);
+
+      await expect(request(aggregator, hunter, args({ alpha: 1001n }), 0n))
+        .to.be.revertedWithPanic(0x11);
+      expect(await aggregator.ethOwed(hunter.address)).to.equal(required);
+      await request(aggregator, hunter, args({ alpha: 1000n }), 0n);
+      expect(await aggregator.ethOwed(hunter.address)).to.equal(0n);
     });
 
     it("applies the keeper's selection checks on base cost and scaling factor", async function () {
@@ -240,13 +256,30 @@ describe("MockVerdiktaAggregator", function () {
       await aggregator.scriptResult(first, RESULT, "QmJ");
       expect(await aggregator.ethOwed(hunter.address)).to.equal(required);
 
+      // The oracles spend the whole worst case; the overfunding still comes back.
+      await aggregator.setRefundAmount(0);
       const id = await request(aggregator, hunter, args(), required);
       expect(await aggregator.ethOwed(hunter.address)).to.equal(0n);
       expect(await aggregator.ethReceived(id)).to.equal(required * 2n);
-      // The round spends `required`; the rest comes back as credit at settlement.
-      await aggregator.setRefundAmount(required);
-      await aggregator.scriptResult(id, RESULT, "QmJ");
+      await expect(aggregator.scriptResult(id, RESULT, "QmJ"))
+        .to.emit(aggregator, "RequesterRefunded").withArgs(id, hunter.address, required);
       expect(await aggregator.ethOwed(hunter.address)).to.equal(required);
+    });
+
+    it("refunds msg.value above maxTotalFee even when the round spends its whole worst case", async function () {
+      const { aggregator, hunter } = await deploy();
+      const required = await aggregator.maxTotalFee(MAX_ORACLE_FEE);
+      expect(await aggregator.refundAmount()).to.equal(0n);
+      const fulfilled = await request(aggregator, hunter, args(), required * 2n);
+      await aggregator.scriptResult(fulfilled, RESULT, "QmJ");
+      expect(await aggregator.ethOwed(hunter.address)).to.equal(required);
+
+      // On the timeout path too. The request draws the credit first, then the overpaid value.
+      const timedOut = await request(aggregator, hunter, args(), required + 7n);
+      expect(await aggregator.ethReceived(timedOut)).to.equal(required * 2n + 7n);
+      await time.increase(300);
+      await aggregator.finalizeEvaluationTimeout(timedOut);
+      expect(await aggregator.ethOwed(hunter.address)).to.equal(required + 7n);
     });
 
     it("withdrawEth pays the caller's credit and reverts NothingOwed on zero", async function () {

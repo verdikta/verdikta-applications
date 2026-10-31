@@ -566,14 +566,29 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
       expect(await sa.acceptsCommits(id)).to.equal(false);
     });
 
-    it("refuses Closed and Rolled listings", async function () {
-      const { harness, maker } = await loadFixture(deploy);
+    it("tops up a Rolled listing for the claims still settling against it; it stays Rolled", async function () {
+      const { harness, maker, hunter } = await loadFixture(deploy);
       const a = await listAs(harness, maker);
       await openAs(harness, maker, a);
+      await harness.harnessPayFromEscrow(a, hunter.address, TOP);
       await harness.harnessSetState(a, State.Rolled);
-      await expect(harness.connect(maker).fund(a, 0n, { value: 1n })).to.be.revertedWith("not fundable");
-      await harness.connect(maker).close(a);
-      await expect(harness.connect(maker).fund(a, 0n, { value: 1n })).to.be.revertedWith("not fundable");
+      const topUp = harness.connect(maker).fund(a, 0n, { value: 2n * TOP });
+      await expect(topUp).to.emit(harness, "Funded").withArgs(a, maker.address, 2n * TOP, 2n * TOP);
+      await expect(topUp).to.not.emit(harness, "Reopened");
+      const l = await harness.getListing(a);
+      expect(l.state).to.equal(State.Rolled);
+      expect(l.escrowWei).to.equal(2n * TOP);
+      expect(await harness.acceptsCommits(a)).to.equal(false);
+      await expect(harness.connect(maker).fund(a, LISTING_FEE, { value: 1n })).to.be.revertedWith("fee changed");
+    });
+
+    it("refuses a Closed listing", async function () {
+      const { sa, maker } = await loadFixture(deploy);
+      const a = await listAs(sa, maker);
+      await openAs(sa, maker, a);
+      await sa.connect(maker).close(a);
+      await expect(sa.connect(maker).fund(a, 0n, { value: 1n })).to.be.revertedWith("not fundable");
+      await expect(sa.connect(maker).fund(a, LISTING_FEE, { value: LISTING_FEE + TOP })).to.be.revertedWith("not fundable");
     });
 
     it("reopens a Depleted listing once escrow is back at awards[CRITICAL] and nothing is owed", async function () {
@@ -814,11 +829,15 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
       await expect(sa.connect(owner).setFeeRecipient(sa.target)).to.be.revertedWith("bad fee recipient");
     });
 
-    it("the constructor refuses a zero aggregator or fee recipient", async function () {
+    it("the constructor refuses a zero aggregator, a zero fee recipient or itself as the recipient", async function () {
       const { owner, aggregator } = await loadFixture(deploy);
       const SA = await ethers.getContractFactory("StakeAttestation");
       await expect(SA.deploy(ZeroAddress, owner.address, owner.address, 0n)).to.be.revertedWith("zero aggregator");
       await expect(SA.deploy(aggregator.target, owner.address, ZeroAddress, 0n)).to.be.revertedWith("bad fee recipient");
+      // The address the next deployment will get: fees credited there could never be withdrawn.
+      const nonce = await ethers.provider.getTransactionCount(owner.address);
+      const predicted = ethers.getCreateAddress({ from: owner.address, nonce });
+      await expect(SA.connect(owner).deploy(aggregator.target, owner.address, predicted, 0n)).to.be.revertedWith("bad fee recipient");
     });
 
     it("only the owner sets the fee and the recipient", async function () {

@@ -263,7 +263,8 @@ contract StakeAttestation is Ownable2Step {
         uint256 listingFeeWei_
     ) Ownable(initialOwner) {
         require(address(verdikta_) != address(0), "zero aggregator");
-        require(feeRecipient_ != address(0), "bad fee recipient");
+        // address(this) would credit every fee to a balance nobody can withdraw.
+        require(feeRecipient_ != address(0) && feeRecipient_ != address(this), "bad fee recipient");
         verdikta = verdikta_;
         feeRecipient = feeRecipient_;
         listingFeeWei = listingFeeWei_;
@@ -353,9 +354,10 @@ contract StakeAttestation is Ownable2Step {
 
     /// @notice Add escrow. On a Listed listing this is the OPENING fund: msg.value pays the
     ///         listing fee and escrows the rest, which must reach awards[CRITICAL]; the listing
-    ///         opens for LISTING_PERIOD. On an Open or Depleted listing it is a top-up with no
-    ///         fee; a Depleted listing reopens once its escrow is back at awards[CRITICAL] and
-    ///         nothing is owed.
+    ///         opens for LISTING_PERIOD. On an Open, Depleted or Rolled listing it is a top-up
+    ///         with no fee: a Depleted listing reopens once its escrow is back at
+    ///         awards[CRITICAL] and nothing is owed; a Rolled one stays Rolled (no new commits)
+    ///         and the escrow pays the claims still settling against it.
     /// @param expectedFeeWei the fee the caller expects this call to charge: feeDue(listingId),
     ///        i.e. the listing fee for an opening fund and 0 for a top-up. A mismatch reverts,
     ///        so a fee change landing first can never take part of the escrow.
@@ -363,10 +365,7 @@ contract StakeAttestation is Ownable2Step {
         Listing storage l = _mustListing(listingId);
         require(msg.sender == l.maker, "not maker");
         ListingState s = l.state;
-        require(
-            s == ListingState.Listed || s == ListingState.Open || s == ListingState.Depleted,
-            "not fundable"
-        );
+        require(s != ListingState.Closed, "not fundable");
         uint256 fee = s == ListingState.Listed ? listingFeeWei : 0;
         require(expectedFeeWei == fee, "fee changed");
 

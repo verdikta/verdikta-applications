@@ -951,17 +951,24 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
       await expect(sa.connect(other).withdraw()).to.be.revertedWith("nothing to withdraw");
     });
 
-    it("re-entering from a payment is refused and the payment still lands", async function () {
-      const { sa } = await loadFixture(deploy);
-      const r = await (await ethers.getContractFactory("MockReentrantRecipient")).deploy();
-      const id = await listVia(sa, r);
-      await openVia(sa, r, id);
-      await r.setAttack(sa.target, sa.interface.encodeFunctionData("close", [id]));
-      await expect(closeVia(sa, r, id)).to.changeEtherBalance(r, TOP);
-      expect(await r.attempted()).to.equal(true);
-      expect(await r.attackOk()).to.equal(false);
-      expect(await r.attackReasonHash()).to.equal(keccak256(revertReason("reentrant")));
-    });
+    for (const entry of ["close", "fund", "renew", "withdraw"]) {
+      it(`re-entering ${entry}() from a close-out payment is refused and the payment still lands`, async function () {
+        const { sa } = await loadFixture(deploy);
+        const r = await (await ethers.getContractFactory("MockReentrantRecipient")).deploy();
+        const id = await listVia(sa, r);
+        await openVia(sa, r, id);
+        // A second Open listing of the same maker, so the re-entrant call is otherwise valid.
+        const other = await listVia(sa, r, params({ artifact: artifact({ baseCommit: COMMIT_SHA256 }) }));
+        await openVia(sa, r, other);
+        const args = { close: [other], fund: [other, 0n], renew: [other], withdraw: [] }[entry];
+        await r.setAttack(sa.target, sa.interface.encodeFunctionData(entry, args));
+        await expect(closeVia(sa, r, id)).to.changeEtherBalance(r, TOP);
+        expect(await r.attempted()).to.equal(true);
+        expect(await r.attackOk()).to.equal(false);
+        expect(await r.attackReasonHash()).to.equal(keccak256(revertReason("reentrant")));
+        expect((await sa.getListing(other)).state).to.equal(State.Open);
+      });
+    }
 
     it("re-entering withdraw() from withdraw() is refused and the balance is paid once", async function () {
       const { sa, owner, maker } = await loadFixture(deploy);

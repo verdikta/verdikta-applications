@@ -13,8 +13,9 @@ Build plan: [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md), the graph of one-PR node
 this application is built from; its errata, assumptions and decisions override
 the design where they differ.
 
-**Status:** scaffold. The packages below build and test; the contract, the
-site's flows and the hunter commands arrive with the nodes named in the plan.
+**Status:** scaffold, plus the listing half of the contract. The packages below
+build and test; the claim half of the contract, the site's flows and the hunter
+commands arrive with the nodes named in the plan.
 
 ## A separate site
 
@@ -51,7 +52,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 
 | Folder | What | Test |
 |---|---|---|
-| `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage), the `IVerdiktaAggregator` interface and the mock aggregator. `StakeAttestation` arrives in P2a–P2e. | `npx hardhat test` |
+| `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage), `StakeAttestation` (listing half, P2a; the claim half arrives in P2b–P2e), the `IVerdiktaAggregator` interface and the mock aggregator. | `npx hardhat test` |
 | `server/` | Express API; `GET /health` for now. Port 5009. | `npm test` |
 | `client/` | Vite + React site. Port 5176. | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI: `check`, `commit`, `reveal`, `status`, `claim` arrive in P5. | `npm test` |
@@ -78,6 +79,36 @@ cd stake-attestation/shared && npm ci && npm test
 solidity-coverage. The Playwright smoke test builds the client and serves it
 with `vite preview`. The shared package's scope test compares against
 `origin/claude/stake-attestation` (or `SA_BASE_REF`), so fetch it first.
+
+## The contract: listings
+
+`onchain/contracts/StakeAttestation.sol` (design §13; the build plan's
+decisions override it). A maker calls `list(params, listingCid, disputeCid,
+knownIssueIds)`, then `fund(listingId, feeDue(listingId))` with the listing fee
+plus at least the `CRITICAL` award: the listing opens for 30 days and accepts
+commits until `fundedUntil`. `fund(listingId, 0)` tops the escrow up, `renew`
+buys another 30 days for exactly the current fee, and `close` returns the
+escrow once no claim is pending and nothing is owed.
+
+- **Record key.** `artifactHash` is `keccak256(abi.encode(uint8 kind, repo,
+  baseCommit))` for a repository (kind 0) and `keccak256(abi.encode(uint8 kind,
+  repo, baseCommit, uint64 chainId, address))` for a deployed contract (kind 1);
+  `artifactHashOf` computes it. `baseCommit` is 40 or 64 lowercase hex and
+  `repo` an `https://` URL, so one commit has one key. `listingsByHash` lists
+  every listing of a hash; a maker has at most one listing per hash that is not
+  closed.
+- **Bounds** (decision D8): `revealWindow` 72 h to 90 d, `disputeWindow` 24 h
+  to 90 d, `fixWindow` 0 to 90 d, `disclosureGrace` at most `fixWindow`. Awards
+  never decrease with severity and every class from `lowestClassCounted` up
+  pays more than 0. The oracle settings are checked as `BountyEscrow`'s
+  `createBounty` checks them, for the claim fee and the dispute fee.
+- **Fees and the owner.** The listing fee accrues to the fee recipient's pull
+  balance (`withdraw`), never to the escrow. The owner can set the fee and the
+  recipient, both applying from the next fund or renew, and nothing else; the
+  opening `fund` takes the fee the maker expects, so a fee change cannot take
+  part of the escrow.
+- **Payments** go through a gas-capped send that falls back to the pull
+  ledger, as in `BountyEscrow`.
 
 ## The mock aggregator
 

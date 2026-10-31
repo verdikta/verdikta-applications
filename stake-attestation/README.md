@@ -115,9 +115,13 @@ escrow once no claim is pending and nothing is owed.
 
 A hunter calls `commit(listingId, archiveHash, ciphertextSha256)` with the
 listing's bond plus at least the aggregator's live `maxTotalFee` (the prepay):
-two hashes, nothing readable (erratum E5). Within `DISCLOSE_WINDOW` (1 hour)
-the hunter calls `disclose(claimId, ciphertextCid)`; the fix window and the
-disclosure grace run from then. The maker may `flagBadDisclosure` within the
+two hashes, nothing readable (erratum E5). **Only once the commit is mined** does
+the hunter pin the ciphertext, then call `disclose(claimId, ciphertextCid)`
+within `DISCLOSE_WINDOW` (1 hour); the fix window and the disclosure grace run
+from then. The order matters: a small raw IPFS file's CID follows from its
+sha256, so a ciphertext pinned before the commit could be fetched by a maker who
+front-runs the commit with `close` or `rollForward`, and the commit would then
+revert. The maker may `flagBadDisclosure` within the
 grace, `release` the claim (revealable now), or `rollForward(listingId,
 successorListingId)` to a fixed version they have listed and funded, which ends
 the window of every claim disclosed so far. Once the window is over the hunter
@@ -134,8 +138,11 @@ the one-line disclosure addendum of erratum E1.
   disclose window whatever its place in the queue.
 - **Requests** go out through a fresh `EvaluationWallet` clone each, as in
   `BountyEscrow`, so the aggregator's refund of unspent prepay belongs to one
-  request. A request the aggregator refuses leaves the claim `RoundFailed`
-  with its prepay held.
+  request. Each is sent with exactly `SUBMISSION_GAS` (10M): a reveal that
+  cannot forward all of it reverts, so a reveal's gas limit is about 10.3M
+  (only the gas used is paid). A request the aggregator refuses leaves the
+  claim `RoundFailed` with its prepay held; with a fixed budget that is the
+  aggregator's answer, never the caller's choice of gas.
 - **Size.** The claim functions' bodies are the linked library `ClaimLogic`
   (deploy it and link it before `StakeAttestation`), and the derived views
   (`claimState`, `claimTimes`, `commitPrice`, `revealTopUp`) are in

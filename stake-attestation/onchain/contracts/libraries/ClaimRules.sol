@@ -13,10 +13,15 @@ library ClaimRules {
 
     /// @notice Program constants (StakeAttestation re-exports each as a public constant, where
     ///         they are documented): erratum E5's disclose window, erratum E2's cap on prior
-    ///         findings per request, and the gas a failed submission must leave.
+    ///         findings per request, the gas every request is sent with, and the gas a reveal
+    ///         must hold before sending it.
     uint256 internal constant DISCLOSE_WINDOW = 1 hours;
     uint256 internal constant MAX_PRIOR_FINDINGS = 8;
-    uint256 internal constant SUBMISSION_FAILURE_MIN_GAS = 100_000;
+    uint256 internal constant SUBMISSION_GAS = 10_000_000;
+    /// @dev SUBMISSION_GAS reaches the callee only if the CALL has SUBMISSION_GAS * 64 / 63
+    ///      available (EIP-150); the extra 100k pays for encoding the arguments, the CALL itself
+    ///      and finishing either branch afterwards.
+    uint256 internal constant SUBMISSION_GAS_NEEDED = SUBMISSION_GAS + SUBMISSION_GAS / 63 + 100_000;
 
     /// @notice When a claim's fix window ends (design §7.1, erratum E5).
     /// @param disclosedAt        0 while undisclosed (then NEVER)

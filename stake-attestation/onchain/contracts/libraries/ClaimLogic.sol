@@ -150,9 +150,14 @@ library ClaimLogic {
 
         // The arguments are built before the call, outside the try: a failure composing them
         // reverts the reveal; only the aggregator's refusal is caught.
-        try EvaluationWallet(payable(wallet)).startEvaluation{value: prepay}(
-            _requestCids(claims, l, prior, bcid),
-            _disclosureLine(c, contentKey, ephemeralKey),
+        string[] memory cids = _requestCids(claims, l, prior, bcid);
+        string memory addendum = _disclosureLine(c, contentKey, ephemeralKey);
+        // The request gets exactly SUBMISSION_GAS, so whether it fails cannot depend on the
+        // caller's gas limit (see StakeAttestation.SUBMISSION_GAS).
+        require(gasleft() >= ClaimRules.SUBMISSION_GAS_NEEDED, "gas below SUBMISSION_GAS_NEEDED");
+        try EvaluationWallet(payable(wallet)).startEvaluation{value: prepay, gas: ClaimRules.SUBMISSION_GAS}(
+            cids,
+            addendum,
             o.alpha,
             o.maxOracleFee,
             o.estimatedBaseCost,
@@ -163,8 +168,6 @@ library ClaimLogic {
             c.state = StakeAttestation.ClaimState.Revealed;
             emit StakeAttestation.EvaluationRequested(claimId, wallet, requestId, prepay);
         } catch (bytes memory reason) {
-            // See StakeAttestation.SUBMISSION_FAILURE_MIN_GAS: an out-of-gas is not a refusal.
-            require(gasleft() >= ClaimRules.SUBMISSION_FAILURE_MIN_GAS, "submission out of gas");
             c.state = StakeAttestation.ClaimState.RoundFailed;
             emit StakeAttestation.SubmissionFailed(claimId, wallet, reason);
         }

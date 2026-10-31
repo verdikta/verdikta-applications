@@ -908,30 +908,57 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       await expect(sa.expire(claimId)).to.be.revertedWith("not committed");
     });
 
-    it("a reveal sent with too little gas for the submission reverts instead of entering the failed-round state", async function () {
-      const { sa, maker, hunter } = await loadFixture(deploy);
-      expect(await sa.SUBMISSION_FAILURE_MIN_GAS()).to.equal(100_000n);
+    it("the request gets exactly SUBMISSION_GAS: whatever gas a reveal brings, a costly aggregator never leaves it RoundFailed", async function () {
+      // Regression (review R1-F1): with the budget forwarded as "all but 1/64", an aggregator
+      // running out of gas several frames down returned enough reserve gas to pass a floor
+      // check, so an underfunded reveal could enter RoundFailed.
+      const { sa, aggregator, maker, hunter } = await loadFixture(deploy);
+      const SUBMISSION_GAS = 10_000_000n;
+      expect(await sa.SUBMISSION_GAS()).to.equal(SUBMISSION_GAS);
+      expect(await sa.SUBMISSION_GAS_NEEDED()).to.equal(SUBMISSION_GAS + SUBMISSION_GAS / 63n + 100_000n);
       const id = await openListing(sa, maker, params({ fixWindow: 0n, disclosureGrace: 0n }));
       const { claimId } = await claimAs(sa, hunter, id);
+      await aggregator.setRequestGasCost(3_000_000n); // a keeper loop over many oracles
       const estimate = await sa.connect(hunter).reveal.estimateGas(claimId, BCID, CK, EK, { value: 0n });
+      expect(estimate).to.be.greaterThan(SUBMISSION_GAS);
       let reverted = 0;
-      for (let cut = 20_000n; cut <= 400_000n; cut += 20_000n) {
+      for (const limit of [3_300_000n, 4_500_000n, 7_000_000n, SUBMISSION_GAS, estimate - 100_000n, estimate - 10_000n]) {
         const snap = await network.provider.send("evm_snapshot");
         try {
-          const tx = await revealTx(sa, hunter, claimId, { value: 0n, gasLimit: estimate - cut });
-          await tx.wait();
-          expect((await sa.getClaim(claimId)).state, `cut ${cut}`).to.equal(ClaimState.Revealed);
+          await (await revealTx(sa, hunter, claimId, { value: 0n, gasLimit: limit })).wait();
+          expect((await sa.getClaim(claimId)).state, `limit ${limit}`).to.equal(ClaimState.Revealed);
         } catch (e) {
           reverted++;
-          expect((await sa.getClaim(claimId)).state, `cut ${cut}`).to.equal(ClaimState.Committed);
+          expect((await sa.getClaim(claimId)).state, `limit ${limit}`).to.equal(ClaimState.Committed);
         } finally {
           await network.provider.send("evm_revert", [snap]);
         }
       }
       expect(reverted).to.be.greaterThan(0);
-      // Gas estimation lands on the submitted path.
+      await expect(revealTx(sa, hunter, claimId, { value: 0n, gasLimit: 3_300_000n }))
+        .to.be.revertedWith("gas below SUBMISSION_GAS_NEEDED");
+      // Gas estimation lands on the submitted path, and a funded retry succeeds.
       await revealAs(sa, hunter, claimId, { value: 0n, gasLimit: estimate });
       expect((await sa.getClaim(claimId)).state).to.equal(ClaimState.Revealed);
+    });
+
+    it("a request that needs more than SUBMISSION_GAS fails the same way for every caller", async function () {
+      const { sa, aggregator, maker, hunter } = await loadFixture(deploy);
+      const id = await openListing(sa, maker, params({ fixWindow: 0n, disclosureGrace: 0n }));
+      const { claimId } = await claimAs(sa, hunter, id);
+      await aggregator.setRequestGasCost(11_000_000n); // more than the budget: out of gas inside
+      for (const limit of [12_000_000n, 25_000_000n]) {
+        const snap = await network.provider.send("evm_snapshot");
+        try {
+          const rc = await (await revealTx(sa, hunter, claimId, { value: 0n, gasLimit: limit })).wait();
+          const failed = eventsOf(sa, rc, "SubmissionFailed");
+          expect(failed, `limit ${limit}`).to.have.length(1);
+          expect(failed[0].args.reason).to.equal("0x"); // out of gas: no revert data
+          expect((await sa.getClaim(claimId)).state).to.equal(ClaimState.RoundFailed);
+        } finally {
+          await network.provider.send("evm_revert", [snap]);
+        }
+      }
     });
 
     it("reveal closes revealWindow after the reveal clock starts", async function () {

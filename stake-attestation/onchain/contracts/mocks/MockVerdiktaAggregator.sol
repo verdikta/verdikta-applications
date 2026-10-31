@@ -27,7 +27,9 @@ import {IVerdiktaAggregator} from "../interfaces/IVerdiktaAggregator.sol";
 /// @dev    Test controls stand in for the owner-only setters and for the oracles:
 ///         setMaxOracleFee, setResponseTimeout, setPaused (owner-only on the real contract),
 ///         setFeeMultiplier (the real multiplier is K + B*P from its config), setRefundAmount
-///         (how much of a round's worst-case cost the oracles leave unspent), scriptResult,
+///         (how much of a round's worst-case cost the oracles leave unspent), setRequestGasCost
+///         (extra gas a request burns, standing in for the real keeper's selection loop and the
+///         K oracle dispatches, whose cost grows with the registered oracles), scriptResult,
 ///         scriptLateResult.
 ///         A scripted vector must have a length a real round can produce (2..maxLikelihoodLength,
 ///         the real reveal bounds); its values are free, so malformed vectors can be tested.
@@ -66,6 +68,7 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     uint256 public override responseTimeoutSeconds = 300;
     uint256 public feeMultiplier = 3;                    // stands in for K + B*P
     uint256 public refundAmount;                         // unspent part of `required`, per round
+    uint256 public requestGasCost;                       // extra gas each request burns (0 = none)
 
     mapping(address => uint256) public override ethOwed;
 
@@ -107,6 +110,7 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     function setMaxLikelihoodLength(uint256 len) external { maxLikelihoodLength = len; }
     function setFeeMultiplier(uint256 m) external { feeMultiplier = m; }
     function setRefundAmount(uint256 amount) external { refundAmount = amount; }
+    function setRequestGasCost(uint256 gasAmount) external { requestGasCost = gasAmount; }
 
     function setPaused(bool p) external {
         if (p) _pause();
@@ -149,6 +153,7 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         uint256 _maxFeeBasedScalingFactor,
         uint64 _requestedClass
     ) external payable override nonReentrant whenNotPaused returns (bytes32 aggId) {
+        _burnGas(requestGasCost);
         if (cids.length == 0) revert EmptyCIDList();
         if (cids.length > MAX_CID_COUNT) revert TooManyCIDs();
         for (uint256 i = 0; i < cids.length; i++) {
@@ -292,6 +297,27 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
 
     function _qualityWeight(uint256 alpha) private pure returns (uint256) {
         return 1000 - alpha;
+    }
+
+    /// @dev Spend about `amount` gas, as a costlier selection would. With less gas than that left
+    ///      the request runs out of gas, exactly as the real one would: no revert data. The gas
+    ///      goes on one memory expansion (cost 3w + w^2/512 for w words) rather than a loop,
+    ///      because solidity-coverage traces every EVM step and a loop of millions of gas
+    ///      exhausted its memory. The loaded word is used, so the optimizer keeps the load.
+    function _burnGas(uint256 amount) private {
+        if (amount == 0) return;
+        uint256 lo = 1;
+        uint256 hi = 1 << 22;
+        while (lo < hi) {
+            uint256 mid = (lo + hi) / 2;
+            if (3 * mid + (mid * mid) / 512 >= amount) hi = mid;
+            else lo = mid + 1;
+        }
+        uint256 word;
+        assembly ("memory-safe") {
+            word := mload(mul(sub(lo, 1), 32)) // above the free memory pointer: scratch
+        }
+        if (word != 0) requestGasCost = word; // never taken: fresh memory is zero
     }
 
     function _checkReachable(uint256 length) private view {

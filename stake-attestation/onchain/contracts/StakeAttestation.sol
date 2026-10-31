@@ -247,14 +247,22 @@ contract StakeAttestation is Ownable2Step {
     ///         listing, the claim and at most this many prior valid findings (the most recent).
     uint256 public constant MAX_PRIOR_FINDINGS = ClaimRules.MAX_PRIOR_FINDINGS;
 
-    /// @notice Gas a reveal must still hold after a failed submission for the failure to stand.
-    /// @dev    An out-of-gas inside the aggregator leaves the caller 1/64 of what it forwarded
-    ///         (EIP-150). Without this floor a reveal sent with too little gas, or with a gas
-    ///         estimate that settled on the catch branch, would enter RoundFailed though the
-    ///         aggregator would have accepted it. With it, a failure only stands when the
-    ///         submission was given at least 63 x 100k (~6.3M) gas, far above what a request
-    ///         costs, so an out-of-gas reverts the whole reveal instead.
-    uint256 public constant SUBMISSION_FAILURE_MIN_GAS = ClaimRules.SUBMISSION_FAILURE_MIN_GAS;
+    /// @notice The gas every evaluation request is sent with: the wallet clone, and the
+    ///         aggregator under it, get exactly this much whatever gas the caller brings. A
+    ///         reveal reverts unless it can forward all of it (SUBMISSION_GAS_NEEDED left before
+    ///         the call, so a reveal's gas limit is about 10.3M; only the gas used is paid).
+    /// @dev    So a refused request is the aggregator's answer, never the caller's choice: with
+    ///         the budget forwarded as "all but 1/64" instead, a reveal sent with too little gas
+    ///         would run the aggregator (or its keeper, several frames down) out of gas, get
+    ///         back the 1/64 reserves of every frame, and enter RoundFailed, a state a hunter
+    ///         could then use to walk away from a weak claim. The figure is several times what
+    ///         a request costs today (keeper selection over the registered oracles plus K
+    ///         dispatches); a request that needs more than this fails the same way for every
+    ///         caller, and RoundFailed is then the right answer.
+    uint256 public constant SUBMISSION_GAS = ClaimRules.SUBMISSION_GAS;
+
+    /// @notice What a reveal must hold when it sends the request (see SUBMISSION_GAS).
+    uint256 public constant SUBMISSION_GAS_NEEDED = ClaimRules.SUBMISSION_GAS_NEEDED;
 
     // ------------------------------------------------------------------
     //                               state
@@ -591,7 +599,10 @@ contract StakeAttestation is Ownable2Step {
 
     /// @notice Commit a claim: the two commitments, the bond and the prepay (erratum E5). Nothing
     ///         readable goes on-chain, so a maker who sees this transaction pending and lands a
-    ///         close or rollForward first learns nothing; the commit then reverts.
+    ///         close or rollForward first learns nothing and the commit reverts, PROVIDED the
+    ///         ciphertext is not published yet: pin it only once the commit is mined, then
+    ///         disclose within DISCLOSE_WINDOW. (A small raw IPFS file's CID follows from its
+    ///         sha256, so a ciphertext pinned early could be fetched by its hash alone.)
     /// @param archiveHash      sha256 of the plaintext claim archive (design §8.5)
     /// @param ciphertextSha256 sha256 of that archive encrypted to the listing's disclosure key
     /// @dev msg.value must be at least bondWei plus the aggregator's live maxTotalFee for the
@@ -671,8 +682,9 @@ contract StakeAttestation is Ownable2Step {
     ///      do not spend comes back through the wallet's ethOwed. The contract alone composes
     ///      the request (design §13.3, errata E1, E2): cids = [listingCid, bcid, up to
     ///      MAX_PRIOR_FINDINGS prior valid bcids], addendum = the E1 disclosure line. It goes out
-    ///      through a fresh EvaluationWallet clone inside try/catch: if the aggregator refuses
-    ///      it, the reveal stands, the claim is RoundFailed and the prepay stays here (P2d).
+    ///      through a fresh EvaluationWallet clone with exactly SUBMISSION_GAS, inside
+    ///      try/catch: if the aggregator refuses it, the reveal stands, the claim is RoundFailed
+    ///      and the prepay stays here (P2d). Too little gas reverts the reveal instead.
     function reveal(uint256 claimId, string calldata bcid, bytes16 contentKey, bytes32 ephemeralKey)
         external payable nonReentrant
     {

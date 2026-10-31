@@ -368,6 +368,26 @@ describe("MockVerdiktaAggregator", function () {
     });
   });
 
+  describe("request gas cost", function () {
+    it("setRequestGasCost makes a request spend about that much more gas, and run out of gas without it", async function () {
+      const { aggregator, hunter } = await deploy();
+      const a = args();
+      const required = await aggregator.maxTotalFee(a.maxFee);
+      const send = (gasLimit) =>
+        aggregator.connect(hunter).requestAIEvaluationWithApproval(
+          a.cids, a.addendum, a.alpha, a.maxFee, a.baseCost, a.scaling, a.requestedClass,
+          { value: required, gasLimit }
+        );
+      expect(await aggregator.requestGasCost()).to.equal(0n);
+      await (await send(5_000_000n)).wait(); // the first request also writes the counter from zero
+      const cheap = (await (await send(5_000_000n)).wait()).gasUsed;
+      await aggregator.setRequestGasCost(1_000_000n);
+      const costly = (await (await send(5_000_000n)).wait()).gasUsed;
+      expect(costly - cheap).to.be.within(990_000n, 1_050_000n); // coverage instruments the search loop
+      await expect(send(900_000n)).to.be.reverted; // out of gas, as the real request would
+    });
+  });
+
   describe("timeouts", function () {
     it("finalizeEvaluationTimeout: UnknownRequest, NotTimedOut, then a failed round", async function () {
       const { aggregator, hunter, other } = await deploy();

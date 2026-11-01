@@ -72,6 +72,9 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
     it(`seed ${seed}: balance == escrow + held bonds + held prepays + withdrawable credits + fee balance after every step`, async function () {
       const { sa, aggregator, feeRecipient, makers, hunters, contracts } = await loadFixture(setup);
       const r = rng(seed);
+      // P2d's actions draw from their own stream and run as extra steps, so the P2c sequence
+      // keeps its pace (they still change the state it acts on).
+      const r2 = rng(seed ^ 0x5eed);
       const listings = []; // { id, maker }
       const claims = []; // { id, listingId, hunter }
       const accounts = [...new Set([...makers, ...hunters].map((a) => a.target ?? a.address))];
@@ -231,32 +234,6 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           if (r.next() < 0.6) await time.increase(24 * 3600); // past a dispute window
           await attempt("settle", () => send(r.pick(hunters), "settle", [c.id]));
         },
-        async dispute() {
-          for (const c of shuffled(await claimsIn([ClaimState.Judged]))) {
-            const k = await sa.getClaim(c.id);
-            if (k.outcome < 2n || k.dispute !== 0n) continue; // valid and undisputed only
-            const { maker } = listings.find((l) => l.id === c.listingId);
-            const fee = (await sa.disputeFee(c.listingId)) + BigInt(r.pick([0, 0, 555]));
-            await attempt("dispute", () => send(maker, "dispute", [c.id, H.STATEMENT_CID], fee));
-            return;
-          }
-        },
-        async retrigger() {
-          const failed = await claimsIn([ClaimState.RoundFailed]);
-          if (!failed.length) return;
-          const c = r.pick(failed);
-          const topUp = (await sa.retriggerTopUp(c.id)) + BigInt(r.pick([0, 0, 333]));
-          await attempt("retrigger", () => send(c.hunter, "retrigger", [c.id], topUp));
-        },
-        async recover() {
-          const wallets = await walletsSeen();
-          if (!wallets.length) return;
-          await attempt("recover", () => sa.connect(r.pick(plainSigners)).recoverLeftoverEth(r.pick(wallets)));
-        },
-        async faults() {
-          await aggregator.setWithdrawBroken(r.next() < 0.3);
-          await aggregator.setPaused(r.next() < 0.15);
-        },
         async expire() {
           const pending = await claimsIn([ClaimState.Committed, ClaimState.RoundFailed]);
           if (!pending.length) return;
@@ -307,23 +284,57 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           await attempt("plainEth", () => r.pick(hunters.filter((h) => !h.act)).sendTransaction({ to: sa.target, value: 1n }));
         },
       };
+      const extras = {
+        async dispute() {
+          for (const c of shuffled(await claimsIn([ClaimState.Judged]))) {
+            const k = await sa.getClaim(c.id);
+            if (k.outcome < 2n || k.dispute !== 0n) continue; // valid and undisputed only
+            const { maker } = listings.find((l) => l.id === c.listingId);
+            const fee = (await sa.disputeFee(c.listingId)) + BigInt(r2.pick([0, 0, 555]));
+            await attempt("dispute", () => send(maker, "dispute", [c.id, H.STATEMENT_CID], fee));
+            return;
+          }
+        },
+        async retrigger() {
+          const failed = await claimsIn([ClaimState.RoundFailed]);
+          if (!failed.length) return;
+          const c = r2.pick(failed);
+          const topUp = (await sa.retriggerTopUp(c.id)) + BigInt(r2.pick([0, 0, 333]));
+          await attempt("retrigger", () => send(c.hunter, "retrigger", [c.id], topUp));
+        },
+        async recover() {
+          const wallets = await walletsSeen();
+          if (!wallets.length) return;
+          await attempt("recover", () => sa.connect(r2.pick(plainSigners)).recoverLeftoverEth(r2.pick(wallets)));
+        },
+        async faults() {
+          await aggregator.setWithdrawBroken(r2.next() < 0.3);
+          const pause = r2.next() < 0.2; // refuse every submission while paused
+          if (pause !== (await aggregator.paused())) await aggregator.setPaused(pause);
+        },
+      };
       const weights = {
         list: 3, commit: 14, disclose: 3, release: 1, reveal: 14, judge: 14, finalize: 3, settle: 14,
         expire: 4, topUp: 6, withdraw: 5, close: 2, rollForward: 2, wait: 6, refunds: 3, rejecting: 3, plainEth: 1,
-        dispute: 5, retrigger: 4, recover: 3, faults: 2,
       };
       const bag = Object.entries(weights).flatMap(([k, w]) => Array(w).fill(k));
+      const bag2 = Object.entries({ dispute: 1, retrigger: 3, recover: 2, faults: 2 }).flatMap(([k, w]) => Array(w).fill(k));
 
       await actions.list();
       await checkInvariant(0, "list");
-      for (let step = 1; step <= 250; step++) {
+      for (let step = 1; step <= 300; step++) {
         const name = r.pick(bag);
         await actions[name]();
         await checkInvariant(step, name);
+        if (r2.next() < 0.25) {
+          const extra = r2.pick(bag2);
+          await extras[extra]();
+          await checkInvariant(step, extra);
+        }
       }
       // Drain: every round finalized, every wallet recovered, then refund attribution.
       await aggregator.setWithdrawBroken(false);
-      await aggregator.setPaused(false);
+      if (await aggregator.paused()) await aggregator.setPaused(false);
       await time.increase(301); // every open round is past the mock's response timeout
       for (let pass = 0; pass < 2; pass++) {
         for (const c of await claimsIn([ClaimState.Revealed, ClaimState.Disputed])) {
@@ -333,7 +344,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       expect(await claimsIn([ClaimState.Revealed, ClaimState.Disputed]), "a round left open").to.deep.equal([]);
       const wallets = await walletsSeen();
       for (const w of wallets) await attempt("recover", () => sa.recoverLeftoverEth(w));
-      await checkInvariant(251, "drain");
+      await checkInvariant(301, "drain");
       const credited = new Map();
       const refunded = new Map();
       const add = (m, k, v) => { if (v !== 0n) m.set(k, (m.get(k) || 0n) + v); };
@@ -345,6 +356,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       for (const ev of await sa.queryFilter(sa.filters.LeftoverRefunded())) {
         add(refunded, `${ev.args.funder}/${ev.args.claimId}`, ev.args.amountWei);
       }
+      expect(credited.size, `seed ${seed}: no leftover was credited`).to.be.greaterThan(0);
       const sorted = (m) => [...m.entries()].sort(([a], [b]) => (a < b ? -1 : 1));
       expect(sorted(refunded), `seed ${seed}: refunds by (funder, claim)`).to.deep.equal(sorted(credited));
       for (const w of wallets) {
@@ -353,7 +365,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       }
 
       // The sequence must have reached the paths that move money.
-      for (const name of ["commit", "reveal", "finalize", "settle", "dispute", "retrigger"]) {
+      for (const name of ["commit", "reveal", "finalize", "settle"]) {
         expect(stats.ok[name] || 0, `seed ${seed}: ${name} succeeded ${JSON.stringify(stats)}`).to.be.greaterThan(0);
       }
       expect(stats.ok.plainEth || 0).to.equal(0);

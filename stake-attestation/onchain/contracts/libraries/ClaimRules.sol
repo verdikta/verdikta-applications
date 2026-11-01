@@ -73,6 +73,15 @@ library ClaimRules {
         return (revealable > headSince ? revealable : headSince) + revealWindow;
     }
 
+    /// @notice Erratum E6: the hunter may re-trigger a failed round until, and anyone may expire
+    ///         it from, revealWindow after the claim FIRST entered RoundFailed (failedAt is set
+    ///         once): a re-triggered round that fails again does not extend the window. §12 puts
+    ///         the re-trigger "inside the reveal window"; measured from the failure, because a
+    ///         round can fail after the reveal deadline it was sent before.
+    function retriggerDeadline(uint64 failedAt, uint32 revealWindow) internal pure returns (uint256) {
+        return uint256(failedAt) + revealWindow;
+    }
+
     /// @notice The per-oracle fee a request is sent with: the listing's, clamped to the
     ///         aggregator's live ceiling (the aggregator clamps it itself; mirrored here so the
     ///         quote and the request agree), as BountyEscrow._effectiveOracle does.

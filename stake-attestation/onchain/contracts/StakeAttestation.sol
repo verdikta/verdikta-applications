@@ -22,14 +22,15 @@ import {ClaimRules} from "./libraries/ClaimRules.sol";
 /// @dev    Built in nodes. P2a: list, fund, renew, close, the listing fee, the pull ledger and
 ///         the listing views. P2b: the claim lifecycle up to the evaluation request: commit (two
 ///         hashes, erratum E5), disclose, flagBadDisclosure, release, rollForward, reveal (the
-///         request, §13.3 with errata E1-E3) and expire. P2c (this revision adds it): finalize
-///         by polling (erratum E4: the aggregator never calls back), settlement of the six
-///         outcomes under THRESHOLD (§8.7), the payouts of §13.2 with per-claim owed amounts,
-///         Depleted, fund paying owed claims first, and the inline recovery of a round's unspent
-///         prepay. Later nodes extend the types and bookkeeping declared here:
-///         - P2d: dispute (Judged -> Disputed; the second finalize is final), failed rounds (a
-///           RoundFailed claim: a refused submission, requestId 0, holds its prepay; a round
-///           finalize failed, requestId set, spent it), re-trigger, recoverLeftoverEth.
+///         request, §13.3 with errata E1-E3) and expire. P2c: finalize by polling (erratum E4:
+///         the aggregator never calls back), settlement of the six outcomes under THRESHOLD
+///         (§8.7), the payouts of §13.2 with per-claim owed amounts, Depleted, fund paying owed
+///         claims first, and the inline recovery of a round's unspent prepay. P2d (this revision
+///         adds it): dispute (Judged -> Disputed; the second finalize is final, §13.2 with
+///         erratum E2), failed rounds and retrigger with the bond following the round (erratum
+///         E6), the failed-round expiry, one EvaluationWallet per request with its funder on
+///         record (walletInfo), and recoverLeftoverEth. Later nodes extend the types and
+///         bookkeeping declared here:
 ///         - P2e: late claims and recordByHash.
 ///         close() refuses while pendingClaims or owedWei is non-zero (decision D8).
 ///
@@ -154,6 +155,12 @@ contract StakeAttestation is Ownable2Step {
         // settlement (P2c)
         uint32[6] outcomeCounts;     // settled claims by Outcome
         uint64  owedCursor;          // _owedClaims[listingId] index of the first claim still owed
+        // failed rounds and disputes (P2d)
+        uint64  noVerdictClaims;     // expired after failed rounds (Expiry.RoundsFailed or SubmissionsRefused)
+        uint64  disputesFiled;
+        uint64  disputesHeld;        // the panel confirmed the outcome: failed disputes (design §13.2)
+        uint64  disputesOverturned;  // the panel's different outcome replaced the first
+        uint64  disputesNoVerdict;   // the dispute round settled no verdict: the first verdict stood
     }
 
     /// @notice A claim's life (design §13.1, errata E4-E6, decision D5). Order is ABI: append only.
@@ -161,13 +168,32 @@ contract StakeAttestation is Ownable2Step {
     ///         from Revealed, finalize makes it Judged (a verdict) or RoundFailed (the round ran
     ///         and settled none); settle makes a Judged claim Settled. RoundFailed with requestId
     ///         0 is a refused submission whose prepay is held; with a requestId, a failed round
-    ///         whose prepay was spent (P2d re-triggers both). P2d adds Disputed. Revealable is
-    ///         never stored: a fix window ends by time, by release or by a roll-forward of the
-    ///         whole listing, so the lens derives it (claimState).
+    ///         whose prepay was spent. retrigger takes either back to Revealed (or, refused
+    ///         again, RoundFailed), and expire ends it once the re-trigger window is over. dispute
+    ///         makes a Judged claim Disputed until the second finalize makes it Judged again,
+    ///         final. Revealable is never stored: a fix window ends by time, by release or by a
+    ///         roll-forward of the whole listing, so the lens derives it (claimState).
     enum ClaimState { Committed, Revealable, Revealed, Judged, Disputed, Settled, Expired, RoundFailed }
 
-    /// @notice Why a claim expired. The listing counts each (undisclosedClaims, unrevealedClaims).
-    enum Expiry { None, Undisclosed, Unrevealed }
+    /// @notice Why a claim expired. The listing counts each (undisclosedClaims, unrevealedClaims,
+    ///         noVerdictClaims for the last two). Erratum E6, the bond follows the round:
+    ///         RoundsFailed (some attempt's round ran, none settled a verdict: bond to the maker)
+    ///         and SubmissionsRefused (the aggregator refused every attempt: bond back).
+    enum Expiry { None, Undisclosed, Unrevealed, RoundsFailed, SubmissionsRefused }
+
+    /// @notice How a claim's dispute stands (design §13.2). Pending while its round is open;
+    ///         then Held (the panel returned the same outcome: the record's failed dispute),
+    ///         Overturned (the panel's different outcome replaced it) or NoVerdict (the round
+    ///         settled no verdict: the first verdict stands). Order is ABI: append only.
+    enum DisputeResult { None, Pending, Held, Overturned, NoVerdict }
+
+    /// @notice Who funded an EvaluationWallet clone, for which claim: the hunter for each of a
+    ///         claim's rounds, the maker for its dispute. A wallet makes one request, so its
+    ///         unspent prepay (the aggregator's ethOwed credit to it) is this funder's.
+    struct WalletInfo {
+        address funder;
+        uint64  claimId;
+    }
 
     /// @notice One hunter's claim against one listing (design §13.1 with erratum E5).
     /// @dev Field order packs the small fields into five slots; P2c-P2e append fields at the end.
@@ -209,6 +235,17 @@ contract StakeAttestation is Ownable2Step {
         Outcome outcome;             // ClaimRules.judge of `vector` (meaningful once Judged)
         uint128 paidWei;             // award paid so far: at settle, then by fund's owed payments
         uint128 owedWei;             // award still owed (paidWei + owedWei = the award)
+        // failed rounds (P2d, erratum E6)
+        uint64  failedAt;            // when the claim first entered RoundFailed (0 = never); the
+                                     // re-trigger window runs revealWindow from it, never reset
+        bool    roundStarted;        // some attempt's request was accepted: a round ran
+        // dispute (P2d); outcome, vector and judgedAt above stay the verdict settle applies
+        DisputeResult dispute;
+        Outcome disputedOutcome;     // the first verdict's outcome, which the maker disputed
+        uint64  disputedAt;
+        uint64  disputeEndedAt;      // when the second finalize read the dispute round
+        address disputeWallet;       // the dispute's EvaluationWallet clone (the maker's)
+        bytes32 disputeRequestId;
     }
 
     // ------------------------------------------------------------------
@@ -283,8 +320,8 @@ contract StakeAttestation is Ownable2Step {
     uint256 public constant SUBMISSION_GAS_NEEDED = ClaimRules.SUBMISSION_GAS_NEEDED;
 
     /// @notice Gas for finalize's inline recovery of a round's unspent prepay (the wallet pulls
-    ///         its ethOwed credit and hands it back for the hunter). If it fails, finalize stands
-    ///         and RefundDeferred is emitted; P2d's recoverLeftoverEth retries. finalize reverts
+    ///         its ethOwed credit and hands it back for its funder). If it fails, finalize stands
+    ///         and RefundDeferred is emitted; recoverLeftoverEth retries. finalize reverts
     ///         unless it can give the recovery all of it (INLINE_REFUND_GAS_NEEDED left), so a
     ///         deferral is the aggregator's doing, never the caller's gas limit.
     uint256 public constant INLINE_REFUND_GAS_LIMIT = ClaimRules.INLINE_REFUND_GAS_LIMIT;
@@ -349,6 +386,12 @@ contract StakeAttestation is Ownable2Step {
     /// @dev listingId => the claims settled with an award shortfall, in settlement (= commit)
     ///      order; Listing.owedCursor is the first still owed. fund pays them in that order.
     mapping(uint256 => uint256[]) internal _owedClaims;
+
+    /// @notice Every EvaluationWallet clone this contract created => its funder and claim (zero
+    ///         for any other address). Written when the clone is made: by reveal and retrigger
+    ///         (the hunter) and by dispute (the maker). recoverLeftoverEth pays what a wallet
+    ///         recovers to its funder, so no refund can reach another payer.
+    mapping(address => WalletInfo) public walletInfo;
 
     // Non-reentrancy guard (1 = unlocked, 2 = locked), as BountyEscrow's.
     uint256 private _lock = 1;
@@ -432,7 +475,9 @@ contract StakeAttestation is Ownable2Step {
     /// @notice The aggregator refused the request; the claim is RoundFailed and the prepay held.
     event SubmissionFailed(uint256 indexed claimId, address wallet, bytes reason);
 
-    /// @notice The claim expired: its bond went to the maker and its prepay back to the hunter.
+    /// @notice The claim expired. Undisclosed, Unrevealed and RoundsFailed: the bond went to the
+    ///         maker; SubmissionsRefused: back to the hunter. Any prepay still held went back to
+    ///         the hunter.
     event Expired(uint256 indexed claimId, uint256 indexed listingId, Expiry reason);
 
     /// @notice finalize read a verdict: the claim is Judged and the dispute window runs from now
@@ -452,12 +497,44 @@ contract StakeAttestation is Ownable2Step {
     /// @notice A top-up paid `amountWei` of an owed award, credited to the hunter's pull balance.
     event OwedPaid(uint256 indexed claimId, uint256 indexed listingId, address indexed hunter, uint256 amountWei, uint256 stillOwedWei);
 
-    /// @notice The round's unspent prepay came back from its wallet, for the hunter.
-    event LeftoverRefunded(uint256 indexed claimId, address indexed hunter, uint256 amountWei);
+    /// @notice A round's unspent prepay came back from its wallet, for the wallet's funder: the
+    ///         hunter for a claim round, the maker for a dispute (walletInfo).
+    event LeftoverRefunded(uint256 indexed claimId, address indexed funder, uint256 amountWei);
 
-    /// @notice The inline recovery of the round's unspent prepay failed; it waits in the wallet's
-    ///         ethOwed credit (P2d's recoverLeftoverEth retries).
-    event RefundDeferred(uint256 indexed claimId);
+    /// @notice The inline recovery of a round's unspent prepay failed; it waits in `wallet`'s
+    ///         ethOwed credit, and recoverLeftoverEth(wallet) retries.
+    event RefundDeferred(uint256 indexed claimId, address wallet);
+
+    /// @notice The maker disputed a valid verdict (design §13.2, erratum E2): the dispute panel
+    ///         re-judges the claim through `wallet`, funded with `prepayWei`. `statementCid` is
+    ///         the pinned statement the request's second addendum line names.
+    event Disputed(
+        uint256 indexed claimId,
+        uint256 indexed listingId,
+        string statementCid,
+        address wallet,
+        bytes32 requestId,
+        uint256 prepayWei
+    );
+
+    /// @notice The second finalize read the dispute panel's verdict, which is final: Held (the
+    ///         same outcome) or Overturned (`outcome` replaced the first). Settle may follow at once.
+    event DisputeJudged(
+        uint256 indexed claimId,
+        uint256 indexed listingId,
+        DisputeResult result,
+        Outcome outcome,
+        uint32[6] vector,
+        string justificationCid
+    );
+
+    /// @notice The dispute round settled no verdict (timed out, or a result that is no verdict:
+    ///         `malformed`). The first verdict stands; settle may follow at once.
+    event DisputeFailed(uint256 indexed claimId, uint256 indexed listingId, bytes32 requestId, bool malformed);
+
+    /// @notice The hunter re-triggered a failed round (erratum E6); EvaluationRequested or
+    ///         SubmissionFailed follows in the same transaction.
+    event Retriggered(uint256 indexed claimId, uint256 indexed listingId);
 
     // ------------------------------------------------------------------
 
@@ -756,7 +833,8 @@ contract StakeAttestation is Ownable2Step {
     ///      MAX_PRIOR_FINDINGS prior valid bcids], addendum = the E1 disclosure line. It goes out
     ///      through a fresh EvaluationWallet clone with exactly SUBMISSION_GAS, inside
     ///      try/catch: if the aggregator refuses it, the reveal stands, the claim is RoundFailed
-    ///      and the prepay stays here (P2d). Too little gas reverts the reveal instead.
+    ///      and the prepay stays here for retrigger (or goes back at expiry). Too little gas
+    ///      reverts the reveal instead.
     function reveal(uint256 claimId, string calldata bcid, bytes16 contentKey, bytes32 ephemeralKey)
         external payable nonReentrant
     {
@@ -764,47 +842,101 @@ contract StakeAttestation is Ownable2Step {
         require(_isValidCid(bcid), "bad bcid");
         uint256 listingId = c.listingId;
         ClaimLogic.reveal(
-            _claims, _listings[listingId], _validFindings[listingId], claimId, bcid, contentKey, ephemeralKey,
-            msg.value, verdikta, address(walletImplementation)
+            _claims, _listings[listingId], _validFindings[listingId], walletInfo, claimId, bcid, contentKey,
+            ephemeralKey, msg.value, verdikta, address(walletImplementation)
         );
     }
 
-    /// @notice Expire a claim nobody can advance any more. Anyone may call. Bond to the maker,
-    ///         prepay back to the hunter (the request never went out), recorded on the listing.
-    ///         - Undisclosed (erratum E5): from DISCLOSE_WINDOW after the commit. Not held back
-    ///           by earlier claims, so an undisclosed claim never blocks the queue for longer
-    ///           than the disclose window.
+    /// @notice Expire a claim nobody can advance any more. Anyone may call, so a claim no party
+    ///         wants to end cannot hold the commit-order queue or close() forever; where the
+    ///         money goes is fixed by the claim's record, never by the caller. Recorded on the
+    ///         listing. Any prepay still held goes back to the hunter.
+    ///         - Undisclosed (erratum E5): from DISCLOSE_WINDOW after the commit; bond to the
+    ///           maker. Not held back by earlier claims, so an undisclosed claim never blocks the
+    ///           queue for longer than the disclose window.
     ///         - Unrevealed (design decision 15, decision D5): from revealWindow after the reveal
-    ///           clock started, which is max(revealableAt, when every earlier claim resolved).
-    ///           Reverts while an earlier claim is unresolved, so a claim never expires while
-    ///           commit order forbids its reveal.
+    ///           clock started, which is max(revealableAt, when every earlier claim resolved);
+    ///           bond to the maker. Reverts while an earlier claim is unresolved, so a claim never
+    ///           expires while commit order forbids its reveal.
+    ///         - A failed round (erratum E6): from revealWindow after the claim first entered
+    ///           RoundFailed, when the hunter can no longer retrigger. The bond follows the
+    ///           round: to the maker if any attempt's round ran (RoundsFailed), back to the hunter
+    ///           only if the aggregator refused every attempt (SubmissionsRefused).
     function expire(uint256 claimId) external nonReentrant {
         Claim storage c = _mustClaim(claimId);
-        Listing storage l = _listings[c.listingId];
-        (uint256 bond, uint256 prepay) = ClaimLogic.expire(_claims, l, claimId);
-        _payOrCredit(l.maker, bond);
+        (address bondTo, uint256 bond, uint256 prepay) = ClaimLogic.expire(_claims, _listings[c.listingId], claimId);
+        _payOrCredit(bondTo, bond);
         _payOrCredit(c.hunter, prepay);
+    }
+
+    /// @notice Re-trigger a claim's failed round (design §12, erratum E6): the hunter's, while
+    ///         the claim is RoundFailed and before revealWindow has passed since it FIRST failed
+    ///         (a re-triggered round that fails again does not extend the window, so a failed
+    ///         claim holds the queue for at most revealWindow plus one round). Failed means: a
+    ///         round the arbiters ran that settled no verdict, a completed result that is no
+    ///         verdict, or a submission the aggregator refused.
+    /// @dev Payable (erratum E3): msg.value tops the held prepay up to the live maxTotalFee (the
+    ///      lens quotes it as retriggerTopUp). After a round that ran its prepay was spent, so a
+    ///      fresh one is due in full; after a refused submission the held prepay goes into the new
+    ///      request. The request is the reveal's (same cids and disclosure line), sent as reveal
+    ///      sends it: a fresh EvaluationWallet clone, exactly SUBMISSION_GAS, try/catch (refused
+    ///      again: the claim stays RoundFailed and holds the prepay).
+    function retrigger(uint256 claimId) external payable nonReentrant {
+        Claim storage c = _mustClaim(claimId);
+        uint256 listingId = c.listingId;
+        ClaimLogic.retrigger(
+            _claims, _listings[listingId], _validFindings[listingId], walletInfo, claimId, msg.value, verdikta,
+            address(walletImplementation)
+        );
+    }
+
+    /// @notice The maker disputes a valid verdict (design §13.2): once per claim, while it is
+    ///         Judged with an outcome LOW..CRITICAL, before disputeWindow has passed since
+    ///         judgedAt. The dispute panel re-judges it; the second finalize is final.
+    /// @param statementCid the maker's statement, pinned (erratum E2: at most 4 KB, never inline);
+    ///        the request names it in the addendum's second line, "verdikta-dispute: <cid>"
+    /// @dev Payable: msg.value must be at least the live maxTotalFee for the listing's (clamped)
+    ///      disputeMaxOracleFee (the lens quotes it as disputeFee) and all of it funds the
+    ///      request through a fresh EvaluationWallet clone whose funder is the maker; what the
+    ///      oracles do not spend comes back to the maker. The request: cids = [disputeCid, the
+    ///      claim's bcid, the prior valid findings the claim's own round carried], addendum = the
+    ///      E1 disclosure line (the arbiters re-run the disclosure gate), LF, the dispute line.
+    ///      It is sent with exactly SUBMISSION_GAS, not caught: a submission the aggregator
+    ///      refuses reverts the dispute, so nothing is recorded and the maker may try again
+    ///      inside the window, and too little gas reverts it too.
+    function dispute(uint256 claimId, string calldata statementCid) external payable nonReentrant {
+        Claim storage c = _mustClaim(claimId);
+        require(_isValidCid(statementCid), "bad statementCid");
+        uint256 listingId = c.listingId;
+        ClaimLogic.dispute(
+            _claims, _listings[listingId], _validFindings[listingId], walletInfo, claimId, statementCid, msg.value,
+            verdikta, address(walletImplementation)
+        );
     }
 
     // ------------------------------------------------------------------
     //                    judgement and settlement (P2c)
     // ------------------------------------------------------------------
 
-    /// @notice Read a revealed claim's round from the aggregator (erratum E4: it never calls
-    ///         back) and judge it. Anyone may call; the site's keeper does. Reverts "evaluation
-    ///         not ready" while the round is open; otherwise never fails on the round's content:
-    ///         a verdict makes the claim Judged (outcome by ClaimRules.judge; the dispute window
-    ///         starts), a round over without one (timed out, or a vector of the wrong length or
-    ///         sum) makes it RoundFailed. Then the round's unspent prepay goes to the hunter.
+    /// @notice Read a Revealed or Disputed claim's open round from the aggregator (erratum E4: it
+    ///         never calls back) and judge it. Anyone may call; the site's keeper does. Reverts
+    ///         "evaluation not ready" while the round is open; otherwise never fails on the
+    ///         round's content. A claim round: a verdict makes the claim Judged (outcome by
+    ///         ClaimRules.judge; the dispute window starts), a round over without one (timed out,
+    ///         or a vector of the wrong length or sum) makes it RoundFailed. A dispute round (the
+    ///         second finalize, final): a verdict replaces the first (Held or Overturned), none
+    ///         leaves the first standing (NoVerdict); the claim is Judged and settles at once.
+    ///         Then the round's unspent prepay goes to its wallet's funder.
     function finalize(uint256 claimId) external nonReentrant {
         Claim storage c = _mustClaim(claimId);
-        uint256 refunded = ClaimLogic.finalize(c, claimId, verdikta);
-        _payOrCredit(c.hunter, refunded);
+        (address payee, uint256 refunded) = ClaimLogic.finalize(c, _listings[c.listingId], claimId, verdikta);
+        _payOrCredit(payee, refunded);
     }
 
     /// @notice Settle a judged claim and move its funds (design §8.7, §13.2; ClaimLogic.settle).
     ///         Anyone may call. INVALID (bond to the maker) and DUPLICATE (bond back) at once;
-    ///         a valid outcome after the dispute window: bond back plus the award at or above
+    ///         a valid outcome after the dispute window, or at once once a dispute of it ended
+    ///         (the second finalize is final): bond back plus the award at or above
     ///         lowestClassCounted, from the escrow, any shortfall owed. The claim leaves the
     ///         commit-order queue, so the next claim may reveal.
     function settle(uint256 claimId) external nonReentrant {
@@ -814,6 +946,18 @@ contract StakeAttestation is Ownable2Step {
             _claims, _listings[listingId], _validFindings[listingId], _owedClaims[listingId], claimId
         );
         _payOrCredit(payee, amount);
+    }
+
+    /// @notice Retry the recovery of a wallet's unspent prepay and pay it to the wallet's funder
+    ///         (walletInfo: the hunter for a claim round, the maker for a dispute). Anyone may
+    ///         call. As BountyEscrow.recoverLeftoverEth: for a round that is over (refused while
+    ///         the round is open, when the prepay is still reserved at the aggregator); the
+    ///         wallet's refundLeftoverEth is idempotent, so this also recovers ETH that reaches
+    ///         a wallet after its round; full gas, and the wallet's or aggregator's revert is not
+    ///         swallowed, so a caller sees why a retry failed.
+    function recoverLeftoverEth(address wallet) external nonReentrant {
+        (address funder, uint256 amount) = ClaimLogic.recoverLeftover(_claims, walletInfo, wallet);
+        _payOrCredit(funder, amount);
     }
 
     // ------------------------------------------------------------------

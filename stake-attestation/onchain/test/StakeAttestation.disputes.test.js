@@ -274,6 +274,17 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       expect(codeReview.parseAddendum(addendum).dispute).to.deep.equal({ statementCid });
     });
 
+    it("refuses a dispute or a re-trigger when the aggregator quotes no budget", async function () {
+      const { sa, aggregator, maker, hunters } = await loadFixture(deploy);
+      const id = await openListing(sa, maker);
+      const { claimId } = await judgedClaim(sa, aggregator, hunters[0], id, V.HIGH);
+      const l2 = await openListing(sa, maker, params({ artifact: atCommit(freshCommit()) }));
+      const f = await failedClaim(sa, aggregator, hunters[1], l2, "timeout");
+      await aggregator.setFeeMultiplier(0n); // maxTotalFee is 0 for every fee
+      await expect(sa.connect(maker).dispute(claimId, STATEMENT_CID, { value: DISPUTE_FEE })).to.be.revertedWith("bad budget");
+      await expect(sa.connect(hunters[1]).retrigger(f.claimId, { value: FEE })).to.be.revertedWith("bad budget");
+    });
+
     it("a refused dispute submission reverts the dispute: nothing is recorded, and the maker may try again inside the window", async function () {
       const { sa, aggregator, maker, hunter } = await loadFixture(deploy);
       const id = await openListing(sa, maker);
@@ -281,10 +292,15 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       await aggregator.setPaused(true);
       await expect(sa.connect(maker).dispute(claimId, STATEMENT_CID, { value: DISPUTE_FEE }))
         .to.be.revertedWithCustomError(aggregator, "EnforcedPause");
-      // Too little gas for the request reverts the whole dispute too: no gas limit enters a state.
+      // The request gets exactly SUBMISSION_GAS: too little gas for it reverts the whole
+      // dispute, and a request that needs more than the budget is refused for every caller.
       await aggregator.setPaused(false);
       await aggregator.setRequestGasCost(3_000_000n);
-      await expect(sa.connect(maker).dispute(claimId, STATEMENT_CID, { value: DISPUTE_FEE, gasLimit: 1_500_000n })).to.be.reverted;
+      await expect(sa.connect(maker).dispute(claimId, STATEMENT_CID, { value: DISPUTE_FEE, gasLimit: 3_300_000n }))
+        .to.be.revertedWith("gas below SUBMISSION_GAS_NEEDED");
+      await aggregator.setRequestGasCost(11_000_000n);
+      await expect(sa.connect(maker).dispute(claimId, STATEMENT_CID, { value: DISPUTE_FEE, gasLimit: 25_000_000n })).to.be.reverted;
+      await aggregator.setRequestGasCost(0n);
       let c = await sa.getClaim(claimId);
       expect(c.state).to.equal(ClaimState.Judged);
       expect(c.dispute).to.equal(DisputeResult.None);
@@ -662,8 +678,7 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
         // At the boundary the window is over for both: no second in which both are possible.
         await time.setNextBlockTimestamp(failedAt + REVEAL);
         await expect(sa.connect(hunter).retrigger(claimId, { value: FEE })).to.be.revertedWith("retrigger window over");
-        await time.setNextBlockTimestamp(failedAt + REVEAL);
-        await expect(sa.connect(other).expire(claimId)).to.emit(sa, "Expired");
+        await expect(sa.connect(other).expire(claimId)).to.emit(sa, "Expired"); // the next second
         await expect(sa.connect(other).expire(claimId)).to.be.revertedWith("not committed");
         await restore(snap);
       }

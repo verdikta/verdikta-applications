@@ -859,15 +859,18 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
         "close", // maker only
         "commit", // anyone allowed on the listing, for themselves (P2b)
         "disclose", // the claim's hunter (P2b)
-        "expire", // anyone, once the claim's deadline has passed (P2b)
-        "finalize", // anyone: reads the aggregator's round for a revealed claim (P2c)
+        "dispute", // the listing's maker, on its own claim's valid verdict (P2d)
+        "expire", // anyone, once the claim's deadline has passed (P2b; failed rounds P2d)
+        "finalize", // anyone: reads the aggregator's round for a revealed or disputed claim (P2c, P2d)
         "flagBadDisclosure", // the listing's maker (P2b)
         "fund", // maker only
         "lensDelegate", // this contract only, inside a static frame (P2b)
         "list", // anyone, for themselves
+        "recoverLeftoverEth", // anyone: pays a wallet's recovered prepay to its recorded funder (P2d)
         "release", // the listing's maker (P2b)
         "renew", // maker only
         "renounceOwnership", // owner: gives up the two powers below
+        "retrigger", // the claim's hunter, on its own failed round (P2d)
         "reveal", // the claim's hunter (P2b)
         "rollForward", // the listing's maker (P2b)
         "setFeeRecipient", // owner

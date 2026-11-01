@@ -1,0 +1,25 @@
+{
+  "name": "@verdikta/stake-attestation-shared",
+  "version": "0.1.0",
+  "description": "Code shared by the stake-attestation packages, and the app's repository checks",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "bin": {
+    "check-forbidden-words": "bin/check-forbidden-words.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check-words": "node bin/check-forbidden-words.js .. ../../.github/workflows/stake-attestation.yml"
+  },
+  "devDependencies": {
+    "yaml": "^2.9.1"
+  }
+}

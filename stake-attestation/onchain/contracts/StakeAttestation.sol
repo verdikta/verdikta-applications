@@ -8,6 +8,7 @@ import {EvaluationWallet} from "./EvaluationWallet.sol";
 import {StakeAttestationLens} from "./StakeAttestationLens.sol";
 import {ClaimLogic} from "./libraries/ClaimLogic.sol";
 import {ClaimRules} from "./libraries/ClaimRules.sol";
+import {RecordLogic} from "./libraries/RecordLogic.sol";
 
 /// @title StakeAttestation
 /// @notice A maker stakes an award table behind one version of an artifact (a repository at a
@@ -29,14 +30,17 @@ import {ClaimRules} from "./libraries/ClaimRules.sol";
 ///         adds it): dispute (Judged -> Disputed; the second finalize is final, §13.2 with
 ///         erratum E2), failed rounds and retrigger with the bond following the round (erratum
 ///         E6), the failed-round expiry, one EvaluationWallet per request with its funder on
-///         record (walletInfo), and recoverLeftoverEth. Later nodes extend the types and
-///         bookkeeping declared here:
-///         - P2e: late claims and recordByHash.
-///         close() refuses while pendingClaims or owedWei is non-zero (decision D8).
+///         record (walletInfo), and recoverLeftoverEth. P2e: late claims (decision D6:
+///         commit-shaped, no award, recorded under `later`) and the record (recordByHash and
+///         recordPage in the lens, read by the linked library RecordLogic through recordData).
+///         close() refuses while pendingClaims or owedWei is non-zero (decision D8); a late claim
+///         is not one of pendingClaims, since no award rides on it.
 ///
-///         Size (EIP-170): the claim functions' bodies are the linked library ClaimLogic, and
-///         derived views (claim state, deadlines, quotes) live in StakeAttestationLens, served at
-///         this address through the fallback as BountyEscrow's are. Later nodes follow suit.
+///         Size (EIP-170): the claim functions' bodies are the linked library ClaimLogic, the
+///         record's reader the linked library RecordLogic, and derived views (claim state,
+///         deadlines, quotes, the record) live in StakeAttestationLens, served at this address
+///         through the fallback as BountyEscrow's are. Deploy and link ClaimLogic, then
+///         RecordLogic, before this contract (deploy/01_deploy_stake_attestation.js).
 ///
 ///         Program values are fixed per deployment (assumption A5): the window bounds, the
 ///         listing period, THRESHOLD, the payout gas cap. The contract owner has exactly two
@@ -138,7 +142,7 @@ contract StakeAttestation is Ownable2Step {
         // money and bookkeeping
         uint256 escrowWei;           // what awards are paid from; never includes a fee
         uint256 owedWei;             // award shortfall still owed to hunters (P2c)
-        uint256 pendingClaims;       // claims neither settled nor expired (P2b)
+        uint256 pendingClaims;       // claims neither settled nor expired (P2b); never a late claim (P2e)
         uint256 predecessor;         // listing id this version fixed (0 = none; P2b)
         uint256 successor;           // listing id that fixed this one (0 = none; P2b)
         // the commit-order queue (P2b, decision D5): the unresolved claims, oldest first, as a
@@ -149,7 +153,7 @@ contract StakeAttestation is Ownable2Step {
         uint64  tailClaim;           // the latest such claim
         uint64  headSince;           // when headClaim became the earliest: its reveal clock's floor
         // counts for the record (P2b)
-        uint64  claimsCommitted;     // every claim ever committed here
+        uint64  claimsCommitted;     // every claim committed here (late claims: lateClaims)
         uint64  undisclosedClaims;   // expired without a disclosure (erratum E5)
         uint64  unrevealedClaims;    // expired without a reveal (design decision 15)
         // settlement (P2c)
@@ -161,6 +165,14 @@ contract StakeAttestation is Ownable2Step {
         uint64  disputesHeld;        // the panel confirmed the outcome: failed disputes (design §13.2)
         uint64  disputesOverturned;  // the panel's different outcome replaced the first
         uint64  disputesNoVerdict;   // the dispute round settled no verdict: the first verdict stood
+        // the record (P2e)
+        uint64  closedAt;            // when close() ran (0 = not closed)
+        uint64  releasedClaims;      // claims whose fix window the maker waived (release)
+        // late claims (P2e, decision D6): recorded under `later` only. The counts above are the
+        // history the stake earned while it took commits; a late claim never changes them.
+        uint64  lateClaims;          // late claims made
+        uint64  lateExpired;         // late claims expired, whatever the reason (Claim.expiry says)
+        uint32[6] lateOutcomeCounts; // settled late claims by Outcome
     }
 
     /// @notice A claim's life (design §13.1, errata E4-E6, decision D5). Order is ABI: append only.
@@ -196,7 +208,8 @@ contract StakeAttestation is Ownable2Step {
     }
 
     /// @notice One hunter's claim against one listing (design §13.1 with erratum E5).
-    /// @dev Field order packs the small fields into five slots; P2c-P2e append fields at the end.
+    /// @dev Field order packs the small fields into five slots; P2c-P2d appended fields at the
+    ///      end, and P2e's `late` fills the dispute group's slot, which settle already reads.
     ///      bondWei and prepayWei are uint128: each is at most what one transaction carried.
     struct Claim {
         // slot 0
@@ -244,8 +257,113 @@ contract StakeAttestation is Ownable2Step {
         Outcome disputedOutcome;     // the first verdict's outcome, which the maker disputed
         uint64  disputedAt;
         uint64  disputeEndedAt;      // when the second finalize read the dispute round
+        // late claims (P2e, decision D6)
+        bool    late;                // made by lateClaim on a Rolled or Closed listing: no award
         address disputeWallet;       // the dispute's EvaluationWallet clone (the maker's)
         bytes32 disputeRequestId;
+    }
+
+    // ------------------------------------------------------------------
+    //                    the record (design §4.1, §13.4; P2e)
+    // ------------------------------------------------------------------
+    // What recordByHash and recordPage (the lens) return. Facts only: the labels (scanned,
+    // staked, under-staked, invited, lapsed off the feed, a false flag) are the site's to compute
+    // (P4b1). Memory types: nothing stores them.
+
+    /// @notice A listing's counts. The history is the claims committed while it took commits;
+    ///         `later` (lateClaims, lateOutcomes, lateExpired) the late claims (decision D6).
+    struct History {
+        uint256 claims;               // committed (commit)
+        uint256 pending;              // committed, neither settled nor expired
+        uint256[6] outcomes;          // settled, by Outcome: their sum is "claims judged"
+        uint256 released;             // the maker waived the fix window
+        uint256 undisclosed;          // expired undisclosed (erratum E5)
+        uint256 unrevealed;           // expired unrevealed (design decision 15)
+        uint256 noVerdict;            // expired after failed rounds (erratum E6)
+        uint256 disputes;             // filed by the maker
+        uint256 disputesHeld;         // the panel confirmed the outcome: a failed dispute
+        uint256 disputesOverturned;   // the panel's outcome replaced the first
+        uint256 disputesNoVerdict;    // the dispute round settled no verdict: the first stood
+        uint256 lateClaims;           // later: late claims made
+        uint256[6] lateOutcomes;      // later: settled late claims, by Outcome
+        uint256 lateExpired;          // later: late claims expired
+    }
+
+    /// @notice One listing of the hash: the stake, its money, its lineage and its own counts.
+    struct ListingRecord {
+        uint256 listingId;
+        address maker;
+        ListingState state;
+        bool    lapsed;               // the paid listing period has ended (isLapsed)
+        bool    invited;              // the listing has an allowlist
+        uint64  artifactChainId;      // a Contract artifact's deployment (0 for a Repo)
+        address artifactAddress;
+        uint64  listedAt;
+        uint64  openedAt;
+        uint64  fundedUntil;
+        uint64  rolledAt;
+        uint64  closedAt;
+        uint256[4] awards;            // wei, by class: [LOW, MEDIUM, HIGH, CRITICAL]
+        Outcome lowestClassCounted;
+        uint256 bondWei;
+        uint256 escrowWei;
+        uint256 owedWei;              // award shortfall still owed to hunters
+        uint256 valueAtRiskUsd;       // declared; 0 = not declared
+        uint256 predecessor;          // the listing this version fixed (0 = none)
+        bytes32 predecessorHash;
+        uint256 successor;            // the listing that fixed this one (0 = none)
+        bytes32 successorHash;
+        History history;
+    }
+
+    /// @notice A valid finding: a settled claim with an outcome LOW..CRITICAL (published from
+    ///         its reveal on, design §14). `late` marks one recorded under `later`.
+    struct Finding {
+        uint256 claimId;
+        uint256 listingId;
+        address hunter;
+        Outcome outcome;              // the class
+        bool    late;
+        DisputeResult dispute;        // None, or how the maker's dispute ended
+        uint256 paidWei;              // award paid so far (0 for a late claim)
+        uint256 owedWei;              // award still owed
+        uint64  revealedAt;
+        uint64  settledAt;
+        string  bcid;                 // the revealed archive
+    }
+
+    /// @notice A bad-disclosure flag (design §14): the maker's statement, with what became of
+    ///         the claim. A flagged claim judged other than INVALID passed the arbiters'
+    ///         disclosure check: the record shows the flag beside the verdict that refutes it.
+    struct FlagRecord {
+        uint256 claimId;
+        uint256 listingId;
+        bool    late;
+        ClaimState state;             // as stored (Revealable is derived, so it reads Committed)
+        Outcome outcome;              // meaningful once judged
+        uint64  disclosedAt;
+        uint64  revealedAt;           // 0 = not revealed
+        uint64  judgedAt;             // 0 = not judged
+    }
+
+    /// @notice The record of one artifact hash over a page of its listings (recordByHash: all
+    ///         of them). Its listings are those that opened (the opening fund), in opening order:
+    ///         a listing never funded carried no stake and took no claim, so it is not on the
+    ///         record (listingsByHash still lists it), and only real stakes can lengthen a
+    ///         record. findings and flags are the item page [itemOffset, itemOffset + itemLimit)
+    ///         of each list, concatenated over the page's listings in their order; findingCount
+    ///         and flagCount are the lists' totals over the page's listings.
+    struct Record {
+        bytes32 artifactHash;
+        ArtifactKind kind;
+        uint256 listingCount;         // every listing of the hash that opened, Closed included
+        uint256[] active;             // the page's listings that are not Closed
+        ListingRecord[] listings;     // the page's listings, in opening order
+        History history;              // summed over the page's listings
+        uint256 findingCount;
+        Finding[] findings;           // settlement order within a listing
+        uint256 flagCount;
+        FlagRecord[] flags;           // flag order within a listing
     }
 
     // ------------------------------------------------------------------
@@ -387,6 +505,14 @@ contract StakeAttestation is Ownable2Step {
     ///      order; Listing.owedCursor is the first still owed. fund pays them in that order.
     mapping(uint256 => uint256[]) internal _owedClaims;
 
+    /// @dev listingId => the claims the maker flagged as a bad disclosure, in flag order (P2e).
+    mapping(uint256 => uint256[]) internal _flaggedClaims;
+
+    /// @dev artifactHash => its listings that opened, in opening order (pushed by the opening
+    ///      fund, P2e): the record's listings. A listing costs only gas to create but real escrow
+    ///      and the listing fee to open, so this is what bounds a record's length.
+    mapping(bytes32 => uint256[]) internal _openedByHash;
+
     /// @notice Every EvaluationWallet clone this contract created => its funder and claim (zero
     ///         for any other address). Written when the clone is made: by reveal and retrigger
     ///         (the hunter) and by dispute (the maker). recoverLeftoverEth pays what a wallet
@@ -445,6 +571,18 @@ contract StakeAttestation is Ownable2Step {
 
     /// @notice A hunter committed: two hashes, the bond and the prepay; nothing readable (E5).
     event Committed(
+        uint256 indexed claimId,
+        uint256 indexed listingId,
+        address indexed hunter,
+        bytes32 archiveHash,
+        bytes32 ciphertextSha256,
+        uint256 bondWei,
+        uint256 prepayWei
+    );
+
+    /// @notice A late claim (decision D6) on a Rolled or Closed listing: the fields of Committed.
+    ///         Recorded under `later`; no award rides on it.
+    event LateClaim(
         uint256 indexed claimId,
         uint256 indexed listingId,
         address indexed hunter,
@@ -673,6 +811,7 @@ contract StakeAttestation is Ownable2Step {
             l.state = ListingState.Open;
             l.openedAt = uint64(block.timestamp);
             l.fundedUntil = until;
+            _openedByHash[l.artifactHash].push(listingId);
             _accrueFee(listingId, fee);
             emit Funded(listingId, msg.sender, amount, escrow);
             emit Opened(listingId, l.artifactHash, escrow, until);
@@ -710,8 +849,9 @@ contract StakeAttestation is Ownable2Step {
     }
 
     /// @notice End the listing and withdraw its escrow to the maker. Refused while any claim is
-    ///         pending or anything is owed to a hunter (decision D8). The badge ends; the history
-    ///         stays, and the maker may list the same hash again.
+    ///         pending or anything is owed to a hunter (decision D8); a pending late claim does
+    ///         not count, as it is owed no award. The badge ends; the history stays, the listing
+    ///         takes late claims from now on, and the maker may list the same hash again.
     function close(uint256 listingId) external nonReentrant {
         Listing storage l = _mustListing(listingId);
         require(msg.sender == l.maker, "not maker");
@@ -722,6 +862,7 @@ contract StakeAttestation is Ownable2Step {
         address maker = l.maker;
         uint256 amount = l.escrowWei;
         l.state = ListingState.Closed;
+        l.closedAt = uint64(block.timestamp);
         l.escrowWei = 0;
         delete activeListingOf[l.artifactHash][maker];
 
@@ -764,8 +905,26 @@ contract StakeAttestation is Ownable2Step {
         require(isAllowed(listingId, msg.sender), "not allowed");
         claimId = ++claimCount;
         ClaimLogic.commit(
-            _claims, _listings[listingId], verdikta, listingId, claimId, archiveHash, ciphertextSha256, msg.value
+            _claims, _listings[listingId], verdikta, listingId, claimId, archiveHash, ciphertextSha256, msg.value, false
         );
+    }
+
+    /// @notice A late claim (design §13.2, decision D6): a finding on a version whose stake has
+    ///         rolled forward or closed (a listing that opened: one closed unfunded never had a
+    ///         stake), judged and recorded under the record's `later`, with no award. Commit-shaped, so everything after this call is a claim's: disclose within
+    ///         DISCLOSE_WINDOW (erratum E5; pin the ciphertext only once this is mined), the
+    ///         listing's fix window from the disclosure (the maker may flag or release), reveal
+    ///         with the E1 line once every earlier claim on the listing has resolved, finalize,
+    ///         a dispute if the maker wants one, settle: the bond back unless INVALID. Open to
+    ///         every hunter (an ended stake's allowlist does not keep findings off its record);
+    ///         a late claim never holds close() and never touches the escrow.
+    /// @dev msg.value as commit's: at least bondWei plus the live maxTotalFee (commitPrice).
+    function lateClaim(uint256 listingId, bytes32 archiveHash, bytes32 ciphertextSha256)
+        external payable nonReentrant returns (uint256 claimId)
+    {
+        Listing storage l = _mustListing(listingId);
+        claimId = ++claimCount;
+        ClaimLogic.commit(_claims, l, verdikta, listingId, claimId, archiveHash, ciphertextSha256, msg.value, true);
     }
 
     /// @notice Publish the encrypted archive's CID, within DISCLOSE_WINDOW of the commit
@@ -784,7 +943,8 @@ contract StakeAttestation is Ownable2Step {
     ///         at reveal decides.
     function flagBadDisclosure(uint256 claimId) external {
         Claim storage c = _mustClaim(claimId);
-        ClaimLogic.flagBadDisclosure(c, _listings[c.listingId], claimId);
+        uint256 listingId = c.listingId;
+        ClaimLogic.flagBadDisclosure(c, _listings[listingId], _flaggedClaims[listingId], claimId);
     }
 
     /// @notice The maker waives the rest of the fix window for a disclosed claim ("I believe
@@ -1059,6 +1219,24 @@ contract StakeAttestation is Ownable2Step {
             return keccak256(abi.encode(a.kind, a.repo, a.baseCommit));
         }
         return keccak256(abi.encode(a.kind, a.repo, a.baseCommit, a.chainId, a.addr));
+    }
+
+    /// @notice The record of an artifact hash, ABI-encoded as one Record (see the type). Read it
+    ///         through the lens's recordByHash(artifactHash) or recordPage(...), which decode it;
+    ///         this is their plumbing. Pages: the listings [listingOffset, listingOffset +
+    ///         listingLimit) of the hash's opened listings, and of each item list the entries
+    ///         [itemOffset, itemOffset + itemLimit) of its concatenation over those listings.
+    function recordData(
+        bytes32 artifactHash,
+        uint256 listingOffset,
+        uint256 listingLimit,
+        uint256 itemOffset,
+        uint256 itemLimit
+    ) external view returns (bytes memory) {
+        return RecordLogic.record(
+            _listings, _claims, _validFindings, _flaggedClaims, _openedByHash[artifactHash], artifactHash,
+            [listingOffset, listingLimit, itemOffset, itemLimit]
+        );
     }
 
     // ------------------------------------------------------------------

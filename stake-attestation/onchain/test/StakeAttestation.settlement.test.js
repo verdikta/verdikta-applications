@@ -17,6 +17,7 @@ const {
   LISTING_CID, BCID, JUSTIFICATION, TOP, AWARDS, BOND, FEE, V,
   params, freshCommit, atCommit, deploy, eventsOf, blockTime,
   listAs, openListing, commitAs, claimAs, revealAs, revealedClaim, judgeAs, afterDisputeWindow,
+  recordOf, listingIn, outcomesOf, findingIds, flagIds,
 } = H;
 const { parseEther, ZeroHash } = ethers;
 
@@ -580,6 +581,10 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       await expect(tx).to.changeEtherBalance(hunter, common.paidWei + BOND);
       await expect(tx).to.emit(sa, "Settled").withArgs(claimId, id, hunter.address, Outcome.HIGH, common.paidWei, 0n);
       expect(common.paidWei).to.equal(AWARDS[2]);
+      // The record (P2e): one finding, class HIGH, HIGH's award paid.
+      const r = await recordOf(sa, id);
+      expect([...r.findings].map((f) => [f.claimId, f.outcome, f.paidWei, f.owedWei])).to.deep.equal([[claimId, Outcome.HIGH, AWARDS[2], 0n]]);
+      expect(outcomesOf(r.history)).to.deep.equal([0n, 0n, 0n, 0n, 1n, 0n]);
     });
 
     it("settlement-below-threshold-split: INVALID and DUPLICATE hold half the mass; DUPLICATE when its mass is at least INVALID's, else INVALID; nothing paid or published", async function () {
@@ -607,6 +612,10 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       const l = await sa.getListing(id);
       expect(l.escrowWei).to.equal(TOP);
       expect([...l.outcomeCounts]).to.deep.equal([2n, 2n, 0n, 0n, 0n, 0n]);
+      // The record (P2e): four counts, nothing published.
+      const r = await recordOf(sa, id);
+      expect(outcomesOf(r.history)).to.deep.equal([2n, 2n, 0n, 0n, 0n, 0n]);
+      expect([r.findingCount, r.findings.length]).to.deep.equal([0n, 0]);
       // One unit past half is valid, at the lowest class with a majority at or above it.
       const claimId = await judgedClaim(sa, aggregator, hunters[0], id, [250000, 249999, 500001, 0, 0, 0], { bcid: cidOf(9) });
       expect((await sa.getClaim(claimId)).outcome).to.equal(Outcome.LOW);
@@ -629,6 +638,12 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
         published.push(cidOf(i));
       }
       expect((await sa.validFindings(id)).length).to.equal(4);
+      // The record (P2e): every one published, with its class and what it was paid.
+      const r = await recordOf(sa, id);
+      expect([...r.findings].map((f) => f.bcid)).to.deep.equal(published);
+      expect([...r.findings].map((f) => f.outcome)).to.deep.equal(classes);
+      expect([...r.findings].map((f) => f.paidWei)).to.deep.equal([0n, AWARDS[1], AWARDS[2], AWARDS[3]]);
+      expect(outcomesOf(r.history)).to.deep.equal([0n, 0n, 1n, 1n, 1n, 1n]);
     });
 
     it("bond-returned-on-duplicate: the bond comes back; nothing is paid or published; the prepay is spent", async function () {
@@ -645,6 +660,10 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       await expect(sa.connect(maker).settle(claimId)).to.changeEtherBalances([hunter, maker], [BOND, 0n]);
       expect((await sa.getClaim(claimId)).paidWei).to.equal(0n);
       expect([...(await sa.validFindings(id))]).to.deep.equal([]);
+      // The record (P2e): a count, nothing published.
+      const r = await recordOf(sa, id);
+      expect(outcomesOf(r.history)).to.deep.equal([0n, 1n, 0n, 0n, 0n, 0n]);
+      expect(r.findingCount).to.equal(0n);
       const next = await revealedClaim(sa, hunters[1], id, { bcid: cidOf(2) });
       expect(await requestCidsOf(sa, aggregator, next.claimId)).to.deep.equal([LISTING_CID, cidOf(2)]);
     });
@@ -660,6 +679,10 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       const l = await sa.getListing(id);
       expect(l.outcomeCounts[0]).to.equal(2n);
       expect([...(await sa.validFindings(id))]).to.deep.equal([]);
+      // The record (P2e) counts both claims and publishes neither.
+      const r = await recordOf(sa, id);
+      expect(outcomesOf(r.history)).to.deep.equal([2n, 0n, 0n, 0n, 0n, 0n]);
+      expect([r.history.claims, r.findingCount]).to.deep.equal([2n, 0n]);
     });
 
     it("valid-below-counted-class: bond back, no award although LOW has one, the finding published and counted", async function () {
@@ -678,6 +701,10 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       expect(l.state).to.equal(ListingState.Open);
       expect(l.outcomeCounts[2]).to.equal(1n);
       expect([...(await sa.validFindings(id))]).to.deep.equal([claimId]);
+      // The record (P2e): published (class LOW, nothing paid) and counted.
+      const r = await recordOf(sa, id);
+      expect([...r.findings].map((f) => [f.claimId, f.outcome, f.paidWei, f.bcid])).to.deep.equal([[claimId, Outcome.LOW, 0n, cidOf(1)]]);
+      expect(outcomesOf(r.history)).to.deep.equal([0n, 0n, 1n, 0n, 0n, 0n]);
       const next = await revealedClaim(sa, hunters[1], id, { bcid: cidOf(2) });
       expect(await requestCidsOf(sa, aggregator, next.claimId)).to.deep.equal([LISTING_CID, cidOf(2), cidOf(1)]);
     });
@@ -711,12 +738,23 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       const cb = await sa.getClaim(b.claimId);
       expect(cb.paidWei).to.equal(TOP - AWARDS[2]);
       expect(cb.owedWei).to.equal(AWARDS[2]);
+      // Shown on the record (P2e): the listing Depleted and owing, the finding short.
+      let r = await recordOf(sa, id);
+      let lr = listingIn(r, id);
+      expect([lr.state, lr.escrowWei, lr.owedWei]).to.deep.equal([ListingState.Depleted, 0n, AWARDS[2]]);
+      expect([...r.findings].map((f) => [f.claimId, f.paidWei, f.owedWei])).to.deep.equal([
+        [a.claimId, AWARDS[2], 0n], [b.claimId, TOP - AWARDS[2], AWARDS[2]],
+      ]);
 
       // Topped up: the owed claim is paid first, then the listing reopens.
       const top = sa.connect(maker).fund(id, 0n, { value: AWARDS[2] + TOP });
       await expect(top).to.emit(sa, "OwedPaid").withArgs(b.claimId, id, hunters[1].address, AWARDS[2], 0n);
       await expect(top).to.emit(sa, "Reopened").withArgs(id, TOP);
       expect(await sa.acceptsCommits(id)).to.equal(true);
+      r = await recordOf(sa, id);
+      lr = listingIn(r, id);
+      expect([lr.state, lr.escrowWei, lr.owedWei]).to.deep.equal([ListingState.Open, TOP, 0n]);
+      expect([r.findings[1].paidWei, r.findings[1].owedWei]).to.deep.equal([TOP, 0n]);
       await expect(sa.connect(hunters[2]).commit(id, H.ARCHIVE, H.CT, { value: BOND + FEE })).to.emit(sa, "Committed");
     });
 
@@ -733,6 +771,8 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       await expect(tx).to.changeEtherBalances([maker, hunter, sa], [BOND, 0n, -BOND]);
       await expect(tx).to.emit(sa, "Settled").withArgs(claimId, id, hunter.address, Outcome.INVALID, 0n, 0n);
       expect(await aggregator.ethReceived(requestId)).to.equal(FEE); // the prepay funded the round
+      const r = await recordOf(sa, id); // P2e: counted INVALID, not published
+      expect([outcomesOf(r.history)[0], r.findingCount]).to.deep.equal([1n, 0n]);
     });
 
     it("payment-gate-pass-jury-rejection: the valid mass is below the threshold with INVALID the larger remainder; INVALID; the prepay is spent; the bond goes to the maker", async function () {
@@ -745,6 +785,8 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       await expect(sa.connect(other).finalize(claimId)).to.changeEtherBalance(hunter, 0n); // nothing left unspent
       await expect(sa.connect(other).settle(claimId)).to.changeEtherBalances([maker, hunter], [BOND, 0n]);
       expect((await sa.getClaim(claimId)).outcome).to.equal(Outcome.INVALID);
+      const r = await recordOf(sa, id); // P2e: counted INVALID, not published
+      expect([outcomesOf(r.history)[0], r.findingCount]).to.deep.equal([1n, 0n]);
     });
 
     it("two-hunters-same-root-cause-minutes-apart: the second reveal waits for the first to settle; the first is paid; the second is judged with the first in its context and settles DUPLICATE", async function () {
@@ -769,6 +811,10 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       await expect(tx).to.changeEtherBalances([second, maker], [BOND, 0n]);
       await expect(tx).to.emit(sa, "Settled").withArgs(b.claimId, id, second.address, Outcome.DUPLICATE, 0n, 0n);
       expect([...(await sa.validFindings(id))]).to.deep.equal([a.claimId]);
+      // The record (P2e): the first is the finding, paid; the second a DUPLICATE count.
+      const r = await recordOf(sa, id);
+      expect([...r.findings].map((f) => [f.claimId, f.hunter, f.paidWei])).to.deep.equal([[a.claimId, first.address, AWARDS[2]]]);
+      expect(outcomesOf(r.history)).to.deep.equal([0n, 1n, 0n, 0n, 1n, 0n]);
     });
 
     it("poc-also-fails-at-makers-fixed-hash: after a roll-forward the claim is judged against the committed hash and paid from its escrow", async function () {
@@ -790,6 +836,13 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       expect((await sa.getListing(id)).escrowWei).to.equal(0n);
       expect((await sa.getListing(id)).state).to.equal(ListingState.Rolled);
       expect((await sa.getListing(successor)).escrowWei).to.equal(TOP); // untouched
+      // The record (P2e): the finding is the committed hash's; the successor's record has none.
+      const rp = await recordOf(sa, id);
+      expect(findingIds(rp)).to.deep.equal([claimId]);
+      expect(rp.findings[0].outcome).to.equal(Outcome.CRITICAL);
+      expect(listingIn(rp, id).successor).to.equal(successor);
+      const rs = await recordOf(sa, successor);
+      expect([rs.findingCount, rs.history.claims]).to.deep.equal([0n, 0n]);
     });
 
     it("bug-learned-after-open: known issues cannot be added after open; the maker fixes and rolls forward or leaves it claimable; a hunter who proves it is paid", async function () {
@@ -820,6 +873,11 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       await afterDisputeWindow(sa, b.claimId);
       await expect(sa.settle(b.claimId)).to.changeEtherBalance(hunters[1], AWARDS[2] + BOND);
       expect([...(await sa.getListing(id)).knownIssueIds]).to.deep.equal(KNOWN);
+      // The record (P2e): both proofs are findings of the listed hash, each paid its award.
+      const r = await recordOf(sa, id);
+      expect([...r.findings].map((f) => [f.claimId, f.paidWei, f.owedWei])).to.deep.equal([
+        [a.claimId, AWARDS[1], 0n], [b.claimId, AWARDS[2], 0n],
+      ]);
     });
 
     it("maker-disclosure-key-unusable: the maker lost the disclosure key, the claim was verifiably encrypted to it, and the award is still owed", async function () {
@@ -854,6 +912,11 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       await afterDisputeWindow(sa, claimId);
       await expect(sa.settle(claimId)).to.changeEtherBalance(hunter, TOP + BOND);
       expect((await sa.getClaim(claimId)).flaggedBadDisclosure).to.equal(true);
+      // The record (P2e): the award paid on the finding, and the maker's flag beside it.
+      const r = await recordOf(sa, id);
+      expect([...r.findings].map((f) => [f.claimId, f.paidWei])).to.deep.equal([[claimId, TOP]]);
+      expect(flagIds(r)).to.deep.equal([claimId]);
+      expect([r.flags[0].state, r.flags[0].outcome]).to.deep.equal([ClaimState.Settled, Outcome.CRITICAL]);
     });
   });
 

@@ -5,6 +5,7 @@ onchain/coverage/
 onchain/coverage.json
 onchain/typechain-types/
 onchain/gasReporterOutput.json
+onchain/deployments/
 
 # Vite and Playwright
 client/dist/

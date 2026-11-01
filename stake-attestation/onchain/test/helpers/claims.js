@@ -206,6 +206,34 @@ async function afterDisputeWindow(sa, claimId) {
   if (now < at) await time.setNextBlockTimestamp(at);
 }
 
+// a late claim (decision D6) on a Rolled or Closed listing: the commit-shaped first step
+async function lateAs(sa, hunter, listingId, { archive = ARCHIVE, ct = CT, value } = {}) {
+  const v = value === undefined ? await sa.commitPrice(listingId) : value;
+  const rc = await (await sa.connect(hunter).lateClaim(listingId, archive, ct, { value: v })).wait();
+  return { claimId: eventsOf(sa, rc, "LateClaim")[0].args.claimId, at: await blockTime(rc), rc };
+}
+
+// ... and its disclosure (erratum E5 applies to late claims too)
+async function lateClaimAs(sa, hunter, listingId, opts = {}) {
+  const { claimId, at } = await lateAs(sa, hunter, listingId, opts);
+  const rc = await (await sa.connect(hunter).disclose(claimId, opts.cid ?? CT_CID)).wait();
+  return { claimId, committedAt: at, disclosedAt: await blockTime(rc) };
+}
+
+// The record of a listing's artifact hash (the lens's recordByHash), and one listing's entry in it.
+async function recordOf(sa, listingId) {
+  const { artifactHash } = await sa.getListing(listingId);
+  return sa.recordByHash(artifactHash);
+}
+function listingIn(record, listingId) {
+  return record.listings.find((l) => l.listingId === BigInt(listingId));
+}
+// A record's numbers as plain arrays and bigints, for deep equality.
+const outcomesOf = (h) => [...h.outcomes].map(BigInt);
+const lateOutcomesOf = (h) => [...h.lateOutcomes].map(BigInt);
+const findingIds = (r) => [...r.findings].map((f) => f.claimId);
+const flagIds = (r) => [...r.flags].map((f) => f.claimId);
+
 module.exports = {
   ListingState, Outcome, OUTCOME_NAMES, ClaimState, Expiry, DisputeResult,
   HOUR, DAY, FIX, DISPUTE, GRACE, REVEAL, SCALE, T,
@@ -213,5 +241,6 @@ module.exports = {
   ARCHIVE, CT, CK, EK, LISTING_FEE, AWARDS, TOP, BOND, ORACLE, FEE, DISPUTE_FEE, V, oneHot,
   atCommit, freshCommit, params, mergedAbi, deploy, eventsOf, blockTime,
   listAs, openListing, commitAs, claimAs, revealAs, revealedClaim, judgeAs, afterDisputeWindow,
-  disputeAs, judgeDisputeAs,
+  disputeAs, judgeDisputeAs, lateAs, lateClaimAs,
+  recordOf, listingIn, outcomesOf, lateOutcomesOf, findingIds, flagIds,
 };

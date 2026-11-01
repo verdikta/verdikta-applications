@@ -864,6 +864,7 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
         "finalize", // anyone: reads the aggregator's round for a revealed or disputed claim (P2c, P2d)
         "flagBadDisclosure", // the listing's maker (P2b)
         "fund", // maker only
+        "lateClaim", // anyone, on a Rolled or Closed listing, for themselves: no award (P2e, decision D6)
         "lensDelegate", // this contract only, inside a static frame (P2b)
         "list", // anyone, for themselves
         "recoverLeftoverEth", // anyone: pays a wallet's recovered prepay to its recorded funder (P2d)

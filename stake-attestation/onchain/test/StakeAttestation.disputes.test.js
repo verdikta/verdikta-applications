@@ -27,6 +27,7 @@ const {
   TOP, AWARDS, BOND, ORACLE, FEE, DISPUTE_FEE, V,
   params, freshCommit, atCommit, deploy, eventsOf, blockTime,
   openListing, claimAs, revealAs, revealedClaim, judgeAs, afterDisputeWindow, disputeAs, judgeDisputeAs,
+  recordOf, listingIn, outcomesOf, findingIds,
 } = H;
 const { ZeroHash, ZeroAddress } = ethers;
 
@@ -406,6 +407,12 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
         expect(l.escrowWei).to.equal(TOP - k.paid);
         expect(l.outcomeCounts[Number(k.outcome)]).to.equal(1n);
         expect([...(await sa.validFindings(id))]).to.deep.equal(k.valid ? [claimId] : []);
+        // The record (P2e): one dispute, overturned; the final outcome counted and, if valid, published with its result.
+        const r = await recordOf(sa, id);
+        expect([r.history.disputes, r.history.disputesHeld, r.history.disputesOverturned, r.history.disputesNoVerdict]).to.deep.equal([1n, 0n, 1n, 0n]);
+        expect(outcomesOf(r.history)[Number(k.outcome)]).to.equal(1n);
+        expect([...r.findings].map((f) => [f.claimId, f.outcome, f.dispute, f.paidWei])).to.deep.equal(
+          k.valid ? [[claimId, k.outcome, DisputeResult.Overturned, k.paid]] : []);
         await restore(snap);
       }
     });
@@ -435,6 +442,10 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       await expect(settle).to.emit(sa, "Settled").withArgs(claimId, id, hunter.address, Outcome.HIGH, AWARDS[2], 0n);
       await expect(settle).to.changeEtherBalances([hunter, maker], [AWARDS[2] + BOND, 0n]);
       expect([...(await sa.validFindings(id))]).to.deep.equal([claimId]);
+      // The record (P2e) shows the failed dispute: held, on the finding and in the counts.
+      const r = await recordOf(sa, id);
+      expect([r.history.disputes, r.history.disputesHeld, r.history.disputesOverturned]).to.deep.equal([1n, 1n, 0n]);
+      expect([...r.findings].map((f) => [f.claimId, f.outcome, f.dispute])).to.deep.equal([[claimId, Outcome.HIGH, DisputeResult.Held]]);
     });
 
     it("the panel may also find a higher class: its outcome is final either way", async function () {
@@ -622,6 +633,9 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       expect(l.pendingClaims).to.equal(0n);
       expect(l.headClaim).to.equal(0n);
       expect(await aggregator.ethReceived(f.requestId)).to.equal(FEE); // the oracles' (no refund set)
+      let r = await recordOf(sa, id); // P2e: no verdict, nothing judged or published
+      expect([r.history.noVerdict, r.history.pending, r.findingCount]).to.deep.equal([1n, 0n, 0n]);
+      expect(outcomesOf(r.history)).to.deep.equal([0n, 0n, 0n, 0n, 0n, 0n]);
       await restore(snap);
 
       // 3. Re-triggered and the new round fails too: a round ran, so the bond goes to the maker.
@@ -662,6 +676,8 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       l = await sa.getListing(id);
       expect(l.noVerdictClaims).to.equal(1n);
       expect(l.unrevealedClaims).to.equal(0n);
+      r = await recordOf(sa, id);
+      expect([r.history.noVerdict, r.history.unrevealed, r.history.claims]).to.deep.equal([1n, 0n, 1n]);
     });
 
     it("who may expire a failed round: anyone, from failedAt + revealWindow, never while the hunter may still re-trigger", async function () {

@@ -16,8 +16,10 @@ import {ClaimRules} from "./libraries/ClaimRules.sol";
 ///   2. Directly at this contract's address (StakeAttestation.lens()), e.g. from an explorer.
 ///   Every read goes through the host's external getters (getClaim, getListing), never raw
 ///   storage, so there is no storage layout to keep in step; the time and fee rules are the
-///   shared ClaimRules library, so the answers match what the contract enforces. `host` and
-///   `verdikta` are immutables (code, not storage), so they hold under delegatecall too.
+///   shared ClaimRules library, so the answers match what the contract enforces. The record
+///   (recordByHash, recordPage) is read by the host's linked RecordLogic through recordData and
+///   decoded here. `host` and `verdikta` are immutables (code, not storage), so they hold under
+///   delegatecall too.
 ///   Created once by the host's constructor (msg.sender at construction is the host); no setter.
 contract StakeAttestationLens {
     StakeAttestation public immutable host;
@@ -149,6 +151,63 @@ contract StakeAttestationLens {
         uint256 held = c.requestId == bytes32(0) ? c.prepayWei : 0;
         uint256 live = _liveFee(host.getListing(c.listingId));
         return live > held ? live - held : 0;
+    }
+
+    /// @notice Whether lateClaim (decision D6) takes a claim on the listing now: its stake ended,
+    ///         Rolled, or Closed after it opened. commitPrice quotes what it takes, as for a commit.
+    function acceptsLateClaims(uint256 listingId) external view returns (bool) {
+        StakeAttestation.Listing memory l = host.getListing(listingId);
+        return l.state == StakeAttestation.ListingState.Rolled
+            || (l.state == StakeAttestation.ListingState.Closed && l.openedAt != 0);
+    }
+
+    // ------------------------------------------------------------------
+    //                    the record (design §4.1, §13.4; P2e)
+    // ------------------------------------------------------------------
+
+    /// @notice The record of an artifact hash: every listing of it that opened, in opening
+    ///         order (one never funded had no stake; listingsByHash lists it), each with its
+    ///         state, times, lapsed, invited, award table, bond, escrow, owed, value at risk,
+    ///         lineage with the neighbours' hashes and its own counts; `active` (those not
+    ///         Closed); the artifact's kind; the history summed over them (claims, pending,
+    ///         settled by outcome, released, undisclosed, unrevealed, no verdict, disputes and
+    ///         their results, and `later`: late claims, their outcomes and expiries); every
+    ///         valid finding (class, paid, owed, revealed-at, settled-at, bcid, dispute result,
+    ///         late or not) and every bad-disclosure flag (with the claim's state and outcome).
+    ///         Facts only: labels are computed off-chain.
+    ///         Gas grows with the history (a few storage reads per listing, finding and flag);
+    ///         page a long one with recordPage.
+    function recordByHash(bytes32 artifactHash) external view returns (StakeAttestation.Record memory) {
+        return _record(artifactHash, 0, type(uint256).max, 0, type(uint256).max);
+    }
+
+    /// @notice recordByHash for a page: the listings [listingOffset, listingOffset +
+    ///         listingLimit) of the hash, their summed history, and of the findings and the
+    ///         flags the entries [itemOffset, itemOffset + itemLimit) of each list's
+    ///         concatenation over those listings (listing order, then settlement or flag order).
+    ///         findingCount and flagCount are the lists' totals over the page's listings, so a
+    ///         client pages items until itemOffset reaches both; listingCount is the hash's, so
+    ///         it pages listings until listingOffset reaches it, summing the histories.
+    function recordPage(
+        bytes32 artifactHash,
+        uint256 listingOffset,
+        uint256 listingLimit,
+        uint256 itemOffset,
+        uint256 itemLimit
+    ) external view returns (StakeAttestation.Record memory) {
+        return _record(artifactHash, listingOffset, listingLimit, itemOffset, itemLimit);
+    }
+
+    function _record(
+        bytes32 artifactHash,
+        uint256 listingOffset,
+        uint256 listingLimit,
+        uint256 itemOffset,
+        uint256 itemLimit
+    ) private view returns (StakeAttestation.Record memory) {
+        return abi.decode(
+            host.recordData(artifactHash, listingOffset, listingLimit, itemOffset, itemLimit), (StakeAttestation.Record)
+        );
     }
 
     function _revealableAt(StakeAttestation.Claim memory c, StakeAttestation.Listing memory l)

@@ -54,7 +54,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 
 | Folder | What | Test |
 |---|---|---|
-| `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and late claims arrive in P2d–P2e) with its `ClaimLogic` library, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface and the mock aggregator. | `npx hardhat test` |
+| `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
 | `server/` | Express API; `GET /health` for now. Port 5009. | `npm test` |
 | `client/` | Vite + React site. Port 5176. | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI: `check`, `commit`, `reveal`, `status`, `claim` arrive in P5. | `npm test` |
@@ -77,8 +77,10 @@ cd stake-attestation/tool && npm ci && npm test
 cd stake-attestation/shared && npm ci && npm test
 ```
 
-`npm run gas` in `onchain/` prints the gas report and `npm run coverage` runs
-solidity-coverage. The Playwright smoke test builds the client and serves it
+`npm run gas` in `onchain/` prints the gas report, `npm run coverage` runs
+solidity-coverage, `npm run coverage:check` runs it and fails below 95% line
+coverage on any production contract, and `npx hardhat size-contracts` prints
+the bytecode sizes and fails above EIP-170's 24 KiB. The Playwright smoke test builds the client and serves it
 with `vite preview`. The shared package's scope test compares against
 `origin/claude/stake-attestation` (or `SA_BASE_REF`), so fetch it first.
 
@@ -145,10 +147,55 @@ the one-line disclosure addendum of erratum E1.
   claim `RoundFailed` with its prepay held; with a fixed budget that is the
   aggregator's answer, never the caller's choice of gas.
 - **Size.** The claim functions' bodies are the linked library `ClaimLogic`
-  (deploy it and link it before `StakeAttestation`), and the derived views
-  (`claimState`, `claimTimes`, `commitPrice`, `revealTopUp`) are in
-  `StakeAttestationLens`, answered at the contract's address through its
-  fallback. Their time and fee rules are one library, `ClaimRules`.
+  and the record's reader the linked library `RecordLogic` (deploy and link
+  both, `ClaimLogic` first, before `StakeAttestation`), and the derived views
+  (`claimState`, `claimTimes`, `commitPrice`, `revealTopUp`, `recordByHash`,
+  ...) are in `StakeAttestationLens`, answered at the contract's address
+  through its fallback. Their time and fee rules are one library, `ClaimRules`.
+
+## The contract: late claims and the record
+
+A finding on a version whose stake has rolled forward or closed is a **late
+claim** (decision D6): `lateClaim(listingId, archiveHash, ciphertextSha256)`
+on a `Rolled` or `Closed` listing, open to every hunter, with the bond plus the
+live fee (`commitPrice`). It is commit-shaped: `disclose` within the hour
+(erratum E5), the listing's fix window from the disclosure (the maker may flag
+or release it), a reveal with the E1 line once every earlier claim on the
+listing has resolved, `finalize`, a dispute if the maker wants one, `settle`.
+It pays **no award**: the bond comes back unless the outcome is INVALID. It is
+recorded under `later` only (`lateClaims`, `lateOutcomeCounts`, `lateExpired`,
+and a valid one among the findings with `late` set), never in the counts the
+stake earned while it took commits, and it does not hold `close()`.
+
+`recordByHash(artifactHash)` returns the record of design §4.1 for a hash:
+every listing of it (state, times, lapsed, invited, award table, bond, escrow,
+owed, value at risk, lineage with the neighbours' hashes, its own counts),
+`active` (those not closed), the history summed over them (claims, pending,
+settled by outcome, released, undisclosed, unrevealed, no verdict, disputes and
+their results, and `later`), every valid finding (class, paid, owed,
+revealed-at, settled-at, bCID, dispute result) and every bad-disclosure flag
+with what became of the claim. It states facts; the labels (scanned, staked,
+under-staked, invited, a false flag) are computed off-chain. A record of 300
+claims costs about 4.2M gas to read; a longer one is paged with
+`recordPage(artifactHash, listingOffset, listingLimit, itemOffset, itemLimit)`:
+a page of the hash's listings and, of the findings and the flags, a window of
+each list over those listings, with the totals to page by.
+
+## Deploying
+
+`onchain/deploy_testnet.sh` (Base Sepolia) and `onchain/deploy_mainnet.sh`
+(Base, which asks for confirmation) run
+`deploy/01_deploy_stake_attestation.js`: `ClaimLogic`, then `RecordLogic`, then
+`StakeAttestation` linked to both, whose constructor creates the lens and the
+wallet implementation. Every value comes from the environment, which the
+scripts may load from an untracked `.env` (`.env.example` names them): the
+deployer's `PRIVATE_KEY`, the aggregator (`VERDIKTA_AGGREGATOR_BASE_SEPOLIA`
+or `VERDIKTA_AGGREGATOR_BASE`) and the constructor arguments
+(`SA_INITIAL_OWNER`, `SA_FEE_RECIPIENT`, `SA_LISTING_FEE_WEI`). The script
+writes `deployments/<chainId>-<network>.json` and the merged ABI, and verifies
+on BaseScan when `ETHERSCAN_API_KEY` is set (`deploy/verify.js` retries).
+`npx hardhat run deploy/01_deploy_stake_attestation.js` with no network
+deploys on the in-process network against the mock aggregator, as a test.
 
 ## The mock aggregator
 
@@ -169,6 +216,7 @@ real contract cannot produce is not added to the mock.
 `.github/workflows/stake-attestation.yml` runs on pull requests into `main` and
 `claude/stake-attestation` that touch this folder or the workflow. It installs
 each package with `npm ci --ignore-scripts`, runs its tests, the Hardhat tests,
-the Playwright smoke test and the banned-words check, and uses no secrets. A new
+the contract sizer, the coverage gate (a job of its own), the Playwright smoke
+test and the banned-words check, and uses no secrets. A new
 package is added to the workflow and to `shared/test/repo/helpers.js` together;
 the workflow test fails until both list it.

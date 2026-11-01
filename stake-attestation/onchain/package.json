@@ -12,6 +12,10 @@
     "test": "hardhat test",
     "gas": "REPORT_GAS=1 hardhat test",
     "coverage": "hardhat coverage",
+    "coverage:check": "hardhat coverage && node scripts/check-coverage.js",
+    "size": "hardhat size-contracts",
+    "deploy:base-sepolia": "./deploy_testnet.sh",
+    "deploy:base": "./deploy_mainnet.sh",
     "clean": "hardhat clean"
   },
   "devDependencies": {
@@ -29,6 +33,7 @@
     "chai": "^4.3.0",
     "ethers": "^6.15.0",
     "hardhat": "^2.26.3",
+    "hardhat-contract-sizer": "^2.10.1",
     "hardhat-gas-reporter": "^1.0.10",
     "solidity-coverage": "^0.8.16",
     "typechain": "^8.3.0"

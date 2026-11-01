@@ -72,19 +72,16 @@ describe("StakeAttestation: the record (P2e, design §4.1, §13.4)", function ()
       emptyHistory(r.history);
     });
 
-    it("returns each listing's state, kind, terms, money and times; active names those not Closed", async function () {
+    it("returns each listing that opened with its state, kind, terms, money and times; active names those not Closed", async function () {
       const { sa, maker, other, hunters } = await loadFixture(deploy);
       const artifact = { kind: 1n, repo: H.REPO, baseCommit: freshCommit(), chainId: 8453n, addr: hunters[9].address };
       const p = params({ artifact, allowlist: [hunters[0].address], valueAtRiskUsd: 250_000n });
       const listed = await listAs(sa, maker, p);
       const listedAt = (await sa.getListing(listed)).listedAt;
+      // Listed but not funded: no stake yet, so nothing on the record (listingsByHash has it).
       let r = await sa.recordByHash(await hashOf(sa, listed));
-      expect(r.kind).to.equal(1n);
-      expect(r.listingCount).to.equal(1n);
-      expect([...r.active]).to.deep.equal([listed]);
-      let lr = r.listings[0];
-      expect([lr.listingId, lr.maker, lr.state]).to.deep.equal([listed, maker.address, ListingState.Listed]);
-      expect([lr.openedAt, lr.fundedUntil, lr.lapsed]).to.deep.equal([0n, 0n, false]);
+      expect([r.listingCount, r.listings.length, r.active.length]).to.deep.equal([0n, 0, 0]);
+      expect([...(await sa.listingsByHash(await hashOf(sa, listed)))]).to.deep.equal([listed]);
 
       const fee = await sa.feeDue(listed);
       const fundRc = await (await sa.connect(maker).fund(listed, fee, { value: fee + TOP + 5n })).wait();
@@ -92,9 +89,11 @@ describe("StakeAttestation: the record (P2e, design §4.1, §13.4)", function ()
       // The same hash listed by a second maker: one record, two listings.
       const second = await openListing(sa, other, p);
       r = await sa.recordByHash(await hashOf(sa, listed));
+      expect(r.kind).to.equal(1n);
       expect(r.listingCount).to.equal(2n);
       expect([...r.active]).to.deep.equal([listed, second]);
-      lr = listingIn(r, listed);
+      let lr = listingIn(r, listed);
+      expect([lr.listingId, lr.maker]).to.deep.equal([listed, maker.address]);
       expect(lr.state).to.equal(ListingState.Open);
       expect(lr.invited).to.equal(true);
       expect(lr.artifactChainId).to.equal(8453n);
@@ -199,6 +198,23 @@ describe("StakeAttestation: the record (P2e, design §4.1, §13.4)", function ()
       expect([...r.findings].map((x) => x.dispute)).to.deep.equal([DisputeResult.Held, DisputeResult.Overturned, DisputeResult.NoVerdict]);
       expect([...r.findings].map((x) => x.outcome)).to.deep.equal([Outcome.HIGH, Outcome.MEDIUM, Outcome.MEDIUM]);
       expect([...r.findings].map((x) => x.paidWei)).to.deep.equal([AWARDS[2], AWARDS[1], AWARDS[1]]);
+    });
+
+    it("never shows a listing that was never funded, though a spammer lists the hash many times", async function () {
+      const { sa, maker, hunters } = await loadFixture(deploy);
+      const p = params({ artifact: atCommit(freshCommit()) });
+      const real = await openListing(sa, maker, p);
+      for (let i = 0; i < 6; i++) await listAs(sa, hunters[i], p); // one listing per address, never funded
+      const h = await hashOf(sa, real);
+      expect((await sa.listingsByHash(h)).length).to.equal(7);
+      const r = await sa.recordByHash(h);
+      expect(r.listingCount).to.equal(1n);
+      expect([...r.listings].map((l) => l.listingId)).to.deep.equal([real]);
+      // One that opens later joins the record, in opening order.
+      const late = (await sa.listingsByHash(h))[3];
+      const fee = await sa.feeDue(late);
+      await sa.connect(hunters[2]).fund(late, fee, { value: fee + TOP });
+      expect([...(await sa.recordByHash(h)).listings].map((l) => l.listingId)).to.deep.equal([real, late]);
     });
 
     it("sums the history over every listing of the hash, Closed included, and keeps each listing's own", async function () {

@@ -61,7 +61,7 @@ async function revealedLate(sa, hunter, listingId, opts = {}) {
 describe("StakeAttestation: late claims (P2e, decision D6)", function () {
   // ------------------------------------------------------------------ lateClaim()
   describe("lateClaim()", function () {
-    it("is taken on a Rolled or Closed listing only: Listed, Open, lapsed and Depleted listings refuse it", async function () {
+    it("is taken on a listing whose stake ended, Rolled or Closed after it opened: Listed, Open, lapsed, Depleted and closed-unfunded listings refuse it", async function () {
       const { sa, aggregator, maker, hunters } = await loadFixture(deploy);
       const hunter = hunters[0];
       const fresh = () => params({ artifact: atCommit(freshCommit()) });
@@ -75,8 +75,11 @@ describe("StakeAttestation: late claims (P2e, decision D6)", function () {
       expect((await sa.getListing(depleted)).state).to.equal(ListingState.Depleted);
       const { id: rolled } = await rolledListing(sa, maker, fresh());
       const closed = await closedListing(sa, maker, fresh());
+      // Closed without ever opening: there was never a stake to be late for.
+      const neverOpened = await listAs(sa, maker, fresh());
+      await sa.connect(maker).close(neverOpened);
 
-      for (const id of [listed, open, depleted]) {
+      for (const id of [listed, open, depleted, neverOpened]) {
         await expect(sa.connect(hunter).lateClaim(id, ARCHIVE, CT, { value: BOND + FEE }), `listing ${id}`)
           .to.be.revertedWith("not accepting late claims");
         expect(await sa.acceptsLateClaims(id)).to.equal(false);

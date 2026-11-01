@@ -82,6 +82,8 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       // P2d's actions draw from their own stream and run as extra steps, so the P2c sequence
       // keeps its pace (they still change the state it acts on).
       const r2 = rng(seed ^ 0x5eed);
+      // P2e's actions (late claims, flags) draw from a third stream, for the same reason.
+      const r3 = rng(seed ^ 0x2e2e);
       const listings = []; // { id, maker }
       const claims = []; // { id, listingId, hunter }
       const accounts = [...new Set([...makers, ...hunters].map((a) => a.target ?? a.address))];
@@ -295,7 +297,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           await attempt("plainEth", () => r.pick(hunters.filter((h) => !h.act)).sendTransaction({ to: sa.target, value: 1n }));
         },
       };
-      const extras = {
+      const later = {
         async lateClaim() {
           if (claims.length >= 56) return;
           const ended = [];
@@ -304,24 +306,26 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
             if (st === ListingState.Rolled || st === ListingState.Closed) ended.push(x);
           }
           if (!ended.length) return;
-          const { id } = r2.pick(ended);
-          const hunter = r2.pick(hunters);
+          const { id } = r3.pick(ended);
+          const hunter = r3.pick(hunters);
           const price = await sa.commitPrice(id);
           const before = await sa.claimCount();
           await attempt("lateClaim", () =>
-            send(hunter, "lateClaim", [id, ethers.sha256(ethers.toBeHex(before + 1n, 32)), H.CT], price + BigInt(r2.pick([0, 0, 1000]))));
+            send(hunter, "lateClaim", [id, ethers.sha256(ethers.toBeHex(before + 1n, 32)), H.CT], price + BigInt(r3.pick([0, 0, 1000]))));
           if ((await sa.claimCount()) === before) return;
           const claim = { id: before + 1n, listingId: id, hunter, late: true };
           claims.push(claim);
-          if (r2.next() < 0.8) await attempt("disclose", () => send(hunter, "disclose", [claim.id, H.CT_CID]));
+          if (r3.next() < 0.8) await attempt("disclose", () => send(hunter, "disclose", [claim.id, H.CT_CID]));
         },
         async flag() {
           const ready = await claimsIn([ClaimState.Committed]);
           if (!ready.length) return;
-          const c = r2.pick(ready);
+          const c = r3.pick(ready);
           const { maker } = listings.find((l) => l.id === c.listingId);
           await attempt("flag", () => send(maker, "flagBadDisclosure", [c.id]));
         },
+      };
+      const extras = {
         async dispute() {
           for (const c of shuffled(await claimsIn([ClaimState.Judged]))) {
             const k = await sa.getClaim(c.id);
@@ -355,7 +359,8 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         expire: 4, topUp: 6, withdraw: 5, close: 2, rollForward: 2, wait: 6, refunds: 3, rejecting: 3, plainEth: 1,
       };
       const bag = Object.entries(weights).flatMap(([k, w]) => Array(w).fill(k));
-      const bag2 = Object.entries({ dispute: 1, retrigger: 3, recover: 2, faults: 2, lateClaim: 3, flag: 1 }).flatMap(([k, w]) => Array(w).fill(k));
+      const bag2 = Object.entries({ dispute: 1, retrigger: 3, recover: 2, faults: 2 }).flatMap(([k, w]) => Array(w).fill(k));
+      const bag3 = Object.entries({ lateClaim: 3, flag: 1 }).flatMap(([k, w]) => Array(w).fill(k));
 
       await actions.list();
       await checkInvariant(0, "list");
@@ -366,6 +371,11 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         if (r2.next() < 0.25) {
           const extra = r2.pick(bag2);
           await extras[extra]();
+          await checkInvariant(step, extra);
+        }
+        if (r3.next() < 0.2) {
+          const extra = r3.pick(bag3);
+          await later[extra]();
           await checkInvariant(step, extra);
         }
       }
@@ -413,6 +423,11 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         const expired = (xs, ...why) => n(xs, (c) => c.k.state === ClaimState.Expired && why.includes(c.k.expiry));
         const rec = await sa.recordByHash((await sa.getListing(id)).artifactHash);
         const at = `seed ${seed} listing ${id}`;
+        if ((await sa.getListing(id)).openedAt === 0n) {
+          // Never funded: no stake, no claims, not on the record.
+          expect([rec.listingCount, BigInt(mine.length)], at).to.deep.equal([0n, 0n]);
+          continue;
+        }
         expect(rec.listingCount, at).to.equal(1n);
         for (const h of [rec.history, rec.listings[0].history]) {
           expect(h.claims, `${at} claims`).to.equal(BigInt(stake.length));
@@ -447,7 +462,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       }
 
       // The sequence must have reached the paths that move money.
-      for (const name of ["commit", "reveal", "finalize", "settle", "lateClaim"]) {
+      for (const name of ["commit", "reveal", "finalize", "settle"]) {
         expect(stats.ok[name] || 0, `seed ${seed}: ${name} succeeded ${JSON.stringify(stats)}`).to.be.greaterThan(0);
       }
       expect(stats.ok.plainEth || 0).to.equal(0);

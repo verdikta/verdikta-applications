@@ -10,7 +10,7 @@ import {ClaimRules} from "./ClaimRules.sol";
 
 /// @title ClaimLogic
 /// @notice The bodies of StakeAttestation's claim functions, as an external (linked) library,
-///         so the contract stays under the EIP-170 size limit (design §13; build nodes P2b-P2d).
+///         so the contract stays under the EIP-170 size limit (design §13; build nodes P2b-P2e).
 /// @dev Every external function here runs by DELEGATECALL from StakeAttestation, on its storage
 ///      (the storage pointers it passes), with its msg.sender and its balance, and emits its
 ///      events (declared in StakeAttestation, so its ABI lists them). The compiler refuses a
@@ -19,9 +19,18 @@ import {ClaimRules} from "./ClaimRules.sol";
 ///      listing lookup, the listing's acceptsCommits / isAllowed, CID shape checks, the
 ///      non-reentrancy guard, and every outgoing payment (_payOrCredit).
 ///      Time and fee rules come from ClaimRules, which the lens shares.
+///
+///      Late claims (P2e, decision D6) run through the same functions: `late` is set at commit and
+///      every later step is a claim's, except that settle pays no award, a late claim is not one
+///      of the listing's pendingClaims (resolve), and its counts go to the listing's `later`
+///      (lateClaims, lateOutcomeCounts, lateExpired) instead of the history: never claimsCommitted,
+///      outcomeCounts, releasedClaims, the expiry counts or the dispute counts.
 library ClaimLogic {
     /// @notice Commit: store the two hashes, the bond and the prepay; join the tail of the
-    ///         listing's commit-order queue (erratum E5, decision D5).
+    ///         listing's commit-order queue (erratum E5, decision D5). The caller has checked
+    ///         acceptsCommits and isAllowed for a commit; `late` (lateClaim, decision D6) needs
+    ///         instead a listing whose stake ended: Rolled, or Closed after it opened (closed
+    ///         unfunded, it never had one). No allowlist.
     function commit(
         mapping(uint256 => StakeAttestation.Claim) storage claims,
         StakeAttestation.Listing storage l,
@@ -30,8 +39,17 @@ library ClaimLogic {
         uint256 claimId,
         bytes32 archiveHash,
         bytes32 ciphertextSha256,
-        uint256 value
+        uint256 value,
+        bool late
     ) external {
+        if (late) {
+            StakeAttestation.ListingState s = l.state;
+            require(
+                s == StakeAttestation.ListingState.Rolled
+                    || (s == StakeAttestation.ListingState.Closed && l.openedAt != 0),
+                "not accepting late claims"
+            );
+        }
         require(archiveHash != bytes32(0), "bad archiveHash");
         require(ciphertextSha256 != bytes32(0), "bad ciphertextSha256");
         uint256 fee = verdikta.maxTotalFee(ClaimRules.effectiveFee(l.oracle.maxOracleFee, verdikta.maxOracleFee()));
@@ -59,10 +77,17 @@ library ClaimLogic {
             c.prevInOrder = tail;
         }
         l.tailClaim = id;
-        l.pendingClaims += 1;
-        l.claimsCommitted += 1;
-
-        emit StakeAttestation.Committed(claimId, listingId, msg.sender, archiveHash, ciphertextSha256, bond, prepay);
+        if (late) {
+            // Behind every pending claim in the queue, but never one of pendingClaims: no award
+            // rides on it, so it holds neither close() nor the escrow.
+            c.late = true;
+            l.lateClaims += 1;
+            emit StakeAttestation.LateClaim(claimId, listingId, msg.sender, archiveHash, ciphertextSha256, bond, prepay);
+        } else {
+            l.pendingClaims += 1;
+            l.claimsCommitted += 1;
+            emit StakeAttestation.Committed(claimId, listingId, msg.sender, archiveHash, ciphertextSha256, bond, prepay);
+        }
     }
 
     /// @notice Disclose: the ciphertext CID, within DISCLOSE_WINDOW of the commit; the fix window
@@ -82,20 +107,28 @@ library ClaimLogic {
         c.disclosedAt = uint64(block.timestamp);
         c.fixWindowEnd = end;
         // Disclosed after a roll-forward: the maker had not seen it, so it gets its own window.
-        if (l.state == StakeAttestation.ListingState.Rolled) c.disclosedAfterRoll = true;
+        // rolledAt, not the state: a late claim on a listing that rolled and then closed is
+        // disclosed after the roll too.
+        if (l.rolledAt != 0) c.disclosedAfterRoll = true;
         emit StakeAttestation.Disclosed(claimId, c.listingId, ciphertextCid, end);
     }
 
-    /// @notice The maker flags a bad disclosure: within disclosureGrace of it, once.
-    function flagBadDisclosure(StakeAttestation.Claim storage c, StakeAttestation.Listing storage l, uint256 claimId)
-        external
-    {
+    /// @notice The maker flags a bad disclosure: within disclosureGrace of it, once. The claim
+    ///         joins the listing's flagged claims, in flag order, for the record.
+    /// @param flagged the listing's flagged claims (StakeAttestation._flaggedClaims)
+    function flagBadDisclosure(
+        StakeAttestation.Claim storage c,
+        StakeAttestation.Listing storage l,
+        uint256[] storage flagged,
+        uint256 claimId
+    ) external {
         require(msg.sender == l.maker, "not maker");
         uint256 disclosedAt = c.disclosedAt;
         require(disclosedAt != 0, "not disclosed");
         require(block.timestamp < disclosedAt + l.disclosureGrace, "grace over");
         require(!c.flaggedBadDisclosure, "already flagged");
         c.flaggedBadDisclosure = true;
+        flagged.push(claimId);
         emit StakeAttestation.Flagged(claimId, c.listingId);
     }
 
@@ -107,6 +140,7 @@ library ClaimLogic {
         require(block.timestamp < revealableAt(c, l), "not in fix window");
         c.released = true;
         c.fixWindowEnd = uint64(block.timestamp);
+        if (!c.late) l.releasedClaims += 1;
         emit StakeAttestation.Released(claimId, c.listingId);
     }
 
@@ -189,7 +223,6 @@ library ClaimLogic {
             }
             // The last attempt's prepay is held only if it was refused; a round that ran spent it.
             if (c.requestId != bytes32(0)) prepayWei = 0;
-            l.noVerdictClaims += 1;
         } else {
             require(c.state == StakeAttestation.ClaimState.Committed, "not committed");
             if (c.disclosedAt == 0) {
@@ -198,14 +231,16 @@ library ClaimLogic {
                     block.timestamp >= uint256(c.committedAt) + ClaimRules.DISCLOSE_WINDOW, "disclose window open"
                 );
                 why = StakeAttestation.Expiry.Undisclosed;
-                l.undisclosedClaims += 1;
             } else {
                 // Decision D5: reverts while an earlier claim is unresolved.
                 require(block.timestamp >= revealDeadline(c, l, claimId), "reveal window open");
                 why = StakeAttestation.Expiry.Unrevealed;
-                l.unrevealedClaims += 1;
             }
         }
+        if (c.late) l.lateExpired += 1;
+        else if (why == StakeAttestation.Expiry.Undisclosed) l.undisclosedClaims += 1;
+        else if (why == StakeAttestation.Expiry.Unrevealed) l.unrevealedClaims += 1;
+        else l.noVerdictClaims += 1;
         c.state = StakeAttestation.ClaimState.Expired;
         c.expiry = why;
         resolve(claims, c, l);
@@ -250,7 +285,7 @@ library ClaimLogic {
         c.disputedOutcome = c.outcome;
         c.disputedAt = uint64(block.timestamp);
         c.disputeWallet = wallet;
-        l.disputesFiled += 1;
+        if (!c.late) l.disputesFiled += 1;
 
         // Erratum E2: the dispute archive first, then what the claim's own round carried (no
         // claim on the listing can have settled since: this one has headed the queue from its
@@ -370,14 +405,17 @@ library ClaimLogic {
                     ? StakeAttestation.DisputeResult.Held
                     : StakeAttestation.DisputeResult.Overturned;
                 c.dispute = result;
-                if (result == StakeAttestation.DisputeResult.Held) l.disputesHeld += 1;
-                else l.disputesOverturned += 1;
+                // A late claim's dispute is on its finding, never in the history's counts.
+                if (!c.late) {
+                    if (result == StakeAttestation.DisputeResult.Held) l.disputesHeld += 1;
+                    else l.disputesOverturned += 1;
+                }
                 emit StakeAttestation.DisputeJudged(
                     claimId, listingId, result, StakeAttestation.Outcome(outcome), packed, justification
                 );
             } else {
                 c.dispute = StakeAttestation.DisputeResult.NoVerdict;
-                l.disputesNoVerdict += 1;
+                if (!c.late) l.disputesNoVerdict += 1;
                 emit StakeAttestation.DisputeFailed(claimId, listingId, requestId, ok);
             }
         }
@@ -407,6 +445,8 @@ library ClaimLogic {
     ///           rest of the award is owed (the claim's owedWei, the listing's owedWei, and the
     ///           owed queue, paid by the maker's next fund in commit order). A payout that leaves
     ///           an Open listing's escrow below the top award makes it Depleted.
+    ///         - a late claim (decision D6): no award at any class, so the bond alone, and it is
+    ///           counted under later (lateOutcomeCounts); a valid one is still published.
     /// @param valid  the listing's valid findings (StakeAttestation._validFindings)
     /// @param owedQ  the listing's owed claims, in settlement order (StakeAttestation._owedClaims)
     function settle(
@@ -425,7 +465,9 @@ library ClaimLogic {
         c.state = StakeAttestation.ClaimState.Settled;
         c.settledAt = uint64(block.timestamp);
         resolve(claims, c, l);
-        l.outcomeCounts[outcome] += 1;
+        bool late = c.late;
+        if (late) l.lateOutcomeCounts[outcome] += 1;
+        else l.outcomeCounts[outcome] += 1;
 
         address hunter = c.hunter;
         payee = outcome == ClaimRules.INVALID ? l.maker : hunter;
@@ -433,8 +475,9 @@ library ClaimLogic {
         uint256 paid;
         uint256 owed;
         if (outcome >= ClaimRules.LOW) {
+            // Published, late or not: later requests carry it as a prior finding (§13.3).
             valid.push(claimId);
-            uint256 award = ClaimRules.awardFor(l.awards, uint8(l.lowestClassCounted), outcome);
+            uint256 award = late ? 0 : ClaimRules.awardFor(l.awards, uint8(l.lowestClassCounted), outcome);
             if (award != 0) {
                 uint256 escrow = l.escrowWei;
                 paid = award < escrow ? award : escrow;
@@ -501,8 +544,9 @@ library ClaimLogic {
 
     /// @dev A claim leaves the commit-order queue, settled or expired. O(1): unlink it.
     ///      When it was the head, the next claim becomes the head and its reveal clock may start
-    ///      now (decision D5). Callers set the claim's final state; this keeps pendingClaims and
-    ///      the queue true. Must be called exactly once per claim, while it is unresolved.
+    ///      now (decision D5). Callers set the claim's final state; this keeps pendingClaims (which
+    ///      a late claim is never one of) and the queue true. Must be called exactly once per
+    ///      claim, while it is unresolved.
     function resolve(
         mapping(uint256 => StakeAttestation.Claim) storage claims,
         StakeAttestation.Claim storage c,
@@ -523,7 +567,7 @@ library ClaimLogic {
         }
         c.prevInOrder = 0;
         c.nextInOrder = 0;
-        l.pendingClaims -= 1;
+        if (!c.late) l.pendingClaims -= 1;
     }
 
     function revealableAt(StakeAttestation.Claim storage c, StakeAttestation.Listing storage l)

@@ -117,6 +117,28 @@ describe("StakeAttestation: final sweep (P2e)", function () {
     });
   });
 
+  // ------------------------------------------------------------------ catalogue
+  describe("catalogue coverage (verdikta-common data/code-review-fixtures.v1.json)", function () {
+    // Decision D2: the paid pre-flight is out of the MVP, and with it these four cases.
+    const DEFERRED = [
+      "preflight-credited-same-archive-hash", "preflight-not-credited-different-archive-hash",
+      "preflight-forfeited-without-commit", "zero-preflight-fee",
+    ];
+    it("every in-scope contract-layer case has a test named after it; the deferred ones are the four pre-flight cases", function () {
+      const catalogue = require("@verdikta/common/data/code-review-fixtures.v1.json");
+      const ids = catalogue.cases.filter((c) => c.layer === "contract").map((c) => c.id);
+      const titles = fs.readdirSync(__dirname).filter((f) => f.endsWith(".test.js"))
+        .flatMap((f) => [...fs.readFileSync(path.join(__dirname, f), "utf8").matchAll(/\bit\(\s*[`"']([^`"']+)/g)].map((m) => m[1]));
+      const named = (id) => titles.filter((t) => t.startsWith(`${id}:`) || t.startsWith(`${id} `));
+      expect(DEFERRED.every((id) => ids.includes(id)), "the deferred cases are in the catalogue").to.equal(true);
+      for (const id of ids) {
+        if (DEFERRED.includes(id)) expect(named(id), `${id} is deferred (D2)`).to.deep.equal([]);
+        else expect(named(id), `${id} has a test`).to.have.length(1);
+      }
+      expect(ids.length - DEFERRED.length).to.equal(23);
+    });
+  });
+
   // ------------------------------------------------------------------ size
   describe("size (EIP-170, EIP-3860)", function () {
     it("every contract that is deployed fits: runtime at most 24,576 bytes, initcode at most 49,152", async function () {

@@ -30,7 +30,9 @@ import {IVerdiktaAggregator} from "../interfaces/IVerdiktaAggregator.sol";
 ///         (how much of a round's worst-case cost the oracles leave unspent), setRequestGasCost
 ///         (extra gas a request burns, standing in for the real keeper's selection loop and the
 ///         K oracle dispatches, whose cost grows with the registered oracles), scriptResult,
-///         scriptLateResult.
+///         scriptLateResult. Two fault switches model an aggregator change a requester must
+///         survive (a paused or broken withdrawal): setWithdrawBroken (withdrawEth reverts) and
+///         setWithdrawBurnsGas (withdrawEth runs out of gas).
 ///         A scripted vector must have a length a real round can produce (2..maxLikelihoodLength,
 ///         the real reveal bounds); its values are free, so malformed vectors can be tested.
 contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausable {
@@ -69,6 +71,8 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     uint256 public feeMultiplier = 3;                    // stands in for K + B*P
     uint256 public refundAmount;                         // unspent part of `required`, per round
     uint256 public requestGasCost;                       // extra gas each request burns (0 = none)
+    bool public withdrawBroken;                          // fault switch: withdrawEth reverts
+    bool public withdrawBurnsGas;                        // fault switch: withdrawEth burns all its gas
 
     mapping(address => uint256) public override ethOwed;
 
@@ -111,6 +115,8 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     function setFeeMultiplier(uint256 m) external { feeMultiplier = m; }
     function setRefundAmount(uint256 amount) external { refundAmount = amount; }
     function setRequestGasCost(uint256 gasAmount) external { requestGasCost = gasAmount; }
+    function setWithdrawBroken(bool v) external { withdrawBroken = v; }
+    function setWithdrawBurnsGas(bool v) external { withdrawBurnsGas = v; }
 
     function setPaused(bool p) external {
         if (p) _pause();
@@ -246,6 +252,11 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     }
 
     function withdrawEth() external override nonReentrant {
+        require(!withdrawBroken, "aggregator withdraw disabled");
+        if (withdrawBurnsGas) {
+            uint256 x;
+            while (true) { x = x + 1; } // runs until out of gas
+        }
         uint256 amount = ethOwed[msg.sender];
         if (amount == 0) revert NothingOwed();
         ethOwed[msg.sender] = 0;

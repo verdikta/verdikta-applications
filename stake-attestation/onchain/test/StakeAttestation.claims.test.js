@@ -13,6 +13,8 @@ const hre = require("hardhat");
 const { ethers, network } = hre;
 const { time, loadFixture, mine } = require("@nomicfoundation/hardhat-network-helpers");
 const { linkedFactory } = require("./helpers/linked");
+// The record (P2e): the lens's recordByHash for a listing's artifact hash.
+const { recordOf, listingIn, outcomesOf } = require("./helpers/claims");
 
 const { parseEther, ZeroAddress, ZeroHash, sha256, toUtf8Bytes } = ethers;
 
@@ -507,6 +509,12 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       const after = await sa.getClaim(claimId);
       expect(after.state).to.equal(ClaimState.Revealed);
       expect(after.released).to.equal(true);
+
+      // The record shows the window ended by release (P2e).
+      const r = await recordOf(sa, id);
+      for (const h of [r.history, listingIn(r, id).history]) {
+        expect([h.claims, h.pending, h.released]).to.deep.equal([1n, 1n, 1n]);
+      }
     });
 
     it("maker-only, disclosed claims only, inside the fix window only, once", async function () {
@@ -566,6 +574,19 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       // The first claim reveals at once; the second waits its turn in commit order.
       await expect(revealTx(sa, hunters[0], a.claimId)).to.emit(sa, "Revealed");
       await expect(revealTx(sa, hunters[1], b.claimId)).to.be.revertedWith("earlier claim unresolved");
+
+      // The record (P2e): the predecessor's hash shows Rolled, its pending claims and the
+      // successor; the successor's hash carries the badge and links back. Lineage both ways.
+      const predHash = pred.artifactHash;
+      const rp = await recordOf(sa, id);
+      const lp = listingIn(rp, id);
+      expect([lp.state, lp.rolledAt, lp.successor, lp.successorHash]).to.deep.equal([ListingState.Rolled, rolledAt, successor, successorHash]);
+      expect(rp.history.pending).to.equal(3n); // two disclosed, one undisclosed: they settle against it
+      const rs = await recordOf(sa, successor);
+      expect([...rs.active]).to.deep.equal([successor]);
+      const ls = listingIn(rs, successor);
+      expect([ls.state, ls.predecessor, ls.predecessorHash]).to.deep.equal([ListingState.Open, id, predHash]);
+      expect(rs.history.claims).to.equal(0n); // the successor's history starts empty
     });
 
     it("a claim disclosed after the roll-forward gets its own fix window from disclosedAt", async function () {
@@ -643,6 +664,10 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       const c = await sa.getClaim(claimId);
       expect(c.state).to.equal(ClaimState.Committed);
       expect(c.bcid).to.equal("");
+      // The record (P2e): a pending claim, nothing judged or published.
+      const r = await recordOf(sa, id);
+      expect([r.history.claims, r.history.pending, r.findingCount]).to.deep.equal([1n, 1n, 0n]);
+      expect(outcomesOf(r.history)).to.deep.equal([0n, 0n, 0n, 0n, 0n, 0n]);
     });
 
     it("a claim becomes Revealable when the fix window elapses: one second before and at the boundary", async function () {
@@ -1116,6 +1141,12 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       expect(l.headSince).to.equal(deadline);
       await expect(revealTx(sa, hunter, claimId, { value: 0n })).to.be.revertedWith("not committed");
       await expect(sa.expire(claimId)).to.be.revertedWith("not committed");
+      // Recorded as unrevealed (P2e: through recordByHash).
+      const r = await recordOf(sa, id);
+      for (const h of [r.history, listingIn(r, id).history]) {
+        expect([h.claims, h.pending, h.unrevealed, h.undisclosed, h.noVerdict]).to.deep.equal([1n, 0n, 1n, 0n, 0n]);
+      }
+      expect(r.findingCount).to.equal(0n);
     });
 
     it("refuses a disclosed claim inside its fix window, and a revealed claim", async function () {

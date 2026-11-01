@@ -61,11 +61,14 @@ describe("Hardhat tooling", function () {
     expect(hre.tasks, "solidity-coverage task").to.have.property("coverage");
   });
 
-  it("needs no network secrets: the only configured network is the in-process one", async function () {
+  it("needs no network secrets: tests run in-process, and the deploy networks (P2e) are Base Sepolia and Base, keyed from the environment", async function () {
+    expect(hre.network.name).to.equal("hardhat");
     const remote = Object.entries(hre.config.networks).filter(
       ([name, cfg]) => name !== "hardhat" && name !== "localhost" && cfg.url && !/127\.0\.0\.1|localhost/.test(cfg.url)
     );
-    expect(remote.map(([name]) => name)).to.deep.equal([]);
+    expect(remote.map(([name]) => name).sort()).to.deep.equal(["base", "base_sepolia"]);
+    // No key in the config: the accounts are PRIVATE_KEY from the environment, or none.
+    for (const [, cfg] of remote) expect(cfg.accounts.length).to.equal(process.env.PRIVATE_KEY ? 1 : 0);
   });
 });
 
@@ -78,6 +81,51 @@ describe("MockVerdiktaAggregator", function () {
         const sig = ethers.FunctionFragment.from(fragment).format("sighash");
         expect(mock.getFunction(sig), sig).to.not.equal(null);
       }
+    });
+
+    // Conformance (P2e): the mock is the interface, function by function and event by event, so
+    // a test that passes against the mock calls the deployed aggregator the same way.
+    it("conformance: every IVerdiktaAggregator function has the mock's inputs, outputs and state mutability", async function () {
+      const iface = new ethers.Interface((await hre.artifacts.readArtifact("IVerdiktaAggregator")).abi);
+      const mock = new ethers.Interface((await hre.artifacts.readArtifact("MockVerdiktaAggregator")).abi);
+      const shape = (f) => ({
+        sig: f.format("sighash"),
+        outputs: f.outputs.map((o) => o.format("sighash")),
+        mutability: f.stateMutability,
+        payable: f.payable,
+      });
+      const fns = iface.fragments.filter((f) => f.type === "function");
+      expect(fns.map((f) => f.name).sort()).to.deep.equal([
+        "ethOwed", "finalizeEvaluationTimeout", "getAggregationStatus", "getEvaluation", "maxOracleFee",
+        "maxTotalFee", "requestAIEvaluationWithApproval", "responseTimeoutSeconds", "withdrawEth",
+      ]);
+      for (const f of fns) {
+        const m = mock.getFunction(f.format("sighash"));
+        expect(shape(m), f.name).to.deep.equal(shape(f));
+      }
+      // The two calls that move ETH are the only payable / state-changing ones requesters rely on.
+      expect(fns.filter((f) => f.payable).map((f) => f.name)).to.deep.equal(["requestAIEvaluationWithApproval"]);
+    });
+
+    it("conformance: every IVerdiktaAggregator event is the mock's, with the same signature and indexed fields", async function () {
+      const iface = new ethers.Interface((await hre.artifacts.readArtifact("IVerdiktaAggregator")).abi);
+      const mock = new ethers.Interface((await hre.artifacts.readArtifact("MockVerdiktaAggregator")).abi);
+      const events = iface.fragments.filter((f) => f.type === "event");
+      expect(events.map((e) => e.name).sort()).to.deep.equal(["FulfillAIEvaluation", "RequestAIEvaluation"]);
+      for (const e of events) {
+        const m = mock.getEvent(e.topicHash);
+        expect(m, e.name).to.not.equal(null);
+        expect(m.inputs.map((i) => [i.type, i.indexed]), e.name).to.deep.equal(e.inputs.map((i) => [i.type, i.indexed]));
+      }
+    });
+
+    it("conformance: the interface is the bounty program's, which BountyEscrow drives the deployed aggregator with", function () {
+      const fs = require("fs");
+      const path = require("path");
+      const ours = path.join(__dirname, "..", "contracts", "interfaces", "IVerdiktaAggregator.sol");
+      const bounty = path.join(__dirname, "..", "..", "..", "example-bounty-program", "onchain", "contracts", "interfaces", "IVerdiktaAggregator.sol");
+      const norm = (p) => fs.readFileSync(p, "utf8").replace(/\r\n/g, "\n");
+      expect(norm(ours), "a change to the aggregator interface goes to both copies").to.equal(norm(bounty));
     });
 
     it("has no requester callback: settlement never calls the requester", async function () {

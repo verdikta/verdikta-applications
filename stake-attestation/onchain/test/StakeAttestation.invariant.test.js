@@ -19,6 +19,12 @@
 // wallet recovered, and refund attribution is checked: what each (funder, claim) received as
 // LeftoverRefunded is exactly what the aggregator credited to the wallets funded by it
 // (RequesterRefunded), and no wallet keeps a credit or a balance.
+//
+// P2e adds late claims (decision D6) on Rolled and Closed listings and bad-disclosure flags. A
+// late claim's bond and prepay are held as any claim's, it is never paid or owed an award, and
+// it is not one of pendingClaims (it never holds close). At the end the record of every listing
+// (recordByHash) is checked against the claims themselves: every count, the findings in
+// settlement order with what each was paid and owed, and the flags in the order raised.
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
@@ -32,6 +38,7 @@ const REACHED = [
   "Judged", "EvaluationFailed", "Settled", "Depleted", "OwedPaid", "Reopened", "LeftoverRefunded",
   "PaymentDeferred", "Expired", "Closed", "Withdrawn",
   "SubmissionFailed", "Disputed", "DisputeJudged", "DisputeFailed", "Retriggered", "RefundDeferred",
+  "LateClaim", "Flagged",
 ];
 const UNRESOLVED = new Set([ClaimState.Committed, ClaimState.Revealed, ClaimState.Judged, ClaimState.Disputed, ClaimState.RoundFailed]);
 
@@ -107,10 +114,13 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         const pendingBy = new Map();
         for (const c of claims) {
           const k = await sa.getClaim(c.id);
+          expect(k.late, `step ${step} claim ${c.id}: late`).to.equal(Boolean(c.late));
           if (UNRESOLVED.has(k.state)) {
             bonds += k.bondWei;
-            pendingBy.set(c.listingId, (pendingBy.get(c.listingId) || 0n) + 1n);
+            // A late claim never holds close(): it is not one of pendingClaims.
+            if (!k.late) pendingBy.set(c.listingId, (pendingBy.get(c.listingId) || 0n) + 1n);
           }
+          if (k.late) expect([k.paidWei, k.owedWei], `step ${step} late claim ${c.id}: no award`).to.deep.equal([0n, 0n]);
           if (k.state === ClaimState.Committed || (k.state === ClaimState.RoundFailed && k.requestId === ethers.ZeroHash)) {
             prepays += k.prepayWei;
           }
@@ -167,6 +177,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
             disputeWindow: 24n * 3600n,
             revealWindow: 72n * 3600n,
           });
+          p.disclosureGrace = p.fixWindow; // so the maker may flag (P2e); no draw, the sequence is unchanged
           await send(maker, "list", [p, LISTING_CID, DISPUTE_CID, []]);
           const id = await sa.listingCount();
           listings.push({ id, maker });
@@ -285,6 +296,32 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         },
       };
       const extras = {
+        async lateClaim() {
+          if (claims.length >= 56) return;
+          const ended = [];
+          for (const x of listings) {
+            const st = (await sa.getListing(x.id)).state;
+            if (st === ListingState.Rolled || st === ListingState.Closed) ended.push(x);
+          }
+          if (!ended.length) return;
+          const { id } = r2.pick(ended);
+          const hunter = r2.pick(hunters);
+          const price = await sa.commitPrice(id);
+          const before = await sa.claimCount();
+          await attempt("lateClaim", () =>
+            send(hunter, "lateClaim", [id, ethers.sha256(ethers.toBeHex(before + 1n, 32)), H.CT], price + BigInt(r2.pick([0, 0, 1000]))));
+          if ((await sa.claimCount()) === before) return;
+          const claim = { id: before + 1n, listingId: id, hunter, late: true };
+          claims.push(claim);
+          if (r2.next() < 0.8) await attempt("disclose", () => send(hunter, "disclose", [claim.id, H.CT_CID]));
+        },
+        async flag() {
+          const ready = await claimsIn([ClaimState.Committed]);
+          if (!ready.length) return;
+          const c = r2.pick(ready);
+          const { maker } = listings.find((l) => l.id === c.listingId);
+          await attempt("flag", () => send(maker, "flagBadDisclosure", [c.id]));
+        },
         async dispute() {
           for (const c of shuffled(await claimsIn([ClaimState.Judged]))) {
             const k = await sa.getClaim(c.id);
@@ -318,7 +355,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         expire: 4, topUp: 6, withdraw: 5, close: 2, rollForward: 2, wait: 6, refunds: 3, rejecting: 3, plainEth: 1,
       };
       const bag = Object.entries(weights).flatMap(([k, w]) => Array(w).fill(k));
-      const bag2 = Object.entries({ dispute: 1, retrigger: 3, recover: 2, faults: 2 }).flatMap(([k, w]) => Array(w).fill(k));
+      const bag2 = Object.entries({ dispute: 1, retrigger: 3, recover: 2, faults: 2, lateClaim: 3, flag: 1 }).flatMap(([k, w]) => Array(w).fill(k));
 
       await actions.list();
       await checkInvariant(0, "list");
@@ -364,8 +401,53 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         expect(await ethers.provider.getBalance(w), `wallet ${w} balance`).to.equal(0n);
       }
 
+      // The record (P2e) of every listing, against the claims themselves.
+      const flaggedInOrder = (await sa.queryFilter(sa.filters.Flagged())).map((e) => e.args.claimId);
+      for (const { id } of listings) {
+        const mine = [];
+        for (const c of claims.filter((x) => x.listingId === id)) mine.push({ id: c.id, k: await sa.getClaim(c.id) });
+        const stake = mine.filter((c) => !c.k.late);
+        const late = mine.filter((c) => c.k.late);
+        const n = (xs, f) => BigInt(xs.filter(f).length);
+        const byOutcome = (xs) => [0, 1, 2, 3, 4, 5].map((o) => n(xs, (c) => c.k.state === ClaimState.Settled && c.k.outcome === BigInt(o)));
+        const expired = (xs, ...why) => n(xs, (c) => c.k.state === ClaimState.Expired && why.includes(c.k.expiry));
+        const rec = await sa.recordByHash((await sa.getListing(id)).artifactHash);
+        const at = `seed ${seed} listing ${id}`;
+        expect(rec.listingCount, at).to.equal(1n);
+        for (const h of [rec.history, rec.listings[0].history]) {
+          expect(h.claims, `${at} claims`).to.equal(BigInt(stake.length));
+          expect(h.pending, `${at} pending`).to.equal(n(stake, (c) => UNRESOLVED.has(c.k.state)));
+          expect([...h.outcomes], `${at} outcomes`).to.deep.equal(byOutcome(stake));
+          expect(h.released, `${at} released`).to.equal(n(stake, (c) => c.k.released));
+          expect(h.undisclosed, `${at} undisclosed`).to.equal(expired(stake, 1n));
+          expect(h.unrevealed, `${at} unrevealed`).to.equal(expired(stake, 2n));
+          expect(h.noVerdict, `${at} noVerdict`).to.equal(expired(stake, 3n, 4n));
+          expect(h.disputes, `${at} disputes`).to.equal(n(stake, (c) => c.k.dispute !== 0n));
+          expect([h.disputesHeld, h.disputesOverturned, h.disputesNoVerdict], `${at} dispute results`)
+            .to.deep.equal([2n, 3n, 4n].map((d) => n(stake, (c) => c.k.dispute === d)));
+          expect(h.lateClaims, `${at} lateClaims`).to.equal(BigInt(late.length));
+          expect([...h.lateOutcomes], `${at} lateOutcomes`).to.deep.equal(byOutcome(late));
+          expect(h.lateExpired, `${at} lateExpired`).to.equal(expired(late, 1n, 2n, 3n, 4n));
+        }
+        // Findings: every settled valid claim, in settlement order (= commit order on a listing).
+        const valid = mine.filter((c) => c.k.state === ClaimState.Settled && c.k.outcome >= 2n);
+        expect([...rec.findings].map((f) => f.claimId), `${at} findings`).to.deep.equal(valid.map((c) => c.id));
+        expect(rec.findingCount).to.equal(BigInt(valid.length));
+        for (const [i, f] of [...rec.findings].entries()) {
+          const k = valid[i].k;
+          expect([f.outcome, f.late, f.paidWei, f.owedWei, f.dispute, f.revealedAt, f.settledAt, f.bcid, f.hunter], `${at} finding ${f.claimId}`)
+            .to.deep.equal([k.outcome, k.late, k.paidWei, k.owedWei, k.dispute, k.revealedAt, k.settledAt, k.bcid, k.hunter]);
+        }
+        // Flags: every flagged claim, in the order raised.
+        const ids = new Set(mine.map((c) => c.id));
+        expect([...rec.flags].map((f) => f.claimId), `${at} flags`).to.deep.equal(flaggedInOrder.filter((x) => ids.has(x)));
+        expect(n(mine, (c) => c.k.flaggedBadDisclosure)).to.equal(rec.flagCount);
+        const l = await sa.getListing(id);
+        expect([rec.listings[0].escrowWei, rec.listings[0].owedWei, rec.listings[0].state], `${at} money`).to.deep.equal([l.escrowWei, l.owedWei, l.state]);
+      }
+
       // The sequence must have reached the paths that move money.
-      for (const name of ["commit", "reveal", "finalize", "settle"]) {
+      for (const name of ["commit", "reveal", "finalize", "settle", "lateClaim"]) {
         expect(stats.ok[name] || 0, `seed ${seed}: ${name} succeeded ${JSON.stringify(stats)}`).to.be.greaterThan(0);
       }
       expect(stats.ok.plainEth || 0).to.equal(0);

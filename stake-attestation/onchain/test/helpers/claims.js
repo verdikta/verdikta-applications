@@ -16,6 +16,8 @@ const OUTCOME_NAMES = ["INVALID", "DUPLICATE", "LOW", "MEDIUM", "HIGH", "CRITICA
 const ClaimState = {
   Committed: 0n, Revealable: 1n, Revealed: 2n, Judged: 3n, Disputed: 4n, Settled: 5n, Expired: 6n, RoundFailed: 7n,
 };
+const Expiry = { None: 0n, Undisclosed: 1n, Unrevealed: 2n, RoundsFailed: 3n, SubmissionsRefused: 4n };
+const DisputeResult = { None: 0n, Pending: 1n, Held: 2n, Overturned: 3n, NoVerdict: 4n };
 
 const HOUR = 3600n;
 const DAY = 24n * HOUR;
@@ -32,6 +34,8 @@ const DISPUTE_CID = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
 const CT_CID = "bafybeihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku";
 const BCID = "bafkreidivzimqfqtoqxkrpge6bjyhlvxqs3rhe73owtmdulaxr5do5in7u";
 const JUSTIFICATION = "bafkreihjustificationcidxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+// The maker's dispute statement, pinned (erratum E2: only its CID reaches the request).
+const STATEMENT_CID = "bafkreistatementofthemakerxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 const REPO = "https://github.com/acme/vault";
 const COMMIT = "9c1e4f0a3b7d2e5c8f1a4b6d9e0c3f5a7b2d4e6f";
 
@@ -54,6 +58,7 @@ const ORACLE = {
   maxFeeBasedScaling: 1n,
 };
 const FEE = ORACLE.maxOracleFee * 3n; // the mock's maxTotalFee: min(fee, ceiling) * 3
+const DISPUTE_FEE = ORACLE.disputeMaxOracleFee * 3n; // the same for the dispute panel's fee
 
 // The six one-hot verdicts and a few named vectors (order INVALID, DUPLICATE, LOW..CRITICAL).
 const oneHot = (i) => OUTCOME_NAMES.map((_, k) => (k === i ? SCALE : 0));
@@ -175,6 +180,23 @@ async function judgeAs(sa, aggregator, caller, claimId, vector, justification = 
   return { rc, at: await blockTime(rc) };
 }
 
+// the maker disputes a judged claim, paying the live dispute fee unless `value` says otherwise
+async function disputeAs(sa, maker, claimId, { statementCid = STATEMENT_CID, value } = {}) {
+  const { listingId } = await sa.getClaim(claimId);
+  const v = value === undefined ? await sa.disputeFee(listingId) : value;
+  const rc = await (await sa.connect(maker).dispute(claimId, statementCid, { value: v })).wait();
+  const ev = eventsOf(sa, rc, "Disputed")[0];
+  return { rc, requestId: ev.args.requestId, wallet: ev.args.wallet, at: await blockTime(rc) };
+}
+
+// the dispute panel's vector arrives at the aggregator; then the second finalize
+async function judgeDisputeAs(sa, aggregator, caller, claimId, vector, justification = JUSTIFICATION) {
+  const { disputeRequestId } = await sa.getClaim(claimId);
+  await aggregator.scriptResult(disputeRequestId, vector.map(BigInt), justification);
+  const rc = await (await sa.connect(caller).finalize(claimId)).wait();
+  return { rc, at: await blockTime(rc) };
+}
+
 // past the dispute window of a claim judged at `judgedAt`
 async function afterDisputeWindow(sa, claimId) {
   const c = await sa.getClaim(claimId);
@@ -185,10 +207,11 @@ async function afterDisputeWindow(sa, claimId) {
 }
 
 module.exports = {
-  ListingState, Outcome, OUTCOME_NAMES, ClaimState,
+  ListingState, Outcome, OUTCOME_NAMES, ClaimState, Expiry, DisputeResult,
   HOUR, DAY, FIX, DISPUTE, GRACE, REVEAL, SCALE, T,
-  LISTING_CID, DISPUTE_CID, CT_CID, BCID, JUSTIFICATION, REPO, COMMIT,
-  ARCHIVE, CT, CK, EK, LISTING_FEE, AWARDS, TOP, BOND, ORACLE, FEE, V, oneHot,
+  LISTING_CID, DISPUTE_CID, CT_CID, BCID, JUSTIFICATION, STATEMENT_CID, REPO, COMMIT,
+  ARCHIVE, CT, CK, EK, LISTING_FEE, AWARDS, TOP, BOND, ORACLE, FEE, DISPUTE_FEE, V, oneHot,
   atCommit, freshCommit, params, mergedAbi, deploy, eventsOf, blockTime,
   listAs, openListing, commitAs, claimAs, revealAs, revealedClaim, judgeAs, afterDisputeWindow,
+  disputeAs, judgeDisputeAs,
 };

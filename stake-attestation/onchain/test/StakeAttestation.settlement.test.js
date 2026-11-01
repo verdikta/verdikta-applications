@@ -98,9 +98,9 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
     it("with no result while the round is open, reverts 'evaluation not ready' and changes nothing", async function () {
       const { sa, maker, hunter } = await loadFixture(deploy);
       const id = await openListing(sa, maker);
-      const { claimId } = await revealedClaim(sa, hunter, id);
+      const { claimId, rc } = await revealedClaim(sa, hunter, id);
       await expect(sa.finalize(claimId)).to.be.revertedWith("evaluation not ready");
-      await time.increase(299); // the mock's response timeout is 300 s
+      await time.setNextBlockTimestamp((await blockTime(rc)) + 299n); // the mock's response timeout is 300 s
       await expect(sa.finalize(claimId)).to.be.revertedWith("evaluation not ready");
       expect((await sa.getClaim(claimId)).state).to.equal(ClaimState.Revealed);
     });
@@ -243,6 +243,34 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       expect(await sa.INLINE_REFUND_GAS_LIMIT()).to.equal(200_000n);
       await expect(sa.finalize(claimId)).to.emit(sa, "RefundDeferred").withArgs(claimId);
       expect((await sa.getClaim(claimId)).state).to.equal(ClaimState.Judged);
+    });
+
+    it("the refund always gets its whole gas budget: too little gas reverts finalize instead of deferring the refund", async function () {
+      const { sa, aggregator, maker, hunter } = await loadFixture(deploy);
+      await aggregator.setRefundAmount(FEE);
+      const id = await openListing(sa, maker);
+      const { claimId, requestId } = await revealedClaim(sa, hunter, id);
+      await aggregator.scriptResult(requestId, V.HIGH, JUSTIFICATION);
+      const NEEDED = 200_000n + 200_000n / 63n + 30_000n;
+      expect(await sa.INLINE_REFUND_GAS_NEEDED()).to.equal(NEEDED);
+      const estimate = await sa.finalize.estimateGas(claimId);
+      let reverted = 0;
+      for (const limit of [150_000n, 250_000n, 300_000n, estimate - 30_000n, estimate - 5_000n, estimate]) {
+        const snap = await snapshot();
+        try {
+          const rc = await (await sa.finalize(claimId, { gasLimit: limit })).wait();
+          expect(eventsOf(sa, rc, "RefundDeferred"), `limit ${limit}`).to.have.length(0);
+          expect(eventsOf(sa, rc, "LeftoverRefunded"), `limit ${limit}`).to.have.length(1);
+        } catch (e) {
+          reverted++;
+          expect((await sa.getClaim(claimId)).state, `limit ${limit}`).to.equal(ClaimState.Revealed);
+        } finally {
+          await restore(snap);
+        }
+      }
+      expect(reverted).to.be.greaterThan(0);
+      await expect(sa.finalize(claimId, { gasLimit: 250_000n })).to.be.revertedWith("gas below INLINE_REFUND_GAS_NEEDED");
+      await expect(sa.finalize(claimId, { gasLimit: estimate })).to.emit(sa, "LeftoverRefunded").withArgs(claimId, hunter.address, FEE);
     });
 
     it("plain ETH is refused; only an EvaluationWallet clone's refund is accepted", async function () {

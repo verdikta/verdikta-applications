@@ -228,6 +228,7 @@ describe("StakeAttestation: settlement equals @verdikta/common settleBugOutcome 
       ...COMMON_FIXTURE_VECTORS,
       ...Array.from({ length: 24 }, (_, i) => GENERATORS[names[i % names.length]](r)),
     ].filter((v) => v.length >= 2 && v.length <= 20); // what a real round can deliver
+    const seen = { judged: 0, failed: 0, paid: 0 };
     for (const v of sample) {
       const want = commonVerdict(v, STAKES[0]);
       const snap = await network.provider.send("evm_snapshot");
@@ -236,7 +237,10 @@ describe("StakeAttestation: settlement equals @verdikta/common settleBugOutcome 
       const c = await sa.getClaim(claimId);
       if (want === null) {
         expect(c.state, `[${v}]`).to.equal(ClaimState.RoundFailed);
+        seen.failed++;
       } else {
+        seen.judged++;
+        if (want.paidWei > 0n) seen.paid++;
         expect(c.state, `[${v}]`).to.equal(ClaimState.Judged);
         expect(c.outcome, `[${v}]`).to.equal(BigInt(want.outcomeIndex));
         await H.afterDisputeWindow(sa, claimId);
@@ -249,5 +253,8 @@ describe("StakeAttestation: settlement equals @verdikta/common settleBugOutcome 
       }
       await network.provider.send("evm_revert", [snap]);
     }
+    expect(seen.judged).to.be.greaterThan(30);
+    expect(seen.paid).to.be.greaterThan(10);
+    expect(seen.failed).to.be.greaterThan(3);
   });
 });

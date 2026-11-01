@@ -860,6 +860,7 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
         "commit", // anyone allowed on the listing, for themselves (P2b)
         "disclose", // the claim's hunter (P2b)
         "expire", // anyone, once the claim's deadline has passed (P2b)
+        "finalize", // anyone: reads the aggregator's round for a revealed claim (P2c)
         "flagBadDisclosure", // the listing's maker (P2b)
         "fund", // maker only
         "lensDelegate", // this contract only, inside a static frame (P2b)
@@ -871,6 +872,7 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
         "rollForward", // the listing's maker (P2b)
         "setFeeRecipient", // owner
         "setListingFee", // owner
+        "settle", // anyone: moves a judged claim's funds by the settlement rule (P2c)
         "transferOwnership", // owner: hands over the two powers
         "withdraw", // msg.sender's own pull balance
       ]);
@@ -880,7 +882,8 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
       expect(await sa.LISTING_PERIOD()).to.equal(LISTING_PERIOD);
       expect(await sa.PAYOUT_GAS_LIMIT()).to.equal(120_000n);
       for (const name of mutating) {
-        expect(name, "no setter beyond the fee and its recipient").to.not.match(/^set(?!ListingFee$|FeeRecipient$)/);
+        // a setter is set<Capital>...; settle() is not one
+        expect(name, "no setter beyond the fee and its recipient").to.not.match(/^set(?=[A-Z])(?!ListingFee$|FeeRecipient$)/);
       }
       const owner = await ethers.getSigner(await sa.owner());
       expect(owner.address).to.not.equal(maker.address);

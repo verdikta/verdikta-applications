@@ -24,7 +24,7 @@ contract StakeAttestationLens {
     IVerdiktaAggregator public immutable verdikta;
 
     constructor(IVerdiktaAggregator verdikta_) {
-        host = StakeAttestation(msg.sender);
+        host = StakeAttestation(payable(msg.sender));
         verdikta = verdikta_;
     }
 
@@ -81,6 +81,32 @@ contract StakeAttestationLens {
         StakeAttestation.Claim memory c = host.getClaim(claimId);
         uint256 live = _liveFee(host.getListing(c.listingId));
         return live > c.prepayWei ? live - c.prepayWei : 0;
+    }
+
+    /// @notice How a jury vector would settle under a listing's terms: the rule finalize and
+    ///         settle apply (ClaimRules.judge and awardFor), for a site or tool to preview.
+    /// @return wellFormed false when the vector is no verdict (finalize would fail the round)
+    /// @return outcome    the settled outcome (INVALID when not wellFormed)
+    /// @return awardWei   the award the outcome earns: awards[class] at or above
+    ///                    lowestClassCounted, else 0 (what settle pays, before any shortfall)
+    function judgeVector(uint256 listingId, uint256[] calldata vector)
+        external view returns (bool wellFormed, StakeAttestation.Outcome outcome, uint256 awardWei)
+    {
+        StakeAttestation.Listing memory l = host.getListing(listingId);
+        uint8 o;
+        (wellFormed, o) = ClaimRules.judge(vector);
+        outcome = StakeAttestation.Outcome(o);
+        if (wellFormed) awardWei = ClaimRules.awardFor(l.awards, uint8(l.lowestClassCounted), o);
+    }
+
+    /// @notice When settle() accepts a Judged claim: at once (judgedAt) for INVALID and
+    ///         DUPLICATE, at the end of the dispute window for a valid outcome. 0 for a claim
+    ///         that is not Judged.
+    function settleableAt(uint256 claimId) external view returns (uint256) {
+        StakeAttestation.Claim memory c = host.getClaim(claimId);
+        if (c.state != StakeAttestation.ClaimState.Judged) return 0;
+        if (uint8(c.outcome) < ClaimRules.LOW) return c.judgedAt;
+        return uint256(c.judgedAt) + host.getListing(c.listingId).disputeWindow;
     }
 
     function _revealableAt(StakeAttestation.Claim memory c, StakeAttestation.Listing memory l)

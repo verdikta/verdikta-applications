@@ -2,9 +2,9 @@
 pragma solidity 0.8.23;
 
 /// @title ClaimRules
-/// @notice The time and fee rules of a claim, in one place. StakeAttestation enforces them and
-///         StakeAttestationLens reports them; both compile this library in, so the views can
-///         never disagree with what the contract accepts.
+/// @notice The time, fee and settlement rules of a claim, in one place. StakeAttestation
+///         enforces them and StakeAttestationLens reports them; both compile this library in, so
+///         the views can never disagree with what the contract accepts.
 /// @dev Windows are half-open: a window [start, start + length) is open while
 ///      block.timestamp < start + length and over from start + length on.
 library ClaimRules {
@@ -22,6 +22,30 @@ library ClaimRules {
     ///      available (EIP-150); the extra 100k pays for encoding the arguments, the CALL itself
     ///      and finishing either branch afterwards.
     uint256 internal constant SUBMISSION_GAS_NEEDED = SUBMISSION_GAS + SUBMISSION_GAS / 63 + 100_000;
+
+    /// @notice Settlement (design §8.7): the jury's vector over [INVALID, DUPLICATE, LOW, MEDIUM,
+    ///         HIGH, CRITICAL] sums to SCORE_SCALE, less the aggregator's flooring loss (it
+    ///         averages the clustered reveals with integer division, losing under one unit on
+    ///         each of six components: at most 5, erratum E4), so MIN_SCORE_SUM..SCORE_SCALE is
+    ///         a verdict. THRESHOLD is a strict majority (T = 500,001). The same numbers as the
+    ///         common package's OUTCOME_MASS_TOTAL, OUTCOME_MASS_MIN_TOTAL and
+    ///         DEFAULT_SETTLEMENT_THRESHOLD; the tests hold them equal.
+    uint256 internal constant SCORE_SCALE = 1_000_000;
+    uint256 internal constant MIN_SCORE_SUM = SCORE_SCALE - 5;
+    uint256 internal constant THRESHOLD = 500_001;
+    uint256 internal constant OUTCOMES = 6;
+    uint8 internal constant INVALID = 0;
+    uint8 internal constant DUPLICATE = 1;
+    uint8 internal constant LOW = 2;
+
+    /// @notice Gas for the inline recovery of a round's unspent prepay (the wallet pulls its
+    ///         ethOwed and hands it back), as BountyEscrow's INLINE_REFUND_GAS_LIMIT.
+    uint256 internal constant INLINE_REFUND_GAS_LIMIT = 200_000;
+    /// @dev What finalize must hold before the recovery, so the wallet always gets the whole
+    ///      INLINE_REFUND_GAS_LIMIT (EIP-150 keeps 1/64 back) and finishing after it is paid for:
+    ///      whether the recovery is deferred then depends on the aggregator, never on the gas
+    ///      limit a caller picks.
+    uint256 internal constant INLINE_REFUND_GAS_NEEDED = INLINE_REFUND_GAS_LIMIT + INLINE_REFUND_GAS_LIMIT / 63 + 30_000;
 
     /// @notice When a claim's fix window ends (design §7.1, erratum E5).
     /// @param disclosedAt        0 while undisclosed (then NEVER)
@@ -54,5 +78,45 @@ library ClaimRules {
     ///         quote and the request agree), as BountyEscrow._effectiveOracle does.
     function effectiveFee(uint256 listingFee, uint256 ceiling) internal pure returns (uint256) {
         return listingFee > ceiling ? ceiling : listingFee;
+    }
+
+    /// @notice The outcome of a jury vector (design §8.7, decisions 10 and 11), as the common
+    ///         package's settleBugOutcome decides it (the differential test holds them equal).
+    ///         1. Valid when the mass on LOW..CRITICAL together is at least THRESHOLD; the class
+    ///            is then the highest class whose mass at or above it reaches THRESHOLD (the
+    ///            median class, T being a majority). Both in one pass from CRITICAL down: the
+    ///            first class at which the running mass reaches T is the class, and if the
+    ///            running mass never reaches it the valid mass is below T.
+    ///         2. Otherwise DUPLICATE when its mass is at least INVALID's, else INVALID.
+    /// @return wellFormed false for a vector that is no verdict: a length other than OUTCOMES, a
+    ///         component above SCORE_SCALE, or a sum outside MIN_SCORE_SUM..SCORE_SCALE (a failed
+    ///         round, never a revert; the component check comes first so the sum cannot wrap)
+    /// @return outcome    the index into the outcome order (0 when not wellFormed)
+    function judge(uint256[] memory v) internal pure returns (bool wellFormed, uint8 outcome) {
+        if (v.length != OUTCOMES) return (false, 0);
+        uint256 sum;
+        for (uint256 i = 0; i < OUTCOMES; ) {
+            uint256 x = v[i];
+            if (x > SCORE_SCALE) return (false, 0);
+            sum += x; // at most 6 * SCORE_SCALE
+            unchecked { ++i; }
+        }
+        if (sum < MIN_SCORE_SUM || sum > SCORE_SCALE) return (false, 0);
+        uint256 mass; // at or above class i
+        for (uint256 i = OUTCOMES; i > LOW; ) {
+            unchecked { --i; }
+            mass += v[i];
+            if (mass >= THRESHOLD) return (true, uint8(i));
+        }
+        return (true, v[DUPLICATE] >= v[INVALID] ? DUPLICATE : INVALID);
+    }
+
+    /// @notice What a settled outcome pays: awards[class] for a class at or above the listing's
+    ///         lowestClassCounted, else nothing (DUPLICATE and INVALID included).
+    /// @param awards        the listing's table, by class: [LOW, MEDIUM, HIGH, CRITICAL]
+    /// @param lowestCounted the listing's lowestClassCounted, as an outcome index (LOW..CRITICAL)
+    function awardFor(uint256[4] memory awards, uint8 lowestCounted, uint8 outcome) internal pure returns (uint256) {
+        if (outcome < LOW || outcome < lowestCounted) return 0;
+        return awards[outcome - LOW];
     }
 }

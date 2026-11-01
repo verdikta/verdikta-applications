@@ -13,10 +13,11 @@ Build plan: [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md), the graph of one-PR node
 this application is built from; its errata, assumptions and decisions override
 the design where they differ.
 
-**Status:** scaffold, plus the contract's listing half and its claim lifecycle up
-to the evaluation request. The packages below build and test; settlement,
-disputes, late claims, the site's flows and the hunter commands arrive with the
-nodes named in the plan.
+**Status:** scaffold, plus the contract's listing half, its claim lifecycle and
+settlement: finalize by polling the aggregator, the six-outcome rule, payouts,
+depletion and owed awards. The packages below build and test; disputes, failed
+rounds' re-trigger, late claims, the site's flows and the hunter commands arrive
+with the nodes named in the plan.
 
 ## A separate site
 
@@ -53,7 +54,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 
 | Folder | What | Test |
 |---|---|---|
-| `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage), `StakeAttestation` (listings, P2a; claims up to the request, P2b; settlement, disputes and late claims arrive in P2c–P2e) with its `ClaimLogic` library, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface and the mock aggregator. | `npx hardhat test` |
+| `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and late claims arrive in P2d–P2e) with its `ClaimLogic` library, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface and the mock aggregator. | `npx hardhat test` |
 | `server/` | Express API; `GET /health` for now. Port 5009. | `npm test` |
 | `client/` | Vite + React site. Port 5176. | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI: `check`, `commit`, `reveal`, `status`, `claim` arrive in P5. | `npm test` |

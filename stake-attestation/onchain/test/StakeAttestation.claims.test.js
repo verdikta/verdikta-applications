@@ -22,7 +22,7 @@ const Outcome = { INVALID: 0n, DUPLICATE: 1n, LOW: 2n, MEDIUM: 3n, HIGH: 4n, CRI
 const ClaimState = {
   Committed: 0n, Revealable: 1n, Revealed: 2n, Judged: 3n, Disputed: 4n, Settled: 5n, Expired: 6n, RoundFailed: 7n,
 };
-const Expiry = { None: 0n, Undisclosed: 1n, Unrevealed: 2n };
+const Expiry = { None: 0n, Undisclosed: 1n, Unrevealed: 2n, RoundsFailed: 3n, SubmissionsRefused: 4n };
 
 const HOUR = 3600n;
 const DAY = 24n * HOUR;
@@ -901,11 +901,11 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       expect(c.prepayWei).to.equal(FEE);
       // escrow + the fee recipient's pull balance + bond + prepay
       expect(await ethers.provider.getBalance(sa.target)).to.equal(TOP + LISTING_FEE + BOND + FEE);
-      // Still unresolved: it holds its place in commit order, and it is not expirable here.
+      // Still unresolved: it holds its place in commit order, and it is not expirable while the
+      // hunter may re-trigger it (P2d: revealWindow from the failure).
       expect((await sa.getListing(id)).headClaim).to.equal(claimId);
       expect((await sa.getListing(id)).pendingClaims).to.equal(1n);
-      await time.increase(REVEAL);
-      await expect(sa.expire(claimId)).to.be.revertedWith("not committed");
+      await expect(sa.expire(claimId)).to.be.revertedWith("retrigger window open");
     });
 
     it("the request gets exactly SUBMISSION_GAS: whatever gas a reveal brings, a costly aggregator never leaves it RoundFailed", async function () {

@@ -225,12 +225,12 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       await aggregator.scriptResult(requestId, V.CRITICAL, JUSTIFICATION);
       await aggregator.setWithdrawBroken(true);
       const tx = sa.finalize(claimId);
-      await expect(tx).to.emit(sa, "RefundDeferred").withArgs(claimId);
+      await expect(tx).to.emit(sa, "RefundDeferred").withArgs(claimId, (await sa.getClaim(claimId)).evalWallet);
       await expect(tx).to.emit(sa, "Judged");
       await expect(tx).to.not.emit(sa, "LeftoverRefunded");
       const c = await sa.getClaim(claimId);
       expect(c.state).to.equal(ClaimState.Judged);
-      expect(await aggregator.ethOwed(c.evalWallet)).to.equal(FEE); // still the wallet's credit (P2d recovers it)
+      expect(await aggregator.ethOwed(c.evalWallet)).to.equal(FEE); // still the wallet's credit (recoverLeftoverEth, P2d)
     });
 
     it("a refund that burns its gas budget is deferred too, and finalize still completes", async function () {
@@ -241,7 +241,7 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       await aggregator.scriptResult(requestId, V.INVALID, JUSTIFICATION);
       await aggregator.setWithdrawBurnsGas(true);
       expect(await sa.INLINE_REFUND_GAS_LIMIT()).to.equal(200_000n);
-      await expect(sa.finalize(claimId)).to.emit(sa, "RefundDeferred").withArgs(claimId);
+      await expect(sa.finalize(claimId)).to.emit(sa, "RefundDeferred").withArgs(claimId, (await sa.getClaim(claimId)).evalWallet);
       expect((await sa.getClaim(claimId)).state).to.equal(ClaimState.Judged);
     });
 

@@ -20,16 +20,17 @@ import {ClaimRules} from "./libraries/ClaimRules.sol";
 ///         build plan's errata, assumptions and decisions (stake-attestation/docs/BUILD_PLAN.md)
 ///         override it where they differ.
 /// @dev    Built in nodes. P2a: list, fund, renew, close, the listing fee, the pull ledger and
-///         the listing views. P2b (this revision adds it): the claim lifecycle up to the
-///         evaluation request: commit (two hashes, erratum E5), disclose, flagBadDisclosure,
-///         release, rollForward, reveal (the request, §13.3 with errata E1-E3) and expire. Later
-///         nodes extend the types and bookkeeping declared here:
-///         - P2c: finalize by polling, settlement under THRESHOLD, Depleted and owedWei. Its
-///           settle marks a claim Settled and calls ClaimLogic.resolve (which keeps
-///           pendingClaims and the commit-order queue true), and pushes a valid claim onto
-///           _validFindings.
-///         - P2d: dispute, failed rounds (a RoundFailed claim; a failed submission already
-///           enters it here), re-trigger, leftover recovery. P2e: late claims and recordByHash.
+///         the listing views. P2b: the claim lifecycle up to the evaluation request: commit (two
+///         hashes, erratum E5), disclose, flagBadDisclosure, release, rollForward, reveal (the
+///         request, §13.3 with errata E1-E3) and expire. P2c (this revision adds it): finalize
+///         by polling (erratum E4: the aggregator never calls back), settlement of the six
+///         outcomes under THRESHOLD (§8.7), the payouts of §13.2 with per-claim owed amounts,
+///         Depleted, fund paying owed claims first, and the inline recovery of a round's unspent
+///         prepay. Later nodes extend the types and bookkeeping declared here:
+///         - P2d: dispute (Judged -> Disputed; the second finalize is final), failed rounds (a
+///           RoundFailed claim: a refused submission, requestId 0, holds its prepay; a round
+///           finalize failed, requestId set, spent it), re-trigger, recoverLeftoverEth.
+///         - P2e: late claims and recordByHash.
 ///         close() refuses while pendingClaims or owedWei is non-zero (decision D8).
 ///
 ///         Size (EIP-170): the claim functions' bodies are the linked library ClaimLogic, and
@@ -51,8 +52,9 @@ contract StakeAttestation is Ownable2Step {
     // ------------------------------------------------------------------
 
     /// @notice Listed after list; Open once funded (escrow >= the top award, fee paid);
-    ///         Depleted when a payout leaves the escrow below the top award (P2c); Rolled once a
-    ///         successor is named (P2b); Closed after close. Order is ABI: append only.
+    ///         Depleted when a payout leaves an Open listing's escrow below the top award (no new
+    ///         commits; fund pays what is owed first and reopens it at the top award); Rolled
+    ///         once a successor is named; Closed after close. Order is ABI: append only.
     enum ListingState { Listed, Open, Depleted, Rolled, Closed }
 
     /// @notice The six outcomes of a claim, in the order of the jury's vector (design §8.7).
@@ -149,14 +151,19 @@ contract StakeAttestation is Ownable2Step {
         uint64  claimsCommitted;     // every claim ever committed here
         uint64  undisclosedClaims;   // expired without a disclosure (erratum E5)
         uint64  unrevealedClaims;    // expired without a reveal (design decision 15)
+        // settlement (P2c)
+        uint32[6] outcomeCounts;     // settled claims by Outcome
+        uint64  owedCursor;          // _owedClaims[listingId] index of the first claim still owed
     }
 
-    /// @notice A claim's life (design §13.1, erratum E5, decision D5). Order is ABI: append only.
-    ///         Stored: Committed, then Revealed (request submitted) or RoundFailed (the
-    ///         submission failed and the prepay is held; P2d re-triggers), or Expired. P2c
-    ///         adds Judged and Settled, P2d Disputed. Revealable is never stored: a fix window
-    ///         ends by time, by release or by a roll-forward of the whole listing, so the lens
-    ///         derives it (claimState).
+    /// @notice A claim's life (design §13.1, errata E4-E6, decision D5). Order is ABI: append only.
+    ///         Stored: Committed, then Revealed (request submitted) or RoundFailed, or Expired;
+    ///         from Revealed, finalize makes it Judged (a verdict) or RoundFailed (the round ran
+    ///         and settled none); settle makes a Judged claim Settled. RoundFailed with requestId
+    ///         0 is a refused submission whose prepay is held; with a requestId, a failed round
+    ///         whose prepay was spent (P2d re-triggers both). P2d adds Disputed. Revealable is
+    ///         never stored: a fix window ends by time, by release or by a roll-forward of the
+    ///         whole listing, so the lens derives it (claimState).
     enum ClaimState { Committed, Revealable, Revealed, Judged, Disputed, Settled, Expired, RoundFailed }
 
     /// @notice Why a claim expired. The listing counts each (undisclosedClaims, unrevealedClaims).
@@ -195,16 +202,27 @@ contract StakeAttestation is Ownable2Step {
         bytes32 requestId;           // the aggregator's id for the reveal's request (0 if it failed)
         string  ciphertextCid;       // from disclose
         string  bcid;                // the plaintext archive, from the reveal
+        // judgement and settlement (P2c)
+        uint32[6] vector;            // the verdict as finalize read it (each at most SCORE_SCALE)
+        uint64  judgedAt;            // finalize's verdict; the dispute window runs from it
+        uint64  settledAt;
+        Outcome outcome;             // ClaimRules.judge of `vector` (meaningful once Judged)
+        uint128 paidWei;             // award paid so far: at settle, then by fund's owed payments
+        uint128 owedWei;             // award still owed (paidWei + owedWei = the award)
     }
 
     // ------------------------------------------------------------------
     //                     program values (fixed per deployment)
     // ------------------------------------------------------------------
 
-    /// @notice The jury's vector sums to SCORE_SCALE; settlement uses THRESHOLD, a strict
-    ///         majority (design §8.7, T = 500,001). Constants: no setter exists.
-    uint256 public constant SCORE_SCALE = 1_000_000;
-    uint256 public constant THRESHOLD = 500_001;
+    /// @notice The jury's vector sums to SCORE_SCALE, less the aggregator's flooring loss: a sum
+    ///         from MIN_SCORE_SUM to SCORE_SCALE is a verdict (erratum E4). Settlement uses
+    ///         THRESHOLD, a strict majority (design §8.7, T = 500,001), so a 50/50 split on
+    ///         validity is not valid and an exact tie between two classes settles to the lower.
+    ///         Constants: no setter exists. The rule itself is ClaimRules.judge.
+    uint256 public constant SCORE_SCALE = ClaimRules.SCORE_SCALE;
+    uint256 public constant MIN_SCORE_SUM = ClaimRules.MIN_SCORE_SUM;
+    uint256 public constant THRESHOLD = ClaimRules.THRESHOLD;
 
     /// @notice One listing fee buys this much live listing (fund opens it, renew extends it).
     uint256 public constant LISTING_PERIOD = 30 days;
@@ -264,6 +282,14 @@ contract StakeAttestation is Ownable2Step {
     /// @notice What a reveal must hold when it sends the request (see SUBMISSION_GAS).
     uint256 public constant SUBMISSION_GAS_NEEDED = ClaimRules.SUBMISSION_GAS_NEEDED;
 
+    /// @notice Gas for finalize's inline recovery of a round's unspent prepay (the wallet pulls
+    ///         its ethOwed credit and hands it back for the hunter). If it fails, finalize stands
+    ///         and RefundDeferred is emitted; P2d's recoverLeftoverEth retries. finalize reverts
+    ///         unless it can give the recovery all of it (INLINE_REFUND_GAS_NEEDED left), so a
+    ///         deferral is the aggregator's doing, never the caller's gas limit.
+    uint256 public constant INLINE_REFUND_GAS_LIMIT = ClaimRules.INLINE_REFUND_GAS_LIMIT;
+    uint256 public constant INLINE_REFUND_GAS_NEEDED = ClaimRules.INLINE_REFUND_GAS_NEEDED;
+
     // ------------------------------------------------------------------
     //                               state
     // ------------------------------------------------------------------
@@ -277,6 +303,12 @@ contract StakeAttestation is Ownable2Step {
     /// @notice The EvaluationWallet every request's wallet is an EIP-1167 clone of. Created once,
     ///         in the constructor. Informational: nothing operates the implementation itself.
     EvaluationWallet public immutable walletImplementation;
+
+    /// @notice The code hash of an EIP-1167 clone of walletImplementation: the only sender whose
+    ///         plain ETH receive() accepts. Only this contract operates such a clone (its requester
+    ///         is this contract), and a clone sends ETH only from refundLeftoverEth, so every wei
+    ///         that arrives is a refund this contract asked for and routes on.
+    bytes32 public immutable walletCodehash;
 
     /// @notice The fee a maker pays per LISTING_PERIOD, charged by the opening fund() and by
     ///         renew(). Owner-set; a change applies from the next fund or renew.
@@ -314,6 +346,10 @@ contract StakeAttestation is Ownable2Step {
     ///      most recent MAX_PRIOR_FINDINGS ride along in every later request (design §13.3).
     mapping(uint256 => uint256[]) internal _validFindings;
 
+    /// @dev listingId => the claims settled with an award shortfall, in settlement (= commit)
+    ///      order; Listing.owedCursor is the first still owed. fund pays them in that order.
+    mapping(uint256 => uint256[]) internal _owedClaims;
+
     // Non-reentrancy guard (1 = unlocked, 2 = locked), as BountyEscrow's.
     uint256 private _lock = 1;
 
@@ -336,7 +372,8 @@ contract StakeAttestation is Ownable2Step {
         string disputeCid
     );
 
-    /// @notice Escrow was added (the opening amount net of the fee, or a top-up).
+    /// @notice Escrow was added: the opening amount net of the fee, or what a top-up left after
+    ///         paying owed awards (OwedPaid), which may be 0.
     event Funded(uint256 indexed listingId, address indexed maker, uint256 amountWei, uint256 escrowWei);
 
     /// @notice The listing opened: escrow at least the top award and the first period paid. The feed announces it.
@@ -398,6 +435,30 @@ contract StakeAttestation is Ownable2Step {
     /// @notice The claim expired: its bond went to the maker and its prepay back to the hunter.
     event Expired(uint256 indexed claimId, uint256 indexed listingId, Expiry reason);
 
+    /// @notice finalize read a verdict: the claim is Judged and the dispute window runs from now
+    ///         (a valid outcome); INVALID and DUPLICATE may be settled at once.
+    event Judged(uint256 indexed claimId, uint256 indexed listingId, Outcome outcome, uint32[6] vector, string justificationCid);
+
+    /// @notice finalize found the round over without a verdict: no result (timed out), or a
+    ///         result that is no verdict (`malformed`). The claim is RoundFailed (erratum E6).
+    event EvaluationFailed(uint256 indexed claimId, uint256 indexed listingId, bytes32 requestId, bool malformed);
+
+    /// @notice The claim settled: `paidWei` of its award paid now, `owedWei` still owed.
+    event Settled(uint256 indexed claimId, uint256 indexed listingId, address indexed hunter, Outcome outcome, uint256 paidWei, uint256 owedWei);
+
+    /// @notice A payout left the Open listing's escrow below the top award: no new commits.
+    event Depleted(uint256 indexed listingId, uint256 escrowWei);
+
+    /// @notice A top-up paid `amountWei` of an owed award, credited to the hunter's pull balance.
+    event OwedPaid(uint256 indexed claimId, uint256 indexed listingId, address indexed hunter, uint256 amountWei, uint256 stillOwedWei);
+
+    /// @notice The round's unspent prepay came back from its wallet, for the hunter.
+    event LeftoverRefunded(uint256 indexed claimId, address indexed hunter, uint256 amountWei);
+
+    /// @notice The inline recovery of the round's unspent prepay failed; it waits in the wallet's
+    ///         ethOwed credit (P2d's recoverLeftoverEth retries).
+    event RefundDeferred(uint256 indexed claimId);
+
     // ------------------------------------------------------------------
 
     constructor(
@@ -417,7 +478,12 @@ contract StakeAttestation is Ownable2Step {
         // Both creation codes live in this contract's initcode, not in the runtime bytecode
         // that EIP-170 caps.
         lens = new StakeAttestationLens(verdikta_);
-        walletImplementation = new EvaluationWallet(address(this), verdikta_);
+        EvaluationWallet impl = new EvaluationWallet(address(this), verdikta_);
+        walletImplementation = impl;
+        // The EIP-1167 runtime code OpenZeppelin's Clones.clone deploys.
+        walletCodehash = keccak256(
+            abi.encodePacked(hex"363d3d373d3d3d363d73", address(impl), hex"5af43d82803e903d91602b57fd5bf3")
+        );
     }
 
     modifier nonReentrant() {
@@ -503,9 +569,11 @@ contract StakeAttestation is Ownable2Step {
     /// @notice Add escrow. On a Listed listing this is the OPENING fund: msg.value pays the
     ///         listing fee and escrows the rest, which must reach awards[CRITICAL]; the listing
     ///         opens for LISTING_PERIOD. On an Open, Depleted or Rolled listing it is a top-up
-    ///         with no fee: a Depleted listing reopens once its escrow is back at
-    ///         awards[CRITICAL] and nothing is owed; a Rolled one stays Rolled (no new commits)
-    ///         and the escrow pays the claims still settling against it.
+    ///         with no fee that first pays what the listing owes, claim by claim in commit order
+    ///         (credited to each hunter's pull balance; OwedPaid), and escrows the rest: a
+    ///         Depleted listing reopens once its escrow is back at awards[CRITICAL] and nothing is
+    ///         owed; a Rolled one stays Rolled (no new commits) and the escrow pays the claims
+    ///         still settling against it.
     /// @param expectedFeeWei the fee the caller expects this call to charge: feeDue(listingId),
     ///        i.e. the listing fee for an opening fund and 0 for a top-up. A mismatch reverts,
     ///        so a fee change landing first can never take part of the escrow.
@@ -533,9 +601,13 @@ contract StakeAttestation is Ownable2Step {
             emit Opened(listingId, l.artifactHash, escrow, until);
         } else {
             require(msg.value > 0, "no value");
-            uint256 escrow = l.escrowWei + msg.value;
+            uint256 amount = msg.value;
+            if (l.owedWei != 0) {
+                amount = ClaimLogic.payOwed(_claims, l, _owedClaims[listingId], withdrawable, listingId, amount);
+            }
+            uint256 escrow = l.escrowWei + amount;
             l.escrowWei = escrow;
-            emit Funded(listingId, msg.sender, msg.value, escrow);
+            emit Funded(listingId, msg.sender, amount, escrow);
             if (s == ListingState.Depleted && escrow >= l.awards[3] && l.owedWei == 0) {
                 l.state = ListingState.Open;
                 emit Reopened(listingId, escrow);
@@ -715,6 +787,36 @@ contract StakeAttestation is Ownable2Step {
     }
 
     // ------------------------------------------------------------------
+    //                    judgement and settlement (P2c)
+    // ------------------------------------------------------------------
+
+    /// @notice Read a revealed claim's round from the aggregator (erratum E4: it never calls
+    ///         back) and judge it. Anyone may call; the site's keeper does. Reverts "evaluation
+    ///         not ready" while the round is open; otherwise never fails on the round's content:
+    ///         a verdict makes the claim Judged (outcome by ClaimRules.judge; the dispute window
+    ///         starts), a round over without one (timed out, or a vector of the wrong length or
+    ///         sum) makes it RoundFailed. Then the round's unspent prepay goes to the hunter.
+    function finalize(uint256 claimId) external nonReentrant {
+        Claim storage c = _mustClaim(claimId);
+        uint256 refunded = ClaimLogic.finalize(c, claimId, verdikta);
+        _payOrCredit(c.hunter, refunded);
+    }
+
+    /// @notice Settle a judged claim and move its funds (design §8.7, §13.2; ClaimLogic.settle).
+    ///         Anyone may call. INVALID (bond to the maker) and DUPLICATE (bond back) at once;
+    ///         a valid outcome after the dispute window: bond back plus the award at or above
+    ///         lowestClassCounted, from the escrow, any shortfall owed. The claim leaves the
+    ///         commit-order queue, so the next claim may reveal.
+    function settle(uint256 claimId) external nonReentrant {
+        Claim storage c = _mustClaim(claimId);
+        uint256 listingId = c.listingId;
+        (address payee, uint256 amount) = ClaimLogic.settle(
+            _claims, _listings[listingId], _validFindings[listingId], _owedClaims[listingId], claimId
+        );
+        _payOrCredit(payee, amount);
+    }
+
+    // ------------------------------------------------------------------
     //                 owner: the listing fee and its recipient only
     // ------------------------------------------------------------------
 
@@ -744,6 +846,13 @@ contract StakeAttestation is Ownable2Step {
     ///         are the lens's claimState and claimTimes.
     function getClaim(uint256 claimId) external view returns (Claim memory) {
         return _mustClaim(claimId);
+    }
+
+    /// @notice The claims judged valid on a listing, in settlement order: the findings it
+    ///         publishes. The most recent MAX_PRIOR_FINDINGS ride along in each later request.
+    function validFindings(uint256 listingId) external view returns (uint256[] memory) {
+        _mustListing(listingId);
+        return _validFindings[listingId];
     }
 
     /// @notice Every listing of an artifact hash, in listing order. listingsByHashPage pages it.
@@ -967,7 +1076,7 @@ contract StakeAttestation is Ownable2Step {
     ///      into lensDelegate(), which delegatecalls the lens; the static frame makes the EVM
     ///      reject any state change inside the lens, so this is never a write path. Return and
     ///      revert data are copied back verbatim. Not a proxy: `lens` is an immutable with no
-    ///      setter. Non-payable, and there is no receive(): plain ETH is refused.
+    ///      setter. Non-payable: ETH with calldata is refused here, plain ETH by receive().
     fallback() external {
         (bool ok, bytes memory ret) = address(this).staticcall(
             abi.encodeWithSelector(this.lensDelegate.selector, msg.data)
@@ -996,5 +1105,12 @@ contract StakeAttestation is Ownable2Step {
             if iszero(ok) { revert(p, returndatasize()) }
             return(p, returndatasize())
         }
+    }
+
+    /// @notice Plain ETH is refused, except a refund from an EvaluationWallet clone (see
+    ///         walletCodehash), which arrives only while this contract recovers it and routes it.
+    ///         Every wei here is then escrow, a held bond or prepay, or a pull balance.
+    receive() external payable {
+        require(msg.sender.codehash == walletCodehash, "plain ETH refused");
     }
 }

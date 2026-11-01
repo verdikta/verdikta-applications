@@ -10,7 +10,7 @@ import {ClaimRules} from "./ClaimRules.sol";
 
 /// @title ClaimLogic
 /// @notice The bodies of StakeAttestation's claim functions, as an external (linked) library,
-///         so the contract stays under the EIP-170 size limit (design §13; build node P2b).
+///         so the contract stays under the EIP-170 size limit (design §13; build nodes P2b, P2c).
 /// @dev Every external function here runs by DELEGATECALL from StakeAttestation, on its storage
 ///      (the storage pointers it passes), with its msg.sender and its balance, and emits its
 ///      events (declared in StakeAttestation, so its ABI lists them). The compiler refuses a
@@ -202,10 +202,174 @@ library ClaimLogic {
     }
 
     // ------------------------------------------------------------------
-    //          internal: inlined into each caller (this library, P2c's settle, tests)
+    //                 judgement and settlement (P2c)
     // ------------------------------------------------------------------
 
-    /// @dev A claim leaves the commit-order queue, settled (P2c) or expired. O(1): unlink it.
+    /// @notice Finalize by polling (erratum E4; modelled on BountyEscrow.finalizeSubmission).
+    ///         Reads the round; with no result, tries finalizeEvaluationTimeout and asks
+    ///         getAggregationStatus whether the round is over: still open reverts (try later),
+    ///         over without a result is a failed round. A result that is no verdict
+    ///         (ClaimRules.judge) is a failed round too, never a revert, so a claim is never
+    ///         stuck in Revealed. A verdict is stored with its outcome and judgedAt, which starts
+    ///         the dispute window. Either way the round is over, so the wallet's unspent prepay
+    ///         is recovered (best effort, gas-capped) for the caller to pay to the hunter.
+    /// @return refunded the wallet's recovered balance (0 if there was none or recovery failed)
+    function finalize(StakeAttestation.Claim storage c, uint256 claimId, IVerdiktaAggregator verdikta)
+        external returns (uint256 refunded)
+    {
+        require(c.state == StakeAttestation.ClaimState.Revealed, "not revealed");
+        bytes32 requestId = c.requestId;
+        (uint256[] memory v, string memory justification, bool ok) = verdikta.getEvaluation(requestId);
+        if (!ok) {
+            // Timed out but not settled at the aggregator: settle it there (reverts, such as
+            // NotTimedOut or AggregationComplete, are the status check's to interpret).
+            try verdikta.finalizeEvaluationTimeout(requestId) {
+                (v, justification, ok) = verdikta.getEvaluation(requestId);
+            } catch {}
+        }
+        if (!ok) {
+            (bool complete, , , , , , , , , ) = verdikta.getAggregationStatus(requestId);
+            require(complete, "evaluation not ready");
+        }
+        uint256 listingId = c.listingId;
+        bool verdict;
+        uint8 outcome;
+        if (ok) (verdict, outcome) = ClaimRules.judge(v);
+        if (verdict) {
+            uint32[6] memory packed;
+            for (uint256 i = 0; i < 6; ) {
+                packed[i] = uint32(v[i]); // judge bounded each by SCORE_SCALE
+                unchecked { ++i; }
+            }
+            c.vector = packed;
+            c.outcome = StakeAttestation.Outcome(outcome);
+            c.judgedAt = uint64(block.timestamp);
+            c.state = StakeAttestation.ClaimState.Judged;
+            emit StakeAttestation.Judged(claimId, listingId, StakeAttestation.Outcome(outcome), packed, justification);
+        } else {
+            // Erratum E6: the round ran and settled no verdict. The claim keeps its place and its
+            // bond; the request id says a round was started. Re-trigger and expiry are P2d's.
+            c.state = StakeAttestation.ClaimState.RoundFailed;
+            emit StakeAttestation.EvaluationFailed(claimId, listingId, requestId, ok);
+        }
+        // As BountyEscrow._refundLeftoverEth: the verdict must never depend on the recovery
+        // (an aggregator change could make withdrawEth revert), so it is wrapped and gas-capped;
+        // and it always gets its whole budget, so a caller cannot starve it into a deferral.
+        require(gasleft() >= ClaimRules.INLINE_REFUND_GAS_NEEDED, "gas below INLINE_REFUND_GAS_NEEDED");
+        try EvaluationWallet(payable(c.evalWallet)).refundLeftoverEth{gas: ClaimRules.INLINE_REFUND_GAS_LIMIT}()
+            returns (uint256 amount)
+        {
+            refunded = amount;
+            emit StakeAttestation.LeftoverRefunded(claimId, c.hunter, amount);
+        } catch {
+            emit StakeAttestation.RefundDeferred(claimId);
+        }
+    }
+
+    /// @notice Settle a judged claim (design §8.7, §13.2; decision D5). INVALID and DUPLICATE at
+    ///         once, a valid outcome once the dispute window from judgedAt has ended. The claim
+    ///         leaves the commit-order queue (resolve), is counted by outcome, and a valid one
+    ///         joins the listing's valid findings (published: later requests carry it).
+    ///         Funds, returned for the caller to pay (one payee):
+    ///         - INVALID: the bond to the maker;
+    ///         - DUPLICATE, or valid below lowestClassCounted: the bond back to the hunter;
+    ///         - valid and counted: the bond plus min(awards[class], escrowWei) to the hunter; the
+    ///           rest of the award is owed (the claim's owedWei, the listing's owedWei, and the
+    ///           owed queue, paid by the maker's next fund in commit order). A payout that leaves
+    ///           an Open listing's escrow below the top award makes it Depleted.
+    /// @param valid  the listing's valid findings (StakeAttestation._validFindings)
+    /// @param owedQ  the listing's owed claims, in settlement order (StakeAttestation._owedClaims)
+    function settle(
+        mapping(uint256 => StakeAttestation.Claim) storage claims,
+        StakeAttestation.Listing storage l,
+        uint256[] storage valid,
+        uint256[] storage owedQ,
+        uint256 claimId
+    ) external returns (address payee, uint256 amount) {
+        StakeAttestation.Claim storage c = claims[claimId];
+        require(c.state == StakeAttestation.ClaimState.Judged, "not judged");
+        uint8 outcome = uint8(c.outcome);
+        if (outcome >= ClaimRules.LOW) {
+            require(block.timestamp >= uint256(c.judgedAt) + l.disputeWindow, "dispute window open");
+        }
+        c.state = StakeAttestation.ClaimState.Settled;
+        c.settledAt = uint64(block.timestamp);
+        resolve(claims, c, l);
+        l.outcomeCounts[outcome] += 1;
+
+        address hunter = c.hunter;
+        payee = outcome == ClaimRules.INVALID ? l.maker : hunter;
+        amount = c.bondWei;
+        uint256 paid;
+        uint256 owed;
+        if (outcome >= ClaimRules.LOW) {
+            valid.push(claimId);
+            uint256 award = ClaimRules.awardFor(l.awards, uint8(l.lowestClassCounted), outcome);
+            if (award != 0) {
+                uint256 escrow = l.escrowWei;
+                paid = award < escrow ? award : escrow;
+                owed = award - paid;
+                escrow -= paid;
+                l.escrowWei = escrow;
+                // Both at most awards[CRITICAL], which an opening fund had to escrow.
+                c.paidWei = uint128(paid);
+                if (owed != 0) {
+                    c.owedWei = uint128(owed);
+                    l.owedWei += owed;
+                    owedQ.push(claimId);
+                }
+                amount += paid;
+                if (l.state == StakeAttestation.ListingState.Open && escrow < l.awards[3]) {
+                    l.state = StakeAttestation.ListingState.Depleted;
+                    emit StakeAttestation.Depleted(c.listingId, escrow);
+                }
+            }
+        }
+        emit StakeAttestation.Settled(claimId, c.listingId, hunter, StakeAttestation.Outcome(outcome), paid, owed);
+    }
+
+    /// @notice A top-up first pays what the listing owes, claim by claim in commit order (claims
+    ///         reveal, hence settle, in commit order, so the owed queue is in commit order), the
+    ///         last one partly if `amount` runs out. Each payment is credited to the hunter's
+    ///         pull balance (withdraw), so the loop makes no external call.
+    /// @return rest what is left of `amount` for the escrow
+    function payOwed(
+        mapping(uint256 => StakeAttestation.Claim) storage claims,
+        StakeAttestation.Listing storage l,
+        uint256[] storage owedQ,
+        mapping(address => uint256) storage withdrawable,
+        uint256 listingId,
+        uint256 amount
+    ) external returns (uint256 rest) {
+        uint256 i = l.owedCursor;
+        uint256 n = owedQ.length;
+        uint256 total = l.owedWei;
+        while (amount != 0 && i < n) {
+            uint256 claimId = owedQ[i];
+            StakeAttestation.Claim storage c = claims[claimId];
+            uint256 owed = c.owedWei;
+            uint256 pay = owed < amount ? owed : amount;
+            owed -= pay;
+            amount -= pay;
+            total -= pay;
+            c.owedWei = uint128(owed);
+            c.paidWei += uint128(pay); // paid + owed is the award: at most awards[CRITICAL]
+            address hunter = c.hunter;
+            withdrawable[hunter] += pay;
+            emit StakeAttestation.OwedPaid(claimId, listingId, hunter, pay, owed);
+            if (owed != 0) break;
+            unchecked { ++i; }
+        }
+        l.owedCursor = uint64(i);
+        l.owedWei = total;
+        return amount;
+    }
+
+    // ------------------------------------------------------------------
+    //          internal: inlined into each caller (this library, tests)
+    // ------------------------------------------------------------------
+
+    /// @dev A claim leaves the commit-order queue, settled or expired. O(1): unlink it.
     ///      When it was the head, the next claim becomes the head and its reveal clock may start
     ///      now (decision D5). Callers set the claim's final state; this keeps pendingClaims and
     ///      the queue true. Must be called exactly once per claim, while it is unresolved.

@@ -1,0 +1,15 @@
+# Hardhat
+onchain/artifacts/
+onchain/cache/
+onchain/coverage/
+onchain/coverage.json
+onchain/typechain-types/
+onchain/gasReporterOutput.json
+onchain/deployments/
+
+# Vite and Playwright
+client/dist/
+client/test-results/
+client/playwright-report/
+client/blob-report/
+client/playwright/.cache/

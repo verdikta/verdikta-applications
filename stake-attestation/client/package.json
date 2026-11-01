@@ -1,0 +1,28 @@
+{
+  "name": "@verdikta/stake-attestation-client",
+  "version": "0.1.0",
+  "description": "Web client for the Verdikta stake-attestation site",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.59.1",
+    "@verdikta/stake-attestation-shared": "file:../shared",
+    "@vitejs/plugin-react": "^4.7.0",
+    "vite": "^6.4.5"
+  }
+}

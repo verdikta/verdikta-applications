@@ -101,7 +101,8 @@ export function createRegistryClient({ repository, apiUrl = null, fetch: fetchIm
     baseUrl,
     /**
      * What an arbiter pulling `digest` for `platform` gets: the platform's manifest, its config
-     * and its compressed size (layers plus config), and the platforms an index offers.
+     * and its compressed size (layers plus config), the platforms an index offers, the layers'
+     * diff ids and the image's labels.
      */
     async imageInfo(digest, platform) {
       const [os, architecture] = platform.split('/');
@@ -133,6 +134,10 @@ export function createRegistryClient({ repository, apiUrl = null, fetch: fetchIm
         platforms: platforms ?? [`${config.os}/${config.architecture}`],
         config: { os: config.os, architecture: config.architecture },
         volumes: Object.keys((config.config && config.config.Volumes) || {}),
+        // The uncompressed layer digests, which do not depend on how a registry compressed them
+        // (the sign step compares the pinned base's with the env image's), and the labels.
+        diffIds: Array.isArray(config.rootfs?.diff_ids) ? config.rootfs.diff_ids.filter((d) => typeof d === 'string') : [],
+        labels: config.config?.Labels && typeof config.config.Labels === 'object' ? { ...config.config.Labels } : {},
       };
     },
   };

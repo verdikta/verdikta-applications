@@ -96,11 +96,12 @@ async function readBlobs(gitDir, ids, timeoutMs) {
  * @param {string} o.baseCommit
  * @param {(url: string) => string|null} [o.mirrorFor]
  * @param {string} o.workDir - where submodules are fetched
+ * @param {boolean} [o.submodules] - false: list each submodule as skipped instead of fetching it (the baseline scan)
  * @returns {Promise<{ entries: { path: string, mode: string, bytes: Buffer }[], skipped: { path: string, detail: string }[] }>}
  * @throws {Refusal} SOURCE_TREE_INVALID (a path git could not check out, a tree over the runner's bounds)
  * @throws {BuilderError} SOURCE_READ_FAILED, REPO_FETCH_FAILED
  */
-export async function commitTree({ gitDir, repo, baseCommit, mirrorFor = () => null, workDir, timeoutMs = 600000 }) {
+export async function commitTree({ gitDir, repo, baseCommit, mirrorFor = () => null, workDir, timeoutMs = 600000, submodules = true }) {
   const entries = [];
   const skipped = [];
   let bytes = 0;
@@ -118,6 +119,10 @@ export async function commitTree({ gitDir, repo, baseCommit, mirrorFor = () => n
       const full = `${prefix}${p}`;
       if (!isTreePath(full)) throw new Refusal('SOURCE_TREE_INVALID', `the listed commit has a path git cannot check out: ${JSON.stringify(full.slice(0, 200))}`);
       if (type === 'commit') {
+        if (!submodules) {
+          skipped.push({ path: full, detail: 'a submodule: not fetched' });
+          continue;
+        }
         if (depth >= MAX_DEPTH) {
           skipped.push({ path: full, detail: `submodules nest deeper than ${MAX_DEPTH}` });
           continue;

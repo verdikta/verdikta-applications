@@ -1,10 +1,13 @@
 // The stake-attestation server's listing API, same-origin under /api (vite.config.js proxies it
 // in development and preview; the site serves both from one origin):
 //
-//   POST /api/listings      { spec, knownIssues?, allowlist? } -> 202 the listing's view;
-//                           400 { error, issues }, 429 every build slot taken, 413 too large
-//   GET  /api/listings/:id  the view: status, validation report, and once ready both CIDs and
-//                           the arguments of list()
+//   POST /api/listings/challenge { spec, knownIssues?, allowlist?, maker, deploymentProof? } -> the
+//                           message the maker's wallet signs for this request; 400 { error, issues }
+//   POST /api/listings      the same with auth: { nonce, signature } -> 202 the listing's view;
+//                           400 { error, issues }, 401/403 not signed by the maker's wallet, 429
+//                           every build slot taken, 413 too large
+//   GET  /api/listings/:id  the view: status, refusal, validation report, and once ready both CIDs
+//                           and the arguments of list()
 //
 // The body holds the draft code_review.json with the disclosure key's public half; nothing the
 // maker keeps private is in it.
@@ -25,6 +28,12 @@ async function json(res) {
     return null;
   }
 }
+
+/** The message the maker's wallet signs for this request; an invalid request is an ApiError (400). */
+export const listingChallenge = (body) => post('/api/listings/challenge', body);
+
+/** The message a contract listing's deployer or owner signs: { message, artifactHash }. */
+export const deploymentMessage = (o) => post('/api/listings/deployment-message', o);
 
 export async function submitListing(body) {
   const res = await fetch('/api/listings', {

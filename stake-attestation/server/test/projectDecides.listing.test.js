@@ -183,6 +183,21 @@ describe('the project\'s proof', () => {
   });
 });
 
+test('a flood of listing challenges takes no maker\'s sign-in for a scan with it', async () => {
+  const { createApp } = await import('../src/app.js');
+  const { testConfig } = await import('./helpers/fixtures.js');
+  const app = createApp({ config: testConfig(), builder: fakeBuilder(), scanner: { scan: async () => ({ status: 'ok', doc: null, error: null }) }, pinner: { backend: 'mock', pin: async () => 'x' }, checkRepository: async () => ({ reachable: false, ref: null, file: null }) });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((r) => server.once('listening', r));
+  const post = (p, b) => fetch(`http://127.0.0.1:${server.address().port}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) });
+  try {
+    const answers = await Promise.all(Array.from({ length: 40 }, (_, i) => post('/api/listings/challenge', listingRequest({ spec: draftSpec({ baseCommit: i.toString(16).padStart(40, '0') }) }))));
+    for (const a of answers) assert.equal(a.status, 200);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
 describe('refused attempts, counted by reason', () => {
   test('/api/status counts them by reason, with no address or repository name', async () => {
     const { chainContext, siteFor } = await import('./helpers/scenario.js');

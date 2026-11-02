@@ -7,6 +7,7 @@ import { STRINGS, fill } from '../strings.js';
 import { TextField } from './Field.jsx';
 import { FundListing } from './FundListing.jsx';
 import { ListingMore } from './ListingExtras.jsx';
+import { ListingWarning } from './ListingWarning.jsx';
 
 const F = STRINGS.fund;
 const CLASSES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
@@ -72,6 +73,7 @@ export function FundPage({ listingId }) {
   return (
     <>
       {header}
+      <ListingWarning />
       <section className="claim" aria-labelledby={headingId} data-testid="listing-summary">
         <h3 id={headingId}>{fill(F.summary, { id: listingId })}</h3>
         <dl>

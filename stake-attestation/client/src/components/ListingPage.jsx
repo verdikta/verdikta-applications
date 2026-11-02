@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { hasWallet } from '../chain/wallet.js';
-import { ApiError, followListing, submitListing } from '../lib/api.js';
+import { ApiError, followListing, listingChallenge, submitListing } from '../lib/api.js';
 import { formIssues, initialForm, listMismatches, toListingRequest } from '../lib/draft.js';
 import { disclosureKeyBytes32 } from '../lib/disclosure.js';
 import { errorReason } from '../lib/format.js';
 import { STRINGS, fill } from '../strings.js';
+import { DeploymentProofPanel } from './DeploymentProofPanel.jsx';
 import { DisclosureKeyPanel } from './DisclosureKeyPanel.jsx';
 import { ListAndFund } from './ListAndFund.jsx';
 import { ListingForm, fieldLabel } from './ListingForm.jsx';
@@ -17,15 +18,17 @@ const L = STRINGS.listing;
 
 /**
  * The maker's listing flow (design §7.1, §8.1): the form, then the server's validation (its
- * issues when it refuses the request; otherwise the build's status and validation report), then
- * list() and fund() through the wallet once the listing is ready. The request names the
- * connected wallet as the maker, the wallet the baseline scan's findings go to (design §8.3);
- * without a wallet it names none and the server runs no scan.
+ * issues when it refuses the request; otherwise the project's proof, then the build's status and
+ * validation report), then list() and fund() through the wallet once the listing is ready. The
+ * request names the connected wallet as the maker: the project names that address in its
+ * repository (node P9), the wallet signs the request, and the baseline scan's findings go to it
+ * (design §8.3). With no wallet nothing is sent.
  */
 export function ListingPage() {
   const w = useWalletContext();
   const [form, setForm] = useState(initialForm);
   const [keyReady, setKeyReady] = useState(false);
+  const [proof, setProof] = useState({ signer: '', signature: '', creationTx: '' });
   const [phase, setPhase] = useState('edit'); // edit | sending | following
   const [serverIssues, setServerIssues] = useState(null); // { error, issues }
   const [notice, setNotice] = useState(null);
@@ -37,7 +40,8 @@ export function ListingPage() {
 
   const issues = useMemo(() => formIssues(form), [form]);
   const pending = Object.keys(issues);
-  const canSend = pending.length === 0 && keyReady && form.disclosureKey && phase === 'edit';
+  const needsProof = form.kind === 'contract' && (!proof.signer.trim() || !proof.signature.trim());
+  const canSend = pending.length === 0 && keyReady && form.disclosureKey && !needsProof && phase === 'edit';
 
   const onRecipient = (recipient, ready) => {
     setForm((f) => ({ ...f, disclosureKey: recipient }));
@@ -49,18 +53,26 @@ export function ListingPage() {
     setServerIssues(null);
     setNotice(null);
     let first;
-    let maker = null;
-    if (hasWallet()) {
-      try {
-        maker = (await w.ensure()).account;
-      } catch {
-        // no account: the request names no maker, and the server runs no baseline scan
-      }
-    }
-    const form0 = toListingRequest(form);
-    const body = maker ? { ...form0, maker } : form0;
+    let body;
+    let wallet;
     try {
-      first = await submitListing(body);
+      if (!hasWallet()) throw new Error('no wallet');
+      wallet = await w.ensure();
+    } catch {
+      setPhase('edit');
+      setNotice(L.needWallet);
+      return;
+    }
+    try {
+      body = { ...toListingRequest(form), maker: wallet.account };
+      if (form.kind === 'contract') {
+        body.deploymentProof = { signer: proof.signer.trim(), signature: proof.signature.trim(), ...(proof.creationTx.trim() ? { creationTx: proof.creationTx.trim() } : {}) };
+      }
+      const challenge = await listingChallenge(body);
+      setPhase('signing');
+      const signature = await wallet.signer.signMessage(challenge.message);
+      setPhase('sending');
+      first = await submitListing({ ...body, auth: { nonce: challenge.nonce, signature } });
     } catch (err) {
       setPhase('edit');
       if (err instanceof ApiError && err.status === 400 && err.body?.issues) setServerIssues(err.body);
@@ -98,8 +110,9 @@ export function ListingPage() {
           {fill(L.status, { status: L.statuses[view.status] ?? view.status })}
         </p>
         {view.error && <p className="error">{fill(L.jobError, view.error)}</p>}
+        {view.refusal && <p className="error" role="alert" data-testid="listing-refusal">{fill(L.refusal, view.refusal)}</p>}
         {notice && <p className="error" role="alert">{notice}</p>}
-        <ValidationReport report={view.validationReport} devTrust={view.devTrust} />
+        {!view.refusal && <ValidationReport report={view.validationReport} devTrust={view.devTrust} />}
         <ScanPanel view={view} />
         {view.status === 'ready' && view.list && <ListAndFund view={view} sent={sent} />}
         {done && <button type="button" className="secondary" onClick={again}>{L.again}</button>}
@@ -116,6 +129,7 @@ export function ListingPage() {
         setForm={setForm}
         issues={issues}
         keyPanel={<DisclosureKeyPanel recipient={form.disclosureKey} ready={keyReady} onRecipient={onRecipient} />}
+        proofPanel={<DeploymentProofPanel form={form} proof={proof} onProof={setProof} />}
       />
       {serverIssues && (
         <div className="refused" role="alert">
@@ -131,8 +145,9 @@ export function ListingPage() {
       {notice && <p className="error" role="alert">{notice}</p>}
       <div className="submit">
         {(!keyReady || !form.disclosureKey) && <p className="hint">{L.needKey}</p>}
+        {needsProof && <p className="hint">{L.needSignature}</p>}
         {pending.length > 0 && <p className="hint">{fill(L.fixFirst, { fields: pending.map(fieldLabel).join(', ') })}</p>}
-        <button type="button" onClick={send} disabled={!canSend}>{phase === 'sending' ? L.submitting : L.submit}</button>
+        <button type="button" onClick={send} disabled={!canSend}>{phase === 'sending' ? L.submitting : phase === 'signing' ? L.signing : L.submit}</button>
       </div>
     </>
   );

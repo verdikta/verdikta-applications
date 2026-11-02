@@ -15,4 +15,4 @@ export {
   repoUrlParts,
   repositoryProofReason,
 } from './controlProof.js';
-export { readSignedListing } from './builderSignature.js';
+export { didBuilderSign, readSignedListing } from './builderSignature.js';

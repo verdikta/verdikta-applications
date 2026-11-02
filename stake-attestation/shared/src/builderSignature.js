@@ -91,3 +91,29 @@ export function readSignedListing(bytes, { codeReview, devKeys = null }) {
     return invalid(err?.code === 'ZIP_TOO_LARGE' ? 'ARCHIVE_TOO_LARGE' : 'ARCHIVE_INVALID');
   }
 }
+
+/**
+ * "Did the builder sign this listing": readSignedListing, for the listing the chain holds. The archive
+ * must be that listing's: the repository, the commit and the disclosure key the chain stores. A hunter
+ * encrypts to the on-chain key while arbiters check against the archive's, so another key there would
+ * cost the hunter the bond. This is the check the hunter tool (node P5) makes before it offers a commit.
+ * @param {Buffer} bytes - the listing archive
+ * @param {object} o
+ * @param {object} o.codeReview - @verdikta/common's codeReview module
+ * @param {{ repo: string, baseCommit: string, disclosureKey: string }} o.listing - what the chain stores
+ *   (disclosureKey: the bytes32, 0x hex)
+ * @param {{ publicKey: string }[]} [o.devKeys]
+ * @returns {{ signed: boolean, reason: string|null, keyId?: string, trust?: string }}
+ */
+export function didBuilderSign(bytes, { codeReview, listing, devKeys = null }) {
+  const read = readSignedListing(bytes, { codeReview, devKeys });
+  if (!read.signed) return { signed: false, reason: read.reason };
+  let key = null;
+  try {
+    key = `0x${Buffer.from(codeReview.parseDisclosureKey(read.spec.stake.disclosureKey)).toString('hex')}`;
+  } catch { /* no key this listing could hold */ }
+  if (read.spec.repo !== listing.repo || read.spec.baseCommit !== listing.baseCommit || key !== String(listing.disclosureKey).toLowerCase()) {
+    return { signed: false, reason: 'ARCHIVE_MISMATCH' };
+  }
+  return { signed: true, reason: null, keyId: read.keyId, trust: read.trust };
+}

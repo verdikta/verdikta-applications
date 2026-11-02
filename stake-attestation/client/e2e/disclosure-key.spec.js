@@ -16,7 +16,7 @@ const AGE_IDENTITY = /^AGE-SECRET-KEY-1[ACDEFGHJKLMNPQRSTUVWXYZ023456789]{58}$/;
 test('the key pair is made in the browser, and its private half is shown and downloadable once', async ({ page, context, stack }) => {
   await installWallet(page, stack);
   await page.goto('/#/list');
-  await fillListing(page, repoTerms());
+  await fillListing(page, await repoTerms(stack));
   const submit = page.getByRole('button', { name: STRINGS.listing.submit });
   await expect(page.getByText(STRINGS.listing.needKey)).toBeVisible();
   await expect(submit).toBeDisabled();
@@ -67,7 +67,7 @@ test('a maker who already has an age key lists its public half; a private key pa
   const rec = recordRequests(context);
   await installWallet(page, stack);
   await page.goto('/#/list');
-  await fillListing(page, repoTerms());
+  await fillListing(page, await repoTerms(stack));
   const submit = page.getByRole('button', { name: STRINGS.listing.submit });
   await page.getByRole('button', { name: STRINGS.key.useOwn }).click();
   const own = field(page, STRINGS.key.ownRecipient);
@@ -102,7 +102,7 @@ test('no request carries the private key, and no browser store holds it', async 
   await page.goto('/#/list');
 
   const { recipient, identity, keyFile } = await generateAndSaveKey(page);
-  await fillListing(page, { ...repoTerms(), allowlist: [] });
+  await fillListing(page, { ...await repoTerms(stack), allowlist: [] });
   await validate(page, 'ready');
   const listingId = await listAndFund(page);
 

@@ -16,6 +16,7 @@ import { buildListing } from '../../src/pipeline.js';
 import { createRegistryClient } from '../../src/registry.js';
 import { attest, loadSigningKey } from '../../src/signing.js';
 import { verifyForSigning } from '../../src/verifyBuild.js';
+import { MAKER } from '../helpers/proof.js';
 import { PIN, fixtureDraft, fixtureRepo, newId, removeImages, startCodeRunner, startRegistries, testPlatforms } from './helpers.js';
 
 const TIMEOUT = 2400000;
@@ -31,7 +32,7 @@ let accepted;
 
 test.before(async () => {
   regs = await startRegistries(id);
-  repo = fixtureRepo(dir);
+  repo = fixtureRepo(dir, { '.verdikta/stake-control.json': `${JSON.stringify({ version: 1, maker: MAKER })}\n` });
   runner = await startCodeRunner({ id, registryHost: regs.host, platform: platforms.run });
   config = parseConfig({
     registry: { repository: `${regs.host}/${id}/env`, apiUrl: regs.apiUrl },
@@ -60,7 +61,7 @@ test('the code-runner sidecar is verdikta-arbiter at the pinned commit', () => {
 
 test('validated by the code-runner\'s listing check: code_review.json gets digest, platform and unpackedBytes; baseline.json, timings and default limits', { timeout: TIMEOUT }, async () => {
   const draft = fixtureDraft(repo.baseCommit, recipient);
-  const r = await buildListing({ draft, knownIssues: null, config, workDir: fs.mkdtempSync(path.join(dir, 'w-')) });
+  const r = await buildListing({ draft, knownIssues: null, maker: MAKER, config, workDir: fs.mkdtempSync(path.join(dir, 'w-')) });
   assert.equal(r.status, 'accepted', show(r));
   accepted = r;
   const spec = JSON.parse(r.files.get('code_review.json'));
@@ -135,7 +136,7 @@ test('the maker\'s validation report: every step, the image, validation, and wha
 test('too heavy for v1: a build past the check\'s 30 s budget stops the listing, and nothing can be signed', { timeout: TIMEOUT }, async () => {
   const draft = fixtureDraft(repo.baseCommit, recipient);
   draft.commands.build = 'sleep 40; forge build';
-  const r = await buildListing({ draft, knownIssues: null, config, workDir: fs.mkdtempSync(path.join(dir, 'w-')) });
+  const r = await buildListing({ draft, knownIssues: null, maker: MAKER, config, workDir: fs.mkdtempSync(path.join(dir, 'w-')) });
   assert.equal(r.status, 'refused', show(r));
   assert.deepEqual(r.report.refusals.map((x) => x.code), ['LISTING_TOO_HEAVY']);
   assert.equal(r.files.has('baseline.json'), false);

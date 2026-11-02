@@ -35,7 +35,7 @@ const HOSTS = Object.freeze({
       const m = /^https:\/\/gitlab\.com\/([A-Za-z0-9._/-]+?)(?:\.git)?$/.exec(repo);
       return m && `https://gitlab.com/api/v4/projects/${encodeURIComponent(m[1])}`;
     },
-    answer: (j) => (typeof j.id === 'number' || j.name !== undefined ? { fork: Boolean(j.forked_from_project), parent: j.forked_from_project?.web_url } : (j.forked_from_project ? { fork: true, parent: j.forked_from_project.web_url } : null)),
+    answer: (j) => (j.forked_from_project ? { fork: true, parent: j.forked_from_project.web_url } : (typeof j.id === 'number' ? { fork: false, parent: null } : null)),
   },
   'codeberg.org': {
     url: (repo) => {

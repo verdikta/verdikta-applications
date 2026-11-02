@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { readSignedListing } from '../src/builderSignature.js';
+import { didBuilderSign, readSignedListing } from '../src/builderSignature.js';
 import { zipStored } from '../src/zip.js';
 
 const files = (over = {}) => ({
@@ -50,4 +50,17 @@ test('dev keys count only for a statement that says dev, and only when the calle
   assert.equal(codeReview.last.o.trust, undefined);
   readSignedListing(zip(dev), { codeReview: codeReview() });
   assert.equal(codeReview.last.o.trust, undefined);
+});
+
+test('did the builder sign this listing: the archive must be the listing the chain holds', () => {
+  const spec = { repo: 'https://github.com/acme/vault', baseCommit: 'a'.repeat(40), attestation: 'attestation.json', baseline: 'baseline.json', stake: { disclosureKey: 'age1key' } };
+  const archive = zip(files({ 'code_review.json': JSON.stringify(spec) }));
+  const cr = { ...codeReview(), parseDisclosureKey: () => new Uint8Array(32).fill(7) };
+  const key = `0x${'07'.repeat(32)}`;
+  const listing = { repo: spec.repo, baseCommit: spec.baseCommit, disclosureKey: key };
+  assert.equal(didBuilderSign(archive, { codeReview: cr, listing }).signed, true);
+  assert.equal(didBuilderSign(archive, { codeReview: cr, listing: { ...listing, disclosureKey: `0x${'08'.repeat(32)}` } }).reason, 'ARCHIVE_MISMATCH');
+  assert.equal(didBuilderSign(archive, { codeReview: cr, listing: { ...listing, baseCommit: 'b'.repeat(40) } }).reason, 'ARCHIVE_MISMATCH');
+  assert.equal(didBuilderSign(archive, { codeReview: { ...cr, validateAttestation: () => ({ ok: false, issues: [{ code: 'X' }], warnings: [] }) }, listing }).reason, 'NOT_SIGNED_BY_BUILDER');
+  assert.equal(didBuilderSign(Buffer.from('nope'), { codeReview: cr, listing }).reason, 'ARCHIVE_INVALID');
 });

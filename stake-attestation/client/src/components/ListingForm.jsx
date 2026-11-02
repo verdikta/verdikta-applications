@@ -51,7 +51,7 @@ function KnownIssuesEditor({ rows, onChange }) {
  * The listing terms. `setForm` takes an updater. The disclosure key is a section of its own,
  * passed in as `keyPanel`, so the private half never enters the form's state.
  */
-export function ListingForm({ form, setForm, issues, keyPanel }) {
+export function ListingForm({ form, setForm, issues, keyPanel, proofPanel = null }) {
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const win = (k) => (v) => setForm((f) => setWindow(f, k, v));
   const cmd = (k) => (v) => setForm((f) => ({ ...f, commands: { ...f.commands, [k]: v } }));
@@ -74,6 +74,7 @@ export function ListingForm({ form, setForm, issues, keyPanel }) {
           <>
             <TextField label={F.address} value={form.address} onChange={set('address')} mono />
             <TextField label={F.chainId} value={form.chainId} onChange={set('chainId')} inputMode="numeric" />
+            {proofPanel}
           </>
         )}
       </fieldset>

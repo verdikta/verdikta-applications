@@ -146,6 +146,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
 
   const status = { lastSync: null, lastFreshSync: null, syncError: null, lastKeep: null, keepError: null };
   const records = lru();
+  const histories = lru();
   const feeds = lru();
   const prices = lru();
   let discloseWindow = null;
@@ -202,7 +203,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     if (archiveRun) return archiveRun;
     // every listing that opened: what is on a record also needs its builder's signature read
     const listings = [...projection().listings.values()].filter((l) => l.opened);
-    archiveRun = refreshArchives({ fetchArchive, store, listings, now, maxBytes: config.archives.maxBytes, retryMs: config.archives.retryMs, logger, devKeys: () => control.devKeys(store.state) })
+    archiveRun = refreshArchives({ fetchArchive, store, listings, now, maxBytes: config.archives.maxBytes, retryMs: config.archives.retryMs, logger, devKeys: () => (config.trust.mode === 'dev' ? control.devKeys(store.state) : null) })
       .catch((err) => {
         if (store.locked) logger.warn(`feed: reading listing archives failed (${err?.code ?? String(err?.message ?? err).slice(0, 200)})`);
       })
@@ -353,11 +354,17 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     const { record: rec, findings, flags } = partitionRecord(view.record, counted);
     const apart = view.record.listings.filter((l) => !counted.has(String(l.listingId)));
     const first = known.get(String(view.record.listings[0]?.listingId));
+    // what is shown of a block's events changes only when another listing starts or stops counting
+    const historyKey = `${hash}:${view.block.hash}:${[...counted].join(',')}`;
+    const told = histories.get(historyKey) ?? histories.set(historyKey, {
+      history: historyOf(rec, events, view.block),
+      apartEvents: apart.length ? historyOf({ ...rec, listings: apart, findings: [] }, events, view.block).events : [],
+    });
     const out = {
       ...view,
       record: rec,
       labels: { ...view.labels, listings: Object.fromEntries(Object.entries(view.labels.listings).filter(([id]) => counted.has(id))) },
-      history: historyOf(rec, events, view.block),
+      history: told.history,
       ...freshness(view.block),
       artifact: first ? { kind: first.artifact.kind, repo: first.artifact.repo, baseCommit: first.artifact.baseCommit, chainId: first.artifact.chainId, address: first.artifact.address } : null,
       fork: first ? control.forkOf(state, first.artifact.repo) : null,
@@ -369,7 +376,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
         }),
         findings,
         flags,
-        events: apart.length ? historyOf({ ...rec, listings: apart, findings: [] }, events, view.block).events : [],
+        events: told.apartEvents,
       },
     };
     out.badge = badgeFor(out);

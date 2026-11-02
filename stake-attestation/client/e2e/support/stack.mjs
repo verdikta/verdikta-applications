@@ -181,6 +181,12 @@ async function startApi(chain, pinner) {
       return bytes;
     },
     logger: quiet,
+    // the host's API never reached: a repository named for what the host would say
+    checkFork: async ({ repo }) => {
+      if (/\/forked-/.test(repo)) return { status: 'fork', parent: 'https://github.com/acme/vault', host: 'github.com' };
+      if (/\/original-/.test(repo)) return { status: 'not-fork', parent: null, host: 'github.com' };
+      return { status: 'unknown', parent: null, host: 'github.com', reason: 'UNAVAILABLE' };
+    },
   });
   site.start();
   const app = createApp({ config, logger: quiet, pinner, site });

@@ -20,6 +20,9 @@ import { contractDraft, draftSpec } from '../helpers/specs.js';
 
 const STRANGER = getAddress('0xab8483f64d9c6d1ecf9b849ae677dd3315835cb2');
 
+// a temporary folder of this file's: another test file counts what the real check leaves in the shared one
+process.env.TMPDIR = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-proof-tests-'));
+
 function repo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-proof-'));
   return { ...makeRepo(dir), dir };

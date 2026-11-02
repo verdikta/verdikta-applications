@@ -85,7 +85,6 @@ export function ScanPanel({ view }) {
       <h3 id={id}>{S.title}</h3>
       <p className="hint">{S.intro}</p>
       <p data-testid="scan-status">{fill(S.status, { status: S.statuses[scan.status] ?? scan.status })}</p>
-      {scan.status === 'skipped' && <p className="hint">{S.noWallet}</p>}
       {READABLE.has(scan.status) && view.maker && !shown && (
         <button type="button" onClick={read} disabled={busy !== null}>{busy === 'signing' ? S.signing : busy === 'reading' ? S.reading : S.read}</button>
       )}

@@ -419,7 +419,8 @@ export function createListingService({ config, builder, scanner, pinner, logger,
     deploymentMessage(body) {
       const o = body && typeof body === 'object' ? body : {};
       const maker = canonicalAddress(o.maker);
-      const address = canonicalAddress(o.address);
+      // as the request's artifact takes it (listParams.js artifactOf): in any case
+      const address = typeof o.address === 'string' ? canonicalAddress(o.address.toLowerCase()) : null;
       const chainId = Number(o.chainId);
       if (!maker || !address || !Number.isSafeInteger(chainId) || chainId < 1 || typeof o.repo !== 'string' || typeof o.baseCommit !== 'string' || !proofs.stake) {
         throw new RequestError([{ code: 'REQUEST_INVALID', path: '/', detail: proofs.stake ? 'the body is { maker, repo, baseCommit, chainId, address }' : 'this server has no deployment configured' }]);

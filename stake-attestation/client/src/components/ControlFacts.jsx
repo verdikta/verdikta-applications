@@ -16,6 +16,7 @@ function CheckTimes({ fact }) {
   return (
     <>
       {fact.checkedAt ? <p className="hint">{fill(C.checked, { time: formatTime(fact.checkedAt) })}</p> : null}
+      {fact.lastCheckFailed ? <p className="hint">{fill(C.lastCheckFailed, { reason: fact.lastCheckFailed })}</p> : null}
       {fact.nextCheckAt && RETRY_REASONS.has(fact.reason) ? <p className="hint">{fill(C.nextCheck, { time: formatTime(fact.nextCheckAt) })}</p> : null}
     </>
   );
@@ -28,7 +29,7 @@ function RepositoryProof({ r, maker }) {
     <>
       <p>{onRefs}</p>
       <p className="mono">{r.blob ? fill(C.fileAt, { path: r.path, commit: r.commit, blob: r.blob }) : fill(C.noFile, { path: r.path, commit: r.commit })}</p>
-      {r.blob && <p className="mono">{r.named ? fill(C.fileNames, { address: r.named, maker }) : C.fileNamesNothing}</p>}
+      {r.blob && <p className="mono">{r.fileNames ? fill(C.fileNames, { address: r.fileNames, maker }) : C.fileNamesNothing}</p>}
       {FILE_REASONS.has(r.reason) && <p className="hint">{fill(C.fileHowTo, { path: r.path, format: CONTROL_FILE_FORMAT })}</p>}
       {r.readable && (
         <>
@@ -68,20 +69,22 @@ function DeploymentProof({ d }) {
 }
 
 /**
- * A listing's control fact as rows of its stake (node P8): "staker controls the repository: yes /
- * no", why when "no", and what it rests on, so a reader can check it without this site. A contract
- * listing's fact is about the deployment, and its repository file is shown apart: it does not count.
+ * A listing's proof as rows of its stake: "staker named by the repository: yes / no" and, for a
+ * contract, "staker controls the deployment: yes / no"; why when "no", and what each rests on, so a
+ * reader can check it without this site. A sponsor's wallet can be named, so the repository's line
+ * never says "controls".
  */
 export function controlRows(c, f) {
   const d = c.deployment;
   const r = c.repository;
+  const word = (yes) => (yes ? C.yes : C.no);
   return [
-    { id: f('control'), label: c.subject === 'deployment' ? C.deployment : C.repository, value: c.controls === 'yes' ? C.yes : C.no },
-    c.controls === 'yes' ? null : { id: f('control-why'), label: C.why, value: c.detail ?? '' },
+    r ? { id: f('control'), label: C.repository, value: word(r.named === 'yes') } : { id: f('control'), label: C.repository, value: C.no },
+    d ? { id: f('control-deployment'), label: C.deployment, value: word(d.controls === 'yes') } : null,
+    c.proof === 'yes' ? null : { id: f('control-why'), label: C.why, value: c.detail ?? '' },
+    r ? { id: f('control-proof'), label: C.proof, value: <RepositoryProof r={r} maker={c.maker} /> } : null,
     // a deployment with no signature on file rests on nothing yet: its form follows
-    r && !d ? { id: f('control-proof'), label: C.proof, value: <RepositoryProof r={r} maker={c.maker} /> } : null,
-    d?.signer ? { id: f('control-proof'), label: C.proof, value: <DeploymentProof d={d} /> } : null,
-    d && r ? { id: f('control-repository'), label: C.repositoryFact, value: <RepositoryProof r={r} maker={c.maker} /> } : null,
+    d?.signer ? { id: f('control-deployment-proof'), label: C.deploymentProof, value: <DeploymentProof d={d} /> } : null,
   ];
 }
 
@@ -99,7 +102,7 @@ export function ControlProofForm({ listingId, hash, control, onChanged }) {
   const [busy, setBusy] = useState(null); // signing | sending
   const [error, setError] = useState(null);
   const d = control.deployment;
-  if (!d || control.controls === 'yes') return null;
+  if (!d || d.controls === 'yes') return null;
 
   const sign = async () => {
     setError(null);

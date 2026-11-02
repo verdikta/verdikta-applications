@@ -1,10 +1,14 @@
 // Every user-facing string of the client, in one place so the wording rule can be checked.
 // Placeholders are {name}; fill() puts values in. No string here is built from parts.
+import { LISTING_WARNING } from '@verdikta/stake-attestation-shared/listing-warning';
+
 /** The control proof file's content (docs/control-proof.md), for the {format} placeholders. */
 export const CONTROL_FILE_FORMAT = '{"version":1,"maker":"<address>"}';
 
 export const STRINGS = {
   appName: 'Verdikta stake attestation',
+  // every listing page, and the hunter tool (node P5): shared/src/listingWarning.js
+  warning: LISTING_WARNING,
   nav: {
     home: 'Home',
     feed: 'Feed',
@@ -93,10 +97,10 @@ export const STRINGS = {
         'Known issues are public and fixed at listing. A claim whose root cause is one of them settles as a duplicate.',
       valueAtRisk: 'A declaration the record shows beside the stake, in whole dollars.',
       control:
-        'Optional: the record says whether a listing\'s staker controls what it lists. For a repository, commit ' +
-        '.verdikta/stake-control.json holding {format} with your wallet\'s address, in the version you list, on a ' +
-        'branch or tag of the repository. A deployed contract\'s deployer or owner signs on the record page after listing. ' +
-        'Nothing requires either, and anyone may stake on any repository.',
+        'Every listing needs the project\'s proof, with no exception. Commit .verdikta/stake-control.json holding {format} ' +
+        'with the address of the wallet that will list, in the version you list, on a branch or tag of the repository. ' +
+        'One address only: a sponsor can stake if the project names its wallet there. A deployed contract also needs a ' +
+        'signature from its deployer or current owner. Without these the builder refuses the listing.',
     },
     bounds: {
       wholeNumber: 'Enter a whole number.',
@@ -118,6 +122,20 @@ export const STRINGS = {
       none: 'No known issues: a valid claim on anything in scope is paid.',
     },
     needKey: 'Generate or enter a disclosure key, and save its private half, before you validate.',
+    needSignature: 'A deployed contract needs its deployer\'s or owner\'s signature before you validate.',
+    needWallet: 'Connect the wallet that will list this version: the project names its address, and it signs the listing request.',
+    signing: 'Waiting for your wallet to sign the listing request…',
+    refusal: 'Refused: {code}: {detail}',
+    proof: {
+      title: 'The deployment\'s signature',
+      intro:
+        'The deployment\'s current owner or its deployer signs the message below (EIP-191 personal_sign; a contract owner ' +
+        'answers through EIP-1271). A deployer also gives the transaction that created the contract. The message names ' +
+        'your wallet, this artifact and this site, so a signature counts for that only.',
+      get: 'Show the message to sign',
+      getting: 'Asking the server…',
+      stale: 'The artifact or the wallet changed: show the message again.',
+    },
     fixFirst: 'Before you validate, complete: {fields}.',
     submit: 'Validate through the server',
     submitting: 'Sending the listing to the server…',
@@ -128,6 +146,7 @@ export const STRINGS = {
     status: 'Validation: {status}',
     statuses: {
       queued: 'waiting for a build slot',
+      checking: 'checking the project\'s proof at the listed commit',
       building: 'building and validating the environment',
       pinning: 'pinning the listing and dispute archives',
       ready: 'ready to list',
@@ -163,6 +182,7 @@ export const STRINGS = {
     step: '{name}: {status}',
     stepNames: {
       spec: 'Spec checked',
+      control: 'The project\'s proof checked at the listed commit',
       fetch: 'Repository fetched at the commit',
       build: 'Environment image built',
       size: 'Image size checked',
@@ -196,6 +216,7 @@ export const STRINGS = {
     valueAtRisk: 'Declared value at risk: {usd} USD',
     mismatch: 'The server\'s list() arguments differ from what you entered ({fields}). Nothing was sent; validate again.',
     list: 'List on-chain',
+    notTheMaker: 'Nothing was sent: this listing was built for {maker}, the wallet the project names, and your wallet is {account}. From another wallet it would not count. Switch back and list again.',
     listing: 'Sending list()…',
     listed: 'Listing {id} created (transaction {tx}).',
     escrow: 'Escrow (ETH, at least the CRITICAL award)',
@@ -303,19 +324,21 @@ export const STRINGS = {
     notConfigured: 'The site\'s server has no deployment configured.',
     retry: 'Read again',
   },
-  // node P8: whether a listing's staker has shown control of what it lists (server/src/control/)
+  // the project's proof on the record (nodes P8, P9; server/src/control/)
   control: {
-    repository: 'Staker controls the repository',
+    repository: 'Staker named by the repository',
     deployment: 'Staker controls the deployment',
+    bothLines: 'Staker named by the repository, and controls the deployment',
     yes: 'yes',
     no: 'no',
     intro:
-      'Anyone may stake on any repository. Each stake states whether its staker has shown control of what it lists; ' +
-      '"no" also covers no proof, a failed check and a listing the site cannot read. Everything below can be checked ' +
-      'without this site.',
+      'The project decides who may stake on it. A listing counts only with a builder\'s signature and the project\'s proof: a ' +
+      'file in the repository, at the listed commit, naming the staker\'s wallet, which may be a sponsor\'s; for a deployed ' +
+      'contract also a signature from its deployer or owner. Everything below can be checked without this site.',
     why: 'Why',
     proof: 'What it rests on',
-    repositoryFact: 'Repository file (it does not count for a deployment)',
+    deploymentProof: 'What the deployment line rests on',
+    lastCheckFailed: 'The last check gave no answer ({reason}); this stands from the check before it, and the site tries again.',
     fileAt: 'File {path} at commit {commit}, blob {blob}.',
     noFile: 'No file at {path} in commit {commit} was read.',
     fileNames: 'It names {address}; this listing\'s maker is {maker}.',
@@ -345,7 +368,7 @@ export const STRINGS = {
     recheckContractSignature: 'cast call {signer} "isValidSignature(bytes32,bytes)(bytes4)" $(cast hash-message "$(cat message.txt)") {signature} --block {block} --rpc-url <chain {chainId}>',
     recheckOwner: 'cast call {address} "owner()(address)" --block {block} --rpc-url <chain {chainId}>',
     recheckDeployer: 'cast tx {tx} from --rpc-url <chain {chainId}>; cast receipt {tx} contractAddress --rpc-url <chain {chainId}>',
-    formTitle: 'Prove control of the deployment',
+    formTitle: 'The deployment\'s signature',
     formIntro:
       'The deployment\'s current owner or its deployer signs the message below (EIP-191 personal_sign; a contract owner ' +
       'answers through EIP-1271). A deployer also gives the transaction that created the contract. The message names ' +
@@ -391,11 +414,42 @@ export const STRINGS = {
     placeholders:
       'The badge floor and the under-staked share behind these labels are placeholder values until the program sets them at launch.',
   },
+  // listings of a hash that do not count (node P9): shown apart, with no amount
+  notCounted: {
+    title: 'Not counted',
+    intro:
+      'These listings are on-chain but have no valid builder signature or no proof from the project. They add nothing to ' +
+      'the stake, labels, feed or badge shown here, and this site offers no commit on them. Arbiters may still judge a ' +
+      'listing whose archive a builder signed.',
+    none: 'No listing of this hash counts.',
+    listing: 'Listing {id}',
+    maker: 'Maker',
+    state: 'State',
+    why: 'Why it does not count',
+    findings: 'Valid findings under these listings: {count}, not counted on this record.',
+    feedTitle: 'Not offered',
+    feedIntro:
+      'Listings that take claims on-chain but do not count: no valid builder signature, or no proof from the project. This site offers no commit on them.',
+  },
+  fork: {
+    label: 'Fork',
+    yes: 'The host\'s API says this repository is a fork of {parent}.',
+    yesUnknownParent: 'The host\'s API says this repository is a fork.',
+    no: 'The host\'s API says this repository is not a fork.',
+    unknown: 'Unknown: the host\'s API gave no answer, or this host has none the site reads.',
+  },
+  // a listing's own page: whether the site offers a commit on it (node P9)
+  offer: {
+    title: 'Commits',
+    yes: 'This listing counts: its builder\'s signature and the project\'s proof check, and the site offers it to hunters.',
+    no: 'This site offers no commit on this listing: {reason}',
+    unknown: 'This site could not read whether this listing counts: {reason}. It offers no commit until it can.',
+  },
   feed: {
     title: 'Feed',
     intro:
-      'Every listing that takes claims now: open, its listing fee paid, and its escrow at least its top award. ' +
-      'Newest first.',
+      'Every listing that counts and takes claims now: a builder signed it, the project proved it, it is open, its ' +
+      'listing fee is paid, and its escrow is at least its top award. Newest first.',
     loading: 'Reading the feed…',
     empty: 'No listing takes claims at this block.',
     entry: 'Listing {id}',
@@ -425,8 +479,8 @@ export const STRINGS = {
   record: {
     title: 'Record',
     intro:
-      'The record of one artifact hash: every listing of it that opened, what was staked, what was judged, ' +
-      'what was found, what fixed it and what was found later.',
+      'The record of one artifact hash: every listing of it that counts, what was staked, what was judged, ' +
+      'what was found, what fixed it and what was found later. Any other listing of the hash shows apart.',
     hash: 'Artifact hash (0x and 64 hex digits)',
     load: 'Show the record',
     loading: 'Reading the record…',
@@ -439,8 +493,8 @@ export const STRINGS = {
     commit: 'Commit',
     address: 'Contract address',
     chainId: 'Chain id',
-    listingCount: 'Listings that opened',
-    active: 'Listings not closed',
+    listingCount: 'Listings that count',
+    active: 'Listings that count and are not closed',
     stakes: 'Stakes',
     listing: 'Listing {id}',
     maker: 'Maker',
@@ -692,10 +746,8 @@ export const STRINGS = {
       running: 'running',
       done: 'finished',
       error: 'stopped with an error',
-      skipped: 'not run: the listing request named no maker wallet',
       not_run: 'not run: the listing was not issued',
     },
-    noWallet: 'No wallet was connected when you validated, so the listing request named no maker and the server runs no baseline scan for it.',
     read: 'Sign in with your wallet to read the scan',
     signing: 'Waiting for your wallet to sign in…',
     reading: 'Reading the scan…',

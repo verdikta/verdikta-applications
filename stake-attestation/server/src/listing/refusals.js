@@ -65,14 +65,19 @@ export class RefusalCounter {
   #write() {
     if (!this.#file) return;
     const tmp = `${this.#file}.${crypto.randomBytes(6).toString('hex')}.tmp`;
-    const fd = fs.openSync(tmp, 'w', 0o600);
+    // a count that cannot be written never fails the refusal it counts
     try {
-      fs.writeSync(fd, JSON.stringify(this.view()));
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
+      const fd = fs.openSync(tmp, 'w', 0o600);
+      try {
+        fs.writeSync(fd, JSON.stringify(this.view()));
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(tmp, this.#file);
+    } catch {
+      fs.rmSync(tmp, { force: true });
     }
-    fs.renameSync(tmp, this.#file);
   }
 }
 

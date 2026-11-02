@@ -27,6 +27,7 @@ const listing = (over = {}) => ({
 function view({ listings = [listing()], findings = [], flags = [], hist = history(), labels = {}, events = null, timestamp = T0 + 40 * DAY } = {}) {
   return {
     artifactHash: H('a'),
+    artifact: { kind: 'Repo', repo: 'https://github.com/acme/vault', baseCommit: 'c0ffee'.padEnd(40, '0'), chainId: '0', address: listings[0]?.artifactAddress ?? '0x0000000000000000000000000000000000000000' },
     block: { number: 120, hash: H('b'), timestamp },
     fresh: true,
     staleReason: null,
@@ -65,8 +66,8 @@ test('the artifact: hash, kind, and the repository and commit from the Listed ev
   assert.deepEqual(v.active, ['3']);
 });
 
-test('the artifact is null when no Listed event of the record\'s listings was indexed', () => {
-  assert.equal(recordView(view({ events: [] })).artifact, null);
+test('the artifact is what the server states: null when it states none', () => {
+  assert.equal(recordView({ ...view(), artifact: null }).artifact, null);
 });
 
 test('each stake: state, award table by class, bond, times, escrow, owed, value at risk', () => {
@@ -108,12 +109,12 @@ test('labels: the stake label, then invited and lapsed; no price gives no stake 
 });
 
 test('each stake carries its control fact as the server states it, and none reads as "no"', () => {
-  const fact = { maker: listing().maker, subject: 'repository', controls: 'yes', statement: 'staker controls the repository: yes', reason: null, detail: null, repository: { path: '.verdikta/stake-control.json' }, deployment: null };
+  const fact = { maker: listing().maker, subject: 'repository', proof: 'yes', statement: 'staker controls the repository: yes', reason: null, detail: null, repository: { path: '.verdikta/stake-control.json' }, deployment: null };
   const v = view();
   v.control = { 3: fact };
   assert.deepEqual(recordView(v).listings[0].control, fact);
   const none = recordView(view()).listings[0].control;
-  assert.equal(none.controls, 'no');
+  assert.equal(none.proof, 'no');
   assert.equal(none.subject, 'repository');
   assert.equal(none.reason, 'NOT_CHECKED_YET');
 });
@@ -190,4 +191,16 @@ test('freshness and the placeholders ride along', () => {
   assert.equal(v.staleReason, 'INDEXER_STALE');
   assert.deepEqual(v.block, { number: 120, hash: H('b'), timestamp: T0 + 40 * DAY });
   assert.deepEqual(v.placeholders, ['SA_BADGE_FLOOR_WEI', 'SA_UNDER_STAKED_RATIO_BPS']);
+});
+
+test('a listing that does not count is apart: with why, and no amount of it', () => {
+  const v = recordView({ ...view(), notCounted: { listings: [{ listingId: '9', maker: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', state: 'Open', lapsed: false, reason: 'NOT_SIGNED_BY_BUILDER', detail: 'why', escrowWei: '5' }], findings: [{ claimId: '1' }], flags: [], events: [] } });
+  assert.deepEqual(v.notCounted, { listings: [{ id: '9', maker: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', state: 'Open', reason: 'NOT_SIGNED_BY_BUILDER', detail: 'why' }], findings: 1 });
+  assert.equal(JSON.stringify(v.notCounted).includes('escrow'), false);
+  assert.deepEqual(recordView(view()).notCounted, { listings: [], findings: 0 });
+});
+
+test('the fork label is the server\'s, and none is not a guess', () => {
+  assert.deepEqual(recordView({ ...view(), fork: { status: 'fork', parent: 'https://github.com/acme/vault' } }).fork, { status: 'fork', parent: 'https://github.com/acme/vault' });
+  assert.equal(recordView(view()).fork, null);
 });

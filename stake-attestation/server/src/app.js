@@ -103,6 +103,9 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
   const cli = builder && scanner ? null : createCliBuilder(config.builder, { logger });
   const pins = pinner ?? createPinner(config.pinning);
   const signIn = auth ?? createWalletAuth({ ttlMs: config.auth.challengeTtlMs });
+  // anyone can ask for a listing's challenge, so those wait apart: a flood of them cannot take a
+  // maker's sign-in for a scan or a dispute with it
+  const listingSignIn = auth ?? createWalletAuth({ ttlMs: config.auth.challengeTtlMs, maxOutstanding: 2000 });
   const noDeployment = async () => {
     throw new ListingControlError('CHAIN_NOT_CHECKED', 'this server has no deployment configured, and a deployment proof names one', 503);
   };
@@ -112,7 +115,7 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
     scanner: scanner ?? cli,
     pinner: pins,
     logger,
-    auth: signIn,
+    auth: listingSignIn,
     refusals: site?.refusals ?? new RefusalCounter(),
     proofs: {
       checkRepository: checkRepository ?? createRepositoryChecker(config.control),

@@ -73,6 +73,7 @@ test('explorers by chain id, https unless loopback; mirrors only for https repos
   assert.equal(c.mirrorFor('https://github.com/acme/other'), null);
   assert.throws(() => parse({ ...MIN, explorers: { 8453: { apiUrl: 'http://api.etherscan.io/v2/api' } } }), /https/);
   assert.throws(() => parse({ ...MIN, explorers: { base: { apiUrl: 'https://x/api' } } }), /chain id/);
+  assert.throws(() => parse({ ...MIN, explorers: { 8453: { apiUrl: 'https://api.etherscan.io/v2/api?apikey=K' } } }), /apiKeyEnv/);
   assert.throws(() => parse({ ...MIN, repoMirrors: { 'git@github.com:acme/vault': '/x' } }), /https/);
 });
 

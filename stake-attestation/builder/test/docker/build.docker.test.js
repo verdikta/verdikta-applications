@@ -107,10 +107,11 @@ test('the image meets the code-runner\'s contract, and the maker\'s setup had ne
   const { image } = await buildOnce();
   const script = [
     'set -e',
-    'echo "owner=$(stat -c %u /repo) git=$(stat -c %F /repo/.git)"',
+    'echo "owner=$(stat -c %u /repo)"',
+    'echo "git=$(stat -c %F /repo/.git)"',
     `echo "commit=$(git -C /repo cat-file -t ${repo.baseCommit})"`,
-    'echo "setupInterfaces=$(cat /repo/setup-interfaces.txt)"',
-    'echo "runInterfaces=$(grep -c : /proc/net/dev)"',
+    'echo "setupRoutes=$(cat /repo/setup-routes.txt)"',
+    'echo "runRoutes=$(tail -n +2 /proc/net/route | grep -c .)"',
     'echo "solc=$(find /opt/verdikta/tools -type f -name "solc*" | head -1)"',
     'echo "home=$(ls -A "$HOME" | wc -l)"',
     'sh=$(readlink -f /bin/sh); d=$sh; while [ "$d" != / ]; do [ -w "$d" ] && echo "writable=$d"; [ "$(stat -c %u "$d")" = 0 ] || echo "notroot=$d"; d=$(dirname "$d"); done',
@@ -122,8 +123,8 @@ test('the image meets the code-runner\'s contract, and the maker\'s setup had ne
   assert.equal(out.owner, '10001', 'the repository belongs to the sandbox user');
   assert.equal(out.git, 'directory', '.git is a real directory');
   assert.equal(out.commit, 'commit', 'the listed commit\'s objects are in the image');
-  assert.ok(Number(out.setupInterfaces) >= 2, `the setup ran with a network (${out.setupInterfaces} interfaces)`);
-  assert.equal(out.runInterfaces, '1', 'run by the builder, the image has loopback only');
+  assert.ok(Number(out.setupRoutes) >= 1, `the setup ran with a network (${out.setupRoutes} routes)`);
+  assert.equal(out.runRoutes, '0', 'run by the builder, the image has no route out');
   assert.match(out.solc, /^\/opt\/verdikta\/tools\/share\/svm\//, 'solc lives outside $HOME and /tmp');
   assert.equal(out.home, '0', '$HOME starts empty');
   assert.equal(out.writable, undefined, 'uid 10001 cannot write /bin/sh or a directory on its path');

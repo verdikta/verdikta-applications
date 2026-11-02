@@ -16,11 +16,12 @@ const files = fs.readdirSync(SRC).filter((f) => f.endsWith('.js')).map((f) => ({
 test('no shell: processes are spawned with argv arrays only', () => {
   for (const { f, text } of files) {
     assert.ok(!/shell:\s*true/.test(text), `${f}: shell: true`);
-    assert.ok(!/\bexecSync\(|\bexec\(|\bexecFile\(/.test(text), `${f}: exec`);
     assert.ok(!/\beval\(|new Function\(/.test(text), `${f}: eval`);
   }
-  const spawners = files.filter(({ text }) => /\bspawn\(/.test(text)).map(({ f }) => f);
-  assert.deepEqual(spawners, ['proc.js'], 'one place spawns processes');
+  const importers = files.filter(({ text }) => /from 'node:child_process'|require\('(node:)?child_process'\)/.test(text));
+  assert.deepEqual(importers.map(({ f }) => f), ['proc.js'], 'one place starts processes');
+  assert.match(importers[0].text, /^import \{ spawn \} from 'node:child_process';$/m, 'and only with spawn');
+  assert.match(importers[0].text, /shell: false/);
 });
 
 test('the only docker run argv is the sandbox\'s: no network, read-only root, no capabilities, uid 10001', () => {

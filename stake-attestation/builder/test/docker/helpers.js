@@ -210,10 +210,10 @@ export function fixtureDraft(baseCommit, recipient, over = {}) {
     attestation: 'attestation.json',
     commands: {
       framework: 'forge',
-      // At build time: count the network interfaces (lo plus the build's), and let forge fetch solc.
-      setup: 'grep -c : /proc/net/dev > setup-interfaces.txt && forge build',
-      // At validation: build only where loopback is the one interface.
-      build: '[ "$(grep -c : /proc/net/dev)" = 1 ] && forge build',
+      // At build time: count the IPv4 routes the setup can use (none without a network), and let forge fetch solc.
+      setup: 'tail -n +2 /proc/net/route | grep -c . > setup-routes.txt; forge build',
+      // At validation: build only where there is no route out.
+      build: '[ "$(tail -n +2 /proc/net/route | grep -c .)" = 0 ] && forge build',
       test: 'forge test',
       testFiles: 'forge test --match-path $FILES',
       testIds: 'forge test --match-test $TEST_IDS',

@@ -64,6 +64,10 @@ test('immutables and the metadata trailer are masked; every other byte of the ru
   assert.equal(a.metadata.toString('hex'), b.metadata.toString('hex'));
   const other = normalizeRuntime(readFixture('explorer', 'getcode-vault-other.json').result, ARTIFACT.deployedBytecode);
   assert.ok(!other.code.equals(b.code));
+  // Without solc's CBOR trailer nothing is split off: every byte is compared.
+  const bare = normalizeRuntime('0x6080604052a10002', {});
+  assert.equal(bare.metadata.length, 0);
+  assert.equal(bare.code.toString('hex'), '6080604052a10002');
 });
 
 test('a verified source that differs from the repository at baseCommit stops the listing', async () => {

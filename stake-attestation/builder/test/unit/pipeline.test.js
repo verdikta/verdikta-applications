@@ -46,7 +46,7 @@ function harness(over = {}) {
     registry: {
       imageInfo: async (digest, platform) => {
         calls.registry.push([digest, platform]);
-        return { digest, manifestDigest: digest, compressedBytes: over.compressed ?? 300000000, platforms: ['linux/amd64'], config: { os: 'linux', architecture: 'amd64' }, volumes: over.volumes ?? [] };
+        return { digest, manifestDigest: digest, compressedBytes: over.compressed ?? 300000000, platforms: over.platforms ?? ['linux/amd64'], config: { os: 'linux', architecture: 'amd64' }, volumes: over.volumes ?? [] };
       },
     },
     runner: {
@@ -232,12 +232,16 @@ test('the validation report for the maker: steps, image, sizes, validation, refu
   for (const secret of [RUNNER_TOKEN, EXPLORER_KEY]) assert.ok(!text.includes(secret), 'no secret in the report');
 });
 
-test('a build on another platform than the class\'s is recorded as dev-only', async () => {
+test('an index without a configured platform is an error; a build on another platform than the class\'s is recorded as dev-only', async () => {
+  const missing = await build(draftSpec(), { cfg: config({ platforms: { extra: ['linux/arm64'] } }) });
+  assert.equal(missing.status, 'error');
+  assert.equal(missing.report.error.code, 'IMAGE_PLATFORM_MISSING');
   const cfg = config({ platforms: { setup: 'linux/arm64', run: 'linux/arm64', extra: ['linux/arm64'] } });
   const { report } = await build(draftSpec(), {
     cfg,
+    platforms: ['linux/amd64', 'linux/arm64'],
     runnerAnswer: () => definitive(IMAGE, acceptedListing(), { version: '0.1.0', runtime: 'runc', platform: 'linux/arm64' }),
   });
-  assert.equal(report.status, 'accepted');
-  assert.deepEqual(report.devOnly.map((d) => d.code).sort(), ['EXTRA_PLATFORMS', 'SETUP_ON_OTHER_PLATFORM', 'VALIDATED_ON_OTHER_PLATFORM', 'VALIDATED_WITHOUT_GVISOR'].sort());
+  assert.equal(report.status, 'accepted', JSON.stringify(report.error));
+  assert.deepEqual(report.devOnly.map((d) => d.code).sort(), ['EXTRA_PLATFORMS', 'RUN_ON_OTHER_PLATFORM', 'SETUP_ON_OTHER_PLATFORM', 'VALIDATED_ON_OTHER_PLATFORM', 'VALIDATED_WITHOUT_GVISOR'].sort());
 });

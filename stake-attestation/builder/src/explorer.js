@@ -46,6 +46,7 @@ export function parseSourceResult(json) {
     optimizer: { enabled: r.OptimizationUsed === '1', runs: Number(r.Runs) || 0 },
     evmVersion: typeof r.EVMVersion === 'string' && r.EVMVersion && r.EVMVersion.toLowerCase() !== 'default' ? r.EVMVersion.toLowerCase() : null,
     viaIR: false,
+    language: r.CompilerType === 'vyper' || /vyper/i.test(String(r.CompilerVersion)) ? 'Vyper' : 'Solidity',
     proxy: r.Proxy === '1',
     implementation: typeof r.Implementation === 'string' && r.Implementation ? r.Implementation : null,
   };
@@ -59,6 +60,7 @@ export function parseSourceResult(json) {
   }
   if (parsed && parsed.language !== undefined && parsed.sources) {
     out.format = 'standard-json';
+    if (typeof parsed.language === 'string') out.language = parsed.language;
     out.sources = sourcesOf(parsed.sources);
     out.settings = parsed.settings && typeof parsed.settings === 'object' ? parsed.settings : {};
     if (out.settings.optimizer) {

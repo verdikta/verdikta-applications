@@ -65,8 +65,12 @@ function emptyOrMissing(dir) {
 async function sign({ dir, config, env, out }) {
   const key = loadSigningKey(config.signing.key, { env });
   const { files, report, names } = readOutputs(dir);
-  const { attestation, bytes } = await attest({ files, report, key });
   const name = names.attestation || 'attestation.json';
+  const taken = ['code_review.json', REPORT_FILE, DEV_TRUST_FILE, names.baseline, names.knownIssues].filter(Boolean);
+  if (taken.includes(name) || !/^(?!\.\.?$)[A-Za-z0-9._-]{1,255}$/.test(name)) {
+    throw new BuilderError('OUTPUT_INVALID', `code_review.json names the attestation ${JSON.stringify(name)}, which is not a free plain file name in ${dir}`);
+  }
+  const { attestation, bytes } = await attest({ files, report, key });
   fs.writeFileSync(path.join(dir, name), bytes, { mode: 0o644 });
   const trust = key.devTrust();
   if (trust) fs.writeFileSync(path.join(dir, DEV_TRUST_FILE), serializeJson(trust), { mode: 0o644 });

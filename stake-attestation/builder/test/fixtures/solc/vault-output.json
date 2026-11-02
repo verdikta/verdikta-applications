@@ -1,0 +1,28 @@
+{
+ "contracts": {
+  "src/Vault.sol": {
+   "Vault": {
+    "evm": {
+     "deployedBytecode": {
+      "immutableReferences": {
+       "4": [
+        {
+         "length": 32,
+         "start": 122
+        }
+       ]
+      },
+      "linkReferences": {},
+      "object": "608060405234801561000f575f5ffd5b506004361061003f575f3560e01c806370a08231146100435780638da5cb5b14610075578063b6b55f25146100b4575b5f5ffd5b6100626100513660046100fa565b5f6020819052908152604090205481565b6040519081526020015b60405180910390f35b61009c7f000000000000000000000000000000000000000000000000000000000000000081565b6040516001600160a01b03909116815260200161006c565b6100c76100c2366004610127565b6100c9565b005b6100d481600161013e565b335f90815260208190526040812080549091906100f290849061013e565b909155505050565b5f6020828403121561010a575f5ffd5b81356001600160a01b0381168114610120575f5ffd5b9392505050565b5f60208284031215610137575f5ffd5b5035919050565b8082018082111561015d57634e487b7160e01b5f52601160045260245ffd5b9291505056fea264697066735822122058a1f2051360a1b7d3d7b36f54a2d2f39f2cb1822a2eab0d8dca4bce6d9c220f64736f6c634300081f0033"
+     }
+    },
+    "metadata": "{\"compiler\":{\"version\":\"0.8.31+commit.fd3a2265\"},\"language\":\"Solidity\",\"output\":{\"abi\":[{\"inputs\":[],\"stateMutability\":\"nonpayable\",\"type\":\"constructor\"},{\"inputs\":[{\"internalType\":\"address\",\"name\":\"\",\"type\":\"address\"}],\"name\":\"balanceOf\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"\",\"type\":\"uint256\"}],\"stateMutability\":\"view\",\"type\":\"function\"},{\"inputs\":[{\"internalType\":\"uint256\",\"name\":\"amount\",\"type\":\"uint256\"}],\"name\":\"deposit\",\"outputs\":[],\"stateMutability\":\"nonpayable\",\"type\":\"function\"},{\"inputs\":[],\"name\":\"owner\",\"outputs\":[{\"internalType\":\"address\",\"name\":\"\",\"type\":\"address\"}],\"stateMutability\":\"view\",\"type\":\"function\"}],\"devdoc\":{\"kind\":\"dev\",\"methods\":{},\"version\":1},\"userdoc\":{\"kind\":\"user\",\"methods\":{},\"notice\":\"A deliberately small vault for the builder's fixtures: deposits credit one wei too many.\",\"version\":1}},\"settings\":{\"compilationTarget\":{\"src/Vault.sol\":\"Vault\"},\"evmVersion\":\"cancun\",\"libraries\":{},\"metadata\":{\"bytecodeHash\":\"ipfs\"},\"optimizer\":{\"enabled\":true,\"runs\":200},\"remappings\":[]},\"sources\":{\"src/Vault.sol\":{\"keccak256\":\"0x14fd11ae8b293d5abb81c6e588b90d2630a4a30540d229cb51e754eaa4ded11c\",\"license\":\"MIT\",\"urls\":[\"bzz-raw://f83ac08b0434f87ed2fdd55a15c129ff05be161fa2e57a2d1ca6c20046e9a824\",\"dweb:/ipfs/QmXjh2AQR8H1wNzBPYpNFFKEaB4uwGAKSDeFXPD74bPj74\"]}},\"version\":1}"
+   }
+  }
+ },
+ "sources": {
+  "src/Vault.sol": {
+   "id": 0
+  }
+ }
+}

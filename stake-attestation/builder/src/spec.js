@@ -66,7 +66,12 @@ export function checkDraft(draft) {
       /* the schema has already said so */
     }
   }
-  const names = [['attestation', draft.attestation], ['baseline', draft.baseline], ['stake/knownIssues', isObject(draft.stake) ? draft.stake.knownIssues : undefined]];
+  // The names the listing archive will use, the defaults included, all distinct and none the builder's own.
+  const names = [
+    ['attestation', draft.attestation ?? codeReview.ATTESTATION_FILE],
+    ['baseline', draft.baseline ?? codeReview.BASELINE_FILE],
+    ['stake/knownIssues', isObject(draft.stake) ? draft.stake.knownIssues : undefined],
+  ];
   for (const [where, name] of names) {
     if (name === undefined) continue;
     if (typeof name !== 'string' || !FILE_NAME.test(name) || RESERVED.has(name)) {

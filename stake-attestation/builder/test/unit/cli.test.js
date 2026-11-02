@@ -127,6 +127,19 @@ test('run (build and sign in one process) takes a dev key only: a production key
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('sign never writes the attestation over another file of the listing', async () => {
+  const dir = tmp();
+  const { bl } = acceptedDir(dir);
+  const spec = JSON.parse(fs.readFileSync(path.join(dir, 'code_review.json')));
+  spec.attestation = 'baseline.json';
+  fs.writeFileSync(path.join(dir, 'code_review.json'), `${JSON.stringify(spec, null, 2)}\n`);
+  const t = io();
+  assert.equal(await main(['sign', '--config', configFile(dir), '--dir', dir], { env: {}, ...t }), 1);
+  assert.match(t.err, /OUTPUT_INVALID/);
+  assert.ok(fs.readFileSync(path.join(dir, 'baseline.json')).equals(bl), 'the baseline is untouched');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('sign refuses an out directory whose report did not accept the listing', async () => {
   const dir = tmp();
   acceptedDir(dir);

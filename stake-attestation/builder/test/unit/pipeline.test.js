@@ -33,7 +33,7 @@ function config(over = {}) {
 
 /** Doubles for one build; `over` replaces any of them. */
 function harness(over = {}) {
-  const calls = { fetch: [], runner: [], collect: [], registry: [] };
+  const calls = { fetch: [], runner: [], readFiles: [], compile: [], registry: [] };
   const docker = fakeDocker((args) => {
     if (args[0] === 'push') return { stdout: `digest: ${DIGEST} size: 1234\n` };
     if (args[0] === 'history') return { stdout: `${over.unpacked ?? 700000000}\n100000000\n` };
@@ -57,14 +57,14 @@ function harness(over = {}) {
       },
     },
     explorerFor: over.explorerFor,
-    collect: over.collect ?? (async (req) => {
-      calls.collect.push(req);
-      return {
-        files: new Map(req.paths.map((p) => [p, fs.readFileSync(path.join(FIXTURES, 'vault', p))])),
-        artifacts: [{ file: 'out/Vault.sol/Vault.json', json: readFixture('artifacts', 'Vault.json') }],
-        build: { exitCode: 0, log: '' },
-      };
-    }),
+    readFiles: async (req) => {
+      calls.readFiles.push(req);
+      return new Map(req.paths.map((p) => [p, { origin: 'commit', bytes: fs.readFileSync(path.join(FIXTURES, 'vault', p)) }]));
+    },
+    compile: async (req) => {
+      calls.compile.push(req);
+      return { output: readFixture('solc', 'vault-output.json'), solc: { version: req.version, sha256: 'a'.repeat(64), platform: 'linux/amd64' } };
+    },
     ...over.deps,
   };
   return { deps, calls, docker };
@@ -110,7 +110,12 @@ test('limits the draft declares above the defaults are kept; the rest are the de
 });
 
 test('a draft common rejects, or one the MVP builder cannot host, is refused before anything is fetched or built', async () => {
+  const { baseline: _omitted, ...noBaseline } = draftSpec();
   for (const draft of [
+    // The attestation would take the default baseline's name (and overwrite it at signing).
+    { ...noBaseline, attestation: 'baseline.json' },
+    draftSpec({ attestation: 'code_review.json' }),
+    draftSpec({ baseline: '../baseline.json' }),
     draftSpec({ env: { from: 'node22' } }),
     draftSpec({ commands: { framework: 'forge', test: 'forge test' } }),
     draftSpec({ repo: 'http://github.com/acme/vault' }),
@@ -157,8 +162,10 @@ test('a contract listing whose verified source matches goes on to validation; th
   assert.equal(status, 'accepted', JSON.stringify(report.refusals));
   assert.equal(report.verifiedSource.status, 'match');
   assert.equal(report.verifiedSource.contract.name, 'Vault');
-  assert.equal(calls.collect[0].baseCommit, BASE_COMMIT);
-  assert.equal(calls.collect[0].image, IMAGE, 'compiled in the pushed image');
+  assert.equal(calls.readFiles[0].baseCommit, BASE_COMMIT, 'the listed commit\'s files');
+  assert.equal(calls.readFiles[0].image, IMAGE, 'untracked files from the pushed image');
+  assert.equal(calls.compile[0].version, '0.8.31+commit.fd3a2265', 'the compiler the explorer names');
+  assert.equal(report.verifiedSource.summary.bytecode, 'match');
   assert.equal(calls.runner.length, 1);
 });
 

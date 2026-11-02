@@ -236,15 +236,19 @@ deploys on the in-process network against the mock aggregator, as a test.
    manifest, read back and checked against the digest: over 2 GB compressed, or any `VOLUME`,
    is refused. Config may lower both limits, never raise them.
 5. **verifiedSource** (a `contract` listing): the explorer configured for the listing's chain
-   (Etherscan v2 API: `getsourcecode`, `eth_getCode`) against the listed commit. Every file of
-   the verified source must be byte-identical to the file at that path in the commit; the
-   artifact compiled at baseCommit for the explorer's contract must use the same compiler,
-   optimizer, EVM and IR settings and no file the verified source lacks; and its runtime code
-   must be the deployed code, every byte but the immutables and the metadata trailer. The
-   compile runs in the env image with no network, as uid 10001 on a read-only root, on a tree
-   rebuilt from the commit's git objects (never the image's checkout, git config, attributes
-   or hooks). A proxy, a flattened source, an unverified address or any mismatch stops the
-   listing.
+   (Etherscan v2 API: `getsourcecode`, `eth_getCode`) against the listed commit, without
+   running anything the listing chose. Every file of the verified source must be
+   byte-identical to the file at that path in the commit, read from the objects the builder
+   fetched by id (and each submodule's, fetched by the commit its gitlink records), never from
+   the env image's checkout or objects; a path the commit does not track is compared with the
+   image's installed dependency. Then the verified standard-JSON input (those files, the
+   verified settings and libraries) is compiled by the solc release the explorer names, from
+   binaries.soliditylang.org (`solc.baseUrl`) checked against the SHA-256 its `list.json`
+   publishes, in a sandbox of the pinned base image with no network, and its runtime code must
+   be the deployed code, every byte but the immutables and solc's metadata trailer. The
+   listing's own compiler is never used: a maker's setup can install anything as `solc`. A
+   proxy, a flattened source, an unverified address, an unlinked library (its address could
+   not be checked) or any mismatch stops the listing.
 6. **listingCheck**: the code-runner's `POST /v1/listing-checks` (verdikta-arbiter A2b), the
    runner the arbiters use: build once, the suite three times without network, `baseline.json`,
    the timings, the default limits and the harness proof. Its refusals (`LISTING_TOO_HEAVY`,
@@ -288,7 +292,8 @@ logged or put in the report.
 }
 ```
 
-Also `registry.apiUrl` (where manifests are read, when not the repository's host), `runner.url`
+Also `solc.baseUrl` (default `https://binaries.soliditylang.org`, or a mirror with the same
+layout) and `solc.cacheDir` (binaries kept by their SHA-256), `registry.apiUrl` (where manifests are read, when not the repository's host), `runner.url`
 (loopback over http, else https) and `tokenEnv`, `runner.deadlineMs` (default 900000),
 `limits.imageCompressedBytes` / `imageUnpackedBytes` (lower only), `repoMirrors` (`{ "<https
 repo>": "<path or https URL>" }`), `workDir`, `docker.bin` / `host` / `buildTimeoutSeconds` /
@@ -305,7 +310,8 @@ does. The report lists that under `devOnly`, and a production key refuses to sig
 **Tests.** `npm test` runs the unit tests (no Docker; explorer answers come only from recorded
 responses in `test/fixtures/explorer`, in the Etherscan v2 API's shape, for the fixture contract
 `test/fixtures/vault`). `npm run test:docker` builds the fixture with a real daemon, pushes it to
-a throwaway `registry:2`, compiles it for the source check, and validates it on the code-runner
+a throwaway `registry:2`, runs the source check (with solc 0.8.31 from binaries.soliditylang.org,
+and an adversarial listing whose setup rewrites a tracked source and plants a `solc`), and validates it on the code-runner
 from verdikta-arbiter at the commit pinned in `test/docker/code-runner.pin.json`, started as a
 sidecar on loopback with its own token and environment (`SA_CODE_RUNNER_DIR` points at a
 checkout of that commit's `code-runner/`; otherwise the tests fetch it). The fixture's setup lets

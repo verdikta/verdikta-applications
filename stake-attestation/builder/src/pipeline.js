@@ -8,8 +8,8 @@
 //   push            to the configured registry; from here on the image is its digest
 //   registry        the linux/amd64 manifest an arbiter pulls: over 2 GB compressed, or any
 //                   VOLUME, stops here
-//   verifiedSource  for a contract: the explorer's verified source against the repository at
-//                   baseCommit and its compile (src/sourceCheck.js)
+//   verifiedSource  for a contract: the explorer's verified source against the listed commit's
+//                   files and, compiled by a checksummed solc, the deployed code (src/sourceCheck.js)
 //   listingCheck    the code-runner's POST /v1/listing-checks: baseline.json, the timings, the
 //                   default limits, the harness proof; its refusals stop the listing
 //   finalSpec       code_review.json with env.image, env.platform, env.unpackedBytes and the limits
@@ -30,7 +30,9 @@ import { buildImage, imageSizeIssues, pushImage, unpackedBytes } from './image.j
 import { createRegistryClient } from './registry.js';
 import { newReport, startStep } from './report.js';
 import { createRunnerClient, interpretListingCheck } from './runner.js';
-import { checkVerifiedSource, collectFromImage } from './sourceCheck.js';
+import { readCommitFiles, readUntrackedFromImage } from './commitFiles.js';
+import { compileStandardJson, fetchSolc } from './solc.js';
+import { checkVerifiedSource } from './sourceCheck.js';
 import { checkDraft, checkKnownIssues, finalSpec, runnerSpec, serializeJson } from './spec.js';
 import { BUILDER_VERSION } from './version.js';
 
@@ -66,6 +68,30 @@ function devOnly(config, report) {
     if (r.runtime !== 'runsc') out.push({ code: 'VALIDATED_WITHOUT_GVISOR', detail: `the code-runner ran under ${r.runtime}, not gVisor` });
   }
   return out;
+}
+
+/**
+ * What the verified-source check reads and compiles with: the listed commit's files from the
+ * fetched objects (an untracked path from the image's /repo), and the checksummed solc the
+ * explorer names, run in a sandbox of the pinned base.
+ * @returns {{ readFiles: (req: { paths: string[], baseCommit: string, gitDir: string, image: string }) => Promise<Map>, compile: (req: { version: string, input: object }) => Promise<object> }}
+ */
+export function verifiedSourceDeps({ config, docker, draft, workDir }) {
+  const run = config.platforms.run;
+  return {
+    async readFiles(req) {
+      const files = await readCommitFiles({ gitDir: req.gitDir, repo: draft.repo, baseCommit: req.baseCommit, paths: req.paths, mirrorFor: config.mirrorFor, workDir });
+      const untracked = [...files].filter(([, f]) => f.origin === 'untracked').map(([p]) => p);
+      const fromImage = await readUntrackedFromImage({ docker, image: req.image, platform: run, paths: untracked });
+      for (const p of untracked) files.set(p, { origin: 'untracked', bytes: fromImage.get(p) });
+      return files;
+    },
+    async compile({ version, input }) {
+      const solc = await fetchSolc({ version, platform: run, baseUrl: config.solc.baseUrl, cacheDir: config.solc.cacheDir });
+      const output = await compileStandardJson({ docker, platform: run, solc, input });
+      return { output, solc: { version: solc.longVersion, sha256: solc.sha256, platform: run } };
+    },
+  };
 }
 
 /**
@@ -124,7 +150,11 @@ export async function buildEnvImage({ draft, config, deps = {}, report, workDir 
     if (issue) throw new Refusal(issue.code, `${issue.detail}; it was pushed as ${ref} and should be deleted`);
     return i;
   });
-  return { ref, digest, tag, platform: CLASS_PLATFORM, platforms: info.platforms, base: refs.attested, compressedBytes: info.compressedBytes, unpackedBytes: builderUnpacked };
+  return {
+    ref, digest, tag, platform: CLASS_PLATFORM, platforms: info.platforms, base: refs.attested, compressedBytes: info.compressedBytes, unpackedBytes: builderUnpacked,
+    // The listed commit's objects as fetched (the build context's copy), for the verified-source check.
+    gitDir: path.join(contextDir, 'repo.git'),
+  };
 }
 
 /**
@@ -133,7 +163,7 @@ export async function buildEnvImage({ draft, config, deps = {}, report, workDir 
  * @param {object} o.draft - the maker's draft code_review.json
  * @param {Buffer|null} [o.knownIssues] - the exact bytes of known_issues.json, when the draft names one
  * @param {object} o.config - parseConfig()
- * @param {object} [o.deps] - doubles (docker, fetchListedCommit, writeBuildContext, registry, runner, explorerFor, collect)
+ * @param {object} [o.deps] - doubles (docker, fetchListedCommit, writeBuildContext, registry, runner, explorerFor, readFiles, compile)
  * @param {string} [o.workDir] - where the temporary build folder is made (default config.workDir)
  * @returns {Promise<{ status: 'accepted'|'refused'|'error', files: Map<string, Buffer>, report: object }>}
  */
@@ -162,9 +192,10 @@ export async function buildListing({ draft, knownIssues = null, config, deps = {
       const ex = config.explorers.get(chainId);
       if (!ex) throw new BuilderError('EXPLORER_NOT_CONFIGURED', `no explorer is configured for chain ${chainId} (config explorers)`);
       const explorer = deps.explorerFor ? deps.explorerFor(chainId, ex) : createExplorer({ apiUrl: ex.apiUrl, apiKey: ex.apiKey(), chainId, timeoutMs: ex.timeoutMs });
-      const collectImpl = deps.collect ?? ((req) => collectFromImage({ docker, ...req }));
-      const collect = (req) => collectImpl({ image: image.ref, platform: config.platforms.run, ...req });
-      const r = await checkVerifiedSource({ spec: draft, explorer, collect });
+      const real = verifiedSourceDeps({ config, docker, draft, workDir: tmp });
+      const readImpl = deps.readFiles ?? real.readFiles;
+      const readFiles = (req) => readImpl({ ...req, baseCommit: draft.baseCommit, gitDir: image.gitDir, image: image.ref });
+      const r = await checkVerifiedSource({ spec: draft, explorer, readFiles, compile: deps.compile ?? real.compile });
       const api = new URL(ex.apiUrl);
       report.verifiedSource = {
         status: r.ok ? 'match' : 'mismatch',

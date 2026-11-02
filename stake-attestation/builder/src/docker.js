@@ -51,10 +51,10 @@ export function createDocker({ bin = 'docker', host = null, baseEnv = process.en
  * @param {string} o.label
  * @param {string[]} o.argv - the program and its arguments
  */
-export function sandboxRunArgs({ image, platform, name, label, argv, cpus = 2, memoryMb = 4096, pids = 4096 }) {
+export function sandboxRunArgs({ image, platform, name, label, argv, cpus = 2, memoryMb = 4096, pids = 4096, interactive = false }) {
   if (!Array.isArray(argv) || argv.length === 0) throw new TypeError('argv is required');
   return [
-    'run', '--rm', '--pull', 'never', '--platform', platform,
+    'run', '--rm', ...(interactive ? ['--interactive'] : []), '--pull', 'never', '--platform', platform,
     '--name', name, '--label', label,
     '--network', 'none',
     '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--ipc', 'none',
@@ -72,13 +72,15 @@ export function sandboxRunArgs({ image, platform, name, label, argv, cpus = 2, m
 }
 
 /**
- * Runs `argv` in a fresh sandboxed container of `image` and removes it, whatever happened.
+ * Runs `argv` in a fresh sandboxed container of `image` and removes it, whatever happened. With
+ * `stdin`, the bytes are the program's standard input (the only way anything reaches it).
  * @returns {Promise<{exitCode:number|null, stdout:Buffer, stderr:Buffer, stdoutTruncated:boolean, timedOut:boolean, spawnError:string|null}>}
  */
-export async function runSandboxed({ docker, image, platform, argv, timeoutMs, maxBytes, cpus, memoryMb }) {
+export async function runSandboxed({ docker, image, platform, argv, timeoutMs, maxBytes, cpus, memoryMb, stdin = null }) {
   const name = `vab-${crypto.randomBytes(6).toString('hex')}`;
   try {
-    return await docker.run(sandboxRunArgs({ image, platform, name, label: 'io.verdikta.builder=1', argv, cpus, memoryMb }), { timeoutMs, maxBytes });
+    const args = sandboxRunArgs({ image, platform, name, label: 'io.verdikta.builder=1', argv, cpus, memoryMb, interactive: stdin !== null });
+    return await docker.run(args, { timeoutMs, maxBytes, stdin });
   } finally {
     await docker.run(['rm', '--force', '--volumes', name], { timeoutMs: 60000 });
   }

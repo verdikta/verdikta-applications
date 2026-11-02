@@ -107,7 +107,7 @@ function parseSigningKey(key) {
  *   secrets are read from env when used
  */
 export function parseConfig(raw, { baseDir, env = process.env } = {}) {
-  keys(raw, ['registry', 'runner', 'explorers', 'signing', 'platforms', 'limits', 'repoMirrors', 'workDir', 'docker'], 'the config');
+  keys(raw, ['registry', 'runner', 'explorers', 'solc', 'signing', 'platforms', 'limits', 'repoMirrors', 'workDir', 'docker'], 'the config');
   const resolve = (p) => path.resolve(baseDir, p);
 
   // registry
@@ -215,6 +215,15 @@ export function parseConfig(raw, { baseDir, env = process.env } = {}) {
   });
 
   if (raw.workDir !== undefined && (typeof raw.workDir !== 'string' || !raw.workDir)) fail('workDir must be a path');
+  const workDir = raw.workDir === undefined ? os.tmpdir() : resolve(raw.workDir);
+
+  // solc: where the verified-source check gets the compiler it trusts
+  const so = raw.solc ?? {};
+  keys(so, ['baseUrl', 'cacheDir'], 'solc');
+  const solcBase = so.baseUrl === undefined ? 'https://binaries.soliditylang.org' : serviceUrl(so.baseUrl, 'solc.baseUrl').href.replace(/\/+$/, '');
+  if (so.cacheDir !== undefined && (typeof so.cacheDir !== 'string' || !so.cacheDir)) fail('solc.cacheDir must be a path');
+  const solc = Object.freeze({ baseUrl: solcBase, cacheDir: so.cacheDir === undefined ? path.join(workDir, 'verdikta-builder-solc') : resolve(so.cacheDir) });
+
   return Object.freeze({
     registry,
     runner,
@@ -223,7 +232,8 @@ export function parseConfig(raw, { baseDir, env = process.env } = {}) {
     platforms,
     limits,
     docker,
-    workDir: raw.workDir === undefined ? os.tmpdir() : resolve(raw.workDir),
+    solc,
+    workDir,
     mirrorFor: (url) => mirrors.get(url) ?? null,
   });
 }

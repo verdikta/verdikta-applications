@@ -1,0 +1,24 @@
+{
+ "status": "1",
+ "message": "OK",
+ "result": [
+  {
+   "SourceCode": "{{\"language\":\"Solidity\",\"sources\":{\"src/Vault.sol\":{\"content\":\"// SPDX-License-Identifier: MIT\\npragma solidity ^0.8.24;\\n\\n/// A deliberately small vault for the builder's fixtures: deposits credit one wei too many.\\ncontract Vault {\\n    address public immutable owner;\\n    mapping(address => uint256) public balanceOf;\\n\\n    constructor() {\\n        owner = msg.sender;\\n    }\\n\\n    function deposit(uint256 amount) external {\\n        balanceOf[msg.sender] += amount + 1;\\n    }\\n}\\n\"}},\"settings\":{\"remappings\":[],\"optimizer\":{\"enabled\":true,\"runs\":200},\"metadata\":{\"bytecodeHash\":\"ipfs\"},\"outputSelection\":{\"*\":{\"*\":[\"abi\",\"evm.bytecode.object\",\"evm.deployedBytecode.object\",\"metadata\"]}},\"evmVersion\":\"cancun\",\"viaIR\":false,\"libraries\":{}}}}",
+   "ABI": "[{\"type\":\"constructor\",\"inputs\":[],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"balanceOf\",\"inputs\":[{\"name\":\"\",\"type\":\"address\",\"internalType\":\"address\"}],\"outputs\":[{\"name\":\"\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"deposit\",\"inputs\":[{\"name\":\"amount\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"outputs\":[],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"owner\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"address\",\"internalType\":\"address\"}],\"stateMutability\":\"view\"}]",
+   "ContractName": "Vault",
+   "CompilerVersion": "v0.8.31+commit.fd3a2265",
+   "CompilerType": "solc",
+   "OptimizationUsed": "1",
+   "Runs": "200",
+   "ConstructorArguments": "",
+   "EVMVersion": "cancun",
+   "Library": "",
+   "ContractFileName": "src/Vault.sol",
+   "LicenseType": "MIT",
+   "Proxy": "1",
+   "Implementation": "0x9d0a3e3cb0e7c0bd0dbd1c4e5b11cb1cf3b8e5a1",
+   "SwarmSource": "",
+   "SimilarMatch": ""
+  }
+ ]
+}

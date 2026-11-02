@@ -12,10 +12,12 @@
   "scripts": {
     "start": "node src/index.js",
     "test": "node --test --test-timeout=300000 test/*.test.js",
-    "test:builder": "node --test --test-timeout=120000 test/builder/*.test.js"
+    "test:builder": "node --test --test-timeout=120000 test/builder/*.test.js",
+    "abi": "node test/helpers/writeAbi.js"
   },
   "dependencies": {
     "@verdikta/common": "1.9.0-attest.1",
+    "@verdikta/stake-attestation-shared": "file:../shared",
     "ethers": "6.15.0",
     "express": "^4.22.3"
   },

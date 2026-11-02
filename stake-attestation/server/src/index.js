@@ -1,9 +1,10 @@
 import { createApp } from './app.js';
+import { loadConfig } from './config.js';
 
-// 5009: next free port after the repository's other apps (see ../README.md).
-const port = Number(process.env.PORT ?? 5009);
-const host = process.env.HOST ?? '127.0.0.1';
+// Everything comes from the environment (src/config.js); 5009 is the next free port after the
+// repository's other apps (see ../README.md).
+const config = loadConfig(process.env);
 
-createApp().listen(port, host, () => {
-  console.log(`stake-attestation server listening on http://${host}:${port}`);
+createApp({ config }).listen(config.port, config.host, () => {
+  console.log(`stake-attestation server listening on http://${config.host}:${config.port} (pinning: ${config.pinning.backend}, trust: ${config.trust.mode})`);
 });

@@ -15,9 +15,9 @@ the design where they differ.
 
 **Status:** scaffold, plus the contract's listing half, its claim lifecycle and
 settlement: finalize by polling the aggregator, the six-outcome rule, payouts,
-depletion and owed awards. The packages below build and test; disputes, failed
-rounds' re-trigger, late claims, the site's flows and the hunter commands arrive
-with the nodes named in the plan.
+depletion and owed awards; the environment builder; and the server's listing
+flow. The packages below build and test; the rest of the site's flows and the
+hunter commands arrive with the nodes named in the plan.
 
 ## A separate site
 
@@ -55,7 +55,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 | Folder | What | Test |
 |---|---|---|
 | `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
-| `server/` | Express API; `GET /health` for now. Port 5009. | `npm test` |
+| `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`. | `npm test`, `npm run test:builder` |
 | `client/` | Vite + React site. Port 5176. | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI: `check`, `commit`, `reveal`, `status`, `claim` arrive in P5. | `npm test` |
 | `shared/` | Code shared by the packages (the banned-words helper so far) and the app's repository checks. | `npm test` |
@@ -198,6 +198,63 @@ writes `deployments/<chainId>-<network>.json` and the merged ABI, and verifies
 on BaseScan when `ETHERSCAN_API_KEY` is set (`deploy/verify.js` retries).
 `npx hardhat run deploy/01_deploy_stake_attestation.js` with no network
 deploys on the in-process network against the mock aggregator, as a test.
+
+## The listing API
+
+`server/` (node P4a) turns a maker's draft into the two archives arbiters read and the
+arguments of `list()`. `POST /api/listings` takes `{ spec, knownIssues?, allowlist? }`: the
+draft `code_review.json` with its stake block and the maker's age disclosure key, the known
+issues when `stake.knownIssues` names them, and up to 64 invited hunters. Before any build it
+decodes the disclosure key with common's `parseDisclosureKey`, checks the draft with common's
+validator (over the builder's stand-ins for the fields the builder measures) and refuses what
+`list()` would refuse (decision D8's windows, a value at risk that is not whole dollars, more
+than 256 known issues) and a file named like an archive member: 400 with the issues.
+Otherwise it answers 202 with an id, and `GET /api/listings/:id` follows the listing:
+
+| Status | |
+|---|---|
+| `queued`, `building` | waiting for, or in, the builder: `verdikta-build-env build`, then `sign` in a process of its own |
+| `refused` | the builder refused it and `validationReport` says why. Nothing is built or pinned: a failed verified-source check ends here |
+| `pinning` | accepted and checked; both archives are being pinned |
+| `ready` | `archives` (both CIDs, their SHA-256 and their members') and `list`: `params`, `listingCid`, `disputeCid` and `knownIssueIds`, in JSON ethers takes as it is (uint256 and uint64 as decimal strings, bytes32 as hex); `params.disclosureKey` is the 32 bytes the archive's age recipient encodes |
+| `error` | anything else (the builder or pinning failed, or the result did not check out); nothing is issued |
+
+An accepted build is checked before anything is issued: every step of its report passed (for
+a contract, the verified source matched), the built `code_review.json` keeps every term the
+maker submitted, the known issues are the bytes the server sent, and both archives pass what
+the External Adapter checks in `cids[0]` (common's manifest validator, the six outcomes, the
+spec, the `code-standard` envelope, the attestation under the configured trust, the known
+issues and the baseline) and this site's own rules: exactly these members, common's panel for
+the archive's role and common's `buildClaimQuery` output as the query.
+
+**The archives.** Both hold `manifest.json` (`codeReview`, the primary file and the panel),
+`primary_query.json` (`buildClaimQuery(spec)` and the six outcomes) and the builder's
+`code_review.json`, `attestation.json`, `baseline.json` and `known_issues.json`, byte for byte.
+The listing archive's panel is common's `CODE_STANDARD_PANEL` and the dispute archive's
+`CODE_STANDARD_DISPUTE_PANEL`; nothing else differs. The ZIP is stored, with a fixed timestamp
+and member order, so the same files always give the same CID.
+
+**Pinning** (`SA_PINNING`): `mock` (in memory, for development and tests; refused in
+production), `kubo` (a daemon's RPC API at `SA_KUBO_API_URL`), `filebase` (its IPFS RPC API,
+token in `SA_FILEBASE_TOKEN`) or `pinata` (JWT in `SA_PINATA_JWT`). Uploads ask for CIDv1 with
+raw leaves, and an answer in the raw-block form must be the CID of the bytes sent.
+
+**Config** comes from the environment only; `server/src/config.js` lists every variable: the
+trust the attestation is checked under (`SA_ATTESTATION_TRUST`, `production` by default; `dev`
+is refused in production and on Base), the builder's command line and config
+(`SA_BUILDER_BIN`, `SA_BUILDER_CONFIG`), the variables each builder step gets besides `PATH`
+and `HOME` (`SA_BUILDER_BUILD_ENV`, `SA_BUILDER_SIGN_ENV`, never one of the server's own `SA_`
+variables), the build queue, and the oracle parameters (`SA_ORACLE_*`; the class is common's
+`code-standard`). A credential is named by its variable and read when it is used, so the
+parsed config holds none.
+
+**Tests.** `npm test` stubs the builder behind its interface, and pins to the mock store or to
+local doubles of kubo, Filebase and Pinata through a fetch that refuses every host but
+loopback. The chain tests copy `onchain/contracts` into `server/.hardhat/` (untracked), compile
+them with onchain's settings, and send `list()` and `fund()` with the server's JSON on the
+in-process Hardhat network against the mock aggregator. `npm run test:builder` (after `npm ci`
+in `builder/`) runs the real builder's command line through the API on a draft the builder
+refuses at its first step, which needs no Docker.
 
 ## The environment builder
 

@@ -121,7 +121,7 @@ function reportFor(draft, statuses = {}) {
 
 /** The code_review.json the builder writes for `draft`. */
 export function builtSpec(draft) {
-  const out = { ...draft };
+  const out = structuredClone(draft);
   out.env = { image: IMAGE, from: draft.env.from, platform: 'linux/amd64', unpackedBytes: 812000000 };
   out.attestation = draft.attestation ?? 'attestation.json';
   out.baseline = draft.baseline ?? 'baseline.json';

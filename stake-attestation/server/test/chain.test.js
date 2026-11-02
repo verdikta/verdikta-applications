@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { ArchiveService, codeReview } from '../src/common.js';
+import { LIST_LIMITS } from '../src/listing/listParams.js';
 import { contractDraft, draftSpec, fakeBuilder, knownIssues, listingRequest } from './helpers/fixtures.js';
 import { deployStakeAttestation, hardhat } from './helpers/chain.js';
 import { startApi } from './helpers/http.js';
@@ -143,5 +144,14 @@ describe('one listing per hash and maker: the second list() of the same version 
     await listAndFund(view, d.maker, d.sa);
     const { params, listingCid, disputeCid, knownIssueIds } = view.list;
     await assert.rejects(d.sa.connect(d.maker).list(params, listingCid, disputeCid, knownIssueIds), /active listing exists/);
+  });
+});
+
+describe('the bounds the server checks before a build are the deployed contract\'s', () => {
+  test('LIST_LIMITS equals StakeAttestation\'s constants', async () => {
+    const { sa } = await deployStakeAttestation(hre);
+    for (const [name, value] of Object.entries(LIST_LIMITS)) {
+      assert.equal(await sa[name](), BigInt(value), name);
+    }
   });
 });

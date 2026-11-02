@@ -5,6 +5,7 @@
 // that the code may exist elsewhere. The server's real check runs over real git against bare
 // repositories in the stack's mirror folder: no network.
 import { LISTING_WARNING } from '@verdikta/stake-attestation-shared/listing-warning';
+import { Contract } from 'ethers';
 
 import { CONTROL_FILE_FORMAT, STRINGS, fill } from '../src/strings.js';
 import { disclosure, expect, fromServer, installWallet, shot, test } from './support/fixtures.js';
@@ -186,6 +187,38 @@ test('a contract listing: the owner\'s signature goes with the request; a strang
   const svg = await (await page.request.get(`/api/records/${hash}/badge.svg`)).text();
   expect(svg).toContain('staker named by the repository: yes');
   expect(svg).toContain('staker controls the deployment: yes');
+});
+
+test('an owner hands over: the listing shows apart, and the new owner signs on the record page: then it counts again', async ({ page, stack, chain }) => {
+  test.setTimeout(180_000);
+  const { makeRepo, proofFile } = await fromServer('test/helpers/gitRepo.js');
+  const repo = makeRepo(stack.mirrorDir, nextRepo(stack));
+  const commit = repo.commit({ file: proofFile(stack.accounts.maker) });
+  const key = disclosure.generateDisclosureKeyPair();
+  const post = (path, body) => fetch(`${stack.apiUrl}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const { message } = await (await post('/api/listings/deployment-message', { maker: stack.accounts.maker, repo: repo.url, baseCommit: commit, chainId: stack.chainId, address: stack.handedOverContract })).json();
+  const signature = await (await chain.provider.getSigner(stack.accounts.other)).signMessage(message);
+  const l = await chain.openListing({
+    recipient: key.recipient,
+    baseCommit: commit,
+    spec: { repo: repo.url, artifact: { kind: 'contract', address: stack.handedOverContract, chainId: stack.chainId } },
+    stake: { valueAtRiskUsd: undefined },
+    deploymentProof: { signer: stack.accounts.other, signature },
+  });
+  const owned = new Contract(stack.handedOverContract, ['function transferOwnership(address)'], await chain.provider.getSigner(stack.accounts.other));
+  await (await owned.transferOwnership(stack.accounts.hunter)).wait();
+  const apart = await chain.notCounted(l.artifactHash, l.listingId);
+  expect(apart.reason).toBe('SIGNER_NOT_CONTROLLER');
+
+  await installWallet(page, stack, stack.accounts.hunter);
+  await page.goto(`/#/record/${l.artifactHash}`);
+  await expect(page.getByTestId(`not-counted-${l.listingId}-why`)).toContainText('not the deployment\'s current owner');
+  const form = page.getByTestId(`control-form-${l.listingId}`);
+  await form.getByRole('button', { name: C.sign }).click();
+  await expect(form.getByTestId('control-signer')).toHaveValue(stack.accounts.hunter);
+  await form.getByRole('button', { name: C.send }).click();
+  await expect(page.getByTestId(`listing-${l.listingId}-control-deployment`)).toHaveText(C.yes, { timeout: 30_000 });
+  await expect(page.getByTestId(`not-counted-${l.listingId}`)).toHaveCount(0);
 });
 
 test('a fork is labelled from the host\'s answer; an unknown answer says unknown; a plain copy is stated as undetectable', async ({ page, stack, chain }) => {

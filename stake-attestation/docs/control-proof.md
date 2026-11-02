@@ -33,9 +33,10 @@ A listing counts when, in this order:
 
 | Reason it does not | |
 |---|---|
-| `ARCHIVE_UNAVAILABLE`, `ARCHIVE_INVALID`, `ARCHIVE_TOO_LARGE`, `ARCHIVE_NOT_CID` | its listing archive could not be read |
-| `NOT_SIGNED_BY_BUILDER` | the archive's attestation does not verify under the builder keys this site accepts (`@verdikta/common`'s trusted-builder set; under dev trust, only keys this site's own signing step made) |
-| `ARCHIVE_MISMATCH` | the chain holds another artifact, disclosure key or terms than the signed archive says |
+| `ARCHIVE_UNAVAILABLE`, `ARCHIVE_TOO_LARGE`, `ARCHIVE_NOT_CID` | its listing or dispute archive could not be read |
+| `ARCHIVE_INVALID` | not an archive arbiters would judge: no panel of common's for its role, another query or outcomes, no primary file, an invalid baseline. The signature covers the spec, the baseline and the known issues, so a repackaged archive still carries a good one |
+| `NOT_SIGNED_BY_BUILDER` | an archive's attestation does not verify under the builder keys this site accepts (`@verdikta/common`'s trusted-builder set; under dev trust, only keys this site's own signing step made) |
+| `ARCHIVE_MISMATCH` | the two archives are not this listing's: another artifact, disclosure key or terms on-chain, other signed files in the dispute archive, or one archive in the other's place |
 | the proof's reasons, below | the on-chain maker is not the one the repository names, or a contract has no signature |
 
 The hunter tool reuses this: `@verdikta/stake-attestation-shared/builder-signature` exports

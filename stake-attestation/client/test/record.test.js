@@ -195,8 +195,11 @@ test('freshness and the placeholders ride along', () => {
 
 test('a listing that does not count is apart: with why, and no amount of it', () => {
   const v = recordView({ ...view(), notCounted: { listings: [{ listingId: '9', maker: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', state: 'Open', lapsed: false, reason: 'NOT_SIGNED_BY_BUILDER', detail: 'why', escrowWei: '5' }], findings: [{ claimId: '1' }], flags: [], events: [] } });
-  assert.deepEqual(v.notCounted, { listings: [{ id: '9', maker: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', state: 'Open', reason: 'NOT_SIGNED_BY_BUILDER', detail: 'why' }], findings: 1 });
-  assert.equal(JSON.stringify(v.notCounted).includes('escrow'), false);
+  const { control, ...row } = v.notCounted.listings[0];
+  assert.deepEqual(row, { id: '9', maker: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', state: 'Open', reason: 'NOT_SIGNED_BY_BUILDER', detail: 'why' });
+  assert.equal(control.proof, 'no', 'its fact comes along, for the signature form');
+  assert.equal(v.notCounted.findings, 1);
+  assert.equal(JSON.stringify(row).includes('escrow'), false);
   assert.deepEqual(recordView(view()).notCounted, { listings: [], findings: 0 });
 });
 

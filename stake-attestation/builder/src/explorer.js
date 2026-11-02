@@ -159,14 +159,15 @@ export function createExplorer({ apiUrl, apiKey = null, chainId, fetch: fetchImp
   };
 }
 
-const hexTag = (tag) => (typeof tag === 'number' ? `0x${tag.toString(16)}` : tag ?? 'latest');
 const addressOf = (a) => (typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a) ? getAddress(a.toLowerCase()) : null);
 
 /**
  * The listing's chain as a deployment proof reads it (shared/src/controlProof.js), through the
  * explorer configured for that chain, in the form ethers' provider gives: an explorer's answers are
  * plain JSON-RPC, with hex numbers and lowercase addresses. The chain id is the explorer's own: it
- * is configured per chain, and the v2 API takes it as a parameter.
+ * is configured per chain, and the v2 API takes it as a parameter. Every read is of `latest`: the
+ * proxy module's eth_call and eth_getCode take no block number, so the check's reads are not pinned
+ * to one block here as they are on the site's RPC, and the sign step records that it trusts them.
  */
 export function explorerChain(explorer) {
   return {
@@ -175,8 +176,8 @@ export function explorerChain(explorer) {
       return `0x${explorer.chainId.toString(16)}`;
     },
     getBlockNumber: async () => Number(await explorer.proxy('eth_blockNumber')),
-    getCode: (address, tag) => explorer.proxy('eth_getCode', { address, tag: hexTag(tag) }),
-    call: ({ to, data, blockTag }) => explorer.proxy('eth_call', { to, data, tag: hexTag(blockTag) }),
+    getCode: (address) => explorer.proxy('eth_getCode', { address, tag: 'latest' }),
+    call: ({ to, data }) => explorer.proxy('eth_call', { to, data, tag: 'latest' }),
     getTransaction: async (hash) => {
       const tx = await explorer.proxy('eth_getTransactionByHash', { txhash: hash });
       return tx ? { from: addressOf(tx.from) } : null;

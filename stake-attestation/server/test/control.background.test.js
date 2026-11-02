@@ -140,12 +140,15 @@ test('a failed re-check keeps the answer on file for a while, and says so: a hos
     const c = (await site.record(l.artifactHash)).control[l.listingId];
     assert.equal(c.proof, 'yes');
     assert.equal(c.repository.lastCheckFailed, 'REPO_UNAVAILABLE');
+    // the limit holds between checks too: no run has to fail after it for the answer to stop counting
     clock += 8 * 86400_000;
-    await site.sync();
-    await site.controlIdle();
     const later = (await site.record(l.artifactHash)).control[l.listingId];
     assert.equal(later.proof, 'no');
     assert.equal(later.reason, 'REPO_UNAVAILABLE');
+    assert.equal(later.repository.commitOnOwnRefs, null, 'nothing is shown from the answer it outlived');
+    await site.sync();
+    await site.controlIdle();
+    assert.equal((await site.record(l.artifactHash)).control[l.listingId].reason, 'REPO_UNAVAILABLE');
   } finally {
     site.close();
   }

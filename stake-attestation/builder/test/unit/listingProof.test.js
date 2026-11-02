@@ -237,7 +237,7 @@ test('the explorer stands in for the chain\'s RPC: its answers, in the form the 
   assert.equal(await chain.getBlockNumber(), 16);
   assert.equal(await chain.getCode('0x5f2A00000000000000000000000000000000C0dE', 16), '0x6001');
   assert.equal(await chain.call({ to: '0x5f2A00000000000000000000000000000000C0dE', data: '0x8da5cb5b', blockTag: 16 }), results.eth_call);
-  assert.equal(seen.at(-1).searchParams.get('tag'), '0x10');
+  assert.equal(seen.at(-1).searchParams.get('tag'), 'latest', 'the proxy module takes no block number');
   assert.equal((await chain.getTransaction('0xab')).from, getAddress(results.eth_getTransactionByHash.from));
   const rc = await chain.getTransactionReceipt('0xab');
   assert.deepEqual([rc.status, rc.blockNumber, rc.contractAddress], [1, 15, getAddress(results.eth_getTransactionReceipt.contractAddress)]);

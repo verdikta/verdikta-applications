@@ -64,6 +64,9 @@ async function startChain() {
   // a deployment for the contract listings' control proof (node P8): the `other` account owns it
   const owned = await (await hre.ethers.getContractFactory('MockOwned')).deploy(signers[4].address);
   await owned.waitForDeployment();
+  // and one whose owner a test changes
+  const handedOver = await (await hre.ethers.getContractFactory('MockOwned')).deploy(signers[4].address);
+  await handedOver.waitForDeployment();
   const { mnemonic, passphrase = '', path: hdPath } = hre.network.config.accounts;
   const keeper = hre.ethers.HDNodeWallet.fromPhrase(mnemonic, passphrase, `${hdPath}/${KEEPER_INDEX}`);
   const { TASK_NODE_CREATE_SERVER } = createRequire(path.join(SERVER, 'package.json'))('hardhat/builtin-tasks/task-names');
@@ -79,6 +82,7 @@ async function startChain() {
     aggregatorAbi: (await hre.artifacts.readArtifact('MockVerdiktaAggregator')).abi,
     ethUsdFeed: await ethUsd.getAddress(),
     ownedContract: await owned.getAddress(),
+    handedOverContract: await handedOver.getAddress(),
     keeperKey: keeper.privateKey,
     listingFeeWei: LISTING_FEE_WEI.toString(),
     accounts: {
@@ -168,6 +172,7 @@ async function startApi(chain, pinner) {
     // the control facts' real check, over repositories in this folder: nothing else is reachable
     SA_CONTROL_GIT_MIRROR_DIR: mirrorDir,
     SA_CONTROL_RETRY_MS: '2000',
+    SA_CONTROL_RECHECK_MS: '4000',
   };
   const config = loadConfig(env);
   const quiet = { info() {}, debug() {}, warn: (...a) => log('api:', ...a), error: (...a) => log('api:', ...a) };
@@ -223,6 +228,7 @@ async function main() {
     aggregator: chain.aggregator,
     ethUsdFeed: chain.ethUsdFeed,
     ownedContract: chain.ownedContract,
+    handedOverContract: chain.handedOverContract,
     mirrorDir: api.mirrorDir,
     listingFeeWei: chain.listingFeeWei,
     accounts: chain.accounts,

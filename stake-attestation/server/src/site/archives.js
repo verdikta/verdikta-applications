@@ -102,18 +102,18 @@ export function readListingArchive(bytes, listingCid, { maxBytes = Infinity, dev
     platform: spec.env?.platform ?? null,
     scope,
     terms,
-    signed: read.signed ? { ok: true, keyId: read.keyId, trust: read.trust, issuedAt: read.issuedAt } : { ok: false },
+    signed: read.signed ? { ok: true, role: read.role, specSha256: read.specSha256, keyId: read.keyId, trust: read.trust, issuedAt: read.issuedAt } : { ok: false },
   };
 }
 
 /**
- * Reads the archives of the listings given (those the feed may show) that the store has no
- * answer for yet, at most MAX_PER_SYNC per call; a failed fetch is stored with its next attempt,
+ * Reads the archives of the listings given (listing and dispute: a listing counts with both) that the
+ * store has no answer for yet, at most MAX_PER_SYNC per call; a failed fetch is stored with its next attempt,
  * counted from when it failed. It runs beside the indexer (site/index.js), never inside a sync.
  * @param {object} o
  * @param {(cid: string) => Promise<Buffer>} o.fetchArchive
  * @param {import('./store.js').StateStore} o.store
- * @param {{ listingCid: string, artifact: object, disclosureKey: string }[]} o.listings
+ * @param {{ listingCid: string, disputeCid: string, artifact: object }[]} o.listings
  * @param {() => number} o.now - the clock, ms
  * @param {number} o.maxBytes
  * @param {number} o.retryMs - the first wait after a failure (doubling per failure)
@@ -121,8 +121,9 @@ export function readListingArchive(bytes, listingCid, { maxBytes = Infinity, dev
  */
 export async function refreshArchives({ fetchArchive, store, listings, now, maxBytes, retryMs, logger, devKeys = () => null }) {
   let tried = 0;
-  for (const listing of listings) {
-    const known = store.state.archives[listing.listingCid];
+  const cids = [...new Set(listings.flatMap((l) => [l.listingCid, l.disputeCid]))];
+  for (const cid of cids) {
+    const known = store.state.archives[cid];
     // an answer from before the builder's signature was read is read again
     const answered = known && ((known.ok && known.signed) || (!known.ok && (known.error !== 'ARCHIVE_UNAVAILABLE' || known.retryAt > now())));
     if (answered) continue;
@@ -130,17 +131,17 @@ export async function refreshArchives({ fetchArchive, store, listings, now, maxB
     tried += 1;
     let result;
     try {
-      const bytes = Buffer.from(await fetchArchive(listing.listingCid));
-      result = readListingArchive(bytes, listing.listingCid, { maxBytes, devKeys: devKeys() });
+      const bytes = Buffer.from(await fetchArchive(cid));
+      result = readListingArchive(bytes, cid, { maxBytes, devKeys: devKeys() });
     } catch (err) {
       const attempts = (known?.attempts ?? 0) + 1;
       const delay = Math.min(RETRY_MAX_MS, retryMs * 2 ** (attempts - 1));
       result = { ok: false, error: 'ARCHIVE_UNAVAILABLE', attempts, retryAt: now() + delay };
-      logger.warn(`feed: listing archive ${listing.listingCid} could not be fetched (${String(err?.message ?? err).slice(0, 200)}); retry in ${Math.round(delay / 1000)} s`);
+      logger.warn(`feed: listing archive ${cid} could not be fetched (${String(err?.message ?? err).slice(0, 200)}); retry in ${Math.round(delay / 1000)} s`);
     }
     if (!store.locked) return; // the site closed while this fetch ran
     store.transact((s) => {
-      s.archives[listing.listingCid] = result;
+      s.archives[cid] = result;
     });
   }
 }

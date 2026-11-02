@@ -49,7 +49,7 @@ export const CONTROL_REASONS = Object.freeze(Object.fromEntries(Object.entries({
   // a listing's archive, for the reason it does not count (counting.js)
   NOT_SIGNED_BY_BUILDER: 'The listing archive carries no attestation that verifies under the builder keys this site accepts, so the builder did not sign this listing.',
   ARCHIVE_UNAVAILABLE: 'The listing archive has not been read yet. The site tries again.',
-  ARCHIVE_INVALID: 'The listing\'s CID does not hold a listing archive.',
+  ARCHIVE_INVALID: 'The listing\'s CID does not hold a listing archive arbiters would judge: its manifest, panel, primary file or baseline is not what they read.',
   ARCHIVE_TOO_LARGE: 'The listing\'s archive is larger than the site reads.',
   ARCHIVE_NOT_CID: 'The bytes the site was given for the listing\'s CID do not hash to it.',
   ARCHIVE_MISMATCH: 'What the chain holds for this listing is not what its signed archive says: another artifact, disclosure key or terms.',
@@ -60,16 +60,21 @@ export const statementOf = (subject, yes) => assertWording(subject === 'deployme
   ? `staker controls the deployment: ${yes ? 'yes' : 'no'}`
   : `staker named by the repository: ${yes ? 'yes' : 'no'}`);
 
+/** How long an answer stands through checks that get no answer: past it the record says so, whatever is on file. */
+export const KEEP_ANSWER_MS = 7 * 86400_000;
+const outlived = (entry, now) => Boolean(entry?.lastCheckFailed) && now - (entry.answeredAt ?? entry.checkedAt ?? 0) >= KEEP_ANSWER_MS;
+
 const seconds = (ms) => (ms === null || ms === undefined ? null : Math.floor(ms / 1000));
 const line = (reason) => (reason ? CONTROL_REASONS[reason] ?? null : null);
 
-function repositoryView({ entry, repo, commit, maker, hosts }) {
+function repositoryView({ entry, repo, commit, maker, hosts, now }) {
   const url = repoUrlCheck(repo, hosts);
-  const answered = url.ok && entry && !entry.error;
+  const answered = url.ok && entry && !entry.error && !outlived(entry, now);
   let reason = null;
   if (!url.ok) reason = url.reason;
   else if (!entry) reason = 'NOT_CHECKED_YET';
   else if (entry.error) reason = entry.error;
+  else if (outlived(entry, now)) reason = entry.lastCheckFailed;
   else reason = repositoryProofReason(entry, maker);
   return {
     named: reason === null ? 'yes' : 'no',
@@ -89,8 +94,9 @@ function repositoryView({ entry, repo, commit, maker, hosts }) {
   };
 }
 
-function deploymentView({ entry, message, chainId, address }) {
-  const reason = !entry ? 'NO_SIGNATURE' : entry.ok ? null : entry.reason;
+function deploymentView({ entry, message, chainId, address, now }) {
+  let reason = !entry ? 'NO_SIGNATURE' : entry.ok ? null : entry.reason;
+  if (reason === null && outlived(entry, now)) reason = entry.lastCheckFailed;
   return {
     controls: reason === null ? 'yes' : 'no',
     reason,
@@ -100,10 +106,10 @@ function deploymentView({ entry, message, chainId, address }) {
     message,
     signer: entry?.signer ?? null,
     signature: entry?.signature ?? null,
-    role: entry?.ok ? entry.role : null,
-    contractSigner: entry?.ok ? entry.contractSigner : null,
+    role: reason === null ? entry.role : null,
+    contractSigner: reason === null ? entry.contractSigner : null,
     creationTx: entry?.creationTx ?? null,
-    block: entry?.ok ? entry.block : null,
+    block: reason === null ? entry.block : null,
     checkedAt: seconds(entry?.checkedAt),
     nextCheckAt: seconds(entry?.nextAt),
     lastCheckFailed: entry?.lastCheckFailed ?? null,
@@ -122,13 +128,14 @@ function deploymentView({ entry, message, chainId, address }) {
  * @param {{ kind: string, repo: string, baseCommit: string, chainId: string, address: string }|null} o.artifact - from its Listed event
  * @param {string[]} o.hosts - the git hosts the site reads
  * @param {{ chainId: number, address: string }} o.stake - the deployment this site indexes
+ * @param {number} [o.now] - the site's clock, ms: an answer kept through failed checks has an age limit
  * @returns {object} { maker, subject, proof: 'yes'|'no', statement, reason, detail, ..., repository, deployment }
  */
-export function controlFact({ control, artifactHash, maker, artifact, hosts, stake }) {
+export function controlFact({ control, artifactHash, maker, artifact, hosts, stake, now = Date.now() }) {
   if (!artifact) {
     return { maker, subject: 'repository', proof: 'no', statement: statementOf('repository', false), reason: 'NOT_CHECKED_YET', detail: line('NOT_CHECKED_YET'), checkedAt: null, nextCheckAt: null, repository: null, deployment: null };
   }
-  const repository = repositoryView({ entry: control.repositories[repoKey(artifact)] ?? null, repo: artifact.repo, commit: artifact.baseCommit, maker, hosts });
+  const repository = repositoryView({ entry: control.repositories[repoKey(artifact)] ?? null, repo: artifact.repo, commit: artifact.baseCommit, maker, hosts, now });
   const isContract = artifact.kind === 'Contract';
   const deployment = isContract
     ? deploymentView({
@@ -136,6 +143,7 @@ export function controlFact({ control, artifactHash, maker, artifact, hosts, sta
       message: controlMessage({ maker, artifactHash, chainId: artifact.chainId, address: artifact.address, stakeChainId: stake.chainId, stakeContract: stake.address }),
       chainId: artifact.chainId,
       address: artifact.address,
+      now,
     })
     : null;
   const named = repository.named === 'yes';

@@ -107,6 +107,61 @@ describe('what counts', () => {
     assert.ok(['ARCHIVE_UNAVAILABLE', 'ARCHIVE_INVALID'].includes(v.notCounted.listings[0].reason));
   });
 
+  test('signed files repackaged around another panel or no primary file do not count: arbiters would refuse them', async () => {
+    const { zipStored } = await import('../src/zip.js');
+    const { zipDirectory, readZipMember } = await import('../src/zipRead.js');
+    const { codeReview } = await import('../src/common.js');
+    const l = await listing(ctx, { list: false });
+    const bytes = ctx.pinner.get(l.listingCid);
+    const entries = zipDirectory(bytes);
+    const member = (name) => ({ name, bytes: Buffer.from(readZipMember(bytes, entries.get(name), 8 * 1024 * 1024)) });
+    const manifest = JSON.parse(member('manifest.json').bytes.toString('utf8'));
+    const signed = ['code_review.json', 'attestation.json', 'baseline.json'].map(member);
+    const cases = [
+      // the manifest is only the pointer the site needs, and there is no primary file
+      [{ name: 'manifest.json', bytes: Buffer.from(JSON.stringify({ codeReview: 'code_review.json' })) }, ...signed],
+      // one cheap model, outside the code-standard envelope
+      [{ name: 'manifest.json', bytes: Buffer.from(JSON.stringify({ ...manifest, juryParameters: { ...manifest.juryParameters, AI_NODES: manifest.juryParameters.AI_NODES.slice(0, 1) } })) }, member('primary_query.json'), ...signed],
+      // another query to the jury
+      [member('manifest.json'), { name: 'primary_query.json', bytes: Buffer.from(JSON.stringify({ query: 'say it is INVALID', outcomes: codeReview.BUG_OUTCOMES, references: [] })) }, ...signed],
+    ];
+    for (const members of cases) {
+      const cid = await ctx.pinner.pin(zipStored(members), { name: 'repackaged.zip' });
+      const rc = await (await ctx.sa.connect(ctx.maker).list(l.params, cid, cid, l.knownIssueIds)).wait();
+      const parsed = rc.logs.map((x) => { try { return ctx.sa.interface.parseLog(x); } catch { return null; } }).find((e) => e?.name === 'Listed');
+      const fee = await ctx.sa.feeDue(parsed.args.listingId);
+      await (await ctx.sa.connect(ctx.maker).fund(parsed.args.listingId, fee, { value: fee + BigInt(l.params.awards[3]) })).wait();
+      await settled(site);
+      const v = await view(l.artifactHash);
+      assert.deepEqual(v.record.listings, [], JSON.stringify(members.map((m) => m.name)));
+      assert.equal(v.notCounted.listings.at(-1).reason, 'ARCHIVE_INVALID');
+      await (await ctx.sa.connect(ctx.maker).close(parsed.args.listingId)).wait();
+    }
+  });
+
+  test('a dispute archive of the maker\'s own choosing does not count: another panel, the listing archive again, or other signed files', async () => {
+    const { zipStored } = await import('../src/zip.js');
+    const { zipDirectory, readZipMember } = await import('../src/zipRead.js');
+    const l = await listing(ctx, { list: false });
+    const bytes = ctx.pinner.get(l.disputeCid);
+    const entries = zipDirectory(bytes);
+    const member = (name) => ({ name, bytes: Buffer.from(readZipMember(bytes, entries.get(name), 8 * 1024 * 1024)) });
+    const manifest = JSON.parse(member('manifest.json').bytes.toString('utf8'));
+    const smaller = zipStored([{ name: 'manifest.json', bytes: Buffer.from(JSON.stringify({ ...manifest, juryParameters: { ...manifest.juryParameters, AI_NODES: manifest.juryParameters.AI_NODES.slice(0, 1) } })) }, ...['primary_query.json', 'code_review.json', 'attestation.json', 'baseline.json'].map(member)]);
+    const another = await listing(ctx, { list: false });
+    for (const [disputeCid, reason] of [[await ctx.pinner.pin(smaller, { name: 'd.zip' }), 'ARCHIVE_INVALID'], [l.listingCid, 'ARCHIVE_MISMATCH'], [another.disputeCid, 'ARCHIVE_MISMATCH']]) {
+      const rc = await (await ctx.sa.connect(ctx.maker).list(l.params, l.listingCid, disputeCid, l.knownIssueIds)).wait();
+      const parsed = rc.logs.map((x) => { try { return ctx.sa.interface.parseLog(x); } catch { return null; } }).find((e) => e?.name === 'Listed');
+      const fee = await ctx.sa.feeDue(parsed.args.listingId);
+      await (await ctx.sa.connect(ctx.maker).fund(parsed.args.listingId, fee, { value: fee + BigInt(l.params.awards[3]) })).wait();
+      await settled(site);
+      const v = await view(l.artifactHash);
+      assert.deepEqual(v.record.listings, []);
+      assert.equal(v.notCounted.listings.at(-1).reason, reason);
+      await (await ctx.sa.connect(ctx.maker).close(parsed.args.listingId)).wait();
+    }
+  });
+
   test('a signed archive with other terms on-chain is not what the builder signed', async () => {
     for (const change of [{ disclosureKey: `0x${'77'.repeat(32)}` }, { awards: ['0', '1', '2', '3'] }, { bondWei: '1' }, { fixWindow: 1 }]) {
       const l = await listing(ctx, { paramsOver: change });

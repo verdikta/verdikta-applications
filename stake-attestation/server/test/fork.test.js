@@ -94,6 +94,25 @@ describe('the host\'s answer', () => {
 });
 
 describe('on the record', () => {
+  test('an unknown answer says unknown, after a known one too', async () => {
+    const ctx = await chainContext();
+    let t = 1_900_000_000_000;
+    let answer = { status: 'fork', parent: 'https://github.com/acme/vault', host: 'github.com' };
+    const site = siteFor(ctx, { settle: false, now: () => t, env: { SA_CONTROL_RECHECK_MS: '1000', SA_MAX_STALENESS_SECONDS: '2000000000' }, checkFork: async () => answer });
+    try {
+      const l = await listing(ctx);
+      await settled(site);
+      assert.equal((await site.record(l.artifactHash)).fork.status, 'fork');
+      answer = { status: 'unknown', parent: null, host: 'github.com', reason: 'RATE_LIMITED' };
+      t += 2000;
+      await settled(site);
+      const v = (await site.record(l.artifactHash)).fork;
+      assert.deepEqual([v.status, v.parent], ['unknown', null]);
+    } finally {
+      site.close();
+    }
+  });
+
   test('a fork is labelled, in the background, and nothing waits for it', async () => {
     const ctx = await chainContext();
     let release;

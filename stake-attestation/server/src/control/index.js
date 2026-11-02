@@ -16,7 +16,7 @@ import { FetchRequest, JsonRpcProvider, Network } from 'ethers';
 import { proofFieldProblem } from '@verdikta/stake-attestation-shared/control-proof';
 
 import { termsDiffer } from '../listing/listParams.js';
-import { CONTROL_REASONS, canonicalAddress, controlFact, controlMessage, deploymentKey, readAnswerFile, repoKey, repoUrlCheck } from './facts.js';
+import { CONTROL_REASONS, KEEP_ANSWER_MS, canonicalAddress, controlFact, controlMessage, deploymentKey, readAnswerFile, repoKey, repoUrlCheck } from './facts.js';
 import { ChainReadError, checkDeploymentProof } from './deployment.js';
 import { forkView } from './forkCheck.js';
 
@@ -29,7 +29,6 @@ const MAX_PROOF_CHECKS_AT_ONCE = 4;
 const MAX_TERMS_PER_RUN = 16;
 const MAX_FORK_CHECKS_PER_RUN = 4;
 const RETRY_MAX_MS = 6 * 3600_000;
-const KEEP_ANSWER_MS = 7 * 86400_000;
 const EMPTY = Object.freeze({ repositories: Object.freeze({}), deployments: Object.freeze({}), terms: Object.freeze({}), forks: Object.freeze({}), devKeys: Object.freeze([]) });
 const LISTING_ID = /^[1-9][0-9]{0,30}$/;
 
@@ -194,10 +193,8 @@ export function createControl({ config, store, provider, env, now, logger, check
     const t = now();
     const attempts = r.status === 'unknown' ? (known?.attempts ?? 0) + 1 : 0;
     const wait = r.status === 'unknown' ? Math.min(RETRY_MAX_MS, Math.max(backoff(attempts), r.retryAfterMs ?? 0)) : cfg.recheckMs;
-    // an unknown answer never replaces a known one until the next one says otherwise
-    const status = r.status === 'unknown' && known && known.status !== 'unknown' ? known.status : r.status;
-    const parent = r.status === 'unknown' && known ? known.parent ?? null : r.parent ?? null;
-    if (store.locked) store.transact((s) => { ensure(s).forks[repo] = { status, parent, host: r.host ?? null, attempts, checkedAt: t, nextAt: t + wait }; });
+    // an unknown answer says unknown: what the host said before is not shown as what it says now
+    if (store.locked) store.transact((s) => { ensure(s).forks[repo] = { status: r.status, parent: r.parent ?? null, host: r.host ?? null, attempts, checkedAt: t, nextAt: t + wait }; });
   }
 
   async function checkProof(item) {
@@ -294,7 +291,7 @@ export function createControl({ config, store, provider, env, now, logger, check
 
     /** A listing's fact from a state snapshot. */
     factOf(state, { artifactHash, maker, artifact }) {
-      return controlFact({ control: controlOf(state), artifactHash, maker, artifact: artifact ?? null, hosts: cfg.gitHosts, stake });
+      return controlFact({ control: controlOf(state), artifactHash, maker, artifact: artifact ?? null, hosts: cfg.gitHosts, stake, now: now() });
     },
 
     /**

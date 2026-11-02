@@ -123,7 +123,7 @@ export function recordView(view) {
       verdict: time(f.judgedAt) === null ? null : { outcome: f.outcome, at: Number(f.judgedAt) },
     })),
     notCounted: {
-      listings: (view.notCounted?.listings ?? []).map((l) => ({ id: String(l.listingId), maker: l.maker, state: l.state, reason: l.reason, detail: l.detail ?? null })),
+      listings: (view.notCounted?.listings ?? []).map((l) => ({ id: String(l.listingId), maker: l.maker, state: l.state, reason: l.reason, detail: l.detail ?? null, control: view.control?.[String(l.listingId)] ?? NOT_CHECKED })),
       findings: (view.notCounted?.findings ?? []).length,
     },
     block,

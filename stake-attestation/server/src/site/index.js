@@ -142,7 +142,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
   });
 
   /** Why a listing of the projection does not count, from a state snapshot; null: it counts. */
-  const reasonOf = (state, l, fact) => notCountedReason({ known: state.archives[l.listingCid], artifact: l.artifact, fact, terms: control.termsOf(state, l) });
+  const reasonOf = (state, l, fact) => notCountedReason({ known: state.archives[l.listingCid], dispute: state.archives[l.disputeCid], artifact: l.artifact, fact, terms: control.termsOf(state, l) });
 
   const status = { lastSync: null, lastFreshSync: null, syncError: null, lastKeep: null, keepError: null };
   const records = lru();

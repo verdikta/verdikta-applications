@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { Fragment, useEffect, useId, useState } from 'react';
 
 import { CONFIG } from '../config.js';
 import { getRecord } from '../lib/api.js';
@@ -46,7 +46,7 @@ function Lineage({ to }) {
   return to.hash ? <a href={`#/record/${to.hash}`}>{text}</a> : text;
 }
 
-function Stake({ l, hash, onChanged }) {
+function Stake({ l }) {
   const id = useId();
   const f = (name) => `listing-${l.id}-${name}`;
   return (
@@ -73,7 +73,6 @@ function Stake({ l, hash, onChanged }) {
         { id: f('predecessor'), label: R.predecessor, value: <Lineage to={l.predecessor} /> },
         { id: f('successor'), label: R.successor, value: <Lineage to={l.successor} /> },
       ]} />
-      <ControlProofForm listingId={l.id} hash={hash} control={l.control} onChanged={onChanged} />
     </section>
   );
 }
@@ -93,7 +92,7 @@ function ForkLabel({ fork }) {
 }
 
 /** Any listing of the hash that does not count: apart, with why, and no amount. */
-function NotCounted({ apart }) {
+function NotCounted({ apart, hash, onChanged }) {
   const N = STRINGS.notCounted;
   if (!apart.listings.length) return null;
   return (
@@ -101,16 +100,19 @@ function NotCounted({ apart }) {
       <h3>{N.title}</h3>
       <p className="hint">{N.intro}</p>
       {apart.listings.map((l) => (
-        <Facts
-          key={l.id}
-          testId={`not-counted-${l.id}`}
-          rows={[
-            { id: `not-counted-${l.id}-listing`, label: fill(N.listing, { id: l.id }), value: <a href={`#/fund/${l.id}`}>{R.listingPage}</a> },
-            { id: `not-counted-${l.id}-maker`, label: N.maker, value: <span className="mono">{l.maker}</span> },
-            { id: `not-counted-${l.id}-state`, label: N.state, value: E.listingStates[l.state] ?? l.state },
-            { id: `not-counted-${l.id}-why`, label: N.why, value: l.detail ?? l.reason },
-          ]}
-        />
+        <Fragment key={l.id}>
+          <Facts
+            testId={`not-counted-${l.id}`}
+            rows={[
+              { id: `not-counted-${l.id}-listing`, label: fill(N.listing, { id: l.id }), value: <a href={`#/fund/${l.id}`}>{R.listingPage}</a> },
+              { id: `not-counted-${l.id}-maker`, label: N.maker, value: <span className="mono">{l.maker}</span> },
+              { id: `not-counted-${l.id}-state`, label: N.state, value: E.listingStates[l.state] ?? l.state },
+              { id: `not-counted-${l.id}-why`, label: N.why, value: l.detail ?? l.reason },
+            ]}
+          />
+          {/* an owner changed, or the listing was built elsewhere: this is where a signature is sent */}
+          <ControlProofForm listingId={l.id} hash={hash} control={l.control} onChanged={onChanged} />
+        </Fragment>
       ))}
       {apart.findings > 0 && <p data-testid="not-counted-findings">{fill(N.findings, { count: apart.findings })}</p>}
     </section>
@@ -173,8 +175,8 @@ function Record({ v, onChanged }) {
       <ListingWarning />
       <h3>{R.stakes}</h3>
       <p className="hint">{STRINGS.control.intro}</p>
-      {v.listings.length ? v.listings.map((l) => <Stake key={l.id} l={l} hash={v.hash} onChanged={onChanged} />) : <p data-testid="record-none-counted">{STRINGS.notCounted.none}</p>}
-      <NotCounted apart={v.notCounted} />
+      {v.listings.length ? v.listings.map((l) => <Stake key={l.id} l={l} />) : <p data-testid="record-none-counted">{STRINGS.notCounted.none}</p>}
+      <NotCounted apart={v.notCounted} hash={v.hash} onChanged={onChanged} />
       {v.placeholders.length > 0 && <p className="hint">{STRINGS.labels.placeholders}</p>}
 
       <section className="claim" data-testid="record-history">

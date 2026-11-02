@@ -75,8 +75,14 @@ function harness(over = {}) {
 
 async function build(draft, { cfg = config(), knownIssues = null, ...over } = {}) {
   const h = harness(over);
-  const out = await buildListing({ draft, knownIssues, config: cfg, deps: h.deps, workDir: fs.mkdtempSync(path.join(os.tmpdir(), 'vab-pipeline-')) });
-  return { ...out, ...h };
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-pipeline-'));
+  try {
+    const out = await buildListing({ draft, knownIssues, config: cfg, deps: h.deps, workDir });
+    assert.deepEqual(fs.readdirSync(workDir), [], 'the build removed its temporary folder');
+    return { ...out, ...h };
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
 }
 
 test('accepted: code_review.json gets the image digest, linux/amd64, the unpacked size and the default limits', async () => {

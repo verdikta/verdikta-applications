@@ -225,12 +225,12 @@ describe('requests refused before any build (400)', () => {
       calls,
       async build(input) {
         calls.push(input);
-        return { status: 'error', report: null, files: null, devTrust: null, error: { code: 'BUILDER_KILLED', detail: 'killed' }, holdSlot: true };
+        return { status: 'error', report: null, files: null, devTrust: null, error: { code: 'BUILDER_TIMEOUT', detail: 'stopped' }, holdSlot: true };
       },
     };
     const s = await api({ builder, config: testConfig({ SA_MAX_CONCURRENT_BUILDS: '1', SA_MAX_QUEUED_BUILDS: '2' }) });
     const first = await submit(s, listingRequest());
-    assert.equal((await s.settle(first.json.id)).error.code, 'BUILDER_KILLED');
+    assert.equal((await s.settle(first.json.id)).error.code, 'BUILDER_TIMEOUT');
     const second = await submit(s, listingRequest());
     assert.equal(second.res.status, 202);
     await new Promise((r) => setTimeout(r, 200));

@@ -253,11 +253,12 @@ parsed config holds none.
 **Stopping a build.** Each builder step runs in a process group of its own, with `TMPDIR` inside
 a build folder the server removes, so the builder config leaves `workDir` unset. The builder
 bounds each of its own steps and cleans up after them; the server's `SA_BUILDER_TIMEOUT_MS`
-(4 h) is a backstop above those limits. When it fires, the group gets SIGTERM (the docker CLI
-passes it to the container it is attached to) and `SA_BUILDER_GRACE_MS` to stop. A step that
-needs SIGKILL keeps its build slot until the server restarts, because a container it started
-runs under the Docker daemon and may still be running; the log says to check the host for
-containers labelled `io.verdikta.builder=1`.
+(4 h) is a backstop above those limits. When it fires, or when the builder exits leaving
+processes behind, the group gets SIGTERM (the docker CLI passes it to the container it is
+attached to), `SA_BUILDER_GRACE_MS` to stop and then SIGKILL, and the step ends only once the
+group is empty. A step the server had to stop keeps its build slot until the server restarts:
+a container it started runs under the Docker daemon, and nothing confirms it has gone. The log
+says to check the host for containers labelled `io.verdikta.builder=1`.
 
 **Tests.** `npm test` stubs the builder behind its interface, and pins to the mock store or to
 local doubles of kubo, Filebase and Pinata through a fetch that refuses every host but

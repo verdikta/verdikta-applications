@@ -131,7 +131,7 @@ describe('createCliBuilder', () => {
     const r = await builder.build({ draft: draftSpec(), knownIssues: kiBytes() });
     assert.equal(r.status, 'error');
     assert.equal(r.error.code, 'BUILDER_TIMEOUT');
-    assert.equal(r.holdSlot, undefined, 'it stopped on SIGTERM: the slot is free again');
+    assert.equal(r.holdSlot, true, 'a stopped step keeps its slot: nothing confirms the Docker daemon cleaned up');
     assert.ok(Date.now() - t0 < 10000);
   });
 
@@ -140,21 +140,32 @@ describe('createCliBuilder', () => {
     const r = await builder.build({ draft: draftSpec(), knownIssues: kiBytes() });
     assert.equal(r.status, 'error');
     assert.equal(r.error.code, 'BUILDER_TIMEOUT');
-    assert.equal(r.holdSlot, undefined, 'it stopped on SIGTERM: the slot is free again');
+    assert.equal(r.holdSlot, true, 'it stopped on SIGTERM, but a container it started could outlive it: the slot stays taken');
     // no waiting here: the result came only after the child (its own pipes, 400 ms to stop) exited
     const pid = Number(fs.readFileSync(path.join(dir, 'record.json.grandchild'), 'utf8'));
     assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'the child had exited before the step settled');
     assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith('sa-build-')), [], 'the build folder, with the builder\'s TMPDIR, is removed');
   });
 
-  test('a step whose child ignores SIGTERM is killed and reported so its slot stays taken (R1-F1)', async () => {
+  test('a step whose child ignores SIGTERM is killed, and its slot stays taken (R1-F1)', async () => {
     const { builder, dir } = setup('hang-stubborn', { timeoutMs: 300, graceMs: 500 });
     const r = await builder.build({ draft: draftSpec(), knownIssues: kiBytes() });
     assert.equal(r.status, 'error');
-    assert.equal(r.error.code, 'BUILDER_KILLED');
+    assert.equal(r.error.code, 'BUILDER_TIMEOUT');
+    assert.match(r.error.detail, /killed/);
     assert.equal(r.holdSlot, true);
     const pid = Number(fs.readFileSync(path.join(dir, 'record.json.grandchild'), 'utf8'));
     assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'SIGKILL reached the child that ignored SIGTERM');
+  });
+
+  test('a builder that exits leaving processes behind has them stopped, and its slot stays taken (R1-F1)', async () => {
+    const { builder, dir } = setup('leave-child', { graceMs: 3000 });
+    const r = await builder.build({ draft: draftSpec(), knownIssues: kiBytes() });
+    assert.equal(r.status, 'error');
+    assert.equal(r.error.code, 'BUILDER_INTERRUPTED');
+    assert.equal(r.holdSlot, true);
+    const pid = Number(fs.readFileSync(path.join(dir, 'record.json.grandchild'), 'utf8'));
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
   });
 
   test('a builder config that names its own workDir is refused: the server owns the temporary folder', async () => {

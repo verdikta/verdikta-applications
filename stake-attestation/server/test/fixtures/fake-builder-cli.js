@@ -34,6 +34,15 @@ const json = (v) => Buffer.from(`${JSON.stringify(v, null, 2)}\n`);
 
 if (config.mode === 'hang') {
   setInterval(() => {}, 1000);
+} else if (config.mode === 'leave-child') {
+  // a builder that exits 0 while a process it started is still running
+  const { spawn } = await import('node:child_process');
+  const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  fs.writeFileSync(`${config.record}.grandchild`, String(grandchild.pid));
+  grandchild.unref();
+  grandchild.stdout.destroy();
+  grandchild.stderr.destroy();
+  process.exit(0);
 } else if (config.mode === 'hang-stubborn' || config.mode === 'hang-tree') {
   // A step that started a process of its own and waits on it, as the builder waits on the
   // docker CLI: the child has pipes of its own (builder/src/proc.js), so the builder's pipes

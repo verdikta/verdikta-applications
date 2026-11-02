@@ -5,8 +5,8 @@
 //   { status: 'refused',  report, files: null, devTrust: null }
 //   { status: 'error',    report|null, files: null, devTrust: null, error?: { code, detail }, holdSlot? }
 //
-// `holdSlot: true` means the builder had to be killed and what it started may still be running
-// under the Docker daemon: the listing flow then keeps that build slot taken (see runStep).
+// `holdSlot: true` means the server had to stop the builder, so what it started may still be
+// running under the Docker daemon: the listing flow then keeps that build slot taken (runStep).
 //
 // It runs the builder's own command line, as the site's workflow would, in two processes:
 // `verdikta-build-env build` (it runs the maker's setup inside Docker and holds no secret; it
@@ -52,11 +52,12 @@ function childEnv(env, names, tmp) {
  *
  * The step settles only when the builder has exited and its process group is empty (polled
  * with signal 0): the builder's own children have pipes of their own, so the builder's pipes
- * closing says nothing about them. A build slot is therefore held until the whole tree has gone.
- * `forced` says SIGKILL was needed: then a container the docker CLI started may outlive it (it
- * runs under the Docker daemon, outside the group), and the caller must not count the slot as
- * free.
- * @returns {Promise<{ code: number|null, spawnError: string|null, timedOut: boolean, forced: boolean, stdout: Buffer, stderr: Buffer }>}
+ * closing says nothing about them. `interrupted` says the server had to signal the group (a
+ * timeout, or members left when the builder exited), and `forced` that SIGKILL was needed. An
+ * empty group does not show that a container the docker CLI started has gone: it runs under the
+ * Docker daemon, and a client cut off mid-run can return without waiting for it. So after any
+ * interruption the caller must not count the slot as free.
+ * @returns {Promise<{ code: number|null, spawnError: string|null, timedOut: boolean, interrupted: boolean, forced: boolean, stdout: Buffer, stderr: Buffer }>}
  */
 function runStep({ nodePath, bin, args, env, timeoutMs, graceMs, cwd }) {
   return new Promise((resolve) => {
@@ -101,7 +102,7 @@ function runStep({ nodePath, bin, args, env, timeoutMs, graceMs, cwd }) {
       for (const t of timers) clearTimeout(t);
       if (poll) clearInterval(poll);
       if (pipeWait) clearTimeout(pipeWait);
-      resolve({ ...r, timedOut, forced, ...out });
+      resolve({ ...r, timedOut, interrupted: stopping, forced, ...out });
     };
     const settle = () => {
       if (done || !exited) return;
@@ -172,11 +173,11 @@ function readNamed(dir, name) {
 
 const errored = (code, detail, report = null, extra = {}) => ({ status: 'error', report, files: null, devTrust: null, error: { code, detail }, ...extra });
 
+/** A step the server had to stop: its slot stays taken (holdSlot), since daemon cleanup is unconfirmed. */
 function stopped(what, r, cfg, report) {
-  if (r.forced) {
-    return errored('BUILDER_KILLED', `the builder's ${what} step did not stop on SIGTERM ${r.timedOut ? `after its ${cfg.timeoutMs} ms` : 'when it exited'} and was killed`, report, { holdSlot: true });
-  }
-  return errored('BUILDER_TIMEOUT', `the builder's ${what} step did not finish in ${cfg.timeoutMs} ms and was stopped`, report);
+  const how = r.forced ? 'and was killed (it did not stop on SIGTERM)' : 'and was stopped';
+  if (r.timedOut) return errored('BUILDER_TIMEOUT', `the builder's ${what} step did not finish in ${cfg.timeoutMs} ms ${how}`, report, { holdSlot: true });
+  return errored('BUILDER_INTERRUPTED', `the builder's ${what} step left processes running when it exited, which were stopped ${r.forced ? 'with SIGKILL' : 'with SIGTERM'}`, report, { holdSlot: true });
 }
 
 /**
@@ -216,7 +217,7 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
         args.push('--out', out);
 
         const b = await step(args, cfg.buildEnv, dir);
-        if (b.timedOut || b.forced) return stopped('build', b, cfg, readJson(path.join(out, REPORT_FILE)));
+        if (b.interrupted) return stopped('build', b, cfg, readJson(path.join(out, REPORT_FILE)));
         if (b.spawnError) return errored('BUILDER_FAILED', `the builder could not be started: ${b.spawnError}`);
         const report = readJson(path.join(out, REPORT_FILE));
         if (!report) return errored('BUILDER_NO_REPORT', `${exited('build', b)}, with no validation report`);
@@ -226,7 +227,7 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
         }
 
         const s = await step(['sign', '--config', cfg.config, '--dir', out], cfg.signEnv, dir);
-        if (s.timedOut || s.forced) return stopped('sign', s, cfg, report);
+        if (s.interrupted) return stopped('sign', s, cfg, report);
         if (s.spawnError) return errored('SIGNING_FAILED', `the builder's sign step could not be started: ${s.spawnError}`, report);
         if (s.code !== 0) return errored('SIGNING_FAILED', exited('sign', s), report);
         const signed = readJson(path.join(out, REPORT_FILE)) ?? report;

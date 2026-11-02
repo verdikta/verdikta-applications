@@ -18,6 +18,23 @@ export class WalletError extends Error {
 
 export const hasWallet = () => typeof window !== 'undefined' && Boolean(window.ethereum);
 
+/**
+ * Whether the wallet still has `wallet.account` selected on the site's chain. Wallets announce
+ * changes (accountsChanged, chainChanged), but this asks, so one that does not is caught too.
+ */
+export async function stillConnected(wallet) {
+  if (!wallet || !hasWallet()) return false;
+  try {
+    const [accounts, chainId] = await Promise.all([
+      window.ethereum.request({ method: 'eth_accounts' }),
+      window.ethereum.request({ method: 'eth_chainId' }),
+    ]);
+    return String(accounts?.[0] ?? '').toLowerCase() === wallet.account.toLowerCase() && Number(chainId) === CONFIG.chainId;
+  } catch {
+    return false;
+  }
+}
+
 /** Asks the wallet for an account on the site's chain. Resolves { provider, signer, account }. */
 export async function connectWallet() {
   if (!CONFIG.contract || !CONFIG.chainId) throw new WalletError('notConfigured');
@@ -46,8 +63,11 @@ let reader = null;
 export function readProvider() {
   if (!reader) {
     if (CONFIG.rpcUrl) reader = new JsonRpcProvider(CONFIG.rpcUrl, CONFIG.chainId ?? undefined, { staticNetwork: Boolean(CONFIG.chainId), pollingInterval: POLL_MS });
-    else if (hasWallet()) reader = new BrowserProvider(window.ethereum, undefined, { pollingInterval: POLL_MS });
-    else throw new WalletError('none');
+    else if (hasWallet()) {
+      reader = new BrowserProvider(window.ethereum, undefined, { pollingInterval: POLL_MS });
+      // a provider is bound to its network: after a chain change, make a new one
+      window.ethereum.on?.('chainChanged', () => { reader = null; });
+    } else throw new WalletError('none');
   }
   return reader;
 }
@@ -58,9 +78,14 @@ export function stakeAttestation(runner = readProvider()) {
   return new Contract(CONFIG.contract, STAKE_ATTESTATION_ABI, runner);
 }
 
-/** The chain's time: the latest block's timestamp (the contract's clock, not the browser's). */
+/**
+ * The chain's time: the latest block's timestamp (the contract's clock, not the browser's). Asked
+ * with a raw eth_getBlockByNumber: ethers shares identical getBlock() calls made within 250 ms,
+ * and a time read just before a new block must not stand in for one read just after it.
+ */
 export async function chainNow(provider = readProvider()) {
-  return BigInt((await provider.getBlock('latest')).timestamp);
+  const block = await provider.send('eth_getBlockByNumber', ['latest', false]);
+  return BigInt(block.timestamp);
 }
 
 /** The event `name` in a receipt, parsed with the client's ABI, or null. */

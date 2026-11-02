@@ -132,6 +132,13 @@ export function CheckPage({ claimId }) {
     setBusy('flag');
     setError(null);
     try {
+      // the offer was made when the check ran: the grace may have ended since, or someone flagged
+      const [fresh, now] = await Promise.all([stakeAttestation().getClaim(BigInt(claimId)), chainNow()]);
+      const still = flagOffer({ verdict: result.verdict, now, disclosedAt: fresh.disclosedAt, disclosureGrace: listing.disclosureGrace, flagged: fresh.flaggedBadDisclosure });
+      if (!still.offer) {
+        setOffer(still);
+        return;
+      }
       const { signer, account } = await w.ensure();
       if (account.toLowerCase() !== listing.maker.toLowerCase()) {
         setError(fill(C.notMaker, { maker: listing.maker, account }));

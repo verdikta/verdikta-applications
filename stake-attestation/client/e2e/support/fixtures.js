@@ -40,16 +40,36 @@ export async function shot(page, name, { target = null } = {}) {
 /**
  * A browser wallet for tests: an EIP-1193 provider on window.ethereum that forwards every call to
  * the local Hardhat node, whose accounts are unlocked. No extension and no key in the page.
+ * window.__testWallet lets a test switch the account (emitting accountsChanged, as a wallet
+ * does) and make the eth_calls that follow the next transaction fail, as a flaky RPC would.
  */
 export async function installWallet(page, stack, account = stack.accounts.maker) {
-  await page.addInitScript(({ rpcUrl, chainId, account: from }) => {
+  await page.addInitScript(({ rpcUrl, chainId, account: first }) => {
     let id = 0;
+    let from = first;
+    let failCallsAfterSend = 0;
+    let failing = 0;
+    const listeners = new Map();
+    const emit = (event, value) => { for (const fn of listeners.get(event) ?? []) fn(value); };
+    window.__testWallet = {
+      setAccount(a) {
+        from = a;
+        emit('accountsChanged', [a]);
+      },
+      failCallsAfterNextSend(n) {
+        failCallsAfterSend = n;
+      },
+    };
     window.ethereum = {
       isVerdiktaTestWallet: true,
       async request({ method, params = [] }) {
         if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [from];
         if (method === 'eth_chainId') return `0x${chainId.toString(16)}`;
         if (method === 'wallet_switchEthereumChain') return null;
+        if (method === 'eth_call' && failing > 0) {
+          failing -= 1;
+          throw Object.assign(new Error('test wallet: RPC unavailable'), { code: -32603 });
+        }
         const res = await fetch(rpcUrl, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -62,10 +82,18 @@ export async function installWallet(page, stack, account = stack.accounts.maker)
           err.data = body.error.data;
           throw err;
         }
+        if (method === 'eth_sendTransaction' && failCallsAfterSend) {
+          failing = failCallsAfterSend;
+          failCallsAfterSend = 0;
+        }
         return body.result;
       },
-      on() {},
-      removeListener() {},
+      on(event, fn) {
+        listeners.set(event, [...(listeners.get(event) ?? []), fn]);
+      },
+      removeListener(event, fn) {
+        listeners.set(event, (listeners.get(event) ?? []).filter((f) => f !== fn));
+      },
     };
   }, { rpcUrl: stack.rpcUrl, chainId: stack.chainId, account });
 }

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { connectWallet } from './chain/wallet.js';
+import { connectWallet, hasWallet, stillConnected } from './chain/wallet.js';
 import { CheckPage } from './components/CheckPage.jsx';
+import { FundPage } from './components/FundPage.jsx';
 import { ListingPage } from './components/ListingPage.jsx';
 import { WalletContext, useWalletContext, walletMessage } from './components/wallet.js';
 import { STRINGS, fill } from './strings.js';
@@ -9,11 +10,14 @@ import { STRINGS, fill } from './strings.js';
 // #/            home
 // #/list        the maker's listing flow
 // #/check[/id]  decrypt-and-check a disclosed claim
-// Nothing private ever goes in the hash: only a claim id.
+// #/fund[/id]   a listing's own page: its terms and, while it is Listed, the opening fund()
+// Nothing private ever goes in the hash: only a claim or listing id.
 function route() {
   const h = window.location.hash.replace(/^#/, '') || '/';
   const check = /^\/check(?:\/(\d{1,20}))?$/.exec(h);
   if (check) return { page: 'check', claimId: check[1] ?? null };
+  const fund = /^\/fund(?:\/(\d{1,20}))?$/.exec(h);
+  if (fund) return { page: 'fund', listingId: fund[1] ?? null };
   if (h === '/list') return { page: 'list' };
   return { page: 'home' };
 }
@@ -46,8 +50,21 @@ function useWallet() {
       setBusy(false);
     }
   }, []);
-  /** The connected wallet, connecting first when there is none. */
-  const ensure = useCallback(async () => wallet ?? connect(), [wallet, connect]);
+  // A wallet that switches account or chain, or disconnects, is no longer the one connected:
+  // forget it, so the bar offers to connect again and the next transaction asks afresh.
+  useEffect(() => {
+    if (!wallet || !hasWallet()) return undefined;
+    const forget = () => setWallet(null);
+    const events = ['accountsChanged', 'chainChanged', 'disconnect'];
+    for (const e of events) window.ethereum.on?.(e, forget);
+    return () => { for (const e of events) window.ethereum.removeListener?.(e, forget); };
+  }, [wallet]);
+  /** The connected wallet, as the wallet has it now: connecting again when it changed. */
+  const ensure = useCallback(async () => {
+    if (wallet && await stillConnected(wallet)) return wallet;
+    setWallet(null);
+    return connect();
+  }, [wallet, connect]);
   return useMemo(() => ({ wallet, error, busy, connect, ensure }), [wallet, error, busy, connect, ensure]);
 }
 
@@ -95,6 +112,7 @@ export default function App() {
         {r.page === 'home' && <Home />}
         {r.page === 'list' && <ListingPage />}
         {r.page === 'check' && <CheckPage key={r.claimId ?? 'none'} claimId={r.claimId} />}
+        {r.page === 'fund' && <FundPage key={r.listingId ?? 'none'} listingId={r.listingId} />}
       </main>
     </WalletContext.Provider>
   );

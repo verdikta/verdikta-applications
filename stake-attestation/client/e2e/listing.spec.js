@@ -159,6 +159,56 @@ test('a deployed contract listed with a 0-day fix window and the shortest D8 win
   expect([...l.allowlist]).toEqual([]);
 });
 
+test('a version listed but not funded is funded later from its own page, and listing it again points there', async ({ page, chain }) => {
+  const terms = repoTerms();
+  await generateAndSaveKey(page);
+  await fillListing(page, terms);
+  await validate(page, 'ready');
+  await page.getByRole('button', { name: STRINGS.chain.list }).click();
+  const listed = page.getByTestId('listed');
+  await expect(listed).toBeVisible({ timeout: 30_000 });
+  const listingId = BigInt(await listed.getAttribute('data-listing-id'));
+  await expect(page.getByRole('link', { name: fill(STRINGS.chain.fundPage, { id: listingId }) })).toBeVisible();
+
+  // the maker leaves before funding; the page's state is gone
+  await page.reload();
+  await generateAndSaveKey(page);
+  await fillListing(page, terms);
+  await validate(page, 'ready');
+  await page.getByRole('button', { name: STRINGS.chain.list }).click();
+  await expect(page.getByTestId('existing-listing')).toContainText(fill(STRINGS.chain.existingListed, { id: listingId }));
+  expect((await chain.sa.getListing(listingId)).state).toBe(0n); // still Listed: no second list()
+  await page.getByRole('link', { name: fill(STRINGS.chain.fundPage, { id: listingId }) }).click();
+
+  await expect(page.getByTestId('listing-summary')).toContainText(STRINGS.fund.states.Listed);
+  await page.getByRole('button', { name: STRINGS.chain.fund }).click();
+  await expect(page.getByTestId('opened')).toBeVisible({ timeout: 30_000 });
+  const l = await chain.sa.getListing(listingId);
+  expect(l.state).toBe(State.Open);
+  expect(l.escrowWei).toBe(2n * ETH);
+  await shot(page, 'listing-funded-from-its-page');
+  await page.reload();
+  await expect(page.getByText(new RegExp(`^Listing ${listingId} is open until `))).toBeVisible();
+  await expect(page.getByRole('button', { name: STRINGS.chain.fund })).toHaveCount(0);
+});
+
+test('a read that fails after fund() is mined never offers a second payment', async ({ page, chain }) => {
+  await generateAndSaveKey(page);
+  await fillListing(page, repoTerms());
+  await validate(page, 'ready');
+  await page.getByRole('button', { name: STRINGS.chain.list }).click();
+  const listed = page.getByTestId('listed');
+  await expect(listed).toBeVisible({ timeout: 30_000 });
+  const listingId = BigInt(await listed.getAttribute('data-listing-id'));
+  await page.evaluate(() => window.__testWallet.failCallsAfterNextSend(5));
+  await page.getByRole('button', { name: STRINGS.chain.fund }).click();
+  await expect(page.getByTestId('opened')).toHaveText(new RegExp(`^Listing ${listingId} is open \\(transaction 0x[0-9a-f]{64}\\)`));
+  await expect(page.getByRole('button', { name: STRINGS.chain.fund })).toHaveCount(0);
+  const l = await chain.sa.getListing(listingId);
+  expect(l.state).toBe(State.Open);
+  expect(l.escrowWei).toBe(2n * ETH);
+});
+
 test('a listing the builder refuses shows the validation report and offers nothing to list', async ({ page, stack }) => {
   setBuilderMode(stack, 'refused-source');
   try {

@@ -15,8 +15,8 @@ const step = (page, id) => page.getByTestId(`check-step-${id}`);
 const stepText = (id, result) => fill(C.stepLine, { name: C.steps[id], result });
 const keyFileOf = ({ identity, recipient }) => `# created: 2026-11-02T00:00:00Z\n# public key: ${recipient}\n${identity}\n`;
 
-async function openCheck(page, stack, claimId) {
-  await installWallet(page, stack);
+async function openCheck(page, stack, claimId, account = stack.accounts.maker) {
+  await installWallet(page, stack, account);
   await page.goto(`/#/check/${claimId}`);
   await expect(page.getByTestId('claim-summary')).toBeVisible();
 }
@@ -131,6 +131,36 @@ test.describe('decrypt-and-check', () => {
     await runCheck(page, 'AGE-SECRET-KEY-1NOTAKEY');
     await expect(page.getByTestId('check-verdict')).toContainText(fill(C.verdicts.badIdentity, { reason: '' }).trim());
     await expect(page.getByRole('button', { name: C.flag })).toHaveCount(0);
+  });
+
+  test('a wallet that switches to the maker\'s account can flag; the page asks the wallet again', async ({ page, stack, chain }) => {
+    const { claimId } = await chain.claim({ listingId, archive: archiveBytes('switch'), commitArchive: archiveBytes('other'), recipient: key.recipient });
+    await openCheck(page, stack, claimId, stack.accounts.other);
+    await runCheck(page, key.identity);
+    await page.getByRole('button', { name: C.flag }).click();
+    await expect(page.getByText(fill(C.notMaker, { maker: stack.accounts.maker, account: stack.accounts.other }))).toBeVisible();
+    await expect(page.getByTestId('wallet')).toHaveText(fill(STRINGS.wallet.connected, { account: stack.accounts.other }));
+
+    await page.evaluate((maker) => window.__testWallet.setAccount(maker), stack.accounts.maker);
+    // the old connection is forgotten as soon as the wallet says so
+    await expect(page.getByRole('button', { name: STRINGS.wallet.connect })).toBeVisible();
+    await page.getByRole('button', { name: C.flag }).click();
+    await expect(page.getByTestId('flagged')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('wallet')).toHaveText(fill(STRINGS.wallet.connected, { account: stack.accounts.maker }));
+    expect((await chain.sa.getClaim(claimId)).flaggedBadDisclosure).toBe(true);
+  });
+
+  test('a flag offered before the grace ended is checked against the chain again when clicked', async ({ page, stack, chain }) => {
+    const { claimId } = await chain.claim({ listingId, archive: archiveBytes('stale offer'), commitArchive: archiveBytes('other'), recipient: key.recipient });
+    await openCheck(page, stack, claimId);
+    await runCheck(page, key.identity);
+    await expect(page.getByRole('button', { name: C.flag })).toBeVisible();
+    const listing = await chain.sa.getListing(listingId);
+    await chain.increaseTime(Number(listing.disclosureGrace) + 60);
+    await page.getByRole('button', { name: C.flag }).click();
+    await expect(page.getByText(/^The disclosure grace ended at /)).toBeVisible();
+    await expect(page.getByRole('button', { name: C.flag })).toHaveCount(0);
+    expect((await chain.sa.getClaim(claimId)).flaggedBadDisclosure).toBe(false);
   });
 
   test('a claim that is committed but not yet disclosed has nothing to check', async ({ page, stack, chain }) => {

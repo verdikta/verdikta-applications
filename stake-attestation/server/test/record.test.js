@@ -13,7 +13,7 @@ import { fakeBuilder } from './helpers/fixtures.js';
 import { startApi } from './helpers/http.js';
 import {
   bcidOf, chainContext, ciphertextCidOf, commit, DAY, disclose, dispute, finalize, freshCommit, HOUR, increaseTime,
-  judgeAndSettle, JUSTIFICATION, latestTimestamp, listing, reveal, revealedClaim, settle, siteFor, verdict,
+  judgeAndSettle, JUSTIFICATION, listing, reveal, revealedClaim, settle, siteFor, verdict,
 } from './helpers/scenario.js';
 
 describe('GET /api/records/:hash', () => {
@@ -206,6 +206,5 @@ describe('GET /api/records/:hash', () => {
     const unfunded = await listing(ctx, { fund: false });
     await site.sync();
     assert.equal((await api.get(`/api/records/${unfunded.artifactHash}`)).status, 404);
-    assert.ok(await latestTimestamp(ctx));
   });
 });

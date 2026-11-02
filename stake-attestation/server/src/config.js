@@ -30,12 +30,50 @@
 //   SA_ORACLE_ALPHA, SA_ORACLE_MAX_FEE_SCALING
 //                                  the oracle parameters list() takes (design §10.8; the class is
 //                                  common's code-standard, build plan A8)
+//
+// The chain side (node P4b1: indexer, keeper, feed, record mirror, badge) is on when a deployment
+// is named; without SA_CONTRACT_ADDRESS the listing flow runs alone.
+//
+//   SA_CONTRACT_ADDRESS            the StakeAttestation deployment (onchain/deployments/<chainId>-*.json)
+//   SA_FROM_BLOCK                  its deployment block, where the indexer starts ("deploymentBlock")
+//   SA_RPC_URL                     the chain's JSON-RPC endpoint. Read when the provider is made and
+//                                  never kept here: a provider's URL may carry its key in the path
+//   SA_CONFIRMATIONS               blocks on top of a block before it is read (10)
+//   SA_REORG_WINDOW_BLOCKS         how far below the cursor the indexer keeps block hashes to find a
+//                                  fork point (512); a deeper reorg re-reads from SA_FROM_BLOCK
+//   SA_LOG_CHUNK_BLOCKS            blocks per eth_getLogs, each committed with its cursor (2000)
+//   SA_INDEXER_POLL_MS             between syncs (15000)
+//   SA_DATA_DIR                    the indexer's and keeper's state, one writer at a time (server/data)
+//   SA_RECORD_LISTING_PAGE, SA_RECORD_ITEM_PAGE
+//                                  recordPage's page sizes when a record is read (50, 200)
+//   SA_IPFS_GATEWAYS               operator-preferred gateways for reading listing archives (the feed's
+//                                  image and scope), tried before @verdikta/common's own list
+//   SA_ARCHIVE_MAX_BYTES           the largest listing archive read (8388608)
+//   SA_ARCHIVE_TIMEOUT_MS          per gateway request (30000)
+//   SA_ARCHIVE_RETRY_MS            after a failed fetch, the first wait before the next; it doubles
+//                                  per failure, up to 6 h (30000)
+//   SA_ETH_USD_FEED                Chainlink's ETH/USD aggregator on the chain (Base mainnet:
+//                                  0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70); under-staked needs it
+//   SA_ETH_USD_MAX_AGE_SECONDS     an older answer is no price (3600)
+//   SA_BADGE_FLOOR_WEI             PLACEHOLDER (record/labels.js): below it a stake is only "scanned"
+//   SA_UNDER_STAKED_RATIO_BPS      PLACEHOLDER (record/labels.js): the share of a declared value at
+//                                  risk below which a stake is "under-staked", in basis points
+//   SA_KEEPER                      on (default) | off: call finalize and settle when due
+//   SA_KEEPER_PRIVATE_KEY          the keeper's key. Read when the keeper starts, never kept here
+//   SA_KEEPER_POLL_MS              between keeper cycles (30000)
+//   SA_KEEPER_TX_TIMEOUT_MS        how long a cycle waits for a receipt (120000)
+//   SA_KEEPER_REPLACE_AFTER_MS     a transaction still pending after this is re-sent at its nonce
+//                                  with higher fees (180000)
+//   SA_KEEPER_MAX_FEE_PER_GAS_WEI  the most the keeper pays per gas (10000000000, 10 gwei)
+//   SA_KEEPER_EXPIRE               off (default) | on: also expire claims nobody can advance
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getAddress } from 'ethers';
 
 import { codeReview } from './common.js';
 import { BACKENDS } from './pinning/index.js';
+import { LABEL_PLACEHOLDERS } from './record/labels.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
@@ -86,6 +124,105 @@ function serviceUrl(env, name, fallback) {
   const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname);
   if (u.protocol !== 'https:' && !(u.protocol === 'http:' && loopback)) fail(`${name} must be https (plain http only to a loopback address)`);
   return raw.replace(/\/+$/, '');
+}
+
+function onOff(env, name, fallback) {
+  const raw = env[name];
+  if (raw === undefined || raw === '') return fallback;
+  if (raw === 'on') return true;
+  if (raw === 'off') return false;
+  return fail(`${name} must be on or off`);
+}
+
+function address(env, name) {
+  const raw = env[name];
+  if (raw === undefined || raw === '') return null;
+  if (!/^0x[0-9a-fA-F]{40}$/.test(raw)) fail(`${name} must be a 20-byte 0x address`);
+  return getAddress(raw.toLowerCase());
+}
+
+/** A URL checked for shape only and never returned: the RPC endpoint may carry a key. */
+function checkSecretUrl(env, name) {
+  const raw = env[name];
+  if (raw === undefined || raw === '') return;
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    fail(`${name} is not a URL`);
+  }
+  const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname);
+  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && loopback)) fail(`${name} must be https (plain http only to a loopback address)`);
+}
+
+function gateways(env, name) {
+  const raw = env[name];
+  if (!raw) return [];
+  const out = [];
+  for (const entry of raw.split(',').map((x) => x.trim()).filter(Boolean)) {
+    let u;
+    try {
+      u = new URL(entry);
+    } catch {
+      fail(`${name}: "${entry}" is not a URL`);
+    }
+    if (u.username || u.password || u.search) fail(`${name}: a gateway URL carries no credentials or query`);
+    const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname);
+    if (u.protocol !== 'https:' && !(u.protocol === 'http:' && loopback)) fail(`${name}: gateways are https (plain http only to a loopback address)`);
+    out.push(entry.replace(/\/+$/, ''));
+  }
+  return [...new Set(out)];
+}
+
+function chainConfig(env, chainId) {
+  const contract = address(env, 'SA_CONTRACT_ADDRESS');
+  checkSecretUrl(env, 'SA_RPC_URL');
+  if (!contract) return null;
+  if (chainId === null) fail('SA_CHAIN_ID is required with SA_CONTRACT_ADDRESS: the indexer checks the provider is on that chain');
+  if (env.SA_FROM_BLOCK === undefined || env.SA_FROM_BLOCK === '') fail('SA_FROM_BLOCK is required with SA_CONTRACT_ADDRESS: the deployment block, where the indexer starts');
+  const reorgWindowBlocks = integer(env, 'SA_REORG_WINDOW_BLOCKS', 512, { min: 1, max: 100000 });
+  const confirmations = integer(env, 'SA_CONFIRMATIONS', 10, { max: 100000 });
+  if (confirmations > reorgWindowBlocks) fail('SA_CONFIRMATIONS must not exceed SA_REORG_WINDOW_BLOCKS');
+  return Object.freeze({
+    chainId,
+    address: contract,
+    fromBlock: integer(env, 'SA_FROM_BLOCK', 0),
+    rpcUrlEnv: 'SA_RPC_URL',
+    confirmations,
+    reorgWindowBlocks,
+    chunkBlocks: integer(env, 'SA_LOG_CHUNK_BLOCKS', 2000, { min: 1, max: 1000000 }),
+    pollMs: integer(env, 'SA_INDEXER_POLL_MS', 15000, { min: 100 }),
+    dataDir: path.resolve(env.SA_DATA_DIR || path.join(here, '..', 'data')),
+    recordListingPage: integer(env, 'SA_RECORD_LISTING_PAGE', 50, { min: 1, max: 10000 }),
+    recordItemPage: integer(env, 'SA_RECORD_ITEM_PAGE', 200, { min: 1, max: 10000 }),
+  });
+}
+
+function labelsConfig(env) {
+  const placeholders = [];
+  const floor = env.SA_BADGE_FLOOR_WEI;
+  if (floor === undefined || floor === '') placeholders.push('SA_BADGE_FLOOR_WEI');
+  const ratio = env.SA_UNDER_STAKED_RATIO_BPS;
+  if (ratio === undefined || ratio === '') placeholders.push('SA_UNDER_STAKED_RATIO_BPS');
+  return Object.freeze({
+    badgeFloorWei: wei(env, 'SA_BADGE_FLOOR_WEI', LABEL_PLACEHOLDERS.badgeFloorWei),
+    underStakedRatioBps: integer(env, 'SA_UNDER_STAKED_RATIO_BPS', LABEL_PLACEHOLDERS.underStakedRatioBps, { max: 10000 }),
+    placeholders: Object.freeze(placeholders),
+    ethUsdFeed: address(env, 'SA_ETH_USD_FEED'),
+    ethUsdMaxAgeSeconds: integer(env, 'SA_ETH_USD_MAX_AGE_SECONDS', 3600, { min: 1 }),
+  });
+}
+
+function keeperConfig(env) {
+  return Object.freeze({
+    enabled: onOff(env, 'SA_KEEPER', true),
+    keyEnv: 'SA_KEEPER_PRIVATE_KEY',
+    pollMs: integer(env, 'SA_KEEPER_POLL_MS', 30000, { min: 100 }),
+    txTimeoutMs: integer(env, 'SA_KEEPER_TX_TIMEOUT_MS', 120000, { min: 1 }),
+    replaceAfterMs: integer(env, 'SA_KEEPER_REPLACE_AFTER_MS', 180000),
+    maxFeePerGasWei: wei(env, 'SA_KEEPER_MAX_FEE_PER_GAS_WEI', '10000000000'),
+    expire: onOff(env, 'SA_KEEPER_EXPIRE', false),
+  });
 }
 
 function envNames(env, name) {
@@ -149,6 +286,7 @@ export function loadConfig(env = process.env) {
     fail('SA_ORACLE_BASE_COST_WEI must be below both oracle fees');
   }
   const builderConfig = env.SA_BUILDER_CONFIG ? path.resolve(env.SA_BUILDER_CONFIG) : null;
+  const chain = chainConfig(env, chainId);
   return Object.freeze({
     port: integer(env, 'PORT', 5009, { min: 0, max: 65535 }),
     host: env.HOST || '127.0.0.1',
@@ -169,6 +307,15 @@ export function loadConfig(env = process.env) {
     builds: Object.freeze({
       maxConcurrent: integer(env, 'SA_MAX_CONCURRENT_BUILDS', 1, { min: 1, max: 16 }),
       maxQueued: integer(env, 'SA_MAX_QUEUED_BUILDS', 8, { min: 0, max: 1000 }),
+    }),
+    chain,
+    keeper: keeperConfig(env),
+    labels: labelsConfig(env),
+    archives: Object.freeze({
+      gateways: Object.freeze(gateways(env, 'SA_IPFS_GATEWAYS')),
+      maxBytes: integer(env, 'SA_ARCHIVE_MAX_BYTES', 8 * 1024 * 1024, { min: 1024 }),
+      timeoutMs: integer(env, 'SA_ARCHIVE_TIMEOUT_MS', 30000, { min: 100 }),
+      retryMs: integer(env, 'SA_ARCHIVE_RETRY_MS', 30000),
     }),
   });
 }

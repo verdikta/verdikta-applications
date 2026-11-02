@@ -16,8 +16,9 @@ the design where they differ.
 **Status:** scaffold, plus the contract's listing half, its claim lifecycle and
 settlement: finalize by polling the aggregator, the six-outcome rule, payouts,
 depletion and owed awards; the environment builder; and the server's listing
-flow. The packages below build and test; the rest of the site's flows and the
-hunter commands arrive with the nodes named in the plan.
+flow, indexer, keeper, feed, record mirror and badge. The packages below build
+and test; the rest of the site's flows and the hunter commands arrive with the
+nodes named in the plan.
 
 ## A separate site
 
@@ -55,7 +56,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 | Folder | What | Test |
 |---|---|---|
 | `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
-| `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`. | `npm test`, `npm run test:builder` |
+| `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`; the indexer, keeper, listing feed, record mirror, labels and badge (P4b1) over one deployment. | `npm test`, `npm run test:builder`, `npm run abi` |
 | `client/` | Vite + React site. Port 5176. | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI: `check`, `commit`, `reveal`, `status`, `claim` arrive in P5. | `npm test` |
 | `shared/` | Code shared by the packages (the banned-words helper so far) and the app's repository checks. | `npm test` |
@@ -267,6 +268,66 @@ them with onchain's settings, and send `list()` and `fund()` with the server's J
 in-process Hardhat network against the mock aggregator. `npm run test:builder` (after `npm ci`
 in `builder/`) runs the real builder's command line through the API on a draft the builder
 refuses at its first step, which needs no Docker.
+
+## The feed, the record and the badge
+
+With a deployment configured (`SA_CONTRACT_ADDRESS`, `SA_CHAIN_ID`, `SA_FROM_BLOCK`,
+`SA_RPC_URL`), `server/src/site/` (node P4b1) indexes the contract and serves, all of one block,
+the indexer's cursor:
+
+| Route | |
+|---|---|
+| `GET /api/feed` | every listing that takes commits (Open, its paid period not over): hash, artifact, image and scope (from its listing archive, used only when the archive is the listing the chain stores), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed and lapsed listings are not in it (design §15) |
+| `GET /api/feed/events?after=&limit=` | the contract's events of listings and claims, in chain order (design §13.4: the feed is those events), paged by `next` (`<block>:<logIndex>`) |
+| `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), read in `recordPage` pages when it is long; `labels`; `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding. 404 for a hash with no opened listing |
+| `GET /api/records/:hash/badge.svg` | the badge |
+| `GET /api/status` | the indexer's cursor and the keeper's address, transaction in flight and last result |
+
+**Only valid findings are published** (design §14). A claim's events appear in full once it
+settled LOW..CRITICAL (the record's findings); every other claim's events (INVALID, DUPLICATE,
+pending, expired) keep only their claim and listing ids, so the site never republishes their
+archives, keys, ciphertext, hunter or verdict. The record's counts and flags are the contract's.
+
+**The indexer** reads every event of the deployment from `SA_FROM_BLOCK`, in chunks of
+`SA_LOG_CHUNK_BLOCKS`, only up to `SA_CONFIRMATIONS` (10) blocks below the head, and commits each
+chunk with its cursor in one atomic write to `SA_DATA_DIR/state.json` (one writer per folder,
+by a lock file; a folder of another deployment is refused). A restart resumes after the last
+committed chunk. Each sync compares the cursor's stored block hash with the chain's; after a
+reorg it rolls back to the newest block it read (within `SA_REORG_WINDOW_BLOCKS`) that is still
+on the chain, drops the events after it and reads again from there, or from `SA_FROM_BLOCK` if
+none is. A chunk whose blocks changed while it was read is not committed.
+
+**The keeper** (erratum E4: the aggregator never calls back) calls `finalize` when a claim's
+round is over and `settle` when a judged claim may settle, and `expire` only with
+`SA_KEEPER_EXPIRE=on`. Its key is `SA_KEEPER_PRIVATE_KEY`, read when it starts (`SA_KEEPER=off`
+turns it off). It reads each claim on-chain and simulates the call before sending it, keeps one
+transaction in flight at its next confirmed nonce, recorded before it is broadcast, and
+resolves that record first in the next cycle or process: waited for, re-sent at the same nonce
+with higher fees after `SA_KEEPER_REPLACE_AFTER_MS`, or, when the call is no longer due,
+replaced by a 0-value transfer to itself. A retry, a restart or a second keeper with the same
+key therefore never makes a call twice; keepers with different keys can still race, so run one
+per deployment or share the key.
+
+**Labels** are the site's (the contract states facts only): `scanned` when the top award is
+below `SA_BADGE_FLOOR_WEI`, `staked`, `under-staked` when the maker declared a value at risk and
+the top award, priced by Chainlink's ETH/USD aggregator at `SA_ETH_USD_FEED` (no older than
+`SA_ETH_USD_MAX_AGE_SECONDS`), is below `SA_UNDER_STAKED_RATIO_BPS` of it (no usable price: no
+label, never a guess), and `invited` for an allowlist. The floor and the share default to
+**placeholders** (0.04 ETH and 10%, `server/src/record/labels.js`) until the owner sets the
+launch values at G1; `/api/status` and every record name the placeholders still in use.
+
+**The badge** reads "no finding at or above *class* while staked" (*class*: the listing's
+lowest class counted, with "under-staked" or "invited" after it when they apply) while a
+listing of the hash takes commits, only "scanned" below the floor, and "*n* valid finding(s) at
+or above *class*" once the record holds one; when no listing of the hash takes commits it says
+how the stake ended (closed, rolled forward, depleted, lapsed). Every string the server writes
+goes through the shared banned-words helper.
+
+**The ABI.** The server reads the contract through `server/src/chain/abi/StakeAttestation.json`,
+onchain's merged ABI (contract plus lens), and never compiles; `npm run abi` rewrites it and a
+test fails while it differs from the contracts in `onchain/`. Its tests run the indexer, the
+keeper (automine off, so transactions wait in a mempool), reorgs (`evm_snapshot` /
+`evm_revert`), restarts and a mock ETH/USD aggregator on the in-process Hardhat network.
 
 ## The environment builder
 

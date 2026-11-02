@@ -9,7 +9,11 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { getAddress } from 'ethers';
 
+import http from 'node:http';
+
 import { codeReview } from '../src/common.js';
+import { rawCid } from '../src/pinning/index.js';
+import { createGatewayFetcher } from '../src/site/archives.js';
 import { IMAGE, fakeBuilder } from './helpers/fixtures.js';
 import { startApi } from './helpers/http.js';
 import {
@@ -178,6 +182,7 @@ describe('the listing archive behind a feed entry', () => {
     const l = await listing(ctx);
     let fail = true;
     const site = siteFor(ctx, {
+      env: { SA_ARCHIVE_RETRY_MS: '0' },
       fetchArchive: async (cid) => {
         if (fail) throw new Error('gateway timeout');
         return ctx.pinner.get(cid);
@@ -218,6 +223,38 @@ describe('the listing archive behind a feed entry', () => {
       assert.deepEqual(entry.archive, { ok: false, error: 'ARCHIVE_MISMATCH' });
     } finally {
       site.close();
+    }
+  });
+});
+
+describe('the gateway fetcher', () => {
+  /** fetch that refuses every host but loopback: a test never reaches a real gateway. */
+  const loopbackFetch = (url, init) => {
+    if (new URL(url).hostname !== '127.0.0.1') return Promise.reject(new Error(`test fetch refused ${new URL(url).origin}`));
+    return fetch(url, init);
+  };
+
+  test('reads <gateway>/ipfs/<cid> from the operator\'s gateway first, checks a raw CID, and stops at the byte cap', async () => {
+    const small = Buffer.from('a listing archive');
+    const big = Buffer.alloc(4096, 1);
+    const routes = new Map([[rawCid(small), small], [rawCid(big), big], [rawCid(Buffer.from('promised')), Buffer.from('something else')]]);
+    const server = http.createServer((req, res) => {
+      const body = routes.get(req.url.replace('/ipfs/', ''));
+      if (!body) return res.writeHead(404).end();
+      res.writeHead(200, { 'content-type': 'application/octet-stream' });
+      return res.end(body);
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const gateway = `http://127.0.0.1:${server.address().port}`;
+    try {
+      const get = createGatewayFetcher({ gateways: [gateway], timeoutMs: 2000, maxBytes: 1024 }, undefined, { fetch: loopbackFetch });
+      assert.deepEqual(await get(rawCid(small)), small);
+      await assert.rejects(get(rawCid(big)), /larger than 1024 bytes/);
+      await assert.rejects(get(rawCid(Buffer.from('promised'))), /refused|not bafkrei/, 'the wrong bytes are not taken; the next gateways are tried');
+      await assert.rejects(get(rawCid(Buffer.from('nowhere'))), /refused/);
+      await assert.rejects(get('../etc/passwd'), /not a CID/);
+    } finally {
+      await new Promise((r) => server.close(r));
     }
   });
 });

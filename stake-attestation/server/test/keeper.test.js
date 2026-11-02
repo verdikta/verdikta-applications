@@ -199,12 +199,29 @@ describe('the keeper\'s key', () => {
       assert.equal(site.status().keeper.address, ctx.keeperAddress);
       await site.sync();
       await site.keep();
-      const config = loadConfig({ SA_CONTRACT_ADDRESS: ctx.address, SA_CHAIN_ID: '31337', SA_KEEPER_PRIVATE_KEY: ctx.keeperKey });
+      const config = loadConfig({ SA_CONTRACT_ADDRESS: ctx.address, SA_CHAIN_ID: '31337', SA_FROM_BLOCK: '0', SA_KEEPER_PRIVATE_KEY: ctx.keeperKey });
       const secret = ctx.keeperKey.slice(2);
       assert.equal(JSON.stringify(config).includes(secret), false);
       assert.equal(config.keeper.keyEnv, 'SA_KEEPER_PRIVATE_KEY');
       assert.equal(JSON.stringify(site.status()).includes(secret), false);
       assert.equal(site.logger.lines.join('\n').includes(secret), false);
+    } finally {
+      site.close();
+    }
+  });
+
+  test('an account with no funds: the node\'s refusal is reported and nothing stays in flight', async () => {
+    const ctx = await chainContext();
+    const { listingId } = await listing(ctx);
+    const claimId = await revealedClaim(ctx, ctx.hunters[0], listingId);
+    await verdict(ctx, claimId, 'INVALID');
+    const site = siteFor(ctx, { env: { SA_KEEPER_PRIVATE_KEY: `0x${'5e'.repeat(32)}` } });
+    try {
+      await site.sync();
+      await assert.rejects(site.keep(), (e) => e.code === 'BROADCAST_FAILED');
+      assert.equal(site.store.state.keeper.inflight, null);
+      assert.equal(site.status().keeper.error, 'BROADCAST_FAILED');
+      assert.equal(await stateOf(ctx, claimId), 'Revealed');
     } finally {
       site.close();
     }

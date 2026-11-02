@@ -155,7 +155,7 @@ describe('Chainlink ETH/USD (a mock aggregator on the in-process chain)', () => 
       const staked = await listing(ctx, { stake: { valueAtRiskUsd: 10000 } });
       const undeclared = await listing(ctx, { stake: { valueAtRiskUsd: undefined } });
       const scanned = await listing(ctx, { stake: { awards: { LOW: '0', MEDIUM: '0.001 ETH', HIGH: '0.005 ETH', CRITICAL: '0.01 ETH' }, valueAtRiskUsd: 1250000 } });
-      const invited = await listing(ctx, { allowlist: [ctx.hunters[0].address] });
+      const invited = await listing(ctx, { stake: { valueAtRiskUsd: undefined }, allowlist: [ctx.hunters[0].address] });
       ids = { under, staked, undeclared, scanned, invited };
       await (await feed.set(PRICE, await latestTimestamp(ctx))).wait();
       site = siteFor(ctx, { env: { SA_ETH_USD_FEED: await feed.getAddress() } });

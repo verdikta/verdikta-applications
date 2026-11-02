@@ -123,6 +123,7 @@ describe('confirmations: a block is read only once SA_CONFIRMATIONS blocks are o
     const ctx = await chainContext();
     const site = siteFor(ctx, { env: { SA_CONFIRMATIONS: '3' } });
     try {
+      await mine(ctx, 5);
       const { listingId } = await listing(ctx, { fund: false });
       const head = await ctx.hre.ethers.provider.getBlockNumber();
       await site.sync();

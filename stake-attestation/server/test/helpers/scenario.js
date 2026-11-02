@@ -71,7 +71,11 @@ export async function chainContext() {
 }
 
 export const rpc = (ctx, method, params = []) => ctx.hre.network.provider.send(method, params);
-export const mine = (ctx, blocks = 1) => rpc(ctx, 'hardhat_mine', [`0x${blocks.toString(16)}`]);
+// evm_mine one block at a time: hardhat_mine reserves a run of blocks lazily, and an eth_call at
+// a reserved block fails inside Hardhat (EDR: Header(ExcessBlobGasNotSet)).
+export async function mine(ctx, blocks = 1) {
+  for (let i = 0; i < blocks; i += 1) await rpc(ctx, 'evm_mine');
+}
 export const automine = (ctx, on) => rpc(ctx, 'evm_setAutomine', [on]);
 export async function increaseTime(ctx, seconds) {
   await rpc(ctx, 'evm_increaseTime', [Number(seconds)]);

@@ -302,8 +302,9 @@ any route that one address may use):
    `CHALLENGE_UNKNOWN` (answered already, never issued, or forgotten after expiry),
    `CHALLENGE_EXPIRED`, `CHALLENGE_MISMATCH` (issued for another listing or action) or
    `SIGNATURE_INVALID`; 400 `AUTH_REQUEST_INVALID`; 409 `SCAN_NOT_READY` with the public status
-   while the scan has not finished, checked before the signature so asking early costs nothing.
-   Every answer is `Cache-Control: no-store`.
+   while the scan has not finished, checked before the signature so asking early costs nothing;
+   a body that is not JSON is 400 `BODY_NOT_JSON`, one over 4 KB 413. Every answer of both
+   routes is `Cache-Control: no-store`.
 
 The message is ASCII, one field per line, joined with `\n`, no final newline:
 
@@ -322,7 +323,8 @@ Expiration Time: <Issued At + SA_AUTH_CHALLENGE_TTL_MS, the same form>
 
 The server never reads the message back from the client: it rebuilds it from its own copy of the
 challenge and recovers the signer with ethers' `verifyMessage`. A nonce answers one attempt,
-whatever its outcome, and nothing after its expiry (5 minutes by default; at most 32 open
+whatever its outcome (a malformed signature or another wallet's uses it up too), and nothing
+after its expiry (5 minutes by default; at most 32 open
 challenges per listing and 10,000 in all, else 429). Only ECDSA signatures of externally owned
 accounts are checked: a contract wallet (EIP-1271) cannot sign in. Anyone may name any address
 as a listing's maker; that only decides who can read the scan, never what goes on-chain.

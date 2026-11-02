@@ -159,6 +159,46 @@ describe('the baseline scan in the listing flow', () => {
     assert.equal((await res.json()).error, 'SIGNATURE_INVALID');
   });
 
+  test('a malformed signature uses the challenge up: the maker\'s real signature after it is 401 (R1-F2)', async () => {
+    const maker = wallet();
+    const s = await api({ builder: fakeBuilder(), scanner: fakeScanner() });
+    const { id } = await list(s, maker);
+    await settleScan(s, id);
+    const c = await signedChallenge(s, id, maker);
+    const bad = await s.post(`/api/listings/${id}/scan`, { nonce: c.body.nonce, signature: '0x00' });
+    assert.equal(bad.status, 400);
+    const then = await s.post(`/api/listings/${id}/scan`, c.body);
+    assert.equal(then.status, 401);
+    const json = await then.json();
+    assert.equal(json.error, 'CHALLENGE_UNKNOWN');
+    assert.equal(json.scan, undefined);
+  });
+
+  test('every answer of both routes is no-store, a body that is not JSON or is over 4 KB included (R1-F1)', async () => {
+    const maker = wallet();
+    const s = await api({ builder: fakeBuilder(), scanner: fakeScanner() });
+    const { id } = await list(s, maker);
+    await settleScan(s, id);
+    const notJson = await s.post(`/api/listings/${id}/scan`, '{ "nonce": ');
+    assert.equal(notJson.status, 400);
+    assert.equal((await notJson.json()).error, 'BODY_NOT_JSON');
+    assert.equal(notJson.headers.get('cache-control'), 'no-store');
+    const big = await s.post(`/api/listings/${id}/scan`, { nonce: 'a'.repeat(32), signature: `0x${'11'.repeat(65)}`, pad: 'x'.repeat(5000) });
+    assert.equal(big.status, 413);
+    assert.deepEqual(await big.json(), { error: 'BODY_TOO_LARGE', limit: '4kb' });
+    assert.equal(big.headers.get('cache-control'), 'no-store');
+    const answers = [
+      await s.post(`/api/listings/${id}/scan/challenge`, {}),
+      await s.post(`/api/listings/${'0'.repeat(32)}/scan/challenge`, {}),
+      await s.post(`/api/listings/${'0'.repeat(32)}/scan`, {}),
+      await s.post(`/api/listings/${id}/scan`, {}),
+      (await readScan(s, id, wallet())).res,
+      (await readScan(s, id, maker)).res,
+    ];
+    assert.deepEqual(answers.map((r) => r.status), [200, 404, 404, 400, 403, 200]);
+    for (const r of answers) assert.equal(r.headers.get('cache-control'), 'no-store', String(r.status));
+  });
+
   test('before the scan has finished, the maker is told so without spending a signature', async () => {
     const maker = wallet();
     const scanner = fakeScanner({ delayMs: Infinity });

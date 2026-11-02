@@ -90,7 +90,6 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
   // answer here is no-store; none but the 200 carries anything of the scan beyond its status, and
   // a failure is logged by its route and the error's name only.
   const scanRoute = (handler) => (req, res) => {
-    res.set('cache-control', 'no-store');
     try {
       const access = ID.test(req.params.id) ? listings.scanAccess(req.params.id) : null;
       if (!access) return res.status(404).json({ error: 'LISTING_NOT_FOUND' });
@@ -102,8 +101,21 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
     }
   };
   const resourceOf = (id) => `listing:${id}`;
+  // no-store from the first middleware on, and the body's own errors answered here, with this
+  // route's limit, so a malformed or oversized body is no exception to either
+  const noStore = (_req, res, next) => {
+    res.set('cache-control', 'no-store');
+    next();
+  };
+  const authJson = express.json({ limit: AUTH_BODY_LIMIT });
+  const authBody = (req, res, next) => authJson(req, res, (err) => {
+    if (!err) return next();
+    if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'BODY_NOT_JSON' });
+    if (err.type === 'entity.too.large') return res.status(413).json({ error: 'BODY_TOO_LARGE', limit: AUTH_BODY_LIMIT });
+    return res.status(Number.isInteger(err.status) && err.status >= 400 && err.status < 500 ? err.status : 400).json({ error: 'BODY_INVALID' });
+  });
 
-  app.post('/api/listings/:id/scan/challenge', scanRoute((_req, res, access) => {
+  app.post('/api/listings/:id/scan/challenge', noStore, scanRoute((_req, res, access) => {
     try {
       return res.json(signIn.challenge({ action: 'read-scan', resource: resourceOf(access.id), address: access.maker }));
     } catch (err) {
@@ -112,7 +124,7 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
     }
   }));
 
-  app.post('/api/listings/:id/scan', express.json({ limit: AUTH_BODY_LIMIT }), scanRoute((req, res, access) => {
+  app.post('/api/listings/:id/scan', noStore, authBody, scanRoute((req, res, access) => {
     // before the signature is checked, so asking early costs the maker no challenge
     if (!access.result) return res.status(409).json({ error: 'SCAN_NOT_READY', scan: access.scan });
     const body = req.body && typeof req.body === 'object' ? req.body : {};

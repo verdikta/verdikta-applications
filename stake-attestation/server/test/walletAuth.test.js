@@ -167,6 +167,18 @@ describe('createWalletAuth', () => {
     }
   });
 
+  test('an attempt with a malformed signature uses the nonce up as well (R1-F2)', async () => {
+    const auth = createWalletAuth();
+    const maker = wallet();
+    for (const malformed of ['0x00', 42, undefined, `0x${'zz'.repeat(65)}`]) {
+      const c = auth.challenge({ action: 'read-scan', resource: RESOURCE, address: maker.address });
+      const first = auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature: malformed });
+      assert.deepEqual([first.status, first.code], [400, 'AUTH_REQUEST_INVALID']);
+      const then = auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature: await maker.signMessage(c.message) });
+      assert.deepEqual([then.ok, then.status, then.code], [false, 401, 'CHALLENGE_UNKNOWN'], String(malformed));
+    }
+  });
+
   test('outstanding challenges are bounded, per resource and in all; expired ones make room', () => {
     const t = clock();
     const auth = createWalletAuth({ ttlMs: 60000, maxOutstanding: 5, maxPerResource: 3, now: t.now });

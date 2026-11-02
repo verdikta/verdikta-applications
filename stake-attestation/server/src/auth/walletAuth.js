@@ -140,12 +140,13 @@ export function createWalletAuth({ ttlMs = 300000, maxOutstanding = 10000, maxPe
      * @returns {{ ok: true, address: string } | { ok: false, status: 400|401|403, code: string, detail: string }}
      */
     verify({ action, resource, nonce, signature } = {}) {
-      if (typeof nonce !== 'string' || !NONCE.test(nonce) || typeof signature !== 'string' || !SIGNATURE.test(signature)) {
-        return refuse(400, 'AUTH_REQUEST_INVALID', 'send { nonce, signature }: the challenge\'s nonce and the wallet\'s signature of its message, as 0x hex');
-      }
+      const malformed = () => refuse(400, 'AUTH_REQUEST_INVALID', 'send { nonce, signature }: the challenge\'s nonce and the wallet\'s signature of its message, as 0x hex');
+      if (typeof nonce !== 'string' || !NONCE.test(nonce)) return malformed();
+      // an attempt that names an open challenge uses it up, whatever else is wrong with it
       const c = open.get(nonce);
-      if (!c) return refuse(401, 'CHALLENGE_UNKNOWN', 'no open challenge has this nonce: it was answered already, it expired, or it was never issued; ask for a new one');
       open.delete(nonce);
+      if (typeof signature !== 'string' || !SIGNATURE.test(signature)) return malformed();
+      if (!c) return refuse(401, 'CHALLENGE_UNKNOWN', 'no open challenge has this nonce: it was answered already, it expired, or it was never issued; ask for a new one');
       if (now() > c.expiresAtMs) return refuse(401, 'CHALLENGE_EXPIRED', `the challenge expired at ${c.expiresAt}; ask for a new one`);
       if (c.action !== action || c.resource !== resource) return refuse(401, 'CHALLENGE_MISMATCH', 'the challenge was issued for another action or resource');
       let signer;

@@ -13,3 +13,6 @@ client/test-results/
 client/playwright-report/
 client/blob-report/
 client/playwright/.cache/
+
+# The server's chain tests: onchain/contracts copied in, compiled on the in-process network
+server/.hardhat/

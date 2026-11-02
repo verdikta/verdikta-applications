@@ -58,22 +58,38 @@ export async function connectWallet() {
   return { provider, signer, account: await signer.getAddress() };
 }
 
+/** Throws wrongChain unless `provider` answers eth_chainId with `expected`. */
+export async function verifyChain(provider, expected) {
+  const actual = Number(await provider.send('eth_chainId', []));
+  if (actual !== expected) throw new WalletError('wrongChain', { actual, expected });
+}
+
 let reader = null;
-/** A provider for reads: the site's RPC endpoint, or the wallet's. */
-export function readProvider() {
+let readerChecked = false;
+/**
+ * A provider for reads on the site's chain: its RPC endpoint (checked once to be that chain), or
+ * else the wallet's, checked on every call because the wallet can switch networks at any time.
+ * A read from another chain could show another listing's terms under the same id.
+ */
+export async function chainReader() {
+  if (!CONFIG.contract || !CONFIG.chainId) throw new WalletError('notConfigured');
   if (!reader) {
-    if (CONFIG.rpcUrl) reader = new JsonRpcProvider(CONFIG.rpcUrl, CONFIG.chainId ?? undefined, { staticNetwork: Boolean(CONFIG.chainId), pollingInterval: POLL_MS });
+    if (CONFIG.rpcUrl) reader = new JsonRpcProvider(CONFIG.rpcUrl, CONFIG.chainId, { staticNetwork: true, pollingInterval: POLL_MS });
     else if (hasWallet()) {
       reader = new BrowserProvider(window.ethereum, undefined, { pollingInterval: POLL_MS });
       // a provider is bound to its network: after a chain change, make a new one
       window.ethereum.on?.('chainChanged', () => { reader = null; });
     } else throw new WalletError('none');
   }
+  if (!CONFIG.rpcUrl || !readerChecked) {
+    await verifyChain(reader, CONFIG.chainId);
+    if (CONFIG.rpcUrl) readerChecked = true;
+  }
   return reader;
 }
 
-/** StakeAttestation at the configured address, for reads or (with a signer) transactions. */
-export function stakeAttestation(runner = readProvider()) {
+/** StakeAttestation at the configured address, on `runner`: a chainReader() or a wallet's signer or provider. */
+export function stakeAttestation(runner) {
   if (!CONFIG.contract) throw new WalletError('notConfigured');
   return new Contract(CONFIG.contract, STAKE_ATTESTATION_ABI, runner);
 }
@@ -83,7 +99,7 @@ export function stakeAttestation(runner = readProvider()) {
  * with a raw eth_getBlockByNumber: ethers shares identical getBlock() calls made within 250 ms,
  * and a time read just before a new block must not stand in for one read just after it.
  */
-export async function chainNow(provider = readProvider()) {
+export async function chainNow(provider) {
   const block = await provider.send('eth_getBlockByNumber', ['latest', false]);
   return BigInt(block.timestamp);
 }

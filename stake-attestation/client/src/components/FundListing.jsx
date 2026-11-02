@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
-import { stakeAttestation } from '../chain/wallet.js';
+import { LISTING_STATES } from '../chain/abi.js';
+import { chainReader, stakeAttestation } from '../chain/wallet.js';
 import { FormError, ethToWei } from '../lib/draft.js';
 import { formatEth, formatTime } from '../lib/format.js';
 import { STRINGS, fill } from '../strings.js';
@@ -10,25 +11,30 @@ import { useWalletContext, walletMessage } from './wallet.js';
 const C = STRINGS.chain;
 
 /**
- * The opening fund() of a Listed listing, through the maker's wallet: feeDue() (read again just
- * before sending, and passed as expectedFeeWei, so a fee change reverts instead of taking escrow)
- * plus the escrow, at least the CRITICAL award. Once the transaction is mined the listing is
- * open and the button is gone for good, whatever a later read says, so no second payment can
- * follow a flaky read.
+ * The opening fund() of a Listed listing, through the maker's wallet: feeDue() plus the escrow,
+ * at least the CRITICAL award. Just before sending, the listing is read again through the
+ * wallet, on the site's chain: it must still be Listed, the same artifact this page shows and
+ * the same CRITICAL award, or nothing is sent. So a stale page (another tab funded it) or terms
+ * read elsewhere never turn into a second payment, which the contract would take as a top-up.
+ * feeDue() is passed as expectedFeeWei, so a racing opening fund still pending reverts ("fee
+ * changed") rather than topping up. Once the transaction is mined the button is gone for good,
+ * whatever a later read says.
  *
- * @param {{ listingId: bigint, top: bigint, maker: string }} props - `top` is awards[CRITICAL]
+ * @param {{ listingId: bigint, top: bigint, maker: string, artifactHash: string }} props - `top`
+ *        is the awards[CRITICAL] this page shows
  */
-export function FundListing({ listingId, top, maker }) {
+export function FundListing({ listingId, top, maker, artifactHash }) {
   const w = useWalletContext();
   const [escrow, setEscrow] = useState(formatEth(top));
   const [fee, setFee] = useState(null);
   const [opened, setOpened] = useState(null); // { tx, until | null }
   const [busy, setBusy] = useState(false);
+  const [stale, setStale] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     let live = true;
-    stakeAttestation().feeDue(listingId).then((f) => { if (live) setFee(f); }).catch(() => {});
+    chainReader().then((p) => stakeAttestation(p).feeDue(listingId)).then((f) => { if (live) setFee(f); }).catch(() => {});
     return () => { live = false; };
   }, [listingId]);
 
@@ -50,7 +56,14 @@ export function FundListing({ listingId, top, maker }) {
         setError(fill(STRINGS.fund.notMaker, { maker, account }));
         return;
       }
-      const due = await stakeAttestation(provider).feeDue(listingId);
+      const reader = stakeAttestation(provider);
+      const now = await reader.getListing(listingId);
+      if (now.state !== 0n || now.artifactHash.toLowerCase() !== artifactHash.toLowerCase() || now.awards[3] !== top) {
+        setError(fill(STRINGS.fund.changed, { id: String(listingId), state: STRINGS.fund.states[LISTING_STATES[Number(now.state)]] ?? String(now.state) }));
+        setStale(true);
+        return;
+      }
+      const due = await reader.feeDue(listingId);
       const tx = await stakeAttestation(signer).fund(listingId, due, { value: due + escrowWei });
       await tx.wait();
       setOpened({ tx: tx.hash, until: null });
@@ -80,7 +93,7 @@ export function FundListing({ listingId, top, maker }) {
     <>
       {fee !== null && <p>{fill(C.fee, { fee: formatEth(fee) })}</p>}
       <TextField label={C.escrow} value={escrow} onChange={setEscrow} inputMode="decimal" error={escrowError} />
-      <button type="button" onClick={fund} disabled={busy || escrowError !== null}>{busy ? C.funding : C.fund}</button>
+      {!stale && <button type="button" onClick={fund} disabled={busy || escrowError !== null}>{busy ? C.funding : C.fund}</button>}
       {error && <p className="error" role="alert">{error}</p>}
     </>
   );

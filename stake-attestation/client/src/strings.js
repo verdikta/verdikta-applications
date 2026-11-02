@@ -213,6 +213,7 @@ export const STRINGS = {
     notMaker: 'Only the listing\'s maker ({maker}) can fund it; your wallet is {account}.',
     alreadyOpen: 'Listing {id} is open until {until}.',
     notFundable: 'Listing {id} is {state}: there is nothing to open here.',
+    changed: 'Nothing was sent: listing {id} on the site\'s chain is not the one this page shows, or it is no longer waiting to open (it is {state}). Reload the page.',
     states: { Listed: 'listed, not funded', Open: 'open', Depleted: 'depleted', Rolled: 'rolled forward', Closed: 'closed' },
   },
   check: {

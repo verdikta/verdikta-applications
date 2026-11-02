@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from 'react';
 
 import { LISTING_STATES } from '../chain/abi.js';
-import { WalletError, stakeAttestation } from '../chain/wallet.js';
+import { WalletError, chainReader, stakeAttestation } from '../chain/wallet.js';
 import { errorReason, formatEth, formatTime } from '../lib/format.js';
 import { STRINGS, fill } from '../strings.js';
 import { TextField } from './Field.jsx';
@@ -11,7 +11,7 @@ const F = STRINGS.fund;
 const CLASSES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
 
 async function readListing(listingId) {
-  const sa = stakeAttestation();
+  const sa = stakeAttestation(await chainReader());
   const id = BigInt(listingId);
   if (id === 0n || id > (await sa.listingCount())) return null;
   return sa.getListing(id);
@@ -74,7 +74,7 @@ export function FundPage({ listingId }) {
           <li>{fill(STRINGS.chain.knownIssues, { count: l.knownIssueIds.length })}</li>
         </ul>
       </section>
-      {state === 'Listed' && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} />}
+      {state === 'Listed' && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} />}
       {state === 'Open' && <p className="ok">{fill(F.alreadyOpen, { id: listingId, until: formatTime(l.fundedUntil) })}</p>}
       {state !== 'Listed' && state !== 'Open' && <p className="hint">{fill(F.notFundable, { id: listingId, state: F.states[state] ?? state })}</p>}
     </>

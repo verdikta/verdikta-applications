@@ -1,6 +1,6 @@
 import { useEffect, useId, useState } from 'react';
 
-import { WalletError, chainNow, stakeAttestation } from '../chain/wallet.js';
+import { WalletError, chainNow, chainReader, stakeAttestation } from '../chain/wallet.js';
 import { CONFIG } from '../config.js';
 import { checkDisclosure, flagOffer } from '../lib/check.js';
 import { identityFromKeyFile, saveLocally } from '../lib/disclosure.js';
@@ -15,13 +15,14 @@ const STEP_IDS = ['key', 'fetch', 'ciphertext', 'decrypt', 'plaintext'];
 const STEP_TEXT = { passed: C.stepPassed, failed: C.stepFailed, skipped: C.stepSkipped };
 
 async function readClaim(claimId) {
-  const sa = stakeAttestation();
+  const provider = await chainReader();
+  const sa = stakeAttestation(provider);
   const count = await sa.claimCount();
   const id = BigInt(claimId);
   if (id === 0n || id > count) return null;
   const claim = await sa.getClaim(id);
   const listing = await sa.getListing(claim.listingId);
-  return { claim, listing, now: await chainNow() };
+  return { claim, listing, now: await chainNow(provider) };
 }
 
 function verdictText(r) {
@@ -117,12 +118,12 @@ export function CheckPage({ claimId }) {
         fetchCiphertext: (cid) => fetchCiphertext(CONFIG.ipfsGateway, cid),
       });
       // the flag depends on the chain as it is now: its clock and whether the claim is flagged
-      const sa = stakeAttestation();
-      const [fresh, now] = await Promise.all([sa.getClaim(BigInt(claimId)), chainNow()]);
+      const provider = await chainReader();
+      const [fresh, now] = await Promise.all([stakeAttestation(provider).getClaim(BigInt(claimId)), chainNow(provider)]);
       setResult(r);
       setOffer(flagOffer({ verdict: r.verdict, now, disclosedAt: fresh.disclosedAt, disclosureGrace: listing.disclosureGrace, flagged: fresh.flaggedBadDisclosure || flagged !== null }));
     } catch (err) {
-      setError(err.message === C.noGateway ? C.noGateway : fill(C.readFailed, { reason: errorReason(err) }));
+      setError(err.message === C.noGateway ? C.noGateway : err instanceof WalletError ? walletMessage(err) : fill(C.readFailed, { reason: errorReason(err) }));
     } finally {
       setBusy(null);
     }
@@ -133,7 +134,8 @@ export function CheckPage({ claimId }) {
     setError(null);
     try {
       // the offer was made when the check ran: the grace may have ended since, or someone flagged
-      const [fresh, now] = await Promise.all([stakeAttestation().getClaim(BigInt(claimId)), chainNow()]);
+      const provider = await chainReader();
+      const [fresh, now] = await Promise.all([stakeAttestation(provider).getClaim(BigInt(claimId)), chainNow(provider)]);
       const still = flagOffer({ verdict: result.verdict, now, disclosedAt: fresh.disclosedAt, disclosureGrace: listing.disclosureGrace, flagged: fresh.flaggedBadDisclosure });
       if (!still.offer) {
         setOffer(still);

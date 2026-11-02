@@ -44,9 +44,10 @@ export async function shot(page, name, { target = null } = {}) {
  * does) and make the eth_calls that follow the next transaction fail, as a flaky RPC would.
  */
 export async function installWallet(page, stack, account = stack.accounts.maker) {
-  await page.addInitScript(({ rpcUrl, chainId, account: first }) => {
+  await page.addInitScript(({ rpcUrl, chainId: configured, account: first }) => {
     let id = 0;
     let from = first;
+    let chainId = configured;
     let failCallsAfterSend = 0;
     let failing = 0;
     const listeners = new Map();
@@ -59,13 +60,19 @@ export async function installWallet(page, stack, account = stack.accounts.maker)
       failCallsAfterNextSend(n) {
         failCallsAfterSend = n;
       },
+      // another network: it answers eth_chainId and refuses to switch back until told to
+      setChain(n) {
+        chainId = n;
+        emit('chainChanged', `0x${n.toString(16)}`);
+      },
     };
     window.ethereum = {
       isVerdiktaTestWallet: true,
       async request({ method, params = [] }) {
         if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [from];
         if (method === 'eth_chainId') return `0x${chainId.toString(16)}`;
-        if (method === 'wallet_switchEthereumChain') return null;
+        if (method === 'wallet_switchEthereumChain') throw Object.assign(new Error('test wallet: switch refused'), { code: 4001 });
+        if (chainId !== configured && method !== 'eth_accounts') throw Object.assign(new Error('test wallet: on another network'), { code: -32603 });
         if (method === 'eth_call' && failing > 0) {
           failing -= 1;
           throw Object.assign(new Error('test wallet: RPC unavailable'), { code: -32603 });

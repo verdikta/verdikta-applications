@@ -95,7 +95,7 @@ export function ListAndFund({ view, sent }) {
             {fill(C.listed, { id: String(listed.listingId), tx: listed.tx })}
           </p>
           <p className="hint">{C.fundLater} {fundLink(listed.listingId)}</p>
-          <FundListing listingId={listed.listingId} top={BigInt(params.awards[3])} maker={listed.maker} />
+          <FundListing listingId={listed.listingId} top={BigInt(params.awards[3])} maker={listed.maker} artifactHash={view.artifactHash} />
         </>
       )}
     </section>

@@ -209,6 +209,49 @@ test('a read that fails after fund() is mined never offers a second payment', as
   expect(l.escrowWei).toBe(2n * ETH);
 });
 
+/** list() through the page, without fund(); returns the listing id. */
+async function listOnly(page) {
+  await generateAndSaveKey(page);
+  await fillListing(page, repoTerms());
+  await validate(page, 'ready');
+  await page.getByRole('button', { name: STRINGS.chain.list }).click();
+  const listed = page.getByTestId('listed');
+  await expect(listed).toBeVisible({ timeout: 30_000 });
+  return BigInt(await listed.getAttribute('data-listing-id'));
+}
+
+test('a listing page left open in another tab cannot pay a second escrow', async ({ page, context, stack, chain }) => {
+  const listingId = await listOnly(page);
+  const other = await context.newPage();
+  await installWallet(other, stack);
+  await other.goto(`/#/fund/${listingId}`);
+  await expect(other.getByRole('button', { name: STRINGS.chain.fund })).toBeVisible();
+
+  await page.getByRole('button', { name: STRINGS.chain.fund }).click();
+  await expect(page.getByTestId('opened')).toBeVisible({ timeout: 30_000 });
+  // the other tab still shows the listing waiting to open; funding it again sends nothing
+  await other.getByRole('button', { name: STRINGS.chain.fund }).click();
+  await expect(other.getByRole('alert')).toContainText(/^Nothing was sent: listing \d+ on the site's chain is not the one this page shows, or it is no longer waiting to open \(it is open\)/);
+  await expect(other.getByRole('button', { name: STRINGS.chain.fund })).toHaveCount(0);
+  expect((await chain.sa.getListing(listingId)).escrowWei).toBe(2n * ETH);
+});
+
+test('the listing page reads and funds on the site\'s chain only, and reads again when the wallet comes back', async ({ page, chain }) => {
+  const listingId = await listOnly(page);
+  await page.goto(`/#/fund/${listingId}`);
+  await expect(page.getByRole('button', { name: STRINGS.chain.fund })).toBeVisible();
+  await page.evaluate(() => window.__testWallet.setChain(1));
+  await page.getByRole('button', { name: STRINGS.chain.fund }).click();
+  await expect(page.getByText(fill(STRINGS.wallet.wrongChain, { actual: 1, expected: 31337 })).first()).toBeVisible();
+  expect((await chain.sa.getListing(listingId)).state).toBe(0n); // nothing was sent
+
+  await page.evaluate(() => window.__testWallet.setChain(31337));
+  await expect(page.getByTestId('listing-summary')).toContainText(STRINGS.fund.states.Listed);
+  await page.getByRole('button', { name: STRINGS.chain.fund }).click();
+  await expect(page.getByTestId('opened')).toBeVisible({ timeout: 30_000 });
+  expect((await chain.sa.getListing(listingId)).state).toBe(State.Open);
+});
+
 test('a listing the builder refuses shows the validation report and offers nothing to list', async ({ page, stack }) => {
   setBuilderMode(stack, 'refused-source');
   try {

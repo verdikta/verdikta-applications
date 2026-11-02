@@ -236,7 +236,7 @@ test('a listing page left open in another tab cannot pay a second escrow', async
   expect((await chain.sa.getListing(listingId)).escrowWei).toBe(2n * ETH);
 });
 
-test('the listing page reads and funds on the site\'s chain only, and reads again when the wallet comes back', async ({ page, chain }) => {
+test('the listing page funds on the site\'s chain only', async ({ page, chain }) => {
   const listingId = await listOnly(page);
   await page.goto(`/#/fund/${listingId}`);
   await expect(page.getByRole('button', { name: STRINGS.chain.fund })).toBeVisible();
@@ -250,6 +250,31 @@ test('the listing page reads and funds on the site\'s chain only, and reads agai
   await page.getByRole('button', { name: STRINGS.chain.fund }).click();
   await expect(page.getByTestId('opened')).toBeVisible({ timeout: 30_000 });
   expect((await chain.sa.getListing(listingId)).state).toBe(State.Open);
+});
+
+test('a wallet the page switches to the site\'s chain while funding keeps the funding on the page', async ({ page, chain }) => {
+  const listingId = await listOnly(page);
+  await page.goto(`/#/fund/${listingId}`);
+  await expect(page.getByRole('button', { name: STRINGS.chain.fund })).toBeVisible();
+  await page.evaluate(() => window.__testWallet.setChain(1, { allowSwitch: true }));
+  await page.getByRole('button', { name: STRINGS.chain.fund }).click();
+  // the switch emits chainChanged mid-action; the page stays, and so does what it is doing
+  await expect(page.getByTestId('opened')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole('button', { name: STRINGS.chain.fund })).toHaveCount(0);
+  const l = await chain.sa.getListing(listingId);
+  expect(l.state).toBe(State.Open);
+  expect(l.escrowWei).toBe(2n * ETH);
+});
+
+test('a listing page whose read failed can read again', async ({ page, stack }) => {
+  const listingId = await listOnly(page);
+  const offline = (url) => url.href.startsWith(stack.rpcUrl);
+  await page.route(offline, (route) => route.abort());
+  await page.goto(`/#/fund/${listingId}`);
+  await expect(page.getByText(/^The listing could not be read: /)).toBeVisible();
+  await page.unroute(offline);
+  await page.getByRole('button', { name: STRINGS.fund.retry }).click();
+  await expect(page.getByTestId('listing-summary')).toContainText(STRINGS.fund.states.Listed);
 });
 
 test('a listing the builder refuses shows the validation report and offers nothing to list', async ({ page, stack }) => {

@@ -150,6 +150,17 @@ test.describe('decrypt-and-check', () => {
     expect((await chain.sa.getClaim(claimId)).flaggedBadDisclosure).toBe(true);
   });
 
+  test('a wallet the page switches to the site\'s chain while flagging keeps the check and the flag on the page', async ({ page, stack, chain }) => {
+    const { claimId } = await chain.claim({ listingId, archive: archiveBytes('auto switch'), commitArchive: archiveBytes('other'), recipient: key.recipient });
+    await openCheck(page, stack, claimId);
+    await runCheck(page, key.identity);
+    await page.evaluate(() => window.__testWallet.setChain(1, { allowSwitch: true }));
+    await page.getByRole('button', { name: C.flag }).click();
+    await expect(page.getByTestId('flagged')).toBeVisible({ timeout: 30_000 });
+    await expect(step(page, 'plaintext')).toHaveText(stepText('plaintext', C.stepFailed));
+    expect((await chain.sa.getClaim(claimId)).flaggedBadDisclosure).toBe(true);
+  });
+
   test('a flag offered before the grace ended is checked against the chain again when clicked', async ({ page, stack, chain }) => {
     const { claimId } = await chain.claim({ listingId, archive: archiveBytes('stale offer'), commitArchive: archiveBytes('other'), recipient: key.recipient });
     await openCheck(page, stack, claimId);

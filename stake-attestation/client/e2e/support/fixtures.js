@@ -48,6 +48,7 @@ export async function installWallet(page, stack, account = stack.accounts.maker)
     let id = 0;
     let from = first;
     let chainId = configured;
+    let switchAllowed = false;
     let failCallsAfterSend = 0;
     let failing = 0;
     const listeners = new Map();
@@ -60,9 +61,10 @@ export async function installWallet(page, stack, account = stack.accounts.maker)
       failCallsAfterNextSend(n) {
         failCallsAfterSend = n;
       },
-      // another network: it answers eth_chainId and refuses to switch back until told to
-      setChain(n) {
+      // another network: it answers eth_chainId and, unless `allowSwitch`, refuses to switch back
+      setChain(n, { allowSwitch = false } = {}) {
         chainId = n;
+        switchAllowed = allowSwitch;
         emit('chainChanged', `0x${n.toString(16)}`);
       },
     };
@@ -71,7 +73,12 @@ export async function installWallet(page, stack, account = stack.accounts.maker)
       async request({ method, params = [] }) {
         if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [from];
         if (method === 'eth_chainId') return `0x${chainId.toString(16)}`;
-        if (method === 'wallet_switchEthereumChain') throw Object.assign(new Error('test wallet: switch refused'), { code: 4001 });
+        if (method === 'wallet_switchEthereumChain') {
+          if (!switchAllowed) throw Object.assign(new Error('test wallet: switch refused'), { code: 4001 });
+          chainId = parseInt(params[0].chainId, 16);
+          emit('chainChanged', params[0].chainId);
+          return null;
+        }
         if (chainId !== configured && method !== 'eth_accounts') throw Object.assign(new Error('test wallet: on another network'), { code: -32603 });
         if (method === 'eth_call' && failing > 0) {
           failing -= 1;

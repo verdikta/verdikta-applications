@@ -25,15 +25,17 @@ export function FundPage({ listingId }) {
   const headingId = useId();
   const [lookup, setLookup] = useState('');
   const [loaded, setLoaded] = useState(null); // { listing } | { missing } | { failed }
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (listingId === null) return undefined;
     let live = true;
+    setLoaded(null);
     readListing(listingId)
       .then((l) => { if (live) setLoaded(l ? { listing: l } : { missing: true }); })
       .catch((err) => { if (live) setLoaded({ failed: err instanceof WalletError ? fill(STRINGS.wallet[err.code], err.vars) : errorReason(err) }); });
     return () => { live = false; };
-  }, [listingId]);
+  }, [listingId, attempt]);
 
   const header = (
     <>
@@ -52,7 +54,15 @@ export function FundPage({ listingId }) {
   if (listingId === null) return <>{header}{lookupForm}</>;
   if (!loaded) return <>{header}<p className="hint">{F.loading}</p></>;
   if (loaded.missing) return <>{header}<p className="error">{fill(F.notFound, { id: listingId })}</p>{lookupForm}</>;
-  if (loaded.failed) return <>{header}<p className="error">{fill(F.readFailed, { reason: loaded.failed })}</p></>;
+  if (loaded.failed) {
+    return (
+      <>
+        {header}
+        <p className="error">{fill(F.readFailed, { reason: loaded.failed })}</p>
+        <button type="button" onClick={() => setAttempt((a) => a + 1)}>{F.retry}</button>
+      </>
+    );
+  }
 
   const l = loaded.listing;
   const state = LISTING_STATES[Number(l.state)];

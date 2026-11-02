@@ -62,15 +62,17 @@ export function CheckPage({ claimId }) {
   const [busy, setBusy] = useState(null);
   const [flagged, setFlagged] = useState(null); // tx hash
   const [error, setError] = useState(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (claimId === null) return undefined;
     let live = true;
+    setLoaded(null);
     readClaim(claimId)
       .then((r) => { if (live) setLoaded(r ?? { missing: true }); })
       .catch((err) => { if (live) setLoaded({ failed: err instanceof WalletError ? fill(STRINGS.wallet[err.code], err.vars) : errorReason(err) }); });
     return () => { live = false; };
-  }, [claimId]);
+  }, [claimId, attempt]);
 
   if (claimId === null) {
     return (
@@ -90,7 +92,15 @@ export function CheckPage({ claimId }) {
   );
   if (!loaded) return <>{header}<p className="hint">{C.loading}</p></>;
   if (loaded.missing) return <>{header}<p className="error">{fill(C.notFound, { id: claimId })}</p><ClaimLookup /></>;
-  if (loaded.failed) return <>{header}<p className="error">{fill(C.readFailed, { reason: loaded.failed })}</p></>;
+  if (loaded.failed) {
+    return (
+      <>
+        {header}
+        <p className="error">{fill(C.readFailed, { reason: loaded.failed })}</p>
+        <button type="button" onClick={() => setAttempt((a) => a + 1)}>{C.retry}</button>
+      </>
+    );
+  }
 
   const { claim, listing } = loaded;
   const disclosed = claim.disclosedAt !== 0n;

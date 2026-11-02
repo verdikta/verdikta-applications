@@ -22,21 +22,6 @@ function route() {
   return { page: 'home' };
 }
 
-/**
- * A counter that moves on every chainChanged: the pages that read the chain are keyed by it, so
- * a wallet that switches networks makes them read again rather than keep another chain's data.
- */
-function useChainEpoch() {
-  const [epoch, setEpoch] = useState(0);
-  useEffect(() => {
-    if (!hasWallet()) return undefined;
-    const bump = () => setEpoch((e) => e + 1);
-    window.ethereum.on?.('chainChanged', bump);
-    return () => window.ethereum.removeListener?.('chainChanged', bump);
-  }, []);
-  return epoch;
-}
-
 function useRoute() {
   const [r, setR] = useState(route);
   useEffect(() => {
@@ -112,7 +97,6 @@ function Home() {
 export default function App() {
   const r = useRoute();
   const wallet = useWallet();
-  const epoch = useChainEpoch();
   return (
     <WalletContext.Provider value={wallet}>
       <header className="top">
@@ -127,8 +111,10 @@ export default function App() {
       <main className="page">
         {r.page === 'home' && <Home />}
         {r.page === 'list' && <ListingPage />}
-        {r.page === 'check' && <CheckPage key={`${r.claimId ?? 'none'}@${epoch}`} claimId={r.claimId} />}
-        {r.page === 'fund' && <FundPage key={`${r.listingId ?? 'none'}@${epoch}`} listingId={r.listingId} />}
+        {/* Keyed by id only: a wallet switching networks mid-action must not unmount the action.
+            What the pages read was checked to be the site's chain (chainReader), so it stays valid. */}
+        {r.page === 'check' && <CheckPage key={r.claimId ?? 'none'} claimId={r.claimId} />}
+        {r.page === 'fund' && <FundPage key={r.listingId ?? 'none'} listingId={r.listingId} />}
       </main>
     </WalletContext.Provider>
   );

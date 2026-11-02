@@ -16,9 +16,10 @@ const C = STRINGS.chain;
  * wallet, on the site's chain: it must still be Listed, the same artifact this page shows and
  * the same CRITICAL award, or nothing is sent. So a stale page (another tab funded it) or terms
  * read elsewhere never turn into a second payment, which the contract would take as a top-up.
- * feeDue() is passed as expectedFeeWei, so a racing opening fund still pending reverts ("fee
- * changed") rather than topping up. Once the transaction is mined the button is gone for good,
- * whatever a later read says.
+ * The state and feeDue() are read at one block and the fee is passed as expectedFeeWei, so an
+ * opening fund from elsewhere that lands first makes this one revert ("fee changed") rather than
+ * top up (with a listing fee of 0 the two cannot be told apart). Once the transaction is mined
+ * the button is gone for good, whatever a later read says.
  *
  * @param {{ listingId: bigint, top: bigint, maker: string, artifactHash: string }} props - `top`
  *        is the awards[CRITICAL] this page shows
@@ -56,14 +57,18 @@ export function FundListing({ listingId, top, maker, artifactHash }) {
         setError(fill(STRINGS.fund.notMaker, { maker, account }));
         return;
       }
+      // the state and the fee at one block, so they cannot straddle another tab's opening fund:
+      // Listed there means the fee is the listing fee, and passed as expectedFeeWei it makes this
+      // transaction revert ("fee changed") if that opening is mined first
       const reader = stakeAttestation(provider);
-      const now = await reader.getListing(listingId);
+      // a raw eth_blockNumber: ethers' getBlockNumber() may answer from before the list() it follows
+      const blockTag = Number(await provider.send('eth_blockNumber', []));
+      const [now, due] = await Promise.all([reader.getListing(listingId, { blockTag }), reader.feeDue(listingId, { blockTag })]);
       if (now.state !== 0n || now.artifactHash.toLowerCase() !== artifactHash.toLowerCase() || now.awards[3] !== top) {
         setError(fill(STRINGS.fund.changed, { id: String(listingId), state: STRINGS.fund.states[LISTING_STATES[Number(now.state)]] ?? String(now.state) }));
         setStale(true);
         return;
       }
-      const due = await reader.feeDue(listingId);
       const tx = await stakeAttestation(signer).fund(listingId, due, { value: due + escrowWei });
       await tx.wait();
       setOpened({ tx: tx.hash, until: null });

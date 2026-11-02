@@ -349,6 +349,9 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     store,
     indexer,
     keeper,
+    /** The provider and the deployment, for reads at the latest block (src/dispute/statement.js). */
+    provider,
+    contract: chain.address,
     sync,
     keep,
     /** Resolves once the archive reads started so far have finished (for tests and shutdown). */

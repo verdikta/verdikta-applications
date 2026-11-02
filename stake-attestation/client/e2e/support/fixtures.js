@@ -21,9 +21,12 @@ export { expect };
 export const readStack = () => JSON.parse(fs.readFileSync(STACK_FILE, 'utf8'));
 const fromServer = (rel) => import(pathToFileURL(path.join(SERVER, rel)).href);
 
-/** The builder stand-in's mode for the next builds: accepted, refused-source or error. */
-export function setBuilderMode(stack, mode) {
-  fs.writeFileSync(stack.builderConfig, JSON.stringify({ mode, record: stack.builderRecord }));
+/**
+ * The builder stand-in's mode for the next builds: accepted, refused-source or error; `scan` adds
+ * its scan settings (scanMode, the canary `mark` every finding carries).
+ */
+export function setBuilderMode(stack, mode, scan = {}) {
+  fs.writeFileSync(stack.builderConfig, JSON.stringify({ mode, record: stack.builderRecord, ...scan }));
 }
 
 /**

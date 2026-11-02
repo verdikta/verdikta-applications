@@ -333,7 +333,9 @@ or above *class*" once the record holds one; when no listing of the hash takes c
 how the stake ended (closed, rolled forward, depleted, lapsed). Every string the server writes
 goes through the shared banned-words helper. The feed reads a listing archive's
 `code_review.json` from the ZIP's central directory, never extracting it, with byte caps on the
-download (`SA_ARCHIVE_MAX_BYTES`) and on each member read, inflated or not.
+download (`SA_ARCHIVE_MAX_BYTES`) and on each member read, inflated or not. Archive reads run
+beside the indexer, one run at a time, so a slow gateway never delays a chain read; a failed
+fetch is retried after `SA_ARCHIVE_RETRY_MS`, doubling, counted from the failure.
 
 **The ABI.** The server reads the contract through `server/src/chain/abi/StakeAttestation.json`,
 onchain's merged ABI (contract plus lens), and never compiles; `npm run abi` rewrites it and a

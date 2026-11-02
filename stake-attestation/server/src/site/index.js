@@ -148,7 +148,26 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
 
   const labelContext = (price) => ({ price, badgeFloorWei: config.labels.badgeFloorWei, underStakedRatioBps: config.labels.underStakedRatioBps });
 
-  /** One indexer pass, then the archives of the listings the feed may show. */
+  /**
+   * The archives of the listings the feed may show, read beside the indexer: one run at a time,
+   * started by each sync but never awaited by it, so a slow gateway cannot hold up chain reads
+   * (and with them the keeper's candidates and the answers' freshness).
+   */
+  let archiveRun = null;
+  function refreshArchivesBeside() {
+    if (archiveRun) return archiveRun;
+    const listings = [...projection().listings.values()].filter((l) => l.opened && !l.rolled && !l.closed);
+    archiveRun = refreshArchives({ fetchArchive, store, listings, now, maxBytes: config.archives.maxBytes, retryMs: config.archives.retryMs, logger })
+      .catch((err) => {
+        if (store.locked) logger.warn(`feed: reading listing archives failed (${err?.code ?? String(err?.message ?? err).slice(0, 200)})`);
+      })
+      .finally(() => {
+        archiveRun = null;
+      });
+    return archiveRun;
+  }
+
+  /** One indexer pass; the archives of the listings it found are read beside it. */
   async function sync() {
     try {
       const r = await indexer.sync();
@@ -156,8 +175,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       status.lastSync = { at: now(), head: r.head, safeHead: r.safeHead, added: r.added, rolledBack: r.rolledBack, caughtUp };
       if (caughtUp) status.lastFreshSync = status.lastSync;
       status.syncError = null;
-      const listings = [...projection().listings.values()].filter((l) => l.opened && !l.rolled && !l.closed);
-      await refreshArchives({ fetchArchive, store, listings, now: now(), maxBytes: config.archives.maxBytes, retryMs: config.archives.retryMs, logger });
+      refreshArchivesBeside();
       return r;
     } catch (err) {
       status.syncError = err?.code ?? 'SYNC_FAILED';
@@ -333,6 +351,8 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     keeper,
     sync,
     keep,
+    /** Resolves once the archive reads started so far have finished (for tests and shutdown). */
+    archivesIdle: () => archiveRun ?? Promise.resolve(),
     feed,
     record,
     badge,

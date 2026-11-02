@@ -117,12 +117,13 @@ export function readListingArchive(bytes, listingCid, { maxBytes = Infinity } = 
 
 /**
  * Reads the archives of the listings given (those the feed may show) that the store has no
- * answer for yet, at most MAX_PER_SYNC per call; a failed fetch is stored with its next attempt.
+ * answer for yet, at most MAX_PER_SYNC per call; a failed fetch is stored with its next attempt,
+ * counted from when it failed. It runs beside the indexer (site/index.js), never inside a sync.
  * @param {object} o
  * @param {(cid: string) => Promise<Buffer>} o.fetchArchive
  * @param {import('./store.js').StateStore} o.store
  * @param {{ listingCid: string, artifact: object, disclosureKey: string }[]} o.listings
- * @param {number} o.now - ms
+ * @param {() => number} o.now - the clock, ms
  * @param {number} o.maxBytes
  * @param {number} o.retryMs - the first wait after a failure (doubling per failure)
  */
@@ -130,7 +131,7 @@ export async function refreshArchives({ fetchArchive, store, listings, now, maxB
   let tried = 0;
   for (const listing of listings) {
     const known = store.state.archives[listing.listingCid];
-    if (known && (known.ok || known.error !== 'ARCHIVE_UNAVAILABLE' || known.retryAt > now)) continue;
+    if (known && (known.ok || known.error !== 'ARCHIVE_UNAVAILABLE' || known.retryAt > now())) continue;
     if (tried >= MAX_PER_SYNC) break;
     tried += 1;
     let result;
@@ -140,9 +141,10 @@ export async function refreshArchives({ fetchArchive, store, listings, now, maxB
     } catch (err) {
       const attempts = (known?.attempts ?? 0) + 1;
       const delay = Math.min(RETRY_MAX_MS, retryMs * 2 ** (attempts - 1));
-      result = { ok: false, error: 'ARCHIVE_UNAVAILABLE', attempts, retryAt: now + delay };
+      result = { ok: false, error: 'ARCHIVE_UNAVAILABLE', attempts, retryAt: now() + delay };
       logger.warn(`feed: listing archive ${listing.listingCid} could not be fetched (${String(err?.message ?? err).slice(0, 200)}); retry in ${Math.round(delay / 1000)} s`);
     }
+    if (!store.locked) return; // the site closed while this fetch ran
     store.transact((s) => {
       s.archives[listing.listingCid] = result;
     });

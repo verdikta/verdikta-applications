@@ -49,12 +49,14 @@ test('rawCid is the server\'s (CIDv1, raw, sha2-256, base32)', () => {
   }
 });
 
-test('cidMatches: a raw CID must be the bytes\'; another form cannot be checked here and is taken as given', () => {
+test('cidMatches: only the raw CID of the bytes; any other CID cannot be checked and is refused', () => {
   const { bytes } = checkStatement('statement');
   assert.equal(cidMatches(rawCid(bytes), bytes), true);
   assert.equal(cidMatches(rawCid(checkStatement('other').bytes), bytes), false);
-  assert.equal(cidMatches('bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi', bytes), true);
-  assert.equal(cidMatches('QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG', bytes), true);
+  assert.equal(cidMatches('bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi', bytes), false);
+  assert.equal(cidMatches('QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG', bytes), false);
+  assert.equal(cidMatches(rawCid(bytes).toUpperCase(), bytes), false);
   assert.equal(cidMatches('not a cid', bytes), false);
   assert.equal(cidMatches('', bytes), false);
+  assert.equal(cidMatches(undefined, bytes), false);
 });

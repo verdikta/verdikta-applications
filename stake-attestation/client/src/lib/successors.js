@@ -2,6 +2,8 @@
 // version, already open (listed and funded on its own). The page offers the feed's listings by
 // the same maker of the same artifact, a repository (and kind) at another commit, and confirms
 // each on-chain as rollForward requires: Open, the maker's, without a predecessor, not itself.
+// A listing at the same commit is never offered: two deployed contracts of one commit (another
+// address or chain) are two artifact hashes but the same source, so no fixed version.
 import { LISTING_STATES } from '../chain/abi.js';
 
 const OPEN = BigInt(LISTING_STATES.indexOf('Open'));
@@ -9,11 +11,13 @@ const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 
 /**
  * @param {object[]} feed - GET /api/feed's listings
- * @param {{ listingId: bigint|string, maker: string, kind: string, repo: string|null }} listing - kind as the feed names it (Repo, Contract)
+ * @param {{ listingId: bigint|string, maker: string, kind: string, repo: string|null, baseCommit: string|null }} listing -
+ *   kind as the feed names it (Repo, Contract)
  */
-export function successorCandidates(feed, { listingId, maker, kind, repo }) {
-  if (!repo) return [];
-  return feed.filter((e) => e.listingId !== String(listingId) && same(e.maker, maker) && e.artifact.kind === kind && e.artifact.repo === repo);
+export function successorCandidates(feed, { listingId, maker, kind, repo, baseCommit }) {
+  if (!repo || !baseCommit) return [];
+  return feed.filter((e) => e.listingId !== String(listingId) && same(e.maker, maker) && e.artifact.kind === kind
+    && e.artifact.repo === repo && !same(e.artifact.baseCommit, baseCommit));
 }
 
 /**

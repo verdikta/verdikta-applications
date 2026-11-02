@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import { CLAIM_STATES, DISPUTE_RESULTS, OUTCOMES } from '../chain/abi.js';
-import { WalletError, chainNow, chainReader, stakeAttestation } from '../chain/wallet.js';
+import { WalletError, chainReader, stakeAttestation } from '../chain/wallet.js';
 import { ApiError, disputeStatementChallenge, pinDisputeStatement } from '../lib/api.js';
 import { disputeOffer, pendingRound, releaseOffer } from '../lib/claimActions.js';
 import { errorReason, formatEth, formatTime } from '../lib/format.js';
@@ -16,23 +16,31 @@ const C = STRINGS.claim;
 const E = STRINGS.enums;
 const P = STRINGS.pending;
 const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+// after a mined transaction: how many reads of the claim, how far apart
+const AFTER_TX_READS = 4;
+const AFTER_TX_WAIT_MS = 2000;
 const when = (t) => (t === 0n ? C.notYet : formatTime(t));
 
 /**
- * The claim as the chain has it now, read through `provider` (the site's reader by default, the
- * wallet's just before a transaction): the stored claim, its listing, the lens's derived state
- * (Revealable) and times, the dispute deadline and the chain's clock. Null for no such claim.
+ * The claim as the chain has it at one block, the latest, read through `provider` (the site's
+ * reader by default, the wallet's just before a transaction): the stored claim, its listing, the
+ * lens's derived state (Revealable) and times, the dispute deadline, and that block's time as
+ * the clock. One block, so a finalize mined between two reads never pairs a new state with the
+ * old claim. Null for no such claim.
  */
 async function readClaim(claimId, provider = null) {
   const p = provider ?? await chainReader();
   const sa = stakeAttestation(p);
   const id = BigInt(claimId);
-  if (id === 0n || id > (await sa.claimCount())) return null;
-  const claim = await sa.getClaim(id);
-  const [listing, state, times, deadline, now] = await Promise.all([
-    sa.getListing(claim.listingId), sa.claimState(id), sa.claimTimes(id), sa.disputeDeadline(id), chainNow(p),
+  // a raw eth_getBlockByNumber: ethers may answer getBlock() from a cache
+  const block = await p.send('eth_getBlockByNumber', ['latest', false]);
+  const at = { blockTag: Number(block.number) };
+  if (id === 0n || id > (await sa.claimCount(at))) return null;
+  const claim = await sa.getClaim(id, at);
+  const [listing, state, times, deadline] = await Promise.all([
+    sa.getListing(claim.listingId, at), sa.claimState(id, at), sa.claimTimes(id, at), sa.disputeDeadline(id, at),
   ]);
-  return { claim, listing, state: CLAIM_STATES[Number(state)], times, deadline, now };
+  return { claim, listing, state: CLAIM_STATES[Number(state)], times, deadline, now: BigInt(block.timestamp), block: at.blockTag };
 }
 
 const releaseArgs = (d) => ({ disclosedAt: d.claim.disclosedAt, state: d.state, revealableAt: d.times.revealableAt, now: d.now });
@@ -83,14 +91,12 @@ function PendingWatch({ claimId, kind, at, onData }) {
 }
 
 /** release(): the maker waives the rest of a disclosed claim's fix window. */
-function ReleasePanel({ claimId, data, onData }) {
+function ReleasePanel({ claimId, data, onData, onSent }) {
   const w = useWalletContext();
   const id = useId();
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(null);
   const [error, setError] = useState(null);
   const offer = releaseOffer(releaseArgs(data));
-  if (done) return <p data-testid="released" className="ok">{fill(STRINGS.release.done, { tx: done })}</p>;
   if (!offer.offer) return null;
 
   const release = async () => {
@@ -108,8 +114,7 @@ function ReleasePanel({ claimId, data, onData }) {
       }
       const tx = await stakeAttestation(signer).release(BigInt(claimId));
       await tx.wait();
-      setDone(tx.hash);
-      onData(await readClaim(claimId, provider));
+      onSent({ release: { tx: tx.hash } });
     } catch (err) {
       setError(fill(C.failed, { reason: walletMessage(err) }));
     } finally {
@@ -138,7 +143,7 @@ function ReleasePanel({ claimId, data, onData }) {
  * credentials), and its CID goes on-chain; the contract names it in the request's second
  * addendum line (erratum E2).
  */
-function DisputePanel({ claimId, data, onData }) {
+function DisputePanel({ claimId, data, onData, onSent }) {
   const w = useWalletContext();
   const id = useId();
   const D = STRINGS.dispute;
@@ -147,7 +152,6 @@ function DisputePanel({ claimId, data, onData }) {
   const [text, setText] = useState('');
   const [pinned, setPinned] = useState(null); // { sha, cid }
   const [stage, setStage] = useState(null); // checking | signing | pinning | sending
-  const [done, setDone] = useState(null); // { tx, cid }
   const [error, setError] = useState(null);
   const offer = disputeOffer(disputeArgs(data));
   const open = offer.offer;
@@ -161,14 +165,6 @@ function DisputePanel({ claimId, data, onData }) {
     return () => { live = false; };
   }, [listingId, open]);
 
-  if (done) {
-    return (
-      <section className="claim" data-testid="dispute-done">
-        <p data-testid="statement-cid" className="mono">{fill(D.pinned, { cid: done.cid })}</p>
-        <p data-testid="disputed" className="ok">{fill(D.done, { tx: done.tx })}</p>
-      </section>
-    );
-  }
   if (!offer.offer) return null;
 
   const check = checkStatement(text);
@@ -224,8 +220,7 @@ function DisputePanel({ claimId, data, onData }) {
       setStage('sending');
       const tx = await stakeAttestation(signer).dispute(BigInt(claimId), cid, { value: s.live });
       await tx.wait();
-      setDone({ tx: tx.hash, cid });
-      onData(await readClaim(claimId, provider));
+      onSent({ dispute: { tx: tx.hash, cid } });
     } catch (err) {
       if (err instanceof ApiError) setError(fill(D.pinFailed, { reason: err.body?.error ?? err.message }));
       else setError(fill(C.failed, { reason: walletMessage(err) }));
@@ -281,7 +276,28 @@ export function ClaimPage({ claimId }) {
   const headingId = useId();
   const [loaded, setLoaded] = useState(null); // { data } | { missing } | { failed }
   const [attempt, setAttempt] = useState(0);
+  // what this page sent and saw mined: { release: { tx }, dispute: { tx, cid } }
+  const [sent, setSent] = useState({});
   const onData = useCallback((data) => setLoaded({ data }), []);
+  /**
+   * After a mined transaction the claim is read again, a few times if the chain does not answer,
+   * so a dispute's round is watched; if it still cannot be read, the page offers to read again,
+   * and what was sent stays on the page either way.
+   */
+  const onSent = useCallback(async (s) => {
+    setSent((x) => ({ ...x, ...s }));
+    let reason = null;
+    for (let i = 0; i < AFTER_TX_READS; i += 1) {
+      if (i) await new Promise((r) => setTimeout(r, AFTER_TX_WAIT_MS));
+      try {
+        const d = await readClaim(claimId);
+        if (d) return setLoaded({ data: d });
+      } catch (err) {
+        reason = err instanceof WalletError ? walletMessage(err) : errorReason(err);
+      }
+    }
+    return setLoaded({ failed: reason ?? 'no answer' });
+  }, [claimId]);
 
   useEffect(() => {
     if (claimId === null) return undefined;
@@ -299,13 +315,25 @@ export function ClaimPage({ claimId }) {
       <p className="lead">{C.intro}</p>
     </>
   );
+  const notices = (
+    <>
+      {sent.release && <p data-testid="released" className="ok">{fill(STRINGS.release.done, { tx: sent.release.tx })}</p>}
+      {sent.dispute && (
+        <section className="claim" data-testid="dispute-done">
+          <p data-testid="statement-cid" className="mono">{fill(STRINGS.dispute.pinned, { cid: sent.dispute.cid })}</p>
+          <p data-testid="disputed" className="ok">{fill(STRINGS.dispute.done, { tx: sent.dispute.tx })}</p>
+        </section>
+      )}
+    </>
+  );
   if (claimId === null) return <>{header}<ClaimLookup /></>;
-  if (!loaded) return <>{header}<p className="hint">{C.loading}</p></>;
+  if (!loaded) return <>{header}{notices}<p className="hint">{C.loading}</p></>;
   if (loaded.missing) return <>{header}<p className="error">{fill(C.notFound, { id: claimId })}</p><ClaimLookup /></>;
   if (loaded.failed) {
     return (
       <>
         {header}
+        {notices}
         <p className="error">{fill(C.readFailed, { reason: loaded.failed })}</p>
         <button type="button" onClick={() => setAttempt((a) => a + 1)}>{C.retry}</button>
       </>
@@ -343,9 +371,10 @@ export function ClaimPage({ claimId }) {
           {c.disclosedAt !== 0n && <a href={`#/check/${claimId}`}>{C.checkPage}</a>}
         </p>
       </section>
+      {notices}
       {pending && <PendingWatch claimId={claimId} kind={pending} at={pending === 'dispute' ? c.disputedAt : c.revealedAt} onData={onData} />}
-      <ReleasePanel claimId={claimId} data={d} onData={onData} />
-      <DisputePanel claimId={claimId} data={d} onData={onData} />
+      {!sent.release && <ReleasePanel claimId={claimId} data={d} onData={onData} onSent={onSent} />}
+      {!sent.dispute && <DisputePanel claimId={claimId} data={d} onData={onData} onSent={onSent} />}
     </>
   );
 }

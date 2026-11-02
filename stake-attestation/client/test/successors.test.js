@@ -28,12 +28,25 @@ test('the maker\'s other open listings of the same repository and kind', () => {
     entry(8, { maker: MAKER.toLowerCase() }),
     entry(3),
   ];
-  const got = successorCandidates(feed, { listingId: 3n, maker: MAKER, kind: 'Repo', repo: REPO });
+  const got = successorCandidates(feed, { listingId: 3n, maker: MAKER, kind: 'Repo', repo: REPO, baseCommit: entry(3).artifact.baseCommit });
   assert.deepEqual(got.map((e) => e.listingId), ['4', '8']);
 });
 
+test('never a listing of the same commit: another deployment of the same source is no fixed version', () => {
+  const commit = entry(3).artifact.baseCommit;
+  const contract = (id, over = {}) => entry(id, { artifact: { ...entry(id).artifact, kind: 'Contract', chainId: '8453', ...over } });
+  const feed = [
+    contract(4, { baseCommit: commit, address: '0x00000000000000000000000000000000000000a4' }),
+    contract(5, { baseCommit: commit.toUpperCase(), chainId: '84532' }),
+    contract(6),
+  ];
+  const got = successorCandidates(feed, { listingId: 3n, maker: MAKER, kind: 'Contract', repo: REPO, baseCommit: commit });
+  assert.deepEqual(got.map((e) => e.listingId), ['6']);
+});
+
 test('nothing when the listing\'s identity is unknown', () => {
-  assert.deepEqual(successorCandidates([entry(4)], { listingId: 3n, maker: MAKER, kind: 'Repo', repo: null }), []);
+  assert.deepEqual(successorCandidates([entry(4)], { listingId: 3n, maker: MAKER, kind: 'Repo', repo: null, baseCommit: null }), []);
+  assert.deepEqual(successorCandidates([entry(4)], { listingId: 3n, maker: MAKER, kind: 'Repo', repo: REPO, baseCommit: null }), []);
 });
 
 test('confirmSuccessor: open, the maker\'s, no predecessor, not the listing itself', () => {

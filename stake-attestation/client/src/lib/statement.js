@@ -4,15 +4,14 @@
 // into the request's second addendum line, "verdikta-dispute: <cid>", and the arbiters fetch it.
 //
 // The page checks the text before the wallet is asked anything, and checks the CID the server
-// answers: in the raw sha2-256 form (bafkrei..., what one block of bytes gets, and what the
-// server's pinning asks for) it must be the CID of the bytes sent. Another form cannot be checked
-// in the browser and is taken as the server gives it, if the contract can store it.
+// answers before anything is paid: it must be the raw sha2-256 CID of the bytes sent (CIDv1,
+// codec raw, bafkrei...). A statement of at most 4,096 bytes is one block, which every pinning
+// backend the server uses answers in that form (it asks for CIDv1 with raw leaves); any other
+// CID cannot be checked against the bytes here, so it is refused.
 import { getBytes, sha256 } from 'ethers';
 
 export const MAX_STATEMENT_BYTES = 4096;
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
-// StakeAttestation._isValidCid
-const STORABLE_CID = /^[0-9A-Za-z]{46,100}$/;
 const RAW_CID = /^bafkrei[a-z2-7]{52}$/;
 const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567';
 
@@ -55,9 +54,7 @@ export function rawCid(bytes) {
   return `b${base32(prefixed)}`;
 }
 
-/** Whether the server's CID can name these bytes on-chain (see above). */
+/** Whether the server's CID is the raw CID of these bytes (see above). */
 export function cidMatches(cid, bytes) {
-  if (typeof cid !== 'string' || !STORABLE_CID.test(cid)) return false;
-  if (cid.startsWith('bafkrei')) return RAW_CID.test(cid) && cid === rawCid(bytes);
-  return true;
+  return typeof cid === 'string' && RAW_CID.test(cid) && cid === rawCid(bytes);
 }

@@ -199,6 +199,19 @@ describe('POST /api/claims/:id/dispute-statement: refusals', () => {
     assert.equal(notJson.status, 400);
   });
 
+  test('a backend that answers another CID than the statement\'s raw CID is 502: the page could not check it', async () => {
+    const odd = { backend: 'odd', pins: [], async pin(bytes) { this.pins.push(bytes); return 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi'; } };
+    const other = await startApi({ builder: fakeBuilder(), site, pinner: odd });
+    try {
+      const c = await (await other.post(`/api/claims/${claimId}/dispute-statement/challenge`, {})).json();
+      const res = await other.post(`/api/claims/${claimId}/dispute-statement`, { nonce: c.nonce, signature: await ctx.maker.signMessage(c.message), statement: STATEMENT });
+      assert.equal(res.status, 502);
+      assert.equal((await res.json()).error, 'PIN_CID_UNVERIFIED');
+    } finally {
+      await other.close();
+    }
+  });
+
   test('without a deployment the routes answer 503', async () => {
     const bare = await startApi({ builder: fakeBuilder() });
     try {

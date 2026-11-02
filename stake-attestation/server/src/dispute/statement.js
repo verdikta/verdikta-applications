@@ -16,7 +16,9 @@
 // challenge. Refusals: 400 a malformed claim id, body or statement; 413 a statement over the
 // limit (STATEMENT_TOO_LONG) or a body over BODY_LIMIT; 404 no such claim; 409
 // CLAIM_NOT_DISPUTABLE; walletAuth's 401 and 429; 403 NOT_THE_MAKER; 502 PIN_FAILED; 503
-// CHAIN_NOT_CONFIGURED or CHAIN_UNAVAILABLE. Every answer is no-store. Nothing else changes: the
+// CHAIN_NOT_CONFIGURED or CHAIN_UNAVAILABLE; 502 PIN_CID_UNVERIFIED when the backend answers a
+// CID other than the statement's raw CID (CIDv1, raw, sha2-256), the only form the maker's page
+// can check against the bytes. Every answer is no-store. Nothing else changes: the
 // pin goes to the server's configured backend, as the listing archives do.
 import crypto from 'node:crypto';
 import express from 'express';
@@ -24,7 +26,7 @@ import express from 'express';
 import { stakeAttestation } from '../chain/abi.js';
 import { codeReview } from '../common.js';
 import { AuthError } from '../auth/walletAuth.js';
-import { PinError } from '../pinning/index.js';
+import { PinError, rawCid } from '../pinning/index.js';
 
 export const MAX_STATEMENT_BYTES = codeReview.MAX_DISPUTE_STATEMENT_BYTES;
 export const PIN_DISPUTE = 'pin-dispute';
@@ -139,6 +141,12 @@ export function disputeStatementRouter({ site, pinner, auth, logger }) {
     if (!v.ok && v.status === 403) return res.status(403).json({ error: 'NOT_THE_MAKER', detail: `${v.detail}, the listing's maker` });
     if (!v.ok) return res.status(v.status).json({ error: v.code, detail: v.detail });
     const cid = await pinner.pin(bytes, { name: `dispute-statement-claim-${claimId}.txt` });
+    // a statement is one block: the backend must answer its raw CID, the one the maker's page
+    // checks against the bytes before paying for the dispute
+    if (cid !== rawCid(bytes)) {
+      logger.error(`claim ${claimId}: the pinning backend answered a CID that is not the statement's raw CID`);
+      return res.status(502).json({ error: 'PIN_CID_UNVERIFIED', detail: 'the pinning backend did not answer the statement\'s raw CID (CIDv1, raw, sha2-256)' });
+    }
     logger.info(`claim ${claimId}: dispute statement pinned (${cid}, ${bytes.length} bytes)`);
     return res.json({ claimId, cid, bytes: bytes.length, sha256: `0x${crypto.createHash('sha256').update(bytes).digest('hex')}` });
   }));

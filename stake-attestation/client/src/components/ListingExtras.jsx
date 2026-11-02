@@ -32,7 +32,7 @@ export function useListingRecord(listingId, artifactHash, opened) {
         const claims = [...new Set(events.filter((e) => (e.name === 'Committed' || e.name === 'LateClaim') && e.listingId === id).map((e) => e.claimId))]
           .sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
         const listed = events.find((e) => e.name === 'Listed' && e.listingId === id);
-        setState({ claims, identity: listed ? { kind: listed.args.kind, repo: listed.args.repo } : null });
+        setState({ claims, identity: listed ? { kind: listed.args.kind, repo: listed.args.repo, baseCommit: listed.args.baseCommit } : null });
       })
       .catch((err) => { if (live) setState({ failed: siteErrorText(err) }); });
     return () => { live = false; };
@@ -78,7 +78,7 @@ export function RollForward({ listingId, listing, identity }) {
     let live = true;
     (async () => {
       const feed = await getFeed();
-      const candidates = successorCandidates(feed.listings, { listingId, maker: listing.maker, kind: identity.kind, repo: identity.repo });
+      const candidates = successorCandidates(feed.listings, { listingId, maker: listing.maker, ...identity });
       const sa = stakeAttestation(await chainReader());
       const out = [];
       for (const e of candidates) {

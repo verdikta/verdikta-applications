@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { POLL_MS, WATCH_MS, watchUntil } from '../src/lib/poll.js';
+import { POLL_MS, READ_TIMEOUT_MS, WATCH_MS, watchUntil } from '../src/lib/poll.js';
 
 /** A fake clock: sleep moves it, nothing waits. */
 function clock() {
@@ -84,4 +84,63 @@ test('the default sleep wakes early when the watch is aborted', async () => {
   setTimeout(() => ac.abort(), 20);
   assert.deepEqual(await p, { outcome: 'aborted' });
   assert.ok(Date.now() - started < 5000);
+});
+
+/**
+ * A pending read's limit on the fake clock: it fires a few real ms later, moving the clock by its
+ * length, unless the read answered first (the watch then aborts it, and the clock stays).
+ */
+const fakeDeadline = (c) => (ms, s) => new Promise((resolve) => {
+  const t = setTimeout(() => { c.advance(ms); resolve(); }, 5);
+  s.addEventListener('abort', () => clearTimeout(t), { once: true });
+});
+const never = () => new Promise(() => {});
+
+test('a read that never answers ends the watch at its limit, with the time-out', async () => {
+  const c = clock();
+  const r = await watchUntil({ read: never, done: () => true, now: c.now, sleep: c.sleep, deadline: fakeDeadline(c), maxMs: 20_000 });
+  assert.deepEqual(r, { outcome: 'timeout', value: undefined });
+  assert.equal(c.now() - 1_000_000, 20_000);
+});
+
+test('a read pending at the 15-minute mark does not hold the watch open past it', async () => {
+  const c = clock();
+  let n = 0;
+  const r = await watchUntil({
+    read: () => { n += 1; return n < 3 ? Promise.resolve('Revealed') : never(); },
+    done: () => false,
+    now: c.now,
+    sleep: c.sleep,
+    deadline: fakeDeadline(c),
+  });
+  assert.equal(r.outcome, 'timeout');
+  assert.equal(r.value, 'Revealed');
+  // two reads answer; the reads after them hang, each given at most READ_TIMEOUT_MS, until the watch is over
+  assert.ok(c.now() - 1_000_000 >= WATCH_MS);
+  assert.ok(c.now() - 1_000_000 <= WATCH_MS + READ_TIMEOUT_MS);
+});
+
+test('a slow read counts as failed and the watch reads again', async () => {
+  const c = clock();
+  const errors = [];
+  let n = 0;
+  const r = await watchUntil({
+    read: () => { n += 1; return n === 1 ? never() : Promise.resolve('Judged'); },
+    done: (s) => s === 'Judged',
+    onError: (e) => errors.push(e.message),
+    now: c.now,
+    sleep: c.sleep,
+    deadline: fakeDeadline(c),
+  });
+  assert.deepEqual(r, { outcome: 'done', value: 'Judged' });
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /longer than/);
+  assert.deepEqual(c.sleeps, [POLL_MS]);
+});
+
+test('an abort ends the watch while a read is pending', async () => {
+  const ac = new AbortController();
+  const p = watchUntil({ read: never, done: () => true, signal: ac.signal });
+  setTimeout(() => ac.abort(), 20);
+  assert.deepEqual(await p, { outcome: 'aborted' });
 });

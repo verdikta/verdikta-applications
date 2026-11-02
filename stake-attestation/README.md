@@ -422,7 +422,7 @@ the listing's maker only, with the same wallet sign-in as the baseline scan (act
 | Route | |
 |---|---|
 | `POST /api/claims/:claimId/dispute-statement/challenge` | `{}` → the challenge for the claim's listing's maker; 404 `CLAIM_NOT_FOUND`, 409 `CLAIM_NOT_DISPUTABLE` |
-| `POST /api/claims/:claimId/dispute-statement` | `{ nonce, signature, statement }` → `{ claimId, cid, bytes, sha256 }`; 400 `STATEMENT_INVALID` (not a non-blank, well-formed string), 413 `STATEMENT_TOO_LONG` (over common's 4,096 bytes of UTF-8) or a body over 32 KB, 401 / 403 `NOT_THE_MAKER` as for the scan, 409, 502 `PIN_FAILED` |
+| `POST /api/claims/:claimId/dispute-statement` | `{ nonce, signature, statement }` → `{ claimId, cid, bytes, sha256 }`; 400 `STATEMENT_INVALID` (not a non-blank, well-formed string), 413 `STATEMENT_TOO_LONG` (over common's 4,096 bytes of UTF-8) or a body over 32 KB, 401 / 403 `NOT_THE_MAKER` as for the scan, 409, 502 `PIN_FAILED`, or 502 `PIN_CID_UNVERIFIED` when the backend answers a CID other than the statement's raw CID (CIDv1, raw, sha2-256: one block, the only form the maker's page can check) |
 
 Both read the claim at the latest block (the lens's `disputeDeadline`): only a judged valid
 outcome, undisputed and inside its dispute window, takes a statement. The statement and the claim
@@ -710,7 +710,8 @@ goes in a URL.
   version (`activeListingOf`), which the page links to instead. The request names the connected
   wallet as the `maker` (none without a wallet: the server then runs no scan); once the
   baseline scan has finished, the page asks for its sign-in challenge, the wallet signs it with
-  `personal_sign`, and the findings are shown on the page to that wallet only, never stored.
+  `personal_sign`, and the findings are shown on the page to that wallet only, never stored,
+  and only while it stays the connected wallet.
 - **A listing's page** (`#/fund/<listingId>`): its stored terms and, while it is Listed, the
   opening `fund()`, so a maker who leaves between `list()` and `fund()` can come back. Just
   before sending, the listing's state and fee are read at one block through the wallet: unless
@@ -720,7 +721,7 @@ goes in a URL.
   the wallet whether its account and chain are still the connected ones. Once it opened, the
   page lists its claims (from the record mirror's events) and links to its record; while it is
   Open or Depleted, **roll forward** offers the maker's own open listings of the same
-  repository at other commits (from the feed, each confirmed on-chain: Open, the maker's, no
+  repository at another commit (from the feed, each confirmed on-chain: Open, the maker's, no
   predecessor) and sends `rollForward` after reading both listings again at one block.
 - **The record** (`#/record/<hash>`, design §4.1, §13.4): from `GET /api/records/:hash`, the
   artifact (hash, kind, repository and commit from the Listed event), each stake (state, labels,
@@ -742,11 +743,12 @@ goes in a URL.
   judged valid verdict before `disputeDeadline`. The dispute panel shows the escalation prepay
   (the lens's `disputeFee`, the dispute panel's `maxTotalFee`) before anything is sent; the
   statement (at most 4,096 bytes) is pinned by the server after the wallet signs its challenge,
-  its CID is checked against the bytes when it is the raw sha2-256 form, the prepay is read
+  its CID must be the raw sha2-256 CID of the bytes or nothing is sent, the prepay is read
   again and a higher figure stops the dispute until the maker has seen it, and `dispute()`
-  pays it. A **pending evaluation** (a Revealed claim, or a Disputed one) is read every 5
-  seconds for up to 15 minutes; then the page says plainly that no verdict was recorded in
-  that time and offers a re-check.
+  pays it. Each claim read is of one block (the claim, its listing and the lens views). A
+  **pending evaluation** (a Revealed claim, or a Disputed one) is read every 5 seconds for up to
+  15 minutes, each read given at most 30 seconds and never past the 15 minutes; then the page
+  says plainly that no verdict was recorded in that time and offers a re-check.
 - **Disclosure key.** "Generate" makes an age X25519 pair in the page with
   `@verdikta/common/src/codeReview/disclosure.js`, common's browser-safe entry, which Vite
   bundles as it is (no shim: @noble takes randomness from `globalThis.crypto`). Only the public

@@ -2111,6 +2111,7 @@ function submissionRecordFromChain(job, submissionId, chainSub, extras = {}) {
     creatorWindowEnd: Number(chainSub.creatorWindowEnd) || null,
     ethMaxBudget: chainSub.ethMaxBudget?.toString() || null,
     paidWinner: statusIndex === 3,
+    passedUnpaid: statusIndex === 4,
     clientType: extras.clientType || 'unknown',
     clientId: extras.clientId || null,
   };

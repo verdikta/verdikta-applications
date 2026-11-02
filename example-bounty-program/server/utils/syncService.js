@@ -1078,6 +1078,7 @@ class SyncService {
             // hunter-address match, which mis-attributes when one hunter has several
             // submissions on the same bounty.
             sub.paidWinner = statusIndex === 3;
+            sub.passedUnpaid = statusIndex === 4;
             if (chainSub.acceptance != null) sub.acceptance = Number(chainSub.acceptance);
             if (chainSub.rejection != null) sub.rejection = Number(chainSub.rejection);
             if (chainSub.funder && !/^0x0{40}$/i.test(chainSub.funder)) sub.funder = chainSub.funder;
@@ -1456,6 +1457,7 @@ class SyncService {
             // PayoutSent handler's hunter-address match).
             sub.paidWinner = paid;
           }
+          sub.passedUnpaid = statusIndex === 4;
           sub.acceptance = acceptance;
           sub.rejection = rejection;
           sub.finalizedAt = Math.floor(Date.now() / 1000);

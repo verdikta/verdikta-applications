@@ -3607,6 +3607,13 @@ function SubmissionCard({
 
   // Receipts-as-memes: only show for paid winners
   const isPaidWinner = submission.paidWinner === true;
+  // Passed the threshold but another submission won (on-chain PassedUnpaid). The
+  // collapsed `status` is 'APPROVED' for both, so key off onChainStatus.
+  const isPassedUnpaid = submission.onChainStatus === 'PassedUnpaid' || submission.passedUnpaid === true;
+  const winningSubmission = isPassedUnpaid
+    ? (job?.submissions || []).find(s => s.paidWinner === true || s.onChainStatus === 'PassedPaid')
+    : null;
+  const winningSubmissionId = winningSubmission?.submissionId ?? winningSubmission?.onChainSubmissionId;
   const ageMinutes = isPending && submission.submittedAt ? getSubmissionAge(submission.submittedAt) : 0;
   // Force-fail only when the aggregator round is settled with no result (the
   // contract's rule; no timer) and the submission is actually on-chain (not Prepared).
@@ -3677,7 +3684,7 @@ function SubmissionCard({
 
         return (
           <div className="score" style={{
-            color: isApproved ? '#28a745' : isRejected ? '#dc3545' : '#666',
+            color: isPassedUnpaid ? '#b26a00' : isApproved ? '#28a745' : isRejected ? '#dc3545' : '#666',
             fontWeight: 'bold'
           }}>
             Score: {displayScore.toFixed(1)}%
@@ -4202,8 +4209,28 @@ function SubmissionCard({
         </div>
       )}
 
+      {/* Passed, but an earlier submission won the bounty (on-chain PassedUnpaid) */}
+      {isPassedUnpaid && (
+        <div style={{
+          marginTop: '0.75rem',
+          padding: '0.5rem',
+          backgroundColor: '#fff3e0',
+          border: '1px solid #ffcc80',
+          borderRadius: '4px',
+          textAlign: 'center',
+          fontSize: '0.85rem',
+          color: '#8a4b00'
+        }}>
+          Passed the threshold, but did not win:{' '}
+          {winningSubmissionId != null
+            ? `submission #${winningSubmissionId} came earlier in line and won the bounty.`
+            : 'an earlier submission won the bounty.'}{' '}
+          Payout priority goes by submission order, not score, so no payout was made for this submission.
+        </div>
+      )}
+
       {/* Success message for fully finalized approved submissions */}
-      {isApproved && !needsFinalization && (
+      {isApproved && !needsFinalization && !isPassedUnpaid && (
         <div style={{
           marginTop: '0.75rem',
           padding: '0.5rem',
@@ -4214,9 +4241,13 @@ function SubmissionCard({
           fontSize: '0.85rem',
           color: '#2e7d32'
         }}>
-          🎉 {acceptedByCreator
-            ? 'This submission was accepted by the bounty creator!'
-            : 'This submission passed the evaluation threshold!'}
+          {isPaidWinner
+            ? (acceptedByCreator
+              ? '🏆 Accepted by the bounty creator. This submission won the bounty.'
+              : '🏆 This submission passed the evaluation threshold and won the bounty.')
+            : acceptedByCreator
+              ? '🎉 This submission was accepted by the bounty creator!'
+              : '🎉 This submission passed the evaluation threshold!'}
         </div>
       )}
 

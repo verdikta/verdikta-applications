@@ -228,7 +228,7 @@ export async function scanListing({ spec, config, deps = {}, workDir, agent = fa
       const r = await runTool({ docker, image: SCAN_TOOLS.gitleaks.image, platform, argv: gitleaksArgv(), stdin: scannerInput(forSecrets.map((f) => ({ path: `src/${f.path}`, bytes: f.bytes }))), tool: 'gitleaks' });
       if (r.exitCode !== 0) throw new BuilderError('SCAN_TOOL_FAILED', `gitleaks exited ${r.exitCode}`, { step: 'scan' });
       const g = parseGitleaks(r.stdout);
-      const log = parseGitleaksLog(r.stderr);
+      const log = parseGitleaksLog(r.stderr, { paths: forSecrets.map((f) => f.path) });
       secNot.push(...log.skipped);
       const named = new Set(secNot.map((x) => x.path));
       for (const f of forSecrets) {

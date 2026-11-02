@@ -207,35 +207,61 @@ export function parseSemgrep(stdout) {
 }
 
 const LOG_PATH = /\spath=("(?:[^"\\]|\\.)*"|\S+)/;
+const LOG_LINE = /^\S+\s+(?:TRC|DBG|INF|WRN|ERR|FTL)\s+(.*)$/;
+// The file- and folder-level skips of the pinned scanner (gitleaks v8.30.1 sources/files.go and
+// sources/file.go), by the start of their message. A skip is recorded in these words, never in
+// the log's: some log lines carry a candidate's unredacted text.
+const FILE_SKIPS = Object.freeze([
+  'skipping directory: global allowlist',
+  'skipping directory: could not get info',
+  'skipping file: global allowlist',
+  'skipping file: could not get info',
+  'skipping file: permission denied',
+  'skipping file: too large',
+  'skipping binary file',
+  'skipping archive: exceeds max archive depth',
+  'skipping unknown archive type',
+  'skipping empty file',
+  'skipping symlink',
+  'skipping directory',
+]);
 
 /**
- * What the secret scanner's trace log says it did: every file it opened ("scanning path") and
- * every file or folder it skipped, with its own words for why ("skipping file: global
- * allowlist", "skipping binary file", "skipping archive: exceeds max archive depth", ...). Only
- * the reason and the path are kept, and nothing is capped: the agent pass is given only what
- * the scanner opened and did not skip.
+ * What the secret scanner's trace log says it did with the files it was given: every one it
+ * opened ("scanning path") and every file or folder it skipped. Lines about a single candidate
+ * ("skipping finding: low entropy", "skipping finding: gitleaks:allow" and the like) say nothing
+ * about which files were read and can quote the candidate, so they are ignored; a skip is kept
+ * as its path (only one it was given, or a folder of them) and the fixed words above. Nothing is
+ * capped: the agent pass is given only what the scanner opened and did not skip.
+ * @param {Buffer|string} stderr
+ * @param {{ paths: string[] }} given - the repository paths the scanner was given
  * @returns {{ opened: Set<string>, skipped: { path: string, detail: string }[] }}
  */
-export function parseGitleaksLog(stderr) {
+export function parseGitleaksLog(stderr, { paths }) {
+  const given = new Set(paths);
+  const known = (p) => given.has(p) || paths.some((x) => x.startsWith(`${p}/`));
   const opened = new Set();
   const skipped = [];
-  for (const line of Buffer.from(stderr ?? '').toString('utf8').split('\n')) {
-    const at = line.search(/\b(?:scanning path|skipping\b)/);
-    const pm = LOG_PATH.exec(line);
-    if (at === -1 || !pm) continue;
+  for (const raw of Buffer.from(stderr ?? '').toString('utf8').split('\n')) {
+    const m = LOG_LINE.exec(raw.replace(/\x1b\[[0-9;]*m/g, ''));
+    if (!m) continue;
+    const msg = m[1];
+    const opens = msg.startsWith('scanning path ');
+    if (!opens && (!/^skipping\b/.test(msg) || /^skipping finding\b/.test(msg))) continue;
+    const pm = LOG_PATH.exec(msg);
+    if (!pm) continue;
     let p = pm[1];
     if (p.startsWith('"')) {
       try { p = JSON.parse(p); } catch { continue; }
     }
     p = repoPath(p);
-    if (line.startsWith('scanning path', at)) {
+    if (!known(p)) continue;
+    if (opens) {
       opened.add(p);
       continue;
     }
-    // The reason: the message up to its fields (key=value pairs, the path last).
-    let reason = line.slice(at, pm.index).trim();
-    while (/\s[A-Za-z_]+=\S+$/.test(reason)) reason = reason.replace(/\s[A-Za-z_]+=\S+$/, '');
-    skipped.push({ path: p, detail: `the secret scanner: ${cut(reason, 120)}` });
+    const reason = FILE_SKIPS.find((s) => msg.startsWith(s));
+    skipped.push({ path: p, detail: reason ? `the secret scanner: ${reason}` : 'the secret scanner skipped it' });
   }
   return { opened, skipped };
 }

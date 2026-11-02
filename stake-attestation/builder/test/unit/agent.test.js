@@ -203,6 +203,39 @@ test('every line the secret scanner flagged is withheld, beyond the findings the
   assert.equal(doc.tools.agent.withheld.lines, n);
 });
 
+test('lines about a single candidate are not skips: the file stays in, and nothing of the line is kept', async () => {
+  const secret = 'Zq8LrT0pVb3NcX7mHs2KdW9fJy4GaE6uRo1iQtPz';
+  const files = { 'src/Vault.sol': 'contract Vault {\n  string constant placeholder = "aaaaaaaaaaaaaaaaaaaa";\n  function withdraw() external {}\n}' };
+  const p = stubProvider(ANSWER);
+  const { doc } = await scan({
+    agent: true,
+    fetch: p.fetch,
+    files,
+    gitleaks: {
+      stdout: '[]',
+      stderr: [
+        '9:47AM TRC skipping finding: low entropy entropy=0 path=/work/src/src/Vault.sol rule=generic-api-key',
+        `9:47AM TRC skipping finding: gitleaks:allow signature finding="apiKey = \\"${secret}\\" path=x" path=/work/src/src/Vault.sol`,
+        `9:47AM DBG skipping something new detail="${secret} with spaces" path=/work/src/src/Vault.sol`,
+        '9:47AM DBG skipping file: global allowlist path=/work/src/not/given.sol',
+      ].join('\n'),
+    },
+  });
+  // The unknown skip of Vault.sol excludes it (conservatively) in fixed words; the candidate
+  // lines and the path it was never given are ignored.
+  assert.deepEqual(doc.tools.secrets.notScanned, [{ path: 'src/Vault.sol', detail: 'the secret scanner skipped it' }]);
+  assert.ok(!JSON.stringify(doc).includes(secret));
+});
+
+test('a file with a rejected candidate is still read and sent to the agent pass', async () => {
+  const files = { 'src/Vault.sol': 'contract Vault {\n  string constant placeholder = "aaaaaaaaaaaaaaaaaaaa";\n}' };
+  const p = stubProvider(ANSWER);
+  const { doc } = await scan({ agent: true, fetch: p.fetch, files, gitleaks: { stdout: '[]', stderr: '9:47AM TRC skipping finding: low entropy entropy=0 path=/work/src/src/Vault.sol rule=generic-api-key\n' } });
+  assert.deepEqual(doc.tools.secrets.notScanned, []);
+  assert.deepEqual(doc.tools.agent.withheld, { lines: 0, files: [] });
+  assert.ok(p.requests[0].body.messages[1].content.includes('contract Vault {'));
+});
+
 test('a cut secret-scanner log leaves what it read unknown: no agent pass', async () => {
   const { status, doc } = await scan({ agent: true, fetch: never(), gitleaks: { stdout: '[]', stderrTruncated: true } });
   assert.equal(status, 'error');

@@ -56,3 +56,43 @@ test('the real builder\'s refusal reaches the maker as its validation report, an
     await s.close();
   }
 });
+
+// The baseline scan's contract between the packages (node P4b2): `verdikta-build-env scan` run by
+// the server's adapter on a spec whose repository the builder cannot fetch (a mirror that does
+// not exist), so no Docker or network is needed. The builder writes its error into
+// scan-findings.json in the folder the server chose and exits 1; the server returns that document,
+// which only the maker is served.
+test('the real builder\'s scan writes the maker\'s document where the server reads it', async () => {
+  assert.ok(fs.existsSync(path.join(BUILDER, 'node_modules', '@verdikta', 'common')), 'run npm ci in stake-attestation/builder first');
+  const builderExports = await import(path.join(BUILDER, 'src', 'index.js'));
+  const { SCAN_FILE } = await import('../../src/builder/cli.js');
+  assert.equal(SCAN_FILE, builderExports.SCAN_FILE, 'the server reads the file the builder writes');
+
+  const spec = draftSpec();
+  const config = path.join(tmp, 'builder-scan.json');
+  fs.writeFileSync(config, JSON.stringify({
+    registry: { repository: 'localhost:5000/stake-env' },
+    runner: { url: 'http://127.0.0.1:9', tokenEnv: 'SA_TEST_RUNNER_TOKEN' },
+    signing: { key: 'dev' },
+    repoMirrors: { [spec.repo]: path.join(tmp, 'no-such-mirror.git') },
+  }));
+  const builder = createCliBuilder({
+    bin: path.join(BUILDER, 'bin', 'verdikta-build-env.js'),
+    config,
+    workDir: tmp,
+    buildEnv: [],
+    signEnv: [],
+    scanEnv: [],
+    scanAgent: false,
+    timeoutMs: 60000,
+  }, { env: { PATH: process.env.PATH, HOME: process.env.HOME } });
+  const r = await builder.scan({ spec });
+  assert.equal(r.status, 'error');
+  assert.equal(r.error, null, JSON.stringify(r.error));
+  assert.equal(r.doc.kind, 'verdikta-baseline-scan');
+  assert.equal(r.doc.audience, 'maker');
+  assert.equal(r.doc.status, 'error');
+  assert.equal(r.doc.error.code, 'REPO_FETCH_FAILED');
+  assert.deepEqual(r.doc.findings, []);
+  assert.deepEqual(fs.readdirSync(tmp).filter((n) => n.startsWith('sa-scan-')), [], 'the scan folder is removed');
+});

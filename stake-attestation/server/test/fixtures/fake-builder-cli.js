@@ -1,20 +1,31 @@
 #!/usr/bin/env node
-// A stand-in for verdikta-build-env (stake-attestation/builder, node P3a) that keeps its command
-// line contract: `build --config C --spec S [--known-issues K] --out O` writes code_review.json,
-// the baseline, known_issues.json and validation-report.json into O and exits 0 (accepted),
-// 2 (refused) or 1 (error); `sign --config C --dir O` writes attestation.json (and, for a dev key,
-// dev-trust.json) and records the attestation in the report. Its behaviour comes from the config
-// file ({ "mode": ..., "record": <file> }); every call is appended to the record with the argv
-// and the environment it was given, so a test can check what the server passes. Test use only.
+// A stand-in for verdikta-build-env (stake-attestation/builder, nodes P3a, P3b) that keeps its
+// command line contract: `build --config C --spec S [--known-issues K] --out O` writes
+// code_review.json, the baseline, known_issues.json and validation-report.json into O and exits 0
+// (accepted), 2 (refused) or 1 (error); `sign --config C --dir O` writes attestation.json (and, for
+// a dev key, dev-trust.json) and records the attestation in the report; `scan --config C --spec S
+// --out O [--agent]` writes scan-findings.json into O, a new folder (owner-only), prints where it
+// is and nothing of what it says, and exits 0 (scanned) or 1 (the scan failed; the details are in
+// the file). Its behaviour comes from the config file ({ "mode": ..., "scanMode": ..., "mark": ...,
+// "record": <file> }); every call is appended to the record with the argv and the environment it
+// was given, so a test can check what the server passes. Test use only.
+//
+// Only node's own modules load at the start: the stand-in builder (which loads @verdikta/common)
+// and the scan document (which loads ethers) are imported by the commands that use them, so the
+// hang modes are running well inside the short timeouts their tests give.
 import fs from 'node:fs';
 import path from 'node:path';
 
-// The build modes load the stand-in (and @verdikta/common under it) when they need it, so the
-// hang modes start their child at once instead of after that import.
-
+const FLAGS = new Set(['--agent', '--check-registry']);
 const [command, ...rest] = process.argv.slice(2);
 const opts = {};
-for (let i = 0; i < rest.length; i += 2) opts[rest[i].replace(/^--/, '')] = rest[i + 1];
+for (let i = 0; i < rest.length; i += 1) {
+  if (FLAGS.has(rest[i])) opts[rest[i].replace(/^--/, '')] = true;
+  else {
+    opts[rest[i].replace(/^--/, '')] = rest[i + 1];
+    i += 1;
+  }
+}
 const config = JSON.parse(fs.readFileSync(opts.config, 'utf8'));
 const record = (entry) => {
   const list = fs.existsSync(config.record) ? JSON.parse(fs.readFileSync(config.record, 'utf8')) : [];
@@ -28,6 +39,11 @@ record({
   ...(command === 'build' ? {
     spec: JSON.parse(fs.readFileSync(opts.spec, 'utf8')),
     knownIssues: opts['known-issues'] ? fs.readFileSync(opts['known-issues']).toString('base64') : null,
+  } : {}),
+  ...(command === 'scan' ? {
+    spec: JSON.parse(fs.readFileSync(opts.spec, 'utf8')),
+    outExisted: fs.existsSync(opts.out),
+    outParentMode: fs.statSync(path.dirname(opts.out)).mode & 0o777,
   } : {}),
 });
 const write = (dir, name, bytes) => fs.writeFileSync(path.join(dir, name), bytes);
@@ -58,6 +74,48 @@ if (config.mode === 'hang') {
   fs.writeFileSync(`${config.record}.grandchild`, String(grandchild.pid));
   fs.writeFileSync(path.join(process.env.TMPDIR, 'builder-temp-file'), 'x');
   setInterval(() => {}, 1000);
+} else if (command === 'scan') {
+  // as the builder's writeScan: a new folder of its own, owner-only, the file created exclusively
+  const mark = config.mark ?? 'no-mark';
+  const scanMode = config.scanMode ?? 'ok';
+  const file = path.join(opts.out, 'scan-findings.json');
+  const writeFile = (bytes) => {
+    fs.mkdirSync(opts.out, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, bytes, { mode: 0o600, flag: 'wx' });
+  };
+  const spec = JSON.parse(fs.readFileSync(opts.spec, 'utf8'));
+  const { scanDoc } = await import('../helpers/scan.js');
+  if (scanMode === 'hang') {
+    setInterval(() => {}, 1000);
+  } else if (scanMode === 'no-output') {
+    process.stderr.write(`verdikta-build-env: SCAN_OUT_NOT_EMPTY: ${opts.out} is not empty (${mark})\n`);
+    process.stdout.write(`${mark}\n`);
+    process.exit(1);
+  } else if (scanMode === 'garbage') {
+    writeFile(Buffer.from(`{ "findings": [ "${mark}" `));
+    process.exit(0);
+  } else if (scanMode === 'not-a-scan') {
+    writeFile(json({ kind: 'verdikta-listing-validation', status: 'ok', findings: [mark] }));
+    process.exit(0);
+  } else if (scanMode === 'too-large') {
+    const doc = scanDoc(spec, { mark });
+    doc.files.inScope = Array.from({ length: 400000 }, (_, i) => `src/${mark}-${i}.sol`);
+    writeFile(json(doc));
+    process.exit(0);
+  } else {
+    const failed = scanMode === 'error';
+    writeFile(json(scanDoc(spec, { status: failed ? 'error' : 'ok', mark })));
+    if (scanMode === 'chatty') {
+      process.stdout.write(`found: ${mark}\n`);
+      process.stderr.write(`verdikta-build-env: NOISE: ${mark}\n`);
+    }
+    if (failed) {
+      process.stderr.write(`verdikta-build-env: scan SCAN_TOOL_FAILED; the details are in ${file} (for the maker only)\n`);
+      process.exit(1);
+    }
+    process.stdout.write(`scan: wrote ${file}; it is for the maker only: keep it out of the listing archive, logs and public artifacts\n`);
+    process.exit(0);
+  }
 } else if (command === 'build') {
   const draft = JSON.parse(fs.readFileSync(opts.spec, 'utf8'));
   const knownIssues = opts['known-issues'] ? fs.readFileSync(opts['known-issues']) : null;

@@ -1,6 +1,7 @@
 // What the Playwright tests share: the stack (stack.mjs wrote .e2e/stack.json), the chain from
 // the test's side (the hunter's commit and disclose, the maker's listing, time), the injected
 // test wallet, a recorder of every request the browser makes, and the screenshots for the PR.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -25,11 +26,15 @@ export function setBuilderMode(stack, mode) {
   fs.writeFileSync(stack.builderConfig, JSON.stringify({ mode, record: stack.builderRecord }));
 }
 
-/** A screenshot for the PR, written only when SA_SCREENSHOTS is set (they are committed). */
-export async function shot(page, name, { fullPage = true } = {}) {
+/**
+ * A screenshot for the PR, written only when SA_SCREENSHOTS is set (they are committed). Fields
+ * that hold a private key (data-private) are masked, though every key here is made for the run.
+ */
+export async function shot(page, name, { target = null } = {}) {
   if (!process.env.SA_SCREENSHOTS) return;
   fs.mkdirSync(SCREENSHOTS, { recursive: true });
-  await page.screenshot({ path: path.join(SCREENSHOTS, `${name}.png`), fullPage });
+  const o = { path: path.join(SCREENSHOTS, `${name}.png`), mask: [page.locator('[data-private]')] };
+  await (target ? target.screenshot(o) : page.screenshot({ ...o, fullPage: true }));
 }
 
 /**
@@ -147,7 +152,9 @@ export function chainOf(stack) {
      */
     async openListing({ recipient, spec = {}, allowlist = [] }) {
       const { draftSpec, knownIssues } = await fromServer('test/helpers/fixtures.js');
-      const body = { spec: draftSpec({ disclosureKey: recipient, ...spec }), knownIssues: knownIssues(), allowlist };
+      // a fresh commit: a maker has one listing per version that is not closed
+      const baseCommit = crypto.randomBytes(20).toString('hex');
+      const body = { spec: draftSpec({ disclosureKey: recipient, baseCommit, ...spec }), knownIssues: knownIssues(), allowlist };
       const res = await fetch(`${stack.apiUrl}/api/listings`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       expect(res.status).toBe(202);
       let view = await res.json();

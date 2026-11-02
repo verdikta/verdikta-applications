@@ -8,7 +8,7 @@ import fs from 'node:fs';
 
 import { STRINGS } from '../src/strings.js';
 import { archiveBytes, disclosure, expect, findSecret, installWallet, recordRequests, secretForms, shot, test } from './support/fixtures.js';
-import { REPO_TERMS, field, fillListing, generateAndSaveKey, listAndFund, validate } from './support/listingForm.js';
+import { field, fillListing, generateAndSaveKey, listAndFund, repoTerms, validate } from './support/listingForm.js';
 
 const AGE_RECIPIENT = /^age1[ac-hj-np-z02-9]{58}$/;
 const AGE_IDENTITY = /^AGE-SECRET-KEY-1[ACDEFGHJKLMNPQRSTUVWXYZ023456789]{58}$/;
@@ -16,6 +16,7 @@ const AGE_IDENTITY = /^AGE-SECRET-KEY-1[ACDEFGHJKLMNPQRSTUVWXYZ023456789]{58}$/;
 test('the key pair is made in the browser, and its private half is shown and downloadable once', async ({ page, context, stack }) => {
   await installWallet(page, stack);
   await page.goto('/#/list');
+  await fillListing(page, repoTerms());
   const submit = page.getByRole('button', { name: STRINGS.listing.submit });
   await expect(page.getByText(STRINGS.listing.needKey)).toBeVisible();
   await expect(submit).toBeDisabled();
@@ -32,7 +33,7 @@ test('the key pair is made in the browser, and its private half is shown and dow
   expect(disclosure.disclosureRecipient(identity)).toBe(recipient);
   await expect(page.getByText(STRINGS.key.shownOnce)).toBeVisible();
   await expect(submit).toBeDisabled(); // not before the maker says the private half is saved
-  await shot(page, 'disclosure-key-shown-once', { fullPage: false });
+  await shot(page, 'disclosure-key-shown-once', { target: page.getByRole('group', { name: STRINGS.listing.sections.disclosure }) });
 
   const [download] = await Promise.all([
     page.waitForEvent('download'),
@@ -45,7 +46,7 @@ test('the key pair is made in the browser, and its private half is shown and dow
   expect(keyFile).toContain(`# public key: ${recipient}\n`);
   expect(keyFile.trimEnd().split('\n').at(-1)).toBe(identity);
 
-  await page.getByLabel(STRINGS.key.saved).check();
+  await page.getByRole('button', { name: STRINGS.key.saved }).click();
   await expect(page.getByText(STRINGS.key.gone)).toBeVisible();
   await expect(field(page, STRINGS.key.identity)).toHaveCount(0);
   await expect(page.getByRole('button', { name: STRINGS.key.download })).toHaveCount(0);
@@ -62,13 +63,46 @@ test('the key pair is made in the browser, and its private half is shown and dow
   expect(await page.content()).not.toContain(identity);
 });
 
+test('a maker who already has an age key lists its public half; a private key pasted there goes nowhere', async ({ page, context, stack }) => {
+  const rec = recordRequests(context);
+  await installWallet(page, stack);
+  await page.goto('/#/list');
+  await fillListing(page, repoTerms());
+  const submit = page.getByRole('button', { name: STRINGS.listing.submit });
+  await page.getByRole('button', { name: STRINGS.key.useOwn }).click();
+  const own = field(page, STRINGS.key.ownRecipient);
+  await own.fill('age1notakey');
+  await expect(page.getByText(/^This is not an age X25519 public key/)).toBeVisible();
+  await expect(submit).toBeDisabled();
+  const { recipient, identity } = disclosure.generateDisclosureKeyPair();
+  // the private half pasted by mistake: refused, said so, and never sent
+  await own.fill(identity);
+  await expect(page.getByText(STRINGS.key.ownIsPrivate)).toBeVisible();
+  await expect(submit).toBeDisabled();
+  await own.fill(recipient);
+  await expect(page.getByText(/^This is not an age X25519 public key/)).toHaveCount(0);
+  await expect(field(page, STRINGS.key.identity)).toHaveCount(0);
+  await expect(submit).toBeEnabled();
+  const [req] = await Promise.all([
+    page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === '/api/listings'),
+    validate(page, 'ready'),
+  ]);
+  expect(req.postDataJSON().spec.stake.disclosureKey).toBe(recipient);
+  const forms = secretForms(identity);
+  for (const r of await rec.settle()) {
+    expect(findSecret(forms, r.url), r.url).toBeNull();
+    expect(findSecret(forms, JSON.stringify(r.headers)), r.url).toBeNull();
+    expect(findSecret(forms, r.body), r.url).toBeNull();
+  }
+});
+
 test('no request carries the private key, and no browser store holds it', async ({ page, context, stack, chain }) => {
   const rec = recordRequests(context);
   await installWallet(page, stack);
   await page.goto('/#/list');
 
   const { recipient, identity, keyFile } = await generateAndSaveKey(page);
-  await fillListing(page, { ...REPO_TERMS, allowlist: [] });
+  await fillListing(page, { ...repoTerms(), allowlist: [] });
   await validate(page, 'ready');
   const listingId = await listAndFund(page);
 

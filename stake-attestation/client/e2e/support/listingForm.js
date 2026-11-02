@@ -1,4 +1,5 @@
 // Filling the listing form the way a maker does, by its labels (src/strings.js).
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 
 import { expect } from '@playwright/test';
@@ -9,11 +10,14 @@ const F = STRINGS.listing.fields;
 export const field = (page, label) => page.getByLabel(label, { exact: true });
 export const awardField = (page, cls) => field(page, fill(F.award, { class: cls }));
 
-/** A repository listing's terms, as the server's fixture draft has them. */
-export const REPO_TERMS = Object.freeze({
+/**
+ * A repository listing's terms, as the server's fixture draft has them, at a fresh commit: a
+ * maker has one listing per version that is not closed, and every test lists its own.
+ */
+export const repoTerms = () => ({
   kind: 'repo',
   repo: 'https://github.com/acme/vault',
-  baseCommit: '7f3a9c0d1e2b3a4c5d6e7f8091a2b3c4d5e6f708',
+  baseCommit: crypto.randomBytes(20).toString('hex'),
   include: 'src/**',
   exclude: 'test/**\nscript/**',
   awards: { LOW: '0', MEDIUM: '0.1', HIGH: '0.4', CRITICAL: '2' },
@@ -63,7 +67,7 @@ export async function generateAndSaveKey(page) {
     page.getByRole('button', { name: STRINGS.key.download }).click(),
   ]);
   const keyFile = fs.readFileSync(await download.path(), 'utf8');
-  await page.getByLabel(STRINGS.key.saved).check();
+  await page.getByRole('button', { name: STRINGS.key.saved }).click();
   await expect(page.getByText(STRINGS.key.gone)).toBeVisible();
   return { recipient, identity, keyFile, fileName: download.suggestedFilename() };
 }

@@ -8,6 +8,7 @@ const api = { '/api': { target: process.env.SA_API_URL || 'http://127.0.0.1:5009
 
 export default defineConfig({
   plugins: [react()],
+  build: { rollupOptions: { output: { manualChunks: { ethers: ['ethers'], react: ['react', 'react-dom'] } } } },
   server: { port: 5176, strictPort: true, proxy: api },
   preview: { port: 5176, strictPort: true, proxy: api },
 });

@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import common from '@verdikta/common';
 
-import { ethToAmount, ethToWei, formIssues, initialForm, setKind, setWindow, toListingRequest } from '../src/lib/draft.js';
+import { ethToAmount, ethToWei, formIssues, initialForm, listMismatches, setKind, setWindow, toListingRequest } from '../src/lib/draft.js';
 import { generateDisclosureKeyPair } from '../src/lib/disclosure.js';
 
 const { codeReview } = common;
@@ -143,4 +143,45 @@ test('a contract listing, no known issues, an open listing and no declared value
 test('a form with a client-side issue is never turned into a request', () => {
   assert.throws(() => toListingRequest(filled({ bond: 'lots' })), /amount/);
   assert.throws(() => toListingRequest(filled({ fixWindowDays: '0' })), /form/);
+});
+
+test('list() is sent only with the maker\'s own key and terms: listMismatches names what the server changed', async () => {
+  const { disclosureKeyBytes32 } = await import('../src/lib/disclosure.js');
+  const body = toListingRequest(filled());
+  // the server's listParams.js for this request, as P4a returns it
+  const ids = body.knownIssues.map((k) => `0x${k.id.slice(7)}`);
+  const list = {
+    params: {
+      artifact: { kind: 0, repo: body.spec.repo, baseCommit: body.spec.baseCommit, chainId: '0', addr: '0x0000000000000000000000000000000000000000' },
+      disclosureKey: disclosureKeyBytes32(body.spec.stake.disclosureKey),
+      awards: ['0', '100000000000000000', '400000000000000000', '2000000000000000000'],
+      lowestClassCounted: 3,
+      bondWei: '20000000000000000',
+      fixWindow: 14 * 86400,
+      disputeWindow: 72 * 3600,
+      disclosureGrace: 48 * 3600,
+      revealWindow: 7 * 86400,
+      allowlist: ['0x70997970C51812dc3A010C7d01b50e0d17dc79C8'],
+      valueAtRiskUsd: '1250000',
+      oracle: { requestedClass: '133' },
+    },
+    knownIssueIds: ids,
+  };
+  assert.deepEqual(listMismatches(body, list, disclosureKeyBytes32), []);
+  const other = disclosureKeyBytes32(generateDisclosureKeyPair().recipient);
+  const changed = (patch, extra = {}) => listMismatches(body, { ...list, ...extra, params: { ...list.params, ...patch } }, disclosureKeyBytes32);
+  assert.deepEqual(changed({ disclosureKey: other }), ['disclosureKey']);
+  assert.deepEqual(changed({ awards: ['0', '1', '400000000000000000', '2000000000000000000'] }), ['awards']);
+  assert.deepEqual(changed({ bondWei: '0' }), ['bondWei']);
+  assert.deepEqual(changed({ fixWindow: 0, disclosureGrace: 0 }), ['fixWindow', 'disclosureGrace']);
+  assert.deepEqual(changed({ allowlist: [] }), ['allowlist']);
+  assert.deepEqual(changed({ lowestClassCounted: 5 }), ['lowestClassCounted']);
+  assert.deepEqual(changed({ valueAtRiskUsd: '0' }), ['valueAtRiskUsd']);
+  assert.deepEqual(changed({ artifact: { ...list.params.artifact, baseCommit: 'f'.repeat(40) } }), ['artifact']);
+  assert.deepEqual(changed({}, { knownIssueIds: [] }), ['knownIssueIds']);
+
+  const c = setKind(filled({ knownIssues: [] }), 'contract');
+  const cBody = toListingRequest({ ...c, address: '0x5f2a00000000000000000000000000000000c0de', chainId: '8453' });
+  const cList = { ...list, knownIssueIds: [], params: { ...list.params, disclosureKey: disclosureKeyBytes32(cBody.spec.stake.disclosureKey), fixWindow: 30 * 86400, artifact: { kind: 1, repo: cBody.spec.repo, baseCommit: cBody.spec.baseCommit, chainId: '8453', addr: '0x5F2a00000000000000000000000000000000c0DE' } } };
+  assert.deepEqual(listMismatches(cBody, cList, disclosureKeyBytes32), []);
 });

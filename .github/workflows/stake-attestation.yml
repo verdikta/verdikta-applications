@@ -13,9 +13,9 @@ permissions:
 concurrency:
   group: stake-attestation-${{ github.ref }}
   cancel-in-progress: true
-# No job reads a secret: contracts run on the in-process Hardhat network, the client against
-# its own production build, the builder against a local registry:2, recorded explorer
-# responses and a per-run dev signing key.
+# No job reads a secret: contracts run on the in-process Hardhat network, the client's
+# production build against that network and the server (its builder stubbed), the builder
+# against a local registry:2, recorded explorer responses and a per-run dev signing key.
 jobs:
   shared:
     name: Shared helper, scope and wording
@@ -132,7 +132,10 @@ jobs:
       - name: Unit tests
         working-directory: stake-attestation/client
         run: npm test
-      - name: Playwright smoke test against the production build
+      - name: Install the server's locked dependencies (the Playwright stack runs the server and Hardhat from it)
+        working-directory: stake-attestation/server
+        run: npm ci --ignore-scripts
+      - name: Playwright tests against the production build, local Hardhat and the server
         working-directory: stake-attestation/client
         run: |
           npx playwright install --with-deps chromium

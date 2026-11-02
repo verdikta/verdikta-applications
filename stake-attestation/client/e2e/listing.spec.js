@@ -7,7 +7,7 @@ import common from '@verdikta/common';
 
 import { STRINGS, fill } from '../src/strings.js';
 import { disclosure, expect, installWallet, setBuilderMode, shot, test } from './support/fixtures.js';
-import { REPO_TERMS, awardField, field, fillListing, generateAndSaveKey, listAndFund, validate } from './support/listingForm.js';
+import { awardField, field, fillListing, generateAndSaveKey, listAndFund, repoTerms, validate } from './support/listingForm.js';
 
 const F = STRINGS.listing.fields;
 const B = STRINGS.listing.bounds;
@@ -51,6 +51,7 @@ test('the windows default to 14 days (30 for a contract), 72 h, 48 h and 7 days'
 
 test('the form holds the D8 bounds, and a 0-day fix window is allowed with no grace', async ({ page }) => {
   const submit = page.getByRole('button', { name: STRINGS.listing.submit });
+  await fillListing(page, repoTerms());
   await generateAndSaveKey(page);
   await expect(submit).toBeEnabled();
 
@@ -89,9 +90,10 @@ test('the form holds the D8 bounds, and a 0-day fix window is allowed with no gr
 test('a maker lists and funds a repository version: server validation, report, list() and fund()', async ({ page, stack, chain }) => {
   const { recipient } = await generateAndSaveKey(page);
   // HIGH below MEDIUM: the client leaves the award rules to the server, which refuses them
+  const terms = repoTerms();
   await fillListing(page, {
-    ...REPO_TERMS,
-    awards: { ...REPO_TERMS.awards, HIGH: '0.05' },
+    ...terms,
+    awards: { ...terms.awards, HIGH: '0.05' },
     allowlist: [stack.accounts.hunter],
     knownIssues: [KNOWN_ISSUE],
     valueAtRisk: 1250000,
@@ -104,7 +106,7 @@ test('a maker lists and funds a repository version: server validation, report, l
   await expect(refused).toBeVisible();
   await expect(refused).toContainText('STAKE_AWARDS_NOT_MONOTONE');
   await expect(refused).toContainText('/spec/stake/awards/HIGH');
-  await shot(page, 'listing-refused-by-server');
+  await shot(page, 'listing-refused-by-server', { target: refused });
 
   await awardField(page, 'HIGH').fill('0.4');
   await validate(page, 'ready');
@@ -138,7 +140,7 @@ test('a maker lists and funds a repository version: server validation, report, l
 test('a deployed contract listed with a 0-day fix window and the shortest D8 windows', async ({ page, chain }) => {
   const { recipient } = await generateAndSaveKey(page);
   await fillListing(page, {
-    ...REPO_TERMS,
+    ...repoTerms(),
     kind: 'contract',
     address: '0x5f2a00000000000000000000000000000000c0de',
     chainId: 8453,
@@ -161,7 +163,8 @@ test('a listing the builder refuses shows the validation report and offers nothi
   setBuilderMode(stack, 'refused-source');
   try {
     await generateAndSaveKey(page);
-    await fillListing(page, { ...REPO_TERMS, kind: 'contract', address: '0x5f2a00000000000000000000000000000000c0de', chainId: 8453 });
+    const terms = repoTerms();
+    await fillListing(page, { ...terms, kind: 'contract', address: '0x5f2a00000000000000000000000000000000c0de', chainId: 8453 });
     await validate(page, 'refused');
     const report = page.getByRole('region', { name: STRINGS.report.title });
     await expect(report).toContainText(fill(STRINGS.report.status, { status: 'refused' }));
@@ -171,7 +174,7 @@ test('a listing the builder refuses shows the validation report and offers nothi
     await shot(page, 'listing-refused-by-builder');
     // the maker can go back to the form, which kept what they entered
     await page.getByRole('button', { name: STRINGS.listing.again }).click();
-    await expect(field(page, F.repo)).toHaveValue(REPO_TERMS.repo);
+    await expect(field(page, F.baseCommit)).toHaveValue(terms.baseCommit);
   } finally {
     setBuilderMode(stack, 'accepted');
   }

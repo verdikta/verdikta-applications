@@ -192,6 +192,47 @@ describe('a retry after a timeout', () => {
     }
   });
 
+  test('call, cancel, call: a call due again after its cancellation vanished is re-sent with the call\'s gas, not 21000', async () => {
+    const ctx = await chainContext();
+    const claimId = await judgedInvalid(ctx);
+    const site = siteFor(ctx, { env: { ...FAST, SA_KEEPER_REPLACE_AFTER_MS: '0' } });
+    const drop = async (hash) => {
+      try {
+        await rpc(ctx, 'hardhat_dropTransaction', [hash]);
+      } catch { /* not there */ }
+    };
+    try {
+      await site.sync();
+      await automine(ctx, false);
+      const first = await site.keep(); // finalize at n, waiting
+      const call = first.pending.attempts.at(-1);
+      const snapshot = await rpc(ctx, 'evm_snapshot');
+      // another caller's finalize lands first, so the keeper cancels its own
+      await drop(call.hash);
+      const other = await ctx.sa.connect(ctx.hunters[1]).finalize(claimId, { gasLimit: 1_000_000 });
+      await mine(ctx);
+      assert.equal((await other.wait()).status, 1);
+      await rpc(ctx, 'eth_sendRawTransaction', [call.raw]);
+      const cancelled = await site.keep();
+      assert.deepEqual(cancelled.sent.map((x) => x.action), ['cancel']);
+      // a reorg undoes the other finalize, and the cancellation is gone with it: due again
+      assert.equal(await rpc(ctx, 'evm_revert', [snapshot]), true);
+      for (const a of site.store.state.keeper.inflight.attempts) await drop(a.hash);
+      assert.equal((await ctx.sa.getClaim(claimId)).state, 2n, 'Revealed again');
+      const again = await site.keep();
+      assert.deepEqual(again.sent.map((x) => [x.action, x.nonce]), [['finalize', first.pending.nonce]]);
+      assert.equal(site.store.state.keeper.inflight.attempts.at(-1).gasLimit, call.gasLimit);
+      await mine(ctx);
+      await automine(ctx, true);
+      await site.keep();
+      assert.equal((await ctx.sa.getClaim(claimId)).state, 3n, 'Judged');
+      for (const t of await keeperTransactions(ctx)) assert.equal(t.status, 1, t.fn);
+    } finally {
+      await automine(ctx, true);
+      site.close();
+    }
+  });
+
   test('a transaction the network dropped is re-checked: sent again only if the call is still due', async () => {
     const ctx = await chainContext();
     const claimId = await judgedInvalid(ctx);

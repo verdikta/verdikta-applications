@@ -304,7 +304,11 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
       finish(inflight, 'dropped', null); // nothing of ours is pending, and nothing is due
       return 'done';
     }
-    const attempt = await sign({ kind: due ? 'call' : 'cancel', action: inflight.action, claimId: inflight.claimId, nonce: inflight.nonce, gasLimit: newest.gasLimit, previous: newest });
+    // a call keeps the gas limit its estimate gave (never a cancellation's 21000), and any
+    // replacement outbids the highest fees recorded at this nonce
+    const lastCall = inflight.attempts.filter((a) => a.kind !== 'cancel').at(-1);
+    const highest = inflight.attempts.reduce((a, b) => (BigInt(b.maxFeePerGas) > BigInt(a.maxFeePerGas) ? b : a));
+    const attempt = await sign({ kind: due ? 'call' : 'cancel', action: inflight.action, claimId: inflight.claimId, nonce: inflight.nonce, gasLimit: lastCall.gasLimit, previous: highest });
     const result = await broadcast(attempt, inflight);
     if (result !== 'sent') return 'pending'; // the nonce moved, or the node keeps the earlier attempt: next cycle
     sent.push({ action: due ? inflight.action : 'cancel', claimId: inflight.claimId, nonce: inflight.nonce, txHash: attempt.hash, replaced: true });

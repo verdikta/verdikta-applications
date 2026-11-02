@@ -25,7 +25,7 @@ import { fetchListedCommit as fetchDefault } from './git.js';
 import { SCAN_FILE } from './outputs.js';
 import {
   GITLEAKS_CONFIG_FILES, GITLEAKS_MAX_MB, SCAN_TOOLS, SEMGREP_MAX_BYTES,
-  gitleaksArgv, loadRules, parseGitleaks, parseGitleaksSkips, parseSemgrep, scannerInput, semgrepArgv,
+  gitleaksArgv, loadRules, parseGitleaks, parseGitleaksLog, parseSemgrep, scannerInput, semgrepArgv,
 } from './scanTools.js';
 import { checkDraft, serializeJson } from './spec.js';
 import { BUILDER_VERSION } from './version.js';
@@ -110,26 +110,41 @@ function sortFindings(list) {
 }
 
 const WITHHELD = '[line withheld from the agent pass: the secret scan flagged it]';
+const MAX_NOT_SCANNED = 500;
+const utf8 = new TextDecoder('utf-8', { fatal: true });
+
+/** Text the secret scanner reads line by line: valid UTF-8 with no NUL byte (no archive, no binary). */
+function isText(bytes) {
+  if (bytes.includes(0)) return false;
+  try {
+    utf8.decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
- * The in-scope files as the agent pass may see them: every line the secret scanner flagged is
- * replaced, and a file it did not read (or one inside a folder it skipped) is left out.
- * @returns {{ path: string, bytes: Buffer }[] & { withheld?: object }}
+ * The in-scope files as the agent pass may see them: only those the secret scanner opened and
+ * did not skip, and that are plain text; every line it flagged replaced.
+ * @param {{ path: string, bytes: Buffer }[]} files
+ * @param {object[]} secrets - every secret finding (parseGitleaks().all)
+ * @param {{ opened: Set<string>, skipped: { path: string }[] }} log - parseGitleaksLog()
+ * @returns {{ files: { path: string, bytes: Buffer }[], withheld: { lines: number, files: string[] } }}
  */
-export function withholdSecrets(files, findings, notScanned) {
+export function withholdSecrets(files, secrets, log) {
   const lines = new Map();
-  for (const f of findings) {
-    if (f.tool !== 'gitleaks') continue;
+  for (const f of secrets) {
     const set = lines.get(f.path) ?? new Set();
     for (let n = f.line; n <= Math.max(f.line, f.endLine); n += 1) set.add(n);
     lines.set(f.path, set);
   }
-  const unread = notScanned.map((x) => x.path);
+  const skipped = log.skipped.map((x) => x.path);
   const out = [];
   const left = [];
   let count = 0;
   for (const f of files) {
-    if (unread.some((p) => f.path === p || f.path.startsWith(`${p}/`))) {
+    if (!log.opened.has(f.path) || skipped.some((p) => f.path === p || f.path.startsWith(`${p}/`)) || !isText(f.bytes)) {
       left.push(f.path);
       continue;
     }
@@ -142,8 +157,7 @@ export function withholdSecrets(files, findings, notScanned) {
     count += flagged.size;
     out.push({ path: f.path, bytes: Buffer.from(text.join('\n'), 'utf8') });
   }
-  out.withheld = { lines: count, files: left };
-  return out;
+  return { files: out, withheld: { lines: count, files: left } };
 }
 
 /**
@@ -202,35 +216,47 @@ export async function scanListing({ spec, config, deps = {}, workDir, agent = fa
       doc.tools.semgrep.status = 'failed';
       failure ??= err;
     }
-    doc.tools.semgrep.notScanned = semNot;
+    doc.tools.semgrep.notScanned = semNot.slice(0, MAX_NOT_SCANNED);
+    if (semNot.length > MAX_NOT_SCANNED) doc.tools.semgrep.notScannedTruncated = true;
 
     // The secret scanner gets every in-scope file but its own configuration files (which would
-    // change its rules); what it skips, it says in its log.
+    // change its rules); what it opens and what it skips, its trace log says.
     const forSecrets = files.filter((f) => !GITLEAKS_CONFIG_FILES.includes(f.path));
     const secNot = files.filter((f) => GITLEAKS_CONFIG_FILES.includes(f.path)).map((f) => ({ path: f.path, detail: 'the secret scanner\'s own configuration file: not given to it, so it cannot change the scan' }));
+    let secrets = null;
     try {
       const r = await runTool({ docker, image: SCAN_TOOLS.gitleaks.image, platform, argv: gitleaksArgv(), stdin: scannerInput(forSecrets.map((f) => ({ path: `src/${f.path}`, bytes: f.bytes }))), tool: 'gitleaks' });
       if (r.exitCode !== 0) throw new BuilderError('SCAN_TOOL_FAILED', `gitleaks exited ${r.exitCode}`, { step: 'scan' });
       const g = parseGitleaks(r.stdout);
-      secNot.push(...parseGitleaksSkips(r.stderr));
+      const log = parseGitleaksLog(r.stderr);
+      secNot.push(...log.skipped);
       const named = new Set(secNot.map((x) => x.path));
       for (const f of forSecrets) {
         if (f.bytes.length > GITLEAKS_MAX_MB * 1000000 && !named.has(f.path)) secNot.push({ path: f.path, detail: `over the secret scanner's per-file limit of ${GITLEAKS_MAX_MB} MB: not read` });
       }
       doc.tools.secrets.status = 'ok';
       if (g.truncated) doc.tools.secrets.truncated = true;
+      // A cut log may have lost a skip: then what the scanner read is not known.
+      if (r.stderrTruncated) doc.tools.secrets.logTruncated = true;
+      else secrets = { all: g.all, log };
       found.push(...g.findings);
     } catch (err) {
       doc.tools.secrets.status = 'failed';
       failure ??= err;
     }
-    doc.tools.secrets.notScanned = secNot;
+    doc.tools.secrets.notScanned = secNot.slice(0, MAX_NOT_SCANNED);
+    if (secNot.length > MAX_NOT_SCANNED) doc.tools.secrets.notScannedTruncated = true;
 
     if (agent) {
-      // The model never sees what the secret scan flagged, nor a file it could not vouch for.
-      const a = doc.tools.secrets.status === 'ok'
-        ? await runAgentPass({ agent: config.scan.agent, spec, files: withholdSecrets(files, found, secNot), fetch: deps.agentFetch })
-        : { summary: { status: 'failed', provider: config.scan.agent.provider, model: config.scan.agent.model, code: 'AGENT_NEEDS_SECRET_SCAN', detail: 'the agent pass runs only on source the secret scan read' }, findings: [] };
+      // The model is given only source the secret scan read, its flagged lines withheld.
+      let a;
+      if (secrets) {
+        const { files: forAgent, withheld } = withholdSecrets(files, secrets.all, secrets.log);
+        a = await runAgentPass({ agent: config.scan.agent, spec, files: forAgent, fetch: deps.agentFetch });
+        if (a.summary.status === 'ok') a.summary.withheld = withheld;
+      } else {
+        a = { summary: { status: 'failed', provider: config.scan.agent.provider, model: config.scan.agent.model, code: 'AGENT_NEEDS_SECRET_SCAN', detail: 'the agent pass runs only on source the secret scan is known to have read' }, findings: [] };
+      }
       doc.tools.agent = a.summary;
       found.push(...a.findings);
       if (a.summary.status !== 'ok') failure ??= new BuilderError(a.summary.code, 'the agent pass failed', { step: 'scan' });

@@ -55,6 +55,17 @@ export function gitleaksResult({ rule = 'generic-api-key', path, line, secret = 
 }
 
 /**
+ * The secret scanner's trace log opens with a "scanning path" line per file it was given (or per
+ * path in `answer.opened`), then the answer's own stderr.
+ */
+function withOpened(answer, stdin) {
+  if (!answer || answer.exitCode) return answer;
+  const opened = answer.opened ?? [...decodeInput(stdin).keys()].filter((p) => p.startsWith('src/')).map((p) => p.slice(4));
+  const lines = opened.map((p) => `9:47AM TRC scanning path path=${/\s/.test(p) ? JSON.stringify(`/work/src/${p}`) : `/work/src/${p}`}\n`).join('');
+  return { ...answer, stderr: `${lines}${answer.stderr ?? ''}` };
+}
+
+/**
  * A docker double for a scan: both pinned images are present; `semgrep` and `gitleaks` answer a
  * run of their image ({ exitCode, stdout, stderr }). Every call and every stdin is recorded.
  */
@@ -67,7 +78,7 @@ export function scanDocker({ semgrep = { stdout: semgrepAnswer() }, gitleaks = {
       const image = args.find((a) => a === SCAN_TOOLS.semgrep.image || a === SCAN_TOOLS.gitleaks.image);
       runs.push({ args, image, stdin: opts.stdin });
       if (image === SCAN_TOOLS.semgrep.image) return fillScanned(typeof semgrep === 'function' ? semgrep(args, opts) : semgrep, opts.stdin);
-      if (image === SCAN_TOOLS.gitleaks.image) return typeof gitleaks === 'function' ? gitleaks(args, opts) : gitleaks;
+      if (image === SCAN_TOOLS.gitleaks.image) return withOpened(typeof gitleaks === 'function' ? gitleaks(args, opts) : gitleaks, opts.stdin);
       return { exitCode: 125, stderr: 'unexpected image' };
     }
     return {};

@@ -232,7 +232,7 @@ test('nothing in scope goes unscanned unsaid: Semgrep\'s default exclusions are 
   assert.ok(decodeInput(runs[1].stdin).has('src/src/package-lock.json'), 'everything else in scope');
   assert.deepEqual(doc.tools.secrets.notScanned, [
     { path: '.gitleaks.toml', detail: 'the secret scanner\'s own configuration file: not given to it, so it cannot change the scan' },
-    { path: 'src/node_modules', detail: 'the secret scanner skips this directory: global allowlist' },
-    { path: 'src/package-lock.json', detail: 'the secret scanner skips this file: global allowlist' },
+    { path: 'src/node_modules', detail: 'the secret scanner: skipping directory: global allowlist' },
+    { path: 'src/package-lock.json', detail: 'the secret scanner: skipping file: global allowlist' },
   ]);
 });

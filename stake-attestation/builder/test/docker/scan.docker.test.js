@@ -58,7 +58,7 @@ test('Semgrep and the secret scanner find the planted bugs and the secret in sco
   assert.deepEqual(doc.tools.semgrep.notScanned, []);
   assert.equal(doc.tools.semgrep.analysed, doc.files.inScope.filter((p) => p.endsWith('.sol')).length);
   // What the secret scanner skips, it says.
-  assert.deepEqual(doc.tools.secrets.notScanned, [{ path: 'src/node_modules', detail: 'the secret scanner skips this directory: global allowlist' }]);
+  assert.deepEqual(doc.tools.secrets.notScanned, [{ path: 'src/node_modules', detail: 'the secret scanner: skipping directory: global allowlist' }]);
   const rules = new Set(doc.findings.filter((f) => f.tool === 'semgrep').map((f) => f.rule));
   for (const r of [
     'verdikta.solidity.tx-origin-auth', 'verdikta.solidity.value-call-before-state-write', 'verdikta.solidity.unchecked-low-level-call',
@@ -75,4 +75,26 @@ test('Semgrep and the secret scanner find the planted bugs and the secret in sco
   const secrets = doc.findings.filter((f) => f.tool === 'gitleaks');
   assert.deepEqual(secrets.map((f) => [f.path, f.line]), [['src/Settings.sol', 4]]);
   assert.equal(JSON.stringify(doc).includes(SECRET), false, 'the secret is not copied into the findings');
+
+  // The agent pass, with a stub for the provider, gets what the real scanner's log says it read,
+  // with the flagged line withheld; never the secret, never the file it skipped.
+  const agentConfig = parseConfig({
+    registry: { repository: 'ghcr.io/verdikta/stake-env' },
+    runner: { url: 'http://127.0.0.1:8090', tokenEnv: 'UNUSED_RUNNER_TOKEN' },
+    platforms: testPlatforms(),
+    repoMirrors: { 'https://github.com/verdikta-test/vault-fixture': repo.mirror },
+    scan: { agent: { provider: 'openrouter', model: 'qwen/qwen3-coder', apiUrl: 'https://provider.invalid/v1/chat/completions', apiKeyEnv: 'STUB_PROVIDER_TOKEN' } },
+  }, { baseDir: dir, env: { STUB_PROVIDER_TOKEN: 'stub-bearer-for-tests' } });
+  const prompts = [];
+  const agentFetch = async (url, init) => {
+    prompts.push(JSON.parse(init.body).messages.map((m) => m.content).join('\n'));
+    return new Response(JSON.stringify({ choices: [{ message: { content: '{"findings":[]}' } }] }), { status: 200 });
+  };
+  const withAgent = await scanListing({ spec, config: agentConfig, deps: { docker, agentFetch }, workDir: dir, agent: true });
+  assert.equal(withAgent.status, 'ok', JSON.stringify(withAgent.doc.error ?? withAgent.doc.tools));
+  assert.equal(prompts.length, 1);
+  assert.ok(prompts[0].includes('contract Checked'), 'the in-scope source the scanner read');
+  assert.ok(!prompts[0].includes(SECRET));
+  assert.ok(prompts[0].includes('[line withheld from the agent pass: the secret scan flagged it]'));
+  assert.deepEqual(withAgent.doc.tools.agent.withheld, { lines: 1, files: ['src/node_modules/x/Key.sol'] });
 });

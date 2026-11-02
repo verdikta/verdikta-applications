@@ -33,6 +33,7 @@ export function fakeDocker(script = () => ({})) {
         stdout: buf(r.stdout),
         stderr: buf(r.stderr),
         stdoutTruncated: Boolean(r.stdoutTruncated),
+        stderrTruncated: Boolean(r.stderrTruncated),
         timedOut: Boolean(r.timedOut),
         spawnError: r.spawnError ?? null,
       };

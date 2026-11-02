@@ -140,12 +140,12 @@ export function semgrepArgv() {
 
 /**
  * The secret scanner's argv: its built-in rules, secrets redacted, its JSON report on stdout and
- * its log, which names every file it skips and why, on stderr.
+ * its trace log, which names every file it opens and every one it skips and why, on stderr.
  */
 export function gitleaksArgv() {
   const script = [
     ...UNPACK,
-    `gitleaks dir /work/src --no-banner --no-color --redact --exit-code 0 --log-level debug --max-target-megabytes ${GITLEAKS_MAX_MB} --report-format json --report-path /work/gitleaks.json >&2`,
+    `gitleaks dir /work/src --no-banner --no-color --redact --exit-code 0 --log-level trace --max-target-megabytes ${GITLEAKS_MAX_MB} --report-format json --report-path /work/gitleaks.json >&2`,
     'cat /work/gitleaks.json',
     '',
   ].join('\n');
@@ -206,24 +206,38 @@ export function parseSemgrep(stdout) {
   return { findings, errors, scanned, truncated: out.results.length > MAX_FINDINGS };
 }
 
+const LOG_PATH = /\spath=("(?:[^"\\]|\\.)*"|\S+)/;
+
 /**
- * The files and folders the secret scanner says it skipped, and why, from its log: lines like
- * "skipping file: global allowlist path=/work/src/package-lock.json". Only the reason and the
- * path are kept.
+ * What the secret scanner's trace log says it did: every file it opened ("scanning path") and
+ * every file or folder it skipped, with its own words for why ("skipping file: global
+ * allowlist", "skipping binary file", "skipping archive: exceeds max archive depth", ...). Only
+ * the reason and the path are kept, and nothing is capped: the agent pass is given only what
+ * the scanner opened and did not skip.
+ * @returns {{ opened: Set<string>, skipped: { path: string, detail: string }[] }}
  */
-export function parseGitleaksSkips(stderr) {
-  const out = [];
+export function parseGitleaksLog(stderr) {
+  const opened = new Set();
+  const skipped = [];
   for (const line of Buffer.from(stderr ?? '').toString('utf8').split('\n')) {
-    const m = /skipping (file|directory): (.*?)\s+(?:[A-Za-z_]+=(?:"(?:[^"\\]|\\.)*"|\S+)\s+)*path=("(?:[^"\\]|\\.)*"|\S+)/.exec(line);
-    if (!m) continue;
-    let p = m[3];
+    const at = line.search(/\b(?:scanning path|skipping\b)/);
+    const pm = LOG_PATH.exec(line);
+    if (at === -1 || !pm) continue;
+    let p = pm[1];
     if (p.startsWith('"')) {
       try { p = JSON.parse(p); } catch { continue; }
     }
-    out.push({ path: repoPath(p), detail: `the secret scanner skips this ${m[1]}: ${cut(m[2].trim(), 100)}` });
-    if (out.length >= MAX_FINDINGS) break;
+    p = repoPath(p);
+    if (line.startsWith('scanning path', at)) {
+      opened.add(p);
+      continue;
+    }
+    // The reason: the message up to its fields (key=value pairs, the path last).
+    let reason = line.slice(at, pm.index).trim();
+    while (/\s[A-Za-z_]+=\S+$/.test(reason)) reason = reason.replace(/\s[A-Za-z_]+=\S+$/, '');
+    skipped.push({ path: p, detail: `the secret scanner: ${cut(reason, 120)}` });
   }
-  return out;
+  return { opened, skipped };
 }
 
 /**
@@ -233,7 +247,8 @@ export function parseGitleaksSkips(stderr) {
 export function parseGitleaks(stdout) {
   const out = json(stdout, 'gitleaks');
   if (!Array.isArray(out)) throw failed('gitleaks', 'its report is not a list');
-  const findings = out.slice(0, MAX_FINDINGS).map((r) => ({
+  // Every finding, for withholding its lines from the agent pass; the maker's file keeps the first MAX_FINDINGS.
+  const all = out.map((r) => ({
     tool: 'gitleaks',
     rule: cut(r.RuleID, 100),
     severity: 'error',
@@ -242,5 +257,5 @@ export function parseGitleaks(stdout) {
     endLine: Number(r.EndLine) || Number(r.StartLine) || 0,
     message: cut(r.Description),
   }));
-  return { findings, truncated: out.length > MAX_FINDINGS };
+  return { all, findings: all.slice(0, MAX_FINDINGS), truncated: out.length > MAX_FINDINGS };
 }

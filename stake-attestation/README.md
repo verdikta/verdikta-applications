@@ -357,8 +357,8 @@ Semgrep reads the in-scope `.sol` files from a folder whose empty `.semgrepignor
 default exclusions (`test/`, `vendor/`, ...); the secret scanner reads every in-scope file but its
 own configuration files at the root. Each tool's `notScanned` names, with the reason, every file it
 did not read: over Semgrep's 2 MB or the secret scanner's 5 MB per-file limit, missing from what
-Semgrep reports it analysed, or skipped by the secret scanner's built-in allowlist (lock files,
-`node_modules`), as its log says.
+Semgrep reports it analysed, or skipped by the secret scanner (its built-in allowlist of lock
+files and `node_modules`, binary files, archives, empty files), in the words of its trace log.
 `--agent` adds the one inexpensive agent pass, **off by default**: the model named in
 `scan.agent` (`{ "provider", "model", "apiUrl"?, "apiKeyEnv" }`, a model of common's
 `code-standard` pool served over a chat-completions API: OpenRouter, OpenAI or xAI) reads the
@@ -366,8 +366,10 @@ in-scope source (up to `maxSourceBytes`, fenced as data) with the scope and the 
 and lists candidates at or above `lowestClassCounted`, each with a sketch of the test that would
 demonstrate it. The token is read from `apiKeyEnv` when the pass runs. Its answer is read as
 data: JSON of a fixed shape, bounded, every path one of the files sent. The model is given only
-source the secret scan read: every line it flagged is replaced, a file it did not read is left
-out, and without a secret scan there is no agent pass. The provider sees the source it is sent
+the plain-text files the secret scanner's trace log says it opened and did not skip (never an
+archive or a binary file), with every line it flagged replaced, all of them and not only those
+the findings file keeps; without a complete secret scan (a failed run or a cut log) there is no
+agent pass. The provider sees the source it is sent
 (public already) and its own answer, which is one more reason the pass runs only when asked for.
 
 The result, `scan-findings.json`, is **the maker's alone**: not a judgement, paying nobody, and

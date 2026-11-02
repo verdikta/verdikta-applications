@@ -164,6 +164,52 @@ test('the model never sees a line the secret scan flagged, nor a file the secret
   assert.ok(!JSON.stringify(doc).includes(secret));
 });
 
+test('the model gets only what the secret scanner opened and did not skip, as plain text', async () => {
+  const files = {
+    'src/Vault.sol': 'contract Vault {}',
+    'src/Bundle.tar': 'src/Inner.sol\u0000\u0000\u0000apiKey = "planted in an archive"',
+    'src/Blob.sol': 'contract B {}\u0000\u0001binary',
+    'src/Unopened.sol': 'contract NeverOpened {}',
+  };
+  const p = stubProvider(ANSWER);
+  const { doc } = await scan({
+    agent: true,
+    fetch: p.fetch,
+    spec: draftSpec({ stake: { ...draftSpec().stake, scope: { include: ['src/**'] } } }),
+    files,
+    gitleaks: {
+      stdout: '[]',
+      opened: ['src/Vault.sol', 'src/Bundle.tar', 'src/Blob.sol'],
+      stderr: '9:47AM TRC skipping archive: exceeds max archive depth max_archive_depth=0 path=/work/src/src/Bundle.tar\n',
+    },
+  });
+  const prompt = p.requests[0].body.messages.map((m) => m.content).join('\n');
+  assert.ok(prompt.includes('contract Vault {}'));
+  for (const s of ['planted in an archive', 'binary', 'NeverOpened']) assert.ok(!prompt.includes(s), s);
+  assert.deepEqual(doc.tools.agent.withheld.files.sort(), ['src/Blob.sol', 'src/Bundle.tar', 'src/Unopened.sol']);
+  assert.ok(doc.tools.secrets.notScanned.some((x) => x.path === 'src/Bundle.tar' && /exceeds max archive depth/.test(x.detail)));
+});
+
+test('every line the secret scanner flagged is withheld, beyond the findings the maker\'s file keeps', async () => {
+  const n = 501;
+  const body = Array.from({ length: n }, (_, i) => `string constant k${i} = "SECRET-${i}-${'q'.repeat(20)}";`).join('\n');
+  const leaks = Array.from({ length: n }, (_, i) => ({ RuleID: 'generic-api-key', Description: 'Detected a Generic API Key', StartLine: i + 1, EndLine: i + 1, File: '/work/src/src/Vault.sol', Secret: 'REDACTED' }));
+  const p = stubProvider(ANSWER);
+  const { doc } = await scan({ agent: true, fetch: p.fetch, files: { 'src/Vault.sol': body }, gitleaks: { stdout: JSON.stringify(leaks) } });
+  assert.equal(doc.tools.secrets.truncated, true);
+  assert.equal(doc.findings.filter((f) => f.tool === 'gitleaks').length, 500);
+  const prompt = p.requests[0].body.messages.map((m) => m.content).join('\n');
+  assert.doesNotMatch(prompt, /SECRET-[0-9]+/);
+  assert.equal(doc.tools.agent.withheld.lines, n);
+});
+
+test('a cut secret-scanner log leaves what it read unknown: no agent pass', async () => {
+  const { status, doc } = await scan({ agent: true, fetch: never(), gitleaks: { stdout: '[]', stderrTruncated: true } });
+  assert.equal(status, 'error');
+  assert.equal(doc.tools.secrets.logTruncated, true);
+  assert.equal(doc.tools.agent.code, 'AGENT_NEEDS_SECRET_SCAN');
+});
+
 test('without a secret scan to vouch for the source, the agent pass does not run', async () => {
   const { status, doc } = await scan({ agent: true, fetch: never(), gitleaks: { exitCode: 1, stdout: '', stderr: 'boom' } });
   assert.equal(status, 'error');

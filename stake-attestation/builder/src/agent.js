@@ -171,7 +171,7 @@ export async function runAgentPass({ agent, spec, files, fetch: fetchImpl = glob
     }
     if (typeof content !== 'string') throw new BuilderError('AGENT_PROVIDER_FAILED', 'the provider\'s answer has no message', { step: 'scan' });
     const { candidates, dropped } = parseAgentAnswer(content, { spec, paths: sent });
-    return { summary: { status: 'ok', ...who, files: sent.length, truncated, dropped, withheld: files.withheld ?? { lines: 0, files: [] } }, findings: candidates };
+    return { summary: { status: 'ok', ...who, files: sent.length, truncated, dropped }, findings: candidates };
   } catch (err) {
     const code = err instanceof BuilderError ? err.code : 'AGENT_PROVIDER_FAILED';
     const detail = err instanceof BuilderError ? err.detail : 'the agent pass failed';

@@ -185,6 +185,15 @@ describe('requests refused before any build (400)', () => {
     ['a disclosure grace longer than the fix window', (b) => { b.spec.stake.fixWindowDays = 1; b.spec.stake.disclosureGraceHours = 48; }, 'LIST_BOUNDS'],
     ['a value at risk that is not whole dollars', (b) => { b.spec.stake.valueAtRiskUsd = 10.5; }, 'LIST_BOUNDS'],
     ['an unknown request field', (b) => { b.maker = '0x5f2a00000000000000000000000000000000c0de'; }, 'REQUEST_INVALID'],
+    // R1-F2: amounts list() could not encode
+    ['an award beyond uint256', (b) => { b.spec.stake.awards.CRITICAL = (1n << 256n).toString(); }, 'LIST_BOUNDS'],
+    ['a bond beyond uint256', (b) => { b.spec.stake.bondWei = (1n << 256n).toString(); }, 'LIST_BOUNDS'],
+    // R1-F3: StakeAttestation._isValidRepo takes printable ASCII only, at most 512 bytes
+    ['a repository URL list() refuses (not ASCII)', (b) => { b.spec.repo = 'https://github.com/acme/va\u00fclt'; }, 'LIST_BOUNDS'],
+    ['a repository URL over 512 bytes once encoded', (b) => { b.spec.repo = `https://example.com/${'\u00e9'.repeat(250)}`; }, 'LIST_BOUNDS'],
+    // R1-F4: the listing's own files need distinct names, and none the builder writes
+    ['an attestation and a baseline with one name', (b) => { b.spec.attestation = 'baseline.json'; }, 'FILE_NAME_COLLISION'],
+    ['known issues named like the builder\'s report', (b) => { b.spec.stake.knownIssues = 'validation-report.json'; }, 'FILE_NAME_RESERVED'],
   ];
   for (const [name, edit, code] of cases) {
     test(name, async () => {

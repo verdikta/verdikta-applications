@@ -90,6 +90,11 @@ describe('config: which backend, and where its credential lives', () => {
     }
   });
 
+  test('oracle amounts must fit in a uint256 (R1-F2)', () => {
+    assert.throws(() => loadConfig({ SA_ORACLE_MAX_FEE_WEI: (1n << 256n).toString() }), ConfigError);
+    assert.equal(loadConfig({ SA_ORACLE_MAX_FEE_WEI: '130000000000000' }).oracle.maxOracleFee, '130000000000000');
+  });
+
   test('a remote kubo URL must be https; a plain-http URL is loopback only', () => {
     assert.throws(() => loadConfig({ SA_PINNING: 'kubo', SA_KUBO_API_URL: 'http://10.0.0.5:5001' }), ConfigError);
     assert.equal(loadConfig({ SA_PINNING: 'kubo', SA_KUBO_API_URL: 'https://kubo.internal:5001' }).pinning.url, 'https://kubo.internal:5001');

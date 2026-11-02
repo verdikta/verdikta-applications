@@ -18,6 +18,8 @@ import { RESERVED_NAMES } from './archives.js';
 import { LIST_LIMITS, disclosureKeyBytes32, listIssues } from './listParams.js';
 
 const TOP_KEYS = ['spec', 'knownIssues', 'allowlist'];
+// Names the builder writes beside the listing's files in its output folder (builder/src/spec.js).
+const BUILDER_NAMES = Object.freeze(['validation-report.json', 'dev-trust.json']);
 const PLACEHOLDER_IMAGE = `registry.invalid/verdikta-builder-draft@sha256:${'0'.repeat(64)}`;
 const ZERO = '0x0000000000000000000000000000000000000000';
 
@@ -97,8 +99,14 @@ export function parseListingRequest(body) {
     ['baseline', standIn.baseline],
     ['stake/knownIssues', isObject(draft.stake) ? draft.stake.knownIssues : undefined],
   ];
+  const seen = new Map();
   for (const [where, name] of names) {
     if (RESERVED_NAMES.includes(name)) issues.push({ code: 'FILE_NAME_RESERVED', path: `/spec/${where}`, detail: `${name} is a name the listing archive uses for its own file` });
+    else if (BUILDER_NAMES.includes(name)) issues.push({ code: 'FILE_NAME_RESERVED', path: `/spec/${where}`, detail: `${name} is a name the builder writes itself` });
+    if (typeof name === 'string' && seen.has(name)) {
+      issues.push({ code: 'FILE_NAME_COLLISION', path: `/spec/${where}`, detail: `${name} is also the ${seen.get(name)} file's name; each archive member needs its own` });
+    }
+    if (typeof name === 'string') seen.set(name, where);
   }
 
   const named = isObject(draft.stake) ? draft.stake.knownIssues : undefined;

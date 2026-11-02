@@ -83,8 +83,8 @@ describe('createCliBuilder', () => {
     await builder.build({ draft: draftSpec(), knownIssues: kiBytes() });
     const [build, sign] = calls();
     const own = (env) => Object.keys(env).filter((k) => !['PWD', 'SHLVL', '_', 'OLDPWD', '__CF_USER_TEXT_ENCODING'].includes(k)).sort();
-    assert.deepEqual(own(build.env), ['DOCKER_HOST', 'ETHERSCAN_API_KEY', 'HOME', 'PATH']);
-    assert.deepEqual(own(sign.env), ['HOME', 'PATH', 'VERDIKTA_BUILDER_KEY']);
+    assert.deepEqual(own(build.env), ['DOCKER_HOST', 'ETHERSCAN_API_KEY', 'HOME', 'PATH', 'TMPDIR']);
+    assert.deepEqual(own(sign.env), ['HOME', 'PATH', 'TMPDIR', 'VERDIKTA_BUILDER_KEY']);
     for (const c of [build, sign]) {
       assert.equal(JSON.stringify(c).includes(SECRET), false);
     }
@@ -131,6 +131,18 @@ describe('createCliBuilder', () => {
     assert.equal(r.status, 'error');
     assert.equal(r.error.code, 'BUILDER_TIMEOUT');
     assert.ok(Date.now() - t0 < 10000);
+  });
+
+  test('a timeout stops everything the step started, and its temporary files go with the build folder (R1-F1)', async () => {
+    const { builder, dir } = setup('hang-tree', { timeoutMs: 500 });
+    const r = await builder.build({ draft: draftSpec(), knownIssues: kiBytes() });
+    assert.equal(r.status, 'error');
+    assert.equal(r.error.code, 'BUILDER_TIMEOUT');
+    const pid = Number(fs.readFileSync(path.join(dir, 'record.json.grandchild'), 'utf8'));
+    const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    for (let i = 0; i < 50 && alive(); i += 1) await new Promise((res) => setTimeout(res, 100));
+    assert.equal(alive(), false, 'the grandchild was killed with the builder');
+    assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith('sa-build-')), [], 'the build folder, with the builder\'s TMPDIR, is removed');
   });
 
   test('with no builder config the build is an error, not a crash', async () => {

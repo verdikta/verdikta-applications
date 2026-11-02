@@ -66,7 +66,7 @@ function integer(env, name, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER }
 function wei(env, name, fallback) {
   const raw = env[name];
   if (raw === undefined || raw === '') return fallback;
-  if (!/^(0|[1-9][0-9]{0,77})$/.test(raw)) fail(`${name} must be a whole number of wei`);
+  if (!/^(0|[1-9][0-9]{0,77})$/.test(raw) || BigInt(raw) >= 1n << 256n) fail(`${name} must be a whole number of wei that fits in a uint256`);
   return raw;
 }
 

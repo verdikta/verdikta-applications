@@ -27,16 +27,27 @@ const tail = (buf, n = 600) => buf.toString('utf8').slice(-n).trim();
 // result the maker sees; the output itself stays in the server's log.
 const builderCode = (buf) => /verdikta-build-env: ([A-Z][A-Z0-9_]+)/.exec(buf.toString('utf8'))?.[1] ?? null;
 
-function childEnv(env, names) {
+function childEnv(env, names, tmp) {
   const out = {};
   for (const n of ['PATH', 'HOME', ...names]) if (typeof env[n] === 'string') out[n] = env[n];
+  // the builder's own temporary folders (and docker's, git's) go inside the server's build
+  // folder, which is removed however the step ends
+  out.TMPDIR = tmp;
   return out;
 }
 
-/** Runs `node bin ...args`; resolves with its exit code, the tails of its output and whether it timed out. */
+/**
+ * Runs `node bin ...args` as the leader of its own process group, so a timeout reaches
+ * everything the step started (git, docker, an external signer), not only the builder: SIGTERM
+ * to the group, SIGKILL after a grace period. Anything of the group still running when the
+ * builder exits is killed too. The promise settles when the step's output pipes close, so a
+ * build slot is held until the whole tree has gone (or, after SIGKILL, a grace period more for
+ * a process that left the group).
+ * @returns {Promise<{ code: number|null, spawnError: string|null, timedOut: boolean, stdout: Buffer, stderr: Buffer }>}
+ */
 function runStep({ nodePath, bin, args, env, timeoutMs, cwd }) {
   return new Promise((resolve) => {
-    const child = spawn(nodePath, [bin, ...args], { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(nodePath, [bin, ...args], { env, cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     const out = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
     const keep = (which) => (chunk) => {
       out[which] = Buffer.concat([out[which], chunk]);
@@ -44,22 +55,38 @@ function runStep({ nodePath, bin, args, env, timeoutMs, cwd }) {
     };
     child.stdout.on('data', keep('stdout'));
     child.stderr.on('data', keep('stderr'));
+    const killGroup = (signal) => {
+      if (!child.pid) return;
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        /* the group has gone */
+      }
+    };
     let timedOut = false;
-    let killer = null;
-    const timer = setTimeout(() => {
+    let done = false;
+    const timers = [];
+    const finish = (r) => {
+      if (done) return;
+      done = true;
+      for (const t of timers) clearTimeout(t);
+      resolve({ ...r, timedOut, ...out });
+    };
+    timers.push(setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-      killer = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS);
-    }, timeoutMs);
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      resolve({ code: null, spawnError: err.message, timedOut, ...out });
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (killer) clearTimeout(killer);
-      resolve({ code, spawnError: null, timedOut, ...out });
-    });
+      killGroup('SIGTERM');
+      timers.push(setTimeout(() => {
+        killGroup('SIGKILL');
+        timers.push(setTimeout(() => {
+          child.stdout.destroy();
+          child.stderr.destroy();
+          finish({ code: child.exitCode, spawnError: null });
+        }, KILL_GRACE_MS));
+      }, KILL_GRACE_MS));
+    }, timeoutMs));
+    child.on('error', (err) => finish({ code: null, spawnError: err.message }));
+    child.on('exit', () => killGroup('SIGKILL'));
+    child.on('close', (code) => finish({ code, spawnError: null }));
   });
 }
 
@@ -87,7 +114,7 @@ const errored = (code, detail, report = null) => ({ status: 'error', report, fil
  * @param {{ env?: Record<string, string|undefined>, nodePath?: string, logger?: { warn: Function } }} [o]
  */
 export function createCliBuilder(cfg, { env = process.env, nodePath = process.execPath, logger = null } = {}) {
-  const step = (args, names, cwd) => runStep({ nodePath, bin: cfg.bin, args, env: childEnv(env, names), timeoutMs: cfg.timeoutMs, cwd });
+  const step = (args, names, cwd) => runStep({ nodePath, bin: cfg.bin, args, env: childEnv(env, names, path.join(cwd, 'tmp')), timeoutMs: cfg.timeoutMs, cwd });
   const exited = (what, r) => {
     logger?.warn(`builder ${what} exited ${r.code}: ${tail(r.stderr)}`);
     const code = builderCode(r.stderr);
@@ -99,6 +126,7 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
       if (!cfg.config) return errored('BUILDER_NOT_CONFIGURED', 'no builder config is set (SA_BUILDER_CONFIG)');
       const dir = fs.mkdtempSync(path.join(cfg.workDir, 'sa-build-'));
       try {
+        fs.mkdirSync(path.join(dir, 'tmp'));
         const specPath = path.join(dir, 'draft.json');
         fs.writeFileSync(specPath, `${JSON.stringify(draft, null, 2)}\n`);
         const args = ['build', '--config', cfg.config, '--spec', specPath];

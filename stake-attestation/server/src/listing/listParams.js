@@ -19,7 +19,12 @@ export const LIST_LIMITS = Object.freeze({
   MAX_WINDOW: 90 * 86400,
   MAX_KNOWN_ISSUES: 256,
   MAX_ALLOWLIST: 64,
+  MAX_REPO_LENGTH: 512,
 });
+
+export const UINT256_MAX = (1n << 256n) - 1n;
+// StakeAttestation._isValidRepo: "https://", then printable non-space ASCII, at most MAX_REPO_LENGTH bytes.
+const CONTRACT_REPO = /^https:\/\/[\x21-\x7e]+$/;
 
 /** StakeAttestation.ArtifactKind and Outcome, in declaration order. */
 const ARTIFACT_KIND = Object.freeze({ repo: 0, contract: 1 });
@@ -67,10 +72,12 @@ export function artifactHashOf(artifact) {
 }
 
 /**
- * What list() would refuse in a spec common accepts (decision D8's windows, a declared value that
- * is not whole dollars, a chain id that is not a positive integer). The awards rules and the
- * commit and repo shapes are common's schema and validator already; the number of known issues
- * and the allowlist are checked with the request (request.js).
+ * What list() would refuse, or could not even encode, in a spec common accepts: decision D8's
+ * windows, a repository URL the contract's _isValidRepo refuses (printable ASCII only, at most
+ * 512 bytes), an amount beyond uint256, a declared value that is not whole dollars, a chain id
+ * that is not a positive integer. The awards rules and the commit shape are common's schema and
+ * validator already; the number of known issues and the allowlist are checked with the request
+ * (request.js).
  * @returns {{ code: 'LIST_BOUNDS', path: string, detail: string }[]} paths in the spec
  */
 export function listIssues(spec) {
@@ -82,6 +89,12 @@ export function listIssues(spec) {
   if (w.disclosureGrace > w.fixWindow) issue('/stake/disclosureGraceHours', 'the disclosure grace cannot be longer than the fix window');
   if (w.disputeWindow < LIST_LIMITS.MIN_DISPUTE_WINDOW || w.disputeWindow > LIST_LIMITS.MAX_WINDOW) issue('/stake/disputeWindowHours', `the dispute window is 24 hours to ${days(LIST_LIMITS.MAX_WINDOW)}`);
   if (w.revealWindow < LIST_LIMITS.MIN_REVEAL_WINDOW || w.revealWindow > LIST_LIMITS.MAX_WINDOW) issue('/stake/revealWindowDays', `the reveal window is 72 hours to ${days(LIST_LIMITS.MAX_WINDOW)}`);
+  if (!CONTRACT_REPO.test(spec.repo) || Buffer.byteLength(spec.repo, 'utf8') > LIST_LIMITS.MAX_REPO_LENGTH) {
+    issue('/repo', `the contract stores "https://" and printable ASCII with no spaces, at most ${LIST_LIMITS.MAX_REPO_LENGTH} bytes`);
+  }
+  const awards = codeReview.awardsToWei(spec.stake.awards);
+  for (const c of codeReview.SEVERITY_CLASSES) if (awards[c] > UINT256_MAX) issue(`/stake/awards/${c}`, 'the award does not fit in a uint256');
+  if (BigInt(spec.stake.bondWei) > UINT256_MAX) issue('/stake/bondWei', 'the bond does not fit in a uint256');
   const v = spec.stake.valueAtRiskUsd;
   if (v !== undefined && !Number.isSafeInteger(v)) issue('/stake/valueAtRiskUsd', 'the declared value at risk is recorded in whole dollars');
   if (spec.artifact?.kind === 'contract' && !(Number.isSafeInteger(spec.artifact.chainId) && spec.artifact.chainId > 0)) issue('/artifact/chainId', 'the chain id must be a positive integer');

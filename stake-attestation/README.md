@@ -207,8 +207,10 @@ draft `code_review.json` with its stake block and the maker's age disclosure key
 issues when `stake.knownIssues` names them, and up to 64 invited hunters. Before any build it
 decodes the disclosure key with common's `parseDisclosureKey`, checks the draft with common's
 validator (over the builder's stand-ins for the fields the builder measures) and refuses what
-`list()` would refuse (decision D8's windows, a value at risk that is not whole dollars, more
-than 256 known issues) and a file named like an archive member: 400 with the issues.
+`list()` would refuse or could not encode (decision D8's windows, a repository URL that is not
+printable ASCII within 512 bytes, an amount beyond uint256, a value at risk that is not whole
+dollars, more than 256 known issues) and file names that collide with each other, with an
+archive member or with the builder's own files: 400 with the issues.
 Otherwise it answers 202 with an id, and `GET /api/listings/:id` follows the listing:
 
 | Status | |
@@ -244,7 +246,8 @@ trust the attestation is checked under (`SA_ATTESTATION_TRUST`, `production` by 
 is refused in production and on Base), the builder's command line and config
 (`SA_BUILDER_BIN`, `SA_BUILDER_CONFIG`), the variables each builder step gets besides `PATH`
 and `HOME` (`SA_BUILDER_BUILD_ENV`, `SA_BUILDER_SIGN_ENV`, never one of the server's own `SA_`
-variables), the build queue, and the oracle parameters (`SA_ORACLE_*`; the class is common's
+variables; each step runs in a process group of its own, so a timeout stops everything it
+started, and with `TMPDIR` inside the server's build folder), the build queue, and the oracle parameters (`SA_ORACLE_*`; the class is common's
 `code-standard`). A credential is named by its variable and read when it is used, so the
 parsed config holds none.
 

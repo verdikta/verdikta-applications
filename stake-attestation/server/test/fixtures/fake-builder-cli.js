@@ -121,7 +121,7 @@ if (config.mode === 'hang') {
   const knownIssues = opts['known-issues'] ? fs.readFileSync(opts['known-issues']) : null;
   fs.mkdirSync(opts.out, { recursive: true });
   if (config.mode === 'no-report') process.exit(1);
-  const outcome = { accepted: 'accepted', 'sign-fails': 'accepted', 'refused-source': 'refused-source', error: 'error' }[config.mode];
+  const outcome = { accepted: 'accepted', 'sign-fails': 'accepted', 'sign-refuses': 'accepted', 'refused-source': 'refused-source', error: 'error' }[config.mode];
   const { fakeBuilder } = await import('../helpers/fixtures.js');
   const deploymentProof = opts['control-proof'] ? JSON.parse(fs.readFileSync(opts['control-proof'], 'utf8')) : null;
   const r = await fakeBuilder({ outcome }).build({ draft, knownIssues, maker: opts.maker, deploymentProof });
@@ -141,6 +141,11 @@ if (config.mode === 'hang') {
 } else if (command === 'sign') {
   if (config.mode === 'sign-fails') {
     process.stderr.write('verdikta-build-env: SIGNING_KEY_NOT_TRUSTED: the configured key is not in the production set\n');
+    process.exit(1);
+  }
+  if (config.mode === 'sign-refuses') {
+    // the project's proof no longer stands when sign reads it again
+    process.stderr.write('verdikta-build-env: COMMIT_NOT_ON_OWN_REFS: the listed commit is on no branch or tag\n');
     process.exit(1);
   }
   const kept = JSON.parse(fs.readFileSync(path.join(opts.dir, '.signed.json'), 'utf8'));

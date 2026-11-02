@@ -29,6 +29,8 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { PROOF_REFUSALS } from '@verdikta/stake-attestation-shared/control-proof';
+
 const REPORT_FILE = 'validation-report.json';
 const DEV_TRUST_FILE = 'dev-trust.json';
 /** Where `verdikta-build-env scan` writes the maker's findings (the builder's SCAN_FILE, builder/src/outputs.js). */
@@ -290,7 +292,16 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
         const s = await step(['sign', '--config', cfg.config, '--dir', out, ...(maker ? ['--maker', maker] : [])], cfg.signEnv, dir);
         if (s.interrupted) return stopped('sign', s, cfg, report);
         if (s.spawnError) return errored('SIGNING_FAILED', `the builder's sign step could not be started: ${s.spawnError}`, report);
-        if (s.code !== 0) return errored('SIGNING_FAILED', exited('sign', s), report);
+        if (s.code !== 0) {
+          // sign reads the project's proof again: one that no longer stands is a refusal like the build's
+          const refusedFor = builderCode(s.stderr);
+          if (refusedFor && Object.hasOwn(PROOF_REFUSALS, refusedFor)) {
+            logger?.warn(`builder sign refused the listing: ${refusedFor}`);
+            const detail = PROOF_REFUSALS[refusedFor];
+            return { status: 'refused', report: { ...report, status: 'refused', refusals: [{ code: refusedFor, detail, step: 'sign' }] }, files: null, devTrust: null };
+          }
+          return errored('SIGNING_FAILED', exited('sign', s), report);
+        }
         const signed = readJson(path.join(out, REPORT_FILE)) ?? report;
         const codeReview = readNamed(out, 'code_review.json');
         const spec = codeReview ? (() => { try { return JSON.parse(codeReview.toString('utf8')); } catch { return null; } })() : null;

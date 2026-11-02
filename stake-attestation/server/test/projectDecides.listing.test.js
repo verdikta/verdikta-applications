@@ -223,6 +223,36 @@ describe('refused attempts, counted by reason', () => {
     }
   });
 
+  test('a proof that no longer stands when sign reads it again is a refusal, counted by its code; nothing is issued', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const { createCliBuilder } = await import('../src/builder/cli.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-sign-refuses-'));
+    const config = path.join(dir, 'builder.json');
+    fs.writeFileSync(config, JSON.stringify({ mode: 'sign-refuses', record: path.join(dir, 'record.json') }));
+    const builder = createCliBuilder({
+      bin: fileURLToPath(new URL('./fixtures/fake-builder-cli.js', import.meta.url)),
+      config,
+      workDir: dir,
+      buildEnv: [],
+      signEnv: [],
+      timeoutMs: 60000,
+    }, { env: { PATH: process.env.PATH, HOME: process.env.HOME } });
+    const s = await api({ builder });
+    const res = await s.submit(listingRequest());
+    const view = await s.settle((await res.json()).id, 60000);
+    assert.equal(view.status, 'refused', JSON.stringify(view.error));
+    assert.equal(view.validationReport.refusals[0].code, 'COMMIT_NOT_ON_OWN_REFS');
+    assert.equal(view.validationReport.refusals[0].step, 'sign');
+    assert.equal(view.archives, null);
+    assert.equal(s.pinner.pins.length, 0);
+    const status = await (await s.get('/api/status')).json();
+    assert.equal(status.listings.refused.byReason.COMMIT_NOT_ON_OWN_REFS, 1);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   test('the counts survive a restart, as the rest of the site\'s state does', async () => {
     const { chainContext, siteFor, tmpDir } = await import('./helpers/scenario.js');
     const ctx = await chainContext();

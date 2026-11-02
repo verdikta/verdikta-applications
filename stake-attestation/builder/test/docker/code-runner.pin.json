@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/verdikta/verdikta-arbiter.git",
+  "branch": "claude/stake-attestation",
+  "commit": "14ae4c4901dec4573ec5ab68e1613bd0c918e7c2",
+  "note": "The verdikta-arbiter commit whose code-runner (node A2b, POST /v1/listing-checks) the Docker tests run as a sidecar."
+}

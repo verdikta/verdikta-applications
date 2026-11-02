@@ -1,0 +1,26 @@
+{
+  "name": "@verdikta/stake-attestation-builder",
+  "version": "0.1.0",
+  "description": "Environment-image builder for Verdikta stake attestation: builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs attestation.json",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "bin": {
+    "verdikta-build-env": "bin/verdikta-build-env.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test --test-timeout=120000 test/unit/*.test.js",
+    "test:docker": "node --test --test-concurrency=1 --test-timeout=2400000 test/docker/*.test.js"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.8.0",
+    "@verdikta/common": "1.9.0-attest.1"
+  }
+}

@@ -14,7 +14,8 @@ concurrency:
   group: stake-attestation-${{ github.ref }}
   cancel-in-progress: true
 # No job reads a secret: contracts run on the in-process Hardhat network, the client against
-# its own production build.
+# its own production build, the builder against a local registry:2, recorded explorer
+# responses and a per-run dev signing key.
 jobs:
   shared:
     name: Shared helper, scope and wording
@@ -43,7 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [server, tool]
+        package: [server, tool, builder]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -55,6 +56,28 @@ jobs:
       - name: Test
         working-directory: stake-attestation/${{ matrix.package }}
         run: npm test
+
+  builder-docker:
+    name: Builder against Docker, registry:2 and the code-runner
+    # Builds the fixture listing's env image, pushes it to a throwaway registry:2, compiles it for
+    # the verified-source check (recorded explorer responses, no live explorer), and validates it
+    # on the code-runner from verdikta-arbiter at the commit in
+    # stake-attestation/builder/test/docker/code-runner.pin.json, run as a sidecar under runc.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: stake-attestation/builder
+        run: npm ci --ignore-scripts
+      - name: Docker tests
+        working-directory: stake-attestation/builder
+        env:
+          CODE_RUNNER_RUNTIME: runc
+        run: npm run test:docker
 
   onchain:
     name: Contracts

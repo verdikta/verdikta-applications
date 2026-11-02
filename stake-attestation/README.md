@@ -59,6 +59,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 | `client/` | Vite + React site. Port 5176. | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI: `check`, `commit`, `reveal`, `status`, `claim` arrive in P5. | `npm test` |
 | `shared/` | Code shared by the packages (the banned-words helper so far) and the app's repository checks. | `npm test` |
+| `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`. | `npm test`, `npm run test:docker` |
 | `docs/` | `BUILD_PLAN.md`. | |
 
 Ports 5009 and 5176 are the next free ones after the apps in the repository's
@@ -75,6 +76,7 @@ cd stake-attestation/server && npm ci && npm test
 cd stake-attestation/client && npm ci && npm test && npx playwright install chromium && npx playwright test
 cd stake-attestation/tool && npm ci && npm test
 cd stake-attestation/shared && npm ci && npm test
+cd stake-attestation/builder && npm ci && npm test && npm run test:docker
 ```
 
 `npm run gas` in `onchain/` prints the gas report, `npm run coverage` runs
@@ -197,6 +199,132 @@ on BaseScan when `ETHERSCAN_API_KEY` is set (`deploy/verify.js` retries).
 `npx hardhat run deploy/01_deploy_stake_attestation.js` with no network
 deploys on the in-process network against the mock aggregator, as a test.
 
+## The environment builder
+
+`builder/` turns a maker's draft `code_review.json` into a listing the arbiters can run (design
+§8.2 steps 1–5, §8.8; build plan A4, A6, D4). `verdikta-build-env build --config builder.json
+--spec draft.json [--known-issues known_issues.json] --out out/` runs, recording each step in
+`out/validation-report.json`, the report the maker reads before funding:
+
+1. **spec**: the draft against `@verdikta/common`'s `validateCodeReviewSpec` (with stand-ins
+   for the fields the builder fills) and what the Foundry MVP hosts: `env.from: "foundry"`,
+   `commands.framework: "forge"`, `build`, `testFiles` with `$FILES`, `testIds` with
+   `$TEST_IDS`; `known_issues.json` when the draft names one.
+2. **fetch**: the listed commit's objects, by id (shallow when the server allows it), from
+   `repo` or a configured mirror of it, into a bare repository. git runs with no system or
+   global config, no hooks or credential prompt, https only (and the local transport for a
+   mirror path); nothing of the maker's tree is checked out on the host.
+3. **build**: `docker build` of a two-stage Dockerfile. The `setup` stage is FROM the foundry
+   base pinned in `@verdikta/common` (`BASE_IMAGE_PINS.foundry`, by digest), checks out the
+   commit and its submodules at `/repo` (a submodule git cannot fetch is left to the setup, as
+   the code-runner leaves one whose objects the image lacks) and runs the maker's `commands.setup` there as root,
+   with the build's network. Its `HOME` is a build-only folder that is thrown away, and
+   `XDG_DATA_HOME` is `/opt/verdikta/tools/share`, so tools installed the usual way (forge's
+   solc downloads) land outside `$HOME` and `/tmp`; `$VERDIKTA_TOOLS/bin` is on `PATH` after
+   the base's own directories. The final stage is FROM the same pinned base and **runs
+   nothing**: it copies `/opt/verdikta/tools` (owned by root) and `/repo` (owned by uid 10001,
+   the sandbox user, with the commit's objects and the installed dependencies) and declares no
+   `VOLUME`, `USER`, `ENTRYPOINT` or `CMD`, so `/bin/sh` and its path are the base's, root's.
+   The setup text is `setup.sh` in the build context, never Dockerfile text; the build has no
+   build argument, secret or SSH agent. That is the image the code-runner's README asks for
+   ("What the env image (P3a) must provide"). The setup stage's network is the build host's
+   default container network: run `build` on a host whose containers can reach nothing
+   private (no instance-metadata credentials, no internal services), as the ephemeral hosted
+   runners of design §20 decision 3 are, or block those addresses from the build network.
+4. **size**, **push**, **registry**: the unpacked size as the code-runner measures it (the layer
+   sizes `docker history` lists; over 6 GB is refused before the push), the push to the
+   configured registry (the image is its digest from here on), and the registry's linux/amd64
+   manifest, read back and checked against the digest: over 2 GB compressed, or any `VOLUME`,
+   is refused. Config may lower both limits, never raise them.
+5. **verifiedSource** (a `contract` listing): the explorer configured for the listing's chain
+   (Etherscan v2 API: `getsourcecode`, `eth_getCode`) against the repository's own build at
+   baseCommit, made with tools the listing did not choose. In one sandbox of the pushed image
+   (no network, uid 10001, read-only root, fed on stdin), the listed commit's files are laid
+   out from the objects the builder fetched by id (each submodule's by the commit its gitlink
+   records; never the image's checkout or objects), the image's untracked files (its installed
+   dependencies) around them, never over a tracked path, as the code-runner's checkout keeps
+   them (a submodule it cannot fetch over https by its gitlink commit stays an empty directory,
+   and a verified file inside one is refused); then the pinned base's forge builds the contract's file with `--use` the solc release
+   the explorer names, from binaries.soliditylang.org (`solc.baseUrl`) checked against the
+   SHA-256 its `list.json` publishes. A maker's setup can install anything as `solc`, so the
+   listing's own compiler is never used. The listing stops unless: every verified file is
+   byte-identical to that path in the tree the build reads (through any symbolic link, as the
+   build reads it); `foundry.toml` pins that solc release and the verified optimizer, EVM and IR
+   settings; the build of the contract uses only
+   verified files, with their bytes (no remapping picks another); and its runtime code is the
+   deployed code, every byte but the immutables and solc's metadata trailer. A proxy, a
+   flattened source, an unverified address or an unlinked library (whose address could not be
+   checked) is refused.
+6. **listingCheck**: the code-runner's `POST /v1/listing-checks` (verdikta-arbiter A2b), the
+   runner the arbiters use: build once, the suite three times without network, `baseline.json`,
+   the timings, the default limits and the harness proof. Its refusals (`LISTING_TOO_HEAVY`,
+   `LIMITS_BELOW_DEFAULTS`, `LEGACY_ASSERTIONS`, `BUILD_FAILED`, ...) and its 400s stop the
+   listing; an abstain is an error to retry.
+7. **finalSpec**: `code_review.json` with `env.image` (the digest), `env.platform`
+   (`linux/amd64`), `env.unpackedBytes` (the larger of the builder's and the runner's
+   measurements) and the limits (the draft's where it set them, the runner's defaults
+   otherwise), checked by `validateCodeReviewSpec`; `baseline.json` as the runner returned it,
+   checked by `validateBaseline`.
+
+Exit status 0 accepted, 2 refused (the report says why, with the build's log when the setup
+failed), 1 error. `verdikta-build-env sign --config builder.json --dir out/` then signs
+`attestation.json` (`createAttestationStatement` over the exact bytes written, Ed25519) and
+records it in the report; `run` does both in one process, with a dev key only.
+
+**The signing key** is `signing.key` in the config, one of:
+
+| Value | Trust | |
+|---|---|---|
+| `"dev"` (default) | `dev` | A fresh Ed25519 key per run, in memory only. Its public key is written to `dev-trust.json`, the `{ dev: true, keys }` option `validateAttestation` takes; production verification refuses its attestations (build plan A6). |
+| `{ "env": "VERDIKTA_BUILDER_KEY" }` | `production` | The production key as a deploy secret: a PKCS#8 PEM Ed25519 key in that environment variable, filled from the deployment's secret store or KMS. Read once and removed from the environment, so no child process inherits it. |
+| `{ "command": ["/usr/local/bin/kms-sign", "..."], "publicKey": "<base64 of the 32 raw bytes>", "env": ["AWS_PROFILE"] }` | `production` | An external signer, the KMS interface: the builder writes the signing bytes (`verdikta-attestation/v1`, a newline, the canonical JSON of the statement) to its stdin and reads the 64-byte signature, base64, from its stdout. The key never enters the builder; the signer gets `PATH`, `HOME` and the variables listed; every signature is checked against `publicKey`. |
+
+The production key is never in code or config (decision D4). It signs only what production
+verification would accept: its id must be in `@verdikta/common`'s trusted-builder set (empty
+until node C6, so today every production signing is refused and nothing is written), and the
+listing must have been validated under gVisor on linux/amd64. `build` refuses to start while
+the `env` key is in its environment (it runs the maker's setup), and `run` refuses a production
+key: signing is its own step, as design §20 decision 3 has it. No private key is written,
+logged or put in the report.
+
+**Config** (`builder.json`; paths relative to it):
+
+```json
+{
+  "registry": { "repository": "ghcr.io/verdikta/stake-env" },
+  "runner": { "socket": "/run/verdikta-code-runner/runner.sock", "tokenFile": "/run/secrets/code-runner-token" },
+  "explorers": { "8453": { "apiUrl": "https://api.etherscan.io/v2/api", "apiKeyEnv": "ETHERSCAN_API_KEY" } },
+  "signing": { "key": { "env": "VERDIKTA_BUILDER_KEY" } }
+}
+```
+
+Also `solc.baseUrl` (default `https://binaries.soliditylang.org`, or a mirror with the same
+layout) and `solc.cacheDir` (binaries kept by their SHA-256), `registry.apiUrl` (where manifests are read, when not the repository's host), `runner.url`
+(loopback over http, else https) and `tokenEnv`, `runner.deadlineMs` (default 900000),
+`limits.imageCompressedBytes` / `imageUnpackedBytes` (lower only), `repoMirrors` (`{ "<https
+repo>": "<path or https URL>" }`), `workDir`, `docker.bin` / `host` / `buildTimeoutSeconds` /
+`pushTimeoutSeconds`, and `platforms` (below). Secrets are named by where they live and read
+when used; the parsed config holds none. Pushing uses the docker CLI's own credentials.
+
+**Platforms.** The class platform is linux/amd64 and so is every production build. On an arm64
+host without amd64 emulation (Apple silicon), `"platforms": { "setup": "linux/arm64", "run":
+"linux/arm64", "extra": ["linux/arm64"] }` builds an index of linux/amd64 and linux/arm64 (the
+final stage runs nothing, so the amd64 variant needs no emulation), runs the setup natively and
+runs and measures the arm64 variant, as the code-runner's own `CODE_RUNNER_PLATFORM=linux/arm64`
+does. The report lists that under `devOnly`, and a production key refuses to sign it.
+
+**Tests.** `npm test` runs the unit tests (no Docker; explorer answers come only from recorded
+responses in `test/fixtures/explorer`, in the Etherscan v2 API's shape, for the fixture contract
+`test/fixtures/vault`). `npm run test:docker` builds the fixture with a real daemon, pushes it to
+a throwaway `registry:2`, runs the source check (with solc 0.8.31 from binaries.soliditylang.org;
+an adversarial listing whose setup rewrites a tracked source, links an untracked alias to it and
+plants a `solc`; and listings that pin another solc or turn the optimizer off), and validates it on the code-runner
+from verdikta-arbiter at the commit pinned in `test/docker/code-runner.pin.json`, started as a
+sidecar on loopback with its own token and environment (`SA_CODE_RUNNER_DIR` points at a
+checkout of that commit's `code-runner/`; otherwise the tests fetch it). The fixture's setup lets
+forge download solc (the build's network) and its build command passes only where the sandbox
+has no route out, so an accepted listing shows the network was there at setup and nowhere after.
+
 ## The mock aggregator
 
 `onchain/contracts/mocks/MockVerdiktaAggregator.sol` stands in for the deployed
@@ -217,6 +345,7 @@ real contract cannot produce is not added to the mock.
 `claude/stake-attestation` that touch this folder or the workflow. It installs
 each package with `npm ci --ignore-scripts`, runs its tests, the Hardhat tests,
 the contract sizer, the coverage gate (a job of its own), the Playwright smoke
-test and the banned-words check, and uses no secrets. A new
+test, the builder's Docker tests (a job of its own, with registry:2 and the
+pinned code-runner under runc) and the banned-words check, and uses no secrets. A new
 package is added to the workflow and to `shared/test/repo/helpers.js` together;
 the workflow test fails until both list it.

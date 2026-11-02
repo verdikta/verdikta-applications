@@ -15,8 +15,9 @@ the design where they differ.
 
 **Status:** scaffold, plus the contract's listing half, its claim lifecycle and
 settlement: finalize by polling the aggregator, the six-outcome rule, payouts,
-depletion and owed awards; the environment builder; and the server's listing
-flow, indexer, keeper, feed, record mirror and badge. The packages below build
+depletion and owed awards; the environment builder; the server's listing
+flow, indexer, keeper, feed, record mirror and badge; and the client's maker
+flows (listing, the disclosure key, decrypt-and-check). The packages below build
 and test; the rest of the site's flows and the hunter commands arrive with the
 nodes named in the plan.
 
@@ -57,7 +58,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 |---|---|---|
 | `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
 | `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`; the indexer, keeper, listing feed, record mirror, labels and badge (P4b1) over one deployment. | `npm test`, `npm run test:builder`, `npm run abi` |
-| `client/` | Vite + React site. Port 5176. | `npm test`, `npx playwright test` |
+| `client/` | Vite + React site, port 5176: the maker's listing flow, the disclosure key made in the browser, and decrypt-and-check (P6a). | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI: `check`, `commit`, `reveal`, `status`, `claim` arrive in P5. | `npm test` |
 | `shared/` | Code shared by the packages (the banned-words helper so far) and the app's repository checks. | `npm test` |
 | `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`; the baseline scan, for the maker only (P3b). The reusable workflow that runs it is `.github/workflows/stake-attestation-builder.yml`. | `npm test`, `npm run test:docker` |
@@ -83,8 +84,9 @@ cd stake-attestation/builder && npm ci && npm test && npm run test:docker
 `npm run gas` in `onchain/` prints the gas report, `npm run coverage` runs
 solidity-coverage, `npm run coverage:check` runs it and fails below 95% line
 coverage on any production contract, and `npx hardhat size-contracts` prints
-the bytecode sizes and fails above EIP-170's 24 KiB. The Playwright smoke test builds the client and serves it
-with `vite preview`. The shared package's scope test compares against
+the bytecode sizes and fails above EIP-170's 24 KiB. The client's Playwright tests build the client and serve it
+with `vite preview` in front of a local stack (see "The client"); they install the server's
+dependencies if `server/node_modules` is missing. The shared package's scope test compares against
 `origin/claude/stake-attestation` (or `SA_BASE_REF`), so fetch it first.
 
 ## The contract: listings
@@ -598,14 +600,68 @@ the caller's credit before `msg.value`, and settles through scripted results or
 owner settings and its oracles; the contract's header lists them. A fault the
 real contract cannot produce is not added to the mock.
 
+## The client
+
+`client/` (node P6a) is the maker's side of the site. Routes are in the hash: `#/list`,
+`#/fund/<listingId>` and `#/check/<claimId>`; nothing private ever goes in a URL.
+
+- **Listing** (`#/list`): the artifact (a repository, or a deployed contract with its chain),
+  scope, award table, lowest class counted, bond, windows (design §7.1's defaults: 14 days, 30
+  for a contract, 72 h, 48 h, 7 days), invited hunters, known issues (their ids are common's
+  `knownIssueId`) and the declared value at risk. The form holds the windows to decision D8
+  (fix window 0 to 90 days, dispute 24 to 2160 hours, reveal 3 to 90 days, grace no longer than
+  the fix window) and leaves every other rule to the server, whose issues it shows. It follows
+  the listing through `GET /api/listings/:id`, shows the validation report, and once ready
+  sends `list()` with the server's arguments and `fund()` with `feeDue()` plus the escrow
+  through the maker's wallet. `list()` is sent only when those arguments carry the maker's own
+  disclosure key and terms, and not when the maker already has an active listing of the
+  version (`activeListingOf`), which the page links to instead.
+- **A listing's page** (`#/fund/<listingId>`): its stored terms and, while it is Listed, the
+  opening `fund()`, so a maker who leaves between `list()` and `fund()` can come back. Just
+  before sending, the listing's state and fee are read at one block through the wallet: unless
+  it is still Listed with the terms the page shows, nothing is sent, and the fee passed as
+  `expectedFeeWei` makes an opening fund that lands first from elsewhere revert this one.
+  Reads are checked to come from `VITE_SA_CHAIN_ID` (`chainReader`), and every transaction asks
+  the wallet whether its account and chain are still the connected ones.
+- **Disclosure key.** "Generate" makes an age X25519 pair in the page with
+  `@verdikta/common/src/codeReview/disclosure.js`, common's browser-safe entry, which Vite
+  bundles as it is (no shim: @noble takes randomness from `globalThis.crypto`). Only the public
+  half enters the listing. The private half is shown once, offered as a key file in
+  age-keygen's format (stock `age -d -i` reads it) and dropped from the page when the maker
+  says it is saved. It is never sent, logged or stored: the client uses no browser storage at
+  all (`test/noStore.test.js`), and a Playwright test records every request of a whole maker
+  session and fails if any carries the key in any encoding. A maker with an age key already
+  enters its public half instead.
+- **Decrypt-and-check** (`#/check/<claimId>`): reads the claim and its listing from the chain,
+  fetches the disclosed ciphertext from `VITE_IPFS_GATEWAY`, checks its SHA-256 against the
+  commitment, decrypts it with the maker's private key (pasted or loaded from the key file)
+  using common's `decryptDisclosure`, and compares the plaintext's SHA-256 with the committed
+  archive hash, all in the browser. A key that is not the listing's is the maker's mistake and
+  is reported as such. A copy that fails, or that cannot be fetched, may be flagged with
+  `flagBadDisclosure` through the wallet while the chain's clock is inside the grace period.
+
+**Config** is Vite's build environment: `VITE_SA_CHAIN_ID`, `VITE_SA_CONTRACT`,
+`VITE_SA_RPC_URL` (reads; without it, reads go through the wallet) and `VITE_IPFS_GATEWAY`.
+The API is same-origin under `/api`; `vite` and `vite preview` proxy it to `SA_API_URL`
+(default `http://127.0.0.1:5009`).
+
+**Tests.** `npm test` covers the form model, the known-issue ids against common's, the key
+file, and decrypt-and-check with common's real encryption. `npx playwright test` starts
+`e2e/support/stack.mjs`: StakeAttestation deployed on the in-process Hardhat network as the
+server's chain tests deploy it, behind Hardhat's JSON-RPC server; the real API server with
+mock pinning, dev trust and the server's own fake builder CLI as its builder; an IPFS gateway
+stand-in; and the production build. The browser's wallet is an injected EIP-1193 provider that
+forwards to the local node's unlocked accounts. `SA_SCREENSHOTS=1` writes the screenshots under
+`client/test-results/screenshots/`, with every private-key field masked.
+
 ## CI
 
 `.github/workflows/stake-attestation.yml` runs on pull requests into `main` and
 `claude/stake-attestation` that touch this folder or the two workflows. It installs
 each package with `npm ci --ignore-scripts`, runs its tests, the Hardhat tests,
-the contract sizer, the coverage gate (a job of its own), the Playwright smoke
-test, the builder's Docker tests (a job of its own, with registry:2 and the
-pinned code-runner under runc), the banned-words check and actionlint (1.7.12, checksum pinned)
-over it and the reusable builder workflow, and uses no secrets. A new
+the contract sizer, the coverage gate (a job of its own), the client's Playwright
+tests against local Hardhat and the server, the builder's Docker tests (a job of its own, with
+registry:2 and the pinned code-runner under runc), the banned-words check and actionlint
+(1.7.12, checksum pinned) over it and the reusable builder workflow, and uses no secrets. A new
 package is added to the workflow and to `shared/test/repo/helpers.js` together;
 the workflow test fails until both list it.

@@ -11,7 +11,11 @@
 //            pinning, dev trust and, as its builder, server/test/fixtures/fake-builder-cli.js:
 //            the stand-in the server's builder tests run, which keeps the builder's command
 //            line. Its mode (accepted, refused-source, error) is read from builder.json at each
-//            build, so a test can change it.
+//            build, so a test can change it. Its chain side (node P4b1) runs too: the indexer,
+//            the keeper (finalize and settle, signing with Hardhat's 10th test account, derived
+//            here from Hardhat's public test mnemonic), the feed, the record mirror and the
+//            badge, with a Chainlink ETH/USD stand-in for the labels. The gateway serves what
+//            the server pinned (listing archives, dispute statements) besides what tests PUT.
 //   client   the production build (vite build, given the addresses above), served by
 //            vite preview on 5176 with /api proxied to the api
 //
@@ -44,11 +48,20 @@ function ensureServerInstalled() {
 
 const fromServer = (rel) => import(pathToFileURL(path.join(SERVER, rel)).href);
 
+// The ETH/USD answer the labels price the top award at: $2,420.00, Chainlink's 8 decimals.
+const ETH_USD = 242_000_000_000n;
+const KEEPER_INDEX = 9;
+
 async function startChain() {
   const { hardhat, deployStakeAttestation, mergedAbi, LISTING_FEE_WEI } = await fromServer('test/helpers/chain.js');
   const hre = await hardhat();
+  const fromBlock = await hre.ethers.provider.getBlockNumber();
   const d = await deployStakeAttestation(hre);
+  const ethUsd = await (await hre.ethers.getContractFactory('MockEthUsdFeed')).deploy(8, ETH_USD);
+  await ethUsd.waitForDeployment();
   const signers = await hre.ethers.getSigners();
+  const { mnemonic, passphrase = '', path: hdPath } = hre.network.config.accounts;
+  const keeper = hre.ethers.HDNodeWallet.fromPhrase(mnemonic, passphrase, `${hdPath}/${KEEPER_INDEX}`);
   const { TASK_NODE_CREATE_SERVER } = createRequire(path.join(SERVER, 'package.json'))('hardhat/builtin-tasks/task-names');
   const rpc = await hre.run(TASK_NODE_CREATE_SERVER, { hostname: '127.0.0.1', port: 0, provider: hre.network.provider });
   const { port } = await rpc.listen();
@@ -56,7 +69,12 @@ async function startChain() {
     rpc,
     rpcUrl: `http://127.0.0.1:${port}`,
     contract: await d.sa.getAddress(),
+    fromBlock,
     abi: mergedAbi(hre),
+    aggregator: await d.aggregator.getAddress(),
+    aggregatorAbi: (await hre.artifacts.readArtifact('MockVerdiktaAggregator')).abi,
+    ethUsdFeed: await ethUsd.getAddress(),
+    keeperKey: keeper.privateKey,
     listingFeeWei: LISTING_FEE_WEI.toString(),
     accounts: {
       owner: d.owner.address,
@@ -64,11 +82,12 @@ async function startChain() {
       hunter: d.hunter.address,
       feeRecipient: d.feeRecipient.address,
       other: signers[4].address,
+      keeper: keeper.address,
     },
   };
 }
 
-function startGateway() {
+function startGateway(pinned) {
   const store = new Map();
   const server = http.createServer((req, res) => {
     res.setHeader('access-control-allow-origin', '*');
@@ -78,7 +97,7 @@ function startGateway() {
       return res.end();
     }
     if (req.method === 'GET') {
-      const bytes = store.get(m[1]);
+      const bytes = store.get(m[1]) ?? pinned.get(m[1]);
       if (!bytes) {
         res.statusCode = 404;
         return res.end('not found');
@@ -109,7 +128,7 @@ function listen(server) {
   });
 }
 
-async function startApi() {
+async function startApi(chain, pinner) {
   const builderConfig = path.join(STACK_DIR, 'builder.json');
   const builderRecord = path.join(STACK_DIR, 'builder-record.json');
   const workDir = path.join(STACK_DIR, 'builds');
@@ -117,7 +136,8 @@ async function startApi() {
   fs.writeFileSync(builderConfig, JSON.stringify({ mode: 'accepted', record: builderRecord }));
   const { loadConfig } = await fromServer('src/config.js');
   const { createApp } = await fromServer('src/app.js');
-  const config = loadConfig({
+  const { createChainProvider, createSite } = await fromServer('src/site/index.js');
+  const env = {
     SA_ATTESTATION_TRUST: 'dev',
     SA_CHAIN_ID: String(CHAIN_ID),
     SA_PINNING: 'mock',
@@ -126,11 +146,36 @@ async function startApi() {
     SA_BUILDER_WORK_DIR: workDir,
     SA_BUILDER_TIMEOUT_MS: '60000',
     SA_BUILDER_GRACE_MS: '1000',
-  });
+    // the chain side: every block at once (no confirmations), synced and kept every few hundred ms
+    SA_CONTRACT_ADDRESS: chain.contract,
+    SA_FROM_BLOCK: String(chain.fromBlock),
+    SA_RPC_URL: chain.rpcUrl,
+    SA_CONFIRMATIONS: '0',
+    SA_DATA_DIR: path.join(STACK_DIR, 'site'),
+    SA_INDEXER_POLL_MS: '250',
+    SA_KEEPER_POLL_MS: '400',
+    SA_KEEPER_PRIVATE_KEY: chain.keeperKey,
+    SA_ETH_USD_FEED: chain.ethUsdFeed,
+    // tests move the chain's clock by days; the stand-in's answer stays the price
+    SA_ETH_USD_MAX_AGE_SECONDS: String(10 * 365 * 86400),
+  };
+  const config = loadConfig(env);
   const quiet = { info() {}, debug() {}, warn: (...a) => log('api:', ...a), error: (...a) => log('api:', ...a) };
-  const app = createApp({ config, logger: quiet });
+  const site = createSite({
+    config,
+    provider: createChainProvider(config, env),
+    env,
+    fetchArchive: async (cid) => {
+      const bytes = pinner.get(cid);
+      if (!bytes) throw new Error(`${cid} is not pinned`);
+      return bytes;
+    },
+    logger: quiet,
+  });
+  site.start();
+  const app = createApp({ config, logger: quiet, pinner, site });
   const { server, url } = await listen(http.createServer(app));
-  return { server, url, builderConfig, builderRecord };
+  return { server, url, site, builderConfig, builderRecord };
 }
 
 function vite(args, env) {
@@ -147,8 +192,11 @@ async function main() {
   ensureServerInstalled();
   log('compiling and deploying StakeAttestation on the in-process Hardhat network');
   const chain = await startChain();
-  const gateway = await startGateway();
-  const api = await startApi();
+  const { createMockPinner } = await fromServer('src/pinning/index.js');
+  const pinner = createMockPinner();
+  const gateway = await startGateway(pinner);
+  const api = await startApi(chain, pinner);
+  // no key in the file: the keeper's stays in this process
   const stack = {
     chainId: CHAIN_ID,
     rpcUrl: chain.rpcUrl,
@@ -156,11 +204,14 @@ async function main() {
     apiUrl: api.url,
     clientUrl: `http://127.0.0.1:${CLIENT_PORT}`,
     contract: chain.contract,
+    aggregator: chain.aggregator,
+    ethUsdFeed: chain.ethUsdFeed,
     listingFeeWei: chain.listingFeeWei,
     accounts: chain.accounts,
     builderConfig: api.builderConfig,
     builderRecord: api.builderRecord,
     abi: chain.abi,
+    aggregatorAbi: chain.aggregatorAbi,
   };
   fs.writeFileSync(path.join(STACK_DIR, 'stack.json'), JSON.stringify(stack, null, 2));
   log(`chain ${chain.rpcUrl}, contract ${chain.contract}, gateway ${gateway.url}, api ${api.url}`);
@@ -179,6 +230,7 @@ async function main() {
 
   const stop = async (exitCode) => {
     preview.kill('SIGTERM');
+    api.site.close();
     await Promise.allSettled([chain.rpc.close(), new Promise((r) => gateway.server.close(r)), new Promise((r) => api.server.close(r))]);
     process.exit(exitCode);
   };

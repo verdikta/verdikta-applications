@@ -192,11 +192,12 @@ export function chainOf(stack) {
      * request from the server's own test fixtures), the maker sends list() with the server's
      * arguments and fund() with the fee and the CRITICAL award.
      */
-    async openListing({ recipient, spec = {}, allowlist = [] }) {
+    async openListing({ recipient, spec = {}, stake = {}, allowlist = [], maker: makerAddress = stack.accounts.maker, baseCommit = crypto.randomBytes(20).toString('hex'), escrow = null }) {
       const { draftSpec, knownIssues } = await fromServer('test/helpers/fixtures.js');
-      // a fresh commit: a maker has one listing per version that is not closed
-      const baseCommit = crypto.randomBytes(20).toString('hex');
-      const body = { spec: draftSpec({ disclosureKey: recipient, baseCommit, ...spec }), knownIssues: knownIssues(), allowlist };
+      // a fresh commit by default: a maker has one listing per version that is not closed
+      const draft = draftSpec({ disclosureKey: recipient, baseCommit, ...spec });
+      draft.stake = { ...draft.stake, ...stake };
+      const body = { spec: draft, knownIssues: knownIssues(), allowlist };
       const res = await fetch(`${stack.apiUrl}/api/listings`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       expect(res.status).toBe(202);
       let view = await res.json();
@@ -206,12 +207,12 @@ export function chainOf(stack) {
       }
       expect(view.status, JSON.stringify(view.error)).toBe('ready');
       const { params, listingCid, disputeCid, knownIssueIds } = view.list;
-      const maker = await as(stack.accounts.maker);
+      const maker = await as(makerAddress);
       const rc = await (await maker.list(params, listingCid, disputeCid, knownIssueIds)).wait();
       const listingId = events(rc, 'Listed')[0].args.listingId;
       const fee = await sa.feeDue(listingId);
-      await (await maker.fund(listingId, fee, { value: fee + BigInt(params.awards[3]) })).wait();
-      return { listingId, view };
+      await (await maker.fund(listingId, fee, { value: fee + (escrow ?? BigInt(params.awards[3])) })).wait();
+      return { listingId, view, artifactHash: (await sa.getListing(listingId)).artifactHash };
     },
 
     /**
@@ -219,7 +220,7 @@ export function chainOf(stack) {
      * sha256(ciphertext), then (once the commit is mined, erratum E5) put `served` (the ciphertext
      * unless given) on the gateway under the ciphertext's CID and disclose that CID.
      */
-    async claim({ listingId, archive, recipient, commitArchive = archive, served = null, disclose = true }) {
+    async claim({ listingId, archive, recipient, commitArchive = archive, served = null, disclose = true, late = false }) {
       const { rawCid } = await fromServer('src/pinning/cid.js');
       const keys = disclosure.generateDisclosureSecrets();
       const ciphertext = disclosure.encryptForDisclosure(archive, recipient, keys);
@@ -227,17 +228,82 @@ export function chainOf(stack) {
       const ciphertextSha256 = disclosure.disclosureSha256(ciphertext);
       const hunter = await as(stack.accounts.hunter);
       const price = await sa.commitPrice(listingId);
-      const rc = await (await hunter.commit(listingId, archiveHash, ciphertextSha256, { value: price })).wait();
-      const claimId = events(rc, 'Committed')[0].args.claimId;
-      if (!disclose) return { claimId, ciphertext, archiveHash, ciphertextSha256, cid: null };
+      const rc = await (await hunter[late ? 'lateClaim' : 'commit'](listingId, archiveHash, ciphertextSha256, { value: price })).wait();
+      const claimId = events(rc, late ? 'LateClaim' : 'Committed')[0].args.claimId;
+      if (!disclose) return { claimId, ciphertext, archiveHash, ciphertextSha256, cid: null, keys, archive };
       const cid = rawCid(ciphertext);
       const put = await fetch(`${stack.gatewayUrl}/ipfs/${cid}`, { method: 'PUT', body: served ?? ciphertext });
       expect(put.status).toBe(201);
       await (await hunter.disclose(claimId, cid)).wait();
-      return { claimId, ciphertext, archiveHash, ciphertextSha256, cid };
+      return { claimId, ciphertext, archiveHash, ciphertextSha256, cid, keys, archive };
+    },
+
+    /** The hunter's reveal (design §13.2, erratum E3): the plaintext pinned, the two keys sent, the prepay topped up. */
+    async reveal({ claimId, keys, archive }) {
+      const { rawCid } = await fromServer('src/pinning/cid.js');
+      const bcid = rawCid(archive);
+      const put = await fetch(`${stack.gatewayUrl}/ipfs/${bcid}`, { method: 'PUT', body: Buffer.from(archive) });
+      expect(put.status).toBe(201);
+      const hunter = await as(stack.accounts.hunter);
+      const topUp = await sa.revealTopUp(claimId);
+      await (await hunter.reveal(claimId, bcid, keys.contentKey, keys.ephemeralKey, { value: topUp, gasLimit: REQUEST_GAS })).wait();
+      return { bcid, requestId: (await sa.getClaim(claimId)).requestId };
+    },
+
+    /** A claim committed, disclosed, released by the maker when its fix window is open, and revealed. */
+    async revealedClaim({ listingId, recipient, label = 'claim', late = false }) {
+      const archive = archiveBytes(label);
+      const c = await this.claim({ listingId, archive, recipient, late });
+      const { revealableAt } = await sa.claimTimes(c.claimId);
+      if (BigInt(await this.now()) < revealableAt) await (await (await as(stack.accounts.maker)).release(c.claimId)).wait();
+      const r = await this.reveal(c);
+      return { ...c, ...r };
+    },
+
+    /** The jury's vector for `outcome` arrives at the mock aggregator for the claim's open round. */
+    async verdict(claimId, outcome, { dispute = false } = {}) {
+      const c = await sa.getClaim(claimId);
+      const vector = OUTCOMES.map((o) => (o === outcome ? 1_000_000n : 0n));
+      const agg = new Contract(stack.aggregator, stack.aggregatorAbi, await provider.getSigner(stack.accounts.owner));
+      await (await agg.scriptResult(dispute ? c.disputeRequestId : c.requestId, vector, JUSTIFICATION_CID)).wait();
+    },
+
+    /** The request the mock aggregator received: its CIDs and addendum. */
+    async request(requestId) {
+      const agg = new Contract(stack.aggregator, stack.aggregatorAbi, provider);
+      return { cids: [...await agg.getRequestCids(requestId)], addendum: (await agg.requestParams(requestId)).addendum };
+    },
+
+    /** Waits until `check()` is true (the site's keeper acts on its own schedule). */
+    async until(check, { timeoutMs = 30_000, what = 'the chain' } = {}) {
+      const end = Date.now() + timeoutMs;
+      for (;;) {
+        if (await check()) return;
+        if (Date.now() > end) throw new Error(`${what}: not reached in ${timeoutMs} ms`);
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    },
+
+    /** Waits for the keeper to finalize the claim's round: Judged (or later). */
+    async judged(claimId) {
+      await this.until(async () => (await sa.getClaim(claimId)).judgedAt !== 0n, { what: `claim ${claimId} judged` });
+    },
+
+    /** Moves the clock past `at` (seconds) and waits for the keeper to settle the claim. */
+    async settledAfter(claimId) {
+      const at = await sa.settleableAt(claimId);
+      const now = BigInt(await this.now());
+      if (at > now) await this.increaseTime(Number(at - now) + 1);
+      await this.until(async () => (await sa.getClaim(claimId)).settledAt !== 0n, { what: `claim ${claimId} settled` });
     },
   };
 }
+
+export const OUTCOMES = Object.freeze(['INVALID', 'DUPLICATE', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
+// reveal and dispute forward exactly SUBMISSION_GAS to the request and need about 10.3M left
+const REQUEST_GAS = 12_000_000n;
+// a CID the mock aggregator returns as the justification (never fetched)
+const JUSTIFICATION_CID = 'bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku';
 
 /** A claim archive's bytes: a stand-in ZIP (the check compares hashes, it does not unpack). */
 export function archiveBytes(label) {

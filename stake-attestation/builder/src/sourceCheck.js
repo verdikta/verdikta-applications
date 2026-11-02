@@ -21,6 +21,8 @@ import crypto from 'node:crypto';
 
 import { keccak_256 as keccak256 } from '@noble/hashes/sha3';
 
+import { optimizerRuns } from './explorer.js';
+
 const IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const MAX_SOURCE_FILES = 2000;
 const SOLC_KEY = Buffer.from('64736f6c63', 'hex'); // CBOR text "solc"
@@ -129,7 +131,7 @@ export function contractPathOf(source) {
 
 function settingsDiff(source, settings) {
   const diffs = [];
-  const opt = { enabled: settings?.optimizer?.enabled === true, runs: Number(settings?.optimizer?.runs) || 0 };
+  const opt = { enabled: settings?.optimizer?.enabled === true, runs: optimizerRuns(settings?.optimizer?.runs) };
   if (opt.enabled !== source.optimizer.enabled) diffs.push(`optimizer ${source.optimizer.enabled ? 'on' : 'off'} vs ${opt.enabled ? 'on' : 'off'}`);
   else if (opt.enabled && opt.runs !== source.optimizer.runs) diffs.push(`optimizer runs ${source.optimizer.runs} vs ${opt.runs}`);
   if (source.evmVersion && String(settings?.evmVersion || '').toLowerCase() !== source.evmVersion) diffs.push(`evmVersion ${source.evmVersion} vs ${settings?.evmVersion || 'default'}`);

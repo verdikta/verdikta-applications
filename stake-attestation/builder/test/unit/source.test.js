@@ -184,6 +184,18 @@ test('compiler settings that differ from the verified ones stop the listing, eve
   assert.deepEqual(codes((await check(MATCH, { b: builder({ artifact: evm }) })).result), ['SOURCE_SETTINGS_MISMATCH']);
 });
 
+test('an omitted optimizer runs is solc\'s default, 200; an explicit 0 stays 0', async () => {
+  const omitted = await check({ ...MATCH, getsourcecode: 'getsourcecode-vault-default-runs.json' });
+  assert.equal(omitted.result.ok, true, JSON.stringify(omitted.result.issues));
+  assert.deepEqual(parseSourceResult(readFixture('explorer', 'getsourcecode-vault-default-runs.json')).optimizer, { enabled: true, runs: 200 });
+  const zero = clone(ARTIFACT);
+  zero.metadata.settings.optimizer = { enabled: true, runs: 0 };
+  assert.match((await check(MATCH, { b: builder({ artifact: zero }) })).result.issues[0].detail, /optimizer runs 200 vs 0/);
+  const unset = clone(ARTIFACT);
+  delete unset.metadata.settings.optimizer.runs;
+  assert.equal((await check(MATCH, { b: builder({ artifact: unset }) })).result.ok, true, 'the repository\'s omitted runs is 200 too');
+});
+
 test('a submodule the build could not fetch is reported', async () => {
   const { result } = await check(MATCH, { b: builder({ skipped: [{ path: 'lib/forge-std', detail: 'no https URL for it in .gitmodules' }] }) });
   assert.equal(result.ok, true);

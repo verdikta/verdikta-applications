@@ -12,6 +12,13 @@ function cut(value, n = 200) {
   return s.length > n ? `${s.slice(0, n)}…` : s;
 }
 
+/** solc's optimizer runs: an omitted value is the compiler's default, 200; an explicit 0 stays 0. */
+export function optimizerRuns(value) {
+  if (value === undefined || value === null || value === '') return 200;
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n >= 0 ? n : 200;
+}
+
 /** A source unit list: { path: content }. */
 function sourcesOf(obj) {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
@@ -43,7 +50,7 @@ export function parseSourceResult(json) {
     contractName: typeof r.ContractName === 'string' ? r.ContractName : '',
     contractFile: typeof r.ContractFileName === 'string' && r.ContractFileName ? r.ContractFileName : null,
     compilerVersion: typeof r.CompilerVersion === 'string' ? r.CompilerVersion.replace(/^v/, '') : '',
-    optimizer: { enabled: r.OptimizationUsed === '1', runs: Number(r.Runs) || 0 },
+    optimizer: { enabled: r.OptimizationUsed === '1', runs: optimizerRuns(r.Runs) },
     evmVersion: typeof r.EVMVersion === 'string' && r.EVMVersion && r.EVMVersion.toLowerCase() !== 'default' ? r.EVMVersion.toLowerCase() : null,
     viaIR: false,
     language: r.CompilerType === 'vyper' || /vyper/i.test(String(r.CompilerVersion)) ? 'Vyper' : 'Solidity',
@@ -64,7 +71,7 @@ export function parseSourceResult(json) {
     out.sources = sourcesOf(parsed.sources);
     out.settings = parsed.settings && typeof parsed.settings === 'object' ? parsed.settings : {};
     if (out.settings.optimizer) {
-      out.optimizer = { enabled: out.settings.optimizer.enabled === true, runs: Number(out.settings.optimizer.runs) || 0 };
+      out.optimizer = { enabled: out.settings.optimizer.enabled === true, runs: optimizerRuns(out.settings.optimizer.runs) };
     }
     if (typeof out.settings.evmVersion === 'string') out.evmVersion = out.settings.evmVersion.toLowerCase();
     out.viaIR = out.settings.viaIR === true;

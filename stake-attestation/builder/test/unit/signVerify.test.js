@@ -16,6 +16,7 @@ import { outputsDigest } from '../../src/outputs.js';
 import { createRegistryClient } from '../../src/registry.js';
 import { DIGEST, MANIFEST_DIGEST, REPOSITORY, writeAcceptedBuild } from '../helpers/build.js';
 import { fakeRegistry, registryImage } from '../helpers/fakes.js';
+import { MAKER, provenAnswer } from '../helpers/proof.js';
 import { contractDraft } from '../helpers/specs.js';
 
 const BASE = codeReview.BASE_IMAGE_PINS.foundry;
@@ -42,9 +43,9 @@ async function listing(opts) {
   return { dir, out, config, edit, ...files, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
-async function sign(l, extra = [], deps) {
+async function sign(l, extra = [], deps, maker = MAKER) {
   const t = io();
-  const code = await main(['sign', '--config', l.config, '--dir', l.out, ...extra], { env: {}, ...t, deps });
+  const code = await main(['sign', '--config', l.config, '--dir', l.out, ...(maker ? ['--maker', maker] : []), ...extra], { env: {}, ...t, deps: { checkRepositoryControl: provenAnswer(), ...deps } });
   return { code, t, attested: fs.existsSync(path.join(l.out, 'attestation.json')) };
 }
 
@@ -78,7 +79,7 @@ test('sign checks the build\'s outputs before signing and records what it checke
   const report = JSON.parse(fs.readFileSync(path.join(l.out, 'validation-report.json'), 'utf8'));
   assert.deepEqual(report.signing.checks, [
     'REPORT_ACCEPTED', 'FILES_MATCH_REPORT', 'SPEC_VALID', 'BASELINE_VALID', 'LISTING_MATCHES_REPORT',
-    'STEPS_COMPLETE', 'IMAGE_MATCHES_REPORT', 'SIZES_WITHIN_LIMITS', 'BASE_PINNED',
+    'STEPS_COMPLETE', 'IMAGE_MATCHES_REPORT', 'SIZES_WITHIN_LIMITS', 'BASE_PINNED', 'PROJECT_PROOF_STANDS',
   ]);
   assert.deepEqual(report.signing.trusts.map((x) => x.code), ['LISTING_CHECK_RESULTS', 'UNPACKED_SIZE', 'BUILD_JOB', 'OUTPUTS_IN_TRANSIT', 'IMAGE_PUBLISHED']);
   for (const x of report.signing.trusts) assert.ok(x.detail.length > 20, x.code);
@@ -91,7 +92,7 @@ test('a contract listing also trusts the verified-source comparison it cannot re
   assert.equal(code, 0, t.err);
   const report = JSON.parse(fs.readFileSync(path.join(l.out, 'validation-report.json'), 'utf8'));
   assert.ok(report.signing.checks.includes('STEPS_COMPLETE'));
-  assert.deepEqual(report.signing.trusts.map((x) => x.code), ['LISTING_CHECK_RESULTS', 'VERIFIED_SOURCE', 'UNPACKED_SIZE', 'BUILD_JOB', 'OUTPUTS_IN_TRANSIT', 'IMAGE_PUBLISHED']);
+  assert.deepEqual(report.signing.trusts.map((x) => x.code), ['LISTING_CHECK_RESULTS', 'VERIFIED_SOURCE', 'DEPLOYMENT_ROLE', 'UNPACKED_SIZE', 'BUILD_JOB', 'OUTPUTS_IN_TRANSIT', 'IMAGE_PUBLISHED']);
   l.cleanup();
   // One whose report names another deployment, or whose verified source was another address or
   // chain, is not signed.
@@ -238,4 +239,45 @@ test('the registry client reports an image\'s layer diff ids and labels from its
   } finally {
     await srv.close();
   }
+});
+
+// node P9: nothing is signed without the project's proof
+test('sign repeats the project\'s proof: another maker, no maker, or a proof that no longer stands is not signed', async () => {
+  const OTHER = '0xAb8483F64d9C6d1EcF9b849Ae677dD3315835cb2';
+  const cases = [
+    [[], {}, OTHER, 'SIGNING_MAKER_MISMATCH'],
+    [[], {}, null, 'SIGNING_MAKER_REQUIRED'],
+    [[], { checkRepositoryControl: provenAnswer(OTHER) }, MAKER, 'PROOF_NAMES_ANOTHER_ADDRESS'],
+    [[], { checkRepositoryControl: async () => ({ reachable: false, ref: null, file: null }) }, MAKER, 'COMMIT_NOT_ON_OWN_REFS'],
+    [[], { checkRepositoryControl: async () => ({ reachable: true, ref: 'refs/heads/main', file: null }) }, MAKER, 'NO_PROOF_FILE'],
+  ];
+  for (const [extra, deps, maker, code] of cases) {
+    const l = await listing();
+    const r = await sign(l, extra, deps, maker);
+    assert.equal(r.code, 1, code);
+    assert.match(r.t.err, new RegExp(code));
+    assert.equal(r.attested, false, code);
+    l.cleanup();
+  }
+});
+
+test('a report that records no proof, or one for another commit, is not signed', async () => {
+  for (const fn of [(report) => { report.control = null; }, (report) => { report.control.commit = 'f'.repeat(40); }, (report) => { report.steps = report.steps.filter((s) => s.name !== 'control'); }]) {
+    const l = await listing();
+    l.edit('validation-report.json', (r) => { fn(r); return r; });
+    const { code, attested } = await sign(l);
+    assert.equal(code, 1);
+    assert.equal(attested, false);
+    l.cleanup();
+  }
+});
+
+test('a contract\'s signature in the report that does not recover to its signer is not signed', async () => {
+  const l = await listing({ draft: contractDraft() });
+  l.edit('validation-report.json', (r) => { r.control.deployment.signature = `0x${'11'.repeat(65)}`; return r; });
+  const { code, t, attested } = await sign(l);
+  assert.equal(code, 1);
+  assert.match(t.err, /SIGNING_MAKER_MISMATCH/);
+  assert.equal(attested, false);
+  l.cleanup();
 });

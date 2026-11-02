@@ -3,6 +3,7 @@
 // real command line against real git with no network. A bare repository serves any object it holds
 // by id, as GitHub serves a fork's commit through the parent's URL.
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -35,13 +36,16 @@ export function makeRepo(mirrorDir, url, { file = null } = {}) {
   const { host, pathname } = new URL(url);
   const mirror = path.join(mirrorDir, host, `${pathname.slice(1).replace(/\.git$/, '')}.git`);
   const work = `${mirror}.work`;
-  fs.mkdirSync(work, { recursive: true });
-  git(work, 'init', '-q', '-b', 'main');
-  write(work, 'src/Vault.sol', 'contract Vault {}\n');
-  git(work, 'add', '-A');
-  git(work, 'commit', '-q', '-m', 'first');
-  git(path.dirname(mirror), 'clone', '-q', '--bare', work, mirror);
-  git(mirror, 'config', 'uploadpack.allowFilter', 'true');
+  // a repository made earlier in the folder is the same repository: it gets another commit
+  if (!fs.existsSync(mirror)) {
+    fs.mkdirSync(work, { recursive: true });
+    git(work, 'init', '-q', '-b', 'main');
+    write(work, 'src/Vault.sol', 'contract Vault {}\n');
+    git(work, 'add', '-A');
+    git(work, 'commit', '-q', '-m', 'first');
+    git(path.dirname(mirror), 'clone', '-q', '--bare', work, mirror);
+    git(mirror, 'config', 'uploadpack.allowFilter', 'true');
+  }
   let n = 0;
   const repo = {
     url,
@@ -50,7 +54,7 @@ export function makeRepo(mirrorDir, url, { file = null } = {}) {
     commit({ file: content = file, branch = 'main' } = {}) {
       n += 1;
       git(work, 'checkout', '-q', '--detach', 'main');
-      write(work, 'src/Vault.sol', `contract Vault { /* ${n} */ }\n`);
+      write(work, 'src/Vault.sol', `contract Vault { /* ${n} ${crypto.randomBytes(4).toString('hex')} */ }\n`);
       if (content === null) fs.rmSync(path.join(work, CONTROL_FILE), { force: true });
       else write(work, CONTROL_FILE, content);
       git(work, 'add', '-A');

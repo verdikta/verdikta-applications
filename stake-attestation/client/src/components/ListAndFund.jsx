@@ -39,6 +39,11 @@ export function ListAndFund({ view, sent }) {
     setExisting(null);
     try {
       const { signer, provider, account } = await w.ensure();
+      // the project named the request's maker: from any other wallet the listing would not count
+      if (String(account).toLowerCase() !== String(view.maker).toLowerCase()) {
+        setError(fill(C.notTheMaker, { maker: view.maker, account }));
+        return;
+      }
       const reader = stakeAttestation(provider);
       const active = await reader.activeListingOf(view.artifactHash, account);
       if (active !== 0n) {

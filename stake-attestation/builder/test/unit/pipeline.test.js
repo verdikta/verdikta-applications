@@ -8,16 +8,21 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { Wallet } from 'ethers';
+
 import { codeReview } from '../../src/common.js';
+import { deploymentMessage } from '../../src/listingProof.js';
 import { parseConfig } from '../../src/config.js';
 import { buildListing } from '../../src/pipeline.js';
 import { createExplorer } from '../../src/explorer.js';
 import { FIXTURES, fakeDocker, readFixture, recordedExplorer, sha256 } from '../helpers/fakes.js';
+import { MAKER, deployment, provenAnswer, stake } from '../helpers/proof.js';
 import { BASE_COMMIT, abstained, acceptedListing, contractDraft, definitive, draftSpec, refusedListing } from '../helpers/specs.js';
 
 const DIGEST = `sha256:${'2'.repeat(64)}`;
 const REPOSITORY = 'ghcr.io/verdikta/stake-env';
 const IMAGE = `${REPOSITORY}@${DIGEST}`;
+const SIGNER = Wallet.createRandom();
 const RUNNER_TOKEN = 'runner-token-0123456789abcdef0123456789';
 const EXPLORER_KEY = 'EXPLORERKEY0123456789';
 
@@ -40,6 +45,8 @@ function harness(over = {}) {
     return {};
   });
   const deps = {
+    checkRepositoryControl: provenAnswer(),
+    chainFor: () => deployment({ owner: SIGNER.address }),
     docker,
     fetchListedCommit: async (req) => { calls.fetch.push(req); return { gitDir: req.dir }; },
     writeBuildContext: () => ({ dockerfile: 'FROM x' }),
@@ -77,7 +84,9 @@ async function build(draft, { cfg = config(), knownIssues = null, ...over } = {}
   const h = harness(over);
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-pipeline-'));
   try {
-    const out = await buildListing({ draft, knownIssues, config: cfg, deps: h.deps, workDir });
+    const contract = draft.artifact?.kind === 'contract';
+    const deploymentProof = contract ? { signer: SIGNER.address, signature: await SIGNER.signMessage(deploymentMessage({ spec: draft, maker: MAKER, stake })), stakeChainId: stake.chainId, stakeContract: stake.address } : null;
+    const out = await buildListing({ draft, knownIssues, maker: MAKER, deploymentProof, config: cfg, deps: h.deps, workDir });
     assert.deepEqual(fs.readdirSync(workDir), [], 'the build removed its temporary folder');
     return { ...out, ...h };
   } finally {
@@ -188,7 +197,7 @@ test('a contract listing whose verified source differs stops before validation',
 });
 
 test('a contract listing on a chain with no explorer configured is a configuration error', async () => {
-  const { status, report } = await build(contractDraft({ artifact: { kind: 'contract', address: '0x5f2A00000000000000000000000000000000C0dE', chainId: 1 } }));
+  const { status, report } = await build(contractDraft({ artifact: { kind: 'contract', address: '0x5f2A00000000000000000000000000000000C0dE', chainId: 1 } }), { deps: { chainFor: undefined } });
   assert.equal(status, 'error');
   assert.equal(report.error.code, 'EXPLORER_NOT_CONFIGURED');
 });
@@ -230,7 +239,7 @@ test('the validation report for the maker: steps, image, sizes, validation, refu
   assert.equal(report.status, 'accepted');
   assert.deepEqual(report.listing, { repo: draftSpec().repo, baseCommit: BASE_COMMIT, artifact: { kind: 'repo' } });
   assert.deepEqual(report.steps.map((s) => [s.name, s.status]), [
-    ['spec', 'ok'], ['fetch', 'ok'], ['build', 'ok'], ['size', 'ok'], ['push', 'ok'], ['registry', 'ok'], ['verifiedSource', 'skipped'], ['listingCheck', 'ok'], ['finalSpec', 'ok'],
+    ['spec', 'ok'], ['control', 'ok'], ['fetch', 'ok'], ['build', 'ok'], ['size', 'ok'], ['push', 'ok'], ['registry', 'ok'], ['verifiedSource', 'skipped'], ['listingCheck', 'ok'], ['finalSpec', 'ok'],
   ]);
   assert.equal(report.image.ref, IMAGE);
   assert.equal(report.image.platform, 'linux/amd64');

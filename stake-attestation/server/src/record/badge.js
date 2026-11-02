@@ -5,9 +5,10 @@
 //
 // qualified " · under-staked" and " · invited" when the labels say so; below the badge floor it
 // reads only "scanned"; and a valid finding on the hash's record at or above the class replaces
-// the statement. Each of these also states the shown listing's control fact (src/control/facts.js),
-// "staker controls the repository: yes / no", and a "no" qualifies the statement as under-staked and
-// invited do. When no listing of the hash takes commits the statement is gone: the badge says how
+// the statement. Each of these also states the shown listing's proof (src/control/facts.js): "staker
+// named by the repository" and, for a contract, "staker controls the deployment". Only listings that
+// count are on the view (src/control/counting.js), so a stake nobody proved never reaches the badge:
+// a hash with listings and none that counts reads "no counted stake". When no listing of the hash takes commits the statement is gone: the badge says how
 // the stake ended (closed, rolled forward, depleted, lapsed). Of several live listings the badge
 // shows the one with the highest top award (then the lowest class counted, then the oldest). Every
 // string it writes passes the shared wording check.
@@ -42,6 +43,7 @@ const byStrength = (a, b) => {
 export function badgeFor(view) {
   if (!view) return { state: 'none', message: 'no stake', listingId: null, class: null };
   const { record, labels } = view;
+  if (!record.listings.length) return { state: 'none', message: 'no counted stake', listingId: null, class: null };
   const live = record.listings.filter((l) => labels.listings[l.listingId]?.live).sort(byStrength);
   if (!live.length) {
     const latest = [...record.listings].sort((a, b) => Number(BigInt(b.listingId) - BigInt(a.listingId)))[0];
@@ -51,7 +53,7 @@ export function badgeFor(view) {
   const l = live[0];
   const cls = l.lowestClassCounted;
   // no fact at hand reads as "no", the fact's default
-  const control = view.control?.[l.listingId] ?? { controls: 'no', statement: statementOf('repository', false) };
+  const control = view.control?.[l.listingId] ?? { proof: 'no', statement: statementOf('repository', false) };
   const withFact = (message) => `${message} · ${control.statement}`;
   const found = record.findings.filter((f) => outcomeRank(f.outcome) >= outcomeRank(cls)).length;
   if (found) return { state: 'finding', message: withFact(`${found} valid finding${found > 1 ? 's' : ''} at or above ${cls}`), listingId: l.listingId, class: cls };
@@ -60,7 +62,7 @@ export function badgeFor(view) {
   if (lab.stake === null) return { state: 'unavailable', message: withFact('price unavailable'), listingId: l.listingId, class: cls };
   const qualifiers = [lab.stake === 'under-staked' ? 'under-staked' : null, lab.invited ? 'invited' : null].filter(Boolean);
   const message = withFact([`no finding at or above ${cls} while staked`, ...qualifiers].join(' · '));
-  return { state: qualifiers.length || control.controls !== 'yes' ? 'qualified' : 'live', message, listingId: l.listingId, class: cls };
+  return { state: qualifiers.length || control.proof !== 'yes' ? 'qualified' : 'live', message, listingId: l.listingId, class: cls };
 }
 
 const escapeXml = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);

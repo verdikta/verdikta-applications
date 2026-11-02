@@ -18,9 +18,17 @@ settlement: finalize by polling the aggregator, the six-outcome rule, payouts,
 depletion and owed awards; the environment builder; the server's listing
 flow, indexer, keeper, feed, record mirror and badge; and the client: the maker
 flows (listing, the disclosure key, decrypt-and-check, the baseline scan, release,
-roll forward, dispute), the record page with its badge, and the feed. The record
-states whether each listing's staker has shown control of what it lists
-([`docs/control-proof.md`](docs/control-proof.md)). The packages below build
+roll forward, dispute), the record page with its badge, and the feed.
+
+**The project decides who may stake on it.** Every listing needs the project's
+proof, with no allowlist and no exception, Verdikta included: a file in the
+repository at the listed commit names the staker's wallet, which may be a
+sponsor's, and a deployed contract also needs a signature from its deployer or
+owner. The builder refuses without it, nothing is signed, and the site counts a
+listing only with a builder's signature and that proof
+([`docs/control-proof.md`](docs/control-proof.md)). This protects a project's name
+and record, not its code: anyone can still stake on a fork or a copy and read
+findings that also apply upstream. The packages below build
 and test; the rest of the site's flows and the hunter commands arrive with the
 nodes named in the plan.
 
@@ -60,12 +68,12 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 | Folder | What | Test |
 |---|---|---|
 | `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
-| `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`; the baseline scan between listing and open, its findings served to the maker's wallet only (P4b2); the indexer, keeper, listing feed, record mirror, labels and badge (P4b1) over one deployment; the control facts (P8). | `npm test`, `npm run test:builder`, `npm run abi` |
+| `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`; the baseline scan between listing and open, its findings served to the maker's wallet only (P4b2); the indexer, keeper, listing feed, record mirror, labels and badge (P4b1) over one deployment; the project's proof, refused listing attempts counted by reason, what counts on the record, the fork label (P8, P9). | `npm test`, `npm run test:builder`, `npm run abi` |
 | `client/` | Vite + React site, port 5176: the maker's listing flow, the disclosure key made in the browser, and decrypt-and-check (P6a); the record page, the badge embed, the feed, the maker's release, roll forward and dispute, pending evaluations watched, the baseline scan read (P6b). | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI: `check`, `commit`, `reveal`, `status`, `claim` arrive in P5. | `npm test` |
-| `shared/` | Code shared by the packages (the banned-words helper so far) and the app's repository checks. | `npm test` |
-| `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`; the baseline scan, for the maker only (P3b); `verdikta-control-check`, what git says about a listing's repository (P8). The reusable workflow that runs it is `.github/workflows/stake-attestation-builder.yml`. | `npm test`, `npm run test:docker` |
-| `docs/` | `BUILD_PLAN.md`, `control-proof.md` (how a staker proves control). | |
+| `shared/` | Code shared by the packages (the banned-words helper, the rules of the project's proof, the warning every listing page carries, "did the builder sign this listing") and the app's repository checks. | `npm test` |
+| `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`; the baseline scan, for the maker only (P3b); `verdikta-control-check`, what git says about a listing's repository (P8); the listing's proof, refused before anything is built (P9). The reusable workflow that runs it is `.github/workflows/stake-attestation-builder.yml`. | `npm test`, `npm run test:docker` |
+| `docs/` | `BUILD_PLAN.md`, `control-proof.md` (the project's proof: what a listing needs, every refusal, what counts). | |
 
 Ports 5009 and 5176 are the next free ones after the apps in the repository's
 `ports.txt`.
@@ -208,11 +216,15 @@ deploys on the in-process network against the mock aggregator, as a test.
 ## The listing API
 
 `server/` (node P4a) turns a maker's draft into the two archives arbiters read and the
-arguments of `list()`. `POST /api/listings` takes `{ spec, knownIssues?, allowlist?, maker? }`:
-the draft `code_review.json` with its stake block and the maker's age disclosure key, the known
-issues when `stake.knownIssues` names them, up to 64 invited hunters, and the address of the
-maker's wallet, which the baseline scan's findings are served to (below). Before any build it
-decodes the disclosure key with common's `parseDisclosureKey`, checks the draft with common's
+arguments of `list()`. `POST /api/listings` takes `{ spec, knownIssues?, allowlist?, maker,
+deploymentProof?, auth }`: the draft `code_review.json` with its stake block and the maker's age
+disclosure key, the known issues when `stake.knownIssues` names them, up to 64 invited hunters,
+the address of the maker's wallet (required: the project names it in its repository, and the
+baseline scan's findings are served to it, below), a contract listing's signature from its
+deployer or owner, and the maker's wallet's signature of the challenge
+`POST /api/listings/challenge` answers for this request: without it anyone could get an archive
+signed, with a disclosure key of their own, by naming a project's address as the maker. Before
+any build it decodes the disclosure key with common's `parseDisclosureKey`, checks the draft with common's
 validator (over the builder's stand-ins for the fields the builder measures) and refuses what
 `list()` would refuse or could not encode (decision D8's windows, a repository URL that is not
 printable ASCII within 512 bytes, an amount beyond uint256, a value at risk that is not whole
@@ -222,9 +234,10 @@ Otherwise it answers 202 with an id, and `GET /api/listings/:id` follows the lis
 
 | Status | |
 |---|---|
-| `queued`, `building` | waiting for, or in, the builder: `verdikta-build-env build`, then `sign` in a process of its own |
-| `refused` | the builder refused it and `validationReport` says why. Nothing is built or pinned: a failed verified-source check ends here |
-| `scanning` | accepted and checked, both archives built; the baseline scan runs (when the request named a maker) |
+| `queued`, `checking` | waiting for a build slot; the project's proof read at the listed commit ([`docs/control-proof.md`](docs/control-proof.md)) |
+| `building` | in the builder: `verdikta-build-env build`, then `sign` in a process of its own, each given `--maker` |
+| `refused` | `refusal` (`code`, `detail`) when the proof refused it, otherwise `validationReport` says why. Nothing is built, signed or pinned: a failed verified-source check ends here too |
+| `scanning` | accepted and checked, both archives built; the baseline scan runs |
 | `pinning` | both archives are being pinned |
 | `ready` | `archives` (both CIDs, their SHA-256 and their members') and `list`: `params`, `listingCid`, `disputeCid` and `knownIssueIds`, in JSON ethers takes as it is (uint256 and uint64 as decimal strings, bytes32 as hex); `params.disclosureKey` is the 32 bytes the archive's age recipient encodes |
 | `error` | anything else (the builder or pinning failed, or the result did not check out); nothing is issued |
@@ -332,8 +345,10 @@ challenge and recovers the signer with ethers' `verifyMessage`. A nonce answers 
 whatever its outcome (a malformed signature or another wallet's uses it up too), and nothing
 after its expiry (5 minutes by default; at most 32 open
 challenges per listing and 10,000 in all, else 429). Only ECDSA signatures of externally owned
-accounts are checked: a contract wallet (EIP-1271) cannot sign in. Anyone may name any address
-as a listing's maker; that only decides who can read the scan, never what goes on-chain.
+accounts are checked: a contract wallet (EIP-1271) cannot sign in, so a project whose treasury is a
+multisig names an externally owned wallet in its file. The listing request's own challenge waits in
+a pool apart (`list-version`, resource `list-request:<the request's SHA-256>`): anyone can ask for
+one, and a flood of them takes nobody's sign-in for a scan or a dispute with it.
 
 **Tests.** `npm test` stubs the builder behind its interface, and pins to the mock store or to
 local doubles of kubo, Filebase and Pinata through a fetch that refuses every host but
@@ -357,11 +372,11 @@ the indexed block are both within `SA_MAX_STALENESS_SECONDS` (600).
 
 | Route | |
 |---|---|
-| `GET /api/feed` | every listing that takes commits (Open, its paid period not over): hash, artifact, image and scope (from its listing archive, used only when the archive is the listing the chain stores), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed and lapsed listings are not in it (design §15) |
+| `GET /api/feed` | every listing that counts and takes commits (a builder's signature and the project's proof, [`docs/control-proof.md`](docs/control-proof.md); Open, its paid period not over), and `notCounted`, the others apart: hash, artifact, image and scope (from its listing archive, used only when the archive is the listing the chain stores), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed and lapsed listings are not in it (design §15) |
 | `GET /api/feed/events?after=&limit=` | the contract's events of listings and claims, in chain order (design §13.4: the feed is those events), paged by `next` (`<block>:<logIndex>`) |
-| `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), read in `recordPage` pages when it is long; `labels`; `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding. 404 for a hash with no opened listing |
+| `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), over the listings that count (`notCounted` holds the others, apart; `artifact` and `fork` say what the record is of), read in `recordPage` pages when it is long; `labels`; `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding. 404 for a hash with no opened listing |
 | `GET /api/records/:hash/badge.svg` | the badge; "record unavailable" when the record is not fresh or cannot be read |
-| `GET /api/status` | the indexer's cursor and the keeper's address, transaction in flight and last result |
+| `GET /api/status` | the indexer's cursor, the keeper's address, transaction in flight and last result, and refused listing attempts by reason (`listings.refused`: no address or repository name, kept beside the state) |
 
 **Only valid findings are published** (design §14). A claim's events appear in full once it
 settled LOW..CRITICAL (the record's findings); every other claim's events (INVALID, DUPLICATE,
@@ -442,8 +457,14 @@ keeper (automine off, so transactions wait in a mempool), reorgs (`evm_snapshot`
 
 `builder/` turns a maker's draft `code_review.json` into a listing the arbiters can run (design
 §8.2 steps 1–5, §8.8; build plan A4, A6, D4). `verdikta-build-env build --config builder.json
---spec draft.json [--known-issues known_issues.json] --out out/` runs, recording each step in
-`out/validation-report.json`, the report the maker reads before funding:
+--spec draft.json --maker <address> [--control-proof proof.json] [--known-issues known_issues.json]
+--out out/` runs, recording each step in `out/validation-report.json`, the report the maker reads
+before funding. Right after the spec, and before anything is fetched for a build, the `control`
+step refuses a listing without the project's proof, by name (node P9;
+[`docs/control-proof.md`](docs/control-proof.md)): it reads only the repository's `refs/heads` and
+`refs/tags`, so a commit a host serves by id from a fork is refused. A contract's signature is
+checked through the explorer the verified-source check reads. The config's optional `control`
+block holds `gitHosts` (the site's `SA_CONTROL_GIT_HOSTS`), `timeoutMs` and `maxBytes`.
 
 1. **spec**: the draft against `@verdikta/common`'s `validateCodeReviewSpec` (with stand-ins
    for the fields the builder fills) and what the Foundry MVP hosts: `env.from: "foundry"`,
@@ -506,8 +527,8 @@ keeper (automine off, so transactions wait in a mempool), reorgs (`evm_snapshot`
    checked by `validateBaseline`.
 
 Exit status 0 accepted, 2 refused (the report says why, with the build's log when the setup
-failed), 1 error. `verdikta-build-env sign --config builder.json --dir out/` then signs
-`attestation.json` (`createAttestationStatement` over the exact bytes written, Ed25519) and
+failed), 1 error. `verdikta-build-env sign --config builder.json --dir out/ --maker <address>` then
+reads the project's proof again and signs `attestation.json` (`createAttestationStatement` over the exact bytes written, Ed25519) and
 records it in the report; `run` does both in one process, with a dev key only.
 
 **What sign checks first.** Signing may run in a job that receives only the build's output folder
@@ -628,7 +649,10 @@ the scan: its logs and artifacts can be public. The site runs it on its own host
 `.github/workflows/stake-attestation-builder.yml` runs the same builder for a maker's CI or for
 the site's own workflow (design §8.2, §20 decision 3). A repository calls it at a commit of this
 one and passes that commit as `builder-ref`, with `spec` (the draft's path in the calling
-repository), `known-issues`, `publish-repository` (e.g. `ghcr.io/<owner>/stake-env`, readable
+repository), `known-issues`, `maker` (required: the wallet that will send `list()`, named in the
+listed commit's `.verdikta/stake-control.json`, or the build refuses the listing),
+`deployment-proof` (a contract listing's signature, as a file in the calling repository),
+`publish-repository` (e.g. `ghcr.io/<owner>/stake-env`, readable
 without a credential), `runtime` (`runsc` by default; a production key needs gVisor),
 `explorer-api-url` (a keyless Etherscan-shaped API for a contract listing's chain, so the build
 job holds no explorer key), `signing` (`dev` by default, or `production`) and `artifact-name`
@@ -709,8 +733,10 @@ goes in a URL.
   sends `list()` with the server's arguments and `fund()` with `feeDue()` plus the escrow
   through the maker's wallet. `list()` is sent only when those arguments carry the maker's own
   disclosure key and terms, and not when the maker already has an active listing of the
-  version (`activeListingOf`), which the page links to instead. The request names the connected
-  wallet as the `maker` (none without a wallet: the server then runs no scan); once the
+  version (`activeListingOf`), which the page links to instead, and only from the wallet the
+  listing was built for. The request names the connected wallet as the `maker`, and that wallet
+  signs it; without a wallet nothing is sent. A refusal shows here by its code. A contract
+  listing's signature is made in the form, with the message the server states; once the
   baseline scan has finished, the page asks for its sign-in challenge, the wallet signs it with
   `personal_sign`, and the findings are shown on the page to that wallet only, never stored,
   and only while it stays the connected wallet.
@@ -725,14 +751,19 @@ goes in a URL.
   Open or Depleted, **roll forward** offers the maker's own open listings of the same
   repository at another commit (from the feed, each confirmed on-chain: Open, the maker's, no
   predecessor) and sends `rollForward` after reading both listings again at one block.
+- **Every listing page** (the feed, the record, a listing's own page) warns who reads a proof
+  first and that the code may exist elsewhere (`shared/src/listingWarning.js`, which the hunter
+  tool repeats). A listing's own page says whether the site offers a commit on it.
 - **The record** (`#/record/<hash>`, design §4.1, §13.4): from `GET /api/records/:hash`, the
-  artifact (hash, kind, repository and commit from the Listed event), each stake (state, labels,
+  artifact (hash, kind, repository and commit from the Listed event, and whether the host says it
+  is a fork), each stake that counts (state, labels,
   award table, lowest class counted, bond, escrow, owed, declared value at risk and the top
   award's share of it, the times, days open, predecessor and successor), the history (claims,
   claims judged, verdicts by outcome, duplicates, released, expired, disputes and their
   outcomes, days since the last valid finding), the valid findings, what was found later (late
   claims), the bad-disclosure flags with what became of each claim, and the badge with its
-  Markdown and HTML embed. Then the diligence text: what a record says and does not (design
+  Markdown and HTML embed. Any other listing of the hash shows apart, as not counted, with why
+  and no amount. Then the diligence text: what a record says and does not (design
   §4.1, §4.2, §15, without third-party figures). Only valid findings are listed; every other
   claim is a count.
 - **The feed** (`#/feed`, design §15): `GET /api/feed`, every listing that takes claims, with

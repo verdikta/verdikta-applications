@@ -1,5 +1,5 @@
 // The environment builder (stake-attestation/builder, nodes P3a, P3b) behind the interface the
-// listing flow uses: build({ draft, knownIssues }) resolves to
+// listing flow uses: build({ draft, knownIssues, maker, deploymentProof }) resolves to
 //
 //   { status: 'accepted', report, files: { codeReview, baseline, knownIssues, attestation }, devTrust }
 //   { status: 'refused',  report, files: null, devTrust: null }
@@ -28,6 +28,8 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+
+import { PROOF_REFUSALS } from '@verdikta/stake-attestation-shared/control-proof';
 
 const REPORT_FILE = 'validation-report.json';
 const DEV_TRUST_FILE = 'dev-trust.json';
@@ -253,7 +255,7 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
   };
 
   return {
-    async build({ draft, knownIssues }) {
+    async build({ draft, knownIssues, maker = null, deploymentProof = null }) {
       const problem = configProblem(cfg);
       if (problem) return errored(problem.code, problem.detail);
       const dir = fs.mkdtempSync(path.join(cfg.workDir, 'sa-build-'));
@@ -266,6 +268,13 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
           const kiPath = path.join(dir, 'known_issues.json');
           fs.writeFileSync(kiPath, knownIssues);
           args.push('--known-issues', kiPath);
+        }
+        // the project's proof: the builder reads the repository for itself, and refuses without it
+        if (maker) args.push('--maker', maker);
+        if (deploymentProof) {
+          const proofPath = path.join(dir, 'control-proof.json');
+          fs.writeFileSync(proofPath, `${JSON.stringify(deploymentProof)}\n`);
+          args.push('--control-proof', proofPath);
         }
         const out = path.join(dir, 'out');
         args.push('--out', out);
@@ -280,10 +289,19 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
           return { status: 'error', report, files: null, devTrust: null, error: report.error ?? { code: 'BUILD_FAILED', detail: exited('build', b) } };
         }
 
-        const s = await step(['sign', '--config', cfg.config, '--dir', out], cfg.signEnv, dir);
+        const s = await step(['sign', '--config', cfg.config, '--dir', out, ...(maker ? ['--maker', maker] : [])], cfg.signEnv, dir);
         if (s.interrupted) return stopped('sign', s, cfg, report);
         if (s.spawnError) return errored('SIGNING_FAILED', `the builder's sign step could not be started: ${s.spawnError}`, report);
-        if (s.code !== 0) return errored('SIGNING_FAILED', exited('sign', s), report);
+        if (s.code !== 0) {
+          // sign reads the project's proof again: one that no longer stands is a refusal like the build's
+          const refusedFor = builderCode(s.stderr);
+          if (refusedFor && Object.hasOwn(PROOF_REFUSALS, refusedFor)) {
+            logger?.warn(`builder sign refused the listing: ${refusedFor}`);
+            const detail = PROOF_REFUSALS[refusedFor];
+            return { status: 'refused', report: { ...report, status: 'refused', refusals: [{ code: refusedFor, detail, step: 'sign' }] }, files: null, devTrust: null };
+          }
+          return errored('SIGNING_FAILED', exited('sign', s), report);
+        }
         const signed = readJson(path.join(out, REPORT_FILE)) ?? report;
         const codeReview = readNamed(out, 'code_review.json');
         const spec = codeReview ? (() => { try { return JSON.parse(codeReview.toString('utf8')); } catch { return null; } })() : null;

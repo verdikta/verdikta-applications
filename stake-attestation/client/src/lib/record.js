@@ -30,7 +30,7 @@ function share(stakeUsd, valueAtRiskUsd) {
 const neighbour = (id, hash) => (BigInt(id) === 0n ? null : { id: String(id), hash: isZeroHash(hash) ? null : hash.toLowerCase() });
 
 /** No fact from the server reads as "no", the fact's default. */
-const NOT_CHECKED = Object.freeze({ subject: 'repository', controls: 'no', reason: 'NOT_CHECKED_YET', detail: null, repository: null, deployment: null });
+const NOT_CHECKED = Object.freeze({ subject: 'repository', proof: 'no', reason: 'NOT_CHECKED_YET', detail: null, repository: null, deployment: null });
 
 function listingView(l, label, blockTimestamp, control) {
   const opened = Number(l.openedAt);
@@ -84,15 +84,13 @@ function findingView(f) {
  */
 export function recordView(view) {
   const { record, labels, history, block } = view;
-  const ids = new Set(record.listings.map((l) => String(l.listingId)));
-  const listed = history.events.find((e) => e.name === 'Listed' && ids.has(String(e.listingId)));
   const h = record.history;
+  const a = view.artifact;
   return {
     hash: record.artifactHash.toLowerCase(),
     kind: record.kind,
-    artifact: listed
-      ? { repo: listed.args.repo, baseCommit: listed.args.baseCommit, chainId: String(listed.args.chainId), address: listed.args.artifactAddress }
-      : null,
+    artifact: a ? { repo: a.repo, baseCommit: a.baseCommit, chainId: String(a.chainId), address: a.address } : null,
+    fork: view.fork ?? null,
     listingCount: String(record.listingCount),
     active: record.active.map(String),
     listings: record.listings.map((l) => listingView(l, labels.listings[String(l.listingId)], block.timestamp, view.control?.[String(l.listingId)])),
@@ -124,6 +122,10 @@ export function recordView(view) {
       disclosedAt: time(f.disclosedAt),
       verdict: time(f.judgedAt) === null ? null : { outcome: f.outcome, at: Number(f.judgedAt) },
     })),
+    notCounted: {
+      listings: (view.notCounted?.listings ?? []).map((l) => ({ id: String(l.listingId), maker: l.maker, state: l.state, reason: l.reason, detail: l.detail ?? null, control: view.control?.[String(l.listingId)] ?? NOT_CHECKED })),
+      findings: (view.notCounted?.findings ?? []).length,
+    },
     block,
     fresh: view.fresh,
     staleReason: view.staleReason,

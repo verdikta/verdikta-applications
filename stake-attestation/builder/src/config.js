@@ -8,6 +8,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { DEFAULT_GIT_HOSTS } from '@verdikta/stake-attestation-shared/control-proof';
+
 import { AGENT_ENDPOINTS } from './agent.js';
 import { codeReview } from './common.js';
 import { BuilderError } from './errors.js';
@@ -150,7 +152,7 @@ function parseScan(raw, env) {
  *   secrets are read from env when used
  */
 export function parseConfig(raw, { baseDir, env = process.env } = {}) {
-  keys(raw, ['registry', 'runner', 'explorers', 'solc', 'signing', 'platforms', 'limits', 'repoMirrors', 'workDir', 'docker', 'scan'], 'the config');
+  keys(raw, ['registry', 'runner', 'explorers', 'solc', 'signing', 'platforms', 'limits', 'repoMirrors', 'workDir', 'docker', 'scan', 'control'], 'the config');
   const resolve = (p) => path.resolve(baseDir, p);
 
   // registry: where the build pushes and reads the image; `publishAs`, when set, is the repository
@@ -275,10 +277,24 @@ export function parseConfig(raw, { baseDir, env = process.env } = {}) {
 
   const scan = parseScan(raw.scan, env);
 
+  // control: the project's proof (src/listingProof.js): the hosts a listing's repository may be on,
+  // the same list as the site's (SA_CONTROL_GIT_HOSTS), and the bounds on reading it
+  const c = raw.control ?? {};
+  keys(c, ['gitHosts', 'timeoutMs', 'maxBytes'], 'control');
+  const gitHosts = c.gitHosts ?? DEFAULT_GIT_HOSTS;
+  if (!Array.isArray(gitHosts) || gitHosts.length === 0 || !gitHosts.every((h) => typeof h === 'string' && /^[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)+$/.test(h))) fail('control.gitHosts must list lowercase host names');
+  const positive = (v, def, where) => {
+    const n = v === undefined ? def : v;
+    if (!Number.isInteger(n) || n < 1) fail(`${where} must be a positive integer`);
+    return n;
+  };
+  const control = Object.freeze({ gitHosts: Object.freeze([...gitHosts]), timeoutMs: positive(c.timeoutMs, 120000, 'control.timeoutMs'), maxBytes: positive(c.maxBytes, 256 * 1024 * 1024, 'control.maxBytes') });
+
   return Object.freeze({
     registry,
     runner,
     scan,
+    control,
     explorers,
     signing,
     platforms,

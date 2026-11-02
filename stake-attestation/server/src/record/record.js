@@ -50,3 +50,36 @@ export async function readRecord(read, artifactHash, { listingPage, itemPage }) 
   }
   return out;
 }
+
+/**
+ * The record as if only the listings in `counted` were on it (owner decision Q34): recordByHash
+ * combines every listing of a hash, and the site must not. Each ListingRecord carries its own history,
+ * and each finding and flag names its listing, so nothing more is read from the chain.
+ * @param {object} record - readRecord's answer
+ * @param {Set<string>} counted - listing ids
+ * @returns {{ record: object, findings: object[], flags: object[] }} the counted record, and the
+ *   findings and flags of the listings that do not count
+ */
+export function partitionRecord(record, counted) {
+  const listings = record.listings.filter((l) => counted.has(String(l.listingId)));
+  const zero = Object.fromEntries(Object.entries(record.history).map(([k, v]) => [k, Array.isArray(v) ? v.map(() => '0') : '0']));
+  const history = listings.reduce((sum, l) => addHistory(sum, l.history), structuredClone(zero));
+  const inRecord = (x) => counted.has(String(x.listingId));
+  const findings = record.findings.filter(inRecord);
+  const flags = record.flags.filter(inRecord);
+  return {
+    record: {
+      ...record,
+      listingCount: String(listings.length),
+      active: record.active.filter((id) => counted.has(String(id))),
+      listings,
+      history,
+      findingCount: String(findings.length),
+      findings,
+      flagCount: String(flags.length),
+      flags,
+    },
+    findings: record.findings.filter((x) => !inRecord(x)),
+    flags: record.flags.filter((x) => !inRecord(x)),
+  };
+}

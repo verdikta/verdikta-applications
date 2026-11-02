@@ -28,11 +28,14 @@ export function useListingRecord(listingId, artifactHash, opened) {
       .then((r) => {
         if (!live) return;
         const id = String(listingId);
-        const events = r?.history.events ?? [];
+        // a listing that does not count has its events apart
+        const events = [...(r?.history.events ?? []), ...(r?.notCounted?.events ?? [])];
         const claims = [...new Set(events.filter((e) => (e.name === 'Committed' || e.name === 'LateClaim') && e.listingId === id).map((e) => e.claimId))]
           .sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
         const listed = events.find((e) => e.name === 'Listed' && e.listingId === id);
-        setState({ claims, identity: listed ? { kind: listed.args.kind, repo: listed.args.repo, baseCommit: listed.args.baseCommit } : null });
+        const apart = r?.notCounted?.listings.find((l) => String(l.listingId) === id);
+        const counted = Boolean(r?.record.listings.some((l) => String(l.listingId) === id));
+        setState({ claims, counted, why: apart ? apart.detail ?? apart.reason : null, identity: listed ? { kind: listed.args.kind, repo: listed.args.repo, baseCommit: listed.args.baseCommit } : null });
       })
       .catch((err) => { if (live) setState({ failed: siteErrorText(err) }); });
     return () => { live = false; };
@@ -154,6 +157,22 @@ export function RollForward({ listingId, listing, identity }) {
   );
 }
 
+/** Whether the site offers a commit on this listing: only one that counts. */
+function CommitOffer({ data }) {
+  const id = useId();
+  const O = STRINGS.offer;
+  if (!data) return null;
+  let text = O.yes;
+  if (data.failed) text = fill(O.unknown, { reason: data.failed });
+  else if (!data.counted) text = fill(O.no, { reason: data.why ?? STRINGS.notCounted.none });
+  return (
+    <section className="claim" aria-labelledby={id} data-testid="commit-offer" data-offered={String(Boolean(data.counted))}>
+      <h3 id={id}>{O.title}</h3>
+      <p>{text}</p>
+    </section>
+  );
+}
+
 /** The parts of a listing's page that follow its opening: its claims, its record, roll forward. */
 export function ListingMore({ listingId, listing }) {
   const state = LISTING_STATES[Number(listing.state)];
@@ -162,6 +181,7 @@ export function ListingMore({ listingId, listing }) {
   if (!opened) return null;
   return (
     <>
+      <CommitOffer data={data} />
       <ListingClaims artifactHash={listing.artifactHash} data={data} />
       {data && !data.failed && <RollForward listingId={listingId} listing={listing} identity={data.identity} />}
     </>

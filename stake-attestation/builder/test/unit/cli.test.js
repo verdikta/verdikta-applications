@@ -14,6 +14,7 @@ import { codeReview } from '../../src/common.js';
 import { main } from '../../src/cli.js';
 import { sha256 } from '../helpers/fakes.js';
 import { writeAcceptedBuild } from '../helpers/build.js';
+import { MAKER, provenAnswer } from '../helpers/proof.js';
 import { draftSpec } from '../helpers/specs.js';
 
 const BIN = fileURLToPath(new URL('../../bin/verdikta-build-env.js', import.meta.url));
@@ -67,7 +68,7 @@ test('sign with a dev key: attestation.json and the dev trust set; the report re
   const dir = tmp();
   const { cr, bl } = await acceptedDir(dir);
   const t = io();
-  const code = await main(['sign', '--config', configFile(dir), '--dir', dir], { env: {}, ...t });
+  const code = await main(['sign', '--config', configFile(dir), '--dir', dir, '--maker', MAKER], { env: {}, ...t, deps: { checkRepositoryControl: provenAnswer() } });
   assert.equal(code, 0, t.err);
   const attestation = JSON.parse(fs.readFileSync(path.join(dir, 'attestation.json')));
   const trust = JSON.parse(fs.readFileSync(path.join(dir, 'dev-trust.json')));
@@ -89,7 +90,7 @@ test('sign with a production key from the environment: nothing is written while 
   const body = pem.split('\n').slice(1, -2).join('');
   const env = { VERDIKTA_BUILDER_KEY: pem };
   const t = io();
-  const code = await main(['sign', '--config', configFile(dir, { env: 'VERDIKTA_BUILDER_KEY' }), '--dir', dir], { env, ...t });
+  const code = await main(['sign', '--config', configFile(dir, { env: 'VERDIKTA_BUILDER_KEY' }), '--dir', dir, '--maker', MAKER], { env, ...t, deps: { checkRepositoryControl: provenAnswer() } });
   assert.equal(code, 1);
   assert.match(t.err, /SIGNING_KEY_NOT_TRUSTED/);
   assert.equal(fs.existsSync(path.join(dir, 'attestation.json')), false);

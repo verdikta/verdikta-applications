@@ -7,7 +7,8 @@
 // or prompt, and no transport but https (and the local one for a mirror path).
 //
 // A fetch by id says the host holds the commit, not that the repository's writers put it there: on
-// GitHub it can return a fork's commit through the parent's URL. controlCheck.js is what asks.
+// GitHub it can return a fork's commit through the parent's URL. controlCheck.js is what asks, and
+// the build's control step (src/listingProof.js) refuses such a commit before this fetch runs.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

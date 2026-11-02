@@ -170,11 +170,12 @@ test('the signed message binds the maker, the artifact hash, its chain and contr
 });
 
 test('the wording is facts only: every statement and reason passes the banned-words and judgemental-phrase checks', () => {
-  for (const subject of ['repository', 'deployment']) {
-    assert.equal(statementOf(subject, true), `staker controls the ${subject}: yes`);
-    assert.equal(statementOf(subject, false), `staker controls the ${subject}: no`);
-    assert.deepEqual(wordingProblems(statementOf(subject, true)), []);
-  }
+  // a repository names its staker, who may be a sponsor; only a contract's signer speaks of control
+  assert.equal(statementOf('repository', true), 'staker named by the repository: yes');
+  assert.equal(statementOf('repository', false), 'staker named by the repository: no');
+  assert.equal(statementOf('deployment', true), 'staker controls the deployment: yes');
+  assert.equal(statementOf('deployment', false), 'staker controls the deployment: no');
+  for (const subject of ['repository', 'deployment']) assert.deepEqual(wordingProblems(statementOf(subject, true)), []);
   assert.ok(Object.keys(CONTROL_REASONS).length >= 12);
   for (const [code, text] of Object.entries(CONTROL_REASONS)) {
     assert.deepEqual(wordingProblems(text), [], code);

@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createCliBuilder } from '../../src/builder/cli.js';
 import { draftSpec, listingRequest } from '../helpers/fixtures.js';
+import { makeRepo, proofFile } from '../helpers/gitRepo.js';
 import { startApi } from '../helpers/http.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -40,7 +41,7 @@ test('the real builder\'s refusal reaches the maker as its validation report, an
   try {
     const spec = draftSpec();
     spec.commands = { ...spec.commands, framework: 'vitest' };
-    const res = await s.post('/api/listings', listingRequest({ spec }));
+    const res = await s.submit(listingRequest({ spec }));
     assert.equal(res.status, 202);
     const view = await s.settle((await res.json()).id, 60000);
     assert.equal(view.status, 'refused', JSON.stringify(view.error));
@@ -50,6 +51,44 @@ test('the real builder\'s refusal reaches the maker as its validation report, an
     assert.deepEqual(report.steps.map((x) => [x.name, x.status]), [['spec', 'failed']]);
     assert.equal(report.refusals[0].code, 'SPEC_INVALID');
     assert.ok(report.refusals[0].issues.some((i) => i.code === 'FRAMEWORK_UNSUPPORTED'));
+    assert.equal(view.archives, null);
+    assert.equal(s.pinner.pins.length, 0);
+  } finally {
+    await s.close();
+  }
+});
+
+// The project's proof, between the packages (node P9): the server's own check passes, on a stand-in
+// answer, and the real builder reads the repository for itself: real git against a bare repository,
+// through the command line the server runs, and refuses a commit whose file names someone else.
+test('the real builder refuses a commit the maker is not named at, with its code, as the validation report', async () => {
+  assert.ok(fs.existsSync(path.join(BUILDER, 'node_modules', '@verdikta', 'common')), 'run npm ci in stake-attestation/builder first');
+  const mirrors = fs.mkdtempSync(path.join(tmp, 'mirrors-'));
+  const repo = makeRepo(mirrors, 'https://github.com/acme/vault');
+  const commit = repo.commit({ file: proofFile('0xAb8483F64d9C6d1EcF9b849Ae677dD3315835cb2') });
+  const config = path.join(tmp, 'builder-proof.json');
+  fs.writeFileSync(config, JSON.stringify({
+    registry: { repository: 'localhost:5000/stake-env' },
+    runner: { url: 'http://127.0.0.1:9', tokenEnv: 'SA_TEST_RUNNER_TOKEN' },
+    signing: { key: 'dev' },
+    repoMirrors: { [repo.url]: repo.mirror },
+  }));
+  const builder = createCliBuilder({
+    bin: path.join(BUILDER, 'bin', 'verdikta-build-env.js'),
+    config,
+    workDir: tmp,
+    buildEnv: [],
+    signEnv: [],
+    timeoutMs: 60000,
+  }, { env: { PATH: process.env.PATH, HOME: process.env.HOME } });
+  const s = await startApi({ builder });
+  try {
+    const res = await s.submit(listingRequest({ spec: draftSpec({ repo: repo.url, baseCommit: commit }) }));
+    assert.equal(res.status, 202);
+    const view = await s.settle((await res.json()).id, 60000);
+    assert.equal(view.status, 'refused', JSON.stringify(view.error));
+    assert.deepEqual(view.validationReport.steps.map((x) => [x.name, x.status]), [['spec', 'ok'], ['control', 'failed']]);
+    assert.equal(view.validationReport.refusals[0].code, 'PROOF_NAMES_ANOTHER_ADDRESS');
     assert.equal(view.archives, null);
     assert.equal(s.pinner.pins.length, 0);
   } finally {

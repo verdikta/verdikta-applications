@@ -131,3 +131,41 @@ export function listArguments({ spec, knownIssues, allowlist, oracle, listingCid
     artifactHash: artifactHashOf(artifact),
   };
 }
+
+/**
+ * What list() stores of a listing that its archive also says, as the contract's getListing answers it:
+ * everything but the allowlist and the oracle, which the archive does not hold. A listing whose
+ * on-chain terms are others is not the listing the builder signed.
+ */
+export function signedTerms(spec, knownIssues) {
+  const { params, knownIssueIds } = listArguments({ spec, knownIssues, allowlist: [], oracle: {}, listingCid: '', disputeCid: '' });
+  return {
+    disclosureKey: params.disclosureKey.toLowerCase(),
+    awards: params.awards,
+    lowestClassCounted: spec.stake.lowestClassCounted,
+    bondWei: params.bondWei,
+    fixWindow: params.fixWindow,
+    disputeWindow: params.disputeWindow,
+    disclosureGrace: params.disclosureGrace,
+    revealWindow: params.revealWindow,
+    valueAtRiskUsd: params.valueAtRiskUsd,
+    knownIssueIds: knownIssueIds.map((x) => x.toLowerCase()),
+  };
+}
+
+/** Whether a getListing answer (chain/codec.js's JSON) differs from an archive's signedTerms. */
+export function termsDiffer(terms, onchain) {
+  if (!terms) return true;
+  const list = (a) => (Array.isArray(a) ? a.map((x) => String(x).toLowerCase()) : []);
+  const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+  return String(onchain.disclosureKey).toLowerCase() !== terms.disclosureKey
+    || !sameList(list(onchain.awards), list(terms.awards))
+    || onchain.lowestClassCounted !== terms.lowestClassCounted
+    || String(onchain.bondWei) !== String(terms.bondWei)
+    || Number(onchain.fixWindow) !== terms.fixWindow
+    || Number(onchain.disputeWindow) !== terms.disputeWindow
+    || Number(onchain.disclosureGrace) !== terms.disclosureGrace
+    || Number(onchain.revealWindow) !== terms.revealWindow
+    || String(onchain.valueAtRiskUsd) !== String(terms.valueAtRiskUsd)
+    || !sameList([...list(onchain.knownIssueIds)].sort(), [...terms.knownIssueIds].sort());
+}

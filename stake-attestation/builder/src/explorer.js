@@ -1,8 +1,10 @@
 // A block explorer's contract API in the Etherscan v2 shape (also served by Blockscout):
 // `module=contract&action=getsourcecode` for the verified source of an address, and
-// `module=proxy&action=eth_getCode` for its deployed bytecode. The base URL and the API key come
+// the `proxy` module for its deployed bytecode and a deployment proof's reads. The base URL and the API key come
 // from the builder's config (per chain id); the key is sent as `apikey` and never appears in an
 // error, a log line or the report.
+import { getAddress } from 'ethers';
+
 import { BuilderError } from './errors.js';
 
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
@@ -137,6 +139,52 @@ export function createExplorer({ apiUrl, apiKey = null, chainId, fetch: fetchImp
         throw new BuilderError('EXPLORER_UNAVAILABLE', redact(`eth_getCode ${address}: ${cut(json?.error?.message ?? json?.message)} ${cut(json?.result)}`));
       }
       return json.result.toLowerCase();
+    },
+    /**
+     * A JSON-RPC read through the explorer's proxy module: its `result`, null included.
+     * @throws {Error} code CALL_EXCEPTION for a call that reverted
+     * @throws {BuilderError} EXPLORER_UNAVAILABLE for anything else that is no answer
+     */
+    async proxy(action, params = {}) {
+      const json = await call({ module: 'proxy', action, ...params }, action);
+      if (json?.error) {
+        if (/revert/i.test(String(json.error.message))) throw Object.assign(new Error('execution reverted'), { code: 'CALL_EXCEPTION' });
+        throw new BuilderError('EXPLORER_UNAVAILABLE', redact(`${action}: ${cut(json.error.message)}`));
+      }
+      if (!json || !Object.hasOwn(json, 'result') || json.status === '0') {
+        throw new BuilderError('EXPLORER_UNAVAILABLE', redact(`${action}: ${cut(json?.message)} ${cut(json?.result)}`));
+      }
+      return json.result;
+    },
+  };
+}
+
+const addressOf = (a) => (typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a) ? getAddress(a.toLowerCase()) : null);
+
+/**
+ * The listing's chain as a deployment proof reads it (shared/src/controlProof.js), through the
+ * explorer configured for that chain, in the form ethers' provider gives: an explorer's answers are
+ * plain JSON-RPC, with hex numbers and lowercase addresses. The chain id is the explorer's own: it
+ * is configured per chain, and the v2 API takes it as a parameter. Every read is of `latest`: the
+ * proxy module's eth_call and eth_getCode take no block number, so the check's reads are not pinned
+ * to one block here as they are on the site's RPC, and the sign step records that it trusts them.
+ */
+export function explorerChain(explorer) {
+  return {
+    send: async (method) => {
+      if (method !== 'eth_chainId') throw new TypeError(`no ${method} through the explorer`);
+      return `0x${explorer.chainId.toString(16)}`;
+    },
+    getBlockNumber: async () => Number(await explorer.proxy('eth_blockNumber')),
+    getCode: (address) => explorer.proxy('eth_getCode', { address, tag: 'latest' }),
+    call: ({ to, data }) => explorer.proxy('eth_call', { to, data, tag: 'latest' }),
+    getTransaction: async (hash) => {
+      const tx = await explorer.proxy('eth_getTransactionByHash', { txhash: hash });
+      return tx ? { from: addressOf(tx.from) } : null;
+    },
+    getTransactionReceipt: async (hash) => {
+      const rc = await explorer.proxy('eth_getTransactionReceipt', { txhash: hash });
+      return rc ? { status: Number(rc.status), blockNumber: Number(rc.blockNumber), contractAddress: addressOf(rc.contractAddress) } : null;
     },
   };
 }

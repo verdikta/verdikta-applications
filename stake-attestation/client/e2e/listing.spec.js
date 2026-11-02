@@ -7,7 +7,7 @@ import common from '@verdikta/common';
 
 import { STRINGS, fill } from '../src/strings.js';
 import { disclosure, expect, installWallet, setBuilderMode, shot, test } from './support/fixtures.js';
-import { awardField, field, fillListing, generateAndSaveKey, listAndFund, repoTerms, validate } from './support/listingForm.js';
+import { awardField, field, fillListing, generateAndSaveKey, listAndFund, repoTerms, signDeployment, validate } from './support/listingForm.js';
 
 const F = STRINGS.listing.fields;
 const B = STRINGS.listing.bounds;
@@ -49,9 +49,9 @@ test('the windows default to 14 days (30 for a contract), 72 h, 48 h and 7 days'
   await expect(field(page, F.fixWindowDays)).toHaveValue('21');
 });
 
-test('the form holds the D8 bounds, and a 0-day fix window is allowed with no grace', async ({ page }) => {
+test('the form holds the D8 bounds, and a 0-day fix window is allowed with no grace', async ({ stack, page }) => {
   const submit = page.getByRole('button', { name: STRINGS.listing.submit });
-  await fillListing(page, repoTerms());
+  await fillListing(page, await repoTerms(stack));
   await generateAndSaveKey(page);
   await expect(submit).toBeEnabled();
 
@@ -90,7 +90,7 @@ test('the form holds the D8 bounds, and a 0-day fix window is allowed with no gr
 test('a maker lists and funds a repository version: server validation, report, list() and fund()', async ({ page, stack, chain }) => {
   const { recipient } = await generateAndSaveKey(page);
   // HIGH below MEDIUM: the client leaves the award rules to the server, which refuses them
-  const terms = repoTerms();
+  const terms = await repoTerms(stack);
   await fillListing(page, {
     ...terms,
     awards: { ...terms.awards, HIGH: '0.05' },
@@ -137,30 +137,31 @@ test('a maker lists and funds a repository version: server validation, report, l
   expect(l.escrowWei).toBe(2n * ETH);
 });
 
-test('a deployed contract listed with a 0-day fix window and the shortest D8 windows', async ({ page, chain }) => {
+test('a deployed contract listed with a 0-day fix window and the shortest D8 windows', async ({ stack, page, chain }) => {
   const { recipient } = await generateAndSaveKey(page);
   await fillListing(page, {
-    ...repoTerms(),
+    ...await repoTerms(stack),
     kind: 'contract',
-    address: '0x5f2a00000000000000000000000000000000c0de',
-    chainId: 8453,
+    address: stack.ownedContract,
+    chainId: stack.chainId,
     windows: { fix: 0, grace: 0, dispute: 24, reveal: 3 },
   });
+  await signDeployment(page, stack);
   await validate(page, 'ready');
   const listingId = await listAndFund(page);
 
   const l = await chain.sa.getListing(listingId);
   expect(l.state).toBe(State.Open);
   expect(l.artifactKind).toBe(1n);
-  expect(l.artifactAddress.toLowerCase()).toBe('0x5f2a00000000000000000000000000000000c0de');
-  expect(l.artifactChainId).toBe(8453n);
+  expect(l.artifactAddress).toBe(stack.ownedContract);
+  expect(l.artifactChainId).toBe(BigInt(stack.chainId));
   expect(l.disclosureKey).toBe(bytes32Of(recipient));
   expect([l.fixWindow, l.disputeWindow, l.disclosureGrace, l.revealWindow]).toEqual([0n, 24n * HOUR, 0n, 3n * DAY]);
   expect([...l.allowlist]).toEqual([]);
 });
 
-test('a version listed but not funded is funded later from its own page, and listing it again points there', async ({ page, chain }) => {
-  const terms = repoTerms();
+test('a version listed but not funded is funded later from its own page, and listing it again points there', async ({ stack, page, chain }) => {
+  const terms = await repoTerms(stack);
   await generateAndSaveKey(page);
   await fillListing(page, terms);
   await validate(page, 'ready');
@@ -193,9 +194,20 @@ test('a version listed but not funded is funded later from its own page, and lis
   await expect(page.getByRole('button', { name: STRINGS.chain.fund })).toHaveCount(0);
 });
 
-test('a read that fails after fund() is mined never offers a second payment', async ({ page, chain }) => {
+test('list() is sent only from the wallet the listing was built for: from another it would not count', async ({ page, stack, chain }) => {
   await generateAndSaveKey(page);
-  await fillListing(page, repoTerms());
+  await fillListing(page, await repoTerms(stack));
+  await validate(page, 'ready');
+  const before = await chain.sa.listingCount();
+  await page.evaluate((a) => window.__testWallet.setAccount(a), stack.accounts.other);
+  await page.getByRole('button', { name: STRINGS.chain.list }).click();
+  await expect(page.getByRole('alert')).toContainText('Nothing was sent');
+  expect(await chain.sa.listingCount()).toBe(before);
+});
+
+test('a read that fails after fund() is mined never offers a second payment', async ({ stack, page, chain }) => {
+  await generateAndSaveKey(page);
+  await fillListing(page, await repoTerms(stack));
   await validate(page, 'ready');
   await page.getByRole('button', { name: STRINGS.chain.list }).click();
   const listed = page.getByTestId('listed');
@@ -211,9 +223,9 @@ test('a read that fails after fund() is mined never offers a second payment', as
 });
 
 /** list() through the page, without fund(); returns the listing id. */
-async function listOnly(page) {
+async function listOnly(page, stack) {
   await generateAndSaveKey(page);
-  await fillListing(page, repoTerms());
+  await fillListing(page, await repoTerms(stack));
   await validate(page, 'ready');
   await page.getByRole('button', { name: STRINGS.chain.list }).click();
   const listed = page.getByTestId('listed');
@@ -222,7 +234,7 @@ async function listOnly(page) {
 }
 
 test('a listing page left open in another tab cannot pay a second escrow', async ({ page, context, stack, chain }) => {
-  const listingId = await listOnly(page);
+  const listingId = await listOnly(page, stack);
   const other = await context.newPage();
   await installWallet(other, stack);
   await other.goto(`/#/fund/${listingId}`);
@@ -237,8 +249,8 @@ test('a listing page left open in another tab cannot pay a second escrow', async
   expect((await chain.sa.getListing(listingId)).escrowWei).toBe(2n * ETH);
 });
 
-test('the listing page funds on the site\'s chain only', async ({ page, chain }) => {
-  const listingId = await listOnly(page);
+test('the listing page funds on the site\'s chain only', async ({ page, stack, chain }) => {
+  const listingId = await listOnly(page, stack);
   await page.goto(`/#/fund/${listingId}`);
   await expect(page.getByRole('button', { name: STRINGS.chain.fund })).toBeVisible();
   await page.evaluate(() => window.__testWallet.setChain(1));
@@ -253,8 +265,8 @@ test('the listing page funds on the site\'s chain only', async ({ page, chain })
   expect((await chain.sa.getListing(listingId)).state).toBe(State.Open);
 });
 
-test('a wallet the page switches to the site\'s chain while funding keeps the funding on the page', async ({ page, chain }) => {
-  const listingId = await listOnly(page);
+test('a wallet the page switches to the site\'s chain while funding keeps the funding on the page', async ({ page, stack, chain }) => {
+  const listingId = await listOnly(page, stack);
   await page.goto(`/#/fund/${listingId}`);
   await expect(page.getByRole('button', { name: STRINGS.chain.fund })).toBeVisible();
   await page.evaluate(() => window.__testWallet.setChain(1, { allowSwitch: true }));
@@ -268,7 +280,7 @@ test('a wallet the page switches to the site\'s chain while funding keeps the fu
 });
 
 test('a listing page whose read failed can read again', async ({ page, stack }) => {
-  const listingId = await listOnly(page);
+  const listingId = await listOnly(page, stack);
   const offline = (url) => url.href.startsWith(stack.rpcUrl);
   await page.route(offline, (route) => route.abort());
   await page.goto(`/#/fund/${listingId}`);
@@ -282,8 +294,9 @@ test('a listing the builder refuses shows the validation report and offers nothi
   setBuilderMode(stack, 'refused-source');
   try {
     await generateAndSaveKey(page);
-    const terms = repoTerms();
-    await fillListing(page, { ...terms, kind: 'contract', address: '0x5f2a00000000000000000000000000000000c0de', chainId: 8453 });
+    const terms = await repoTerms(stack);
+    await fillListing(page, { ...terms, kind: 'contract', address: stack.ownedContract, chainId: stack.chainId });
+    await signDeployment(page, stack);
     await validate(page, 'refused');
     const report = page.getByRole('region', { name: STRINGS.report.title });
     await expect(report).toContainText(fill(STRINGS.report.status, { status: 'refused' }));

@@ -18,6 +18,13 @@ export const STACK_FILE = path.join(CLIENT, '.e2e', 'stack.json');
 const SCREENSHOTS = path.join(CLIENT, 'test-results', 'screenshots');
 
 export { expect };
+/** The repository the tests list by default. */
+export const REPO_URL = 'https://github.com/acme/vault';
+/** A fresh commit on `repo`'s main (a bare repository in the stack's mirror folder) whose file names `maker`. */
+export async function provenCommit(stack, { repo = REPO_URL, maker = stack.accounts.maker } = {}) {
+  const { makeRepo, proofFile } = await fromServer('test/helpers/gitRepo.js');
+  return makeRepo(stack.mirrorDir, repo).commit({ file: proofFile(maker) });
+}
 export const readStack = () => JSON.parse(fs.readFileSync(STACK_FILE, 'utf8'));
 export const fromServer = (rel) => import(pathToFileURL(path.join(SERVER, rel)).href);
 
@@ -191,17 +198,26 @@ export function chainOf(stack) {
     },
 
     /**
-     * An Open listing made the way the site makes one: the server validates and pins it (the
-     * request from the server's own test fixtures), the maker sends list() with the server's
-     * arguments and fund() with the fee and the CRITICAL award.
+     * An Open listing made the way the site makes one: the repository names the maker at the commit,
+     * the maker's wallet signs the request, the server validates and pins it (the request from the
+     * server's own test fixtures), the maker sends list() with the server's arguments and fund() with
+     * the fee and the CRITICAL award; and it waits for the site to count it.
      */
-    async openListing({ recipient, spec = {}, stake = {}, allowlist = [], maker: makerAddress = stack.accounts.maker, baseCommit = crypto.randomBytes(20).toString('hex'), escrow = null }) {
+    async openListing({ recipient, spec = {}, stake = {}, allowlist = [], maker: makerAddress = stack.accounts.maker, baseCommit = null, escrow = null, deploymentProof = null }) {
       const { draftSpec, knownIssues } = await fromServer('test/helpers/fixtures.js');
-      // a fresh commit by default: a maker has one listing per version that is not closed
-      const draft = draftSpec({ disclosureKey: recipient, baseCommit, ...spec });
+      // a fresh commit by default, on the repository's main, whose file names the maker: a maker has
+      // one listing per version that is not closed
+      const repoUrl = spec.repo ?? REPO_URL;
+      const commit = baseCommit ?? await provenCommit(stack, { repo: repoUrl, maker: makerAddress });
+      const draft = draftSpec({ disclosureKey: recipient, baseCommit: commit, ...spec });
       draft.stake = { ...draft.stake, ...stake };
-      const body = { spec: draft, knownIssues: knownIssues(), allowlist };
-      const res = await fetch(`${stack.apiUrl}/api/listings`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const body = { spec: draft, knownIssues: knownIssues(), allowlist, maker: makerAddress, ...(deploymentProof ? { deploymentProof } : {}) };
+      const post = (path, b) => fetch(`${stack.apiUrl}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) });
+      const c = await post('/api/listings/challenge', body);
+      expect(c.status, await c.clone().text()).toBe(200);
+      const challenge = await c.json();
+      const signature = await (await provider.getSigner(makerAddress)).signMessage(challenge.message);
+      const res = await post('/api/listings', { ...body, auth: { nonce: challenge.nonce, signature } });
       expect(res.status).toBe(202);
       let view = await res.json();
       for (let i = 0; i < 400 && !['ready', 'refused', 'error'].includes(view.status); i++) {
@@ -215,7 +231,40 @@ export function chainOf(stack) {
       const listingId = events(rc, 'Listed')[0].args.listingId;
       const fee = await sa.feeDue(listingId);
       await (await maker.fund(listingId, fee, { value: fee + (escrow ?? BigInt(params.awards[3])) })).wait();
-      return { listingId, view, artifactHash: (await sa.getListing(listingId)).artifactHash };
+      const artifactHash = (await sa.getListing(listingId)).artifactHash;
+      await this.counted(artifactHash, listingId);
+      return { listingId, view, artifactHash };
+    },
+
+    /** Waits for the site to count a listing: its archive read, its proof checked. */
+    async counted(artifactHash, listingId) {
+      await this.until(async () => {
+        const res = await fetch(`${stack.apiUrl}/api/records/${artifactHash}`);
+        return res.ok && (await res.json()).record.listings.some((l) => l.listingId === String(listingId));
+      }, { timeoutMs: 45_000, what: `listing ${listingId} counted` });
+    },
+
+    /** Waits for the site to show a listing apart, as not counted; returns its row. */
+    async notCounted(artifactHash, listingId) {
+      let row = null;
+      await this.until(async () => {
+        const res = await fetch(`${stack.apiUrl}/api/records/${artifactHash}`);
+        if (!res.ok) return false;
+        row = (await res.json()).notCounted.listings.find((l) => l.listingId === String(listingId) && !['ARCHIVE_UNAVAILABLE', 'NOT_CHECKED_YET'].includes(l.reason));
+        return Boolean(row);
+      }, { timeoutMs: 45_000, what: `listing ${listingId} apart` });
+      return row;
+    },
+
+    /** The server's list() arguments sent from another wallet, and funded: list() takes any CID. */
+    async replay(view, from) {
+      const { params, listingCid, disputeCid, knownIssueIds } = view.list;
+      const wallet = await as(from);
+      const rc = await (await wallet.list(params, listingCid, disputeCid, knownIssueIds)).wait();
+      const listingId = events(rc, 'Listed')[0].args.listingId;
+      const fee = await sa.feeDue(listingId);
+      await (await wallet.fund(listingId, fee, { value: fee + BigInt(params.awards[3]) * 50n })).wait();
+      return { listingId };
     },
 
     /**

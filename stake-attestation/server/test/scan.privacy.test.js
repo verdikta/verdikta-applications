@@ -28,7 +28,7 @@ async function scanned({ outcome = 'ok', pinner } = {}) {
   const scanner = fakeScanner({ outcome, delayMs: 50 });
   const s = await api({ builder: fakeBuilder(), scanner, logger, ...(pinner ? { pinner } : {}) });
   const body = { ...listingRequest(), maker: maker.address };
-  const res = await s.post('/api/listings', body);
+  const res = await s.submit(body, { wallet: maker });
   const answers = [await res.json()];
   const { id } = answers[0];
   // the public view at every step the poll sees: queued, building, scanning, pinning, ready
@@ -36,7 +36,7 @@ async function scanned({ outcome = 'ok', pinner } = {}) {
   for (;;) {
     const view = await (await s.get(`/api/listings/${id}`)).json();
     answers.push(view);
-    if (['ready', 'refused', 'error'].includes(view.status) && ['done', 'error', 'skipped', 'not_run'].includes(view.scan.status)) break;
+    if (['ready', 'refused', 'error'].includes(view.status) && ['done', 'error', 'not_run'].includes(view.scan.status)) break;
     if (Date.now() > until) throw new Error(`listing ${id} did not settle`);
     await new Promise((r) => setTimeout(r, 5));
   }
@@ -135,7 +135,7 @@ describe('the findings never leave the maker-only read', () => {
       const s = await api({ builder, scanner: fakeScanner() });
       const body = listingRequest();
       edit(body);
-      const res = await s.post('/api/listings', body);
+      const res = await s.submit(body);
       assert.equal(res.status, 400);
       assert.ok((await res.json()).issues.some((i) => i.code === 'FILE_NAME_RESERVED'));
       assert.equal(builder.calls.length, 0);

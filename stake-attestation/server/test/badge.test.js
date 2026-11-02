@@ -19,7 +19,7 @@ import {
 
 const PRICE = 2420n * 10n ** 8n;
 // every statement of a live stake also states its control fact; none of these listings proves control
-const NO = 'staker controls the repository: no';
+const NO = 'staker named by the repository: yes';
 
 /** The badge's message, from its SVG: the text after the label. */
 async function badge(api, hash) {

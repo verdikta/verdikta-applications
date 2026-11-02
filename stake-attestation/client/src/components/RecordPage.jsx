@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { Fragment, useEffect, useId, useState } from 'react';
 
 import { CONFIG } from '../config.js';
 import { getRecord } from '../lib/api.js';
@@ -10,6 +10,7 @@ import { ControlProofForm, controlRows } from './ControlFacts.jsx';
 import { Diligence } from './Diligence.jsx';
 import { AsOf, Facts, labelText, siteErrorText } from './Facts.jsx';
 import { TextField } from './Field.jsx';
+import { ListingWarning } from './ListingWarning.jsx';
 
 const R = STRINGS.record;
 const E = STRINGS.enums;
@@ -45,7 +46,7 @@ function Lineage({ to }) {
   return to.hash ? <a href={`#/record/${to.hash}`}>{text}</a> : text;
 }
 
-function Stake({ l, hash, onChanged }) {
+function Stake({ l }) {
   const id = useId();
   const f = (name) => `listing-${l.id}-${name}`;
   return (
@@ -72,7 +73,48 @@ function Stake({ l, hash, onChanged }) {
         { id: f('predecessor'), label: R.predecessor, value: <Lineage to={l.predecessor} /> },
         { id: f('successor'), label: R.successor, value: <Lineage to={l.successor} /> },
       ]} />
-      <ControlProofForm listingId={l.id} hash={hash} control={l.control} onChanged={onChanged} />
+    </section>
+  );
+}
+
+/** What the host's API says of the repository, and that a plain copy cannot be told. */
+function ForkLabel({ fork }) {
+  const F = STRINGS.fork;
+  let text = F.unknown;
+  if (fork?.status === 'fork') text = fork.parent ? fill(F.yes, { parent: fork.parent }) : F.yesUnknownParent;
+  else if (fork?.status === 'not-fork') text = F.no;
+  return (
+    <>
+      <span data-testid="record-fork-status">{text}</span>
+      {fork?.note ? <span className="hint" data-testid="record-fork-note"> {fork.note}</span> : null}
+    </>
+  );
+}
+
+/** Any listing of the hash that does not count: apart, with why, and no amount. */
+function NotCounted({ apart, hash, onChanged }) {
+  const N = STRINGS.notCounted;
+  if (!apart.listings.length) return null;
+  return (
+    <section className="claim" data-testid="record-not-counted">
+      <h3>{N.title}</h3>
+      <p className="hint">{N.intro}</p>
+      {apart.listings.map((l) => (
+        <Fragment key={l.id}>
+          <Facts
+            testId={`not-counted-${l.id}`}
+            rows={[
+              { id: `not-counted-${l.id}-listing`, label: fill(N.listing, { id: l.id }), value: <a href={`#/fund/${l.id}`}>{R.listingPage}</a> },
+              { id: `not-counted-${l.id}-maker`, label: N.maker, value: <span className="mono">{l.maker}</span> },
+              { id: `not-counted-${l.id}-state`, label: N.state, value: E.listingStates[l.state] ?? l.state },
+              { id: `not-counted-${l.id}-why`, label: N.why, value: l.detail ?? l.reason },
+            ]}
+          />
+          {/* an owner changed, or the listing was built elsewhere: this is where a signature is sent */}
+          <ControlProofForm listingId={l.id} hash={hash} control={l.control} onChanged={onChanged} />
+        </Fragment>
+      ))}
+      {apart.findings > 0 && <p data-testid="not-counted-findings">{fill(N.findings, { count: apart.findings })}</p>}
     </section>
   );
 }
@@ -124,14 +166,17 @@ function Record({ v, onChanged }) {
           a ? { id: 'record-commit', label: R.commit, value: <span className="mono">{a.baseCommit}</span> } : null,
           a && v.kind === 'Contract' ? { id: 'record-address', label: R.address, value: <span className="mono">{a.address}</span> } : null,
           a && v.kind === 'Contract' ? { id: 'record-chain', label: R.chainId, value: a.chainId } : null,
+          a ? { id: 'record-fork', label: STRINGS.fork.label, value: <ForkLabel fork={v.fork} /> } : null,
           { id: 'record-listing-count', label: R.listingCount, value: v.listingCount },
           { id: 'record-active', label: R.active, value: v.active.length ? v.active.join(', ') : R.none },
         ]} />
       </section>
 
+      <ListingWarning />
       <h3>{R.stakes}</h3>
       <p className="hint">{STRINGS.control.intro}</p>
-      {v.listings.map((l) => <Stake key={l.id} l={l} hash={v.hash} onChanged={onChanged} />)}
+      {v.listings.length ? v.listings.map((l) => <Stake key={l.id} l={l} />) : <p data-testid="record-none-counted">{STRINGS.notCounted.none}</p>}
+      <NotCounted apart={v.notCounted} hash={v.hash} onChanged={onChanged} />
       {v.placeholders.length > 0 && <p className="hint">{STRINGS.labels.placeholders}</p>}
 
       <section className="claim" data-testid="record-history">

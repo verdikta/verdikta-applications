@@ -5,8 +5,11 @@ import { AuthError, createWalletAuth } from './auth/walletAuth.js';
 import { createCliBuilder } from './builder/cli.js';
 import { disputeStatementRouter } from './dispute/statement.js';
 import { loadConfig } from './config.js';
+import { ControlError as ListingControlError } from './control/index.js';
+import { createRepositoryChecker } from './control/gitCheck.js';
+import { RefusalCounter } from './listing/refusals.js';
 import { RequestError } from './listing/request.js';
-import { QueueFullError, createListingService } from './listing/service.js';
+import { MakerSignatureError, QueueFullError, createListingService } from './listing/service.js';
 import { createPinner } from './pinning/index.js';
 import { ControlError, SiteError } from './site/index.js';
 
@@ -32,17 +35,22 @@ const consoleLogger = {
  * The stake-attestation API:
  *
  *   GET  /health
- *   POST /api/listings       { spec, knownIssues?, allowlist?, maker? } -> 202 { id, status, ... };
- *                            400 an invalid request (no build started), 429 the build queue is full
- *   GET  /api/listings/:id   the listing's status, validation report and, once ready, both CIDs
- *                            and the arguments of list(); the maker and the scan's status
+ *   POST /api/listings/challenge  { spec, knownIssues?, allowlist?, maker, deploymentProof? } -> 200 the
+ *                            message the maker's wallet signs for this request; 400 an invalid request
+ *   POST /api/listings       the same with auth: { nonce, signature } -> 202 { id, status, ... };
+ *                            400 an invalid request (no build started), 401/403 the maker's wallet did
+ *                            not sign it, 429 the build queue is full. The listing's page then says
+ *                            what became of it: refused for its proof, with a named code, or built
+ *   POST /api/listings/deployment-message  { maker, repo, baseCommit, chainId, address } -> 200 the
+ *                            message a contract listing's deployer or owner signs
+ *   GET  /api/listings/:id   the listing's status, refusal, validation report and, once ready, both
+ *                            CIDs and the arguments of list(); the maker and the scan's status
  *
  * and the baseline scan's findings, for the maker's wallet only (node P4b2; src/auth/walletAuth.js):
  *
  *   POST /api/listings/:id/scan/challenge   {} -> 200 { action, resource, address, nonce, issuedAt,
  *                            expiresAt, message }: the message the maker's wallet signs as it is;
- *                            404 no such listing, 409 the listing names no maker, 429 too many
- *                            challenges waiting
+ *                            404 no such listing, 429 too many challenges waiting
  *   POST /api/listings/:id/scan              { nonce, signature } -> 200 { id, maker, status, scan,
  *                            error }: the builder's scan-findings.json; 400 no nonce or signature,
  *                            401 an unknown, used, expired or mismatched challenge or a bad
@@ -64,7 +72,8 @@ const consoleLogger = {
  *   GET  /api/feed/events?after=&limit=  the contract's events of listings and claims (§13.4)
  *   GET  /api/records/:hash            recordByHash for an artifact hash, its labels, its history
  *   GET  /api/records/:hash/badge.svg  the hash's badge (§4.1)
- *   GET  /api/status                   the indexer's cursor and the keeper's state
+ *   GET  /api/status                   the indexer's cursor, the keeper's state, and refused listing
+ *                                      attempts by reason (no address or repository in the counts)
  *
  * and a contract listing's control proof (node P8; src/control/, docs/control-proof.md). Anyone may
  * send one: it speaks for itself. The record states the message to sign:
@@ -75,7 +84,7 @@ const consoleLogger = {
  *                            count (error: why; nothing is stored), 429 too many being checked, 503
  *                            the listing's chain cannot be read
  *
- * Without one these answer 503 CHAIN_NOT_CONFIGURED.
+ * Without one these answer 503 CHAIN_NOT_CONFIGURED (/api/status with the refused counts in its body).
  *
  * @param {object} [o]
  * @param {object} [o.config] - loadConfig(); default from process.env
@@ -85,18 +94,36 @@ const consoleLogger = {
  * @param {object} [o.auth] - the wallet sign-in (default: createWalletAuth with config.auth)
  * @param {object} [o.logger]
  * @param {object} [o.site] - the chain side (src/site/index.js createSite)
+ * @param {Function} [o.checkRepository] - what git says of a listing's repository (default: the
+ *   control check's command line, src/control/gitCheck.js)
+ * @param {Function} [o.checkDeployment] - a contract listing's signature, checked on its chain and kept
+ *   if it counts (default: the site's; with no deployment configured there is nothing it can bind to)
  */
-export function createApp({ config = loadConfig(process.env), builder, scanner, pinner, auth, logger = consoleLogger, site = null } = {}) {
+export function createApp({ config = loadConfig(process.env), builder, scanner, pinner, auth, logger = consoleLogger, site = null, checkRepository, checkDeployment } = {}) {
   const cli = builder && scanner ? null : createCliBuilder(config.builder, { logger });
   const pins = pinner ?? createPinner(config.pinning);
+  const signIn = auth ?? createWalletAuth({ ttlMs: config.auth.challengeTtlMs });
+  // anyone can ask for a listing's challenge, so those wait apart: a flood of them cannot take a
+  // maker's sign-in for a scan or a dispute with it
+  const listingSignIn = auth ?? createWalletAuth({ ttlMs: config.auth.challengeTtlMs, maxOutstanding: 2000 });
+  const noDeployment = async () => {
+    throw new ListingControlError('CHAIN_NOT_CHECKED', 'this server has no deployment configured, and a deployment proof names one', 503);
+  };
   const listings = createListingService({
     config,
     builder: builder ?? cli,
     scanner: scanner ?? cli,
     pinner: pins,
     logger,
+    auth: listingSignIn,
+    refusals: site?.refusals ?? new RefusalCounter(),
+    proofs: {
+      checkRepository: checkRepository ?? createRepositoryChecker(config.control),
+      checkDeployment: checkDeployment ?? site?.checkDeployment ?? noDeployment,
+      stake: site?.stake ?? null,
+      noteDevTrust: site?.noteDevTrust,
+    },
   });
-  const signIn = auth ?? createWalletAuth({ ttlMs: config.auth.challengeTtlMs });
   const app = express();
   app.disable('x-powered-by');
 
@@ -104,17 +131,27 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
     res.json({ status: 'ok', service: 'stake-attestation-server', version });
   });
 
-  app.post('/api/listings', express.json({ limit: BODY_LIMIT }), (req, res) => {
+  const listingRoute = (name, handler) => (req, res) => {
     try {
-      const view = listings.submit(req.body);
-      res.status(202).location(`/api/listings/${view.id}`).json(view);
+      return handler(req, res);
     } catch (err) {
       if (err instanceof RequestError) return res.status(400).json({ error: err.code, issues: err.issues });
+      if (err instanceof MakerSignatureError) return res.status(err.status).json({ error: err.code, detail: err.detail });
       if (err instanceof QueueFullError) return res.status(429).json({ error: err.code, detail: err.message });
-      logger.error(`POST /api/listings: ${err?.stack ?? err}`);
+      if (err instanceof AuthError) return res.status(err.status).json({ error: err.code, detail: err.detail });
+      logger.error(`POST ${name}: ${err?.stack ?? err}`);
       return res.status(500).json({ error: 'INTERNAL' });
     }
-  });
+  };
+
+  app.post('/api/listings', express.json({ limit: BODY_LIMIT }), listingRoute('/api/listings', (req, res) => {
+    const view = listings.submit(req.body);
+    return res.status(202).location(`/api/listings/${view.id}`).json(view);
+  }));
+
+  app.post('/api/listings/challenge', express.json({ limit: BODY_LIMIT }), listingRoute('/api/listings/challenge', (req, res) => res.set('cache-control', 'no-store').json(listings.challenge(req.body))));
+
+  app.post('/api/listings/deployment-message', express.json({ limit: AUTH_BODY_LIMIT }), listingRoute('/api/listings/deployment-message', (req, res) => res.json(listings.deploymentMessage(req.body))));
 
   app.get('/api/listings/:id', (req, res) => {
     const view = ID.test(req.params.id) ? listings.get(req.params.id) : null;
@@ -129,7 +166,6 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
     try {
       const access = ID.test(req.params.id) ? listings.scanAccess(req.params.id) : null;
       if (!access) return res.status(404).json({ error: 'LISTING_NOT_FOUND' });
-      if (!access.maker) return res.status(409).json({ error: 'LISTING_HAS_NO_MAKER', detail: 'the listing request named no maker, so its scan was not run' });
       return handler(req, res, access);
     } catch (err) {
       logger.error(`${req.method} /api/listings/:id/${req.path.endsWith('/challenge') ? 'scan/challenge' : 'scan'} failed (${err?.name ?? 'error'})`);
@@ -224,7 +260,10 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
     return res.json({ control: await site.submitControlProof(hash, req.params.id, req.body) });
   }));
 
-  app.get('/api/status', chainRoute(async (_req, res) => res.json(site.status())));
+  app.get('/api/status', (req, res, next) => {
+    if (site) return next();
+    return res.status(503).json({ error: 'CHAIN_NOT_CONFIGURED', listings: { refused: listings.refusedCounts() } });
+  }, chainRoute(async (_req, res) => res.json(site.status())));
 
   // body-parser's errors: a body that is not JSON, or one over the limit
   app.use((err, _req, res, next) => {

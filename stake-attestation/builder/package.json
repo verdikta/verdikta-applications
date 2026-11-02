@@ -21,7 +21,9 @@
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",
-    "@verdikta/common": "1.9.0-attest.1"
+    "@verdikta/common": "1.9.0-attest.1",
+    "@verdikta/stake-attestation-shared": "file:../shared",
+    "ethers": "6.15.0"
   },
   "devDependencies": {
     "yaml": "2.9.1"

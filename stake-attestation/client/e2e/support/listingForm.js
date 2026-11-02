@@ -1,23 +1,23 @@
 // Filling the listing form the way a maker does, by its labels (src/strings.js).
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 
 import { expect } from '@playwright/test';
 
 import { STRINGS, fill } from '../../src/strings.js';
+import { REPO_URL, provenCommit } from './fixtures.js';
 
 const F = STRINGS.listing.fields;
 export const field = (page, label) => page.getByLabel(label, { exact: true });
 export const awardField = (page, cls) => field(page, fill(F.award, { class: cls }));
 
 /**
- * A repository listing's terms, as the server's fixture draft has them, at a fresh commit: a
- * maker has one listing per version that is not closed, and every test lists its own.
+ * A repository listing's terms, as the server's fixture draft has them, at a fresh commit whose file
+ * names the maker: a maker has one listing per version that is not closed, and every test lists its own.
  */
-export const repoTerms = () => ({
+export const repoTerms = async (stack, { repo = REPO_URL, maker = stack.accounts.maker } = {}) => ({
   kind: 'repo',
-  repo: 'https://github.com/acme/vault',
-  baseCommit: crypto.randomBytes(20).toString('hex'),
+  repo,
+  baseCommit: await provenCommit(stack, { repo, maker }),
   include: 'src/**',
   exclude: 'test/**\nscript/**',
   awards: { LOW: '0', MEDIUM: '0.1', HIGH: '0.4', CRITICAL: '2' },
@@ -70,6 +70,23 @@ export async function generateAndSaveKey(page) {
   await page.getByRole('button', { name: STRINGS.key.saved }).click();
   await expect(page.getByText(STRINGS.key.gone)).toBeVisible();
   return { recipient, identity, keyFile, fileName: download.suggestedFilename() };
+}
+
+/**
+ * A contract listing's signature in the form: the message for the maker's wallet, signed by `signer`
+ * (by default the owner of the stack's deployment), and the wallet back on the maker.
+ */
+export async function signDeployment(page, stack, signer = stack.accounts.other) {
+  const C = STRINGS.control;
+  const panel = page.getByTestId('deployment-proof');
+  const setWallet = (a) => page.evaluate((x) => window.__testWallet.setAccount(x), a);
+  await setWallet(stack.accounts.maker);
+  await panel.getByRole('button', { name: STRINGS.listing.proof.get }).click();
+  await expect(panel.getByTestId('control-message')).toContainText(`Maker: ${stack.accounts.maker}`);
+  await setWallet(signer);
+  await panel.getByRole('button', { name: C.sign }).click();
+  await expect(panel.getByTestId('control-signer')).toHaveValue(signer);
+  await setWallet(stack.accounts.maker);
 }
 
 /** Sends the form to the server and waits for the listing to settle; returns the final status text. */

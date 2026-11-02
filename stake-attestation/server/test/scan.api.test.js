@@ -20,7 +20,7 @@ after(() => Promise.all(servers.map((s) => s.close())));
 
 async function list(s, maker, over = {}) {
   const body = { ...listingRequest(), ...(maker ? { maker: maker.address } : {}), ...over };
-  const res = await s.post('/api/listings', body);
+  const res = await s.submit(body, maker ? { wallet: maker } : {});
   const json = await res.json();
   assert.equal(res.status, 202, JSON.stringify(json));
   return { id: json.id, body, first: json };
@@ -270,20 +270,6 @@ describe('the baseline scan in the listing flow', () => {
     assert.equal(builder.calls.length, 1);
   });
 
-  test('a listing that names no maker is not scanned: nobody could read the findings', async () => {
-    const scanner = fakeScanner();
-    const s = await api({ builder: fakeBuilder(), scanner });
-    const { id, first } = await list(s, null);
-    assert.equal(first.maker, null);
-    const view = await settleScan(s, id);
-    assert.equal(view.status, 'ready');
-    assert.deepEqual(view.scan, { status: 'skipped', reason: 'NO_MAKER' });
-    assert.equal(scanner.calls.length, 0);
-    const res = await s.post(`/api/listings/${id}/scan/challenge`, {});
-    assert.equal(res.status, 409);
-    assert.equal((await res.json()).error, 'LISTING_HAS_NO_MAKER');
-  });
-
   test('a refused build is not scanned', async () => {
     const maker = wallet();
     const scanner = fakeScanner();
@@ -333,7 +319,7 @@ describe('the maker address in the listing request', () => {
     test(`${name} is refused before any build`, async () => {
       const builder = fakeBuilder();
       const s = await api({ builder, scanner: fakeScanner() });
-      const res = await s.post('/api/listings', { ...listingRequest(), maker });
+      const res = await s.submit({ ...listingRequest(), maker });
       assert.equal(res.status, 400);
       const json = await res.json();
       assert.ok(json.issues.some((i) => i.code === 'MAKER_INVALID' && i.path === '/maker'), JSON.stringify(json.issues));

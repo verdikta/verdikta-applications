@@ -187,7 +187,7 @@ describe('the listing flow pins both archives through the configured backend', (
     const pinner = createPinner(config.pinning, { env: {}, fetch: loopbackFetch });
     const s = await startApi({ builder: fakeBuilder(), pinner, config, logger });
     try {
-      const res = await s.post('/api/listings', listingRequest());
+      const res = await s.submit(listingRequest());
       const view = await s.settle((await res.json()).id);
       assert.equal(view.status, 'ready', JSON.stringify(view.error));
       assert.equal(kubo.requests.length, 2);

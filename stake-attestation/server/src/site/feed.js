@@ -2,7 +2,8 @@
 // takes commits at the indexed block. Candidates are the listings the events say opened and have
 // not rolled forward or closed; each is then read on-chain at that block, and kept only while it
 // is Open and its paid period has not ended (a lapsed listing stays Open for its pending claims
-// but leaves the feed, §13.1). Its identity (repo, commit) comes from its Listed event, its image
+// but leaves the feed, §13.1). Which of them the site offers (those that count) is decided when the
+// answer is made (site/index.js, src/control/counting.js), as the proofs change between blocks. Its identity (repo, commit) comes from its Listed event, its image
 // and scope from its listing archive (archives.js), everything else from getListing.
 import { SEVERITY_CLASSES } from '../chain/abi.js';
 import { outputJson } from '../chain/codec.js';

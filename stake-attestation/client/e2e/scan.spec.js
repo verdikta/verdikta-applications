@@ -20,7 +20,7 @@ test('the scan\'s findings are shown to the maker\'s wallet after it signs in, a
 
   await installWallet(page, stack);
   await page.goto('/#/list');
-  await fillListing(page, repoTerms());
+  await fillListing(page, await repoTerms(stack));
   await generateAndSaveKey(page);
   await validate(page, 'ready');
   // the request named the connected wallet as the maker
@@ -56,12 +56,11 @@ test('the scan\'s findings are shown to the maker\'s wallet after it signs in, a
   expect(JSON.parse(requests.find((r) => /\/scan$/.test(r.url)).body)).toEqual({ nonce: expect.stringMatching(/^[0-9a-f]{32}$/), signature: expect.stringMatching(/^0x[0-9a-f]{130}$/) });
 });
 
-test('without a wallet the request names no maker, and the page says no scan runs', async ({ page }) => {
+test('without a wallet nothing is sent: the project names a wallet, and it signs the request', async ({ page, stack }) => {
   await page.goto('/#/list');
-  await fillListing(page, repoTerms());
+  await fillListing(page, await repoTerms(stack));
   await generateAndSaveKey(page);
-  await validate(page, 'ready');
-  await expect(page.getByTestId('scan-status')).toHaveText(fill(S.status, { status: S.statuses.skipped }));
-  await expect(page.getByText(S.noWallet)).toBeVisible();
-  await expect(page.getByRole('button', { name: S.read })).toHaveCount(0);
+  await page.getByRole('button', { name: STRINGS.listing.submit }).click();
+  await expect(page.getByRole('alert')).toHaveText(STRINGS.listing.needWallet);
+  await expect(page.getByTestId('listing-status')).toHaveCount(0);
 });

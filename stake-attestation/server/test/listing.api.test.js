@@ -19,7 +19,7 @@ async function api(opts) {
 after(() => Promise.all(servers.map((s) => s.close())));
 
 async function submit(s, body) {
-  const res = await s.post('/api/listings', body);
+  const res = await s.submit(body);
   const json = await res.json();
   return { res, json };
 }
@@ -33,7 +33,7 @@ describe('POST /api/listings, then GET /api/listings/:id', () => {
     assert.equal(res.status, 202);
     assert.match(json.id, /^[0-9a-f]{32}$/);
     assert.equal(res.headers.get('location'), `/api/listings/${json.id}`);
-    assert.ok(['queued', 'building'].includes(json.status));
+    assert.ok(['queued', 'checking', 'building'].includes(json.status));
 
     const view = await s.settle(json.id);
     assert.equal(view.status, 'ready', JSON.stringify(view.error));
@@ -45,7 +45,7 @@ describe('POST /api/listings, then GET /api/listings/:id', () => {
     assert.equal(view.validationReport.kind, 'verdikta-listing-validation');
     assert.equal(view.validationReport.status, 'accepted');
     assert.equal(view.validationReport.verifiedSource.status, 'match');
-    assert.deepEqual(view.validationReport.steps.map((x) => x.name), ['spec', 'fetch', 'build', 'size', 'push', 'registry', 'verifiedSource', 'listingCheck', 'finalSpec']);
+    assert.deepEqual(view.validationReport.steps.map((x) => x.name), ['spec', 'control', 'fetch', 'build', 'size', 'push', 'registry', 'verifiedSource', 'listingCheck', 'finalSpec']);
     // two archives pinned, their CIDs returned with everything list() takes
     assert.equal(s.pinner.pins.length, 2);
     assert.deepEqual(s.pinner.pins.map((p) => p.cid), [view.archives.listing.cid, view.archives.dispute.cid]);
@@ -211,10 +211,10 @@ describe('requests refused before any build (400)', () => {
 
   test('a body that is not JSON is 400, a body over the limit 413', async () => {
     const s = await api({ builder: fakeBuilder() });
-    const bad = await s.post('/api/listings', '{ not json');
+    const bad = await s.submit('{ not json');
     assert.equal(bad.status, 400);
     assert.equal((await bad.json()).error, 'BODY_NOT_JSON');
-    const big = await s.post('/api/listings', { spec: draftSpec(), knownIssues: knownIssues(), pad: 'x'.repeat(2_000_000) });
+    const big = await s.submit({ spec: draftSpec(), knownIssues: knownIssues(), pad: 'x'.repeat(2_000_000) });
     assert.equal(big.status, 413);
   });
 

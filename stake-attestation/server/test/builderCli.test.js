@@ -22,6 +22,20 @@ let tmp;
 before(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-server-cli-')); });
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
+// The hang modes' child is ready (its SIGTERM handler in place) in well under 200 ms; the step's
+// timeout is set far above that, and the tests check the child's readiness signal, so the signal
+// always meets the behaviour under test instead of racing the child's start on a loaded runner.
+const CHILD_READY_BOUND_MS = 3000;
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code !== 'ESRCH';
+  }
+}
+
 function setup(mode, over = {}) {
   const dir = fs.mkdtempSync(path.join(tmp, `${mode}-`));
   const configPath = path.join(dir, 'builder.json');
@@ -136,8 +150,9 @@ describe('createCliBuilder', () => {
   });
 
   test('a timeout stops everything the step started, and settles only once it has all gone (R1-F1)', async () => {
-    const { builder, dir } = setup('hang-tree', { timeoutMs: 500, graceMs: 3000 });
+    const { builder, dir } = setup('hang-tree', { timeoutMs: CHILD_READY_BOUND_MS, graceMs: 3000 });
     const r = await builder.build({ draft: draftSpec(), knownIssues: kiBytes() });
+    assert.ok(fs.existsSync(path.join(dir, 'record.json.grandchild.ready')), `the child was not ready within ${CHILD_READY_BOUND_MS} ms`);
     assert.equal(r.status, 'error');
     assert.equal(r.error.code, 'BUILDER_TIMEOUT');
     assert.equal(r.holdSlot, true, 'it stopped on SIGTERM, but a container it started could outlive it: the slot stays taken');
@@ -148,14 +163,19 @@ describe('createCliBuilder', () => {
   });
 
   test('a step whose child ignores SIGTERM is killed, and its slot stays taken (R1-F1)', async () => {
-    const { builder, dir } = setup('hang-stubborn', { timeoutMs: 300, graceMs: 500 });
+    const { builder, dir } = setup('hang-stubborn', { timeoutMs: CHILD_READY_BOUND_MS, graceMs: 500 });
     const r = await builder.build({ draft: draftSpec(), knownIssues: kiBytes() });
+    // the timeout fired after the child had put its SIGTERM handler in place (it signals that)
+    assert.ok(fs.existsSync(path.join(dir, 'record.json.grandchild.ready')), `the child was not ready within ${CHILD_READY_BOUND_MS} ms`);
     assert.equal(r.status, 'error');
     assert.equal(r.error.code, 'BUILDER_TIMEOUT');
     assert.match(r.error.detail, /killed/);
     assert.equal(r.holdSlot, true);
     const pid = Number(fs.readFileSync(path.join(dir, 'record.json.grandchild'), 'utf8'));
-    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'SIGKILL reached the child that ignored SIGTERM');
+    // SIGKILL reached it; a killed child is gone once it has been reaped, so poll with a bound
+    const until = Date.now() + 10000;
+    while (alive(pid) && Date.now() < until) await new Promise((res) => setTimeout(res, 50));
+    assert.equal(alive(pid), false, 'SIGKILL reached the child that ignored SIGTERM');
   });
 
   test('a builder that exits leaving processes behind has them stopped, and its slot stays taken (R1-F1)', async () => {

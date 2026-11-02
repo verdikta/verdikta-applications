@@ -9,7 +9,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { fakeBuilder } from '../helpers/fixtures.js';
+// The build modes load the stand-in (and @verdikta/common under it) when they need it, so the
+// hang modes start their child at once instead of after that import.
 
 const [command, ...rest] = process.argv.slice(2);
 const opts = {};
@@ -49,8 +50,11 @@ if (config.mode === 'hang') {
   // close as soon as the builder dies. 'hang-tree': the child takes a moment to stop on SIGTERM,
   // as a docker CLI stopping its container does. 'hang-stubborn': it ignores SIGTERM.
   const { spawn } = await import('node:child_process');
+  // The child writes <record>.grandchild.ready once its SIGTERM handler is in place: a test checks
+  // that the step was stopped after that, so the signal met the behaviour under test.
   const onTerm = config.mode === 'hang-tree' ? 'setTimeout(() => process.exit(0), 400)' : '{}';
-  const grandchild = spawn(process.execPath, ['-e', `process.on("SIGTERM", () => ${onTerm}); setInterval(() => {}, 1000)`], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const ready = `${config.record}.grandchild.ready`;
+  const grandchild = spawn(process.execPath, ['-e', `process.on("SIGTERM", () => ${onTerm}); require("node:fs").writeFileSync(${JSON.stringify(ready)}, "1"); setInterval(() => {}, 1000)`], { stdio: ['ignore', 'pipe', 'pipe'] });
   fs.writeFileSync(`${config.record}.grandchild`, String(grandchild.pid));
   fs.writeFileSync(path.join(process.env.TMPDIR, 'builder-temp-file'), 'x');
   setInterval(() => {}, 1000);
@@ -60,6 +64,7 @@ if (config.mode === 'hang') {
   fs.mkdirSync(opts.out, { recursive: true });
   if (config.mode === 'no-report') process.exit(1);
   const outcome = { accepted: 'accepted', 'sign-fails': 'accepted', 'refused-source': 'refused-source', error: 'error' }[config.mode];
+  const { fakeBuilder } = await import('../helpers/fixtures.js');
   const r = await fakeBuilder({ outcome }).build({ draft, knownIssues });
   if (r.status === 'accepted') {
     // what build writes: the files and the report, before signing

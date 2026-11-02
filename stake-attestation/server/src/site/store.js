@@ -6,12 +6,14 @@
 //
 // One writer per folder, by numbered lock files (writer.lock.<n>, each created atomically with
 // its writer's pid already in it). A process may write only by creating the next number after the
-// highest one, and only when the highest one's process is gone; creation fails if the number is
-// taken, so of two processes racing for it exactly one wins, and a lock is kept only if it is
-// still the highest once created (a process acting on a stale view of the folder backs off).
-// Nobody ever removes a lock that may be live: a writer removes its own at close, and the numbers
-// below its own, whose processes were all found gone before it could take its number. A crash at
-// any point leaves at most a lock of a dead process, which the next start steps over.
+// highest one, and only when the highest one is released (writer.lock.<n>.released, written at
+// close) or names a process that is gone; creation fails if the number is taken, so of two
+// processes racing for it exactly one wins, and a lock is kept only if it is still the highest
+// once created (a process acting on a stale view of the folder backs off). Lock files are never
+// removed (one small file and its release marker per start), so a number is never free again
+// for a process that looked at the folder earlier; the only exception is a lock its own creator
+// gives up at once because a higher one exists, which stays. A crash at any point leaves at most
+// the lock of a dead process, which the next start steps over.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -68,9 +70,9 @@ function lockHolder(file) {
 
 /**
  * Tries to take lock number `observedTop + 1`, where `observedTop` is the highest number this
- * process saw held by a process that is gone (-1: none). The view may be stale by the time the
- * lock is created (numbers below a writer's are removed, so a low name can be free again), so a
- * lock is kept only if no higher number exists once it is created; otherwise it is removed again.
+ * process found released or held by a process that is gone (-1: none). The view may be stale by
+ * the time the lock is created, so a lock is kept only if no higher number exists once it is
+ * created; otherwise its creator removes it again (a higher number exists, and stays).
  * @returns {'taken'|'lost'} lost: another process holds that number or a higher one
  */
 export function tryLock(dir, observedTop) {
@@ -94,13 +96,14 @@ function acquireLock(dir) {
     const taken = lockNumbers(dir);
     const top = taken.length ? taken.at(-1) : -1;
     if (top >= 0) {
-      const holder = lockHolder(path.join(dir, `writer.lock.${top}`));
-      if (holder === undefined) continue; // closed while we looked: look again
-      if (holder !== null && alive(holder)) throw new StoreError('WRITER_ACTIVE', `the state folder is in use by process ${holder}`);
+      const file = path.join(dir, `writer.lock.${top}`);
+      if (!fs.existsSync(`${file}.released`)) {
+        const holder = lockHolder(file);
+        if (holder === undefined) continue; // given up by its creator while we looked: look again
+        if (holder !== null && alive(holder)) throw new StoreError('WRITER_ACTIVE', `the state folder is in use by process ${holder}`);
+      }
     }
-    if (tryLock(dir, top) === 'lost') continue; // look again: the winner's lock decides
-    for (const n of taken) fs.rmSync(path.join(dir, `writer.lock.${n}`), { force: true });
-    return path.join(dir, `writer.lock.${top + 1}`);
+    if (tryLock(dir, top) === 'taken') return path.join(dir, `writer.lock.${top + 1}`);
   }
   throw new StoreError('WRITER_ACTIVE', 'the state folder\'s lock is contended');
 }
@@ -178,9 +181,14 @@ export class StateStore {
     } catch { /* not every platform syncs a directory */ }
   }
 
+  /** Releases the lock: its file stays, with a release marker beside it. */
   close() {
     if (!this.locked) return;
     this.locked = false;
-    fs.rmSync(this.lockFile, { force: true });
+    try {
+      createExclusive(`${this.lockFile}.released`, String(process.pid));
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+    }
   }
 }

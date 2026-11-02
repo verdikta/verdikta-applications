@@ -293,8 +293,10 @@ archives, keys, ciphertext, hunter or verdict. The record's counts and flags are
 **The indexer** reads every event of the deployment from `SA_FROM_BLOCK`, in chunks of
 `SA_LOG_CHUNK_BLOCKS`, only up to `SA_CONFIRMATIONS` (10) blocks below the head, and commits each
 chunk with its cursor in one atomic write to `SA_DATA_DIR/state.json` (one writer per folder, by
-numbered lock files: a process takes the next number only when the highest one's process is
-gone, and no lock that may be live is ever removed; a folder of another deployment is refused). A restart resumes after the last
+numbered lock files: a process takes the next number only when the highest one is released or
+its process is gone, keeps it only if it is still the highest, and lock files are never removed,
+so the folder keeps one small file and a release marker per start; a folder of another
+deployment is refused). A restart resumes after the last
 committed chunk. Each sync asks the endpoint for its chain id (`eth_chainId`; the provider's
 request cache is off) and compares the cursor's stored block hash with the chain's; after a
 reorg it rolls back to the newest block it read (within `SA_REORG_WINDOW_BLOCKS`) that is still

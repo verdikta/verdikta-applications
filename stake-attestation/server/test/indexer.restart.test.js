@@ -124,20 +124,19 @@ describe('a restart mid-sync', () => {
     }
   });
 
-  test('a writer that died, or a lock left empty, does not block the next start, and old locks are cleared', async () => {
+  test('a released lock, a dead writer\'s or an empty one does not block the next start, and no lock is removed', async () => {
     const ctx = await chainContext();
     const dir = tmpDir();
-    siteFor(ctx, { dir }).close();
     const locks = () => fs.readdirSync(dir).filter((n) => n.startsWith('writer.lock')).sort();
-    assert.deepEqual(locks(), [], 'close() removes its own lock');
+    siteFor(ctx, { dir }).close();
+    assert.deepEqual(locks(), ['writer.lock.0', 'writer.lock.0.released'], 'close() releases, and keeps the file');
     fs.writeFileSync(path.join(dir, 'writer.lock.3'), '999999999');
-    let site = siteFor(ctx, { dir });
-    assert.deepEqual(locks(), ['writer.lock.4']);
-    site.close();
+    siteFor(ctx, { dir }).close();
+    assert.deepEqual(locks(), ['writer.lock.0', 'writer.lock.0.released', 'writer.lock.3', 'writer.lock.4', 'writer.lock.4.released']);
     fs.writeFileSync(path.join(dir, 'writer.lock.7'), '');
-    fs.writeFileSync(path.join(dir, 'writer.lock.2'), '999999998');
-    site = siteFor(ctx, { dir });
-    assert.deepEqual(locks(), ['writer.lock.8'], 'every lock below the new one was a dead process\'s');
+    const site = siteFor(ctx, { dir });
+    assert.ok(locks().includes('writer.lock.8'));
+    assert.throws(() => siteFor(ctx, { dir }), (e) => e.code === 'WRITER_ACTIVE', 'held, not released');
     site.close();
   });
 
@@ -154,14 +153,19 @@ describe('a restart mid-sync', () => {
     assert.equal(fs.readFileSync(path.join(dir, 'writer.lock.6'), 'utf8'), String(process.pid), 'a live lock is never removed');
   });
 
-  test('a process acting on a stale view of the folder backs off from a lock below the live one', () => {
-    // A saw an empty folder and paused; B took lock 0 and died; C took lock 1, removed lock 0 and
-    // writes. A, resuming, can create lock 0 again, but finds lock 1 above it and gives it up.
+  test('a process acting on a stale view of the folder never takes a lock below or beside a live one', () => {
+    // A saw lock 0 dead and paused before taking 1. B took 1 and closed (released); C took 2 and
+    // writes. A resumes: 1 is still there (no lock is ever removed), so A cannot take it.
     const dir = tmpDir();
-    fs.writeFileSync(path.join(dir, 'writer.lock.1'), String(process.pid));
+    fs.writeFileSync(path.join(dir, 'writer.lock.0'), '999999999');
+    fs.writeFileSync(path.join(dir, 'writer.lock.1'), '999999998');
+    fs.writeFileSync(path.join(dir, 'writer.lock.1.released'), '999999998');
+    fs.writeFileSync(path.join(dir, 'writer.lock.2'), String(process.pid));
+    assert.equal(tryLock(dir, 0), 'lost');
+    // and one that saw an older, emptier folder creates a low number, finds 2 above it, gives it up
+    fs.rmSync(path.join(dir, 'writer.lock.0'));
     assert.equal(tryLock(dir, -1), 'lost');
-    assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith('writer.lock')), ['writer.lock.1']);
-    assert.equal(tryLock(dir, 0), 'lost', 'the number is taken');
-    assert.equal(tryLock(dir, 1), 'taken', 'the next number, with nothing above it');
+    assert.deepEqual(fs.readdirSync(dir).filter((n) => /^writer\.lock\.\d+$/.test(n)).sort(), ['writer.lock.1', 'writer.lock.2']);
+    assert.equal(tryLock(dir, 2), 'taken', 'the next number, with nothing above it');
   });
 });

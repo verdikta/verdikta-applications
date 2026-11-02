@@ -43,6 +43,7 @@ function setup(mode, over = {}) {
     buildEnv: ['DOCKER_HOST', 'ETHERSCAN_API_KEY'],
     signEnv: ['VERDIKTA_BUILDER_KEY'],
     timeoutMs: 20000,
+    graceMs: 1000,
     ...over,
   }, { env });
   const calls = () => (fs.existsSync(recordPath) ? JSON.parse(fs.readFileSync(recordPath, 'utf8')) : []);
@@ -130,6 +131,7 @@ describe('createCliBuilder', () => {
     const r = await builder.build({ draft: draftSpec(), knownIssues: kiBytes() });
     assert.equal(r.status, 'error');
     assert.equal(r.error.code, 'BUILDER_TIMEOUT');
+    assert.equal(r.holdSlot, undefined, 'it stopped on SIGTERM: the slot is free again');
     assert.ok(Date.now() - t0 < 10000);
   });
 
@@ -143,6 +145,27 @@ describe('createCliBuilder', () => {
     for (let i = 0; i < 50 && alive(); i += 1) await new Promise((res) => setTimeout(res, 100));
     assert.equal(alive(), false, 'the grandchild was killed with the builder');
     assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith('sa-build-')), [], 'the build folder, with the builder\'s TMPDIR, is removed');
+  });
+
+  test('a step that must be killed is reported so its slot stays taken (R1-F1)', async () => {
+    const { builder, dir } = setup('hang-stubborn', { timeoutMs: 300, graceMs: 300 });
+    const r = await builder.build({ draft: draftSpec(), knownIssues: kiBytes() });
+    assert.equal(r.status, 'error');
+    assert.equal(r.error.code, 'BUILDER_KILLED');
+    assert.equal(r.holdSlot, true);
+    const pid = Number(fs.readFileSync(path.join(dir, 'record.json.grandchild'), 'utf8'));
+    const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    for (let i = 0; i < 50 && alive(); i += 1) await new Promise((res) => setTimeout(res, 100));
+    assert.equal(alive(), false, 'SIGKILL reached the child that ignored SIGTERM');
+  });
+
+  test('a builder config that names its own workDir is refused: the server owns the temporary folder', async () => {
+    const { builder, dir } = setup('accepted');
+    const configPath = path.join(dir, 'builder.json');
+    fs.writeFileSync(configPath, JSON.stringify({ ...JSON.parse(fs.readFileSync(configPath, 'utf8')), workDir: dir }));
+    const r = await builder.build({ draft: draftSpec(), knownIssues: kiBytes() });
+    assert.equal(r.status, 'error');
+    assert.equal(r.error.code, 'BUILDER_CONFIG_INVALID');
   });
 
   test('with no builder config the build is an error, not a crash', async () => {

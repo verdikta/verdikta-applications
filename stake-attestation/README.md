@@ -246,10 +246,18 @@ trust the attestation is checked under (`SA_ATTESTATION_TRUST`, `production` by 
 is refused in production and on Base), the builder's command line and config
 (`SA_BUILDER_BIN`, `SA_BUILDER_CONFIG`), the variables each builder step gets besides `PATH`
 and `HOME` (`SA_BUILDER_BUILD_ENV`, `SA_BUILDER_SIGN_ENV`, never one of the server's own `SA_`
-variables; each step runs in a process group of its own, so a timeout stops everything it
-started, and with `TMPDIR` inside the server's build folder), the build queue, and the oracle parameters (`SA_ORACLE_*`; the class is common's
+variables), the build queue, and the oracle parameters (`SA_ORACLE_*`; the class is common's
 `code-standard`). A credential is named by its variable and read when it is used, so the
 parsed config holds none.
+
+**Stopping a build.** Each builder step runs in a process group of its own, with `TMPDIR` inside
+a build folder the server removes, so the builder config leaves `workDir` unset. The builder
+bounds each of its own steps and cleans up after them; the server's `SA_BUILDER_TIMEOUT_MS`
+(4 h) is a backstop above those limits. When it fires, the group gets SIGTERM (the docker CLI
+passes it to the container it is attached to) and `SA_BUILDER_GRACE_MS` to stop. A step that
+needs SIGKILL keeps its build slot until the server restarts, because a container it started
+runs under the Docker daemon and may still be running; the log says to check the host for
+containers labelled `io.verdikta.builder=1`.
 
 **Tests.** `npm test` stubs the builder behind its interface, and pins to the mock store or to
 local doubles of kubo, Filebase and Pinata through a fetch that refuses every host but

@@ -218,6 +218,26 @@ describe('requests refused before any build (400)', () => {
     assert.equal(big.status, 413);
   });
 
+  test('a build the builder could not stop keeps its slot: nothing more runs beyond the limit (R1-F1)', async () => {
+    const { testConfig } = await import('./helpers/fixtures.js');
+    const calls = [];
+    const builder = {
+      calls,
+      async build(input) {
+        calls.push(input);
+        return { status: 'error', report: null, files: null, devTrust: null, error: { code: 'BUILDER_KILLED', detail: 'killed' }, holdSlot: true };
+      },
+    };
+    const s = await api({ builder, config: testConfig({ SA_MAX_CONCURRENT_BUILDS: '1', SA_MAX_QUEUED_BUILDS: '2' }) });
+    const first = await submit(s, listingRequest());
+    assert.equal((await s.settle(first.json.id)).error.code, 'BUILDER_KILLED');
+    const second = await submit(s, listingRequest());
+    assert.equal(second.res.status, 202);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal((await (await s.get(`/api/listings/${second.json.id}`)).json()).status, 'queued');
+    assert.equal(calls.length, 1, 'the second build never started');
+  });
+
   test('a full build queue is 429 and starts nothing more', async () => {
     const { testConfig } = await import('./helpers/fixtures.js');
     const builder = fakeBuilder({ delayMs: Infinity });

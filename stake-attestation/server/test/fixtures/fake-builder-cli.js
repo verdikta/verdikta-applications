@@ -34,6 +34,13 @@ const json = (v) => Buffer.from(`${JSON.stringify(v, null, 2)}\n`);
 
 if (config.mode === 'hang') {
   setInterval(() => {}, 1000);
+} else if (config.mode === 'hang-stubborn') {
+  // a step whose child does not stop on SIGTERM (as a container the docker CLI started would
+  // outlive the CLI): only SIGKILL ends it
+  const { spawn } = await import('node:child_process');
+  const grandchild = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'inherit'] });
+  fs.writeFileSync(`${config.record}.grandchild`, String(grandchild.pid));
+  setInterval(() => {}, 1000);
 } else if (config.mode === 'hang-tree') {
   // a step that started a process of its own (git, docker, a signer) and waits on it; the
   // grandchild shares the step's output pipes, as a docker CLI it ran would

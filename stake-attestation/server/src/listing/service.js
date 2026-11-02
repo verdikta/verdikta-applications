@@ -208,6 +208,13 @@ export function createListingService({ config, builder, pinner, logger }) {
       return;
     }
     set(job, { report: r.report ?? null });
+    if (r.holdSlot) {
+      // What the builder started may still be running under the Docker daemon: the slot stays
+      // taken, so builds never run beyond SA_MAX_CONCURRENT_BUILDS, until an operator has
+      // checked the Docker host and restarted the server.
+      job.holdsSlot = true;
+      logger.error(`listing ${job.id}: the builder had to be killed; its build slot stays taken until the server restarts. Check the Docker host for containers labelled io.verdikta.builder=1.`);
+    }
     if (r.status === 'refused') {
       set(job, { status: 'refused' });
       logger.info(`listing ${job.id} refused: ${(r.report?.refusals ?? []).map((x) => `${x.code} (${x.step})`).join(', ')}`);
@@ -234,7 +241,7 @@ export function createListingService({ config, builder, pinner, logger }) {
       const job = queue.shift();
       running += 1;
       run(job).finally(() => {
-        running -= 1;
+        if (!job.holdsSlot) running -= 1;
         pump();
       });
     }

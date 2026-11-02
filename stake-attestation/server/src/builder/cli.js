@@ -3,7 +3,10 @@
 //
 //   { status: 'accepted', report, files: { codeReview, baseline, knownIssues, attestation }, devTrust }
 //   { status: 'refused',  report, files: null, devTrust: null }
-//   { status: 'error',    report|null, files: null, devTrust: null, error?: { code, detail } }
+//   { status: 'error',    report|null, files: null, devTrust: null, error?: { code, detail }, holdSlot? }
+//
+// `holdSlot: true` means the builder had to be killed and what it started may still be running
+// under the Docker daemon: the listing flow then keeps that build slot taken (see runStep).
 //
 // It runs the builder's own command line, as the site's workflow would, in two processes:
 // `verdikta-build-env build` (it runs the maker's setup inside Docker and holds no secret; it
@@ -20,7 +23,7 @@ const REPORT_FILE = 'validation-report.json';
 const DEV_TRUST_FILE = 'dev-trust.json';
 const PLAIN_NAME = /^(?!\.\.?$)[A-Za-z0-9._-]{1,255}$/;
 const OUTPUT_CAP = 64 * 1024;
-const KILL_GRACE_MS = 5000;
+const DEFAULT_GRACE_MS = 30000;
 
 const tail = (buf, n = 600) => buf.toString('utf8').slice(-n).trim();
 // The builder's own error line, "verdikta-build-env: CODE: detail": only the code goes into a
@@ -37,15 +40,21 @@ function childEnv(env, names, tmp) {
 }
 
 /**
- * Runs `node bin ...args` as the leader of its own process group, so a timeout reaches
- * everything the step started (git, docker, an external signer), not only the builder: SIGTERM
- * to the group, SIGKILL after a grace period. Anything of the group still running when the
- * builder exits is killed too. The promise settles when the step's output pipes close, so a
- * build slot is held until the whole tree has gone (or, after SIGKILL, a grace period more for
- * a process that left the group).
- * @returns {Promise<{ code: number|null, spawnError: string|null, timedOut: boolean, stdout: Buffer, stderr: Buffer }>}
+ * Runs `node bin ...args` as the leader of its own process group, so a stop reaches everything
+ * the step started (git, the docker CLI, an external signer), not only the builder.
+ *
+ * The server's timeout is a backstop: the builder bounds each of its own steps and cleans up
+ * after them (it removes its sandbox containers in a finally), so SA_BUILDER_TIMEOUT_MS is set
+ * above the sum of those limits and fires only for a builder that hangs. Then the group gets
+ * SIGTERM, which the docker CLI forwards to the container it is attached to (and which cancels a
+ * BuildKit build), and `graceMs` to finish; whatever is left gets SIGKILL. Anything of the group
+ * still running when the builder exits is stopped the same way. The promise settles when the
+ * step's output pipes close, so a build slot is held until the whole tree has gone. `forced`
+ * says SIGKILL was needed: then a container the docker CLI started may outlive it (it runs under
+ * the Docker daemon, outside the group), and the caller must not count the slot as free.
+ * @returns {Promise<{ code: number|null, spawnError: string|null, timedOut: boolean, forced: boolean, stdout: Buffer, stderr: Buffer }>}
  */
-function runStep({ nodePath, bin, args, env, timeoutMs, cwd }) {
+function runStep({ nodePath, bin, args, env, timeoutMs, graceMs, cwd }) {
   return new Promise((resolve) => {
     const child = spawn(nodePath, [bin, ...args], { env, cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     const out = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
@@ -64,28 +73,37 @@ function runStep({ nodePath, bin, args, env, timeoutMs, cwd }) {
       }
     };
     let timedOut = false;
+    let stopping = false;
+    let forced = false;
     let done = false;
     const timers = [];
     const finish = (r) => {
       if (done) return;
       done = true;
       for (const t of timers) clearTimeout(t);
-      resolve({ ...r, timedOut, ...out });
+      resolve({ ...r, timedOut, forced, ...out });
     };
-    timers.push(setTimeout(() => {
-      timedOut = true;
+    const stop = () => {
+      if (stopping) return;
+      stopping = true;
       killGroup('SIGTERM');
       timers.push(setTimeout(() => {
+        forced = true;
         killGroup('SIGKILL');
+        // a process that left the group may hold the pipes: stop waiting for it
         timers.push(setTimeout(() => {
           child.stdout.destroy();
           child.stderr.destroy();
           finish({ code: child.exitCode, spawnError: null });
-        }, KILL_GRACE_MS));
-      }, KILL_GRACE_MS));
+        }, graceMs));
+      }, graceMs));
+    };
+    timers.push(setTimeout(() => {
+      timedOut = true;
+      stop();
     }, timeoutMs));
     child.on('error', (err) => finish({ code: null, spawnError: err.message }));
-    child.on('exit', () => killGroup('SIGKILL'));
+    child.on('exit', stop);
     child.on('close', (code) => finish({ code, spawnError: null }));
   });
 }
@@ -107,14 +125,22 @@ function readNamed(dir, name) {
   }
 }
 
-const errored = (code, detail, report = null) => ({ status: 'error', report, files: null, devTrust: null, error: { code, detail } });
+const errored = (code, detail, report = null, extra = {}) => ({ status: 'error', report, files: null, devTrust: null, error: { code, detail }, ...extra });
+
+function stopped(what, r, cfg, report) {
+  if (r.forced) {
+    return errored('BUILDER_KILLED', `the builder's ${what} step did not stop on SIGTERM ${r.timedOut ? `after its ${cfg.timeoutMs} ms` : 'when it exited'} and was killed`, report, { holdSlot: true });
+  }
+  return errored('BUILDER_TIMEOUT', `the builder's ${what} step did not finish in ${cfg.timeoutMs} ms and was stopped`, report);
+}
 
 /**
- * @param {{ bin: string, config: string|null, workDir: string, buildEnv: string[], signEnv: string[], timeoutMs: number }} cfg - config.builder
+ * @param {{ bin: string, config: string|null, workDir: string, buildEnv: string[], signEnv: string[], timeoutMs: number, graceMs?: number }} cfg - config.builder
  * @param {{ env?: Record<string, string|undefined>, nodePath?: string, logger?: { warn: Function } }} [o]
  */
 export function createCliBuilder(cfg, { env = process.env, nodePath = process.execPath, logger = null } = {}) {
-  const step = (args, names, cwd) => runStep({ nodePath, bin: cfg.bin, args, env: childEnv(env, names, path.join(cwd, 'tmp')), timeoutMs: cfg.timeoutMs, cwd });
+  const graceMs = cfg.graceMs ?? DEFAULT_GRACE_MS;
+  const step = (args, names, cwd) => runStep({ nodePath, bin: cfg.bin, args, env: childEnv(env, names, path.join(cwd, 'tmp')), timeoutMs: cfg.timeoutMs, graceMs, cwd });
   const exited = (what, r) => {
     logger?.warn(`builder ${what} exited ${r.code}: ${tail(r.stderr)}`);
     const code = builderCode(r.stderr);
@@ -124,6 +150,12 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
   return {
     async build({ draft, knownIssues }) {
       if (!cfg.config) return errored('BUILDER_NOT_CONFIGURED', 'no builder config is set (SA_BUILDER_CONFIG)');
+      const builderConfig = readJson(cfg.config);
+      if (!builderConfig || typeof builderConfig !== 'object') return errored('BUILDER_CONFIG_INVALID', 'the builder config (SA_BUILDER_CONFIG) is not a JSON object');
+      if (Object.hasOwn(builderConfig, 'workDir')) {
+        // a folder of the builder's choosing would outlive a build the server has to stop
+        return errored('BUILDER_CONFIG_INVALID', 'leave workDir out of the builder config: the server gives each build a temporary folder of its own (TMPDIR) and removes it');
+      }
       const dir = fs.mkdtempSync(path.join(cfg.workDir, 'sa-build-'));
       try {
         fs.mkdirSync(path.join(dir, 'tmp'));
@@ -139,7 +171,7 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
         args.push('--out', out);
 
         const b = await step(args, cfg.buildEnv, dir);
-        if (b.timedOut) return errored('BUILDER_TIMEOUT', `the build did not finish in ${cfg.timeoutMs} ms`, readJson(path.join(out, REPORT_FILE)));
+        if (b.timedOut || b.forced) return stopped('build', b, cfg, readJson(path.join(out, REPORT_FILE)));
         if (b.spawnError) return errored('BUILDER_FAILED', `the builder could not be started: ${b.spawnError}`);
         const report = readJson(path.join(out, REPORT_FILE));
         if (!report) return errored('BUILDER_NO_REPORT', `${exited('build', b)}, with no validation report`);
@@ -149,7 +181,7 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
         }
 
         const s = await step(['sign', '--config', cfg.config, '--dir', out], cfg.signEnv, dir);
-        if (s.timedOut) return errored('BUILDER_TIMEOUT', `signing did not finish in ${cfg.timeoutMs} ms`, report);
+        if (s.timedOut || s.forced) return stopped('sign', s, cfg, report);
         if (s.spawnError) return errored('SIGNING_FAILED', `the builder's sign step could not be started: ${s.spawnError}`, report);
         if (s.code !== 0) return errored('SIGNING_FAILED', exited('sign', s), report);
         const signed = readJson(path.join(out, REPORT_FILE)) ?? report;

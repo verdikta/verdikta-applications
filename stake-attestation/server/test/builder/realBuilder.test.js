@@ -27,7 +27,6 @@ test('the real builder\'s refusal reaches the maker as its validation report, an
     registry: { repository: 'localhost:5000/stake-env' },
     runner: { url: 'http://127.0.0.1:9', tokenEnv: 'SA_TEST_RUNNER_TOKEN' },
     signing: { key: 'dev' },
-    workDir: tmp,
   }));
   const builder = createCliBuilder({
     bin: path.join(BUILDER, 'bin', 'verdikta-build-env.js'),

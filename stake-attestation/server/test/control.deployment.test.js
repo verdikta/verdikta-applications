@@ -55,7 +55,7 @@ describe('a contract listing\'s control fact', () => {
     ctx = await chainContext();
     [owner, deployer, stranger] = [ctx.signers[10], ctx.signers[11], ctx.signers[12]];
     clock = Date.now();
-    site = siteFor(ctx, { now: () => clock, env: { SA_CONTROL_RECHECK_MS: '1000', SA_MAX_STALENESS_SECONDS: '100000000' } });
+    site = siteFor(ctx, { settle: false, now: () => clock, env: { SA_CONTROL_RECHECK_MS: '1000', SA_MAX_STALENESS_SECONDS: '100000000' } });
     api = await startApi({ builder: fakeBuilder(), site });
   });
   after(async () => {
@@ -69,14 +69,14 @@ describe('a contract listing\'s control fact', () => {
     await site.sync();
     const c = await fact(l);
     assert.equal(c.subject, 'deployment');
-    assert.equal(c.controls, 'no');
-    assert.equal(c.statement, 'staker controls the deployment: no');
+    assert.equal(c.deployment.controls, 'no');
+    assert.match(c.statement, /staker controls the deployment: no$/);
     assert.equal(c.reason, 'NO_SIGNATURE');
     assert.equal(c.deployment.message, messageOf(l, ctx.maker.address, address));
     assert.equal(c.deployment.chainId, String(CHAIN_ID));
     assert.equal(c.deployment.address, address);
     assert.equal(c.deployment.signer, null);
-    assert.match((await site.badge(l.artifactHash)).message, /staker controls the deployment: no$/);
+    assert.equal((await site.badge(l.artifactHash)).message, 'no counted stake');
   });
 
   test('yes: the current owner signs; the record shows the signature, the signer, its role and the block, so anyone can re-check', async () => {
@@ -88,15 +88,15 @@ describe('a contract listing\'s control fact', () => {
     const res = await post(l, { signer: owner.address, signature });
     assert.equal(res.status, 200);
     const c = (await res.json()).control;
-    assert.equal(c.controls, 'yes');
-    assert.equal(c.statement, 'staker controls the deployment: yes');
+    assert.equal(c.deployment.controls, 'yes');
+    assert.match(c.statement, /staker controls the deployment: yes$/);
     assert.equal(c.reason, null);
     assert.equal(c.deployment.signer, owner.address);
     assert.equal(c.deployment.signature, signature);
     assert.equal(c.deployment.role, 'owner');
     assert.ok(c.deployment.block > 0);
     assert.equal(ethers.verifyMessage(c.deployment.message, c.deployment.signature), owner.address, 'it re-checks from the record alone');
-    assert.equal((await fact(l)).controls, 'yes');
+    assert.equal((await fact(l)).deployment.controls, 'yes');
     assert.match((await site.badge(l.artifactHash)).message, /staker controls the deployment: yes$/);
     const live = await api.get(`/api/records/${l.artifactHash}`);
     assert.equal((await live.json()).control[l.listingId].deployment.signature, signature);
@@ -111,7 +111,7 @@ describe('a contract listing\'s control fact', () => {
     const res = await post(l, { signer: deployer.address, signature, creationTx });
     assert.equal(res.status, 200);
     const c = (await res.json()).control;
-    assert.equal(c.controls, 'yes');
+    assert.equal(c.deployment.controls, 'yes');
     assert.equal(c.deployment.role, 'deployer');
     assert.equal(c.deployment.creationTx, creationTx);
   });
@@ -133,7 +133,7 @@ describe('a contract listing\'s control fact', () => {
     // a transaction that created nothing
     const tx = await (await stranger.sendTransaction({ to: stranger.address, value: 0n })).wait();
     await refused(await post(l, { signer: stranger.address, signature: await stranger.signMessage(message), creationTx: tx.hash }), 422, 'SIGNER_NOT_CONTROLLER');
-    assert.equal((await fact(l)).controls, 'no');
+    assert.equal((await fact(l)).deployment.controls, 'no');
     assert.equal((await fact(l)).deployment.signer, null, 'nothing refused was stored');
   });
 
@@ -150,8 +150,8 @@ describe('a contract listing\'s control fact', () => {
 
     // the owner named the maker: the stranger's listing of the same hash gets nothing from it
     await refused(await post(theirs, { signer: owner.address, signature: signed }), 422, 'SIGNATURE_INVALID');
-    assert.equal((await fact(theirs)).controls, 'no');
-    assert.equal((await fact(mine)).controls, 'yes');
+    assert.equal((await fact(theirs)).deployment.controls, 'no');
+    assert.equal((await fact(mine)).deployment.controls, 'yes');
     // signed for this maker and another hash
     const forOther = await owner.signMessage(messageOf(otherCommit, stranger.address, address));
     await refused(await post(theirs, { signer: owner.address, signature: forOther }), 422, 'SIGNATURE_INVALID');
@@ -162,7 +162,7 @@ describe('a contract listing\'s control fact', () => {
     }
     // something else entirely
     await refused(await post(theirs, { signer: owner.address, signature: await owner.signMessage('x') }), 422, 'SIGNATURE_INVALID');
-    assert.equal((await fact(otherCommit)).controls, 'no');
+    assert.equal((await fact(otherCommit)).deployment.controls, 'no');
   });
 
   test('an address in another case is the same address; a bad checksum or another format is refused', async () => {
@@ -200,7 +200,7 @@ describe('a contract listing\'s control fact', () => {
     const res = await post(l, { signer: wallet.address, signature: good });
     assert.equal(res.status, 200);
     const c = (await res.json()).control;
-    assert.equal(c.controls, 'yes');
+    assert.equal(c.deployment.controls, 'yes');
     assert.equal(c.deployment.role, 'owner');
     assert.equal(c.deployment.contractSigner, true);
 
@@ -211,7 +211,7 @@ describe('a contract listing\'s control fact', () => {
     await site.sync();
     await site.controlIdle();
     const later = await fact(l);
-    assert.equal(later.controls, 'no');
+    assert.equal(later.deployment.controls, 'no');
     assert.equal(later.reason, 'SIGNATURE_INVALID');
     await (await wallet.contract.setMode(0)).wait();
   });
@@ -224,22 +224,22 @@ describe('a contract listing\'s control fact', () => {
     await site.sync();
     await post(l, { signer: owner.address, signature: await owner.signMessage((await fact(l)).deployment.message) });
     await post(d, { signer: deployer.address, signature: await deployer.signMessage((await fact(d)).deployment.message), creationTx: byDeployer.creationTx });
-    assert.equal((await fact(l)).controls, 'yes');
-    assert.equal((await fact(d)).controls, 'yes');
+    assert.equal((await fact(l)).deployment.controls, 'yes');
+    assert.equal((await fact(d)).deployment.controls, 'yes');
 
     await (await owned.contract.connect(owner).transferOwnership(stranger.address)).wait();
     await (await byDeployer.contract.connect(owner).transferOwnership(stranger.address)).wait();
     await site.sync();
     await site.controlIdle();
-    assert.equal((await fact(l)).controls, 'yes', 'not before the recheck time');
+    assert.equal((await fact(l)).deployment.controls, 'yes', 'not before the recheck time');
     clock += 1001;
     await site.sync();
     await site.controlIdle();
     const later = await fact(l);
-    assert.equal(later.controls, 'no');
+    assert.equal(later.deployment.controls, 'no');
     assert.equal(later.reason, 'SIGNER_NOT_CONTROLLER');
     assert.equal(later.deployment.signer, owner.address, 'what was checked stays on the record');
-    assert.equal((await fact(d)).controls, 'yes');
+    assert.equal((await fact(d)).deployment.controls, 'yes');
     assert.equal((await fact(d)).deployment.role, 'deployer');
 
     // the new owner's signature replaces it
@@ -255,7 +255,7 @@ describe('a contract listing\'s control fact', () => {
     const signature = await owner.signMessage((await fact(l)).deployment.message);
     await post(l, { signer: owner.address, signature });
     await refused(await post(l, { signer: stranger.address, signature: await stranger.signMessage('nope') }), 422, 'SIGNATURE_INVALID');
-    assert.equal((await fact(l)).controls, 'yes');
+    assert.equal((await fact(l)).deployment.controls, 'yes');
     assert.equal((await fact(l)).deployment.signature, signature);
   });
 
@@ -265,7 +265,7 @@ describe('a contract listing\'s control fact', () => {
     const commit = vault.commit({ file: proofFile(ctx.maker.address) });
     const { address } = await deploy('MockOwned', deployer, owner.address);
     const l = await contractListing(address, { commit });
-    const local = siteFor(ctx, { checkRepository: null, env: { SA_CONTROL_GIT_MIRROR_DIR: mirrors } });
+    const local = siteFor(ctx, { settle: false, checkRepository: null, env: { SA_CONTROL_GIT_MIRROR_DIR: mirrors } });
     try {
       for (let round = 0; round < 24; round += 1) {
         await local.sync();
@@ -273,11 +273,11 @@ describe('a contract listing\'s control fact', () => {
       }
       const c = (await local.record(l.artifactHash)).control[l.listingId];
       assert.equal(c.subject, 'deployment');
-      assert.equal(c.controls, 'no');
+      assert.equal(c.deployment.controls, 'no');
       assert.equal(c.reason, 'NO_SIGNATURE');
-      assert.equal(c.repository.controls, 'yes', 'the repository line says what the file says');
-      assert.equal(c.repository.named, ctx.maker.address);
-      assert.match((await local.badge(l.artifactHash)).message, /staker controls the deployment: no$/);
+      assert.equal(c.repository.named, 'yes', 'the repository line says what the file says');
+      assert.equal(c.repository.fileNames, ctx.maker.address);
+      assert.equal((await local.badge(l.artifactHash)).message, 'no counted stake');
     } finally {
       local.close();
     }
@@ -309,7 +309,7 @@ describe('a contract listing\'s control fact', () => {
     const l = await contractListing(empty);
     await site.sync();
     await refused(await post(l, { signer: owner.address, signature: await owner.signMessage((await fact(l)).deployment.message) }), 422, 'NO_CONTRACT_AT_ADDRESS');
-    assert.equal((await fact(l)).controls, 'no');
+    assert.equal((await fact(l)).deployment.controls, 'no');
   });
 
   test('an owner() that answers no address names nobody', async () => {
@@ -327,10 +327,10 @@ describe('a contract listing\'s control fact', () => {
     assert.equal((await fact(l)).deployment.message, message);
     assert.equal((await fact(l)).deployment.chainId, '8453');
     await refused(await post(l, { signer: owner.address, signature: await owner.signMessage(message) }), 503, 'CHAIN_NOT_CHECKED');
-    assert.equal((await fact(l)).controls, 'no');
+    assert.equal((await fact(l)).deployment.controls, 'no');
 
     // a provider for the chain id that is really another chain: its contract does not count
-    const local = siteFor(ctx, { chainProviderFor: (id) => (id === 8453 ? ctx.provider : null) });
+    const local = siteFor(ctx, { settle: false, chainProviderFor: (id) => (id === 8453 ? ctx.provider : null) });
     try {
       await local.sync();
       await assert.rejects(
@@ -356,7 +356,7 @@ describe('a contract listing\'s control fact', () => {
         return typeof v === 'function' ? v.bind(target) : v;
       },
     });
-    const local = siteFor(ctx, { provider: flaky, now: () => t, env: { SA_CONTROL_RPC_TIMEOUT_MS: '200', SA_CONTROL_RETRY_MS: '1000', SA_CONTROL_RECHECK_MS: '5000', SA_MAX_STALENESS_SECONDS: '100000000' } });
+    const local = siteFor(ctx, { settle: false, provider: flaky, now: () => t, env: { SA_CONTROL_RPC_TIMEOUT_MS: '200', SA_CONTROL_RETRY_MS: '1000', SA_CONTROL_RECHECK_MS: '5000', SA_MAX_STALENESS_SECONDS: '100000000' } });
     try {
       await local.sync();
       const message = (await local.record(l.artifactHash)).control[l.listingId].deployment.message;
@@ -366,22 +366,33 @@ describe('a contract listing\'s control fact', () => {
       await assert.rejects(local.submitControlProof(l.artifactHash, String(l.listingId), body), (err) => err.code === 'CHAIN_UNAVAILABLE' && err.status === 503);
       mode = 'ok';
       await local.submitControlProof(l.artifactHash, String(l.listingId), body);
-      assert.equal((await local.record(l.artifactHash)).control[l.listingId].controls, 'yes');
+      assert.equal((await local.record(l.artifactHash)).control[l.listingId].deployment.controls, 'yes');
 
-      // the recheck meets a hung chain: the sync does not wait, the fact goes to "no" and comes back
+      // the recheck meets a hung chain: the sync does not wait, and an answer on file stands meanwhile
       mode = 'hang';
       t += 5001;
       await local.sync();
       await local.controlIdle();
-      const down = (await local.record(l.artifactHash)).control[l.listingId];
-      assert.equal(down.controls, 'no');
-      assert.equal(down.reason, 'CHAIN_UNAVAILABLE');
+      const down = (await local.record(l.artifactHash)).control[l.listingId].deployment;
+      assert.equal(down.controls, 'yes');
+      assert.equal(down.lastCheckFailed, 'CHAIN_UNAVAILABLE');
       assert.equal(down.nextCheckAt, Math.floor((t + 1000) / 1000));
       mode = 'ok';
       t += 1001;
       await local.sync();
       await local.controlIdle();
-      assert.equal((await local.record(l.artifactHash)).control[l.listingId].controls, 'yes');
+      const back = (await local.record(l.artifactHash)).control[l.listingId].deployment;
+      assert.equal(back.controls, 'yes');
+      assert.equal(back.lastCheckFailed, null);
+
+      // for a while: a chain that stays down past it leaves "no"
+      mode = 'hang';
+      t += 8 * 86400_000;
+      await local.sync();
+      await local.controlIdle();
+      const gone = (await local.record(l.artifactHash)).control[l.listingId];
+      assert.equal(gone.deployment.controls, 'no');
+      assert.equal(gone.deployment.reason, 'CHAIN_UNAVAILABLE');
     } finally {
       local.close();
     }
@@ -404,7 +415,7 @@ describe('a contract listing\'s control fact', () => {
         return typeof v === 'function' ? v.bind(target) : v;
       },
     });
-    const local = siteFor(ctx, { provider: gated, now: () => t, env: { SA_CONTROL_RECHECK_MS: '1000', SA_MAX_STALENESS_SECONDS: '100000000' } });
+    const local = siteFor(ctx, { settle: false, provider: gated, now: () => t, env: { SA_CONTROL_RECHECK_MS: '1000', SA_MAX_STALENESS_SECONDS: '100000000' } });
     try {
       await local.sync();
       const message = (await local.record(l.artifactHash)).control[l.listingId].deployment.message;
@@ -420,14 +431,14 @@ describe('a contract listing\'s control fact', () => {
 
       // the new owner's proof arrives and counts
       const c = await local.submitControlProof(l.artifactHash, String(l.listingId), { signer: stranger.address, signature: await stranger.signMessage(message) });
-      assert.equal(c.controls, 'yes');
+      assert.equal(c.deployment.controls, 'yes');
       assert.equal(c.deployment.signer, stranger.address);
 
       // the old proof's check ends with "no": it answers for the old proof, not this one
       release();
       await local.controlIdle();
       const after = (await local.record(l.artifactHash)).control[l.listingId];
-      assert.equal(after.controls, 'yes');
+      assert.equal(after.deployment.controls, 'yes');
       assert.equal(after.deployment.signer, stranger.address);
     } finally {
       local.close();
@@ -450,7 +461,7 @@ describe('a contract listing\'s control fact', () => {
         return typeof v === 'function' ? v.bind(target) : v;
       },
     });
-    const local = siteFor(ctx, { provider: slow, env: { SA_CONTROL_RPC_TIMEOUT_MS: '100' } });
+    const local = siteFor(ctx, { settle: false, provider: slow, env: { SA_CONTROL_RPC_TIMEOUT_MS: '100' } });
     try {
       await local.sync();
       const message = (await local.record(l.artifactHash)).control[l.listingId].deployment.message;
@@ -473,7 +484,7 @@ describe('a contract listing\'s control fact', () => {
       await new Promise((r) => setTimeout(r, 50));
       assert.equal(readsAfterGate, 0);
       const c = await local.submitControlProof(l.artifactHash, id, body);
-      assert.equal(c.controls, 'yes');
+      assert.equal(c.deployment.controls, 'yes');
     } finally {
       local.close();
     }
@@ -492,7 +503,7 @@ describe('a contract listing\'s control fact', () => {
         return typeof v === 'function' ? v.bind(target) : v;
       },
     });
-    const local = siteFor(ctx, { provider: flaky });
+    const local = siteFor(ctx, { settle: false, provider: flaky });
     try {
       await local.sync();
       const message = (await local.record(l.artifactHash)).control[l.listingId].deployment.message;
@@ -501,7 +512,7 @@ describe('a contract listing\'s control fact', () => {
       await assert.rejects(local.submitControlProof(l.artifactHash, String(l.listingId), body), (err) => err.code === 'CHAIN_UNAVAILABLE');
       assert.equal(txReads, 0);
       failing = false;
-      assert.equal((await local.submitControlProof(l.artifactHash, String(l.listingId), body)).controls, 'yes');
+      assert.equal((await local.submitControlProof(l.artifactHash, String(l.listingId), body)).deployment.controls, 'yes');
     } finally {
       local.close();
     }
@@ -520,7 +531,7 @@ describe('a contract listing\'s control fact', () => {
         return typeof v === 'function' ? v.bind(target) : v;
       },
     });
-    const local = siteFor(ctx, { provider: slow, env: { SA_CONTROL_RPC_TIMEOUT_MS: '60000' } });
+    const local = siteFor(ctx, { settle: false, provider: slow, env: { SA_CONTROL_RPC_TIMEOUT_MS: '60000' } });
     try {
       await local.sync();
       const message = (await local.record(l.artifactHash)).control[l.listingId].deployment.message;

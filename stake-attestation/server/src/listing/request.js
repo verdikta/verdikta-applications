@@ -3,8 +3,12 @@
 //   { "spec": <draft code_review.json, with its stake block and disclosure key>,
 //     "knownIssues": <known_issues.json entries, when spec.stake.knownIssues names the file>,
 //     "allowlist": [<hunter addresses>],      (optional; empty or absent: open to every hunter)
-//     "maker": "<the maker's address>" }      (optional; the wallet the baseline scan's findings
-//                                              are served to, design §8.3; absent: no scan)
+//     "maker": "<the maker's address>",       (required, node P9: the wallet that will send list(). The
+//                                              repository's file must name it, and it signs the request;
+//                                              the baseline scan's findings go to it, design §8.3)
+//     "deploymentProof": { signer, signature, creationTx? },  (a contract listing: required, its
+//                                              deployer's or owner's signature, docs/control-proof.md)
+//     "auth": { nonce, signature } }          (the maker's wallet's signature of the challenge)
 //
 // The draft is what the builder completes (it measures env.image, env.platform, env.unpackedBytes
 // and the default limits), so it is checked here with common's validator over the builder's
@@ -13,13 +17,17 @@
 // refused before anything is built. What list() would refuse (the windows, the allowlist, the
 // number of known issues) and a claim query too long for a primary file are refused here too,
 // so a build is never spent on a listing that could not go on-chain.
+import crypto from 'node:crypto';
+
 import { getAddress, isAddress } from 'ethers';
+import { DEFAULT_GIT_HOSTS, PROOF_REFUSALS, proofFieldProblem, repoUrlCheck } from '@verdikta/stake-attestation-shared/control-proof';
 
 import { codeReview } from '../common.js';
+import { canonicalAddress } from '../control/facts.js';
 import { RESERVED_NAMES } from './archives.js';
 import { LIST_LIMITS, disclosureKeyBytes32, listIssues } from './listParams.js';
 
-const TOP_KEYS = ['spec', 'knownIssues', 'allowlist', 'maker'];
+const TOP_KEYS = ['spec', 'knownIssues', 'allowlist', 'maker', 'deploymentProof', 'auth'];
 // Names the builder writes beside the listing's files in its output folder, and the scan's own
 // file, which is the maker's alone and never a listing file (builder/src/spec.js).
 const BUILDER_NAMES = Object.freeze(['validation-report.json', 'dev-trust.json', 'scan-findings.json']);
@@ -54,9 +62,12 @@ export function serializeKnownIssues(list) {
   return Buffer.from(`${JSON.stringify(list, null, 2)}\n`, 'utf8');
 }
 
-/** The maker's address, checksummed; null when the request names none. */
+/** The maker's address, checksummed: every listing names one. */
 function makerOf(raw, issues) {
-  if (raw === undefined || raw === null) return null;
+  if (raw === undefined || raw === null || raw === '') {
+    issues.push({ code: 'MAKER_REQUIRED', path: '/maker', detail: 'a listing names its maker, the wallet that will send list(): the project names that address in its repository' });
+    return null;
+  }
   if (typeof raw !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(raw) || !isAddress(raw.toLowerCase())) {
     issues.push({ code: 'MAKER_INVALID', path: '/maker', detail: 'the maker is the 0x address of the wallet that will send list()' });
     return null;
@@ -87,12 +98,13 @@ function allowlistOf(raw, issues) {
 
 /**
  * @param {unknown} body - the parsed JSON body
- * @returns {{ draft: object, knownIssues: { list: object[], bytes: Buffer }|null, allowlist: string[], maker: string|null, disclosureKey: { recipient: string, bytes32: string } }}
+ * @param {{ gitHosts?: string[] }} [o] - the hosts the site reads a repository from
+ * @returns {{ draft: object, knownIssues: { list: object[], bytes: Buffer }|null, allowlist: string[], maker: string, deploymentProof: object|null, disclosureKey: { recipient: string, bytes32: string }, digest: string }}
  * @throws {RequestError} with every issue found
  */
-export function parseListingRequest(body) {
+export function parseListingRequest(body, { gitHosts = DEFAULT_GIT_HOSTS } = {}) {
   const issues = [];
-  if (!isObject(body)) throw new RequestError([{ code: 'REQUEST_INVALID', path: '/', detail: 'the body is a JSON object { spec, knownIssues?, allowlist?, maker? }' }]);
+  if (!isObject(body)) throw new RequestError([{ code: 'REQUEST_INVALID', path: '/', detail: 'the body is a JSON object { spec, knownIssues?, allowlist?, maker, deploymentProof?, auth }' }]);
   for (const k of Object.keys(body)) {
     if (!TOP_KEYS.includes(k)) issues.push({ code: 'REQUEST_INVALID', path: `/${k}`, detail: `unknown field; a listing request has ${TOP_KEYS.join(', ')}` });
   }
@@ -142,6 +154,21 @@ export function parseListingRequest(body) {
   const allowlist = allowlistOf(body.allowlist, issues);
   const maker = makerOf(body.maker, issues);
 
+  // the repository's proof is read from a URL the site reads, and a contract's signature comes with the request
+  if (typeof draft.repo === 'string') {
+    const url = repoUrlCheck(draft.repo, gitHosts);
+    if (!url.ok) issues.push({ code: url.reason, path: '/spec/repo', detail: PROOF_REFUSALS[url.reason] });
+  }
+  const contract = draft.artifact?.kind === 'contract';
+  let deploymentProof = null;
+  if (body.deploymentProof !== undefined && body.deploymentProof !== null) {
+    if (!contract) issues.push({ code: 'REQUEST_INVALID', path: '/deploymentProof', detail: 'a repository listing has no deployment signature: its proof is the file at the commit' });
+    else if (proofFieldProblem(body.deploymentProof, canonicalAddress)) issues.push({ code: 'SIGNATURE_INVALID', path: '/deploymentProof', detail: proofFieldProblem(body.deploymentProof, canonicalAddress).detail });
+    else deploymentProof = { signer: canonicalAddress(body.deploymentProof.signer), signature: body.deploymentProof.signature, creationTx: body.deploymentProof.creationTx ?? null };
+  } else if (contract) {
+    issues.push({ code: 'NO_SIGNATURE', path: '/deploymentProof', detail: PROOF_REFUSALS.NO_SIGNATURE });
+  }
+
   if (v.ok) {
     for (const i of listIssues(standIn)) issues.push({ ...i, path: `/spec${i.path}` });
     try {
@@ -151,5 +178,11 @@ export function parseListingRequest(body) {
     }
   }
   if (issues.length) throw new RequestError(issues);
-  return { draft, knownIssues, allowlist, maker, disclosureKey };
+  return { draft, knownIssues, allowlist, maker, deploymentProof, disclosureKey, digest: requestDigest(body) };
+}
+
+/** What the maker's wallet signs for: the whole request but its signature, as it was sent. */
+function requestDigest(body) {
+  const { auth, ...signed } = body;
+  return crypto.createHash('sha256').update(JSON.stringify(signed)).digest('hex');
 }

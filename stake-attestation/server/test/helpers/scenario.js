@@ -17,6 +17,7 @@ import { createMockPinner, rawCid } from '../../src/pinning/index.js';
 import { createSite } from '../../src/site/index.js';
 import { deployStakeAttestation, hardhat } from './chain.js';
 import { draftSpec, fakeBuilder, testConfig } from './fixtures.js';
+import { proofFile } from './gitRepo.js';
 import { quietLogger } from './http.js';
 
 export const OUTCOMES = Object.freeze(['INVALID', 'DUPLICATE', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
@@ -51,6 +52,12 @@ export async function chainContext() {
   const address = await d.sa.getAddress();
   const fromBlock = await hre.ethers.provider.getBlockNumber();
   const accounts = hre.network.config.accounts;
+  // what git says of each listed commit: the file naming its maker, as the project's own listing has it
+  const proofs = new Map();
+  const answerFor = async ({ repo, commit }) => {
+    const maker = proofs.get(`${repo}@${commit}`);
+    return maker ? { reachable: true, ref: 'refs/heads/main', file: { blob: 'b'.repeat(40), text: proofFile(maker), problem: null } } : { reachable: true, ref: 'refs/heads/main', file: null };
+  };
   // the keeper signs with its own key, as in production: Hardhat's 10th account, derived here
   const keyOf = (index) => ethers.HDNodeWallet.fromPhrase(accounts.mnemonic, accounts.passphrase ?? '', `${accounts.path}/${index}`).privateKey;
   return {
@@ -67,6 +74,8 @@ export async function chainContext() {
     provider: inProcessProvider(hre),
     pinner: createMockPinner(),
     builder: fakeBuilder(),
+    proofs,
+    answerFor,
   };
 }
 
@@ -96,9 +105,12 @@ function eventArgs(ctx, rc, name) {
 
 /**
  * Builds, pins and lists a listing, and funds it unless `fund` is false. The stake defaults to a
- * fix window and a disclosure grace of 0, so a disclosed claim reveals at once.
+ * fix window and a disclosure grace of 0, so a disclosed claim reveals at once. The repository's
+ * file at the commit names the maker, as the project's own listing has it (`proof` another address,
+ * or null: none). `builder` signs it (by default the one the site trusts); `list: false` stops
+ * before list(), for a test that replays the archive; `paramsOver` changes what goes on-chain.
  */
-export async function listing(ctx, { maker = ctx.maker, spec = {}, stake = {}, fund = true, allowlist = [], escrowWei, oracle } = {}) {
+export async function listing(ctx, { maker = ctx.maker, spec = {}, stake = {}, fund = true, allowlist = [], escrowWei, oracle, proof, builder = ctx.builder, list = true, paramsOver = {} } = {}) {
   const base = draftSpec();
   const draft = {
     ...base,
@@ -107,7 +119,9 @@ export async function listing(ctx, { maker = ctx.maker, spec = {}, stake = {}, f
     stake: { ...base.stake, fixWindowDays: 0, disclosureGraceHours: 0, ...stake },
   };
   delete draft.stake.knownIssues;
-  const built = await ctx.builder.build({ draft, knownIssues: null });
+  if (proof === null) ctx.proofs.delete(`${draft.repo}@${draft.baseCommit}`);
+  else ctx.proofs.set(`${draft.repo}@${draft.baseCommit}`, proof ?? maker.address);
+  const built = await builder.build({ draft, knownIssues: null, maker: maker.address });
   const archives = buildListingArchives(built.files);
   const listingCid = await ctx.pinner.pin(archives.listing.bytes, { name: 'listing.zip' });
   const disputeCid = await ctx.pinner.pin(archives.dispute.bytes, { name: 'dispute.zip' });
@@ -119,10 +133,54 @@ export async function listing(ctx, { maker = ctx.maker, spec = {}, stake = {}, f
     listingCid,
     disputeCid,
   });
-  const rc = await (await ctx.sa.connect(maker).list(args.params, listingCid, disputeCid, args.knownIssueIds)).wait();
+  const out = { artifactHash: args.artifactHash, spec: archives.spec, listingCid, disputeCid, params: args.params, knownIssueIds: args.knownIssueIds };
+  if (!list) return out;
+  const rc = await (await ctx.sa.connect(maker).list({ ...args.params, ...paramsOver }, listingCid, disputeCid, args.knownIssueIds)).wait();
   const listingId = eventArgs(ctx, rc, 'Listed').listingId;
-  if (fund) await fundListing(ctx, listingId, { maker, escrowWei: escrowWei ?? BigInt(args.params.awards[3]) });
-  return { listingId, artifactHash: args.artifactHash, spec: archives.spec, listingCid, disputeCid, params: args.params };
+  if (fund) await fundListing(ctx, listingId, { maker, escrowWei: escrowWei ?? BigInt((paramsOver.awards ?? args.params.awards)[3]) });
+  return { ...out, listingId };
+}
+
+/** A signed archive listed from another wallet: list() takes it, as it takes any CID. */
+export async function replay(ctx, l, { from, escrowMultiple = 1n } = {}) {
+  const rc = await (await ctx.sa.connect(from).list(l.params, l.listingCid, l.disputeCid, l.knownIssueIds)).wait();
+  const listingId = eventArgs(ctx, rc, 'Listed').listingId;
+  await fundListing(ctx, listingId, { maker: from, escrowWei: BigInt(l.params.awards[3]) * escrowMultiple });
+  return { listingId };
+}
+
+/** A contract someone owns on the in-process chain, for a contract listing's proof. */
+export async function ownedContract(ctx, owner) {
+  const owned = await (await ctx.hre.ethers.getContractFactory('MockOwned')).deploy(owner.address);
+  await owned.waitForDeployment();
+  return owned.getAddress();
+}
+
+/** A contract listing's owner signs the message the record states. */
+export async function proveDeployment(site, l, signer) {
+  const id = String(l.listingId);
+  const { message } = (await site.record(l.artifactHash)).control[id].deployment;
+  return site.submitControlProof(l.artifactHash, id, { signer: signer.address, signature: await signer.signMessage(message) });
+}
+
+/** A listing no builder this site trusts signed: another builder's key, or a CID that holds nothing. */
+export async function bareListing(ctx, { signWith, junkCid = false, maker = ctx.maker } = {}) {
+  if (!junkCid) return listing(ctx, { maker, builder: signWith });
+  const l = await listing(ctx, { maker, list: false });
+  const cid = rawCid(Buffer.from(`nothing pinned ${crypto.randomBytes(8).toString('hex')}`));
+  const rc = await (await ctx.sa.connect(maker).list(l.params, cid, cid, l.knownIssueIds)).wait();
+  const listingId = eventArgs(ctx, rc, 'Listed').listingId;
+  await fundListing(ctx, listingId, { maker, escrowWei: BigInt(l.params.awards[3]) });
+  return { ...l, listingId, listingCid: cid };
+}
+
+/** Syncs until the checks beside the indexer have run: a run takes at most a few. */
+export async function settled(site, rounds = 8) {
+  for (let round = 0; round < rounds; round += 1) {
+    await site.rawSync();
+    await site.archivesIdle();
+    await site.controlIdle();
+  }
 }
 
 export async function fundListing(ctx, listingId, { maker = ctx.maker, escrowWei } = {}) {
@@ -206,11 +264,13 @@ export function siteEnv(ctx, dir, over = {}) {
  * The site (indexer, keeper, feed, record, badge) over the in-process chain. `env` adds to or
  * overrides siteEnv; `provider` replaces the in-process provider (a wrapper that fails on cue);
  * `keeperHooks.beforeBroadcast` runs between recording a transaction and broadcasting it; `now`
- * replaces the site's wall clock. `checkRepository` is the git check: by default it answers that the
- * commit is on no ref and fetches nothing (no test reaches a live host); null runs the real command
- * line, for a test that names SA_CONTROL_GIT_MIRROR_DIR.
+ * replaces the site's wall clock. `checkRepository` is the git check: by default it answers from the
+ * listings made here (a file naming each one's maker; no test reaches a live host); null runs the
+ * real command line, for a test that names SA_CONTROL_GIT_MIRROR_DIR. `checkFork` answers for the
+ * host's API: by default unknown. `settle` makes each sync wait for the checks beside the indexer,
+ * so a test reads what they answered; false: sync as the site does.
  */
-export function siteFor(ctx, { dir = tmpDir(), env = {}, provider = ctx.provider, fetchArchive, logger = quietLogger(), keeperHooks, now, checkRepository = async () => ({ reachable: false, ref: null, file: null }), chainProviderFor } = {}) {
+export function siteFor(ctx, { dir = tmpDir(), env = {}, provider = ctx.provider, fetchArchive, logger = quietLogger(), keeperHooks, now, checkRepository = ctx.answerFor, chainProviderFor, checkFork = async () => ({ status: 'unknown', parent: null, host: null, reason: 'TEST' }), settle = true } = {}) {
   const fullEnv = siteEnv(ctx, dir, env);
   const config = testConfig(fullEnv);
   const site = createSite({
@@ -227,9 +287,28 @@ export function siteFor(ctx, { dir = tmpDir(), env = {}, provider = ctx.provider
     ...(now ? { now } : {}),
     ...(checkRepository ? { checkRepository } : {}),
     ...(chainProviderFor ? { chainProviderFor } : {}),
+    checkFork,
   });
   site.dir = dir;
   site.logger = logger;
+  // the builder stand-in's key is one this site's signing step made
+  site.noteDevTrust(ctx.builder.devTrust());
+  site.rawSync = site.sync;
+  if (settle) {
+    site.sync = async () => {
+      const r = await site.rawSync();
+      let seen = null;
+      for (let round = 0; round < 40; round += 1) {
+        await site.archivesIdle();
+        await site.controlIdle();
+        const now2 = JSON.stringify([site.store.state.archives, site.store.state.control]);
+        if (now2 === seen) break;
+        seen = now2;
+        await site.rawSync();
+      }
+      return r;
+    };
+  }
   return site;
 }
 

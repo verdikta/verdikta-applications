@@ -6,6 +6,9 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { ethers } from 'ethers';
+
+import { mergedAbi } from './helpers/chain.js';
 import { fakeBuilder } from './helpers/fixtures.js';
 import { startApi } from './helpers/http.js';
 import { bareListing, chainContext, listing, replay, revealedClaim, judgeAndSettle, settled, siteFor } from './helpers/scenario.js';
@@ -31,7 +34,7 @@ describe('what counts', () => {
   const feed = async () => (await api.get('/api/feed')).json();
 
   test('the project\'s own listing counts: record, feed, badge and labels; wording names the repository', async () => {
-    const l = await listing(ctx);
+    const l = await listing(ctx, { stake: { valueAtRiskUsd: undefined } });
     await settled(site);
     const v = await view(l.artifactHash);
     assert.deepEqual(ids(v.record.listings), [String(l.listingId)]);
@@ -45,7 +48,7 @@ describe('what counts', () => {
     assert.ok(ids(f.listings).includes(String(l.listingId)));
     assert.equal(f.notCounted.some((e) => e.listingId === String(l.listingId)), false);
     // what a contract read says too: this is recordByHash's answer when every listing counts
-    const onchain = await ctx.hre.ethers.getContractAt(ctx.mergedAbi, ctx.address);
+    const onchain = new ethers.Contract(ctx.address, mergedAbi(ctx.hre), ctx.provider);
     assert.equal(String((await onchain.recordByHash(l.artifactHash)).listingCount), v.record.listingCount);
   });
 
@@ -115,8 +118,8 @@ describe('what counts', () => {
   });
 
   test('a valid finding under a listing that does not count stays off the project\'s badge and shows apart', async () => {
-    const l = await listing(ctx);
-    const r = await replay(ctx, l, { from: ctx.other, fixWindow: 0 });
+    const l = await listing(ctx, { stake: { valueAtRiskUsd: undefined } });
+    const r = await replay(ctx, l, { from: ctx.other });
     const claim = await revealedClaim(ctx, ctx.hunters[0], r.listingId);
     await judgeAndSettle(ctx, claim, 'HIGH');
     await settled(site);

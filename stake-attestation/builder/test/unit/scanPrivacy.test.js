@@ -16,6 +16,7 @@ import { main } from '../../src/cli.js';
 import { SCAN_FILE } from '../../src/scan.js';
 import { KNOWN_ISSUES, writeAcceptedBuild } from '../helpers/build.js';
 import { gitleaksResult, scanDeps, semgrepAnswer, semgrepResult } from '../helpers/scan.js';
+import { MAKER, provenAnswer } from '../helpers/proof.js';
 import { draftSpec } from '../helpers/specs.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -99,7 +100,7 @@ test('sign refuses a listing folder that holds scan findings: they are never att
   const scan = await runScan(dir);
   fs.copyFileSync(path.join(scan.out, SCAN_FILE), path.join(listing, SCAN_FILE));
   const t = io();
-  assert.equal(await main(['sign', '--config', writeConfig(dir), '--dir', listing], { env: {}, ...t }), 1);
+  assert.equal(await main(['sign', '--config', writeConfig(dir), '--dir', listing, '--maker', MAKER], { env: {}, ...t, deps: { checkRepositoryControl: provenAnswer() } }), 1);
   assert.match(t.err, /SCAN_RESULTS_IN_LISTING_DIR/);
   assert.equal(fs.existsSync(path.join(listing, 'attestation.json')), false);
   fs.rmSync(dir, { recursive: true, force: true });
@@ -113,7 +114,7 @@ test('the listing archive, the record and known_issues.json carry nothing from t
   const scan = await runScan(dir, { spec: JSON.parse(fs.readFileSync(path.join(listing, 'code_review.json'), 'utf8')) });
   assert.equal(scan.code, 0, scan.t.err);
   const t = io();
-  assert.equal(await main(['sign', '--config', writeConfig(dir), '--dir', listing], { env: {}, ...t }), 0, t.err);
+  assert.equal(await main(['sign', '--config', writeConfig(dir), '--dir', listing, '--maker', MAKER], { env: {}, ...t, deps: { checkRepositoryControl: provenAnswer() } }), 0, t.err);
   // The archive's files (code_review.json, the baseline, known_issues.json, attestation.json) and
   // the record's source (validation-report.json, the attestation) hold no finding.
   assert.deepEqual(fs.readdirSync(listing).sort(), ['attestation.json', 'baseline.json', 'code_review.json', 'dev-trust.json', 'known_issues.json', 'validation-report.json']);

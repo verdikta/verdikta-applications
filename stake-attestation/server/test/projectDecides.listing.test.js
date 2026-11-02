@@ -76,9 +76,8 @@ describe('the maker', () => {
     const other = listingRequest({ spec: draftSpec({ baseCommit: 'c'.repeat(40) }) });
     const res = await s.post('/api/listings', { ...other, auth });
     assert.equal(res.status, 401);
-    // and a signature answers once
-    const first = await s.post('/api/listings', { ...body, auth });
-    assert.ok([401, 202].includes(first.status));
+    // and a nonce answers one attempt, whatever its outcome
+    assert.equal((await s.post('/api/listings', { ...body, auth })).status, 401);
     assert.equal(s.builder.calls.length, 0);
   });
 
@@ -145,7 +144,7 @@ describe('the project\'s proof', () => {
 
   test('a contract listing needs the signature too: none is refused at the request, a bad one by its code', async () => {
     const s = await api();
-    const res = await s.post('/api/listings/challenge', listingRequest({ spec: contractDraft() }));
+    const res = await s.post('/api/listings/challenge', listingRequest({ spec: contractDraft(), deploymentProof: null }));
     assert.equal(res.status, 400);
     assert.ok((await res.json()).issues.some((i) => i.code === 'NO_SIGNATURE'));
 
@@ -243,7 +242,7 @@ describe('refused attempts, counted by reason', () => {
     c.count(['NO_PROOF_FILE', 'NO_PROOF_FILE', 'https://github.com/acme/vault', '0x5B38Da6a701c568545dCfcB03FcB875f56beddC4']);
     const view = c.view();
     assert.equal(view.total, 1);
-    assert.deepEqual(view.byReason, { NO_PROOF_FILE: 1, OTHER: 2 });
+    assert.deepEqual(view.byReason, { NO_PROOF_FILE: 1, OTHER: 1 });
   });
 });
 

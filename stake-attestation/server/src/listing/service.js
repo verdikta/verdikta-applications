@@ -1,6 +1,9 @@
 // The listing flow (design §7, §8.1-§8.2, §10.4, §13.2 list and fund):
 //
-//   queued     the request passed request.js; it waits for a build slot
+//   queued     the request passed request.js and the maker's wallet signed it; it waits for a slot
+//   checking   the project's proof (node P9, owner decision Q34): the file at the listed commit names
+//              the maker, on one of the repository's own branches or tags, and a contract's deployer
+//              or owner signed. No proof: refused, with a named code, nothing built, signed or pinned
 //   building   the environment builder (node P3a) builds and pushes the env image, checks a
 //              contract's verified source, validates the listing on the arbiters' code-runner,
 //              then signs attestation.json in a separate step
@@ -8,7 +11,7 @@
 //              or pinned (a failed verified-source check ends here)
 //   scanning   the build was accepted, its result checked (below) and both archives built and
 //              checked as arbiters read them; the baseline scan (design §8.3; node P4b2) runs on
-//              the staked version, when the request names the maker it is for
+//              the staked version, for the maker the request names
 //   pinning    both archives are being pinned
 //   ready      both CIDs are pinned: the view carries the validation report and every argument
 //              of list(); the maker's wallet sends list() and then fund()
@@ -31,18 +34,33 @@
 import crypto from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 
+import { PROOF_REFUSALS, repositoryProofReason } from '@verdikta/stake-attestation-shared/control-proof';
+
 import { codeReview } from '../common.js';
+import { CONTROL_REASONS, canonicalAddress, controlMessage, readAnswerFile } from '../control/facts.js';
 import { buildListingArchives } from './archives.js';
 import { artifactHashOf, artifactOf, listArguments } from './listParams.js';
-import { parseListingRequest } from './request.js';
+import { RefusalCounter } from './refusals.js';
+import { RequestError, parseListingRequest } from './request.js';
 import { validateListingArchive } from './validateArchive.js';
 
-const STEPS_ALWAYS_OK = ['spec', 'fetch', 'build', 'size', 'push', 'registry', 'listingCheck', 'finalSpec'];
+const STEPS_ALWAYS_OK = ['spec', 'control', 'fetch', 'build', 'size', 'push', 'registry', 'listingCheck', 'finalSpec'];
 const BUILDER_FILLS = new Set(['env', 'limits', 'attestation', 'baseline']);
 const MAX_KEPT = 500;
+const LIST_ACTION = 'list-version';
 const CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 /** An error code fit for the log: a fixed identifier, never text that could quote a finding. */
 const logCode = (c) => (typeof c === 'string' && CODE.test(c) ? c : 'SCAN_FAILED');
+
+/** The maker's wallet did not sign this request. */
+export class MakerSignatureError extends Error {
+  constructor(status, code, detail) {
+    super(`${code}: ${detail}`);
+    this.status = status;
+    this.code = code;
+    this.detail = detail;
+  }
+}
 
 export class QueueFullError extends Error {
   constructor() {
@@ -63,8 +81,10 @@ const stop = (code, detail) => { throw new Stop(code, detail); };
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 
 /** Why an accepted report cannot be trusted to have run every check, or null. */
-export function reportProblem(draft, report) {
+export function reportProblem(draft, report, maker) {
   if (!report || report.status !== 'accepted') return `the report's status is ${report?.status ?? 'missing'}, not accepted`;
+  if (report.control?.maker !== maker || report.control?.repo !== draft.repo || report.control?.commit !== draft.baseCommit) return `the report's proof is not for this maker, repository and commit`;
+  if (draft.artifact?.kind === 'contract' && !report.control?.deployment) return 'the report records no deployment signature';
   const steps = new Map((Array.isArray(report.steps) ? report.steps : []).map((s) => [s?.name, s?.status]));
   for (const name of STEPS_ALWAYS_OK) if (steps.get(name) !== 'ok') return `the report's ${name} step is ${steps.get(name) ?? 'missing'}`;
   if (draft.artifact?.kind === 'contract') {
@@ -95,23 +115,37 @@ export function specChanges(draft, built) {
 /** What anyone with the listing's id may know of its scan. */
 function publicScan(scan) {
   if (scan.status === 'done' || scan.status === 'error') return { status: scan.status, finishedAt: scan.finishedAt };
-  if (scan.status === 'skipped') return { status: 'skipped', reason: scan.reason };
   return { status: scan.status };
 }
 
 /**
  * @param {object} o
  * @param {object} o.config - loadConfig()
- * @param {{ build(input: { draft: object, knownIssues: Buffer|null }): Promise<object> }} o.builder
+ * @param {{ build(input: { draft: object, knownIssues: Buffer|null, maker: string, deploymentProof: object|null }): Promise<object> }} o.builder
  * @param {{ scan(input: { spec: object }): Promise<{ status: 'ok'|'error', doc: object|null, error: { code: string, detail: string }|null, holdSlot?: boolean }> }} o.scanner -
  *   the baseline scan (src/builder/cli.js scan)
  * @param {{ backend: string, pin(bytes: Buffer, o?: { name?: string }): Promise<string> }} o.pinner
  * @param {{ info: Function, warn: Function, error: Function }} o.logger
+ * @param {{ challenge: Function, verify: Function }} o.auth - the wallet sign-in (src/auth/walletAuth.js)
+ * @param {object} o.proofs - where the project's proof is read: checkRepository({ repo, commit }),
+ *   checkDeployment(listing, proof) (stores a proof that counts; throws ControlError for one that does
+ *   not), stake ({ chainId, address }, or null: no deployment configured), noteDevTrust(devTrust)
+ * @param {RefusalCounter} [o.refusals] - refused attempts by reason, for /api/status
  */
-export function createListingService({ config, builder, scanner, pinner, logger }) {
+export function createListingService({ config, builder, scanner, pinner, logger, auth, proofs, refusals = new RefusalCounter() }) {
   const jobs = new Map();
   const queue = [];
   let running = 0;
+
+  /** The request, or its refusal counted by each reason. */
+  function parse(body) {
+    try {
+      return parseListingRequest(body, { gitHosts: config.control.gitHosts });
+    } catch (err) {
+      if (err instanceof RequestError) refusals.count(err.issues.map((i) => i.code));
+      throw err;
+    }
+  }
 
   const now = () => new Date().toISOString();
   const set = (job, fields) => Object.assign(job, fields, { updatedAt: now() });
@@ -125,6 +159,7 @@ export function createListingService({ config, builder, scanner, pinner, logger 
       updatedAt: job.updatedAt,
       listing: { repo: job.request.draft.repo, baseCommit: job.request.draft.baseCommit, artifact: job.request.draft.artifact ?? { kind: 'repo' } },
       maker: job.request.maker,
+      refusal: job.refusal ?? null,
       scan: publicScan(job.scan),
       artifactHash: job.artifactHash,
       disclosureKey: job.request.disclosureKey,
@@ -178,7 +213,7 @@ export function createListingService({ config, builder, scanner, pinner, logger 
 
   async function issue(job, r) {
     const { draft, knownIssues } = job.request;
-    const problem = reportProblem(draft, r.report);
+    const problem = reportProblem(draft, r.report, job.request.maker);
     if (problem) stop('BUILD_REPORT_INCONSISTENT', `the builder accepted the listing, but ${problem}`);
     const files = r.files;
     if (!files?.codeReview || !files.baseline || !files.attestation) stop('BUILD_REPORT_INCONSISTENT', 'the builder accepted the listing but returned no code_review.json, baseline or attestation');
@@ -203,6 +238,8 @@ export function createListingService({ config, builder, scanner, pinner, logger 
       statementTrust = null;
     }
     const devTrust = config.trust.mode === 'dev' && statementTrust === 'dev' && r.devTrust?.dev === true && Array.isArray(r.devTrust.keys) ? r.devTrust : undefined;
+    // the site counts an archive only under a key this server's own signing step made
+    if (devTrust) proofs.noteDevTrust?.(devTrust);
 
     let archives;
     try {
@@ -263,12 +300,68 @@ export function createListingService({ config, builder, scanner, pinner, logger 
     }
   }
 
+  /** Refused for its proof: a named code, and nothing built, signed or pinned. */
+  function refuse(job, code) {
+    set(job, { status: 'refused', refusal: { code, detail: CONTROL_REASONS[code] ?? PROOF_REFUSALS[code] ?? code } });
+    refusals.count([code]);
+    logger.info(`listing ${job.id} refused: ${code}`);
+  }
+
+  /** The project's proof. @returns {Promise<boolean>} whether the listing goes on to its build */
+  async function checkProof(job) {
+    const { draft, maker, deploymentProof } = job.request;
+    set(job, { status: 'checking' });
+    let answer;
+    try {
+      answer = await proofs.checkRepository({ repo: draft.repo, commit: draft.baseCommit });
+    } catch (err) {
+      if (err?.code === 'REPO_TOO_LARGE') {
+        refuse(job, 'REPO_TOO_LARGE');
+        return false;
+      }
+      logger.warn(`listing ${job.id}: the git host gave no answer (${err?.code ?? err?.name ?? 'error'})`);
+      set(job, { status: 'error', error: { code: 'REPO_UNAVAILABLE', detail: CONTROL_REASONS.REPO_UNAVAILABLE } });
+      return false;
+    }
+    const reason = repositoryProofReason({ reachable: answer.reachable, file: readAnswerFile(answer.file) }, maker);
+    if (reason) {
+      refuse(job, reason);
+      return false;
+    }
+    if (draft.artifact?.kind !== 'contract') return true;
+    const a = artifactOf(draft);
+    try {
+      await proofs.checkDeployment({
+        artifactHash: job.artifactHash,
+        maker,
+        artifact: { kind: 'Contract', repo: a.repo, baseCommit: a.baseCommit, chainId: a.chainId, address: a.addr },
+      }, deploymentProof);
+      return true;
+    } catch (err) {
+      const transient = err?.status === 429 || err?.code === 'CHAIN_UNAVAILABLE';
+      if (typeof err?.status !== 'number' || transient) {
+        if (typeof err?.status !== 'number') logger.error(`listing ${job.id}: the deployment proof could not be checked (${err?.name ?? 'error'})`);
+        set(job, { status: 'error', error: { code: 'CHAIN_UNAVAILABLE', detail: CONTROL_REASONS.CHAIN_UNAVAILABLE } });
+        return false;
+      }
+      refuse(job, CONTROL_REASONS[err.code] ? err.code : 'SIGNATURE_INVALID');
+      return false;
+    }
+  }
+
   async function runSteps(job) {
+    if (!(await checkProof(job))) return;
     set(job, { status: 'building' });
     let r;
+    const proof = job.request.deploymentProof;
     try {
       // copies: what the builder does to its input cannot change what the result is checked against
-      r = await builder.build({ draft: structuredClone(job.request.draft), knownIssues: job.request.knownIssues ? Buffer.from(job.request.knownIssues.bytes) : null });
+      r = await builder.build({
+        draft: structuredClone(job.request.draft),
+        knownIssues: job.request.knownIssues ? Buffer.from(job.request.knownIssues.bytes) : null,
+        maker: job.request.maker,
+        deploymentProof: proof ? { ...proof, stakeChainId: proofs.stake?.chainId ?? null, stakeContract: proofs.stake?.address ?? null } : null,
+      });
     } catch (err) {
       logger.error(`listing ${job.id}: the builder failed: ${err?.message ?? err}`);
       set(job, { status: 'error', error: { code: 'BUILDER_FAILED', detail: 'the environment builder could not be run' } });
@@ -278,6 +371,7 @@ export function createListingService({ config, builder, scanner, pinner, logger 
     if (r.holdSlot) holdSlot(job, 'build', r.error?.code);
     if (r.status === 'refused') {
       set(job, { status: 'refused' });
+      refusals.count((r.report?.refusals ?? []).map((x) => x.code));
       logger.info(`listing ${job.id} refused: ${(r.report?.refusals ?? []).map((x) => `${x.code} (${x.step})`).join(', ')}`);
       return;
     }
@@ -309,9 +403,44 @@ export function createListingService({ config, builder, scanner, pinner, logger 
   }
 
   return {
-    /** @throws {import('./request.js').RequestError|QueueFullError} */
+    /**
+     * The message the maker's wallet signs for this request. Nothing to sign for a request that is refused anyway.
+     * @throws {RequestError}
+     */
+    challenge(body) {
+      const request = parse(body);
+      return auth.challenge({ action: LIST_ACTION, resource: `list-request:${request.digest}`, address: request.maker });
+    },
+
+    /**
+     * The message a contract listing's deployer or owner signs for a maker and an artifact.
+     * @throws {RequestError}
+     */
+    deploymentMessage(body) {
+      const o = body && typeof body === 'object' ? body : {};
+      const maker = canonicalAddress(o.maker);
+      const address = canonicalAddress(o.address);
+      const chainId = Number(o.chainId);
+      if (!maker || !address || !Number.isSafeInteger(chainId) || chainId < 1 || typeof o.repo !== 'string' || typeof o.baseCommit !== 'string' || !proofs.stake) {
+        throw new RequestError([{ code: 'REQUEST_INVALID', path: '/', detail: proofs.stake ? 'the body is { maker, repo, baseCommit, chainId, address }' : 'this server has no deployment configured' }]);
+      }
+      const artifactHash = artifactHashOf({ kind: 1, repo: o.repo, baseCommit: o.baseCommit, chainId: String(chainId), addr: address });
+      return { artifactHash, message: controlMessage({ maker, artifactHash, chainId, address, stakeChainId: proofs.stake.chainId, stakeContract: proofs.stake.address }) };
+    },
+
+    /** @throws {RequestError|MakerSignatureError|QueueFullError} */
     submit(body) {
-      const request = parseListingRequest(body);
+      const request = parse(body);
+      const a = body.auth;
+      if (!a || typeof a !== 'object') {
+        refusals.count(['MAKER_SIGNATURE_REQUIRED']);
+        throw new MakerSignatureError(401, 'MAKER_SIGNATURE_REQUIRED', PROOF_REFUSALS.MAKER_SIGNATURE_REQUIRED);
+      }
+      const v = auth.verify({ action: LIST_ACTION, resource: `list-request:${request.digest}`, nonce: a.nonce, signature: a.signature });
+      if (!v.ok) {
+        refusals.count(['MAKER_SIGNATURE_INVALID']);
+        throw new MakerSignatureError(v.status, 'MAKER_SIGNATURE_INVALID', `${PROOF_REFUSALS.MAKER_SIGNATURE_INVALID} ${v.detail}`);
+      }
       if (running >= config.builds.maxConcurrent && queue.length >= config.builds.maxQueued) throw new QueueFullError();
       const at = now();
       const job = {
@@ -321,8 +450,7 @@ export function createListingService({ config, builder, scanner, pinner, logger 
         updatedAt: at,
         request,
         artifactHash: artifactHashOf(artifactOf(request.draft)),
-        // the findings would have nobody to go to without a maker
-        scan: request.maker ? { status: 'pending' } : { status: 'skipped', reason: 'NO_MAKER' },
+        scan: { status: 'pending' },
       };
       jobs.set(job.id, job);
       prune();
@@ -331,6 +459,8 @@ export function createListingService({ config, builder, scanner, pinner, logger 
       pump();
       return view(job);
     },
+    /** Refused attempts by reason, as /api/status states them. */
+    refusedCounts: () => refusals.view(),
     get(id) {
       const job = jobs.get(id);
       return job ? view(job) : null;

@@ -7,7 +7,12 @@
   "type": "module",
   "main": "src/index.js",
   "exports": {
-    ".": "./src/index.js"
+    ".": "./src/index.js",
+    "./listing-warning": "./src/listingWarning.js",
+    "./control-proof": "./src/controlProof.js",
+    "./builder-signature": "./src/builderSignature.js",
+    "./zip": "./src/zip.js",
+    "./zip-read": "./src/zipRead.js"
   },
   "bin": {
     "check-forbidden-words": "bin/check-forbidden-words.js"

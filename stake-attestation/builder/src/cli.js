@@ -15,8 +15,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { loadConfig } from './config.js';
-import { BuilderError } from './errors.js';
+import { BuilderError, Refusal } from './errors.js';
 import { DEV_TRUST_FILE, outputsDigest, readOutputs, writeOutputs } from './outputs.js';
+import { recheckForSigning } from './listingProof.js';
 import { buildListing } from './pipeline.js';
 import { REPORT_FILE } from './report.js';
 import { scanListing, writeScan } from './scan.js';
@@ -36,9 +37,9 @@ export const COMMANDS = Object.freeze({
 // What each command needs, and the flags it takes.
 const NEEDS = Object.freeze({ build: ['config', 'spec', 'out'], run: ['config', 'spec', 'out'], sign: ['config', 'dir'], scan: ['config', 'spec', 'out'], digest: ['dir'] });
 const ALLOWED = Object.freeze({
-  build: ['config', 'spec', 'known-issues', 'out'],
-  run: ['config', 'spec', 'known-issues', 'out'],
-  sign: ['config', 'dir', 'expect-outputs', 'check-registry'],
+  build: ['config', 'spec', 'known-issues', 'out', 'maker', 'control-proof'],
+  run: ['config', 'spec', 'known-issues', 'out', 'maker', 'control-proof'],
+  sign: ['config', 'dir', 'expect-outputs', 'check-registry', 'maker'],
   scan: ['config', 'spec', 'out', 'agent'],
   digest: ['dir'],
 });
@@ -57,6 +58,10 @@ Options:
   --config <file>          the builder's config (JSON)
   --spec <file>            build, run, scan: the maker's code_review.json (the draft, or the built one)
   --known-issues <file>    build, run: known_issues.json, when the draft names one
+  --maker <address>        build, run, sign: the wallet that will send list(). The repository's
+                           .verdikta/stake-control.json at the listed commit must name it
+  --control-proof <file>   build, run: a contract listing's signature from its deployer or owner, JSON
+                           { signer, signature, creationTx?, stakeChainId, stakeContract }
   --out <dir>              build, run, scan: where the output is written (new or empty)
   --dir <dir>              sign, digest: a build's output folder
   --expect-outputs <hex>   sign: refuse unless the folder's digest is this (from digest, in the build job)
@@ -73,7 +78,7 @@ function parseArgs(argv) {
   const [command, ...rest] = argv;
   const opts = {};
   for (let i = 0; i < rest.length; i += 1) {
-    const m = /^--(config|spec|known-issues|out|dir|expect-outputs|check-registry|agent)$/.exec(rest[i]);
+    const m = /^--(config|spec|known-issues|out|dir|expect-outputs|check-registry|agent|maker|control-proof)$/.exec(rest[i]);
     if (m && FLAGS.has(m[1])) {
       opts[m[1]] = true;
       continue;
@@ -92,7 +97,7 @@ function emptyOrMissing(dir) {
   return !fs.existsSync(dir) || fs.readdirSync(dir).length === 0;
 }
 
-async function sign({ dir, config, env, out, expectOutputs = null, checkRegistry = false, deps = {} }) {
+async function sign({ dir, config, env, out, maker, expectOutputs = null, checkRegistry = false, deps = {} }) {
   const key = loadSigningKey(config.signing.key, { env });
   const { files, report, names } = readOutputs(dir);
   const name = names.attestation || 'attestation.json';
@@ -108,6 +113,14 @@ async function sign({ dir, config, env, out, expectOutputs = null, checkRegistry
   if (extra.length) throw new BuilderError('OUTPUT_INVALID', `${dir} also holds ${extra.join(', ')}: sign takes a folder of the listing's files only, as build wrote it`);
   // Everything that can be checked without re-running the build, before any signature exists.
   const verified = await verifyForSigning({ files, report, dir, expectOutputs, checkRegistry, ...(deps.registryFor ? { registryFor: deps.registryFor } : {}) });
+  // The project's proof again, read from the host: nothing is signed without it.
+  try {
+    await recheckForSigning({ spec: JSON.parse(files.codeReview.toString('utf8')), report, maker, config, deps });
+  } catch (err) {
+    if (err instanceof Refusal) throw new BuilderError(err.code, err.detail, { step: 'sign' });
+    throw err;
+  }
+  verified.checks.push('PROJECT_PROOF_STANDS');
   const { attestation, bytes } = await attest({ files, report, key });
   fs.writeFileSync(path.join(dir, name), bytes, { mode: 0o644 });
   const trust = key.devTrust();
@@ -148,7 +161,15 @@ async function build({ opts, config, out, deps }) {
     throw new BuilderError('SPEC_UNREADABLE', `${opts.spec}: ${err.message}`);
   }
   const knownIssues = opts['known-issues'] ? fs.readFileSync(opts['known-issues']) : null;
-  const result = await buildListing({ draft, knownIssues, config, deps });
+  let deploymentProof = null;
+  if (opts['control-proof']) {
+    try {
+      deploymentProof = JSON.parse(fs.readFileSync(opts['control-proof'], 'utf8'));
+    } catch (err) {
+      throw new BuilderError('CONTROL_PROOF_UNREADABLE', `${opts['control-proof']}: ${err.message}`);
+    }
+  }
+  const result = await buildListing({ draft, knownIssues, maker: opts.maker ?? null, deploymentProof, config, deps });
   writeOutputs(opts.out, result);
   const { report } = result;
   if (report.status === 'accepted') out.write(`accepted: ${report.image.ref}; the files and ${REPORT_FILE} are in ${opts.out}\n`);
@@ -190,7 +211,7 @@ export async function main(argv, { env = process.env, stdout = process.stdout, s
     const config = loadConfig(opts.config, { env });
     const key = config.signing.key;
     if (command === 'sign') {
-      await sign({ dir: opts.dir, config, env, out: stdout, expectOutputs: opts['expect-outputs'] ?? null, checkRegistry: Boolean(opts['check-registry']), deps });
+      await sign({ dir: opts.dir, config, env, out: stdout, maker: opts.maker ?? null, expectOutputs: opts['expect-outputs'] ?? null, checkRegistry: Boolean(opts['check-registry']), deps });
       return 0;
     }
     if (command === 'scan') return await scan({ opts, config, out: stdout, err: stderr, deps });
@@ -202,7 +223,7 @@ export async function main(argv, { env = process.env, stdout = process.stdout, s
     }
     const status = await build({ opts, config, out: stdout, deps });
     if (status !== 'accepted') return status === 'refused' ? 2 : 1;
-    if (command === 'run') await sign({ dir: opts.out, config, env, out: stdout, deps });
+    if (command === 'run') await sign({ dir: opts.out, config, env, out: stdout, maker: opts.maker ?? null, deps });
     return 0;
   } catch (err) {
     stderr.write(`verdikta-build-env: ${err instanceof BuilderError ? err.message : `BUILDER_FAILED: ${err?.message ?? err}`}\n`);

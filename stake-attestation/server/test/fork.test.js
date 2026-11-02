@@ -52,7 +52,9 @@ describe('the host\'s answer', () => {
     assert.equal((await checker(() => json({ fork: 'yes' })).check({ repo: 'https://github.com/acme/vault' })).status, 'unknown');
 
     const hang = createForkChecker({ timeoutMs: 50, env: {}, fetch: (_u, { signal }) => new Promise((_, reject) => { signal.addEventListener('abort', () => reject(new Error('aborted'))); }) });
+    const alive = setInterval(() => {}, 10); // the abort timer does not hold the process, as a socket would
     assert.equal((await hang({ repo: 'https://github.com/acme/vault' })).status, 'unknown');
+    clearInterval(alive);
 
     const huge = createForkChecker({ timeoutMs: 1000, maxBytes: 1024, env: {}, fetch: async () => new Response('x'.repeat(4096)) });
     assert.equal((await huge({ repo: 'https://github.com/acme/vault' })).status, 'unknown');
@@ -97,11 +99,12 @@ describe('on the record', () => {
     let release;
     const gate = new Promise((r) => { release = r; });
     let calls = 0;
-    const site = siteFor(ctx, { checkFork: async () => { calls += 1; await gate; return { status: 'fork', parent: 'https://github.com/acme/vault', host: 'github.com' }; } });
+    const site = siteFor(ctx, { settle: false, checkFork: async () => { calls += 1; await gate; return { status: 'fork', parent: 'https://github.com/acme/vault', host: 'github.com' }; } });
     try {
       const l = await listing(ctx);
-      await site.sync(); // settled or not, the sync does not wait for the host
+      await site.sync(); // the sync does not wait for the host
       await site.archivesIdle();
+      await new Promise((r) => setTimeout(r, 50));
       const before = await site.record(l.artifactHash);
       assert.equal(before.fork.status, 'unknown');
       assert.match(before.fork.note, /plain copy/i);
@@ -120,7 +123,7 @@ describe('on the record', () => {
     const ctx = await chainContext();
     const asked = [];
     let t = 1_900_000_000_000;
-    const site = siteFor(ctx, { now: () => t, env: { SA_CONTROL_RETRY_MS: '1000', SA_MAX_STALENESS_SECONDS: '2000000000' }, checkFork: async ({ repo }) => { asked.push(repo); return { status: 'unknown', parent: null, host: 'github.com', reason: 'UNAVAILABLE' }; } });
+    const site = siteFor(ctx, { settle: false, now: () => t, env: { SA_CONTROL_RETRY_MS: '1000', SA_MAX_STALENESS_SECONDS: '2000000000' }, checkFork: async ({ repo }) => { asked.push(repo); return { status: 'unknown', parent: null, host: 'github.com', reason: 'UNAVAILABLE' }; } });
     try {
       const made = [];
       for (let i = 0; i < 6; i += 1) made.push(await listing(ctx, { spec: { repo: `https://github.com/acme/repo-${i}` } }));

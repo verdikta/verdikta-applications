@@ -38,7 +38,7 @@ after(async () => {
 
 /** The ready listing view for a request body. */
 async function ready(body) {
-  const res = await s.post('/api/listings', body);
+  const res = await s.submit(body);
   assert.equal(res.status, 202);
   const view = await s.settle((await res.json()).id);
   assert.equal(view.status, 'ready', JSON.stringify(view.error));

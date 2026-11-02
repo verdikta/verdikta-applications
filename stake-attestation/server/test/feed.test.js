@@ -21,7 +21,7 @@ import { IMAGE, draftSpec, fakeBuilder } from './helpers/fixtures.js';
 import { startApi } from './helpers/http.js';
 import {
   bcidOf, chainContext, commit, DAY, HOUR, increaseTime, judgeAndSettle, latestTimestamp, listing, revealedClaim,
-  siteFor, verdict,
+  siteFor, verdict, ownedContract, proveDeployment,
 } from './helpers/scenario.js';
 
 const CLASSES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
@@ -33,6 +33,7 @@ describe('GET /api/feed', () => {
   let open;
   let renewed;
   let contract;
+  let deployed;
   let successor;
   const gone = {};
   let invalidClaim;
@@ -49,7 +50,8 @@ describe('GET /api/feed', () => {
 
     renewed = await listing(ctx, { maker: ctx.other });
     await (await ctx.sa.connect(ctx.other).renew(renewed.listingId, { value: await ctx.sa.listingFeeWei() })).wait();
-    contract = await listing(ctx, { spec: { artifact: { kind: 'contract', address: '0x5f2a00000000000000000000000000000000c0de', chainId: 8453 } } });
+    deployed = await ownedContract(ctx, ctx.other);
+    contract = await listing(ctx, { spec: { artifact: { kind: 'contract', address: deployed.toLowerCase(), chainId: 31337 } } });
 
     gone.unfunded = await listing(ctx, { fund: false });
     gone.closed = await listing(ctx);
@@ -66,6 +68,8 @@ describe('GET /api/feed', () => {
     if (now < openedAt + 3 * DAY + HOUR) await increaseTime(ctx, openedAt + 3 * DAY + HOUR - now);
 
     site = siteFor(ctx);
+    await site.sync();
+    await proveDeployment(site, contract, ctx.other);
     await site.sync();
     await site.archivesIdle();
     api = await startApi({ builder: fakeBuilder(), site });
@@ -131,7 +135,7 @@ describe('GET /api/feed', () => {
   test('a contract listing carries its deployment', async () => {
     const body = await (await api.get('/api/feed')).json();
     const entry = body.listings.find((l) => l.listingId === String(contract.listingId));
-    assert.deepEqual(entry.artifact, { kind: 'Contract', repo: contract.spec.repo, baseCommit: contract.spec.baseCommit, chainId: '8453', address: getAddress('0x5f2a00000000000000000000000000000000c0de') });
+    assert.deepEqual(entry.artifact, { kind: 'Contract', repo: contract.spec.repo, baseCommit: contract.spec.baseCommit, chainId: '31337', address: getAddress(deployed.toLowerCase()) });
   });
 
   test('GET /api/feed/events: the contract\'s events in order; unpublished claims are their ids only', async () => {
@@ -181,11 +185,12 @@ describe('GET /api/feed', () => {
 });
 
 describe('the listing archive behind a feed entry', () => {
-  test('an archive that cannot be fetched leaves the entry in the feed without image or scope, and is retried', async () => {
+  test('an archive that cannot be fetched keeps the listing off the feed, apart and not counted, and is retried', async () => {
     const ctx = await chainContext();
     const l = await listing(ctx);
     let fail = true;
     const site = siteFor(ctx, {
+      settle: false,
       env: { SA_ARCHIVE_RETRY_MS: '0' },
       fetchArchive: async (cid) => {
         if (fail) throw new Error('gateway timeout');
@@ -195,14 +200,15 @@ describe('the listing archive behind a feed entry', () => {
     try {
       await site.sync();
       await site.archivesIdle();
-      let entry = (await site.feed()).listings.find((e) => e.listingId === String(l.listingId));
-      assert.equal(entry.image, null);
-      assert.equal(entry.scope, null);
-      assert.deepEqual(entry.archive, { ok: false, error: 'ARCHIVE_UNAVAILABLE' });
+      assert.equal((await site.feed()).listings.some((e) => e.listingId === String(l.listingId)), false);
+      assert.equal((await site.feed()).notCounted.find((e) => e.listingId === String(l.listingId)).reason, 'ARCHIVE_UNAVAILABLE');
       fail = false;
       await site.sync();
       await site.archivesIdle();
-      entry = (await site.feed()).listings.find((e) => e.listingId === String(l.listingId));
+      await site.controlIdle();
+      await site.sync();
+      await site.controlIdle();
+      const entry = (await site.feed()).listings.find((e) => e.listingId === String(l.listingId));
       assert.equal(entry.image, IMAGE);
       assert.deepEqual(entry.archive, { ok: true });
     } finally {
@@ -224,10 +230,9 @@ describe('the listing archive behind a feed entry', () => {
     try {
       await site.sync();
       await site.archivesIdle();
-      const entry = (await site.feed()).listings.find((e) => e.listingId === String(listingId));
-      assert.equal(entry.image, null);
-      assert.equal(entry.scope, null);
-      assert.deepEqual(entry.archive, { ok: false, error: 'ARCHIVE_MISMATCH' });
+      const f = await site.feed();
+      assert.equal(f.listings.some((e) => e.listingId === String(listingId)), false);
+      assert.equal(f.notCounted.find((e) => e.listingId === String(listingId)).reason, 'ARCHIVE_MISMATCH');
     } finally {
       site.close();
     }
@@ -242,6 +247,7 @@ describe('archive reads run beside the indexer', () => {
     const stalled = new Promise((r) => { release = r; });
     const fetches = [];
     const site = siteFor(ctx, {
+      settle: false,
       fetchArchive: async (cid) => {
         fetches.push(cid);
         await stalled;
@@ -258,9 +264,14 @@ describe('archive reads run beside the indexer', () => {
       assert.ok(site.store.state.cursor.number > before, 'the cursor moved on while the archive read hung');
       assert.equal(fetches.length, 1, 'one archive run at a time');
       assert.deepEqual((await site.keep()).sent.map((x) => [x.action, x.claimId]), [['finalize', String(claimId)]], 'the keeper sees the new claim');
-      assert.equal((await site.feed()).listings.find((e) => e.listingId === String(l.listingId)).archive.error, 'ARCHIVE_UNAVAILABLE');
+      assert.equal((await site.feed()).notCounted.find((e) => e.listingId === String(l.listingId)).reason, 'ARCHIVE_UNAVAILABLE');
       release();
       await site.archivesIdle();
+      await site.sync();
+      await site.archivesIdle();
+      await site.controlIdle();
+      await site.sync();
+      await site.controlIdle();
       assert.equal((await site.feed()).listings.find((e) => e.listingId === String(l.listingId)).image, IMAGE);
     } finally {
       release();
@@ -273,6 +284,7 @@ describe('archive reads run beside the indexer', () => {
     await listing(ctx);
     let clock = 1_000_000;
     const site = siteFor(ctx, {
+      settle: false,
       env: { SA_ARCHIVE_RETRY_MS: '1000' },
       now: () => clock,
       fetchArchive: async () => {

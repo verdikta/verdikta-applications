@@ -41,6 +41,7 @@ export function project(events) {
     if (e.name === 'Listed') {
       listings.set(a.listingId, {
         listingId: a.listingId,
+        listedTx: e.txHash,
         maker: a.maker,
         artifactHash: a.artifactHash,
         artifact: { kind: a.kind, repo: a.repo, baseCommit: a.baseCommit, chainId: a.chainId, address: a.artifactAddress },

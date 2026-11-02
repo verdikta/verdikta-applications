@@ -6,7 +6,8 @@ export { checkVerifiedSource, compareCompilerPin, compareFiles, compareRepoBuild
 export { commitTree } from './commitFiles.js';
 export { buildAtCommit } from './repoBuild.js';
 export { fetchSolc } from './solc.js';
-export { createExplorer } from './explorer.js';
+export { createExplorer, explorerChain } from './explorer.js';
+export { checkListingProof, deploymentMessage, recheckForSigning } from './listingProof.js';
 export { createRunnerClient, interpretListingCheck } from './runner.js';
 export { SCAN_FILE, outputsDigest, readOutputs, writeOutputs } from './outputs.js';
 export { scanListing, writeScan } from './scan.js';

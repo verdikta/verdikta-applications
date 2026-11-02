@@ -34,7 +34,7 @@ test('a check that hangs blocks neither the indexer nor the keeper, and the fact
   let started = 0;
   let release;
   const hung = new Promise((r) => { release = r; });
-  const site = siteFor(ctx, {
+  const site = siteFor(ctx, { settle: false,
     checkRepository: async () => {
       started += 1;
       await hung;
@@ -48,7 +48,7 @@ test('a check that hangs blocks neither the indexer nor the keeper, and the fact
 
     // the record answers while the check hangs
     const during = (await site.record(l.artifactHash)).control[l.listingId];
-    assert.equal(during.controls, 'no');
+    assert.equal(during.proof, 'no');
     assert.equal(during.reason, 'NOT_CHECKED_YET');
     assert.equal(during.checkedAt, null);
 
@@ -63,7 +63,7 @@ test('a check that hangs blocks neither the indexer nor the keeper, and the fact
 
     release();
     await site.controlIdle();
-    assert.equal((await site.record(l.artifactHash)).control[l.listingId].controls, 'yes');
+    assert.equal((await site.record(l.artifactHash)).control[l.listingId].proof, 'yes');
   } finally {
     site.close();
   }
@@ -75,7 +75,7 @@ test('a git host that fails leaves "no" with a retry that backs off, and a later
   let clock = Date.now();
   const calls = [];
   let answerNow = null;
-  const site = siteFor(ctx, {
+  const site = siteFor(ctx, { settle: false,
     now: () => clock,
     env: { SA_CONTROL_RETRY_MS: '1000', SA_MAX_STALENESS_SECONDS: '100000' },
     checkRepository: async ({ repo, commit }) => {
@@ -93,7 +93,7 @@ test('a git host that fails leaves "no" with a retry that backs off, and a later
     await round();
     assert.deepEqual(calls, [{ repo: 'https://github.com/acme/vault', commit: l.baseCommit }]);
     let c = await fact();
-    assert.equal(c.controls, 'no');
+    assert.equal(c.proof, 'no');
     assert.equal(c.reason, 'REPO_UNAVAILABLE');
     assert.equal(c.repository.commitOnOwnRefs, null);
     assert.equal(c.nextCheckAt, Math.floor((clock + 1000) / 1000));
@@ -110,18 +110,18 @@ test('a git host that fails leaves "no" with a retry that backs off, and a later
     clock += 2001;
     answerNow = answer(ctx.maker.address, l.baseCommit);
     await round();
-    assert.equal((await fact()).controls, 'yes');
+    assert.equal((await fact()).proof, 'yes');
   } finally {
     site.close();
   }
 });
 
-test('a failed re-check takes a "yes" back to "no": nothing is shown from an answer the site could not repeat', async () => {
+test('a failed re-check keeps the answer on file for a while, and says so: a host down for an hour drops no honest listing; down for a week it does', async () => {
   const ctx = await chainContext();
   const l = await listedCommit(ctx);
   let clock = Date.now();
   let down = false;
-  const site = siteFor(ctx, {
+  const site = siteFor(ctx, { settle: false,
     now: () => clock,
     env: { SA_CONTROL_RECHECK_MS: '1000', SA_MAX_STALENESS_SECONDS: '100000' },
     checkRepository: async () => {
@@ -132,14 +132,20 @@ test('a failed re-check takes a "yes" back to "no": nothing is shown from an ans
   try {
     await site.sync();
     await site.controlIdle();
-    assert.equal((await site.record(l.artifactHash)).control[l.listingId].controls, 'yes');
+    assert.equal((await site.record(l.artifactHash)).control[l.listingId].proof, 'yes');
     down = true;
     clock += 1001;
     await site.sync();
     await site.controlIdle();
     const c = (await site.record(l.artifactHash)).control[l.listingId];
-    assert.equal(c.controls, 'no');
-    assert.equal(c.reason, 'REPO_UNAVAILABLE');
+    assert.equal(c.proof, 'yes');
+    assert.equal(c.repository.lastCheckFailed, 'REPO_UNAVAILABLE');
+    clock += 8 * 86400_000;
+    await site.sync();
+    await site.controlIdle();
+    const later = (await site.record(l.artifactHash)).control[l.listingId];
+    assert.equal(later.proof, 'no');
+    assert.equal(later.reason, 'REPO_UNAVAILABLE');
   } finally {
     site.close();
   }
@@ -152,7 +158,7 @@ test('one repository at a commit is checked once, however many listings name it;
   await listing(ctx, { maker: ctx.other, spec: { baseCommit }, stake: { valueAtRiskUsd: undefined } });
   for (let i = 0; i < 6; i += 1) await listing(ctx, { spec: { baseCommit: freshCommit() }, stake: { valueAtRiskUsd: undefined } });
   const seen = [];
-  const site = siteFor(ctx, {
+  const site = siteFor(ctx, { settle: false,
     checkRepository: async ({ commit }) => {
       seen.push(commit);
       return { ...answer(ctx.maker.address, commit), file: null };
@@ -176,14 +182,14 @@ test('facts survive a restart, and a state file from before this node loads', as
   const ctx = await chainContext();
   const l = await listedCommit(ctx);
   const dir = tmpDir();
-  const first = siteFor(ctx, { dir, checkRepository: async () => answer(ctx.maker.address, l.baseCommit) });
+  const first = siteFor(ctx, { settle: false, dir, checkRepository: async () => answer(ctx.maker.address, l.baseCommit) });
   await first.sync();
   await first.controlIdle();
   first.close();
 
-  const second = siteFor(ctx, { dir, checkRepository: async () => assert.fail('checked again') });
+  const second = siteFor(ctx, { settle: false, dir, checkRepository: async () => assert.fail('checked again') });
   await second.sync();
-  assert.equal((await second.record(l.artifactHash)).control[l.listingId].controls, 'yes');
+  assert.equal((await second.record(l.artifactHash)).control[l.listingId].proof, 'yes');
   await second.controlIdle();
   second.close();
 
@@ -192,10 +198,10 @@ test('facts survive a restart, and a state file from before this node loads', as
   const state = JSON.parse(fs.readFileSync(file, 'utf8'));
   delete state.control;
   fs.writeFileSync(file, JSON.stringify(state));
-  const third = siteFor(ctx, { dir, checkRepository: async () => { throw Object.assign(new Error('down'), { code: 'REPO_UNAVAILABLE' }); } });
+  const third = siteFor(ctx, { settle: false, dir, checkRepository: async () => { throw Object.assign(new Error('down'), { code: 'REPO_UNAVAILABLE' }); } });
   try {
     await third.sync();
-    assert.equal((await third.record(l.artifactHash)).control[l.listingId].controls, 'no');
+    assert.equal((await third.record(l.artifactHash)).control[l.listingId].proof, 'no');
     await third.controlIdle();
   } finally {
     third.close();
@@ -205,12 +211,12 @@ test('facts survive a restart, and a state file from before this node loads', as
 test('a check that throws something unexpected leaves "no" and logs the code, and the loop goes on', async () => {
   const ctx = await chainContext();
   const l = await listedCommit(ctx);
-  const site = siteFor(ctx, { checkRepository: async () => { throw new Error('boom with https://secret@example'); } });
+  const site = siteFor(ctx, { settle: false, checkRepository: async () => { throw new Error('boom with https://secret@example'); } });
   try {
     await site.sync();
     await site.controlIdle();
     const c = (await site.record(l.artifactHash)).control[l.listingId];
-    assert.equal(c.controls, 'no');
+    assert.equal(c.proof, 'no');
     assert.equal(c.reason, 'REPO_UNAVAILABLE');
     assert.equal(site.logger.lines.some((line) => line.includes('secret')), false);
     await site.sync();

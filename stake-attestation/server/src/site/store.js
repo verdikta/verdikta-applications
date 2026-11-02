@@ -116,7 +116,7 @@ function emptyState(identity) {
     checkpoints: [], // blocks read, oldest first, within the reorg window: where a rollback can stop
     events: [], // { name, blockNumber, blockHash, logIndex, txHash, timestamp, args }, in chain order
     archives: {}, // listingCid -> what the listing archive says (image, scope), or why it could not be read
-    control: { repositories: {}, deployments: {} }, // the control facts' answers (src/control/); a file from before them has none
+    control: { repositories: {}, deployments: {}, terms: {}, forks: {}, devKeys: [] }, // the control facts' answers (src/control/); a file from before them has none or some
     keeper: { inflight: null, foreign: [], last: null },
   };
 }

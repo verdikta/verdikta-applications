@@ -6,10 +6,19 @@
 // check, the fact is "no". Answers are stored by what they are about (facts.js), so a reorg that
 // moves a listing id cannot hand one listing's "yes" to another, and they are read with the state
 // snapshot of the answer that shows them.
+//
+// Node P9: the fact now decides whether a listing counts, so a listing that has been answered keeps
+// its answer through a failed re-check (a git host down for a while must not drop an honest listing
+// from the feed), for at most KEEP_ANSWER_MS; an answer that says otherwise replaces it at once. The
+// same runs also read, once per listing, whether what the chain holds is what its signed archive says
+// (`terms`), and ask the host whether the repository is a fork (`forks`).
 import { FetchRequest, JsonRpcProvider, Network } from 'ethers';
+import { proofFieldProblem } from '@verdikta/stake-attestation-shared/control-proof';
 
-import { CONTROL_REASONS, canonicalAddress, controlFact, controlMessage, deploymentKey, parseControlFile, repoKey, repoUrlCheck } from './facts.js';
+import { termsDiffer } from '../listing/listParams.js';
+import { CONTROL_REASONS, canonicalAddress, controlFact, controlMessage, deploymentKey, readAnswerFile, repoKey, repoUrlCheck } from './facts.js';
 import { ChainReadError, checkDeploymentProof } from './deployment.js';
+import { forkView } from './forkCheck.js';
 
 const MAX_CHECKS_PER_RUN = 4;
 const MAX_PROOFS_PER_RUN = 8;
@@ -17,11 +26,14 @@ const MAX_PROOFS_PER_RUN = 8;
 // keeps its place until its read in flight settles (ethers gives one up within its own limit), and
 // makes no further read.
 const MAX_PROOF_CHECKS_AT_ONCE = 4;
+const MAX_TERMS_PER_RUN = 16;
+const MAX_FORK_CHECKS_PER_RUN = 4;
 const RETRY_MAX_MS = 6 * 3600_000;
-const EMPTY = Object.freeze({ repositories: Object.freeze({}), deployments: Object.freeze({}) });
-const SIGNATURE = /^0x(?:[0-9a-fA-F]{2}){1,4096}$/;
-const TX_HASH = /^0x[0-9a-f]{64}$/;
+const KEEP_ANSWER_MS = 7 * 86400_000;
+const EMPTY = Object.freeze({ repositories: Object.freeze({}), deployments: Object.freeze({}), terms: Object.freeze({}), forks: Object.freeze({}), devKeys: Object.freeze([]) });
 const LISTING_ID = /^[1-9][0-9]{0,30}$/;
+
+const termsKey = (listing) => `${listing.listingId}:${listing.listedTx}`;
 
 export class ControlError extends Error {
   constructor(code, detail, status) {
@@ -33,7 +45,7 @@ export class ControlError extends Error {
 }
 
 /** The answers in a state snapshot; a state file from before this node has none. */
-export const controlOf = (state) => state.control ?? EMPTY;
+export const controlOf = (state) => ({ ...EMPTY, ...state.control });
 
 /**
  * @param {object} o
@@ -45,8 +57,10 @@ export const controlOf = (state) => state.control ?? EMPTY;
  * @param {object} o.logger
  * @param {(o: { repo: string, commit: string }) => Promise<object>} o.checkRepository
  * @param {(chainId: number) => object|null} [o.chainProviderFor] - a provider on that chain, or null
+ * @param {(o: { repo: string }) => Promise<object>} o.checkFork - what the host says of the repository (forkCheck.js)
+ * @param {(listingId: string) => Promise<object>} o.readListing - getListing at the indexed block, as JSON
  */
-export function createControl({ config, store, provider, env, now, logger, checkRepository, chainProviderFor }) {
+export function createControl({ config, store, provider, env, now, logger, checkRepository, chainProviderFor, checkFork, readListing }) {
   const cfg = config.control;
   const stake = { chainId: config.chain.chainId, address: config.chain.address };
   const backoff = (attempts) => Math.min(RETRY_MAX_MS, cfg.retryMs * 2 ** (attempts - 1));
@@ -120,10 +134,18 @@ export function createControl({ config, store, provider, env, now, logger, check
     }
   }
 
+  const ensure = (s) => {
+    s.control ??= {};
+    s.control.repositories ??= {};
+    s.control.deployments ??= {};
+    s.control.terms ??= {};
+    s.control.forks ??= {};
+    return s.control;
+  };
+
   function putRepository(key, entry) {
     store.transact((s) => {
-      s.control ??= { repositories: {}, deployments: {} };
-      s.control.repositories[key] = entry;
+      ensure(s).repositories[key] = entry;
     });
   }
 
@@ -140,19 +162,42 @@ export function createControl({ config, store, provider, env, now, logger, check
     let entry;
     try {
       const a = await checkRepository({ repo, commit });
-      let file = null;
-      if (a.file) {
-        const parsed = a.file.problem || a.file.text === null ? { maker: null, problem: a.file.problem ?? 'NOT_JSON' } : parseControlFile(a.file.text);
-        file = { blob: a.file.blob, named: parsed.maker, problem: parsed.problem };
-      }
-      entry = { reachable: a.reachable, ref: a.ref, file, error: null, attempts: 0, checkedAt: t(), nextAt: t() + cfg.recheckMs };
+      entry = { reachable: a.reachable, ref: a.ref, file: readAnswerFile(a.file), error: null, attempts: 0, answeredAt: t(), checkedAt: t(), nextAt: t() + cfg.recheckMs };
     } catch (err) {
       const attempts = (known?.attempts ?? 0) + 1;
       const error = err?.code === 'REPO_TOO_LARGE' ? 'REPO_TOO_LARGE' : 'REPO_UNAVAILABLE';
-      entry = { error, attempts, checkedAt: t(), nextAt: t() + backoff(attempts) };
+      // an answer on file stands through a failed check, for a while
+      const kept = known && !known.error && t() - (known.answeredAt ?? known.checkedAt ?? 0) < KEEP_ANSWER_MS;
+      entry = kept
+        ? { ...known, lastCheckFailed: error, attempts, nextAt: t() + backoff(attempts) }
+        : { error, attempts, checkedAt: t(), nextAt: t() + backoff(attempts) };
       logger.warn(`control: ${repo} at ${commit} gave no answer (${error}); next try in ${Math.round(backoff(attempts) / 1000)} s`);
     }
     if (store.locked) putRepository(key, entry); // the site may have closed while this check ran
+  }
+
+  /** Whether the chain holds what the listing's signed archive says: read once per Listed transaction. */
+  async function checkTerms(listing, known) {
+    let answer;
+    try {
+      answer = { ok: !termsDiffer(known.terms, await readListing(listing.listingId)) };
+    } catch (err) {
+      logger.warn(`control: listing ${listing.listingId} could not be read (${err?.code ?? err?.name ?? 'error'})`);
+      return; // the next run asks again
+    }
+    if (store.locked) store.transact((s) => { ensure(s).terms[termsKey(listing)] = answer; });
+  }
+
+  /** What the host says of a repository; an answer is asked again after the recheck, an unknown after its wait. */
+  async function checkForkOf(repo, known) {
+    const r = await checkFork({ repo });
+    const t = now();
+    const attempts = r.status === 'unknown' ? (known?.attempts ?? 0) + 1 : 0;
+    const wait = r.status === 'unknown' ? Math.min(RETRY_MAX_MS, Math.max(backoff(attempts), r.retryAfterMs ?? 0)) : cfg.recheckMs;
+    // an unknown answer never replaces a known one until the next one says otherwise
+    const status = r.status === 'unknown' && known && known.status !== 'unknown' ? known.status : r.status;
+    const parent = r.status === 'unknown' && known ? known.parent ?? null : r.parent ?? null;
+    if (store.locked) store.transact((s) => { ensure(s).forks[repo] = { status, parent, host: r.host ?? null, attempts, checkedAt: t, nextAt: t + wait }; });
   }
 
   async function checkProof(item) {
@@ -161,9 +206,11 @@ export function createControl({ config, store, provider, env, now, logger, check
     if (!store.locked) return;
     const t = now();
     updateDeployment(key, entry.rev, (current) => {
-      if (r.ok) return { ...current, ok: true, reason: null, role: r.role, contractSigner: r.contractSigner, block: r.block, attempts: 0, checkedAt: t, nextAt: t + cfg.recheckMs };
+      if (r.ok) return { ...current, ok: true, reason: null, role: r.role, contractSigner: r.contractSigner, block: r.block, lastCheckFailed: null, attempts: 0, answeredAt: t, checkedAt: t, nextAt: t + cfg.recheckMs };
       const attempts = r.transient ? (current.attempts ?? 0) + 1 : 0;
-      return { ...current, ok: false, reason: r.reason, role: null, contractSigner: null, block: null, attempts, checkedAt: t, nextAt: t + (r.transient ? backoff(attempts) : cfg.recheckMs) };
+      // an answer on file stands through a chain that cannot be read, for a while
+      if (r.transient && current.ok && t - (current.answeredAt ?? current.checkedAt ?? 0) < KEEP_ANSWER_MS) return { ...current, lastCheckFailed: r.reason, attempts, nextAt: t + backoff(attempts) };
+      return { ...current, ok: false, reason: r.reason, role: null, contractSigner: null, block: null, lastCheckFailed: null, attempts, checkedAt: t, nextAt: t + (r.transient ? backoff(attempts) : cfg.recheckMs) };
     });
   }
 
@@ -203,9 +250,46 @@ export function createControl({ config, store, provider, env, now, logger, check
         if (entry && entry.nextAt <= t && !l.rolled && !l.closed && !proofs.some((p) => p.key === key)) proofs.push({ key, listing: l, entry });
       }
       for (const item of proofs.slice(0, MAX_PROOFS_PER_RUN)) {
-        if (!store.locked || proofChecks >= MAX_PROOF_CHECKS_AT_ONCE) return; // the next run takes it
+        if (!store.locked || proofChecks >= MAX_PROOF_CHECKS_AT_ONCE) break; // the next run takes it
         await checkProof(item);
       }
+
+      const { archives = {} } = store.state;
+      const { terms } = controlOf(store.state);
+      const unread = listings.filter((l) => l.opened && archives[l.listingCid]?.signed?.ok && !terms[termsKey(l)]);
+      for (const l of unread.slice(0, MAX_TERMS_PER_RUN)) {
+        if (!store.locked) return;
+        await checkTerms(l, archives[l.listingCid]);
+      }
+
+      const { forks } = controlOf(store.state);
+      const asked = [...new Set(listings.filter((l) => l.opened).map((l) => l.artifact.repo))]
+        .filter((repo) => !forks[repo] || forks[repo].nextAt <= t);
+      for (const repo of asked.slice(0, MAX_FORK_CHECKS_PER_RUN)) {
+        if (!store.locked) return;
+        await checkForkOf(repo, forks[repo]);
+      }
+    },
+
+    /** The record's fork label for a repository, from a state snapshot. */
+    forkOf: (state, repo) => forkView(controlOf(state).forks[repo]),
+
+    /** The store's answer on a listing's terms, from a state snapshot. */
+    termsOf: (state, listing) => controlOf(state).terms[termsKey(listing)] ?? null,
+
+    /** The dev keys this site's own signing step made (dev trust only), for reading an archive. */
+    devKeys: (state) => [...controlOf(state).devKeys],
+
+    /** A signing step's dev key, kept: only an archive signed by a key of this site's counts under dev trust. */
+    noteDevTrust(devTrust) {
+      if (config.trust.mode !== 'dev' || !devTrust?.dev || !Array.isArray(devTrust.keys)) return;
+      const add = devTrust.keys.filter((k) => typeof k?.publicKey === 'string').map((k) => ({ publicKey: k.publicKey }));
+      if (!add.length) return;
+      store.transact((s) => {
+        const c = ensure(s);
+        c.devKeys ??= [];
+        for (const k of add) if (!c.devKeys.some((x) => x.publicKey === k.publicKey)) c.devKeys.push(k);
+      });
     },
 
     /** A listing's fact from a state snapshot. */
@@ -223,11 +307,10 @@ export function createControl({ config, store, provider, env, now, logger, check
     async submit(listing, body) {
       if (listing.artifact.kind !== 'Contract') throw new ControlError('NOT_A_CONTRACT_LISTING', 'a repository listing proves control with a file at its commit', 409);
       const o = body && typeof body === 'object' ? body : {};
+      const problem = proofFieldProblem(o, canonicalAddress);
+      if (problem) throw new ControlError(problem.code, problem.detail, 400);
       const signer = canonicalAddress(o.signer);
-      if (!signer) throw new ControlError('BAD_SIGNER', 'signer is an EIP-55 or all-lowercase 0x address', 400);
-      if (typeof o.signature !== 'string' || !SIGNATURE.test(o.signature)) throw new ControlError('BAD_SIGNATURE', 'signature is 0x hex, at most 4,096 bytes', 400);
       const creationTx = o.creationTx ?? null;
-      if (creationTx !== null && (typeof creationTx !== 'string' || !TX_HASH.test(creationTx))) throw new ControlError('BAD_CREATION_TX', 'creationTx is the deployment\'s transaction hash, 0x and 64 lowercase hex digits', 400);
       if (proofChecks >= MAX_PROOF_CHECKS_AT_ONCE) throw new ControlError('TOO_MANY_PROOF_CHECKS', 'too many proofs are being checked; try again in a moment', 429);
       const r = await proofAnswer(listing, { signer, signature: o.signature, creationTx });
       if (!r.ok) {
@@ -237,9 +320,9 @@ export function createControl({ config, store, provider, env, now, logger, check
       const t = now();
       const key = deploymentKey(listing.artifactHash, listing.maker);
       store.transact((s) => {
-        s.control ??= { repositories: {}, deployments: {} };
-        const rev = (s.control.deployments[key]?.rev ?? 0) + 1;
-        s.control.deployments[key] = { rev, signer, signature: o.signature, creationTx, ok: true, reason: null, role: r.role, contractSigner: r.contractSigner, block: r.block, attempts: 0, checkedAt: t, nextAt: t + cfg.recheckMs };
+        const c = ensure(s);
+        const rev = (c.deployments[key]?.rev ?? 0) + 1;
+        c.deployments[key] = { rev, signer, signature: o.signature, creationTx, ok: true, reason: null, role: r.role, contractSigner: r.contractSigner, block: r.block, attempts: 0, answeredAt: t, checkedAt: t, nextAt: t + cfg.recheckMs };
       });
     },
 

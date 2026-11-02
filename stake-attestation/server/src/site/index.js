@@ -14,16 +14,26 @@
 // The control facts (src/control/; node P8) are the site's own, not the chain's: each answer reads
 // them from its state snapshot, so a record cached per block still states the latest check, and the
 // checks themselves run beside the indexer, like the archive reads.
+//
+// What counts (node P9, owner decision Q34): the record, the feed, the badge and the labels read only
+// a listing with a valid builder signature and the project's proof (src/control/counting.js), since
+// recordByHash combines every listing of a hash. Any other listing of the hash shows apart, as not
+// counted, with no amount, and never adds to the stake shown; the site offers no commit on it.
 import { JsonRpcProvider, Network } from 'ethers';
 
 import { stakeAttestation } from '../chain/abi.js';
+import { outputJson } from '../chain/codec.js';
 import { readerAt } from '../chain/read.js';
+import { notCountedReason } from '../control/counting.js';
+import { CONTROL_REASONS } from '../control/facts.js';
+import { FORK_TIMEOUT_MS, createForkChecker } from '../control/forkCheck.js';
 import { createRepositoryChecker } from '../control/gitCheck.js';
 import { ControlError, createControl } from '../control/index.js';
+import { RefusalCounter, refusalsFileIn } from '../listing/refusals.js';
 import { badgeFor, renderBadge } from '../record/badge.js';
 import { listingLabels } from '../record/labels.js';
 import { PriceError, readEthUsd } from '../record/price.js';
-import { readRecord } from '../record/record.js';
+import { partitionRecord, readRecord } from '../record/record.js';
 import { refreshArchives } from './archives.js';
 import { buildFeed } from './feed.js';
 import { createIndexer } from './indexer.js';
@@ -87,13 +97,16 @@ const blockOf = (c) => ({ number: c.number, hash: c.hash, timestamp: c.timestamp
  *   check (default: builder/bin/verdikta-control-check.js in a process of its own)
  * @param {(chainId: number) => object|null} [o.chainProviderFor] - a provider on a listing's chain
  *   (default: this site's for its own chain, SA_CONTROL_RPC_URL_<id> for another)
+ * @param {(o: { repo: string }) => Promise<object>} [o.checkFork] - what the host says of a repository
+ *   (default: its API, src/control/forkCheck.js)
  */
-export function createSite({ config, provider, env = process.env, fetchArchive, logger, keeperHooks, now = Date.now, checkRepository, chainProviderFor }) {
+export function createSite({ config, provider, env = process.env, fetchArchive, logger, keeperHooks, now = Date.now, checkRepository, chainProviderFor, checkFork }) {
   const chain = config.chain;
   if (!chain) throw new TypeError('createSite needs config.chain (SA_CONTRACT_ADDRESS)');
   const store = new StateStore(chain.dataDir, { chainId: chain.chainId, address: chain.address, fromBlock: chain.fromBlock });
   const indexer = createIndexer({ provider, store, chain, logger });
   const at = (block) => readerAt(provider, stakeAttestation, chain.address, block.hash);
+  const refusals = new RefusalCounter({ file: refusalsFileIn(chain.dataDir) });
 
   // the projection of a state snapshot's events, kept for the latest one asked for
   let projected = { events: null, value: null };
@@ -121,7 +134,15 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     logger,
     checkRepository: checkRepository ?? createRepositoryChecker(config.control, { env }),
     chainProviderFor,
+    checkFork: checkFork ?? createForkChecker({ timeoutMs: config.control.forkTimeoutMs ?? FORK_TIMEOUT_MS, env }),
+    readListing: async (listingId) => {
+      const { block } = snapshot();
+      return outputJson('getListing', (await at(block)('getListing', [listingId]))[0]);
+    },
   });
+
+  /** Why a listing of the projection does not count, from a state snapshot; null: it counts. */
+  const reasonOf = (state, l, fact) => notCountedReason({ known: state.archives[l.listingCid], artifact: l.artifact, fact, terms: control.termsOf(state, l) });
 
   const status = { lastSync: null, lastFreshSync: null, syncError: null, lastKeep: null, keepError: null };
   const records = lru();
@@ -179,8 +200,9 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
   let archiveRun = null;
   function refreshArchivesBeside() {
     if (archiveRun) return archiveRun;
-    const listings = [...projection().listings.values()].filter((l) => l.opened && !l.rolled && !l.closed);
-    archiveRun = refreshArchives({ fetchArchive, store, listings, now, maxBytes: config.archives.maxBytes, retryMs: config.archives.retryMs, logger })
+    // every listing that opened: what is on a record also needs its builder's signature read
+    const listings = [...projection().listings.values()].filter((l) => l.opened);
+    archiveRun = refreshArchives({ fetchArchive, store, listings, now, maxBytes: config.archives.maxBytes, retryMs: config.archives.retryMs, logger, devKeys: () => control.devKeys(store.state) })
       .catch((err) => {
         if (store.locked) logger.warn(`feed: reading listing archives failed (${err?.code ?? String(err?.message ?? err).slice(0, 200)})`);
       })
@@ -251,11 +273,16 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       });
     }
     const known = projectionOf(state).listings;
-    const listings = value.listings.map((e) => {
-      const fact = control.factOf(state, { artifactHash: e.artifactHash, maker: e.maker, artifact: known.get(e.listingId)?.artifact });
-      return { ...e, control: { subject: fact.subject, controls: fact.controls, statement: fact.statement, reason: fact.reason } };
-    });
-    return { block: value.block, ...freshness(value.block), listings };
+    const listings = [];
+    const notCounted = [];
+    for (const e of value.listings) {
+      const l = known.get(e.listingId);
+      const fact = control.factOf(state, { artifactHash: e.artifactHash, maker: e.maker, artifact: l?.artifact });
+      const reason = l ? reasonOf(state, l, fact) : 'NOT_CHECKED_YET';
+      if (reason) notCounted.push({ listingId: e.listingId, artifactHash: e.artifactHash, artifact: e.artifact, maker: e.maker, reason, detail: CONTROL_REASONS[reason] ?? null });
+      else listings.push({ ...e, control: { subject: fact.subject, proof: fact.proof, statement: fact.statement, reason: fact.reason } });
+    }
+    return { block: value.block, ...freshness(value.block), listings, notCounted };
   }
 
   /** The history of a record's listings: the snapshot's events, placed and published. */
@@ -304,12 +331,47 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
         priceError,
         placeholders: config.labels.placeholders,
       };
-      return records.set(key, { artifactHash: hash, block, record: rec, labels, history: historyOf(rec, events, block) });
+      return records.set(key, { artifactHash: hash, block, record: rec, labels });
     });
     if (!view) return view;
+    return countedAnswer(view, state, hash, { events: blockTag === undefined ? state.events : state.events.filter((e) => e.blockNumber <= view.block.number) });
+  }
+
+  /** The record's answer: what counts on the record, the rest apart (src/control/counting.js). */
+  function countedAnswer(view, state, hash, { events }) {
     const known = projectionOf(state).listings;
-    const facts = Object.fromEntries(view.record.listings.map((l) => [l.listingId, control.factOf(state, { artifactHash: hash, maker: l.maker, artifact: known.get(l.listingId)?.artifact })]));
-    const out = { ...view, ...freshness(view.block), control: facts };
+    const facts = {};
+    const reasons = new Map();
+    for (const l of view.record.listings) {
+      const id = String(l.listingId);
+      const p = known.get(id);
+      facts[id] = control.factOf(state, { artifactHash: hash, maker: l.maker, artifact: p?.artifact });
+      const reason = p ? reasonOf(state, p, facts[id]) : 'NOT_CHECKED_YET';
+      if (reason) reasons.set(id, reason);
+    }
+    const counted = new Set(view.record.listings.map((l) => String(l.listingId)).filter((id) => !reasons.has(id)));
+    const { record: rec, findings, flags } = partitionRecord(view.record, counted);
+    const apart = view.record.listings.filter((l) => !counted.has(String(l.listingId)));
+    const first = known.get(String(view.record.listings[0]?.listingId));
+    const out = {
+      ...view,
+      record: rec,
+      labels: { ...view.labels, listings: Object.fromEntries(Object.entries(view.labels.listings).filter(([id]) => counted.has(id))) },
+      history: historyOf(rec, events, view.block),
+      ...freshness(view.block),
+      artifact: first ? { kind: first.artifact.kind, repo: first.artifact.repo, baseCommit: first.artifact.baseCommit, chainId: first.artifact.chainId, address: first.artifact.address } : null,
+      fork: first ? control.forkOf(state, first.artifact.repo) : null,
+      control: facts,
+      notCounted: {
+        listings: apart.map((l) => {
+          const id = String(l.listingId);
+          return { listingId: id, maker: l.maker, state: l.state, lapsed: l.lapsed, reason: reasons.get(id), detail: CONTROL_REASONS[reasons.get(id)] ?? null };
+        }),
+        findings,
+        flags,
+        events: apart.length ? historyOf({ ...rec, listings: apart, findings: [] }, events, view.block).events : [],
+      },
+    };
     out.badge = badgeFor(out);
     return out;
   }
@@ -356,9 +418,15 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       from = [Number(m[1]), Number(m[2])];
     }
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > EVENTS_MAX) throw new SiteError('BAD_LIMIT', `limit is 1 to ${EVENTS_MAX}`, 400);
-    const all = feedEvents(projectionOf(state), state.events);
+    const proj = projectionOf(state);
+    const all = feedEvents(proj, state.events);
     const start = from ? all.findIndex((e) => e.blockNumber > from[0] || (e.blockNumber === from[0] && e.logIndex > from[1])) : 0;
-    const page = start === -1 ? [] : all.slice(start, start + limit);
+    // the chain's events, all of them; each says whether its listing counts at this answer
+    const counts = (id) => {
+      const l = proj.listings.get(id);
+      return Boolean(l) && reasonOf(state, l, control.factOf(state, { artifactHash: l.artifactHash, maker: l.maker, artifact: l.artifact })) === null;
+    };
+    const page = start === -1 ? [] : all.slice(start, start + limit).map((e) => ({ ...e, counted: counts(e.listingId) }));
     const last = page.at(-1);
     return { block, ...freshness(block), events: page, next: last ? `${last.blockNumber}:${last.logIndex}` : after };
   }
@@ -389,6 +457,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       },
       labels: { placeholders: config.labels.placeholders, ethUsdFeed: config.labels.ethUsdFeed },
       control: { gitHosts: config.control.gitHosts },
+      listings: { refused: refusals.view() },
     };
   }
 
@@ -424,6 +493,14 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     /** Resolves once the control checks started so far have finished (for tests and shutdown). */
     controlIdle: () => controlRun ?? Promise.resolve(),
     submitControlProof,
+    /** Refused listing attempts by reason; they live beside this site's state. */
+    refusals,
+    /** A deployment proof sent with a listing request: checked now, stored only if it counts. */
+    checkDeployment: (listing, proof) => control.submit(listing, proof),
+    /** A signing step's dev key: only those count under dev trust. */
+    noteDevTrust: (devTrust) => control.noteDevTrust(devTrust),
+    /** The message a contract listing's deployer or owner signs, for a request's maker and artifact. */
+    stake: { chainId: chain.chainId, address: chain.address },
     feed,
     record,
     badge,

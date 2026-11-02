@@ -4,12 +4,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { Wallet } from 'ethers';
+
 import { codeReview } from '../../src/common.js';
 import { parseConfig } from '../../src/config.js';
 import { createExplorer } from '../../src/explorer.js';
 import { writeOutputs } from '../../src/outputs.js';
 import { buildListing } from '../../src/pipeline.js';
 import { FIXTURES, fakeDocker, readFixture, recordedExplorer } from './fakes.js';
+import { deploymentMessage } from '../../src/listingProof.js';
+import { MAKER, deployment, provenAnswer, stake } from './proof.js';
 import { acceptedListing, definitive, draftSpec } from './specs.js';
 
 export const DIGEST = `sha256:${'2'.repeat(64)}`;
@@ -27,7 +31,7 @@ export const KNOWN_ISSUES = Buffer.from(`${JSON.stringify([{ id: codeReview.know
  * @param {object} [o.registry] - config.registry
  * @param {object} [o.runner] - the code-runner's `runner` block in its answer
  */
-export async function acceptedBuild({ draft = draftSpec(), knownIssues = null, registry = { repository: REPOSITORY }, runner, compressedBytes = 300000000 } = {}) {
+export async function acceptedBuild({ draft = draftSpec(), knownIssues = null, registry = { repository: REPOSITORY }, runner, compressedBytes = 300000000, maker = MAKER, deploymentProof = null, chainFor } = {}) {
   const config = parseConfig({
     registry,
     runner: { url: 'http://127.0.0.1:8090', tokenEnv: 'CODE_RUNNER_TOKEN' },
@@ -38,7 +42,15 @@ export async function acceptedBuild({ draft = draftSpec(), knownIssues = null, r
   // build at the commit as the fixture's files and artifact.
   const rec = recordedExplorer({ getsourcecode: 'getsourcecode-vault.json', getcode: 'getcode-vault.json' });
   const runs = [];
+  // a contract listing's owner signs, on a chain double
+  const owner = Wallet.createRandom();
+  const contract = draft.artifact?.kind === 'contract';
+  const signed = contract && !deploymentProof
+    ? { signer: owner.address, signature: await owner.signMessage(deploymentMessage({ spec: draft, maker, stake })), stakeChainId: stake.chainId, stakeContract: stake.address }
+    : deploymentProof;
   const deps = {
+    checkRepositoryControl: provenAnswer(maker),
+    chainFor: chainFor ?? (() => deployment({ owner: owner.address, chainId: draft.artifact?.chainId ?? 8453 })),
     docker: fakeDocker((args) => {
       if (args[0] === 'push') return { stdout: `digest: ${DIGEST} size: 1234\n` };
       if (args[0] === 'history') return { stdout: '700000000\n100000000\n' };
@@ -66,7 +78,7 @@ export async function acceptedBuild({ draft = draftSpec(), knownIssues = null, r
   };
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-accepted-'));
   try {
-    const out = await buildListing({ draft, knownIssues, config, deps, workDir });
+    const out = await buildListing({ draft, knownIssues, maker, deploymentProof: signed, config, deps, workDir });
     if (out.status !== 'accepted') throw new Error(`the doubled build was ${out.status}: ${JSON.stringify(out.report.refusals ?? out.report.error)}`);
     return { ...out, runs };
   } finally {

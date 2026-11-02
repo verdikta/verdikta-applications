@@ -9,7 +9,8 @@ import { getAddress } from 'ethers';
 import { parseConfig } from '../../src/config.js';
 import { BuilderError } from '../../src/errors.js';
 import { buildListing } from '../../src/pipeline.js';
-import { FIXTURES, fakeDocker, readFixture } from './fakes.js';
+import { createExplorer } from '../../src/explorer.js';
+import { FIXTURES, fakeDocker, readFixture, recordedExplorer } from './fakes.js';
 import { acceptedListing, definitive, draftSpec } from './specs.js';
 import { proofFile } from './proofRepo.js';
 
@@ -61,6 +62,7 @@ export function deployment({ owner = null, deployer = null, creationTx = null, a
 export async function attempt({ h, commit, draft, maker = MAKER, repoUrl = REPO, chain, deploymentProof = null, checkRepositoryControl }) {
   const spec = draft ?? draftSpec({ repo: repoUrl, baseCommit: commit });
   const calls = { fetch: [], docker: 0 };
+  const rec = recordedExplorer({ getsourcecode: 'getsourcecode-vault.json', getcode: 'getcode-vault.json' });
   const inner = fakeDocker((args) => {
     if (args[0] === 'push') return { stdout: `digest: ${DIGEST} size: 1234\n` };
     if (args[0] === 'history') return { stdout: '700000000\n100000000\n' };
@@ -74,8 +76,15 @@ export async function attempt({ h, commit, draft, maker = MAKER, repoUrl = REPO,
     writeBuildContext: () => ({ dockerfile: 'FROM x' }),
     registry: { imageInfo: async (digest) => ({ digest, manifestDigest: digest, compressedBytes: 300000000, platforms: ['linux/amd64'], config: { os: 'linux', architecture: 'amd64' }, volumes: [] }) },
     runner: { listingCheck: async () => { const d = definitive(IMAGE, acceptedListing(spec.baseCommit)); return { status: d.status, json: d.body }; } },
-    explorerFor: () => ({ getSource: async () => readFixture('explorer', 'parsed-vault.json'), getCode: async () => '0x' }),
-    verifiedSource: async () => ({ ok: true, issues: [], warnings: [], contract: { path: 'src/Vault.sol', name: 'Vault' }, summary: { bytecode: 'match' } }),
+    explorerFor: (chainId, cfg) => createExplorer({ apiUrl: rec.apiUrl, apiKey: cfg.apiKey(), chainId, fetch: rec.fetch, timeoutMs: 5000 }),
+    buildRepo: async (req) => ({
+      files: new Map(req.paths.map((p) => [p, fs.readFileSync(path.join(FIXTURES, 'vault', p))])),
+      config: readFixture('forge', 'config.json'),
+      artifact: readFixture('forge', 'Vault.json'),
+      build: { exitCode: 0, log: '' },
+      skippedSubmodules: [],
+      solc: { version: req.version, sha256: 'a'.repeat(64), platform: 'linux/amd64' },
+    }),
     chainFor: () => chain,
     ...(checkRepositoryControl ? { checkRepositoryControl } : {}),
   };

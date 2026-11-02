@@ -1,6 +1,8 @@
 // A listing's build, end to end (design §8.2 steps 1-4; build plan A4):
 //
 //   spec            the draft against @verdikta/common's schema and what this builder hosts
+//   control         the project's proof (src/listingProof.js; node P9): the file at the commit naming
+//                   the maker, the commit on the repository's own refs, a contract's signature
 //   fetch           the listed commit's objects, by id, from the repository (or its mirror)
 //   build           the env image (src/dockerfile.js): the maker's setup with network, then a
 //                   final stage that runs nothing
@@ -25,7 +27,7 @@ import { codeReview } from './common.js';
 import { baseImageRefs, writeBuildContext as writeContextDefault } from './dockerfile.js';
 import { createDocker } from './docker.js';
 import { BuilderError, Refusal } from './errors.js';
-import { createExplorer } from './explorer.js';
+import { createExplorer, explorerChain } from './explorer.js';
 import { fetchListedCommit as fetchDefault } from './git.js';
 import { buildImage, imageSizeIssues, pushImage, unpackedBytes } from './image.js';
 import { createRegistryClient } from './registry.js';
@@ -34,6 +36,7 @@ import { createRunnerClient, interpretListingCheck } from './runner.js';
 import { commitTree } from './commitFiles.js';
 import { buildAtCommit } from './repoBuild.js';
 import { fetchSolc } from './solc.js';
+import { checkListingProof } from './listingProof.js';
 import { checkVerifiedSource } from './sourceCheck.js';
 import { checkDraft, checkKnownIssues, finalSpec, runnerSpec, serializeJson } from './spec.js';
 import { BUILDER_VERSION } from './version.js';
@@ -160,22 +163,34 @@ export async function buildEnvImage({ draft, config, deps = {}, report, workDir 
  * @param {object} o
  * @param {object} o.draft - the maker's draft code_review.json
  * @param {Buffer|null} [o.knownIssues] - the exact bytes of known_issues.json, when the draft names one
+ * @param {string|null} [o.maker] - the wallet that will send list(): the repository's file must name it
+ * @param {object|null} [o.deploymentProof] - a contract listing's signature (src/listingProof.js)
  * @param {object} o.config - parseConfig()
- * @param {object} [o.deps] - doubles (docker, fetchListedCommit, writeBuildContext, registry, runner, explorerFor, buildRepo)
+ * @param {object} [o.deps] - doubles (docker, fetchListedCommit, writeBuildContext, registry, runner, explorerFor, buildRepo, checkRepositoryControl, chainFor)
  * @param {string} [o.workDir] - where the temporary build folder is made (default config.workDir)
  * @returns {Promise<{ status: 'accepted'|'refused'|'error', files: Map<string, Buffer>, report: object }>}
  */
-export async function buildListing({ draft, knownIssues = null, config, deps = {}, workDir }) {
+export async function buildListing({ draft, knownIssues = null, maker = null, deploymentProof = null, config, deps = {}, workDir }) {
   const report = newReport({ draft });
   const files = new Map();
   let tmp = null;
   let docker = null;
+  const explorerOn = (chainId) => {
+    const ex = config.explorers.get(chainId);
+    if (!ex) throw new BuilderError('EXPLORER_NOT_CONFIGURED', `no explorer is configured for chain ${chainId} (config explorers)`);
+    return { ex, explorer: deps.explorerFor ? deps.explorerFor(chainId, ex) : createExplorer({ apiUrl: ex.apiUrl, apiKey: ex.apiKey(), chainId, timeoutMs: ex.timeoutMs }) };
+  };
   try {
     const known = await step(report, 'spec', () => {
       const v = checkDraft(draft);
       report.warnings.push(...v.warnings);
       if (!v.ok) throw new Refusal('SPEC_INVALID', `code_review.json does not validate: ${v.issues.map((i) => i.code).join(', ')}`, { issues: v.issues });
       return checkKnownIssues(draft, knownIssues);
+    });
+    // before anything of the repository is fetched for a build, and whatever else the listing is
+    await step(report, 'control', async () => {
+      const chainFor = deps.chainFor ?? ((chainId) => explorerChain(explorerOn(chainId).explorer));
+      report.control = await checkListingProof({ draft, maker, deploymentProof, config, chainFor, deps });
     });
     tmp = fs.mkdtempSync(path.join(workDir ?? config.workDir, 'vab-build-'));
     docker = deps.docker ?? createDocker({ bin: config.docker.bin, host: config.docker.host });
@@ -187,9 +202,7 @@ export async function buildListing({ draft, knownIssues = null, config, deps = {
         return;
       }
       const { chainId, address } = draft.artifact;
-      const ex = config.explorers.get(chainId);
-      if (!ex) throw new BuilderError('EXPLORER_NOT_CONFIGURED', `no explorer is configured for chain ${chainId} (config explorers)`);
-      const explorer = deps.explorerFor ? deps.explorerFor(chainId, ex) : createExplorer({ apiUrl: ex.apiUrl, apiKey: ex.apiKey(), chainId, timeoutMs: ex.timeoutMs });
+      const { ex, explorer } = explorerOn(chainId);
       const buildImpl = deps.buildRepo ?? repoBuilder({ config, docker, draft, workDir: tmp });
       const buildRepo = (req) => buildImpl({ ...req, baseCommit: draft.baseCommit, gitDir: image.gitDir, image: image.stagedRef });
       const r = await checkVerifiedSource({ spec: draft, explorer, buildRepo });

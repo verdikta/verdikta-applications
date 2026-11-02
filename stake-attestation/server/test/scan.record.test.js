@@ -25,7 +25,7 @@ describe('the scan never reaches the record mirror or the feed', () => {
     scanner = fakeScanner();
     site = siteFor(ctx);
     api = await startApi({ builder: fakeBuilder(), scanner, pinner: ctx.pinner, site, logger: apiLog });
-    const res = await api.post('/api/listings', { ...listingRequest(), maker: ctx.maker.address });
+    const res = await api.submit({ ...listingRequest(), maker: ctx.maker.address }, { wallet: ctx.maker });
     assert.equal(res.status, 202);
     view = await settleScan(api, (await res.json()).id);
     assert.equal(view.status, 'ready', JSON.stringify(view.error));
@@ -35,6 +35,7 @@ describe('the scan never reaches the record mirror or the feed', () => {
     const rc = await (await ctx.sa.connect(ctx.maker).list(params, listingCid, disputeCid, knownIssueIds)).wait();
     const listed = rc.logs.map((l) => ctx.sa.interface.parseLog(l)).find((e) => e?.name === 'Listed');
     const { listingId } = listed.args;
+    ctx.proofs.set(`${params.artifact.repo}@${params.artifact.baseCommit}`, ctx.maker.address);
     const fee = await ctx.sa.feeDue(listingId);
     await (await ctx.sa.connect(ctx.maker).fund(listingId, fee, { value: fee + BigInt(params.awards[3]) })).wait();
     await site.sync();

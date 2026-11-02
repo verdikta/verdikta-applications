@@ -9,6 +9,7 @@ name: Stake attestation builder
 #       with:
 #         builder-ref: <commit>
 #         spec: listing/code_review.json
+#         maker: <the wallet that will send list(), named in the listed commit's .verdikta/stake-control.json>
 #         publish-repository: ghcr.io/<owner>/stake-env
 #       permissions:
 #         contents: read
@@ -39,6 +40,15 @@ on:
         type: string
       known-issues:
         description: Path, in the calling repository, of known_issues.json, when the draft names one.
+        required: false
+        type: string
+        default: ''
+      maker:
+        description: The wallet that will send list(). The repository's .verdikta/stake-control.json at the listed commit must name this address, or the build refuses the listing (stake-attestation/docs/control-proof.md).
+        required: true
+        type: string
+      deployment-proof:
+        description: For a contract listing, the path, in the calling repository, of its deployer's or owner's signature, JSON { signer, signature, creationTx?, stakeChainId, stakeContract }.
         required: false
         type: string
         default: ''
@@ -136,6 +146,7 @@ jobs:
           sparse-checkout: |
             ${{ inputs.spec }}
             ${{ inputs.known-issues }}
+            ${{ inputs.deployment-proof }}
           sparse-checkout-cone-mode: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -182,11 +193,15 @@ jobs:
         env:
           SPEC: ${{ inputs.spec }}
           KNOWN_ISSUES: ${{ inputs.known-issues }}
+          MAKER: ${{ inputs.maker }}
+          DEPLOYMENT_PROOF: ${{ inputs.deployment-proof }}
         run: |
           set -euo pipefail
           known=()
           if [ -n "$KNOWN_ISSUES" ]; then known=(--known-issues "listing-source/$KNOWN_ISSUES"); fi
-          node "$VAB_BUILDER/bin/verdikta-build-env.js" build --config "$VAB_WORK/builder.json" --spec "listing-source/$SPEC" "${known[@]}" --out "$VAB_OUT"
+          proof=()
+          if [ -n "$DEPLOYMENT_PROOF" ]; then proof=(--control-proof "listing-source/$DEPLOYMENT_PROOF"); fi
+          node "$VAB_BUILDER/bin/verdikta-build-env.js" build --config "$VAB_WORK/builder.json" --spec "listing-source/$SPEC" "${known[@]}" "${proof[@]}" --maker "$MAKER" --out "$VAB_OUT"
           echo "image=$(jq -r .env.image "$VAB_OUT/code_review.json")" >> "$GITHUB_OUTPUT"
       - name: Export the validated image, byte for byte (skopeo's dir layout keeps any manifest type)
         run: node "$VAB_BUILDER/action/image.js" export --from "$(jq -r .image.stagedRef "$VAB_OUT/validation-report.json")" --dir "$VAB_IMAGE"
@@ -293,7 +308,8 @@ jobs:
         env:
           OUTPUTS_SHA256: ${{ needs.build.outputs.outputs-sha256 }}
           VERDIKTA_BUILDER_KEY: ${{ inputs.signing == 'production' && secrets.VERDIKTA_BUILDER_KEY || '' }}
-        run: node "$VAB_BUILDER/bin/verdikta-build-env.js" sign --config "$VAB_WORK/sign.json" --dir "$VAB_OUT" --expect-outputs "$OUTPUTS_SHA256" --check-registry
+          MAKER: ${{ inputs.maker }}
+        run: node "$VAB_BUILDER/bin/verdikta-build-env.js" sign --config "$VAB_WORK/sign.json" --dir "$VAB_OUT" --maker "$MAKER" --expect-outputs "$OUTPUTS_SHA256" --check-registry
       - name: Upload the signed listing files
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

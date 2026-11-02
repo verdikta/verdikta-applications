@@ -3,7 +3,7 @@
 //
 // It says whether the listing was accepted, refused (and why, step by step, with the build's log
 // when the setup failed) or could not be validated (an error to retry), and what was measured:
-// the image, its sizes, the verified-source comparison, the code-runner's listing check (timings,
+// the project's proof (`control`), the image, its sizes, the verified-source comparison, the code-runner's listing check (timings,
 // limits, suite, harness proof) and the baseline. `devOnly` lists what makes the result fit only
 // for dev trust (another platform, no gVisor). It never holds a secret: the config it reads has
 // none, and the runner's token and explorer keys are never passed to it.
@@ -25,6 +25,7 @@ export function newReport({ draft }) {
       artifact: ok && draft.artifact && typeof draft.artifact === 'object' ? draft.artifact : { kind: 'repo' },
     },
     steps: [],
+    control: null,
     image: null,
     verifiedSource: null,
     listingCheck: null,

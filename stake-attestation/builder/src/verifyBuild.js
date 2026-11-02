@@ -2,6 +2,8 @@
 // decision 3: signing in a separate job from the one that ran the maker's setup). That job
 // receives only the build's output folder, so it checks:
 //
+//   before these           the project's proof, read again (src/listingProof.js recheckForSigning):
+//                          nothing is signed for a listing without it
 //   always                 the report accepted the listing; the files are the bytes it accepted;
 //                          code_review.json, the baseline and known_issues.json validate; the report
 //                          is about this listing, has every step of a build in order, and names the
@@ -24,11 +26,12 @@ import { createRegistryClient } from './registry.js';
 
 const CLASS = codeReview.CLASS_HARD_LIMITS;
 const PIN = codeReview.BASE_IMAGE_PINS.foundry;
-const STEPS = Object.freeze(['spec', 'fetch', 'build', 'size', 'push', 'registry', 'verifiedSource', 'listingCheck', 'finalSpec']);
+const STEPS = Object.freeze(['spec', 'control', 'fetch', 'build', 'size', 'push', 'registry', 'verifiedSource', 'listingCheck', 'finalSpec']);
 const IMAGE_REF = /^(.+)@(sha256:[0-9a-f]{64})$/;
 
 const TRUSTS = Object.freeze({
   LISTING_CHECK_RESULTS: 'baseline.json, the timings, the default limits and the harness proof are the code-runner\'s answer as the build job recorded it, from the runner, runtime and platform the report names; repeating the check needs the image and a runner',
+  DEPLOYMENT_ROLE: 'that the signer named in the report is the deployment\'s owner or deployer was read from the chain in the build job; its signature is checked again here unless the signer is a contract',
   VERIFIED_SOURCE: 'the comparison of the explorer\'s verified source and deployed code with the build at baseCommit ran in the build job; only its recorded result is seen here',
   UNPACKED_SIZE: 'env.unpackedBytes is the build\'s and the runner\'s measurement of the unpacked image; measuring it again needs the image unpacked',
   BUILD_JOB: 'the build job ran this builder unmodified, at the pinned ref, on a runner nothing else used; a maker\'s own CI is the maker\'s to vouch for, so a production key signs only in Verdikta\'s own workflow',
@@ -178,7 +181,7 @@ export async function verifyForSigning({ files, report, dir, expectOutputs = nul
     pass('IMAGE_LABELLED_WITH_COMMIT');
   }
 
-  const trusts = ['LISTING_CHECK_RESULTS', ...(contract ? ['VERIFIED_SOURCE'] : []), 'UNPACKED_SIZE', 'BUILD_JOB',
+  const trusts = ['LISTING_CHECK_RESULTS', ...(contract ? ['VERIFIED_SOURCE', 'DEPLOYMENT_ROLE'] : []), 'UNPACKED_SIZE', 'BUILD_JOB',
     ...(expectOutputs === null ? ['OUTPUTS_IN_TRANSIT'] : []), ...(checkRegistry ? [] : ['IMAGE_PUBLISHED'])]
     .map((code) => ({ code, detail: TRUSTS[code] }));
   return { checks, trusts };

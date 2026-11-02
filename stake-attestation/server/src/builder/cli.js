@@ -1,5 +1,5 @@
 // The environment builder (stake-attestation/builder, nodes P3a, P3b) behind the interface the
-// listing flow uses: build({ draft, knownIssues }) resolves to
+// listing flow uses: build({ draft, knownIssues, maker, deploymentProof }) resolves to
 //
 //   { status: 'accepted', report, files: { codeReview, baseline, knownIssues, attestation }, devTrust }
 //   { status: 'refused',  report, files: null, devTrust: null }
@@ -253,7 +253,7 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
   };
 
   return {
-    async build({ draft, knownIssues }) {
+    async build({ draft, knownIssues, maker = null, deploymentProof = null }) {
       const problem = configProblem(cfg);
       if (problem) return errored(problem.code, problem.detail);
       const dir = fs.mkdtempSync(path.join(cfg.workDir, 'sa-build-'));
@@ -266,6 +266,13 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
           const kiPath = path.join(dir, 'known_issues.json');
           fs.writeFileSync(kiPath, knownIssues);
           args.push('--known-issues', kiPath);
+        }
+        // the project's proof: the builder reads the repository for itself, and refuses without it
+        if (maker) args.push('--maker', maker);
+        if (deploymentProof) {
+          const proofPath = path.join(dir, 'control-proof.json');
+          fs.writeFileSync(proofPath, `${JSON.stringify(deploymentProof)}\n`);
+          args.push('--control-proof', proofPath);
         }
         const out = path.join(dir, 'out');
         args.push('--out', out);
@@ -280,7 +287,7 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
           return { status: 'error', report, files: null, devTrust: null, error: report.error ?? { code: 'BUILD_FAILED', detail: exited('build', b) } };
         }
 
-        const s = await step(['sign', '--config', cfg.config, '--dir', out], cfg.signEnv, dir);
+        const s = await step(['sign', '--config', cfg.config, '--dir', out, ...(maker ? ['--maker', maker] : [])], cfg.signEnv, dir);
         if (s.interrupted) return stopped('sign', s, cfg, report);
         if (s.spawnError) return errored('SIGNING_FAILED', `the builder's sign step could not be started: ${s.spawnError}`, report);
         if (s.code !== 0) return errored('SIGNING_FAILED', exited('sign', s), report);

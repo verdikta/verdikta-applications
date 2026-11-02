@@ -6,11 +6,17 @@
 // registry, an explorer or the code-runner. Every key is generated per run.
 import crypto from 'node:crypto';
 
+import { Wallet } from 'ethers';
+
 import { codeReview } from '../../src/common.js';
 import { loadConfig } from '../../src/config.js';
 
 export const BASE_COMMIT = '7f3a9c0d1e2b3a4c5d6e7f8091a2b3c4d5e6f708';
 export const IMAGE = `ghcr.io/verdikta/stake-env@sha256:${'4e1b2c3d'.repeat(8)}`;
+
+/** The wallet a test's listing request names as its maker: made per run, and it signs the request. */
+export const MAKER_WALLET = Wallet.createRandom();
+export const MAKER = MAKER_WALLET.address;
 
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 export const serialize = (value) => Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
@@ -19,6 +25,9 @@ export const serialize = (value) => Buffer.from(`${JSON.stringify(value, null, 2
 export function disclosureKeyPair() {
   return codeReview.generateDisclosureKeyPair();
 }
+
+/** A deployment proof in the right shape: API tests answer for it with a stand-in (startApi's checkDeployment). */
+export const TEST_DEPLOYMENT_PROOF = Object.freeze({ signer: '0x5B38Da6a701c568545dCfcB03FcB875f56beddC4', signature: `0x${'11'.repeat(65)}` });
 
 /** A maker's draft code_review.json for a repository listing. */
 export function draftSpec({ disclosureKey = disclosureKeyPair().recipient, ...over } = {}) {
@@ -68,10 +77,12 @@ export function knownIssues() {
   return bodies.map((b) => ({ id: codeReview.knownIssueId(b), ...b }));
 }
 
-/** A listing request body: the draft, its known issues and an allowlist. */
-export function listingRequest({ spec = draftSpec(), issues = knownIssues(), allowlist = [] } = {}) {
-  const body = { spec, allowlist };
+/** A listing request body: the draft, its known issues, an allowlist and the maker. */
+export function listingRequest({ spec = draftSpec(), issues = knownIssues(), allowlist = [], maker = MAKER, deploymentProof } = {}) {
+  const body = { spec, allowlist, maker };
   if (issues) body.knownIssues = issues;
+  if (spec.artifact?.kind === 'contract' && deploymentProof === undefined) body.deploymentProof = TEST_DEPLOYMENT_PROOF;
+  if (deploymentProof) body.deploymentProof = deploymentProof;
   return body;
 }
 
@@ -88,9 +99,9 @@ function baselineFor(baseCommit) {
   };
 }
 
-const STEPS = ['spec', 'fetch', 'build', 'size', 'push', 'registry', 'verifiedSource', 'listingCheck', 'finalSpec'];
+const STEPS = ['spec', 'control', 'fetch', 'build', 'size', 'push', 'registry', 'verifiedSource', 'listingCheck', 'finalSpec'];
 
-function reportFor(draft, statuses = {}) {
+function reportFor(draft, statuses = {}, maker = MAKER, deploymentProof = null) {
   const contract = draft.artifact?.kind === 'contract';
   return {
     version: 1,
@@ -105,6 +116,7 @@ function reportFor(draft, statuses = {}) {
       durationMs: 1,
       ...(name === 'verifiedSource' && !contract ? { detail: 'not a contract listing' } : {}),
     })),
+    control: { maker, repo: draft.repo, commit: draft.baseCommit, path: '.verdikta/stake-control.json', ref: 'refs/heads/main', blob: 'b'.repeat(40), deployment: contract ? { signer: deploymentProof?.signer ?? null, signature: deploymentProof?.signature ?? null, role: 'owner', contractSigner: false } : null },
     image: { ref: IMAGE, digest: IMAGE.split('@')[1], platform: 'linux/amd64', unpackedBytes: { builder: 812000000, runner: 812000000, attested: 812000000 } },
     verifiedSource: contract ? { status: 'match', issues: [], warnings: [] } : null,
     listingCheck: { status: 'accepted', runner: { version: '0.1.0', runtime: 'runsc', platform: 'linux/amd64' } },
@@ -148,13 +160,14 @@ export function fakeBuilder({ outcome = 'accepted', alterSpec = null, tamper = n
   return {
     calls,
     key,
+    devTrust: () => ({ dev: true, keys: [{ publicKey: key.publicKey }] }),
     release: () => release?.(),
-    async build({ draft, knownIssues: knownIssuesBytes }) {
-      calls.push({ draft: structuredClone(draft), knownIssues: knownIssuesBytes ? Buffer.from(knownIssuesBytes) : null });
+    async build({ draft, knownIssues: knownIssuesBytes, maker = MAKER, deploymentProof = null }) {
+      calls.push({ draft: structuredClone(draft), knownIssues: knownIssuesBytes ? Buffer.from(knownIssuesBytes) : null, maker, deploymentProof });
       if (gate) await gate;
       else if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
       if (outcome === 'refused-source') {
-        const report = reportFor(draft, { verifiedSource: 'failed', listingCheck: 'pending', finalSpec: 'pending' });
+        const report = reportFor(draft, { verifiedSource: 'failed', listingCheck: 'pending', finalSpec: 'pending' }, maker, deploymentProof);
         report.steps = report.steps.filter((s) => s.status !== 'pending');
         report.status = 'refused';
         report.verifiedSource = { status: 'mismatch', issues: [{ code: 'BYTECODE_MISMATCH', detail: 'the deployed runtime code is not the repository\'s build at baseCommit' }], warnings: [] };
@@ -162,14 +175,14 @@ export function fakeBuilder({ outcome = 'accepted', alterSpec = null, tamper = n
         return { status: 'refused', report, files: null, devTrust: null };
       }
       if (outcome === 'refused') {
-        const report = reportFor(draft, { listingCheck: 'failed', finalSpec: 'pending' });
+        const report = reportFor(draft, { listingCheck: 'failed', finalSpec: 'pending' }, maker, deploymentProof);
         report.steps = report.steps.filter((s) => s.status !== 'pending');
         report.status = 'refused';
         report.refusals.push({ code: 'LISTING_TOO_HEAVY', detail: 'the suite needs more than runSeconds', step: 'listingCheck' });
         return { status: 'refused', report, files: null, devTrust: null };
       }
       if (outcome === 'error') {
-        const report = reportFor(draft, { listingCheck: 'failed', finalSpec: 'pending' });
+        const report = reportFor(draft, { listingCheck: 'failed', finalSpec: 'pending' }, maker, deploymentProof);
         report.steps = report.steps.filter((s) => s.status !== 'pending');
         report.status = 'error';
         report.error = { code: 'LISTING_CHECK_ABSTAINED', detail: 'the code-runner decided nothing (pull_failed at pull)', step: 'listingCheck' };
@@ -183,7 +196,7 @@ export function fakeBuilder({ outcome = 'accepted', alterSpec = null, tamper = n
         knownIssues: knownIssuesBytes ? Buffer.from(knownIssuesBytes) : null,
         attestation: null,
       };
-      const report = reportFor(draft);
+      const report = reportFor(draft, {}, maker, deploymentProof);
       report.status = 'accepted';
       report.files = { 'code_review.json': sha256(files.codeReview), [spec.baseline]: sha256(files.baseline) };
       if (files.knownIssues) report.files[spec.stake.knownIssues] = sha256(files.knownIssues);

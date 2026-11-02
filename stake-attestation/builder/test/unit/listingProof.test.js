@@ -161,7 +161,7 @@ test('a contract\'s deployer signs with its creation transaction', async () => {
   const deployer = Wallet.createRandom();
   const creationTx = `0x${'ab'.repeat(32)}`;
   const draft = contractDraft({ repo: REPO, baseCommit: h.commit({ file: proofFile(MAKER) }) });
-  const chain = deployment({ owner: null, deployer: deployer.address, creationTx, address: draft.artifact.address });
+  const chain = deployment({ owner: null, deployer: deployer.address, creationTx, address: getAddress(draft.artifact.address.toLowerCase()) });
   const signature = await deployer.signMessage(deploymentMessage({ spec: draft, maker: MAKER, stake }));
   const r = await attempt({ h, draft, chain, deploymentProof: { signer: deployer.address, signature, creationTx, stakeChainId: stake.chainId, stakeContract: stake.address } });
   assert.equal(r.status, 'accepted', JSON.stringify(r.report.refusals ?? r.report.error));

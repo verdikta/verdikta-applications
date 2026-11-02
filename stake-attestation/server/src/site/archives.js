@@ -9,14 +9,16 @@
 // retried with a backoff. The archive is trusted for a listing's image and scope only when it is
 // that listing: its repository, commit and disclosure key must be the ones the chain stores
 // (archiveFields checks, per listing, since two listings may name one CID).
-import { DEFAULT_IPFS_GATEWAYS, codeReview } from '../common.js';
-import { disclosureKeyBytes32 } from '../listing/listParams.js';
-import { isRawSha256Cid, rawCid } from '../pinning/cid.js';
-import { ZipError, readZipMember, zipDirectory } from '../zipRead.js';
+//
+// Node P9: reading it also answers "did the builder sign this listing", with the check the hunter
+// tool reuses (shared/src/builderSignature.js), under the trust the arbiters apply here: production's
+// trusted-builder set, or under dev trust only the keys this site's own signing step made.
+import { readSignedListing } from '@verdikta/stake-attestation-shared/builder-signature';
 
-const PLAIN_NAME = /^(?!\.\.?$)[A-Za-z0-9._-]{1,255}$/;
-const MANIFEST_MAX_BYTES = 64 * 1024;
-const SPEC_MAX_BYTES = 1024 * 1024;
+import { DEFAULT_IPFS_GATEWAYS, codeReview } from '../common.js';
+import { disclosureKeyBytes32, signedTerms } from '../listing/listParams.js';
+import { isRawSha256Cid, rawCid } from '../pinning/cid.js';
+
 const quiet = { info() {}, warn() {}, error() {}, debug() {} };
 const RETRY_MAX_MS = 6 * 3600_000;
 const MAX_PER_SYNC = 8;
@@ -68,51 +70,40 @@ export function createGatewayFetcher({ gateways, timeoutMs, maxBytes }, logger =
   };
 }
 
-/** The folder the archive's files sit in: the root, or its one top-level folder (as ArchiveService). */
-function rootOf(entries) {
-  if (entries.has('manifest.json')) return '';
-  const files = [...entries.keys()].filter((n) => !n.endsWith('/'));
-  const tops = new Set(files.map((n) => (n.includes('/') ? n.slice(0, n.indexOf('/') + 1) : '')));
-  if (tops.size !== 1) return null;
-  const [top] = tops;
-  return top && entries.has(`${top}manifest.json`) ? top : null;
-}
-
-function readJson(bytes, entries, name, maxBytes) {
-  const entry = entries.get(name);
-  if (!entry) throw new ZipError('ZIP_INVALID', `${name} is not in the archive`);
-  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(readZipMember(bytes, entry, maxBytes)));
-}
-
 /**
- * What an archive's code_review.json says, from its bytes.
+ * What an archive says and whether the builder signed it, from its bytes.
  * @param {Buffer} bytes
  * @param {string} listingCid
- * @returns {{ ok: true, repo: string, baseCommit: string, disclosureKey: string, image: string|null, platform: string|null, scope: object } | { ok: false, error: string }}
+ * @param {{ maxBytes?: number, devKeys?: object[] }} [o]
+ * @returns {{ ok: true, repo: string, baseCommit: string, artifact: object, disclosureKey: string, image: string|null, platform: string|null, scope: object, terms: object, signed: object } | { ok: false, error: string }}
  */
-export function readListingArchive(bytes, listingCid, { maxBytes = Infinity } = {}) {
+export function readListingArchive(bytes, listingCid, { maxBytes = Infinity, devKeys = null } = {}) {
   if (bytes.length > maxBytes) return { ok: false, error: 'ARCHIVE_TOO_LARGE' };
   if (isRawSha256Cid(listingCid) && rawCid(bytes) !== listingCid) return { ok: false, error: 'ARCHIVE_NOT_CID' };
-  let spec;
-  try {
-    const entries = zipDirectory(bytes);
-    const root = rootOf(entries);
-    if (root === null) return { ok: false, error: 'ARCHIVE_INVALID' };
-    const manifest = readJson(bytes, entries, `${root}manifest.json`, MANIFEST_MAX_BYTES);
-    if (typeof manifest?.codeReview !== 'string' || !PLAIN_NAME.test(manifest.codeReview)) return { ok: false, error: 'ARCHIVE_INVALID' };
-    spec = readJson(bytes, entries, `${root}${manifest.codeReview}`, SPEC_MAX_BYTES);
-  } catch (err) {
-    return { ok: false, error: err?.code === 'ZIP_TOO_LARGE' ? 'ARCHIVE_TOO_LARGE' : 'ARCHIVE_INVALID' };
-  }
-  if (!spec || typeof spec !== 'object' || !codeReview.validateCodeReviewSpec(spec).ok) return { ok: false, error: 'ARCHIVE_INVALID' };
+  const read = readSignedListing(bytes, { codeReview, devKeys });
+  if (!read.spec) return { ok: false, error: read.reason };
+  const { spec } = read;
   let disclosureKey;
+  let terms;
   try {
     disclosureKey = disclosureKeyBytes32(spec.stake.disclosureKey);
+    terms = signedTerms(spec, read.knownIssues);
   } catch {
     return { ok: false, error: 'ARCHIVE_INVALID' };
   }
   const scope = { include: [...spec.stake.scope.include], exclude: [...(spec.stake.scope.exclude ?? [])] };
-  return { ok: true, repo: spec.repo, baseCommit: spec.baseCommit, disclosureKey, image: spec.env?.image ?? null, platform: spec.env?.platform ?? null, scope };
+  return {
+    ok: true,
+    repo: spec.repo,
+    baseCommit: spec.baseCommit,
+    artifact: spec.artifact ?? { kind: 'repo' },
+    disclosureKey,
+    image: spec.env?.image ?? null,
+    platform: spec.env?.platform ?? null,
+    scope,
+    terms,
+    signed: read.signed ? { ok: true, keyId: read.keyId, trust: read.trust, issuedAt: read.issuedAt } : { ok: false },
+  };
 }
 
 /**
@@ -126,18 +117,21 @@ export function readListingArchive(bytes, listingCid, { maxBytes = Infinity } = 
  * @param {() => number} o.now - the clock, ms
  * @param {number} o.maxBytes
  * @param {number} o.retryMs - the first wait after a failure (doubling per failure)
+ * @param {() => object[]} [o.devKeys] - the dev keys that count here
  */
-export async function refreshArchives({ fetchArchive, store, listings, now, maxBytes, retryMs, logger }) {
+export async function refreshArchives({ fetchArchive, store, listings, now, maxBytes, retryMs, logger, devKeys = () => null }) {
   let tried = 0;
   for (const listing of listings) {
     const known = store.state.archives[listing.listingCid];
-    if (known && (known.ok || known.error !== 'ARCHIVE_UNAVAILABLE' || known.retryAt > now())) continue;
+    // an answer from before the builder's signature was read is read again
+    const answered = known && ((known.ok && known.signed) || (!known.ok && (known.error !== 'ARCHIVE_UNAVAILABLE' || known.retryAt > now())));
+    if (answered) continue;
     if (tried >= MAX_PER_SYNC) break;
     tried += 1;
     let result;
     try {
       const bytes = Buffer.from(await fetchArchive(listing.listingCid));
-      result = readListingArchive(bytes, listing.listingCid, { maxBytes });
+      result = readListingArchive(bytes, listing.listingCid, { maxBytes, devKeys: devKeys() });
     } catch (err) {
       const attempts = (known?.attempts ?? 0) + 1;
       const delay = Math.min(RETRY_MAX_MS, retryMs * 2 ** (attempts - 1));

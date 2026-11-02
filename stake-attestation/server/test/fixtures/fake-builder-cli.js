@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // A stand-in for verdikta-build-env (stake-attestation/builder, nodes P3a, P3b) that keeps its
-// command line contract: `build --config C --spec S [--known-issues K] --out O` writes
+// command line contract: `build --config C --spec S [--known-issues K] --maker M [--control-proof P] --out O` writes
 // code_review.json, the baseline, known_issues.json and validation-report.json into O and exits 0
-// (accepted), 2 (refused) or 1 (error); `sign --config C --dir O` writes attestation.json (and, for
+// (accepted), 2 (refused) or 1 (error); `sign --config C --dir O --maker M` writes attestation.json (and, for
 // a dev key, dev-trust.json) and records the attestation in the report; `scan --config C --spec S
 // --out O [--agent]` writes scan-findings.json into O, a new folder (owner-only), prints where it
 // is and nothing of what it says, and exits 0 (scanned) or 1 (the scan failed; the details are in
@@ -123,7 +123,8 @@ if (config.mode === 'hang') {
   if (config.mode === 'no-report') process.exit(1);
   const outcome = { accepted: 'accepted', 'sign-fails': 'accepted', 'refused-source': 'refused-source', error: 'error' }[config.mode];
   const { fakeBuilder } = await import('../helpers/fixtures.js');
-  const r = await fakeBuilder({ outcome }).build({ draft, knownIssues });
+  const deploymentProof = opts['control-proof'] ? JSON.parse(fs.readFileSync(opts['control-proof'], 'utf8')) : null;
+  const r = await fakeBuilder({ outcome }).build({ draft, knownIssues, maker: opts.maker, deploymentProof });
   if (r.status === 'accepted') {
     // what build writes: the files and the report, before signing
     write(opts.out, 'code_review.json', r.files.codeReview);

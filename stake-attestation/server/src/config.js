@@ -94,10 +94,14 @@
 //                                  listing on a chain with none is "no"
 //   SA_CONTROL_GIT_MIRROR_DIR      development only, refused in production: repositories are read from
 //                                  <dir>/<host>/<path>.git instead of the network
+//   SA_CONTROL_FORK_TIMEOUT_MS     one request to a host's API for the record's fork label (10000)
+//   SA_GITHUB_TOKEN                optional: raises GitHub's rate limit for the fork label. Read when
+//                                  used and never kept here; without it the label may say unknown
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getAddress } from 'ethers';
+import { DEFAULT_GIT_HOSTS } from '@verdikta/stake-attestation-shared/control-proof';
 
 import { codeReview } from './common.js';
 import { BACKENDS } from './pinning/index.js';
@@ -202,7 +206,6 @@ function gateways(env, name) {
   return [...new Set(out)];
 }
 
-const DEFAULT_GIT_HOSTS = Object.freeze(['github.com', 'gitlab.com', 'codeberg.org', 'bitbucket.org']);
 const GIT_HOST = /^[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)+$/;
 
 function controlConfig(env, production) {
@@ -227,6 +230,7 @@ function controlConfig(env, production) {
     retryMs: integer(env, 'SA_CONTROL_RETRY_MS', 60000, { min: 1 }),
     recheckMs: integer(env, 'SA_CONTROL_RECHECK_MS', 86400000, { min: 1 }),
     rpcTimeoutMs: integer(env, 'SA_CONTROL_RPC_TIMEOUT_MS', 10000, { min: 1 }),
+    forkTimeoutMs: integer(env, 'SA_CONTROL_FORK_TIMEOUT_MS', 10000, { min: 1 }),
   });
 }
 

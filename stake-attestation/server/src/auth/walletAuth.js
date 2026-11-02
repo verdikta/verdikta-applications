@@ -11,8 +11,9 @@
 //   <the action's statement> This is not a transaction: it costs nothing and moves no funds.
 //
 //   Version: 1
-//   Action: <action>                  read-scan, pin-dispute
-//   Resource: <resource>              listing:<the listing's 32-hex id>, claim:<the claim's id>
+//   Action: <action>                  read-scan, pin-dispute, list-version
+//   Resource: <resource>              listing:<the listing's 32-hex id>, claim:<the claim's id>,
+//                                     list-request:<the request's SHA-256>
 //   Address: <EIP-55 address>         the address that must sign
 //   Nonce: <32 lowercase hex>         16 random bytes, issued once
 //   Issued At: <UTC, ISO 8601, whole seconds, Z>
@@ -32,6 +33,8 @@ export const AUTH_ACTIONS = Object.freeze({
   'read-scan': 'Sign to read the baseline scan of a listing you made.',
   // node P6b: the maker's dispute statement, pinned by the server (src/dispute/statement.js)
   'pin-dispute': 'Sign to pin the statement of a dispute you file against a verdict on your listing.',
+  // node P9: the listing request names this wallet as its maker (src/listing/service.js)
+  'list-version': 'Sign to ask the site to build and sign a listing of a version, with this wallet as its maker.',
 });
 
 const ACTION = /^[a-z][a-z-]{0,31}$/;

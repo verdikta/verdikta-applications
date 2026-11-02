@@ -3,9 +3,9 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { CLAIM_STATES, DISPUTE_RESULTS, OUTCOMES } from '../chain/abi.js';
 import { WalletError, chainReader, stakeAttestation } from '../chain/wallet.js';
 import { ApiError, disputeStatementChallenge, pinDisputeStatement } from '../lib/api.js';
-import { disputeOffer, pendingRound, releaseOffer } from '../lib/claimActions.js';
+import { disputeOffer, pendingRound, releaseOffer, roundOver } from '../lib/claimActions.js';
 import { errorReason, formatEth, formatTime } from '../lib/format.js';
-import { POLL_MS, WATCH_MS, watchUntil } from '../lib/poll.js';
+import { POLL_MS, READ_TIMEOUT_MS, WATCH_MS, watchUntil, withTimeout } from '../lib/poll.js';
 import { MAX_STATEMENT_BYTES, checkStatement, cidMatches, statementSha256 } from '../lib/statement.js';
 import { STRINGS, fill } from '../strings.js';
 import { Facts } from './Facts.jsx';
@@ -53,9 +53,13 @@ async function makerWallet(w, maker) {
   return { wallet };
 }
 
+const disputeOf = (d) => DISPUTE_RESULTS[Number(d.claim.dispute)];
+
 /**
- * Watches a pending round (design §11, erratum E4): reads the claim every POLL_MS until it leaves
- * `kind`'s state, for up to WATCH_MS, then says plainly that it stopped and offers a re-check.
+ * Watches a pending round (design §11, erratum E4): reads the claim every POLL_MS until the round
+ * is over (roundOver), for up to WATCH_MS, then says plainly that it stopped and offers a
+ * re-check. `at` is when the round was requested, 0 when the page's read does not show it yet (a
+ * dispute this page sent, read from before it was mined).
  */
 function PendingWatch({ claimId, kind, at, onData }) {
   const [timedOut, setTimedOut] = useState(false);
@@ -68,7 +72,7 @@ function PendingWatch({ claimId, kind, at, onData }) {
     setTimedOut(false);
     watchUntil({
       read: () => readClaim(claimId),
-      done: (d) => d !== null && pendingRound(d.state) !== kind,
+      done: (d) => d !== null && roundOver(kind, { state: d.state, dispute: disputeOf(d) }),
       onValue: (d) => { if (d && !ac.signal.aborted) latest.current(d); },
       signal: ac.signal,
     }).then((r) => { if (r.outcome === 'timeout') setTimedOut(true); });
@@ -78,7 +82,13 @@ function PendingWatch({ claimId, kind, at, onData }) {
   const minutes = WATCH_MS / 60000;
   return (
     <section className="claim" data-testid="pending" aria-live="polite">
-      {!timedOut && <p>{fill(kind === 'dispute' ? P.dispute : P.claim, { time: formatTime(at), seconds: POLL_MS / 1000, minutes })}</p>}
+      {!timedOut && (
+        <p>
+          {at === 0n
+            ? fill(P.disputeSent, { seconds: POLL_MS / 1000, minutes })
+            : fill(kind === 'dispute' ? P.dispute : P.claim, { time: formatTime(at), seconds: POLL_MS / 1000, minutes })}
+        </p>
+      )}
       {!timedOut && <p className="hint">{P.typical}</p>}
       {timedOut && (
         <>
@@ -114,7 +124,7 @@ function ReleasePanel({ claimId, data, onData, onSent }) {
       }
       const tx = await stakeAttestation(signer).release(BigInt(claimId));
       await tx.wait();
-      onSent({ release: { tx: tx.hash } });
+      onSent({ release: { tx: tx.hash } }, provider);
     } catch (err) {
       setError(fill(C.failed, { reason: walletMessage(err) }));
     } finally {
@@ -220,7 +230,7 @@ function DisputePanel({ claimId, data, onData, onSent }) {
       setStage('sending');
       const tx = await stakeAttestation(signer).dispute(BigInt(claimId), cid, { value: s.live });
       await tx.wait();
-      onSent({ dispute: { tx: tx.hash, cid } });
+      onSent({ dispute: { tx: tx.hash, cid } }, provider);
     } catch (err) {
       if (err instanceof ApiError) setError(fill(D.pinFailed, { reason: err.body?.error ?? err.message }));
       else setError(fill(C.failed, { reason: walletMessage(err) }));
@@ -278,25 +288,31 @@ export function ClaimPage({ claimId }) {
   const [attempt, setAttempt] = useState(0);
   // what this page sent and saw mined: { release: { tx }, dispute: { tx, cid } }
   const [sent, setSent] = useState({});
+  const [refreshFailed, setRefreshFailed] = useState(null);
   const onData = useCallback((data) => setLoaded({ data }), []);
+  /** Whether a read shows every transaction this page sent (a later read may, when the first did not). */
+  const showsSent = (d) => Boolean(d) && (!sent.release || d.claim.released) && (!sent.dispute || disputeOf(d) !== 'None');
   /**
-   * After a mined transaction the claim is read again, a few times if the chain does not answer,
-   * so a dispute's round is watched; if it still cannot be read, the page offers to read again,
-   * and what was sent stays on the page either way.
+   * After a mined transaction the claim is read again through the wallet that sent it, each read
+   * bounded, until a read shows the transaction (released, or a dispute recorded), a few times at
+   * most; then the page says it could not and offers to read again. What was sent stays on the
+   * page, and a dispute's round is watched from the moment it is mined whatever these reads do.
    */
-  const onSent = useCallback(async (s) => {
+  const onSent = useCallback(async (s, provider) => {
     setSent((x) => ({ ...x, ...s }));
-    let reason = null;
+    setRefreshFailed(null);
+    const shows = (d) => (s.release ? d.claim.released : disputeOf(d) !== 'None');
+    let reason = 'the chain does not show the transaction yet';
     for (let i = 0; i < AFTER_TX_READS; i += 1) {
       if (i) await new Promise((r) => setTimeout(r, AFTER_TX_WAIT_MS));
       try {
-        const d = await readClaim(claimId);
-        if (d) return setLoaded({ data: d });
+        const d = await withTimeout(readClaim(claimId, provider), READ_TIMEOUT_MS);
+        if (d && shows(d)) return setLoaded({ data: d });
       } catch (err) {
         reason = err instanceof WalletError ? walletMessage(err) : errorReason(err);
       }
     }
-    return setLoaded({ failed: reason ?? 'no answer' });
+    return setRefreshFailed(reason);
   }, [claimId]);
 
   useEffect(() => {
@@ -306,6 +322,7 @@ export function ClaimPage({ claimId }) {
     readClaim(claimId)
       .then((d) => { if (live) setLoaded(d ? { data: d } : { missing: true }); })
       .catch((err) => { if (live) setLoaded({ failed: err instanceof WalletError ? walletMessage(err) : errorReason(err) }); });
+    setRefreshFailed(null);
     return () => { live = false; };
   }, [claimId, attempt]);
 
@@ -323,6 +340,12 @@ export function ClaimPage({ claimId }) {
           <p data-testid="statement-cid" className="mono">{fill(STRINGS.dispute.pinned, { cid: sent.dispute.cid })}</p>
           <p data-testid="disputed" className="ok">{fill(STRINGS.dispute.done, { tx: sent.dispute.tx })}</p>
         </section>
+      )}
+      {refreshFailed && !showsSent(loaded?.data) && (
+        <>
+          <p className="error">{fill(C.readFailed, { reason: refreshFailed })}</p>
+          <button type="button" onClick={() => setAttempt((a) => a + 1)}>{C.retry}</button>
+        </>
       )}
     </>
   );
@@ -345,7 +368,8 @@ export function ClaimPage({ claimId }) {
   const listingId = String(c.listingId);
   const judged = c.judgedAt !== 0n;
   const dispute = DISPUTE_RESULTS[Number(c.dispute)];
-  const pending = pendingRound(d.state);
+  // a dispute this page sent is watched even while the page's last read predates it
+  const pending = pendingRound(d.state) ?? (sent.dispute && dispute === 'None' ? 'dispute' : null);
   return (
     <>
       {header}
@@ -372,7 +396,7 @@ export function ClaimPage({ claimId }) {
         </p>
       </section>
       {notices}
-      {pending && <PendingWatch claimId={claimId} kind={pending} at={pending === 'dispute' ? c.disputedAt : c.revealedAt} onData={onData} />}
+      {pending && <PendingWatch key={pending} claimId={claimId} kind={pending} at={pending === 'dispute' ? c.disputedAt : c.revealedAt} onData={onData} />}
       {!sent.release && <ReleasePanel claimId={claimId} data={d} onData={onData} onSent={onSent} />}
       {!sent.dispute && <DisputePanel claimId={claimId} data={d} onData={onData} onSent={onSent} />}
     </>

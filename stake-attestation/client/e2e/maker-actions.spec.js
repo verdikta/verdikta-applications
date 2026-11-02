@@ -144,6 +144,28 @@ test.describe('maker actions', () => {
     expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);
   });
 
+  test('dispute: the round is watched from the moment it is mined, even when the wallet cannot read the claim after it', async ({ page, stack, chain }) => {
+    test.setTimeout(180_000);
+    const { listingId } = await chain.openListing({ recipient: key.recipient, stake: { fixWindowDays: 0, disclosureGraceHours: 0 } });
+    const claim = await chain.revealedClaim({ listingId, recipient: key.recipient, label: 'refresh fails' });
+    await chain.verdict(claim.claimId, 'HIGH');
+    await chain.judged(claim.claimId);
+    const fee = await chain.sa.disputeFee(listingId);
+
+    await openClaim(page, stack, claim.claimId);
+    await field(page, fill(STRINGS.dispute.statement, { max: 4096 })).fill('The class is overstated.');
+    // every read through the wallet after the dispute is sent fails, as a flaky RPC would
+    await page.evaluate(() => window.__testWallet.failCallsAfterNextSend(1000));
+    await page.getByRole('button', { name: fill(STRINGS.dispute.button, { fee: formatEth(fee) }) }).click();
+    await expect(page.getByTestId('disputed')).toBeVisible({ timeout: 60_000 });
+    expect(Number((await chain.sa.getClaim(claim.claimId)).state)).toBe(4); // Disputed
+    // the watch runs on the site's reader all the same, and finds the panel's verdict
+    await expect(page.getByTestId('pending')).toBeVisible();
+    await chain.verdict(claim.claimId, 'HIGH', { dispute: true });
+    await expect(page.getByTestId('claim-dispute')).toHaveText(STRINGS.enums.disputes.Held, { timeout: 40_000 });
+    await expect(page.getByTestId('pending')).toHaveCount(0);
+  });
+
   test('dispute: a statement over 4,096 bytes is refused before the wallet is asked anything', async ({ page, stack, chain }) => {
     const { listingId } = await chain.openListing({ recipient: key.recipient, stake: { fixWindowDays: 0, disclosureGraceHours: 0 } });
     const claim = await chain.revealedClaim({ listingId, recipient: key.recipient, label: 'too long' });

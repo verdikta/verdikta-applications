@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { POLL_MS, READ_TIMEOUT_MS, WATCH_MS, watchUntil } from '../src/lib/poll.js';
+import { POLL_MS, READ_TIMEOUT_MS, WATCH_MS, watchUntil, withTimeout } from '../src/lib/poll.js';
 
 /** A fake clock: sleep moves it, nothing waits. */
 function clock() {
@@ -32,13 +32,15 @@ test('it reads until the value is no longer pending', async () => {
   assert.deepEqual(c.sleeps, [POLL_MS, POLL_MS, POLL_MS]);
 });
 
-test('it stops after 15 minutes, with a last read at the end, and says it timed out', async () => {
+test('it stops at 15 minutes, starts no read then, and says it timed out', async () => {
   const c = clock();
   let reads = 0;
-  const r = await watchUntil({ read: async () => { reads += 1; return 'Revealed'; }, done: () => false, now: c.now, sleep: c.sleep });
+  const at = [];
+  const r = await watchUntil({ read: async () => { reads += 1; at.push(c.now() - 1_000_000); return 'Revealed'; }, done: () => false, now: c.now, sleep: c.sleep });
   assert.deepEqual(r, { outcome: 'timeout', value: 'Revealed' });
-  assert.equal(c.sleeps.reduce((a, b) => a + b, 0), WATCH_MS, 'it waits exactly the watch, the last sleep cut short');
-  assert.equal(reads, Math.ceil(WATCH_MS / POLL_MS) + 1);
+  assert.equal(c.sleeps.reduce((a, b) => a + b, 0), WATCH_MS, 'it waits exactly the watch');
+  assert.equal(reads, WATCH_MS / POLL_MS);
+  assert.ok(at.every((t) => t < WATCH_MS));
 });
 
 test('a read that fails is reported and the watch goes on', async () => {
@@ -115,9 +117,9 @@ test('a read pending at the 15-minute mark does not hold the watch open past it'
   });
   assert.equal(r.outcome, 'timeout');
   assert.equal(r.value, 'Revealed');
-  // two reads answer; the reads after them hang, each given at most READ_TIMEOUT_MS, until the watch is over
-  assert.ok(c.now() - 1_000_000 >= WATCH_MS);
-  assert.ok(c.now() - 1_000_000 <= WATCH_MS + READ_TIMEOUT_MS);
+  // two reads answer; the reads after them hang, each given at most READ_TIMEOUT_MS and never
+  // past the watch: it ends at 15 minutes exactly
+  assert.equal(c.now() - 1_000_000, WATCH_MS);
 });
 
 test('a slow read counts as failed and the watch reads again', async () => {
@@ -136,6 +138,21 @@ test('a slow read counts as failed and the watch reads again', async () => {
   assert.equal(errors.length, 1);
   assert.match(errors[0], /longer than/);
   assert.deepEqual(c.sleeps, [POLL_MS]);
+});
+
+test('a read is never given more than the time left', async () => {
+  const c = clock();
+  const limits = [];
+  const deadline = (ms, s) => { limits.push(ms); return fakeDeadline(c)(ms, s); };
+  const r = await watchUntil({ read: never, done: () => true, now: c.now, sleep: c.sleep, deadline, maxMs: 42_000 });
+  assert.equal(r.outcome, 'timeout');
+  assert.deepEqual(limits, [READ_TIMEOUT_MS, 42_000 - READ_TIMEOUT_MS - POLL_MS]);
+  assert.equal(c.now() - 1_000_000, 42_000);
+});
+
+test('withTimeout rejects a promise that does not answer in time and passes one that does', async () => {
+  await assert.rejects(withTimeout(never(), 10, 'the claim read'), /the claim read took longer than 10 ms/);
+  assert.equal(await withTimeout(Promise.resolve(7), 1000), 7);
 });
 
 test('an abort ends the watch while a read is pending', async () => {

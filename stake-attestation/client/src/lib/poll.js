@@ -33,11 +33,11 @@ const aborted = (signal) => new Promise((resolve) => {
 
 /**
  * Calls `read` now and every `intervalMs` until `done(value)`, or until `maxMs` has passed since
- * the start, the last read falling at maxMs. The limit holds while a read is pending too: each
- * read gets at most `readTimeoutMs`, and no more than the time left (or, for the last read, one
- * interval); a read that runs out counts as a failed read, and one still pending when the watch's
- * time is up ends it, its late answer ignored. An abort ends the watch at once. A read that
- * throws or times out is passed to `onError` and the watch goes on.
+ * the start. The limit holds while a read is pending too: each read gets at most
+ * `readTimeoutMs` and never more than the time left; a read that runs out counts as a failed
+ * read, one still pending when the watch's time is up ends it (its late answer ignored), and no
+ * read starts once the time is up. An abort ends the watch at once. A read that throws or times
+ * out is passed to `onError` and the watch goes on.
  *
  * @template T
  * @param {object} o
@@ -72,12 +72,13 @@ export async function watchUntil({
   for (;;) {
     if (signal?.aborted) return { outcome: 'aborted' };
     const left = start + maxMs - now();
+    if (left <= 0) return { outcome: 'timeout', value: last };
     const timer = new AbortController();
     let got;
     try {
       got = await Promise.race([
         Promise.resolve().then(read).then((value) => ({ value })),
-        deadline(Math.min(readTimeoutMs, Math.max(left, intervalMs)), timer.signal).then(() => TIMED_OUT),
+        deadline(Math.min(readTimeoutMs, left), timer.signal).then(() => TIMED_OUT),
         stop,
       ]);
     } catch (err) {
@@ -97,7 +98,13 @@ export async function watchUntil({
       if (done(got.value)) return { outcome: 'done', value: got.value };
     }
     const remaining = start + maxMs - now();
-    if (remaining <= 0) return { outcome: 'timeout', value: last };
-    await Promise.race([sleep(Math.min(intervalMs, remaining)), stop]);
+    if (remaining > 0) await Promise.race([sleep(Math.min(intervalMs, remaining)), stop]);
   }
+}
+
+/** `promise`, or a rejection once `ms` have passed without an answer. */
+export function withTimeout(promise, ms, what = 'the read') {
+  let t;
+  const late = new Promise((_, reject) => { t = setTimeout(() => reject(new Error(`${what} took longer than ${ms} ms`)), ms); });
+  return Promise.race([promise, late]).finally(() => clearTimeout(t));
 }

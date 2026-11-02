@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { disputeOffer, pendingRound, releaseOffer } from '../src/lib/claimActions.js';
+import { disputeOffer, pendingRound, releaseOffer, roundOver } from '../src/lib/claimActions.js';
 
 const NOW = 1_800_000_000n;
 
@@ -44,4 +44,16 @@ test('pending: a revealed claim waits for its round, a disputed one for the disp
   assert.equal(pendingRound('Revealed'), 'claim');
   assert.equal(pendingRound('Disputed'), 'dispute');
   for (const s of ['Committed', 'Revealable', 'Judged', 'Settled', 'Expired', 'RoundFailed']) assert.equal(pendingRound(s), null, s);
+});
+
+test('roundOver: a claim round ends when the claim leaves Revealed; a dispute round only once the dispute is recorded and over', () => {
+  assert.equal(roundOver('claim', { state: 'Revealed', dispute: 'None' }), false);
+  for (const s of ['Judged', 'RoundFailed', 'Settled']) assert.equal(roundOver('claim', { state: s, dispute: 'None' }), true, s);
+  // a read from before the dispute was mined: still Judged and undisputed, so the watch goes on
+  assert.equal(roundOver('dispute', { state: 'Judged', dispute: 'None' }), false);
+  assert.equal(roundOver('dispute', { state: 'Disputed', dispute: 'Pending' }), false);
+  for (const d of ['Held', 'Overturned', 'NoVerdict']) {
+    assert.equal(roundOver('dispute', { state: 'Judged', dispute: d }), true, d);
+    assert.equal(roundOver('dispute', { state: 'Settled', dispute: d }), true, d);
+  }
 });

@@ -607,6 +607,7 @@ export const STRINGS = {
   pending: {
     claim: 'The claim was revealed at {time} and its evaluation requested. Waiting for the arbiters\' verdict: this page reads the chain every {seconds} seconds for up to {minutes} minutes.',
     dispute: 'The claim was disputed at {time} and the dispute panel\'s evaluation requested. Waiting for its verdict: this page reads the chain every {seconds} seconds for up to {minutes} minutes.',
+    disputeSent: 'The dispute was sent. Waiting for the dispute panel\'s verdict: this page reads the chain every {seconds} seconds for up to {minutes} minutes.',
     typical: 'A verdict usually takes 3 to 6 minutes, and the site\'s keeper records it on-chain.',
     timedOut:
       'No verdict was recorded in {minutes} minutes of checking. The arbiters may still be working, or the round may ' +

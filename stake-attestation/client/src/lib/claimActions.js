@@ -38,3 +38,15 @@ export function pendingRound(state) {
   if (state === 'Disputed') return 'dispute';
   return null;
 }
+
+/**
+ * Whether the round a watch of `kind` waits for is over in this read of the claim: a claim round
+ * once the claim left Revealed; a dispute round once the claim records a dispute (a read that
+ * does not yet show the maker's dispute is stale, not over) and has left Disputed.
+ * @param {'claim'|'dispute'} kind
+ * @param {{ state: string, dispute: string }} claim - the lens's state name and DisputeResult name
+ */
+export function roundOver(kind, { state, dispute }) {
+  if (kind === 'claim') return state !== 'Revealed';
+  return dispute !== 'None' && state !== 'Disputed';
+}

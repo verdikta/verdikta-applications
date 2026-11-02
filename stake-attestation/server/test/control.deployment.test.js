@@ -387,6 +387,98 @@ describe('a contract listing\'s control fact', () => {
     }
   });
 
+  test('a proof sent while an older one is being re-checked stands: the older check\'s answer does not overwrite it', async () => {
+    const { address, contract } = await deploy('MockOwned', deployer, owner.address);
+    const l = await contractListing(address);
+    let t = Date.now();
+    let hold = null;
+    let held = 0;
+    const gated = new Proxy(ctx.provider, {
+      get(target, prop) {
+        if (prop === 'getCode' && hold) {
+          const gate = hold;
+          hold = null;
+          return async (...a) => { held += 1; await gate; return target.getCode(...a); };
+        }
+        const v = target[prop];
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    const local = siteFor(ctx, { provider: gated, now: () => t, env: { SA_CONTROL_RECHECK_MS: '1000', SA_MAX_STALENESS_SECONDS: '100000000' } });
+    try {
+      await local.sync();
+      const message = (await local.record(l.artifactHash)).control[l.listingId].deployment.message;
+      await local.submitControlProof(l.artifactHash, String(l.listingId), { signer: owner.address, signature: await owner.signMessage(message) });
+
+      // ownership moves on, and the re-check of the old proof is under way
+      await (await contract.connect(owner).transferOwnership(stranger.address)).wait();
+      let release;
+      hold = new Promise((r) => { release = r; });
+      t += 1001;
+      await local.sync();
+      while (!held) await new Promise((r) => setTimeout(r, 10));
+
+      // the new owner's proof arrives and counts
+      const c = await local.submitControlProof(l.artifactHash, String(l.listingId), { signer: stranger.address, signature: await stranger.signMessage(message) });
+      assert.equal(c.controls, 'yes');
+      assert.equal(c.deployment.signer, stranger.address);
+
+      // the old proof's check ends with "no": it answers for the old proof, not this one
+      release();
+      await local.controlIdle();
+      const after = (await local.record(l.artifactHash)).control[l.listingId];
+      assert.equal(after.controls, 'yes');
+      assert.equal(after.deployment.signer, stranger.address);
+    } finally {
+      local.close();
+    }
+  });
+
+  test('a check past its deadline keeps its place until its read settles, and reads no more: slow checks cannot pile up', async () => {
+    const { address } = await deploy('MockOwned', deployer, owner.address);
+    const l = await contractListing(address);
+    let release;
+    let armed = false;
+    const gate = new Promise((r) => { release = r; });
+    let started = 0;
+    let readsAfterGate = 0;
+    const slow = new Proxy(ctx.provider, {
+      get(target, prop) {
+        if (armed && prop === 'getCode') return async () => { started += 1; await gate; return '0x60'; };
+        if (armed && ['call', 'getTransaction', 'getTransactionReceipt'].includes(prop)) return async () => { readsAfterGate += 1; return '0x'; };
+        const v = target[prop];
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    const local = siteFor(ctx, { provider: slow, env: { SA_CONTROL_RPC_TIMEOUT_MS: '100' } });
+    try {
+      await local.sync();
+      const message = (await local.record(l.artifactHash)).control[l.listingId].deployment.message;
+      const body = { signer: owner.address, signature: await owner.signMessage(message) };
+      const id = String(l.listingId);
+      armed = true;
+
+      // four checks reach the hung read and are given up at the deadline, one batch after another
+      for (let i = 0; i < 4; i += 1) {
+        await assert.rejects(local.submitControlProof(l.artifactHash, id, body), (err) => err.code === 'CHAIN_UNAVAILABLE');
+      }
+      assert.equal(started, 4);
+      // they are still running: no fifth starts, whatever the deadline said
+      await assert.rejects(local.submitControlProof(l.artifactHash, id, body), (err) => err.code === 'TOO_MANY_PROOF_CHECKS' && err.status === 429);
+      assert.equal(started, 4);
+
+      // their reads settle: none reads on, and the places are free again
+      armed = false;
+      release();
+      await new Promise((r) => setTimeout(r, 50));
+      assert.equal(readsAfterGate, 0);
+      const c = await local.submitControlProof(l.artifactHash, id, body);
+      assert.equal(c.controls, 'yes');
+    } finally {
+      local.close();
+    }
+  });
+
   test('proof checks are bounded: a few at a time, the rest are told to come back', async () => {
     const { address } = await deploy('MockOwned', deployer, owner.address);
     const l = await contractListing(address);

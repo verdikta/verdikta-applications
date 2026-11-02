@@ -15,7 +15,8 @@
 // the one blob, by its id. A host that ignores the filters sends more; the byte cap holds either way.
 //
 // Every step is bounded: one deadline over the whole check, a byte cap on what the fetches write,
-// a much smaller one on the proof's blob. git runs as builder/src/git.js runs it (no system or
+// a much smaller one on the proof's blob, and each is enforced on git's whole process group, since
+// its transport and pack processes write on after git itself is killed. git runs as builder/src/git.js runs it (no system or
 // global config, no hooks, no credential helper or prompt, https only), and here also with no
 // redirects, no background maintenance and no lazy fetch of a missing object: a partial repository
 // would otherwise fetch by id the very commit whose absence the check looks for.
@@ -108,15 +109,15 @@ export async function checkRepositoryControl({ repo, baseCommit, mirror = null, 
   };
   /** A read of what was fetched; a timeout is never read as an answer. */
   const read = async (dir, args, opts = {}) => {
-    const r = await run('git', [...localOptions, '--git-dir', dir, ...args], { env, timeoutMs: left(), ...opts });
+    const r = await run('git', [...localOptions, '--git-dir', dir, ...args], { env, timeoutMs: left(), group: true, ...opts });
     if (r.timedOut) throw expired();
     return r;
   };
 
   async function init(dir) {
-    must(await run('git', [...remoteOptions, 'init', '--quiet', '--bare', '--template=', ...(baseCommit.length === 64 ? ['--object-format=sha256'] : []), dir], { env, timeoutMs: left() }), 'git init');
+    must(await run('git', [...remoteOptions, 'init', '--quiet', '--bare', '--template=', ...(baseCommit.length === 64 ? ['--object-format=sha256'] : []), dir], { env, timeoutMs: left(), group: true }), 'git init');
     // a named remote: git keeps a partial fetch's promise only for one (a bare path is refused)
-    must(await run('git', [...remoteOptions, '-C', dir, 'config', 'remote.origin.url', source], { env, timeoutMs: left() }), 'git config');
+    must(await run('git', [...remoteOptions, '-C', dir, 'config', 'remote.origin.url', source], { env, timeoutMs: left(), group: true }), 'git config');
   }
 
   /** A fetch stopped by the deadline or the byte cap. @returns the result, or 'too-large' */
@@ -131,7 +132,7 @@ export async function checkRepositoryControl({ repo, baseCommit, mirror = null, 
     }, WATCH_MS);
     let r;
     try {
-      r = await run('git', [...remoteOptions, ...options, '-C', dir, 'fetch', '--quiet', '--no-tags', '--no-write-fetch-head', ...args], { env, timeoutMs: left(), signal: stop.signal });
+      r = await run('git', [...remoteOptions, ...options, '-C', dir, 'fetch', '--quiet', '--no-tags', '--no-write-fetch-head', ...args], { env, timeoutMs: left(), signal: stop.signal, group: true });
     } finally {
       clearInterval(watch);
     }

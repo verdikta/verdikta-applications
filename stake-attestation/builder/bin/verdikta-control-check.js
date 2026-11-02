@@ -7,9 +7,18 @@
 //                          [--timeout-ms <n>] [--max-bytes <n>]
 //
 // Exit status: 0 an answer, 1 no answer (the code on stderr: REPO_FETCH_FAILED, REPO_TOO_LARGE,
-// REPO_CHECK_TIMEOUT), 64 usage error.
+// REPO_CHECK_TIMEOUT), 64 usage error. git runs in process groups of its own, so a process told to
+// stop takes them with it.
 import { BuilderError } from '../src/errors.js';
 import { checkRepositoryControl } from '../src/controlCheck.js';
+import { killRunningGroups } from '../src/proc.js';
+
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    killRunningGroups();
+    process.exit(1);
+  });
+}
 
 const NAME = 'verdikta-control-check';
 const DEFAULTS = Object.freeze({ 'timeout-ms': 120000, 'max-bytes': 256 * 1024 * 1024 });

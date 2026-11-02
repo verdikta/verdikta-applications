@@ -6,7 +6,7 @@
 // branches and tags tells it apart.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 import { CONTROL_FILE, CONTROL_FILE_MAX_BYTES, checkRepositoryControl, fetchSource } from '../../src/controlCheck.js';
 import { fetchListedCommit } from '../../src/git.js';
+import { run } from '../../src/proc.js';
 
 const BIN = fileURLToPath(new URL('../../bin/verdikta-control-check.js', import.meta.url));
 const REPO = 'https://github.com/acme/vault';
@@ -241,6 +242,112 @@ test('bounded in size: a repository over the byte cap stops the fetch and leaves
   const left = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('vab-control-') && !before.has(n));
   assert.deepEqual(left, []);
   done(r);
+});
+
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code !== 'ESRCH';
+  }
+};
+
+async function gone(pid) {
+  for (let i = 0; i < 100 && alive(pid); i += 1) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(alive(pid), false, `process ${pid} is still running`);
+}
+
+async function readPid(file) {
+  for (let i = 0; i < 200; i += 1) {
+    if (fs.existsSync(file) && fs.readFileSync(file, 'utf8').trim()) return Number(fs.readFileSync(file, 'utf8').trim());
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error(`${file} never appeared`);
+}
+
+/**
+ * A git whose fetch leaves a descendant writing into the repository for as long as it lives, as
+ * git's transport and pack processes do: it holds git's pipes and outlives a kill of git alone.
+ * Every other command is the real git. Returns the PATH that finds it and the descendant's pid file.
+ */
+function gitThatKeepsWriting(root) {
+  const dir = path.join(root, 'fake-bin');
+  fs.mkdirSync(dir);
+  const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  const pidFile = path.join(root, 'descendant.pid');
+  const script = [
+    '#!/bin/sh',
+    'case " $* " in',
+    '  *" fetch "*)',
+    '    prev=""; dir=""',
+    '    for a in "$@"; do [ "$prev" = "-C" ] && dir="$a"; prev="$a"; done',
+    '    ( while :; do dd if=/dev/zero bs=65536 count=1 >> "$dir/grow" 2>/dev/null; sleep 0.02; done ) &',
+    `    echo $! > "${pidFile}"`,
+    '    wait',
+    '    ;;',
+    `  *) exec "${realGit}" "$@" ;;`,
+    'esac',
+    '',
+  ].join('\n');
+  fs.writeFileSync(path.join(dir, 'git'), script, { mode: 0o755 });
+  return { path: `${dir}:${process.env.PATH}`, pidFile };
+}
+
+test('the byte cap stops git\'s whole process tree: a descendant still writing dies with it, and the check does not wait for it', async () => {
+  const r = makeRepo();
+  const fake = gitThatKeepsWriting(r.root);
+  const saved = process.env.PATH;
+  process.env.PATH = fake.path;
+  try {
+    const started = Date.now();
+    await assert.rejects(check(r, r.listed, { maxBytes: 256 * 1024 }), (err) => err.code === 'REPO_TOO_LARGE');
+    assert.ok(Date.now() - started < 10000, 'it did not wait for the descendant');
+    await gone(await readPid(fake.pidFile));
+  } finally {
+    process.env.PATH = saved;
+    done(r);
+  }
+});
+
+test('the deadline stops git\'s whole process tree too', async () => {
+  const r = makeRepo();
+  const fake = gitThatKeepsWriting(r.root);
+  const saved = process.env.PATH;
+  process.env.PATH = fake.path;
+  try {
+    await assert.rejects(check(r, r.listed, { timeoutMs: 1000, maxBytes: 1024 * 1024 * 1024 }), (err) => err.code === 'REPO_CHECK_TIMEOUT');
+    await gone(await readPid(fake.pidFile));
+  } finally {
+    process.env.PATH = saved;
+    done(r);
+  }
+});
+
+test('the command line told to stop takes git\'s process tree with it', async () => {
+  const r = makeRepo();
+  const fake = gitThatKeepsWriting(r.root);
+  const child = spawn(process.execPath, [BIN, '--repo', REPO, '--commit', r.listed, '--mirror', r.mirror, '--timeout-ms', '60000', '--max-bytes', String(1024 * 1024 * 1024)], { env: { PATH: fake.path, HOME: r.root }, stdio: 'ignore' });
+  const pid = await readPid(fake.pidFile);
+  assert.equal(alive(pid), true);
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  child.kill('SIGTERM');
+  await exited;
+  await gone(pid);
+  done(r);
+});
+
+test('run with group: a stop reaches what the child started, and a child that ends takes the rest of its group', async () => {
+  const stop = new AbortController();
+  const stopped = run('sh', ['-c', 'sleep 60 & echo $!; wait'], { env: { PATH: process.env.PATH }, timeoutMs: 60000, signal: stop.signal, group: true });
+  await new Promise((r) => setTimeout(r, 200));
+  stop.abort();
+  const out = await stopped;
+  await gone(Number(out.stdout.toString().trim()));
+
+  // the leader exits with a member left holding no pipe of ours
+  const ended = await run('sh', ['-c', 'sleep 60 >/dev/null 2>&1 </dev/null & echo $!'], { env: { PATH: process.env.PATH }, timeoutMs: 60000, group: true });
+  await gone(Number(ended.stdout.toString().trim()));
 });
 
 test('bounded in time: a check past its deadline stops with an error, never an answer', async () => {

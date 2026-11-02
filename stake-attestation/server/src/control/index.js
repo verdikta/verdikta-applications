@@ -6,13 +6,16 @@
 // check, the fact is "no". Answers are stored by what they are about (facts.js), so a reorg that
 // moves a listing id cannot hand one listing's "yes" to another, and they are read with the state
 // snapshot of the answer that shows them.
-import { Network, JsonRpcProvider } from 'ethers';
+import { FetchRequest, JsonRpcProvider, Network } from 'ethers';
 
 import { CONTROL_REASONS, canonicalAddress, controlFact, controlMessage, deploymentKey, parseControlFile, repoKey, repoUrlCheck } from './facts.js';
 import { ChainReadError, checkDeploymentProof } from './deployment.js';
 
 const MAX_CHECKS_PER_RUN = 4;
 const MAX_PROOFS_PER_RUN = 8;
+// Proof checks whose reads have not all settled, sent or background alike. A check past its deadline
+// keeps its place until its read in flight settles (ethers gives one up within its own limit), and
+// makes no further read.
 const MAX_PROOF_CHECKS_AT_ONCE = 4;
 const RETRY_MAX_MS = 6 * 3600_000;
 const EMPTY = Object.freeze({ repositories: Object.freeze({}), deployments: Object.freeze({}) });
@@ -57,20 +60,46 @@ export function createControl({ config, store, provider, env, now, logger, check
     let p = null;
     if (typeof url === 'string' && url.trim()) {
       const network = Network.from(chainId);
-      p = new JsonRpcProvider(url.trim(), network, { staticNetwork: network, cacheTimeout: -1 });
+      const request = new FetchRequest(url.trim());
+      request.timeout = cfg.rpcTimeoutMs;
+      p = new JsonRpcProvider(request, network, { staticNetwork: network, cacheTimeout: -1 });
     }
     otherChains.set(chainId, p);
     return p;
   };
   const providerFor = chainProviderFor ?? defaultProviderFor;
 
-  const withTimeout = (promise) => {
+  /** The reads a check makes, none of them once it has expired. */
+  function guardedReads(chain) {
+    let expired = false;
+    const read = (fn) => {
+      if (expired) throw new ChainReadError('CHAIN_UNAVAILABLE', 'past its deadline');
+      return fn();
+    };
+    return {
+      expire: () => { expired = true; },
+      reads: {
+        send: (method, params) => read(() => chain.send(method, params)),
+        getBlockNumber: () => read(() => chain.getBlockNumber()),
+        getCode: (address, blockTag) => read(() => chain.getCode(address, blockTag)),
+        call: (tx) => read(() => chain.call(tx)),
+        getTransaction: (hash) => read(() => chain.getTransaction(hash)),
+        getTransactionReceipt: (hash) => read(() => chain.getTransactionReceipt(hash)),
+      },
+    };
+  }
+
+  /** `work`'s answer, or at the deadline CHAIN_UNAVAILABLE, with `expire` called so it reads no more. */
+  function withDeadline(work, expire) {
     let timer;
     const limit = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new ChainReadError('CHAIN_UNAVAILABLE', `no answer in ${cfg.rpcTimeoutMs} ms`)), cfg.rpcTimeoutMs);
+      timer = setTimeout(() => {
+        expire();
+        reject(new ChainReadError('CHAIN_UNAVAILABLE', `no answer in ${cfg.rpcTimeoutMs} ms`));
+      }, cfg.rpcTimeoutMs);
     });
-    return Promise.race([promise, limit]).finally(() => clearTimeout(timer));
-  };
+    return Promise.race([work, limit]).finally(() => clearTimeout(timer));
+  }
 
   /** One proof, on the listing's chain: its answer, with a reason a fact can state. */
   async function proofAnswer(listing, proof) {
@@ -80,8 +109,10 @@ export function createControl({ config, store, provider, env, now, logger, check
     if (!chain) return { ok: false, reason: 'CHAIN_NOT_CHECKED', transient: false };
     try {
       const message = controlMessage({ maker, artifactHash, chainId: artifact.chainId, address: artifact.address, stakeChainId: stake.chainId, stakeContract: stake.address });
-      const r = await withTimeout(checkDeploymentProof(chain, { message, chainId: artifact.chainId, address: artifact.address, ...proof }));
-      return { ...r, transient: false };
+      const { reads, expire } = guardedReads(chain);
+      proofChecks += 1;
+      const work = checkDeploymentProof(reads, { message, chainId: artifact.chainId, address: artifact.address, ...proof }).finally(() => { proofChecks -= 1; });
+      return { ...await withDeadline(work, expire), transient: false };
     } catch (err) {
       if (err instanceof ChainReadError && err.code === 'CHAIN_NOT_CHECKED') return { ok: false, reason: 'CHAIN_NOT_CHECKED', transient: false };
       logger.warn(`control: chain ${artifact.chainId} could not be read (${err?.code ?? err?.name ?? 'error'})`);
@@ -96,10 +127,11 @@ export function createControl({ config, store, provider, env, now, logger, check
     });
   }
 
-  function putDeployment(key, entry) {
+  /** `update` of the proof on file, if that is still the proof `rev` says: one sent meanwhile stands. */
+  function updateDeployment(key, rev, update) {
     store.transact((s) => {
-      s.control ??= { repositories: {}, deployments: {} };
-      s.control.deployments[key] = entry;
+      const current = s.control?.deployments?.[key];
+      if (current && current.rev === rev) s.control.deployments[key] = update(current);
     });
   }
 
@@ -128,12 +160,11 @@ export function createControl({ config, store, provider, env, now, logger, check
     const r = await proofAnswer(listing, { signer: entry.signer, signature: entry.signature, creationTx: entry.creationTx ?? null });
     if (!store.locked) return;
     const t = now();
-    if (r.ok) {
-      putDeployment(key, { ...entry, ok: true, reason: null, role: r.role, contractSigner: r.contractSigner, block: r.block, attempts: 0, checkedAt: t, nextAt: t + cfg.recheckMs });
-    } else {
-      const attempts = r.transient ? (entry.attempts ?? 0) + 1 : 0;
-      putDeployment(key, { ...entry, ok: false, reason: r.reason, role: null, contractSigner: null, block: null, attempts, checkedAt: t, nextAt: t + (r.transient ? backoff(attempts) : cfg.recheckMs) });
-    }
+    updateDeployment(key, entry.rev, (current) => {
+      if (r.ok) return { ...current, ok: true, reason: null, role: r.role, contractSigner: r.contractSigner, block: r.block, attempts: 0, checkedAt: t, nextAt: t + cfg.recheckMs };
+      const attempts = r.transient ? (current.attempts ?? 0) + 1 : 0;
+      return { ...current, ok: false, reason: r.reason, role: null, contractSigner: null, block: null, attempts, checkedAt: t, nextAt: t + (r.transient ? backoff(attempts) : cfg.recheckMs) };
+    });
   }
 
   return {
@@ -172,7 +203,7 @@ export function createControl({ config, store, provider, env, now, logger, check
         if (entry && entry.nextAt <= t && !l.rolled && !l.closed && !proofs.some((p) => p.key === key)) proofs.push({ key, listing: l, entry });
       }
       for (const item of proofs.slice(0, MAX_PROOFS_PER_RUN)) {
-        if (!store.locked) return;
+        if (!store.locked || proofChecks >= MAX_PROOF_CHECKS_AT_ONCE) return; // the next run takes it
         await checkProof(item);
       }
     },
@@ -198,19 +229,18 @@ export function createControl({ config, store, provider, env, now, logger, check
       const creationTx = o.creationTx ?? null;
       if (creationTx !== null && (typeof creationTx !== 'string' || !TX_HASH.test(creationTx))) throw new ControlError('BAD_CREATION_TX', 'creationTx is the deployment\'s transaction hash, 0x and 64 lowercase hex digits', 400);
       if (proofChecks >= MAX_PROOF_CHECKS_AT_ONCE) throw new ControlError('TOO_MANY_PROOF_CHECKS', 'too many proofs are being checked; try again in a moment', 429);
-      proofChecks += 1;
-      let r;
-      try {
-        r = await proofAnswer(listing, { signer, signature: o.signature, creationTx });
-      } finally {
-        proofChecks -= 1;
-      }
+      const r = await proofAnswer(listing, { signer, signature: o.signature, creationTx });
       if (!r.ok) {
         const status = r.reason === 'CHAIN_NOT_CHECKED' || r.reason === 'CHAIN_UNAVAILABLE' ? 503 : 422;
         throw new ControlError(r.reason, CONTROL_REASONS[r.reason], status);
       }
       const t = now();
-      putDeployment(deploymentKey(listing.artifactHash, listing.maker), { signer, signature: o.signature, creationTx, ok: true, reason: null, role: r.role, contractSigner: r.contractSigner, block: r.block, attempts: 0, checkedAt: t, nextAt: t + cfg.recheckMs });
+      const key = deploymentKey(listing.artifactHash, listing.maker);
+      store.transact((s) => {
+        s.control ??= { repositories: {}, deployments: {} };
+        const rev = (s.control.deployments[key]?.rev ?? 0) + 1;
+        s.control.deployments[key] = { rev, signer, signature: o.signature, creationTx, ok: true, reason: null, role: r.role, contractSigner: r.contractSigner, block: r.block, attempts: 0, checkedAt: t, nextAt: t + cfg.recheckMs };
+      });
     },
 
     listingIdValid: (id) => typeof id === 'string' && LISTING_ID.test(id),

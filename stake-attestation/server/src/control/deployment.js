@@ -57,7 +57,8 @@ async function signatureCheck(provider, { message, signer, signature, blockTag }
 }
 
 /**
- * @param {import('ethers').JsonRpcApiProvider} provider - on the listing's chain
+ * @param {{ send: Function, getBlockNumber: Function, getCode: Function, call: Function, getTransaction: Function, getTransactionReceipt: Function }} provider -
+ *   the listing's chain
  * @param {object} o
  * @param {string} o.message - controlMessage's text for the listing
  * @param {number|bigint} o.chainId - the listing's chain

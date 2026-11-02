@@ -11,8 +11,8 @@
 //   <the action's statement> This is not a transaction: it costs nothing and moves no funds.
 //
 //   Version: 1
-//   Action: <action>                  read-scan
-//   Resource: <resource>              listing:<the listing's 32-hex id>
+//   Action: <action>                  read-scan, pin-dispute
+//   Resource: <resource>              listing:<the listing's 32-hex id>, claim:<the claim's id>
 //   Address: <EIP-55 address>         the address that must sign
 //   Nonce: <32 lowercase hex>         16 random bytes, issued once
 //   Issued At: <UTC, ISO 8601, whole seconds, Z>
@@ -30,6 +30,8 @@ const NOT_A_TRANSACTION = 'This is not a transaction: it costs nothing and moves
 /** The actions a challenge may name, each with the statement the wallet shows. */
 export const AUTH_ACTIONS = Object.freeze({
   'read-scan': 'Sign to read the baseline scan of a listing you made.',
+  // node P6b: the maker's dispute statement, pinned by the server (src/dispute/statement.js)
+  'pin-dispute': 'Sign to pin the statement of a dispute you file against a verdict on your listing.',
 });
 
 const ACTION = /^[a-z][a-z-]{0,31}$/;

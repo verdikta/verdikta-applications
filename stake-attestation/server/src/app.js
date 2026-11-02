@@ -3,6 +3,7 @@ import express from 'express';
 
 import { AuthError, createWalletAuth } from './auth/walletAuth.js';
 import { createCliBuilder } from './builder/cli.js';
+import { disputeStatementRouter } from './dispute/statement.js';
 import { loadConfig } from './config.js';
 import { RequestError } from './listing/request.js';
 import { QueueFullError, createListingService } from './listing/service.js';
@@ -46,6 +47,15 @@ const consoleLogger = {
  *                            signature, 403 signed by another wallet than the maker's, 404, 409
  *                            the scan has not finished (or will not run)
  *
+ * and the maker's dispute statement, pinned for dispute() (node P6b; src/dispute/statement.js),
+ * with a deployment configured; the same wallet sign-in, read at the latest block:
+ *
+ *   POST /api/claims/:claimId/dispute-statement/challenge   {} -> 200 the challenge for the
+ *                            claim's listing's maker; 404 no such claim, 409 not disputable now
+ *   POST /api/claims/:claimId/dispute-statement             { nonce, signature, statement } ->
+ *                            200 { claimId, cid, bytes, sha256 }; 400/413 the statement (at most
+ *                            4,096 bytes of UTF-8), 401/403 the signature, 409, 502 PIN_FAILED
+ *
  * and, with a deployment configured (node P4b1; src/site/), everything at the indexed block:
  *
  *   GET  /api/feed                     the listings that take commits (design §15)
@@ -67,11 +77,12 @@ const consoleLogger = {
  */
 export function createApp({ config = loadConfig(process.env), builder, scanner, pinner, auth, logger = consoleLogger, site = null } = {}) {
   const cli = builder && scanner ? null : createCliBuilder(config.builder, { logger });
+  const pins = pinner ?? createPinner(config.pinning);
   const listings = createListingService({
     config,
     builder: builder ?? cli,
     scanner: scanner ?? cli,
-    pinner: pinner ?? createPinner(config.pinning),
+    pinner: pins,
     logger,
   });
   const signIn = auth ?? createWalletAuth({ ttlMs: config.auth.challengeTtlMs });
@@ -148,6 +159,8 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
     return res.json({ id: access.id, maker: access.maker, status: access.scan.status, scan: access.result.doc, error: access.result.error });
   }));
 
+  // the maker's dispute statement, pinned for dispute() (node P6b; src/dispute/statement.js)
+  app.use(disputeStatementRouter({ site, pinner: pins, auth: signIn, logger }));
 
   // the chain side: every answer is of the indexer's block
   const chainRoute = (handler) => async (req, res) => {

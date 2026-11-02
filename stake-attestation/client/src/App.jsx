@@ -2,18 +2,30 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { connectWallet, hasWallet, stillConnected } from './chain/wallet.js';
 import { CheckPage } from './components/CheckPage.jsx';
+import { ClaimPage } from './components/ClaimPage.jsx';
+import { FeedPage } from './components/FeedPage.jsx';
 import { FundPage } from './components/FundPage.jsx';
 import { ListingPage } from './components/ListingPage.jsx';
+import { RecordPage } from './components/RecordPage.jsx';
 import { WalletContext, useWalletContext, walletMessage } from './components/wallet.js';
 import { STRINGS, fill } from './strings.js';
 
-// #/            home
-// #/list        the maker's listing flow
-// #/check[/id]  decrypt-and-check a disclosed claim
-// #/fund[/id]   a listing's own page: its terms and, while it is Listed, the opening fund()
-// Nothing private ever goes in the hash: only a claim or listing id.
+// #/              home
+// #/feed          the listing feed
+// #/record[/hash] an artifact hash's record, its badge and what a record means
+// #/list          the maker's listing flow
+// #/check[/id]    decrypt-and-check a disclosed claim
+// #/claim[/id]    a claim: its state, a pending round watched, release and dispute
+// #/fund[/id]     a listing's own page: its terms, the opening fund() while it is Listed, its
+//                 claims and record, roll forward
+// Nothing private ever goes in the hash: only an artifact hash, a claim or a listing id.
 function route() {
   const h = window.location.hash.replace(/^#/, '') || '/';
+  if (h === '/feed') return { page: 'feed' };
+  const record = /^\/record(?:\/([^/]{1,80}))?$/.exec(h);
+  if (record) return { page: 'record', hash: record[1] ?? null };
+  const claim = /^\/claim(?:\/(\d{1,20}))?$/.exec(h);
+  if (claim) return { page: 'claim', claimId: claim[1] ?? null };
   const check = /^\/check(?:\/(\d{1,20}))?$/.exec(h);
   if (check) return { page: 'check', claimId: check[1] ?? null };
   const fund = /^\/fund(?:\/(\d{1,20}))?$/.exec(h);
@@ -103,14 +115,20 @@ export default function App() {
         <h1>{STRINGS.appName}</h1>
         <nav>
           <a href="#/">{STRINGS.nav.home}</a>
+          <a href="#/feed">{STRINGS.nav.feed}</a>
+          <a href="#/record">{STRINGS.nav.record}</a>
           <a href="#/list">{STRINGS.nav.list}</a>
+          <a href="#/claim">{STRINGS.nav.claim}</a>
           <a href="#/check">{STRINGS.nav.check}</a>
         </nav>
         <WalletBar />
       </header>
       <main className="page">
         {r.page === 'home' && <Home />}
+        {r.page === 'feed' && <FeedPage />}
+        {r.page === 'record' && <RecordPage key={r.hash ?? 'none'} hash={r.hash} />}
         {r.page === 'list' && <ListingPage />}
+        {r.page === 'claim' && <ClaimPage key={r.claimId ?? 'none'} claimId={r.claimId} />}
         {/* Keyed by id only: a wallet switching networks mid-action must not unmount the action.
             What the pages read was checked to be the site's chain (chainReader), so it stays valid. */}
         {r.page === 'check' && <CheckPage key={r.claimId ?? 'none'} claimId={r.claimId} />}

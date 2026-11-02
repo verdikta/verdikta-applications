@@ -6,6 +6,7 @@ import { errorReason, formatEth, formatTime } from '../lib/format.js';
 import { STRINGS, fill } from '../strings.js';
 import { TextField } from './Field.jsx';
 import { FundListing } from './FundListing.jsx';
+import { ListingMore } from './ListingExtras.jsx';
 
 const F = STRINGS.fund;
 const CLASSES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
@@ -20,6 +21,7 @@ async function readListing(listingId) {
 /**
  * A listing's own page (#/fund/<id>): its stored terms and, while it is Listed, the opening
  * fund(). It is where a maker who left the listing flow between list() and fund() comes back to.
+ * Once it opened: its claims, its record and, while it is Open or Depleted, roll forward.
  */
 export function FundPage({ listingId }) {
   const headingId = useId();
@@ -88,6 +90,7 @@ export function FundPage({ listingId }) {
       {state === 'Listed' && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} onOpened={() => setOpenedHere(true)} />}
       {state === 'Open' && <p className="ok">{fill(F.alreadyOpen, { id: listingId, until: formatTime(l.fundedUntil) })}</p>}
       {state !== 'Listed' && state !== 'Open' && <p className="hint">{fill(F.notFundable, { id: listingId, state: F.states[state] ?? state })}</p>}
+      <ListingMore listingId={listingId} listing={l} />
     </>
   );
 }

@@ -4,8 +4,11 @@ export const STRINGS = {
   appName: 'Verdikta stake attestation',
   nav: {
     home: 'Home',
+    feed: 'Feed',
+    record: 'Records',
     list: 'List a version',
     check: 'Check a disclosure',
+    claim: 'Claims',
   },
   home: {
     lead:
@@ -15,7 +18,9 @@ export const STRINGS = {
     recordNote:
       'The record states what was staked and what the arbiters found. It is not a guarantee ' +
       'that the code has no bugs.',
-    status: 'Makers can list a version and check the disclosures hunters send them. Record pages and the feed come next.',
+    status:
+      'The feed lists every stake that takes claims, and each artifact hash has a public record. Makers list a ' +
+      'version, check the disclosures hunters send them, and release, roll forward or dispute from a claim or listing page.',
   },
   wallet: {
     connect: 'Connect wallet',
@@ -199,7 +204,7 @@ export const STRINGS = {
     failed: 'The transaction failed: {reason}',
   },
   fund: {
-    title: 'Fund a listing',
+    title: 'Listing',
     intro: 'A listing opens once its maker funds it: the listing fee for the first 30 days and an escrow of at least the CRITICAL award.',
     listingId: 'Listing id',
     load: 'Load the listing',
@@ -281,6 +286,373 @@ export const STRINGS = {
     alreadyFlagged: 'This claim is already flagged.',
     graceOver: 'The disclosure grace ended at {time}: a flag is no longer possible.',
     notMaker: 'Only the listing\'s maker ({maker}) can flag it; your wallet is {account}.',
+  },
+  // the site's server: the feed, the record mirror and the badge (node P4b1)
+  site: {
+    asOf: 'As of block {block}, {time}.',
+    stale: 'The site\'s indexer is behind the chain ({reason}): events after block {block} may be missing.',
+    unavailable: 'The site\'s server could not answer: {reason}',
+    notConfigured: 'The site\'s server has no deployment configured.',
+    retry: 'Read again',
+  },
+  // the contract's enums, as the record mirror names them
+  enums: {
+    listingStates: { Listed: 'listed, not funded', Open: 'open', Depleted: 'depleted', Rolled: 'rolled forward', Closed: 'closed' },
+    claimStates: {
+      Committed: 'committed',
+      Revealable: 'revealable',
+      Revealed: 'revealed, evaluation requested',
+      Judged: 'judged',
+      Disputed: 'disputed, dispute evaluation requested',
+      Settled: 'settled',
+      Expired: 'expired',
+      RoundFailed: 'round ended without a verdict',
+    },
+    disputes: {
+      None: 'not disputed',
+      Pending: 'dispute pending',
+      Held: 'disputed; the dispute panel gave the same outcome',
+      Overturned: 'disputed; the dispute panel replaced the outcome',
+      NoVerdict: 'disputed; the dispute round ended without a verdict and the first verdict stands',
+    },
+    kinds: { Repo: 'repository', Contract: 'deployed contract' },
+  },
+  labels: {
+    scanned: 'scanned',
+    staked: 'staked',
+    'under-staked': 'under-staked',
+    invited: 'invited',
+    lapsed: 'lapsed',
+    noPrice: 'no stake label: no ETH/USD price to compare the top award with the declared value at risk',
+    placeholders:
+      'The badge floor and the under-staked share behind these labels are placeholder values until the program sets them at launch.',
+  },
+  feed: {
+    title: 'Feed',
+    intro:
+      'Every listing that takes claims now: open, its listing fee paid, and its escrow at least its top award. ' +
+      'Newest first.',
+    loading: 'Reading the feed…',
+    empty: 'No listing takes claims at this block.',
+    entry: 'Listing {id}',
+    artifact: 'Artifact',
+    repoAt: '{repo} at {commit}',
+    contractAt: '{address} on chain {chainId} ({repo} at {commit})',
+    labels: 'Labels',
+    awards: 'Award table',
+    lowest: 'Lowest class counted',
+    bond: 'Hunter bond',
+    windows: 'Windows',
+    windowsLine: 'fix {fix} days, dispute {dispute} hours, disclosure grace {grace} hours, reveal {reveal} days, disclose within {disclose} minutes of the commit',
+    opened: 'Opened',
+    fundedUntil: 'Listing fee paid until',
+    daysOpen: 'Days open',
+    claims: 'Claims so far',
+    escrow: 'Escrow remaining',
+    owed: 'Owed to hunters',
+    valueAtRisk: 'Declared value at risk',
+    image: 'Environment image',
+    scope: 'Scope',
+    scopeLine: 'in: {include}; out: {exclude}',
+    noArchive: 'not read from the listing archive ({reason})',
+    record: 'Record of this hash',
+    listing: 'Listing page',
+  },
+  record: {
+    title: 'Record',
+    intro:
+      'The record of one artifact hash: every listing of it that opened, what was staked, what was judged, ' +
+      'what was found, what fixed it and what was found later.',
+    hash: 'Artifact hash (0x and 64 hex digits)',
+    load: 'Show the record',
+    loading: 'Reading the record…',
+    badHash: 'An artifact hash is 0x and 64 hex digits.',
+    notFound: 'No listing of artifact hash {hash} has opened, so it has no record.',
+    artifact: 'Artifact',
+    artifactHash: 'Artifact hash',
+    kind: 'Kind',
+    repo: 'Repository',
+    commit: 'Commit',
+    address: 'Contract address',
+    chainId: 'Chain id',
+    listingCount: 'Listings that opened',
+    active: 'Listings not closed',
+    stakes: 'Stakes',
+    listing: 'Listing {id}',
+    maker: 'Maker',
+    state: 'State',
+    labels: 'Labels',
+    awards: 'Award table',
+    awardsLine: 'LOW {LOW}, MEDIUM {MEDIUM}, HIGH {HIGH}, CRITICAL {CRITICAL} ETH',
+    lowest: 'Lowest class counted',
+    bond: 'Hunter bond',
+    escrow: 'Escrow remaining',
+    owed: 'Owed to hunters',
+    valueAtRisk: 'Declared value at risk',
+    notDeclared: 'not declared',
+    usd: '{usd} USD',
+    shareLabel: 'Top award in USD',
+    share: '{usd} USD at the block\'s ETH/USD price, {share}% of the declared value at risk',
+    listedAt: 'Listed',
+    openedAt: 'Opened',
+    fundedUntil: 'Listing fee paid until',
+    rolledAt: 'Rolled forward',
+    closedAt: 'Closed',
+    daysOpen: 'Days open, to its roll forward or close',
+    eth: '{eth} ETH',
+    none: 'none',
+    listingPage: 'Listing page',
+    history: 'History',
+    claims: 'Claims committed',
+    judged: 'Claims judged',
+    pending: 'Claims pending',
+    verdicts: 'Verdicts by outcome',
+    verdictLine: '{outcome}: {count}',
+    duplicates: 'Duplicates',
+    released: 'Claims the maker released early',
+    undisclosed: 'Commits expired undisclosed',
+    unrevealed: 'Commits expired unrevealed',
+    noVerdict: 'Claims expired after rounds without a verdict',
+    disputes: 'Disputes filed',
+    disputeResults: 'Dispute outcomes',
+    disputeLine: 'same outcome {held}, outcome replaced {overturned}, no verdict {noVerdict}',
+    daysSince: 'Days since the last valid finding',
+    noValidFinding: 'no valid finding recorded',
+    findings: 'Valid findings',
+    noFindings: 'No valid finding is recorded.',
+    findingClaim: 'Claim',
+    findingClass: 'Class',
+    findingListing: 'Listing',
+    findingHunter: 'Hunter',
+    findingPaid: 'Paid',
+    findingOwed: 'Owed',
+    findingRevealed: 'Public from',
+    findingSettled: 'Settled',
+    findingDispute: 'Dispute',
+    findingArchive: 'Archive',
+    lineage: 'Lineage',
+    predecessor: 'Predecessor, the version this one fixed',
+    successor: 'Successor, the version that fixed this one',
+    lineageLine: 'listing {id}, artifact hash {hash}',
+    later: 'Found later',
+    laterIntro: 'Claims made against this hash after a stake on it rolled forward or closed. They carry no award.',
+    lateClaims: 'Late claims made',
+    lateVerdicts: 'Late claims judged, by outcome',
+    lateExpired: 'Late claims expired',
+    noLaterFindings: 'No later finding is recorded.',
+    flags: 'Bad-disclosure flags',
+    flagsIntro:
+      'A flag is the maker\'s statement that a disclosed copy did not decrypt or did not match its commitment. ' +
+      'It is a claim, not a verdict: a flagged claim judged other than INVALID passed the arbiters\' disclosure check.',
+    noFlags: 'No bad-disclosure flag is recorded.',
+    flagClaim: 'Claim',
+    flagListing: 'Listing',
+    flagDisclosed: 'Disclosed',
+    flagState: 'Claim state',
+    flagJudged: 'Verdict',
+    flagLate: 'late claim',
+    notJudged: 'not judged',
+    judgedLine: '{outcome}, {time}',
+  },
+  badge: {
+    title: 'Badge',
+    intro: 'The badge shows the live state of the stake on this hash. It changes with the record and ends when the stake ends.',
+    alt: 'verdikta stake',
+    markdown: 'Markdown',
+    html: 'HTML',
+  },
+  // design §4.1, §4.2 and §15: what a record does and does not mean
+  diligence: {
+    title: 'What a record says, and what it does not',
+    facts:
+      'A stake record is live on-chain state bound to an artifact hash. It states facts: what was staked, for ' +
+      'how long, what was judged, what was found, what was fixed and what was found later. It is an attestation ' +
+      'of stake and judgement, never a security claim.',
+    badge:
+      'The badge is the live state. Funds stay escrowed and the stake stays open on the hash while the badge is ' +
+      'shown; closing the stake ends the badge and leaves the history. A quiet period attests only that nobody ' +
+      'who looked valued a finding below the award.',
+    amount:
+      'The reader interprets the amount. The record shows the stake, the bond and, when the maker declared one, ' +
+      'the stake as a share of the value at risk. Tiers are not named; the site labels each listing:',
+    labelList: [
+      'scanned: the top award is below the program floor, and the badge says nothing beyond "scanned";',
+      'staked: the top award is at or above the floor;',
+      'under-staked: the maker declared a value at risk, and the top award is below a program-set share of it;',
+      'invited: only allow-listed hunters may claim, the weaker attestation it is.',
+    ],
+    readingsIntro: 'An unclaimed stake means one of five things:',
+    readings: [
+      'no finding exists at the staked class;',
+      'nobody competent looked;',
+      'someone found one worth more than the award and is holding it;',
+      'the jury wrongly rejected a real finding;',
+      'or the rules made a real finding unclaimable.',
+    ],
+    readingsAfter:
+      'Which reading applies depends on the award against two quantities: the cost of looking and the value of holding.',
+    looking:
+      'The cost of looking is near zero for small artifacts. Any listing the feed announces will be scanned, so ' +
+      'small stakes do get attention, of the kind the maker could buy for a dollar of inference. The record is ' +
+      'therefore defined by severity: the maker names the lowest class that counts, and the badge reads "no ' +
+      'finding at or above that class while staked".',
+    holding:
+      'The value of holding is the hold problem. A $1,000 stake on a contract securing $10M tells every hunter ' +
+      'that any real finding is worth more unheld. A maker may declare the value at risk; the record then shows ' +
+      'the ratio and labels the listing under-staked when the stake is below the program\'s share of it.',
+    tableTitle: 'What an unclaimed period attests, by top award',
+    tableHead: { award: 'Top award', who: 'Who looks', attests: 'What an unclaimed period attests', label: 'Label' },
+    table: [
+      { award: 'about $10 to $50', who: 'Scanners, if a feed exists', attests: 'Nothing a scanner reaches; the maker could run that', label: 'scanned' },
+      { award: 'about $100 to $500', who: 'Scanners plus agent passes over small artifacts (skills, MCP servers, small contracts)', attests: 'No medium-or-worse issue an agent pass finds at that budget', label: 'staked' },
+      { award: 'about $1k to $10k', who: 'Serious agent audits, some humans', attests: 'No High found while staked', label: 'staked; the dispute window applies' },
+      { award: '$50k or more', who: 'Human specialists', attests: 'The only level credible for value-bearing code', label: 'staked' },
+    ],
+    feed:
+      'The feed lists every listing that takes claims: hash, image, scope, award table, bond, windows, days open, ' +
+      'claims so far and escrow remaining. The baseline scan, funded by the listing fee, is the floor of attention ' +
+      'every record gets.',
+    hunters:
+      'Autonomous hunters are welcome. A claim is judged in minutes once its fix window ends, awards are paid ' +
+      'on-chain, and a bond, not a ban, prices invalid claims.',
+  },
+  claim: {
+    title: 'Claim',
+    intro:
+      'One hunter\'s claim against a listing, as the chain holds it now, and what the listing\'s maker can do with it.',
+    claimId: 'Claim id',
+    load: 'Show the claim',
+    loading: 'Reading the claim…',
+    notFound: 'There is no claim {id}.',
+    readFailed: 'The claim could not be read: {reason}',
+    retry: 'Read again',
+    summary: 'Claim {id} on listing {listingId}',
+    state: 'State',
+    late: 'Late claim',
+    hunter: 'Hunter',
+    committedAt: 'Committed',
+    disclosedAt: 'Disclosed',
+    fixWindowEnd: 'Fix window ends',
+    released: 'Released by the maker',
+    revealedAt: 'Revealed',
+    judgedAt: 'Judged',
+    outcome: 'Outcome',
+    dispute: 'Dispute',
+    settledAt: 'Settled',
+    paid: 'Paid',
+    yes: 'yes',
+    no: 'no',
+    notYet: 'not yet',
+    listingPage: 'Listing {id}',
+    checkPage: 'Check the disclosure',
+    notMaker: 'Only the listing\'s maker ({maker}) can do this; your wallet is {account}.',
+    failed: 'The transaction failed: {reason}',
+    changed: 'Nothing was sent: the claim changed on-chain since this page read it. It has been read again.',
+  },
+  release: {
+    title: 'Release',
+    intro:
+      'Releasing waives the rest of the fix window for this claim: the hunter may reveal it now and the arbiters ' +
+      'judge it. The record counts the claim as released.',
+    until: 'The fix window ends at {time}.',
+    button: 'Release the claim',
+    sending: 'Sending release()…',
+    done: 'Released (transaction {tx}). The claim is revealable now.',
+  },
+  roll: {
+    title: 'Roll forward',
+    intro:
+      'Roll the stake forward to a fixed version: your own listing of the same repository at another commit, ' +
+      'already open. This listing then takes no new claims, every claim disclosed on it is revealable at once, ' +
+      'and the record links the two versions.',
+    loading: 'Looking for your open listings of this repository…',
+    pick: 'Successor listing',
+    option: 'Listing {id}: {commit}, escrow {escrow} ETH, open since {opened}',
+    none: 'You have no open listing of this repository to roll to. List and fund the fixed version first, then come back here.',
+    noIdentity: 'This listing\'s repository is not in the site\'s record yet, so its successors cannot be found here.',
+    feedFailed: 'The open listings could not be read: {reason}',
+    button: 'Roll forward to listing {id}',
+    sending: 'Sending rollForward()…',
+    done: 'Rolled forward to listing {id} (transaction {tx}).',
+    changed: 'Nothing was sent: listing {id} is no longer an open listing of yours without a predecessor, or this listing can no longer roll forward. Reload the page.',
+  },
+  dispute: {
+    title: 'Dispute',
+    intro:
+      'You may dispute a valid verdict once, until {deadline}. A stronger panel re-judges the claim, and its ' +
+      'outcome is final. A dispute that turns the outcome INVALID forfeits the hunter\'s bond to you; one that ' +
+      'holds is recorded as a failed dispute.',
+    prepay: 'Escalation prepay: {fee} ETH, the dispute panel\'s maxTotalFee read from the chain. What the oracles do not spend comes back to you.',
+    prepayLoading: 'Reading the escalation prepay…',
+    statement: 'Your statement (at most {max} bytes of UTF-8 text)',
+    statementHint:
+      'It is pinned to IPFS and its CID goes on-chain with the dispute; the dispute panel reads it as your argument. ' +
+      'Your wallet signs a sign-in message first, which costs nothing and moves no funds.',
+    bytes: '{bytes} of {max} bytes',
+    empty: 'Write the statement before you dispute.',
+    tooLong: 'The statement is {bytes} bytes; the most is {max}.',
+    malformed: 'The statement holds characters that are not valid UTF-8 text.',
+    button: 'Pin the statement and dispute, paying {fee} ETH',
+    checking: 'Reading the claim and the escalation prepay again…',
+    signing: 'Waiting for your wallet to sign in…',
+    pinning: 'Pinning the statement…',
+    sending: 'Sending dispute()…',
+    pinned: 'Statement pinned: {cid}',
+    cidMismatch: 'Nothing was sent: the server answered CID {cid}, which is not the CID of your statement.',
+    feeRose: 'Nothing was sent: the escalation prepay is now {fee} ETH. The figure above is updated; dispute again to pay it.',
+    closed: 'Nothing was sent: this claim can no longer be disputed.',
+    pinFailed: 'The statement could not be pinned: {reason}',
+    done: 'Disputed (transaction {tx}). The dispute panel\'s evaluation is requested.',
+  },
+  pending: {
+    claim: 'The claim was revealed at {time} and its evaluation requested. Waiting for the arbiters\' verdict: this page reads the chain every {seconds} seconds for up to {minutes} minutes.',
+    dispute: 'The claim was disputed at {time} and the dispute panel\'s evaluation requested. Waiting for its verdict: this page reads the chain every {seconds} seconds for up to {minutes} minutes.',
+    disputeSent: 'The dispute was sent. Waiting for the dispute panel\'s verdict: this page reads the chain every {seconds} seconds for up to {minutes} minutes.',
+    typical: 'A verdict usually takes 3 to 6 minutes, and the site\'s keeper records it on-chain.',
+    timedOut:
+      'No verdict was recorded in {minutes} minutes of checking. The arbiters may still be working, or the round may ' +
+      'end without a verdict; either is recorded on-chain when it happens. This page has stopped checking.',
+    recheck: 'Check again',
+  },
+  // the baseline scan's findings (design §8.3; the server's P4b2 routes): the maker's alone
+  scan: {
+    title: 'Baseline scan',
+    intro:
+      'Before the listing opens, the site scans the staked version: Semgrep with Verdikta\'s pinned rules and a ' +
+      'secret scan over the in-scope paths, and, where the site runs it, one inexpensive agent pass. The findings ' +
+      'are for you only. The scan is not a judgement and pays nobody: nothing from it enters the listing archive, ' +
+      'the record, the jury\'s inputs or your known issues unless you put it there.',
+    status: 'Baseline scan: {status}',
+    statuses: {
+      pending: 'waiting for the build',
+      running: 'running',
+      done: 'finished',
+      error: 'stopped with an error',
+      skipped: 'not run: the listing request named no maker wallet',
+      not_run: 'not run: the listing was not issued',
+    },
+    noWallet: 'No wallet was connected when you validated, so the listing request named no maker and the server runs no baseline scan for it.',
+    read: 'Sign in with your wallet to read the scan',
+    signing: 'Waiting for your wallet to sign in…',
+    reading: 'Reading the scan…',
+    notMaker: 'The scan is for the wallet the listing request named ({maker}); your wallet is {account}.',
+    failed: 'The scan could not be read: {reason}',
+    docStatus: 'Scan status: {status}',
+    stopped: 'The scan stopped: {code}: {detail}',
+    tools: 'Tools',
+    tool: '{name}: {status}',
+    files: 'Files in scope: {inScope}; in scope but not read: {skipped}',
+    findings: 'Findings: {count}',
+    none: 'The scan lists no finding.',
+    toolFinding: '{tool} {rule} ({severity}), {path} line {line}: {message}',
+    agentFinding: 'agent pass, {class}: {title} ({paths}). How it would be demonstrated: {demonstration}',
+  },
+  claims: {
+    title: 'Claims on this listing',
+    none: 'No claim has been committed on this listing.',
+    line: 'Claim {id}',
+    unavailable: 'The claims could not be listed: {reason}. A claim can still be opened by its id.',
+    record: 'Record of this version',
   },
 };
 

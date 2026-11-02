@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { hasWallet } from '../chain/wallet.js';
 import { ApiError, followListing, submitListing } from '../lib/api.js';
 import { formIssues, initialForm, listMismatches, toListingRequest } from '../lib/draft.js';
 import { disclosureKeyBytes32 } from '../lib/disclosure.js';
@@ -8,16 +9,21 @@ import { STRINGS, fill } from '../strings.js';
 import { DisclosureKeyPanel } from './DisclosureKeyPanel.jsx';
 import { ListAndFund } from './ListAndFund.jsx';
 import { ListingForm, fieldLabel } from './ListingForm.jsx';
+import { ScanPanel } from './ScanPanel.jsx';
 import { ValidationReport } from './ValidationReport.jsx';
+import { useWalletContext } from './wallet.js';
 
 const L = STRINGS.listing;
 
 /**
  * The maker's listing flow (design §7.1, §8.1): the form, then the server's validation (its
  * issues when it refuses the request; otherwise the build's status and validation report), then
- * list() and fund() through the wallet once the listing is ready.
+ * list() and fund() through the wallet once the listing is ready. The request names the
+ * connected wallet as the maker, the wallet the baseline scan's findings go to (design §8.3);
+ * without a wallet it names none and the server runs no scan.
  */
 export function ListingPage() {
+  const w = useWalletContext();
   const [form, setForm] = useState(initialForm);
   const [keyReady, setKeyReady] = useState(false);
   const [phase, setPhase] = useState('edit'); // edit | sending | following
@@ -43,7 +49,16 @@ export function ListingPage() {
     setServerIssues(null);
     setNotice(null);
     let first;
-    const body = toListingRequest(form);
+    let maker = null;
+    if (hasWallet()) {
+      try {
+        maker = (await w.ensure()).account;
+      } catch {
+        // no account: the request names no maker, and the server runs no baseline scan
+      }
+    }
+    const form0 = toListingRequest(form);
+    const body = maker ? { ...form0, maker } : form0;
     try {
       first = await submitListing(body);
     } catch (err) {
@@ -85,6 +100,7 @@ export function ListingPage() {
         {view.error && <p className="error">{fill(L.jobError, view.error)}</p>}
         {notice && <p className="error" role="alert">{notice}</p>}
         <ValidationReport report={view.validationReport} devTrust={view.devTrust} />
+        <ScanPanel view={view} />
         {view.status === 'ready' && view.list && <ListAndFund view={view} sent={sent} />}
         {done && <button type="button" className="secondary" onClick={again}>{L.again}</button>}
       </>

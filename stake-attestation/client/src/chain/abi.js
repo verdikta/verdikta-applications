@@ -32,9 +32,22 @@ export const STAKE_ATTESTATION_ABI = Object.freeze([
   'function claimCount() view returns (uint256)',
   'function activeListingOf(bytes32, address) view returns (uint256)',
   'function flagBadDisclosure(uint256 claimId)',
+  // the maker's actions on a claim or a listing (node P6b) and the lens views that time them
+  'function release(uint256 claimId)',
+  'function rollForward(uint256 listingId, uint256 successorListingId)',
+  'function dispute(uint256 claimId, string statementCid) payable',
+  'function claimState(uint256 claimId) view returns (uint8)',
+  'function claimTimes(uint256 claimId) view returns (uint256 discloseDeadline, uint256 revealableAt, uint256 revealDeadline)',
+  'function disputeFee(uint256 listingId) view returns (uint256)',
+  'function disputeDeadline(uint256 claimId) view returns (uint256)',
   'event Listed(uint256 indexed listingId, address indexed maker, bytes32 indexed artifactHash, uint8 kind, string repo, string baseCommit, uint64 chainId, address artifactAddress, string listingCid, string disputeCid)',
   'event Opened(uint256 indexed listingId, bytes32 indexed artifactHash, uint256 escrowWei, uint64 fundedUntil)',
 ]);
 
-/** StakeAttestation.ListingState, in declaration order. */
+/** StakeAttestation's enums, in declaration order (test/enums.test.js reads them from the source). */
 export const LISTING_STATES = Object.freeze(['Listed', 'Open', 'Depleted', 'Rolled', 'Closed']);
+export const CLAIM_STATES = Object.freeze(['Committed', 'Revealable', 'Revealed', 'Judged', 'Disputed', 'Settled', 'Expired', 'RoundFailed']);
+export const OUTCOMES = Object.freeze(['INVALID', 'DUPLICATE', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
+export const DISPUTE_RESULTS = Object.freeze(['None', 'Pending', 'Held', 'Overturned', 'NoVerdict']);
+/** The severity classes, LOW up: awards[] is indexed by class - LOW. */
+export const CLASSES = Object.freeze(OUTCOMES.slice(2));

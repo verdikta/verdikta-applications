@@ -16,8 +16,9 @@ the design where they differ.
 **Status:** scaffold, plus the contract's listing half, its claim lifecycle and
 settlement: finalize by polling the aggregator, the six-outcome rule, payouts,
 depletion and owed awards; the environment builder; the server's listing
-flow, indexer, keeper, feed, record mirror and badge; and the client's maker
-flows (listing, the disclosure key, decrypt-and-check). The packages below build
+flow, indexer, keeper, feed, record mirror and badge; and the client: the maker
+flows (listing, the disclosure key, decrypt-and-check, the baseline scan, release,
+roll forward, dispute), the record page with its badge, and the feed. The packages below build
 and test; the rest of the site's flows and the hunter commands arrive with the
 nodes named in the plan.
 
@@ -58,7 +59,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 |---|---|---|
 | `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
 | `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`; the baseline scan between listing and open, its findings served to the maker's wallet only (P4b2); the indexer, keeper, listing feed, record mirror, labels and badge (P4b1) over one deployment. | `npm test`, `npm run test:builder`, `npm run abi` |
-| `client/` | Vite + React site, port 5176: the maker's listing flow, the disclosure key made in the browser, and decrypt-and-check (P6a). | `npm test`, `npx playwright test` |
+| `client/` | Vite + React site, port 5176: the maker's listing flow, the disclosure key made in the browser, and decrypt-and-check (P6a); the record page, the badge embed, the feed, the maker's release, roll forward and dispute, pending evaluations watched, the baseline scan read (P6b). | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI: `check`, `commit`, `reveal`, `status`, `claim` arrive in P5. | `npm test` |
 | `shared/` | Code shared by the packages (the banned-words helper so far) and the app's repository checks. | `npm test` |
 | `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`; the baseline scan, for the maker only (P3b). The reusable workflow that runs it is `.github/workflows/stake-attestation-builder.yml`. | `npm test`, `npm run test:docker` |
@@ -412,6 +413,23 @@ download (`SA_ARCHIVE_MAX_BYTES`) and on each member read, inflated or not. Arch
 beside the indexer, one run at a time, so a slow gateway never delays a chain read; a failed
 fetch is retried after `SA_ARCHIVE_RETRY_MS`, doubling, counted from the failure.
 
+**The dispute statement** (node P6b; `server/src/dispute/statement.js`). `dispute()` takes the
+statement's CID only (erratum E2: the contract writes `verdikta-dispute: <cid>` as the request's
+second addendum line), and the browser has no pinning credentials, so the server pins it, for
+the listing's maker only, with the same wallet sign-in as the baseline scan (action
+`pin-dispute`, resource `claim:<claimId>`):
+
+| Route | |
+|---|---|
+| `POST /api/claims/:claimId/dispute-statement/challenge` | `{}` → the challenge for the claim's listing's maker; 404 `CLAIM_NOT_FOUND`, 409 `CLAIM_NOT_DISPUTABLE` |
+| `POST /api/claims/:claimId/dispute-statement` | `{ nonce, signature, statement }` → `{ claimId, cid, bytes, sha256 }`; 400 `STATEMENT_INVALID` (not a non-blank, well-formed string), 413 `STATEMENT_TOO_LONG` (over common's 4,096 bytes of UTF-8) or a body over 32 KB, 401 / 403 `NOT_THE_MAKER` as for the scan, 409, 502 `PIN_FAILED`, or 502 `PIN_CID_UNVERIFIED` when the backend answers a CID other than the statement's raw CID (CIDv1, raw, sha2-256: one block, the only form the maker's page can check) |
+
+Both read the claim at the latest block (the lens's `disputeDeadline`): only a judged valid
+outcome, undisputed and inside its dispute window, takes a statement. The statement and the claim
+are checked before the signature, so neither refusal uses the maker's challenge up. The pin goes
+to the configured backend as the listing archives do; every answer is `no-store`; without a
+deployment both answer 503 `CHAIN_NOT_CONFIGURED`.
+
 **The ABI.** The server reads the contract through `server/src/chain/abi/StakeAttestation.json`,
 onchain's merged ABI (contract plus lens), and never compiles; `npm run abi` rewrites it and a
 test fails while it differs from the contracts in `onchain/`. Its tests run the indexer, the
@@ -675,8 +693,9 @@ real contract cannot produce is not added to the mock.
 
 ## The client
 
-`client/` (node P6a) is the maker's side of the site. Routes are in the hash: `#/list`,
-`#/fund/<listingId>` and `#/check/<claimId>`; nothing private ever goes in a URL.
+`client/` (nodes P6a, P6b) is the site. Routes are in the hash: `#/feed`, `#/record/<hash>`,
+`#/list`, `#/fund/<listingId>`, `#/claim/<claimId>` and `#/check/<claimId>`; nothing private ever
+goes in a URL.
 
 - **Listing** (`#/list`): the artifact (a repository, or a deployed contract with its chain),
   scope, award table, lowest class counted, bond, windows (design §7.1's defaults: 14 days, 30
@@ -688,14 +707,48 @@ real contract cannot produce is not added to the mock.
   sends `list()` with the server's arguments and `fund()` with `feeDue()` plus the escrow
   through the maker's wallet. `list()` is sent only when those arguments carry the maker's own
   disclosure key and terms, and not when the maker already has an active listing of the
-  version (`activeListingOf`), which the page links to instead.
+  version (`activeListingOf`), which the page links to instead. The request names the connected
+  wallet as the `maker` (none without a wallet: the server then runs no scan); once the
+  baseline scan has finished, the page asks for its sign-in challenge, the wallet signs it with
+  `personal_sign`, and the findings are shown on the page to that wallet only, never stored,
+  and only while it stays the connected wallet.
 - **A listing's page** (`#/fund/<listingId>`): its stored terms and, while it is Listed, the
   opening `fund()`, so a maker who leaves between `list()` and `fund()` can come back. Just
   before sending, the listing's state and fee are read at one block through the wallet: unless
   it is still Listed with the terms the page shows, nothing is sent, and the fee passed as
   `expectedFeeWei` makes an opening fund that lands first from elsewhere revert this one.
   Reads are checked to come from `VITE_SA_CHAIN_ID` (`chainReader`), and every transaction asks
-  the wallet whether its account and chain are still the connected ones.
+  the wallet whether its account and chain are still the connected ones. Once it opened, the
+  page lists its claims (from the record mirror's events) and links to its record; while it is
+  Open or Depleted, **roll forward** offers the maker's own open listings of the same
+  repository at another commit (from the feed, each confirmed on-chain: Open, the maker's, no
+  predecessor) and sends `rollForward` after reading both listings again at one block.
+- **The record** (`#/record/<hash>`, design §4.1, §13.4): from `GET /api/records/:hash`, the
+  artifact (hash, kind, repository and commit from the Listed event), each stake (state, labels,
+  award table, lowest class counted, bond, escrow, owed, declared value at risk and the top
+  award's share of it, the times, days open, predecessor and successor), the history (claims,
+  claims judged, verdicts by outcome, duplicates, released, expired, disputes and their
+  outcomes, days since the last valid finding), the valid findings, what was found later (late
+  claims), the bad-disclosure flags with what became of each claim, and the badge with its
+  Markdown and HTML embed. Then the diligence text: what a record says and does not (design
+  §4.1, §4.2, §15, without third-party figures). Only valid findings are listed; every other
+  claim is a count.
+- **The feed** (`#/feed`, design §15): `GET /api/feed`, every listing that takes claims, with
+  its artifact, hash, labels, award table, lowest class counted, bond, windows, times, days
+  open, claims so far, escrow remaining, value at risk, image and scope, and links to its record
+  and its page.
+- **A claim** (`#/claim/<claimId>`): its state and times from the chain (the lens's derived
+  state and `claimTimes`), and the maker's actions through the wallet, each after reading the
+  claim again: **release** inside the fix window of a disclosed claim, and **dispute** of a
+  judged valid verdict before `disputeDeadline`. The dispute panel shows the escalation prepay
+  (the lens's `disputeFee`, the dispute panel's `maxTotalFee`) before anything is sent; the
+  statement (at most 4,096 bytes) is pinned by the server after the wallet signs its challenge,
+  its CID must be the raw sha2-256 CID of the bytes or nothing is sent, the prepay is read
+  again and a higher figure stops the dispute until the maker has seen it, and `dispute()`
+  pays it. Each claim read is of one block (the claim, its listing and the lens views). A
+  **pending evaluation** (a Revealed claim, or a Disputed one) is read every 5 seconds for up to
+  15 minutes, each read given at most 30 seconds and never past the 15 minutes; then the page
+  says plainly that no verdict was recorded in that time and offers a re-check.
 - **Disclosure key.** "Generate" makes an age X25519 pair in the page with
   `@verdikta/common/src/codeReview/disclosure.js`, common's browser-safe entry, which Vite
   bundles as it is (no shim: @noble takes randomness from `globalThis.crypto`). Only the public
@@ -718,12 +771,21 @@ real contract cannot produce is not added to the mock.
 The API is same-origin under `/api`; `vite` and `vite preview` proxy it to `SA_API_URL`
 (default `http://127.0.0.1:5009`).
 
+**Wording.** The record states facts only. Every UI string is in `src/strings.js`;
+`test/wording.test.js` runs the shared banned-words helper and a guard against judgemental
+phrases (safe, secure, audited, bug-free, vetted, approved, guaranteed, a medal tier, ...;
+`e2e/support/wording.js`) over all of them, and the Playwright tests run both over the text the
+record, feed and claim pages render, the server's labels and badge included.
+
 **Tests.** `npm test` covers the form model, the known-issue ids against common's, the key
-file, and decrypt-and-check with common's real encryption. `npx playwright test` starts
+file, decrypt-and-check with common's real encryption, the record's view, the 15-minute watch,
+the release and dispute rules, roll-forward successors, the dispute statement and its CID, the
+enum names against the contract and the wording. `npx playwright test` starts
 `e2e/support/stack.mjs`: StakeAttestation deployed on the in-process Hardhat network as the
 server's chain tests deploy it, behind Hardhat's JSON-RPC server; the real API server with
-mock pinning, dev trust and the server's own fake builder CLI as its builder; an IPFS gateway
-stand-in; and the production build. The browser's wallet is an injected EIP-1193 provider that
+mock pinning, dev trust and the server's own fake builder CLI as its builder, and its chain side
+(indexer, keeper, feed, record mirror, badge, a Chainlink ETH/USD stand-in); an IPFS gateway
+stand-in that also serves what the server pinned; and the production build. The browser's wallet is an injected EIP-1193 provider that
 forwards to the local node's unlocked accounts. `SA_SCREENSHOTS=1` writes the screenshots under
 `client/test-results/screenshots/`, with every private-key field masked.
 

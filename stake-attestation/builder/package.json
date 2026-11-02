@@ -16,8 +16,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test --test-timeout=120000 test/unit/",
-    "test:docker": "node --test --test-concurrency=1 --test-timeout=2400000 test/docker/"
+    "test": "node --test --test-timeout=120000 test/unit/*.test.js",
+    "test:docker": "node --test --test-concurrency=1 --test-timeout=2400000 test/docker/*.test.js"
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",

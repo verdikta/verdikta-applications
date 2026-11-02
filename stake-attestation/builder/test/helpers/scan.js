@@ -32,8 +32,18 @@ export function decodeInput(buf) {
   return out;
 }
 
-export function semgrepAnswer(results = [], errors = []) {
-  return JSON.stringify({ version: SCAN_TOOLS.semgrep.version, results, errors, paths: { scanned: [] } });
+// Stands for "every file Semgrep was given": scanDocker fills it in from the run's stdin.
+const SENT = '__every_file_sent__';
+
+/** Semgrep's JSON; `scanned` (repository paths) defaults to every file it was given. */
+export function semgrepAnswer(results = [], errors = [], scanned = null) {
+  return JSON.stringify({ version: SCAN_TOOLS.semgrep.version, results, errors, paths: { scanned: scanned === null ? SENT : scanned.map((p) => `/work/src/${p}`) } });
+}
+
+function fillScanned(answer, stdin) {
+  if (!answer || typeof answer.stdout !== 'string' || !answer.stdout.includes(SENT)) return answer;
+  const sent = [...decodeInput(stdin).keys()].filter((p) => p.startsWith('src/')).map((p) => `/work/${p}`);
+  return { ...answer, stdout: answer.stdout.replace(JSON.stringify(SENT), JSON.stringify(sent)) };
 }
 
 export function semgrepResult({ rule, path, line, severity = 'ERROR', message = 'a finding' }) {
@@ -56,7 +66,7 @@ export function scanDocker({ semgrep = { stdout: semgrepAnswer() }, gitleaks = {
     if (args[0] === 'run') {
       const image = args.find((a) => a === SCAN_TOOLS.semgrep.image || a === SCAN_TOOLS.gitleaks.image);
       runs.push({ args, image, stdin: opts.stdin });
-      if (image === SCAN_TOOLS.semgrep.image) return typeof semgrep === 'function' ? semgrep(args, opts) : semgrep;
+      if (image === SCAN_TOOLS.semgrep.image) return fillScanned(typeof semgrep === 'function' ? semgrep(args, opts) : semgrep, opts.stdin);
       if (image === SCAN_TOOLS.gitleaks.image) return typeof gitleaks === 'function' ? gitleaks(args, opts) : gitleaks;
       return { exitCode: 125, stderr: 'unexpected image' };
     }

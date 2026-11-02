@@ -23,7 +23,10 @@ import { createDocker, runSandboxed } from './docker.js';
 import { BuilderError } from './errors.js';
 import { fetchListedCommit as fetchDefault } from './git.js';
 import { SCAN_FILE } from './outputs.js';
-import { SCAN_TOOLS, gitleaksArgv, loadRules, parseGitleaks, parseSemgrep, scannerInput, semgrepArgv } from './scanTools.js';
+import {
+  GITLEAKS_CONFIG_FILES, GITLEAKS_MAX_MB, SCAN_TOOLS, SEMGREP_MAX_BYTES,
+  gitleaksArgv, loadRules, parseGitleaks, parseGitleaksSkips, parseSemgrep, scannerInput, semgrepArgv,
+} from './scanTools.js';
 import { checkDraft, serializeJson } from './spec.js';
 import { BUILDER_VERSION } from './version.js';
 
@@ -52,10 +55,12 @@ function newDoc(spec) {
       lowestClassCounted: stake.lowestClassCounted ?? null,
       scope: stake.scope ?? null,
     },
-    files: { scanned: [], skipped: [] },
+    // inScope: the files the scope names; skipped: in scope but given to no tool (links, submodules).
+    // Each tool's notScanned: files it was given or meant for and did not read, and why.
+    files: { inScope: [], skipped: [] },
     tools: {
-      semgrep: { version: SCAN_TOOLS.semgrep.version, image: SCAN_TOOLS.semgrep.image, rules: { version: SCAN_TOOLS.rules.version, sha256: SCAN_TOOLS.rules.sha256 }, status: 'pending', errors: [] },
-      secrets: { tool: 'gitleaks', version: SCAN_TOOLS.gitleaks.version, image: SCAN_TOOLS.gitleaks.image, status: 'pending' },
+      semgrep: { version: SCAN_TOOLS.semgrep.version, image: SCAN_TOOLS.semgrep.image, rules: { version: SCAN_TOOLS.rules.version, sha256: SCAN_TOOLS.rules.sha256 }, status: 'pending', analysed: 0, notScanned: [], errors: [] },
+      secrets: { tool: 'gitleaks', version: SCAN_TOOLS.gitleaks.version, image: SCAN_TOOLS.gitleaks.image, status: 'pending', notScanned: [] },
       agent: { status: 'off' },
     },
     findings: [],
@@ -104,6 +109,43 @@ function sortFindings(list) {
     || cmp(String(a.rule ?? a.title), String(b.rule ?? b.title)));
 }
 
+const WITHHELD = '[line withheld from the agent pass: the secret scan flagged it]';
+
+/**
+ * The in-scope files as the agent pass may see them: every line the secret scanner flagged is
+ * replaced, and a file it did not read (or one inside a folder it skipped) is left out.
+ * @returns {{ path: string, bytes: Buffer }[] & { withheld?: object }}
+ */
+export function withholdSecrets(files, findings, notScanned) {
+  const lines = new Map();
+  for (const f of findings) {
+    if (f.tool !== 'gitleaks') continue;
+    const set = lines.get(f.path) ?? new Set();
+    for (let n = f.line; n <= Math.max(f.line, f.endLine); n += 1) set.add(n);
+    lines.set(f.path, set);
+  }
+  const unread = notScanned.map((x) => x.path);
+  const out = [];
+  const left = [];
+  let count = 0;
+  for (const f of files) {
+    if (unread.some((p) => f.path === p || f.path.startsWith(`${p}/`))) {
+      left.push(f.path);
+      continue;
+    }
+    const flagged = lines.get(f.path);
+    if (!flagged) {
+      out.push(f);
+      continue;
+    }
+    const text = f.bytes.toString('utf8').split('\n').map((l, i) => (flagged.has(i + 1) ? WITHHELD : l));
+    count += flagged.size;
+    out.push({ path: f.path, bytes: Buffer.from(text.join('\n'), 'utf8') });
+  }
+  out.withheld = { lines: count, files: left };
+  return out;
+}
+
 /**
  * Scans a listing's staked version. Never throws for what happens during the scan: a failure is
  * recorded in the returned document (status "error"), which is the maker's.
@@ -133,18 +175,26 @@ export async function scanListing({ spec, config, deps = {}, workDir, agent = fa
     await fetchListedCommit({ repo: spec.repo, baseCommit: spec.baseCommit, mirror: config.mirrorFor(spec.repo), dir: gitDir, timeoutMs: FETCH_TIMEOUT_MS });
     const tree = await commitTree({ gitDir, repo: spec.repo, baseCommit: spec.baseCommit, mirrorFor: config.mirrorFor, workDir: tmp, submodules: false });
     const { files, skipped } = inScopeFiles(tree.entries, spec.stake.scope, tree.skipped);
-    doc.files = { scanned: files.map((f) => f.path), skipped };
+    doc.files = { inScope: files.map((f) => f.path), skipped };
 
     for (const tool of [SCAN_TOOLS.semgrep, SCAN_TOOLS.gitleaks]) await ensureImage(docker, tool.image, platform);
-    const sources = files.map((f) => ({ path: `src/${f.path}`, bytes: f.bytes }));
     const found = [];
     let failure = null;
 
+    // Semgrep's rules are Solidity's: it is given the in-scope .sol files within its size limit,
+    // and every one it does not report as analysed is named.
+    const sol = files.filter((f) => f.path.endsWith('.sol'));
+    const forSemgrep = sol.filter((f) => f.bytes.length <= SEMGREP_MAX_BYTES);
+    const semNot = sol.filter((f) => f.bytes.length > SEMGREP_MAX_BYTES).map((f) => ({ path: f.path, detail: `over Semgrep's per-file limit of ${SEMGREP_MAX_BYTES} bytes: not analysed` }));
     try {
-      const r = await runTool({ docker, image: SCAN_TOOLS.semgrep.image, platform, argv: semgrepArgv(), stdin: scannerInput([...sources, { path: `rules/${rules.name}`, bytes: rules.bytes }]), tool: 'semgrep' });
+      const input = [...forSemgrep.map((f) => ({ path: `src/${f.path}`, bytes: f.bytes })), { path: `rules/${rules.name}`, bytes: rules.bytes }];
+      const r = await runTool({ docker, image: SCAN_TOOLS.semgrep.image, platform, argv: semgrepArgv(), stdin: scannerInput(input), tool: 'semgrep' });
       if (r.exitCode !== 0 && r.exitCode !== 1) throw new BuilderError('SCAN_TOOL_FAILED', `semgrep exited ${r.exitCode}`, { step: 'scan' });
       const s = parseSemgrep(r.stdout);
+      const analysed = new Set(s.scanned);
+      for (const f of forSemgrep) if (!analysed.has(f.path)) semNot.push({ path: f.path, detail: 'Semgrep did not analyse it' });
       doc.tools.semgrep.status = 'ok';
+      doc.tools.semgrep.analysed = forSemgrep.filter((f) => analysed.has(f.path)).length;
       doc.tools.semgrep.errors = s.errors;
       if (s.truncated) doc.tools.semgrep.truncated = true;
       found.push(...s.findings);
@@ -152,11 +202,21 @@ export async function scanListing({ spec, config, deps = {}, workDir, agent = fa
       doc.tools.semgrep.status = 'failed';
       failure ??= err;
     }
+    doc.tools.semgrep.notScanned = semNot;
 
+    // The secret scanner gets every in-scope file but its own configuration files (which would
+    // change its rules); what it skips, it says in its log.
+    const forSecrets = files.filter((f) => !GITLEAKS_CONFIG_FILES.includes(f.path));
+    const secNot = files.filter((f) => GITLEAKS_CONFIG_FILES.includes(f.path)).map((f) => ({ path: f.path, detail: 'the secret scanner\'s own configuration file: not given to it, so it cannot change the scan' }));
     try {
-      const r = await runTool({ docker, image: SCAN_TOOLS.gitleaks.image, platform, argv: gitleaksArgv(), stdin: scannerInput(sources), tool: 'gitleaks' });
+      const r = await runTool({ docker, image: SCAN_TOOLS.gitleaks.image, platform, argv: gitleaksArgv(), stdin: scannerInput(forSecrets.map((f) => ({ path: `src/${f.path}`, bytes: f.bytes }))), tool: 'gitleaks' });
       if (r.exitCode !== 0) throw new BuilderError('SCAN_TOOL_FAILED', `gitleaks exited ${r.exitCode}`, { step: 'scan' });
       const g = parseGitleaks(r.stdout);
+      secNot.push(...parseGitleaksSkips(r.stderr));
+      const named = new Set(secNot.map((x) => x.path));
+      for (const f of forSecrets) {
+        if (f.bytes.length > GITLEAKS_MAX_MB * 1000000 && !named.has(f.path)) secNot.push({ path: f.path, detail: `over the secret scanner's per-file limit of ${GITLEAKS_MAX_MB} MB: not read` });
+      }
       doc.tools.secrets.status = 'ok';
       if (g.truncated) doc.tools.secrets.truncated = true;
       found.push(...g.findings);
@@ -164,9 +224,13 @@ export async function scanListing({ spec, config, deps = {}, workDir, agent = fa
       doc.tools.secrets.status = 'failed';
       failure ??= err;
     }
+    doc.tools.secrets.notScanned = secNot;
 
     if (agent) {
-      const a = await runAgentPass({ agent: config.scan.agent, spec, files, fetch: deps.agentFetch });
+      // The model never sees what the secret scan flagged, nor a file it could not vouch for.
+      const a = doc.tools.secrets.status === 'ok'
+        ? await runAgentPass({ agent: config.scan.agent, spec, files: withholdSecrets(files, found, secNot), fetch: deps.agentFetch })
+        : { summary: { status: 'failed', provider: config.scan.agent.provider, model: config.scan.agent.model, code: 'AGENT_NEEDS_SECRET_SCAN', detail: 'the agent pass runs only on source the secret scan read' }, findings: [] };
       doc.tools.agent = a.summary;
       found.push(...a.findings);
       if (a.summary.status !== 'ok') failure ??= new BuilderError(a.summary.code, 'the agent pass failed', { step: 'scan' });

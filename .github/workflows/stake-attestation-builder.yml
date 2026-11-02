@@ -15,7 +15,7 @@ name: Stake attestation builder
 #         packages: write
 #
 # Three jobs. build runs the maker's setup and holds no secret: the image goes to a registry:2 on
-# the runner's loopback and is validated by the pinned code-runner there; the image (an OCI
+# the runner's loopback and is validated by the pinned code-runner there; the image (skopeo's dir
 # layout) and the output folder leave as artifacts, with their digests as job outputs. publish
 # runs none of the maker's code: it checks the layout against the digest and copies it byte for
 # byte to publish-repository, which must be readable without a credential, as arbiters pull it.
@@ -163,13 +163,8 @@ jobs:
           if [ -n "$KNOWN_ISSUES" ]; then known=(--known-issues "listing-source/$KNOWN_ISSUES"); fi
           node "$VAB_BUILDER/bin/verdikta-build-env.js" build --config "$VAB_WORK/builder.json" --spec "listing-source/$SPEC" "${known[@]}" --out "$VAB_OUT"
           echo "image=$(jq -r .env.image "$VAB_OUT/code_review.json")" >> "$GITHUB_OUTPUT"
-      - name: Export the validated image as an OCI layout, byte for byte
-        run: |
-          set -euo pipefail
-          staged=$(jq -r .image.stagedRef "$VAB_OUT/validation-report.json")
-          digest=$(jq -r .image.digest "$VAB_OUT/validation-report.json")
-          skopeo copy --all --preserve-digests --src-tls-verify=false "docker://$staged" "oci:$VAB_IMAGE:listing"
-          node "$VAB_BUILDER/action/oci.js" verify --dir "$VAB_IMAGE" --digest "$digest"
+      - name: Export the validated image, byte for byte (skopeo's dir layout keeps any manifest type)
+        run: node "$VAB_BUILDER/action/image.js" export --from "$(jq -r .image.stagedRef "$VAB_OUT/validation-report.json")" --dir "$VAB_IMAGE"
       - name: Digest of the output folder, for the sign job
         id: digest
         run: echo "sha256=$(node "$VAB_BUILDER/bin/verdikta-build-env.js" digest --dir "$VAB_OUT")" >> "$GITHUB_OUTPUT"
@@ -220,21 +215,13 @@ jobs:
         with:
           name: env-image
           path: ${{ env.VAB_IMAGE }}
-      - name: Check the layout against the digest code_review.json names, then copy it byte for byte
+      - name: Check the layout against the digest code_review.json names, push it byte for byte, read it back without a credential
         env:
           IMAGE: ${{ needs.build.outputs.image }}
           PUBLISH_REPOSITORY: ${{ inputs.publish-repository }}
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          DIGEST="${IMAGE##*@}"
-          if [ "${IMAGE%@*}" != "$PUBLISH_REPOSITORY" ]; then echo "::error::code_review.json names ${IMAGE}, not an image in ${PUBLISH_REPOSITORY}"; exit 1; fi
-          node "$VAB_BUILDER/action/oci.js" verify --dir "$VAB_IMAGE" --digest "$DIGEST"
-          tag="listing-${DIGEST#sha256:}"
-          skopeo copy --all --preserve-digests --dest-creds "${REGISTRY_USER}:${REGISTRY_TOKEN}" "oci:$VAB_IMAGE:listing" "docker://${PUBLISH_REPOSITORY}:${tag}"
-          pushed="sha256:$(skopeo inspect --raw --no-creds "docker://${PUBLISH_REPOSITORY}@${DIGEST}" | sha256sum | cut -d' ' -f1)"
-          if [ "$pushed" != "$DIGEST" ]; then echo "::error::${PUBLISH_REPOSITORY} serves ${pushed} for ${DIGEST}, or cannot be read without a credential"; exit 1; fi
+        run: node "$VAB_BUILDER/action/image.js" publish --dir "$VAB_IMAGE" --image "$IMAGE" --to "$PUBLISH_REPOSITORY"
 
   sign:
     name: Sign attestation.json

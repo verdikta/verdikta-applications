@@ -8,9 +8,12 @@
 // The source is the maker's and the answer goes only to the maker, so an instruction planted in
 // the code can mislead the maker's own scan and nothing else; the files are fenced as data all
 // the same, and the answer is read as data: JSON in a fixed shape, every field bounded, every path
-// one of the files sent. The provider's token is read from its environment variable when the
-// pass runs and sent only as the bearer header; neither it nor the provider's error text is ever
-// written.
+// one of the files sent. What the model is given has passed the secret scan first (src/scan.js,
+// withholdSecrets): the lines it flagged are replaced and the files it could not read are left
+// out, so neither the provider nor the model's answer holds them. The answer is the model's own
+// words, which may quote the source it was sent. The provider's token is read from its
+// environment variable when the pass runs and sent only as the bearer header; neither it nor the
+// provider's error text is ever written.
 import crypto from 'node:crypto';
 
 import { codeReview } from './common.js';
@@ -25,7 +28,7 @@ export const AGENT_ENDPOINTS = Object.freeze({
 
 const MAX_ANSWER_BYTES = 4 * 1024 * 1024;
 const MAX_CANDIDATES = 50;
-const LIMITS = { title: 200, rootCause: 2000, demonstration: 4000, path: 400 };
+const LIMITS = { title: 200, rootCause: 2000, demonstration: 4000 };
 
 const cut = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
@@ -121,7 +124,8 @@ export function parseAgentAnswer(text, { spec, paths }) {
       tool: 'agent',
       class: f.class,
       title: cut(title, LIMITS.title),
-      paths: inFiles.map((p) => cut(p, LIMITS.path)),
+      // Paths are kept whole: each is one of the files sent, and a cut one would name no file.
+      paths: inFiles,
       rootCause: cut(rootCause, LIMITS.rootCause),
       demonstration: cut(demonstration, LIMITS.demonstration),
     });
@@ -167,7 +171,7 @@ export async function runAgentPass({ agent, spec, files, fetch: fetchImpl = glob
     }
     if (typeof content !== 'string') throw new BuilderError('AGENT_PROVIDER_FAILED', 'the provider\'s answer has no message', { step: 'scan' });
     const { candidates, dropped } = parseAgentAnswer(content, { spec, paths: sent });
-    return { summary: { status: 'ok', ...who, files: sent.length, truncated, dropped }, findings: candidates };
+    return { summary: { status: 'ok', ...who, files: sent.length, truncated, dropped, withheld: files.withheld ?? { lines: 0, files: [] } }, findings: candidates };
   } catch (err) {
     const code = err instanceof BuilderError ? err.code : 'AGENT_PROVIDER_FAILED';
     const detail = err instanceof BuilderError ? err.detail : 'the agent pass failed';

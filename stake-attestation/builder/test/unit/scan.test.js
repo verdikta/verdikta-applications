@@ -12,7 +12,7 @@ import { parse as parseYaml } from 'yaml';
 import { codeReview } from '../../src/common.js';
 import { parseConfig } from '../../src/config.js';
 import { SCAN_FILE, scanListing, writeScan } from '../../src/scan.js';
-import { RULES_DIR, SCAN_TOOLS, loadRules, parseGitleaks, parseSemgrep } from '../../src/scanTools.js';
+import { RULES_DIR, SCAN_TOOLS, SEMGREP_MAX_BYTES, loadRules, parseGitleaks, parseSemgrep } from '../../src/scanTools.js';
 import { decodeInput, gitleaksResult, scanDeps, semgrepAnswer, semgrepResult } from '../helpers/scan.js';
 import { draftSpec } from '../helpers/specs.js';
 
@@ -70,6 +70,8 @@ test('Semgrep, its Solidity rules and the secret scanner are pinned by version a
     assert.ok(['ERROR', 'WARNING'].includes(r.severity));
   }
   assert.equal(new Set(rules.map((r) => r.id)).size, rules.length);
+  // A message naming a metavariable would carry source text into a finding.
+  for (const r of rules) assert.doesNotMatch(r.message, /\$/, `${r.id}'s message names no metavariable`);
 });
 
 test('rules that are not the pinned bytes are refused before anything runs', async () => {
@@ -107,7 +109,7 @@ test('both scanners run in a sandbox with no network, a read-only root and uid 1
 
 test('only the in-scope paths are scanned: scope.include less scope.exclude, no symbolic link followed', async () => {
   const { doc, runs } = await scan();
-  assert.deepEqual(doc.files.scanned, ['src/Vault.sol', 'src/lib/Math.sol']);
+  assert.deepEqual(doc.files.inScope, ['src/Vault.sol', 'src/lib/Math.sol']);
   assert.deepEqual(doc.files.skipped, [{ path: 'src/Link.sol', detail: 'a symbolic link: not followed' }]);
   for (const r of runs) {
     const fed = decodeInput(r.stdin);
@@ -123,7 +125,7 @@ test('only the in-scope paths are scanned: scope.include less scope.exclude, no 
 test('a listing whose scope matches no file is scanned as empty, not refused', async () => {
   const { status, doc } = await scan({ 'contracts/A.sol': 'contract A {}' });
   assert.equal(status, 'ok');
-  assert.deepEqual(doc.files.scanned, []);
+  assert.deepEqual(doc.files.inScope, []);
   assert.deepEqual(doc.findings, []);
 });
 
@@ -145,19 +147,29 @@ test('the findings JSON: Semgrep results and secrets, repository paths, sorted, 
     { tool: 'gitleaks', rule: 'generic-api-key', severity: 'error', path: 'src/Vault.sol', line: 2, endLine: 2, message: 'Detected a Generic API Key' },
   ]);
   assert.ok(!JSON.stringify(doc).includes(secret), 'the secret itself is never copied into the findings');
-  assert.deepEqual(doc.tools.semgrep, { version: SCAN_TOOLS.semgrep.version, image: SCAN_TOOLS.semgrep.image, rules: { version: SCAN_TOOLS.rules.version, sha256: SCAN_TOOLS.rules.sha256 }, status: 'ok', errors: [] });
-  assert.deepEqual(doc.tools.secrets, { tool: 'gitleaks', version: SCAN_TOOLS.gitleaks.version, image: SCAN_TOOLS.gitleaks.image, status: 'ok' });
+  assert.deepEqual(doc.tools.semgrep, { version: SCAN_TOOLS.semgrep.version, image: SCAN_TOOLS.semgrep.image, rules: { version: SCAN_TOOLS.rules.version, sha256: SCAN_TOOLS.rules.sha256 }, status: 'ok', analysed: 2, notScanned: [], errors: [] });
+  assert.deepEqual(doc.tools.secrets, { tool: 'gitleaks', version: SCAN_TOOLS.gitleaks.version, image: SCAN_TOOLS.gitleaks.image, status: 'ok', notScanned: [] });
   assert.deepEqual(doc.tools.agent, { status: 'off' });
   assert.deepEqual(doc.listing, { repo: spec().repo, baseCommit: spec().baseCommit, artifact: { kind: 'repo' }, lowestClassCounted: 'MEDIUM', scope: SCOPE });
 });
 
 test('parsers keep only what the maker needs: rule, path, lines, message; never a source line or a secret', () => {
+  // An error's message can quote the source (a secret literal in a file Semgrep could not parse):
+  // only its kind, level and place are kept.
+  const secret = 'Zq8LrT0pVb3NcX7mHs2KdW9fJy4GaE6uRo1iQtPz';
   const sem = parseSemgrep(Buffer.from(semgrepAnswer(
-    [semgrepResult({ rule: 'verdikta.solidity.selfdestruct', path: 'src/A.sol', line: 3, severity: 'WARNING' })],
-    [{ type: 'Syntax error', level: 'warn', message: 'could not parse', path: '/work/src/src/B.sol' }],
+    [semgrepResult({ rule: 'work.rules.verdikta.solidity.selfdestruct', path: 'src/A.sol', line: 3, severity: 'WARNING' })],
+    [
+      { type: 'Syntax error', level: 'warn', message: `unexpected token "${secret}"`, path: '/work/src/src/B.sol', spans: [{ start: { line: 7, col: 1 } }] },
+      { type: ['PartialParsing', [{ path: '/work/src/src/C.sol' }]], level: 'warn', message: secret, path: '/work/src/src/C.sol' },
+    ],
+    ['src/A.sol', 'src/B.sol'],
   )));
   assert.deepEqual(sem.findings, [{ tool: 'semgrep', rule: 'verdikta.solidity.selfdestruct', severity: 'warning', path: 'src/A.sol', line: 3, endLine: 3, message: 'a finding' }]);
-  assert.deepEqual(sem.errors, [{ type: 'Syntax error', level: 'warn', path: 'src/B.sol', message: 'could not parse' }]);
+  assert.deepEqual(sem.errors, [{ type: 'Syntax error', level: 'warn', path: 'src/B.sol', line: 7 }, { type: 'PartialParsing', level: 'warn', path: 'src/C.sol' }]);
+  assert.ok(!JSON.stringify(sem).includes(secret));
+  assert.deepEqual(sem.scanned, ['src/A.sol', 'src/B.sol']);
+  assert.throws(() => parseSemgrep(Buffer.from(JSON.stringify({ results: [], errors: [] }))), (err) => err.code === 'SCAN_TOOL_FAILED', 'an answer that does not say what it analysed');
   const leaks = parseGitleaks(Buffer.from(JSON.stringify([gitleaksResult({ path: 'src/A.sol', line: 1, secret: 'abc' })])));
   assert.deepEqual(Object.keys(leaks.findings[0]).sort(), ['endLine', 'line', 'message', 'path', 'rule', 'severity', 'tool']);
   assert.throws(() => parseSemgrep(Buffer.from('not json')), (err) => err.code === 'SCAN_TOOL_FAILED');
@@ -183,4 +195,44 @@ test('the findings file is written for the maker alone: a new folder, owner-only
     assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
   }
   fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+});
+
+test('nothing in scope goes unscanned unsaid: Semgrep\'s default exclusions are off, and each tool names what it did not read', async () => {
+  const big = { mode: '100644', text: `// ${'x'.repeat(SEMGREP_MAX_BYTES)}` };
+  const files = {
+    'src/Vault.sol': 'contract Vault {}',
+    'src/test/Helper.sol': 'contract H {}',
+    'src/vendor/Lib.sol': 'library L {}',
+    'src/Huge.sol': big,
+    'src/Missed.sol': 'contract M {}',
+    'src/package-lock.json': '{}',
+    'src/node_modules/x/K.sol': 'contract K {}',
+    // The scanner's own configuration at the root of what it reads: it would replace its rules.
+    '.gitleaks.toml': '[allowlist]\npaths = [".*"]\n',
+  };
+  const s = spec();
+  s.stake.scope = { include: ['src/**', '.gitleaks.toml'] };
+  const { doc, runs } = await scan(files, {
+    spec: s,
+    semgrep: (args, opts) => ({ stdout: semgrepAnswer([], [], [...decodeInput(opts.stdin).keys()].filter((p) => p.startsWith('src/') && p !== 'src/src/Missed.sol').map((p) => p.slice(4))) }),
+    gitleaks: { stdout: '[]', stderr: '9:29AM DBG skipping directory: global allowlist path=/work/src/src/node_modules\n9:29AM DBG skipping file: global allowlist path=/work/src/src/package-lock.json\n' },
+  });
+  // Semgrep runs where an empty .semgrepignore replaces its defaults (test/, vendor/, ...).
+  const script = runs[0].args.at(-2);
+  assert.match(script, /cd \/work\/src\n: > \/work\/src\/\.semgrepignore\n/);
+  const toSemgrep = [...decodeInput(runs[0].stdin).keys()].filter((p) => p.startsWith('src/')).map((p) => p.slice(4)).sort();
+  assert.deepEqual(toSemgrep, ['src/Missed.sol', 'src/Vault.sol', 'src/node_modules/x/K.sol', 'src/test/Helper.sol', 'src/vendor/Lib.sol'], 'every in-scope .sol file within its limit');
+  assert.deepEqual(doc.tools.semgrep.notScanned, [
+    { path: 'src/Huge.sol', detail: `over Semgrep's per-file limit of ${SEMGREP_MAX_BYTES} bytes: not analysed` },
+    { path: 'src/Missed.sol', detail: 'Semgrep did not analyse it' },
+  ]);
+  assert.equal(doc.tools.semgrep.analysed, 4);
+  // The secret scanner gets every file but its own configuration, and its skips are named.
+  assert.equal(decodeInput(runs[1].stdin).has('src/.gitleaks.toml'), false);
+  assert.ok(decodeInput(runs[1].stdin).has('src/src/package-lock.json'), 'everything else in scope');
+  assert.deepEqual(doc.tools.secrets.notScanned, [
+    { path: '.gitleaks.toml', detail: 'the secret scanner\'s own configuration file: not given to it, so it cannot change the scan' },
+    { path: 'src/node_modules', detail: 'the secret scanner skips this directory: global allowlist' },
+    { path: 'src/package-lock.json', detail: 'the secret scanner skips this file: global allowlist' },
+  ]);
 });

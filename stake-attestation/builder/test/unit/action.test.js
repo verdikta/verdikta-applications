@@ -16,7 +16,7 @@ import { parse } from 'yaml';
 import { codeReview } from '../../src/common.js';
 import { parseConfig } from '../../src/config.js';
 import { ACTION_PINS, builderConfig, codeRunnerEnv, registryArgs, signConfig } from '../../action/services.js';
-import { verifyOciLayout } from '../../action/oci.js';
+import { exportArgs, inspectArgs, publishArgs, skopeoRun, verifyImageDir } from '../../action/image.js';
 import { REGISTRY_IMAGE } from '../docker/helpers.js';
 import { contractDraft, draftSpec } from '../helpers/specs.js';
 
@@ -75,6 +75,7 @@ test('the build job holds no secret, reads the repositories only, and runs the s
   assert.match(r, /bin\/verdikta-build-env\.js" build --config "\$VAB_WORK\/builder\.json"/);
   assert.doesNotMatch(r, /verdikta-build-env\.js"? (sign|scan|run)\b/);
   assert.match(r, /action\/services\.js" start\b/);
+  assert.match(r, /action\/image\.js" export --from /);
   assert.match(r, /action\/services\.js" stop\b/);
   // Inputs reach scripts through the environment, never spliced into the script text.
   for (const s of steps('build')) if (s.run) assert.doesNotMatch(s.run, /\$\{\{/, s.name);
@@ -91,10 +92,10 @@ test('the image is published by a job of its own, which runs none of the maker\'
   for (const c of uses('publish', 'actions/checkout')) assert.equal(c.with.repository, SELF);
   const r = runs('publish');
   assert.doesNotMatch(r, /verdikta-build-env/);
-  assert.match(r, /action\/oci\.js" verify --dir "\$VAB_IMAGE" --digest "\$DIGEST"/);
-  assert.match(r, /skopeo copy --all --preserve-digests/);
-  assert.match(r, /skopeo inspect --raw --no-creds/, 'readable by anyone, as arbiters pull it');
-  assert.match(JSON.stringify(p), /needs\.build\.outputs\.image/);
+  assert.match(r, /action\/image\.js" publish --dir "\$VAB_IMAGE" --image "\$IMAGE" --to "\$PUBLISH_REPOSITORY"/);
+  const step = steps('publish').find((x) => /image\.js" publish/.test(x.run ?? ''));
+  assert.equal(step.env.IMAGE, '${{ needs.build.outputs.image }}');
+  assert.equal(step.env.REGISTRY_TOKEN, '${{ github.token }}', 'the job\'s own token, packages: write');
   const downloads = uses('publish', 'actions/download-artifact');
   assert.deepEqual(downloads.map((d) => d.with.name), ['env-image']);
 });
@@ -124,6 +125,7 @@ test('pins: the code-runner the Docker tests run, registry:2 by digest, common\'
   assert.equal(ACTION_PINS.codeRunner.commit, PIN.commit);
   assert.equal(ACTION_PINS.codeRunner.repository, PIN.repository);
   assert.equal(ACTION_PINS.registry.image, REGISTRY_IMAGE);
+  assert.match(ACTION_PINS.skopeo.image, /^quay\.io\/skopeo\/stable@sha256:[0-9a-f]{64}$/);
   assert.equal(`release-${ACTION_PINS.gvisor.version}`, codeReview.GVISOR_RELEASE);
   assert.match(ACTION_PINS.gvisor.sha512, /^[0-9a-f]{128}$/);
   assert.match(runs('build'), /\.gvisor\.version/);
@@ -160,30 +162,45 @@ test('services.js starts registry:2 by digest on loopback, and the code-runner w
   assert.throws(() => codeRunnerEnv({ token: 't'.repeat(64), port: 42000, runtime: 'kata', registryHost: '127.0.0.1:41000', stateDir: '/tmp/s', base: {} }));
 });
 
-/** An OCI image layout holding one linux/amd64 image; returns its folder and top digest. */
-function ociLayout() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-oci-'));
-  fs.mkdirSync(path.join(dir, 'blobs', 'sha256'), { recursive: true });
-  const put = (bytes, mediaType) => {
+/** A skopeo dir: layout holding an index of one linux/amd64 image; returns its folder and digests. */
+function imageDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-imagedir-'));
+  const put = (bytes, mediaType, name) => {
     const hex = crypto.createHash('sha256').update(bytes).digest('hex');
-    fs.writeFileSync(path.join(dir, 'blobs', 'sha256', hex), bytes);
+    fs.writeFileSync(path.join(dir, name ?? hex), bytes);
     return { mediaType, digest: `sha256:${hex}`, size: bytes.length };
   };
-  const layer = put(Buffer.from('layer bytes'), 'application/vnd.oci.image.layer.v1.tar+gzip');
-  const config = put(Buffer.from(JSON.stringify({ os: 'linux', architecture: 'amd64', rootfs: { type: 'layers', diff_ids: [] } })), 'application/vnd.oci.image.config.v1+json');
-  const manifest = put(Buffer.from(JSON.stringify({ schemaVersion: 2, mediaType: 'application/vnd.oci.image.manifest.v1+json', config, layers: [layer] })), 'application/vnd.oci.image.manifest.v1+json');
-  fs.writeFileSync(path.join(dir, 'oci-layout'), JSON.stringify({ imageLayoutVersion: '1.0.0' }));
-  fs.writeFileSync(path.join(dir, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [{ ...manifest, annotations: { 'org.opencontainers.image.ref.name': 'listing' } }] }));
-  return { dir, digest: manifest.digest, layer };
+  const layer = put(Buffer.from('layer bytes'), 'application/vnd.docker.image.rootfs.diff.tar.gzip');
+  const config = put(Buffer.from(JSON.stringify({ os: 'linux', architecture: 'amd64', rootfs: { type: 'layers', diff_ids: [] } })), 'application/vnd.docker.container.image.v1+json');
+  const manifestBytes = Buffer.from(JSON.stringify({ schemaVersion: 2, mediaType: 'application/vnd.docker.distribution.manifest.v2+json', config, layers: [layer] }));
+  const hex = crypto.createHash('sha256').update(manifestBytes).digest('hex');
+  const manifest = put(manifestBytes, 'application/vnd.docker.distribution.manifest.v2+json', `${hex}.manifest.json`);
+  const index = put(Buffer.from(JSON.stringify({ schemaVersion: 2, mediaType: 'application/vnd.docker.distribution.manifest.list.v2+json', manifests: [{ ...manifest, platform: { os: 'linux', architecture: 'amd64' } }] })), null, 'manifest.json');
+  fs.writeFileSync(path.join(dir, 'version'), 'Directory Transport Version: 1.1\n');
+  return { dir, digest: index.digest, layer, manifest };
 }
 
-test('oci.js: the exported image verifies only at the digest the build reported, with every blob intact', async () => {
-  const l = ociLayout();
-  assert.deepEqual(await verifyOciLayout({ dir: l.dir, digest: l.digest }), { digest: l.digest, blobs: 3 });
-  await assert.rejects(verifyOciLayout({ dir: l.dir, digest: `sha256:${'0'.repeat(64)}` }), /OCI_DIGEST_MISMATCH/);
-  fs.writeFileSync(path.join(l.dir, 'blobs', 'sha256', l.layer.digest.slice(7)), 'other bytes');
-  await assert.rejects(verifyOciLayout({ dir: l.dir, digest: l.digest }), /OCI_BLOB_CORRUPT/);
+test('image.js: the exported layout verifies only at the digest the build reported, with every manifest and blob intact; Docker schema-2 included', async () => {
+  const l = imageDir();
+  assert.deepEqual(await verifyImageDir({ dir: l.dir, digest: l.digest }), { digest: l.digest, blobs: 4 });
+  await assert.rejects(verifyImageDir({ dir: l.dir, digest: `sha256:${'0'.repeat(64)}` }), /IMAGE_DIGEST_MISMATCH/);
+  fs.writeFileSync(path.join(l.dir, l.layer.digest.slice(7)), 'other bytes');
+  await assert.rejects(verifyImageDir({ dir: l.dir, digest: l.digest }), /IMAGE_BLOB_CORRUPT/);
+  fs.rmSync(path.join(l.dir, 'version'));
+  await assert.rejects(verifyImageDir({ dir: l.dir, digest: l.digest }), /IMAGE_DIR_INVALID/);
   fs.rmSync(l.dir, { recursive: true, force: true });
+});
+
+test('image.js: skopeo by digest, preserving digests, through its dir layout; plain HTTP only to a loopback registry; the token only in an auth file', () => {
+  const digest = `sha256:${'d'.repeat(64)}`;
+  const run = skopeoRun({ mounts: [['/tmp/img', '/image', 'ro']], args: ['inspect'], uid: 1001, gid: 118 });
+  assert.equal(run[run.indexOf('--user') + 1], '1001:118');
+  assert.ok(run.includes(ACTION_PINS.skopeo.image));
+  assert.deepEqual(exportArgs(`127.0.0.1:41000/stake-env@${digest}`), ['copy', '--quiet', '--all', '--preserve-digests', '--src-tls-verify=false', `docker://127.0.0.1:41000/stake-env@${digest}`, 'dir:/image']);
+  assert.throws(() => exportArgs('127.0.0.1:41000/stake-env:latest'));
+  assert.deepEqual(publishArgs({ digest, to: 'ghcr.io/acme/stake-env', authfile: '/auth/auth.json' }), ['copy', '--quiet', '--all', '--preserve-digests', '--dest-authfile', '/auth/auth.json', 'dir:/image', `docker://ghcr.io/acme/stake-env:listing-${'d'.repeat(64)}`]);
+  assert.deepEqual(inspectArgs(`ghcr.io/acme/stake-env@${digest}`), ['inspect', '--raw', '--no-creds', `docker://ghcr.io/acme/stake-env@${digest}`]);
+  assert.doesNotMatch(fs.readFileSync(new URL('../../action/image.js', import.meta.url), 'utf8'), /--(dest-)?creds\b/, 'no credential on a command line');
 });
 
 test('CI lints this workflow with a pinned actionlint, and runs the app\'s checks when it changes', () => {

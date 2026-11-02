@@ -99,8 +99,14 @@ export async function verifyForSigning({ files, report, dir, expectOutputs = nul
 
   const l = report.listing ?? {};
   const kind = spec.artifact?.kind ?? 'repo';
-  if (l.repo !== spec.repo || l.baseCommit !== spec.baseCommit || (l.artifact?.kind ?? 'repo') !== kind) {
+  const sameArtifact = (a) => (a?.kind ?? 'repo') === kind
+    && (kind !== 'contract' || (a.chainId === spec.artifact.chainId && String(a.address).toLowerCase() === String(spec.artifact.address).toLowerCase()));
+  if (l.repo !== spec.repo || l.baseCommit !== spec.baseCommit || !sameArtifact(l.artifact)) {
     refuse('LISTING_MISMATCH', 'the validation report is about another repository, commit or artifact than code_review.json');
+  }
+  // A contract's verified source must have been read for this deployment.
+  if (kind === 'contract' && !sameArtifact({ kind, ...report.verifiedSource?.explorer })) {
+    refuse('LISTING_MISMATCH', `the report's verified source is for ${report.verifiedSource?.explorer?.address ?? 'no address'} on chain ${report.verifiedSource?.explorer?.chainId ?? 'none'}, not the listed deployment`);
   }
   pass('LISTING_MATCHES_REPORT');
 

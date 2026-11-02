@@ -115,22 +115,37 @@ const UNPACK = [
   'tar -xf - -C /work',
 ];
 
-/** Semgrep's argv: offline, no metrics or version check, the pinned rules, JSON on stdout. */
+/** Semgrep's per-file limit: a larger file is not analysed, and the scan says so. */
+export const SEMGREP_MAX_BYTES = 2000000;
+/** The secret scanner's per-file limit, in its unit (MB). */
+export const GITLEAKS_MAX_MB = 5;
+/** Files that would change what the secret scanner does if they were in its folder. */
+export const GITLEAKS_CONFIG_FILES = Object.freeze(['.gitleaks.toml', '.gitleaksignore']);
+
+/**
+ * Semgrep's argv: offline, no metrics or version check, the pinned rules, JSON on stdout. It
+ * runs from /work/src with an empty .semgrepignore there, which replaces Semgrep's default
+ * exclusions (test/, tests/, vendor/, node_modules/, ...): every file it is given is a target.
+ */
 export function semgrepArgv() {
   const script = [
     ...UNPACK,
-    'cd /work/rules',
-    `exec semgrep scan --config ${SCAN_TOOLS.rules.file} --json --quiet --metrics off --disable-version-check --no-git-ignore --timeout 30 --max-target-bytes 2000000 --jobs 2 /work/src`,
+    'cd /work/src',
+    ': > /work/src/.semgrepignore',
+    `exec semgrep scan --config /work/rules/${SCAN_TOOLS.rules.file} --json --quiet --metrics off --disable-version-check --no-git-ignore --timeout 30 --max-target-bytes ${SEMGREP_MAX_BYTES} --jobs 2 /work/src`,
     '',
   ].join('\n');
   return ['/bin/sh', '-c', script, 'vab-semgrep'];
 }
 
-/** The secret scanner's argv: its built-in rules, secrets redacted, its JSON report on stdout. */
+/**
+ * The secret scanner's argv: its built-in rules, secrets redacted, its JSON report on stdout and
+ * its log, which names every file it skips and why, on stderr.
+ */
 export function gitleaksArgv() {
   const script = [
     ...UNPACK,
-    'gitleaks dir /work/src --no-banner --redact --exit-code 0 --log-level error --max-target-megabytes 5 --report-format json --report-path /work/gitleaks.json >&2',
+    `gitleaks dir /work/src --no-banner --no-color --redact --exit-code 0 --log-level debug --max-target-megabytes ${GITLEAKS_MAX_MB} --report-format json --report-path /work/gitleaks.json >&2`,
     'cat /work/gitleaks.json',
     '',
   ].join('\n');
@@ -155,12 +170,15 @@ function json(stdout, tool) {
 }
 
 /**
- * Semgrep's JSON: its results as findings, and its errors (a file it could not parse, say).
+ * Semgrep's JSON: its results as findings, the files it analysed, and its errors (a file it could
+ * not parse, say) by kind and place only: an error's message can quote the source.
  * @throws {BuilderError} SCAN_TOOL_FAILED
  */
 export function parseSemgrep(stdout) {
   const out = json(stdout, 'semgrep');
   if (!out || !Array.isArray(out.results) || !Array.isArray(out.errors)) throw failed('semgrep', 'its output has no results');
+  // A rule's message is the pinned rules file's text: none of them names a metavariable, so no
+  // finding carries source text (test/unit/scan.test.js).
   const findings = out.results.slice(0, MAX_FINDINGS).map((r) => {
     const id = String(r.check_id ?? '');
     const at = id.indexOf('verdikta.');
@@ -174,13 +192,38 @@ export function parseSemgrep(stdout) {
       message: cut(r.extra?.message),
     };
   });
-  const errors = out.errors.slice(0, MAX_ERRORS).map((e) => ({
-    type: cut(e.type, 100),
-    level: cut(e.level, 20),
-    ...(e.path ? { path: repoPath(e.path) } : {}),
-    message: cut(e.message),
-  }));
-  return { findings, errors, truncated: out.results.length > MAX_FINDINGS };
+  const errors = out.errors.slice(0, MAX_ERRORS).map((e) => {
+    const line = Number(e.spans?.[0]?.start?.line);
+    return {
+      type: cut(Array.isArray(e.type) ? e.type[0] : e.type, 100),
+      level: cut(e.level, 20),
+      ...(e.path ? { path: repoPath(e.path) } : {}),
+      ...(Number.isSafeInteger(line) && line > 0 ? { line } : {}),
+    };
+  });
+  const scanned = Array.isArray(out.paths?.scanned) ? out.paths.scanned.map(repoPath) : null;
+  if (!scanned) throw failed('semgrep', 'its output does not list the files it analysed');
+  return { findings, errors, scanned, truncated: out.results.length > MAX_FINDINGS };
+}
+
+/**
+ * The files and folders the secret scanner says it skipped, and why, from its log: lines like
+ * "skipping file: global allowlist path=/work/src/package-lock.json". Only the reason and the
+ * path are kept.
+ */
+export function parseGitleaksSkips(stderr) {
+  const out = [];
+  for (const line of Buffer.from(stderr ?? '').toString('utf8').split('\n')) {
+    const m = /skipping (file|directory): (.*?)\s+(?:[A-Za-z_]+=(?:"(?:[^"\\]|\\.)*"|\S+)\s+)*path=("(?:[^"\\]|\\.)*"|\S+)/.exec(line);
+    if (!m) continue;
+    let p = m[3];
+    if (p.startsWith('"')) {
+      try { p = JSON.parse(p); } catch { continue; }
+    }
+    out.push({ path: repoPath(p), detail: `the secret scanner skips this ${m[1]}: ${cut(m[2].trim(), 100)}` });
+    if (out.length >= MAX_FINDINGS) break;
+  }
+  return out;
 }
 
 /**

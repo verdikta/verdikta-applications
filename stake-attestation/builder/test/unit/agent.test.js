@@ -47,8 +47,8 @@ function never() {
   return async () => { throw new Error('the provider must not be called'); };
 }
 
-async function scan({ agent, cfg = config(), fetch = never(), spec = draftSpec() } = {}) {
-  const h = scanDeps(FILES, { deps: { agentFetch: fetch } });
+async function scan({ agent, cfg = config(), fetch = never(), spec = draftSpec(), files = FILES, gitleaks } = {}) {
+  const h = scanDeps(files, { deps: { agentFetch: fetch }, ...(gitleaks ? { gitleaks } : {}) });
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-agent-'));
   try {
     return await scanListing({ spec, config: cfg, deps: h.deps, workDir, agent });
@@ -113,7 +113,7 @@ test('with --agent: one call to the stub, with the in-scope source, the scope an
   assert.match(prompt, /MEDIUM or above/);
   const agent = doc.findings.filter((f) => f.tool === 'agent');
   assert.deepEqual(agent, [{ tool: 'agent', class: 'HIGH', title: 'withdraw has no access control', paths: ['src/Vault.sol'], rootCause: 'anyone can call withdraw', demonstration: 'a test calls withdraw from a stranger and asserts the balance moved' }]);
-  assert.deepEqual(doc.tools.agent, { status: 'ok', provider: 'openrouter', model: AGENT.model, files: 1, truncated: [], dropped: 3 });
+  assert.deepEqual(doc.tools.agent, { status: 'ok', provider: 'openrouter', model: AGENT.model, files: 1, truncated: [], dropped: 3, withheld: { lines: 0, files: [] } });
 });
 
 test('the token is read when the pass runs, sent only as the bearer header, and never written', async () => {
@@ -135,6 +135,47 @@ test('a provider failure or an answer that is not the JSON asked for fails the a
     assert.equal(doc.tools.semgrep.status, 'ok', 'the deterministic scan still ran');
     assert.ok(!JSON.stringify(doc).includes('overloaded'), 'the provider\'s text is not copied');
   }
+});
+
+test('the model never sees a line the secret scan flagged, nor a file the secret scan did not read', async () => {
+  const secret = 'Zq8LrT0pVb3NcX7mHs2KdW9fJy4GaE6uRo1iQtPz';
+  const files = {
+    'src/Vault.sol': `contract Vault {\n  string constant apiKey = "${secret}";\n  function withdraw() external {}\n}`,
+    'src/vendor/Skipped.sol': 'contract SkippedBody {}',
+  };
+  const p = stubProvider(ANSWER);
+  const { status, doc } = await scan({
+    agent: true,
+    fetch: p.fetch,
+    spec: draftSpec({ stake: { ...draftSpec().stake, scope: { include: ['src/**'] } } }),
+    files,
+    gitleaks: {
+      stdout: JSON.stringify([{ RuleID: 'generic-api-key', Description: 'Detected a Generic API Key', StartLine: 2, EndLine: 2, File: '/work/src/src/Vault.sol', Secret: 'REDACTED', Match: 'REDACTED' }]),
+      stderr: '9:29AM DBG skipping directory: global allowlist path=/work/src/src/vendor\n',
+    },
+  });
+  assert.equal(status, 'ok');
+  const prompt = p.requests[0].body.messages.map((m) => m.content).join('\n');
+  assert.ok(!prompt.includes(secret), 'the secret never reaches the provider');
+  assert.ok(prompt.includes('[line withheld from the agent pass: the secret scan flagged it]'));
+  assert.ok(prompt.includes('function withdraw() external {}'), 'the rest of the file is sent');
+  assert.ok(!prompt.includes('SkippedBody'), 'a file the secret scan skipped is not sent');
+  assert.deepEqual(doc.tools.agent.withheld, { lines: 1, files: ['src/vendor/Skipped.sol'] });
+  assert.ok(!JSON.stringify(doc).includes(secret));
+});
+
+test('without a secret scan to vouch for the source, the agent pass does not run', async () => {
+  const { status, doc } = await scan({ agent: true, fetch: never(), gitleaks: { exitCode: 1, stdout: '', stderr: 'boom' } });
+  assert.equal(status, 'error');
+  assert.equal(doc.tools.secrets.status, 'failed');
+  assert.equal(doc.tools.agent.status, 'failed');
+  assert.equal(doc.tools.agent.code, 'AGENT_NEEDS_SECRET_SCAN');
+});
+
+test('a candidate\'s paths are kept whole: each is a file that was sent', () => {
+  const long = `src/${'deep/'.repeat(120)}Vault.sol`;
+  const text = JSON.stringify({ findings: [{ class: 'HIGH', title: 't', paths: [long], rootCause: 'r', demonstration: 'd' }] });
+  assert.deepEqual(parseAgentAnswer(text, { spec: draftSpec(), paths: [long] }).candidates[0].paths, [long]);
 });
 
 test('the prompt fences the source as data and caps what is sent', () => {

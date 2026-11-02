@@ -353,22 +353,31 @@ image with no network, a read-only root and uid 10001, the files fed on stdin as
 The rules flag `tx.origin` authorization, Ether sent by a low-level call before a later mapping
 write, ignored low-level call and ERC-20 transfer results, `transferFrom` from a caller-chosen
 address, `delegatecall` to a parameter, block values used as randomness and `selfdestruct`.
+Semgrep reads the in-scope `.sol` files from a folder whose empty `.semgrepignore` replaces its
+default exclusions (`test/`, `vendor/`, ...); the secret scanner reads every in-scope file but its
+own configuration files at the root. Each tool's `notScanned` names, with the reason, every file it
+did not read: over Semgrep's 2 MB or the secret scanner's 5 MB per-file limit, missing from what
+Semgrep reports it analysed, or skipped by the secret scanner's built-in allowlist (lock files,
+`node_modules`), as its log says.
 `--agent` adds the one inexpensive agent pass, **off by default**: the model named in
 `scan.agent` (`{ "provider", "model", "apiUrl"?, "apiKeyEnv" }`, a model of common's
 `code-standard` pool served over a chat-completions API: OpenRouter, OpenAI or xAI) reads the
 in-scope source (up to `maxSourceBytes`, fenced as data) with the scope and the severity rubric,
 and lists candidates at or above `lowestClassCounted`, each with a sketch of the test that would
 demonstrate it. The token is read from `apiKeyEnv` when the pass runs. Its answer is read as
-data: JSON of a fixed shape, bounded, every path one of the files sent. The provider sees the
-source it is sent (public already) and its own answer, which is one more reason the pass runs only
-when asked for.
+data: JSON of a fixed shape, bounded, every path one of the files sent. The model is given only
+source the secret scan read: every line it flagged is replaced, a file it did not read is left
+out, and without a secret scan there is no agent pass. The provider sees the source it is sent
+(public already) and its own answer, which is one more reason the pass runs only when asked for.
 
 The result, `scan-findings.json`, is **the maker's alone**: not a judgement, paying nobody, and
 kept out of the record, the jury and `known_issues.json` unless the maker writes a finding there
 themselves. So it is written only into a new or empty folder of its own (owner-only
 permissions), never beside a listing's files: `sign` refuses a folder that holds it, and a draft
-cannot give a listing file its name. A finding keeps the rule, the path, the lines and the
-message, never a source line or a secret's value. The command prints where the file is and
+cannot give a listing file its name. A tool's finding keeps the rule, the path, the lines and the
+rule's fixed message, never a source line or a secret's value, and a tool's error only its kind and
+place (Semgrep's messages can quote the source). An agent candidate is the model's own words,
+which may quote the source it was sent, never a line the secret scan flagged. The command prints where the file is and
 nothing of what it says, not even a count, so its output can sit in a public CI log; a scanner
 that fails is an error whose details are in the file. The reusable workflow below does not run
 the scan: its logs and artifacts can be public. The site runs it on its own host (node P4b2).
@@ -386,15 +395,19 @@ job holds no explorer key) and `signing` (`dev` by default, or `production`). Th
 1. **build**, `contents: read` and no secret: checks out the builder and only the draft and the
    known issues of the calling repository (the builder fetches the listed commit itself), blocks
    the runner's metadata addresses from containers, installs common's gVisor release
-   (SHA-512-checked; `builder/action/pins.json`), and starts with `builder/action/services.js` a
+   (SHA-512-checked; `builder/action/pins.json`, which also pins registry:2, skopeo and the
+   code-runner's commit), and starts with `builder/action/services.js` a
    registry:2 on the runner's loopback and the code-runner of verdikta-arbiter at the pinned
    commit with a token made for the run. `build` pushes to that registry with no credential,
    validates there and names `publish-repository` in `code_review.json` (`registry.publishAs`);
-   the image leaves as an OCI layout (`skopeo copy --preserve-digests`) and the output folder as
-   artifacts, the image and the folder's digest as job outputs.
-2. **publish**, `packages: write`, runs none of the maker's code: `builder/action/oci.js` checks
-   the layout holds exactly the digest `code_review.json` names, with every blob intact; skopeo
-   copies it byte for byte and reads it back without a credential.
+   the image leaves in skopeo's `dir:` layout (`builder/action/image.js export`: the pinned skopeo,
+   `--preserve-digests`; unlike its `oci:` layout this reads back any manifest type, and `docker
+   push` writes Docker schema-2) and the output folder as artifacts, the image and the folder's
+   digest as job outputs.
+2. **publish**, `packages: write`, runs none of the maker's code: `builder/action/image.js
+   publish` checks the layout holds exactly the digest `code_review.json` names, with every
+   manifest and blob intact, pushes it byte for byte with the job's token in an auth file of its
+   own (never on a command line), and reads it back without a credential.
 3. **sign**, in the `signing-environment` (default `stake-attestation-signing`, whose secret
    `VERDIKTA_BUILDER_KEY` is the production key, read only when `signing` is `production`):
    checks out the builder only, downloads only the output folder, and runs `sign
@@ -402,7 +415,9 @@ job holds no explorer key) and `signing` (`dev` by default, or `production`). Th
 
 The workflow has no trigger of its own and nothing in this repository calls it: publishing under
 Verdikta's registry namespace is owner gate G1. Its tests read its YAML and unit-test the scripts
-it calls (`test/unit/action.test.js`); CI lints it with a pinned actionlint.
+it calls (`test/unit/action.test.js`); `test/docker/image.docker.test.js` runs the image hand-off
+with the same script and skopeo between two throwaway registry:2 (a Docker schema-2 image, an OCI
+image and a multi-platform index); CI lints it with a pinned actionlint.
 
 **Tests.** `npm test` runs the unit tests (no Docker; explorer answers come only from recorded
 responses in `test/fixtures/explorer`, in the Etherscan v2 API's shape, for the fixture contract

@@ -93,6 +93,22 @@ test('a contract listing also trusts the verified-source comparison it cannot re
   assert.ok(report.signing.checks.includes('STEPS_COMPLETE'));
   assert.deepEqual(report.signing.trusts.map((x) => x.code), ['LISTING_CHECK_RESULTS', 'VERIFIED_SOURCE', 'UNPACKED_SIZE', 'BUILD_JOB', 'OUTPUTS_IN_TRANSIT', 'IMAGE_PUBLISHED']);
   l.cleanup();
+  // One whose report names another deployment, or whose verified source was another address or
+  // chain, is not signed.
+  for (const tamper of [
+    (r) => ({ ...r, listing: { ...r.listing, artifact: { ...r.listing.artifact, address: '0x0000000000000000000000000000000000000001' } } }),
+    (r) => ({ ...r, listing: { ...r.listing, artifact: { ...r.listing.artifact, chainId: 1 } } }),
+    (r) => ({ ...r, verifiedSource: { ...r.verifiedSource, explorer: { ...r.verifiedSource.explorer, address: '0x0000000000000000000000000000000000000001' } } }),
+    (r) => ({ ...r, verifiedSource: { ...r.verifiedSource, explorer: { ...r.verifiedSource.explorer, chainId: 1 } } }),
+  ]) {
+    const lx = await listing({ draft: contractDraft() });
+    lx.edit('validation-report.json', tamper);
+    const r = await sign(lx);
+    assert.equal(r.code, 1);
+    assert.match(r.t.err, /LISTING_MISMATCH/);
+    assert.equal(r.attested, false);
+    lx.cleanup();
+  }
   // One whose report does not say the source matched is not signed.
   const l2 = await listing({ draft: contractDraft() });
   l2.edit('validation-report.json', (r) => ({ ...r, verifiedSource: { ...r.verifiedSource, status: 'mismatch' } }));
@@ -110,6 +126,7 @@ test('a report that disagrees with the files or with itself is not signed', asyn
     ['SIZE_MISMATCH', (l) => l.edit('validation-report.json', (r) => ({ ...r, image: { ...r.image, unpackedBytes: { ...r.image.unpackedBytes, runner: r.image.unpackedBytes.attested + 1 } } }))],
     ['SIZE_MISMATCH', (l) => l.edit('validation-report.json', (r) => ({ ...r, image: { ...r.image, compressedBytes: codeReview.CLASS_HARD_LIMITS.imageCompressedBytes + 1 } }))],
     ['LISTING_MISMATCH', (l) => l.edit('validation-report.json', (r) => ({ ...r, listing: { ...r.listing, baseCommit: 'e'.repeat(40) } }))],
+    ['LISTING_MISMATCH', (l) => l.edit('validation-report.json', (r) => ({ ...r, listing: { ...r.listing, artifact: { kind: 'contract', address: '0x5f2A00000000000000000000000000000000C0dE', chainId: 8453 } } }))],
     ['STEPS_INCOMPLETE', (l) => l.edit('validation-report.json', (r) => ({ ...r, steps: r.steps.filter((s) => s.name !== 'listingCheck') }))],
     ['STEPS_INCOMPLETE', (l) => l.edit('validation-report.json', (r) => ({ ...r, listingCheck: { ...r.listingCheck, status: 'refused' } }))],
     ['BASE_NOT_PINNED', (l) => l.edit('validation-report.json', (r) => ({ ...r, image: { ...r.image, base: 'ghcr.io/foundry-rs/foundry:latest' } }))],

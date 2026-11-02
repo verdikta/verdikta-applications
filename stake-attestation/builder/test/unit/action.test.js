@@ -48,6 +48,17 @@ test('a reusable workflow: it runs only when another workflow calls it, and noth
   }
 });
 
+test('artifact names are this invocation\'s: a caller may build several listings in one run', () => {
+  const names = steps('build').find((s) => s.id === 'names');
+  assert.match(names.run, /sha256sum/);
+  for (const k of ['SPEC', 'KNOWN_ISSUES', 'PUBLISH_REPOSITORY', 'ARTIFACT_NAME']) assert.ok(names.env[k], k);
+  assert.equal(job('build').outputs['artifact-id'], '${{ steps.names.outputs.id }}');
+  const all = Object.entries(wf.jobs).flatMap(([n, j]) => j.steps.map((s) => [n, s])).filter(([, s]) => /actions\/(upload|download)-artifact@/.test(String(s.uses ?? '')));
+  assert.equal(all.length, 5);
+  for (const [n, s] of all) assert.match(s.with.name, n === 'build' ? /^\$\{\{ steps\.names\.outputs\.id \}\}-/ : /^\$\{\{ needs\.build\.outputs\.artifact-id \}\}-/, `${n}: ${s.with.name}`);
+  assert.match(wf.on.workflow_call.outputs['signed-artifact'].value, /artifact-id/);
+});
+
 test('every upload keeps hidden files: a listing may name its files with a leading dot', () => {
   const uploads = Object.values(wf.jobs).flatMap((j) => j.steps).filter((s) => String(s.uses ?? '').startsWith('actions/upload-artifact@'));
   assert.equal(uploads.length, 3);
@@ -103,7 +114,7 @@ test('the image is published by a job of its own, which runs none of the maker\'
   assert.equal(step.env.IMAGE, '${{ needs.build.outputs.image }}');
   assert.equal(step.env.REGISTRY_TOKEN, '${{ github.token }}', 'the job\'s own token, packages: write');
   const downloads = uses('publish', 'actions/download-artifact');
-  assert.deepEqual(downloads.map((d) => d.with.name), ['env-image']);
+  assert.deepEqual(downloads.map((d) => d.with.name), ['${{ needs.build.outputs.artifact-id }}-env-image']);
 });
 
 test('signing is a separate job that receives only the build\'s outputs and checks them before it signs', () => {
@@ -115,7 +126,7 @@ test('signing is a separate job that receives only the build\'s outputs and chec
     assert.equal(c.with.repository, SELF, 'the builder only, never the caller\'s repository');
     assert.equal(c.with.ref, '${{ inputs.builder-ref }}');
   }
-  assert.deepEqual(uses('sign', 'actions/download-artifact').map((d) => d.with.name), ['listing']);
+  assert.deepEqual(uses('sign', 'actions/download-artifact').map((d) => d.with.name), ['${{ needs.build.outputs.artifact-id }}-listing']);
   const step = steps('sign').find((x) => /verdikta-build-env\.js" sign\b/.test(x.run ?? ''));
   assert.match(step.run, /--expect-outputs "\$OUTPUTS_SHA256" --check-registry/);
   assert.equal(step.env.OUTPUTS_SHA256, '${{ needs.build.outputs.outputs-sha256 }}');

@@ -66,6 +66,11 @@ on:
         required: false
         type: string
         default: stake-attestation-signing
+      artifact-name:
+        description: The prefix of this invocation's artifact names (letters, digits, . _ -). By default one derived from spec, known-issues and publish-repository, so a caller that runs the workflow for several listings in one run gets distinct artifacts; set it when one run builds the same listing twice.
+        required: false
+        type: string
+        default: ''
     secrets:
       VERDIKTA_BUILDER_KEY:
         description: The production builder key (PKCS#8 PEM, Ed25519). Only the sign job reads it, and only when signing is production.
@@ -74,6 +79,9 @@ on:
       image:
         description: The env image, by digest, as code_review.json names it.
         value: ${{ jobs.build.outputs.image }}
+      signed-artifact:
+        description: The artifact holding the signed listing files.
+        value: ${{ format('{0}-listing-signed', jobs.build.outputs.artifact-id) }}
 
 permissions: {}
 
@@ -87,6 +95,7 @@ jobs:
     outputs:
       image: ${{ steps.build.outputs.image }}
       outputs-sha256: ${{ steps.digest.outputs.sha256 }}
+      artifact-id: ${{ steps.names.outputs.id }}
     steps:
       - name: Paths
         run: |
@@ -96,6 +105,22 @@ jobs:
             echo "VAB_IMAGE=$RUNNER_TEMP/vab-image"
             echo "VAB_BUILDER=$GITHUB_WORKSPACE/verdikta-builder/stake-attestation/builder"
           } >> "$GITHUB_ENV"
+      - name: Artifact names for this invocation (artifacts share the calling run's namespace)
+        id: names
+        env:
+          ARTIFACT_NAME: ${{ inputs.artifact-name }}
+          SPEC: ${{ inputs.spec }}
+          KNOWN_ISSUES: ${{ inputs.known-issues }}
+          PUBLISH_REPOSITORY: ${{ inputs.publish-repository }}
+        run: |
+          set -euo pipefail
+          if [ -n "$ARTIFACT_NAME" ]; then
+            if ! printf '%s' "$ARTIFACT_NAME" | grep -Eq '^[A-Za-z0-9._-]{1,64}$'; then echo "::error::artifact-name must be 1-64 letters, digits, . _ or -"; exit 1; fi
+            id="$ARTIFACT_NAME"
+          else
+            id="vab-$(printf '%s\n%s\n%s' "$SPEC" "$KNOWN_ISSUES" "$PUBLISH_REPOSITORY" | sha256sum | cut -c1-16)"
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
       - name: Check out the builder
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -172,7 +197,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: listing
+          name: ${{ steps.names.outputs.id }}-listing
           path: ${{ env.VAB_OUT }}
           if-no-files-found: ignore
           # A listing may name its files with a leading dot (.attestation.json, say).
@@ -180,7 +205,7 @@ jobs:
       - name: Upload the image
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: env-image
+          name: ${{ steps.names.outputs.id }}-env-image
           path: ${{ env.VAB_IMAGE }}
           if-no-files-found: error
           include-hidden-files: true
@@ -216,7 +241,7 @@ jobs:
       - name: Download the image
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: env-image
+          name: ${{ needs.build.outputs.artifact-id }}-env-image
           path: ${{ env.VAB_IMAGE }}
       - name: Check the layout against the digest code_review.json names, push it byte for byte, read it back without a credential
         env:
@@ -257,7 +282,7 @@ jobs:
       - name: Download the build's outputs
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: listing
+          name: ${{ needs.build.outputs.artifact-id }}-listing
           path: ${{ env.VAB_OUT }}
       - name: The signing config
         env:
@@ -272,7 +297,7 @@ jobs:
       - name: Upload the signed listing files
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: listing-signed
+          name: ${{ needs.build.outputs.artifact-id }}-listing-signed
           path: ${{ env.VAB_OUT }}
           if-no-files-found: error
           include-hidden-files: true

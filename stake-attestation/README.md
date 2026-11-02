@@ -392,7 +392,10 @@ one and passes that commit as `builder-ref`, with `spec` (the draft's path in th
 repository), `known-issues`, `publish-repository` (e.g. `ghcr.io/<owner>/stake-env`, readable
 without a credential), `runtime` (`runsc` by default; a production key needs gVisor),
 `explorer-api-url` (a keyless Etherscan-shaped API for a contract listing's chain, so the build
-job holds no explorer key) and `signing` (`dev` by default, or `production`). Three jobs:
+job holds no explorer key), `signing` (`dev` by default, or `production`) and `artifact-name`
+(the prefix of its artifacts' names: by default one derived from the spec, known issues and
+repository, so one run can build several listings). Its outputs are `image` and
+`signed-artifact`, the artifact holding the signed listing files. Three jobs:
 
 1. **build**, `contents: read` and no secret: checks out the builder and only the draft and the
    known issues of the calling repository (the builder fetches the listed commit itself), blocks

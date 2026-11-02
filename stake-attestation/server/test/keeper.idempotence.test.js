@@ -7,6 +7,7 @@
 // turn automine off so that transactions wait in the mempool as they would on Base.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { Transaction } from 'ethers';
 
 import {
   automine, chainContext, commit, finalize, HOUR, increaseTime, keeperTransactions, listing, mine,
@@ -344,6 +345,94 @@ describe('a record the keeper cannot act on any more', () => {
     } finally {
       await automine(ctx, true);
       site.close();
+    }
+  });
+
+  /** The gap of the test above, up to the queued settle surviving the reorg; returns its nonce. */
+  async function gapAfterReorg(ctx, site) {
+    await site.sync();
+    const snapshot = await rpc(ctx, 'evm_snapshot');
+    await site.keep(); // finalize at n, mined
+    await automine(ctx, false);
+    const r = await site.keep(); // settle at n + 1, waiting
+    const queued = r.pending.attempts.at(-1).raw;
+    assert.equal(await rpc(ctx, 'evm_revert', [snapshot]), true);
+    try {
+      await rpc(ctx, 'eth_sendRawTransaction', [queued]);
+    } catch { /* the node kept it */ }
+    return r.pending.nonce;
+  }
+
+  async function finishAndCheck(ctx, site, claimId) {
+    await mine(ctx);
+    await automine(ctx, true);
+    for (let i = 0; i < 3; i += 1) {
+      await site.sync();
+      await site.keep();
+    }
+    assert.equal((await ctx.sa.getClaim(claimId)).state, 5n, 'Settled');
+    const txs = await keeperTransactions(ctx);
+    for (const t of txs) assert.equal(t.status, 1, t.fn);
+    assert.equal(txs.filter((t) => t.fn === `settle(${claimId})`).length, 1);
+  }
+
+  test('a cancellation the node refuses leaves the gap open: no nonce is filled under the stale call', async () => {
+    const ctx = await chainContext();
+    const claimId = await judgedInvalid(ctx);
+    let refuse = true;
+    const provider = new Proxy(ctx.provider, {
+      get(target, prop) {
+        if (prop === 'broadcastTransaction') {
+          return async (raw) => {
+            if (refuse && Transaction.from(raw).to === ctx.keeperAddress) throw Object.assign(new Error('replacement transaction underpriced'), { code: 'REPLACEMENT_UNDERPRICED' });
+            return target.broadcastTransaction(raw);
+          };
+        }
+        const v = target[prop];
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    const site = siteFor(ctx, { env: FAST, provider });
+    try {
+      const nonce = await gapAfterReorg(ctx, site);
+      const refused = await site.keep();
+      assert.deepEqual(refused.sent, [], 'neither the cancel nor any filler');
+      assert.ok(refused.pending);
+      await mine(ctx);
+      assert.equal(await ctx.hre.ethers.provider.getTransactionCount(ctx.keeperAddress, 'latest'), nonce - 1, 'the gap is still open, so the stale settle cannot run');
+      refuse = false;
+      const accepted = await site.keep();
+      assert.deepEqual(accepted.sent.map((x) => [x.action, x.nonce]), [['cancel', nonce], ['fill', nonce - 1]]);
+      await finishAndCheck(ctx, site, claimId);
+    } finally {
+      await automine(ctx, true);
+      site.close();
+    }
+  });
+
+  test('a cancellation recorded but never broadcast (a crash) is sent on restart before the gap is filled', async () => {
+    const ctx = await chainContext();
+    const claimId = await judgedInvalid(ctx);
+    const dir = tmpDir();
+    const crashOnCancel = (attempt) => {
+      if (attempt.kind === 'cancel') throw Object.assign(new Error('the process died here'), { code: 'TEST_CRASH' });
+    };
+    const first = siteFor(ctx, { dir, env: FAST, keeperHooks: { beforeBroadcast: crashOnCancel } });
+    let second;
+    try {
+      const nonce = await gapAfterReorg(ctx, first);
+      await assert.rejects(first.keep(), (e) => e.code === 'TEST_CRASH');
+      assert.equal(first.store.state.keeper.inflight.attempts.at(-1).kind, 'cancel');
+      first.close();
+      await mine(ctx);
+      assert.equal(await ctx.hre.ethers.provider.getTransactionCount(ctx.keeperAddress, 'latest'), nonce - 1, 'nothing was filled');
+      second = siteFor(ctx, { dir, env: FAST });
+      const r = await second.keep();
+      assert.deepEqual(r.sent.map((x) => [x.action, x.nonce]), [['cancel', nonce], ['fill', nonce - 1]]);
+      await finishAndCheck(ctx, second, claimId);
+    } finally {
+      await automine(ctx, true);
+      second?.close();
     }
   });
 

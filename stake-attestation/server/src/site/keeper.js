@@ -70,7 +70,7 @@ function broadcastRefusal(err) {
  * @param {Wallet} o.wallet - not connected; the keeper signs and broadcasts itself
  * @param {() => object} o.projection - the projection of the indexed events
  * @param {object} o.logger
- * @param {{ beforeBroadcast?: () => void|Promise<void> }} [o.hooks]
+ * @param {{ beforeBroadcast?: (attempt: object) => void|Promise<void> }} [o.hooks] - for tests
  * @param {() => number} [o.now] - ms
  */
 export function createKeeper({ provider, store, chain, cfg, wallet, projection, logger, hooks = {}, now = Date.now }) {
@@ -147,7 +147,7 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
         s.keeper.inflight = { ...inflight, attempts: [...inflight.attempts, attempt] };
       });
     }
-    await hooks.beforeBroadcast?.();
+    await hooks.beforeBroadcast?.(attempt);
     try {
       await provider.broadcastTransaction(attempt.raw);
       return 'sent';
@@ -209,13 +209,6 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     }
   }
 
-  async function anyKnown(inflight) {
-    for (const a of inflight.attempts) {
-      if (await provider.getTransaction(a.hash)) return true;
-    }
-    return false;
-  }
-
   const FINAL = new Set(['Settled', 'Expired']);
 
   /**
@@ -248,20 +241,35 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     }
   }
 
+  /** Whether the node holds any of these attempts. */
+  async function someKnown(attempts) {
+    for (const a of attempts) {
+      if (await provider.getTransaction(a.hash)) return true;
+    }
+    return false;
+  }
+
   /**
    * The account's nonce is below the record's: a reorg dropped a transaction this key had mined.
    * The record cannot mine until the nonces below it are used, and whatever is queued at its
-   * nonce would run as soon as they are. So: if its call is no longer due, replace it with a
-   * transfer to itself first; then fill each missing nonce with a 0-value transfer to itself.
+   * nonce would run as soon as they are. So: if its call is no longer due, a transfer to itself
+   * must first be in place at that nonce (the node accepted it, and holds no call attempt), and
+   * only then is each missing nonce filled with a 0-value transfer to itself. A cancellation the
+   * node refuses (underpriced), or one recorded but never broadcast, leaves the gap open: the
+   * next cycle tries again with higher fees.
    */
   async function fillGap(inflight, accountNonce, sent) {
-    logger.warn(`keeper: the account's nonce is ${accountNonce}, below the ${inflight.action}(${inflight.claimId}) at ${inflight.nonce}: a reorg dropped an earlier transaction; filling the gap`);
+    logger.warn(`keeper: the account's nonce is ${accountNonce}, below the ${inflight.action}(${inflight.claimId}) at ${inflight.nonce}: a reorg dropped an earlier transaction`);
     const allowed = inflight.action !== 'expire' || cfg.expire;
     const due = allowed && await isDue(inflight.action, inflight.claimId);
-    const newest = inflight.attempts.at(-1);
-    if (!due && newest.kind !== 'cancel') {
-      const attempt = await sign({ kind: 'cancel', nonce: inflight.nonce, previous: newest });
-      if ((await broadcast(attempt, inflight)) === 'sent') {
+    if (!due) {
+      const calls = inflight.attempts.filter((a) => a.kind !== 'cancel');
+      const cancels = inflight.attempts.filter((a) => a.kind === 'cancel');
+      const inPlace = (await someKnown(cancels)) && !(await someKnown(calls));
+      if (!inPlace) {
+        const highest = inflight.attempts.reduce((a, b) => (BigInt(b.maxFeePerGas) > BigInt(a.maxFeePerGas) ? b : a));
+        const attempt = await sign({ kind: 'cancel', nonce: inflight.nonce, previous: highest });
+        if ((await broadcast(attempt, inflight)) !== 'sent') return 'pending'; // the call still holds its nonce: no filling
         sent.push({ action: 'cancel', claimId: inflight.claimId, nonce: inflight.nonce, txHash: attempt.hash, replaced: true });
       }
     }
@@ -287,7 +295,7 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     const nonce = await provider.getTransactionCount(address, 'latest');
     if (nonce > inflight.nonce) return settleInflight(inflight, 0);
     if (nonce < inflight.nonce) return fillGap(inflight, nonce, sent);
-    const known = await anyKnown(inflight);
+    const known = await someKnown(inflight.attempts);
     const newest = inflight.attempts.at(-1);
     if (known && now() - newest.sentAt < cfg.replaceAfterMs) return settleInflight(inflight, cfg.txTimeoutMs);
     const allowed = inflight.action !== 'expire' || cfg.expire;

@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { tryLock } from '../src/site/store.js';
 import { chainContext, commit, disclose, listing, mine, siteFor, tmpDir } from './helpers/scenario.js';
 
 const view = (events) => events.map(({ name, blockNumber, blockHash, logIndex, txHash, args }) => ({ name, blockNumber, blockHash, logIndex, txHash, args }));
@@ -151,5 +152,16 @@ describe('a restart mid-sync', () => {
     fs.writeFileSync(path.join(dir, 'writer.lock.6'), String(process.pid));
     assert.throws(() => siteFor(ctx, { dir }), (e) => e.code === 'WRITER_ACTIVE');
     assert.equal(fs.readFileSync(path.join(dir, 'writer.lock.6'), 'utf8'), String(process.pid), 'a live lock is never removed');
+  });
+
+  test('a process acting on a stale view of the folder backs off from a lock below the live one', () => {
+    // A saw an empty folder and paused; B took lock 0 and died; C took lock 1, removed lock 0 and
+    // writes. A, resuming, can create lock 0 again, but finds lock 1 above it and gives it up.
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, 'writer.lock.1'), String(process.pid));
+    assert.equal(tryLock(dir, -1), 'lost');
+    assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith('writer.lock')), ['writer.lock.1']);
+    assert.equal(tryLock(dir, 0), 'lost', 'the number is taken');
+    assert.equal(tryLock(dir, 1), 'taken', 'the next number, with nothing above it');
   });
 });

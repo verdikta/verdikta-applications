@@ -7,10 +7,11 @@
 // One writer per folder, by numbered lock files (writer.lock.<n>, each created atomically with
 // its writer's pid already in it). A process may write only by creating the next number after the
 // highest one, and only when the highest one's process is gone; creation fails if the number is
-// taken, so of two processes racing for it exactly one wins. Nobody ever removes a lock that may
-// be live: a writer removes its own at close, and the numbers below its own, whose processes were
-// all found gone before it could take its number. A crash at any point leaves at most a lock of a
-// dead process, which the next start steps over.
+// taken, so of two processes racing for it exactly one wins, and a lock is kept only if it is
+// still the highest once created (a process acting on a stale view of the folder backs off).
+// Nobody ever removes a lock that may be live: a writer removes its own at close, and the numbers
+// below its own, whose processes were all found gone before it could take its number. A crash at
+// any point leaves at most a lock of a dead process, which the next start steps over.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -65,6 +66,28 @@ function lockHolder(file) {
   return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }
 
+/**
+ * Tries to take lock number `observedTop + 1`, where `observedTop` is the highest number this
+ * process saw held by a process that is gone (-1: none). The view may be stale by the time the
+ * lock is created (numbers below a writer's are removed, so a low name can be free again), so a
+ * lock is kept only if no higher number exists once it is created; otherwise it is removed again.
+ * @returns {'taken'|'lost'} lost: another process holds that number or a higher one
+ */
+export function tryLock(dir, observedTop) {
+  const file = path.join(dir, `writer.lock.${observedTop + 1}`);
+  try {
+    createExclusive(file, String(process.pid));
+  } catch (err) {
+    if (err.code === 'EEXIST') return 'lost';
+    throw err;
+  }
+  if (lockNumbers(dir).at(-1) > observedTop + 1) {
+    fs.rmSync(file, { force: true });
+    return 'lost';
+  }
+  return 'taken';
+}
+
 /** Takes the folder's next writer lock; returns its file. */
 function acquireLock(dir) {
   for (let attempt = 0; attempt < 16; attempt += 1) {
@@ -75,15 +98,9 @@ function acquireLock(dir) {
       if (holder === undefined) continue; // closed while we looked: look again
       if (holder !== null && alive(holder)) throw new StoreError('WRITER_ACTIVE', `the state folder is in use by process ${holder}`);
     }
-    const file = path.join(dir, `writer.lock.${top + 1}`);
-    try {
-      createExclusive(file, String(process.pid));
-    } catch (err) {
-      if (err.code === 'EEXIST') continue; // another process took this number first
-      throw err;
-    }
+    if (tryLock(dir, top) === 'lost') continue; // look again: the winner's lock decides
     for (const n of taken) fs.rmSync(path.join(dir, `writer.lock.${n}`), { force: true });
-    return file;
+    return path.join(dir, `writer.lock.${top + 1}`);
   }
   throw new StoreError('WRITER_ACTIVE', 'the state folder\'s lock is contended');
 }

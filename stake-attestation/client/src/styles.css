@@ -2,6 +2,12 @@
   --bg: #ffffff;
   --fg: #1b1f24;
   --muted: #57606a;
+  --line: #d0d7de;
+  --panel: #f6f8fa;
+  --accent: #0969da;
+  --ok: #1a7f37;
+  --bad: #cf222e;
+  --warn: #9a6700;
   color-scheme: light dark;
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
   line-height: 1.5;
@@ -12,6 +18,12 @@
     --bg: #0d1117;
     --fg: #e6edf3;
     --muted: #8d96a0;
+    --line: #30363d;
+    --panel: #161b22;
+    --accent: #4493f8;
+    --ok: #3fb950;
+    --bad: #f85149;
+    --warn: #d29922;
   }
 }
 
@@ -21,16 +33,242 @@ body {
   color: var(--fg);
 }
 
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.5rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.top h1 {
+  font-size: 1.15rem;
+  margin: 0;
+}
+
+.top nav {
+  display: flex;
+  gap: 1rem;
+}
+
+.top a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.wallet {
+  margin-left: auto;
+}
+
+.wallet p {
+  margin: 0.25rem 0 0;
+}
+
 .page {
-  max-width: 44rem;
+  max-width: 48rem;
   margin: 0 auto;
-  padding: 3rem 1rem;
+  padding: 2rem 1rem 4rem;
 }
 
 .lead {
-  font-size: 1.15rem;
+  font-size: 1.1rem;
 }
 
-.status {
+.status,
+.hint {
   color: var(--muted);
+}
+
+.hint {
+  font-size: 0.9rem;
+  margin: 0.25rem 0 0.5rem;
+}
+
+fieldset {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem 1rem;
+}
+
+legend {
+  font-weight: 600;
+  padding: 0 0.25rem;
+}
+
+details {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  margin: 0.5rem 0;
+}
+
+.field label {
+  font-size: 0.9rem;
+  margin-bottom: 0.2rem;
+}
+
+input[type='text'],
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+}
+
+input[aria-invalid='true'],
+textarea[aria-invalid='true'] {
+  border-color: var(--bad);
+}
+
+.mono,
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.grid4 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0 0.75rem;
+}
+
+button {
+  font: inherit;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  padding: 0.4rem 0.9rem;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.known-issue {
+  background: var(--panel);
+}
+
+.once {
+  border: 2px solid var(--warn);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+}
+
+.warning {
+  color: var(--warn);
+}
+
+.field-error,
+.error {
+  color: var(--bad);
+}
+
+.field-error {
+  font-size: 0.9rem;
+  margin: 0.2rem 0 0;
+}
+
+.ok {
+  color: var(--ok);
+}
+
+.refused {
+  border: 1px solid var(--bad);
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  margin: 1rem 0;
+}
+
+.submit {
+  margin: 1rem 0;
+}
+
+.report,
+.ready,
+.claim,
+.check-run,
+.check-result {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.5rem 1rem 1rem;
+  margin: 1rem 0;
+}
+
+.steps {
+  list-style: none;
+  padding-left: 0;
+}
+
+.steps li::before {
+  display: inline-block;
+  width: 1.25rem;
+  content: '·';
+}
+
+.steps .step-ok::before,
+.steps .step-passed::before {
+  content: '+';
+  color: var(--ok);
+}
+
+.steps .step-failed::before {
+  content: 'x';
+  color: var(--bad);
+}
+
+.status-line {
+  font-weight: 600;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+}
+
+dt {
+  color: var(--muted);
+}
+
+dd {
+  margin: 0;
+}
+
+.lookup {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
 }

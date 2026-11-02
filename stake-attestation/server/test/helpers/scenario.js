@@ -206,9 +206,11 @@ export function siteEnv(ctx, dir, over = {}) {
  * The site (indexer, keeper, feed, record, badge) over the in-process chain. `env` adds to or
  * overrides siteEnv; `provider` replaces the in-process provider (a wrapper that fails on cue);
  * `keeperHooks.beforeBroadcast` runs between recording a transaction and broadcasting it; `now`
- * replaces the site's wall clock.
+ * replaces the site's wall clock. `checkRepository` is the git check: by default it answers that the
+ * commit is on no ref and fetches nothing (no test reaches a live host); null runs the real command
+ * line, for a test that names SA_CONTROL_GIT_MIRROR_DIR.
  */
-export function siteFor(ctx, { dir = tmpDir(), env = {}, provider = ctx.provider, fetchArchive, logger = quietLogger(), keeperHooks, now } = {}) {
+export function siteFor(ctx, { dir = tmpDir(), env = {}, provider = ctx.provider, fetchArchive, logger = quietLogger(), keeperHooks, now, checkRepository = async () => ({ reachable: false, ref: null, file: null }), chainProviderFor } = {}) {
   const fullEnv = siteEnv(ctx, dir, env);
   const config = testConfig(fullEnv);
   const site = createSite({
@@ -223,6 +225,8 @@ export function siteFor(ctx, { dir = tmpDir(), env = {}, provider = ctx.provider
     logger,
     keeperHooks,
     ...(now ? { now } : {}),
+    ...(checkRepository ? { checkRepository } : {}),
+    ...(chainProviderFor ? { chainProviderFor } : {}),
   });
   site.dir = dir;
   site.logger = logger;

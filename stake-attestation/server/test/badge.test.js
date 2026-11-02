@@ -2,8 +2,9 @@
 // live state of the hash's stake. While a listing of the hash takes commits it reads "no finding
 // at or above <class> while staked" (with "under-staked" or "invited" when the labels say so), or
 // only "scanned" below the badge floor; a valid finding at or above the class replaces the
-// statement; and the statement ends when the stake does (closed, rolled forward, lapsed or
-// depleted). Every string the server writes passes the shared banned-words helper.
+// statement; each states the listing's control fact (node P8); and the statement ends when the
+// stake does (closed, rolled forward, lapsed or depleted). Every string the server writes passes
+// the shared wording helper.
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -17,6 +18,8 @@ import {
 } from './helpers/scenario.js';
 
 const PRICE = 2420n * 10n ** 8n;
+// every statement of a live stake also states its control fact; none of these listings proves control
+const NO = 'staker controls the repository: no';
 
 /** The badge's message, from its SVG: the text after the label. */
 async function badge(api, hash) {
@@ -74,28 +77,28 @@ describe('GET /api/records/:hash/badge.svg', () => {
   });
 
   test('a live stake: "no finding at or above <class> while staked"', async () => {
-    assert.equal((await badge(api, L.staked.artifactHash)).message, 'no finding at or above MEDIUM while staked');
-    assert.equal((await badge(api, L.successor.artifactHash)).message, 'no finding at or above MEDIUM while staked', 'the badge moved to the successor');
+    assert.equal((await badge(api, L.staked.artifactHash)).message, `no finding at or above MEDIUM while staked · ${NO}`);
+    assert.equal((await badge(api, L.successor.artifactHash)).message, `no finding at or above MEDIUM while staked · ${NO}`, 'the badge moved to the successor');
   });
 
   test('the class is the listing\'s lowest class counted, and a finding below it does not end the statement', async () => {
-    assert.equal((await badge(api, L.high.artifactHash)).message, 'no finding at or above HIGH while staked');
+    assert.equal((await badge(api, L.high.artifactHash)).message, `no finding at or above HIGH while staked · ${NO}`);
   });
 
   test('under-staked and invited qualify the statement', async () => {
-    assert.equal((await badge(api, L.under.artifactHash)).message, 'no finding at or above MEDIUM while staked · under-staked');
-    assert.equal((await badge(api, L.invited.artifactHash)).message, 'no finding at or above MEDIUM while staked · invited');
+    assert.equal((await badge(api, L.under.artifactHash)).message, `no finding at or above MEDIUM while staked · under-staked · ${NO}`);
+    assert.equal((await badge(api, L.invited.artifactHash)).message, `no finding at or above MEDIUM while staked · invited · ${NO}`);
   });
 
   test('below the badge floor the badge says only "scanned"', async () => {
     const { message, svg } = await badge(api, L.scanned.artifactHash);
-    assert.equal(message, 'scanned');
+    assert.equal(message, `scanned · ${NO}`);
     assert.equal(svg.includes('no finding'), false);
   });
 
   test('a valid finding at or above the class replaces the statement', async () => {
     const { message, svg } = await badge(api, L.found.artifactHash);
-    assert.equal(message, '1 valid finding at or above MEDIUM');
+    assert.equal(message, `1 valid finding at or above MEDIUM · ${NO}`);
     assert.equal(svg.includes('no finding'), false);
   });
 
@@ -117,7 +120,7 @@ describe('GET /api/records/:hash/badge.svg', () => {
     const late = await listing(ctx, { stake: { valueAtRiskUsd: 1250000 } });
     await increaseTime(ctx, 2 * 3600);
     await site.sync();
-    assert.equal((await badge(api, late.artifactHash)).message, 'price unavailable', 'never a guess at the label');
+    assert.equal((await badge(api, late.artifactHash)).message, `price unavailable · ${NO}`, 'never a guess at the label');
   });
 
   test('a malformed hash is 400', async () => {
@@ -142,7 +145,7 @@ describe('a stale record states no live stake', () => {
     try {
       assert.equal((await site.badge(l.artifactHash)).message, 'record unavailable', 'nothing indexed yet');
       await site.sync();
-      assert.equal((await site.badge(l.artifactHash)).message, 'no finding at or above MEDIUM while staked');
+      assert.equal((await site.badge(l.artifactHash)).message, `no finding at or above MEDIUM while staked · ${NO}`);
       assert.equal((await site.record(l.artifactHash)).fresh, true);
 
       // the RPC goes down: syncs fail, and a minute later the cached record is stale
@@ -158,7 +161,7 @@ describe('a stale record states no live stake', () => {
 
       down = false;
       await site.sync();
-      assert.equal((await site.badge(l.artifactHash)).message, 'no finding at or above MEDIUM while staked');
+      assert.equal((await site.badge(l.artifactHash)).message, `no finding at or above MEDIUM while staked · ${NO}`);
 
       // an indexed block far behind the wall clock (a node that stopped producing, or a catch-up)
       clock = (site.store.state.cursor.timestamp + 120) * 1000;

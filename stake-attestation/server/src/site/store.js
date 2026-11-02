@@ -163,9 +163,11 @@ export class StateStore {
   }
 
   #write(state) {
+    const bytes = Buffer.from(JSON.stringify(state), 'utf8');
     const fd = fs.openSync(this.tmp, 'w', 0o600);
     try {
-      fs.writeSync(fd, JSON.stringify(state));
+      // writeSync may write less than it was given: loop until every byte is in the file
+      for (let off = 0; off < bytes.length;) off += fs.writeSync(fd, bytes, off, bytes.length - off);
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);

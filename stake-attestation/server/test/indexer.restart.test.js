@@ -124,6 +124,26 @@ describe('a restart mid-sync', () => {
     }
   });
 
+  test('a write the OS completes only in part is finished before the state is replaced', async () => {
+    const ctx = await chainContext();
+    await listing(ctx);
+    const dir = tmpDir();
+    const site = siteFor(ctx, { dir });
+    const writeSync = fs.writeSync;
+    // at most 100 bytes per call, as a short write returns
+    fs.writeSync = (fd, buffer, offset = 0, length = buffer.length - offset, ...rest) => writeSync(fd, buffer, offset, Math.min(length, 100), ...rest);
+    try {
+      await site.sync();
+    } finally {
+      fs.writeSync = writeSync;
+      site.close();
+    }
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf8'));
+    assert.ok(saved.events.length > 0);
+    assert.deepEqual(saved.events, site.store.state.events);
+    assert.deepEqual(saved.cursor, site.store.state.cursor);
+  });
+
   test('a released lock, a dead writer\'s or an empty one does not block the next start, and no lock is removed', async () => {
     const ctx = await chainContext();
     const dir = tmpDir();

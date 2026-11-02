@@ -60,7 +60,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 | `client/` | Vite + React site. Port 5176. | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI: `check`, `commit`, `reveal`, `status`, `claim` arrive in P5. | `npm test` |
 | `shared/` | Code shared by the packages (the banned-words helper so far) and the app's repository checks. | `npm test` |
-| `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`. | `npm test`, `npm run test:docker` |
+| `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`; the baseline scan, for the maker only (P3b). The reusable workflow that runs it is `.github/workflows/stake-attestation-builder.yml`. | `npm test`, `npm run test:docker` |
 | `docs/` | `BUILD_PLAN.md`. | |
 
 Ports 5009 and 5176 are the next free ones after the apps in the repository's
@@ -401,6 +401,25 @@ failed), 1 error. `verdikta-build-env sign --config builder.json --dir out/` the
 `attestation.json` (`createAttestationStatement` over the exact bytes written, Ed25519) and
 records it in the report; `run` does both in one process, with a dev key only.
 
+**What sign checks first.** Signing may run in a job that receives only the build's output folder
+(the reusable workflow below), so before any signature exists `sign` checks what it can without
+re-running the build (`src/verifyBuild.js`) and refuses on the first failure, writing nothing:
+the report accepted the listing; the files are the bytes it accepted; `code_review.json`, the
+baseline and `known_issues.json` validate; the report is about this repository, commit and
+artifact, records every step of a build (the verified-source match for a contract) and an
+accepted listing check; it names the image, platform, base and sizes `code_review.json` names,
+inside the class limits. `--expect-outputs <hex>` also requires the folder to be byte for byte
+the one `verdikta-build-env digest --dir out/` digested in the build job. `--check-registry` reads
+the image `code_review.json` names from its registry without a credential, as arbiters pull it,
+and requires the manifest and compressed size the build measured, no `VOLUME`, layers that begin
+with the pinned base's (`rootfs.diff_ids`, which do not depend on compression) and the listed
+commit's `io.verdikta.listing.base-commit` label. The report's `signing` records `checks` and
+`trusts`: what only a re-run could check, namely the code-runner's answer (baseline, timings,
+limits, harness proof, and the runner, runtime and platform it names), the verified-source
+comparison, the unpacked size, that the build job ran this builder unmodified, and, without the
+two options, the folder in transit and the image's publication. A maker's own CI is the maker's
+to vouch for, so a production key signs only in Verdikta's own workflow.
+
 **The signing key** is `signing.key` in the config, one of:
 
 | Value | Trust | |
@@ -431,6 +450,9 @@ logged or put in the report.
 Also `solc.baseUrl` (default `https://binaries.soliditylang.org`, or a mirror with the same
 layout) and `solc.cacheDir` (binaries kept by their SHA-256), `registry.apiUrl` (where manifests are read, when not the repository's host), `runner.url`
 (loopback over http, else https) and `tokenEnv`, `runner.deadlineMs` (default 900000),
+`registry.publishAs` (the repository `code_review.json` names when the build pushes to another,
+e.g. a loopback registry:2 whose image a later step copies there byte for byte, digest kept),
+`scan.agent` (below),
 `limits.imageCompressedBytes` / `imageUnpackedBytes` (lower only), `repoMirrors` (`{ "<https
 repo>": "<path or https URL>" }`), `workDir`, `docker.bin` / `host` / `buildTimeoutSeconds` /
 `pushTimeoutSeconds`, and `platforms` (below). Secrets are named by where they live and read
@@ -443,6 +465,95 @@ final stage runs nothing, so the amd64 variant needs no emulation), runs the set
 runs and measures the arm64 variant, as the code-runner's own `CODE_RUNNER_PLATFORM=linux/arm64`
 does. The report lists that under `devOnly`, and a production key refuses to sign it.
 
+### The baseline scan
+
+Between listing and open the site scans the staked version (design §8.3) so the stake pays for
+findings that take work, not for bugs a scanner finds for a dollar. `verdikta-build-env scan
+--config builder.json --spec code_review.json --out <dir>` fetches the listed commit's objects by
+id (as `build` does; submodules are not scanned), takes the files `stake.scope` includes and does
+not exclude (symbolic links are not followed), and runs over them, each in a fresh sandbox of its
+image with no network, a read-only root and uid 10001, the files fed on stdin as a tar stream:
+
+| Tool | Pin |
+|---|---|
+| Semgrep | `semgrep/semgrep` 1.181.0, by digest (`src/scanTools.js`) |
+| Verdikta's Solidity rules | `scan-rules/solidity.yml`, rule set `2026.10` (common's `SEMGREP_RULES_VERSION`), its SHA-256 pinned: a changed rule is refused until the pin and the version move |
+| The secret scan | `zricethezav/gitleaks` v8.30.1, by digest, with its built-in rules and `--redact` |
+
+The rules flag `tx.origin` authorization, Ether sent by a low-level call before a later mapping
+write, ignored low-level call and ERC-20 transfer results, `transferFrom` from a caller-chosen
+address, `delegatecall` to a parameter, block values used as randomness and `selfdestruct`.
+Semgrep reads the in-scope `.sol` files from a folder whose empty `.semgrepignore` replaces its
+default exclusions (`test/`, `vendor/`, ...); the secret scanner reads every in-scope file but its
+own configuration files at the root. Each tool's `notScanned` names, with the reason, every file it
+did not read: over Semgrep's 2 MB or the secret scanner's 5 MB per-file limit, missing from what
+Semgrep reports it analysed, or skipped by the secret scanner (its built-in allowlist of lock
+files and `node_modules`, binary files, archives, empty files), in the words of its trace log.
+`--agent` adds the one inexpensive agent pass, **off by default**: the model named in
+`scan.agent` (`{ "provider", "model", "apiUrl"?, "apiKeyEnv" }`, a model of common's
+`code-standard` pool served over a chat-completions API: OpenRouter, OpenAI or xAI) reads the
+in-scope source (up to `maxSourceBytes`, fenced as data) with the scope and the severity rubric,
+and lists candidates at or above `lowestClassCounted`, each with a sketch of the test that would
+demonstrate it. The token is read from `apiKeyEnv` when the pass runs. Its answer is read as
+data: JSON of a fixed shape, bounded, every path one of the files sent. The model is given only
+the plain-text files the secret scanner's trace log says it opened and did not skip (never an
+archive or a binary file), with every line it flagged replaced, all of them and not only those
+the findings file keeps; without a complete secret scan (a failed run or a cut log) there is no
+agent pass. The provider sees the source it is sent
+(public already) and its own answer, which is one more reason the pass runs only when asked for.
+
+The result, `scan-findings.json`, is **the maker's alone**: not a judgement, paying nobody, and
+kept out of the record, the jury and `known_issues.json` unless the maker writes a finding there
+themselves. So it is written only into a new or empty folder of its own (owner-only
+permissions), never beside a listing's files: `sign` refuses a folder that holds it, and a draft
+cannot give a listing file its name. A tool's finding keeps the rule, the path, the lines and the
+rule's fixed message, never a source line or a secret's value, and a tool's error only its kind and
+place (Semgrep's messages can quote the source). An agent candidate is the model's own words,
+which may quote the source it was sent, never a line the secret scan flagged. The command prints where the file is and
+nothing of what it says, not even a count, so its output can sit in a public CI log; a scanner
+that fails is an error whose details are in the file. The reusable workflow below does not run
+the scan: its logs and artifacts can be public. The site runs it on its own host (node P4b2).
+
+### The reusable builder workflow
+
+`.github/workflows/stake-attestation-builder.yml` runs the same builder for a maker's CI or for
+the site's own workflow (design §8.2, §20 decision 3). A repository calls it at a commit of this
+one and passes that commit as `builder-ref`, with `spec` (the draft's path in the calling
+repository), `known-issues`, `publish-repository` (e.g. `ghcr.io/<owner>/stake-env`, readable
+without a credential), `runtime` (`runsc` by default; a production key needs gVisor),
+`explorer-api-url` (a keyless Etherscan-shaped API for a contract listing's chain, so the build
+job holds no explorer key), `signing` (`dev` by default, or `production`) and `artifact-name`
+(the prefix of its artifacts' names: by default one derived from the spec, known issues and
+repository, so one run can build several listings). Its outputs are `image` and
+`signed-artifact`, the artifact holding the signed listing files. Three jobs:
+
+1. **build**, `contents: read` and no secret: checks out the builder and only the draft and the
+   known issues of the calling repository (the builder fetches the listed commit itself), blocks
+   the runner's metadata addresses from containers, installs common's gVisor release
+   (SHA-512-checked; `builder/action/pins.json`, which also pins registry:2, skopeo and the
+   code-runner's commit), and starts with `builder/action/services.js` a
+   registry:2 on the runner's loopback and the code-runner of verdikta-arbiter at the pinned
+   commit with a token made for the run. `build` pushes to that registry with no credential,
+   validates there and names `publish-repository` in `code_review.json` (`registry.publishAs`);
+   the image leaves in skopeo's `dir:` layout (`builder/action/image.js export`: the pinned skopeo,
+   `--preserve-digests`; unlike its `oci:` layout this reads back any manifest type, and `docker
+   push` writes Docker schema-2) and the output folder as artifacts, the image and the folder's
+   digest as job outputs.
+2. **publish**, `packages: write`, runs none of the maker's code: `builder/action/image.js
+   publish` checks the layout holds exactly the digest `code_review.json` names, with every
+   manifest and blob intact, pushes it byte for byte with the job's token in an auth file of its
+   own (never on a command line), and reads it back without a credential.
+3. **sign**, in the `signing-environment` (default `stake-attestation-signing`, whose secret
+   `VERDIKTA_BUILDER_KEY` is the production key, read only when `signing` is `production`):
+   checks out the builder only, downloads only the output folder, and runs `sign
+   --expect-outputs <the build job's digest> --check-registry`.
+
+The workflow has no trigger of its own and nothing in this repository calls it: publishing under
+Verdikta's registry namespace is owner gate G1. Its tests read its YAML and unit-test the scripts
+it calls (`test/unit/action.test.js`); `test/docker/image.docker.test.js` runs the image hand-off
+with the same script and skopeo between two throwaway registry:2 (a Docker schema-2 image, an OCI
+image and a multi-platform index); CI lints it with a pinned actionlint.
+
 **Tests.** `npm test` runs the unit tests (no Docker; explorer answers come only from recorded
 responses in `test/fixtures/explorer`, in the Etherscan v2 API's shape, for the fixture contract
 `test/fixtures/vault`). `npm run test:docker` builds the fixture with a real daemon, pushes it to
@@ -454,6 +565,10 @@ sidecar on loopback with its own token and environment (`SA_CODE_RUNNER_DIR` poi
 checkout of that commit's `code-runner/`; otherwise the tests fetch it). The fixture's setup lets
 forge download solc (the build's network) and its build command passes only where the sandbox
 has no route out, so an accepted listing shows the network was there at setup and nowhere after.
+The Docker tests also run `sign`'s checks on that build, the registry read included, and the
+scan with the real pinned Semgrep, rules and secret scanner over the fixture plus planted bugs
+and a secret written at run time (`test/fixtures/scan`). The scan's and the agent pass's unit
+tests use doubles only: no test holds a provider key or reaches a provider.
 
 ## The mock aggregator
 
@@ -472,10 +587,11 @@ real contract cannot produce is not added to the mock.
 ## CI
 
 `.github/workflows/stake-attestation.yml` runs on pull requests into `main` and
-`claude/stake-attestation` that touch this folder or the workflow. It installs
+`claude/stake-attestation` that touch this folder or the two workflows. It installs
 each package with `npm ci --ignore-scripts`, runs its tests, the Hardhat tests,
 the contract sizer, the coverage gate (a job of its own), the Playwright smoke
 test, the builder's Docker tests (a job of its own, with registry:2 and the
-pinned code-runner under runc) and the banned-words check, and uses no secrets. A new
+pinned code-runner under runc), the banned-words check and actionlint (1.7.12, checksum pinned)
+over it and the reusable builder workflow, and uses no secrets. A new
 package is added to the workflow and to `shared/test/repo/helpers.js` together;
 the workflow test fails until both list it.

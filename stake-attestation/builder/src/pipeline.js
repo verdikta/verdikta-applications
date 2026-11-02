@@ -5,7 +5,8 @@
 //   build           the env image (src/dockerfile.js): the maker's setup with network, then a
 //                   final stage that runs nothing
 //   size            its unpacked size, as the code-runner measures it: over 6 GB stops here
-//   push            to the configured registry; from here on the image is its digest
+//   push            to the configured registry; from here on the image is its digest (named in
+//                   code_review.json under registry.publishAs when that is set)
 //   registry        the linux/amd64 manifest an arbiter pulls: over 2 GB compressed, or any
 //                   VOLUME, stops here
 //   verifiedSource  for a contract: the explorer's verified source against the listed commit's
@@ -95,7 +96,7 @@ export function repoBuilder({ config, docker, draft, workDir }) {
  * @param {object} [o.deps] - doubles: docker, fetchListedCommit, writeBuildContext, registry
  * @param {object} o.report - the report to record into
  * @param {string} o.workDir - an empty folder for the fetch and the build context
- * @returns {Promise<{ ref: string, digest: string, tag: string, platform: string, platforms: string[], base: string, compressedBytes: number, unpackedBytes: number }>}
+ * @returns {Promise<{ ref: string, stagedRef: string, digest: string, tag: string, platform: string, platforms: string[], base: string, compressedBytes: number, unpackedBytes: number }>}
  * @throws {Refusal|BuilderError}
  */
 export async function buildEnvImage({ draft, config, deps = {}, report, workDir }) {
@@ -127,9 +128,13 @@ export async function buildEnvImage({ draft, config, deps = {}, report, workDir 
     return bytes;
   });
   const { digest } = await step(report, 'push', () => pushImage({ docker, tag, timeoutMs: config.docker.pushTimeoutMs }));
-  const ref = `${repository}@${digest}`;
+  // Where this build reads and runs the image, and the reference code_review.json gives arbiters:
+  // the same unless registry.publishAs names the repository a later step copies the digest to.
+  const stagedRef = `${repository}@${digest}`;
+  const ref = `${config.registry.publishAs ?? repository}@${digest}`;
   report.image.ref = ref;
   report.image.digest = digest;
+  if (config.registry.publishAs) report.image.stagedRef = stagedRef;
   const info = await step(report, 'registry', async () => {
     const i = await registry.imageInfo(digest, CLASS_PLATFORM);
     report.image.manifestDigest = i.manifestDigest;
@@ -140,11 +145,11 @@ export async function buildEnvImage({ draft, config, deps = {}, report, workDir 
     }
     if (i.volumes.length) throw new Refusal('IMAGE_DECLARES_VOLUMES', `the env image declares VOLUME ${i.volumes.join(', ')}; the code-runner refuses images with volumes`);
     const [issue] = imageSizeIssues({ compressedBytes: i.compressedBytes }, config.limits);
-    if (issue) throw new Refusal(issue.code, `${issue.detail}; it was pushed as ${ref} and should be deleted`);
+    if (issue) throw new Refusal(issue.code, `${issue.detail}; it was pushed as ${stagedRef} and should be deleted`);
     return i;
   });
   return {
-    ref, digest, tag, platform: CLASS_PLATFORM, platforms: info.platforms, base: refs.attested, compressedBytes: info.compressedBytes, unpackedBytes: builderUnpacked,
+    ref, stagedRef, digest, tag, platform: CLASS_PLATFORM, platforms: info.platforms, base: refs.attested, compressedBytes: info.compressedBytes, unpackedBytes: builderUnpacked,
     // The listed commit's objects as fetched (the build context's copy), for the verified-source check.
     gitDir: path.join(contextDir, 'repo.git'),
   };
@@ -186,7 +191,7 @@ export async function buildListing({ draft, knownIssues = null, config, deps = {
       if (!ex) throw new BuilderError('EXPLORER_NOT_CONFIGURED', `no explorer is configured for chain ${chainId} (config explorers)`);
       const explorer = deps.explorerFor ? deps.explorerFor(chainId, ex) : createExplorer({ apiUrl: ex.apiUrl, apiKey: ex.apiKey(), chainId, timeoutMs: ex.timeoutMs });
       const buildImpl = deps.buildRepo ?? repoBuilder({ config, docker, draft, workDir: tmp });
-      const buildRepo = (req) => buildImpl({ ...req, baseCommit: draft.baseCommit, gitDir: image.gitDir, image: image.ref });
+      const buildRepo = (req) => buildImpl({ ...req, baseCommit: draft.baseCommit, gitDir: image.gitDir, image: image.stagedRef });
       const r = await checkVerifiedSource({ spec: draft, explorer, buildRepo });
       const api = new URL(ex.apiUrl);
       report.verifiedSource = {
@@ -202,8 +207,8 @@ export async function buildListing({ draft, knownIssues = null, config, deps = {
 
     const lc = await step(report, 'listingCheck', async () => {
       const runner = deps.runner ?? createRunnerClient({ url: config.runner.url, socket: config.runner.socket, token: config.runner.token(), timeoutMs: config.runner.deadlineMs + 60000 });
-      const answer = await runner.listingCheck({ spec: runnerSpec(draft, image.ref), image: image.ref, deadline: config.runner.deadlineMs });
-      const r = interpretListingCheck(answer, { spec: draft, image: image.ref });
+      const answer = await runner.listingCheck({ spec: runnerSpec(draft, image.stagedRef), image: image.stagedRef, deadline: config.runner.deadlineMs });
+      const r = interpretListingCheck(answer, { spec: draft, image: image.stagedRef });
       report.listingCheck = {
         status: r.outcome, checkId: r.checkId, runner: r.runner, refusals: r.refusals ?? [], issues: r.issues ?? [], warnings: r.warnings,
         abstain: r.abstain ?? null, timings: r.timings, limits: r.limits ?? null, unpackedBytes: r.unpackedBytes ?? null, suite: r.suite, harness: r.harness, checkout: r.checkout,

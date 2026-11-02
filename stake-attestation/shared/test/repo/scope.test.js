@@ -7,7 +7,8 @@ import { execFileSync } from 'node:child_process';
 
 import { REPO_ROOT } from './helpers.js';
 
-const ALLOWED_OUTSIDE = ['.github/workflows/stake-attestation.yml'];
+// The reusable builder workflow (P3b) lives beside it: GitHub runs a called workflow only from .github/workflows.
+const ALLOWED_OUTSIDE = ['.github/workflows/stake-attestation.yml', '.github/workflows/stake-attestation-builder.yml'];
 const UNTOUCHABLE = ['example-bounty-program/onchain/contracts/BountyEscrow.sol'];
 
 function git(...args) {

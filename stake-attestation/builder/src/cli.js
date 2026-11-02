@@ -1,29 +1,48 @@
 // verdikta-build-env: the environment builder's command line.
 //
-//   build  builds, pushes, checks and validates a listing; writes code_review.json, the baseline,
-//          known_issues.json and validation-report.json. Holds no secret: it refuses to start
-//          while the production signing key is in its environment.
-//   sign   signs attestation.json for an accepted build, in its own step (design §20 decision 3:
-//          signing in a separate job from the one that ran the maker's setup).
-//   run    build, then sign, in one process: with a dev key only.
+//   build   builds, pushes, checks and validates a listing; writes code_review.json, the baseline,
+//           known_issues.json and validation-report.json. Holds no secret: it refuses to start
+//           while the production signing key is in its environment.
+//   sign    signs attestation.json for an accepted build, in its own step (design §20 decision 3:
+//           signing in a separate job from the one that ran the maker's setup), after checking the
+//           build's outputs as far as it can without re-running the build (src/verifyBuild.js).
+//   run     build, then sign, in one process: with a dev key only.
+//   scan    the baseline scan (design §8.3; src/scan.js): findings for the maker only, in a folder
+//           of their own; the agent pass only with --agent.
+//   digest  the digest of a build's output folder, which the sign step can be asked to expect.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
 import { loadConfig } from './config.js';
 import { BuilderError } from './errors.js';
-import { DEV_TRUST_FILE, readOutputs, writeOutputs } from './outputs.js';
+import { DEV_TRUST_FILE, outputsDigest, readOutputs, writeOutputs } from './outputs.js';
 import { buildListing } from './pipeline.js';
 import { REPORT_FILE } from './report.js';
+import { scanListing, writeScan } from './scan.js';
 import { attest, loadSigningKey } from './signing.js';
 import { serializeJson } from './spec.js';
+import { verifyForSigning } from './verifyBuild.js';
 import { BUILDER_VERSION } from './version.js';
 
 export const COMMANDS = Object.freeze({
   build: 'Build, push and validate a listing\'s env image; write code_review.json, baseline.json and the report',
-  sign: 'Sign attestation.json for an accepted build, with the configured key',
+  sign: 'Check an accepted build\'s outputs, then sign attestation.json with the configured key',
   run: 'build, then sign, in one process (dev key only)',
+  scan: 'The baseline scan: Semgrep and a secret scan of the in-scope files, for the maker only',
+  digest: 'Print the digest of a build\'s output folder (for sign --expect-outputs)',
 });
+
+// What each command needs, and the flags it takes.
+const NEEDS = Object.freeze({ build: ['config', 'spec', 'out'], run: ['config', 'spec', 'out'], sign: ['config', 'dir'], scan: ['config', 'spec', 'out'], digest: ['dir'] });
+const ALLOWED = Object.freeze({
+  build: ['config', 'spec', 'known-issues', 'out'],
+  run: ['config', 'spec', 'known-issues', 'out'],
+  sign: ['config', 'dir', 'expect-outputs', 'check-registry'],
+  scan: ['config', 'spec', 'out', 'agent'],
+  digest: ['dir'],
+});
+const FLAGS = new Set(['agent', 'check-registry']);
 
 const USAGE = `Usage: verdikta-build-env <command> [options]
 
@@ -32,29 +51,40 @@ pinned foundry base, pushes it, checks a contract's verified source, validates t
 the arbiters' code-runner, and signs attestation.json.
 
 Commands:
-${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(7)}${about}`).join('\n')}
+${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`).join('\n')}
 
 Options:
-  --config <file>        the builder's config (JSON)
-  --spec <file>          build, run: the maker's draft code_review.json
-  --known-issues <file>  build, run: known_issues.json, when the draft names one
-  --out <dir>            build, run: where the files and the report are written (new or empty)
-  --dir <dir>            sign: a build's output folder
-  -h, --help             Show this help
-  -v, --version          Print the version
+  --config <file>          the builder's config (JSON)
+  --spec <file>            build, run, scan: the maker's code_review.json (the draft, or the built one)
+  --known-issues <file>    build, run: known_issues.json, when the draft names one
+  --out <dir>              build, run, scan: where the output is written (new or empty)
+  --dir <dir>              sign, digest: a build's output folder
+  --expect-outputs <hex>   sign: refuse unless the folder's digest is this (from digest, in the build job)
+  --check-registry         sign: read the image code_review.json names from its registry and check it
+  --agent                  scan: also run the agent pass (scan.agent in the config; off by default)
+  -h, --help               Show this help
+  -v, --version            Print the version
 
-Exit status: 0 accepted (or signed), 2 refused (see the report), 1 error, 64 usage error.
+Exit status: 0 accepted (or signed, scanned), 2 refused (see the report), 1 error, 64 usage error.
+The scan's findings are the maker's alone: scan prints where they are and nothing of what they say.
 `;
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
   const opts = {};
   for (let i = 0; i < rest.length; i += 1) {
-    const m = /^--(config|spec|known-issues|out|dir)$/.exec(rest[i]);
+    const m = /^--(config|spec|known-issues|out|dir|expect-outputs|check-registry|agent)$/.exec(rest[i]);
+    if (m && FLAGS.has(m[1])) {
+      opts[m[1]] = true;
+      continue;
+    }
     if (!m || i + 1 >= rest.length) return { command, error: `unknown or incomplete option '${rest[i]}'` };
     opts[m[1]] = rest[i + 1];
     i += 1;
   }
+  const bad = Object.hasOwn(ALLOWED, command ?? '') ? Object.keys(opts).find((k) => !ALLOWED[command].includes(k)) : null;
+  if (bad) return { command, error: `${command} does not take --${bad}` };
+  if (opts['expect-outputs'] !== undefined && !/^[0-9a-f]{64}$/.test(opts['expect-outputs'])) return { command, error: '--expect-outputs takes a SHA-256 in lowercase hex' };
   return { command, opts };
 }
 
@@ -62,7 +92,7 @@ function emptyOrMissing(dir) {
   return !fs.existsSync(dir) || fs.readdirSync(dir).length === 0;
 }
 
-async function sign({ dir, config, env, out }) {
+async function sign({ dir, config, env, out, expectOutputs = null, checkRegistry = false, deps = {} }) {
   const key = loadSigningKey(config.signing.key, { env });
   const { files, report, names } = readOutputs(dir);
   const name = names.attestation || 'attestation.json';
@@ -70,13 +100,43 @@ async function sign({ dir, config, env, out }) {
   if (taken.includes(name) || !/^(?!\.\.?$)[A-Za-z0-9._-]{1,255}$/.test(name)) {
     throw new BuilderError('OUTPUT_INVALID', `code_review.json names the attestation ${JSON.stringify(name)}, which is not a free plain file name in ${dir}`);
   }
+  if (fs.existsSync(path.join(dir, name))) throw new BuilderError('OUTPUT_INVALID', `${path.join(dir, name)} exists: this build is signed already`);
+  // The folder is the listing's files as build wrote them, and nothing else: whatever is signed
+  // here may be shipped whole as the listing.
+  const listed = new Set(['code_review.json', REPORT_FILE, names.baseline, names.knownIssues].filter(Boolean));
+  const extra = fs.readdirSync(dir).filter((f) => !listed.has(f));
+  if (extra.length) throw new BuilderError('OUTPUT_INVALID', `${dir} also holds ${extra.join(', ')}: sign takes a folder of the listing's files only, as build wrote it`);
+  // Everything that can be checked without re-running the build, before any signature exists.
+  const verified = await verifyForSigning({ files, report, dir, expectOutputs, checkRegistry, ...(deps.registryFor ? { registryFor: deps.registryFor } : {}) });
   const { attestation, bytes } = await attest({ files, report, key });
   fs.writeFileSync(path.join(dir, name), bytes, { mode: 0o644 });
   const trust = key.devTrust();
   if (trust) fs.writeFileSync(path.join(dir, DEV_TRUST_FILE), serializeJson(trust), { mode: 0o644 });
   report.attestation = { trust: attestation.trust, keyId: attestation.signature.keyId, issuedAt: attestation.issuedAt, file: name, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+  report.signing = verified;
   fs.writeFileSync(path.join(dir, REPORT_FILE), serializeJson(report), { mode: 0o644 });
   out.write(`signed ${name} (${attestation.trust} trust, key ${attestation.signature.keyId})${trust ? `; the dev trust set is ${DEV_TRUST_FILE}` : ''}\n`);
+}
+
+async function scan({ opts, config, out, err, deps }) {
+  const target = opts.out;
+  if (fs.existsSync(target) && fs.readdirSync(target).length > 0) throw new BuilderError('SCAN_OUT_NOT_EMPTY', `${target} is not empty: the scan's findings go into a folder of their own, never beside a listing's files`);
+  if (opts.agent && !config.scan.agent) throw new BuilderError('AGENT_NOT_CONFIGURED', '--agent needs scan.agent in the config: a model of the code-standard pool');
+  let spec;
+  try {
+    spec = JSON.parse(fs.readFileSync(opts.spec, 'utf8'));
+  } catch {
+    throw new BuilderError('SPEC_UNREADABLE', `${opts.spec} cannot be read as JSON`);
+  }
+  const { status, doc } = await scanListing({ spec, config, deps, agent: Boolean(opts.agent) });
+  const file = writeScan(target, doc);
+  // Where the findings are, never what they say: this output may be a public CI log.
+  if (status === 'ok') {
+    out.write(`scan: wrote ${file}; it is for the maker only: keep it out of the listing archive, logs and public artifacts\n`);
+    return 0;
+  }
+  err.write(`verdikta-build-env: scan ${doc.error.code}; the details are in ${file} (for the maker only)\n`);
+  return 1;
 }
 
 async function build({ opts, config, out, deps }) {
@@ -117,19 +177,23 @@ export async function main(argv, { env = process.env, stdout = process.stdout, s
     stderr.write(`verdikta-build-env: ${error ?? (command ? `unknown command '${command}'` : 'no command')}\n\n${USAGE}`);
     return 64;
   }
-  const needs = command === 'sign' ? ['config', 'dir'] : ['config', 'spec', 'out'];
-  const missing = needs.filter((k) => !opts[k]);
+  const missing = NEEDS[command].filter((k) => !opts[k]);
   if (missing.length) {
     stderr.write(`verdikta-build-env ${command}: missing --${missing.join(', --')}\n`);
     return 64;
   }
   try {
+    if (command === 'digest') {
+      stdout.write(`${outputsDigest(opts.dir)}\n`);
+      return 0;
+    }
     const config = loadConfig(opts.config, { env });
     const key = config.signing.key;
     if (command === 'sign') {
-      await sign({ dir: opts.dir, config, env, out: stdout });
+      await sign({ dir: opts.dir, config, env, out: stdout, expectOutputs: opts['expect-outputs'] ?? null, checkRegistry: Boolean(opts['check-registry']), deps });
       return 0;
     }
+    if (command === 'scan') return await scan({ opts, config, out: stdout, err: stderr, deps });
     if (command === 'build' && key !== 'dev' && key.env && env[key.env] !== undefined) {
       throw new BuilderError('BUILD_ENV_HOLDS_SIGNING_KEY', `the signing key (${key.env}) is in build's environment; build runs the maker's setup and holds no secret: sign in a separate step`);
     }
@@ -138,7 +202,7 @@ export async function main(argv, { env = process.env, stdout = process.stdout, s
     }
     const status = await build({ opts, config, out: stdout, deps });
     if (status !== 'accepted') return status === 'refused' ? 2 : 1;
-    if (command === 'run') await sign({ dir: opts.out, config, env, out: stdout });
+    if (command === 'run') await sign({ dir: opts.out, config, env, out: stdout, deps });
     return 0;
   } catch (err) {
     stderr.write(`verdikta-build-env: ${err instanceof BuilderError ? err.message : `BUILDER_FAILED: ${err?.message ?? err}`}\n`);

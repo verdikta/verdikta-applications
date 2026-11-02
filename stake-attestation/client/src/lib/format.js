@@ -20,3 +20,8 @@ export function shortHash(hash) {
 export function errorReason(err) {
   return err?.shortMessage || err?.reason || err?.info?.error?.message || err?.message || String(err);
 }
+
+/** A whole number (bigint, number or decimal string) with thousands separators: 1250000 -> 1,250,000. */
+export function formatWhole(n) {
+  return BigInt(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}

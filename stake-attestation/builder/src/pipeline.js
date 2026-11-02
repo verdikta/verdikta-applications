@@ -223,7 +223,7 @@ export async function buildListing({ draft, knownIssues = null, config, deps = {
           step: err.step,
           ...(r === list[0] && err.issues ? { issues: err.issues } : {}),
           ...(r.path ? { path: r.path } : {}),
-          ...(r === list[0] && err.log ? { log: err.log } : {}),
+          ...(r === list[0] && err.log ? { log: err.log } : r.log ? { log: r.log } : {}),
         });
       }
       files.clear();

@@ -412,8 +412,8 @@ real contract cannot produce is not added to the mock.
 
 ## The client
 
-`client/` (node P6a) is the maker's side of the site. Routes are in the hash: `#/list` and
-`#/check/<claimId>`; nothing private ever goes in a URL.
+`client/` (node P6a) is the maker's side of the site. Routes are in the hash: `#/list`,
+`#/fund/<listingId>` and `#/check/<claimId>`; nothing private ever goes in a URL.
 
 - **Listing** (`#/list`): the artifact (a repository, or a deployed contract with its chain),
   scope, award table, lowest class counted, bond, windows (design §7.1's defaults: 14 days, 30
@@ -423,7 +423,16 @@ real contract cannot produce is not added to the mock.
   the fix window) and leaves every other rule to the server, whose issues it shows. It follows
   the listing through `GET /api/listings/:id`, shows the validation report, and once ready
   sends `list()` with the server's arguments and `fund()` with `feeDue()` plus the escrow
-  through the maker's wallet.
+  through the maker's wallet. `list()` is sent only when those arguments carry the maker's own
+  disclosure key and terms, and not when the maker already has an active listing of the
+  version (`activeListingOf`), which the page links to instead.
+- **A listing's page** (`#/fund/<listingId>`): its stored terms and, while it is Listed, the
+  opening `fund()`, so a maker who leaves between `list()` and `fund()` can come back. Just
+  before sending, the listing's state and fee are read at one block through the wallet: unless
+  it is still Listed with the terms the page shows, nothing is sent, and the fee passed as
+  `expectedFeeWei` makes an opening fund that lands first from elsewhere revert this one.
+  Reads are checked to come from `VITE_SA_CHAIN_ID` (`chainReader`), and every transaction asks
+  the wallet whether its account and chain are still the connected ones.
 - **Disclosure key.** "Generate" makes an age X25519 pair in the page with
   `@verdikta/common/src/codeReview/disclosure.js`, common's browser-safe entry, which Vite
   bundles as it is (no shim: @noble takes randomness from `globalThis.crypto`). Only the public

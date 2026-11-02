@@ -24,7 +24,7 @@ const C = STRINGS.chain;
  * @param {{ listingId: bigint, top: bigint, maker: string, artifactHash: string }} props - `top`
  *        is the awards[CRITICAL] this page shows
  */
-export function FundListing({ listingId, top, maker, artifactHash }) {
+export function FundListing({ listingId, top, maker, artifactHash, onOpened = () => {} }) {
   const w = useWalletContext();
   const [escrow, setEscrow] = useState(formatEth(top));
   const [fee, setFee] = useState(null);
@@ -72,6 +72,7 @@ export function FundListing({ listingId, top, maker, artifactHash }) {
       const tx = await stakeAttestation(signer).fund(listingId, due, { value: due + escrowWei });
       await tx.wait();
       setOpened({ tx: tx.hash, until: null });
+      onOpened();
       try {
         const l = await stakeAttestation(provider).getListing(listingId);
         setOpened({ tx: tx.hash, until: l.fundedUntil });

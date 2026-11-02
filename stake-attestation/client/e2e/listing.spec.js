@@ -183,6 +183,7 @@ test('a version listed but not funded is funded later from its own page, and lis
   await expect(page.getByTestId('listing-summary')).toContainText(STRINGS.fund.states.Listed);
   await page.getByRole('button', { name: STRINGS.chain.fund }).click();
   await expect(page.getByTestId('opened')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('listing-summary')).toContainText(STRINGS.fund.states.Open);
   const l = await chain.sa.getListing(listingId);
   expect(l.state).toBe(State.Open);
   expect(l.escrowWei).toBe(2n * ETH);

@@ -26,6 +26,7 @@ export function FundPage({ listingId }) {
   const [lookup, setLookup] = useState('');
   const [loaded, setLoaded] = useState(null); // { listing } | { missing } | { failed }
   const [attempt, setAttempt] = useState(0);
+  const [openedHere, setOpenedHere] = useState(false);
 
   useEffect(() => {
     if (listingId === null) return undefined;
@@ -73,7 +74,7 @@ export function FundPage({ listingId }) {
         <h3 id={headingId}>{fill(F.summary, { id: listingId })}</h3>
         <dl>
           <dt>{F.maker}</dt><dd className="mono">{l.maker}</dd>
-          <dt>{F.state}</dt><dd>{F.states[state] ?? state}</dd>
+          <dt>{F.state}</dt><dd>{F.states[openedHere ? 'Open' : state] ?? state}</dd>
           <dt>{F.listingCid}</dt><dd className="mono">{l.listingCid}</dd>
         </dl>
         <ul>
@@ -84,7 +85,7 @@ export function FundPage({ listingId }) {
           <li>{fill(STRINGS.chain.knownIssues, { count: l.knownIssueIds.length })}</li>
         </ul>
       </section>
-      {state === 'Listed' && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} />}
+      {state === 'Listed' && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} onOpened={() => setOpenedHere(true)} />}
       {state === 'Open' && <p className="ok">{fill(F.alreadyOpen, { id: listingId, until: formatTime(l.fundedUntil) })}</p>}
       {state !== 'Listed' && state !== 'Open' && <p className="hint">{fill(F.notFundable, { id: listingId, state: F.states[state] ?? state })}</p>}
     </>

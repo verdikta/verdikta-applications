@@ -1,12 +1,22 @@
-// The environment builder (stake-attestation/builder, node P3a) behind the interface the listing
-// flow uses: build({ draft, knownIssues }) resolves to
+// The environment builder (stake-attestation/builder, nodes P3a, P3b) behind the interface the
+// listing flow uses: build({ draft, knownIssues }) resolves to
 //
 //   { status: 'accepted', report, files: { codeReview, baseline, knownIssues, attestation }, devTrust }
 //   { status: 'refused',  report, files: null, devTrust: null }
 //   { status: 'error',    report|null, files: null, devTrust: null, error?: { code, detail }, holdSlot? }
 //
+// and scan({ spec }), the baseline scan (design §8.3), to
+//
+//   { status: 'ok'|'error', doc, error: null }        the builder's scan-findings.json, parsed
+//   { status: 'error', doc: null, error: { code, detail }, holdSlot? }   no document came back
+//
 // `holdSlot: true` means the server had to stop the builder, so what it started may still be
 // running under the Docker daemon: the listing flow then keeps that build slot taken (runStep).
+//
+// The scan's document is the maker's alone (node P4b2): `verdikta-build-env scan` writes it into
+// a new folder inside the step's own folder (owner-only, as mkdtemp makes it), the server reads it
+// once and removes the folder, and nothing the step printed is logged or returned beyond the
+// builder's error code, because a scanner's output can name a finding.
 //
 // It runs the builder's own command line, as the site's workflow would, in two processes:
 // `verdikta-build-env build` (it runs the maker's setup inside Docker and holds no secret; it
@@ -21,6 +31,9 @@ import path from 'node:path';
 
 const REPORT_FILE = 'validation-report.json';
 const DEV_TRUST_FILE = 'dev-trust.json';
+/** Where `verdikta-build-env scan` writes the maker's findings (the builder's SCAN_FILE, builder/src/outputs.js). */
+export const SCAN_FILE = 'scan-findings.json';
+const SCAN_MAX_BYTES = 16 * 1024 * 1024;
 const PLAIN_NAME = /^(?!\.\.?$)[A-Za-z0-9._-]{1,255}$/;
 const OUTPUT_CAP = 64 * 1024;
 const DEFAULT_GRACE_MS = 30000;
@@ -28,7 +41,7 @@ const DEFAULT_GRACE_MS = 30000;
 const tail = (buf, n = 600) => buf.toString('utf8').slice(-n).trim();
 // The builder's own error line, "verdikta-build-env: CODE: detail": only the code goes into a
 // result the maker sees; the output itself stays in the server's log.
-const builderCode = (buf) => /verdikta-build-env: ([A-Z][A-Z0-9_]+)/.exec(buf.toString('utf8'))?.[1] ?? null;
+const builderCode = (buf) => /verdikta-build-env: (?:scan )?([A-Z][A-Z0-9_]{0,63})\b/.exec(buf.toString('utf8'))?.[1] ?? null;
 
 function childEnv(env, names, tmp) {
   const out = {};
@@ -172,16 +185,62 @@ function readNamed(dir, name) {
 }
 
 const errored = (code, detail, report = null, extra = {}) => ({ status: 'error', report, files: null, devTrust: null, error: { code, detail }, ...extra });
+const scanErrored = (code, detail, extra = {}) => ({ status: 'error', doc: null, error: { code, detail }, ...extra });
 
-/** A step the server had to stop: its slot stays taken (holdSlot), since daemon cleanup is unconfirmed. */
-function stopped(what, r, cfg, report) {
+/** Why a stopped step ended: its slot stays taken (holdSlot), since daemon cleanup is unconfirmed. */
+function stopReason(what, r, cfg) {
   const how = r.forced ? 'and was killed (it did not stop on SIGTERM)' : 'and was stopped';
-  if (r.timedOut) return errored('BUILDER_TIMEOUT', `the builder's ${what} step did not finish in ${cfg.timeoutMs} ms ${how}`, report, { holdSlot: true });
-  return errored('BUILDER_INTERRUPTED', `the builder's ${what} step left processes running when it exited, which were stopped ${r.forced ? 'with SIGKILL' : 'with SIGTERM'}`, report, { holdSlot: true });
+  if (r.timedOut) return { code: 'BUILDER_TIMEOUT', detail: `the builder's ${what} step did not finish in ${cfg.timeoutMs} ms ${how}` };
+  return { code: 'BUILDER_INTERRUPTED', detail: `the builder's ${what} step left processes running when it exited, which were stopped ${r.forced ? 'with SIGKILL' : 'with SIGTERM'}` };
+}
+
+function stopped(what, r, cfg, report) {
+  const { code, detail } = stopReason(what, r, cfg);
+  return errored(code, detail, report, { holdSlot: true });
+}
+
+/** Why the builder config cannot be used, or null. */
+function configProblem(cfg) {
+  if (!cfg.config) return { code: 'BUILDER_NOT_CONFIGURED', detail: 'no builder config is set (SA_BUILDER_CONFIG)' };
+  const builderConfig = readJson(cfg.config);
+  if (!builderConfig || typeof builderConfig !== 'object') return { code: 'BUILDER_CONFIG_INVALID', detail: 'the builder config (SA_BUILDER_CONFIG) is not a JSON object' };
+  if (Object.hasOwn(builderConfig, 'workDir')) {
+    // a folder of the builder's choosing would outlive a build the server has to stop
+    return { code: 'BUILDER_CONFIG_INVALID', detail: 'leave workDir out of the builder config: the server gives each build a temporary folder of its own (TMPDIR) and removes it' };
+  }
+  return null;
+}
+
+const isObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * The scan's document, or what is wrong with it. Never the parser's message or any of the file's
+ * text: both can quote a finding.
+ */
+function readScanDoc(out) {
+  const file = path.join(out, SCAN_FILE);
+  let st;
+  try {
+    st = fs.lstatSync(file);
+  } catch {
+    return { missing: true };
+  }
+  if (!st.isFile()) return { problem: { code: 'SCAN_OUTPUT_INVALID', detail: `the scan's ${SCAN_FILE} is not a regular file` } };
+  if (st.size > SCAN_MAX_BYTES) return { problem: { code: 'SCAN_OUTPUT_TOO_LARGE', detail: `the scan's ${SCAN_FILE} is larger than ${SCAN_MAX_BYTES} bytes` } };
+  let doc;
+  try {
+    doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return { problem: { code: 'SCAN_OUTPUT_INVALID', detail: `the scan's ${SCAN_FILE} is not JSON` } };
+  }
+  if (!isObject(doc) || doc.kind !== 'verdikta-baseline-scan' || doc.audience !== 'maker' || !['ok', 'error'].includes(doc.status) || !Array.isArray(doc.findings)) {
+    return { problem: { code: 'SCAN_OUTPUT_INVALID', detail: `the scan's ${SCAN_FILE} is not a baseline scan document` } };
+  }
+  return { doc };
 }
 
 /**
- * @param {{ bin: string, config: string|null, workDir: string, buildEnv: string[], signEnv: string[], timeoutMs: number, graceMs?: number }} cfg - config.builder
+ * @param {{ bin: string, config: string|null, workDir: string, buildEnv: string[], signEnv: string[], scanEnv?: string[], scanAgent?: boolean, timeoutMs: number, graceMs?: number }} cfg - config.builder
  * @param {{ env?: Record<string, string|undefined>, nodePath?: string, logger?: { warn: Function } }} [o]
  */
 export function createCliBuilder(cfg, { env = process.env, nodePath = process.execPath, logger = null } = {}) {
@@ -195,13 +254,8 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
 
   return {
     async build({ draft, knownIssues }) {
-      if (!cfg.config) return errored('BUILDER_NOT_CONFIGURED', 'no builder config is set (SA_BUILDER_CONFIG)');
-      const builderConfig = readJson(cfg.config);
-      if (!builderConfig || typeof builderConfig !== 'object') return errored('BUILDER_CONFIG_INVALID', 'the builder config (SA_BUILDER_CONFIG) is not a JSON object');
-      if (Object.hasOwn(builderConfig, 'workDir')) {
-        // a folder of the builder's choosing would outlive a build the server has to stop
-        return errored('BUILDER_CONFIG_INVALID', 'leave workDir out of the builder config: the server gives each build a temporary folder of its own (TMPDIR) and removes it');
-      }
+      const problem = configProblem(cfg);
+      if (problem) return errored(problem.code, problem.detail);
       const dir = fs.mkdtempSync(path.join(cfg.workDir, 'sa-build-'));
       try {
         fs.mkdirSync(path.join(dir, 'tmp'));
@@ -244,6 +298,38 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
           return errored('BUILDER_OUTPUT_INVALID', 'the build\'s output folder lacks a file code_review.json names', signed);
         }
         return { status: 'accepted', report: signed, files, devTrust: readJson(path.join(out, DEV_TRUST_FILE)) };
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+
+    /** The baseline scan of `spec` (the listing's code_review.json): see the head of this file. */
+    async scan({ spec }) {
+      const problem = configProblem(cfg);
+      if (problem) return scanErrored(problem.code, problem.detail);
+      const dir = fs.mkdtempSync(path.join(cfg.workDir, 'sa-scan-'));
+      try {
+        fs.mkdirSync(path.join(dir, 'tmp'));
+        const specPath = path.join(dir, 'code_review.json');
+        fs.writeFileSync(specPath, `${JSON.stringify(spec, null, 2)}\n`);
+        // a new folder, which the builder makes owner-only, inside this owner-only one
+        const out = path.join(dir, 'scan');
+        const args = ['scan', '--config', cfg.config, '--spec', specPath, '--out', out, ...(cfg.scanAgent ? ['--agent'] : [])];
+        const r = await step(args, cfg.scanEnv ?? [], dir);
+        if (r.interrupted) {
+          const { code, detail } = stopReason('scan', r, cfg);
+          return scanErrored(code, detail, { holdSlot: true });
+        }
+        if (r.spawnError) return scanErrored('SCAN_STEP_FAILED', 'the builder\'s scan step could not be started');
+        const code = r.code === 0 ? null : builderCode(r.stderr);
+        // the exit status and the builder's error code, never its output
+        if (r.code !== 0) logger?.warn(`builder scan exited ${r.code}${code ? `: ${code}` : ''}`);
+        const read = readScanDoc(out);
+        if (read.missing) {
+          return scanErrored('SCAN_STEP_FAILED', r.code === 0 ? `the builder's scan step exited 0 and wrote no ${SCAN_FILE}` : `the builder's scan step exited ${r.code}${code ? `: ${code}` : ''}`);
+        }
+        if (read.problem) return scanErrored(read.problem.code, read.problem.detail);
+        return { status: r.code === 0 && read.doc.status === 'ok' ? 'ok' : 'error', doc: read.doc, error: null };
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }

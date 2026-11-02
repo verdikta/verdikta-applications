@@ -184,7 +184,7 @@ describe('requests refused before any build (400)', () => {
     ['a dispute window list() refuses (under 24 hours)', (b) => { b.spec.stake.disputeWindowHours = 12; }, 'LIST_BOUNDS'],
     ['a disclosure grace longer than the fix window', (b) => { b.spec.stake.fixWindowDays = 1; b.spec.stake.disclosureGraceHours = 48; }, 'LIST_BOUNDS'],
     ['a value at risk that is not whole dollars', (b) => { b.spec.stake.valueAtRiskUsd = 10.5; }, 'LIST_BOUNDS'],
-    ['an unknown request field', (b) => { b.maker = '0x5f2a00000000000000000000000000000000c0de'; }, 'REQUEST_INVALID'],
+    ['an unknown request field', (b) => { b.owner = '0x5f2a00000000000000000000000000000000c0de'; }, 'REQUEST_INVALID'],
     // R1-F2: amounts list() could not encode
     ['an award beyond uint256', (b) => { b.spec.stake.awards.CRITICAL = (1n << 256n).toString(); }, 'LIST_BOUNDS'],
     ['a bond beyond uint256', (b) => { b.spec.stake.bondWei = (1n << 256n).toString(); }, 'LIST_BOUNDS'],

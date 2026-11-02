@@ -6,8 +6,10 @@
 //              then signs attestation.json in a separate step
 //   refused    the builder refused the listing: the validation report says why; nothing is built
 //              or pinned (a failed verified-source check ends here)
-//   pinning    the build was accepted, its result checked (below) and both archives built and
-//              checked as arbiters read them; they are being pinned
+//   scanning   the build was accepted, its result checked (below) and both archives built and
+//              checked as arbiters read them; the baseline scan (design §8.3; node P4b2) runs on
+//              the staked version, when the request names the maker it is for
+//   pinning    both archives are being pinned
 //   ready      both CIDs are pinned: the view carries the validation report and every argument
 //              of list(); the maker's wallet sends list() and then fund()
 //   error      anything else (a builder or pinning failure, a result that does not check out):
@@ -19,6 +21,13 @@
 // env.unpackedBytes and the limits), the known issues must be the bytes the server sent, and both
 // archives must pass validateArchive.js (common's checks, as arbiters run them, with the
 // attestation verified under the configured trust).
+//
+// The baseline scan is the maker's alone. Its document is kept in the job, apart from everything
+// the view shows, and handed out only through scanAccess() to the route that checks the maker's
+// signature. The view carries the scan's status and when it finished, never a finding, a count or
+// an error text; the archives are built before the scan runs, from the builder's files only; the
+// log gets the scan's outcome and the builder's error code. A scan that fails does not stop the
+// listing: the scan is not a judgement, and the maker reads why it failed.
 import crypto from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 
@@ -31,6 +40,9 @@ import { validateListingArchive } from './validateArchive.js';
 const STEPS_ALWAYS_OK = ['spec', 'fetch', 'build', 'size', 'push', 'registry', 'listingCheck', 'finalSpec'];
 const BUILDER_FILLS = new Set(['env', 'limits', 'attestation', 'baseline']);
 const MAX_KEPT = 500;
+const CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
+/** An error code fit for the log: a fixed identifier, never text that could quote a finding. */
+const logCode = (c) => (typeof c === 'string' && CODE.test(c) ? c : 'SCAN_FAILED');
 
 export class QueueFullError extends Error {
   constructor() {
@@ -80,14 +92,23 @@ export function specChanges(draft, built) {
   return out;
 }
 
+/** What anyone with the listing's id may know of its scan. */
+function publicScan(scan) {
+  if (scan.status === 'done' || scan.status === 'error') return { status: scan.status, finishedAt: scan.finishedAt };
+  if (scan.status === 'skipped') return { status: 'skipped', reason: scan.reason };
+  return { status: scan.status };
+}
+
 /**
  * @param {object} o
  * @param {object} o.config - loadConfig()
  * @param {{ build(input: { draft: object, knownIssues: Buffer|null }): Promise<object> }} o.builder
+ * @param {{ scan(input: { spec: object }): Promise<{ status: 'ok'|'error', doc: object|null, error: { code: string, detail: string }|null, holdSlot?: boolean }> }} o.scanner -
+ *   the baseline scan (src/builder/cli.js scan)
  * @param {{ backend: string, pin(bytes: Buffer, o?: { name?: string }): Promise<string> }} o.pinner
  * @param {{ info: Function, warn: Function, error: Function }} o.logger
  */
-export function createListingService({ config, builder, pinner, logger }) {
+export function createListingService({ config, builder, scanner, pinner, logger }) {
   const jobs = new Map();
   const queue = [];
   let running = 0;
@@ -103,6 +124,8 @@ export function createListingService({ config, builder, pinner, logger }) {
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
       listing: { repo: job.request.draft.repo, baseCommit: job.request.draft.baseCommit, artifact: job.request.draft.artifact ?? { kind: 'repo' } },
+      maker: job.request.maker,
+      scan: publicScan(job.scan),
       artifactHash: job.artifactHash,
       disclosureKey: job.request.disclosureKey,
       validationReport: job.report ?? null,
@@ -120,6 +143,37 @@ export function createListingService({ config, builder, pinner, logger }) {
       if (jobs.size <= MAX_KEPT) break;
       if (['ready', 'refused', 'error'].includes(job.status)) jobs.delete(id);
     }
+  }
+
+  function holdSlot(job, what, code) {
+    // What the builder started may still be running under the Docker daemon: the slot stays
+    // taken, so builds never run beyond SA_MAX_CONCURRENT_BUILDS, until an operator has
+    // checked the Docker host and restarted the server.
+    job.holdsSlot = true;
+    logger.error(`listing ${job.id}: the builder's ${what} had to be stopped (${logCode(code)}); its build slot stays taken until the server restarts. Check the Docker host for containers labelled io.verdikta.builder=1.`);
+  }
+
+  /** The baseline scan of the staked version, for the maker named in the request. Never throws. */
+  async function scan(job, spec) {
+    if (job.scan.status !== 'pending') return;
+    set(job, { status: 'scanning' });
+    job.scan = { status: 'running' };
+    let r;
+    try {
+      r = await scanner.scan({ spec: structuredClone(spec) });
+    } catch (err) {
+      // the error's name only: its message could quote what the scan read
+      logger.error(`listing ${job.id}: the baseline scan could not be run (${err?.name ?? 'error'})`);
+      r = { status: 'error', doc: null, error: { code: 'SCAN_FAILED', detail: 'the baseline scan could not be run' } };
+    }
+    if (r?.holdSlot) holdSlot(job, 'scan', r.error?.code);
+    const doc = r?.doc ?? null;
+    const ok = r?.status === 'ok' && doc?.status === 'ok';
+    const error = doc ? null : (r?.error ?? { code: 'SCAN_FAILED', detail: 'the baseline scan returned nothing' });
+    job.scanResult = { doc, error };
+    job.scan = { status: ok ? 'done' : 'error', finishedAt: now() };
+    if (ok) logger.info(`listing ${job.id} scan: done`);
+    else logger.warn(`listing ${job.id} scan: error (${logCode(doc ? doc.error?.code : error.code)})`);
   }
 
   async function issue(job, r) {
@@ -161,6 +215,10 @@ export function createListingService({ config, builder, pinner, logger }) {
       if (!v.ok) stop('ARCHIVE_INVALID', `the ${role} archive would be refused by arbiters: ${v.issues.map((i) => `${i.code}: ${i.detail}`).join('; ')}`);
     }
 
+    // between listing and open (design §8.3): the archives are fixed already, from the builder's
+    // files alone, so nothing the scan finds can reach them
+    await scan(job, archives.spec);
+
     set(job, { status: 'pinning' });
     const cids = {};
     for (const role of ['listing', 'dispute']) {
@@ -197,6 +255,15 @@ export function createListingService({ config, builder, pinner, logger }) {
   }
 
   async function run(job) {
+    try {
+      await runSteps(job);
+    } finally {
+      // a listing that ended before its scan was reached is not scanned
+      if (job.scan.status === 'pending') job.scan = { status: 'not_run' };
+    }
+  }
+
+  async function runSteps(job) {
     set(job, { status: 'building' });
     let r;
     try {
@@ -208,13 +275,7 @@ export function createListingService({ config, builder, pinner, logger }) {
       return;
     }
     set(job, { report: r.report ?? null });
-    if (r.holdSlot) {
-      // What the builder started may still be running under the Docker daemon: the slot stays
-      // taken, so builds never run beyond SA_MAX_CONCURRENT_BUILDS, until an operator has
-      // checked the Docker host and restarted the server.
-      job.holdsSlot = true;
-      logger.error(`listing ${job.id}: the builder had to be stopped (${r.error?.code}); its build slot stays taken until the server restarts. Check the Docker host for containers labelled io.verdikta.builder=1.`);
-    }
+    if (r.holdSlot) holdSlot(job, 'build', r.error?.code);
     if (r.status === 'refused') {
       set(job, { status: 'refused' });
       logger.info(`listing ${job.id} refused: ${(r.report?.refusals ?? []).map((x) => `${x.code} (${x.step})`).join(', ')}`);
@@ -260,6 +321,8 @@ export function createListingService({ config, builder, pinner, logger }) {
         updatedAt: at,
         request,
         artifactHash: artifactHashOf(artifactOf(request.draft)),
+        // the findings would have nobody to go to without a maker
+        scan: request.maker ? { status: 'pending' } : { status: 'skipped', reason: 'NO_MAKER' },
       };
       jobs.set(job.id, job);
       prune();
@@ -271,6 +334,15 @@ export function createListingService({ config, builder, pinner, logger }) {
     get(id) {
       const job = jobs.get(id);
       return job ? view(job) : null;
+    },
+    /**
+     * The scan's document, for the route that has checked the maker's signature and for nothing
+     * else: { id, maker, scan (public status), result: { doc, error } | null }, or null.
+     */
+    scanAccess(id) {
+      const job = jobs.get(id);
+      if (!job) return null;
+      return { id: job.id, maker: job.request.maker, scan: publicScan(job.scan), result: job.scanResult ?? null };
     },
   };
 }

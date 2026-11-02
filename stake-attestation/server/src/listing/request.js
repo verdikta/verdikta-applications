@@ -2,7 +2,9 @@
 //
 //   { "spec": <draft code_review.json, with its stake block and disclosure key>,
 //     "knownIssues": <known_issues.json entries, when spec.stake.knownIssues names the file>,
-//     "allowlist": [<hunter addresses>] }     (optional; empty or absent: open to every hunter)
+//     "allowlist": [<hunter addresses>],      (optional; empty or absent: open to every hunter)
+//     "maker": "<the maker's address>" }      (optional; the wallet the baseline scan's findings
+//                                              are served to, design §8.3; absent: no scan)
 //
 // The draft is what the builder completes (it measures env.image, env.platform, env.unpackedBytes
 // and the default limits), so it is checked here with common's validator over the builder's
@@ -17,9 +19,10 @@ import { codeReview } from '../common.js';
 import { RESERVED_NAMES } from './archives.js';
 import { LIST_LIMITS, disclosureKeyBytes32, listIssues } from './listParams.js';
 
-const TOP_KEYS = ['spec', 'knownIssues', 'allowlist'];
-// Names the builder writes beside the listing's files in its output folder (builder/src/spec.js).
-const BUILDER_NAMES = Object.freeze(['validation-report.json', 'dev-trust.json']);
+const TOP_KEYS = ['spec', 'knownIssues', 'allowlist', 'maker'];
+// Names the builder writes beside the listing's files in its output folder, and the scan's own
+// file, which is the maker's alone and never a listing file (builder/src/spec.js).
+const BUILDER_NAMES = Object.freeze(['validation-report.json', 'dev-trust.json', 'scan-findings.json']);
 const PLACEHOLDER_IMAGE = `registry.invalid/verdikta-builder-draft@sha256:${'0'.repeat(64)}`;
 const ZERO = '0x0000000000000000000000000000000000000000';
 
@@ -51,6 +54,21 @@ export function serializeKnownIssues(list) {
   return Buffer.from(`${JSON.stringify(list, null, 2)}\n`, 'utf8');
 }
 
+/** The maker's address, checksummed; null when the request names none. */
+function makerOf(raw, issues) {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(raw) || !isAddress(raw.toLowerCase())) {
+    issues.push({ code: 'MAKER_INVALID', path: '/maker', detail: 'the maker is the 0x address of the wallet that will send list()' });
+    return null;
+  }
+  const addr = getAddress(raw.toLowerCase());
+  if (addr === ZERO) {
+    issues.push({ code: 'MAKER_INVALID', path: '/maker', detail: 'the zero address cannot sign in' });
+    return null;
+  }
+  return addr;
+}
+
 function allowlistOf(raw, issues) {
   if (raw === undefined || raw === null) return [];
   const bad = (detail) => { issues.push({ code: 'ALLOWLIST_INVALID', path: '/allowlist', detail }); return []; };
@@ -69,12 +87,12 @@ function allowlistOf(raw, issues) {
 
 /**
  * @param {unknown} body - the parsed JSON body
- * @returns {{ draft: object, knownIssues: { list: object[], bytes: Buffer }|null, allowlist: string[], disclosureKey: { recipient: string, bytes32: string } }}
+ * @returns {{ draft: object, knownIssues: { list: object[], bytes: Buffer }|null, allowlist: string[], maker: string|null, disclosureKey: { recipient: string, bytes32: string } }}
  * @throws {RequestError} with every issue found
  */
 export function parseListingRequest(body) {
   const issues = [];
-  if (!isObject(body)) throw new RequestError([{ code: 'REQUEST_INVALID', path: '/', detail: 'the body is a JSON object { spec, knownIssues?, allowlist? }' }]);
+  if (!isObject(body)) throw new RequestError([{ code: 'REQUEST_INVALID', path: '/', detail: 'the body is a JSON object { spec, knownIssues?, allowlist?, maker? }' }]);
   for (const k of Object.keys(body)) {
     if (!TOP_KEYS.includes(k)) issues.push({ code: 'REQUEST_INVALID', path: `/${k}`, detail: `unknown field; a listing request has ${TOP_KEYS.join(', ')}` });
   }
@@ -122,6 +140,7 @@ export function parseListingRequest(body) {
   }
 
   const allowlist = allowlistOf(body.allowlist, issues);
+  const maker = makerOf(body.maker, issues);
 
   if (v.ok) {
     for (const i of listIssues(standIn)) issues.push({ ...i, path: `/spec${i.path}` });
@@ -132,5 +151,5 @@ export function parseListingRequest(body) {
     }
   }
   if (issues.length) throw new RequestError(issues);
-  return { draft, knownIssues, allowlist, disclosureKey };
+  return { draft, knownIssues, allowlist, maker, disclosureKey };
 }

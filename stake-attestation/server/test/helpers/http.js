@@ -6,12 +6,14 @@ import { testConfig } from './fixtures.js';
 const TERMINAL = new Set(['ready', 'refused', 'error']);
 
 /**
- * @param {{ builder: object, pinner?: object, config?: object, logger?: object, site?: object }} o - `site`: the
- *   indexer's site (src/site/index.js), for the feed, record and badge routes
+ * @param {{ builder: object, pinner?: object, config?: object, logger?: object, scanner?: object, auth?: object, site?: object }} o -
+ *   `scanner`: the baseline scan's stand-in (test/helpers/scan.js); `auth`: a wallet sign-in
+ *   (src/auth/walletAuth.js) with a clock of the test's; `site`: the indexer's site
+ *   (src/site/index.js), for the feed, record and badge routes
  * @returns {Promise<{ base: string, pinner: object, app: object, close(): Promise<void>, post(path: string, body: unknown): Promise<Response>, get(path: string): Promise<Response>, settle(id: string): Promise<object> }>}
  */
-export async function startApi({ builder, pinner = createMockPinner(), config = testConfig(), logger = quietLogger(), site }) {
-  const app = createApp({ config, builder, pinner, logger, site });
+export async function startApi({ builder, pinner = createMockPinner(), config = testConfig(), logger = quietLogger(), scanner, auth, site }) {
+  const app = createApp({ config, builder, pinner, logger, scanner, auth, site });
   const server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;

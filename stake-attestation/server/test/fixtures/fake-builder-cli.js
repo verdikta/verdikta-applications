@@ -13,7 +13,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { fakeBuilder } from '../helpers/fixtures.js';
-import { scanDoc } from '../helpers/scan.js';
 
 const FLAGS = new Set(['--agent', '--check-registry']);
 const [command, ...rest] = process.argv.slice(2);
@@ -80,6 +79,9 @@ if (config.mode === 'hang') {
     fs.writeFileSync(file, bytes, { mode: 0o600, flag: 'wx' });
   };
   const spec = JSON.parse(fs.readFileSync(opts.spec, 'utf8'));
+  // loaded here only: it brings in ethers, which would slow every other command's start past the
+  // short timeouts the hang tests use
+  const { scanDoc } = await import('../helpers/scan.js');
   if (scanMode === 'hang') {
     setInterval(() => {}, 1000);
   } else if (scanMode === 'no-output') {

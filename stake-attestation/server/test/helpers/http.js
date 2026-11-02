@@ -6,11 +6,13 @@ import { testConfig } from './fixtures.js';
 const TERMINAL = new Set(['ready', 'refused', 'error']);
 
 /**
- * @param {{ builder: object, pinner?: object, config?: object, logger?: object }} o
+ * @param {{ builder: object, pinner?: object, config?: object, logger?: object, scanner?: object, auth?: object }} o -
+ *   `scanner`: the baseline scan's stand-in (test/helpers/scan.js); `auth`: a wallet sign-in
+ *   (src/auth/walletAuth.js) with a clock of the test's
  * @returns {Promise<{ base: string, pinner: object, app: object, close(): Promise<void>, post(path: string, body: unknown): Promise<Response>, get(path: string): Promise<Response>, settle(id: string): Promise<object> }>}
  */
-export async function startApi({ builder, pinner = createMockPinner(), config = testConfig(), logger = quietLogger() }) {
-  const app = createApp({ config, builder, pinner, logger });
+export async function startApi({ builder, pinner = createMockPinner(), config = testConfig(), logger = quietLogger(), scanner, auth }) {
+  const app = createApp({ config, builder, pinner, logger, scanner, auth });
   const server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;

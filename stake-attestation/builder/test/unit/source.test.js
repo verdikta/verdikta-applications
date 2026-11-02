@@ -1,158 +1,175 @@
 // Acceptance 2: for a contract listing, the deployed bytecode's verified source (explorer API from
-// config) is compared with the repository at baseCommit and what it compiles to; any mismatch
-// stops the listing. Explorer answers come only from recorded responses (test/fixtures/explorer:
-// the Etherscan-v2 API's getsourcecode and eth_getCode shapes, recorded for the fixture contract
-// test/fixtures/vault), never a live explorer; the compile is solc 0.8.31's recorded output for
-// the verified input (test/fixtures/solc/vault-output.json). Nothing the listing chose (its
-// compiler, its image's files) takes part: see source.docker.test.js for the adversarial case.
+// config) is compared with the repository at baseCommit and what it builds to; any mismatch stops
+// the listing. Explorer answers come only from recorded responses (test/fixtures/explorer: the
+// Etherscan-v2 API's getsourcecode and eth_getCode shapes, recorded for the fixture contract
+// test/fixtures/vault), never a live explorer. The repository's build is a double here, answering
+// with forge's recorded artifact and config for the fixture (test/fixtures/forge); the real one,
+// with trusted tools and an adversarial listing, is in source.docker.test.js.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
 import { createExplorer, parseSourceResult } from '../../src/explorer.js';
-import { checkVerifiedSource, compareCompiled, compilerInput, normalizeRuntime } from '../../src/sourceCheck.js';
+import { checkVerifiedSource, compareCompilerPin, compareRepoBuild, contractPathOf, normalizeRuntime } from '../../src/sourceCheck.js';
 import { FIXTURES, readFixture, recordedExplorer } from '../helpers/fakes.js';
 import { contractDraft } from '../helpers/specs.js';
 
-const OUTPUT = readFixture('solc', 'vault-output.json');
-const RUNTIME = OUTPUT.contracts['src/Vault.sol'].Vault.evm.deployedBytecode;
+const ARTIFACT = readFixture('forge', 'Vault.json');
+const CONFIG = readFixture('forge', 'config.json');
 const VAULT_SOL = fs.readFileSync(path.join(FIXTURES, 'vault', 'src', 'Vault.sol'));
 const KEY = 'TESTKEY-not-a-real-explorer-key';
-const SOLC = { version: '0.8.31+commit.fd3a2265', sha256: 'acf358d82da7db033debb2f4db11e1c9cfcb02b0cb5b5ddbb9635ad817b41bdd' };
+const SOLC = { version: '0.8.31+commit.fd3a2265', sha256: 'acf358d82da7db033debb2f4db11e1c9cfcb02b0cb5b5ddbb9635ad817b41bdd', platform: 'linux/amd64' };
 
-/** The listed commit's side, as a double: path -> { origin, bytes }. */
-function reader(files = { 'src/Vault.sol': { origin: 'commit', bytes: VAULT_SOL } }) {
+/** The repository's build at baseCommit, as a double: what it reads at each path, its config, its artifact. */
+function builder({ files = { 'src/Vault.sol': VAULT_SOL }, config = CONFIG, artifact = ARTIFACT, exitCode = 0, skipped = [] } = {}) {
   const calls = [];
-  const readFiles = async (req) => {
+  const buildRepo = async (req) => {
     calls.push(req);
-    return new Map(req.paths.map((p) => [p, files[p] ?? { origin: 'missing', bytes: null }]));
+    return {
+      files: new Map(req.paths.map((p) => [p, Object.hasOwn(files, p) ? Buffer.from(files[p]) : null])),
+      config,
+      artifact: exitCode === 0 ? artifact : null,
+      build: { exitCode, log: exitCode ? 'Compiler run failed' : '' },
+      skippedSubmodules: skipped,
+      solc: SOLC,
+    };
   };
-  return { readFiles, calls };
+  return { buildRepo, calls };
 }
 
-/** The trusted compiler, as a double answering with solc's recorded output. */
-function compiler(output = OUTPUT) {
-  const calls = [];
-  return { compile: async (req) => { calls.push(req); return { output, solc: SOLC }; }, calls };
-}
-
-async function check(routes, { apiKey = KEY, read = reader(), comp = compiler() } = {}) {
+async function check(routes, { apiKey = KEY, b = builder() } = {}) {
   const rec = recordedExplorer(routes);
   const explorer = createExplorer({ apiUrl: rec.apiUrl, apiKey, chainId: 8453, fetch: rec.fetch, timeoutMs: 5000 });
-  const result = await checkVerifiedSource({ spec: contractDraft(), explorer, readFiles: read.readFiles, compile: comp.compile });
-  return { result, rec, read, comp };
+  const result = await checkVerifiedSource({ spec: contractDraft(), explorer, buildRepo: b.buildRepo });
+  return { result, rec, b };
 }
 
 const MATCH = { getsourcecode: 'getsourcecode-vault.json', getcode: 'getcode-vault.json' };
 const codes = (r) => r.issues.map((i) => i.code);
+const clone = (v) => JSON.parse(JSON.stringify(v));
 
-test('the verified files are the listed commit\'s and, compiled as verified, give the deployed code: the listing goes on', async () => {
-  const { result, read, comp, rec } = await check(MATCH);
+test('the verified files are the listed commit\'s and the repository builds them to the deployed code: the listing goes on', async () => {
+  const { result, b, rec } = await check(MATCH);
   assert.equal(result.ok, true, JSON.stringify(result.issues));
   assert.deepEqual(result.summary.contract, { path: 'src/Vault.sol', name: 'Vault' });
   assert.equal(result.summary.filesCompared, 1);
   assert.equal(result.summary.bytecode, 'match');
   assert.equal(result.summary.metadata, 'match');
   assert.deepEqual(result.summary.solc, SOLC);
-  assert.deepEqual(read.calls.map((c) => c.paths), [['src/Vault.sol']]);
-  // The compiler is the release the explorer names, on the explorer's own input.
-  assert.equal(comp.calls[0].version, '0.8.31+commit.fd3a2265');
-  assert.equal(comp.calls[0].input.sources['src/Vault.sol'].content, VAULT_SOL.toString());
+  // The build uses the release the explorer names, for the explorer's contract, and reads back its files.
+  assert.deepEqual(b.calls, [{ version: '0.8.31+commit.fd3a2265', contractPath: 'src/Vault.sol', contractName: 'Vault', paths: ['src/Vault.sol'] }]);
   for (const u of rec.seen) {
     assert.equal(u.searchParams.get('chainid'), '8453');
     assert.equal(u.searchParams.get('address'), contractDraft().artifact.address);
   }
 });
 
-test('the compile input is the verified one: its sources, settings and libraries, asking only for the runtime code', () => {
-  const source = parseSourceResult(readFixture('explorer', 'getsourcecode-vault.json'));
-  const input = compilerInput({ ...source, settings: { ...source.settings, libraries: { 'src/L.sol': { L: '0x0000000000000000000000000000000000000001' } } } });
-  assert.equal(input.language, 'Solidity');
-  assert.deepEqual(input.settings.optimizer, { enabled: true, runs: 200 });
-  assert.equal(input.settings.evmVersion, 'cancun');
-  assert.deepEqual(input.settings.libraries, { 'src/L.sol': { L: '0x0000000000000000000000000000000000000001' } });
-  assert.deepEqual(input.settings.outputSelection, { '*': { '*': ['evm.deployedBytecode.object', 'evm.deployedBytecode.immutableReferences', 'evm.deployedBytecode.linkReferences', 'metadata'] } });
-  const off = compilerInput(parseSourceResult(readFixture('explorer', 'getsourcecode-vault-no-optimizer.json')));
-  assert.deepEqual(off.settings.optimizer, { enabled: false, runs: 200 });
-});
-
 test('immutables and solc\'s metadata trailer are masked; every other byte of the runtime must match', () => {
+  const runtime = ARTIFACT.deployedBytecode;
   const deployed = readFixture('explorer', 'getcode-vault.json').result;
-  assert.notEqual(deployed.replace(/^0x/, ''), RUNTIME.object, 'the deployed code carries the immutable owner');
-  const a = normalizeRuntime(deployed, RUNTIME);
-  const b = normalizeRuntime(RUNTIME.object, RUNTIME);
+  assert.notEqual(deployed, runtime.object, 'the deployed code carries the immutable owner');
+  const a = normalizeRuntime(deployed, runtime);
+  const b = normalizeRuntime(runtime.object, runtime);
   assert.ok(a.code.equals(b.code));
   assert.equal(a.metadata.toString('hex'), b.metadata.toString('hex'));
-  const other = normalizeRuntime(readFixture('explorer', 'getcode-vault-other.json').result, RUNTIME);
-  assert.ok(!other.code.equals(b.code));
+  assert.ok(!normalizeRuntime(readFixture('explorer', 'getcode-vault-other.json').result, runtime).code.equals(b.code));
   // Without solc's CBOR trailer nothing is split off: every byte is compared.
   const bare = normalizeRuntime('0x6080604052a10002', {});
   assert.equal(bare.metadata.length, 0);
   assert.equal(bare.code.toString('hex'), '6080604052a10002');
+  assert.throws(() => normalizeRuntime(`0x60__$${'a'.repeat(34)}$__`, {}), /hex/, 'an unlinked placeholder is never masked');
 });
 
-test('a verified source that differs from the listed commit stops the listing, before anything is compiled', async () => {
-  const { result, comp } = await check({ ...MATCH, getsourcecode: 'getsourcecode-vault-edited.json' });
-  assert.deepEqual(codes(result), ['SOURCE_FILE_MISMATCH']);
-  assert.equal(result.issues[0].path, 'src/Vault.sol');
-  assert.equal(comp.calls.length, 0);
+test('a verified source that differs from what the build reads at that path stops the listing', async () => {
+  assert.deepEqual(codes((await check({ ...MATCH, getsourcecode: 'getsourcecode-vault-edited.json' })).result), ['SOURCE_FILE_MISMATCH']);
+  assert.deepEqual(codes((await check(MATCH, { b: builder({ files: {} }) })).result), ['SOURCE_FILE_MISSING']);
 });
 
-test('a file missing from the commit and its dependencies, or a symbolic link there, stops the listing', async () => {
-  assert.deepEqual(codes((await check(MATCH, { read: reader({}) })).result), ['SOURCE_FILE_MISSING']);
-  const link = reader({ 'src/Vault.sol': { origin: 'symlink', bytes: null, detail: 'src/Vault.sol is a symbolic link in the listed commit' } });
-  assert.deepEqual(codes((await check(MATCH, { read: link })).result), ['SOURCE_FILE_MISMATCH']);
-  // An installed dependency (untracked in the commit) is compared as the image holds it.
-  const dep = reader({ 'src/Vault.sol': { origin: 'untracked', bytes: VAULT_SOL } });
-  assert.equal((await check(MATCH, { read: dep })).result.ok, true);
-});
-
-test('deployed bytecode the verified compile does not reproduce stops the listing', async () => {
-  const { result } = await check({ ...MATCH, getcode: 'getcode-vault-other.json' });
-  assert.deepEqual(codes(result), ['BYTECODE_MISMATCH']);
-});
-
-test('an external library the verified source does not link is refused: its address could not be checked', async () => {
-  const linked = JSON.parse(JSON.stringify(OUTPUT));
-  linked.contracts['src/Vault.sol'].Vault.evm.deployedBytecode.linkReferences = { 'src/Lib.sol': { Lib: [{ start: 10, length: 20 }] } };
-  const { result } = await check(MATCH, { comp: compiler(linked) });
-  assert.deepEqual(codes(result), ['SOURCE_LIBRARIES_UNSUPPORTED']);
-});
-
-test('a verified input that does not compile, or names no single such contract, stops the listing', async () => {
-  const failing = { errors: [{ severity: 'error', formattedMessage: 'ParserError: Expected ";"' }], contracts: {} };
-  assert.deepEqual(codes((await check(MATCH, { comp: compiler(failing) })).result), ['SOURCE_COMPILE_FAILED']);
-  assert.deepEqual(codes((await check(MATCH, { comp: compiler({ contracts: {} }) })).result), ['SOURCE_CONTRACT_NOT_FOUND']);
+test('the repository must pin the solc release the contract was verified with', async () => {
+  assert.deepEqual(codes((await check(MATCH, { b: builder({ config: { ...CONFIG, solc: '0.8.30' } }) })).result), ['SOURCE_COMPILER_MISMATCH']);
+  assert.deepEqual(codes((await check(MATCH, { b: builder({ config: { ...CONFIG, solc: null } }) })).result), ['SOURCE_COMPILER_NOT_PINNED']);
+  assert.deepEqual(codes((await check(MATCH, { b: builder({ config: { ...CONFIG, solc: '/opt/verdikta/tools/bin/solc' } }) })).result), ['SOURCE_COMPILER_NOT_PINNED']);
+  assert.deepEqual(codes((await check(MATCH, { b: builder({ config: null }) })).result), ['SOURCE_COMPILER_NOT_PINNED']);
   const source = parseSourceResult(readFixture('explorer', 'getsourcecode-vault.json'));
-  const two = { contracts: { 'a/Vault.sol': OUTPUT.contracts['src/Vault.sol'], 'b/Vault.sol': OUTPUT.contracts['src/Vault.sol'] } };
-  const deployedCode = readFixture('explorer', 'getcode-vault.json').result;
-  assert.equal(compareCompiled({ source: { ...source, contractFile: null }, output: two, deployedCode }).issues[0].code, 'SOURCE_CONTRACT_AMBIGUOUS');
+  assert.deepEqual(compareCompilerPin({ solc: 'v0.8.31' }, source), []);
 });
 
-test('no code at the address, an unverified contract, a proxy or a flattened source stop the listing', async () => {
-  assert.deepEqual(codes((await check({ ...MATCH, getcode: 'getcode-empty.json' })).result), ['SOURCE_NO_CODE']);
-  assert.deepEqual(codes((await check({ ...MATCH, getsourcecode: 'getsourcecode-unverified.json' })).result), ['SOURCE_NOT_VERIFIED']);
-  assert.deepEqual(codes((await check({ ...MATCH, getsourcecode: 'getsourcecode-vault-proxy.json' })).result), ['SOURCE_PROXY_UNSUPPORTED']);
-  assert.deepEqual(codes((await check({ ...MATCH, getsourcecode: 'getsourcecode-vault-flattened.json' })).result), ['SOURCE_FLATTENED_UNSUPPORTED']);
+test('settings in foundry.toml that build other code than the deployment stop the listing, and the detail names them', async () => {
+  const noOpt = clone(ARTIFACT);
+  noOpt.metadata.settings.optimizer = { enabled: false, runs: 200 };
+  noOpt.deployedBytecode.object = readFixture('explorer', 'getcode-vault-other.json').result;
+  const { result } = await check(MATCH, { b: builder({ artifact: noOpt }) });
+  assert.deepEqual(codes(result), ['BYTECODE_MISMATCH']);
+  assert.match(result.issues[0].detail, /optimizer on vs off/);
 });
 
-test('the compiler is the one the explorer names, whatever it is: a wrong claim shows as a bytecode mismatch', async () => {
-  const { comp } = await check({ ...MATCH, getsourcecode: 'getsourcecode-vault-old-compiler.json' });
-  assert.equal(comp.calls[0].version, '0.8.30+commit.73712a01');
+test('a build that uses a file the verified source lacks (say, through a remapping), or other bytes for it, stops the listing', async () => {
+  const extra = clone(ARTIFACT);
+  extra.metadata.sources['lib/evil/Math.sol'] = { keccak256: `0x${'0'.repeat(64)}` };
+  assert.deepEqual(codes((await check(MATCH, { b: builder({ artifact: extra }) })).result), ['SOURCE_FILES_DIFFER']);
+  const other = clone(ARTIFACT);
+  other.metadata.sources['src/Vault.sol'].keccak256 = `0x${'1'.repeat(64)}`;
+  assert.deepEqual(codes((await check(MATCH, { b: builder({ artifact: other }) })).result), ['SOURCE_FILES_DIFFER']);
 });
 
-test('a source path outside the repository is refused before anything reads it', async () => {
-  const { result, read } = await check({ ...MATCH, getsourcecode: 'getsourcecode-vault-escape.json' });
-  assert.deepEqual(codes(result), ['SOURCE_PATH_INVALID']);
-  assert.equal(read.calls.length, 0);
+test('deployed bytecode the repository does not build to stops the listing', async () => {
+  assert.deepEqual(codes((await check({ ...MATCH, getcode: 'getcode-vault-other.json' })).result), ['BYTECODE_MISMATCH']);
 });
 
-test('the older multi-file source format compiles with the explorer\'s optimizer and EVM fields', async () => {
-  const { result, comp } = await check({ ...MATCH, getsourcecode: 'getsourcecode-vault-multifile.json' });
+test('an external library the build does not link is refused: its deployed address could not be checked', async () => {
+  const linked = clone(ARTIFACT);
+  linked.deployedBytecode.linkReferences = { 'src/Lib.sol': { Lib: [{ start: 10, length: 20 }] } };
+  assert.ok(codes((await check(MATCH, { b: builder({ artifact: linked }) })).result).includes('SOURCE_LIBRARIES_UNSUPPORTED'));
+});
+
+test('a build that fails, or yields no artifact for the contract, stops the listing', async () => {
+  const failed = (await check(MATCH, { b: builder({ exitCode: 1 }) })).result;
+  assert.deepEqual(codes(failed), ['SOURCE_BUILD_FAILED']);
+  assert.match(failed.issues[0].log, /Compiler run failed/);
+  assert.deepEqual(codes((await check(MATCH, { b: builder({ artifact: null }) })).result), ['SOURCE_CONTRACT_NOT_FOUND']);
+  const elsewhere = clone(ARTIFACT);
+  elsewhere.metadata.settings.compilationTarget = { 'test/mocks/Vault.sol': 'Vault' };
+  assert.deepEqual(compareRepoBuild({ source: parseSourceResult(readFixture('explorer', 'getsourcecode-vault.json')), artifact: elsewhere, contractPath: 'src/Vault.sol', deployedCode: '0x00' }).issues.map((i) => i.code), ['SOURCE_CONTRACT_NOT_FOUND']);
+});
+
+test('no code at the address, an unverified contract, a proxy or a flattened source stop the listing before any build', async () => {
+  for (const [routes, code] of [
+    [{ ...MATCH, getcode: 'getcode-empty.json' }, 'SOURCE_NO_CODE'],
+    [{ ...MATCH, getsourcecode: 'getsourcecode-unverified.json' }, 'SOURCE_NOT_VERIFIED'],
+    [{ ...MATCH, getsourcecode: 'getsourcecode-vault-proxy.json' }, 'SOURCE_PROXY_UNSUPPORTED'],
+    [{ ...MATCH, getsourcecode: 'getsourcecode-vault-flattened.json' }, 'SOURCE_FLATTENED_UNSUPPORTED'],
+    [{ ...MATCH, getsourcecode: 'getsourcecode-vault-escape.json' }, 'SOURCE_PATH_INVALID'],
+  ]) {
+    const { result, b } = await check(routes);
+    assert.deepEqual(codes(result), [code]);
+    assert.equal(b.calls.length, 0, code);
+  }
+});
+
+test('the compiler is the release the explorer names, whatever it is', async () => {
+  const { b, result } = await check({ ...MATCH, getsourcecode: 'getsourcecode-vault-old-compiler.json' });
+  assert.equal(b.calls[0].version, '0.8.30+commit.73712a01');
+  assert.deepEqual(codes(result), ['SOURCE_COMPILER_MISMATCH'], 'and the repository pins 0.8.31');
+});
+
+test('the contract\'s file: path:Name, ContractFileName, or the one verified file that declares it', () => {
+  const s = (over) => ({ contractName: 'Vault', contractFile: null, sources: { 'src/Vault.sol': 'contract Vault {}', 'src/B.sol': 'contract B {}' }, ...over });
+  assert.equal(contractPathOf(s({ contractName: 'src/B.sol:Vault' })), 'src/B.sol');
+  assert.equal(contractPathOf(s({ contractFile: 'src/B.sol' })), 'src/B.sol');
+  assert.equal(contractPathOf(s()), 'src/Vault.sol');
+  assert.equal(contractPathOf(s({ sources: { 'a.sol': 'contract Vault {}', 'b.sol': 'abstract contract Vault {}' } })), null);
+});
+
+test('the older multi-file source format is checked the same way', async () => {
+  const { result } = await check({ ...MATCH, getsourcecode: 'getsourcecode-vault-multifile.json' });
   assert.equal(result.ok, true, JSON.stringify(result.issues));
-  assert.deepEqual(comp.calls[0].input.settings.optimizer, { enabled: true, runs: 200 });
-  assert.equal(comp.calls[0].input.settings.evmVersion, 'cancun');
+});
+
+test('a submodule the build could not fetch is reported', async () => {
+  const { result } = await check(MATCH, { b: builder({ skipped: [{ path: 'lib/forge-std', detail: 'no https URL for it in .gitmodules' }] }) });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.warnings.map((w) => w.code), ['SUBMODULE_NOT_FETCHED']);
 });
 
 test('an explorer error is not the maker\'s refusal: it fails the build, to be retried', async () => {

@@ -1,7 +1,6 @@
 // The compiler the verified-source check trusts: the release the explorer names, from the
 // Solidity project's list.json and binaries (a local double here), checked by the SHA-256 the
-// list publishes and cached by it; run in a sandbox of the pinned base image with the binary and
-// the input on stdin, no network and nothing mounted.
+// list publishes and cached by it. repoBuild.test.js covers how it is run.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -9,9 +8,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { codeReview } from '../../src/common.js';
-import { compileArgv, compileStandardJson, fetchSolc, sandboxImage } from '../../src/solc.js';
-import { fakeDocker, startServer } from '../helpers/fakes.js';
+import { fetchSolc } from '../../src/solc.js';
+import { startServer } from '../helpers/fakes.js';
 
 const BINARY = Buffer.from('\x7fELF fake solc for the test');
 const VERSION = '0.8.31+commit.fd3a2265';
@@ -69,22 +67,4 @@ test('a compiler the Solidity project never released for the platform is the lis
   } finally {
     await srv.close();
   }
-});
-
-test('solc runs in a sandbox of the pinned base image, fed the binary then the input on stdin', async () => {
-  const docker = fakeDocker((args) => (args[0] === 'run' ? { stdout: '{"contracts":{}}' } : {}));
-  const out = await compileStandardJson({ docker, platform: 'linux/amd64', solc: { bytes: BINARY, longVersion: VERSION }, input: { language: 'Solidity', sources: {} } });
-  assert.deepEqual(out, { contracts: {} });
-  const pin = codeReview.BASE_IMAGE_PINS.foundry;
-  assert.equal(sandboxImage('linux/amd64'), `${pin.repository}@${pin.digest}`);
-  const run = docker.calls.find((c) => c.args[0] === 'run');
-  const args = run.args;
-  assert.equal(args[args.indexOf('--network') + 1], 'none');
-  assert.ok(args.includes('--interactive') && args.includes('--read-only'));
-  assert.equal(args[args.indexOf('--user') + 1], '10001:10001');
-  assert.ok(args.includes(`${pin.repository}@${pin.digest}`), 'the pinned base, not the listing\'s image');
-  assert.deepEqual(args.slice(-compileArgv(BINARY.length).length), compileArgv(BINARY.length));
-  assert.ok(run.opts.stdin.equals(Buffer.concat([BINARY, Buffer.from('{"language":"Solidity","sources":{}}')])));
-  const failing = fakeDocker((a) => (a[0] === 'run' ? { exitCode: 1, stderr: 'boom' } : {}));
-  await assert.rejects(compileStandardJson({ docker: failing, platform: 'linux/amd64', solc: { bytes: BINARY, longVersion: VERSION }, input: {} }), { code: 'SOLC_FAILED' });
 });

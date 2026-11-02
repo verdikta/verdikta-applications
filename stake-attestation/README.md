@@ -236,19 +236,22 @@ deploys on the in-process network against the mock aggregator, as a test.
    manifest, read back and checked against the digest: over 2 GB compressed, or any `VOLUME`,
    is refused. Config may lower both limits, never raise them.
 5. **verifiedSource** (a `contract` listing): the explorer configured for the listing's chain
-   (Etherscan v2 API: `getsourcecode`, `eth_getCode`) against the listed commit, without
-   running anything the listing chose. Every file of the verified source must be
-   byte-identical to the file at that path in the commit, read from the objects the builder
-   fetched by id (and each submodule's, fetched by the commit its gitlink records), never from
-   the env image's checkout or objects; a path the commit does not track is compared with the
-   image's installed dependency. Then the verified standard-JSON input (those files, the
-   verified settings and libraries) is compiled by the solc release the explorer names, from
-   binaries.soliditylang.org (`solc.baseUrl`) checked against the SHA-256 its `list.json`
-   publishes, in a sandbox of the pinned base image with no network, and its runtime code must
-   be the deployed code, every byte but the immutables and solc's metadata trailer. The
-   listing's own compiler is never used: a maker's setup can install anything as `solc`. A
-   proxy, a flattened source, an unverified address, an unlinked library (its address could
-   not be checked) or any mismatch stops the listing.
+   (Etherscan v2 API: `getsourcecode`, `eth_getCode`) against the repository's own build at
+   baseCommit, made with tools the listing did not choose. In one sandbox of the pushed image
+   (no network, uid 10001, read-only root, fed on stdin), the listed commit's files are laid
+   out from the objects the builder fetched by id (each submodule's by the commit its gitlink
+   records; never the image's checkout or objects), the image's untracked files (its installed
+   dependencies) around them, never over a tracked path, as the code-runner's checkout keeps
+   them; then the pinned base's forge builds the contract's file with `--use` the solc release
+   the explorer names, from binaries.soliditylang.org (`solc.baseUrl`) checked against the
+   SHA-256 its `list.json` publishes. A maker's setup can install anything as `solc`, so the
+   listing's own compiler is never used. The listing stops unless: every verified file is
+   byte-identical to that path in the tree the build reads (through any symbolic link, as the
+   build reads it); `foundry.toml` pins that solc release; the build of the contract uses only
+   verified files, with their bytes (no remapping picks another); and its runtime code is the
+   deployed code, every byte but the immutables and solc's metadata trailer. A proxy, a
+   flattened source, an unverified address or an unlinked library (whose address could not be
+   checked) is refused.
 6. **listingCheck**: the code-runner's `POST /v1/listing-checks` (verdikta-arbiter A2b), the
    runner the arbiters use: build once, the suite three times without network, `baseline.json`,
    the timings, the default limits and the harness proof. Its refusals (`LISTING_TOO_HEAVY`,
@@ -310,8 +313,9 @@ does. The report lists that under `devOnly`, and a production key refuses to sig
 **Tests.** `npm test` runs the unit tests (no Docker; explorer answers come only from recorded
 responses in `test/fixtures/explorer`, in the Etherscan v2 API's shape, for the fixture contract
 `test/fixtures/vault`). `npm run test:docker` builds the fixture with a real daemon, pushes it to
-a throwaway `registry:2`, runs the source check (with solc 0.8.31 from binaries.soliditylang.org,
-and an adversarial listing whose setup rewrites a tracked source and plants a `solc`), and validates it on the code-runner
+a throwaway `registry:2`, runs the source check (with solc 0.8.31 from binaries.soliditylang.org;
+an adversarial listing whose setup rewrites a tracked source, links an untracked alias to it and
+plants a `solc`; and listings that pin another solc or turn the optimizer off), and validates it on the code-runner
 from verdikta-arbiter at the commit pinned in `test/docker/code-runner.pin.json`, started as a
 sidecar on loopback with its own token and environment (`SA_CODE_RUNNER_DIR` points at a
 checkout of that commit's `code-runner/`; otherwise the tests fetch it). The fixture's setup lets

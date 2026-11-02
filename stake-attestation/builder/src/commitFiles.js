@@ -1,62 +1,50 @@
-// The listed commit's files, for the verified-source check, from objects the builder fetched
+// The listed commit's tree, for the verified-source check, from objects the builder fetched
 // itself: the commit by its id (git's index-pack computed every object id from its bytes, so a
 // fetched object is what its id says), and each submodule the same way, by the commit its gitlink
 // records. Never the env image's checkout or objects: a maker's setup ran as root there and could
-// have rewritten either.
-//
-// A path the commit does not track (a dependency the setup installed) is read from the image's
-// /repo, which is what the code-runner keeps of it for every claim, in a sandbox in which nothing
-// of the listing's runs: only the base image's sh, test and base64.
+// have rewritten either. A submodule that cannot be fetched is left out, as the code-runner leaves
+// one whose objects the image lacks: an empty directory.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { runSandboxed } from './docker.js';
 import { BuilderError, Refusal } from './errors.js';
 import { fetchListedCommit, gitEnv } from './git.js';
 import { run, tail } from './proc.js';
 
 const MAX_DEPTH = 8;
+// The code-runner's bounds on a checkout (code-runner/README.md, "The forced checkout").
+const MAX_ENTRIES = 200000;
+const MAX_BYTES = 512 * 1024 * 1024;
+const MODES = new Set(['100644', '100755', '120000']);
 
-function hardening() {
-  return ['--literal-pathspecs', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'protocol.allow=never'];
-}
-
-async function git(gitDir, args, timeoutMs, maxBytes) {
+async function git(gitDir, args, { timeoutMs, maxBytes, stdin = null }) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-git-home-'));
   try {
-    return await run('git', [...hardening(), '--git-dir', gitDir, ...args], { env: gitEnv({ home }), timeoutMs, maxBytes });
+    return await run('git', ['--literal-pathspecs', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'protocol.allow=never', '--git-dir', gitDir, ...args],
+      { env: gitEnv({ home }), timeoutMs, maxBytes, stdin });
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
 }
 
-/** Every entry of a commit's tree: path -> { mode, type, id }. */
-async function treeOf(gitDir, commit, timeoutMs) {
-  const r = await git(gitDir, ['ls-tree', '-r', '-t', '-z', '--full-tree', commit], timeoutMs, 256 * 1024 * 1024);
-  if (r.exitCode !== 0 || r.stdoutTruncated) throw new BuilderError('SOURCE_READ_FAILED', `git ls-tree ${commit}: ${tail(r.stderr, 500).trim()}`);
-  const entries = new Map();
-  for (const rec of r.stdout.toString('utf8').split('\0')) {
-    if (!rec) continue;
-    const tab = rec.indexOf('\t');
-    const [mode, type, id] = rec.slice(0, tab).split(' ');
-    entries.set(rec.slice(tab + 1), { mode, type, id });
-  }
-  return entries;
+/** A path git could check out on Linux: no empty, `.`, `..` or `.git` component, no NUL or newline. */
+export function isTreePath(p) {
+  if (!p || p.length > 4000 || /[\0\n\r]/.test(p)) return false;
+  return p.split('/').every((c) => c !== '' && c !== '.' && c !== '..' && c.toLowerCase() !== '.git');
 }
 
-/** A submodule's https URL from the commit's .gitmodules, relative URLs against the superproject's. */
+/** A submodule's https URL from the commit's .gitmodules; relative URLs resolve against the superproject's. */
 async function submoduleUrl(gitDir, commit, subPath, superUrl, timeoutMs) {
-  const list = await git(gitDir, ['config', '--blob', `${commit}:.gitmodules`, '--no-includes', '-z', '--get-regexp', '^submodule\\..*\\.path$'], timeoutMs);
+  const list = await git(gitDir, ['config', '--blob', `${commit}:.gitmodules`, '--no-includes', '-z', '--get-regexp', '^submodule\\..*\\.path$'], { timeoutMs });
   if (list.exitCode !== 0) return null;
   let name = null;
   for (const rec of list.stdout.toString('utf8').split('\0')) {
     const nl = rec.indexOf('\n');
-    if (nl === -1) continue;
-    if (rec.slice(nl + 1) === subPath) name = rec.slice('submodule.'.length, nl - '.path'.length);
+    if (nl !== -1 && rec.slice(nl + 1) === subPath) name = rec.slice('submodule.'.length, nl - '.path'.length);
   }
   if (name === null) return null;
-  const u = await git(gitDir, ['config', '--blob', `${commit}:.gitmodules`, '--no-includes', '--get', `submodule.${name}.url`], timeoutMs);
+  const u = await git(gitDir, ['config', '--blob', `${commit}:.gitmodules`, '--no-includes', '--get', `submodule.${name}.url`], { timeoutMs });
   if (u.exitCode !== 0) return null;
   const raw = u.stdout.toString('utf8').trim();
   let url;
@@ -68,94 +56,90 @@ async function submoduleUrl(gitDir, commit, subPath, superUrl, timeoutMs) {
   return /^https:\/\/\S+$/.test(url) ? url.replace(/\/$/, '') : null;
 }
 
-/**
- * @param {object} o
- * @param {string} o.gitDir - the bare repository fetchListedCommit made
- * @param {string} o.repo - code_review.json's repo (relative submodule URLs resolve against it)
- * @param {string} o.baseCommit
- * @param {string[]} o.paths - repository-relative paths (sourceCheck.isSourcePath)
- * @param {(url: string) => string|null} [o.mirrorFor]
- * @param {string} o.workDir - where submodules are fetched
- * @param {number} [o.timeoutMs]
- * @returns {Promise<Map<string, { origin: 'commit'|'submodule'|'untracked'|'symlink'|'missing', bytes: Buffer|null, detail?: string }>>}
- */
-export async function readCommitFiles({ gitDir, repo, baseCommit, paths, mirrorFor = () => null, workDir, timeoutMs = 600000 }) {
-  const trees = new Map();
-  const subs = new Map();
-  const tree = async (dir, commit) => {
-    const key = `${dir}\0${commit}`;
-    if (!trees.has(key)) trees.set(key, await treeOf(dir, commit, timeoutMs));
-    return trees.get(key);
-  };
-  const submodule = async (dir, commit, subPath, id, superUrl) => {
-    const url = await submoduleUrl(dir, commit, subPath, superUrl, timeoutMs);
-    if (!url) return { error: `the submodule at ${subPath} has no https URL in .gitmodules` };
-    const key = `${url}\0${id}`;
-    if (!subs.has(key)) {
-      const target = path.join(workDir, `submodule-${id}-${subs.size}.git`);
-      try {
-        await fetchListedCommit({ repo: url, baseCommit: id, mirror: mirrorFor(url), dir: target, timeoutMs });
-        subs.set(key, { gitDir: target, url });
-      } catch (err) {
-        if (!(err instanceof Refusal)) throw err;
-        subs.set(key, { error: `the submodule at ${subPath} (${url}) has no commit ${id}` });
-      }
-    }
-    return subs.get(key);
-  };
-
-  async function resolve(dir, commit, p, superUrl, depth, prefixShown) {
-    const entries = await tree(dir, commit);
-    const e = entries.get(p);
-    if (e) {
-      if (e.type === 'blob' && e.mode === '120000') return { origin: 'symlink', bytes: null, detail: `${prefixShown}${p} is a symbolic link in the listed commit` };
-      if (e.type !== 'blob') return { origin: 'missing', bytes: null, detail: `${prefixShown}${p} is not a file in the listed commit` };
-      const r = await git(dir, ['cat-file', 'blob', e.id], timeoutMs, 64 * 1024 * 1024);
-      if (r.exitCode !== 0 || r.stdoutTruncated) throw new BuilderError('SOURCE_READ_FAILED', `git cat-file ${e.id}: ${tail(r.stderr, 500).trim()}`);
-      return { origin: depth === 0 ? 'commit' : 'submodule', bytes: r.stdout };
-    }
-    const parts = p.split('/');
-    for (let i = parts.length - 1; i >= 1; i -= 1) {
-      const prefix = parts.slice(0, i).join('/');
-      const pe = entries.get(prefix);
-      if (!pe) continue;
-      if (pe.type === 'commit') {
-        if (depth >= MAX_DEPTH) return { origin: 'missing', bytes: null, detail: `submodules nest deeper than ${MAX_DEPTH} at ${prefixShown}${prefix}` };
-        const sub = await submodule(dir, commit, prefix, pe.id, superUrl);
-        if (sub.error) return { origin: 'missing', bytes: null, detail: sub.error };
-        return resolve(sub.gitDir, pe.id, parts.slice(i).join('/'), sub.url, depth + 1, `${prefixShown}${prefix}/`);
-      }
-      if (pe.type === 'tree') break;
-      return { origin: 'missing', bytes: null, detail: `${prefixShown}${prefix} is a file in the listed commit, not a directory` };
-    }
-    return { origin: 'untracked', bytes: null };
-  }
-
+/** The blobs' bytes, by id, through one `git cat-file --batch`. */
+async function readBlobs(gitDir, ids, timeoutMs) {
   const out = new Map();
-  for (const p of paths) out.set(p, await resolve(gitDir, baseCommit, p, repo, 0, ''));
+  if (ids.length === 0) return out;
+  const r = await git(gitDir, ['cat-file', '--batch'], { timeoutMs, maxBytes: MAX_BYTES + 64 * ids.length + 1024, stdin: `${ids.join('\n')}\n` });
+  if (r.exitCode !== 0 || r.stdoutTruncated) throw new BuilderError('SOURCE_READ_FAILED', `git cat-file --batch: ${tail(r.stderr, 500).trim() || 'the output was cut'}`);
+  const buf = r.stdout;
+  let at = 0;
+  for (const id of ids) {
+    const nl = buf.indexOf(0x0a, at);
+    const [got, type, size] = buf.subarray(at, nl).toString('utf8').split(' ');
+    if (got !== id || type !== 'blob' || !/^[0-9]+$/.test(size)) throw new BuilderError('SOURCE_READ_FAILED', `git cat-file --batch did not return the blob ${id}`);
+    const n = Number(size);
+    out.set(id, buf.subarray(nl + 1, nl + 1 + n));
+    at = nl + 1 + n + 1;
+  }
   return out;
 }
 
 /**
- * Untracked files as the image's /repo holds them: path -> bytes, or null when absent.
- * @returns {Promise<Map<string, Buffer|null>>}
+ * Every file of the listed commit, submodules included, with its mode and bytes.
+ * @param {object} o
+ * @param {string} o.gitDir - the bare repository fetchListedCommit made
+ * @param {string} o.repo - code_review.json's repo (relative submodule URLs resolve against it)
+ * @param {string} o.baseCommit
+ * @param {(url: string) => string|null} [o.mirrorFor]
+ * @param {string} o.workDir - where submodules are fetched
+ * @returns {Promise<{ entries: { path: string, mode: string, bytes: Buffer }[], skipped: { path: string, detail: string }[] }>}
+ * @throws {Refusal} SOURCE_TREE_INVALID (a path git could not check out, a tree over the runner's bounds)
+ * @throws {BuilderError} SOURCE_READ_FAILED, REPO_FETCH_FAILED
  */
-export async function readUntrackedFromImage({ docker, image, platform, paths, timeoutMs = 300000 }) {
-  const out = new Map(paths.map((p) => [p, null]));
-  if (paths.length === 0) return out;
-  const script = [
-    'for p in "$@"; do',
-    "  if [ -f \"/repo/$p\" ]; then printf 'F %s ' \"$(printf '%s' \"$p\" | base64 -w0)\"; base64 -w0 < \"/repo/$p\"; printf '\\n'; fi",
-    'done',
-  ].join('\n');
-  const r = await runSandboxed({ docker, image, platform, argv: ['/bin/sh', '-c', script, 'vab-read', ...paths], timeoutMs, maxBytes: 128 * 1024 * 1024 });
-  if (r.spawnError) throw new BuilderError('DOCKER_UNAVAILABLE', r.spawnError);
-  if (r.exitCode !== 0 || r.timedOut || r.stdoutTruncated) throw new BuilderError('SOURCE_READ_FAILED', `the image's untracked files could not be read: ${tail(r.stderr, 1000).trim()}`);
-  for (const line of r.stdout.toString('utf8').split('\n')) {
-    const [kind, name, body = ''] = line.split(' ');
-    if (kind !== 'F') continue;
-    const p = Buffer.from(name, 'base64').toString('utf8');
-    if (out.has(p)) out.set(p, Buffer.from(body, 'base64'));
+export async function commitTree({ gitDir, repo, baseCommit, mirrorFor = () => null, workDir, timeoutMs = 600000 }) {
+  const entries = [];
+  const skipped = [];
+  let bytes = 0;
+  let fetched = 0;
+
+  async function walk(dir, commit, url, prefix, depth) {
+    const r = await git(dir, ['ls-tree', '-r', '-z', '--full-tree', commit], { timeoutMs, maxBytes: 256 * 1024 * 1024 });
+    if (r.exitCode !== 0 || r.stdoutTruncated) throw new BuilderError('SOURCE_READ_FAILED', `git ls-tree ${commit}: ${tail(r.stderr, 500).trim()}`);
+    const blobs = [];
+    for (const rec of r.stdout.toString('utf8').split('\0')) {
+      if (!rec) continue;
+      const tab = rec.indexOf('\t');
+      const [mode, type, id] = rec.slice(0, tab).split(' ');
+      const p = rec.slice(tab + 1);
+      const full = `${prefix}${p}`;
+      if (!isTreePath(full)) throw new Refusal('SOURCE_TREE_INVALID', `the listed commit has a path git cannot check out: ${JSON.stringify(full.slice(0, 200))}`);
+      if (type === 'commit') {
+        if (depth >= MAX_DEPTH) {
+          skipped.push({ path: full, detail: `submodules nest deeper than ${MAX_DEPTH}` });
+          continue;
+        }
+        const subUrl = await submoduleUrl(dir, commit, p, url, timeoutMs);
+        if (!subUrl) {
+          skipped.push({ path: full, detail: 'no https URL for it in .gitmodules' });
+          continue;
+        }
+        const target = path.join(workDir, `submodule-${fetched}.git`);
+        fetched += 1;
+        try {
+          await fetchListedCommit({ repo: subUrl, baseCommit: id, mirror: mirrorFor(subUrl), dir: target, timeoutMs });
+        } catch (err) {
+          if (!(err instanceof Refusal)) throw err;
+          skipped.push({ path: full, detail: `${subUrl} has no commit ${id}` });
+          continue;
+        }
+        await walk(target, id, subUrl, `${full}/`, depth + 1);
+      } else if (type === 'blob' && MODES.has(mode)) {
+        blobs.push({ path: full, mode, id });
+      } else {
+        throw new Refusal('SOURCE_TREE_INVALID', `the listed commit has an entry git cannot check out: ${JSON.stringify(full.slice(0, 200))} (${mode} ${type})`);
+      }
+    }
+    if (entries.length + blobs.length > MAX_ENTRIES) throw new Refusal('SOURCE_TREE_INVALID', `the listed commit has more than ${MAX_ENTRIES} files`);
+    const contents = await readBlobs(dir, [...new Set(blobs.map((b) => b.id))], timeoutMs);
+    for (const b of blobs) {
+      const content = contents.get(b.id);
+      bytes += content.length;
+      if (bytes > MAX_BYTES) throw new Refusal('SOURCE_TREE_INVALID', `the listed commit's files exceed ${MAX_BYTES} bytes`);
+      entries.push({ path: b.path, mode: b.mode, bytes: content });
+    }
   }
-  return out;
+
+  await walk(gitDir, baseCommit, repo, '', 0);
+  return { entries, skipped };
 }

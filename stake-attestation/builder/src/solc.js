@@ -2,32 +2,19 @@
 // was verified with, from the Solidity project's own binaries (binaries.soliditylang.org, or a
 // mirror of it in config), checked against the SHA-256 its list.json publishes and kept in a
 // cache by that hash. Never the listing's compiler: a maker's setup can install any program as
-// "solc" in the env image, so nothing the listing chose compiles what the check compares.
-//
-// The binary runs in a fresh sandbox of the pinned foundry base image (src/docker.js: no
-// network, read-only root, uid 10001), fed on stdin: the binary's bytes, then the standard-JSON
-// input. Nothing is mounted and nothing of the listing's image is involved.
+// "solc" in the env image, so nothing the listing chose compiles what the check compares
+// (src/repoBuild.js passes this binary to forge with --use).
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { codeReview } from './common.js';
-import { runSandboxed } from './docker.js';
 import { BuilderError, Refusal } from './errors.js';
-import { tail } from './proc.js';
 
 const DIRS = Object.freeze({ 'linux/amd64': 'linux-amd64', 'linux/arm64': 'linux-arm64' });
 const LONG_VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-nightly\.[0-9.]+)?\+commit\.[0-9a-f]{8}$/;
 const MAX_SOLC_BYTES = 128 * 1024 * 1024;
-const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
-
-/** The pinned base image to run solc in, for a platform this daemon runs. */
-export function sandboxImage(platform) {
-  const pin = codeReview.BASE_IMAGE_PINS.foundry;
-  return platform === pin.platform ? `${pin.repository}@${pin.digest}` : `${pin.repository}@${pin.indexDigest}`;
-}
 
 async function get(fetchImpl, url, what, maxBytes, timeoutMs) {
   let res;
@@ -89,33 +76,4 @@ export async function fetchSolc({ version, platform, baseUrl, cacheDir, fetch: f
   fs.writeFileSync(tmp, bytes, { mode: 0o644 });
   fs.renameSync(tmp, cached);
   return { bytes, sha256: expected, longVersion: version, path: build.path };
-}
-
-/** The argv that runs the solc read from stdin on the standard-JSON input that follows it. */
-export function compileArgv(solcBytes) {
-  return ['/bin/sh', '-c', 'head -c "$1" > /work/solc && chmod 0700 /work/solc && exec /work/solc --standard-json', 'vab-solc', String(solcBytes)];
-}
-
-/**
- * Compiles `input` (solc standard JSON) with `solc` in a sandbox of the pinned base image.
- * @returns {Promise<object>} solc's standard-JSON output
- * @throws {BuilderError} SOLC_FAILED, DOCKER_UNAVAILABLE
- */
-export async function compileStandardJson({ docker, platform, solc, input, timeoutMs = 300000 }) {
-  const image = sandboxImage(platform);
-  const have = await docker.run(['image', 'inspect', '--format', '{{.Id}}', image], { timeoutMs: 60000 });
-  if (have.exitCode !== 0) {
-    const pull = await docker.run(['pull', '--quiet', '--platform', platform, image], { timeoutMs: 900000 });
-    if (pull.exitCode !== 0) throw new BuilderError('SOLC_FAILED', `the pinned base image ${image} could not be pulled: ${tail(pull.stderr, 1000).trim()}`);
-  }
-  const stdin = Buffer.concat([solc.bytes, Buffer.from(JSON.stringify(input), 'utf8')]);
-  const r = await runSandboxed({ docker, image, platform, argv: compileArgv(solc.bytes.length), stdin, timeoutMs, maxBytes: MAX_OUTPUT_BYTES });
-  if (r.spawnError) throw new BuilderError('DOCKER_UNAVAILABLE', r.spawnError, { step: 'verifiedSource' });
-  if (r.timedOut) throw new BuilderError('SOLC_FAILED', `solc did not finish in ${Math.round(timeoutMs / 1000)} s`);
-  if (r.exitCode !== 0 || r.stdoutTruncated) throw new BuilderError('SOLC_FAILED', `solc ${solc.longVersion} exited ${r.exitCode}: ${tail(r.stderr, 1000).trim()}`);
-  try {
-    return JSON.parse(r.stdout.toString('utf8'));
-  } catch {
-    throw new BuilderError('SOLC_FAILED', 'solc printed no standard-JSON output');
-  }
 }

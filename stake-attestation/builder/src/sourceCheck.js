@@ -2,24 +2,27 @@
 // bytecode's verified source, from the explorer configured for the listing's chain, against the
 // repository at baseCommit and what it compiles to. A mismatch stops the listing.
 //
-// Two comparisons, neither of which runs anything the listing chose:
-//   files     every file of the verified source is byte-identical to the file at that path in
-//             the listed commit, read from objects the builder fetched by id (src/commitFiles.js),
-//             or, for a path the commit does not track, to the image's installed dependency;
-//   bytecode  the verified standard-JSON input (those same bytes, the verified settings, the
-//             verified libraries) compiled by the solc release the explorer names, from the
-//             Solidity project's checksummed binaries (src/solc.js), in a sandbox of the pinned
-//             base image, gives the deployed runtime code, every byte but the immutables (filled
-//             in at deployment) and solc's CBOR metadata trailer. A contract with an unlinked
-//             library reference is refused: its library address could not be checked.
-// So the deployed code is the listed commit's code compiled as verified, whatever the explorer's
-// own matching did, and whatever the maker's setup put in the env image.
+// The repository is built as every claim's run will build it, with tools the listing did not
+// choose (src/repoBuild.js): the listed commit's files from the objects the builder fetched, the
+// image's installed dependencies around them, the pinned base's forge, and the solc release the
+// explorer names from the Solidity project's checksummed binaries (src/solc.js). Then:
+//   files     every file of the verified source is byte-identical to that path in the tree the
+//             build reads (through any symbolic link, as the build reads it);
+//   compiler  the repository pins that solc release (foundry.toml `solc = "x.y.z"`);
+//   sources   the build of the contract uses only files of the verified source, with their bytes
+//             (so no remapping selects a file the explorer never saw);
+//   bytecode  its runtime code is the deployed code, every byte but the immutables (filled in at
+//             deployment) and solc's CBOR metadata trailer. An unlinked library reference is
+//             refused: its address could not be checked.
+// So the deployed code is what the listed commit builds to, with the repository's own settings,
+// whatever the explorer's own matching did and whatever the maker's setup put in the image.
 import crypto from 'node:crypto';
+
+import { keccak_256 as keccak256 } from '@noble/hashes/sha3';
 
 const IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const MAX_SOURCE_FILES = 2000;
 const SOLC_KEY = Buffer.from('64736f6c63', 'hex'); // CBOR text "solc"
-const OUTPUTS = Object.freeze(['evm.deployedBytecode.object', 'evm.deployedBytecode.immutableReferences', 'evm.deployedBytecode.linkReferences', 'metadata']);
 
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 
@@ -83,74 +86,90 @@ function refuse(code, detail, source, extra) {
   return result([{ code, detail }], [], summaryOf(source, extra));
 }
 
-/** The standard-JSON input the verified contract compiles from, asking for the runtime code. */
-export function compilerInput(source) {
-  const settings = source.format === 'standard-json'
-    ? { ...source.settings }
-    : {
-        optimizer: { enabled: source.optimizer.enabled, runs: source.optimizer.runs },
-        ...(source.evmVersion ? { evmVersion: source.evmVersion } : {}),
-      };
-  settings.outputSelection = { '*': { '*': [...OUTPUTS] } };
-  return {
-    language: 'Solidity',
-    sources: Object.fromEntries(Object.entries(source.sources).map(([p, content]) => [p, { content }])),
-    settings,
-  };
-}
-
-/** Compares the verified files with the listed commit's (or the image's untracked) files. */
+/** Compares the verified files with the files the repository's build reads at those paths. */
 export function compareFiles(source, files) {
   const issues = [];
   for (const [p, content] of Object.entries(source.sources)) {
-    const f = files.get(p);
+    const bytes = files.get(p);
     const verified = Buffer.from(content, 'utf8');
-    if (f && f.origin === 'symlink') {
-      issues.push({ code: 'SOURCE_FILE_MISMATCH', path: p, detail: f.detail });
-    } else if (!f || f.origin === 'missing' || !f.bytes) {
-      issues.push({ code: 'SOURCE_FILE_MISSING', path: p, detail: f?.detail ?? `${p} is in the verified source but not in the repository at baseCommit or its installed dependencies` });
-    } else if (!f.bytes.equals(verified)) {
-      issues.push({ code: 'SOURCE_FILE_MISMATCH', path: p, detail: `${p} differs: the ${f.origin === 'untracked' ? 'image\'s installed file' : 'listed commit'} has sha256 ${sha256(f.bytes)}, the verified source ${sha256(verified)}` });
+    if (!bytes) {
+      issues.push({ code: 'SOURCE_FILE_MISSING', path: p, detail: `${p} is in the verified source but not a file of the listed commit or its installed dependencies` });
+    } else if (!bytes.equals(verified)) {
+      issues.push({ code: 'SOURCE_FILE_MISMATCH', path: p, detail: `${p} differs: the listed commit (with its installed dependencies) has sha256 ${sha256(bytes)}, the verified source ${sha256(verified)}` });
     }
   }
   return issues;
 }
 
+const SEMVER = /^([0-9]+\.[0-9]+\.[0-9]+)/;
+
+/** The repository's solc pin (forge config's `solc`) against the release the source was verified with. */
+export function compareCompilerPin(config, source) {
+  const pin = config && typeof config.solc === 'string' ? config.solc.trim().replace(/^v/, '') : null;
+  const verified = SEMVER.exec(source.compilerVersion)?.[1] ?? source.compilerVersion;
+  if (!pin || !SEMVER.test(pin) || pin.includes('/')) {
+    return [{ code: 'SOURCE_COMPILER_NOT_PINNED', detail: `foundry.toml must name the solc release the contract was verified with (solc = "${verified}"); it ${pin ? `names ${JSON.stringify(pin.slice(0, 200))}` : 'names none'}, so claims could build other bytecode than the deployed` }];
+  }
+  if (SEMVER.exec(pin)[1] !== verified) {
+    return [{ code: 'SOURCE_COMPILER_MISMATCH', detail: `foundry.toml pins solc ${pin}; the contract was verified with ${source.compilerVersion}` }];
+  }
+  return [];
+}
+
+/** The contract's source file: `path:Name`, the explorer's ContractFileName, or the one verified file declaring it. */
+export function contractPathOf(source) {
+  const { path: p, name } = splitName(source.contractName);
+  if (p) return p;
+  if (source.contractFile) return source.contractFile;
+  const decl = new RegExp(`\\b(?:abstract\\s+)?(?:contract|library)\\s+${name.replace(/\$/g, '\\$')}\\b`);
+  const files = Object.entries(source.sources).filter(([, c]) => decl.test(c)).map(([f]) => f);
+  return files.length === 1 ? files[0] : null;
+}
+
+function settingsDiff(source, settings) {
+  const diffs = [];
+  const opt = { enabled: settings?.optimizer?.enabled === true, runs: Number(settings?.optimizer?.runs) || 0 };
+  if (opt.enabled !== source.optimizer.enabled) diffs.push(`optimizer ${source.optimizer.enabled ? 'on' : 'off'} vs ${opt.enabled ? 'on' : 'off'}`);
+  else if (opt.enabled && opt.runs !== source.optimizer.runs) diffs.push(`optimizer runs ${source.optimizer.runs} vs ${opt.runs}`);
+  if (source.evmVersion && String(settings?.evmVersion || '').toLowerCase() !== source.evmVersion) diffs.push(`evmVersion ${source.evmVersion} vs ${settings?.evmVersion || 'default'}`);
+  if (source.viaIR !== (settings?.viaIR === true)) diffs.push(`viaIR ${source.viaIR} vs ${settings?.viaIR === true}`);
+  return diffs;
+}
+
 /**
- * Compares solc's output for the verified input with the deployed code.
+ * Compares the repository's build of the contract with the verified source and the deployed code.
  * @param {object} o
  * @param {object} o.source - parseSourceResult()
- * @param {object} o.output - solc's standard-JSON output for compilerInput(source)
+ * @param {object|null} o.artifact - forge's artifact for the contract
+ * @param {string} o.contractPath
  * @param {string} o.deployedCode - 0x hex
  */
-export function compareCompiled({ source, output, deployedCode }) {
+export function compareRepoBuild({ source, artifact, contractPath, deployedCode }) {
+  const issues = [];
   const warnings = [];
-  const none = (code, detail, contract = null) => ({ issues: [{ code, detail }], warnings, contract, bytecode: 'not compared', metadata: 'not compared' });
-  const errors = (output.errors || []).filter((e) => e.severity === 'error');
-  if (errors.length) {
-    return none('SOURCE_COMPILE_FAILED', `the verified source does not compile with solc ${source.compilerVersion}: ${String(errors[0].formattedMessage || errors[0].message).slice(0, 500)}`);
+  const { name } = splitName(source.contractName);
+  const target = Object.entries(artifact?.metadata?.settings?.compilationTarget || {});
+  if (!artifact || target.length !== 1 || target[0][0] !== contractPath || target[0][1] !== name || !artifact.deployedBytecode) {
+    return { issues: [{ code: 'SOURCE_CONTRACT_NOT_FOUND', detail: `the repository's build has no artifact for ${contractPath}:${name}` }], warnings, contract: null, bytecode: 'not compared', metadata: 'not compared' };
   }
-  const want = splitName(source.contractName);
-  if (!want.path && source.contractFile) want.path = source.contractFile;
-  const candidates = [];
-  for (const [p, contracts] of Object.entries(output.contracts || {})) {
-    if (want.path && p !== want.path) continue;
-    if (contracts && Object.hasOwn(contracts, want.name)) candidates.push({ path: p, name: want.name, out: contracts[want.name] });
+  const contract = { path: contractPath, name };
+  // Every file the build of the contract used must be a verified file, with its bytes.
+  for (const [p, info] of Object.entries(artifact.metadata.sources || {})) {
+    if (!Object.hasOwn(source.sources, p)) {
+      issues.push({ code: 'SOURCE_FILES_DIFFER', path: p, detail: `the repository's build of ${contractPath}:${name} uses ${p}, which the verified source does not contain` });
+    } else if (`0x${Buffer.from(keccak256(Buffer.from(source.sources[p], 'utf8'))).toString('hex')}` !== info?.keccak256) {
+      issues.push({ code: 'SOURCE_FILES_DIFFER', path: p, detail: `the repository's build of ${contractPath}:${name} compiled other bytes for ${p} than the verified source holds` });
+    }
   }
-  if (candidates.length !== 1) {
-    return none(candidates.length ? 'SOURCE_CONTRACT_AMBIGUOUS' : 'SOURCE_CONTRACT_NOT_FOUND', `the verified source compiles to ${candidates.length} contracts named ${source.contractName}${want.path ? ` in ${want.path}` : ''}`);
-  }
-  const [c] = candidates;
-  const contract = { path: c.path, name: c.name };
-  const runtime = c.out?.evm?.deployedBytecode;
-  if (!runtime || typeof runtime.object !== 'string') return none('SOURCE_CONTRACT_NOT_FOUND', `solc produced no runtime code for ${c.path}:${c.name}`, contract);
+  const runtime = artifact.deployedBytecode;
   const links = Object.entries(runtime.linkReferences || {}).flatMap(([file, libs]) => Object.keys(libs || {}).map((lib) => `${file}:${lib}`));
   if (links.length) {
-    return none('SOURCE_LIBRARIES_UNSUPPORTED', `${c.path}:${c.name} calls external libraries whose addresses the verified source does not fix (${links.slice(0, 5).join(', ')}): the deployed library code could not be checked`, contract);
+    issues.push({ code: 'SOURCE_LIBRARIES_UNSUPPORTED', detail: `${contractPath}:${name} calls external libraries the build does not link (${links.slice(0, 5).join(', ')}): their deployed addresses could not be checked` });
+    return { issues, warnings, contract, bytecode: 'not compared', metadata: 'not compared' };
   }
-  const issues = [];
   let bytecode;
   let metadata = 'not compared';
+  const diffs = settingsDiff(source, artifact.metadata.settings);
   try {
     const deployed = normalizeRuntime(deployedCode, runtime);
     const built = normalizeRuntime(runtime.object, runtime);
@@ -158,9 +177,13 @@ export function compareCompiled({ source, output, deployedCode }) {
       bytecode = 'match';
       metadata = deployed.metadata.equals(built.metadata) ? 'match' : 'differs';
       if (metadata === 'differs') warnings.push({ code: 'BYTECODE_METADATA_DIFFERS', detail: 'the runtime code matches; the metadata hash in its trailer differs' });
+      if (diffs.length) warnings.push({ code: 'SETTINGS_DIFFER', detail: `the verified settings differ from the repository's (verified vs repository) without changing the code: ${diffs.join('; ')}` });
     } else {
       bytecode = 'mismatch';
-      issues.push({ code: 'BYTECODE_MISMATCH', detail: `the deployed runtime code (${deployed.code.length} bytes) is not what ${c.path}:${c.name} compiles to as verified (${built.code.length} bytes; first difference at byte ${firstDifference(deployed.code, built.code)})` });
+      issues.push({
+        code: 'BYTECODE_MISMATCH',
+        detail: `the deployed runtime code (${deployed.code.length} bytes) is not what the listed commit builds ${contractPath}:${name} to (${built.code.length} bytes; first difference at byte ${firstDifference(deployed.code, built.code)})${diffs.length ? `; the verified settings differ from foundry.toml's (verified vs repository): ${diffs.join('; ')}` : ''}`,
+      });
     }
   } catch (err) {
     bytecode = 'mismatch';
@@ -174,13 +197,12 @@ export function compareCompiled({ source, output, deployedCode }) {
  * @param {object} o
  * @param {object} o.spec - the draft code_review.json (artifact.kind contract)
  * @param {{ getSource(a: string): Promise<object>, getCode(a: string): Promise<string> }} o.explorer
- * @param {(req: { paths: string[] }) => Promise<Map<string, { origin: string, bytes: Buffer|null, detail?: string }>>} o.readFiles -
- *   the listed commit's files (commitFiles.readCommitFiles, then the image for untracked ones)
- * @param {(req: { version: string, input: object }) => Promise<{ output: object, solc: { version: string, sha256: string } }>} o.compile -
- *   the trusted compiler (solc.js)
- * @throws {BuilderError} EXPLORER_UNAVAILABLE, SOLC_* (to be retried; not the maker's refusal)
+ * @param {(req: { version: string, contractPath: string, contractName: string, paths: string[] }) =>
+ *   Promise<{ files: Map<string, Buffer|null>, config: object|null, artifact: object|null, build: { exitCode: number, log: string }, solc: object }>} o.buildRepo -
+ *   the repository's build at baseCommit with trusted tools (repoBuild.js)
+ * @throws {BuilderError} EXPLORER_UNAVAILABLE, SOLC_*, SOURCE_READ_FAILED (to be retried; not the maker's refusal)
  */
-export async function checkVerifiedSource({ spec, explorer, readFiles, compile }) {
+export async function checkVerifiedSource({ spec, explorer, buildRepo }) {
   const { address, chainId } = spec.artifact;
   const source = await explorer.getSource(address);
   if (!source.verified) return refuse('SOURCE_NOT_VERIFIED', `${address} has no verified source on the explorer`, source);
@@ -197,15 +219,24 @@ export async function checkVerifiedSource({ spec, explorer, readFiles, compile }
   if (paths.length === 0 || paths.length > MAX_SOURCE_FILES) return refuse('SOURCE_PATH_INVALID', `the verified source has ${paths.length} files`, source);
   const { name } = splitName(source.contractName);
   if (!IDENT.test(name)) return refuse('SOURCE_CONTRACT_NOT_FOUND', `the explorer's contract name ${JSON.stringify(source.contractName)} is not a Solidity identifier`, source);
+  const contractPath = contractPathOf(source);
+  if (!contractPath || !paths.includes(contractPath)) return refuse('SOURCE_CONTRACT_NOT_FOUND', `the verified source does not say which of its files declares ${name}`, source);
   const code = await explorer.getCode(address);
   if (code === '0x') return refuse('SOURCE_NO_CODE', `there is no code at ${address} on chain ${chainId}`, source);
 
-  const files = await readFiles({ paths });
-  const fileIssues = compareFiles(source, files);
+  const b = await buildRepo({ version: source.compilerVersion, contractPath, contractName: name, paths });
   const filesCompared = paths.length;
-  if (fileIssues.length) return result(fileIssues, [], summaryOf(source, { filesCompared }));
-
-  const { output, solc } = await compile({ version: source.compilerVersion, input: compilerInput(source) });
-  const c = compareCompiled({ source, output, deployedCode: code });
-  return result(c.issues, c.warnings, summaryOf(source, { contract: c.contract, filesCompared, bytecode: c.bytecode, metadata: c.metadata, solc }));
+  const fileIssues = compareFiles(source, b.files);
+  if (fileIssues.length) return result(fileIssues, [], summaryOf(source, { filesCompared, solc: b.solc }));
+  const pinIssues = compareCompilerPin(b.config, source);
+  if (pinIssues.length) return result(pinIssues, [], summaryOf(source, { filesCompared, solc: b.solc }));
+  if (b.build.exitCode !== 0) {
+    const r = refuse('SOURCE_BUILD_FAILED', `forge build of ${contractPath} at baseCommit failed with the verified solc ${source.compilerVersion}`, source, { filesCompared, solc: b.solc });
+    r.issues[0].log = b.build.log;
+    return r;
+  }
+  const c = compareRepoBuild({ source, artifact: b.artifact, contractPath, deployedCode: code });
+  if (b.copy && b.copy.exitCode !== 0) c.warnings.push({ code: 'UNTRACKED_COPY_INCOMPLETE', detail: `some of the image's untracked files could not be laid out beside the listed commit: ${b.copy.errors.slice(-500)}` });
+  for (const sub of b.skippedSubmodules ?? []) c.warnings.push({ code: 'SUBMODULE_NOT_FETCHED', path: sub.path, detail: `the submodule at ${sub.path} was left empty, as claims will see it: ${sub.detail}` });
+  return result(c.issues, c.warnings, summaryOf(source, { contract: c.contract, filesCompared, bytecode: c.bytecode, metadata: c.metadata, solc: b.solc }));
 }

@@ -2,9 +2,10 @@
 export { loadConfig, parseConfig } from './config.js';
 export { buildEnvImage, buildListing } from './pipeline.js';
 export { attest, loadSigningKey } from './signing.js';
-export { checkVerifiedSource, compareCompiled, compareFiles, compilerInput } from './sourceCheck.js';
-export { readCommitFiles, readUntrackedFromImage } from './commitFiles.js';
-export { compileStandardJson, fetchSolc } from './solc.js';
+export { checkVerifiedSource, compareCompilerPin, compareFiles, compareRepoBuild } from './sourceCheck.js';
+export { commitTree } from './commitFiles.js';
+export { buildAtCommit } from './repoBuild.js';
+export { fetchSolc } from './solc.js';
 export { createExplorer } from './explorer.js';
 export { createRunnerClient, interpretListingCheck } from './runner.js';
 export { readOutputs, writeOutputs } from './outputs.js';

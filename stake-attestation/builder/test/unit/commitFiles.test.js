@@ -1,6 +1,6 @@
-// The verified-source check reads the listed commit's files from objects the builder fetched by
-// id, the superproject's and each submodule's (by the commit its gitlink records), never from the
-// env image's checkout or objects. Real git, local mirrors standing in for the https remotes.
+// The verified-source check builds the listed commit from objects the builder fetched by id, the
+// superproject's and each submodule's (by the commit its gitlink records), never from the env
+// image's checkout or objects. Real git, local mirrors standing in for the https remotes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { readCommitFiles } from '../../src/commitFiles.js';
+import { commitTree, isTreePath } from '../../src/commitFiles.js';
 import { fetchListedCommit } from '../../src/git.js';
 
 const ENV = { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_DATE: '1700000000 +0000', GIT_COMMITTER_DATE: '1700000000 +0000' };
@@ -31,6 +31,8 @@ function repos() {
   fs.mkdirSync(path.join(work, 'src'), { recursive: true });
   git(work, 'init', '-q', '-b', 'main');
   fs.writeFileSync(path.join(work, 'src', 'Vault.sol'), 'contract Vault {}\n');
+  fs.writeFileSync(path.join(work, 'run.sh'), '#!/bin/sh\n');
+  fs.chmodSync(path.join(work, 'run.sh'), 0o755);
   fs.symlinkSync('Vault.sol', path.join(work, 'src', 'link.sol'));
   fs.writeFileSync(path.join(work, '.gitmodules'), [
     '[submodule "dep"]', '\tpath = lib/dep', '\turl = ../dep.git',
@@ -49,43 +51,38 @@ function repos() {
     'https://github.com/acme/dep.git': path.join(root, 'dep.git'),
     'https://github.com/acme/gone.git': path.join(root, 'dep.git'),
   };
-  return { root, baseCommit, mirrors };
+  return { root, work, baseCommit, mirrors };
 }
 
-test('tracked files come from the fetched commit, submodule files from the submodule\'s commit fetched by its gitlink', async () => {
-  const r = repos();
+async function fetched(r) {
   const gitDir = path.join(r.root, 'fetched.git');
   await fetchListedCommit({ repo: 'https://github.com/acme/vault', baseCommit: r.baseCommit, mirror: r.mirrors['https://github.com/acme/vault'], dir: gitDir, timeoutMs: 60000 });
-  const files = await readCommitFiles({
-    gitDir,
-    repo: 'https://github.com/acme/vault',
-    baseCommit: r.baseCommit,
-    paths: ['src/Vault.sol', 'lib/dep/src/Lib.sol', 'src/link.sol', 'node_modules/x/y.sol', 'src/Nope.sol', 'lib/gone/src/Lib.sol', 'lib/ssh/src/Lib.sol', 'src', 'src/Vault.sol/x'],
-    mirrorFor: (u) => r.mirrors[u] ?? null,
-    workDir: r.root,
-    timeoutMs: 60000,
-  });
-  const show = (p) => ({ origin: files.get(p).origin, text: files.get(p).bytes?.toString() ?? null });
-  assert.deepEqual(show('src/Vault.sol'), { origin: 'commit', text: 'contract Vault {}\n' });
-  assert.deepEqual(show('lib/dep/src/Lib.sol'), { origin: 'submodule', text: 'library Lib {}\n' }, 'relative URL ../dep.git resolved against the listed repository');
-  assert.equal(show('src/link.sol').origin, 'symlink');
-  assert.equal(show('node_modules/x/y.sol').origin, 'untracked', 'an installed dependency is read from the image');
-  assert.equal(show('src/Nope.sol').origin, 'untracked');
-  assert.equal(show('lib/gone/src/Lib.sol').origin, 'missing', 'a submodule commit its repository lacks');
-  assert.match(files.get('lib/gone/src/Lib.sol').detail, /has no commit e{40}/);
-  assert.equal(show('lib/ssh/src/Lib.sol').origin, 'missing', 'only https submodules are fetched');
-  assert.equal(show('src').origin, 'missing', 'a directory is not a file');
-  assert.equal(show('src/Vault.sol/x').origin, 'missing');
+  return gitDir;
+}
+
+test('every file of the commit with its mode, submodules fetched by their gitlinks and laid out under them', async () => {
+  const r = repos();
+  const { entries, skipped } = await commitTree({ gitDir: await fetched(r), repo: 'https://github.com/acme/vault', baseCommit: r.baseCommit, mirrorFor: (u) => r.mirrors[u] ?? null, workDir: r.root, timeoutMs: 60000 });
+  const byPath = Object.fromEntries(entries.map((e) => [e.path, { mode: e.mode, text: e.bytes.toString() }]));
+  assert.deepEqual(byPath['src/Vault.sol'], { mode: '100644', text: 'contract Vault {}\n' });
+  assert.deepEqual(byPath['run.sh'], { mode: '100755', text: '#!/bin/sh\n' });
+  assert.deepEqual(byPath['src/link.sol'], { mode: '120000', text: 'Vault.sol' }, 'a symbolic link is its target');
+  assert.deepEqual(byPath['lib/dep/src/Lib.sol'], { mode: '100644', text: 'library Lib {}\n' }, 'relative URL ../dep.git resolved against the listed repository');
+  assert.deepEqual(skipped.map((s) => s.path).sort(), ['lib/gone', 'lib/ssh'], 'a missing submodule commit, and a submodule without an https URL, stay empty');
+  assert.match(skipped.find((s) => s.path === 'lib/gone').detail, /has no commit e{40}/);
   fs.rmSync(r.root, { recursive: true, force: true });
 });
 
-test('the work tree and objects of the image play no part: only the fetched objects are read', async () => {
+test('the maker\'s work tree plays no part: only the fetched objects are read', async () => {
   const r = repos();
-  const gitDir = path.join(r.root, 'fetched.git');
-  await fetchListedCommit({ repo: 'https://github.com/acme/vault', baseCommit: r.baseCommit, mirror: r.mirrors['https://github.com/acme/vault'], dir: gitDir, timeoutMs: 60000 });
-  // Rewriting the maker's work tree after the fetch changes nothing the check reads.
-  fs.writeFileSync(path.join(r.root, 'vault', 'src', 'Vault.sol'), 'contract Forged {}\n');
-  const files = await readCommitFiles({ gitDir, repo: 'https://github.com/acme/vault', baseCommit: r.baseCommit, paths: ['src/Vault.sol'], mirrorFor: () => null, workDir: r.root, timeoutMs: 60000 });
-  assert.equal(files.get('src/Vault.sol').bytes.toString(), 'contract Vault {}\n');
+  const gitDir = await fetched(r);
+  fs.writeFileSync(path.join(r.work, 'src', 'Vault.sol'), 'contract Forged {}\n');
+  const { entries } = await commitTree({ gitDir, repo: 'https://github.com/acme/vault', baseCommit: r.baseCommit, mirrorFor: (u) => r.mirrors[u] ?? null, workDir: r.root, timeoutMs: 60000 });
+  assert.equal(entries.find((e) => e.path === 'src/Vault.sol').bytes.toString(), 'contract Vault {}\n');
   fs.rmSync(r.root, { recursive: true, force: true });
+});
+
+test('paths git could not check out are refused', () => {
+  for (const p of ['src/Vault.sol', 'a b/c.sol', 'lib/dep/x']) assert.equal(isTreePath(p), true, p);
+  for (const p of ['', '../x', 'a/../b', './a', 'a//b', '.git/config', 'a/.GIT/hooks', 'a\nb', 'a\0b']) assert.equal(isTreePath(p), false, JSON.stringify(p));
 });

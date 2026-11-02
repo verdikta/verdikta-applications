@@ -33,7 +33,7 @@ function config(over = {}) {
 
 /** Doubles for one build; `over` replaces any of them. */
 function harness(over = {}) {
-  const calls = { fetch: [], runner: [], readFiles: [], compile: [], registry: [] };
+  const calls = { fetch: [], runner: [], buildRepo: [], registry: [] };
   const docker = fakeDocker((args) => {
     if (args[0] === 'push') return { stdout: `digest: ${DIGEST} size: 1234\n` };
     if (args[0] === 'history') return { stdout: `${over.unpacked ?? 700000000}\n100000000\n` };
@@ -57,13 +57,16 @@ function harness(over = {}) {
       },
     },
     explorerFor: over.explorerFor,
-    readFiles: async (req) => {
-      calls.readFiles.push(req);
-      return new Map(req.paths.map((p) => [p, { origin: 'commit', bytes: fs.readFileSync(path.join(FIXTURES, 'vault', p)) }]));
-    },
-    compile: async (req) => {
-      calls.compile.push(req);
-      return { output: readFixture('solc', 'vault-output.json'), solc: { version: req.version, sha256: 'a'.repeat(64), platform: 'linux/amd64' } };
+    buildRepo: async (req) => {
+      calls.buildRepo.push(req);
+      return {
+        files: new Map(req.paths.map((p) => [p, fs.readFileSync(path.join(FIXTURES, 'vault', p))])),
+        config: readFixture('forge', 'config.json'),
+        artifact: readFixture('forge', 'Vault.json'),
+        build: { exitCode: 0, log: '' },
+        skippedSubmodules: [],
+        solc: { version: req.version, sha256: 'a'.repeat(64), platform: 'linux/amd64' },
+      };
     },
     ...over.deps,
   };
@@ -162,9 +165,9 @@ test('a contract listing whose verified source matches goes on to validation; th
   assert.equal(status, 'accepted', JSON.stringify(report.refusals));
   assert.equal(report.verifiedSource.status, 'match');
   assert.equal(report.verifiedSource.contract.name, 'Vault');
-  assert.equal(calls.readFiles[0].baseCommit, BASE_COMMIT, 'the listed commit\'s files');
-  assert.equal(calls.readFiles[0].image, IMAGE, 'untracked files from the pushed image');
-  assert.equal(calls.compile[0].version, '0.8.31+commit.fd3a2265', 'the compiler the explorer names');
+  assert.equal(calls.buildRepo[0].baseCommit, BASE_COMMIT, 'built at the listed commit');
+  assert.equal(calls.buildRepo[0].image, IMAGE, 'in the pushed image, for its forge and installed dependencies');
+  assert.equal(calls.buildRepo[0].version, '0.8.31+commit.fd3a2265', 'with the compiler the explorer names');
   assert.equal(report.verifiedSource.summary.bytecode, 'match');
   assert.equal(calls.runner.length, 1);
 });

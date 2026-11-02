@@ -48,6 +48,12 @@ test('a reusable workflow: it runs only when another workflow calls it, and noth
   }
 });
 
+test('every upload keeps hidden files: a listing may name its files with a leading dot', () => {
+  const uploads = Object.values(wf.jobs).flatMap((j) => j.steps).filter((s) => String(s.uses ?? '').startsWith('actions/upload-artifact@'));
+  assert.equal(uploads.length, 3);
+  for (const u of uploads) assert.equal(u.with['include-hidden-files'], true, u.with.name);
+});
+
 test('every action it uses is pinned to a commit', () => {
   for (const [name, j] of Object.entries(wf.jobs)) {
     for (const s of j.steps) if (s.uses) assert.match(s.uses, /^[a-z-]+\/[a-z-]+@[0-9a-f]{40}$/, `${name}: ${s.uses}`);

@@ -175,12 +175,15 @@ jobs:
           name: listing
           path: ${{ env.VAB_OUT }}
           if-no-files-found: ignore
+          # A listing may name its files with a leading dot (.attestation.json, say).
+          include-hidden-files: true
       - name: Upload the image
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: env-image
           path: ${{ env.VAB_IMAGE }}
           if-no-files-found: error
+          include-hidden-files: true
       - name: Stop the services
         if: always()
         run: node "$VAB_BUILDER/action/services.js" stop --dir "$VAB_WORK"
@@ -272,3 +275,4 @@ jobs:
           name: listing-signed
           path: ${{ env.VAB_OUT }}
           if-no-files-found: error
+          include-hidden-files: true

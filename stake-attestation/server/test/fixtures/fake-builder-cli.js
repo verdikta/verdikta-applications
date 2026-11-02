@@ -9,10 +9,12 @@
 // the file). Its behaviour comes from the config file ({ "mode": ..., "scanMode": ..., "mark": ...,
 // "record": <file> }); every call is appended to the record with the argv and the environment it
 // was given, so a test can check what the server passes. Test use only.
+//
+// Only node's own modules load at the start: the stand-in builder (which loads @verdikta/common)
+// and the scan document (which loads ethers) are imported by the commands that use them, so the
+// hang modes are running well inside the short timeouts their tests give.
 import fs from 'node:fs';
 import path from 'node:path';
-
-import { fakeBuilder } from '../helpers/fixtures.js';
 
 const FLAGS = new Set(['--agent', '--check-registry']);
 const [command, ...rest] = process.argv.slice(2);
@@ -79,8 +81,6 @@ if (config.mode === 'hang') {
     fs.writeFileSync(file, bytes, { mode: 0o600, flag: 'wx' });
   };
   const spec = JSON.parse(fs.readFileSync(opts.spec, 'utf8'));
-  // loaded here only: it brings in ethers, which would slow every other command's start past the
-  // short timeouts the hang tests use
   const { scanDoc } = await import('../helpers/scan.js');
   if (scanMode === 'hang') {
     setInterval(() => {}, 1000);
@@ -119,6 +119,7 @@ if (config.mode === 'hang') {
   fs.mkdirSync(opts.out, { recursive: true });
   if (config.mode === 'no-report') process.exit(1);
   const outcome = { accepted: 'accepted', 'sign-fails': 'accepted', 'refused-source': 'refused-source', error: 'error' }[config.mode];
+  const { fakeBuilder } = await import('../helpers/fixtures.js');
   const r = await fakeBuilder({ outcome }).build({ draft, knownIssues });
   if (r.status === 'accepted') {
     // what build writes: the files and the report, before signing

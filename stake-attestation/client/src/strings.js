@@ -1,5 +1,8 @@
 // Every user-facing string of the client, in one place so the wording rule can be checked.
 // Placeholders are {name}; fill() puts values in. No string here is built from parts.
+/** The control proof file's content (docs/control-proof.md), for the {format} placeholders. */
+export const CONTROL_FILE_FORMAT = '{"version":1,"maker":"<address>"}';
+
 export const STRINGS = {
   appName: 'Verdikta stake attestation',
   nav: {
@@ -89,6 +92,11 @@ export const STRINGS = {
       knownIssues:
         'Known issues are public and fixed at listing. A claim whose root cause is one of them settles as a duplicate.',
       valueAtRisk: 'A declaration the record shows beside the stake, in whole dollars.',
+      control:
+        'Optional: the record says whether a listing\'s staker controls what it lists. For a repository, commit ' +
+        '.verdikta/stake-control.json holding {format} with your wallet\'s address, in the version you list, on a ' +
+        'branch or tag of the repository. A deployed contract\'s deployer or owner signs on the record page after listing. ' +
+        'Nothing requires either, and anyone may stake on any repository.',
     },
     bounds: {
       wholeNumber: 'Enter a whole number.',
@@ -294,6 +302,62 @@ export const STRINGS = {
     unavailable: 'The site\'s server could not answer: {reason}',
     notConfigured: 'The site\'s server has no deployment configured.',
     retry: 'Read again',
+  },
+  // node P8: whether a listing's staker has shown control of what it lists (server/src/control/)
+  control: {
+    repository: 'Staker controls the repository',
+    deployment: 'Staker controls the deployment',
+    yes: 'yes',
+    no: 'no',
+    intro:
+      'Anyone may stake on any repository. Each stake states whether its staker has shown control of what it lists; ' +
+      '"no" also covers no proof, a failed check and a listing the site cannot read. Everything below can be checked ' +
+      'without this site.',
+    why: 'Why',
+    proof: 'What it rests on',
+    repositoryFact: 'Repository file (it does not count for a deployment)',
+    fileAt: 'File {path} at commit {commit}, blob {blob}.',
+    noFile: 'No file at {path} in commit {commit} was read.',
+    fileNames: 'It names {address}; this listing\'s maker is {maker}.',
+    fileNamesNothing: 'It names no address in the documented format.',
+    onRefsYes: 'The commit is on the repository\'s own branch or tag {ref}.',
+    onRefsNo: 'The commit is not on any of the repository\'s own branches or tags.',
+    onRefsUnknown: 'Whether the commit is on the repository\'s own branches or tags is not known.',
+    checked: 'Last checked {time}.',
+    nextCheck: 'The site tries again at {time}.',
+    recheck: 'To check it yourself (any ref printed by the second command holds the commit):',
+    recheckClone: 'git clone --bare --filter=tree:0 {repo} check.git',
+    recheckRefs: 'git -C check.git for-each-ref --contains {commit} refs/heads refs/tags',
+    recheckFile: 'git -C check.git show {commit}:{path}',
+    fileHowTo:
+      'To prove control a commit holds {path} with {format} and is on a branch or tag of the ' +
+      'repository. A commit cannot change, so a file added later needs a new version listed.',
+    signer: 'Signed by {signer}, {role}.',
+    roles: { owner: 'its current owner (owner() at the block below)', deployer: 'its deployer (the creation transaction below)' },
+    contractSigner: 'The signer is a contract: its isValidSignature (EIP-1271) answers for the signature.',
+    deploymentAt: 'Deployment {address} on chain {chainId}, read at block {block}.',
+    creationTx: 'Creation transaction {tx}.',
+    signature: 'Signature {signature}',
+    messageLabel: 'The message to sign',
+    messageSigned: 'The message signed',
+    recheckDeployment: 'To check it yourself (save the message above as message.txt):',
+    recheckSignature: 'cast wallet verify --address {signer} "$(cat message.txt)" {signature}',
+    recheckContractSignature: 'cast call {signer} "isValidSignature(bytes32,bytes)(bytes4)" $(cast hash-message "$(cat message.txt)") {signature} --block {block} --rpc-url <chain {chainId}>',
+    recheckOwner: 'cast call {address} "owner()(address)" --block {block} --rpc-url <chain {chainId}>',
+    recheckDeployer: 'cast tx {tx} from --rpc-url <chain {chainId}>; cast receipt {tx} contractAddress --rpc-url <chain {chainId}>',
+    formTitle: 'Prove control of the deployment',
+    formIntro:
+      'The deployment\'s current owner or its deployer signs the message below (EIP-191 personal_sign; a contract owner ' +
+      'answers through EIP-1271). A deployer also gives the transaction that created the contract. The message names ' +
+      'this maker, this artifact hash and this chain, so a signature counts for this listing\'s maker on this artifact only.',
+    signerField: 'Signer address',
+    signatureField: 'Signature (0x hex)',
+    creationTxField: 'Creation transaction hash (a deployer only)',
+    sign: 'Sign with the connected wallet',
+    signing: 'Waiting for the wallet…',
+    send: 'Send the proof',
+    sending: 'Checking on the listing\'s chain…',
+    refused: 'The proof does not count: {reason}',
   },
   // the contract's enums, as the record mirror names them
   enums: {

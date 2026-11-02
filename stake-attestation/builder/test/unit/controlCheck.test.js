@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CONTROL_FILE, CONTROL_FILE_MAX_BYTES, checkRepositoryControl } from '../../src/controlCheck.js';
+import { CONTROL_FILE, CONTROL_FILE_MAX_BYTES, checkRepositoryControl, fetchSource } from '../../src/controlCheck.js';
 import { fetchListedCommit } from '../../src/git.js';
 
 const BIN = fileURLToPath(new URL('../../bin/verdikta-control-check.js', import.meta.url));
@@ -169,7 +169,7 @@ test('no proof file at the commit', async () => {
   done(r);
 });
 
-test('the proof must be a regular file: a symlink, a directory or a submodule at its path is no proof', async () => {
+test('the proof must be a regular file: a symlink or a directory at its path is no proof', async () => {
   for (const make of [
     (w) => fs.symlinkSync('../src/Vault.sol', path.join(w, CONTROL_FILE)),
     (w) => write(w, `${CONTROL_FILE}/inside`, proof(OWNER)),
@@ -186,6 +186,18 @@ test('the proof must be a regular file: a symlink, a directory or a submodule at
     assert.equal(out.file.text, null);
     done(r);
   }
+});
+
+test('a submodule at the proof\'s path is no proof', async () => {
+  const r = makeRepo({ file: null });
+  git(r.work, 'update-index', '--add', '--cacheinfo', `160000,${r.listed},${CONTROL_FILE}`);
+  git(r.work, 'commit', '-q', '-m', 'a gitlink');
+  const tip = git(r.work, 'rev-parse', 'HEAD');
+  git(r.work, 'push', '-q', r.mirror, 'main');
+  const out = await check(r, tip);
+  assert.equal(out.reachable, true);
+  assert.equal(out.file.problem, 'NOT_A_REGULAR_FILE');
+  done(r);
 });
 
 test('a symlinked folder does not lead to the proof', async () => {
@@ -250,6 +262,12 @@ test('a SHA-256 repository', async () => {
   assert.equal(out.reachable, true);
   assert.equal(out.file.text, proof(OWNER));
   done(r);
+});
+
+test('a repository is read through its .git form, which hosts serve with no redirect (redirects are off), or its mirror', () => {
+  assert.equal(fetchSource('https://gitlab.com/acme/vault'), 'https://gitlab.com/acme/vault.git');
+  assert.equal(fetchSource('https://gitlab.com/acme/vault.git'), 'https://gitlab.com/acme/vault.git');
+  assert.equal(fetchSource('https://gitlab.com/acme/vault', '/m/vault.git'), '/m/vault.git');
 });
 
 test('it takes only an https repository and a full commit id', async () => {

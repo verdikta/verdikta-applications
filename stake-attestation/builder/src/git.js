@@ -5,6 +5,9 @@
 // it. Nothing of the maker's tree is written as files here; the checkout happens inside the
 // image's setup stage. git runs with no system or global config, no hooks, no credential helper
 // or prompt, and no transport but https (and the local one for a mirror path).
+//
+// A fetch by id says the host holds the commit, not that the repository's writers put it there: on
+// GitHub it can return a fork's commit through the parent's URL. controlCheck.js is what asks.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,7 +29,8 @@ export function gitEnv({ home, base = process.env }) {
   };
 }
 
-function hardening(local) {
+/** The options every git call that may touch a remote runs with. */
+export function hardening(local) {
   return [
     '-c', 'protocol.allow=never',
     '-c', 'protocol.https.allow=always',

@@ -18,7 +18,9 @@ settlement: finalize by polling the aggregator, the six-outcome rule, payouts,
 depletion and owed awards; the environment builder; the server's listing
 flow, indexer, keeper, feed, record mirror and badge; and the client: the maker
 flows (listing, the disclosure key, decrypt-and-check, the baseline scan, release,
-roll forward, dispute), the record page with its badge, and the feed. The packages below build
+roll forward, dispute), the record page with its badge, and the feed. The record
+states whether each listing's staker has shown control of what it lists
+([`docs/control-proof.md`](docs/control-proof.md)). The packages below build
 and test; the rest of the site's flows and the hunter commands arrive with the
 nodes named in the plan.
 
@@ -58,12 +60,12 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 | Folder | What | Test |
 |---|---|---|
 | `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
-| `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`; the baseline scan between listing and open, its findings served to the maker's wallet only (P4b2); the indexer, keeper, listing feed, record mirror, labels and badge (P4b1) over one deployment. | `npm test`, `npm run test:builder`, `npm run abi` |
+| `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`; the baseline scan between listing and open, its findings served to the maker's wallet only (P4b2); the indexer, keeper, listing feed, record mirror, labels and badge (P4b1) over one deployment; the control facts (P8). | `npm test`, `npm run test:builder`, `npm run abi` |
 | `client/` | Vite + React site, port 5176: the maker's listing flow, the disclosure key made in the browser, and decrypt-and-check (P6a); the record page, the badge embed, the feed, the maker's release, roll forward and dispute, pending evaluations watched, the baseline scan read (P6b). | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI: `check`, `commit`, `reveal`, `status`, `claim` arrive in P5. | `npm test` |
 | `shared/` | Code shared by the packages (the banned-words helper so far) and the app's repository checks. | `npm test` |
-| `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`; the baseline scan, for the maker only (P3b). The reusable workflow that runs it is `.github/workflows/stake-attestation-builder.yml`. | `npm test`, `npm run test:docker` |
-| `docs/` | `BUILD_PLAN.md`. | |
+| `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`; the baseline scan, for the maker only (P3b); `verdikta-control-check`, what git says about a listing's repository (P8). The reusable workflow that runs it is `.github/workflows/stake-attestation-builder.yml`. | `npm test`, `npm run test:docker` |
+| `docs/` | `BUILD_PLAN.md`, `control-proof.md` (how a staker proves control). | |
 
 Ports 5009 and 5176 are the next free ones after the apps in the repository's
 `ports.txt`.

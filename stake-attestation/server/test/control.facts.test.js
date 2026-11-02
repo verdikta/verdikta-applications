@@ -208,6 +208,9 @@ test('config: the git hosts, the bounds, a mirror folder for development only, n
     'a local copy must not be able to say yes in production',
   );
 
+  assert.throws(() => loadConfig({ SA_CONTROL_RPC_URL_8453: 'http://rpc.example/x' }), (e) => /SA_CONTROL_RPC_URL_8453/.test(e.message));
+  assert.throws(() => loadConfig({ SA_CONTROL_RPC_URL_base: 'https://rpc.example/x' }), (e) => /the listing chain's id/.test(e.message));
+
   const key = 'https://rpc.example/secret-key';
   const held = JSON.stringify(loadConfig({ SA_CONTROL_RPC_URL_8453: key }));
   assert.equal(held.includes('secret-key'), false, 'an RPC URL may carry a key: it stays in the environment');

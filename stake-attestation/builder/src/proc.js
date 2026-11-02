@@ -13,9 +13,10 @@ const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
  * @param {Buffer|string} [o.stdin]
  * @param {number} [o.maxBytes] - per stream; the rest is dropped and flagged
  * @param {string} [o.cwd]
+ * @param {AbortSignal} [o.signal] - stops the child with SIGKILL, as the timeout does
  * @returns {Promise<{exitCode:number|null, signal:string|null, stdout:Buffer, stderr:Buffer, stdoutTruncated:boolean, stderrTruncated:boolean, timedOut:boolean, spawnError:string|null}>}
  */
-export function run(cmd, args, { env, timeoutMs, stdin = null, maxBytes = DEFAULT_MAX_BYTES, cwd } = {}) {
+export function run(cmd, args, { env, timeoutMs, stdin = null, maxBytes = DEFAULT_MAX_BYTES, cwd, signal: stop = null } = {}) {
   if (!Array.isArray(args) || !args.every((a) => typeof a === 'string')) throw new TypeError('args must be an array of strings');
   if (!env || typeof env !== 'object') throw new TypeError('env is required');
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new TypeError('timeoutMs is required');
@@ -47,6 +48,11 @@ export function run(cmd, args, { env, timeoutMs, stdin = null, maxBytes = DEFAUL
       timedOut = true;
       child.kill('SIGKILL');
     }, timeoutMs);
+    const onStop = () => child.kill('SIGKILL');
+    if (stop) {
+      if (stop.aborted) onStop();
+      else stop.addEventListener('abort', onStop, { once: true });
+    }
     child.on('error', (err) => {
       spawnError = err.message;
     });
@@ -55,6 +61,7 @@ export function run(cmd, args, { env, timeoutMs, stdin = null, maxBytes = DEFAUL
     else child.stdin.end();
     child.on('close', (exitCode, signal) => {
       clearTimeout(timer);
+      stop?.removeEventListener('abort', onStop);
       resolve({
         exitCode,
         signal,

@@ -10,10 +10,16 @@
 // SA_MAX_STALENESS_SECONDS old and the cursor's block is no older than that. The badge states a
 // live stake only when fresh; otherwise it says the record is unavailable. The feed and the record
 // say whether they are fresh, and of which block.
+//
+// The control facts (src/control/; node P8) are the site's own, not the chain's: each answer reads
+// them from its state snapshot, so a record cached per block still states the latest check, and the
+// checks themselves run beside the indexer, like the archive reads.
 import { JsonRpcProvider, Network } from 'ethers';
 
 import { stakeAttestation } from '../chain/abi.js';
 import { readerAt } from '../chain/read.js';
+import { createRepositoryChecker } from '../control/gitCheck.js';
+import { ControlError, createControl } from '../control/index.js';
 import { badgeFor, renderBadge } from '../record/badge.js';
 import { listingLabels } from '../record/labels.js';
 import { PriceError, readEthUsd } from '../record/price.js';
@@ -29,6 +35,8 @@ const DAY = 86400;
 const CACHE_ENTRIES = 256;
 const EVENTS_MAX = 1000;
 const POSITION = /^([0-9]{1,15}):([0-9]{1,9})$/;
+
+export { ControlError };
 
 export class SiteError extends Error {
   constructor(code, detail, status = 503) {
@@ -75,8 +83,12 @@ const blockOf = (c) => ({ number: c.number, hash: c.hash, timestamp: c.timestamp
  * @param {object} o.logger
  * @param {object} [o.keeperHooks]
  * @param {() => number} [o.now] - wall-clock ms (tests move it)
+ * @param {(o: { repo: string, commit: string }) => Promise<object>} [o.checkRepository] - the git
+ *   check (default: builder/bin/verdikta-control-check.js in a process of its own)
+ * @param {(chainId: number) => object|null} [o.chainProviderFor] - a provider on a listing's chain
+ *   (default: this site's for its own chain, SA_CONTROL_RPC_URL_<id> for another)
  */
-export function createSite({ config, provider, env = process.env, fetchArchive, logger, keeperHooks, now = Date.now }) {
+export function createSite({ config, provider, env = process.env, fetchArchive, logger, keeperHooks, now = Date.now, checkRepository, chainProviderFor }) {
   const chain = config.chain;
   if (!chain) throw new TypeError('createSite needs config.chain (SA_CONTRACT_ADDRESS)');
   const store = new StateStore(chain.dataDir, { chainId: chain.chainId, address: chain.address, fromBlock: chain.fromBlock });
@@ -99,6 +111,17 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     if (wallet) keeper = createKeeper({ provider, store, chain, cfg: config.keeper, wallet, projection, logger, hooks: keeperHooks });
     else logger.warn(`keeper: off (${error}: ${config.keeper.keyEnv})`);
   }
+
+  const control = createControl({
+    config,
+    store,
+    provider,
+    env,
+    now,
+    logger,
+    checkRepository: checkRepository ?? createRepositoryChecker(config.control, { env }),
+    chainProviderFor,
+  });
 
   const status = { lastSync: null, lastFreshSync: null, syncError: null, lastKeep: null, keepError: null };
   const records = lru();
@@ -167,7 +190,25 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     return archiveRun;
   }
 
-  /** One indexer pass; the archives of the listings it found are read beside it. */
+  /**
+   * The control facts' checks, beside the indexer in the same way: one run at a time, started by
+   * each sync and never awaited by it, so a git host or another chain that hangs holds up nothing.
+   */
+  let controlRun = null;
+  function refreshControlBeside() {
+    if (controlRun) return controlRun;
+    const listings = [...projection().listings.values()];
+    controlRun = control.refresh(listings)
+      .catch((err) => {
+        if (store.locked) logger.warn(`control: a run failed (${err?.code ?? err?.name ?? 'error'})`);
+      })
+      .finally(() => {
+        controlRun = null;
+      });
+    return controlRun;
+  }
+
+  /** One indexer pass; the archives of the listings it found are read beside it, and their control facts checked. */
   async function sync() {
     try {
       const r = await indexer.sync();
@@ -176,6 +217,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       if (caughtUp) status.lastFreshSync = status.lastSync;
       status.syncError = null;
       refreshArchivesBeside();
+      refreshControlBeside();
       return r;
     } catch (err) {
       status.syncError = err?.code ?? 'SYNC_FAILED';
@@ -208,7 +250,12 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
         return feeds.set(block.hash, { archives: state.archives, block, listings });
       });
     }
-    return { block: value.block, ...freshness(value.block), listings: value.listings };
+    const known = projectionOf(state).listings;
+    const listings = value.listings.map((e) => {
+      const fact = control.factOf(state, { artifactHash: e.artifactHash, maker: e.maker, artifact: known.get(e.listingId)?.artifact });
+      return { ...e, control: { subject: fact.subject, controls: fact.controls, statement: fact.statement, reason: fact.reason } };
+    });
+    return { block: value.block, ...freshness(value.block), listings };
   }
 
   /** The history of a record's listings: the snapshot's events, placed and published. */
@@ -257,11 +304,28 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
         priceError,
         placeholders: config.labels.placeholders,
       };
-      const v = { artifactHash: hash, block, record: rec, labels, history: historyOf(rec, events, block) };
-      v.badge = badgeFor(v);
-      return records.set(key, v);
+      return records.set(key, { artifactHash: hash, block, record: rec, labels, history: historyOf(rec, events, block) });
     });
-    return view && { ...view, ...freshness(view.block) };
+    if (!view) return view;
+    const known = projectionOf(state).listings;
+    const facts = Object.fromEntries(view.record.listings.map((l) => [l.listingId, control.factOf(state, { artifactHash: hash, maker: l.maker, artifact: known.get(l.listingId)?.artifact })]));
+    const out = { ...view, ...freshness(view.block), control: facts };
+    out.badge = badgeFor(out);
+    return out;
+  }
+
+  /**
+   * A signature for a contract listing's control fact (src/control/index.js). The listing is read
+   * from the indexed events, its maker and artifact from there too, never from the request.
+   * @returns {Promise<object>} the listing's fact, after the proof
+   */
+  async function submitControlProof(artifactHash, listingId, body) {
+    const hash = artifactHash.toLowerCase();
+    const l = control.listingIdValid(listingId) ? projection().listings.get(listingId) : null;
+    if (!l || l.artifactHash.toLowerCase() !== hash) throw new SiteError('LISTING_NOT_FOUND', 'no indexed listing of this artifact hash has this id', 404);
+    const listing = { artifactHash: hash, maker: l.maker, artifact: l.artifact };
+    await control.submit(listing, body);
+    return control.factOf(store.state, listing);
   }
 
   /**
@@ -324,6 +388,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
         lastRun: status.lastKeep,
       },
       labels: { placeholders: config.labels.placeholders, ethUsdFeed: config.labels.ethUsdFeed },
+      control: { gitHosts: config.control.gitHosts },
     };
   }
 
@@ -356,6 +421,9 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     keep,
     /** Resolves once the archive reads started so far have finished (for tests and shutdown). */
     archivesIdle: () => archiveRun ?? Promise.resolve(),
+    /** Resolves once the control checks started so far have finished (for tests and shutdown). */
+    controlIdle: () => controlRun ?? Promise.resolve(),
+    submitControlProof,
     feed,
     record,
     badge,

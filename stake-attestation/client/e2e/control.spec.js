@@ -3,7 +3,7 @@
 // site cannot read is "no"; nothing refuses a listing for that; and a contract listing's owner signs
 // from the record page. The server's real check runs (builder/bin/verdikta-control-check.js) over
 // real git against bare repositories in the stack's mirror folder: no network.
-import { STRINGS, fill } from '../src/strings.js';
+import { CONTROL_FILE_FORMAT, STRINGS, fill } from '../src/strings.js';
 import { disclosure, expect, fromServer, installWallet, shot, test } from './support/fixtures.js';
 import { wordingProblems } from './support/wording.js';
 
@@ -28,6 +28,7 @@ test('a repository listing: the file names the maker, on a branch: "yes", with w
   const theirs = await chain.openListing({ recipient: key.recipient, baseCommit: commit, spec: { repo: repo.url }, maker: stack.accounts.other, stake: { valueAtRiskUsd: undefined } });
   expect(theirs.artifactHash).toBe(mine.artifactHash);
   await checked(chain, stack, mine.artifactHash, mine.listingId);
+  await checked(chain, stack, mine.artifactHash, theirs.listingId);
 
   await page.goto(`/#/record/${mine.artifactHash}`);
   const s = (id, f) => page.getByTestId(`listing-${id}-${f}`);
@@ -115,7 +116,6 @@ test('a contract listing: a repository file alone is "no"; a stranger\'s signatu
     spec: { repo: repo.url, artifact: { kind: 'contract', address: stack.ownedContract, chainId: stack.chainId } },
     stake: { valueAtRiskUsd: undefined },
   });
-  await checked(chain, stack, l.artifactHash, l.listingId).catch(() => {});
   await chain.until(async () => (await factFromServer(stack, l.artifactHash, l.listingId))?.repository?.checkedAt > 0, { what: 'the repository check' });
 
   await installWallet(page, stack, stack.accounts.hunter);
@@ -159,5 +159,5 @@ test('a contract listing: a repository file alone is "no"; a stranger\'s signatu
 
 test('the listing form says how to prove control and that nothing requires it', async ({ page }) => {
   await page.goto('/#/list');
-  await expect(page.getByText(fill(STRINGS.listing.hints.control, {}))).toBeVisible();
+  await expect(page.getByText(fill(STRINGS.listing.hints.control, { format: CONTROL_FILE_FORMAT }))).toBeVisible();
 });

@@ -38,6 +38,7 @@ function Entry({ e }) {
         { id: f('artifact'), label: F.artifact, value: <span className="mono">{artifactLine(e)}</span> },
         { id: f('hash'), label: R.artifactHash, value: <span className="mono">{e.artifactHash.toLowerCase()}</span> },
         { id: f('labels'), label: F.labels, value: labelsOf(e) || R.none },
+        { id: f('control'), label: e.control?.subject === 'deployment' ? STRINGS.control.deployment : STRINGS.control.repository, value: e.control?.controls === 'yes' ? STRINGS.control.yes : STRINGS.control.no },
         { id: f('awards'), label: F.awards, value: fill(R.awardsLine, Object.fromEntries(CLASSES.map((c) => [c, formatEth(e.awards[c])]))) },
         { id: f('lowest'), label: F.lowest, value: e.lowestClassCounted },
         { id: f('bond'), label: F.bond, value: eth(e.bondWei) },

@@ -8,7 +8,7 @@ import { loadConfig } from './config.js';
 import { RequestError } from './listing/request.js';
 import { QueueFullError, createListingService } from './listing/service.js';
 import { createPinner } from './pinning/index.js';
-import { SiteError } from './site/index.js';
+import { ControlError, SiteError } from './site/index.js';
 
 const { version } = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const ID = /^[0-9a-f]{32}$/;
@@ -18,6 +18,8 @@ const BADGE_MAX_AGE_S = 60;
 const BODY_LIMIT = '1mb';
 // { nonce, signature }
 const AUTH_BODY_LIMIT = '4kb';
+// { signer, signature (at most 4,096 bytes, as hex), creationTx }
+const PROOF_BODY_LIMIT = '16kb';
 
 const consoleLogger = {
   info: (...a) => console.log(...a),
@@ -63,6 +65,15 @@ const consoleLogger = {
  *   GET  /api/records/:hash            recordByHash for an artifact hash, its labels, its history
  *   GET  /api/records/:hash/badge.svg  the hash's badge (§4.1)
  *   GET  /api/status                   the indexer's cursor and the keeper's state
+ *
+ * and a contract listing's control proof (node P8; src/control/, docs/control-proof.md). Anyone may
+ * send one: it speaks for itself. The record states the message to sign:
+ *
+ *   POST /api/records/:hash/listings/:id/control-proof   { signer, signature, creationTx? } -> 200
+ *                            { control }, the listing's fact; 400 a malformed field, 404 no such
+ *                            listing of the hash, 409 not a contract listing, 422 the proof does not
+ *                            count (error: why; nothing is stored), 429 too many being checked, 503
+ *                            the listing's chain cannot be read
  *
  * Without one these answer 503 CHAIN_NOT_CONFIGURED.
  *
@@ -132,13 +143,16 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
     res.set('cache-control', 'no-store');
     next();
   };
-  const authJson = express.json({ limit: AUTH_BODY_LIMIT });
-  const authBody = (req, res, next) => authJson(req, res, (err) => {
-    if (!err) return next();
-    if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'BODY_NOT_JSON' });
-    if (err.type === 'entity.too.large') return res.status(413).json({ error: 'BODY_TOO_LARGE', limit: AUTH_BODY_LIMIT });
-    return res.status(Number.isInteger(err.status) && err.status >= 400 && err.status < 500 ? err.status : 400).json({ error: 'BODY_INVALID' });
-  });
+  const boundedJson = (limit) => {
+    const parse = express.json({ limit });
+    return (req, res, next) => parse(req, res, (err) => {
+      if (!err) return next();
+      if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'BODY_NOT_JSON' });
+      if (err.type === 'entity.too.large') return res.status(413).json({ error: 'BODY_TOO_LARGE', limit });
+      return res.status(Number.isInteger(err.status) && err.status >= 400 && err.status < 500 ? err.status : 400).json({ error: 'BODY_INVALID' });
+    });
+  };
+  const authBody = boundedJson(AUTH_BODY_LIMIT);
 
   app.post('/api/listings/:id/scan/challenge', noStore, scanRoute((_req, res, access) => {
     try {
@@ -168,7 +182,7 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
     try {
       return await handler(req, res);
     } catch (err) {
-      if (err instanceof SiteError) return res.status(err.status).json({ error: err.code, detail: err.message });
+      if (err instanceof SiteError || err instanceof ControlError) return res.status(err.status).json({ error: err.code, detail: err.message });
       logger.error(`${req.method} ${req.path}: ${err?.stack ?? err}`);
       return res.status(500).json({ error: 'INTERNAL' });
     }
@@ -202,6 +216,12 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
     res.set('content-type', 'image/svg+xml; charset=utf-8');
     res.set('cache-control', `public, max-age=${BADGE_MAX_AGE_S}`);
     return res.send(b.svg);
+  }));
+
+  app.post('/api/records/:hash/listings/:id/control-proof', boundedJson(PROOF_BODY_LIMIT), chainRoute(async (req, res) => {
+    const hash = hashParam(req, res);
+    if (!hash) return undefined;
+    return res.json({ control: await site.submitControlProof(hash, req.params.id, req.body) });
   }));
 
   app.get('/api/status', chainRoute(async (_req, res) => res.json(site.status())));

@@ -49,7 +49,7 @@ export const CONTROL_REASONS = Object.freeze(Object.fromEntries(Object.entries({
   // a listing's archive, for the reason it does not count (counting.js)
   NOT_SIGNED_BY_BUILDER: 'The listing archive carries no attestation that verifies under the builder keys this site accepts, so the builder did not sign this listing.',
   ARCHIVE_UNAVAILABLE: 'The listing archive has not been read yet. The site tries again.',
-  ARCHIVE_INVALID: 'The listing\'s CID does not hold a listing archive arbiters would judge: its manifest, panel, primary file or baseline is not what they read.',
+  ARCHIVE_INVALID: 'The listing\'s CID does not hold the archive the listing flow issues for its files: another panel, query, member or form.',
   ARCHIVE_TOO_LARGE: 'The listing\'s archive is larger than the site reads.',
   ARCHIVE_NOT_CID: 'The bytes the site was given for the listing\'s CID do not hash to it.',
   ARCHIVE_MISMATCH: 'What the chain holds for this listing is not what its signed archive says: another artifact, disclosure key or terms.',

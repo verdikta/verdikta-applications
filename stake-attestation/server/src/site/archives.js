@@ -1,14 +1,11 @@
 // What a feed entry takes from its listing archive (design §15: the image and the scope): the
-// archive is fetched by the listingCid the chain stores and its code_review.json is read through
-// its manifest, straight from the ZIP's central directory and never extracted: the archive is
-// the maker's, so the download, the directory and each member read are all held to byte caps
-// (zipRead.js). As the arbiters' ArchiveService does, an archive whose members all sit in one
-// top-level folder is read from that folder. An archive whose CID is the raw sha2-256 form must
-// hash to it. What it says is kept
-// in the store by CID (content addressed, so a read never goes stale); a fetch that failed is
-// retried with a backoff. The archive is trusted for a listing's image and scope only when it is
-// that listing: its repository, commit and disclosure key must be the ones the chain stores
-// (archiveFields checks, per listing, since two listings may name one CID).
+// archive is fetched by the listingCid the chain stores and its code_review.json is read straight from
+// the ZIP's central directory and never extracted: the archive is the maker's, so the download, the
+// directory and each member read are all held to byte caps (zipRead.js). An archive whose CID is the
+// raw sha2-256 form must hash to it. What it says is kept in the store by CID (content addressed, so a
+// read never goes stale); a fetch that failed is retried with a backoff. The archive is trusted for a
+// listing's image and scope only when it is that listing (src/control/counting.js, per listing, since
+// two listings may name one CID).
 //
 // Node P9: reading it also answers "did the builder sign this listing", with the check the hunter
 // tool reuses (shared/src/builderSignature.js), under the trust the arbiters apply here: production's

@@ -3,14 +3,14 @@
 // feed ask this, and so does the hunter tool (node P5) before it offers a commit: a listing whose
 // archive does not verify is one arbiters will not judge.
 //
-// The attestation binds code_review.json, the baseline and the known issues, not the manifest or the
-// primary file, so those signed files can be repackaged around another panel or none. So the archive
-// must also be exactly what the listing flow issues (server/src/listing/archives.js): these members
-// and no others, the manifest with common's panel for its role (the listing or the dispute), and
-// common's claim query with the six outcomes as its primary file; and its baseline and known issues
-// valid. An archive that differs is not what the flow issued, however good its signature, and the
-// dispute archive counts as much as the listing archive: a maker who chose their own would choose
-// who judges their disputes.
+// The attestation binds code_review.json, the baseline and the known issues, not the manifest, the
+// primary file or the ZIP around them, so those signed files can be repackaged around another panel,
+// another query, or in a form one reader takes and another refuses. So the archive must be, byte for
+// byte, what the listing flow issues for them (server/src/listing/archives.js): its writer is
+// deterministic, so anyone can rebuild it from its members and compare. Its baseline and known issues
+// must be valid too. An archive that differs is not what the flow issued, however good its signature,
+// and the dispute archive counts as much as the listing archive: a maker who chose their own would
+// choose who judges their disputes.
 //
 // A signature says nothing of who listed the archive: a signed archive can be listed from any
 // wallet, and that wallet's address is not in it (docs/control-proof.md, "Replay"). The signature
@@ -19,28 +19,18 @@
 // The archive is the maker's, so nothing is extracted: named members are read from the ZIP's central
 // directory, each held to a byte cap (zipRead.js). This package has no dependency, so common's
 // validators are an argument: `codeReview`, as the caller's pinned copy.
-import { isDeepStrictEqual } from 'node:util';
-
+import { zipStored } from './zip.js';
 import { ZipError, readZipMember, zipDirectory } from './zipRead.js';
 
 const PLAIN_NAME = /^(?!\.\.?$)[A-Za-z0-9._-]{1,255}$/;
-const MANIFEST_MAX_BYTES = 64 * 1024;
 const SPEC_MAX_BYTES = 1024 * 1024;
 const MEMBER_MAX_BYTES = 8 * 1024 * 1024;
 const MANIFEST_FILE = 'manifest.json';
 const PRIMARY_FILE = 'primary_query.json';
 const SPEC_FILE = 'code_review.json';
-const utf8 = new TextDecoder('utf-8', { fatal: true });
-
-/** The folder the archive's files sit in: the root, or its one top-level folder (as ArchiveService). */
-function rootOf(entries) {
-  if (entries.has('manifest.json')) return '';
-  const files = [...entries.keys()].filter((n) => !n.endsWith('/'));
-  const tops = new Set(files.map((n) => (n.includes('/') ? n.slice(0, n.indexOf('/') + 1) : '')));
-  if (tops.size !== 1) return null;
-  const [top] = tops;
-  return top && entries.has(`${top}manifest.json`) ? top : null;
-}
+// a byte order mark stays in the text, and JSON.parse refuses it, as the arbiters' reader does
+const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+const written = (value) => Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
 
 /** The attested hashes of a statement's files, as one value: the same in a listing's two archives. */
 const filesKey = (attestation) => JSON.stringify([attestation.sha256?.codeReview ?? null, attestation.sha256?.baseline ?? null, attestation.sha256?.knownIssues ?? null]);
@@ -58,10 +48,8 @@ const invalid = (reason = 'ARCHIVE_INVALID') => ({ signed: false, reason, spec: 
  */
 export function readSignedListing(bytes, { codeReview, devKeys = null }) {
   let entries;
-  let root;
-  let spec;
   const member = (name, max) => {
-    const entry = entries.get(`${root}${name}`);
+    const entry = entries.get(name);
     return entry ? readZipMember(bytes, entry, max) : null;
   };
   const json = (name, max) => {
@@ -71,43 +59,40 @@ export function readSignedListing(bytes, { codeReview, devKeys = null }) {
   };
   try {
     entries = zipDirectory(bytes);
-    root = rootOf(entries);
-    if (root === null) return invalid();
-    const manifest = json(MANIFEST_FILE, MANIFEST_MAX_BYTES).value;
     const read = json(SPEC_FILE, SPEC_MAX_BYTES);
-    spec = read.value;
+    const spec = read.value;
     if (!spec || typeof spec !== 'object' || !codeReview.validateCodeReviewSpec(spec).ok) return invalid();
-    const issued = (panel) => ({ version: '1.0', primary: { filename: PRIMARY_FILE }, juryParameters: JSON.parse(JSON.stringify(panel)), codeReview: SPEC_FILE });
-    let role = null;
-    if (isDeepStrictEqual(manifest, issued(codeReview.CODE_STANDARD_PANEL))) role = 'listing';
-    else if (isDeepStrictEqual(manifest, issued(codeReview.CODE_STANDARD_DISPUTE_PANEL))) role = 'dispute';
-    if (!role) return invalid();
-    const primary = json(PRIMARY_FILE, SPEC_MAX_BYTES).value;
-    if (!isDeepStrictEqual(primary, { query: codeReview.buildClaimQuery(spec), outcomes: [...codeReview.BUG_OUTCOMES], references: [] })) return invalid();
 
     const named = (name) => (typeof name === 'string' && PLAIN_NAME.test(name) ? name : null);
     const baselineName = named(spec.baseline ?? codeReview.BASELINE_FILE);
     const attestationName = named(spec.attestation ?? codeReview.ATTESTATION_FILE);
     const knownName = spec.stake?.knownIssues === undefined ? null : named(spec.stake.knownIssues);
     if (!baselineName || !attestationName || (spec.stake?.knownIssues !== undefined && !knownName)) return invalid();
-    // these members and no others
-    const expected = new Set([MANIFEST_FILE, PRIMARY_FILE, SPEC_FILE, baselineName, attestationName, ...(knownName ? [knownName] : [])].map((n) => `${root}${n}`));
-    if ([...entries.keys()].some((n) => !n.endsWith('/') && !expected.has(n))) return invalid();
-    const files = { codeReview: read.raw };
     const baseline = member(baselineName, MEMBER_MAX_BYTES);
-    if (baseline) files.baseline = baseline;
     const known = knownName ? member(knownName, MEMBER_MAX_BYTES) : null;
-    if (known) files.knownIssues = known;
-    let knownIssues = null;
-    if (knownName) {
-      if (!known) return { ...invalid('NOT_SIGNED_BY_BUILDER'), spec };
-      knownIssues = JSON.parse(utf8.decode(known));
-      if (!codeReview.validateKnownIssues(knownIssues).ok) return invalid();
-    }
-    if (baseline && !codeReview.validateBaseline(JSON.parse(utf8.decode(baseline)), spec).ok) return invalid();
     const attestationBytes = member(attestationName, MEMBER_MAX_BYTES);
-    let attestation;
-    if (attestationBytes) attestation = JSON.parse(utf8.decode(attestationBytes));
+    if (!baseline || !attestationBytes || (knownName && !known)) return { ...invalid('NOT_SIGNED_BY_BUILDER'), spec };
+
+    // exactly what the listing flow issues for these files: the panel says which archive it is
+    const issue = (panel) => zipStored([
+      { name: MANIFEST_FILE, bytes: written({ version: '1.0', primary: { filename: PRIMARY_FILE }, juryParameters: panel, codeReview: SPEC_FILE }) },
+      { name: PRIMARY_FILE, bytes: written({ query: codeReview.buildClaimQuery(spec), outcomes: [...codeReview.BUG_OUTCOMES], references: [] }) },
+      { name: SPEC_FILE, bytes: read.raw },
+      { name: attestationName, bytes: attestationBytes },
+      { name: baselineName, bytes: baseline },
+      ...(knownName ? [{ name: knownName, bytes: known }] : []),
+    ]);
+    let role = null;
+    if (issue(codeReview.CODE_STANDARD_PANEL).equals(bytes)) role = 'listing';
+    else if (issue(codeReview.CODE_STANDARD_DISPUTE_PANEL).equals(bytes)) role = 'dispute';
+    if (!role) return invalid();
+
+    const knownIssues = knownName ? JSON.parse(utf8.decode(known)) : null;
+    if (knownName && !codeReview.validateKnownIssues(knownIssues).ok) return invalid();
+    if (!codeReview.validateBaseline(JSON.parse(utf8.decode(baseline)), spec).ok) return invalid();
+
+    const attestation = JSON.parse(utf8.decode(attestationBytes));
+    const files = { codeReview: read.raw, baseline, ...(known ? { knownIssues: known } : {}) };
     // the statement's own (signed) trust picks the verification, as the arbiters' front gates do
     const trust = devKeys?.length && attestation?.trust === 'dev' ? { dev: true, keys: devKeys } : undefined;
     const verified = codeReview.validateAttestation(attestation, { files, trust });

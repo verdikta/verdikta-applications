@@ -34,13 +34,14 @@ A listing counts when, in this order:
 | Reason it does not | |
 |---|---|
 | `ARCHIVE_UNAVAILABLE`, `ARCHIVE_TOO_LARGE`, `ARCHIVE_NOT_CID` | its listing or dispute archive could not be read |
-| `ARCHIVE_INVALID` | not an archive arbiters would judge: no panel of common's for its role, another query or outcomes, no primary file, an invalid baseline. The signature covers the spec, the baseline and the known issues, so a repackaged archive still carries a good one |
+| `ARCHIVE_INVALID` | not, byte for byte, what the listing flow issues for its files (its writer is deterministic, so anyone can rebuild it): another panel, query or outcomes, another member, another form of the same. The signature covers the spec, the baseline and the known issues, so a repackaged archive still carries a good one |
 | `NOT_SIGNED_BY_BUILDER` | an archive's attestation does not verify under the builder keys this site accepts (`@verdikta/common`'s trusted-builder set; under dev trust, only keys this site's own signing step made) |
 | `ARCHIVE_MISMATCH` | the two archives are not this listing's: another artifact, disclosure key or terms on-chain, other signed files in the dispute archive, or one archive in the other's place |
 | the proof's reasons, below | the on-chain maker is not the one the repository names, or a contract has no signature |
 
-The hunter tool reuses this: `@verdikta/stake-attestation-shared/builder-signature` exports
-`didBuilderSign` and `readSignedListing`, and `.../listing-warning` the warning every listing page
+A maker who runs the builder in their own CI builds the archives from the signed files with the same
+writer (`buildListingArchives`, `shared/src/zip.js`), or they are other bytes. The hunter tool reuses
+this: `@verdikta/stake-attestation-shared/builder-signature` exports `didBuilderSign` and `readSignedListing`, and `.../listing-warning` the warning every listing page
 carries (who reads a proof first, and that the code may exist elsewhere).
 
 ## Refusals

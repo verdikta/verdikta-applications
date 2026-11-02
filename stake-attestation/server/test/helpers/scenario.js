@@ -109,7 +109,7 @@ function eventArgs(ctx, rc, name) {
  * file at the commit names the maker, as the project's own listing has it (`proof` another address,
  * or null: none). `builder` signs it (by default the one the site trusts); `list: false` stops
  * before list(), for a test that replays the archive; `paramsOver` changes what goes on-chain;
- * `knownIssuesList` signs it with known issues.
+ * `knownIssuesList` signs it with these known issues (true: the fixture's).
  */
 export async function listing(ctx, { maker = ctx.maker, spec = {}, stake = {}, fund = true, allowlist = [], escrowWei, oracle, proof, builder = ctx.builder, list = true, paramsOver = {}, knownIssuesList = false } = {}) {
   const base = draftSpec();
@@ -122,14 +122,15 @@ export async function listing(ctx, { maker = ctx.maker, spec = {}, stake = {}, f
   if (!knownIssuesList) delete draft.stake.knownIssues;
   if (proof === null) ctx.proofs.delete(`${draft.repo}@${draft.baseCommit}`);
   else ctx.proofs.set(`${draft.repo}@${draft.baseCommit}`, proof ?? maker.address);
-  const issues = knownIssuesList ? serialize(knownIssues()) : null;
+  const issuesList = knownIssuesList === true ? knownIssues() : knownIssuesList || null;
+  const issues = issuesList ? serialize(issuesList) : null;
   const built = await builder.build({ draft, knownIssues: issues, maker: maker.address });
   const archives = buildListingArchives(built.files);
   const listingCid = await ctx.pinner.pin(archives.listing.bytes, { name: 'listing.zip' });
   const disputeCid = await ctx.pinner.pin(archives.dispute.bytes, { name: 'dispute.zip' });
   const args = listArguments({
     spec: archives.spec,
-    knownIssues: knownIssuesList ? knownIssues() : null,
+    knownIssues: issuesList,
     allowlist,
     oracle: oracle ?? testConfig().oracle,
     listingCid,

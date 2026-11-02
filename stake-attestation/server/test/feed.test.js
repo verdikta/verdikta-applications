@@ -313,12 +313,12 @@ describe('reading a listing archive without extracting it', () => {
   });
   const spec = () => JSON.parse(members.find((m) => m.name === 'code_review.json').bytes);
 
-  test('a stored archive, a deflated one, and one whose files sit in a single folder read the same', () => {
-    const want = { ok: true, image: IMAGE, scope: spec().stake.scope };
-    for (const bytes of [zipStored(members), zipDeflated(members), zipDeflated(members.map((m) => ({ ...m, name: `listing/${m.name}` })))]) {
-      const r = readListingArchive(bytes, 'QmNotARawCidSoNoHashCheckXXXXXXXXXXXXXXXXXXXXXX');
-      assert.deepEqual({ ok: r.ok, image: r.image, scope: r.scope }, want);
-      assert.equal(r.baseCommit, spec().baseCommit);
+  test('the archive the flow issues reads; the same members deflated, or under one folder, are not what it issues', () => {
+    const r = readListingArchive(zipStored(members), 'QmNotARawCidSoNoHashCheckXXXXXXXXXXXXXXXXXXXXXX');
+    assert.deepEqual({ ok: r.ok, image: r.image, scope: r.scope }, { ok: true, image: IMAGE, scope: spec().stake.scope });
+    assert.equal(r.baseCommit, spec().baseCommit);
+    for (const bytes of [zipDeflated(members), zipDeflated(members.map((m) => ({ ...m, name: `listing/${m.name}` })))]) {
+      assert.deepEqual(readListingArchive(bytes, 'QmNotARawCidSoNoHashCheckXXXXXXXXXXXXXXXXXXXXXX'), { ok: false, error: 'ARCHIVE_INVALID' });
     }
   });
 

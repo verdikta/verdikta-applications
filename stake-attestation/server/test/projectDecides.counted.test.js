@@ -11,7 +11,7 @@ import { ethers } from 'ethers';
 import { mergedAbi } from './helpers/chain.js';
 import { fakeBuilder } from './helpers/fixtures.js';
 import { startApi } from './helpers/http.js';
-import { bareListing, chainContext, listing, replay, revealedClaim, judgeAndSettle, settled, siteFor } from './helpers/scenario.js';
+import { bareListing, chainContext, freshCommit, listing, replay, revealedClaim, judgeAndSettle, settled, siteFor } from './helpers/scenario.js';
 
 const ids = (list) => list.map((l) => String(l.listingId));
 
@@ -122,6 +122,8 @@ describe('what counts', () => {
       [{ name: 'manifest.json', bytes: Buffer.from(JSON.stringify({ codeReview: 'code_review.json' })) }, ...signed],
       // one cheap model, outside the code-standard envelope
       [{ name: 'manifest.json', bytes: Buffer.from(JSON.stringify({ ...manifest, juryParameters: { ...manifest.juryParameters, AI_NODES: manifest.juryParameters.AI_NODES.slice(0, 1) } })) }, member('primary_query.json'), ...signed],
+      // a byte order mark: one reader takes it, the arbiters' does not
+      [{ name: 'manifest.json', bytes: Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), member('manifest.json').bytes]) }, member('primary_query.json'), ...signed],
       // a primary file the arbiters' validator refuses, though its query and outcomes are the flow's
       [member('manifest.json'), { name: 'primary_query.json', bytes: Buffer.from(JSON.stringify({ ...JSON.parse(member('primary_query.json').bytes.toString('utf8')), references: 'a string' })) }, ...signed],
       // another query to the jury
@@ -151,9 +153,24 @@ describe('what counts', () => {
     const manifest = JSON.parse(member('manifest.json').bytes.toString('utf8'));
     const smaller = zipStored([{ name: 'manifest.json', bytes: Buffer.from(JSON.stringify({ ...manifest, juryParameters: { ...manifest.juryParameters, AI_NODES: manifest.juryParameters.AI_NODES.slice(0, 1) } })) }, ...['primary_query.json', 'code_review.json', 'attestation.json', 'baseline.json'].map(member)]);
     const another = await listing(ctx, { list: false });
-    // the same spec, signed again with other known issues: the listing's own spec and commit, other signed files
-    const twin = await listing(ctx, { list: false, spec: { baseCommit: l.spec.baseCommit }, knownIssuesList: true });
-    for (const [disputeCid, reason] of [[await ctx.pinner.pin(smaller, { name: 'd.zip' }), 'ARCHIVE_INVALID'], [l.listingCid, 'ARCHIVE_MISMATCH'], [another.disputeCid, 'ARCHIVE_MISMATCH'], [twin.disputeCid, 'ARCHIVE_MISMATCH']]) {
+    // the same spec, signed again with other known issues: one code_review.json, other signed files
+    const { disclosureKeyPair, knownIssues } = await import('./helpers/fixtures.js');
+    const stake = { disclosureKey: disclosureKeyPair().recipient };
+    const commit = freshCommit();
+    const [a, b] = knownIssues();
+    const withKnown = await listing(ctx, { list: false, stake, spec: { baseCommit: commit }, knownIssuesList: [a] });
+    const twin = await listing(ctx, { list: false, stake, spec: { baseCommit: commit }, knownIssuesList: [b] });
+    assert.deepEqual(withKnown.spec, twin.spec, 'one spec');
+    assert.notEqual(withKnown.disputeCid, twin.disputeCid);
+    const rcTwin = await (await ctx.sa.connect(ctx.maker).list(withKnown.params, withKnown.listingCid, twin.disputeCid, withKnown.knownIssueIds)).wait();
+    const twinId = rcTwin.logs.map((x) => { try { return ctx.sa.interface.parseLog(x); } catch { return null; } }).find((e) => e?.name === 'Listed').args.listingId;
+    const twinFee = await ctx.sa.feeDue(twinId);
+    await (await ctx.sa.connect(ctx.maker).fund(twinId, twinFee, { value: twinFee + BigInt(withKnown.params.awards[3]) })).wait();
+    await settled(site);
+    const twinView = await view(withKnown.artifactHash);
+    assert.deepEqual(twinView.record.listings, []);
+    assert.equal(twinView.notCounted.listings[0].reason, 'ARCHIVE_MISMATCH');
+    for (const [disputeCid, reason] of [[await ctx.pinner.pin(smaller, { name: 'd.zip' }), 'ARCHIVE_INVALID'], [l.listingCid, 'ARCHIVE_MISMATCH'], [another.disputeCid, 'ARCHIVE_MISMATCH']]) {
       const rc = await (await ctx.sa.connect(ctx.maker).list(l.params, l.listingCid, disputeCid, l.knownIssueIds)).wait();
       const parsed = rc.logs.map((x) => { try { return ctx.sa.interface.parseLog(x); } catch { return null; } }).find((e) => e?.name === 'Listed');
       const fee = await ctx.sa.feeDue(parsed.args.listingId);

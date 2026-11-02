@@ -479,6 +479,34 @@ describe('a contract listing\'s control fact', () => {
     }
   });
 
+  test('a check\'s reads are one at a time, so none is in flight once it settles: a failed receipt read leaves no transaction read running', async () => {
+    const { address, creationTx } = await deploy('MockOwnerless', deployer);
+    const l = await contractListing(address);
+    let failing = false;
+    let txReads = 0;
+    const flaky = new Proxy(ctx.provider, {
+      get(target, prop) {
+        if (failing && prop === 'getTransactionReceipt') return async () => { throw new Error('rpc down'); };
+        if (failing && prop === 'getTransaction') return async () => { txReads += 1; return new Promise(() => {}); };
+        const v = target[prop];
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    const local = siteFor(ctx, { provider: flaky });
+    try {
+      await local.sync();
+      const message = (await local.record(l.artifactHash)).control[l.listingId].deployment.message;
+      const body = { signer: deployer.address, signature: await deployer.signMessage(message), creationTx };
+      failing = true;
+      await assert.rejects(local.submitControlProof(l.artifactHash, String(l.listingId), body), (err) => err.code === 'CHAIN_UNAVAILABLE');
+      assert.equal(txReads, 0);
+      failing = false;
+      assert.equal((await local.submitControlProof(l.artifactHash, String(l.listingId), body)).controls, 'yes');
+    } finally {
+      local.close();
+    }
+  });
+
   test('proof checks are bounded: a few at a time, the rest are told to come back', async () => {
     const { address } = await deploy('MockOwned', deployer, owner.address);
     const l = await contractListing(address);

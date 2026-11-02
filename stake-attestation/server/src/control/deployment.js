@@ -82,9 +82,11 @@ export async function checkDeploymentProof(provider, { message, chainId, address
 
   if ((await ownerOf(provider, address, block)) === signer) return { ok: true, role: 'owner', contractSigner: contract, block };
   if (creationTx) {
-    const [tx, receipt] = await Promise.all([provider.getTransaction(creationTx), provider.getTransactionReceipt(creationTx)]);
-    if (tx && receipt && receipt.status === 1 && receipt.blockNumber <= block && tx.from === signer && receipt.contractAddress === address) {
-      return { ok: true, role: 'deployer', contractSigner: contract, block };
+    // one read at a time, so that when this check settles no read of it is still in flight
+    const receipt = await provider.getTransactionReceipt(creationTx);
+    if (receipt && receipt.status === 1 && receipt.blockNumber <= block && receipt.contractAddress === address) {
+      const tx = await provider.getTransaction(creationTx);
+      if (tx && tx.from === signer) return { ok: true, role: 'deployer', contractSigner: contract, block };
     }
   }
   return { ok: false, reason: 'SIGNER_NOT_CONTROLLER' };

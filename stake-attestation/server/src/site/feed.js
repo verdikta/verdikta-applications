@@ -13,18 +13,18 @@ const DAY = 86400;
 
 /**
  * @param {object} o
- * @param {import('ethers').Contract} o.contract
- * @param {object} o.projection
+ * @param {(fn: string, args: unknown[]) => Promise<import('ethers').Result>} o.read - the contract at `block`
+ * @param {object} o.projection - of the events up to `block`
  * @param {{ number: number, hash: string, timestamp: number }} o.block - the indexed block
  * @param {Record<string, object>} o.archives - store.state.archives
  * @param {object} o.labels - { price, badgeFloorWei, underStakedRatioBps }
  * @param {number} o.discloseWindow - the contract's DISCLOSE_WINDOW
  */
-export async function buildFeed({ contract, projection, block, archives, labels, discloseWindow }) {
+export async function buildFeed({ read, projection, block, archives, labels, discloseWindow }) {
   const candidates = [...projection.listings.values()].filter((l) => l.opened && !l.rolled && !l.closed);
   const entries = [];
   for (const l of candidates) {
-    const onchain = outputJson('getListing', await contract.getListing(l.listingId, { blockTag: block.number }));
+    const onchain = outputJson('getListing', (await read('getListing', [l.listingId]))[0]);
     const fundedUntil = Number(onchain.fundedUntil);
     const lapsed = fundedUntil !== 0 && block.timestamp >= fundedUntil;
     if (onchain.state !== 'Open' || lapsed || BigInt(onchain.escrowWei) < BigInt(onchain.awards[3])) continue;

@@ -4,7 +4,9 @@
 // either the old state or the new one, never half of one. A file lock (writer.lock, holding the
 // writer's pid) keeps one writer per folder; a lock whose process is gone is reclaimed. The state
 // names the deployment it indexes, and a folder of another deployment is refused rather than
-// mixed with it.
+// mixed with it. The lock is created with the writer's pid already in it, so no crash leaves a
+// lock nobody can tell is stale.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -27,31 +29,60 @@ function alive(pid) {
   }
 }
 
-function acquireLock(file) {
+/** Creates `file` holding `content`, or fails with EEXIST: the content is in place before the name is. */
+function createExclusive(file, content) {
+  const tmp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}`;
+  fs.writeFileSync(tmp, content, { mode: 0o600, flag: 'wx' });
   try {
-    return fs.openSync(file, 'wx', 0o600);
-  } catch (err) {
-    if (err.code !== 'EEXIST') throw err;
+    fs.linkSync(tmp, file);
+  } finally {
+    fs.rmSync(tmp, { force: true });
   }
-  // reclaim a dead writer's lock, one reclaimer at a time, checking it is still the same file
-  const reclaim = `${file}.reclaim`;
+}
+
+/** Whether a lock file names a running process (a missing, empty or garbled one does not). */
+function heldByLiveProcess(file) {
+  let text;
   try {
-    fs.mkdirSync(reclaim);
+    text = fs.readFileSync(file, 'utf8');
   } catch (err) {
-    if (err.code === 'EEXIST') throw new StoreError('WRITER_ACTIVE', 'another process is reclaiming the state folder\'s lock');
+    if (err.code === 'ENOENT') return false;
     throw err;
   }
-  try {
-    const before = fs.statSync(file);
-    const pid = Number(fs.readFileSync(file, 'utf8'));
-    if (!Number.isSafeInteger(pid) || pid <= 0 || alive(pid) || fs.statSync(file).ino !== before.ino) {
-      throw new StoreError('WRITER_ACTIVE', `the state folder is in use by process ${pid}`);
+  const pid = Number(text.trim());
+  return Number.isSafeInteger(pid) && pid > 0 && alive(pid);
+}
+
+/**
+ * Takes the folder's writer lock. A lock whose process is gone is reclaimed, one reclaimer at a
+ * time (writer.lock.reclaim, itself reclaimed when its process is gone), and only after checking
+ * again under the reclaim lock that its process is still gone.
+ */
+function acquireLock(file) {
+  const reclaim = `${file}.reclaim`;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      createExclusive(file, String(process.pid));
+      return;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
     }
-    fs.unlinkSync(file);
-    return fs.openSync(file, 'wx', 0o600);
-  } finally {
-    fs.rmdirSync(reclaim);
+    if (heldByLiveProcess(file)) throw new StoreError('WRITER_ACTIVE', `the state folder is in use by process ${fs.readFileSync(file, 'utf8').trim()}`);
+    try {
+      createExclusive(reclaim, String(process.pid));
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      if (heldByLiveProcess(reclaim)) throw new StoreError('WRITER_ACTIVE', 'another process is reclaiming the state folder\'s lock');
+      fs.rmSync(reclaim, { force: true }); // left by a reclaimer that died
+      continue;
+    }
+    try {
+      if (!heldByLiveProcess(file)) fs.rmSync(file, { force: true });
+    } finally {
+      fs.rmSync(reclaim, { force: true });
+    }
   }
+  throw new StoreError('WRITER_ACTIVE', 'the state folder\'s lock could not be taken');
 }
 
 function emptyState(identity) {
@@ -77,8 +108,8 @@ export class StateStore {
     this.file = path.join(dir, 'state.json');
     this.tmp = path.join(dir, 'state.json.tmp');
     this.lockFile = path.join(dir, 'writer.lock');
-    this.fd = acquireLock(this.lockFile);
-    fs.writeSync(this.fd, String(process.pid));
+    acquireLock(this.lockFile);
+    this.locked = true;
     try {
       if (fs.existsSync(this.file)) {
         const state = JSON.parse(fs.readFileSync(this.file, 'utf8'));
@@ -100,7 +131,7 @@ export class StateStore {
 
   /** Applies `update` to a copy of the state and commits it in one atomic write. */
   transact(update) {
-    if (this.fd === null) throw new StoreError('STORE_CLOSED', 'the store is closed');
+    if (!this.locked) throw new StoreError('STORE_CLOSED', 'the store is closed');
     const next = structuredClone(this.state);
     const result = update(next);
     if (result && typeof result.then === 'function') throw new TypeError('store transactions are synchronous');
@@ -129,9 +160,10 @@ export class StateStore {
   }
 
   close() {
-    if (this.fd === null) return;
-    fs.closeSync(this.fd);
-    this.fd = null;
-    fs.rmSync(this.lockFile, { force: true });
+    if (!this.locked) return;
+    this.locked = false;
+    try {
+      if (fs.readFileSync(this.lockFile, 'utf8').trim() === String(process.pid)) fs.rmSync(this.lockFile, { force: true });
+    } catch { /* gone already */ }
   }
 }

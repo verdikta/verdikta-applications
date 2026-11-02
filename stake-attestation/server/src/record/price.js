@@ -2,9 +2,12 @@
 // §4.2). Read at the block the record is read at, so a record and its labels are of one block. An
 // answer that is not positive, or older than SA_ETH_USD_MAX_AGE_SECONDS at that block, is no price:
 // the labels then leave a declared value at risk unlabelled rather than guess.
-import { Contract } from 'ethers';
+import { Interface } from 'ethers';
 
 import { ETH_USD_FEED_ABI } from '../chain/abi.js';
+import { readerAt } from '../chain/read.js';
+
+const feedInterface = new Interface(ETH_USD_FEED_ABI);
 
 export class PriceError extends Error {
   constructor(code, detail) {
@@ -16,21 +19,21 @@ export class PriceError extends Error {
 
 /**
  * @param {object} o
- * @param {import('ethers').Provider} o.provider
+ * @param {import('ethers').JsonRpcApiProvider} o.provider
  * @param {string|null} o.feed - the aggregator's address (config.labels.ethUsdFeed)
- * @param {number|string} o.blockTag
+ * @param {string} o.blockHash - the block read at (by hash, chain/read.js)
  * @param {number} o.at - that block's timestamp
  * @param {number} o.maxAgeSeconds
  * @returns {Promise<{ answer: string, decimals: number, updatedAt: number, roundId: string, feed: string }>}
  * @throws {PriceError} ETH_USD_NOT_CONFIGURED, ETH_USD_UNREADABLE, ETH_USD_INVALID, ETH_USD_STALE
  */
-export async function readEthUsd({ provider, feed, blockTag, at, maxAgeSeconds }) {
+export async function readEthUsd({ provider, feed, blockHash, at, maxAgeSeconds }) {
   if (!feed) throw new PriceError('ETH_USD_NOT_CONFIGURED', 'SA_ETH_USD_FEED names no aggregator');
-  const aggregator = new Contract(feed, ETH_USD_FEED_ABI, provider);
+  const read = readerAt(provider, feedInterface, feed, blockHash);
   let decimals;
   let round;
   try {
-    [decimals, round] = await Promise.all([aggregator.decimals({ blockTag }), aggregator.latestRoundData({ blockTag })]);
+    [[decimals], round] = await Promise.all([read('decimals'), read('latestRoundData')]);
   } catch (err) {
     throw new PriceError('ETH_USD_UNREADABLE', `the aggregator at ${feed} did not answer (${err?.code ?? 'error'})`);
   }

@@ -50,6 +50,25 @@ describe('a reorg deeper than the confirmation depth', () => {
       const replacement = await listing(ctx, { maker: ctx.other });
       await mine(ctx, 12);
 
+      // before the next sync, an answer is still the indexed block's, read by its hash: the
+      // orphaned branch's record with its history if the node still has that block, else 503;
+      // never the replacement branch's state at the same height mixed with the indexed history
+      const pinned = async (hash) => {
+        try {
+          return await site.record(hash);
+        } catch (e) {
+          assert.equal(e.code, 'CHAIN_UNAVAILABLE');
+          return 'unavailable';
+        }
+      };
+      const before = await pinned(orphan.artifactHash);
+      if (before !== 'unavailable') {
+        assert.equal(before.block.hash, orphanedHash);
+        assert.equal(before.record.listings[0].listingId, String(orphan.listingId));
+        assert.ok(before.history.events.some((e) => e.name === 'Listed' && e.listingId === String(orphan.listingId)));
+      }
+      assert.ok([null, 'unavailable'].includes(await pinned(replacement.artifactHash)), 'the replacement branch is not read under the orphaned block');
+
       const r = await site.sync();
       assert.ok(r.rolledBack, 'the sync reports the rollback');
       assert.ok(r.rolledBack.to <= fork, `rolled back to a block still on the chain (${r.rolledBack.to} <= ${fork})`);

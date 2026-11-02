@@ -112,7 +112,7 @@ describe('Chainlink ETH/USD (a mock aggregator on the in-process chain)', () => 
 
   const read = async (over = {}) => {
     const block = await ctx.provider.getBlock('latest');
-    return readEthUsd({ provider: ctx.provider, feed: await feed.getAddress(), blockTag: block.number, at: block.timestamp, maxAgeSeconds: 3600, ...over });
+    return readEthUsd({ provider: ctx.provider, feed: await feed.getAddress(), blockHash: block.hash, at: block.timestamp, maxAgeSeconds: 3600, ...over });
   };
 
   test('a fresh answer is read with its decimals', async () => {

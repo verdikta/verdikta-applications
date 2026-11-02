@@ -190,8 +190,9 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
   /** Waits up to SA_KEEPER_TX_TIMEOUT_MS for the nonce to be used: 'done' or 'pending'. */
   async function settleInflight(inflight, timeoutMs) {
     const deadline = now() + timeoutMs;
+    const from = inflight.from ?? address;
     for (;;) {
-      const used = (await provider.getTransactionCount(address, 'latest')) > inflight.nonce;
+      const used = (await provider.getTransactionCount(from, 'latest')) > inflight.nonce;
       for (const a of [...inflight.attempts].reverse()) {
         const rc = await provider.getTransactionReceipt(a.hash);
         if (rc) {
@@ -208,16 +209,40 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     }
   }
 
+  async function anyKnown(inflight) {
+    for (const a of inflight.attempts) {
+      if (await provider.getTransaction(a.hash)) return true;
+    }
+    return false;
+  }
+
+  /** A record another key signed: wait for its account, never replace it. */
+  async function resolveForeign(inflight) {
+    if ((await provider.getTransactionCount(inflight.from, 'latest')) > inflight.nonce) return settleInflight(inflight, 0);
+    const newest = inflight.attempts.at(-1);
+    if (newest && ((await anyKnown(inflight)) || now() - newest.sentAt < cfg.replaceAfterMs)) {
+      logger.warn(`keeper: waiting for ${inflight.action}(${inflight.claimId}) that ${inflight.from} sent at nonce ${inflight.nonce}; this key (${address}) cannot replace it`);
+      return 'pending';
+    }
+    finish(inflight, 'dropped', null);
+    return 'done';
+  }
+
   /** The transaction in flight from an earlier cycle or process, resolved first. */
   async function resolve(inflight, sent) {
-    if ((await provider.getTransactionCount(address, 'latest')) > inflight.nonce) return settleInflight(inflight, 0);
-    let known = false;
-    for (const a of inflight.attempts) {
-      if (await provider.getTransaction(a.hash)) known = true;
+    if (inflight.from && inflight.from !== address) return resolveForeign(inflight);
+    const nonce = await provider.getTransactionCount(address, 'latest');
+    if (nonce > inflight.nonce) return settleInflight(inflight, 0);
+    if (nonce < inflight.nonce) {
+      logger.warn(`keeper: the account's nonce is ${nonce}, below the ${inflight.action}(${inflight.claimId}) at ${inflight.nonce} (a reorg dropped an earlier transaction); the next send fills the gap`);
+      finish(inflight, 'nonce-gap', null);
+      return 'done';
     }
+    const known = await anyKnown(inflight);
     const newest = inflight.attempts.at(-1);
     if (known && now() - newest.sentAt < cfg.replaceAfterMs) return settleInflight(inflight, cfg.txTimeoutMs);
-    const due = await isDue(inflight.action, inflight.claimId);
+    const allowed = inflight.action !== 'expire' || cfg.expire;
+    const due = allowed && await isDue(inflight.action, inflight.claimId);
     if (!due && !known) {
       finish(inflight, 'dropped', null); // nothing of ours is pending, and nothing is due
       return 'done';
@@ -239,7 +264,7 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
       return 'skipped'; // the call stopped passing since it was checked (another sender's is pending, say)
     }
     const gasLimit = (estimate * 5n) / 4n + 10000n;
-    const inflight = { action, claimId, nonce, recordedAt: now(), attempts: [] };
+    const inflight = { action, claimId, from: address, nonce, recordedAt: now(), attempts: [] };
     const attempt = await sign({ kind: 'call', action, claimId, nonce, gasLimit });
     const result = await broadcast(attempt, inflight);
     if (result !== 'sent') {

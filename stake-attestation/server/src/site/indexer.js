@@ -33,7 +33,7 @@ const checkpointOf = (b) => ({ number: b.number, hash: b.hash, timestamp: b.time
  * @param {object} o.logger
  */
 export function createIndexer({ provider, store, chain, logger }) {
-  let verified = false;
+  let hasCode = false;
 
   async function mustBlock(number) {
     const b = await provider.getBlock(number);
@@ -41,13 +41,17 @@ export function createIndexer({ provider, store, chain, logger }) {
     return b;
   }
 
+  /**
+   * The endpoint is asked for its chain id on every sync (eth_chainId itself: a provider built
+   * with a static network answers getNetwork() from its config), and the contract's code once.
+   */
   async function verifyDeployment() {
-    if (verified) return;
-    const network = await provider.getNetwork();
-    if (Number(network.chainId) !== chain.chainId) throw new IndexerError('WRONG_CHAIN', `the provider is on chain ${network.chainId}, not ${chain.chainId}`);
+    const id = typeof provider.send === 'function' ? BigInt(await provider.send('eth_chainId', [])) : (await provider.getNetwork()).chainId;
+    if (Number(id) !== chain.chainId) throw new IndexerError('WRONG_CHAIN', `the provider is on chain ${id}, not ${chain.chainId}`);
+    if (hasCode) return;
     const code = await provider.getCode(chain.address);
     if (!code || code === '0x') throw new IndexerError('NO_CONTRACT', `${chain.address} holds no contract on chain ${chain.chainId}`);
-    verified = true;
+    hasCode = true;
   }
 
   /** Walks back to the newest checkpoint still on the chain and drops everything after it. */

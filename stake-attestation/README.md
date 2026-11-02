@@ -273,14 +273,16 @@ refuses at its first step, which needs no Docker.
 
 With a deployment configured (`SA_CONTRACT_ADDRESS`, `SA_CHAIN_ID`, `SA_FROM_BLOCK`,
 `SA_RPC_URL`), `server/src/site/` (node P4b1) indexes the contract and serves, all of one block,
-the indexer's cursor:
+the indexer's cursor, read by its hash (EIP-1898), so a reorg never mixes two branches in one
+answer. Each answer says whether it is `fresh`: the last sync that reached the confirmed head and
+the indexed block are both within `SA_MAX_STALENESS_SECONDS` (600).
 
 | Route | |
 |---|---|
 | `GET /api/feed` | every listing that takes commits (Open, its paid period not over): hash, artifact, image and scope (from its listing archive, used only when the archive is the listing the chain stores), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed and lapsed listings are not in it (design §15) |
 | `GET /api/feed/events?after=&limit=` | the contract's events of listings and claims, in chain order (design §13.4: the feed is those events), paged by `next` (`<block>:<logIndex>`) |
 | `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), read in `recordPage` pages when it is long; `labels`; `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding. 404 for a hash with no opened listing |
-| `GET /api/records/:hash/badge.svg` | the badge |
+| `GET /api/records/:hash/badge.svg` | the badge; "record unavailable" when the record is not fresh or cannot be read |
 | `GET /api/status` | the indexer's cursor and the keeper's address, transaction in flight and last result |
 
 **Only valid findings are published** (design §14). A claim's events appear in full once it
@@ -292,7 +294,8 @@ archives, keys, ciphertext, hunter or verdict. The record's counts and flags are
 `SA_LOG_CHUNK_BLOCKS`, only up to `SA_CONFIRMATIONS` (10) blocks below the head, and commits each
 chunk with its cursor in one atomic write to `SA_DATA_DIR/state.json` (one writer per folder,
 by a lock file; a folder of another deployment is refused). A restart resumes after the last
-committed chunk. Each sync compares the cursor's stored block hash with the chain's; after a
+committed chunk. Each sync asks the endpoint for its chain id (`eth_chainId`; the provider's
+request cache is off) and compares the cursor's stored block hash with the chain's; after a
 reorg it rolls back to the newest block it read (within `SA_REORG_WINDOW_BLOCKS`) that is still
 on the chain, drops the events after it and reads again from there, or from `SA_FROM_BLOCK` if
 none is. A chunk whose blocks changed while it was read is not committed.
@@ -304,9 +307,11 @@ turns it off). It reads each claim on-chain and simulates the call before sendin
 transaction in flight at its next confirmed nonce, recorded before it is broadcast, and
 resolves that record first in the next cycle or process: waited for, re-sent at the same nonce
 with higher fees after `SA_KEEPER_REPLACE_AFTER_MS`, or, when the call is no longer due,
-replaced by a 0-value transfer to itself. A retry, a restart or a second keeper with the same
-key therefore never makes a call twice; keepers with different keys can still race, so run one
-per deployment or share the key.
+replaced by a 0-value transfer to itself. A record past a nonce gap (a reorg dropped an earlier
+transaction) is dropped so the next send fills the gap; one signed by a previous key is waited
+for, never replaced; an expiry is re-sent only while `SA_KEEPER_EXPIRE` is on. A retry, a restart
+or a second keeper with the same key therefore never makes a call twice; keepers with different
+keys can still race, so run one per deployment or share the key.
 
 **Labels** are the site's (the contract states facts only): `scanned` when the top award is
 below `SA_BADGE_FLOOR_WEI`, `staked`, `under-staked` when the maker declared a value at risk and
@@ -321,7 +326,9 @@ lowest class counted, with "under-staked" or "invited" after it when they apply)
 listing of the hash takes commits, only "scanned" below the floor, and "*n* valid finding(s) at
 or above *class*" once the record holds one; when no listing of the hash takes commits it says
 how the stake ended (closed, rolled forward, depleted, lapsed). Every string the server writes
-goes through the shared banned-words helper.
+goes through the shared banned-words helper. The feed reads a listing archive's
+`code_review.json` from the ZIP's central directory, never extracting it, with byte caps on the
+download (`SA_ARCHIVE_MAX_BYTES`) and on each member read, inflated or not.
 
 **The ABI.** The server reads the contract through `server/src/chain/abi/StakeAttestation.json`,
 onchain's merged ABI (contract plus lens), and never compiles; `npm run abi` rewrites it and a

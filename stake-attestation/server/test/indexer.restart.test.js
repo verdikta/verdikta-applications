@@ -131,4 +131,31 @@ describe('a restart mid-sync', () => {
     const site = siteFor(ctx, { dir });
     site.close();
   });
+
+  test('a lock left empty, or a reclaim left by a reclaimer that died, does not block the next start', async () => {
+    const ctx = await chainContext();
+    const dir = tmpDir();
+    siteFor(ctx, { dir }).close();
+    const lock = path.join(dir, 'writer.lock');
+    fs.writeFileSync(lock, '');
+    siteFor(ctx, { dir }).close();
+    fs.writeFileSync(lock, '999999999');
+    fs.writeFileSync(`${lock}.reclaim`, '999999998');
+    siteFor(ctx, { dir }).close();
+    assert.equal(fs.existsSync(`${lock}.reclaim`), false);
+    assert.equal(fs.existsSync(lock), false, 'close() removes its own lock');
+  });
+
+  test('a live reclaimer, or a live writer, keeps the folder', async () => {
+    const ctx = await chainContext();
+    const dir = tmpDir();
+    siteFor(ctx, { dir }).close();
+    const lock = path.join(dir, 'writer.lock');
+    fs.writeFileSync(lock, '999999999');
+    fs.writeFileSync(`${lock}.reclaim`, String(process.pid));
+    assert.throws(() => siteFor(ctx, { dir }), (e) => e.code === 'WRITER_ACTIVE');
+    fs.rmSync(`${lock}.reclaim`);
+    fs.writeFileSync(lock, String(process.pid));
+    assert.throws(() => siteFor(ctx, { dir }), (e) => e.code === 'WRITER_ACTIVE');
+  });
 });

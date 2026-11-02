@@ -205,9 +205,10 @@ export function siteEnv(ctx, dir, over = {}) {
 /**
  * The site (indexer, keeper, feed, record, badge) over the in-process chain. `env` adds to or
  * overrides siteEnv; `provider` replaces the in-process provider (a wrapper that fails on cue);
- * `keeperHooks.beforeBroadcast` runs between recording a transaction and broadcasting it.
+ * `keeperHooks.beforeBroadcast` runs between recording a transaction and broadcasting it; `now`
+ * replaces the site's wall clock.
  */
-export function siteFor(ctx, { dir = tmpDir(), env = {}, provider = ctx.provider, fetchArchive, logger = quietLogger(), keeperHooks } = {}) {
+export function siteFor(ctx, { dir = tmpDir(), env = {}, provider = ctx.provider, fetchArchive, logger = quietLogger(), keeperHooks, now } = {}) {
   const fullEnv = siteEnv(ctx, dir, env);
   const config = testConfig(fullEnv);
   const site = createSite({
@@ -221,6 +222,7 @@ export function siteFor(ctx, { dir = tmpDir(), env = {}, provider = ctx.provider
     }),
     logger,
     keeperHooks,
+    ...(now ? { now } : {}),
   });
   site.dir = dir;
   site.logger = logger;
@@ -228,23 +230,24 @@ export function siteFor(ctx, { dir = tmpDir(), env = {}, provider = ctx.provider
 }
 
 /**
- * Every transaction the keeper's address sent from `fromBlock`, mined, with its function name
- * (finalize, settle, expire, or a 0-value self-send that cancels a stale one) and its status.
+ * Every transaction the keeper's address (or `from`) sent from `fromBlock`, mined, with its
+ * function name (finalize, settle, expire, or a 0-value self-send that cancels a stale one) and
+ * its status.
  */
-export async function keeperTransactions(ctx, fromBlock = ctx.fromBlock) {
+export async function keeperTransactions(ctx, fromBlock = ctx.fromBlock, from = ctx.keeperAddress) {
   const p = ctx.hre.ethers.provider;
   const latest = await p.getBlockNumber();
   const out = [];
   for (let n = fromBlock; n <= latest; n += 1) {
     const block = await p.getBlock(n, true);
     for (const tx of block.prefetchedTransactions) {
-      if (tx.from !== ctx.keeperAddress) continue;
+      if (tx.from !== from) continue;
       const rc = await p.getTransactionReceipt(tx.hash);
       let fn = 'cancel';
       if (tx.to === ctx.address) {
         const parsed = ctx.sa.interface.parseTransaction({ data: tx.data });
         fn = `${parsed.name}(${parsed.args.map(String).join(',')})`;
-      } else if (tx.to !== ctx.keeperAddress || tx.value !== 0n) {
+      } else if (tx.to !== from || tx.value !== 0n) {
         fn = 'other';
       }
       out.push({ fn, nonce: tx.nonce, status: rc.status, block: n, hash: tx.hash });

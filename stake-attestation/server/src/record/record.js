@@ -1,9 +1,10 @@
 // The record mirror (design §4.1, §13.4; node P4b1): recordByHash of an artifact hash at the
-// indexed block, read through the lens at the contract's own address with the merged ABI, and
-// written field for field as JSON (chain/codec.js). A long record is read with recordPage, a page
-// of listings at a time and, within each, a window of the findings and the flags at a time, and
-// assembled to exactly what recordByHash answers: the listings and `active` in order, the
-// histories summed, the findings and flags concatenated, their counts summed.
+// indexed block (pinned by its hash, chain/read.js), read through the lens at the contract's own
+// address with the merged ABI, and written field for field as JSON (chain/codec.js). A long
+// record is read with recordPage, a page of listings at a time and, within each, a window of the
+// findings and the flags at a time, and assembled to exactly what recordByHash answers: the
+// listings and `active` in order, the histories summed, the findings and flags concatenated,
+// their counts summed.
 import { outputJson } from '../chain/codec.js';
 
 const HISTORY_ARRAYS = new Set(['outcomes', 'lateOutcomes']);
@@ -17,13 +18,14 @@ function addHistory(sum, h) {
 }
 
 /**
- * @param {import('ethers').Contract} contract - StakeAttestation with the merged ABI
+ * @param {(fn: string, args: unknown[]) => Promise<import('ethers').Result>} read - StakeAttestation
+ *   (merged ABI) at one block (chain/read.js readerAt)
  * @param {string} artifactHash
- * @param {{ blockTag: number, listingPage: number, itemPage: number }} o
+ * @param {{ listingPage: number, itemPage: number }} o
  * @returns {Promise<object>} the Record, as JSON
  */
-export async function readRecord(contract, artifactHash, { blockTag, listingPage, itemPage }) {
-  const page = async (lo, io) => outputJson('recordPage', await contract.recordPage(artifactHash, lo, listingPage, io, itemPage, { blockTag }));
+export async function readRecord(read, artifactHash, { listingPage, itemPage }) {
+  const page = async (lo, io) => outputJson('recordPage', (await read('recordPage', [artifactHash, lo, listingPage, io, itemPage]))[0]);
   const first = await page(0, 0);
   const total = BigInt(first.listingCount);
   if (total <= BigInt(listingPage) && BigInt(first.findingCount) <= BigInt(itemPage) && BigInt(first.flagCount) <= BigInt(itemPage)) {

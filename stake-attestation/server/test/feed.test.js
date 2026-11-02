@@ -12,9 +12,12 @@ import { getAddress } from 'ethers';
 import http from 'node:http';
 
 import { codeReview } from '../src/common.js';
+import { buildListingArchives } from '../src/listing/archives.js';
 import { rawCid } from '../src/pinning/index.js';
-import { createGatewayFetcher } from '../src/site/archives.js';
-import { IMAGE, fakeBuilder } from './helpers/fixtures.js';
+import { createGatewayFetcher, readListingArchive } from '../src/site/archives.js';
+import { zipStored } from '../src/zip.js';
+import { zipDeflated } from './helpers/zipDeflate.js';
+import { IMAGE, draftSpec, fakeBuilder } from './helpers/fixtures.js';
 import { startApi } from './helpers/http.js';
 import {
   bcidOf, chainContext, commit, DAY, HOUR, increaseTime, judgeAndSettle, latestTimestamp, listing, revealedClaim,
@@ -224,6 +227,41 @@ describe('the listing archive behind a feed entry', () => {
     } finally {
       site.close();
     }
+  });
+});
+
+describe('reading a listing archive without extracting it', () => {
+  let members;
+  before(async () => {
+    const draft = draftSpec();
+    delete draft.stake.knownIssues;
+    const built = await fakeBuilder().build({ draft, knownIssues: null });
+    members = buildListingArchives(built.files).listing.members;
+  });
+  const spec = () => JSON.parse(members.find((m) => m.name === 'code_review.json').bytes);
+
+  test('a stored archive, a deflated one, and one whose files sit in a single folder read the same', () => {
+    const want = { ok: true, image: IMAGE, scope: spec().stake.scope };
+    for (const bytes of [zipStored(members), zipDeflated(members), zipDeflated(members.map((m) => ({ ...m, name: `listing/${m.name}` })))]) {
+      const r = readListingArchive(bytes, 'QmNotARawCidSoNoHashCheckXXXXXXXXXXXXXXXXXXXXXX');
+      assert.deepEqual({ ok: r.ok, image: r.image, scope: r.scope }, want);
+      assert.equal(r.baseCommit, spec().baseCommit);
+    }
+  });
+
+  test('a member that inflates past the cap is refused before it is held in memory, whatever size it declares', () => {
+    const bomb = Buffer.alloc(64 * 1024 * 1024, 0x20); // 64 MiB of spaces deflates to about 64 KiB
+    const withBomb = (declaredSize) => zipDeflated(members.map((m) => (m.name === 'code_review.json' ? { name: m.name, bytes: bomb, declaredSize } : m)));
+    assert.deepEqual(readListingArchive(withBomb(), 'QmNotARawCidSoNoHashCheckXXXXXXXXXXXXXXXXXXXXXX'), { ok: false, error: 'ARCHIVE_TOO_LARGE' });
+    assert.deepEqual(readListingArchive(withBomb(1000), 'QmNotARawCidSoNoHashCheckXXXXXXXXXXXXXXXXXXXXXX'), { ok: false, error: 'ARCHIVE_TOO_LARGE' }, 'a declared size that lies');
+  });
+
+  test('a raw CID must be the archive\'s, and what is not a ZIP is invalid', () => {
+    const bytes = zipStored(members);
+    assert.equal(readListingArchive(bytes, rawCid(bytes)).ok, true);
+    assert.deepEqual(readListingArchive(bytes, rawCid(Buffer.from('other'))), { ok: false, error: 'ARCHIVE_NOT_CID' });
+    assert.deepEqual(readListingArchive(Buffer.from('not a zip at all, just text'), 'QmNotARawCidSoNoHashCheckXXXXXXXXXXXXXXXXXXXXXX'), { ok: false, error: 'ARCHIVE_INVALID' });
+    assert.deepEqual(readListingArchive(zipStored(members.filter((m) => m.name !== 'code_review.json')), 'QmNotARawCidSoNoHashCheckXXXXXXXXXXXXXXXXXXXXXX'), { ok: false, error: 'ARCHIVE_INVALID' });
   });
 });
 

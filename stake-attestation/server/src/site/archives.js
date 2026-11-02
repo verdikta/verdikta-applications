@@ -1,20 +1,22 @@
 // What a feed entry takes from its listing archive (design §15: the image and the scope): the
-// archive is fetched by the listingCid the chain stores, extracted with @verdikta/common's
-// ArchiveService as the arbiters extract it, and its code_review.json is read through the
-// manifest. An archive whose CID is the raw sha2-256 form must hash to it. What it says is kept
+// archive is fetched by the listingCid the chain stores and its code_review.json is read through
+// its manifest, straight from the ZIP's central directory and never extracted: the archive is
+// the maker's, so the download, the directory and each member read are all held to byte caps
+// (zipRead.js). As the arbiters' ArchiveService does, an archive whose members all sit in one
+// top-level folder is read from that folder. An archive whose CID is the raw sha2-256 form must
+// hash to it. What it says is kept
 // in the store by CID (content addressed, so a read never goes stale); a fetch that failed is
 // retried with a backoff. The archive is trusted for a listing's image and scope only when it is
 // that listing: its repository, commit and disclosure key must be the ones the chain stores
 // (archiveFields checks, per listing, since two listings may name one CID).
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-
-import { ArchiveService, DEFAULT_IPFS_GATEWAYS, codeReview } from '../common.js';
+import { DEFAULT_IPFS_GATEWAYS, codeReview } from '../common.js';
 import { disclosureKeyBytes32 } from '../listing/listParams.js';
 import { isRawSha256Cid, rawCid } from '../pinning/cid.js';
+import { ZipError, readZipMember, zipDirectory } from '../zipRead.js';
 
 const PLAIN_NAME = /^(?!\.\.?$)[A-Za-z0-9._-]{1,255}$/;
+const MANIFEST_MAX_BYTES = 64 * 1024;
+const SPEC_MAX_BYTES = 1024 * 1024;
 const quiet = { info() {}, warn() {}, error() {}, debug() {} };
 const RETRY_MAX_MS = 6 * 3600_000;
 const MAX_PER_SYNC = 8;
@@ -66,53 +68,51 @@ export function createGatewayFetcher({ gateways, timeoutMs, maxBytes }, logger =
   };
 }
 
-function readMember(root, name) {
-  if (typeof name !== 'string' || !PLAIN_NAME.test(name)) return null;
-  const file = path.join(root, name);
-  try {
-    if (!fs.lstatSync(file).isFile()) return null;
-  } catch {
-    return null;
-  }
-  return fs.readFileSync(file);
+/** The folder the archive's files sit in: the root, or its one top-level folder (as ArchiveService). */
+function rootOf(entries) {
+  if (entries.has('manifest.json')) return '';
+  const files = [...entries.keys()].filter((n) => !n.endsWith('/'));
+  const tops = new Set(files.map((n) => (n.includes('/') ? n.slice(0, n.indexOf('/') + 1) : '')));
+  if (tops.size !== 1) return null;
+  const [top] = tops;
+  return top && entries.has(`${top}manifest.json`) ? top : null;
+}
+
+function readJson(bytes, entries, name, maxBytes) {
+  const entry = entries.get(name);
+  if (!entry) throw new ZipError('ZIP_INVALID', `${name} is not in the archive`);
+  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(readZipMember(bytes, entry, maxBytes)));
 }
 
 /**
  * What an archive's code_review.json says, from its bytes.
  * @param {Buffer} bytes
  * @param {string} listingCid
- * @returns {Promise<{ ok: true, repo: string, baseCommit: string, disclosureKey: string, image: string|null, platform: string|null, scope: object|null } | { ok: false, error: string }>}
+ * @returns {{ ok: true, repo: string, baseCommit: string, disclosureKey: string, image: string|null, platform: string|null, scope: object } | { ok: false, error: string }}
  */
-export async function readListingArchive(bytes, listingCid, { workDir = os.tmpdir(), maxBytes = Infinity } = {}) {
+export function readListingArchive(bytes, listingCid, { maxBytes = Infinity } = {}) {
   if (bytes.length > maxBytes) return { ok: false, error: 'ARCHIVE_TOO_LARGE' };
   if (isRawSha256Cid(listingCid) && rawCid(bytes) !== listingCid) return { ok: false, error: 'ARCHIVE_NOT_CID' };
-  const dir = fs.mkdtempSync(path.join(workDir, 'sa-feed-'));
+  let spec;
   try {
-    let root;
-    try {
-      root = await new ArchiveService({ fetchFromIPFS: async () => { throw new Error('no fetch'); } }, quiet).extractArchive(bytes, 'listing.zip', dir);
-    } catch {
-      return { ok: false, error: 'ARCHIVE_INVALID' };
-    }
-    let spec;
-    try {
-      const manifest = JSON.parse(readMember(root, 'manifest.json')?.toString('utf8') ?? 'null');
-      spec = JSON.parse(readMember(root, manifest?.codeReview)?.toString('utf8') ?? 'null');
-    } catch {
-      return { ok: false, error: 'ARCHIVE_INVALID' };
-    }
-    if (!spec || !codeReview.validateCodeReviewSpec(spec).ok) return { ok: false, error: 'ARCHIVE_INVALID' };
-    let disclosureKey;
-    try {
-      disclosureKey = disclosureKeyBytes32(spec.stake.disclosureKey);
-    } catch {
-      return { ok: false, error: 'ARCHIVE_INVALID' };
-    }
-    const scope = { include: [...spec.stake.scope.include], exclude: [...(spec.stake.scope.exclude ?? [])] };
-    return { ok: true, repo: spec.repo, baseCommit: spec.baseCommit, disclosureKey, image: spec.env?.image ?? null, platform: spec.env?.platform ?? null, scope };
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    const entries = zipDirectory(bytes);
+    const root = rootOf(entries);
+    if (root === null) return { ok: false, error: 'ARCHIVE_INVALID' };
+    const manifest = readJson(bytes, entries, `${root}manifest.json`, MANIFEST_MAX_BYTES);
+    if (typeof manifest?.codeReview !== 'string' || !PLAIN_NAME.test(manifest.codeReview)) return { ok: false, error: 'ARCHIVE_INVALID' };
+    spec = readJson(bytes, entries, `${root}${manifest.codeReview}`, SPEC_MAX_BYTES);
+  } catch (err) {
+    return { ok: false, error: err?.code === 'ZIP_TOO_LARGE' ? 'ARCHIVE_TOO_LARGE' : 'ARCHIVE_INVALID' };
   }
+  if (!spec || typeof spec !== 'object' || !codeReview.validateCodeReviewSpec(spec).ok) return { ok: false, error: 'ARCHIVE_INVALID' };
+  let disclosureKey;
+  try {
+    disclosureKey = disclosureKeyBytes32(spec.stake.disclosureKey);
+  } catch {
+    return { ok: false, error: 'ARCHIVE_INVALID' };
+  }
+  const scope = { include: [...spec.stake.scope.include], exclude: [...(spec.stake.scope.exclude ?? [])] };
+  return { ok: true, repo: spec.repo, baseCommit: spec.baseCommit, disclosureKey, image: spec.env?.image ?? null, platform: spec.env?.platform ?? null, scope };
 }
 
 /**
@@ -136,7 +136,7 @@ export async function refreshArchives({ fetchArchive, store, listings, now, maxB
     let result;
     try {
       const bytes = Buffer.from(await fetchArchive(listing.listingCid));
-      result = await readListingArchive(bytes, listing.listingCid, { maxBytes });
+      result = readListingArchive(bytes, listing.listingCid, { maxBytes });
     } catch (err) {
       const attempts = (known?.attempts ?? 0) + 1;
       const delay = Math.min(RETRY_MAX_MS, retryMs * 2 ** (attempts - 1));

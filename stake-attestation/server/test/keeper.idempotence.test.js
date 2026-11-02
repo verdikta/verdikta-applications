@@ -9,8 +9,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  automine, chainContext, finalize, keeperTransactions, listing, mine, pendingKeeperTransactions, revealedClaim,
-  rpc, siteFor, tmpDir, verdict,
+  automine, chainContext, commit, finalize, HOUR, increaseTime, keeperTransactions, listing, mine,
+  pendingKeeperTransactions, revealedClaim, rpc, siteFor, tmpDir, verdict,
 } from './helpers/scenario.js';
 
 const FAST = { SA_KEEPER_TX_TIMEOUT_MS: '200', SA_KEEPER_REPLACE_AFTER_MS: '600000' };
@@ -260,6 +260,100 @@ describe('a restart with a transaction in flight', () => {
       const r = await second.keep();
       assert.deepEqual(r.sent.map((s) => s.action), ['finalize']);
       assert.deepEqual((await keeperTransactions(ctx)).map((t) => [t.fn, t.status]), [[`finalize(${claimId})`, 1]]);
+    } finally {
+      second.close();
+    }
+  });
+});
+
+describe('a record the keeper cannot act on any more', () => {
+  test('after the key changed, the old key\'s transaction is waited for, never replaced by the new key', async () => {
+    const ctx = await chainContext();
+    const claimId = await judgedInvalid(ctx);
+    const dir = tmpDir();
+    const oldKey = siteFor(ctx, { dir, env: FAST });
+    await oldKey.sync();
+    await automine(ctx, false);
+    let newKey;
+    try {
+      const r = await oldKey.keep();
+      assert.equal(r.pending.from, ctx.keeperAddress);
+      oldKey.close();
+      newKey = siteFor(ctx, { dir, env: { ...FAST, SA_KEEPER_REPLACE_AFTER_MS: '0', SA_KEEPER_PRIVATE_KEY: ctx.keyOf(10) } });
+      const newAddress = ctx.signers[10].address;
+      assert.equal(newKey.status().keeper.address, newAddress);
+      const again = await newKey.keep();
+      assert.deepEqual(again.sent, [], 'the new key sends nothing while the old key\'s call is pending');
+      assert.equal(again.pending.from, ctx.keeperAddress);
+      await mine(ctx);
+      await automine(ctx, true);
+      const resolved = await newKey.keep();
+      assert.equal(resolved.pending, null);
+      await newKey.sync();
+      await newKey.keep();
+      assert.deepEqual((await keeperTransactions(ctx)).map((t) => [t.fn, t.status]), [[`finalize(${claimId})`, 1]]);
+      assert.deepEqual((await keeperTransactions(ctx, ctx.fromBlock, newAddress)).map((t) => [t.fn, t.status]), [[`settle(${claimId})`, 1]]);
+    } finally {
+      await automine(ctx, true);
+      newKey?.close();
+    }
+  });
+
+  test('a reorg that drops a mined transaction under the one in flight: the gap is filled, the keeper is not stuck', async () => {
+    const ctx = await chainContext();
+    const claimId = await judgedInvalid(ctx);
+    const site = siteFor(ctx, { env: FAST });
+    try {
+      await site.sync();
+      const snapshot = await rpc(ctx, 'evm_snapshot');
+      assert.deepEqual((await site.keep()).sent.map((s) => s.action), ['finalize']); // nonce n, mined
+      await automine(ctx, false);
+      const r = await site.keep(); // settle at n + 1, waiting
+      assert.deepEqual(r.sent.map((s) => s.action), ['settle']);
+      const gapNonce = r.pending.nonce;
+      // the block with the finalize at n is orphaned: the account's nonce is n again
+      assert.equal(await rpc(ctx, 'evm_revert', [snapshot]), true);
+      assert.equal(await ctx.hre.ethers.provider.getTransactionCount(ctx.keeperAddress, 'latest'), gapNonce - 1);
+      await site.sync();
+      for (let i = 0; i < 4; i += 1) {
+        await site.keep();
+        await mine(ctx);
+      }
+      await automine(ctx, true);
+      await site.sync();
+      await site.keep();
+      await site.sync();
+      await site.keep();
+      assert.equal((await ctx.sa.getClaim(claimId)).state, 5n, 'Settled');
+      assert.equal(site.status().keeper.inflight, null);
+      assert.ok(site.logger.lines.some((l) => l.includes('a reorg dropped an earlier transaction')), 'the gap was seen');
+      for (const t of await keeperTransactions(ctx)) assert.equal(t.status, 1, t.fn);
+    } finally {
+      await automine(ctx, true);
+      site.close();
+    }
+  });
+
+  test('an expiry recorded with SA_KEEPER_EXPIRE=on is not sent after a restart with it off', async () => {
+    const ctx = await chainContext();
+    const { listingId } = await listing(ctx);
+    const claimId = await commit(ctx, ctx.hunters[0], listingId);
+    await increaseTime(ctx, HOUR + 1);
+    const dir = tmpDir();
+    const crash = () => { throw Object.assign(new Error('the process died here'), { code: 'TEST_CRASH' }); };
+    const first = siteFor(ctx, { dir, env: { SA_KEEPER_EXPIRE: 'on' }, keeperHooks: { beforeBroadcast: crash } });
+    await first.sync();
+    await assert.rejects(first.keep(), (e) => e.code === 'TEST_CRASH');
+    assert.equal(first.store.state.keeper.inflight.action, 'expire');
+    first.close();
+    const second = siteFor(ctx, { dir, env: { SA_KEEPER_EXPIRE: 'off' } });
+    try {
+      const r = await second.keep();
+      assert.deepEqual(r.sent, []);
+      assert.equal(r.pending, null);
+      assert.equal(second.status().keeper.last.status, 'dropped');
+      assert.deepEqual(await keeperTransactions(ctx), []);
+      assert.equal((await ctx.sa.getClaim(claimId)).state, 0n, 'still Committed');
     } finally {
       second.close();
     }

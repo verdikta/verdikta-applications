@@ -1,11 +1,19 @@
 // The site's chain side (node P4b1): the indexer, the keeper, the listing feed, the record mirror
-// and the badge, over one StakeAttestation deployment (config.chain). Everything the API shows is
-// of one block, the indexer's cursor: the feed and the record are read on-chain at it (through
-// the lens at the contract's address, with the merged ABI), and the history is the events
-// indexed up to it. Reads are cached per block.
-import { Contract, JsonRpcProvider, Network } from 'ethers';
+// and the badge, over one StakeAttestation deployment (config.chain). Everything one answer shows
+// is of one block, the indexer's cursor: each request takes the store's state once (a transaction
+// replaces the state object and never changes the old one, so that is a consistent snapshot), its
+// feed and record are read on-chain at that block, pinned by its hash (chain/read.js), through
+// the lens at the contract's address with the merged ABI, and its history is the snapshot's
+// events. Reads are cached per block hash.
+//
+// Freshness: an answer is fresh while the last sync that reached the confirmed head is at most
+// SA_MAX_STALENESS_SECONDS old and the cursor's block is no older than that. The badge states a
+// live stake only when fresh; otherwise it says the record is unavailable. The feed and the record
+// say whether they are fresh, and of which block.
+import { JsonRpcProvider, Network } from 'ethers';
 
-import { STAKE_ATTESTATION_ABI } from '../chain/abi.js';
+import { stakeAttestation } from '../chain/abi.js';
+import { readerAt } from '../chain/read.js';
 import { badgeFor, renderBadge } from '../record/badge.js';
 import { listingLabels } from '../record/labels.js';
 import { PriceError, readEthUsd } from '../record/price.js';
@@ -31,12 +39,17 @@ export class SiteError extends Error {
   }
 }
 
-/** The JSON-RPC provider for config.chain, its URL read from the environment now. */
+/**
+ * The JSON-RPC provider for config.chain, its URL read from the environment now. ethers'
+ * request cache is off (cacheTimeout -1): the indexer reads a block twice to see whether it
+ * changed, and a cached answer would hide the change. The network is given so ethers does not
+ * probe for it; the indexer asks the endpoint for its chain id itself (eth_chainId) every sync.
+ */
 export function createChainProvider(config, env = process.env) {
   const url = env[config.chain.rpcUrlEnv];
   if (typeof url !== 'string' || !url.trim()) throw new SiteError('RPC_URL_MISSING', `${config.chain.rpcUrlEnv} holds no RPC URL`);
   const network = Network.from(config.chain.chainId);
-  return new JsonRpcProvider(url.trim(), network, { staticNetwork: network });
+  return new JsonRpcProvider(url.trim(), network, { staticNetwork: network, cacheTimeout: -1 });
 }
 
 function lru() {
@@ -51,28 +64,32 @@ function lru() {
   };
 }
 
+const blockOf = (c) => ({ number: c.number, hash: c.hash, timestamp: c.timestamp });
+
 /**
  * @param {object} o
  * @param {object} o.config - loadConfig(); config.chain must be set
- * @param {import('ethers').Provider} o.provider
+ * @param {import('ethers').JsonRpcApiProvider} o.provider - with send (eth_call by block hash)
  * @param {Record<string, string|undefined>} [o.env] - where the keeper's key is read
  * @param {(cid: string) => Promise<Buffer>} o.fetchArchive - reads a listing archive by CID
  * @param {object} o.logger
  * @param {object} [o.keeperHooks]
+ * @param {() => number} [o.now] - wall-clock ms (tests move it)
  */
-export function createSite({ config, provider, env = process.env, fetchArchive, logger, keeperHooks }) {
+export function createSite({ config, provider, env = process.env, fetchArchive, logger, keeperHooks, now = Date.now }) {
   const chain = config.chain;
   if (!chain) throw new TypeError('createSite needs config.chain (SA_CONTRACT_ADDRESS)');
   const store = new StateStore(chain.dataDir, { chainId: chain.chainId, address: chain.address, fromBlock: chain.fromBlock });
-  const contract = new Contract(chain.address, STAKE_ATTESTATION_ABI, provider);
   const indexer = createIndexer({ provider, store, chain, logger });
+  const at = (block) => readerAt(provider, stakeAttestation, chain.address, block.hash);
 
-  let projected = { key: null, value: null };
-  const projection = () => {
-    const key = `${store.state.cursor?.hash ?? 'none'}:${store.state.events.length}`;
-    if (projected.key !== key) projected = { key, value: project(store.state.events) };
+  // the projection of a state snapshot's events, kept for the latest one asked for
+  let projected = { events: null, value: null };
+  const projectionOf = (state) => {
+    if (projected.events !== state.events) projected = { events: state.events, value: project(state.events) };
     return projected.value;
   };
+  const projection = () => projectionOf(store.state);
 
   let keeper = null;
   let keeperError = null;
@@ -83,17 +100,26 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     else logger.warn(`keeper: off (${error}: ${config.keeper.keyEnv})`);
   }
 
-  const status = { lastSync: null, syncError: null, lastKeep: null, keepError: null };
+  const status = { lastSync: null, lastFreshSync: null, syncError: null, lastKeep: null, keepError: null };
   const records = lru();
   const feeds = lru();
   const prices = lru();
   let discloseWindow = null;
 
-  const cursorBlock = () => {
-    const c = store.state.cursor;
-    if (!c) throw new SiteError('NOT_INDEXED', 'the indexer has not read a block yet');
-    return { number: c.number, hash: c.hash, timestamp: c.timestamp };
+  /** The state to answer from, and its block. */
+  const snapshot = () => {
+    const state = store.state;
+    if (!state.cursor) throw new SiteError('NOT_INDEXED', 'the indexer has not read a block yet');
+    return { state, block: blockOf(state.cursor) };
   };
+
+  function freshness(block) {
+    const maxMs = config.chain.maxStalenessSeconds * 1000;
+    const t = now();
+    if (!status.lastFreshSync || t - status.lastFreshSync.at > maxMs) return { fresh: false, staleReason: 'INDEXER_STALE' };
+    if (t - block.timestamp * 1000 > maxMs) return { fresh: false, staleReason: 'CHAIN_BEHIND' };
+    return { fresh: true, staleReason: null };
+  }
 
   async function chainRead(fn) {
     try {
@@ -101,7 +127,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     } catch (err) {
       if (err instanceof SiteError) throw err;
       logger.warn(`site: a chain read failed (${err?.code ?? err?.message ?? err})`);
-      throw new SiteError('CHAIN_UNAVAILABLE', 'the chain could not be read');
+      throw new SiteError('CHAIN_UNAVAILABLE', 'the chain could not be read at the indexed block');
     }
   }
 
@@ -110,7 +136,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     const cached = prices.get(block.hash);
     if (cached) return cached;
     try {
-      const price = await readEthUsd({ provider, feed: config.labels.ethUsdFeed, blockTag: block.number, at: block.timestamp, maxAgeSeconds: config.labels.ethUsdMaxAgeSeconds });
+      const price = await readEthUsd({ provider, feed: config.labels.ethUsdFeed, blockHash: block.hash, at: block.timestamp, maxAgeSeconds: config.labels.ethUsdMaxAgeSeconds });
       return prices.set(block.hash, { price, priceError: null });
     } catch (err) {
       if (!(err instanceof PriceError)) throw err;
@@ -126,10 +152,12 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
   async function sync() {
     try {
       const r = await indexer.sync();
-      const listings = [...projection().listings.values()].filter((l) => l.opened && !l.rolled && !l.closed);
-      await refreshArchives({ fetchArchive, store, listings, now: Date.now(), maxBytes: config.archives.maxBytes, retryMs: config.archives.retryMs, logger });
-      status.lastSync = { at: Date.now(), head: r.head, safeHead: r.safeHead, added: r.added, rolledBack: r.rolledBack };
+      const caughtUp = Boolean(r.cursor) && r.cursor.number >= r.safeHead;
+      status.lastSync = { at: now(), head: r.head, safeHead: r.safeHead, added: r.added, rolledBack: r.rolledBack, caughtUp };
+      if (caughtUp) status.lastFreshSync = status.lastSync;
       status.syncError = null;
+      const listings = [...projection().listings.values()].filter((l) => l.opened && !l.rolled && !l.closed);
+      await refreshArchives({ fetchArchive, store, listings, now: now(), maxBytes: config.archives.maxBytes, retryMs: config.archives.retryMs, logger });
       return r;
     } catch (err) {
       status.syncError = err?.code ?? 'SYNC_FAILED';
@@ -141,7 +169,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     if (!keeper) return { sent: [], pending: null };
     try {
       const r = await keeper.run();
-      status.lastKeep = { at: Date.now(), sent: r.sent.length };
+      status.lastKeep = { at: now(), sent: r.sent.length };
       status.keepError = null;
       return r;
     } catch (err) {
@@ -151,23 +179,23 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
   }
 
   async function feed() {
-    const block = cursorBlock();
-    const cached = feeds.get(block.hash);
-    if (cached && cached.archives === store.state.archives) return cached.value;
-    return chainRead(async () => {
-      discloseWindow ??= Number(await contract.DISCLOSE_WINDOW());
-      const { price } = await priceAt(block);
-      const listings = await buildFeed({ contract, projection: projection(), block, archives: store.state.archives, labels: labelContext(price), discloseWindow });
-      const value = { block, listings };
-      feeds.set(block.hash, { archives: store.state.archives, value });
-      return value;
-    });
+    const { state, block } = snapshot();
+    let value = feeds.get(block.hash);
+    if (!value || value.archives !== state.archives) {
+      value = await chainRead(async () => {
+        const read = at(block);
+        discloseWindow ??= Number((await read('DISCLOSE_WINDOW'))[0]);
+        const { price } = await priceAt(block);
+        const listings = await buildFeed({ read, projection: projectionOf(state), block, archives: state.archives, labels: labelContext(price), discloseWindow });
+        return feeds.set(block.hash, { archives: state.archives, block, listings });
+      });
+    }
+    return { block: value.block, ...freshness(value.block), listings: value.listings };
   }
 
-  /** The history of a record's listings: the events up to `block`, placed and published. */
-  function historyOf(record, block) {
-    const events = store.state.events.filter((e) => e.blockNumber <= block.number);
-    const proj = events.length === store.state.events.length ? projection() : project(events);
+  /** The history of a record's listings: the snapshot's events, placed and published. */
+  function historyOf(record, events, block) {
+    const proj = project(events);
     const ids = new Set(record.listings.map((l) => l.listingId));
     const shown = events.filter((e) => ids.has(listingOf(proj, e))).map((e) => publicEvent(proj, e));
     const publishedClaims = [...proj.claims.values()]
@@ -185,21 +213,23 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
   }
 
   /**
-   * The record of a hash at the indexed block (or at `blockTag`), its labels and its history;
-   * null when the hash has no opened listing.
+   * The record of a hash at the indexed block (or, for tests, at an earlier `blockTag`), its
+   * labels and its history; null when the hash has no opened listing.
    */
   async function record(artifactHash, { blockTag } = {}) {
     const hash = artifactHash.toLowerCase();
-    return chainRead(async () => {
-      let block = cursorBlock();
+    const { state, block: cursor } = snapshot();
+    const view = await chainRead(async () => {
+      let block = cursor;
+      let events = state.events;
       if (blockTag !== undefined) {
-        const b = await provider.getBlock(blockTag);
-        block = { number: b.number, hash: b.hash, timestamp: b.timestamp };
+        block = blockOf(await provider.getBlock(blockTag));
+        events = state.events.filter((e) => e.blockNumber <= block.number);
       }
       const key = `${hash}:${block.hash}`;
       const cached = records.get(key);
       if (cached !== undefined) return cached;
-      const rec = await readRecord(contract, hash, { blockTag: block.number, listingPage: chain.recordListingPage, itemPage: chain.recordItemPage });
+      const rec = await readRecord(at(block), hash, { listingPage: chain.recordListingPage, itemPage: chain.recordItemPage });
       if (rec.listingCount === '0') return records.set(key, null);
       const { price, priceError } = await priceAt(block);
       const ctx = labelContext(price);
@@ -209,17 +239,24 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
         priceError,
         placeholders: config.labels.placeholders,
       };
-      const view = { artifactHash: hash, block, record: rec, labels, history: historyOf(rec, block) };
-      view.badge = badgeFor(view);
-      return records.set(key, view);
+      const v = { artifactHash: hash, block, record: rec, labels, history: historyOf(rec, events, block) };
+      v.badge = badgeFor(v);
+      return records.set(key, v);
     });
+    return view && { ...view, ...freshness(view.block) };
   }
 
-  /** The badge for a hash: its SVG and what it says. A record that cannot be read: "record unavailable". */
+  /**
+   * The badge for a hash: its SVG and what it says. A live stake is stated only from a fresh
+   * record; a stale or unreadable one is "record unavailable".
+   */
   async function badge(artifactHash) {
     let b;
     try {
-      b = badgeFor(await record(artifactHash));
+      const view = await record(artifactHash);
+      b = view && !view.fresh
+        ? { state: 'unavailable', message: 'record unavailable', listingId: null, class: null }
+        : badgeFor(view);
     } catch (err) {
       if (!(err instanceof SiteError)) throw err;
       b = { state: 'unavailable', message: 'record unavailable', listingId: null, class: null };
@@ -229,7 +266,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
 
   /** The feed's events after `after` ("<block>:<logIndex>"), at most `limit`. */
   function events({ after = null, limit = 100 } = {}) {
-    const block = cursorBlock();
+    const { state, block } = snapshot();
     let from = null;
     if (after !== null) {
       const m = POSITION.exec(after);
@@ -237,21 +274,23 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       from = [Number(m[1]), Number(m[2])];
     }
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > EVENTS_MAX) throw new SiteError('BAD_LIMIT', `limit is 1 to ${EVENTS_MAX}`, 400);
-    const all = feedEvents(projection(), store.state.events);
+    const all = feedEvents(projectionOf(state), state.events);
     const start = from ? all.findIndex((e) => e.blockNumber > from[0] || (e.blockNumber === from[0] && e.logIndex > from[1])) : 0;
     const page = start === -1 ? [] : all.slice(start, start + limit);
     const last = page.at(-1);
-    return { block, events: page, next: last ? `${last.blockNumber}:${last.logIndex}` : after };
+    return { block, ...freshness(block), events: page, next: last ? `${last.blockNumber}:${last.logIndex}` : after };
   }
 
   function statusView() {
-    const inflight = store.state.keeper.inflight;
+    const state = store.state;
+    const inflight = state.keeper.inflight;
     return {
       chainId: chain.chainId,
       contract: chain.address,
       indexer: {
-        cursor: store.state.cursor,
-        events: store.state.events.length,
+        cursor: state.cursor,
+        ...(state.cursor ? freshness(state.cursor) : { fresh: false, staleReason: 'NOT_INDEXED' }),
+        events: state.events.length,
         confirmations: chain.confirmations,
         lastSync: status.lastSync,
         error: status.syncError,
@@ -261,8 +300,8 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
         address: keeper?.address ?? null,
         error: keeper ? status.keepError : keeperError ?? (config.keeper.enabled ? null : 'KEEPER_OFF'),
         expire: config.keeper.expire,
-        inflight: inflight ? { action: inflight.action, claimId: inflight.claimId, nonce: inflight.nonce, attempts: inflight.attempts.map((a) => ({ kind: a.kind, hash: a.hash, sentAt: a.sentAt })) } : null,
-        last: store.state.keeper.last,
+        inflight: inflight ? { action: inflight.action, claimId: inflight.claimId, from: inflight.from, nonce: inflight.nonce, attempts: inflight.attempts.map((a) => ({ kind: a.kind, hash: a.hash, sentAt: a.sentAt })) } : null,
+        last: state.keeper.last,
         lastRun: status.lastKeep,
       },
       labels: { placeholders: config.labels.placeholders, ethUsdFeed: config.labels.ethUsdFeed },

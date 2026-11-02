@@ -125,6 +125,52 @@ describe('GET /api/records/:hash/badge.svg', () => {
   });
 });
 
+describe('a stale record states no live stake', () => {
+  test('when the last full sync, or the indexed block, is older than SA_MAX_STALENESS_SECONDS', async () => {
+    const ctx = await chainContext();
+    const l = await listing(ctx, { stake: { valueAtRiskUsd: undefined } });
+    let clock = Date.now();
+    let down = false;
+    const provider = new Proxy(ctx.provider, {
+      get(target, prop) {
+        if (prop === 'getBlockNumber' && down) return async () => { throw Object.assign(new Error('rpc down'), { code: 'NETWORK_ERROR' }); };
+        const v = target[prop];
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    const site = siteFor(ctx, { provider, env: { SA_MAX_STALENESS_SECONDS: '60' }, now: () => clock });
+    try {
+      assert.equal((await site.badge(l.artifactHash)).message, 'record unavailable', 'nothing indexed yet');
+      await site.sync();
+      assert.equal((await site.badge(l.artifactHash)).message, 'no finding at or above MEDIUM while staked');
+      assert.equal((await site.record(l.artifactHash)).fresh, true);
+
+      // the RPC goes down: syncs fail, and a minute later the cached record is stale
+      down = true;
+      clock += 61_000;
+      await assert.rejects(site.sync());
+      assert.equal((await site.badge(l.artifactHash)).message, 'record unavailable');
+      const view = await site.record(l.artifactHash);
+      assert.equal(view.fresh, false);
+      assert.equal(view.staleReason, 'INDEXER_STALE');
+      assert.equal((await site.feed()).fresh, false);
+      assert.equal(site.status().indexer.fresh, false);
+
+      down = false;
+      await site.sync();
+      assert.equal((await site.badge(l.artifactHash)).message, 'no finding at or above MEDIUM while staked');
+
+      // an indexed block far behind the wall clock (a node that stopped producing, or a catch-up)
+      clock = (site.store.state.cursor.timestamp + 120) * 1000;
+      await site.sync();
+      assert.equal((await site.record(l.artifactHash)).staleReason, 'CHAIN_BEHIND');
+      assert.equal((await site.badge(l.artifactHash)).message, 'record unavailable');
+    } finally {
+      site.close();
+    }
+  });
+});
+
 describe('wording', () => {
   test('assertWording refuses either banned word, in any case, and passes the badge\'s own strings', () => {
     for (const word of FORBIDDEN_WORDS) {

@@ -44,6 +44,9 @@
 //   SA_LOG_CHUNK_BLOCKS            blocks per eth_getLogs, each committed with its cursor (2000)
 //   SA_INDEXER_POLL_MS             between syncs (15000)
 //   SA_DATA_DIR                    the indexer's and keeper's state, one writer at a time (server/data)
+//   SA_MAX_STALENESS_SECONDS       an answer is stale once the last sync that reached the confirmed
+//                                  head, or the cursor's block, is older than this; the badge then
+//                                  says the record is unavailable rather than state a live stake (600)
 //   SA_RECORD_LISTING_PAGE, SA_RECORD_ITEM_PAGE
 //                                  recordPage's page sizes when a record is read (50, 200)
 //   SA_IPFS_GATEWAYS               operator-preferred gateways for reading listing archives (the feed's
@@ -193,6 +196,7 @@ function chainConfig(env, chainId) {
     chunkBlocks: integer(env, 'SA_LOG_CHUNK_BLOCKS', 2000, { min: 1, max: 1000000 }),
     pollMs: integer(env, 'SA_INDEXER_POLL_MS', 15000, { min: 100 }),
     dataDir: path.resolve(env.SA_DATA_DIR || path.join(here, '..', 'data')),
+    maxStalenessSeconds: integer(env, 'SA_MAX_STALENESS_SECONDS', 600, { min: 1 }),
     recordListingPage: integer(env, 'SA_RECORD_LISTING_PAGE', 50, { min: 1, max: 10000 }),
     recordItemPage: integer(env, 'SA_RECORD_ITEM_PAGE', 200, { min: 1, max: 10000 }),
   });

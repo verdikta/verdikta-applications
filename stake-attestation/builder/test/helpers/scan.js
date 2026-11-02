@@ -11,17 +11,23 @@ export function entries(files) {
     : { path: p, mode: v.mode, bytes: Buffer.from(v.text ?? '', 'utf8') }));
 }
 
-/** The files a scanner received on stdin ("<mode> <size> <base64 path>" then the bytes), by path. */
+/** The files a scanner received on stdin (a tar stream with a PAX path header per file), by path. */
 export function decodeInput(buf) {
   const out = new Map();
   let at = 0;
-  for (;;) {
-    const nl = buf.indexOf(0x0a, at);
-    const [mode, size, enc] = buf.subarray(at, nl).toString('utf8').split(' ');
-    if (mode === 'end') break;
-    const n = Number(size);
-    out.set(Buffer.from(enc, 'base64').toString('utf8'), buf.subarray(nl + 1, nl + 1 + n).toString('utf8'));
-    at = nl + 1 + n;
+  let pending = null;
+  while (at + 512 <= buf.length) {
+    const h = buf.subarray(at, at + 512);
+    if (h.every((b) => b === 0)) break;
+    const size = parseInt(h.subarray(124, 136).toString('ascii').replace(/\0.*$/, ''), 8);
+    const type = String.fromCharCode(h[156]);
+    const body = buf.subarray(at + 512, at + 512 + size);
+    if (type === 'x') pending = /path=([^\n]*)\n/.exec(body.toString('utf8'))[1];
+    else {
+      out.set(pending, body.toString('utf8'));
+      pending = null;
+    }
+    at += 512 + Math.ceil(size / 512) * 512;
   }
   return out;
 }

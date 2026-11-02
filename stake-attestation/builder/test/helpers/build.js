@@ -4,17 +4,20 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { codeReview } from '../../src/common.js';
 import { parseConfig } from '../../src/config.js';
+import { createExplorer } from '../../src/explorer.js';
 import { writeOutputs } from '../../src/outputs.js';
 import { buildListing } from '../../src/pipeline.js';
-import { fakeDocker } from './fakes.js';
+import { FIXTURES, fakeDocker, readFixture, recordedExplorer } from './fakes.js';
 import { acceptedListing, definitive, draftSpec } from './specs.js';
 
 export const DIGEST = `sha256:${'2'.repeat(64)}`;
 export const MANIFEST_DIGEST = `sha256:${'3'.repeat(64)}`;
 export const REPOSITORY = 'ghcr.io/verdikta/stake-env';
 export const IMAGE = `${REPOSITORY}@${DIGEST}`;
-export const KNOWN_ISSUES = Buffer.from(`${JSON.stringify([{ id: `sha256:${'a'.repeat(64)}`, title: 'Rounding favours the vault on withdraw', class: 'LOW', paths: ['src/Vault.sol'], description: 'Withdrawals round down by at most one wei; accepted.' }], null, 2)}\n`);
+const ISSUE = { title: 'Rounding favours the vault on withdraw', class: 'LOW', paths: ['src/Vault.sol'], description: 'Withdrawals round down by at most one wei; accepted.' };
+export const KNOWN_ISSUES = Buffer.from(`${JSON.stringify([{ id: codeReview.knownIssueId(ISSUE), ...ISSUE }], null, 2)}\n`);
 
 /**
  * Runs buildListing on `draft` with doubles and returns its result.
@@ -28,8 +31,12 @@ export async function acceptedBuild({ draft = draftSpec(), knownIssues = null, r
   const config = parseConfig({
     registry,
     runner: { url: 'http://127.0.0.1:8090', tokenEnv: 'CODE_RUNNER_TOKEN' },
+    explorers: { 8453: { apiUrl: 'https://explorer.test/api', apiKeyEnv: 'EXPLORER_KEY' } },
     signing: { key: 'dev' },
-  }, { baseDir: '/tmp', env: { CODE_RUNNER_TOKEN: 'runner-token-0123456789abcdef0123456789' } });
+  }, { baseDir: '/tmp', env: { CODE_RUNNER_TOKEN: 'runner-token-0123456789abcdef0123456789', EXPLORER_KEY: 'EXPLORERKEY0123456789' } });
+  // A contract listing's verified source: recorded explorer answers for the fixture vault, and its
+  // build at the commit as the fixture's files and artifact.
+  const rec = recordedExplorer({ getsourcecode: 'getsourcecode-vault.json', getcode: 'getcode-vault.json' });
   const runs = [];
   const deps = {
     docker: fakeDocker((args) => {
@@ -40,6 +47,15 @@ export async function acceptedBuild({ draft = draftSpec(), knownIssues = null, r
     fetchListedCommit: async (req) => ({ gitDir: req.dir }),
     writeBuildContext: () => ({ dockerfile: 'FROM x' }),
     registry: { imageInfo: async (digest) => ({ digest, manifestDigest: MANIFEST_DIGEST, compressedBytes, platforms: ['linux/amd64'], config: { os: 'linux', architecture: 'amd64' }, volumes: [] }) },
+    explorerFor: (chainId, cfg) => createExplorer({ apiUrl: rec.apiUrl, apiKey: cfg.apiKey(), chainId, fetch: rec.fetch, timeoutMs: 5000 }),
+    buildRepo: async (req) => ({
+      files: new Map(req.paths.map((p) => [p, fs.readFileSync(path.join(FIXTURES, 'vault', p))])),
+      config: readFixture('forge', 'config.json'),
+      artifact: readFixture('forge', 'Vault.json'),
+      build: { exitCode: 0, log: '' },
+      skippedSubmodules: [],
+      solc: { version: req.version, sha256: 'a'.repeat(64), platform: 'linux/amd64' },
+    }),
     runner: {
       listingCheck: async (body) => {
         runs.push(body);

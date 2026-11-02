@@ -44,7 +44,7 @@ test('a reusable workflow: it runs only when another workflow calls it, and noth
   assert.deepEqual(wf.permissions, {}, 'each job asks for what it needs');
   for (const f of fs.readdirSync(WORKFLOWS)) {
     if (f === path.basename(FILE)) continue;
-    assert.doesNotMatch(fs.readFileSync(path.join(WORKFLOWS, f), 'utf8'), /stake-attestation-builder\.yml/, `${f} calls the builder workflow`);
+    assert.doesNotMatch(fs.readFileSync(path.join(WORKFLOWS, f), 'utf8'), /uses:\s*['"]?\S*stake-attestation-builder\.yml/, `${f} calls the builder workflow`);
   }
 });
 

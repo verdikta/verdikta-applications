@@ -77,7 +77,7 @@ const CONFIG = 'application/vnd.oci.image.config.v1+json';
  * Registry v2 content for an image: one manifest per platform (layer sizes given), and an index
  * when there is more than one platform. Returns the blobs by digest and the top digest.
  */
-export function registryImage({ platforms = { 'linux/amd64': [1000, 2000] }, volumes = null, forceIndex = false } = {}) {
+export function registryImage({ platforms = { 'linux/amd64': [1000, 2000] }, volumes = null, forceIndex = false, diffIds = [], labels = null } = {}) {
   const blobs = new Map();
   const put = (bytes, mediaType) => {
     const digest = `sha256:${sha256(bytes)}`;
@@ -87,7 +87,7 @@ export function registryImage({ platforms = { 'linux/amd64': [1000, 2000] }, vol
   const manifests = [];
   for (const [platform, layers] of Object.entries(platforms)) {
     const [os, architecture] = platform.split('/');
-    const config = put(Buffer.from(JSON.stringify({ os, architecture, config: { Env: ['PATH=/usr/bin'], ...(volumes ? { Volumes: volumes } : {}) }, rootfs: { type: 'layers', diff_ids: [] } })), CONFIG);
+    const config = put(Buffer.from(JSON.stringify({ os, architecture, config: { Env: ['PATH=/usr/bin'], ...(volumes ? { Volumes: volumes } : {}), ...(labels ? { Labels: labels } : {}) }, rootfs: { type: 'layers', diff_ids: diffIds } })), CONFIG);
     const manifest = Buffer.from(JSON.stringify({
       schemaVersion: 2,
       mediaType: MANIFEST,

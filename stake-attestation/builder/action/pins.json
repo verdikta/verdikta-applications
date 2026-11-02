@@ -1,0 +1,14 @@
+{
+  "note": "What the reusable builder workflow's build job runs beside the builder. codeRunner is the verdikta-arbiter commit whose code-runner validates the listing (the same pin as test/docker/code-runner.pin.json); registry is registry:2 2.8.3, the multi-platform index; gvisor is @verdikta/common's GVISOR_RELEASE and the SHA-512 of its x86_64 gvisor.tar.bz2.",
+  "codeRunner": {
+    "repository": "https://github.com/verdikta/verdikta-arbiter.git",
+    "commit": "14ae4c4901dec4573ec5ab68e1613bd0c918e7c2"
+  },
+  "registry": {
+    "image": "registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
+  },
+  "gvisor": {
+    "version": "20260921.0",
+    "sha512": "7c899979bed334f0987888c41e545cede8e1f7e67a257978c8de244c3867e32bc30d08491e9af36720273c502acd01d8d86c9844ebcbe125790c43fe6bdf563e"
+  }
+}

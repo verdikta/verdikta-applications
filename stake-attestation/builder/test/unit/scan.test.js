@@ -98,6 +98,7 @@ test('both scanners run in a sandbox with no network, a read-only root and uid 1
     // Nothing of the host is mounted: the files arrive on stdin.
     assert.ok(!args.some((a) => a === '-v' || a === '--volume' || a === '--mount' || a.startsWith('--volume=') || a.startsWith('--mount=')));
     assert.ok(args.includes('--interactive'));
+    assert.equal(flag('--log-driver'), 'none', 'what a scanner prints is never kept by the daemon');
   }
   // The images are pulled by digest (the daemon checks every byte) before the sandboxes start.
   const pulls = docker.calls.filter((c) => c.args[0] === 'pull').map((c) => c.args.at(-1));

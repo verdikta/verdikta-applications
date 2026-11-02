@@ -87,13 +87,20 @@ test('sign checks the build\'s outputs before signing and records what it checke
 
 test('a contract listing also trusts the verified-source comparison it cannot repeat', async () => {
   const l = await listing({ draft: contractDraft() });
-  // A contract listing's report says the verified source matched; the doubled build skipped it.
-  l.edit('validation-report.json', (r) => ({ ...r, steps: r.steps.map((s) => (s.name === 'verifiedSource' ? { ...s, status: 'ok' } : s)), verifiedSource: { status: 'match' } }));
   const { code, t } = await sign(l);
   assert.equal(code, 0, t.err);
   const report = JSON.parse(fs.readFileSync(path.join(l.out, 'validation-report.json'), 'utf8'));
-  assert.ok(report.signing.trusts.some((x) => x.code === 'VERIFIED_SOURCE'));
+  assert.ok(report.signing.checks.includes('STEPS_COMPLETE'));
+  assert.deepEqual(report.signing.trusts.map((x) => x.code), ['LISTING_CHECK_RESULTS', 'VERIFIED_SOURCE', 'UNPACKED_SIZE', 'BUILD_JOB', 'OUTPUTS_IN_TRANSIT', 'IMAGE_PUBLISHED']);
   l.cleanup();
+  // One whose report does not say the source matched is not signed.
+  const l2 = await listing({ draft: contractDraft() });
+  l2.edit('validation-report.json', (r) => ({ ...r, verifiedSource: { ...r.verifiedSource, status: 'mismatch' } }));
+  const bad = await sign(l2);
+  assert.equal(bad.code, 1);
+  assert.match(bad.t.err, /STEPS_INCOMPLETE/);
+  assert.equal(bad.attested, false);
+  l2.cleanup();
 });
 
 test('a report that disagrees with the files or with itself is not signed', async () => {
@@ -150,11 +157,12 @@ test('--expect-outputs: the folder must be the one the build job digested; any c
   assert.equal(bad.code, 1);
   assert.match(bad.t.err, /OUTPUTS_CHANGED/);
   assert.equal(bad.attested, false);
-  // An extra file in the folder is a change too.
+  // A file the listing does not have is refused whether or not a digest is expected.
   const l2 = await listing();
   const d2 = outputsDigest(l2.out);
   fs.writeFileSync(path.join(l2.out, 'extra.json'), '{}');
-  assert.match((await sign(l2, ['--expect-outputs', d2])).t.err, /OUTPUTS_CHANGED/);
+  assert.match((await sign(l2, ['--expect-outputs', d2])).t.err, /OUTPUT_INVALID: .* also holds extra\.json/);
+  assert.match((await sign(l2)).t.err, /OUTPUT_INVALID/);
   fs.rmSync(path.join(l2.out, 'extra.json'));
   const good = await sign(l2, ['--expect-outputs', d2]);
   assert.equal(good.code, 0, good.t.err);

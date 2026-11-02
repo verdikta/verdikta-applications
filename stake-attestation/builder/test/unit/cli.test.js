@@ -28,11 +28,17 @@ function io() {
   return { stdout: { write: (s) => { out += s; } }, stderr: { write: (s) => { err += s; } }, get out() { return out; }, get err() { return err; } };
 }
 
-/** A builder config file. */
+/** A builder config file, beside the test's folder: sign takes a folder of the listing's files only. */
 function configFile(dir, key = 'dev') {
-  const file = path.join(dir, 'builder.json');
+  const cdir = `${dir}-config`;
+  fs.mkdirSync(cdir, { recursive: true });
+  const file = path.join(cdir, 'builder.json');
   fs.writeFileSync(file, JSON.stringify({ registry: { repository: 'ghcr.io/verdikta/stake-env' }, runner: { url: 'http://127.0.0.1:8090', tokenEnv: 'CODE_RUNNER_TOKEN' }, signing: { key } }));
   return file;
+}
+
+function cleanup(dir) {
+  for (const d of [dir, `${dir}-config`]) fs.rmSync(d, { recursive: true, force: true });
 }
 
 /** An out directory as `build` leaves it after an accepted validation (the real pipeline, doubled tools). */
@@ -72,7 +78,7 @@ test('sign with a dev key: attestation.json and the dev trust set; the report re
   // No private key reached the disk or the log.
   const everything = `${allText(dir)}\n${t.out}\n${t.err}`;
   assert.ok(!/PRIVATE KEY|"d":/.test(everything));
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
 
 test('sign with a production key from the environment: nothing is written while the key is not in common\'s set, and the key is never shown', async () => {
@@ -90,7 +96,7 @@ test('sign with a production key from the environment: nothing is written while 
   assert.equal(env.VERDIKTA_BUILDER_KEY, undefined, 'read once and removed');
   const everything = `${allText(dir)}\n${t.out}\n${t.err}`;
   assert.ok(!everything.includes(body) && !everything.includes('PRIVATE KEY'));
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
 
 test('build refuses to start while the signing key is in its environment: the build job holds no secret', async () => {
@@ -101,7 +107,7 @@ test('build refuses to start while the signing key is in its environment: the bu
   assert.equal(code, 1);
   assert.match(t.err, /BUILD_ENV_HOLDS_SIGNING_KEY/);
   assert.equal(fs.existsSync(path.join(dir, 'out')), false);
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
 
 test('run (build and sign in one process) takes a dev key only: a production key signs in its own step', async () => {
@@ -111,7 +117,7 @@ test('run (build and sign in one process) takes a dev key only: a production key
   const code = await main(['run', '--config', configFile(dir, { env: 'VERDIKTA_BUILDER_KEY' }), '--spec', path.join(dir, 'draft.json'), '--out', path.join(dir, 'out')], { env: {}, ...t });
   assert.equal(code, 1);
   assert.match(t.err, /RUN_NEEDS_DEV_KEY/);
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
 
 test('sign never writes the attestation over another file of the listing', async () => {
@@ -124,7 +130,7 @@ test('sign never writes the attestation over another file of the listing', async
   assert.equal(await main(['sign', '--config', configFile(dir), '--dir', dir], { env: {}, ...t }), 1);
   assert.match(t.err, /OUTPUT_INVALID/);
   assert.ok(fs.readFileSync(path.join(dir, 'baseline.json')).equals(bl), 'the baseline is untouched');
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
 
 test('sign refuses an out directory whose report did not accept the listing', async () => {
@@ -137,5 +143,5 @@ test('sign refuses an out directory whose report did not accept the listing', as
   assert.equal(await main(['sign', '--config', configFile(dir), '--dir', dir], { env: {}, ...t }), 1);
   assert.match(t.err, /SIGNING_NOT_ACCEPTED/);
   assert.equal(fs.existsSync(path.join(dir, 'attestation.json')), false);
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });

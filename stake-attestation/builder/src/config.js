@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { AGENT_ENDPOINTS } from './agent.js';
 import { codeReview } from './common.js';
 import { BuilderError } from './errors.js';
 import { imageLimits } from './image.js';
@@ -102,21 +103,69 @@ function parseSigningKey(key) {
 }
 
 /**
+ * The baseline scan's settings: the agent pass's model (src/agent.js), used only with --agent.
+ * The token is named by its environment variable and read when the pass runs.
+ */
+function parseScan(raw, env) {
+  if (raw === undefined) return Object.freeze({ agent: null });
+  keys(raw, ['agent'], 'scan');
+  if (raw.agent === undefined) return Object.freeze({ agent: null });
+  const a = raw.agent;
+  keys(a, ['provider', 'model', 'apiUrl', 'apiKeyEnv', 'maxSourceBytes', 'maxOutputTokens', 'timeoutSeconds'], 'scan.agent');
+  const pool = codeReview.CODE_CLASSES['code-standard'].models;
+  if (!pool.some((m) => m.provider === a.provider && m.model === a.model)) {
+    fail(`scan.agent must name a model of the code-standard pool as { provider, model }: ${pool.map((m) => `${m.provider} ${m.model}`).join(', ')}`);
+  }
+  if (!Object.hasOwn(AGENT_ENDPOINTS, a.provider)) {
+    fail(`scan.agent.provider must serve a chat-completions API (${Object.keys(AGENT_ENDPOINTS).join(', ')}); ${a.provider} models are not supported by the agent pass`);
+  }
+  const apiUrl = a.apiUrl === undefined ? AGENT_ENDPOINTS[a.provider] : serviceUrl(a.apiUrl, 'scan.agent.apiUrl').href;
+  const apiKeyEnv = envName(a.apiKeyEnv, 'scan.agent.apiKeyEnv');
+  const int = (v, def, min, max, where) => {
+    const n = v === undefined ? def : v;
+    if (!Number.isInteger(n) || n < min || n > max) fail(`${where} must be an integer from ${min} to ${max}`);
+    return n;
+  };
+  return Object.freeze({
+    agent: Object.freeze({
+      provider: a.provider,
+      model: a.model,
+      apiUrl,
+      apiKeyEnv,
+      maxSourceBytes: int(a.maxSourceBytes, 300000, 1000, 2000000, 'scan.agent.maxSourceBytes'),
+      maxOutputTokens: int(a.maxOutputTokens, 4000, 256, 32000, 'scan.agent.maxOutputTokens'),
+      timeoutMs: int(a.timeoutSeconds, 180, 10, 900, 'scan.agent.timeoutSeconds') * 1000,
+      apiKey: () => {
+        const v = env[apiKeyEnv];
+        if (typeof v !== 'string' || !v.trim()) throw new BuilderError('SECRET_UNAVAILABLE', `the agent pass's token: the environment variable ${apiKeyEnv} is not set`);
+        return v.trim();
+      },
+    }),
+  });
+}
+
+/**
  * @param {object} raw - the parsed JSON
  * @param {{ baseDir: string, env?: Record<string,string|undefined> }} o - paths resolve against baseDir;
  *   secrets are read from env when used
  */
 export function parseConfig(raw, { baseDir, env = process.env } = {}) {
-  keys(raw, ['registry', 'runner', 'explorers', 'solc', 'signing', 'platforms', 'limits', 'repoMirrors', 'workDir', 'docker'], 'the config');
+  keys(raw, ['registry', 'runner', 'explorers', 'solc', 'signing', 'platforms', 'limits', 'repoMirrors', 'workDir', 'docker', 'scan'], 'the config');
   const resolve = (p) => path.resolve(baseDir, p);
 
-  // registry
-  keys(raw.registry, ['repository', 'apiUrl'], 'registry');
+  // registry: where the build pushes and reads the image; `publishAs`, when set, is the repository
+  // code_review.json names instead, the same digest copied there byte for byte by a later step
+  // (the reusable workflow's publish job), so the build itself needs no registry credential.
+  keys(raw.registry, ['repository', 'apiUrl', 'publishAs'], 'registry');
   const repository = raw.registry.repository;
   if (typeof repository !== 'string' || !REPOSITORY.test(repository)) {
     fail('registry.repository must be a lowercase image repository with its registry host and no tag or digest, e.g. ghcr.io/verdikta/stake-env');
   }
-  const registry = Object.freeze({ repository, apiUrl: raw.registry.apiUrl === undefined ? null : serviceUrl(raw.registry.apiUrl, 'registry.apiUrl').origin });
+  const publishAs = raw.registry.publishAs === undefined ? null : raw.registry.publishAs;
+  if (publishAs !== null && (typeof publishAs !== 'string' || !REPOSITORY.test(publishAs))) {
+    fail('registry.publishAs must be a lowercase image repository with its registry host and no tag or digest, e.g. ghcr.io/acme/stake-env');
+  }
+  const registry = Object.freeze({ repository, publishAs, apiUrl: raw.registry.apiUrl === undefined ? null : serviceUrl(raw.registry.apiUrl, 'registry.apiUrl').origin });
 
   // runner
   keys(raw.runner, ['url', 'socket', 'tokenFile', 'tokenEnv', 'deadlineMs'], 'runner');
@@ -224,9 +273,12 @@ export function parseConfig(raw, { baseDir, env = process.env } = {}) {
   if (so.cacheDir !== undefined && (typeof so.cacheDir !== 'string' || !so.cacheDir)) fail('solc.cacheDir must be a path');
   const solc = Object.freeze({ baseUrl: solcBase, cacheDir: so.cacheDir === undefined ? path.join(workDir, 'verdikta-builder-solc') : resolve(so.cacheDir) });
 
+  const scan = parseScan(raw.scan, env);
+
   return Object.freeze({
     registry,
     runner,
+    scan,
     explorers,
     signing,
     platforms,

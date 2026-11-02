@@ -11,9 +11,11 @@ import path from 'node:path';
 
 import { codeReview } from '../../src/common.js';
 import { parseConfig } from '../../src/config.js';
-import { readOutputs, writeOutputs } from '../../src/outputs.js';
+import { outputsDigest, readOutputs, writeOutputs } from '../../src/outputs.js';
 import { buildListing } from '../../src/pipeline.js';
+import { createRegistryClient } from '../../src/registry.js';
 import { attest, loadSigningKey } from '../../src/signing.js';
+import { verifyForSigning } from '../../src/verifyBuild.js';
 import { PIN, fixtureDraft, fixtureRepo, newId, removeImages, startCodeRunner, startRegistries, testPlatforms } from './helpers.js';
 
 const TIMEOUT = 2400000;
@@ -82,6 +84,20 @@ test('validated by the code-runner\'s listing check: code_review.json gets diges
   assert.deepEqual(spec.limits, { ...lc.limits, cpus: 1, memoryMb: 2048 });
   assert.equal(lc.runner.platform, platforms.run);
   assert.ok(lc.harness.probes.some((p) => p.verdict === 'assertion'), 'the harness proof ran');
+});
+
+test('the sign step\'s checks pass on a real build\'s outputs: the pushed image is the one measured, FROM the pinned base, labelled with the commit', { timeout: TIMEOUT }, async () => {
+  assert.ok(accepted, 'the listing was accepted');
+  const out = path.join(dir, 'out-verify');
+  writeOutputs(out, accepted);
+  const { files, report } = readOutputs(out);
+  // The env image is read where this test's registry serves it; the base from its own registry.
+  const registryFor = (repository) => createRegistryClient({ repository, apiUrl: repository === config.registry.repository ? regs.apiUrl : null });
+  const v = await verifyForSigning({ files, report, dir: out, expectOutputs: outputsDigest(out), checkRegistry: true, registryFor });
+  for (const c of ['FILES_MATCH_REPORT', 'STEPS_COMPLETE', 'OUTPUTS_MATCH_BUILD', 'IMAGE_PUBLISHED', 'IMAGE_MATCHES_MEASUREMENTS', 'IMAGE_FROM_PINNED_BASE', 'IMAGE_LABELLED_WITH_COMMIT']) {
+    assert.ok(v.checks.includes(c), c);
+  }
+  assert.deepEqual(v.trusts.map((x) => x.code), ['LISTING_CHECK_RESULTS', 'UNPACKED_SIZE', 'BUILD_JOB']);
 });
 
 test('attestation.json, signed with a per-run dev key, passes validateAttestation in dev trust and fails it in production trust', { timeout: TIMEOUT }, async () => {

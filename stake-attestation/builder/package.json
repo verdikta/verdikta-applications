@@ -1,7 +1,7 @@
 {
   "name": "@verdikta/stake-attestation-builder",
   "version": "0.1.0",
-  "description": "Environment-image builder for Verdikta stake attestation: builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs attestation.json",
+  "description": "Environment-image builder for Verdikta stake attestation: builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs attestation.json; the maker-only baseline scan",
   "private": true,
   "license": "MIT",
   "type": "module",

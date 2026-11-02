@@ -48,10 +48,14 @@ function childEnv(env, names, tmp) {
  * above the sum of those limits and fires only for a builder that hangs. Then the group gets
  * SIGTERM, which the docker CLI forwards to the container it is attached to (and which cancels a
  * BuildKit build), and `graceMs` to finish; whatever is left gets SIGKILL. Anything of the group
- * still running when the builder exits is stopped the same way. The promise settles when the
- * step's output pipes close, so a build slot is held until the whole tree has gone. `forced`
- * says SIGKILL was needed: then a container the docker CLI started may outlive it (it runs under
- * the Docker daemon, outside the group), and the caller must not count the slot as free.
+ * still running when the builder exits is stopped the same way.
+ *
+ * The step settles only when the builder has exited and its process group is empty (polled
+ * with signal 0): the builder's own children have pipes of their own, so the builder's pipes
+ * closing says nothing about them. A build slot is therefore held until the whole tree has gone.
+ * `forced` says SIGKILL was needed: then a container the docker CLI started may outlive it (it
+ * runs under the Docker daemon, outside the group), and the caller must not count the slot as
+ * free.
  * @returns {Promise<{ code: number|null, spawnError: string|null, timedOut: boolean, forced: boolean, stdout: Buffer, stderr: Buffer }>}
  */
 function runStep({ nodePath, bin, args, env, timeoutMs, graceMs, cwd }) {
@@ -72,29 +76,62 @@ function runStep({ nodePath, bin, args, env, timeoutMs, graceMs, cwd }) {
         /* the group has gone */
       }
     };
+    const groupAlive = () => {
+      if (!child.pid) return false;
+      try {
+        process.kill(-child.pid, 0);
+        return true;
+      } catch (err) {
+        return err.code === 'EPERM';
+      }
+    };
     let timedOut = false;
     let stopping = false;
     let forced = false;
+    let exited = false;
+    let closed = false;
+    let exitCode = null;
     let done = false;
+    let poll = null;
+    let pipeWait = null;
     const timers = [];
     const finish = (r) => {
       if (done) return;
       done = true;
       for (const t of timers) clearTimeout(t);
+      if (poll) clearInterval(poll);
+      if (pipeWait) clearTimeout(pipeWait);
       resolve({ ...r, timedOut, forced, ...out });
+    };
+    const settle = () => {
+      if (done || !exited) return;
+      if (groupAlive()) {
+        if (!poll) poll = setInterval(settle, 100);
+        return;
+      }
+      if (closed) return finish({ code: exitCode, spawnError: null });
+      // the group has gone, but something outside it still holds the pipes: keep what was read
+      if (!pipeWait) {
+        pipeWait = setTimeout(() => {
+          child.stdout.destroy();
+          child.stderr.destroy();
+          finish({ code: exitCode, spawnError: null });
+        }, 1000);
+      }
     };
     const stop = () => {
       if (stopping) return;
       stopping = true;
       killGroup('SIGTERM');
       timers.push(setTimeout(() => {
+        if (!groupAlive() && exited) return;
         forced = true;
         killGroup('SIGKILL');
-        // a process that left the group may hold the pipes: stop waiting for it
+        // a member that cannot be killed (or a leader that never exits): stop waiting
         timers.push(setTimeout(() => {
           child.stdout.destroy();
           child.stderr.destroy();
-          finish({ code: child.exitCode, spawnError: null });
+          finish({ code: exitCode, spawnError: null });
         }, graceMs));
       }, graceMs));
     };
@@ -103,8 +140,16 @@ function runStep({ nodePath, bin, args, env, timeoutMs, graceMs, cwd }) {
       stop();
     }, timeoutMs));
     child.on('error', (err) => finish({ code: null, spawnError: err.message }));
-    child.on('exit', stop);
-    child.on('close', (code) => finish({ code, spawnError: null }));
+    child.on('exit', (code) => {
+      exited = true;
+      exitCode = code;
+      if (groupAlive()) stop();
+      settle();
+    });
+    child.on('close', () => {
+      closed = true;
+      settle();
+    });
   });
 }
 

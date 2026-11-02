@@ -135,28 +135,26 @@ describe('createCliBuilder', () => {
     assert.ok(Date.now() - t0 < 10000);
   });
 
-  test('a timeout stops everything the step started, and its temporary files go with the build folder (R1-F1)', async () => {
-    const { builder, dir } = setup('hang-tree', { timeoutMs: 500 });
+  test('a timeout stops everything the step started, and settles only once it has all gone (R1-F1)', async () => {
+    const { builder, dir } = setup('hang-tree', { timeoutMs: 500, graceMs: 3000 });
     const r = await builder.build({ draft: draftSpec(), knownIssues: kiBytes() });
     assert.equal(r.status, 'error');
     assert.equal(r.error.code, 'BUILDER_TIMEOUT');
+    assert.equal(r.holdSlot, undefined, 'it stopped on SIGTERM: the slot is free again');
+    // no waiting here: the result came only after the child (its own pipes, 400 ms to stop) exited
     const pid = Number(fs.readFileSync(path.join(dir, 'record.json.grandchild'), 'utf8'));
-    const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
-    for (let i = 0; i < 50 && alive(); i += 1) await new Promise((res) => setTimeout(res, 100));
-    assert.equal(alive(), false, 'the grandchild was killed with the builder');
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'the child had exited before the step settled');
     assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith('sa-build-')), [], 'the build folder, with the builder\'s TMPDIR, is removed');
   });
 
-  test('a step that must be killed is reported so its slot stays taken (R1-F1)', async () => {
-    const { builder, dir } = setup('hang-stubborn', { timeoutMs: 300, graceMs: 300 });
+  test('a step whose child ignores SIGTERM is killed and reported so its slot stays taken (R1-F1)', async () => {
+    const { builder, dir } = setup('hang-stubborn', { timeoutMs: 300, graceMs: 500 });
     const r = await builder.build({ draft: draftSpec(), knownIssues: kiBytes() });
     assert.equal(r.status, 'error');
     assert.equal(r.error.code, 'BUILDER_KILLED');
     assert.equal(r.holdSlot, true);
     const pid = Number(fs.readFileSync(path.join(dir, 'record.json.grandchild'), 'utf8'));
-    const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
-    for (let i = 0; i < 50 && alive(); i += 1) await new Promise((res) => setTimeout(res, 100));
-    assert.equal(alive(), false, 'SIGKILL reached the child that ignored SIGTERM');
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'SIGKILL reached the child that ignored SIGTERM');
   });
 
   test('a builder config that names its own workDir is refused: the server owns the temporary folder', async () => {

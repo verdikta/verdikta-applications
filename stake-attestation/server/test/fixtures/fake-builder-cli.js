@@ -34,18 +34,14 @@ const json = (v) => Buffer.from(`${JSON.stringify(v, null, 2)}\n`);
 
 if (config.mode === 'hang') {
   setInterval(() => {}, 1000);
-} else if (config.mode === 'hang-stubborn') {
-  // a step whose child does not stop on SIGTERM (as a container the docker CLI started would
-  // outlive the CLI): only SIGKILL ends it
+} else if (config.mode === 'hang-stubborn' || config.mode === 'hang-tree') {
+  // A step that started a process of its own and waits on it, as the builder waits on the
+  // docker CLI: the child has pipes of its own (builder/src/proc.js), so the builder's pipes
+  // close as soon as the builder dies. 'hang-tree': the child takes a moment to stop on SIGTERM,
+  // as a docker CLI stopping its container does. 'hang-stubborn': it ignores SIGTERM.
   const { spawn } = await import('node:child_process');
-  const grandchild = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'inherit'] });
-  fs.writeFileSync(`${config.record}.grandchild`, String(grandchild.pid));
-  setInterval(() => {}, 1000);
-} else if (config.mode === 'hang-tree') {
-  // a step that started a process of its own (git, docker, a signer) and waits on it; the
-  // grandchild shares the step's output pipes, as a docker CLI it ran would
-  const { spawn } = await import('node:child_process');
-  const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'inherit'] });
+  const onTerm = config.mode === 'hang-tree' ? 'setTimeout(() => process.exit(0), 400)' : '{}';
+  const grandchild = spawn(process.execPath, ['-e', `process.on("SIGTERM", () => ${onTerm}); setInterval(() => {}, 1000)`], { stdio: ['ignore', 'pipe', 'pipe'] });
   fs.writeFileSync(`${config.record}.grandchild`, String(grandchild.pid));
   fs.writeFileSync(path.join(process.env.TMPDIR, 'builder-temp-file'), 'x');
   setInterval(() => {}, 1000);

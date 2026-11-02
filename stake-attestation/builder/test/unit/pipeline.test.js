@@ -261,3 +261,24 @@ test('an index without a configured platform is an error; a build on another pla
   assert.equal(report.status, 'accepted', JSON.stringify(report.error));
   assert.deepEqual(report.devOnly.map((d) => d.code).sort(), ['EXTRA_PLATFORMS', 'RUN_ON_OTHER_PLATFORM', 'SETUP_ON_OTHER_PLATFORM', 'VALIDATED_ON_OTHER_PLATFORM', 'VALIDATED_WITHOUT_GVISOR'].sort());
 });
+
+test('registry.publishAs: the build pushes to and validates from a staging registry; code_review.json names the published repository at the same digest', async () => {
+  const staging = '127.0.0.1:5000/stake-env';
+  const cfg = config({ registry: { repository: staging, publishAs: REPOSITORY } });
+  const staged = `${staging}@${DIGEST}`;
+  const { status, files, report, calls, docker } = await build(draftSpec(), {
+    cfg,
+    runnerAnswer: (body) => definitive(body.image, acceptedListing()),
+  });
+  assert.equal(status, 'accepted', JSON.stringify(report.error ?? report.refusals));
+  // Pushed, read and checked where the build can reach it, with no credential.
+  assert.ok(docker.calls.some((c) => c.args[0] === 'push' && c.args[1].startsWith(`${staging}:`)));
+  assert.deepEqual(calls.registry, [[DIGEST, 'linux/amd64']]);
+  assert.equal(calls.runner[0].image, staged);
+  assert.equal(calls.runner[0].spec.env.image, staged);
+  // What arbiters pull: the published repository, by the digest validated.
+  assert.equal(JSON.parse(files.get('code_review.json')).env.image, IMAGE);
+  assert.equal(report.image.ref, IMAGE);
+  assert.equal(report.image.stagedRef, staged);
+  assert.throws(() => config({ registry: { repository: staging, publishAs: 'ghcr.io/verdikta/stake-env:latest' } }), /publishAs/);
+});

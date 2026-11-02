@@ -11,7 +11,7 @@ import { Refusal } from './errors.js';
 const CLASS_PLATFORM = codeReview.CLASS_HARD_LIMITS.platform;
 const PLACEHOLDER_IMAGE = `registry.invalid/verdikta-builder-draft@sha256:${'0'.repeat(64)}`;
 const FILE_NAME = /^(?!\.\.?$)[A-Za-z0-9._-]{1,255}$/;
-const RESERVED = new Set(['code_review.json', 'validation-report.json', 'dev-trust.json']);
+const RESERVED = new Set(['code_review.json', 'validation-report.json', 'dev-trust.json', 'scan-findings.json']);
 
 function isObject(v) {
   return Boolean(v) && typeof v === 'object' && !Array.isArray(v);

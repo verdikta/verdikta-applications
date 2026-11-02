@@ -50,11 +50,13 @@ export function createDocker({ bin = 'docker', host = null, baseEnv = process.en
  * @param {string} o.name
  * @param {string} o.label
  * @param {string[]} o.argv - the program and its arguments
+ * @param {boolean} [o.keepLogs] - false: no logging driver, so what the container prints reaches
+ *   only this process (the baseline scan's findings must not reach a daemon's log shipping)
  */
-export function sandboxRunArgs({ image, platform, name, label, argv, cpus = 2, memoryMb = 4096, pids = 4096, interactive = false }) {
+export function sandboxRunArgs({ image, platform, name, label, argv, cpus = 2, memoryMb = 4096, pids = 4096, interactive = false, keepLogs = true }) {
   if (!Array.isArray(argv) || argv.length === 0) throw new TypeError('argv is required');
   return [
-    'run', '--rm', ...(interactive ? ['--interactive'] : []), '--pull', 'never', '--platform', platform,
+    'run', '--rm', ...(interactive ? ['--interactive'] : []), ...(keepLogs ? [] : ['--log-driver', 'none']), '--pull', 'never', '--platform', platform,
     '--name', name, '--label', label,
     '--network', 'none',
     '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--ipc', 'none',
@@ -76,10 +78,10 @@ export function sandboxRunArgs({ image, platform, name, label, argv, cpus = 2, m
  * `stdin`, the bytes are the program's standard input (the only way anything reaches it).
  * @returns {Promise<{exitCode:number|null, stdout:Buffer, stderr:Buffer, stdoutTruncated:boolean, timedOut:boolean, spawnError:string|null}>}
  */
-export async function runSandboxed({ docker, image, platform, argv, timeoutMs, maxBytes, cpus, memoryMb, stdin = null }) {
+export async function runSandboxed({ docker, image, platform, argv, timeoutMs, maxBytes, cpus, memoryMb, stdin = null, keepLogs = true }) {
   const name = `vab-${crypto.randomBytes(6).toString('hex')}`;
   try {
-    const args = sandboxRunArgs({ image, platform, name, label: 'io.verdikta.builder=1', argv, cpus, memoryMb, interactive: stdin !== null });
+    const args = sandboxRunArgs({ image, platform, name, label: 'io.verdikta.builder=1', argv, cpus, memoryMb, interactive: stdin !== null, keepLogs });
     return await docker.run(args, { timeoutMs, maxBytes, stdin });
   } finally {
     await docker.run(['rm', '--force', '--volumes', name], { timeoutMs: 60000 });

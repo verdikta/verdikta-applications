@@ -7,6 +7,7 @@ on:
     paths:
       - 'stake-attestation/**'
       - '.github/workflows/stake-attestation.yml'
+      - '.github/workflows/stake-attestation-builder.yml'
   workflow_dispatch:
 permissions:
   contents: read
@@ -35,7 +36,14 @@ jobs:
         working-directory: stake-attestation/shared
         run: npm test
       - name: No banned words in source, UI strings or docs
-        run: node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .github/workflows/stake-attestation.yml
+        run: node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .github/workflows/stake-attestation.yml .github/workflows/stake-attestation-builder.yml
+      - name: Lint the workflows, the reusable builder's included (actionlint 1.7.12, checksum pinned; the runner's shellcheck)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" .github/workflows/stake-attestation.yml .github/workflows/stake-attestation-builder.yml
 
   packages:
     name: ${{ matrix.package }}

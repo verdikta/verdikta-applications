@@ -20,6 +20,12 @@
 //   SA_BUILDER_BUILD_ENV           names of the variables `build` is given besides PATH and HOME
 //                                  (DOCKER_HOST, the runner token's, the explorer key's, ...)
 //   SA_BUILDER_SIGN_ENV            the same for `sign` (the signing key's variable, the KMS signer's)
+//   SA_BUILDER_SCAN_ENV            the same for `scan`, the baseline scan (DOCKER_HOST; with the
+//                                  agent pass, the variable its builder config names for the key)
+//   SA_SCAN_AGENT                  on | off (default): the scan's agent pass (design §8.3; the model
+//                                  is the builder config's scan.agent)
+//   SA_AUTH_CHALLENGE_TTL_MS       how long a wallet sign-in challenge can be answered (300000, 5
+//                                  min; whole seconds, 10 s to 1 h)
 //   SA_BUILDER_TIMEOUT_MS          per builder step (14400000, 4 h): a backstop above the builder's
 //                                  own step limits (fetch, image build, push, source build, the
 //                                  code-runner's deadline), which clean up after themselves
@@ -88,6 +94,13 @@ function serviceUrl(env, name, fallback) {
   return raw.replace(/\/+$/, '');
 }
 
+function flag(env, name, fallback) {
+  const raw = env[name];
+  if (raw === undefined || raw === '') return fallback;
+  if (raw !== 'on' && raw !== 'off') fail(`${name} must be on or off`);
+  return raw === 'on';
+}
+
 function envNames(env, name) {
   const raw = env[name];
   if (!raw) return [];
@@ -149,6 +162,8 @@ export function loadConfig(env = process.env) {
     fail('SA_ORACLE_BASE_COST_WEI must be below both oracle fees');
   }
   const builderConfig = env.SA_BUILDER_CONFIG ? path.resolve(env.SA_BUILDER_CONFIG) : null;
+  const challengeTtlMs = integer(env, 'SA_AUTH_CHALLENGE_TTL_MS', 300000, { min: 10000, max: 3600000 });
+  if (challengeTtlMs % 1000) fail('SA_AUTH_CHALLENGE_TTL_MS must be whole seconds: the expiry is stated to the second in the message the wallet signs');
   return Object.freeze({
     port: integer(env, 'PORT', 5009, { min: 0, max: 65535 }),
     host: env.HOST || '127.0.0.1',
@@ -163,9 +178,12 @@ export function loadConfig(env = process.env) {
       workDir: path.resolve(env.SA_BUILDER_WORK_DIR || os.tmpdir()),
       buildEnv: Object.freeze(envNames(env, 'SA_BUILDER_BUILD_ENV')),
       signEnv: Object.freeze(envNames(env, 'SA_BUILDER_SIGN_ENV')),
+      scanEnv: Object.freeze(envNames(env, 'SA_BUILDER_SCAN_ENV')),
+      scanAgent: flag(env, 'SA_SCAN_AGENT', false),
       timeoutMs: integer(env, 'SA_BUILDER_TIMEOUT_MS', 14400000, { min: 1000 }),
       graceMs: integer(env, 'SA_BUILDER_GRACE_MS', 30000, { min: 100 }),
     }),
+    auth: Object.freeze({ challengeTtlMs }),
     builds: Object.freeze({
       maxConcurrent: integer(env, 'SA_MAX_CONCURRENT_BUILDS', 1, { min: 1, max: 16 }),
       maxQueued: integer(env, 'SA_MAX_QUEUED_BUILDS', 8, { min: 0, max: 1000 }),

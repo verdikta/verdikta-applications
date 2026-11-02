@@ -55,7 +55,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 | Folder | What | Test |
 |---|---|---|
 | `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
-| `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`. | `npm test`, `npm run test:builder` |
+| `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`; the baseline scan between listing and open, its findings served to the maker's wallet only (P4b2). | `npm test`, `npm run test:builder` |
 | `client/` | Vite + React site. Port 5176. | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI: `check`, `commit`, `reveal`, `status`, `claim` arrive in P5. | `npm test` |
 | `shared/` | Code shared by the packages (the banned-words helper so far) and the app's repository checks. | `npm test` |
@@ -202,9 +202,10 @@ deploys on the in-process network against the mock aggregator, as a test.
 ## The listing API
 
 `server/` (node P4a) turns a maker's draft into the two archives arbiters read and the
-arguments of `list()`. `POST /api/listings` takes `{ spec, knownIssues?, allowlist? }`: the
-draft `code_review.json` with its stake block and the maker's age disclosure key, the known
-issues when `stake.knownIssues` names them, and up to 64 invited hunters. Before any build it
+arguments of `list()`. `POST /api/listings` takes `{ spec, knownIssues?, allowlist?, maker? }`:
+the draft `code_review.json` with its stake block and the maker's age disclosure key, the known
+issues when `stake.knownIssues` names them, up to 64 invited hunters, and the address of the
+maker's wallet, which the baseline scan's findings are served to (below). Before any build it
 decodes the disclosure key with common's `parseDisclosureKey`, checks the draft with common's
 validator (over the builder's stand-ins for the fields the builder measures) and refuses what
 `list()` would refuse or could not encode (decision D8's windows, a repository URL that is not
@@ -217,7 +218,8 @@ Otherwise it answers 202 with an id, and `GET /api/listings/:id` follows the lis
 |---|---|
 | `queued`, `building` | waiting for, or in, the builder: `verdikta-build-env build`, then `sign` in a process of its own |
 | `refused` | the builder refused it and `validationReport` says why. Nothing is built or pinned: a failed verified-source check ends here |
-| `pinning` | accepted and checked; both archives are being pinned |
+| `scanning` | accepted and checked, both archives built; the baseline scan runs (when the request named a maker) |
+| `pinning` | both archives are being pinned |
 | `ready` | `archives` (both CIDs, their SHA-256 and their members') and `list`: `params`, `listingCid`, `disputeCid` and `knownIssueIds`, in JSON ethers takes as it is (uint256 and uint64 as decimal strings, bytes32 as hex); `params.disclosureKey` is the 32 bytes the archive's age recipient encodes |
 | `error` | anything else (the builder or pinning failed, or the result did not check out); nothing is issued |
 
@@ -260,13 +262,81 @@ group is empty. A step the server had to stop keeps its build slot until the ser
 a container it started runs under the Docker daemon, and nothing confirms it has gone. The log
 says to check the host for containers labelled `io.verdikta.builder=1`.
 
+### The baseline scan and the maker's sign-in
+
+Between listing and open the server scans the staked version (design §8.3, node P4b2): once a
+build is accepted and both archives are built and checked, and before they are pinned, it runs
+`verdikta-build-env scan` on the built `code_review.json`, in a process of its own like `build`
+and `sign` (the variables in `SA_BUILDER_SCAN_ENV` besides `PATH` and `HOME`; `--agent` only with
+`SA_SCAN_AGENT=on`). The builder writes `scan-findings.json` into a new folder inside the step's
+owner-only folder; the server reads it once, keeps it in memory with the listing (as it keeps the
+listing itself; nothing survives a restart) and removes the folder. The archives are fixed
+before the scan runs, from the builder's files only. A scan that fails does not hold the
+listing back: the scan is not a judgement, and the maker reads why it failed. A request that
+names no `maker` is not scanned (`scan.status` is `skipped`, `reason` `NO_MAKER`): nobody could
+read the findings. A listing that is refused or not issued is not scanned (`not_run`).
+
+**What is public and what is the maker's:**
+
+| | Who sees it |
+|---|---|
+| The listing view (`GET /api/listings/:id`): status, validation report, both archives' CIDs and members, the arguments of `list()`, the disclosure key's public half, `maker`, and `scan`: `{ status }` (`pending`, `running`, `skipped` with its `reason`, `not_run`) or `{ status, finishedAt }` (`done`, `error`) | anyone with the listing's id |
+| The listing and dispute archives, `known_issues.json` (the maker's own list, byte for byte) and what `list()` stores | everyone: pinned and on-chain. Never anything of the scan |
+| The record mirror and the feed (node P4b1) | everyone. Never anything of the scan |
+| The scan's document: every finding, the files in scope and skipped, each tool's status and what it did not read, the agent pass's summary, a failure's code and detail | the maker's wallet only, through `POST /api/listings/:id/scan` |
+| The server's log | the operator: that the scan ran and its outcome's error code, never a finding, a count, a file name or a tool's output |
+
+No refusal or error the server answers carries anything of the scan beyond its status.
+
+**Signing in.** The findings go to the address in the listing request, proven with a wallet
+signature over a one-time challenge (`server/src/auth/walletAuth.js`, written to be reused by
+any route that one address may use):
+
+1. `POST /api/listings/:id/scan/challenge` (no body) answers `{ action, resource, address, nonce,
+   issuedAt, expiresAt, message }`; 409 `LISTING_HAS_NO_MAKER` when the request named none.
+2. The maker's wallet signs `message` exactly as given, with EIP-191 `personal_sign`
+   (`signer.signMessage(message)` in ethers).
+3. `POST /api/listings/:id/scan` with `{ nonce, signature }` answers `{ id, maker, status, scan,
+   error }`: `scan` is the builder's `scan-findings.json`, or null with the server's `error` when
+   the scan step left no document. 403 `NOT_THE_MAKER` when another wallet signed; 401
+   `CHALLENGE_UNKNOWN` (answered already, never issued, or forgotten after expiry),
+   `CHALLENGE_EXPIRED`, `CHALLENGE_MISMATCH` (issued for another listing or action) or
+   `SIGNATURE_INVALID`; 400 `AUTH_REQUEST_INVALID`; 409 `SCAN_NOT_READY` with the public status
+   while the scan has not finished, checked before the signature so asking early costs nothing.
+   Every answer is `Cache-Control: no-store`.
+
+The message is ASCII, one field per line, joined with `\n`, no final newline:
+
+```text
+Verdikta stake attestation: sign in
+Sign to read the baseline scan of a listing you made. This is not a transaction: it costs nothing and moves no funds.
+
+Version: 1
+Action: read-scan
+Resource: listing:<the listing's 32-hex id>
+Address: <the maker's address, EIP-55>
+Nonce: <32 lowercase hex: 16 random bytes>
+Issued At: <UTC, ISO 8601 in whole seconds, e.g. 2026-11-02T10:00:00Z>
+Expiration Time: <Issued At + SA_AUTH_CHALLENGE_TTL_MS, the same form>
+```
+
+The server never reads the message back from the client: it rebuilds it from its own copy of the
+challenge and recovers the signer with ethers' `verifyMessage`. A nonce answers one attempt,
+whatever its outcome, and nothing after its expiry (5 minutes by default; at most 32 open
+challenges per listing and 10,000 in all, else 429). Only ECDSA signatures of externally owned
+accounts are checked: a contract wallet (EIP-1271) cannot sign in. Anyone may name any address
+as a listing's maker; that only decides who can read the scan, never what goes on-chain.
+
 **Tests.** `npm test` stubs the builder behind its interface, and pins to the mock store or to
 local doubles of kubo, Filebase and Pinata through a fetch that refuses every host but
 loopback. The chain tests copy `onchain/contracts` into `server/.hardhat/` (untracked), compile
 them with onchain's settings, and send `list()` and `fund()` with the server's JSON on the
 in-process Hardhat network against the mock aggregator. `npm run test:builder` (after `npm ci`
 in `builder/`) runs the real builder's command line through the API on a draft the builder
-refuses at its first step, which needs no Docker.
+refuses at its first step, and the real `scan` on a repository it cannot fetch, which need no
+Docker. The scan's tests stub the scanner the same way, and mark every finding with a string
+made per run that they look for in the view, both archives, `known_issues.json`, the arguments
+of `list()`, every log line and every refusal.
 
 ## The environment builder
 

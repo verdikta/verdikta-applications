@@ -40,12 +40,12 @@ describe('the sign-in message', () => {
       'Version: 1',
       'Action: read-scan',
       `Resource: listing:${ID}`,
-      'Address: 0x5f2A00000000000000000000000000000000C0DE',
+      'Address: 0x5F2A00000000000000000000000000000000c0DE',
       'Nonce: 9f86d081884c7d659a2feaa0c55ad015',
       'Issued At: 2026-11-02T10:00:00Z',
       'Expiration Time: 2026-11-02T10:05:00Z',
     ].join('\n'));
-    assert.equal(getAddress('0x5f2a00000000000000000000000000000000c0de'), '0x5f2A00000000000000000000000000000000C0DE');
+    assert.equal(getAddress('0x5f2a00000000000000000000000000000000c0de'), '0x5F2A00000000000000000000000000000000c0DE');
   });
 
   test('is ASCII with one field per line: no value can add a line of its own', () => {

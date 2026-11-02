@@ -123,39 +123,33 @@ describe('a restart mid-sync', () => {
     }
   });
 
-  test('a writer that died leaves a lock the next process reclaims', async () => {
+  test('a writer that died, or a lock left empty, does not block the next start, and old locks are cleared', async () => {
     const ctx = await chainContext();
     const dir = tmpDir();
     siteFor(ctx, { dir }).close();
-    fs.writeFileSync(path.join(dir, 'writer.lock'), '999999999');
-    const site = siteFor(ctx, { dir });
+    const locks = () => fs.readdirSync(dir).filter((n) => n.startsWith('writer.lock')).sort();
+    assert.deepEqual(locks(), [], 'close() removes its own lock');
+    fs.writeFileSync(path.join(dir, 'writer.lock.3'), '999999999');
+    let site = siteFor(ctx, { dir });
+    assert.deepEqual(locks(), ['writer.lock.4']);
+    site.close();
+    fs.writeFileSync(path.join(dir, 'writer.lock.7'), '');
+    fs.writeFileSync(path.join(dir, 'writer.lock.2'), '999999998');
+    site = siteFor(ctx, { dir });
+    assert.deepEqual(locks(), ['writer.lock.8'], 'every lock below the new one was a dead process\'s');
     site.close();
   });
 
-  test('a lock left empty, or a reclaim left by a reclaimer that died, does not block the next start', async () => {
+  test('a live writer keeps the folder, whether it holds the highest lock or took the next one first', async () => {
     const ctx = await chainContext();
     const dir = tmpDir();
     siteFor(ctx, { dir }).close();
-    const lock = path.join(dir, 'writer.lock');
-    fs.writeFileSync(lock, '');
-    siteFor(ctx, { dir }).close();
-    fs.writeFileSync(lock, '999999999');
-    fs.writeFileSync(`${lock}.reclaim`, '999999998');
-    siteFor(ctx, { dir }).close();
-    assert.equal(fs.existsSync(`${lock}.reclaim`), false);
-    assert.equal(fs.existsSync(lock), false, 'close() removes its own lock');
-  });
-
-  test('a live reclaimer, or a live writer, keeps the folder', async () => {
-    const ctx = await chainContext();
-    const dir = tmpDir();
-    siteFor(ctx, { dir }).close();
-    const lock = path.join(dir, 'writer.lock');
-    fs.writeFileSync(lock, '999999999');
-    fs.writeFileSync(`${lock}.reclaim`, String(process.pid));
+    fs.writeFileSync(path.join(dir, 'writer.lock.5'), String(process.pid));
     assert.throws(() => siteFor(ctx, { dir }), (e) => e.code === 'WRITER_ACTIVE');
-    fs.rmSync(`${lock}.reclaim`);
-    fs.writeFileSync(lock, String(process.pid));
+    // a dead holder at 5, and another process that already took 6
+    fs.writeFileSync(path.join(dir, 'writer.lock.5'), '999999999');
+    fs.writeFileSync(path.join(dir, 'writer.lock.6'), String(process.pid));
     assert.throws(() => siteFor(ctx, { dir }), (e) => e.code === 'WRITER_ACTIVE');
+    assert.equal(fs.readFileSync(path.join(dir, 'writer.lock.6'), 'utf8'), String(process.pid), 'a live lock is never removed');
   });
 });

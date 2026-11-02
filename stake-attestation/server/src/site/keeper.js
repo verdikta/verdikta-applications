@@ -216,28 +216,77 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     return false;
   }
 
-  /** A record another key signed: wait for its account, never replace it. */
-  async function resolveForeign(inflight) {
-    if ((await provider.getTransactionCount(inflight.from, 'latest')) > inflight.nonce) return settleInflight(inflight, 0);
-    const newest = inflight.attempts.at(-1);
-    if (newest && ((await anyKnown(inflight)) || now() - newest.sentAt < cfg.replaceAfterMs)) {
-      logger.warn(`keeper: waiting for ${inflight.action}(${inflight.claimId}) that ${inflight.from} sent at nonce ${inflight.nonce}; this key (${address}) cannot replace it`);
-      return 'pending';
+  const FINAL = new Set(['Settled', 'Expired']);
+
+  /**
+   * Records another key signed (SA_KEEPER_PRIVATE_KEY changed). This key cannot replace them, and
+   * a node that does not know one cannot say it will never mine, so each is kept until its
+   * account's nonce passes it or its claim is over; until then the keeper never sends the same
+   * call for that claim (`blocked`), and goes on with everything else.
+   */
+  async function checkForeign(blocked) {
+    const own = store.state.keeper.inflight;
+    if (own && own.from && own.from !== address) {
+      logger.warn(`keeper: ${own.action}(${own.claimId}) at nonce ${own.nonce} was sent by ${own.from}, not this key (${address}); kept until it resolves, and not sent again meanwhile`);
+      store.transact((s) => {
+        s.keeper.foreign = [...(s.keeper.foreign ?? []), s.keeper.inflight];
+        s.keeper.inflight = null;
+      });
     }
-    finish(inflight, 'dropped', null);
-    return 'done';
+    for (const f of store.state.keeper.foreign ?? []) {
+      const used = (await provider.getTransactionCount(f.from, 'latest')) > f.nonce;
+      if (!used && !FINAL.has(await claimState(f.claimId))) {
+        blocked.add(`${f.claimId}:${f.action}`);
+        continue;
+      }
+      let receipt = null;
+      for (const a of f.attempts) receipt ??= await provider.getTransactionReceipt(a.hash);
+      store.transact((s) => {
+        s.keeper.foreign = s.keeper.foreign.filter((x) => !(x.from === f.from && x.nonce === f.nonce));
+        s.keeper.last = { action: f.action, claimId: f.claimId, nonce: f.nonce, from: f.from, status: receipt ? (receipt.status === 1 ? 'mined' : 'reverted') : used ? 'superseded' : 'claim-over', txHash: receipt?.hash ?? null, blockNumber: receipt?.blockNumber ?? null, at: now() };
+      });
+    }
+  }
+
+  /**
+   * The account's nonce is below the record's: a reorg dropped a transaction this key had mined.
+   * The record cannot mine until the nonces below it are used, and whatever is queued at its
+   * nonce would run as soon as they are. So: if its call is no longer due, replace it with a
+   * transfer to itself first; then fill each missing nonce with a 0-value transfer to itself.
+   */
+  async function fillGap(inflight, accountNonce, sent) {
+    logger.warn(`keeper: the account's nonce is ${accountNonce}, below the ${inflight.action}(${inflight.claimId}) at ${inflight.nonce}: a reorg dropped an earlier transaction; filling the gap`);
+    const allowed = inflight.action !== 'expire' || cfg.expire;
+    const due = allowed && await isDue(inflight.action, inflight.claimId);
+    const newest = inflight.attempts.at(-1);
+    if (!due && newest.kind !== 'cancel') {
+      const attempt = await sign({ kind: 'cancel', nonce: inflight.nonce, previous: newest });
+      if ((await broadcast(attempt, inflight)) === 'sent') {
+        sent.push({ action: 'cancel', claimId: inflight.claimId, nonce: inflight.nonce, txHash: attempt.hash, replaced: true });
+      }
+    }
+    for (let k = accountNonce; k < inflight.nonce; k += 1) {
+      const prev = store.state.keeper.inflight.fillers?.[k];
+      if (prev && now() - prev.sentAt < cfg.replaceAfterMs && await provider.getTransaction(prev.hash)) continue;
+      const filler = await sign({ kind: 'cancel', nonce: k, previous: prev });
+      store.transact((s) => {
+        s.keeper.inflight = { ...s.keeper.inflight, fillers: { ...(s.keeper.inflight.fillers ?? {}), [k]: filler } };
+      });
+      try {
+        await provider.broadcastTransaction(filler.raw);
+      } catch (err) {
+        if (!broadcastRefusal(err)) throw new KeeperError('BROADCAST_FAILED', rpcText(err).slice(0, 300));
+      }
+      sent.push({ action: 'fill', claimId: null, nonce: k, txHash: filler.hash, replaced: Boolean(prev) });
+    }
+    return settleInflight(store.state.keeper.inflight, cfg.txTimeoutMs);
   }
 
   /** The transaction in flight from an earlier cycle or process, resolved first. */
   async function resolve(inflight, sent) {
-    if (inflight.from && inflight.from !== address) return resolveForeign(inflight);
     const nonce = await provider.getTransactionCount(address, 'latest');
     if (nonce > inflight.nonce) return settleInflight(inflight, 0);
-    if (nonce < inflight.nonce) {
-      logger.warn(`keeper: the account's nonce is ${nonce}, below the ${inflight.action}(${inflight.claimId}) at ${inflight.nonce} (a reorg dropped an earlier transaction); the next send fills the gap`);
-      finish(inflight, 'nonce-gap', null);
-      return 'done';
-    }
+    if (nonce < inflight.nonce) return fillGap(inflight, nonce, sent);
     const known = await anyKnown(inflight);
     const newest = inflight.attempts.at(-1);
     if (known && now() - newest.sentAt < cfg.replaceAfterMs) return settleInflight(inflight, cfg.txTimeoutMs);
@@ -295,6 +344,8 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     running = true;
     const sent = [];
     try {
+      const blocked = new Set();
+      await checkForeign(blocked);
       const acted = new Set();
       const inflight = store.state.keeper.inflight;
       if (inflight) {
@@ -304,7 +355,7 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
       for (const claimId of candidates()) {
         if (acted.has(claimId)) continue;
         const action = await dueAction(claimId);
-        if (!action) continue;
+        if (!action || blocked.has(`${claimId}:${action}`)) continue;
         acted.add(claimId);
         const result = await sendNew(action, claimId, sent);
         if (result === 'skipped') continue;

@@ -1,11 +1,16 @@
 // The indexer's and keeper's state: one JSON file in SA_DATA_DIR, as the bounty program's campaign
 // store keeps its ledger. Every change is one transaction: the next state is written to
 // state.json.tmp, flushed, and renamed over state.json, so a process killed at any point leaves
-// either the old state or the new one, never half of one. A file lock (writer.lock, holding the
-// writer's pid) keeps one writer per folder; a lock whose process is gone is reclaimed. The state
-// names the deployment it indexes, and a folder of another deployment is refused rather than
-// mixed with it. The lock is created with the writer's pid already in it, so no crash leaves a
-// lock nobody can tell is stale.
+// either the old state or the new one, never half of one. The state names the deployment it
+// indexes, and a folder of another deployment is refused rather than mixed with it.
+//
+// One writer per folder, by numbered lock files (writer.lock.<n>, each created atomically with
+// its writer's pid already in it). A process may write only by creating the next number after the
+// highest one, and only when the highest one's process is gone; creation fails if the number is
+// taken, so of two processes racing for it exactly one wins. Nobody ever removes a lock that may
+// be live: a writer removes its own at close, and the numbers below its own, whose processes were
+// all found gone before it could take its number. A crash at any point leaves at most a lock of a
+// dead process, which the next start steps over.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -40,49 +45,47 @@ function createExclusive(file, content) {
   }
 }
 
-/** Whether a lock file names a running process (a missing, empty or garbled one does not). */
-function heldByLiveProcess(file) {
+const LOCK = /^writer\.lock\.([0-9]{1,15})$/;
+
+/** The lock numbers in the folder, ascending. */
+function lockNumbers(dir) {
+  return fs.readdirSync(dir).map((n) => LOCK.exec(n)).filter(Boolean).map((m) => Number(m[1])).sort((a, b) => a - b);
+}
+
+/** The pid a lock names: a number, null for an empty or garbled one, undefined if it is gone. */
+function lockHolder(file) {
   let text;
   try {
     text = fs.readFileSync(file, 'utf8');
   } catch (err) {
-    if (err.code === 'ENOENT') return false;
+    if (err.code === 'ENOENT') return undefined;
     throw err;
   }
   const pid = Number(text.trim());
-  return Number.isSafeInteger(pid) && pid > 0 && alive(pid);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }
 
-/**
- * Takes the folder's writer lock. A lock whose process is gone is reclaimed, one reclaimer at a
- * time (writer.lock.reclaim, itself reclaimed when its process is gone), and only after checking
- * again under the reclaim lock that its process is still gone.
- */
-function acquireLock(file) {
-  const reclaim = `${file}.reclaim`;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+/** Takes the folder's next writer lock; returns its file. */
+function acquireLock(dir) {
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    const taken = lockNumbers(dir);
+    const top = taken.length ? taken.at(-1) : -1;
+    if (top >= 0) {
+      const holder = lockHolder(path.join(dir, `writer.lock.${top}`));
+      if (holder === undefined) continue; // closed while we looked: look again
+      if (holder !== null && alive(holder)) throw new StoreError('WRITER_ACTIVE', `the state folder is in use by process ${holder}`);
+    }
+    const file = path.join(dir, `writer.lock.${top + 1}`);
     try {
       createExclusive(file, String(process.pid));
-      return;
     } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
+      if (err.code === 'EEXIST') continue; // another process took this number first
+      throw err;
     }
-    if (heldByLiveProcess(file)) throw new StoreError('WRITER_ACTIVE', `the state folder is in use by process ${fs.readFileSync(file, 'utf8').trim()}`);
-    try {
-      createExclusive(reclaim, String(process.pid));
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-      if (heldByLiveProcess(reclaim)) throw new StoreError('WRITER_ACTIVE', 'another process is reclaiming the state folder\'s lock');
-      fs.rmSync(reclaim, { force: true }); // left by a reclaimer that died
-      continue;
-    }
-    try {
-      if (!heldByLiveProcess(file)) fs.rmSync(file, { force: true });
-    } finally {
-      fs.rmSync(reclaim, { force: true });
-    }
+    for (const n of taken) fs.rmSync(path.join(dir, `writer.lock.${n}`), { force: true });
+    return file;
   }
-  throw new StoreError('WRITER_ACTIVE', 'the state folder\'s lock could not be taken');
+  throw new StoreError('WRITER_ACTIVE', 'the state folder\'s lock is contended');
 }
 
 function emptyState(identity) {
@@ -93,7 +96,7 @@ function emptyState(identity) {
     checkpoints: [], // blocks read, oldest first, within the reorg window: where a rollback can stop
     events: [], // { name, blockNumber, blockHash, logIndex, txHash, timestamp, args }, in chain order
     archives: {}, // listingCid -> what the listing archive says (image, scope), or why it could not be read
-    keeper: { inflight: null, last: null },
+    keeper: { inflight: null, foreign: [], last: null },
   };
 }
 
@@ -107,8 +110,7 @@ export class StateStore {
     this.dir = dir;
     this.file = path.join(dir, 'state.json');
     this.tmp = path.join(dir, 'state.json.tmp');
-    this.lockFile = path.join(dir, 'writer.lock');
-    acquireLock(this.lockFile);
+    this.lockFile = acquireLock(dir);
     this.locked = true;
     try {
       if (fs.existsSync(this.file)) {
@@ -162,8 +164,6 @@ export class StateStore {
   close() {
     if (!this.locked) return;
     this.locked = false;
-    try {
-      if (fs.readFileSync(this.lockFile, 'utf8').trim() === String(process.pid)) fs.rmSync(this.lockFile, { force: true });
-    } catch { /* gone already */ }
+    fs.rmSync(this.lockFile, { force: true });
   }
 }

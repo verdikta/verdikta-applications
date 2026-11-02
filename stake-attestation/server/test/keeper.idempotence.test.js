@@ -267,9 +267,12 @@ describe('a restart with a transaction in flight', () => {
 });
 
 describe('a record the keeper cannot act on any more', () => {
-  test('after the key changed, the old key\'s transaction is waited for, never replaced by the new key', async () => {
+  test('after the key changed, the old key\'s call is never sent again while it can still mine, even unseen by this node', async () => {
     const ctx = await chainContext();
     const claimId = await judgedInvalid(ctx);
+    const other = await listing(ctx);
+    const otherClaim = await revealedClaim(ctx, ctx.hunters[1], other.listingId);
+    await verdict(ctx, otherClaim, 'INVALID');
     const dir = tmpDir();
     const oldKey = siteFor(ctx, { dir, env: FAST });
     await oldKey.sync();
@@ -277,29 +280,36 @@ describe('a record the keeper cannot act on any more', () => {
     let newKey;
     try {
       const r = await oldKey.keep();
-      assert.equal(r.pending.from, ctx.keeperAddress);
+      assert.deepEqual(r.sent.map((x) => [x.action, x.claimId]), [['finalize', String(claimId)]]);
+      const raw = r.pending.attempts.at(-1).raw;
       oldKey.close();
+      // the old transaction leaves this node's mempool, but may still be pending elsewhere
+      await rpc(ctx, 'hardhat_dropTransaction', [r.pending.attempts.at(-1).hash]);
+      await automine(ctx, true);
+
       newKey = siteFor(ctx, { dir, env: { ...FAST, SA_KEEPER_REPLACE_AFTER_MS: '0', SA_KEEPER_PRIVATE_KEY: ctx.keyOf(10) } });
       const newAddress = ctx.signers[10].address;
-      assert.equal(newKey.status().keeper.address, newAddress);
-      const again = await newKey.keep();
-      assert.deepEqual(again.sent, [], 'the new key sends nothing while the old key\'s call is pending');
-      assert.equal(again.pending.from, ctx.keeperAddress);
-      await mine(ctx);
-      await automine(ctx, true);
-      const resolved = await newKey.keep();
-      assert.equal(resolved.pending, null);
-      await newKey.sync();
-      await newKey.keep();
+      const first = await newKey.keep();
+      assert.deepEqual(first.sent.map((x) => [x.action, x.claimId]), [['finalize', String(otherClaim)]], 'the other claim goes on; the old key\'s call is not repeated');
+      assert.deepEqual(newKey.status().keeper.foreign, [{ action: 'finalize', claimId: String(claimId), from: ctx.keeperAddress, nonce: r.pending.nonce }]);
+      assert.deepEqual((await newKey.keep()).sent.map((x) => [x.action, x.claimId]), [['settle', String(otherClaim)]]);
+
+      // the old transaction turns up and mines after all
+      await rpc(ctx, 'eth_sendRawTransaction', [raw]);
+      const after = await newKey.keep();
+      assert.deepEqual(after.sent.map((x) => [x.action, x.claimId]), [['settle', String(claimId)]]);
+      assert.deepEqual(newKey.status().keeper.foreign, []);
       assert.deepEqual((await keeperTransactions(ctx)).map((t) => [t.fn, t.status]), [[`finalize(${claimId})`, 1]]);
-      assert.deepEqual((await keeperTransactions(ctx, ctx.fromBlock, newAddress)).map((t) => [t.fn, t.status]), [[`settle(${claimId})`, 1]]);
+      assert.deepEqual((await keeperTransactions(ctx, ctx.fromBlock, newAddress)).map((t) => [t.fn, t.status]), [
+        [`finalize(${otherClaim})`, 1], [`settle(${otherClaim})`, 1], [`settle(${claimId})`, 1],
+      ]);
     } finally {
       await automine(ctx, true);
       newKey?.close();
     }
   });
 
-  test('a reorg that drops a mined transaction under the one in flight: the gap is filled, the keeper is not stuck', async () => {
+  test('a reorg that drops a mined transaction under one still queued: the stale call is cancelled and the gap filled, nothing reverts', async () => {
     const ctx = await chainContext();
     const claimId = await judgedInvalid(ctx);
     const site = siteFor(ctx, { env: FAST });
@@ -310,24 +320,27 @@ describe('a record the keeper cannot act on any more', () => {
       await automine(ctx, false);
       const r = await site.keep(); // settle at n + 1, waiting
       assert.deepEqual(r.sent.map((s) => s.action), ['settle']);
-      const gapNonce = r.pending.nonce;
-      // the block with the finalize at n is orphaned: the account's nonce is n again
+      const queued = r.pending.attempts.at(-1).raw;
+      // the block with the finalize at n is orphaned; the settle at n + 1 survives in a mempool,
+      // where it would run, and revert, as soon as nonce n is used
       assert.equal(await rpc(ctx, 'evm_revert', [snapshot]), true);
-      assert.equal(await ctx.hre.ethers.provider.getTransactionCount(ctx.keeperAddress, 'latest'), gapNonce - 1);
-      await site.sync();
-      for (let i = 0; i < 4; i += 1) {
-        await site.keep();
-        await mine(ctx);
-      }
+      assert.equal(await ctx.hre.ethers.provider.getTransactionCount(ctx.keeperAddress, 'latest'), r.pending.nonce - 1);
+      try {
+        await rpc(ctx, 'eth_sendRawTransaction', [queued]);
+      } catch { /* the node kept it */ }
+      const gap = await site.keep();
+      assert.deepEqual(gap.sent.map((s) => [s.action, s.nonce]), [['cancel', r.pending.nonce], ['fill', r.pending.nonce - 1]]);
+      await mine(ctx);
       await automine(ctx, true);
-      await site.sync();
-      await site.keep();
-      await site.sync();
-      await site.keep();
+      for (let i = 0; i < 3; i += 1) {
+        await site.sync();
+        await site.keep();
+      }
       assert.equal((await ctx.sa.getClaim(claimId)).state, 5n, 'Settled');
       assert.equal(site.status().keeper.inflight, null);
-      assert.ok(site.logger.lines.some((l) => l.includes('a reorg dropped an earlier transaction')), 'the gap was seen');
-      for (const t of await keeperTransactions(ctx)) assert.equal(t.status, 1, t.fn);
+      const txs = await keeperTransactions(ctx);
+      for (const t of txs) assert.equal(t.status, 1, t.fn);
+      assert.deepEqual(txs.map((t) => t.fn), ['cancel', 'cancel', `finalize(${claimId})`, `settle(${claimId})`]);
     } finally {
       await automine(ctx, true);
       site.close();

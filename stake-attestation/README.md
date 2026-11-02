@@ -292,8 +292,9 @@ archives, keys, ciphertext, hunter or verdict. The record's counts and flags are
 
 **The indexer** reads every event of the deployment from `SA_FROM_BLOCK`, in chunks of
 `SA_LOG_CHUNK_BLOCKS`, only up to `SA_CONFIRMATIONS` (10) blocks below the head, and commits each
-chunk with its cursor in one atomic write to `SA_DATA_DIR/state.json` (one writer per folder,
-by a lock file; a folder of another deployment is refused). A restart resumes after the last
+chunk with its cursor in one atomic write to `SA_DATA_DIR/state.json` (one writer per folder, by
+numbered lock files: a process takes the next number only when the highest one's process is
+gone, and no lock that may be live is ever removed; a folder of another deployment is refused). A restart resumes after the last
 committed chunk. Each sync asks the endpoint for its chain id (`eth_chainId`; the provider's
 request cache is off) and compares the cursor's stored block hash with the chain's; after a
 reorg it rolls back to the newest block it read (within `SA_REORG_WINDOW_BLOCKS`) that is still
@@ -307,9 +308,11 @@ turns it off). It reads each claim on-chain and simulates the call before sendin
 transaction in flight at its next confirmed nonce, recorded before it is broadcast, and
 resolves that record first in the next cycle or process: waited for, re-sent at the same nonce
 with higher fees after `SA_KEEPER_REPLACE_AFTER_MS`, or, when the call is no longer due,
-replaced by a 0-value transfer to itself. A record past a nonce gap (a reorg dropped an earlier
-transaction) is dropped so the next send fills the gap; one signed by a previous key is waited
-for, never replaced; an expiry is re-sent only while `SA_KEEPER_EXPIRE` is on. A retry, a restart
+replaced by a 0-value transfer to itself. When a reorg drops a transaction it had mined, it
+fills the missing nonces with transfers to itself, after cancelling a queued call that is no
+longer due; a record signed by a previous key is kept until that account's nonce passes it or
+its claim is over, and the same call is not sent for that claim meanwhile; an expiry is re-sent
+only while `SA_KEEPER_EXPIRE` is on. A retry, a restart
 or a second keeper with the same key therefore never makes a call twice; keepers with different
 keys can still race, so run one per deployment or share the key.
 

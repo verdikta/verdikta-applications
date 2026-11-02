@@ -46,14 +46,27 @@ async function submoduleUrl(gitDir, commit, subPath, superUrl, timeoutMs) {
   if (name === null) return null;
   const u = await git(gitDir, ['config', '--blob', `${commit}:.gitmodules`, '--no-includes', '--get', `submodule.${name}.url`], { timeoutMs });
   if (u.exitCode !== 0) return null;
-  const raw = u.stdout.toString('utf8').trim();
+  return submoduleHttpsUrl(u.stdout.toString('utf8').trim(), superUrl);
+}
+
+/**
+ * The https form of a submodule URL: relative URLs against the superproject's, and the ssh and
+ * git:// forms of a host's repository as that host's https URL. The transport does not matter
+ * for integrity: the submodule is fetched by the commit id its gitlink records.
+ * @returns {string|null} null for anything else (file://, plain http, a local path)
+ */
+export function submoduleHttpsUrl(raw, superUrl) {
+  let s = raw;
+  const scp = /^[A-Za-z0-9._-]+@([A-Za-z0-9.-]+):(?!\/)(.+)$/.exec(s);
+  if (scp) s = `https://${scp[1]}/${scp[2]}`;
+  else if (/^(?:ssh:\/\/(?:[A-Za-z0-9._-]+@)?|git:\/\/)/.test(s)) s = s.replace(/^(?:ssh:\/\/(?:[A-Za-z0-9._-]+@)?|git:\/\/)([^/:]+)(?::[0-9]+)?\//, 'https://$1/');
   let url;
   try {
-    url = /^\.\.?\//.test(raw) ? new URL(raw, `${superUrl.replace(/\/+$/, '')}/`).href : new URL(raw).href;
+    url = /^\.\.?\//.test(s) ? new URL(s, `${superUrl.replace(/\/+$/, '')}/`).href : new URL(s).href;
   } catch {
     return null;
   }
-  return /^https:\/\/\S+$/.test(url) ? url.replace(/\/$/, '') : null;
+  return /^https:\/\/[^/\s]+\/\S+$/.test(url) && !/^https:\/\/[^/]*@/.test(url) ? url.replace(/\/$/, '') : null;
 }
 
 /** The blobs' bytes, by id, through one `git cat-file --batch`. */

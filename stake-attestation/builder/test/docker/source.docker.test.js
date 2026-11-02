@@ -8,7 +8,8 @@
 // explorer's edited version, adds an untracked symbolic link lib/Alias.sol to it, and installs a
 // fake `solc`. The check reads none of them: the listing is still refused, and the compiler is
 // the Solidity project's. Two more listings change only foundry.toml: another solc pin, and the
-// optimizer off; both are refused.
+// optimizer off; both are refused. And one has a submodule the builder cannot authenticate,
+// which its setup fills with the explorer's edited source: refused, never read.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -41,9 +42,9 @@ let regs;
 const listings = {};
 
 /** A fixture repository (foundry.toml changed by `toml`), its draft and its pushed image. */
-async function listing(name, { toml = TOML, setup } = {}) {
+async function listing(name, { toml = TOML, setup, extra = {}, gitlinks = {} } = {}) {
   const sub = fs.mkdtempSync(path.join(dir, `${name}-`));
-  const repo = fixtureRepo(sub, { 'foundry.toml': toml });
+  const repo = fixtureRepo(sub, { 'foundry.toml': toml, ...extra }, { gitlinks });
   const draft = fixtureDraft(repo.baseCommit, recipient, { artifact: CONTRACT, repo: `https://github.com/verdikta-test/${name}` });
   if (setup !== undefined) draft.commands.setup = setup;
   const config = parseConfig({
@@ -71,6 +72,13 @@ test.before(async () => {
   });
   await listing('otherpin', { toml: TOML.replace('solc = "0.8.31"', 'solc = "0.8.30"'), setup: 'true' });
   await listing('nooptimizer', { toml: TOML.replace('optimizer = true', 'optimizer = false'), setup: 'true' });
+  // A submodule whose URL has no https form: git cannot fetch it at build time (the build goes on),
+  // the builder cannot authenticate it, and the setup fills its directory with an edited source.
+  await listing('skipsub', {
+    extra: { '.gitmodules': '[submodule "dep"]\n\tpath = lib/dep\n\turl = file:///nonexistent/dep.git\n' },
+    gitlinks: { 'lib/dep': 'e'.repeat(40) },
+    setup: "mkdir -p lib/dep/src && sed 's/amount + 1/amount/' src/Vault.sol > lib/dep/src/Vault.sol",
+  });
 });
 
 test.after(() => {
@@ -121,6 +129,17 @@ test('a setup that rewrites a tracked source, links an untracked alias to it and
   const ok = await check('tampered', MATCH);
   assert.equal(ok.ok, true, JSON.stringify(ok.issues));
   assert.equal(ok.summary.solc.sha256, SOLC_SHA256[platforms.run]);
+});
+
+test('a submodule the builder could not authenticate, filled by the setup, cannot pass for the verified source', { timeout: TIMEOUT }, async () => {
+  const { image } = listings.skipsub;
+  const look = await runSandboxed({ docker, image: image.ref, platform: platforms.run, argv: ['/bin/sh', '-c', 'grep -c "amount;" /repo/lib/dep/src/Vault.sol'], timeoutMs: 60000 });
+  assert.equal(look.stdout.toString().trim(), '1', 'the setup filled the submodule with the explorer\'s edited source');
+  assert.deepEqual(codes(await check('skipsub', { ...MATCH, getsourcecode: 'getsourcecode-vault-submodule.json' })), [['SOURCE_SUBMODULE_UNVERIFIABLE', 'lib/dep/src/Vault.sol']]);
+  // The contract outside it is still checked, the submodule left empty in the build.
+  const ok = await check('skipsub', MATCH);
+  assert.equal(ok.ok, true, JSON.stringify(ok.issues));
+  assert.deepEqual(ok.warnings.map((w) => [w.code, w.path]), [['SUBMODULE_NOT_FETCHED', 'lib/dep']]);
 });
 
 test('a repository that pins another solc than the deployment was verified with stops the listing', { timeout: TIMEOUT }, async () => {

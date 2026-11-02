@@ -82,7 +82,7 @@ export function repoBuilder({ config, docker, draft, workDir }) {
   return async (req) => {
     const solc = await fetchSolc({ version: req.version, platform: run, baseUrl: config.solc.baseUrl, cacheDir: config.solc.cacheDir });
     const tree = await commitTree({ gitDir: req.gitDir, repo: draft.repo, baseCommit: draft.baseCommit, mirrorFor: config.mirrorFor, workDir });
-    const out = await buildAtCommit({ docker, image: req.image, platform: run, solc, entries: tree.entries, contractPath: req.contractPath, contractName: req.contractName, paths: req.paths });
+    const out = await buildAtCommit({ docker, image: req.image, platform: run, solc, entries: tree.entries, skipped: tree.skipped, contractPath: req.contractPath, contractName: req.contractName, paths: req.paths });
     return { ...out, skippedSubmodules: tree.skipped, solc: { version: solc.longVersion, sha256: solc.sha256, platform: run } };
   };
 }

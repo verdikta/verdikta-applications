@@ -8,7 +8,8 @@
 //   2. the listed commit's files from the objects the builder fetched (src/commitFiles.js), laid out
 //      as the code-runner's forced checkout lays them out;
 //   3. the image's untracked files (its installed dependencies) copied in around them, never over a
-//      tracked path, as the code-runner keeps them.
+//      tracked path, as the code-runner keeps them, and never into a submodule the builder could
+//      not authenticate (left an empty directory).
 //
 // The verified source's files are read from that tree, through any symbolic link exactly as the
 // build and every claim's run will read them, before anything compiles. Then `forge config --json`
@@ -29,9 +30,12 @@ const SCRIPT = [
   'contract=$2; name=$3; shift 3',
   'cd /work/src',
   // The listed commit's files: "<mode> <size> <base64 path>" then exactly <size> bytes.
+  ': > /work/.skip',
   'while IFS=" " read -r mode size enc; do',
   '  [ "$mode" = end ] && break',
   '  p=$(printf "%s" "$enc" | base64 -d)',
+  // A submodule the builder could not authenticate: an empty directory, never filled from the image.
+  '  if [ "$mode" = skip ]; then mkdir -p -- "$p"; printf "./%s\\n" "$p" >> /work/.skip; continue; fi',
   '  mkdir -p -- "$(dirname -- "$p")"',
   '  if [ "$mode" = 120000 ]; then t=$(head -c "$size"); ln -s -- "$t" "$p"; else head -c "$size" > "$p"; fi',
   '  [ "$mode" = 100755 ] && chmod 0755 "$p"',
@@ -39,7 +43,7 @@ const SCRIPT = [
   'done',
   // The image's untracked files around them, never over what is there.
   'copy=0',
-  '{ tar -C /repo --exclude=.git -cf - . | tar -C /work/src --skip-old-files -xf - ; } 2>/work/.copy-errors || copy=$?',
+  '{ tar -C /repo --exclude=.git --anchored --no-wildcards --exclude-from=/work/.skip -cf - . | tar -C /work/src --skip-old-files -xf - ; } 2>/work/.copy-errors || copy=$?',
   'printf "T %s %s\\n" "$copy" "$(tail -c 2000 /work/.copy-errors | base64 -w0)"',
   // The verified files as the build reads them.
   'for p in "$@"; do',
@@ -55,12 +59,13 @@ const SCRIPT = [
   '',
 ].join('\n');
 
-/** The stdin of a build: the solc binary, then the commit's files, then the end marker. */
-export function buildInput(solcBytes, entries) {
+/** The stdin of a build: the solc binary, the commit's files, the submodules left empty, then the end marker. */
+export function buildInput(solcBytes, entries, skipped = []) {
   const parts = [solcBytes];
   for (const e of entries) {
     parts.push(Buffer.from(`${e.mode} ${e.bytes.length} ${Buffer.from(e.path, 'utf8').toString('base64')}\n`, 'utf8'), e.bytes);
   }
+  for (const k of skipped) parts.push(Buffer.from(`skip 0 ${Buffer.from(k.path, 'utf8').toString('base64')}\n`, 'utf8'));
   parts.push(Buffer.from('end 0 -\n', 'utf8'));
   return Buffer.concat(parts);
 }
@@ -77,18 +82,19 @@ export function buildArgv({ solcSize, contractPath, contractName, paths }) {
  * @param {string} o.platform
  * @param {{ bytes: Buffer }} o.solc - fetchSolc()
  * @param {{ path: string, mode: string, bytes: Buffer }[]} o.entries - commitTree().entries
+ * @param {{ path: string }[]} [o.skipped] - commitTree().skipped: submodules left empty
  * @param {string} o.contractPath - the contract's source file
  * @param {string} o.contractName
  * @param {string[]} o.paths - the verified source's files, to read back
  * @returns {Promise<{ files: Map<string, Buffer|null>, config: object|null, artifact: object|null, copy: { exitCode: number, errors: string }|null, build: { exitCode: number, log: string } }>}
  */
-export async function buildAtCommit({ docker, image, platform, solc, entries, contractPath, contractName, paths, timeoutMs = 900000 }) {
+export async function buildAtCommit({ docker, image, platform, solc, entries, skipped = [], contractPath, contractName, paths, timeoutMs = 900000 }) {
   const r = await runSandboxed({
     docker,
     image,
     platform,
     argv: buildArgv({ solcSize: solc.bytes.length, contractPath, contractName, paths }),
-    stdin: buildInput(solc.bytes, entries),
+    stdin: buildInput(solc.bytes, entries, skipped),
     timeoutMs,
     maxBytes: MAX_OUTPUT_BYTES,
   });

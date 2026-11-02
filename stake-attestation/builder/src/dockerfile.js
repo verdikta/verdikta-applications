@@ -74,7 +74,8 @@ export function renderDockerfile({ baseCommit, hasSetup, refs, platforms, builde
     ...(hasSetup ? [`COPY setup.sh ${L.buildDir}/setup.sh`] : []),
     `RUN mkdir -p ${L.buildHome} ${L.xdgData} ${L.tools}/bin \\`,
     ` && git -C ${L.repo} checkout --quiet --force --detach ${baseCommit} \\`,
-    ` && if [ -f ${L.repo}/.gitmodules ]; then git -C ${L.repo} submodule update --init --recursive --quiet; fi`,
+    // A submodule git cannot fetch is left as the setup leaves it, as the code-runner leaves one it has no objects for.
+    ` && if [ -f ${L.repo}/.gitmodules ]; then git -C ${L.repo} submodule update --init --recursive --quiet || echo "verdikta-builder: git submodule update failed; the submodules are left to the setup" >&2; fi`,
     ...(hasSetup ? [`RUN cd ${L.repo} && /bin/sh -e ${L.buildDir}/setup.sh`] : []),
     `RUN chmod -R a+rX,go-w ${L.repo} ${L.tools}`,
     '',

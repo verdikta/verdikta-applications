@@ -55,7 +55,7 @@ test('the setup stage checks out exactly the listed commit and its submodules, t
   assert.match(body, /^USER root$/m);
   assert.match(body, /^COPY repo\.git \/repo\/\.git$/m);
   assert.ok(body.includes(`checkout --quiet --force --detach ${SHA}`), 'checks out baseCommit');
-  assert.match(body, /submodule update --init --recursive/);
+  assert.match(body, /submodule update --init --recursive --quiet \|\| echo /, 'a submodule git cannot fetch is left to the setup, as the code-runner leaves it');
   assert.match(body, /cd \/repo && \/bin\/sh -e \/verdikta-build\/setup\.sh/);
   // HOME during setup is a build-only directory, never carried into the image.
   assert.match(body, /HOME=\/verdikta-build\/home/);

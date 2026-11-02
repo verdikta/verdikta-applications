@@ -118,8 +118,8 @@ function git(cwd, ...args) {
   }).trim();
 }
 
-/** The fixture Foundry repository (test/fixtures/vault plus `extra` files) as a bare mirror. */
-export function fixtureRepo(dir, extra = {}) {
+/** The fixture Foundry repository (test/fixtures/vault plus `extra` files and `gitlinks`) as a bare mirror. */
+export function fixtureRepo(dir, extra = {}, { gitlinks = {} } = {}) {
   const work = path.join(dir, 'work');
   fs.cpSync(path.join(FIXTURES, 'vault'), work, { recursive: true });
   for (const [rel, text] of Object.entries(extra)) {
@@ -128,6 +128,7 @@ export function fixtureRepo(dir, extra = {}) {
   }
   git(work, 'init', '-q', '-b', 'main');
   git(work, 'add', '-A');
+  for (const [p, commit] of Object.entries(gitlinks)) git(work, 'update-index', '--add', '--cacheinfo', `160000,${commit},${p}`);
   git(work, '-c', 'user.name=maker', '-c', 'user.email=maker@verdikta.invalid', 'commit', '-q', '-m', 'listed');
   const mirror = path.join(dir, 'mirror.git');
   git(dir, 'clone', '-q', '--bare', work, mirror);

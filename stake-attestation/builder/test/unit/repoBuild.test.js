@@ -25,6 +25,13 @@ test('stdin: the solc bytes, then "<mode> <size> <base64 path>" and the exact by
   assert.ok(input.equals(expected));
 });
 
+test('a submodule the builder could not authenticate is sent as an empty directory, excluded from the image\'s files', () => {
+  const input = buildInput(SOLC.bytes, [], [{ path: 'lib/dep', detail: 'x' }]);
+  assert.ok(input.equals(Buffer.concat([SOLC.bytes, Buffer.from(`skip 0 ${b64('lib/dep')}\nend 0 -\n`)])));
+  const script = buildArgv({ solcSize: 1, contractPath: 'a.sol', contractName: 'A', paths: [] })[2];
+  assert.match(script, /--anchored --no-wildcards --exclude-from=\/work\/\.skip/);
+});
+
 test('the build runs in the sandbox (no network, uid 10001, read-only root) and its answer is read back', async () => {
   const artifact = { metadata: { compiler: { version: '0.8.31' } }, deployedBytecode: { object: '0x00' } };
   const out = [

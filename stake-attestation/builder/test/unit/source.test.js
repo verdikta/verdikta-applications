@@ -166,6 +166,24 @@ test('the older multi-file source format is checked the same way', async () => {
   assert.equal(result.ok, true, JSON.stringify(result.issues));
 });
 
+test('a verified file in a submodule the builder could not authenticate stops the listing', async () => {
+  const b = builder({ files: { 'src/Vault.sol': VAULT_SOL }, skipped: [{ path: 'src', detail: 'no https URL for it in .gitmodules' }] });
+  const { result } = await check(MATCH, { b });
+  assert.deepEqual(result.issues.map((i) => [i.code, i.path]), [['SOURCE_SUBMODULE_UNVERIFIABLE', 'src/Vault.sol']]);
+});
+
+test('compiler settings that differ from the verified ones stop the listing, even when this contract\'s code comes out the same', async () => {
+  const runs = clone(ARTIFACT);
+  runs.metadata.settings.optimizer = { enabled: true, runs: 1000 };
+  const { result } = await check(MATCH, { b: builder({ artifact: runs }) });
+  assert.equal(result.summary.bytecode, 'match');
+  assert.deepEqual(codes(result), ['SOURCE_SETTINGS_MISMATCH']);
+  assert.match(result.issues[0].detail, /optimizer runs 200 vs 1000/);
+  const evm = clone(ARTIFACT);
+  evm.metadata.settings.evmVersion = 'prague';
+  assert.deepEqual(codes((await check(MATCH, { b: builder({ artifact: evm }) })).result), ['SOURCE_SETTINGS_MISMATCH']);
+});
+
 test('a submodule the build could not fetch is reported', async () => {
   const { result } = await check(MATCH, { b: builder({ skipped: [{ path: 'lib/forge-std', detail: 'no https URL for it in .gitmodules' }] }) });
   assert.equal(result.ok, true);

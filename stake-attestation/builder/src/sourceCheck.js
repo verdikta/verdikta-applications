@@ -8,7 +8,8 @@
 // explorer names from the Solidity project's checksummed binaries (src/solc.js). Then:
 //   files     every file of the verified source is byte-identical to that path in the tree the
 //             build reads (through any symbolic link, as the build reads it);
-//   compiler  the repository pins that solc release (foundry.toml `solc = "x.y.z"`);
+//   compiler  the repository pins that solc release (foundry.toml `solc = "x.y.z"`) and builds with
+//             the verified optimizer, EVM and IR settings;
 //   sources   the build of the contract uses only files of the verified source, with their bytes
 //             (so no remapping selects a file the explorer never saw);
 //   bytecode  its runtime code is the deployed code, every byte but the immutables (filled in at
@@ -177,7 +178,7 @@ export function compareRepoBuild({ source, artifact, contractPath, deployedCode 
       bytecode = 'match';
       metadata = deployed.metadata.equals(built.metadata) ? 'match' : 'differs';
       if (metadata === 'differs') warnings.push({ code: 'BYTECODE_METADATA_DIFFERS', detail: 'the runtime code matches; the metadata hash in its trailer differs' });
-      if (diffs.length) warnings.push({ code: 'SETTINGS_DIFFER', detail: `the verified settings differ from the repository's (verified vs repository) without changing the code: ${diffs.join('; ')}` });
+      if (diffs.length) issues.push({ code: 'SOURCE_SETTINGS_MISMATCH', detail: `the verified compiler settings differ from foundry.toml's (verified vs repository): ${diffs.join('; ')}; claims would build with other settings than the deployment` });
     } else {
       bytecode = 'mismatch';
       issues.push({
@@ -226,6 +227,14 @@ export async function checkVerifiedSource({ spec, explorer, buildRepo }) {
 
   const b = await buildRepo({ version: source.compilerVersion, contractPath, contractName: name, paths });
   const filesCompared = paths.length;
+  const unverifiable = (b.skippedSubmodules ?? []).flatMap((sub) => paths.filter((p) => p.startsWith(`${sub.path}/`)).map((p) => ({ sub, p })));
+  if (unverifiable.length) {
+    return result(unverifiable.map(({ sub, p }) => ({
+      code: 'SOURCE_SUBMODULE_UNVERIFIABLE',
+      path: p,
+      detail: `${p} is in the submodule at ${sub.path}, which the builder could not fetch by the commit its gitlink records (${sub.detail}); its files could not be checked`,
+    })), [], summaryOf(source, { filesCompared, solc: b.solc }));
+  }
   const fileIssues = compareFiles(source, b.files);
   if (fileIssues.length) return result(fileIssues, [], summaryOf(source, { filesCompared, solc: b.solc }));
   const pinIssues = compareCompilerPin(b.config, source);
@@ -237,6 +246,6 @@ export async function checkVerifiedSource({ spec, explorer, buildRepo }) {
   }
   const c = compareRepoBuild({ source, artifact: b.artifact, contractPath, deployedCode: code });
   if (b.copy && b.copy.exitCode !== 0) c.warnings.push({ code: 'UNTRACKED_COPY_INCOMPLETE', detail: `some of the image's untracked files could not be laid out beside the listed commit: ${b.copy.errors.slice(-500)}` });
-  for (const sub of b.skippedSubmodules ?? []) c.warnings.push({ code: 'SUBMODULE_NOT_FETCHED', path: sub.path, detail: `the submodule at ${sub.path} was left empty, as claims will see it: ${sub.detail}` });
+  for (const sub of b.skippedSubmodules ?? []) c.warnings.push({ code: 'SUBMODULE_NOT_FETCHED', path: sub.path, detail: `the submodule at ${sub.path} was left empty in this check's build (${sub.detail}); the contract does not use it` });
   return result(c.issues, c.warnings, summaryOf(source, { contract: c.contract, filesCompared, bytecode: c.bytecode, metadata: c.metadata, solc: b.solc }));
 }

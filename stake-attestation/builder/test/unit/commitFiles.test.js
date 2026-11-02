@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { commitTree, isTreePath } from '../../src/commitFiles.js';
+import { commitTree, isTreePath, submoduleHttpsUrl } from '../../src/commitFiles.js';
 import { fetchListedCommit } from '../../src/git.js';
 
 const ENV = { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_DATE: '1700000000 +0000', GIT_COMMITTER_DATE: '1700000000 +0000' };
@@ -37,12 +37,14 @@ function repos() {
   fs.writeFileSync(path.join(work, '.gitmodules'), [
     '[submodule "dep"]', '\tpath = lib/dep', '\turl = ../dep.git',
     '[submodule "gone"]', '\tpath = lib/gone', '\turl = https://github.com/acme/gone.git',
-    '[submodule "ssh"]', '\tpath = lib/ssh', '\turl = git@github.com:acme/ssh.git', '',
+    '[submodule "ssh"]', '\tpath = lib/ssh', '\turl = git@github.com:acme/ssh.git',
+    '[submodule "local"]', '\tpath = lib/local', '\turl = file:///nonexistent/local.git', '',
   ].join('\n'));
   git(work, 'add', '-A');
   git(work, 'update-index', '--add', '--cacheinfo', `160000,${subCommit},lib/dep`);
   git(work, 'update-index', '--add', '--cacheinfo', `160000,${'e'.repeat(40)},lib/gone`);
   git(work, 'update-index', '--add', '--cacheinfo', `160000,${subCommit},lib/ssh`);
+  git(work, 'update-index', '--add', '--cacheinfo', `160000,${subCommit},lib/local`);
   git(work, 'commit', '-q', '-m', 'listed');
   const baseCommit = git(work, 'rev-parse', 'HEAD');
   git(root, 'clone', '-q', '--bare', work, path.join(root, 'vault.git'));
@@ -50,6 +52,7 @@ function repos() {
     'https://github.com/acme/vault': path.join(root, 'vault.git'),
     'https://github.com/acme/dep.git': path.join(root, 'dep.git'),
     'https://github.com/acme/gone.git': path.join(root, 'dep.git'),
+    'https://github.com/acme/ssh.git': path.join(root, 'dep.git'),
   };
   return { root, work, baseCommit, mirrors };
 }
@@ -68,7 +71,8 @@ test('every file of the commit with its mode, submodules fetched by their gitlin
   assert.deepEqual(byPath['run.sh'], { mode: '100755', text: '#!/bin/sh\n' });
   assert.deepEqual(byPath['src/link.sol'], { mode: '120000', text: 'Vault.sol' }, 'a symbolic link is its target');
   assert.deepEqual(byPath['lib/dep/src/Lib.sol'], { mode: '100644', text: 'library Lib {}\n' }, 'relative URL ../dep.git resolved against the listed repository');
-  assert.deepEqual(skipped.map((s) => s.path).sort(), ['lib/gone', 'lib/ssh'], 'a missing submodule commit, and a submodule without an https URL, stay empty');
+  assert.deepEqual(byPath['lib/ssh/src/Lib.sol'], { mode: '100644', text: 'library Lib {}\n' }, 'an ssh URL is fetched over https: the gitlink\'s id authenticates it');
+  assert.deepEqual(skipped.map((s) => s.path).sort(), ['lib/gone', 'lib/local'], 'a missing submodule commit, and a submodule with no https form, are left out');
   assert.match(skipped.find((s) => s.path === 'lib/gone').detail, /has no commit e{40}/);
   fs.rmSync(r.root, { recursive: true, force: true });
 });
@@ -80,6 +84,19 @@ test('the maker\'s work tree plays no part: only the fetched objects are read', 
   const { entries } = await commitTree({ gitDir, repo: 'https://github.com/acme/vault', baseCommit: r.baseCommit, mirrorFor: (u) => r.mirrors[u] ?? null, workDir: r.root, timeoutMs: 60000 });
   assert.equal(entries.find((e) => e.path === 'src/Vault.sol').bytes.toString(), 'contract Vault {}\n');
   fs.rmSync(r.root, { recursive: true, force: true });
+});
+
+test('submodule URLs: relative, ssh and git:// forms become the host\'s https URL; nothing else is fetched', () => {
+  const up = 'https://github.com/acme/vault';
+  assert.equal(submoduleHttpsUrl('../dep.git', up), 'https://github.com/acme/dep.git');
+  assert.equal(submoduleHttpsUrl('./sub', up), 'https://github.com/acme/vault/sub');
+  assert.equal(submoduleHttpsUrl('git@github.com:foundry-rs/forge-std.git', up), 'https://github.com/foundry-rs/forge-std.git');
+  assert.equal(submoduleHttpsUrl('ssh://git@github.com/foundry-rs/forge-std', up), 'https://github.com/foundry-rs/forge-std');
+  assert.equal(submoduleHttpsUrl('git://github.com/foundry-rs/forge-std', up), 'https://github.com/foundry-rs/forge-std');
+  assert.equal(submoduleHttpsUrl('https://github.com/OpenZeppelin/openzeppelin-contracts', up), 'https://github.com/OpenZeppelin/openzeppelin-contracts');
+  for (const raw of ['file:///etc', 'http://example.com/x', '/srv/x.git', 'https://user:pw@github.com/x', 'ext::sh -c id']) {
+    assert.equal(submoduleHttpsUrl(raw, up), null, raw);
+  }
 });
 
 test('paths git could not check out are refused', () => {

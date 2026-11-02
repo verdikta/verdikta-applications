@@ -216,7 +216,8 @@ deploys on the in-process network against the mock aggregator, as a test.
    mirror path); nothing of the maker's tree is checked out on the host.
 3. **build**: `docker build` of a two-stage Dockerfile. The `setup` stage is FROM the foundry
    base pinned in `@verdikta/common` (`BASE_IMAGE_PINS.foundry`, by digest), checks out the
-   commit and its submodules at `/repo` and runs the maker's `commands.setup` there as root,
+   commit and its submodules at `/repo` (a submodule git cannot fetch is left to the setup, as
+   the code-runner leaves one whose objects the image lacks) and runs the maker's `commands.setup` there as root,
    with the build's network. Its `HOME` is a build-only folder that is thrown away, and
    `XDG_DATA_HOME` is `/opt/verdikta/tools/share`, so tools installed the usual way (forge's
    solc downloads) land outside `$HOME` and `/tmp`; `$VERDIKTA_TOOLS/bin` is on `PATH` after
@@ -242,12 +243,14 @@ deploys on the in-process network against the mock aggregator, as a test.
    out from the objects the builder fetched by id (each submodule's by the commit its gitlink
    records; never the image's checkout or objects), the image's untracked files (its installed
    dependencies) around them, never over a tracked path, as the code-runner's checkout keeps
-   them; then the pinned base's forge builds the contract's file with `--use` the solc release
+   them (a submodule it cannot fetch over https by its gitlink commit stays an empty directory,
+   and a verified file inside one is refused); then the pinned base's forge builds the contract's file with `--use` the solc release
    the explorer names, from binaries.soliditylang.org (`solc.baseUrl`) checked against the
    SHA-256 its `list.json` publishes. A maker's setup can install anything as `solc`, so the
    listing's own compiler is never used. The listing stops unless: every verified file is
    byte-identical to that path in the tree the build reads (through any symbolic link, as the
-   build reads it); `foundry.toml` pins that solc release; the build of the contract uses only
+   build reads it); `foundry.toml` pins that solc release and the verified optimizer, EVM and IR
+   settings; the build of the contract uses only
    verified files, with their bytes (no remapping picks another); and its runtime code is the
    deployed code, every byte but the immutables and solc's metadata trailer. A proxy, a
    flattened source, an unverified address or an unlinked library (whose address could not be

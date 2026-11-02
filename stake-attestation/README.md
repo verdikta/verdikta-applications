@@ -15,9 +15,11 @@ the design where they differ.
 
 **Status:** scaffold, plus the contract's listing half, its claim lifecycle and
 settlement: finalize by polling the aggregator, the six-outcome rule, payouts,
-depletion and owed awards; the environment builder; and the server's listing
-flow. The packages below build and test; the rest of the site's flows and the
-hunter commands arrive with the nodes named in the plan.
+depletion and owed awards; the environment builder; the server's listing
+flow, indexer, keeper, feed, record mirror and badge; and the client's maker
+flows (listing, the disclosure key, decrypt-and-check). The packages below build
+and test; the rest of the site's flows and the hunter commands arrive with the
+nodes named in the plan.
 
 ## A separate site
 
@@ -55,8 +57,8 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 | Folder | What | Test |
 |---|---|---|
 | `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
-| `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`; the baseline scan between listing and open, its findings served to the maker's wallet only (P4b2). | `npm test`, `npm run test:builder` |
-| `client/` | Vite + React site. Port 5176. | `npm test`, `npx playwright test` |
+| `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`; the baseline scan between listing and open, its findings served to the maker's wallet only (P4b2); the indexer, keeper, listing feed, record mirror, labels and badge (P4b1) over one deployment. | `npm test`, `npm run test:builder`, `npm run abi` |
+| `client/` | Vite + React site, port 5176: the maker's listing flow, the disclosure key made in the browser, and decrypt-and-check (P6a). | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI: `check`, `commit`, `reveal`, `status`, `claim` arrive in P5. | `npm test` |
 | `shared/` | Code shared by the packages (the banned-words helper so far) and the app's repository checks. | `npm test` |
 | `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`; the baseline scan, for the maker only (P3b). The reusable workflow that runs it is `.github/workflows/stake-attestation-builder.yml`. | `npm test`, `npm run test:docker` |
@@ -82,8 +84,9 @@ cd stake-attestation/builder && npm ci && npm test && npm run test:docker
 `npm run gas` in `onchain/` prints the gas report, `npm run coverage` runs
 solidity-coverage, `npm run coverage:check` runs it and fails below 95% line
 coverage on any production contract, and `npx hardhat size-contracts` prints
-the bytecode sizes and fails above EIP-170's 24 KiB. The Playwright smoke test builds the client and serves it
-with `vite preview`. The shared package's scope test compares against
+the bytecode sizes and fails above EIP-170's 24 KiB. The client's Playwright tests build the client and serve it
+with `vite preview` in front of a local stack (see "The client"); they install the server's
+dependencies if `server/node_modules` is missing. The shared package's scope test compares against
 `origin/claude/stake-attestation` (or `SA_BASE_REF`), so fetch it first.
 
 ## The contract: listings
@@ -338,7 +341,82 @@ in `builder/`) runs the real builder's command line through the API on a draft t
 refuses at its first step, and the real `scan` on a repository it cannot fetch, which need no
 Docker. The scan's tests stub the scanner the same way, and mark every finding with a string
 made per run that they look for in the view, both archives, `known_issues.json`, the arguments
-of `list()`, every log line and every refusal.
+of `list()`, every log line and every refusal, and, once the listing is listed and funded on the
+in-process chain, in the feed, its events, the record, the badge and the status.
+
+## The feed, the record and the badge
+
+With a deployment configured (`SA_CONTRACT_ADDRESS`, `SA_CHAIN_ID`, `SA_FROM_BLOCK`,
+`SA_RPC_URL`), `server/src/site/` (node P4b1) indexes the contract and serves, all of one block,
+the indexer's cursor, read by its hash (EIP-1898), so a reorg never mixes two branches in one
+answer. Each answer says whether it is `fresh`: the last sync that reached the confirmed head and
+the indexed block are both within `SA_MAX_STALENESS_SECONDS` (600).
+
+| Route | |
+|---|---|
+| `GET /api/feed` | every listing that takes commits (Open, its paid period not over): hash, artifact, image and scope (from its listing archive, used only when the archive is the listing the chain stores), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed and lapsed listings are not in it (design §15) |
+| `GET /api/feed/events?after=&limit=` | the contract's events of listings and claims, in chain order (design §13.4: the feed is those events), paged by `next` (`<block>:<logIndex>`) |
+| `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), read in `recordPage` pages when it is long; `labels`; `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding. 404 for a hash with no opened listing |
+| `GET /api/records/:hash/badge.svg` | the badge; "record unavailable" when the record is not fresh or cannot be read |
+| `GET /api/status` | the indexer's cursor and the keeper's address, transaction in flight and last result |
+
+**Only valid findings are published** (design §14). A claim's events appear in full once it
+settled LOW..CRITICAL (the record's findings); every other claim's events (INVALID, DUPLICATE,
+pending, expired) keep only their claim and listing ids, so the site never republishes their
+archives, keys, ciphertext, hunter or verdict. The record's counts and flags are the contract's.
+
+**The indexer** reads every event of the deployment from `SA_FROM_BLOCK`, in chunks of
+`SA_LOG_CHUNK_BLOCKS`, only up to `SA_CONFIRMATIONS` (10) blocks below the head, and commits each
+chunk with its cursor in one atomic write to `SA_DATA_DIR/state.json` (one writer per folder, by
+numbered lock files: a process takes the next number only when the highest one is released or
+its process is gone, keeps it only if it is still the highest, and lock files are never removed,
+so the folder keeps one small file and a release marker per start; a folder of another
+deployment is refused). A restart resumes after the last
+committed chunk. Each sync asks the endpoint for its chain id (`eth_chainId`; the provider's
+request cache is off) and compares the cursor's stored block hash with the chain's; after a
+reorg it rolls back to the newest block it read (within `SA_REORG_WINDOW_BLOCKS`) that is still
+on the chain, drops the events after it and reads again from there, or from `SA_FROM_BLOCK` if
+none is. A chunk whose blocks changed while it was read is not committed.
+
+**The keeper** (erratum E4: the aggregator never calls back) calls `finalize` when a claim's
+round is over and `settle` when a judged claim may settle, and `expire` only with
+`SA_KEEPER_EXPIRE=on`. Its key is `SA_KEEPER_PRIVATE_KEY`, read when it starts (`SA_KEEPER=off`
+turns it off). It reads each claim on-chain and simulates the call before sending it, keeps one
+transaction in flight at its next confirmed nonce, recorded before it is broadcast, and
+resolves that record first in the next cycle or process: waited for, re-sent at the same nonce
+with higher fees after `SA_KEEPER_REPLACE_AFTER_MS`, or, when the call is no longer due,
+replaced by a 0-value transfer to itself. When a reorg drops a transaction it had mined, it
+fills the missing nonces with transfers to itself, after cancelling a queued call that is no
+longer due; a record signed by a previous key is kept until that account's nonce passes it or
+its claim is over, and the same call is not sent for that claim meanwhile; an expiry is re-sent
+only while `SA_KEEPER_EXPIRE` is on. A retry, a restart
+or a second keeper with the same key therefore never makes a call twice; keepers with different
+keys can still race, so run one per deployment or share the key.
+
+**Labels** are the site's (the contract states facts only): `scanned` when the top award is
+below `SA_BADGE_FLOOR_WEI`, `staked`, `under-staked` when the maker declared a value at risk and
+the top award, priced by Chainlink's ETH/USD aggregator at `SA_ETH_USD_FEED` (no older than
+`SA_ETH_USD_MAX_AGE_SECONDS`), is below `SA_UNDER_STAKED_RATIO_BPS` of it (no usable price: no
+label, never a guess), and `invited` for an allowlist. The floor and the share default to
+**placeholders** (0.04 ETH and 10%, `server/src/record/labels.js`) until the owner sets the
+launch values at G1; `/api/status` and every record name the placeholders still in use.
+
+**The badge** reads "no finding at or above *class* while staked" (*class*: the listing's
+lowest class counted, with "under-staked" or "invited" after it when they apply) while a
+listing of the hash takes commits, only "scanned" below the floor, and "*n* valid finding(s) at
+or above *class*" once the record holds one; when no listing of the hash takes commits it says
+how the stake ended (closed, rolled forward, depleted, lapsed). Every string the server writes
+goes through the shared banned-words helper. The feed reads a listing archive's
+`code_review.json` from the ZIP's central directory, never extracting it, with byte caps on the
+download (`SA_ARCHIVE_MAX_BYTES`) and on each member read, inflated or not. Archive reads run
+beside the indexer, one run at a time, so a slow gateway never delays a chain read; a failed
+fetch is retried after `SA_ARCHIVE_RETRY_MS`, doubling, counted from the failure.
+
+**The ABI.** The server reads the contract through `server/src/chain/abi/StakeAttestation.json`,
+onchain's merged ABI (contract plus lens), and never compiles; `npm run abi` rewrites it and a
+test fails while it differs from the contracts in `onchain/`. Its tests run the indexer, the
+keeper (automine off, so transactions wait in a mempool), reorgs (`evm_snapshot` /
+`evm_revert`), restarts and a mock ETH/USD aggregator on the in-process Hardhat network.
 
 ## The environment builder
 
@@ -595,14 +673,68 @@ the caller's credit before `msg.value`, and settles through scripted results or
 owner settings and its oracles; the contract's header lists them. A fault the
 real contract cannot produce is not added to the mock.
 
+## The client
+
+`client/` (node P6a) is the maker's side of the site. Routes are in the hash: `#/list`,
+`#/fund/<listingId>` and `#/check/<claimId>`; nothing private ever goes in a URL.
+
+- **Listing** (`#/list`): the artifact (a repository, or a deployed contract with its chain),
+  scope, award table, lowest class counted, bond, windows (design §7.1's defaults: 14 days, 30
+  for a contract, 72 h, 48 h, 7 days), invited hunters, known issues (their ids are common's
+  `knownIssueId`) and the declared value at risk. The form holds the windows to decision D8
+  (fix window 0 to 90 days, dispute 24 to 2160 hours, reveal 3 to 90 days, grace no longer than
+  the fix window) and leaves every other rule to the server, whose issues it shows. It follows
+  the listing through `GET /api/listings/:id`, shows the validation report, and once ready
+  sends `list()` with the server's arguments and `fund()` with `feeDue()` plus the escrow
+  through the maker's wallet. `list()` is sent only when those arguments carry the maker's own
+  disclosure key and terms, and not when the maker already has an active listing of the
+  version (`activeListingOf`), which the page links to instead.
+- **A listing's page** (`#/fund/<listingId>`): its stored terms and, while it is Listed, the
+  opening `fund()`, so a maker who leaves between `list()` and `fund()` can come back. Just
+  before sending, the listing's state and fee are read at one block through the wallet: unless
+  it is still Listed with the terms the page shows, nothing is sent, and the fee passed as
+  `expectedFeeWei` makes an opening fund that lands first from elsewhere revert this one.
+  Reads are checked to come from `VITE_SA_CHAIN_ID` (`chainReader`), and every transaction asks
+  the wallet whether its account and chain are still the connected ones.
+- **Disclosure key.** "Generate" makes an age X25519 pair in the page with
+  `@verdikta/common/src/codeReview/disclosure.js`, common's browser-safe entry, which Vite
+  bundles as it is (no shim: @noble takes randomness from `globalThis.crypto`). Only the public
+  half enters the listing. The private half is shown once, offered as a key file in
+  age-keygen's format (stock `age -d -i` reads it) and dropped from the page when the maker
+  says it is saved. It is never sent, logged or stored: the client uses no browser storage at
+  all (`test/noStore.test.js`), and a Playwright test records every request of a whole maker
+  session and fails if any carries the key in any encoding. A maker with an age key already
+  enters its public half instead.
+- **Decrypt-and-check** (`#/check/<claimId>`): reads the claim and its listing from the chain,
+  fetches the disclosed ciphertext from `VITE_IPFS_GATEWAY`, checks its SHA-256 against the
+  commitment, decrypts it with the maker's private key (pasted or loaded from the key file)
+  using common's `decryptDisclosure`, and compares the plaintext's SHA-256 with the committed
+  archive hash, all in the browser. A key that is not the listing's is the maker's mistake and
+  is reported as such. A copy that fails, or that cannot be fetched, may be flagged with
+  `flagBadDisclosure` through the wallet while the chain's clock is inside the grace period.
+
+**Config** is Vite's build environment: `VITE_SA_CHAIN_ID`, `VITE_SA_CONTRACT`,
+`VITE_SA_RPC_URL` (reads; without it, reads go through the wallet) and `VITE_IPFS_GATEWAY`.
+The API is same-origin under `/api`; `vite` and `vite preview` proxy it to `SA_API_URL`
+(default `http://127.0.0.1:5009`).
+
+**Tests.** `npm test` covers the form model, the known-issue ids against common's, the key
+file, and decrypt-and-check with common's real encryption. `npx playwright test` starts
+`e2e/support/stack.mjs`: StakeAttestation deployed on the in-process Hardhat network as the
+server's chain tests deploy it, behind Hardhat's JSON-RPC server; the real API server with
+mock pinning, dev trust and the server's own fake builder CLI as its builder; an IPFS gateway
+stand-in; and the production build. The browser's wallet is an injected EIP-1193 provider that
+forwards to the local node's unlocked accounts. `SA_SCREENSHOTS=1` writes the screenshots under
+`client/test-results/screenshots/`, with every private-key field masked.
+
 ## CI
 
 `.github/workflows/stake-attestation.yml` runs on pull requests into `main` and
 `claude/stake-attestation` that touch this folder or the two workflows. It installs
 each package with `npm ci --ignore-scripts`, runs its tests, the Hardhat tests,
-the contract sizer, the coverage gate (a job of its own), the Playwright smoke
-test, the builder's Docker tests (a job of its own, with registry:2 and the
-pinned code-runner under runc), the banned-words check and actionlint (1.7.12, checksum pinned)
-over it and the reusable builder workflow, and uses no secrets. A new
+the contract sizer, the coverage gate (a job of its own), the client's Playwright
+tests against local Hardhat and the server, the builder's Docker tests (a job of its own, with
+registry:2 and the pinned code-runner under runc), the banned-words check and actionlint
+(1.7.12, checksum pinned) over it and the reusable builder workflow, and uses no secrets. A new
 package is added to the workflow and to `shared/test/repo/helpers.js` together;
 the workflow test fails until both list it.

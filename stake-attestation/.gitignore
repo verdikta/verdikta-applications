@@ -13,6 +13,11 @@ client/test-results/
 client/playwright-report/
 client/blob-report/
 client/playwright/.cache/
+# the Playwright stack's per-run state (e2e/support/stack.mjs)
+client/.e2e/
 
 # The server's chain tests: onchain/contracts copied in, compiled on the in-process network
 server/.hardhat/
+
+# The server's indexer and keeper state (SA_DATA_DIR default)
+server/data/

@@ -66,8 +66,11 @@ if (config.mode === 'hang') {
   // close as soon as the builder dies. 'hang-tree': the child takes a moment to stop on SIGTERM,
   // as a docker CLI stopping its container does. 'hang-stubborn': it ignores SIGTERM.
   const { spawn } = await import('node:child_process');
+  // The child writes <record>.grandchild.ready once its SIGTERM handler is in place: a test checks
+  // that the step was stopped after that, so the signal met the behaviour under test.
   const onTerm = config.mode === 'hang-tree' ? 'setTimeout(() => process.exit(0), 400)' : '{}';
-  const grandchild = spawn(process.execPath, ['-e', `process.on("SIGTERM", () => ${onTerm}); setInterval(() => {}, 1000)`], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const ready = `${config.record}.grandchild.ready`;
+  const grandchild = spawn(process.execPath, ['-e', `process.on("SIGTERM", () => ${onTerm}); require("node:fs").writeFileSync(${JSON.stringify(ready)}, "1"); setInterval(() => {}, 1000)`], { stdio: ['ignore', 'pipe', 'pipe'] });
   fs.writeFileSync(`${config.record}.grandchild`, String(grandchild.pid));
   fs.writeFileSync(path.join(process.env.TMPDIR, 'builder-temp-file'), 'x');
   setInterval(() => {}, 1000);

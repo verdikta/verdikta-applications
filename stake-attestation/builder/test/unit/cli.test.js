@@ -13,10 +13,10 @@ import { fileURLToPath } from 'node:url';
 import { codeReview } from '../../src/common.js';
 import { main } from '../../src/cli.js';
 import { sha256 } from '../helpers/fakes.js';
-import { acceptedListing, draftSpec } from '../helpers/specs.js';
+import { writeAcceptedBuild } from '../helpers/build.js';
+import { draftSpec } from '../helpers/specs.js';
 
 const BIN = fileURLToPath(new URL('../../bin/verdikta-build-env.js', import.meta.url));
-const IMAGE = `ghcr.io/verdikta/stake-env@sha256:${'c'.repeat(64)}`;
 
 function tmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'vab-cli-'));
@@ -35,22 +35,9 @@ function configFile(dir, key = 'dev') {
   return file;
 }
 
-/** An out directory as `build` leaves it after an accepted validation. */
-function acceptedDir(dir) {
-  const listing = acceptedListing();
-  const spec = { ...draftSpec(), env: { image: IMAGE, from: 'foundry', platform: 'linux/amd64', unpackedBytes: 812000000 }, limits: listing.limits };
-  const cr = Buffer.from(`${JSON.stringify(spec, null, 2)}\n`);
-  const bl = Buffer.from(`${JSON.stringify(listing.baseline, null, 2)}\n`);
-  fs.writeFileSync(path.join(dir, 'code_review.json'), cr);
-  fs.writeFileSync(path.join(dir, 'baseline.json'), bl);
-  const report = {
-    version: 1, kind: 'verdikta-listing-validation', status: 'accepted',
-    image: { ref: IMAGE, base: codeReview.BASE_IMAGE_PINS.foundry.reference, platform: 'linux/amd64' },
-    listingCheck: { runner: { version: '0.1.0', runtime: 'runsc', platform: 'linux/amd64' } },
-    files: { 'code_review.json': sha256(cr), 'baseline.json': sha256(bl), 'known_issues.json': null },
-    devOnly: [], attestation: null, refusals: [], warnings: [], steps: [],
-  };
-  fs.writeFileSync(path.join(dir, 'validation-report.json'), `${JSON.stringify(report, null, 2)}\n`);
+/** An out directory as `build` leaves it after an accepted validation (the real pipeline, doubled tools). */
+async function acceptedDir(dir) {
+  const { cr, bl } = await writeAcceptedBuild(dir);
   return { cr, bl };
 }
 
@@ -72,7 +59,7 @@ test('the package exposes verdikta-build-env; --help and --version', () => {
 
 test('sign with a dev key: attestation.json and the dev trust set; the report records the signature', async () => {
   const dir = tmp();
-  const { cr, bl } = acceptedDir(dir);
+  const { cr, bl } = await acceptedDir(dir);
   const t = io();
   const code = await main(['sign', '--config', configFile(dir), '--dir', dir], { env: {}, ...t });
   assert.equal(code, 0, t.err);
@@ -90,7 +77,7 @@ test('sign with a dev key: attestation.json and the dev trust set; the report re
 
 test('sign with a production key from the environment: nothing is written while the key is not in common\'s set, and the key is never shown', async () => {
   const dir = tmp();
-  acceptedDir(dir);
+  await acceptedDir(dir);
   const { privateKey } = crypto.generateKeyPairSync('ed25519');
   const pem = privateKey.export({ format: 'pem', type: 'pkcs8' });
   const body = pem.split('\n').slice(1, -2).join('');
@@ -129,7 +116,7 @@ test('run (build and sign in one process) takes a dev key only: a production key
 
 test('sign never writes the attestation over another file of the listing', async () => {
   const dir = tmp();
-  const { bl } = acceptedDir(dir);
+  const { bl } = await acceptedDir(dir);
   const spec = JSON.parse(fs.readFileSync(path.join(dir, 'code_review.json')));
   spec.attestation = 'baseline.json';
   fs.writeFileSync(path.join(dir, 'code_review.json'), `${JSON.stringify(spec, null, 2)}\n`);
@@ -142,7 +129,7 @@ test('sign never writes the attestation over another file of the listing', async
 
 test('sign refuses an out directory whose report did not accept the listing', async () => {
   const dir = tmp();
-  acceptedDir(dir);
+  await acceptedDir(dir);
   const report = JSON.parse(fs.readFileSync(path.join(dir, 'validation-report.json')));
   report.status = 'refused';
   fs.writeFileSync(path.join(dir, 'validation-report.json'), JSON.stringify(report));

@@ -23,8 +23,8 @@ export function notCountedReason({ known, dispute, artifact, fact, terms }) {
     if (!answer.ok) return answer.error;
     if (!answer.signed?.ok) return 'NOT_SIGNED_BY_BUILDER';
   }
-  // each archive what it is on-chain, of one signed spec, and that spec this listing's
-  if (known.signed.role !== 'listing' || dispute.signed.role !== 'dispute' || known.signed.specSha256 !== dispute.signed.specSha256) return 'ARCHIVE_MISMATCH';
+  // each archive what it is on-chain, of one set of signed files, and those files this listing's
+  if (known.signed.role !== 'listing' || dispute.signed.role !== 'dispute' || known.signed.filesSha256 !== dispute.signed.filesSha256) return 'ARCHIVE_MISMATCH';
   if (!artifact || !sameArtifact(known, artifact)) return 'ARCHIVE_MISMATCH';
   if (fact.proof !== 'yes') return fact.reason ?? 'NOT_CHECKED_YET';
   if (!terms) return 'NOT_CHECKED_YET';

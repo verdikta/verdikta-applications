@@ -16,7 +16,7 @@ import { listArguments } from '../../src/listing/listParams.js';
 import { createMockPinner, rawCid } from '../../src/pinning/index.js';
 import { createSite } from '../../src/site/index.js';
 import { deployStakeAttestation, hardhat } from './chain.js';
-import { draftSpec, fakeBuilder, testConfig } from './fixtures.js';
+import { draftSpec, fakeBuilder, knownIssues, serialize, testConfig } from './fixtures.js';
 import { proofFile } from './gitRepo.js';
 import { quietLogger } from './http.js';
 
@@ -108,9 +108,10 @@ function eventArgs(ctx, rc, name) {
  * fix window and a disclosure grace of 0, so a disclosed claim reveals at once. The repository's
  * file at the commit names the maker, as the project's own listing has it (`proof` another address,
  * or null: none). `builder` signs it (by default the one the site trusts); `list: false` stops
- * before list(), for a test that replays the archive; `paramsOver` changes what goes on-chain.
+ * before list(), for a test that replays the archive; `paramsOver` changes what goes on-chain;
+ * `knownIssuesList` signs it with known issues.
  */
-export async function listing(ctx, { maker = ctx.maker, spec = {}, stake = {}, fund = true, allowlist = [], escrowWei, oracle, proof, builder = ctx.builder, list = true, paramsOver = {} } = {}) {
+export async function listing(ctx, { maker = ctx.maker, spec = {}, stake = {}, fund = true, allowlist = [], escrowWei, oracle, proof, builder = ctx.builder, list = true, paramsOver = {}, knownIssuesList = false } = {}) {
   const base = draftSpec();
   const draft = {
     ...base,
@@ -118,16 +119,17 @@ export async function listing(ctx, { maker = ctx.maker, spec = {}, stake = {}, f
     ...spec,
     stake: { ...base.stake, fixWindowDays: 0, disclosureGraceHours: 0, ...stake },
   };
-  delete draft.stake.knownIssues;
+  if (!knownIssuesList) delete draft.stake.knownIssues;
   if (proof === null) ctx.proofs.delete(`${draft.repo}@${draft.baseCommit}`);
   else ctx.proofs.set(`${draft.repo}@${draft.baseCommit}`, proof ?? maker.address);
-  const built = await builder.build({ draft, knownIssues: null, maker: maker.address });
+  const issues = knownIssuesList ? serialize(knownIssues()) : null;
+  const built = await builder.build({ draft, knownIssues: issues, maker: maker.address });
   const archives = buildListingArchives(built.files);
   const listingCid = await ctx.pinner.pin(archives.listing.bytes, { name: 'listing.zip' });
   const disputeCid = await ctx.pinner.pin(archives.dispute.bytes, { name: 'dispute.zip' });
   const args = listArguments({
     spec: archives.spec,
-    knownIssues: null,
+    knownIssues: knownIssuesList ? knownIssues() : null,
     allowlist,
     oracle: oracle ?? testConfig().oracle,
     listingCid,

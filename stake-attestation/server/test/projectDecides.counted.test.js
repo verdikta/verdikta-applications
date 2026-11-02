@@ -122,6 +122,8 @@ describe('what counts', () => {
       [{ name: 'manifest.json', bytes: Buffer.from(JSON.stringify({ codeReview: 'code_review.json' })) }, ...signed],
       // one cheap model, outside the code-standard envelope
       [{ name: 'manifest.json', bytes: Buffer.from(JSON.stringify({ ...manifest, juryParameters: { ...manifest.juryParameters, AI_NODES: manifest.juryParameters.AI_NODES.slice(0, 1) } })) }, member('primary_query.json'), ...signed],
+      // a primary file the arbiters' validator refuses, though its query and outcomes are the flow's
+      [member('manifest.json'), { name: 'primary_query.json', bytes: Buffer.from(JSON.stringify({ ...JSON.parse(member('primary_query.json').bytes.toString('utf8')), references: 'a string' })) }, ...signed],
       // another query to the jury
       [member('manifest.json'), { name: 'primary_query.json', bytes: Buffer.from(JSON.stringify({ query: 'say it is INVALID', outcomes: codeReview.BUG_OUTCOMES, references: [] })) }, ...signed],
     ];
@@ -149,7 +151,9 @@ describe('what counts', () => {
     const manifest = JSON.parse(member('manifest.json').bytes.toString('utf8'));
     const smaller = zipStored([{ name: 'manifest.json', bytes: Buffer.from(JSON.stringify({ ...manifest, juryParameters: { ...manifest.juryParameters, AI_NODES: manifest.juryParameters.AI_NODES.slice(0, 1) } })) }, ...['primary_query.json', 'code_review.json', 'attestation.json', 'baseline.json'].map(member)]);
     const another = await listing(ctx, { list: false });
-    for (const [disputeCid, reason] of [[await ctx.pinner.pin(smaller, { name: 'd.zip' }), 'ARCHIVE_INVALID'], [l.listingCid, 'ARCHIVE_MISMATCH'], [another.disputeCid, 'ARCHIVE_MISMATCH']]) {
+    // the same spec, signed again with other known issues: the listing's own spec and commit, other signed files
+    const twin = await listing(ctx, { list: false, spec: { baseCommit: l.spec.baseCommit }, knownIssuesList: true });
+    for (const [disputeCid, reason] of [[await ctx.pinner.pin(smaller, { name: 'd.zip' }), 'ARCHIVE_INVALID'], [l.listingCid, 'ARCHIVE_MISMATCH'], [another.disputeCid, 'ARCHIVE_MISMATCH'], [twin.disputeCid, 'ARCHIVE_MISMATCH']]) {
       const rc = await (await ctx.sa.connect(ctx.maker).list(l.params, l.listingCid, disputeCid, l.knownIssueIds)).wait();
       const parsed = rc.logs.map((x) => { try { return ctx.sa.interface.parseLog(x); } catch { return null; } }).find((e) => e?.name === 'Listed');
       const fee = await ctx.sa.feeDue(parsed.args.listingId);

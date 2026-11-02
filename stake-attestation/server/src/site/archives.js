@@ -102,7 +102,7 @@ export function readListingArchive(bytes, listingCid, { maxBytes = Infinity, dev
     platform: spec.env?.platform ?? null,
     scope,
     terms,
-    signed: read.signed ? { ok: true, role: read.role, specSha256: read.specSha256, keyId: read.keyId, trust: read.trust, issuedAt: read.issuedAt } : { ok: false },
+    signed: read.signed ? { ok: true, role: read.role, filesSha256: read.filesSha256, keyId: read.keyId, trust: read.trust, issuedAt: read.issuedAt } : { ok: false },
   };
 }
 

@@ -8,10 +8,10 @@ import { didBuilderSign, readSignedListing } from '../src/builderSignature.js';
 import { zipStored } from '../src/zip.js';
 
 const files = (over = {}, panel = 'standard') => ({
-  'manifest.json': JSON.stringify({ version: '1.0', codeReview: 'code_review.json', primary: { filename: 'primary_query.json' }, juryParameters: { panel } }),
-  'primary_query.json': JSON.stringify({ query: 'the query', outcomes: ['six'] }),
+  'manifest.json': JSON.stringify({ version: '1.0', primary: { filename: 'primary_query.json' }, juryParameters: { panel }, codeReview: 'code_review.json' }),
+  'primary_query.json': JSON.stringify({ query: 'the query', outcomes: ['six'], references: [] }),
   'code_review.json': JSON.stringify({ repo: 'https://github.com/acme/vault', baseCommit: 'a'.repeat(40), attestation: 'attestation.json', baseline: 'baseline.json', stake: {} }),
-  'attestation.json': JSON.stringify({ trust: 'production', signature: { keyId: 'k1' }, issuedAt: '2026-11-02T00:00:00Z', sha256: { codeReview: 'spec-hash' } }),
+  'attestation.json': JSON.stringify({ trust: 'production', signature: { keyId: 'k1' }, issuedAt: '2026-11-02T00:00:00Z', sha256: { codeReview: 'spec-hash', baseline: 'baseline-hash', knownIssues: null } }),
   'baseline.json': '{}',
   ...over,
 });
@@ -23,8 +23,7 @@ const codeReview = (issues = []) => ({
   validateCodeReviewSpec: yes,
   CODE_STANDARD_PANEL: { panel: 'standard' },
   CODE_STANDARD_DISPUTE_PANEL: { panel: 'dispute' },
-  validateClassEnvelope: (panel, name) => ({ ok: ['standard', 'dispute', 'smaller'].includes(panel?.panel) && name === 'code-standard', issues: [] }),
-  validateBugOutcomes: (o) => ({ ok: Array.isArray(o) && o[0] === 'six', issues: [] }),
+  BUG_OUTCOMES: ['six'],
   buildClaimQuery: () => 'the query',
   validateBaseline: yes,
   validateKnownIssues: yes,
@@ -77,19 +76,26 @@ test('did the builder sign this listing: both archives, the listing the chain ho
   // the archives must be what they are on-chain, of one signed spec
   assert.equal(ask({ disputeBytes: listingBytes }).reason, 'ARCHIVE_MISMATCH');
   assert.equal(ask({ listingBytes: disputeBytes }).reason, 'ARCHIVE_MISMATCH');
-  const other = zip(files({ 'code_review.json': JSON.stringify(spec), 'attestation.json': JSON.stringify({ trust: 'production', signature: { keyId: 'k1' }, sha256: { codeReview: 'another-hash' } }) }, 'dispute'));
-  assert.equal(ask({ disputeBytes: other }).reason, 'ARCHIVE_MISMATCH');
+  // one spec with other known issues or another baseline is other signed files
+  for (const sha256 of [{ codeReview: 'another-hash', baseline: 'baseline-hash', knownIssues: null }, { codeReview: 'spec-hash', baseline: 'another-hash', knownIssues: null }, { codeReview: 'spec-hash', baseline: 'baseline-hash', knownIssues: 'other-issues' }]) {
+    const other = zip(files({ 'code_review.json': JSON.stringify(spec), 'attestation.json': JSON.stringify({ trust: 'production', signature: { keyId: 'k1' }, sha256 }) }, 'dispute'));
+    assert.equal(ask({ disputeBytes: other }).reason, 'ARCHIVE_MISMATCH', JSON.stringify(sha256));
+  }
 });
 
-test('signed files repackaged around another panel, query or outcomes, or no primary file, are not a listing arbiters would judge', () => {
-  const manifest = (over) => JSON.stringify({ version: '1.0', codeReview: 'code_review.json', primary: { filename: 'primary_query.json' }, juryParameters: { panel: 'standard' }, ...over });
+test('signed files repackaged in any way are not what the flow issued: the manifest, the primary file or the members differ', () => {
+  const manifest = (over) => JSON.stringify({ version: '1.0', primary: { filename: 'primary_query.json' }, juryParameters: { panel: 'standard' }, codeReview: 'code_review.json', ...over });
+  const primary = (over) => JSON.stringify({ query: 'the query', outcomes: ['six'], references: [], ...over });
   const cases = [
     { 'manifest.json': JSON.stringify({ codeReview: 'code_review.json' }) },
     { 'manifest.json': manifest({ juryParameters: { panel: 'one cheap model' } }) },
-    { 'manifest.json': manifest({ juryParameters: { panel: 'smaller' } }) },
     { 'manifest.json': manifest({ primary: { filename: 'missing.json' } }) },
-    { 'primary_query.json': JSON.stringify({ query: 'another query', outcomes: ['six'] }) },
-    { 'primary_query.json': JSON.stringify({ query: 'the query', outcomes: ['two'] }) },
+    { 'manifest.json': manifest({ additional: [{ name: 'x' }] }) },
+    { 'primary_query.json': primary({ query: 'another query' }) },
+    { 'primary_query.json': primary({ outcomes: ['two'] }) },
+    { 'primary_query.json': primary({ references: 'a string' }) },
+    { 'primary_query.json': primary({ references: ['https://example.invalid'] }) },
+    { 'extra.txt': 'a member the flow never writes' },
   ];
   for (const over of cases) assert.equal(readSignedListing(zip(files(over)), { codeReview: codeReview() }).reason, 'ARCHIVE_INVALID', JSON.stringify(over));
   assert.equal(readSignedListing(zip(files()), { codeReview: codeReview() }).signed, true);

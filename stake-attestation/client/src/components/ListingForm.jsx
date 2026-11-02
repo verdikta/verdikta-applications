@@ -1,6 +1,6 @@
 import { SEVERITY_CLASSES, setKind, setWindow } from '../lib/draft.js';
 import { knownIssueEntry } from '../lib/knownIssues.js';
-import { STRINGS, fill } from '../strings.js';
+import { CONTROL_FILE_FORMAT, STRINGS, fill } from '../strings.js';
 import { SelectField, TextField } from './Field.jsx';
 
 const L = STRINGS.listing;
@@ -61,6 +61,7 @@ export function ListingForm({ form, setForm, issues, keyPanel }) {
     <>
       <fieldset>
         <legend>{L.sections.artifact}</legend>
+        <p className="hint">{fill(L.hints.control, { format: CONTROL_FILE_FORMAT })}</p>
         <SelectField
           label={F.kind}
           value={form.kind}

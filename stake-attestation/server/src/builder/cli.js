@@ -43,7 +43,7 @@ const tail = (buf, n = 600) => buf.toString('utf8').slice(-n).trim();
 // result the maker sees; the output itself stays in the server's log.
 const builderCode = (buf) => /verdikta-build-env: (?:scan )?([A-Z][A-Z0-9_]{0,63})\b/.exec(buf.toString('utf8'))?.[1] ?? null;
 
-function childEnv(env, names, tmp) {
+export function childEnv(env, names, tmp) {
   const out = {};
   for (const n of ['PATH', 'HOME', ...names]) if (typeof env[n] === 'string') out[n] = env[n];
   // the builder's own temporary folders (and docker's, git's) go inside the server's build
@@ -72,7 +72,7 @@ function childEnv(env, names, tmp) {
  * interruption the caller must not count the slot as free.
  * @returns {Promise<{ code: number|null, spawnError: string|null, timedOut: boolean, interrupted: boolean, forced: boolean, stdout: Buffer, stderr: Buffer }>}
  */
-function runStep({ nodePath, bin, args, env, timeoutMs, graceMs, cwd }) {
+export function runStep({ nodePath, bin, args, env, timeoutMs, graceMs, cwd }) {
   return new Promise((resolve) => {
     const child = spawn(nodePath, [bin, ...args], { env, cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     const out = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };

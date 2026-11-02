@@ -106,6 +106,15 @@ async function post(path, body) {
   return out;
 }
 
+/**
+ * A contract listing's control proof (node P8): anyone may send one, since it speaks for itself.
+ * Resolves { control }, the listing's fact; a proof that does not count is an ApiError (422).
+ */
+export const sendControlProof = (hash, listingId, { signer, signature, creationTx }) => post(
+  `/api/records/${encodeURIComponent(hash)}/listings/${encodeURIComponent(listingId)}/control-proof`,
+  { signer, signature, ...(creationTx ? { creationTx } : {}) },
+);
+
 /** A sign-in challenge for pinning a statement on the claim, naming its listing's maker. */
 export const disputeStatementChallenge = (claimId) => post(`/api/claims/${encodeURIComponent(claimId)}/dispute-statement/challenge`, {});
 

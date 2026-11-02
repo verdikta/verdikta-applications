@@ -11,7 +11,8 @@
 //            pinning, dev trust and, as its builder, server/test/fixtures/fake-builder-cli.js:
 //            the stand-in the server's builder tests run, which keeps the builder's command
 //            line. Its mode (accepted, refused-source, error) is read from builder.json at each
-//            build, so a test can change it. Its chain side (node P4b1) runs too: the indexer,
+//            build, so a test can change it. The control check (node P8) is the real one, reading
+//            only the bare repositories in .e2e/mirrors. Its chain side (node P4b1) runs too: the indexer,
 //            the keeper (finalize and settle, signing with Hardhat's 10th test account, derived
 //            here from Hardhat's public test mnemonic), the feed, the record mirror and the
 //            badge, with a Chainlink ETH/USD stand-in for the labels. The gateway serves what
@@ -60,6 +61,9 @@ async function startChain() {
   const ethUsd = await (await hre.ethers.getContractFactory('MockEthUsdFeed')).deploy(8, ETH_USD);
   await ethUsd.waitForDeployment();
   const signers = await hre.ethers.getSigners();
+  // a deployment for the contract listings' control proof (node P8): the `other` account owns it
+  const owned = await (await hre.ethers.getContractFactory('MockOwned')).deploy(signers[4].address);
+  await owned.waitForDeployment();
   const { mnemonic, passphrase = '', path: hdPath } = hre.network.config.accounts;
   const keeper = hre.ethers.HDNodeWallet.fromPhrase(mnemonic, passphrase, `${hdPath}/${KEEPER_INDEX}`);
   const { TASK_NODE_CREATE_SERVER } = createRequire(path.join(SERVER, 'package.json'))('hardhat/builtin-tasks/task-names');
@@ -74,6 +78,7 @@ async function startChain() {
     aggregator: await d.aggregator.getAddress(),
     aggregatorAbi: (await hre.artifacts.readArtifact('MockVerdiktaAggregator')).abi,
     ethUsdFeed: await ethUsd.getAddress(),
+    ownedContract: await owned.getAddress(),
     keeperKey: keeper.privateKey,
     listingFeeWei: LISTING_FEE_WEI.toString(),
     accounts: {
@@ -132,7 +137,9 @@ async function startApi(chain, pinner) {
   const builderConfig = path.join(STACK_DIR, 'builder.json');
   const builderRecord = path.join(STACK_DIR, 'builder-record.json');
   const workDir = path.join(STACK_DIR, 'builds');
+  const mirrorDir = path.join(STACK_DIR, 'mirrors');
   fs.mkdirSync(workDir, { recursive: true });
+  fs.mkdirSync(mirrorDir, { recursive: true });
   fs.writeFileSync(builderConfig, JSON.stringify({ mode: 'accepted', record: builderRecord }));
   const { loadConfig } = await fromServer('src/config.js');
   const { createApp } = await fromServer('src/app.js');
@@ -158,6 +165,9 @@ async function startApi(chain, pinner) {
     SA_ETH_USD_FEED: chain.ethUsdFeed,
     // tests move the chain's clock by days; the stand-in's answer stays the price
     SA_ETH_USD_MAX_AGE_SECONDS: String(10 * 365 * 86400),
+    // the control facts' real check, over repositories in this folder: nothing else is reachable
+    SA_CONTROL_GIT_MIRROR_DIR: mirrorDir,
+    SA_CONTROL_RETRY_MS: '2000',
   };
   const config = loadConfig(env);
   const quiet = { info() {}, debug() {}, warn: (...a) => log('api:', ...a), error: (...a) => log('api:', ...a) };
@@ -175,7 +185,7 @@ async function startApi(chain, pinner) {
   site.start();
   const app = createApp({ config, logger: quiet, pinner, site });
   const { server, url } = await listen(http.createServer(app));
-  return { server, url, site, builderConfig, builderRecord };
+  return { server, url, site, builderConfig, builderRecord, mirrorDir };
 }
 
 function vite(args, env) {
@@ -206,6 +216,8 @@ async function main() {
     contract: chain.contract,
     aggregator: chain.aggregator,
     ethUsdFeed: chain.ethUsdFeed,
+    ownedContract: chain.ownedContract,
+    mirrorDir: api.mirrorDir,
     listingFeeWei: chain.listingFeeWei,
     accounts: chain.accounts,
     builderConfig: api.builderConfig,

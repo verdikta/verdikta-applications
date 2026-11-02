@@ -75,6 +75,25 @@
 //                                  with higher fees (180000)
 //   SA_KEEPER_MAX_FEE_PER_GAS_WEI  the most the keeper pays per gas (10000000000, 10 gwei)
 //   SA_KEEPER_EXPIRE               off (default) | on: also expire claims nobody can advance
+//
+// The control facts (node P8; src/control/, docs/control-proof.md):
+//
+//   SA_CONTROL_GIT_HOSTS           the git hosts the site reads a repository from, comma-separated
+//                                  (github.com, gitlab.com, codeberg.org, bitbucket.org); a listing
+//                                  on any other host is "no"
+//   SA_CONTROL_CHECK_BIN           the check's command line (../builder/bin/verdikta-control-check.js)
+//   SA_CONTROL_CHECK_TIMEOUT_MS    one repository's whole check (120000)
+//   SA_CONTROL_CHECK_MAX_BYTES     what one check may fetch (268435456, 256 MiB)
+//   SA_CONTROL_RETRY_MS            after a failed check, the first wait before the next; it doubles
+//                                  per failure, up to 6 h (60000)
+//   SA_CONTROL_RECHECK_MS          between checks of a listing that is live (86400000, 1 day): a
+//                                  branch can be deleted and an owner can change
+//   SA_CONTROL_RPC_TIMEOUT_MS      one deployment proof's reads on the listing's chain (10000)
+//   SA_CONTROL_RPC_URL_<chain id>  the JSON-RPC endpoint of a listing's chain other than SA_CHAIN_ID.
+//                                  Read when used and never kept here: it may carry a key. A contract
+//                                  listing on a chain with none is "no"
+//   SA_CONTROL_GIT_MIRROR_DIR      development only, refused in production: repositories are read from
+//                                  <dir>/<host>/<path>.git instead of the network
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -181,6 +200,34 @@ function gateways(env, name) {
     out.push(entry.replace(/\/+$/, ''));
   }
   return [...new Set(out)];
+}
+
+const DEFAULT_GIT_HOSTS = Object.freeze(['github.com', 'gitlab.com', 'codeberg.org', 'bitbucket.org']);
+const GIT_HOST = /^[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)+$/;
+
+function controlConfig(env, production) {
+  // another chain's endpoint is read when used and never kept; only its shape is checked here
+  for (const name of Object.keys(env)) {
+    if (name.startsWith('SA_CONTROL_RPC_URL_')) {
+      if (!/^SA_CONTROL_RPC_URL_[1-9][0-9]{0,19}$/.test(name)) fail(`${name}: the suffix is the listing chain's id`);
+      checkSecretUrl(env, name);
+    }
+  }
+  const gitHosts = env.SA_CONTROL_GIT_HOSTS ? env.SA_CONTROL_GIT_HOSTS.split(',').map((x) => x.trim()).filter(Boolean) : [...DEFAULT_GIT_HOSTS];
+  for (const h of gitHosts) if (!GIT_HOST.test(h) || /^[0-9.]+$/.test(h)) fail(`SA_CONTROL_GIT_HOSTS: "${h}" is not a lowercase host name`);
+  const mirrorDir = env.SA_CONTROL_GIT_MIRROR_DIR ? path.resolve(env.SA_CONTROL_GIT_MIRROR_DIR) : null;
+  if (mirrorDir && production) fail('SA_CONTROL_GIT_MIRROR_DIR is for development only: in production a repository is read from its host, so a local copy can say nothing');
+  return Object.freeze({
+    gitHosts: Object.freeze(gitHosts),
+    bin: path.resolve(env.SA_CONTROL_CHECK_BIN || path.join(here, '..', '..', 'builder', 'bin', 'verdikta-control-check.js')),
+    workDir: path.resolve(env.SA_BUILDER_WORK_DIR || os.tmpdir()),
+    mirrorDir,
+    timeoutMs: integer(env, 'SA_CONTROL_CHECK_TIMEOUT_MS', 120000, { min: 100 }),
+    maxBytes: integer(env, 'SA_CONTROL_CHECK_MAX_BYTES', 256 * 1024 * 1024, { min: 1024 }),
+    retryMs: integer(env, 'SA_CONTROL_RETRY_MS', 60000, { min: 1 }),
+    recheckMs: integer(env, 'SA_CONTROL_RECHECK_MS', 86400000, { min: 1 }),
+    rpcTimeoutMs: integer(env, 'SA_CONTROL_RPC_TIMEOUT_MS', 10000, { min: 1 }),
+  });
 }
 
 function chainConfig(env, chainId) {
@@ -326,6 +373,7 @@ export function loadConfig(env = process.env) {
     chain,
     keeper: keeperConfig(env),
     labels: labelsConfig(env),
+    control: controlConfig(env, production),
     archives: Object.freeze({
       gateways: Object.freeze(gateways(env, 'SA_IPFS_GATEWAYS')),
       maxBytes: integer(env, 'SA_ARCHIVE_MAX_BYTES', 8 * 1024 * 1024, { min: 1024 }),

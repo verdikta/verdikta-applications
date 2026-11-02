@@ -29,7 +29,10 @@ function share(stakeUsd, valueAtRiskUsd) {
 
 const neighbour = (id, hash) => (BigInt(id) === 0n ? null : { id: String(id), hash: isZeroHash(hash) ? null : hash.toLowerCase() });
 
-function listingView(l, label, blockTimestamp) {
+/** No fact from the server reads as "no", the fact's default. */
+const NOT_CHECKED = Object.freeze({ subject: 'repository', controls: 'no', reason: 'NOT_CHECKED_YET', detail: null, repository: null, deployment: null });
+
+function listingView(l, label, blockTimestamp, control) {
   const opened = Number(l.openedAt);
   // it took claims from the opening to its roll forward or close, whichever came first
   const ends = [time(l.rolledAt), time(l.closedAt)].filter((t) => t !== null);
@@ -39,6 +42,7 @@ function listingView(l, label, blockTimestamp) {
     maker: l.maker,
     state: l.state,
     labels: labelsOf(l, label),
+    control: control ?? NOT_CHECKED,
     awards: Object.fromEntries(CLASSES.map((c, i) => [c, String(l.awards[i])])),
     lowest: l.lowestClassCounted,
     bondWei: String(l.bondWei),
@@ -91,7 +95,7 @@ export function recordView(view) {
       : null,
     listingCount: String(record.listingCount),
     active: record.active.map(String),
-    listings: record.listings.map((l) => listingView(l, labels.listings[String(l.listingId)], block.timestamp)),
+    listings: record.listings.map((l) => listingView(l, labels.listings[String(l.listingId)], block.timestamp, view.control?.[String(l.listingId)])),
     history: {
       claims: String(h.claims),
       judged: String(h.outcomes.reduce((s, x) => s + BigInt(x), 0n)),

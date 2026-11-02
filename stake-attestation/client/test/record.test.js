@@ -107,6 +107,17 @@ test('labels: the stake label, then invited and lapsed; no price gives no stake 
   assert.equal(unpriced.valueAtRiskUsd, '1250000');
 });
 
+test('each stake carries its control fact as the server states it, and none reads as "no"', () => {
+  const fact = { maker: listing().maker, subject: 'repository', controls: 'yes', statement: 'staker controls the repository: yes', reason: null, detail: null, repository: { path: '.verdikta/stake-control.json' }, deployment: null };
+  const v = view();
+  v.control = { 3: fact };
+  assert.deepEqual(recordView(v).listings[0].control, fact);
+  const none = recordView(view()).listings[0].control;
+  assert.equal(none.controls, 'no');
+  assert.equal(none.subject, 'repository');
+  assert.equal(none.reason, 'NOT_CHECKED_YET');
+});
+
 test('the top award as a share of the declared value at risk, when the server priced it', () => {
   const l = recordView(view({ listings: [listing({ valueAtRiskUsd: '1250000' })], labels: { 3: { stake: 'under-staked', stakeUsd: '4840' } } })).listings[0];
   assert.equal(l.stakeUsd, '4840');

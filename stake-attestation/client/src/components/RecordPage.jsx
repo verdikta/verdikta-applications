@@ -6,6 +6,7 @@ import { formatEth, formatTime, formatWhole } from '../lib/format.js';
 import { recordView } from '../lib/record.js';
 import { STRINGS, fill } from '../strings.js';
 import { BadgeEmbed } from './BadgeEmbed.jsx';
+import { ControlProofForm, controlRows } from './ControlFacts.jsx';
 import { Diligence } from './Diligence.jsx';
 import { AsOf, Facts, labelText, siteErrorText } from './Facts.jsx';
 import { TextField } from './Field.jsx';
@@ -44,7 +45,7 @@ function Lineage({ to }) {
   return to.hash ? <a href={`#/record/${to.hash}`}>{text}</a> : text;
 }
 
-function Stake({ l }) {
+function Stake({ l, hash, onChanged }) {
   const id = useId();
   const f = (name) => `listing-${l.id}-${name}`;
   return (
@@ -54,6 +55,7 @@ function Stake({ l }) {
         { id: f('maker'), label: R.maker, value: <span className="mono">{l.maker}</span> },
         { id: f('state'), label: R.state, value: E.listingStates[l.state] ?? l.state },
         { id: f('labels'), label: R.labels, value: labelText(l.labels) || R.none },
+        ...controlRows(l.control, f),
         { id: f('awards'), label: R.awards, value: fill(R.awardsLine, Object.fromEntries(Object.entries(l.awards).map(([c, w]) => [c, formatEth(w)]))) },
         { id: f('lowest'), label: R.lowest, value: l.lowest },
         { id: f('bond'), label: R.bond, value: eth(l.bondWei) },
@@ -70,6 +72,7 @@ function Stake({ l }) {
         { id: f('predecessor'), label: R.predecessor, value: <Lineage to={l.predecessor} /> },
         { id: f('successor'), label: R.successor, value: <Lineage to={l.successor} /> },
       ]} />
+      <ControlProofForm listingId={l.id} hash={hash} control={l.control} onChanged={onChanged} />
     </section>
   );
 }
@@ -106,7 +109,7 @@ function FindingsTable({ findings, testId, rowId }) {
   );
 }
 
-function Record({ v }) {
+function Record({ v, onChanged }) {
   const h = v.history;
   const a = v.artifact;
   return (
@@ -127,7 +130,8 @@ function Record({ v }) {
       </section>
 
       <h3>{R.stakes}</h3>
-      {v.listings.map((l) => <Stake key={l.id} l={l} />)}
+      <p className="hint">{STRINGS.control.intro}</p>
+      {v.listings.map((l) => <Stake key={l.id} l={l} hash={v.hash} onChanged={onChanged} />)}
       {v.placeholders.length > 0 && <p className="hint">{STRINGS.labels.placeholders}</p>}
 
       <section className="claim" data-testid="record-history">
@@ -223,7 +227,7 @@ export function RecordPage({ hash }) {
   else if (!loaded) body = <p className="hint">{R.loading}</p>;
   else if (loaded.missing) body = <><p className="error">{fill(R.notFound, { hash: hash.toLowerCase() })}</p><HashLookup /></>;
   else if (loaded.failed) body = <><p className="error">{loaded.failed}</p><button type="button" onClick={() => setAttempt((x) => x + 1)}>{STRINGS.site.retry}</button></>;
-  else body = <Record v={loaded.view} />;
+  else body = <Record v={loaded.view} onChanged={() => setAttempt((x) => x + 1)} />;
   return (
     <>
       {header}

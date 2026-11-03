@@ -1,0 +1,326 @@
+// Acceptance 1: `check` runs the code-runner pipeline minus the jury at CODE_RUNNER_URL, the image
+// pulled by digest, with finding.json validation and scope through common, and prints the gate forecast
+// and the pack. And the notes from A3a, A3b, A2c and Q35 the forecast must carry.
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { runCli } from './helpers/cli.js';
+import { FINDING, FIX_PATCH, JUSTIFICATION_CID, POC_PATCH, makeClaimDir, makeWorld, vectorOf } from './helpers/world.js';
+import { GATES, IMAGE_SHA, PACK, TOKEN, abstaining, definitive, pocFacts, refused, startRunner } from './helpers/runner.js';
+
+let w;
+let l;
+let runner;
+const runnerOpt = () => ({ url: runner.url, token: TOKEN });
+const check = (claimDir, over = {}) => w.hunter({ runner: runnerOpt(), signer: undefined }).check({ claimDir, listingId: l.listingId, ...over });
+
+before(async () => {
+  w = await makeWorld();
+  l = await w.listing();
+  runner = await startRunner();
+});
+after(async () => {
+  await runner.close();
+  await w.close();
+});
+
+test('check posts one pipeline request with the bearer token and the listing\'s image by digest', async () => {
+  runner.requests.length = 0;
+  const r = await check(makeClaimDir({ fix: FIX_PATCH }));
+  assert.equal(runner.requests.length, 1);
+  const req = runner.requests[0];
+  assert.deepEqual(req.spec, l.spec);
+  assert.match(req.spec.env.image, /@sha256:[0-9a-f]{64}$/);
+  assert.equal(Buffer.from(req.pocPatch, 'base64').toString(), POC_PATCH);
+  assert.equal(Buffer.from(req.fixPatch, 'base64').toString(), FIX_PATCH);
+  assert.deepEqual(req.finding, FINDING);
+  assert.deepEqual(req.eaGates, { disclosure: 'pass', inScope: 'pass' });
+  assert.equal(req.listingCid, l.listingCid);
+  assert.equal(r.forecast.verdict, 'pass');
+  assert.deepEqual(r.forecast.gates.map((g) => g.name), ['listingSigned', 'finding', 'inScope', 'applies', 'testPathsOnly', 'build', 'reproduces', 'integrity', 'claimedObservable']);
+  assert.ok(r.pack.files.length > 0);
+});
+
+test('a finding.json common refuses, or one out of scope, stops at the local gate and never reaches the runner', async () => {
+  runner.requests.length = 0;
+  const outOfScope = await check(makeClaimDir({ finding: { ...FINDING, affectedPaths: ['lib/Other.sol'] } }));
+  assert.equal(outOfScope.forecast.verdict, 'fail');
+  assert.equal(outOfScope.forecast.gates.find((g) => g.name === 'inScope').status, 'fail');
+  assert.match(outOfScope.forecast.gates.find((g) => g.name === 'inScope').detail, /PATH_OUT_OF_SCOPE/);
+  assert.equal(outOfScope.forecast.settlesAs.outcome, 'INVALID');
+  const schema = await check(makeClaimDir({ finding: { ...FINDING, claimedClass: 'HUGE' } }));
+  assert.equal(schema.forecast.gates.find((g) => g.name === 'finding').status, 'fail');
+  assert.equal(runner.requests.length, 0);
+});
+
+test('the runner\'s refusal codes are shown by code, path and detail, none taken for the claim\'s failure', async () => {
+  runner.state.answer = () => refused([{ code: 'SOLC_NOT_OFFICIAL', path: '/spec/env/image', detail: 'svm/0.8.31/solc-0.8.31 is not the official build' }, { code: 'A_CODE_THIS_TOOL_HAS_NEVER_SEEN', path: '/x', detail: 'something new' }]);
+  const r = await check(makeClaimDir());
+  assert.equal(r.forecast.verdict, 'refused');
+  assert.equal(r.forecast.settlesAs, null);
+  assert.deepEqual(r.forecast.refusals.map((i) => i.code), ['SOLC_NOT_OFFICIAL', 'A_CODE_THIS_TOOL_HAS_NEVER_SEEN']);
+  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId), '--no-pack'], { runner });
+  assert.equal(cli.code, 1);
+  assert.match(cli.stdout, /SOLC_NOT_OFFICIAL/);
+  assert.match(cli.stdout, /\/spec\/env\/image/);
+  assert.match(cli.stdout, /svm\/0\.8\.31\/solc-0\.8\.31 is not the official build/);
+  assert.match(cli.stdout, /A_CODE_THIS_TOOL_HAS_NEVER_SEEN/);
+  runner.state.answer = (req) => definitive(req.spec);
+});
+
+test('an abstention says so, with its cause, and forecasts nothing', async () => {
+  runner.state.answer = (req) => abstaining(req.spec, 'pull_failed', 'the registry was unreachable', 'pull');
+  const r = await check(makeClaimDir());
+  assert.equal(r.forecast.verdict, 'abstain');
+  assert.equal(r.forecast.abstain.cause, 'pull_failed');
+  assert.equal(r.forecast.settlesAs, null);
+  runner.state.answer = (req) => definitive(req.spec);
+});
+
+test('an abstain a claim can cause is shown as an abstain, with what it costs (design §12 at A4b): nothing on-chain says why', async () => {
+  for (const [cause, step, detail] of [['oom', 'poc:run-1', 'a process in the sandbox was OOM-killed during the step'], ['step_timeout', 'poc:run-2', 'the step hit its limit'], ['pids_limit', 'build', 'the pid table was full'], ['killed_by_signal', 'poc:run-1', 'exit 137']]) {
+    runner.state.answer = (req) => abstaining(req.spec, cause, detail, step);
+    const r = await check(makeClaimDir());
+    assert.equal(r.forecast.verdict, 'abstain', cause);
+    assert.equal(r.forecast.settlesAs, null, 'an abstain settles nothing');
+    assert.equal(r.forecast.abstain.cause, cause);
+    assert.equal(r.forecast.abstain.step, step);
+    assert.equal(r.forecast.abstain.claimCanCause, true, cause);
+    const text = r.forecast.abstain.cost;
+    for (const needle of [/every arbiter/i, /no commit|no verdict/i, /base fees/, /K × the per-oracle fee/, /\$1\.75/, /\$3\.50/, /rest .*comes back at finalize/i, /no round settles/, /bond goes to the maker at expiry/, /[Nn]othing on-chain or on IPFS says why/]) {
+      assert.match(text, needle, `${cause}: ${needle}`);
+    }
+  }
+  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId), '--no-pack'], { runner });
+  assert.equal(cli.code, 1, cli.stderr);
+  assert.match(cli.stdout, /ABSTAIN/i);
+  assert.match(cli.stdout, /killed_by_signal/);
+  assert.match(cli.stdout, /poc:run-1/);
+  assert.match(cli.stdout, /bond goes to the maker at expiry/);
+  assert.match(cli.stdout, /\$1\.75/);
+  assert.doesNotMatch(cli.stdout, /Settles as/);
+  runner.state.answer = (req) => definitive(req.spec);
+});
+
+test('an abstain from this machine\'s own runner says that too, and still what the same cause would cost on the arbiters', async () => {
+  runner.state.answer = (req) => abstaining(req.spec, 'docker_unreachable', 'the daemon cannot be reached', 'admission');
+  const r = await check(makeClaimDir());
+  assert.equal(r.forecast.verdict, 'abstain');
+  assert.equal(r.forecast.abstain.claimCanCause, false);
+  assert.match(r.forecast.abstain.cost, /this machine/);
+  assert.match(r.forecast.abstain.cost, /no forecast/i);
+  runner.state.answer = (req) => definitive(req.spec);
+});
+
+test('the request is what the EA sends (A4b): report cut as far as the pack could hold, an over-limit fix.patch dropped, an empty one absent', async () => {
+  const maxChars = 60000 * 4;
+  runner.requests.length = 0;
+  await check(makeClaimDir({ report: `# ${'r'.repeat(maxChars + 500)}`, fix: 'x'.repeat(2000001) }));
+  let req = runner.requests[0];
+  assert.equal(req.report.length, maxChars);
+  assert.equal(req.fixPatch, null);
+  assert.equal(req.codeClass, 'code-standard');
+  runner.requests.length = 0;
+  await check(makeClaimDir({ fix: '' }));
+  req = runner.requests[0];
+  assert.equal(req.fixPatch, null);
+});
+
+test('a poc.patch over maxPatchBytes is the EA\'s INVALID at applies: forecast here, never sent to the runner', async () => {
+  runner.requests.length = 0;
+  const r = await check(makeClaimDir({ poc: `diff --git a/t b/t\n${'x'.repeat(2000001)}` }));
+  assert.equal(r.forecast.verdict, 'fail');
+  const gate = r.forecast.gates.find((g) => g.name === 'applies');
+  assert.equal(gate.status, 'fail');
+  assert.match(gate.detail, /maxPatchBytes/);
+  assert.equal(r.forecast.settlesAs.outcome, 'INVALID');
+  assert.equal(runner.requests.length, 0);
+});
+
+test('prior valid findings go to the runner as the EA sends them: they are in the pack jurors read', async () => {
+  const lp = await w.listing();
+  const hunter = w.hunter();
+  const first = makeClaimDir();
+  const { claimId } = await hunter.commit({ claimDir: first, listingId: lp.listingId, acknowledge: true });
+  await hunter.reveal({ claimDir: first });
+  const req0 = (await w.sa.getClaim(claimId)).requestId;
+  await (await w.aggregator.scriptResult(req0, vectorOf('HIGH'), JUSTIFICATION_CID)).wait();
+  await (await w.sa.finalize(claimId)).wait();
+  await w.increase((await w.sa.getListing(lp.listingId)).disputeWindow);
+  await (await w.sa.settle(claimId)).wait();
+  runner.requests.length = 0;
+  await w.hunter({ runner: runnerOpt(), signer: undefined }).check({ claimDir: makeClaimDir(), listingId: lp.listingId });
+  const req = runner.requests[0];
+  assert.equal(req.priorFindings.length, 1);
+  assert.equal(req.priorFindings[0].bcid, (await w.sa.getClaim(claimId)).bcid);
+  assert.deepEqual(req.priorFindings[0].finding, FINDING);
+  assert.ok(req.priorFindings[0].report.length <= 4096);
+});
+
+test('a prior finding this machine cannot read is named, and the pack is said to lack it', async () => {
+  const lp = await w.listing();
+  const hunter = w.hunter();
+  const first = makeClaimDir();
+  const { claimId } = await hunter.commit({ claimDir: first, listingId: lp.listingId, acknowledge: true });
+  const { bcid } = await hunter.reveal({ claimDir: first });
+  await (await w.aggregator.scriptResult((await w.sa.getClaim(claimId)).requestId, vectorOf('HIGH'), JUSTIFICATION_CID)).wait();
+  await (await w.sa.finalize(claimId)).wait();
+  await w.increase((await w.sa.getListing(lp.listingId)).disputeWindow);
+  await (await w.sa.settle(claimId)).wait();
+  w.ipfs.drop(bcid);
+  const r = await w.hunter({ runner: runnerOpt(), signer: undefined, readBackMs: 10 }).check({ claimDir: makeClaimDir(), listingId: lp.listingId });
+  assert.equal(r.forecast.priorFindings.read, 0);
+  assert.deepEqual(r.forecast.priorFindings.unread, [bcid]);
+});
+
+test('linux/arm64: no report, only gates and the pack, and the tool says so instead of failing', async () => {
+  runner.state.answer = (req) => definitive(req.spec, { report: null, reportSha256: null, reportUnavailable: 'linux/arm64 is a development platform', platform: 'linux/arm64' });
+  const r = await check(makeClaimDir());
+  assert.equal(r.forecast.verdict, 'pass');
+  assert.equal(r.forecast.reportUnavailable, 'linux/arm64 is a development platform');
+  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId)], { runner });
+  assert.equal(cli.code, 0, cli.stderr);
+  assert.match(cli.stdout, /linux\/arm64/);
+  assert.match(cli.stdout, /no report/i);
+  assert.match(cli.stdout, /01-poc-diff\.patch/);
+  runner.state.answer = (req) => definitive(req.spec);
+});
+
+test('the run pattern comes from facts.poc.tests, not the report\'s folded form', async () => {
+  const tests = [{ id: 'test/Exploit.t.sol > ExploitTest > test_drain()', runs: ['fail', 'pass', 'fail'], kind: 'assertion', message: 'flaky' }];
+  const folded = { testCount: 1, runCounts: { fail: 0, pass: 0, error: 3, skip: 0, missing: 0, duplicate: 0, notRun: 0 }, tests: [{ id: tests[0].id, runs: ['error', 'error', 'error'], kind: 'error', message: 'disagree' }] };
+  const gates = { ...GATES.allPass(), reproduces: GATES.fail('junit', 'test_drain passed on run 2') };
+  delete gates.integrity;
+  delete gates.claimedObservable;
+  runner.state.answer = (req) => definitive(req.spec, { gates, facts: { poc: pocFacts({ tests, report: folded }) } });
+  const r = await check(makeClaimDir());
+  assert.deepEqual(r.forecast.tests[0].runs, ['fail', 'pass', 'fail']);
+  runner.state.answer = (req) => definitive(req.spec);
+});
+
+test('a PoC whose pragma the listing\'s release cannot compile: build fails, with the pin and the pragma shown', async () => {
+  const gates = { applies: GATES.pass('exit_code'), testPathsOnly: GATES.pass('exit_code'), build: GATES.fail('exit_code', 'the build command exited 1') };
+  const steps = [{ name: 'build', outcome: 'ok', exitCode: 1, durationMs: 9, stdout: { text: '', totalBytes: 0, omittedBytes: 0 }, stderr: { text: 'Error: Found incompatible versions', totalBytes: 34, omittedBytes: 0 } }];
+  runner.state.answer = (req) => definitive(req.spec, { gates, steps, facts: { compiler: { tier: 'A', solc: '0.7.6' }, poc: undefined }, report: null, contextPack: PACK() });
+  const r = await check(makeClaimDir());
+  assert.equal(r.forecast.verdict, 'fail');
+  assert.equal(r.forecast.settlesAs.outcome, 'INVALID');
+  assert.equal(r.forecast.build.compiler, '0.7.6');
+  assert.deepEqual(r.forecast.build.pragmas, ['^0.8.20']);
+  assert.match(r.forecast.build.output, /incompatible versions/);
+  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId), '--no-pack'], { runner });
+  assert.match(cli.stdout, /0\.7\.6/);
+  assert.match(cli.stdout, /\^0\.8\.20/);
+  runner.state.answer = (req) => definitive(req.spec);
+});
+
+test('claimedObservable: a failed gate shows the recorded failure and a line that follows the rule (A3a)', async () => {
+  const gates = { ...GATES.allPass(), claimedObservable: GATES.fail('junit', '"something else" is not in the recorded failure of test_drain on every run') };
+  runner.state.answer = (req) => definitive(req.spec, { gates });
+  const r = await check(makeClaimDir({ finding: { ...FINDING, poc: { command: 'forge test --match-test test_drain', observable: 'test_drain fails with "something else"' } } }));
+  assert.equal(r.forecast.verdict, 'fail');
+  assert.equal(r.forecast.settlesAs.outcome, 'INVALID');
+  assert.equal(r.forecast.observable.suggestions[0], 'test_drain fails with "vault balance 0 after one withdraw"');
+  runner.state.answer = (req) => definitive(req.spec);
+});
+
+test('a static read warns before the run: no test the patch added named, another test named, nothing quoted', async () => {
+  const none = await check(makeClaimDir({ finding: { ...FINDING, poc: { command: 'forge test', observable: 'the vault is drained by anyone at all' } } }));
+  assert.ok(none.forecast.lint.some((x) => x.code === 'NO_ADDED_TEST_NAMED'));
+  assert.ok(none.forecast.lint.some((x) => x.code === 'NOTHING_QUOTED'));
+  const other = await check(makeClaimDir({ finding: { ...FINDING, poc: { command: 'forge test --match-test test_deposit_credits', observable: 'test_drain and test_deposit_credits both fail with "x"' } } }));
+  assert.ok(other.forecast.lint.some((x) => x.code === 'OTHER_TEST_NAMED' && /test_deposit_credits/.test(x.detail)));
+  const fine = await check(makeClaimDir());
+  assert.deepEqual(fine.forecast.lint, []);
+});
+
+test('a message that moves between runs: the hint says to quote only its steady part', async () => {
+  const tests = [{ id: 'test/Exploit.t.sol > ExploitTest > test_drain()', runs: ['fail', 'fail', 'fail'], kind: 'assertion', message: 'balance 0 at 1767225600' }];
+  const report = { testCount: 1, runCounts: { fail: 3, pass: 0, error: 0, skip: 0, missing: 0, duplicate: 0, notRun: 0 }, tests: [{ id: tests[0].id, runs: ['fail', 'fail', 'fail'], kind: 'assertion', message: null }] };
+  const gates = { ...GATES.allPass(), claimedObservable: GATES.fail('junit', 'not on every run') };
+  runner.state.answer = (req) => definitive(req.spec, { gates, facts: { poc: pocFacts({ tests, report }) } });
+  const r = await check(makeClaimDir());
+  assert.match(r.forecast.observable.hints.join('\n'), /moves between runs|changes between runs/);
+  runner.state.answer = (req) => definitive(req.spec);
+});
+
+test('Q35, in plain words: a date-keyed trap is not caught; a tamper flag costs the bond; other integrity failures return it', async () => {
+  const tamper = { ...GATES.allPass(), reproduces: GATES.fail('integrity', 'not trusted'), integrity: GATES.fail('integrity', 'tamperFlags') };
+  delete tamper.claimedObservable;
+  runner.state.answer = (req) => definitive(req.spec, { gates: tamper, facts: { poc: pocFacts({ integrity: { tamperFlags: [{ kind: 'framework-patched', file: 'test/E.t.sol', line: 3 }], frameworkUnchanged: false } }) } });
+  let r = await check(makeClaimDir());
+  assert.equal(r.forecast.settlesAs.outcome, 'INVALID');
+  assert.equal(r.forecast.settlesAs.bond, 'forfeited');
+  assert.match(r.forecast.settlesAs.reason, /tamper/i);
+
+  const other = { ...tamper, integrity: GATES.fail('integrity', 'dependenciesUnchanged') };
+  runner.state.answer = (req) => definitive(req.spec, { gates: other, facts: { poc: pocFacts({ integrity: { dependenciesUnchanged: false } }) } });
+  r = await check(makeClaimDir());
+  assert.equal(r.forecast.settlesAs.outcome, 'DUPLICATE');
+  assert.equal(r.forecast.settlesAs.bond, 'returned');
+  assert.equal(r.forecast.settlesAs.award, 'none');
+  assert.match(r.forecast.settlesAs.reason, /dependenciesUnchanged/);
+
+  const alone = { ...tamper, reproduces: GATES.fail('junit', 'test_drain passed on run 1'), integrity: GATES.fail('integrity', 'dependenciesUnchanged') };
+  const passed = [{ id: 'test/Exploit.t.sol > ExploitTest > test_drain()', runs: ['pass', 'pass', 'pass'], kind: null, message: null }];
+  runner.state.answer = (req) => definitive(req.spec, { gates: alone, facts: { poc: pocFacts({ tests: passed, integrity: { dependenciesUnchanged: false } }) } });
+  r = await check(makeClaimDir());
+  assert.equal(r.forecast.settlesAs.outcome, 'INVALID', 'a reproduces failure on its own stays INVALID, whatever integrity says');
+
+  runner.state.answer = (req) => definitive(req.spec);
+  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId), '--no-pack'], { runner });
+  assert.equal(cli.code, 0, cli.stderr);
+  assert.match(cli.stdout, /date/i);
+  assert.match(cli.stdout, /fakes no clock/);
+  assert.match(cli.stdout, /tamper flag/i);
+  assert.match(cli.stdout, /bond/);
+});
+
+test('a runner off the machine is refused unless asked for, and then the tool says it reads the plaintext', async () => {
+  const hunter = w.hunter({ runner: { url: 'http://192.0.2.1:8090', token: TOKEN }, signer: undefined });
+  await assert.rejects(hunter.check({ claimDir: makeClaimDir(), listingId: l.listingId }), (e) => e.code === 'RUNNER_NOT_LOCAL');
+  const notices = [];
+  const allowed = w.hunter({ runner: { url: runner.url.replace('127.0.0.1', 'localhost'), token: TOKEN, allowRemote: true }, signer: undefined, onNotice: (t) => notices.push(t) });
+  await allowed.check({ claimDir: makeClaimDir(), listingId: l.listingId }).catch(() => {});
+  const refusedLoud = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId)], { runner: { url: 'http://192.0.2.1:8090' } });
+  assert.equal(refusedLoud.code, 1);
+  assert.match(refusedLoud.stderr, /RUNNER_NOT_LOCAL/);
+  const seen = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId), '--remote-runner', '--no-pack'], { runner });
+  assert.match(seen.stdout, /reads? the plaintext/i);
+});
+
+test('an image the runner reports under another digest is a failed forecast, never a pass', async () => {
+  runner.state.answer = (req) => definitive(req.spec, { image: { ref: `ghcr.io/verdikta/stake-env@sha256:${IMAGE_SHA}`, cache: 'hit', durationMs: 1 } });
+  const r = await check(makeClaimDir());
+  assert.equal(r.forecast.verdict, 'fail');
+  assert.equal(r.forecast.gates.find((g) => g.name === 'image').status, 'fail');
+  runner.state.answer = (req) => definitive(req.spec);
+});
+
+test('a listing with no digest in its image is refused before the runner', async () => {
+  const hunter = w.hunter({ runner: runnerOpt(), signer: undefined });
+  const before_ = runner.requests.length;
+  const bad = await hunter.check({ claimDir: makeClaimDir(), listingArchive: Buffer.from('not a zip') }).catch((e) => e);
+  assert.equal(bad.code, 'LISTING_ARCHIVE_INVALID');
+  assert.equal(runner.requests.length, before_);
+});
+
+test('check also works from a listing archive on disk, naming what it could not check', async () => {
+  const r = await w.hunter({ runner: runnerOpt(), signer: undefined, provider: undefined, contract: undefined }).check({ claimDir: makeClaimDir(), listingArchive: l.archives.listing });
+  assert.equal(r.forecast.gates.find((g) => g.name === 'listingSigned').status, 'pass');
+  assert.match(r.forecast.gates.find((g) => g.name === 'listingSigned').detail, /chain/);
+});
+
+test('the CLI prints the forecast and the pack; --no-pack leaves the pack out; --json carries both', async () => {
+  const shown = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId)], { runner });
+  assert.equal(shown.code, 0, shown.stderr);
+  for (const name of ['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity', 'claimedObservable', 'inScope']) assert.match(shown.stdout, new RegExp(name));
+  assert.match(shown.stdout, /01-poc-diff\.patch/);
+  assert.match(shown.stdout, /pack text/);
+  const quiet = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId), '--no-pack'], { runner });
+  assert.doesNotMatch(quiet.stdout, /pack text/);
+  const json = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId), '--json'], { runner });
+  const out = JSON.parse(json.stdout);
+  assert.equal(out.forecast.verdict, 'pass');
+  assert.ok(out.pack.files.length);
+});

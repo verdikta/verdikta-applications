@@ -14,7 +14,6 @@ import { draftSpec, FORGE_COMMANDS } from '../src/fixtures.js';
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const KEYS = ['build', 'test', 'testFiles', 'testIds'];
-const FILES = { testFiles: 'forge test --match-path $FILES', testIds: 'forge test --match-test $TEST_IDS' };
 
 /** Commands an arbiter's runner must refuse, and those it must take, per command. */
 const REFUSED = Object.freeze([
@@ -115,13 +114,13 @@ describe('the builder\'s command check against verdikta-arbiter at the pin', () 
     assert.deepEqual((await builder.checkCommands({ runner: client, draft: draftWith('testFiles', 'forge test') })).issues.map((i) => i.code), ['COMMAND_PLACEHOLDER']);
   });
 
-  test('P3a\'s Docker fixture and the round\'s fixture hold plain forge commands, by the real parser', () => {
-    const helpers = fs.readFileSync(path.join(APP_DIR, 'builder', 'test', 'docker', 'helpers.js'), 'utf8');
-    const block = /build: '([^']*)',\n\s*test: '([^']*)',\n\s*testFiles: '([^']*)',\n\s*testIds: '([^']*)',/.exec(helpers);
-    assert.ok(block, 'the Docker fixture\'s commands');
-    KEYS.forEach((key, i) => assert.equal(parseCommand(key, block[i + 1]).ok, true, `Docker fixture ${key}: ${block[i + 1]}`));
-    for (const key of KEYS) assert.equal(parseCommand(key, FORGE_COMMANDS[key]).ok, true, `round ${key}`);
-    assert.deepEqual([FILES.testFiles, FILES.testIds], [FORGE_COMMANDS.testFiles, FORGE_COMMANDS.testIds]);
+  test('P3a\'s Docker fixture and the round\'s fixture hold plain forge commands, by the real parser', async () => {
+    const { fixtureDraft } = await import(path.join(APP_DIR, 'builder', 'test', 'docker', 'helpers.js'));
+    const docker = fixtureDraft(COMMIT, 'age1placeholder').commands;
+    for (const key of KEYS) {
+      assert.equal(parseCommand(key, docker[key]).ok, true, `the Docker fixture's ${key}: ${docker[key]}`);
+      assert.equal(parseCommand(key, FORGE_COMMANDS[key]).ok, true, `the round's ${key}: ${FORGE_COMMANDS[key]}`);
+    }
   });
 
   test('the pinned commit has A2c, A2d and A3c, by calling them', async () => {

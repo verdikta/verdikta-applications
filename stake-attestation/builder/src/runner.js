@@ -22,6 +22,8 @@ const SEMVER = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
 const LIMIT_KEYS = Object.freeze(['cpus', 'memoryMb', 'buildSeconds', 'testSeconds', 'runSeconds', 'maxPatchBytes']);
 const CHECK_IMAGE = 'registry.invalid/verdikta-builder-command-check';
 const CHECK_DEADLINE_MS = 1000;
+/** It starts nothing, so a runner that says nothing for this long is not going to. */
+const CHECK_TIMEOUT_MS = 60000;
 const MISMATCH = 'IMAGE_MISMATCH';
 const NOT_ALLOWED = 'COMMAND_NOT_ALLOWED';
 /** What a runner without Q31's grammar lets through and one with it refuses, per command. */
@@ -50,7 +52,7 @@ export function createRunnerClient({ url = null, socket = null, token, timeoutMs
   }
   if (typeof token !== 'string' || token.length < 32) throw new BuilderError('CONFIG_INVALID', 'the runner token must be at least 32 characters');
 
-  function request(method, pathname, body) {
+  function request(method, pathname, body, waitMs = timeoutMs) {
     const payload = body === undefined ? null : Buffer.from(JSON.stringify(body), 'utf8');
     const options = {
       method,
@@ -82,7 +84,7 @@ export function createRunnerClient({ url = null, socket = null, token, timeoutMs
         });
         res.on('error', (err) => reject(new BuilderError('RUNNER_UNAVAILABLE', `the code-runner's answer broke off: ${err.message}`)));
       });
-      req.setTimeout(timeoutMs, () => req.destroy(new Error(`no answer in ${Math.round(timeoutMs / 1000)} s`)));
+      req.setTimeout(waitMs, () => req.destroy(new Error(`no answer in ${Math.round(waitMs / 1000)} s`)));
       req.on('error', (err) => reject(new BuilderError('RUNNER_UNAVAILABLE', `the code-runner at ${socket || target.origin} cannot be reached: ${err.message}`)));
       req.end(payload);
     });
@@ -90,8 +92,11 @@ export function createRunnerClient({ url = null, socket = null, token, timeoutMs
 
   return {
     health: () => request('GET', '/health'),
-    /** @param {{ spec: object, image: string, deadline: number }} body */
-    listingCheck: ({ spec, image, deadline }) => request('POST', '/v1/listing-checks', { spec, image, deadline }),
+    /**
+     * @param {{ spec: object, image: string, deadline: number }} body
+     * @param {{ waitMs?: number }} [o]
+     */
+    listingCheck: ({ spec, image, deadline }, { waitMs } = {}) => request('POST', '/v1/listing-checks', { spec, image, deadline }, waitMs),
   };
 }
 
@@ -155,12 +160,13 @@ function commandAnswer({ status, json }) {
  * @throws {BuilderError} RUNNER_WITHOUT_GRAMMAR, RUNNER_UNAUTHORIZED, RUNNER_ANSWER_INVALID, RUNNER_UNAVAILABLE
  */
 export async function checkCommands({ runner, draft }) {
-  const canary = commandAnswer(await runner.listingCheck(commandCheckBody(commandCanary(draft))));
+  const ask = async (spec) => commandAnswer(await runner.listingCheck(commandCheckBody(spec), { waitMs: CHECK_TIMEOUT_MS }));
+  const canary = await ask(commandCanary(draft));
   const lets = Object.keys(CANARY).filter((key) => !canary.some((i) => i.code === NOT_ALLOWED && i.path === `/spec/commands/${key}`));
   if (lets.length) {
     throw new BuilderError('RUNNER_WITHOUT_GRAMMAR', `the code-runner does not refuse a shell in front of commands.${lets.join(', commands.')}, as an arbiter's runner does: it is older than the verdikta-arbiter commit this builder is pinned to (action/pins.json), and a claim could refuse what it accepts`, { step: 'spec' });
   }
-  return { canary: NOT_ALLOWED, issues: commandAnswer(await runner.listingCheck(commandCheckBody(draft))) };
+  return { canary: NOT_ALLOWED, issues: await ask(draft) };
 }
 
 /**

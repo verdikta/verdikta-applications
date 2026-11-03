@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 import { codeReview } from '../../src/common.js';
 import { REPORT_FILE } from '../../src/report.js';
+import { SCAN_TOOLS } from '../../src/scanTools.js';
 import { MAKER } from '../helpers/proof.js';
 import { PIN, fixtureDraft, fixtureRepo, newId, removeImages } from './helpers.js';
 
@@ -58,6 +59,8 @@ test.after(() => {
 });
 
 test('services.js starts the runner at the pin, whether or not this host has the Semgrep image a claim needs', { skip, timeout: 1500000 }, () => {
+  // On CI's fresh host this file runs first, so this is the case that matters: a runner whose /health is 503.
+  if (process.env.CI) assert.notEqual(spawnSync('docker', ['image', 'inspect', SCAN_TOOLS.semgrep.image], { encoding: 'utf8' }).status, 0, 'CI\'s host has no Semgrep image yet');
   repo = fixtureRepo(dir, { '.verdikta/stake-control.json': `${JSON.stringify({ version: 1, maker: MAKER })}\n` });
   const r = node(['action/services.js', 'start', '--dir', work, '--publish-as', PUBLISH_AS, '--spec', writeDraft('plain'), '--runtime', 'runc', '--signing', 'dev']);
   assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);

@@ -184,6 +184,18 @@ function json(stdout, tool) {
   }
 }
 
+/** Why an error on a file means it was not read as a clean file is: fixed words, since an error's message can quote the source. */
+function unreadWords(kind, rule) {
+  switch (kind) {
+    case 'Too many matches': return `past Semgrep's limit of matches of one rule in one file (${rule}), it drops every result for the file: not analysed`;
+    case 'Timeout': return `a rule ran past Semgrep's time limit on this file (${rule}): not wholly analysed`;
+    case 'Out of memory': return `a rule ran out of memory on this file (${rule}): not wholly analysed`;
+    case 'PartialParsing': return 'Semgrep could not parse part of it: not wholly analysed';
+    case 'Syntax error': case 'Lexical error': case 'Other syntax error': case 'Parse error': return 'Semgrep could not parse it: not analysed';
+    default: return 'Semgrep reports an error on it: not wholly analysed';
+  }
+}
+
 /** A rule's id, without the folder Semgrep puts in front of it. */
 function ruleName(id) {
   const s = String(id ?? '');
@@ -198,8 +210,10 @@ function ruleName(id) {
  *
  * - `skipped_rules`: a rule it skipped found nothing, and reads like one that looked. The rules and
  *   the tool are pinned, so this is the tool's failure, not a fact about the maker's code.
- * - A `Too many matches` error: past 10,000 matches of one rule in one file it drops every result for
- *   the file, with exit 0. `capped` names the file and the rule.
+ * - An error on a file says it was not read as a clean file is: past 10,000 matches of one rule in one
+ *   file it drops every result for the file, with exit 0, and still lists the file as scanned; a
+ *   rule past its time or memory found what it found so far; a file it could not parse holds no finding
+ *   in the part it could not. `unread` names each such file and why, in fixed words.
  *
  * @throws {BuilderError} SCAN_TOOL_FAILED
  */
@@ -231,12 +245,15 @@ export function parseSemgrep(stdout) {
       ...(Number.isSafeInteger(line) && line > 0 ? { line } : {}),
     };
   });
-  const capped = out.errors
-    .filter((e) => (Array.isArray(e.type) ? e.type[0] : e.type) === 'Too many matches')
-    .map((e) => ({ rule: cut(ruleName(e.rule_id), 100), path: repoPath(e.path) }));
+  const unread = new Map();
+  for (const e of out.errors) {
+    if (!e?.path) continue;
+    const p = repoPath(e.path);
+    unread.set(p, [...(unread.get(p) ?? []), unreadWords(Array.isArray(e.type) ? e.type[0] : e.type, cut(ruleName(e.rule_id), 100))]);
+  }
   const scanned = Array.isArray(out.paths?.scanned) ? out.paths.scanned.map(repoPath) : null;
   if (!scanned) throw failed('semgrep', 'its output does not list the files it analysed');
-  return { findings, errors, capped, scanned, truncated: out.results.length > MAX_FINDINGS, errorsTruncated: out.errors.length > MAX_ERRORS };
+  return { findings, errors, unread: new Map([...unread].map(([p, words]) => [p, [...new Set(words)].join('; ')])), scanned, truncated: out.results.length > MAX_FINDINGS, errorsTruncated: out.errors.length > MAX_ERRORS };
 }
 
 const LOG_PATH = /\spath=("(?:[^"\\]|\\.)*"|\S+)/;

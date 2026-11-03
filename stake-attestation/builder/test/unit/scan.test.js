@@ -294,6 +294,21 @@ test('a match cap is stated: the file\'s results were dropped, so it is named as
   assert.deepEqual(doc.tools.semgrep.notScanned, [{ path: 'src/Vault.sol', detail: `past Semgrep's limit of matches of one rule in one file (${rule}), it drops every result for the file: not analysed` }]);
   assert.deepEqual(doc.tools.semgrep.errors, [{ type: 'Too many matches', level: 'warn', path: 'src/Vault.sol' }]);
   assert.ok(!JSON.stringify(doc).includes('a line of the source'), 'the message can quote the source');
+  // The other ways a file is not read as a clean one is: in fixed words, and not in what was analysed.
+  for (const [type, words] of [
+    ['Timeout', /time limit[^:]*: not wholly analysed/],
+    ['Out of memory', /out of memory[^:]*: not wholly analysed/],
+    ['Syntax error', /could not parse it: not analysed/],
+    [['PartialParsing', []], /could not parse part of it: not wholly analysed/],
+    ['A kind this release has not seen', /reports an error on it: not wholly analysed/],
+  ]) {
+    const one = await scan(FILES, { semgrep: { stdout: semgrepAnswer([], [{ type, rule_id: rule, level: 'warn', path: '/work/src/src/Vault.sol', message: 'a line of the source' }], ['src/Vault.sol', 'src/lib/Math.sol']) } });
+    assert.equal(one.status, 'ok');
+    assert.equal(one.doc.tools.semgrep.analysed, 1, String(type));
+    assert.equal(one.doc.tools.semgrep.notScanned.length, 1, String(type));
+    assert.match(one.doc.tools.semgrep.notScanned[0].detail, words);
+    assert.ok(!JSON.stringify(one.doc).includes('a line of the source'));
+  }
   // Whichever cap comes first: a report of more errors than are kept says so, and no capped file is lost with them.
   const many = Array.from({ length: 60 }, (_, i) => ({ type: 'Syntax error', level: 'warn', path: `/work/src/src/E${i}.sol` }));
   const capped = await scan(FILES, { semgrep: { stdout: semgrepAnswer([], [...many, { type: 'Too many matches', rule_id: rule, level: 'warn', path: '/work/src/src/Vault.sol' }], ['src/Vault.sol', 'src/lib/Math.sol']) } });

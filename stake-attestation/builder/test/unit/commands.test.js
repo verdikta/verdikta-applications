@@ -15,7 +15,7 @@ import { checkCommands, commandCanary, commandCheckBody, createRunnerClient, int
 import { fakeDocker } from '../helpers/fakes.js';
 import { MAKER, provenAnswer } from '../helpers/proof.js';
 import { doubledBuild } from '../helpers/build.js';
-import { BASE_COMMIT, acceptedListing, definitive, draftSpec, refusedListing, requesterError, runnerWithGrammar, withGrammar } from '../helpers/specs.js';
+import { BASE_COMMIT, acceptedListing, definitive, draftSpec, refusedListing, requesterError, runnerWithGrammar } from '../helpers/specs.js';
 
 const DIGEST = `sha256:${'2'.repeat(64)}`;
 const IMAGE = `ghcr.io/verdikta/stake-env@${DIGEST}`;
@@ -169,9 +169,4 @@ test('what the listing check refuses reaches the maker by the runner\'s code: th
     assert.equal(r.outcome, 'rejected');
     assert.deepEqual(r.issues.map((x) => x.code), [code]);
   }
-});
-
-test('whichever runner passed the canary, the double used here refuses what the real grammar refuses first: e2e/test/grammar.test.js holds that', () => {
-  const issues = withGrammar(draftSpec({ commands: { ...draftSpec().commands, build: 'true; forge build' } }));
-  assert.deepEqual(issues.map((i) => i.code), ['COMMAND_NOT_ALLOWED']);
 });

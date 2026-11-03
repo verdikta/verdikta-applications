@@ -695,7 +695,7 @@ gets the same way, so it isn't quietly smaller than it looks. Its answer comes f
 this under `runsc` too, and a cut answer of any size does not parse, so it fails the scan. `--disable-nosem`: a `// nosemgrep` in
 the source drops no finding. A rule named in `skipped_rules`, or an answer from another release, fails the scan.
 And past 10,000 matches of one rule in one file Semgrep drops every result for the file with exit 0, so that file goes in `notScanned`
-with the rule, and out of `analysed`.
+with the rule, and out of `analysed`, as does any other file Semgrep reports an error on (a rule past its time or memory, a parse failure), in fixed words.
 `--agent` adds the one inexpensive agent pass, **off by default**: the model named in
 `scan.agent` (`{ "provider", "model", "apiUrl"?, "apiKeyEnv" }`, a model of common's
 `code-standard` pool served over a chat-completions API: OpenRouter, OpenAI or xAI) reads the

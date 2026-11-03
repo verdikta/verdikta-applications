@@ -205,12 +205,10 @@ export async function scanListing({ spec, config, deps = {}, workDir, agent = fa
       const r = await runTool({ docker, image: SCAN_TOOLS.semgrep.image, platform, argv: semgrepArgv(), stdin: scannerInput(input), tool: 'semgrep' });
       if (r.exitCode !== 0 && r.exitCode !== 1) throw new BuilderError('SCAN_TOOL_FAILED', `semgrep exited ${r.exitCode}`, { step: 'scan' });
       const s = parseSemgrep(r.stdout);
-      // Semgrep lists a file as scanned when it dropped its results at the match cap: that file is not analysed.
-      const capped = new Map();
-      for (const { path: p, rule } of s.capped) capped.set(p, [...(capped.get(p) ?? []), rule]);
-      const analysed = new Set(s.scanned.filter((p) => !capped.has(p)));
+      // Semgrep lists a file as scanned even when it dropped its results, past the match cap, say: that file is not counted.
+      const analysed = new Set(s.scanned.filter((p) => !s.unread.has(p)));
       for (const f of forSemgrep) {
-        if (capped.has(f.path)) semNot.push({ path: f.path, detail: `past Semgrep's limit of matches of one rule in one file (${capped.get(f.path).join(', ')}), it drops every result for the file: not analysed` });
+        if (s.unread.has(f.path)) semNot.push({ path: f.path, detail: s.unread.get(f.path) });
         else if (!analysed.has(f.path)) semNot.push({ path: f.path, detail: 'Semgrep did not analyse it' });
       }
       doc.tools.semgrep.status = 'ok';

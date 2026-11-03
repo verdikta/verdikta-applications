@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import { ACTION_PINS } from '../../action/services.js';
@@ -45,7 +46,7 @@ test('no fourth place pins the arbiter: a file, a line or a workflow naming its 
 });
 
 test('the walk that says so can fail: it finds a pin in a new file, a line and a workflow', () => {
-  const root = fs.mkdtempSync(path.join(fs.realpathSync(process.env.TMPDIR ?? '/tmp'), 'vab-pins-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-pins-'));
   try {
     const app = path.join(root, 'stake-attestation');
     const hex = 'b'.repeat(40);

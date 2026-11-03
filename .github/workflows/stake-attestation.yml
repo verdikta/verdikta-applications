@@ -148,3 +148,47 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
           npx playwright test
+
+  e2e:
+    name: The local round (every piece together)
+    # One script: Hardhat, StakeAttestation and the poll-only mock aggregator bridged to the real External
+    # Adapter, AI Node (mock provider) and code runner of verdikta-arbiter at the commit in
+    # stake-attestation/e2e/arbiter.pin.json (public, fetched by id), the real server, keeper, builder,
+    # tool and client. Local registry, local IPFS, no secret. SA_E2E_REQUIRE_CLASS_PLATFORM fails it on
+    # anything but linux/amd64, so the runner's own report path runs here and A6a's launcher cannot.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install the client's locked dependencies, for the browser that reads its pages
+        working-directory: stake-attestation/client
+        run: |
+          npm ci --ignore-scripts
+          npx playwright install --with-deps chromium
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: stake-attestation/e2e
+        run: npm ci --ignore-scripts
+      - name: The round, and the round broken on purpose
+        working-directory: stake-attestation/e2e
+        env:
+          SA_E2E_REQUIRE_CLASS_PLATFORM: '1'
+          SA_E2E_LOG_DIR: ${{ runner.temp }}/round-logs
+        run: npm test
+      - name: No container left behind
+        if: always()
+        run: |
+          left=$(docker ps --all --format '{{.Names}} {{.Image}} {{.Labels}}' | grep -E 'sae2e' || true)
+          if [ -n "$left" ]; then
+            echo "::error::containers left behind: $left"
+            exit 1
+          fi
+      - name: Keep the service logs
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4
+        with:
+          name: round-logs
+          path: ${{ runner.temp }}/round-logs
+          if-no-files-found: ignore

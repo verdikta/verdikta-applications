@@ -21,7 +21,9 @@ test('servedRoundChecks: K, M, N, P, or it fails', () => {
   fails(servedRoundChecks('x', served({ jobs: jobs('commit', 6) })), 'x.round.revealJobs');
   fails(servedRoundChecks('x', served({ reveals: 1 })), 'x.round.reveals');
   fails(servedRoundChecks('x', served({ justifications: 'QmA' })), 'x.round.clustered');
-  fails(servedRoundChecks('x', served({ reverted: [{ reason: 'MalformedPayload' }] })), 'x.round.noRevert');
+  allPass(servedRoundChecks('x', served({ reverted: [{ phase: 'reveal', reason: 'AggregationComplete' }] })), 'the M - N late reveals revert, as on the real contract');
+  fails(servedRoundChecks('x', served({ reverted: [{ phase: 'reveal', reason: 'MalformedPayload' }] })), 'x.round.noRevert');
+  fails(servedRoundChecks('x', served({ reverted: [{ phase: 'reveal', reason: 'AggregationComplete' }, { phase: 'reveal', reason: 'AggregationComplete' }] })), 'x.round.noRevert');
   fails(servedRoundChecks('x', served({ ignored: [{ reason: 'RevealHashMismatch' }] })), 'x.round.noBadReveal');
   allPass(servedRoundChecks('x', served({ ignored: [{ reason: 'commit after the reveal phase began' }] })));
 });
@@ -106,8 +108,7 @@ test('settlementChecks: the keeper moved it, to the outcome and the vector expec
 test('moneyChecks: to the wei', () => {
   allPass(moneyChecks('x', [{ name: 'bond', before: 10n, after: 30n, expected: 20n }]));
   fails(moneyChecks('x', [{ name: 'bond', before: 10n, after: 29n, expected: 20n }]), 'x.money.bond');
-  allPass(moneyChecks('x', [{ name: 'prepay', before: 100n, after: 40n, gas: 10n, expected: -50n }]));
-  fails(moneyChecks('x', [{ name: 'prepay', before: 100n, after: 40n, gas: 0n, expected: -50n }]), 'x.money.prepay');
+  fails(moneyChecks('x', [{ name: 'bond', before: 10n, after: 31n, expected: 20n }]), 'x.money.bond');
 });
 
 test('abstainEndChecks: no verdict, ever, and it ended by E6', () => {

@@ -85,7 +85,9 @@ test('stopped by a signal, it stops everything it started, and the exit code say
     },
   });
   assert.equal(sent, true, r.out.slice(-1500));
-  assert.equal(r.code, 143);
+  assert.equal(r.code, 143, r.out.slice(-1500));
+  assert.equal(r.report.signal, 'SIGTERM');
+  assert.ok(r.report.pids.length >= 4, JSON.stringify(r.report.pids));
   assertNothingLeft(r.report, r.out);
 });
 

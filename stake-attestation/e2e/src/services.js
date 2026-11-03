@@ -2,6 +2,7 @@
 // recording proxy, its service starters and registry helper, called as they are. This repository's
 // are started as a deployment would start them: their own entry points, configured by environment,
 // each given only what it needs.
+import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -38,6 +39,36 @@ export function arbiterHarness(arbiterDir) {
 }
 
 export const startIpfs = (h) => h.startLocalIpfs({ pinKey: PIN_KEY }).then((ipfs) => ({ ...ipfs, pinKey: PIN_KEY }));
+
+/**
+ * For SA_E2E_BREAK=signal-in-start: a startup step that is already under way when a signal arrives, and
+ * creates its container only afterwards. It runs apart from this process and names nothing of the run on
+ * its command line (the names are in its environment), so no sweep can stop it or see it coming: the
+ * case of a docker pull that a docker run follows, which is what a real step does and what a sweep made
+ * once, at the signal, leaves behind.
+ * @returns {{ name: string, pid: number, done: Promise<string> }}
+ */
+export function startLateContainer({ instance, seconds, dockerConfigDir }) {
+  const name = `${instance}-late-start`;
+  const child = spawn('sh', ['-c', 'sleep "$E2E_LATE_SECONDS"; exec docker run --detach --name "$E2E_LATE_NAME" "$E2E_LATE_IMAGE"'], {
+    detached: true,
+    stdio: 'ignore',
+    env: {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      DOCKER_CONFIG: dockerConfigDir,
+      ...(process.env.DOCKER_HOST ? { DOCKER_HOST: process.env.DOCKER_HOST } : {}),
+      E2E_LATE_SECONDS: String(seconds),
+      E2E_LATE_NAME: name,
+      E2E_LATE_IMAGE: REGISTRY_IMAGE,
+    },
+  });
+  const done = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code) => (code === 0 ? resolve(name) : reject(new Error(`the late step exited ${code}`))));
+  });
+  return { name, pid: child.pid, done };
+}
 
 /**
  * A6a's registry:2, which listens on the daemon host's loopback: the daemon pushes to it and the runner

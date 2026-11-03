@@ -89,7 +89,7 @@ test('review focus: the bridge ran the real K, M, N and P, and what the real con
 });
 
 test('nothing is a stand-in for a verdict: the runner, the jury and the evidence each say they ran', () => {
-  has('valid.runner.oneSandbox', 'valid.runner.definitive', 'valid.runner.reportPlatform', 'valid.jury.perJob', 'valid.jury.everyJuror', 'valid.jury.justifier', 'valid.jury.keysKnown', 'valid.jury.keysNotSeen', 'valid.evidence.uploads', 'valid.evidence.settlement', 'valid.evidence.reportHash');
+  has('valid.report.everyGatePassed', 'valid.runner.oneSandbox', 'valid.runner.definitive', 'valid.runner.reportPlatform', 'valid.jury.perJob', 'valid.jury.panelAskedEveryJob', 'valid.jury.everyJuror', 'valid.jury.onlyThePanel', 'valid.jury.everyJobAverage', 'valid.jury.everyJurorInEveryAnswer', 'valid.jury.everyCallSawEvidence', 'valid.jury.codeModeSettings', 'valid.jury.onePrompt', 'valid.jury.justifier', 'valid.jury.keysKnown', 'valid.jury.keysNotSeen', 'valid.evidence.uploads', 'valid.evidence.settlement', 'valid.evidence.reportHash', 'valid.evidence.source', 'valid.round.everyRevealTheAverage');
 });
 
 test('the embargo and the queue are the chain\'s and the tool\'s, not the script\'s order', () => {

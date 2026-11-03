@@ -156,6 +156,20 @@ test('stopping does not wait for an EA that does not answer: every request still
   server.close();
 });
 
+test('whoever waits on a round is told when the bridge stops: a stopping round must get its main flow back', async () => {
+  const evaluate = () => new Promise(() => {});
+  evaluate.cancelAll = () => 0;
+  const bridge = createBridge({ mock: fakeMock(), evaluate, operator: OPERATOR, requestedClass: CLASS, pollMs: 5 });
+  await bridge.start(0);
+  const done = bridge.done(AGG);
+  const quiet = bridge.quiet(`0x${'cd'.repeat(32)}`);
+  const stopping = bridge.stop();
+  await assert.rejects(done, /stopped/);
+  await assert.rejects(quiet, /stopped/);
+  await assert.rejects(bridge.done(AGG), /stopped/, 'and whoever asks afterwards');
+  await Promise.race([stopping, new Promise((r) => { setTimeout(r, 200); })]);
+});
+
 test('a request found as the bridge stops starts nothing: not while it reads the request, not while it reads the chain', async () => {
   for (const hold of ['getRequestCids', 'queryFilter']) {
     const mock = fakeMock();
@@ -275,6 +289,15 @@ test('a request on a class no job is registered for fails the bridge, loudly: th
   await assert.rejects(bridge.done(AGG), /class 128/);
   await bridge.stop();
   assert.match(bridge.failure().message, /class 128/);
+});
+
+test('a reveal job keeps what it answered, and the round keeps what the request asked of the oracles', async () => {
+  const record = await serve(fakeMock(), honestEa().evaluate);
+  const reveals = record.jobs.filter((j) => j.phase === 'reveal');
+  assert.equal(reveals.length, REAL_CONFIG.m);
+  for (const j of reveals) assert.deepEqual(j.scores, VECTOR);
+  assert.ok(record.jobs.filter((j) => j.phase === 'commit').every((j) => j.scores === null));
+  assert.deepEqual(record.oracle, { alpha: 500n, maxFee: FEE, estimatedBaseCost: 1n, maxFeeBasedScaling: 3n });
 });
 
 test('the job reads only data.aggregatedScore and data.justificationCid, and what it cannot encode ends it with no transaction', () => {

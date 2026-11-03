@@ -111,6 +111,68 @@ test('stopped by a signal, it stops everything it started, and the exit code say
   assertNothingLeft(r.report, r.out);
 });
 
+const dockerNames = () => spawnSync('docker', ['ps', '--all', '--format', '{{.Names}}'], { encoding: 'utf8', timeout: 60000, env: { ...process.env, DOCKER_CONFIG: tmp } }).stdout.split('\n');
+
+/** The late step's child, however the run ended: its group is its own. */
+async function endOfLateStep(lateStep, timeoutMs = 60000) {
+  const until = Date.now() + timeoutMs;
+  while (alive(-lateStep.pid) && Date.now() < until) await new Promise((r) => { setTimeout(r, 250); });
+  return !alive(-lateStep.pid);
+}
+
+test('stopped while a startup step is under way, what that step creates just after the signal is stopped too (R4-F1)', async () => {
+  // The step is apart from the round and names nothing of the run, so no sweep can stop it: it creates its
+  // container seconds after the signal. A sweep made once, at the signal, has long finished by then.
+  const r = await runRound('signal-in-start', { SA_E2E_BREAK: 'signal-in-start', SA_E2E_LATE_SECONDS: '6' });
+  const late = r.report?.lateStep;
+  try {
+    assert.ok(late, r.out.slice(-1500));
+    assert.equal(r.code, 143, r.out.slice(-1500));
+    assert.equal(r.report.signal, 'SIGTERM');
+    assert.ok(await endOfLateStep(late), 'the late step ended');
+    await new Promise((resolve) => { setTimeout(resolve, 1000); });
+    assert.ok(!dockerNames().includes(late.name), `${late.name} was created after the sweep and left behind`);
+    assert.ok(!r.report.checks.some((c) => c.name === 'registry.up'), 'and no later step of the startup ran');
+    assertNothingLeft(r.report, r.out);
+  } finally {
+    if (late) spawnSync('docker', ['rm', '--force', '--volumes', late.name], { encoding: 'utf8', timeout: 60000, env: { ...process.env, DOCKER_CONFIG: tmp } });
+  }
+});
+
+test('a startup step that outlasts the bound fails the run, by name, and the sweep still runs', async () => {
+  const r = await runRound('signal-past-bound', { SA_E2E_BREAK: 'signal-in-start', SA_E2E_LATE_SECONDS: '60', SA_E2E_STOP_BOUND_MS: '2000' });
+  const late = r.report?.lateStep;
+  try {
+    assert.ok(late, r.out.slice(-1500));
+    assert.equal(r.code, 143, r.out.slice(-1500));
+    assert.equal(r.report.ok, false);
+    assert.match(r.report.failure, /had not stopped/);
+    assert.ok(r.report.cleanupFailures.some((f) => /had not stopped/.test(f)), JSON.stringify(r.report.cleanupFailures));
+    assert.deepEqual(r.report.leftovers, { containers: [], images: [] }, 'the sweep ran');
+    assert.ok(alive(-late.pid), 'the step really was still out');
+  } finally {
+    if (late && alive(-late.pid)) process.kill(-late.pid, 'SIGKILL');
+  }
+});
+
+test('a signal somewhere in the real startup, and another while it stops: one exit, its own code, nothing left', async () => {
+  let timer = null;
+  const r = await runRound('signal-twice', {}, {
+    onLine: (line, child) => {
+      if (!timer && line.includes('[round] start')) {
+        timer = setTimeout(() => {
+          child.kill('SIGTERM');
+          setTimeout(() => child.kill('SIGTERM'), 300);
+        }, 2500);
+      }
+    },
+  });
+  assert.ok(timer, r.out.slice(-1500));
+  assert.equal(r.code, 143, r.out.slice(-1500));
+  assert.equal(r.report.signal, 'SIGTERM');
+  assertNothingLeft(r.report, r.out);
+});
+
 test('stopped in the middle of a build, it stops the builder too, though the builder has a process group of its own', async () => {
   let timer = null;
   const r = await runRound('signal-in-build', {}, {

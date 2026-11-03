@@ -22,7 +22,7 @@ import {
 } from './fixtures.js';
 import { stopProcessesNaming, waitUntil } from './proc.js';
 import {
-  arbiterHarness, cleanDockerConfig, leftovers, newRunnerToken, removeRunContainers, removeRunImages, startClient, startIpfs, startRegistryPair, startServer,
+  arbiterHarness, cleanDockerConfig, leftovers, newRunnerToken, removeRunContainers, removeRunImages, startClient, startIpfs, startLateContainer, startRegistryPair, startServer,
 } from './services.js';
 import { APP_DIR, arbiterCheckout, browserReady, compileContracts, E2E_DIR, installSiblings } from './setup.js';
 import { createTool } from './tool.js';
@@ -45,7 +45,7 @@ class CheckFailed extends Error {}
 /**
  * @param {object} [o]
  * @param {(line: string) => void} [o.log]
- * @param {string|null} [o.breakName] - SA_E2E_BREAK: break the round on purpose (runner-start, valid-claim-abstains, signal-in-scan)
+ * @param {string|null} [o.breakName] - SA_E2E_BREAK: break the round on purpose (runner-start, valid-claim-abstains, signal-in-scan, signal-in-start)
  * @param {boolean} [o.requireClassPlatform] - SA_E2E_REQUIRE_CLASS_PLATFORM=1: anything but linux/amd64 is a failure
  * @param {string} [o.logDir] - SA_E2E_LOG_DIR: the run's logs go in a new folder inside it, and nothing there is removed
  * @param {(report: object) => void} [o.onFinished] - called with the report, on a signal too: a signal ends the process here
@@ -168,6 +168,13 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     chain = await startChain({ logDir });
     closers.push(() => chain.close());
     track(chain.node);
+    if (breakName === 'signal-in-start') {
+      const late = startLateContainer({ instance, seconds: Number(process.env.SA_E2E_LATE_SECONDS) || 5, dockerConfigDir: dockerSettings.dockerConfigDir });
+      report.lateStep = { name: late.name, pid: late.pid };
+      process.kill(process.pid, 'SIGTERM');
+      const name = await late.done;
+      closers.push(() => h.runText(docker, ['rm', '--force', '--volumes', name], { timeoutMs: 60000 }));
+    }
     await (await chain.aggregator.setResponseTimeout(RESPONSE_TIMEOUT_SECONDS)).wait();
     await (await chain.aggregator.setRequestGasCost(REQUEST_GAS_STAND_IN)).wait();
     const ipfs = await startIpfs(h);

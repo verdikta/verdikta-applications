@@ -3,7 +3,7 @@
 // phrases; the guard itself is tested here so a pattern that stops matching is caught.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FORBIDDEN_WORDS } from '@verdikta/stake-attestation-shared';
+import { FORBIDDEN_WORDS, INTEGRITY_NOTE } from '@verdikta/stake-attestation-shared';
 
 import { JUDGEMENTAL, wordingProblems } from '../e2e/support/wording.js';
 import { STRINGS } from '../src/strings.js';
@@ -76,4 +76,43 @@ test('the diligence text is the design\'s: the five readings of an unclaimed sta
   }
   assert.equal(d.table.length, 4);
   assert.match(d.feed, /escrow remaining/);
+});
+
+// Node P10 (owner decision Q35, condition 3): the count states what the checks found. It does not
+// imply that the maker, or the hunter, caused a failure, and a hunter's own failed run raises it too.
+const BLAMING = Object.freeze([
+  /\btrap/i, /\bcheat/i, /\bfault/i, /\bblam/i, /\bmalicious/i, /\bsuspicious/i, /\battack/i, /\bgrief/i, /\bdishonest/i, /\bcaught\b/i,
+  /\bbad\b/i, /\bguilty\b/i, /\bculprit\b/i, /\bsabotag/i, /\bfraud/i, /\bwrongdoing\b/i, /\bmaker\b/i,
+  /\bcaused by\b/i,
+]);
+const integrityStrings = () => Object.entries(STRINGS.record).filter(([k]) => k.startsWith('integrity')).map(([k, v]) => [`STRINGS.record.${k}`, v]);
+
+test('the words about claims that failed integrity blame neither side, and pass the banned-words and judgemental checks', () => {
+  const strings = integrityStrings();
+  assert.ok(strings.length >= 6, strings.map(([k]) => k).join());
+  for (const [at, text] of strings) {
+    assert.deepEqual(wordingProblems(text), [], at);
+    for (const re of BLAMING) assert.equal(re.test(text), false, `${at} says ${re}: ${text}`);
+  }
+});
+
+test('the blaming guard catches what it names, and leaves the note alone', () => {
+  for (const s of ['A trapped listing.', 'The maker failed this.', 'Caused by the hunter.', 'A cheat was caught.', 'Griefing.', 'At fault.', 'A malicious run.']) {
+    assert.ok(BLAMING.some((re) => re.test(s)), s);
+  }
+  assert.equal(BLAMING.some((re) => re.test(STRINGS.record.integrityNote)), false);
+});
+
+test('the note says what the count means: on-chain a DUPLICATE, a hunter\'s own failed run raises it, it does not say who or what caused it', () => {
+  const note = STRINGS.record.integrityNote;
+  assert.match(note, /a hunter's own failed run also raises/i);
+  assert.match(note, /does not say who or what caused/i);
+  assert.match(note, /settled as DUPLICATE on-chain/i);
+  assert.match(note, /kept apart from the other duplicates/i);
+  assert.equal(note, INTEGRITY_NOTE, 'the API and the page say the same');
+});
+
+test('what could not be read is said in words that never call it a failed check', () => {
+  assert.match(STRINGS.record.integrityUnreadNote, /plain duplicate/i);
+  assert.match(STRINGS.record.integrityUnreadNote, /never as a failed check/i);
 });

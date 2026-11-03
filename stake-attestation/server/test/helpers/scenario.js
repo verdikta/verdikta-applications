@@ -183,6 +183,7 @@ export async function settled(site, rounds = 8) {
     await site.rawSync();
     await site.archivesIdle();
     await site.controlIdle();
+    await site.evidenceIdle();
   }
 }
 
@@ -222,9 +223,9 @@ export async function revealedClaim(ctx, hunter, listingId, opts = {}) {
 }
 
 /** The jury's verdict arrives at the (mock) aggregator for the claim's open round. */
-export async function verdict(ctx, claimId, outcome, { dispute = false } = {}) {
+export async function verdict(ctx, claimId, outcome, { dispute = false, justification = JUSTIFICATION } = {}) {
   const c = await ctx.sa.getClaim(claimId);
-  await (await ctx.aggregator.scriptResult(dispute ? c.disputeRequestId : c.requestId, vector(outcome).map(BigInt), JUSTIFICATION)).wait();
+  await (await ctx.aggregator.scriptResult(dispute ? c.disputeRequestId : c.requestId, vector(outcome).map(BigInt), justification)).wait();
 }
 
 export async function finalize(ctx, claimId, caller = ctx.other) {
@@ -236,8 +237,8 @@ export async function settle(ctx, claimId, caller = ctx.other) {
 }
 
 /** finalize with `outcome`, then settle once the claim may settle (after the dispute window for a valid one). */
-export async function judgeAndSettle(ctx, claimId, outcome) {
-  await verdict(ctx, claimId, outcome);
+export async function judgeAndSettle(ctx, claimId, outcome, { justification } = {}) {
+  await verdict(ctx, claimId, outcome, { justification });
   await finalize(ctx, claimId);
   const at = Number(await ctx.sa.settleableAt(claimId));
   const now = await latestTimestamp(ctx);
@@ -267,13 +268,13 @@ export function siteEnv(ctx, dir, over = {}) {
  * The site (indexer, keeper, feed, record, badge) over the in-process chain. `env` adds to or
  * overrides siteEnv; `provider` replaces the in-process provider (a wrapper that fails on cue);
  * `keeperHooks.beforeBroadcast` runs between recording a transaction and broadcasting it; `now`
- * replaces the site's wall clock. `checkRepository` is the git check: by default it answers from the
+ * replaces the site's wall clock. `fetchJustification` reads an upload (default: as `fetchArchive`). `checkRepository` is the git check: by default it answers from the
  * listings made here (a file naming each one's maker; no test reaches a live host); null runs the
  * real command line, for a test that names SA_CONTROL_GIT_MIRROR_DIR. `checkFork` answers for the
  * host's API: by default unknown. `settle` makes each sync wait for the checks beside the indexer,
  * so a test reads what they answered; false: sync as the site does.
  */
-export function siteFor(ctx, { dir = tmpDir(), env = {}, provider = ctx.provider, fetchArchive, logger = quietLogger(), keeperHooks, now, checkRepository = ctx.answerFor, chainProviderFor, checkFork = async () => ({ status: 'unknown', parent: null, host: null, reason: 'TEST' }), settle = true } = {}) {
+export function siteFor(ctx, { dir = tmpDir(), env = {}, provider = ctx.provider, fetchArchive, fetchJustification, logger = quietLogger(), keeperHooks, now, checkRepository = ctx.answerFor, chainProviderFor, checkFork = async () => ({ status: 'unknown', parent: null, host: null, reason: 'TEST' }), settle = true } = {}) {
   const fullEnv = siteEnv(ctx, dir, env);
   const config = testConfig(fullEnv);
   const site = createSite({
@@ -285,6 +286,7 @@ export function siteFor(ctx, { dir = tmpDir(), env = {}, provider = ctx.provider
       if (!bytes) throw new Error(`${cid} is not pinned`);
       return bytes;
     }),
+    ...(fetchJustification ? { fetchJustification } : {}),
     logger,
     keeperHooks,
     ...(now ? { now } : {}),
@@ -304,7 +306,8 @@ export function siteFor(ctx, { dir = tmpDir(), env = {}, provider = ctx.provider
       for (let round = 0; round < 40; round += 1) {
         await site.archivesIdle();
         await site.controlIdle();
-        const now2 = JSON.stringify([site.store.state.archives, site.store.state.control]);
+        await site.evidenceIdle();
+        const now2 = JSON.stringify([site.store.state.archives, site.store.state.control, site.store.state.evidence]);
         if (now2 === seen) break;
         seen = now2;
         await site.rawSync();

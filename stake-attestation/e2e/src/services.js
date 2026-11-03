@@ -125,6 +125,7 @@ export async function startServer({ workDir, logDir, chain, ipfs, registry, runn
     ...(arm ? { platforms: { setup: platform, run: platform, extra: [platform] } } : {}),
     repoMirrors: { [repository.url]: repository.mirror },
     signing: { key: 'dev' },
+    control: { gitHosts: [new URL(repository.url).host] },
   }, null, 2));
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
@@ -151,6 +152,7 @@ export async function startServer({ workDir, logDir, chain, ipfs, registry, runn
     SA_BUILDER_SIGN_ENV: passDocker.join(','),
     SA_BUILDER_SCAN_ENV: passDocker.join(','),
     SA_CONTROL_GIT_MIRROR_DIR: repository.mirrorsDir,
+    SA_CONTROL_GIT_HOSTS: new URL(repository.url).host,
     SA_CONTRACT_ADDRESS: chain.contract,
     SA_FROM_BLOCK: String(chain.fromBlock),
     SA_RPC_URL: chain.rpcUrl,

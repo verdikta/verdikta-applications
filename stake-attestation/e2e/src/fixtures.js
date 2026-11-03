@@ -12,7 +12,10 @@ import path from 'node:path';
 import { APP_DIR } from './setup.js';
 import { git } from './proc.js';
 
-export const REPO_URL = 'https://github.com/verdikta-e2e/vault';
+// On a host with no API the site knows, and named as one for this run: the record's fork label would
+// otherwise read api.github.com. The mirror stands for it (SA_CONTROL_GIT_MIRROR_DIR, repoMirrors).
+export const GIT_HOST = 'git.verdikta-e2e.invalid';
+export const REPO_URL = `https://${GIT_HOST}/acme/vault`;
 const FORGE_COMMANDS = Object.freeze({
   framework: 'forge',
   setup: 'forge build',

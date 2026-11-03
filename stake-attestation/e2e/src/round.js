@@ -18,7 +18,7 @@ import {
   recordChecks, requestChecks, servedRoundChecks, settlementChecks,
 } from './checks.js';
 import {
-  AWARDS_WEI, BOND_WEI, ESCROW_WEI, JURY_AVERAGE, JUROR_SCORES, JUSTIFIER, POC_MARKER, REPORT_MARKER, WINDOWS, claimFolder, draftSpec, makeRepository,
+  AWARDS_WEI, BOND_WEI, ESCROW_WEI, GIT_HOST, JURY_AVERAGE, JUROR_SCORES, JUSTIFIER, POC_MARKER, REPORT_MARKER, WINDOWS, claimFolder, draftSpec, makeRepository,
 } from './fixtures.js';
 import { killProcessesNaming, waitUntil } from './proc.js';
 import {
@@ -608,6 +608,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
 
     // ---------------------------------------------------------------- nothing live
     stage('nothing live');
+    one('live.noHostApi', new URL(repository.url).host === GIT_HOST && finalView.fork?.status === 'unknown' && finalView.fork?.host === null, `the fork label: status ${finalView.fork?.status}, host ${finalView.fork?.host}: a host with no API (null is the checker's answer before any request), so it asked nobody`);
     one('live.ipfsNoMisses', ipfs.misses.length === 0, ipfs.misses.join(', ') || `${ipfs.fetches.length} fetches, ${ipfs.pins.length} pins, all here`);
     const everyProviderCall = providerCalls();
     one('live.providerIsTheMock', everyProviderCall.length > 0 && everyProviderCall.every((c) => [...panel.map((p) => p.model), JUSTIFIER.model].includes(c.model) && c.outcome === 'answered'), `${everyProviderCall.length} calls, every one logged by the mock provider`);

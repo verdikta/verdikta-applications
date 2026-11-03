@@ -97,7 +97,7 @@ test('the embargo and the queue are the chain\'s and the tool\'s, not the script
 });
 
 test('nothing live: every CID came from the local IPFS, every model call from the mock provider, the image from the local registry', () => {
-  has('live.ipfsNoMisses', 'live.providerIsTheMock', 'live.image.pulled', 'live.image.byDigest');
+  has('live.noHostApi', 'live.ipfsNoMisses', 'live.providerIsTheMock', 'live.image.pulled', 'live.image.byDigest');
 });
 
 test('on the class platform the runner\'s own entry point and report path; elsewhere the launcher, and the run says so', () => {

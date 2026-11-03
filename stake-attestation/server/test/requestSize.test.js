@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { readSignedListing, wordingProblems } from '@verdikta/stake-attestation-shared';
 import {
@@ -31,7 +32,7 @@ async function api(opts) {
 }
 after(() => Promise.all(servers.map((s) => s.close())));
 
-const FAKE_CLI = path.resolve(path.dirname(new URL(import.meta.url).pathname), 'fixtures', 'fake-builder-cli.js');
+const FAKE_CLI = fileURLToPath(new URL('./fixtures/fake-builder-cli.js', import.meta.url));
 const kiBytes = () => serialize(knownIssues());
 
 /** What the stand-in builder's listing takes beside its baseline, in the request. */

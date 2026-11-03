@@ -29,13 +29,12 @@ const options = { codeReview };
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 
 describe('the size rule against verdikta-arbiter at the pin', () => {
+  let arbiter;
   let A;
-  let require;
   before(() => {
-    const { dir } = arbiterCheckout(() => {}, process.env, { packages: ['external-adapter', 'code-runner'] });
-    require = createRequire(path.join(dir, 'package.json'));
-    A = (relative) => require(path.join(dir, relative));
-    A.dir = dir;
+    arbiter = arbiterCheckout(() => {}, process.env, { packages: ['external-adapter', 'code-runner'] }).dir;
+    const require = createRequire(path.join(arbiter, 'package.json'));
+    A = (relative) => require(path.join(arbiter, relative));
   });
 
   const realSpec = () => A('code-runner/test/helpers/claimRun').forgeSpec();
@@ -53,8 +52,8 @@ describe('the size rule against verdikta-arbiter at the pin', () => {
     assert.equal(A('code-runner/src/request').MAX_DEADLINE_MS, RUNNER_MAX_DEADLINE_MS);
     const pin = (file) => JSON.parse(fs.readFileSync(file, 'utf8')).dependencies['@verdikta/common'];
     const ours = pin(path.join(E2E_DIR, 'package.json'));
-    assert.equal(pin(path.join(A.dir, 'external-adapter', 'package.json')), ours);
-    assert.equal(pin(path.join(A.dir, 'code-runner', 'package.json')), ours);
+    assert.equal(pin(path.join(arbiter, 'external-adapter', 'package.json')), ours);
+    assert.equal(pin(path.join(arbiter, 'code-runner', 'package.json')), ours);
     // the fields of the body: exactly what the runner takes, in this copy's order
     const body = runRequestBody(worstClaimContext({ spec: {}, attestation: {}, baseline: {}, knownIssues: [] }, { codeReview, codeClass: 'code-standard' }), 1, options);
     assert.deepEqual(Object.keys(body), [...A('code-runner/src/request').FIELDS]);

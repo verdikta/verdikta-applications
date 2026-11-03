@@ -554,7 +554,7 @@ their caps, every character of text at JSON's widest (6 bytes), make a body of 1
 listing 3,992,801 and 2,552,802. The External Adapter sends `code-standard` today, but a listing is signed
 once, so the bound holds for both. `shared/src/listingRequestSize.js` measures this by building the
 request, and lowers the bound if a release of `@verdikta/common` ever leaves less. One test costs about
-`2 × id length + 45` bytes, so 2 MiB holds roughly 8,500 tests with 100-character ids. The arbiter's code
+`2 × id length + 46` bytes, so 2 MiB holds roughly 8,500 tests with 100-character ids. The arbiter's code
 can't be imported from here, so what is its own is pinned in that file, each number with its source, and
 `e2e/test/requestSize.test.js` holds that and the copy of the request to verdikta-arbiter at the pin.
 

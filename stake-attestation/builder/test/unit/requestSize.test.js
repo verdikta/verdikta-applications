@@ -268,6 +268,37 @@ test('known_issues.json that is not UTF-8 is refused: the EA decodes strictly an
   assert.match(r.report.refusals[0].detail, /UTF-8/);
 });
 
+test('sign reads known_issues.json as strictly: a folder holding one that is not UTF-8 is not signed', async () => {
+  const draft = withKnownIssues();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-utf8-'));
+  try {
+    const out = path.join(dir, 'out');
+    const result = await doubledBuild({ draft, knownIssues: pretty(knownIssueList(1)) });
+    writeOutputs(out, result);
+    const broken = Buffer.from(result.files.get('known_issues.json'));
+    broken[broken.indexOf(Buffer.from('Withdrawals'))] = 0xff;
+    fs.writeFileSync(path.join(out, 'known_issues.json'), broken);
+    const reportFile = path.join(out, 'validation-report.json');
+    const report = JSON.parse(fs.readFileSync(reportFile, 'utf8'));
+    report.files['known_issues.json'] = sha256(broken);
+    fs.writeFileSync(reportFile, JSON.stringify(report));
+    const config = path.join(dir, 'builder.json');
+    fs.writeFileSync(config, JSON.stringify({ registry: { repository: REPOSITORY }, runner: { url: 'http://127.0.0.1:8090', tokenEnv: 'CODE_RUNNER_TOKEN' } }));
+    let err = '';
+    const code = await main(['sign', '--config', config, '--dir', out, '--maker', MAKER], {
+      env: {},
+      stdout: { write() {} },
+      stderr: { write: (s) => { err += s; } },
+      deps: { checkRepositoryControl: provenAnswer() },
+    });
+    assert.equal(code, 1);
+    assert.match(err, /KNOWN_ISSUES_INVALID/);
+    assert.equal(fs.existsSync(path.join(out, 'attestation.json')), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('nothing over the bound is signed: attest refuses before the key is asked, whatever build said', async () => {
   const draft = draftSpec();
   const { result, baseline } = await buildAround(0, { draft });
@@ -388,4 +419,6 @@ test('a draft at every cap of its schema is under the bound on its own: the spec
   assert.deepEqual(codeReview.validateCodeReviewSpec(spec).issues, []);
   const bytes = requestBytes(spec);
   assert.ok(bytes > 800000 && bytes < LISTING_REQUEST_MAX_BYTES, String(bytes));
+  // and the file the builder writes for it stays within what the site reads of a code_review.json
+  assert.ok(pretty(spec).length <= 1024 * 1024, String(pretty(spec).length));
 });

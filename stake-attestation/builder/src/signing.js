@@ -22,6 +22,7 @@ import crypto from 'node:crypto';
 import { codeReview } from './common.js';
 import { BuilderError } from './errors.js';
 import { run, tail } from './proc.js';
+import { assertStatementFits } from './requestSize.js';
 
 const CLASS_PLATFORM = codeReview.CLASS_HARD_LIMITS.platform;
 
@@ -130,6 +131,7 @@ function devOnlyReasons(report) {
  * @returns {Promise<{ attestation: object, bytes: Buffer, validation: object }>}
  * @throws {BuilderError} SIGNING_NOT_ACCEPTED, SIGNING_REPORT_MISMATCH, SIGNING_DEV_ONLY_VALIDATION,
  *   SIGNING_KEY_NOT_TRUSTED, ATTESTATION_SELF_CHECK_FAILED, SIGNER_*
+ * @throws {Refusal} LISTING_REQUEST_TOO_LARGE, before the key is asked for anything
  */
 export async function attest({ files, report, key, issuedAt }) {
   if (!report || report.status !== 'accepted') {
@@ -163,6 +165,7 @@ export async function attest({ files, report, key, issuedAt }) {
     tools: { runner: runnerVersion },
     base: report.image?.base,
   });
+  assertStatementFits(files, statement);
   const signature = await key.sign(codeReview.attestationSigningBytes(statement));
   const attestation = { ...statement, signature: { algorithm: 'Ed25519', keyId: key.keyId, value: Buffer.from(signature).toString('base64') } };
   const validation = codeReview.validateAttestation(attestation, {

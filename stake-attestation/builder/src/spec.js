@@ -9,6 +9,10 @@ import { codeReview } from './common.js';
 import { Refusal } from './errors.js';
 
 const CLASS_PLATFORM = codeReview.CLASS_HARD_LIMITS.platform;
+// As the arbiters' External Adapter decodes a listing's files. A lossy decode would pass bytes the EA
+// refuses on every claim (frontGates.js, readListing). A byte order mark stays in the text, and JSON.parse
+// refuses it.
+const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const PLACEHOLDER_IMAGE = `registry.invalid/verdikta-builder-draft@sha256:${'0'.repeat(64)}`;
 const FILE_NAME = /^(?!\.\.?$)[A-Za-z0-9._-]{1,255}$/;
 const RESERVED = new Set(['code_review.json', 'validation-report.json', 'dev-trust.json', 'scan-findings.json']);
@@ -17,8 +21,17 @@ function isObject(v) {
   return Boolean(v) && typeof v === 'object' && !Array.isArray(v);
 }
 
+/**
+ * A listing's file, read as arbiters read it.
+ * @throws {TypeError} not UTF-8
+ * @throws {SyntaxError} not JSON
+ */
+export function readJsonFile(bytes) {
+  return JSON.parse(UTF8.decode(bytes));
+}
+
 /** The draft with the builder's stand-ins, as the validator sees it. */
-function withStandIns(draft) {
+export function withStandIns(draft) {
   const env = isObject(draft.env) ? draft.env : {};
   return {
     ...draft,
@@ -97,9 +110,9 @@ export function checkKnownIssues(draft, bytes) {
   if (!bytes) throw new Refusal('KNOWN_ISSUES_MISSING', `code_review.json names ${name}, but no known-issues file was given`, { step: 'spec' });
   let list;
   try {
-    list = JSON.parse(Buffer.from(bytes).toString('utf8'));
-  } catch {
-    throw new Refusal('KNOWN_ISSUES_INVALID', `${name} is not JSON`, { step: 'spec' });
+    list = readJsonFile(bytes);
+  } catch (err) {
+    throw new Refusal('KNOWN_ISSUES_INVALID', `${name} is not ${err instanceof SyntaxError ? 'JSON' : 'UTF-8: arbiters read it strictly, so they would refuse every claim on this listing'}`, { step: 'spec' });
   }
   const v = codeReview.validateKnownIssues(list);
   if (!v.ok) throw new Refusal('KNOWN_ISSUES_INVALID', `${name} does not validate`, { step: 'spec', issues: v.issues });

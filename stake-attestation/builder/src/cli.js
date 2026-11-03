@@ -121,7 +121,21 @@ async function sign({ dir, config, env, out, maker, expectOutputs = null, checkR
     throw err;
   }
   verified.checks.push('PROJECT_PROOF_STANDS');
-  const { attestation, bytes } = await attest({ files, report, key });
+  let signed;
+  try {
+    signed = await attest({ files, report, key });
+  } catch (err) {
+    if (!(err instanceof Refusal)) throw err;
+    // the maker's, as a build's refusal is: the report says why, and nothing is signed
+    report.status = 'refused';
+    report.refusals = [...(report.refusals ?? []), { code: err.code, detail: err.detail, step: err.step }];
+    fs.writeFileSync(path.join(dir, REPORT_FILE), serializeJson(report), { mode: 0o644 });
+    // the detail too: a signing job may keep nothing but its log. It is numbers, and names no project.
+    out.write(`refused: ${err.code} (${err.step}): ${err.detail}; see ${path.join(dir, REPORT_FILE)}\n`);
+    return 2;
+  }
+  const { attestation, bytes } = signed;
+  verified.checks.push('LISTING_REQUEST_WITHIN_BOUND');
   fs.writeFileSync(path.join(dir, name), bytes, { mode: 0o644 });
   const trust = key.devTrust();
   if (trust) fs.writeFileSync(path.join(dir, DEV_TRUST_FILE), serializeJson(trust), { mode: 0o644 });
@@ -129,6 +143,7 @@ async function sign({ dir, config, env, out, maker, expectOutputs = null, checkR
   report.signing = verified;
   fs.writeFileSync(path.join(dir, REPORT_FILE), serializeJson(report), { mode: 0o644 });
   out.write(`signed ${name} (${attestation.trust} trust, key ${attestation.signature.keyId})${trust ? `; the dev trust set is ${DEV_TRUST_FILE}` : ''}\n`);
+  return 0;
 }
 
 async function scan({ opts, config, out, err, deps }) {
@@ -211,8 +226,7 @@ export async function main(argv, { env = process.env, stdout = process.stdout, s
     const config = loadConfig(opts.config, { env });
     const key = config.signing.key;
     if (command === 'sign') {
-      await sign({ dir: opts.dir, config, env, out: stdout, maker: opts.maker ?? null, expectOutputs: opts['expect-outputs'] ?? null, checkRegistry: Boolean(opts['check-registry']), deps });
-      return 0;
+      return await sign({ dir: opts.dir, config, env, out: stdout, maker: opts.maker ?? null, expectOutputs: opts['expect-outputs'] ?? null, checkRegistry: Boolean(opts['check-registry']), deps });
     }
     if (command === 'scan') return await scan({ opts, config, out: stdout, err: stderr, deps });
     if (command === 'build' && key !== 'dev' && key.env && env[key.env] !== undefined) {
@@ -223,7 +237,7 @@ export async function main(argv, { env = process.env, stdout = process.stdout, s
     }
     const status = await build({ opts, config, out: stdout, deps });
     if (status !== 'accepted') return status === 'refused' ? 2 : 1;
-    if (command === 'run') await sign({ dir: opts.out, config, env, out: stdout, maker: opts.maker ?? null, deps });
+    if (command === 'run') return await sign({ dir: opts.out, config, env, out: stdout, maker: opts.maker ?? null, deps });
     return 0;
   } catch (err) {
     stderr.write(`verdikta-build-env: ${err instanceof BuilderError ? err.message : `BUILDER_FAILED: ${err?.message ?? err}`}\n`);

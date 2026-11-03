@@ -20,7 +20,7 @@ import {
 import { baselineOfBytes } from '../../shared/test/helpers/baselineOfBytes.js';
 import { createCliBuilder } from '../src/builder/cli.js';
 import { codeReview } from '../src/common.js';
-import { BASE_COMMIT, MAKER, draftSpec, fakeBuilder, knownIssues, listingRequest, serialize } from './helpers/fixtures.js';
+import { BASE_COMMIT, MAKER, draftSpec, fakeBuilder, knownIssues, listingRequest, serialize, testConfig } from './helpers/fixtures.js';
 import { startApi } from './helpers/http.js';
 
 const servers = [];
@@ -102,8 +102,8 @@ for (const [name, idLength] of [['long test ids', 1000], ['short test ids, the m
     const view = await s.settle((await res.json()).id, 60000);
     assert.equal(view.status, 'ready', JSON.stringify(view.error ?? view.refusal));
     const archive = s.pinner.get(view.archives.listing.cid);
-    assert.ok(archive.length <= s.app.locals?.archivesMaxBytes ?? 8 * 1024 * 1024, String(archive.length));
-    assert.ok(archive.length <= 8 * 1024 * 1024, `the site reads at most 8 MiB of a listing archive: ${archive.length}`);
+    const { maxBytes } = testConfig().archives;
+    assert.ok(archive.length <= maxBytes, `the site reads at most ${maxBytes} bytes of a listing archive: ${archive.length}`);
     const read = readSignedListing(archive, { codeReview, devKeys: builder.devTrust().keys });
     assert.equal(read.signed, true, read.reason);
     const counts = await counted(s);

@@ -23,6 +23,7 @@ import { codeReview } from './common.js';
 import { BuilderError } from './errors.js';
 import { outputsDigest } from './outputs.js';
 import { createRegistryClient } from './registry.js';
+import { readJsonFile } from './spec.js';
 
 const CLASS = codeReview.CLASS_HARD_LIMITS;
 const PIN = codeReview.BASE_IMAGE_PINS.foundry;
@@ -92,9 +93,9 @@ export async function verifyForSigning({ files, report, dir, expectOutputs = nul
   if (files.knownIssues) {
     let list;
     try {
-      list = JSON.parse(Buffer.from(files.knownIssues).toString('utf8'));
+      list = readJsonFile(files.knownIssues);
     } catch {
-      refuse('KNOWN_ISSUES_INVALID', `${names.knownIssues} is not JSON`);
+      refuse('KNOWN_ISSUES_INVALID', `${names.knownIssues} is not JSON in UTF-8`);
     }
     if (!codeReview.validateKnownIssues(list).ok) refuse('KNOWN_ISSUES_INVALID', `${names.knownIssues} does not validate`);
     pass('KNOWN_ISSUES_VALID');

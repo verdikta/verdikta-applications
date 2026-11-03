@@ -292,6 +292,11 @@ export function createCliBuilder(cfg, { env = process.env, nodePath = process.ex
         const s = await step(['sign', '--config', cfg.config, '--dir', out, ...(maker ? ['--maker', maker] : [])], cfg.signEnv, dir);
         if (s.interrupted) return stopped('sign', s, cfg, report);
         if (s.spawnError) return errored('SIGNING_FAILED', `the builder's sign step could not be started: ${s.spawnError}`, report);
+        // the builder's exit status: 2 is a refusal, and as in build its report says why (node P11)
+        if (s.code === 2) {
+          const refused = readJson(path.join(out, REPORT_FILE));
+          if (refused?.status === 'refused') return { status: 'refused', report: refused, files: null, devTrust: null };
+        }
         if (s.code !== 0) {
           // sign reads the project's proof again: one that no longer stands is a refusal like the build's
           const refusedFor = builderCode(s.stderr);

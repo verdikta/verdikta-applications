@@ -238,7 +238,7 @@ Otherwise it answers 202 with an id, and `GET /api/listings/:id` follows the lis
 |---|---|
 | `queued`, `checking` | waiting for a build slot; the project's proof read at the listed commit ([`docs/control-proof.md`](docs/control-proof.md)) |
 | `building` | in the builder: `verdikta-build-env build`, then `sign` in a process of its own, each given `--maker` |
-| `refused` | `refusal` (`code`, `detail`) when the proof refused it, otherwise `validationReport` says why. Nothing is built, signed or pinned: a failed verified-source check ends here too |
+| `refused` | `refusal` (`code`, `detail`) when the proof refused it or the server measured it too large for the code-runner's request, otherwise `validationReport` says why. Nothing is built, signed or pinned: a failed verified-source check ends here too |
 | `scanning` | accepted and checked, both archives built; the baseline scan runs |
 | `pinning` | both archives are being pinned |
 | `ready` | `archives` (both CIDs, their SHA-256 and their members') and `list`: `params`, `listingCid`, `disputeCid` and `knownIssueIds`, in JSON ethers takes as it is (uint256 and uint64 as decimal strings, bytes32 as hex); `params.disclosureKey` is the 32 bytes the archive's age recipient encodes |
@@ -250,7 +250,10 @@ maker submitted, the known issues are the bytes the server sent, and both archiv
 the External Adapter checks in `cids[0]` (common's manifest validator, the six outcomes, the
 spec, the `code-standard` envelope, the attestation under the configured trust, the known
 issues and the baseline) and this site's own rules: exactly these members, common's panel for
-the archive's role and common's `buildClaimQuery` output as the query.
+the archive's role and common's `buildClaimQuery` output as the query. The listing must also fit its
+share of the code-runner's request ([A listing's size](#the-environment-builder)):
+`LISTING_REQUEST_TOO_LARGE`, with the size and the bound, whichever of the builder and the server finds
+it, and counted by reason on `/api/status`.
 
 **The archives.** Both hold `manifest.json` (`codeReview`, the primary file and the panel),
 `primary_query.json` (`buildClaimQuery(spec)` and the six outcomes) and the builder's
@@ -471,7 +474,8 @@ block holds `gitHosts` (the site's `SA_CONTROL_GIT_HOSTS`), `timeoutMs` and `max
 1. **spec**: the draft against `@verdikta/common`'s `validateCodeReviewSpec` (with stand-ins
    for the fields the builder fills) and what the Foundry MVP hosts: `env.from: "foundry"`,
    `commands.framework: "forge"`, `build`, `testFiles` with `$FILES`, `testIds` with
-   `$TEST_IDS`; `known_issues.json` when the draft names one.
+   `$TEST_IDS`; `known_issues.json` when the draft names one, in strict UTF-8 as arbiters read it, and
+   not too large on its own (see "A listing's size").
 2. **fetch**: the listed commit's objects, by id (shallow when the server allows it), from
    `repo` or a configured mirror of it, into a bare repository. git runs with no system or
    global config, no hooks or credential prompt, https only (and the local transport for a
@@ -526,12 +530,33 @@ block holds `gitHosts` (the site's `SA_CONTROL_GIT_HOSTS`), `timeoutMs` and `max
    (`linux/amd64`), `env.unpackedBytes` (the larger of the builder's and the runner's
    measurements) and the limits (the draft's where it set them, the runner's defaults
    otherwise), checked by `validateCodeReviewSpec`; `baseline.json` as the runner returned it,
-   checked by `validateBaseline`.
+   checked by `validateBaseline`; and the whole listing measured against the code-runner's request.
 
 Exit status 0 accepted, 2 refused (the report says why, with the build's log when the setup
 failed), 1 error. `verdikta-build-env sign --config builder.json --dir out/ --maker <address>` then
 reads the project's proof again and signs `attestation.json` (`createAttestationStatement` over the exact bytes written, Ed25519) and
 records it in the report; `run` does both in one process, with a dev key only.
+
+**A listing's size.** For each claim an arbiter's External Adapter sends the code-runner one JSON
+body, and the runner answers 413 above 16 MiB (16,777,216 bytes). The listing's `code_review.json`,
+attestation, baseline and known issues are in that body every time, so a listing that leaves a claim
+no room makes every arbiter abstain on every claim, and under erratum E6 the bonds then go to the
+maker. So a listing may take at most 2 MiB (2,097,152 bytes) of it, measured as the body holds it:
+`JSON.stringify(JSON.parse(file))`, and a known-issues file, which is attested as given, at its file
+size if that's larger. `finalSpec` refuses one over the bound with `LISTING_REQUEST_TOO_LARGE`, stating
+the size and the bound; `spec` refuses known issues too large on their own, before anything is fetched;
+and `sign` measures again before the key is asked for anything, exits 2 and says why in the report.
+`validation-report.json` records `listingRequest`: the bytes, each part's and the bound.
+
+The bound comes from the request. With the listing's parts empty, a claim and its 8 prior findings at
+their caps, every character of text at JSON's widest (6 bytes), make a body of 12,784,423 bytes at
+`code-standard` and 14,224,422 at `code-premium`, whose `report.md` may be twice as long. That leaves the
+listing 3,992,801 and 2,552,802. The External Adapter sends `code-standard` today, but a listing is signed
+once, so the bound holds for both. `shared/src/listingRequestSize.js` measures this by building the
+request, and lowers the bound if a release of `@verdikta/common` ever leaves less. One test costs about
+`2 × id length + 45` bytes, so 2 MiB holds roughly 8,500 tests with 100-character ids. The arbiter's code
+can't be imported from here, so what is its own is pinned in that file, each number with its source, and
+`e2e/test/requestSize.test.js` holds that and the copy of the request to verdikta-arbiter at the pin.
 
 **What sign checks first.** Signing may run in a job that receives only the build's output folder
 (the reusable workflow below), so before any signature exists `sign` checks what it can without

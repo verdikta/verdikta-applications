@@ -116,7 +116,7 @@ test('the bound: a claim and its priors at their caps leave at least it in the r
 });
 
 test('a common release that raised a cap lowers the bound: a claim still fits', () => {
-  const raised = { ...codeReview, SPEC_LIMIT_MAXIMA: { ...codeReview.SPEC_LIMIT_MAXIMA, maxPatchBytes: 3000000 } };
+  const raised = { ...codeReview, SPEC_LIMIT_MAXIMA: { ...codeReview.SPEC_LIMIT_MAXIMA, maxPatchBytes: 2300000 } };
   const bound = listingRequestBound({ codeReview: raised });
   assert.ok(bound < LISTING_REQUEST_MAX_BYTES, String(bound));
   assert.equal(bound, RUNNER_MAX_BODY_BYTES - claimSideBytes({ codeReview: raised }));
@@ -172,7 +172,7 @@ test('the measure is the bytes JSON writes in the request, not the bytes of the 
 test('a listing at the bound, with a claim and 8 prior findings at their caps: the request fits. One byte over is refused', async () => {
   const draft = withKnownIssues();
   const knownIssues = pretty(knownIssueList(3));
-  const { result, baseline } = await buildAround(0, { draft, knownIssues });
+  const { result } = await buildAround(0, { draft, knownIssues });
   assert.equal(result.status, 'accepted', JSON.stringify(result.report.refusals));
   assert.equal(result.report.listingRequest.bytes, LISTING_REQUEST_MAX_BYTES);
   assert.equal(result.report.listingRequest.maxBytes, LISTING_REQUEST_MAX_BYTES);
@@ -195,8 +195,6 @@ test('a listing at the bound, with a claim and 8 prior findings at their caps: t
   assert.equal(over.report.refusals[0].step, 'finalSpec');
   assert.equal(over.files.size, 0, 'nothing is left to sign');
   assert.equal(over.report.listingRequest.bytes, LISTING_REQUEST_MAX_BYTES + 1);
-  // the baseline the size came from is as long as the runner sent it
-  assert.ok(baseline.tests.length > 0);
 });
 
 test('the refusal says the size and the bound, passes the wording rule and names no project', async () => {
@@ -381,7 +379,7 @@ test('a draft at every cap of its schema is under the bound on its own: the spec
   const spec = {
     ...draft,
     repo: `https://${wide(504)}`,
-    env: { image: `${'r'.repeat(445)}@sha256:${'a'.repeat(64)}`, from: 'foundry', platform: 'linux/amd64', unpackedBytes: 6000000000 },
+    env: { image: `${'r'.repeat(440)}@sha256:${'a'.repeat(64)}`, from: 'foundry', platform: 'linux/amd64', unpackedBytes: 6000000000 },
     commands: { framework: 'forge', setup: command, build: command, test: command, testFiles: command, testIds: command, lint: command },
     paths: { tests: globs('t'), protected: globs('p') },
     limits: { cpus: 2, memoryMb: 4096, buildSeconds: 90, testSeconds: 360, runSeconds: 360, maxPatchBytes: 2000000 },

@@ -11,6 +11,7 @@
     "./listing-warning": "./src/listingWarning.js",
     "./control-proof": "./src/controlProof.js",
     "./builder-signature": "./src/builderSignature.js",
+    "./listing-request-size": "./src/listingRequestSize.js",
     "./zip": "./src/zip.js",
     "./zip-read": "./src/zipRead.js"
   },

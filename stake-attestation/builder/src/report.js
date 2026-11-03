@@ -30,6 +30,8 @@ export function newReport({ draft }) {
     verifiedSource: null,
     listingCheck: null,
     baseline: null,
+    // what the listing takes of the code-runner's request, and the most it may (src/requestSize.js)
+    listingRequest: null,
     limits: null,
     files: null,
     attestation: null,

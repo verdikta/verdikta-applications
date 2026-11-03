@@ -313,11 +313,20 @@ export function chainOf(stack) {
     },
 
     /** The jury's vector for `outcome` arrives at the mock aggregator for the claim's open round. */
-    async verdict(claimId, outcome, { dispute = false } = {}) {
+    async verdict(claimId, outcome, { dispute = false, justification = JUSTIFICATION_CID } = {}) {
       const c = await sa.getClaim(claimId);
       const vector = OUTCOMES.map((o) => (o === outcome ? 1_000_000n : 0n));
       const agg = new Contract(stack.aggregator, stack.aggregatorAbi, await provider.getSigner(stack.accounts.owner));
-      await (await agg.scriptResult(dispute ? c.disputeRequestId : c.requestId, vector, JUSTIFICATION_CID)).wait();
+      await (await agg.scriptResult(dispute ? c.disputeRequestId : c.requestId, vector, justification)).wait();
+    },
+
+    /** An arbiter's justification upload on the gateway stand-in: its CID. */
+    async upload(bytes) {
+      const { rawCid } = await fromServer('src/pinning/cid.js');
+      const cid = rawCid(bytes);
+      const put = await fetch(`${stack.gatewayUrl}/ipfs/${cid}`, { method: 'PUT', body: bytes });
+      expect(put.status).toBe(201);
+      return cid;
     },
 
     /** The request the mock aggregator received: its CIDs and addendum. */

@@ -7,6 +7,8 @@
 // A credential is read when a pin is made, and is never in a message. A service's answer is parsed, never quoted.
 import crypto from 'node:crypto';
 
+import { isCidShaped } from '@verdikta/stake-attestation-shared/execution-evidence';
+
 import { fail } from './errors.js';
 
 const ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
@@ -34,12 +36,10 @@ export function rawCid(bytes) {
 
 export const isRawSha256Cid = (cid) => typeof cid === 'string' && /^bafkrei[a-z2-7]{52}$/.test(cid);
 
-// StakeAttestation._isValidCid (46 to 100 letters and digits) and the runner's request rule, both.
-const CONTRACT_CID = /^[0-9A-Za-z]{46,100}$/;
+// StakeAttestation._isValidCid (46 to 100 letters and digits, shared/src/executionEvidence.js) and the runner's request rule, both.
 const RUNNER_CID = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{50,120})$/;
-export const isStorableCid = (cid) => typeof cid === 'string' && CONTRACT_CID.test(cid) && RUNNER_CID.test(cid);
-/** A CID safe to put in a URL: the contract's rule. */
-export const isCidShaped = (cid) => typeof cid === 'string' && CONTRACT_CID.test(cid);
+export const isStorableCid = (cid) => isCidShaped(cid) && RUNNER_CID.test(cid);
+export { isCidShaped };
 
 export const sha256Hex0x = (bytes) => `0x${crypto.createHash('sha256').update(bytes).digest('hex')}`;
 

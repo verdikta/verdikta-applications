@@ -19,6 +19,10 @@
 // a listing with a valid builder signature and the project's proof (src/control/counting.js), since
 // recordByHash combines every listing of a hash. Any other listing of the hash shows apart, as not
 // counted, with no amount, and never adds to the stake shown; the site offers no commit on it.
+//
+// Claims that failed integrity (node P10, owner decision Q35): on-chain they are DUPLICATE, so the record
+// says apart how many and which checks, from each settled DUPLICATE's justification (src/site/evidence.js
+// reads them beside the indexer; src/record/integrity.js folds the answers per listing).
 import { JsonRpcProvider, Network } from 'ethers';
 
 import { stakeAttestation } from '../chain/abi.js';
@@ -33,8 +37,10 @@ import { RefusalCounter, refusalsFileIn } from '../listing/refusals.js';
 import { badgeFor, renderBadge } from '../record/badge.js';
 import { listingLabels } from '../record/labels.js';
 import { PriceError, readEthUsd } from '../record/price.js';
+import { integrityByListing, integrityNote } from '../record/integrity.js';
 import { partitionRecord, readRecord } from '../record/record.js';
 import { refreshArchives } from './archives.js';
+import { refreshEvidence } from './evidence.js';
 import { buildFeed } from './feed.js';
 import { createIndexer } from './indexer.js';
 import { createKeeper, keeperWallet } from './keeper.js';
@@ -90,6 +96,8 @@ const blockOf = (c) => ({ number: c.number, hash: c.hash, timestamp: c.timestamp
  * @param {import('ethers').JsonRpcApiProvider} o.provider - with send (eth_call by block hash)
  * @param {Record<string, string|undefined>} [o.env] - where the keeper's key is read
  * @param {(cid: string) => Promise<Buffer>} o.fetchArchive - reads a listing archive by CID
+ * @param {(cid: string) => Promise<Buffer>} [o.fetchJustification] - reads an arbiter's justification upload
+ *   by CID (production: createJustificationFetcher; default: fetchArchive)
  * @param {object} o.logger
  * @param {object} [o.keeperHooks]
  * @param {() => number} [o.now] - wall-clock ms (tests move it)
@@ -100,7 +108,7 @@ const blockOf = (c) => ({ number: c.number, hash: c.hash, timestamp: c.timestamp
  * @param {(o: { repo: string }) => Promise<object>} [o.checkFork] - what the host says of a repository
  *   (default: its API, src/control/forkCheck.js)
  */
-export function createSite({ config, provider, env = process.env, fetchArchive, logger, keeperHooks, now = Date.now, checkRepository, chainProviderFor, checkFork }) {
+export function createSite({ config, provider, env = process.env, fetchArchive, fetchJustification = fetchArchive, logger, keeperHooks, now = Date.now, checkRepository, chainProviderFor, checkFork }) {
   const chain = config.chain;
   if (!chain) throw new TypeError('createSite needs config.chain (SA_CONTRACT_ADDRESS)');
   const store = new StateStore(chain.dataDir, { chainId: chain.chainId, address: chain.address, fromBlock: chain.fromBlock });
@@ -231,7 +239,24 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     return controlRun;
   }
 
-  /** One indexer pass; the archives of the listings it found are read beside it, and their control facts checked. */
+  /**
+   * The justifications of settled duplicates, beside the indexer in the same way: one run at a time,
+   * started by each sync and never awaited by it, and no page request starts one.
+   */
+  let evidenceRun = null;
+  function refreshEvidenceBeside() {
+    if (evidenceRun) return evidenceRun;
+    evidenceRun = refreshEvidence({ fetchJustification, store, claims: projection().claims.values(), now, retryMs: config.archives.retryMs, logger })
+      .catch((err) => {
+        if (store.locked) logger.warn(`record: reading justifications failed (${err?.code ?? err?.name ?? 'error'})`);
+      })
+      .finally(() => {
+        evidenceRun = null;
+      });
+    return evidenceRun;
+  }
+
+  /** One indexer pass; the archives of the listings it found are read beside it, their control facts checked, and the justifications of its settled duplicates read. */
   async function sync() {
     try {
       const r = await indexer.sync();
@@ -241,6 +266,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       status.syncError = null;
       refreshArchivesBeside();
       refreshControlBeside();
+      refreshEvidenceBeside();
       return r;
     } catch (err) {
       status.syncError = err?.code ?? 'SYNC_FAILED';
@@ -365,6 +391,11 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       record: rec,
       labels: { ...view.labels, listings: Object.fromEntries(Object.entries(view.labels.listings).filter(([id]) => counted.has(id))) },
       history: told.history,
+      // from the snapshot, not the block's cache: a record cached for its block still states the latest reads
+      integrity: {
+        note: integrityNote,
+        listings: integrityByListing({ claims: (events === state.events ? projectionOf(state) : project(events)).claims.values(), readings: state.evidence, listingIds: [...counted] }),
+      },
       ...freshness(view.block),
       artifact: first ? { kind: first.artifact.kind, repo: first.artifact.repo, baseCommit: first.artifact.baseCommit, chainId: first.artifact.chainId, address: first.artifact.address } : null,
       fork: first ? control.forkOf(state, first.artifact.repo) : null,
@@ -499,6 +530,8 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     archivesIdle: () => archiveRun ?? Promise.resolve(),
     /** Resolves once the control checks started so far have finished (for tests and shutdown). */
     controlIdle: () => controlRun ?? Promise.resolve(),
+    /** Resolves once the justification reads started so far have finished (for tests and shutdown). */
+    evidenceIdle: () => evidenceRun ?? Promise.resolve(),
     submitControlProof,
     /** Refused listing attempts by reason; they live beside this site's state. */
     refusals,

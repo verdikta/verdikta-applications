@@ -7,55 +7,23 @@
 // (external-adapter/README.md): jury text follows it and can say anything. Every field is held to the form the
 // block's writer gives it, so nothing else from an upload reaches a hunter's terminal. The chain says the outcome;
 // the block only says why.
+import { MAX_JUSTIFICATION_UPLOAD_BYTES, justificationCidOf, readExecutionEvidence as readEvidenceBlock } from '@verdikta/stake-attestation-shared/execution-evidence';
+
 import { CLAIM_STATES, DISPUTE_RESULTS, EXPIRIES, OUTCOMES } from './abi.js';
 import { codeReview } from './common.js';
 import { within } from './context.js';
 import { fail } from './errors.js';
-import { gatewayGet, isCidShaped } from './ipfs.js';
+import { gatewayGet } from './ipfs.js';
 import { ABSTAIN_COSTS } from './notices.js';
 import { openWorkspace } from './workspace.js';
 
 export const WATCH_MAX_MS = 15 * 60 * 1000;
 const WATCH_POLL_MS = 15_000;
-const EVIDENCE_HEADER = 'Execution evidence v1';
-const EVIDENCE_END = 'End execution evidence';
-const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
-const NONE = /^none$/;
 
-/** The first comma-separated CID of what the aggregator holds, in a form safe to fetch; else null. */
-export function justificationCidOf(text) {
-  const first = String(text ?? '').split(',')[0].split(':')[0].trim();
-  return isCidShaped(first) ? first : null;
-}
+export { justificationCidOf };
 
-/**
- * The block at the very start of a justification, if that is what is there. It is the first line or it is not
- * the block, so jury text cannot stand in for it; a line that appears twice counts the first time.
- * @returns {null | { settlement: string, reportSha256: string|null, integrityFailedChecks: string[]|null, tamperFlags: string|null }}
- */
-export function readExecutionEvidence(justification) {
-  if (typeof justification !== 'string') return null;
-  const lines = justification.split('\n');
-  if (lines[0] !== EVIDENCE_HEADER) return null;
-  const end = lines.indexOf(EVIDENCE_END);
-  if (end < 0) return null;
-  const fields = new Map();
-  for (const line of lines.slice(1, end)) {
-    const at = line.indexOf(': ');
-    if (at > 0 && !fields.has(line.slice(0, at))) fields.set(line.slice(0, at), line.slice(at + 2));
-  }
-  const settlement = fields.get('Settlement');
-  if (!/^(jury|DUPLICATE \(integrity\)|INVALID \([A-Za-z]{1,40}\))$/.test(settlement ?? '')) return null;
-  const sha = fields.get('Report-SHA256');
-  const checks = fields.get('Integrity-Failed-Checks');
-  const flags = fields.get('Tamper-Flags');
-  return {
-    settlement,
-    reportSha256: /^[0-9a-f]{64}$/.test(sha ?? '') ? sha : null,
-    integrityFailedChecks: checks === undefined ? null : NONE.test(checks) ? [] : checks.split(',').filter((c) => codeReview.INTEGRITY_CHECKS.includes(c)),
-    tamperFlags: /^(none|[a-z-]{1,40}=[0-9]{1,6}(,[a-z-]{1,40}=[0-9]{1,6})*)$/.test(flags ?? '') ? flags : null,
-  };
-}
+/** The block at the very start of a justification, if that is what is there (shared/src/executionEvidence.js). */
+export const readExecutionEvidence = (justification) => readEvidenceBlock(justification, { integrityChecks: codeReview.INTEGRITY_CHECKS });
 
 async function readEvidence(ctx, claim, live = () => true) {
   if (!ctx.gateway) return null;
@@ -68,7 +36,7 @@ async function readEvidence(ctx, claim, live = () => true) {
     const { justificationCID } = await ctx.rpc(() => aggregator.getEvaluation(requestId));
     const cid = justificationCidOf(justificationCID);
     if (!cid || !live()) return null;
-    const bytes = await gatewayGet(ctx.gateway, cid, { maxBytes: MAX_UPLOAD_BYTES, timeoutMs: Math.min(ctx.readTimeoutMs, 30_000), fetchImpl: ctx.fetch });
+    const bytes = await gatewayGet(ctx.gateway, cid, { maxBytes: MAX_JUSTIFICATION_UPLOAD_BYTES, timeoutMs: Math.min(ctx.readTimeoutMs, 30_000), fetchImpl: ctx.fetch });
     return readExecutionEvidence(JSON.parse(bytes.toString('utf8'))?.justification);
   } catch {
     return null; // it explains the outcome; the chain holds the outcome either way

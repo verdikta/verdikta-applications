@@ -1,6 +1,7 @@
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { createGatewayFetcher } from './site/archives.js';
+import { createJustificationFetcher } from './site/evidence.js';
 import { createChainProvider, createSite } from './site/index.js';
 
 // Everything comes from the environment (src/config.js); 5009 is the next free port after the
@@ -22,6 +23,7 @@ if (config.chain) {
     provider: createChainProvider(config, process.env),
     env: process.env,
     fetchArchive: createGatewayFetcher(config.archives, logger),
+    fetchJustification: createJustificationFetcher(config.archives, logger),
     logger,
   });
   site.start();

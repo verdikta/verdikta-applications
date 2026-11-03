@@ -207,3 +207,51 @@ test('the fork label is the server\'s, and none is not a guess', () => {
   assert.deepEqual(recordView({ ...view(), fork: { status: 'fork', parent: 'https://github.com/acme/vault' } }).fork, { status: 'fork', parent: 'https://github.com/acme/vault' });
   assert.equal(recordView(view()).fork, null);
 });
+
+// Node P10: on-chain a claim that failed integrity is a DUPLICATE. The server says which, per listing;
+// the view keeps them apart from the other duplicates, and shows what it is told, as names and counts.
+const integrityEntry = (over = {}) => ({ failed: 0, checks: [], otherDuplicates: 0, unread: 0, disagree: 0, late: { failed: 0, checks: [], otherDuplicates: 0, unread: 0, disagree: 0 }, ...over });
+
+test('claims that failed integrity: per listing, and apart from the other duplicates in the history', () => {
+  const hist = history({ outcomes: ['0', '5', '0', '0', '0', '0'], lateOutcomes: ['0', '2', '0', '0', '0', '0'] });
+  const l3 = listing({ listingId: '3', history: history({ outcomes: ['0', '3', '0', '0', '0', '0'] }) });
+  const l4 = listing({ listingId: '4', history: history({ outcomes: ['0', '2', '0', '0', '0', '0'], lateOutcomes: ['0', '2', '0', '0', '0', '0'] }) });
+  const v = recordView({
+    ...view({ listings: [l3, l4], hist }),
+    integrity: {
+      note: 'the note',
+      listings: {
+        3: integrityEntry({ failed: 2, otherDuplicates: 1, checks: [{ check: 'identityComplete', count: 1 }, { check: 'frameworkUnchanged', count: 2 }] }),
+        4: integrityEntry({ failed: 1, otherDuplicates: 1, unread: 1, disagree: 0, checks: [{ check: 'exitConsistent', count: 1 }], late: { failed: 1, checks: [{ check: 'exitConsistent', count: 1 }], otherDuplicates: 1, unread: 1, disagree: 1 } }),
+      },
+    },
+  });
+  assert.deepEqual(v.listings[0].integrity, { failed: '2', checks: [['identityComplete', '1'], ['frameworkUnchanged', '2']], otherDuplicates: '1', unread: '0', lateFailed: '0', lateChecks: [] });
+  assert.deepEqual(v.listings[1].integrity, { failed: '1', checks: [['exitConsistent', '1']], otherDuplicates: '1', unread: '1', lateFailed: '1', lateChecks: [['exitConsistent', '1']] });
+  assert.equal(v.history.integrityFailed, '3');
+  assert.deepEqual(v.history.integrityChecks, [['identityComplete', '1'], ['frameworkUnchanged', '2'], ['exitConsistent', '1']]);
+  assert.deepEqual(v.later.integrityChecks, [['exitConsistent', '1']]);
+  assert.equal(v.history.duplicates, '2', 'the other duplicates');
+  assert.equal(v.history.integrityUnread, '1');
+  assert.equal(v.later.integrityFailed, '1');
+  assert.equal(v.later.integrityUnread, '2', 'unread and disagreeing, both plain');
+  assert.deepEqual(v.history.verdicts[1], ['DUPLICATE', '5'], 'the verdicts are the chain\'s');
+  assert.deepEqual(v.later.verdicts[1], ['DUPLICATE', '2']);
+});
+
+test('an answer that disagrees counts with what could not be read, as one line on the page', () => {
+  const l = listing({ history: history({ outcomes: ['0', '3', '0', '0', '0', '0'] }) });
+  const v = recordView({ ...view({ listings: [l], hist: history({ outcomes: ['0', '3', '0', '0', '0', '0'] }) }), integrity: { note: 'n', listings: { 3: integrityEntry({ otherDuplicates: 3, unread: 1, disagree: 2 }) } } });
+  assert.equal(v.listings[0].integrity.unread, '3');
+  assert.equal(v.history.integrityUnread, '3');
+  assert.equal(v.history.duplicates, '3');
+});
+
+test('a record with no integrity field (a server from before it): every duplicate stays where the chain counts it, and it fails no one', () => {
+  const l = listing({ history: history({ outcomes: ['0', '3', '0', '0', '0', '0'] }) });
+  const v = recordView(view({ listings: [l], hist: history({ outcomes: ['0', '3', '0', '0', '0', '0'] }) }));
+  assert.deepEqual(v.listings[0].integrity, { failed: '0', checks: [], otherDuplicates: '3', unread: '0', lateFailed: '0', lateChecks: [] });
+  assert.equal(v.history.duplicates, '3');
+  assert.equal(v.history.integrityFailed, '0');
+  assert.equal(v.later.integrityFailed, '0');
+});

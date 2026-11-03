@@ -56,11 +56,12 @@
 //   SA_RECORD_LISTING_PAGE, SA_RECORD_ITEM_PAGE
 //                                  recordPage's page sizes when a record is read (50, 200)
 //   SA_IPFS_GATEWAYS               operator-preferred gateways for reading listing archives (the feed's
-//                                  image and scope), tried before @verdikta/common's own list
+//                                  image and scope) and justifications (the record's claims that failed
+//                                  integrity), tried before @verdikta/common's own list
 //   SA_ARCHIVE_MAX_BYTES           the largest listing archive read (8388608)
-//   SA_ARCHIVE_TIMEOUT_MS          per gateway request (30000)
-//   SA_ARCHIVE_RETRY_MS            after a failed fetch, the first wait before the next; it doubles
-//                                  per failure, up to 6 h (30000)
+//   SA_ARCHIVE_TIMEOUT_MS          per gateway request, for a justification too (30000)
+//   SA_ARCHIVE_RETRY_MS            after a failed fetch, a justification's too, the first wait before the
+//                                  next; it doubles per failure, up to 6 h (30000)
 //   SA_ETH_USD_FEED                Chainlink's ETH/USD aggregator on the chain (Base mainnet:
 //                                  0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70); under-staked needs it
 //   SA_ETH_USD_MAX_AGE_SECONDS     an older answer is no price (3600)

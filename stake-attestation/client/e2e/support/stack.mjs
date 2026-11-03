@@ -137,7 +137,7 @@ function listen(server) {
   });
 }
 
-async function startApi(chain, pinner) {
+async function startApi(chain, pinner, gateway) {
   const builderConfig = path.join(STACK_DIR, 'builder.json');
   const builderRecord = path.join(STACK_DIR, 'builder-record.json');
   const workDir = path.join(STACK_DIR, 'builds');
@@ -185,6 +185,12 @@ async function startApi(chain, pinner) {
       if (!bytes) throw new Error(`${cid} is not pinned`);
       return bytes;
     },
+    // an arbiter's upload, from the gateway stand-in only: no public gateway is ever asked
+    fetchJustification: async (cid) => {
+      const res = await fetch(`${gateway.url}/ipfs/${cid}`);
+      if (!res.ok) throw new Error(`the gateway stand-in answered HTTP ${res.status}`);
+      return Buffer.from(await res.arrayBuffer());
+    },
     logger: quiet,
     // the host's API never reached: a repository named for what the host would say
     checkFork: async ({ repo }) => {
@@ -216,7 +222,7 @@ async function main() {
   const { createMockPinner } = await fromServer('src/pinning/index.js');
   const pinner = createMockPinner();
   const gateway = await startGateway(pinner);
-  const api = await startApi(chain, pinner);
+  const api = await startApi(chain, pinner, gateway);
   // no key in the file: the keeper's stays in this process
   const stack = {
     chainId: CHAIN_ID,

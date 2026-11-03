@@ -7,7 +7,7 @@
 // judged INVALID, a duplicate, a roll forward to a fixed version, and a late finding after it.
 // The site's keeper finalizes and settles each round, as it does in production (erratum E4).
 import { STRINGS, fill } from '../src/strings.js';
-import { archiveBytes, disclosure, expect, shot, test } from './support/fixtures.js';
+import { archiveBytes, disclosure, expect, fromServer, shot, test } from './support/fixtures.js';
 import { wordingProblems } from './support/wording.js';
 
 const R = STRINGS.record;
@@ -153,6 +153,92 @@ test('a version\'s record: stake, labels, history, findings, flags, lineage, lat
   // the rolled version's badge says how its stake ended
   const ended = await (await page.request.get(`${origin}/api/records/${first.artifactHash.toLowerCase()}/badge.svg`)).text();
   expect(ended).toContain('stake rolled forward');
+});
+
+// Node P10 (owner decision Q35, design §9.5): on-chain a claim that failed an integrity check is a
+// DUPLICATE. The page says apart how many failed and which checks, from the block at the start of the
+// justification, in neutral words. The site reads the uploads from the gateway stand-in in the
+// background; a page request reads none.
+test('claims that failed integrity: per listing, by check, apart from the other duplicates, in neutral words', async ({ page, stack, chain }) => {
+  test.setTimeout(300_000);
+  const { evidenceBlock, integrityUpload, juryUpload, uploadBytes } = await fromServer('test/helpers/evidence.js');
+  const key = disclosure.generateDisclosureKeyPair();
+  const listed = await chain.openListing({ recipient: key.recipient, stake: STAKE, escrow: 5n * 10n ** 18n });
+  const id = listed.listingId;
+  const settledWith = async (label, outcome, justification) => {
+    const c = await chain.revealedClaim({ listingId: id, recipient: key.recipient, label });
+    await chain.verdict(c.claimId, outcome, { justification });
+    await chain.judged(c.claimId);
+    await chain.settledAfter(c.claimId);
+    return c;
+  };
+  // two arbiters' uploads that agree, each with its own report hash; then one arbiter's, naming one check
+  const a = await chain.upload(integrityUpload({ sha: 'a'.repeat(64) }));
+  const b = await chain.upload(integrityUpload({ sha: 'b'.repeat(64) }));
+  await settledWith('integrity-1', 'DUPLICATE', `${a},${b}`);
+  await settledWith('integrity-2', 'DUPLICATE', await chain.upload(integrityUpload({ checks: 'frameworkUnchanged', sha: 'c'.repeat(64) })));
+  // a jury's duplicate, quoting the block: a duplicate
+  await settledWith('jury-duplicate', 'DUPLICATE', await chain.upload(juryUpload(`The hunter's report says:\n${evidenceBlock()}`)));
+  // an INVALID verdict with an integrity block on it, a forged name, and an upload no gateway has
+  await settledWith('invalid-forged', 'INVALID', await chain.upload(integrityUpload({ sha: 'd'.repeat(64) })));
+  await settledWith('forged-name', 'DUPLICATE', await chain.upload(uploadBytes(evidenceBlock({ checks: 'frameworkUnchanged,madeUpCheck' }))));
+  await settledWith('not-pinned', 'DUPLICATE', 'bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku');
+
+  await chain.until(async () => {
+    const r = await recordFromServer(stack, listed.artifactHash);
+    // every settlement indexed, and the reads beside the indexer done: the one with no upload stays unread
+    const e = r?.integrity?.listings[String(id)];
+    return r?.record.history.outcomes[1] === '5' && e?.failed === 2 && e.otherDuplicates === 3 && e.unread === 1;
+  }, { what: 'the record\'s reads of the justifications' });
+
+  const requests = [];
+  page.on('request', (r) => requests.push(r.url()));
+  await page.goto(`/#/record/${listed.artifactHash}`);
+  await expect(page.getByRole('heading', { name: R.title, level: 2 })).toBeVisible();
+
+  // per listing: the count and each check's name
+  const s = (f) => page.getByTestId(`listing-${id}-${f}`);
+  await expect(s('integrity')).toHaveText('2');
+  await expect(s('integrity-checks')).toContainText(fill(R.integrityCheckLine, { check: 'frameworkUnchanged', count: 2 }));
+  await expect(s('integrity-checks')).toContainText(fill(R.integrityCheckLine, { check: 'dependenciesUnchanged', count: 1 }));
+  await expect(s('integrity-checks')).not.toContainText('madeUpCheck');
+  await expect(s('other-duplicates')).toHaveText('3');
+  await expect(s('integrity-unread')).toHaveText('1');
+
+  // apart from the other duplicates, and the chain's own count still shown
+  const h = (f) => page.getByTestId(`history-${f}`);
+  await expect(h('integrity')).toHaveText('2');
+  await expect(h('duplicates')).toHaveText('3');
+  await expect(h('integrity-unread')).toHaveText('1');
+  await expect(page.getByTestId('history-verdicts')).toContainText(fill(R.verdictLine, { outcome: 'DUPLICATE', count: 5 }));
+  await expect(page.getByTestId('history-verdicts')).toContainText(fill(R.verdictLine, { outcome: 'INVALID', count: 1 }));
+
+  // in neutral words
+  await expect(page.getByTestId('integrity-note')).toHaveText(R.integrityNote);
+  await expect(s('integrity-note')).toHaveText(R.integrityNote);
+  await expect(page.getByTestId('integrity-unread-note')).toHaveText(R.integrityUnreadNote);
+  const text = await page.locator('main').innerText();
+  expect(wordingProblems(text)).toEqual([]);
+  const said = await page.getByTestId('record-history').innerText();
+  expect(/\b(trap|cheat|fault|blame|malicious|attack|grief)/i.test(said)).toBe(false);
+  await shot(page, 'record-integrity');
+  await shot(page, 'record-integrity-listing', { target: page.getByTestId(`listing-${id}`) });
+  await shot(page, 'record-integrity-history', { target: page.getByTestId('record-history') });
+
+  // the browser reads the record from the server, never a justification from a gateway
+  expect(requests.filter((u) => u.includes(a) || u.includes(b))).toEqual([]);
+
+  // the API says the same, with the same note
+  const api = await recordFromServer(stack, listed.artifactHash);
+  expect(api.integrity.note).toBe(R.integrityNote);
+  expect(api.integrity.listings[String(id)]).toEqual({
+    failed: 2,
+    checks: [{ check: 'frameworkUnchanged', count: 2 }, { check: 'dependenciesUnchanged', count: 1 }],
+    otherDuplicates: 3,
+    unread: 1,
+    disagree: 0,
+    late: { failed: 0, checks: [], otherDuplicates: 0, unread: 0, disagree: 0 },
+  });
 });
 
 test('a hash with no opened listing has no record, and a malformed one is refused before any request', async ({ page }) => {

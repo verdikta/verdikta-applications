@@ -46,6 +46,13 @@ function Lineage({ to }) {
   return to.hash ? <a href={`#/record/${to.hash}`}>{text}</a> : text;
 }
 
+/** Each check's name, as the server names it, with how many of the claims name it. */
+const checkList = (checks, testId) => (
+  <ul className="inline" data-testid={testId}>
+    {checks.map(([check, count]) => <li key={check} className="mono">{fill(R.integrityCheckLine, { check, count })}</li>)}
+  </ul>
+);
+
 function Stake({ l }) {
   const id = useId();
   const f = (name) => `listing-${l.id}-${name}`;
@@ -72,7 +79,15 @@ function Stake({ l }) {
         { id: f('days-open'), label: R.daysOpen, value: String(l.daysOpen) },
         { id: f('predecessor'), label: R.predecessor, value: <Lineage to={l.predecessor} /> },
         { id: f('successor'), label: R.successor, value: <Lineage to={l.successor} /> },
+        { id: f('integrity'), label: R.integrity, value: l.integrity.failed },
+        l.integrity.checks.length > 0 ? { id: f('integrity-checks-row'), label: R.integrityChecks, value: checkList(l.integrity.checks, f('integrity-checks')) } : null,
+        { id: f('other-duplicates'), label: R.integrityOther, value: l.integrity.otherDuplicates },
+        BigInt(l.integrity.unread) > 0n ? { id: f('integrity-unread'), label: R.integrityUnread, value: l.integrity.unread } : null,
+        BigInt(l.integrity.lateFailed) > 0n ? { id: f('integrity-late'), label: R.integrityLate, value: l.integrity.lateFailed } : null,
+        l.integrity.lateChecks.length > 0 ? { id: f('integrity-late-checks-row'), label: R.integrityLateChecks, value: checkList(l.integrity.lateChecks, f('integrity-late-checks')) } : null,
       ]} />
+      {/* a count beside a maker's address says nothing about the maker, and says so where it is read */}
+      {(BigInt(l.integrity.failed) > 0n || BigInt(l.integrity.lateFailed) > 0n) && <p className="hint" data-testid={f('integrity-note')}>{R.integrityNote}</p>}
     </section>
   );
 }
@@ -186,7 +201,10 @@ function Record({ v, onChanged }) {
           { id: 'history-judged', label: R.judged, value: h.judged },
           { id: 'history-pending', label: R.pending, value: h.pending },
           { id: 'history-verdicts-row', label: R.verdicts, value: verdictList(h.verdicts, 'history-verdicts') },
-          { id: 'history-duplicates', label: R.duplicates, value: h.duplicates },
+          { id: 'history-integrity', label: R.integrity, value: h.integrityFailed },
+          h.integrityChecks.length > 0 ? { id: 'history-integrity-checks-row', label: R.integrityChecks, value: checkList(h.integrityChecks, 'history-integrity-checks') } : null,
+          { id: 'history-duplicates', label: R.integrityOther, value: h.duplicates },
+          BigInt(h.integrityUnread) > 0n ? { id: 'history-integrity-unread', label: R.integrityUnread, value: h.integrityUnread } : null,
           { id: 'history-released', label: R.released, value: h.released },
           { id: 'history-undisclosed', label: R.undisclosed, value: h.undisclosed },
           { id: 'history-unrevealed', label: R.unrevealed, value: h.unrevealed },
@@ -195,6 +213,8 @@ function Record({ v, onChanged }) {
           { id: 'history-dispute-results', label: R.disputeResults, value: fill(R.disputeLine, h.disputes) },
           { id: 'history-days-since', label: R.daysSince, value: h.daysSinceLastValidFinding === null ? R.noValidFinding : String(h.daysSinceLastValidFinding) },
         ]} />
+        <p className="hint" data-testid="integrity-note">{R.integrityNote}</p>
+        {(BigInt(h.integrityUnread) > 0n || BigInt(v.later.integrityUnread) > 0n) && <p className="hint" data-testid="integrity-unread-note">{R.integrityUnreadNote}</p>}
       </section>
 
       <section className="claim">
@@ -208,6 +228,9 @@ function Record({ v, onChanged }) {
         <Facts rows={[
           { id: 'later-claims', label: R.lateClaims, value: v.later.claims },
           { id: 'later-verdicts-row', label: R.lateVerdicts, value: verdictList(v.later.verdicts, 'later-verdicts') },
+          BigInt(v.later.integrityFailed) > 0n ? { id: 'later-integrity', label: R.integrityLate, value: v.later.integrityFailed } : null,
+          v.later.integrityChecks.length > 0 ? { id: 'later-integrity-checks-row', label: R.integrityLateChecks, value: checkList(v.later.integrityChecks, 'later-integrity-checks') } : null,
+          BigInt(v.later.integrityUnread) > 0n ? { id: 'later-integrity-unread', label: R.integrityUnread, value: v.later.integrityUnread } : null,
           { id: 'later-expired', label: R.lateExpired, value: v.later.expired },
         ]} />
         {v.later.findings.length ? <FindingsTable findings={v.later.findings} testId="record-later-findings" rowId="late-finding" /> : <p>{R.noLaterFindings}</p>}

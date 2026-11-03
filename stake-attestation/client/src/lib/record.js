@@ -32,7 +32,26 @@ const neighbour = (id, hash) => (BigInt(id) === 0n ? null : { id: String(id), ha
 /** No fact from the server reads as "no", the fact's default. */
 const NOT_CHECKED = Object.freeze({ subject: 'repository', proof: 'no', reason: 'NOT_CHECKED_YET', detail: null, repository: null, deployment: null });
 
-function listingView(l, label, blockTimestamp, control) {
+const checksOf = (checks) => (checks ?? []).map(({ check, count }) => [check, String(count)]);
+
+/**
+ * A listing's claims that failed integrity (node P10), apart from the other duplicates, whose count is
+ * the chain's less those. `unread` holds what could not be read and what the arbiters said differently:
+ * both are plain duplicates, and the page gives them one line. No answer from the server: none failed.
+ */
+function integrityView(l, entry) {
+  const failed = BigInt(entry?.failed ?? 0);
+  return {
+    failed: String(failed),
+    checks: checksOf(entry?.checks),
+    otherDuplicates: String(BigInt(l.history.outcomes[1]) - failed),
+    unread: String(BigInt(entry?.unread ?? 0) + BigInt(entry?.disagree ?? 0)),
+    lateFailed: String(entry?.late?.failed ?? 0),
+    lateChecks: checksOf(entry?.late?.checks),
+  };
+}
+
+function listingView(l, label, blockTimestamp, control, integrity) {
   const opened = Number(l.openedAt);
   // it took claims from the opening to its roll forward or close, whichever came first
   const ends = [time(l.rolledAt), time(l.closedAt)].filter((t) => t !== null);
@@ -43,6 +62,7 @@ function listingView(l, label, blockTimestamp, control) {
     state: l.state,
     labels: labelsOf(l, label),
     control: control ?? NOT_CHECKED,
+    integrity: integrityView(l, integrity),
     awards: Object.fromEntries(CLASSES.map((c, i) => [c, String(l.awards[i])])),
     lowest: l.lowestClassCounted,
     bondWei: String(l.bondWei),
@@ -63,6 +83,13 @@ function listingView(l, label, blockTimestamp, control) {
 }
 
 const byOutcome = (counts) => OUTCOMES.map((o, i) => [o, String(counts[i])]);
+
+/** Each check's count over the listings, in the order the server gives them (common's). */
+function checkTotals(lists) {
+  const totals = new Map();
+  for (const { check, count } of lists.flat()) totals.set(check, (totals.get(check) ?? 0n) + BigInt(count));
+  return [...totals].map(([check, count]) => [check, String(count)]);
+}
 
 function findingView(f) {
   return {
@@ -86,6 +113,9 @@ export function recordView(view) {
   const { record, labels, history, block } = view;
   const h = record.history;
   const a = view.artifact;
+  const integrity = Object.values(view.integrity?.listings ?? {});
+  const sum = (of) => integrity.reduce((total, e) => total + BigInt(of(e)), 0n);
+  const failed = sum((e) => e.failed);
   return {
     hash: record.artifactHash.toLowerCase(),
     kind: record.kind,
@@ -93,13 +123,16 @@ export function recordView(view) {
     fork: view.fork ?? null,
     listingCount: String(record.listingCount),
     active: record.active.map(String),
-    listings: record.listings.map((l) => listingView(l, labels.listings[String(l.listingId)], block.timestamp, view.control?.[String(l.listingId)])),
+    listings: record.listings.map((l) => listingView(l, labels.listings[String(l.listingId)], block.timestamp, view.control?.[String(l.listingId)], view.integrity?.listings?.[String(l.listingId)])),
     history: {
       claims: String(h.claims),
       judged: String(h.outcomes.reduce((s, x) => s + BigInt(x), 0n)),
       pending: String(h.pending),
       verdicts: byOutcome(h.outcomes),
-      duplicates: String(h.outcomes[1]),
+      integrityFailed: String(failed),
+      integrityChecks: checkTotals(integrity.map((e) => e.checks)),
+      integrityUnread: String(sum((e) => e.unread) + sum((e) => e.disagree)),
+      duplicates: String(BigInt(h.outcomes[1]) - failed),
       released: String(h.released),
       undisclosed: String(h.undisclosed),
       unrevealed: String(h.unrevealed),
@@ -111,6 +144,9 @@ export function recordView(view) {
     later: {
       claims: String(h.lateClaims),
       verdicts: byOutcome(h.lateOutcomes),
+      integrityFailed: String(sum((e) => e.late.failed)),
+      integrityChecks: checkTotals(integrity.map((e) => e.late.checks)),
+      integrityUnread: String(sum((e) => e.late.unread) + sum((e) => e.late.disagree)),
       expired: String(h.lateExpired),
       findings: record.findings.filter((f) => f.late).map(findingView),
     },

@@ -17,3 +17,16 @@ export {
 } from './controlProof.js';
 export { didBuilderSign, readSignedListing } from './builderSignature.js';
 export { LISTING_REQUEST_MAX_BYTES, LISTING_REQUEST_TOO_LARGE, listingRequestRefusal } from './listingRequestSize.js';
+export {
+  EVIDENCE_END,
+  EVIDENCE_HEADER,
+  INTEGRITY_NOTE,
+  MAX_BLOCK_LINES,
+  MAX_JUSTIFICATION_CIDS,
+  MAX_JUSTIFICATION_UPLOAD_BYTES,
+  integrityFailureOf,
+  isCidShaped,
+  justificationCidOf,
+  justificationCidsOf,
+  readExecutionEvidence,
+} from './executionEvidence.js';

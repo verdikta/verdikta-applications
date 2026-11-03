@@ -379,7 +379,7 @@ the indexed block are both within `SA_MAX_STALENESS_SECONDS` (600).
 |---|---|
 | `GET /api/feed` | every listing that counts and takes commits (a builder's signature and the project's proof, [`docs/control-proof.md`](docs/control-proof.md); Open, its paid period not over), and `notCounted`, the others apart: hash, artifact, image and scope (from its listing archive, used only when the archive is the listing the chain stores), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed and lapsed listings are not in it (design §15) |
 | `GET /api/feed/events?after=&limit=` | the contract's events of listings and claims, in chain order (design §13.4: the feed is those events), paged by `next` (`<block>:<logIndex>`) |
-| `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), over the listings that count (`notCounted` holds the others, apart; `artifact` and `fork` say what the record is of), read in `recordPage` pages when it is long; `labels`; `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding. 404 for a hash with no opened listing |
+| `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), over the listings that count (`notCounted` holds the others, apart; `artifact` and `fork` say what the record is of), read in `recordPage` pages when it is long; `labels`; `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding; `integrity`: per listing, the claims that failed integrity, by check, apart from the other duplicates (below). 404 for a hash with no opened listing |
 | `GET /api/records/:hash/badge.svg` | the badge; "record unavailable" when the record is not fresh or cannot be read |
 | `GET /api/status` | the indexer's cursor, the keeper's address, transaction in flight and last result, and refused listing attempts by reason (`listings.refused`: no address or repository name, kept beside the state) |
 
@@ -434,6 +434,43 @@ goes through the shared banned-words helper. The feed reads a listing archive's
 download (`SA_ARCHIVE_MAX_BYTES`) and on each member read, inflated or not. Archive reads run
 beside the indexer, one run at a time, so a slow gateway never delays a chain read; a failed
 fetch is retried after `SA_ARCHIVE_RETRY_MS`, doubling, counted from the failure.
+
+**Claims that failed integrity** (node P10, owner decision Q35; `server/src/site/evidence.js`,
+`server/src/record/integrity.js`). A failed integrity check with no tamper flag settles with all weight
+on DUPLICATE: bond back, no award. So on-chain it is a DUPLICATE, and the record keeps it apart. A record's
+`integrity.listings[<id>]` has `failed`, `checks` (each check's name in common's order, with how many of
+those claims name it), `otherDuplicates`, `unread`, `disagree` and the same again under `late`, and
+`integrity.note` says what the count means; the record page shows them. `record.history` stays the chain's,
+so for each listing `failed + otherDuplicates` is `outcomes[DUPLICATE]`.
+
+The reason comes from the justification, which is untrusted text from IPFS, so a claim counts as failed only
+when all of these hold:
+
+- its `Settled` event says DUPLICATE, whatever any text says. Nothing else is ever fetched;
+- its last verdict's `justificationCid` (a dispute round's replaces the first) is a list of at most 16 CIDs;
+- **every** CID on it has been read: the aggregator joins the clustered oracles', and reading only the first
+  would let that one arbiter move the count;
+- each one starts with the block, in the writer's form: `Execution evidence v1` is the very first line, every
+  line of the block is `Name: value` with each name once, the settlement is `DUPLICATE (integrity)`, it says
+  `Tamper-Flags: none`, and at least one check is named, each one of common's `INTEGRITY_CHECKS`, once, in
+  common's order. One unknown name makes the whole block plain. Jury text after the block is never read, and
+  neither is the upload's `metadata`;
+- they all name the same checks. Report hashes are not compared, since a hash can differ between hosts.
+
+Anything else is a plain DUPLICATE, never an integrity failure: `disagree` counts the claims whose arbiters
+state different settlements or checks, and `unread` the ones with a malformed list or a read not done. A failed
+read (a gateway down, a file over the cap, an answer with no justification in it) is tried again after
+`SA_ARCHIVE_RETRY_MS`, doubling up to 6 hours; an answer with a justification is final, because a CID names its
+content. The reads run beside the indexer, one run at a time and at most 8 fetches a run, each download stopped
+at 4 MiB; no request and no sync waits for one. The store keeps only the outcome of each read, by CID: known
+check names and a settlement in its writer's form, never other text from the upload.
+
+**What the count does not say.** It counts claims that failed a check. It does not say who or what caused a
+failure, and a hunter's own failed run raises it too, so it proves nothing about a listing. If every clustered
+arbiter wrote the same block falsely, or a gateway answered other bytes for a CID that isn't a raw hash (the
+fetcher checks those), an on-chain DUPLICATE would move between the two counts. Nothing else moves: the outcome,
+the money, the badge, the labels, the feed and what counts on a record read none of this. A listing that doesn't
+count (P9) keeps its count off the record, like the rest of its history.
 
 **The dispute statement** (node P6b; `server/src/dispute/statement.js`). `dispute()` takes the
 statement's CID only (erratum E2: the contract writes `verdikta-dispute: <cid>` as the request's
@@ -829,9 +866,10 @@ goes in a URL.
   artifact (hash, kind, repository and commit from the Listed event, and whether the host says it
   is a fork), each stake that counts (state, labels,
   award table, lowest class counted, bond, escrow, owed, declared value at risk and the top
-  award's share of it, the times, days open, predecessor and successor), the history (claims,
-  claims judged, verdicts by outcome, duplicates, released, expired, disputes and their
-  outcomes, days since the last valid finding), the valid findings, what was found later (late
+  award's share of it, the times, days open, predecessor and successor, and the claims that failed
+  integrity with each check's name, apart from its other duplicates), the history (claims,
+  claims judged, verdicts by outcome, claims that failed integrity, other duplicates, released,
+  expired, disputes and their outcomes, days since the last valid finding), the valid findings, what was found later (late
   claims), the bad-disclosure flags with what became of each claim, and the badge with its
   Markdown and HTML embed. Any other listing of the hash shows apart, as not counted, with why
   and no amount. Then the diligence text: what a record says and does not (design

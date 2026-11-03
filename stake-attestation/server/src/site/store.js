@@ -117,6 +117,7 @@ function emptyState(identity) {
     events: [], // { name, blockNumber, blockHash, logIndex, txHash, timestamp, args }, in chain order
     archives: {}, // listingCid -> what the listing archive says (image, scope), or why it could not be read
     control: { repositories: {}, deployments: {}, terms: {}, forks: {}, devKeys: [] }, // the control facts' answers (src/control/); a file from before them has none or some
+    evidence: {}, // justification CID -> what its upload says of integrity (src/site/evidence.js); a file from before it has none
     keeper: { inflight: null, foreign: [], last: null },
   };
 }

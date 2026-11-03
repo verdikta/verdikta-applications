@@ -1,5 +1,6 @@
 // Every user-facing string of the client, in one place so the wording rule can be checked.
 // Placeholders are {name}; fill() puts values in. No string here is built from parts.
+import { INTEGRITY_NOTE } from '@verdikta/stake-attestation-shared/execution-evidence';
 import { LISTING_WARNING } from '@verdikta/stake-attestation-shared/listing-warning';
 
 /** The control proof file's content (docs/control-proof.md), for the {format} placeholders. */
@@ -526,7 +527,18 @@ export const STRINGS = {
     pending: 'Claims pending',
     verdicts: 'Verdicts by outcome',
     verdictLine: '{outcome}: {count}',
-    duplicates: 'Duplicates',
+    // claims that failed integrity (owner decision Q35, condition 3): what the checks found, never who caused it
+    integrity: 'Claims that failed integrity',
+    integrityChecks: 'Checks that failed, with how many of those claims name each',
+    integrityCheckLine: '{check}: {count}',
+    integrityLate: 'Late claims that failed integrity',
+    integrityLateChecks: 'Checks those late claims name',
+    integrityOther: 'Other duplicates',
+    integrityUnread: 'Duplicates with a justification not read, or read differently',
+    integrityNote: INTEGRITY_NOTE,
+    integrityUnreadNote:
+      'A justification that could not be read, or arbiters whose justifications say different things, count as a plain duplicate, ' +
+      'never as a failed check. A read that failed is tried again.',
     released: 'Claims the maker released early',
     undisclosed: 'Commits expired undisclosed',
     unrevealed: 'Commits expired unrevealed',

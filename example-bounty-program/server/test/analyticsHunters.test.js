@@ -6,7 +6,12 @@ jest.mock('../config', () => ({ config: { network: 'base-sepolia', bountyEscrowA
 jest.mock('../utils/verdiktaService', () => ({ getVerdiktaService: () => null, isVerdiktaServiceAvailable: () => false }));
 jest.mock('../utils/contractService', () => ({ getContractService: () => ({}) }));
 let mockJobs = [];
-jest.mock('../utils/jobStorage', () => ({ listJobs: jest.fn(async () => ({ jobs: mockJobs })) }));
+jest.mock('../utils/jobStorage', () => ({ listJobs: jest.fn(async () => ({ jobs: mockJobs })), readStorage: jest.fn(async () => ({ jobs: mockJobs })) }));
+let mockLinkState = null;
+jest.mock('../utils/hunterLinks', () => {
+  const actual = jest.requireActual('../utils/hunterLinks');
+  return { ...actual, readState: jest.fn(async () => mockLinkState), getStatus: () => ({ running: false }) };
+});
 
 const express = require('express');
 const request = require('supertest');
@@ -19,8 +24,12 @@ const A = '0x' + 'aa'.repeat(20);
 const B = '0x' + 'bb'.repeat(20);
 const C = '0x' + 'cc'.repeat(20);
 
+const emptyLinks = () => ({ version: 1, addresses: {}, funders: {}, tokens: {}, transfers: [],
+  tokenScan: { covered: [], cursor: null }, lastRunAt: null, lastError: null });
+
 beforeEach(() => {
   analyticsCache.clear();
+  mockLinkState = emptyLinks();
   mockJobs = [
     {
       jobId: 1, status: 'AWARDED', winner: A, bountyAmount: '0', arbiterDeterminationPayment: '0.01',
@@ -65,4 +74,39 @@ test('view=winners keeps only addresses that won', async () => {
   expect(res.body.data.hunters).toHaveLength(1);
   expect(res.body.data.hunters[0].address.toLowerCase()).toBe(A);
   expect(res.body.data.totalSubmitters).toBe(3);
+});
+
+test('connections: hunters funded by the same personal wallet form a group; groups show on the list', async () => {
+  const F = '0x' + 'f1'.repeat(20);
+  mockLinkState = {
+    ...emptyLinks(),
+    lastRunAt: 1,
+    addresses: {
+      [A]: { kind: 'eoa', parent: F, via: 'direct', parentTx: '0x01', parentBlock: 10 },
+      [B]: { kind: 'eoa', parent: F, via: 'direct', parentTx: '0x02', parentBlock: 11 },
+      [C]: { kind: 'eoa', parent: null, via: 'none', parentTx: null, parentBlock: null },
+    },
+    funders: { [F]: { nonce: 12, isContract: false, hub: false, checkedAt: Date.now() } },
+  };
+  const res = await request(app).get('/api/analytics/hunters/connections');
+  expect(res.status).toBe(200);
+  const { groups, coverage } = res.body.data;
+  expect(groups).toHaveLength(1);
+  expect(groups[0].members.map(m => m.address.toLowerCase()).sort()).toEqual([A, B]);
+  expect(groups[0]).toMatchObject({ wins: 1, ethWon: 0.01 });
+  expect(groups[0].links[0]).toMatchObject({ type: 'shared-funder', funder: F, relation: 'funder' });
+  expect(coverage).toMatchObject({ hunters: 3, linkedHunters: 2, neverFunded: 1 });
+
+  const list = await request(app).get('/api/analytics/hunters');
+  const groupOf = Object.fromEntries(list.body.data.hunters.map(h => [h.address.toLowerCase(), h.group]));
+  expect(groupOf).toEqual({ [A]: 1, [B]: 1, [C]: null });
+
+  const overview = await request(app).get('/api/analytics/overview');
+  expect(overview.body.data.hunters).toMatchObject({ linkedHunters: 2, connectionGroups: 1 });
+});
+
+test('connections: overview counts are null before the first analysis run', async () => {
+  const overview = await request(app).get('/api/analytics/overview');
+  expect(overview.status).toBe(200);
+  expect(overview.body.data.hunters).toMatchObject({ totalSubmitters: 3, linkedHunters: null, connectionGroups: null });
 });

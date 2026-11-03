@@ -13,6 +13,7 @@ const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/ver
 const { getContractService } = require('../utils/contractService');
 const { classMap } = require('@verdikta/common');
 const { summarizeTemplateUsage } = require('../utils/templateUsage');
+const hunterLinks = require('../utils/hunterLinks');
 
 /**
  * GET /api/analytics/overview
@@ -54,7 +55,8 @@ router.get('/overview', async (req, res) => {
       // Counts only; the per-address list is served by GET /hunters.
       hunters: {
         totalSubmitters: hunterData.totalSubmitters,
-        totalWinners: hunterData.totalWinners
+        totalWinners: hunterData.totalWinners,
+        ...(await getConnectionCounts(hunterData))
       },
       generatedAt: Date.now()
     };
@@ -228,7 +230,9 @@ router.get('/hunters', async (req, res) => {
     const data = cached ? cached.data : await getHunterAnalytics();
     if (!cached) analyticsCache.set(cacheKey, data);
 
-    const hunters = view === 'winners' ? data.hunters.filter(h => h.wins > 0) : data.hunters;
+    const { groupOf } = await getConnections(data);
+    const hunters = (view === 'winners' ? data.hunters.filter(h => h.wins > 0) : data.hunters)
+      .map(h => ({ ...h, group: groupOf[h.address.toLowerCase()] ?? null }));
 
     return res.json({
       success: true,
@@ -240,6 +244,49 @@ router.get('/hunters', async (req, res) => {
     logger.error('[analytics/hunters] error', { msg: error.message });
     return res.status(500).json({
       error: 'Failed to get hunter analytics',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/analytics/hunters/connections
+ * Groups of hunter addresses linked on chain (one funded another, same parent
+ * account, or a token transfer between them), from the cached background
+ * analysis in utils/hunterLinks.js. Heuristic: links are evidence, not proof
+ * of common ownership.
+ */
+router.get('/hunters/connections', async (req, res) => {
+  try {
+    const cacheKey = 'analytics_hunters';
+    const cached = analyticsCache.get(cacheKey);
+    const data = cached ? cached.data : await getHunterAnalytics();
+    if (!cached) analyticsCache.set(cacheKey, data);
+
+    const { groups, hubs, coverage } = await getConnections(data);
+    const stats = new Map(data.hunters.map(h => [h.address.toLowerCase(), h]));
+    const enriched = groups.map(g => {
+      const members = g.addresses.map(a => {
+        const h = stats.get(a) || {};
+        return { address: h.address || a, submissions: h.submissions || 0, wins: h.wins || 0, ethWon: h.ethWon || 0 };
+      }).sort((x, y) => y.wins - x.wins || y.submissions - x.submissions);
+      return {
+        id: g.id,
+        members,
+        wins: members.reduce((n, m) => n + m.wins, 0),
+        ethWon: Math.round(members.reduce((n, m) => n + m.ethWon, 0) * 1e6) / 1e6,
+        links: g.links
+      };
+    });
+
+    return res.json({
+      success: true,
+      data: { groups: enriched, hubs, coverage, status: hunterLinks.getStatus() }
+    });
+  } catch (error) {
+    logger.error('[analytics/hunters/connections] error', { msg: error.message });
+    return res.status(500).json({
+      error: 'Failed to get hunter connections',
       details: error.message
     });
   }
@@ -796,6 +843,24 @@ async function getHunterAnalytics() {
   } catch (error) {
     logger.error('Failed to get hunter analytics', { msg: error.message });
     throw error;
+  }
+}
+
+/** Hunter connection groups from the cached analysis state (cheap; no RPC). */
+async function getConnections(hunterData) {
+  const state = await hunterLinks.readState();
+  return hunterLinks.buildConnections(state, hunterData.hunters.map(h => h.address));
+}
+
+/** Counts for the overview; null until the first background run completes. */
+async function getConnectionCounts(hunterData) {
+  try {
+    const { groups, coverage } = await getConnections(hunterData);
+    if (!coverage.lastRunAt) return { linkedHunters: null, connectionGroups: null };
+    return { linkedHunters: coverage.linkedHunters, connectionGroups: groups.length };
+  } catch (error) {
+    logger.warn('Failed to read hunter connections', { msg: error.message });
+    return { linkedHunters: null, connectionGroups: null };
   }
 }
 

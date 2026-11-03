@@ -25,7 +25,8 @@ import {
   ExternalLink,
   LayoutTemplate,
   UserCheck,
-  Trophy
+  Trophy,
+  Link2
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
@@ -780,6 +781,15 @@ function Analytics() {
                 <div className="stat-icon"><Trophy size={24} /></div>
                 <div className="stat-value">{data.hunters.totalWinners ?? 0}</div>
                 <div className="stat-label">Winners</div>
+              </Link>
+              <Link
+                to="/analytics/hunters?view=connections"
+                className="stat-card stat-card-link warning"
+                title="Hunter addresses linked on chain to another hunter: one funded the other, they share a parent account, or tokens moved between them. Evidence of a connection, not proof of common ownership. Click for the groups and the evidence."
+              >
+                <div className="stat-icon"><Link2 size={24} /></div>
+                <div className="stat-value">{data.hunters.linkedHunters ?? '—'}</div>
+                <div className="stat-label">Linked Hunters</div>
               </Link>
             </div>
           </div>

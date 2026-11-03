@@ -558,6 +558,14 @@ async uploadRubric(rubricJson, classId = 128) {
   },
 
   /**
+   * Get groups of hunter addresses linked on chain (cached background analysis)
+   */
+  async getHunterConnections() {
+    const response = await api.get('/api/analytics/hunters/connections');
+    return response.data;
+  },
+
+  /**
    * Get system health information
    */
   async getSystemHealth() {

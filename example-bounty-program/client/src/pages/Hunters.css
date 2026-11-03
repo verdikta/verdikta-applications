@@ -162,3 +162,106 @@
   font-size: 0.8rem;
   cursor: help;
 }
+
+.hunters-page .muted {
+  color: var(--text-secondary);
+}
+
+.hunters-page .group-link,
+.hunters-page .tx-link {
+  color: var(--primary);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.hunters-page .tx-link {
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.hunters-page .group-link:hover,
+.hunters-page .tx-link:hover {
+  text-decoration: underline;
+}
+
+/* Connections view */
+.hunters-page .analysis-status {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.hunters-page .analysis-status .running {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.hunters-page .analysis-status .error-text {
+  color: var(--danger);
+}
+
+.hunters-page .connection-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  scroll-margin-top: 5rem;
+  overflow-x: auto;
+}
+
+.hunters-page .connection-group h2 {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  font-size: 1.1rem;
+  margin: 0 0 0.75rem;
+}
+
+.hunters-page .connection-group .group-meta {
+  font-size: 0.85rem;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+.hunters-page .connection-group h3 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  margin: 1rem 0 0.5rem;
+}
+
+.hunters-page .evidence {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 0.875rem;
+  line-height: 1.8;
+}
+
+.hunters-page .evidence .address-link code {
+  font-size: 0.75rem;
+}
+
+.hunters-page .hubs {
+  margin: 1.5rem 0 1rem;
+  font-size: 0.875rem;
+}
+
+.hunters-page .hubs summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.hunters-page .hubs p {
+  margin: 0.5rem 0;
+}
+
+.hunters-page .method-note {
+  font-size: 0.8rem;
+  margin-top: 1.5rem;
+}

@@ -66,6 +66,8 @@ const agentRoutes = require('./routes/agentRoutes');
 const classRoutes = require('./routes/classRoutes');
 const templateRoutes = require('./routes/templateRoutes');
 const { initializeVerdiktaService } = require('./utils/verdiktaService');
+const { startHunterLinksService } = require('./utils/hunterLinks');
+const jobStorage = require('./utils/jobStorage');
 const clientIdentification = require('./middleware/clientIdentification');
 
 const app = express();
@@ -315,6 +317,12 @@ const startServer = async () => {
     // ============ INITIALIZE BLOCKCHAIN SYNC ============
     const syncService = initializeBlockchainSync();
     // ====================================================
+
+    // Hunter connection analysis (RPC-heavy; runs in the background, results cached on disk)
+    startHunterLinksService(async () => {
+      const r = await jobStorage.listJobs({});
+      return (r.jobs || r).flatMap((j) => (j.submissions || []).map((sub) => sub.hunter)).filter(Boolean);
+    });
 
     const server = app.listen(config.port, config.host, () => {
       logger.info(`🚀 Bounty API server listening on ${config.host}:${config.port}`);

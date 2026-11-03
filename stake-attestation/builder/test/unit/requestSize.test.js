@@ -203,6 +203,9 @@ test('the refusal says the size and the bound, passes the wording rule and names
   assert.match(detail, new RegExp(`\\b${LISTING_REQUEST_MAX_BYTES + 1} bytes`));
   assert.match(detail, new RegExp(`at most ${LISTING_REQUEST_MAX_BYTES}\\b`));
   assert.deepEqual(wordingProblems(detail), []);
+  // one byte over the bound still fits the limit, so it says what happens to a request over the limit, no more
+  assert.equal(/every claim/.test(detail), false, detail);
+  assert.match(detail, /A request over that limit/);
   assert.equal(detail.includes('acme'), false, detail);
   assert.equal(/0x[0-9a-fA-F]{40}/.test(detail), false, detail);
 });

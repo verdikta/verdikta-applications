@@ -214,7 +214,7 @@ export function listingRequestRefusal(parts, { codeReview }) {
   if (bytes <= bound) return null;
   return {
     code: LISTING_REQUEST_TOO_LARGE,
-    detail: `The listing's files take ${bytes} bytes of the request an arbiter sends the code-runner for each claim (baseline ${p.baseline}, known issues ${p.knownIssues}, code_review.json ${p.spec}, attestation ${p.attestation}). A listing may take at most ${bound}, so that a claim and its prior findings fit in the runner's limit of ${RUNNER_MAX_BODY_BYTES}. Over it, every arbiter would abstain on every claim.`,
+    detail: `The listing takes ${bytes} bytes (baseline ${p.baseline}, known issues ${p.knownIssues}, the larger of their file and what the request holds, code_review.json ${p.spec}, attestation ${p.attestation}). A listing may take at most ${bound} of the ${RUNNER_MAX_BODY_BYTES}-byte request an arbiter sends the code-runner for each claim, which keeps the rest for the claim and its prior findings. A request over that limit isn't read, and every arbiter abstains on that claim.`,
     bytes,
     bound,
   };

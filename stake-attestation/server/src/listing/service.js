@@ -18,9 +18,10 @@
 //   error      anything else (a builder or pinning failure, a result that does not check out):
 //              nothing is issued; the maker may submit again
 //
-// A listing too large for the code-runner's request is refused, by the builder and again here (node
-// P11; shared/src/listingRequestSize.js): every arbiter would abstain on every claim, and the bonds
-// would go to the maker. The refusal states the size and the bound, and /api/status counts it.
+// A listing over its share of the code-runner's request is refused, by the builder and again here (node
+// P11; shared/src/listingRequestSize.js): a claim must always fit beside it, because a request over the
+// limit makes every arbiter abstain and the bond then goes to the maker. The refusal states the size and
+// the bound, and /api/status counts it.
 //
 // An accepted build is not taken on its word. Before any archive is issued: the report must say
 // every step passed (for a contract, that the verified source matched), the built code_review.json

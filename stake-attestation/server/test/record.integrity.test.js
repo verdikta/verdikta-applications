@@ -194,7 +194,8 @@ describe('the record says apart which claims failed integrity', () => {
         assert.deepEqual(await entry(l), none({ otherDuplicates: 1 }));
         const stored = site.store.state.evidence[cid];
         assert.equal(stored.says, 'other');
-        assert.deepEqual(Object.keys(stored).sort(), ['says', 'settlement'], 'nothing of its checks is kept');
+        assert.deepEqual(Object.keys(stored).sort(), ['checks', 'says', 'settlement']);
+        assert.ok(stored.checks === null || stored.checks.every((c) => codeReview.INTEGRITY_CHECKS.includes(c)), 'only known names are kept');
       });
     }
 
@@ -222,7 +223,7 @@ describe('the record says apart which claims failed integrity', () => {
       const { cid } = await claimed(ctx, l.listingId, 'DUPLICATE', uploadBytes('The jurors read this as a repeat.'));
       await settled(site);
       assert.deepEqual(await entry(l), none({ otherDuplicates: 1 }));
-      assert.deepEqual(site.store.state.evidence[cid], { says: 'other', settlement: null });
+      assert.deepEqual(site.store.state.evidence[cid], { says: 'other', settlement: null, checks: null });
     });
 
     test('the metadata is not read: it can say integrity failed and the block still decides', async () => {
@@ -279,6 +280,7 @@ describe('the record says apart which claims failed integrity', () => {
         [uploadBytes(evidenceBlock({ settlement: 'jury', checks: 'none' })), uploadBytes(evidenceBlock({ settlement: 'INVALID (build)', checks: 'none' }))],
         [uploadBytes(evidenceBlock({ settlement: 'INVALID (build)', checks: 'none' })), uploadBytes(evidenceBlock({ settlement: 'INVALID (applies)', checks: 'none' }))],
         [uploadBytes(evidenceBlock({ settlement: 'jury', checks: 'none' })), uploadBytes('No block in this one.')],
+        [uploadBytes(evidenceBlock({ settlement: 'INVALID (build)', checks: 'frameworkUnchanged' })), uploadBytes(evidenceBlock({ settlement: 'INVALID (build)', checks: 'dependenciesUnchanged' }))],
       ];
       for (const [one, other] of blocks) {
         const l = await listing(ctx);
@@ -724,6 +726,10 @@ describe('the fold on its own', () => {
     assert.deepEqual(out({ [A]: jury, [B]: jury }, `${A},${B}`), none({ otherDuplicates: 1 }));
     assert.deepEqual(out({ [A]: jury, [B]: { says: 'other', settlement: 'INVALID (build)' } }, `${A},${B}`), none({ otherDuplicates: 1, disagree: 1 }));
     assert.deepEqual(out({ [A]: jury, [B]: { says: 'other', settlement: null } }, `${A},${B}`), none({ otherDuplicates: 1, disagree: 1 }));
+    const invalid = (checks) => ({ says: 'other', settlement: 'INVALID (build)', checks });
+    assert.deepEqual(out({ [A]: invalid(['identityComplete']), [B]: invalid(['identityComplete']) }, `${A},${B}`), none({ otherDuplicates: 1 }));
+    assert.deepEqual(out({ [A]: invalid(['identityComplete']), [B]: invalid(['exitConsistent']) }, `${A},${B}`), none({ otherDuplicates: 1, disagree: 1 }));
+    assert.deepEqual(out({ [A]: invalid([]), [B]: invalid(null) }, `${A},${B}`), none({ otherDuplicates: 1, disagree: 1 }));
     assert.deepEqual(out({ [A]: jury }, `${A},${B}`), none({ otherDuplicates: 1, unread: 1 }));
   });
 

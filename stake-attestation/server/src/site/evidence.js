@@ -10,8 +10,8 @@
 // justification in it (a gateway's error can answer 200, as a page or as JSON). It is tried again with a
 // backoff, counted from the failure, up to a cap, and until then the claim is a plain DUPLICATE, never an
 // integrity failure. An upload with a justification is read, and final: it either has an integrity block
-// in the writer's form or says `other`, with the settlement its block states, so arbiters that differ
-// can be told from arbiters that agree. A gateway's bytes are checked against the CID only when it names
+// in the writer's form or says `other`, with the settlement and the known checks its block states, so
+// arbiters that differ can be told from arbiters that agree. A gateway's bytes are checked against the CID only when it names
 // their hash (createGatewayFetcher): a dag-pb CID's aren't.
 import { MAX_JUSTIFICATION_UPLOAD_BYTES, integrityFailureOf, justificationCidsOf, readExecutionEvidence } from '@verdikta/stake-attestation-shared';
 
@@ -28,8 +28,9 @@ export const createJustificationFetcher = ({ gateways, timeoutMs }, logger, opti
 /**
  * What an upload says of integrity.
  * @param {Buffer} bytes
- * @returns {{ says: 'integrity', checks: string[] } | { says: 'other', settlement: string|null } | null}
- *   `settlement`: what the block states, in its writer's form, or null for no block; null: it could not be read
+ * @returns {{ says: 'integrity', checks: string[] } | { says: 'other', settlement: string|null, checks: string[]|null } | null}
+ *   `settlement` and `checks`: what the block states, as the reader for a person takes it, known names only,
+ *   or null for no block; null: it could not be read
  */
 export function readUpload(bytes) {
   if (bytes.length > MAX_JUSTIFICATION_UPLOAD_BYTES) return null;
@@ -44,7 +45,8 @@ export function readUpload(bytes) {
   const integrityChecks = codeReview.INTEGRITY_CHECKS;
   const checks = integrityFailureOf(justification, { integrityChecks });
   if (checks) return { says: 'integrity', checks };
-  return { says: 'other', settlement: readExecutionEvidence(justification, { integrityChecks })?.settlement ?? null };
+  const block = readExecutionEvidence(justification, { integrityChecks });
+  return { says: 'other', settlement: block?.settlement ?? null, checks: block?.integrityFailedChecks ?? null };
 }
 
 /**

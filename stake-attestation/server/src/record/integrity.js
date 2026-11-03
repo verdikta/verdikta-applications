@@ -29,6 +29,8 @@ const PLAIN = 'plain';
 const UNREAD = 'unread';
 const DISAGREE = 'disagree';
 
+const sameOther = (a, b) => a.says === 'other' && a.settlement === b.settlement && String(a.checks) === String(b.checks);
+
 /** What the store's readings say of one settled DUPLICATE. */
 function classify(claim, readings) {
   const cids = justificationCidsOf(claim.justificationCid);
@@ -36,7 +38,7 @@ function classify(claim, readings) {
   const said = cids.map((cid) => readings[cid]);
   if (said.some((reading) => !reading?.says)) return { kind: UNREAD };
   const [first] = said;
-  if (said.every((reading) => reading.says === 'other' && reading.settlement === first.settlement)) return { kind: PLAIN };
+  if (said.every((reading) => sameOther(reading, first))) return { kind: PLAIN };
   const agree = said.every((reading) => reading.says === 'integrity' && reading.checks.join() === first.checks?.join());
   return agree ? { kind: FAILED, checks: first.checks } : { kind: DISAGREE };
 }

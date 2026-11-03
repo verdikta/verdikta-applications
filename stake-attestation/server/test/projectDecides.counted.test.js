@@ -14,6 +14,7 @@ import { startApi } from './helpers/http.js';
 import { bareListing, chainContext, freshCommit, listing, replay, revealedClaim, judgeAndSettle, settled, siteFor } from './helpers/scenario.js';
 
 const ids = (list) => list.map((l) => String(l.listingId));
+const RETRY_MAX_MS = 6 * 3600_000; // src/control/index.js: the longest wait after a failed check
 
 describe('what counts', () => {
   let ctx;
@@ -226,7 +227,14 @@ describe('it stays counted only while the proof stands', () => {
     const ctx = await chainContext();
     let mode = 'ok';
     const proofs = ctx.proofs;
+    // The clock the checks wait on, moved by this test. A failed check's wait doubles, so on the wall
+    // clock its length depends on how fast the rounds before it ran: slow rounds while the host was
+    // down, then 8 fast ones inside the last wait, and no check answered "gone" (failed once in a full
+    // run with 1 !== 0).
+    let skew = 0;
+    const pastAnyWait = () => { skew += RETRY_MAX_MS + 1; };
     const site = siteFor(ctx, {
+      now: () => Date.now() + skew,
       env: { SA_CONTROL_RECHECK_MS: '1', SA_CONTROL_RETRY_MS: '1' },
       checkRepository: async ({ repo, commit }) => {
         if (mode === 'down') throw Object.assign(new Error('503'), { code: 'REPO_UNAVAILABLE' });
@@ -240,11 +248,13 @@ describe('it stays counted only while the proof stands', () => {
       await settled(site);
       assert.equal((await site.record(l.artifactHash)).record.listings.length, 1);
       mode = 'down';
+      pastAnyWait();
       await settled(site);
       const during = await site.record(l.artifactHash);
       assert.equal(during.record.listings.length, 1, 'a transient failure does not drop an honest listing');
       assert.equal(during.control[String(l.listingId)].repository.lastCheckFailed, 'REPO_UNAVAILABLE');
       mode = 'gone';
+      pastAnyWait();
       await settled(site);
       const after2 = await site.record(l.artifactHash);
       assert.equal(after2.record.listings.length, 0);

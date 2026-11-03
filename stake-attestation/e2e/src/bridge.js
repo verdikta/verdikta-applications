@@ -173,6 +173,7 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
 
     const jobs = [];
     const job = (slot, cid, phase) => {
+      if (stopped) return Promise.resolve(); // a stopping round starts nothing it would have to wait for
       const started = Date.now();
       const entry = { slot, phase, status: null, ms: null, outcome: null, error: null };
       record.jobs.push(entry);
@@ -199,13 +200,16 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
         if (effect.kind === 'reveal' || effect.kind === 'finalized') record.reveals += 1;
         if (effect.kind === 'reveal-phase') for (const r of effect.reveals) jobs.push(job(r.slot, r.cid, 'reveal'));
         return effect.kind === 'finalized' && !stopped ? publish() : undefined;
-      });
+      // Handled here and at once: a job further down the list may be out for minutes, and nothing awaits this one until then.
+      }).catch(failAll);
       return running;
     };
 
+    if (stopped) return;
     const composed = params.addendum.length > 0 ? `${cids.join(',')}:${params.addendum}` : cids.join(',');
     for (let slot = 0; slot < config.k; slot += 1) jobs.push(job(slot, `1:${composed}`, 'commit'));
     for (let i = 0; i < jobs.length; i += 1) await jobs[i]; // the list grows as reveals go out
+    if (fatal) return; // failAll has told whoever waits
 
     if (!round.isComplete) {
       record.spent = round.baseCredited;
@@ -217,10 +221,12 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
     wake(quietWaiters, aggId, record);
   }
 
+  let polling = null;
   async function poll() {
     if (stopped) return;
     try {
       const events = await mock.queryFilter(mock.filters.RequestAIEvaluation(), fromBlock);
+      if (stopped) return;
       for (const event of events) {
         const aggId = event.args[0];
         fromBlock = Math.max(fromBlock, event.blockNumber + 1);
@@ -232,7 +238,7 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
     } catch (err) {
       failAll(err);
     }
-    if (!stopped) timer = setTimeout(poll, pollMs);
+    if (!stopped) timer = setTimeout(() => { polling = poll(); }, pollMs);
   }
 
   return {
@@ -241,7 +247,7 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
     async start(startBlock = 0) {
       fromBlock = startBlock;
       await configure();
-      timer = setTimeout(poll, 0);
+      timer = setTimeout(() => { polling = poll(); }, 0);
     },
     /** Resolves with the round's record at its verdict, or once every job has answered with none; rejects if the bridge failed. */
     done(aggId) {
@@ -264,6 +270,7 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
       stopped = true;
       if (timer) clearTimeout(timer);
       const cut = evaluate.cancelAll?.() ?? 0;
+      await polling; // what it found starts nothing now
       await Promise.allSettled([...inflight]);
       return cut;
     },

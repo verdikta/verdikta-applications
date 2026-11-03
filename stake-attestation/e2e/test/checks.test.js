@@ -133,14 +133,14 @@ test('moneyChecks: to the wei', () => {
 });
 
 test('abstainEndChecks: no verdict, ever, and it ended by E6', () => {
-  const obs = { state: 'Expired', expiry: 'RoundsFailed', judgedEvents: 0, settledEvents: 0, record: { history: { noVerdict: '1' } }, pinsBefore: 5, pinsAfter: 5 };
+  const obs = { state: 'Expired', expiry: 'RoundsFailed', judgedEvents: 0, settledEvents: 0, record: { history: { noVerdict: '1' } }, uploads: [] };
   allPass(abstainEndChecks('x', obs));
   fails(abstainEndChecks('x', { ...obs, judgedEvents: 1 }), 'x.never.judged');
   fails(abstainEndChecks('x', { ...obs, settledEvents: 1 }), 'x.never.settled');
   fails(abstainEndChecks('x', { ...obs, state: 'Settled' }), 'x.ended.expired');
   fails(abstainEndChecks('x', { ...obs, expiry: 'SubmissionsRefused' }), 'x.ended.expired');
   fails(abstainEndChecks('x', { ...obs, record: { history: { noVerdict: '0' } } }), 'x.record.noVerdict');
-  fails(abstainEndChecks('x', { ...obs, pinsAfter: 6 }), 'x.nothingUploaded');
+  fails(abstainEndChecks('x', { ...obs, uploads: ['QmU'] }), 'x.nothingUploaded');
 });
 
 const finding = { claimId: '1', outcome: 'HIGH', paidWei: '4', owedWei: '0', bcid: 'QmB' };

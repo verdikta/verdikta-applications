@@ -122,13 +122,13 @@ export function moneyChecks(prefix, entries) {
 }
 
 /** An abstaining claim's end: E6. No verdict, the bond to the maker, nothing published. */
-export function abstainEndChecks(prefix, { state, expiry, judgedEvents, settledEvents, record, pinsBefore, pinsAfter }) {
+export function abstainEndChecks(prefix, { state, expiry, judgedEvents, settledEvents, record, uploads }) {
   return [
     check(`${prefix}.never.judged`, judgedEvents === 0, `${judgedEvents} Judged event(s)`),
     check(`${prefix}.never.settled`, settledEvents === 0, `${settledEvents} Settled event(s)`),
     check(`${prefix}.ended.expired`, state === 'Expired' && expiry === 'RoundsFailed', `${state}, ${expiry}`),
     check(`${prefix}.record.noVerdict`, record?.history?.noVerdict === '1', `noVerdict ${record?.history?.noVerdict}`),
-    check(`${prefix}.nothingUploaded`, pinsAfter === pinsBefore, `${pinsAfter - pinsBefore} upload(s) during the rounds`),
+    check(`${prefix}.nothingUploaded`, uploads?.length === 0, `${uploads?.length} upload(s) during the rounds`),
   ];
 }
 

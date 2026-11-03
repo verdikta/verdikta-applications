@@ -156,6 +156,62 @@ test('stopping does not wait for an EA that does not answer: every request still
   server.close();
 });
 
+test('a request found as the bridge stops starts nothing: not while it reads the request, not while it reads the chain', async () => {
+  for (const hold of ['getRequestCids', 'queryFilter']) {
+    const mock = fakeMock();
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let reached = false;
+    const real = mock[hold];
+    mock[hold] = async (...args) => {
+      reached = true;
+      await gate;
+      return real(...args);
+    };
+    let calls = 0;
+    const evaluate = async () => {
+      calls += 1;
+      return new Promise(() => {}); // an EA that never answers: stopping could not wait for it
+    };
+    evaluate.cancelAll = () => 0;
+    const bridge = createBridge({ mock, evaluate, operator: OPERATOR, requestedClass: CLASS, pollMs: 5 });
+    await bridge.start(0);
+    while (!reached) await new Promise((r) => { setTimeout(r, 2); });
+    const stopping = bridge.stop();
+    release();
+    await stopping;
+    assert.equal(calls, 0, `held at ${hold}: no job went out`);
+  }
+});
+
+test('a transaction that fails at the N-th reveal fails the bridge at once, with jobs still out, and nothing is left unhandled', async () => {
+  const unhandled = [];
+  const onUnhandled = (err) => unhandled.push(err);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const mock = fakeMock();
+    mock.scriptResult = () => Promise.reject(new Error('the node refused it'));
+    const ea = honestEa();
+    let commits = 0;
+    const evaluate = (body) => {
+      if (body.data.cid.startsWith('1:')) {
+        commits += 1;
+        if (commits > REAL_CONFIG.m) return new Promise(() => {}); // surplus commits, out for good
+      }
+      return ea.evaluate(body);
+    };
+    const bridge = createBridge({ mock, evaluate, operator: OPERATOR, requestedClass: CLASS, pollMs: 5 });
+    await bridge.start(0);
+    await assert.rejects(bridge.done(AGG), /the node refused it/);
+    assert.match(bridge.failure().message, /the node refused it/);
+    await new Promise((r) => { setTimeout(r, 20); });
+    assert.deepEqual(unhandled, []);
+    bridge.stop();
+  } finally {
+    process.removeListener('unhandledRejection', onUnhandled);
+  }
+});
+
 test('the fee ceiling clamps as the real one does', async () => {
   const mock = fakeMock({ maxFee: 10n ** 18n });
   const record = await serve(mock, honestEa().evaluate);

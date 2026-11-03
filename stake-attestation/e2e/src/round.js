@@ -315,6 +315,8 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const hunter = chain.accounts.hunter;
     const provider = chain.provider;
     const balance = (who) => provider.getBalance(who.address);
+    // A balance as of a transaction's block: what the keeper does next, however soon, is not in it.
+    const balanceAfterTx = async (who, hash) => provider.getBalance(who.address, (await provider.getTransactionReceipt(hash)).blockNumber);
     const claimStateOf = async (id) => CLAIM_STATES[Number(await sa.claimState(id))];
     const stateIs = (id, ...states) => settleOutcome(async () => {
       if (bridge.failure()) throw bridge.failure();
@@ -398,8 +400,8 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     }
     const validReveal = await tool('reveal', validDir);
     toolDone('reveal', validReveal);
-    const hunterAfterReveal = await balance(hunter);
-    const makerBeforeJudge = await balance(maker);
+    const hunterAfterReveal = await balanceAfterTx(hunter, validReveal.json.tx);
+    const makerBeforeJudge = await balanceAfterTx(maker, validReveal.json.tx);
     const before1 = { runner: runsBeforeCommit, ai: 0, provider: 0 };
     const validRound = await roundOf(validId);
     const validClaim = await sa.getClaim(validId);
@@ -486,8 +488,8 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const before2 = counts();
     const gateReveal = await tool('reveal', gateDir);
     toolDone('reveal', gateReveal);
-    const hunterAfterGateReveal = await balance(hunter);
-    const makerBeforeGate = await balance(maker);
+    const hunterAfterGateReveal = await balanceAfterTx(hunter, gateReveal.json.tx);
+    const makerBeforeGate = await balanceAfterTx(maker, gateReveal.json.tx);
     const gateRound = await roundOf(gateId);
     const gateClaim = await sa.getClaim(gateId);
     expect(requestChecks('gate', gateRound, {
@@ -531,10 +533,10 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const abstainId = BigInt(abstainCommit.json.claimId);
     await makerRelease(abstainId);
     const before3 = counts();
+    const pinsBeforeAbstain = ipfs.pins.length;
     const abstainReveal = await tool('reveal', abstainDir);
     toolDone('reveal', abstainReveal);
-    const hunterAfterAbstainReveal = await balance(hunter);
-    const pinsBeforeAbstain = ipfs.pins.length; // the reveal pinned the claim itself; the arbiters pin nothing
+    const hunterAfterAbstainReveal = await balanceAfterTx(hunter, abstainReveal.json.tx);
     const firstRound = await roundOf(abstainId);
     expect(abstainedRoundChecks('abstain.first', firstRound));
     expect(abstainRunChecks('abstain.first', { round: firstRound, ...since(before3), cause: 'step_timeout' }));
@@ -551,15 +553,15 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     one('abstain.status.saysRetrigger', failedStatus.json?.state === 'RoundFailed' && /--retrigger/.test(failedStatus.json?.next ?? ''), failedStatus.json?.next);
 
     stage('abstain: re-trigger, a fresh prepay, and it fails again');
+    const before4 = counts();
     const retrigger = await tool('reveal', abstainDir, '--retrigger');
     toolDone('retrigger', retrigger);
-    const afterRetrigger = await balance(hunter);
+    const afterRetrigger = await balanceAfterTx(hunter, retrigger.json.tx);
     const retriggerTx = await provider.getTransaction(retrigger.json.tx);
     const prepaid = (await sa.queryFilter(sa.filters.EvaluationRequested(abstainId), chain.fromBlock)).pop().args;
     one('abstain.retrigger.freshPrepay', retriggerTx.value === firstRound.required && prepaid.prepayWei === firstRound.required && (await chain.aggregator.ethReceived(prepaid.requestId)) === firstRound.required, `sent ${retriggerTx.value}, the aggregator received ${await chain.aggregator.ethReceived(prepaid.requestId)}, the live fee is ${firstRound.required}`);
     one('abstain.retrigger.isTheHuntersTx', retriggerTx.from === hunter.address, retriggerTx.from);
     await stateIs(abstainId, 'Revealed');
-    const before4 = counts();
     const secondRound = await roundOf(abstainId);
     expect(abstainedRoundChecks('abstain.second', secondRound));
     expect(abstainRunChecks('abstain.second', { round: secondRound, ...since(before4), cause: 'step_timeout' }));
@@ -592,8 +594,8 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       judgedEvents: (await eventOf('Judged', abstainId)).length,
       settledEvents: (await eventOf('Settled', abstainId)).length,
       record: finalView.record,
-      pinsBefore: pinsBeforeAbstain,
-      pinsAfter: ipfs.pins.length,
+      // the reveal pinned the claim itself; the arbiters, nothing
+      uploads: ipfs.pins.slice(pinsBeforeAbstain).filter((cid) => cid !== abstainFinal.bcid),
     }));
     expect(recordChecks('final', finalView, {
       artifactHash,

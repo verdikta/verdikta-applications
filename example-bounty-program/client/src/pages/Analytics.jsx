@@ -5,7 +5,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import {
   BarChart3,
   RefreshCw,
@@ -23,7 +23,9 @@ import {
   Zap,
   Award,
   ExternalLink,
-  LayoutTemplate
+  LayoutTemplate,
+  UserCheck,
+  Trophy
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
@@ -754,6 +756,35 @@ function Analytics() {
           )}
         </div>
       </section>
+
+      {/* Bounty Hunters Section: counts here, address lists on /analytics/hunters */}
+      {data?.hunters && (
+        <section className="analytics-section">
+          <h2><UserCheck size={20} className="inline-icon" /> Bounty Hunters</h2>
+          <div className="section-content">
+            <div className="stat-grid">
+              <Link
+                to="/analytics/hunters?view=submitters"
+                className="stat-card stat-card-link"
+                title="Distinct wallet addresses with at least one submission on the current contract. Click to list them."
+              >
+                <div className="stat-icon"><Users size={24} /></div>
+                <div className="stat-value">{data.hunters.totalSubmitters ?? 0}</div>
+                <div className="stat-label">Submitters</div>
+              </Link>
+              <Link
+                to="/analytics/hunters?view=winners"
+                className="stat-card stat-card-link success"
+                title="Distinct wallet addresses that have been paid for at least one bounty. Click to list them."
+              >
+                <div className="stat-icon"><Trophy size={24} /></div>
+                <div className="stat-value">{data.hunters.totalWinners ?? 0}</div>
+                <div className="stat-label">Winners</div>
+              </Link>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Submission Metrics Section */}
       <section className="analytics-section">

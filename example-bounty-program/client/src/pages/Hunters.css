@@ -1,0 +1,164 @@
+.hunters-page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.hunters-page h1 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0.25rem;
+}
+
+.hunters-page .hunters-blurb {
+  color: var(--text-secondary);
+  margin-bottom: 1rem;
+}
+
+.hunters-page .back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--info);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.hunters-page .back-link:hover {
+  text-decoration: underline;
+}
+
+/* View tabs */
+.hunters-page .view-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.hunters-page .view-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 1rem;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.hunters-page .view-tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.hunters-page .tab-count {
+  font-size: 0.75rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.hunters-page .hunters-state {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.hunters-page .hunters-state.error {
+  color: var(--danger);
+}
+
+/* Table */
+.hunters-page .hunters-table-wrap {
+  overflow-x: auto;
+}
+
+.hunters-page .hunters-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.hunters-page .hunters-table th,
+.hunters-page .hunters-table td {
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.hunters-page .hunters-table th {
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.hunters-page .hunters-table th.numeric,
+.hunters-page .hunters-table td.numeric {
+  text-align: right;
+}
+
+.hunters-page .hunters-table th.sortable button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.hunters-page .hunters-table th.sortable button:hover {
+  color: var(--primary);
+}
+
+.hunters-page .hunters-table .rank {
+  color: var(--text-secondary);
+  width: 2.5rem;
+}
+
+.hunters-page .address-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.hunters-page .address-link code {
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
+  font-size: 0.8rem;
+  color: inherit;
+}
+
+.hunters-page .address-link:hover {
+  text-decoration: underline;
+}
+
+.hunters-page .bounty-links a {
+  color: var(--primary);
+  text-decoration: none;
+  margin-right: 0.5rem;
+}
+
+.hunters-page .bounty-links a:hover {
+  text-decoration: underline;
+}
+
+.hunters-page .bounty-links .more {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  cursor: help;
+}

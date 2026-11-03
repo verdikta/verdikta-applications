@@ -34,13 +34,14 @@ router.get('/overview', async (req, res) => {
     }
 
     // Gather all analytics data
-    const [arbiterData, bountyData, submissionData, systemData, fulfilledData, templateData] = await Promise.all([
+    const [arbiterData, bountyData, submissionData, systemData, fulfilledData, templateData, hunterData] = await Promise.all([
       getArbiterAnalytics(),
       getBountyAnalytics(),
       getSubmissionAnalytics(),
       getSystemHealth(),
       getFulfilledBounties(),
-      getTemplateUsageAnalytics()
+      getTemplateUsageAnalytics(),
+      getHunterAnalytics()
     ]);
 
     const result = {
@@ -50,6 +51,11 @@ router.get('/overview', async (req, res) => {
       system: systemData,
       fulfilledBounties: fulfilledData,
       templates: templateData,
+      // Counts only; the per-address list is served by GET /hunters.
+      hunters: {
+        totalSubmitters: hunterData.totalSubmitters,
+        totalWinners: hunterData.totalWinners
+      },
       generatedAt: Date.now()
     };
 
@@ -204,6 +210,36 @@ router.get('/templates', async (req, res) => {
     logger.error('[analytics/templates] error', { msg: error.message });
     return res.status(500).json({
       error: 'Failed to get template usage',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/analytics/hunters?view=submitters|winners
+ * Distinct hunter addresses with per-address submission and win counts.
+ * view=winners keeps only addresses with at least one paid win.
+ */
+router.get('/hunters', async (req, res) => {
+  try {
+    const view = req.query.view === 'winners' ? 'winners' : 'submitters';
+    const cacheKey = 'analytics_hunters';
+    const cached = analyticsCache.get(cacheKey);
+    const data = cached ? cached.data : await getHunterAnalytics();
+    if (!cached) analyticsCache.set(cacheKey, data);
+
+    const hunters = view === 'winners' ? data.hunters.filter(h => h.wins > 0) : data.hunters;
+
+    return res.json({
+      success: true,
+      data: { ...data, view, hunters },
+      cached: !!cached,
+      cachedAt: cached?.timestamp
+    });
+  } catch (error) {
+    logger.error('[analytics/hunters] error', { msg: error.message });
+    return res.status(500).json({
+      error: 'Failed to get hunter analytics',
       details: error.message
     });
   }
@@ -682,6 +718,83 @@ async function getTemplateUsageAnalytics() {
     return { ...summarizeTemplateUsage(onContract), timestamp: Date.now() };
   } catch (error) {
     logger.error('Failed to get template usage analytics', { msg: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Hunters on the current contract: every distinct address that has a submission
+ * (prepared or evaluated), and which of them won. A win is a PassedPaid
+ * submission, or the bounty's recorded winner, counted once per bounty.
+ * ETH won uses effectiveBountyAmount, since payoutWei is zeroed after payout.
+ */
+async function getHunterAnalytics() {
+  try {
+    const jobs = await jobStorage.listJobs({});
+    const jobList = jobs.jobs || jobs;
+    const byAddress = new Map();
+
+    const entryFor = (address) => {
+      const key = address.toLowerCase();
+      let h = byAddress.get(key);
+      if (!h) {
+        h = {
+          address,
+          submissions: 0,
+          bounties: new Set(),
+          wins: 0,
+          ethWon: 0,
+          wonBountyIds: [],
+          firstSubmittedAt: null,
+          lastSubmittedAt: null
+        };
+        byAddress.set(key, h);
+      }
+      return h;
+    };
+
+    for (const job of jobList) {
+      const winners = new Set();
+      for (const sub of job.submissions || []) {
+        if (!sub.hunter) continue;
+        const h = entryFor(sub.hunter);
+        h.submissions++;
+        h.bounties.add(job.jobId);
+        const at = Number(sub.submittedAt) || null;
+        if (at) {
+          if (h.firstSubmittedAt == null || at < h.firstSubmittedAt) h.firstSubmittedAt = at;
+          if (h.lastSubmittedAt == null || at > h.lastSubmittedAt) h.lastSubmittedAt = at;
+        }
+        const status = (sub.onChainStatus || sub.status || '').toLowerCase();
+        if (status === 'passedpaid') winners.add(sub.hunter.toLowerCase());
+      }
+      if (job.status === 'AWARDED' && job.winner) winners.add(job.winner.toLowerCase());
+
+      for (const key of winners) {
+        const h = byAddress.get(key) || entryFor(job.winner);
+        h.wins++;
+        h.ethWon += effectiveBountyAmount(job);
+        h.wonBountyIds.push(job.jobId);
+      }
+    }
+
+    const hunters = [...byAddress.values()]
+      .map(h => ({
+        ...h,
+        bounties: h.bounties.size,
+        ethWon: Math.round(h.ethWon * 1e6) / 1e6,
+        wonBountyIds: h.wonBountyIds.sort((a, b) => b - a)
+      }))
+      .sort((a, b) => b.wins - a.wins || b.submissions - a.submissions);
+
+    return {
+      hunters,
+      totalSubmitters: hunters.filter(h => h.submissions > 0).length,
+      totalWinners: hunters.filter(h => h.wins > 0).length,
+      timestamp: Date.now()
+    };
+  } catch (error) {
+    logger.error('Failed to get hunter analytics', { msg: error.message });
     throw error;
   }
 }

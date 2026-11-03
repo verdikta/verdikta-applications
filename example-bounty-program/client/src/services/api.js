@@ -549,6 +549,15 @@ async uploadRubric(rubricJson, classId = 128) {
   },
 
   /**
+   * Get hunter addresses with submission/win counts
+   * @param {'submitters'|'winners'} view
+   */
+  async getHunterAnalytics(view = 'submitters') {
+    const response = await api.get('/api/analytics/hunters', { params: { view } });
+    return response.data;
+  },
+
+  /**
    * Get system health information
    */
   async getSystemHealth() {

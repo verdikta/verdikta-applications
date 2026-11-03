@@ -4,6 +4,7 @@
 // linux/arm64 there is no report, and the report's own form folds what each run did (node A3b).
 import { codeReview } from './common.js';
 import { fail } from './errors.js';
+import { isCidShaped } from './ipfs.js';
 import { ABSTAIN_BY_CLAIM, ABSTAIN_BY_HOST } from './notices.js';
 import { addedPragmas, observableHelp } from './observable.js';
 
@@ -46,8 +47,8 @@ export function settlesAs(gates, poc) {
   const failed = (name) => gates[name]?.status === 'fail';
   const flags = poc?.integrity?.tamperFlags ?? [];
   if (flags.length > 0) {
-    const kinds = [...new Set(flags.map((f) => f.kind))].sort().join(', ');
-    return invalid(`a tamper flag on the lines the patch added (${kinds}), which settles INVALID even beside another failed check`);
+    const kinds = [...new Set(flags.map((f) => f.kind))].filter((k) => codeReview.TAMPER_FLAG_KINDS.includes(k)).sort().join(', ');
+    return invalid(`a tamper flag on the lines the patch added (${kinds || 'of a kind this tool does not know'}), which settles INVALID even beside another failed check`);
   }
   if (failed('applies')) return invalid('poc.patch does not apply to the listed commit, or is over the listing\'s patch limits');
   if (failed('testPathsOnly')) return invalid('poc.patch touches a path outside paths.tests or inside paths.protected');
@@ -140,7 +141,7 @@ export function buildForecast({ local, answer, spec, pocPatch, lint, priorFindin
   const runnerGates = body.gates ?? {};
   for (const name of RUNNER_GATES) {
     const g = runnerGates[name];
-    if (g) gates.push({ name, status: g.status, basis: g.basis ?? 'runner', detail: g.detail ?? null });
+    if (g?.status === 'pass' || g?.status === 'fail') gates.push({ name, status: g.status, basis: g.basis ?? 'runner', detail: g.detail ?? null });
   }
   if (body.outcome === 'abstain') {
     const a = body.abstain ?? {};
@@ -174,22 +175,34 @@ export function buildForecast({ local, answer, spec, pocPatch, lint, priorFindin
 
 export { gate };
 
+const RUN_RESULTS = Object.freeze(['pass', 'fail', 'error', 'skip', 'missing', 'duplicate', 'not-run']);
+const TEST_KINDS = Object.freeze(['assertion', 'error']);
+const oneOf = (list, value) => (list.includes(value) ? value : null);
+const hexHash = (value) => (typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : null);
+
 /**
- * The forecast with nothing that can quote the proof: no runner text, no recorded message, no test name, no build
- * output. Status, counts and codes stay. What --no-pack prints.
+ * The forecast with nothing that can quote the proof: what --no-pack prints. Built field by field from an allow-list
+ * rather than by removing what is known to be free text: enums, counts, fixed words and values held to a shape. A new
+ * field of the forecast, or a runner that says something new, stays out until it is added here.
  */
 export function withoutProofText(f) {
   return {
-    ...f,
-    gates: f.gates.map((g) => (g.name === 'listingSigned' ? g : { ...g, detail: null })),
-    tests: f.tests.map((t, i) => ({ id: `test ${i + 1}`, runs: t.runs, kind: t.kind, message: null })),
-    abstain: f.abstain ? { ...f.abstain, detail: null } : null,
-    refusals: f.refusals ? f.refusals.map((i) => ({ ...i, detail: '' })) : null,
-    build: f.build ? { compiler: f.build.compiler, pragmas: [], output: '' } : null,
+    verdict: f.verdict,
+    gates: f.gates.map((g) => ({ name: g.name, status: g.status, basis: codeOf(g.basis, null), detail: g.name === 'listingSigned' ? g.detail : null })),
+    settlesAs: f.settlesAs,
+    refusals: f.refusals ? f.refusals.map((i) => ({ code: i.code, path: i.path, detail: '' })) : null,
+    abstain: f.abstain ? { cause: f.abstain.cause, step: f.abstain.step, detail: null, claimCanCause: f.abstain.claimCanCause, cost: f.abstain.cost } : null,
+    reportUnavailable: f.reportUnavailable ? 'a development platform' : null,
+    reportSha256: hexHash(f.reportSha256),
+    runner: f.runner ? { version: codeOf(f.runner.version, 'unknown'), runtime: codeOf(f.runner.runtime, 'unknown'), platform: /^linux\/(amd64|arm64)$/.test(String(f.runner.platform)) ? f.runner.platform : 'unknown' } : null,
+    image: f.image ? { ref: digestOf(f.image.ref), cache: codeOf(f.image.cache, null) } : null,
+    compiler: null,
+    tests: f.tests.map((t, i) => ({ id: `test ${i + 1}`, runs: (Array.isArray(t.runs) ? t.runs : []).map((r) => oneOf(RUN_RESULTS, r)), kind: oneOf(TEST_KINDS, t.kind), message: null })),
+    build: f.build ? { compiler: null, pragmas: [], output: '' } : null,
     observable: null,
     lint: f.lint.map((l) => ({ code: l.code, detail: l.detail })),
-    settlesAs: f.settlesAs,
     fix: null,
-    notes: f.notes.filter((n) => !/^[A-Z_]+: /.test(n)),
+    priorFindings: f.priorFindings ? { read: f.priorFindings.read, unread: (f.priorFindings.unread ?? []).filter(isCidShaped), total: f.priorFindings.total } : null,
+    notes: [],
   };
 }

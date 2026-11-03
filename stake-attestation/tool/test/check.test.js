@@ -5,7 +5,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-import { buildForecast } from '../src/index.js';
+import { buildForecast, withoutProofText } from '../src/index.js';
 import { closeRpc, runCli } from './helpers/cli.js';
 import { FINDING, FIX_PATCH, JUSTIFICATION_CID, POC_MARKER, POC_PATCH, codeReview, makeClaimDir, makeWorld, vectorOf } from './helpers/world.js';
 import { GATES, IMAGE_SHA, PACK, TOKEN, abstaining, definitive, pocFacts, refused, startRunner } from './helpers/runner.js';
@@ -272,6 +272,41 @@ test('--no-pack means no proof text anywhere: build output, messages, runner tex
     assert.equal(`${cli.stdout}${cli.stderr}`.includes(M), false, cli.stdout.slice(0, 400));
   }
   runner.state.answer = (req) => definitive(req.spec);
+});
+
+test('--no-pack is an allow-list: a marker in any string a runner answers with, one at a time, never comes out', () => {
+  const M = 'QUOTED-PROOF-TEXT';
+  const leaves = (value, at = []) => {
+    if (typeof value === 'string') return [at];
+    if (!value || typeof value !== 'object') return [];
+    return Object.entries(value).flatMap(([k, v]) => leaves(v, [...at, k]));
+  };
+  const setAt = (root, at, v) => {
+    const copy = structuredClone(root);
+    let node = copy;
+    for (const k of at.slice(0, -1)) node = node[k];
+    node[at.at(-1)] = v;
+    return copy;
+  };
+  let tried = 0;
+  for (const name of ['definitive', 'abstain']) {
+    const a = recorded(name);
+    for (const at of leaves(a.body)) {
+      const body = setAt(a.body, at, `${M} ${at.join('.')}`);
+      let f;
+      try {
+        f = buildForecast({ local: [], answer: { status: a.status, body }, spec: a.spec, pocPatch: Buffer.from(a.pocPatch), lint: [], priorFindings: { read: 0, unread: [], total: 0 } });
+      } catch (err) {
+        assert.equal(err.code, 'RUNNER_ANSWER_INVALID'); // a runner that says something unreadable: an error, with fixed words
+        assert.equal(err.message.includes(M), false, at.join('.'));
+        continue;
+      }
+      tried += 1;
+      const out = JSON.stringify(withoutProofText(f));
+      assert.equal(out.includes(M), false, `${at.join('.')} came through`);
+    }
+  }
+  assert.ok(tried > 40, String(tried));
 });
 
 test('a real runner\'s definitive answer reads as a pass, on arm64 with no report and the run pattern from facts.poc', () => {

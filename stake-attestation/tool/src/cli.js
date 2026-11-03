@@ -135,7 +135,7 @@ const when = (s) => (s === 0n || s === undefined ? '-' : `${s} (${new Date(Numbe
 function printForecast(out, { forecast: f, pack }, { noPack }) {
   if (noPack) out('--no-pack: nothing that can quote your proof is printed, so this says status and codes only.');
   out(`Gate forecast: ${f.verdict.toUpperCase()}`);
-  if (f.runner) out(`Runner ${f.runner.version} (${f.runner.runtime}, ${f.runner.platform})${f.image?.ref ? `, image ${f.image.ref}, ${f.image.cache}` : ''}`);
+  if (f.runner) out(`Runner ${f.runner.version} (${f.runner.runtime}, ${f.runner.platform})${f.image?.ref ? `, image ${f.image.ref}${f.image.cache ? `, ${f.image.cache}` : ''}` : ''}`);
   for (const g of f.gates) out(`  ${g.status === 'pass' ? 'pass' : 'FAIL'}  ${g.name}${g.detail ? `: ${g.detail}` : ''}`);
   if (f.verdict === 'refused') {
     out('The runner refused the listing\'s package, before any of your claim ran. On the arbiters this is a requester error: no commit, and no round settles. Do not commit on it.');
@@ -145,7 +145,7 @@ function printForecast(out, { forecast: f, pack }, { noPack }) {
     out(`ABSTAIN: ${f.abstain.cause}${f.abstain.step ? ` at ${f.abstain.step}` : ''}${f.abstain.detail ? `: ${f.abstain.detail}` : ''}`);
     out(f.abstain.cost);
   }
-  if (f.reportUnavailable) out(`No report on this platform, only gates and the pack: ${f.reportUnavailable}. The class's platform is linux/amd64.`);
+  if (f.reportUnavailable) out(`No report on this platform, only gates${noPack ? '' : ' and the pack'}: ${f.reportUnavailable}. The class's platform is linux/amd64.`);
   if (f.compiler !== null && f.compiler !== undefined) out(`Compiler the run pinned: ${f.compiler === '' ? 'none named: the sources\' pragmas pick among the installed releases' : f.compiler}`);
   if (f.build) {
     out(`The build failed. The listing's compiler: ${f.build.compiler || 'chosen by pragma'}.${noPack ? '' : ` Your patch's pragmas: ${f.build.pragmas.join(', ') || 'none'}.`} A proof whose pragma that compiler cannot satisfy fails here.`);

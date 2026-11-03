@@ -46,10 +46,7 @@ export function openWorkspace(claimDir) {
   }
 
   function ensureDir() {
-    if (assertDirPrivate()) {
-      if (!fs.existsSync(pathOf('.gitignore'))) writePrivate('.gitignore', Buffer.from('*\n'));
-      return;
-    }
+    if (assertDirPrivate()) return;
     try {
       fs.mkdirSync(dir, { mode: 0o700 });
       fs.chmodSync(dir, 0o700);
@@ -61,7 +58,6 @@ export function openWorkspace(claimDir) {
       throw fail('FILE_ERROR', `${STATE_DIR} could not be made`);
     }
     assertDirPrivate();
-    writePrivate('.gitignore', Buffer.from('*\n'));
     fsyncDir(claimDir);
   }
 
@@ -187,7 +183,9 @@ export function openWorkspace(claimDir) {
     ensureDir();
     const mine = takeLock();
     try {
+      // Writes happen only under the lock, so what removeTemps finds is a dead run's.
       removeTemps();
+      if (!fs.existsSync(pathOf('.gitignore'))) writePrivate('.gitignore', Buffer.from('*\n'));
       return await fn();
     } finally {
       fs.rmSync(pathOf(mine), { force: true });

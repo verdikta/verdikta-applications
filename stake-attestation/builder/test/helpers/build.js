@@ -14,7 +14,7 @@ import { buildListing } from '../../src/pipeline.js';
 import { FIXTURES, fakeDocker, readFixture, recordedExplorer } from './fakes.js';
 import { deploymentMessage } from '../../src/listingProof.js';
 import { MAKER, deployment, provenAnswer, stake } from './proof.js';
-import { acceptedListing, definitive, draftSpec } from './specs.js';
+import { acceptedListing, cannotRun, commandCheckAnswer, definitive, draftSpec } from './specs.js';
 
 export const DIGEST = `sha256:${'2'.repeat(64)}`;
 export const MANIFEST_DIGEST = `sha256:${'3'.repeat(64)}`;
@@ -72,6 +72,7 @@ export async function doubledBuild({ draft = draftSpec(), knownIssues = null, re
     }),
     runner: {
       listingCheck: async (body) => {
+        if (cannotRun(body)) return commandCheckAnswer(body);
         runs.push(body);
         const d = definitive(body.image, acceptedListing(draft.baseCommit, baseline ? { baseline } : {}), runner);
         return { status: d.status, json: d.body };

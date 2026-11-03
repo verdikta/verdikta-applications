@@ -15,7 +15,7 @@ import { parse } from 'yaml';
 
 import { codeReview } from '../../src/common.js';
 import { parseConfig } from '../../src/config.js';
-import { ACTION_PINS, builderConfig, codeRunnerEnv, registryArgs, signConfig } from '../../action/services.js';
+import { ACTION_PINS, builderConfig, codeRunnerEnv, publishTargetNote, registryArgs, runnerAnswersListings, signConfig } from '../../action/services.js';
 import { exportArgs, inspectArgs, publishArgs, skopeoRun, verifyImageDir } from '../../action/image.js';
 import { REGISTRY_IMAGE } from '../docker/helpers.js';
 import { contractDraft, draftSpec } from '../helpers/specs.js';
@@ -177,6 +177,38 @@ test('services.js starts registry:2 by digest on loopback, and the code-runner w
   assert.equal(env.CODE_RUNNER_REGISTRY_ALLOWLIST, '127.0.0.1:41000');
   assert.equal(env.CODE_RUNNER_HOST, '127.0.0.1');
   assert.throws(() => codeRunnerEnv({ token: 't'.repeat(64), port: 42000, runtime: 'kata', registryHost: '127.0.0.1:41000', stateDir: '/tmp/s', base: {} }));
+});
+
+test('services.js waits for a runner that can check a listing: the Semgrep image a claim needs is not asked of a maker\'s build', () => {
+  const missing = 'the Semgrep image docker.io/semgrep/semgrep@sha256:x is not on this host: the installer warms it, the runner never pulls it';
+  const health = (over = {}) => ({ ok: false, reasons: [missing], service: 'verdikta-code-runner', scanner: { present: false, problem: missing, rulesProblem: null }, ...over });
+  assert.equal(runnerAnswersListings({ status: 200, json: { ok: true, reasons: [], service: 'verdikta-code-runner' } }), true);
+  assert.equal(runnerAnswersListings({ status: 503, json: health() }), true, 'only the scanner\'s image is missing');
+  // Anything else stops the build, beside it or alone.
+  assert.equal(runnerAnswersListings({ status: 503, json: health({ reasons: [missing, 'the maintenance lock is held'] }) }), false);
+  assert.equal(runnerAnswersListings({ status: 503, json: health({ reasons: ['the Docker daemon has no runsc runtime registered'], scanner: { present: true, problem: null } }) }), false);
+  assert.equal(runnerAnswersListings({ status: 503, json: health({ scanner: { present: true, problem: missing } }) }), false, 'a wrong image is not a missing one');
+  assert.equal(runnerAnswersListings({ status: 503, json: health({ reasons: [] }) }), false);
+  assert.equal(runnerAnswersListings({ status: 503, json: { reasons: [missing] } }), false, 'not the runner\'s shape');
+  assert.equal(runnerAnswersListings({ status: 500, json: health() }), false);
+  assert.equal(runnerAnswersListings({ status: 503, json: null }), false);
+});
+
+test('the workflow says when the publish target is off the pinned runner\'s default allowlist, and a production signing stops there', () => {
+  const arbiter = { allowed: (repository) => repository.startsWith('ghcr.io/verdikta/'), defaults: 'ghcr.io/verdikta' };
+  assert.equal(publishTargetNote({ publishAs: 'ghcr.io/verdikta/stake-env', signing: 'production', arbiter }), null);
+  assert.equal(publishTargetNote({ publishAs: 'ghcr.io/verdikta/stake-env', signing: 'dev', arbiter }), null);
+  const dev = publishTargetNote({ publishAs: 'ghcr.io/acme/stake-env', signing: 'dev', arbiter });
+  assert.equal(dev.refuse, false);
+  assert.match(dev.text, /ghcr\.io\/acme\/stake-env/);
+  assert.match(dev.text, /ghcr\.io\/verdikta/);
+  assert.match(dev.text, /abstain/);
+  const prod = publishTargetNote({ publishAs: 'ghcr.io/acme/stake-env', signing: 'production', arbiter });
+  assert.equal(prod.refuse, true);
+  // The starter is told how the listing will be signed.
+  assert.match(runs('build'), /services\.js" start [^\n]*--signing "\$SIGNING"/);
+  const start = steps('build').find((s) => /services\.js" start/.test(s.run ?? ''));
+  assert.equal(start.env.SIGNING, '${{ inputs.signing }}');
 });
 
 /** A skopeo dir: layout holding an index of one linux/amd64 image; returns its folder and digests. */

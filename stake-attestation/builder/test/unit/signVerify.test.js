@@ -130,6 +130,10 @@ test('a report that disagrees with the files or with itself is not signed', asyn
     ['LISTING_MISMATCH', (l) => l.edit('validation-report.json', (r) => ({ ...r, listing: { ...r.listing, artifact: { kind: 'contract', address: '0x5f2A00000000000000000000000000000000C0dE', chainId: 8453 } } }))],
     ['STEPS_INCOMPLETE', (l) => l.edit('validation-report.json', (r) => ({ ...r, steps: r.steps.filter((s) => s.name !== 'listingCheck') }))],
     ['STEPS_INCOMPLETE', (l) => l.edit('validation-report.json', (r) => ({ ...r, listingCheck: { ...r.listingCheck, status: 'refused' } }))],
+    // The command check (src/runner.js): a report that does not record it, or records a runner without the grammar.
+    ['COMMANDS_NOT_CHECKED', (l) => l.edit('validation-report.json', (r) => { const { commands, ...rest } = r; return rest; })],
+    ['COMMANDS_NOT_CHECKED', (l) => l.edit('validation-report.json', (r) => ({ ...r, commands: { ...r.commands, canary: null } }))],
+    ['COMMANDS_NOT_CHECKED', (l) => l.edit('validation-report.json', (r) => ({ ...r, commands: { ...r.commands, issues: [{ code: 'COMMAND_NOT_ALLOWED' }] } }))],
     ['BASE_NOT_PINNED', (l) => l.edit('validation-report.json', (r) => ({ ...r, image: { ...r.image, base: 'ghcr.io/foundry-rs/foundry:latest' } }))],
     ['SIGNING_NOT_ACCEPTED', (l) => l.edit('validation-report.json', (r) => ({ ...r, status: 'error' }))],
     ['SIGNING_REPORT_MISMATCH', (l) => l.edit('baseline.json', (b) => ({ ...b, unstable: [b.stable[0]] }))],

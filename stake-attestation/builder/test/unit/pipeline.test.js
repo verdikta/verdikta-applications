@@ -17,7 +17,7 @@ import { buildListing } from '../../src/pipeline.js';
 import { createExplorer } from '../../src/explorer.js';
 import { FIXTURES, fakeDocker, readFixture, recordedExplorer, sha256 } from '../helpers/fakes.js';
 import { MAKER, deployment, provenAnswer, stake } from '../helpers/proof.js';
-import { BASE_COMMIT, abstained, acceptedListing, contractDraft, definitive, draftSpec, refusedListing } from '../helpers/specs.js';
+import { BASE_COMMIT, abstained, acceptedListing, cannotRun, commandCheckAnswer, contractDraft, definitive, draftSpec, refusedListing } from '../helpers/specs.js';
 
 const DIGEST = `sha256:${'2'.repeat(64)}`;
 const REPOSITORY = 'ghcr.io/verdikta/stake-env';
@@ -58,6 +58,7 @@ function harness(over = {}) {
     },
     runner: {
       listingCheck: async (body) => {
+        if (cannotRun(body)) return commandCheckAnswer(body);
         calls.runner.push(body);
         const d = (over.runnerAnswer ?? (() => definitive(IMAGE, acceptedListing())))(body);
         return { status: d.status, json: d.body };

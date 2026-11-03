@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, evidenceChecks, gateSettledChecks, juryPathChecks, moneyChecks, pageChecks, recordChecks, requestChecks, servedRoundChecks, settlementChecks } from '../src/checks.js';
+import { abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, evidenceChecks, gateSettledChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, moneyChecks, pageChecks, recordChecks, requestChecks, servedRoundChecks, settlementChecks } from '../src/checks.js';
 
 const failing = (list) => list.filter((c) => !c.ok).map((c) => c.name);
 const allPass = (list) => assert.deepEqual(failing(list), []);
@@ -294,4 +294,52 @@ test('pageChecks: what the browser read', () => {
   fails(pageChecks('x', r({ main: 'it names QmI' }), o), 'x.page.invalidNotPublished');
   fails(pageChecks('x', { ...pages, errors: ['boom'] }, o), 'x.page.noErrors');
   fails(pageChecks('x', { ...pages, feed: '' }, o), 'x.page.feed');
+});
+
+test('integrityRunChecks: the proof failed where it reproduces, and a measured check is why: not a tamper flag, and no model asked', () => {
+  const answer = (over = {}, poc = {}) => ({
+    outcome: 'definitive',
+    gates: { build: { status: 'pass' }, reproduces: { status: 'fail', basis: 'integrity' }, integrity: { status: 'fail' } },
+    report: { poc: { testCount: 1, tests: [{ runs: ['fail', 'fail', 'fail'] }], integrity: { protectedPathsUnchanged: false, frameworkUnchanged: true, tamperFlags: [] }, ...poc } },
+    ...over,
+  });
+  const obs = (a = answer(), over = {}) => ({ runnerCalls: [{ response: a }], aiCalls: [], providerCalls: [], failedCheck: 'protectedPathsUnchanged', ...over });
+  allPass(integrityRunChecks('x', obs()));
+  fails(integrityRunChecks('x', obs(answer({ outcome: 'abstain' }))), 'x.runner.gateFailed');
+  fails(integrityRunChecks('x', obs(answer({ gates: { reproduces: { status: 'pass' }, integrity: { status: 'pass' } } }))), 'x.runner.gateFailed');
+  fails(integrityRunChecks('x', obs(answer({ gates: { reproduces: { status: 'fail', basis: 'junit' }, integrity: { status: 'fail' } } }))), 'x.runner.reproducesOnlyThroughIntegrity');
+  fails(integrityRunChecks('x', obs(answer({}, { integrity: { protectedPathsUnchanged: true, tamperFlags: [] } }))), 'x.runner.checkFailed');
+  fails(integrityRunChecks('x', obs(answer({}, { integrity: { protectedPathsUnchanged: false, tamperFlags: [{ kind: 'framework-patched', file: 'test/E.t.sol', line: 9 }] } }))), 'x.runner.noTamperFlag');
+  fails(integrityRunChecks('x', obs(answer({}, { tests: [{ runs: ['fail', 'pass', 'fail'] }] }))), 'x.runner.everyRunFailed');
+  fails(integrityRunChecks('x', obs(answer(), { runnerCalls: [{ response: answer() }, { response: answer() }] })), 'x.runner.oneSandbox');
+  fails(integrityRunChecks('x', obs(answer(), { aiCalls: [{}] })), 'x.noAi');
+  fails(integrityRunChecks('x', obs(answer(), { providerCalls: [{}] })), 'x.noAi');
+});
+
+test('integrityRecordChecks: the record counts it under the check it names, apart from the other duplicates, read and not guessed', () => {
+  const entry = { failed: 1, checks: [{ check: 'protectedPathsUnchanged', count: 1 }], otherDuplicates: 0, unread: 0, disagree: 0, late: { failed: 0, checks: [] } };
+  const view = (over = {}, note = 'These claims settled as DUPLICATE on-chain: bond back, no award.') => ({ integrity: { note, listings: { 7: { ...entry, ...over } } } });
+  const expected = { listingId: 7n, failed: 1, checks: [{ check: 'protectedPathsUnchanged', count: 1 }], note: 'These claims settled as DUPLICATE on-chain: bond back, no award.' };
+  allPass(integrityRecordChecks('x', view(), expected));
+  fails(integrityRecordChecks('x', view({ failed: 0 }), expected), 'x.record.integrityFailed');
+  fails(integrityRecordChecks('x', view({ checks: [] }), expected), 'x.record.integrityChecks');
+  fails(integrityRecordChecks('x', view({ checks: [{ check: 'identityComplete', count: 1 }] }), expected), 'x.record.integrityChecks');
+  fails(integrityRecordChecks('x', view({ otherDuplicates: 1 }), expected), 'x.record.integrityApart');
+  fails(integrityRecordChecks('x', view({ unread: 1 }), expected), 'x.record.integrityApart');
+  fails(integrityRecordChecks('x', view({ disagree: 1 }), expected), 'x.record.integrityApart');
+  fails(integrityRecordChecks('x', view({ late: { failed: 1, checks: [] } }), expected), 'x.record.integrityApart');
+  fails(integrityRecordChecks('x', view({}, 'the maker set a trap'), expected), 'x.record.integrityNote');
+  fails(integrityRecordChecks('x', {}, expected), 'x.record.integrityFailed');
+});
+
+test('integrityPageChecks: what the browser read: the count, the check, the note, and nothing published', () => {
+  const pages = { record: { integrity: '1', integrityChecks: 'protectedPathsUnchanged: 1', integrityOther: '0', integrityNote: 'NOTE', main: 'the record' } };
+  const o = { failed: 1, check: 'protectedPathsUnchanged', count: 1, note: 'NOTE', bcid: 'QmDup' };
+  const r = (over) => ({ record: { ...pages.record, ...over } });
+  allPass(integrityPageChecks('x', pages, o));
+  fails(integrityPageChecks('x', r({ integrity: '0' }), o), 'x.page.integrityFailed');
+  fails(integrityPageChecks('x', r({ integrityChecks: 'identityComplete: 1' }), o), 'x.page.integrityChecks');
+  fails(integrityPageChecks('x', r({ integrityOther: '1' }), o), 'x.page.integrityOther');
+  fails(integrityPageChecks('x', r({ integrityNote: 'the maker set a trap' }), o), 'x.page.integrityNote');
+  fails(integrityPageChecks('x', r({ main: 'it names QmDup' }), o), 'x.page.duplicateNotPublished');
 });

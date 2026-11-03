@@ -23,6 +23,61 @@ const SECRET = crypto.randomBytes(30).toString('base64').replace(/[^A-Za-z0-9]/g
 
 test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
+const SD = (body) => `// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\ncontract C {\n    function k(address payable a) external {\n${body}\n    }\n}\n`;
+/** Past Semgrep's limit of 10,000 matches of one rule in one file, under its 2 MB per file. */
+const CAPPED = SD('        selfdestruct(a);\n'.repeat(10500));
+const RULE = 'verdikta.solidity.selfdestruct';
+
+async function scanFiles(extra, { runtime = null } = {}) {
+  const sub = fs.mkdtempSync(path.join(dir, 'files-'));
+  const repo = fixtureRepo(sub, extra);
+  const config = parseConfig({
+    registry: { repository: 'ghcr.io/verdikta/stake-env' },
+    runner: { url: 'http://127.0.0.1:8090', tokenEnv: 'UNUSED_RUNNER_TOKEN' },
+    platforms: testPlatforms(),
+    repoMirrors: { 'https://github.com/verdikta-test/vault-fixture': repo.mirror },
+  }, { baseDir: dir, env: {} });
+  const real = createDocker();
+  // The runtime is the daemon's choice in production: here, this test's.
+  const docker = { run: (args, opts) => real.run(args[0] === 'run' && runtime ? ['run', '--runtime', runtime, ...args.slice(1)] : args, opts) };
+  const spec = fixtureDraft(repo.baseCommit, codeReview.generateDisclosureKeyPair().recipient);
+  return scanListing({ spec, config, deps: { docker }, workDir: dir });
+}
+
+/** What A3c measured of Semgrep 1.181.0, on the real tool, as a maker's scan meets it. */
+async function assertScanIsWhole(runtime) {
+  // An answer far past 64 KiB, with a finding on the last line: all of it arrived, whatever the runtime does to stdout.
+  const lines = 2500;
+  const { status, doc } = await scanFiles({ 'src/Many.sol': SD('        selfdestruct(a);\n'.repeat(lines)) }, { runtime });
+  assert.equal(status, 'ok', JSON.stringify(doc.error ?? doc.tools.semgrep));
+  assert.equal(doc.tools.semgrep.truncated, true, 'past the findings the file keeps, and it says so');
+  assert.equal(doc.findings.filter((f) => f.tool === 'semgrep' && f.path === 'src/Many.sol').length, 500);
+  assert.deepEqual(doc.tools.semgrep.notScanned, []);
+  assert.deepEqual(doc.tools.semgrep.errors, []);
+  // The match cap: every result of the file dropped, exit 0. It is stated, by the rule, and the file is not counted.
+  const cap = await scanFiles({ 'src/Capped.sol': CAPPED }, { runtime });
+  assert.equal(cap.status, 'ok', JSON.stringify(cap.doc.error ?? cap.doc.tools.semgrep));
+  assert.equal(cap.doc.findings.some((f) => f.path === 'src/Capped.sol'), false, 'Semgrep dropped them');
+  assert.deepEqual(cap.doc.tools.semgrep.notScanned, [{ path: 'src/Capped.sol', detail: `past Semgrep's limit of matches of one rule in one file (${RULE}), it drops every result for the file: not analysed` }]);
+  assert.equal(cap.doc.tools.semgrep.analysed, 1, 'the fixture\'s Vault.sol, and not the capped file');
+}
+
+test('real Semgrep: a whole answer past 64 KiB, and a match cap stated by the rule', { timeout: 1200000 }, () => assertScanIsWhole(null));
+
+test('real Semgrep under gVisor, where its stdout can be cut at 64 KiB with exit 0: the same', {
+  timeout: 1200000,
+  skip: process.env.SA_BUILDER_TEST_RUNSC === '1' ? false : 'needs a daemon with runsc registered: CI\'s builder-docker job sets SA_BUILDER_TEST_RUNSC=1',
+}, () => assertScanIsWhole('runsc'));
+
+test('real Semgrep: // nosemgrep in the maker\'s source does not take a finding out of the scan', { timeout: 600000 }, async () => {
+  const { status, doc } = await scanFiles({
+    'src/Hidden.sol': SD('        selfdestruct(a); // nosemgrep\n'),
+    'src/Named.sol': SD('        // nosemgrep: verdikta.solidity.selfdestruct\n        selfdestruct(a);\n'),
+  });
+  assert.equal(status, 'ok', JSON.stringify(doc.error ?? doc.tools.semgrep));
+  for (const p of ['src/Hidden.sol', 'src/Named.sol']) assert.ok(doc.findings.some((f) => f.path === p && f.rule === RULE), p);
+});
+
 test('Semgrep and the secret scanner find the planted bugs and the secret in scope, and nothing out of it, with no network', { timeout: 1800000 }, async () => {
   const repo = fixtureRepo(dir, {
     'src/Leaky.sol': LEAKY,

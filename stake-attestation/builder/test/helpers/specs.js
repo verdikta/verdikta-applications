@@ -44,6 +44,51 @@ export function contractDraft(over = {}) {
 export const RUNNER = { version: '0.1.0', runtime: 'runsc', platform: 'linux/amd64' };
 const ID = (fn) => `test/Vault.t.sol > VaultTest > ${fn}`;
 
+const COMMAND_KEYS = Object.freeze(['build', 'test', 'testFiles', 'testIds']);
+const SHAPED_LIKE_FORGE = (text) => /^forge (?:build|test)(?: [^;&|<>`$"()]*(?:\$\{?(?:FILES|TEST_IDS)\}?[^;&|<>`$"()]*)*)?$/.test(text);
+
+/**
+ * What a double of the runner says of a draft's commands, in the runner's words and order. This is not the
+ * grammar: the builder holds no copy of it, and e2e/test/grammar.test.js asks the real one.
+ * @param {object} spec
+ * @param {{ refuses?: (text: string, key: string) => boolean }} [o]
+ */
+export function withGrammar(spec, { refuses = (text) => !SHAPED_LIKE_FORGE(text) } = {}) {
+  const issues = [];
+  for (const key of COMMAND_KEYS) {
+    const text = spec.commands?.[key];
+    const path = `/spec/commands/${key}`;
+    if (typeof text !== 'string' || text === '') issues.push({ code: 'COMMAND_MISSING', path, detail: `the forge adapter needs commands.${key}` });
+    else if (refuses(text, key)) issues.push({ code: 'COMMAND_NOT_ALLOWED', path, detail: `commands.${key}: ${JSON.stringify(text)} is not allowed` });
+    else if (key === 'testFiles' && !text.includes('FILES')) issues.push({ code: 'COMMAND_PLACEHOLDER', path, detail: 'commands.testFiles must use --match-path $FILES' });
+    else if (key === 'testIds' && !text.includes('TEST_IDS')) issues.push({ code: 'COMMAND_PLACEHOLDER', path, detail: 'commands.testIds must use --match-test $TEST_IDS' });
+  }
+  return issues;
+}
+
+/** A listing-check request that cannot start a run: its spec names another image than the one sent. */
+export const cannotRun = (body) => body?.spec?.env?.image !== undefined && body.spec.env.image !== body.image;
+
+/** The runner's 400 to such a request: the mismatch, always, and whatever else it found. */
+export function commandCheckAnswer(body, opts) {
+  const issues = [{ code: 'IMAGE_MISMATCH', path: '/spec/env/image', detail: 'code_review.json names another image than the one to check' }, ...withGrammar(body.spec, opts)];
+  return { status: 400, json: { outcome: 'requester_error', issues } };
+}
+
+/**
+ * A runner double for checkCommands alone.
+ * @param {{ refuses?: Function, onBody?: (body: object) => void }} [o]
+ */
+export function runnerWithGrammar({ refuses, onBody = () => {} } = {}) {
+  return {
+    listingCheck: async (body) => {
+      onBody(body);
+      if (!cannotRun(body)) throw new Error('this double only answers the command check');
+      return commandCheckAnswer(body, refuses ? { refuses } : undefined);
+    },
+  };
+}
+
 export function acceptedListing(baseCommit = BASE_COMMIT, over = {}) {
   const tests = [
     { id: ID('test_deposit_credits()'), results: ['pass', 'pass', 'pass'] },
@@ -55,6 +100,7 @@ export function acceptedListing(baseCommit = BASE_COMMIT, over = {}) {
     warnings: [],
     image: { ref: null, unpackedBytes: 812000000 },
     checkout: { commit: 'f'.repeat(40), tree: 'e'.repeat(40), paths: 6, corrected: 0, correctedPaths: [] },
+    compilers: { platform: 'linux/amd64', listAsOf: '2026-10-01', newest: '0.8.32', checked: [{ path: '/opt/verdikta/tools/share/svm/0.8.31/solc-0.8.31', release: '0.8.31' }] },
     timings: { prepareSeconds: 2.1, buildSeconds: 4.2, testSeconds: [1.5, 1.4, 1.6] },
     baseline: {
       version: 1, baseCommit, framework: 'forge', runs: 3, tests,

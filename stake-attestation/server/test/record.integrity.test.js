@@ -290,6 +290,21 @@ describe('the record says apart which claims failed integrity', () => {
       }
     });
 
+    test('a block near the cap repeating known names keeps at most one of each: what is stored stays small, and order is no disagreement', async () => {
+      const repeated = uploadBytes(evidenceBlock({ settlement: 'INVALID (build)', checks: Array(180_000).fill('frameworkUnchanged').join(',') }));
+      assert.ok(repeated.length > 3_000_000 && repeated.length <= MAX_JUSTIFICATION_UPLOAD_BYTES, String(repeated.length));
+      assert.deepEqual(readUpload(repeated), { says: 'other', settlement: 'INVALID (build)', checks: ['frameworkUnchanged'] });
+      const all = codeReview.INTEGRITY_CHECKS;
+      const everyName = uploadBytes(evidenceBlock({ settlement: 'jury', checks: Array(20_000).fill([...all].reverse()).flat().join(',') }));
+      assert.deepEqual(readUpload(everyName).checks, [...all], 'at most one per check');
+      const l = await listing(ctx);
+      const a = await pin(ctx, uploadBytes(evidenceBlock({ settlement: 'INVALID (build)', checks: 'dependenciesUnchanged,frameworkUnchanged' })));
+      const b = await pin(ctx, uploadBytes(evidenceBlock({ settlement: 'INVALID (build)', checks: 'frameworkUnchanged,dependenciesUnchanged', sha: 'b'.repeat(64) })));
+      await claimed(ctx, l.listingId, 'DUPLICATE', `${a},${b}`);
+      await settled(site);
+      assert.deepEqual(await entry(l), none({ otherDuplicates: 1 }));
+    });
+
     test('two jury verdicts with their own text and hash agree: plain, not measured as a disagreement', async () => {
       const l = await listing(ctx);
       const a = await pin(ctx, uploadBytes(`${evidenceBlock({ settlement: 'jury', checks: 'none', sha: 'a'.repeat(64) })}\n\nOne panel's words.`));

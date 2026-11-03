@@ -29,8 +29,8 @@ export const createJustificationFetcher = ({ gateways, timeoutMs }, logger, opti
  * What an upload says of integrity.
  * @param {Buffer} bytes
  * @returns {{ says: 'integrity', checks: string[] } | { says: 'other', settlement: string|null, checks: string[]|null } | null}
- *   `settlement` and `checks`: what the block states, as the reader for a person takes it, known names only,
- *   or null for no block; null: it could not be read
+ *   `settlement` and `checks`: what the block states, as the reader for a person takes it, each known name
+ *   once, or null for no block; null: it could not be read
  */
 export function readUpload(bytes) {
   if (bytes.length > MAX_JUSTIFICATION_UPLOAD_BYTES) return null;
@@ -46,7 +46,9 @@ export function readUpload(bytes) {
   const checks = integrityFailureOf(justification, { integrityChecks });
   if (checks) return { says: 'integrity', checks };
   const block = readExecutionEvidence(justification, { integrityChecks });
-  return { says: 'other', settlement: block?.settlement ?? null, checks: block?.integrityFailedChecks ?? null };
+  const stated = block?.integrityFailedChecks;
+  // as a set, in common's order: at most one entry per check, whatever the upload repeats
+  return { says: 'other', settlement: block?.settlement ?? null, checks: stated ? integrityChecks.filter((check) => stated.includes(check)) : null };
 }
 
 /**

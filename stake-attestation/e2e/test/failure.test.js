@@ -173,6 +173,44 @@ test('a signal somewhere in the real startup, and another while it stops: one ex
   assertNothingLeft(r.report, r.out);
 });
 
+/** Whatever a test made and a failed run left: its own groups, so nothing stays behind a failing test. */
+function killGroups(pids) {
+  for (const pid of pids) {
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch { /* gone */ }
+  }
+}
+
+test('a service whose leader dies leaves its children in its group, and they are stopped too (R6-F1)', async () => {
+  const r = await runRound('leader-dies', { SA_E2E_BREAK: 'leader-dies' });
+  try {
+    assert.equal(r.code, 1, r.out.slice(-1500));
+    assert.match(r.report.failure, /^leader-dies: ended here on purpose/, r.report.failure);
+    assert.ok(r.report.checks.some((c) => c.name === 'break.groupOutlivesItsLeader' && c.ok), 'the group really did outlive its leader');
+    const aiNode = r.report.pids.find((p) => p.name === 'ai-node');
+    assert.equal(alive(-aiNode.pid), false, `the AI Node's process group (${aiNode.pid}) still has members`);
+    assertNothingLeft(r.report, r.out);
+  } finally {
+    killGroups((r.report?.pids ?? []).map((p) => p.pid));
+  }
+});
+
+test('a process group of the harness\'s still alive fails a run whose every check passed', async () => {
+  const r = await runRound('group-survives', { SA_E2E_BREAK: 'group-survives' });
+  try {
+    assert.ok(r.report?.survivor, r.out.slice(-1500));
+    assert.deepEqual(r.report.checks.filter((c) => !c.ok), [], 'no check failed: only what was left can fail this run');
+    assert.equal(alive(-r.report.survivor), true, 'the group really is alive');
+    assert.equal(r.code, 1, 'a live group fails the run');
+    assert.equal(r.report.ok, false);
+    assert.deepEqual(r.report.leftovers.groups, [r.report.survivor]);
+    assert.match(r.report.failure, /left behind/);
+  } finally {
+    if (r.report?.survivor) killGroups([r.report.survivor]);
+  }
+});
+
 test('a crash in the round, not a signal, stops everything the same way, and exits 1', async () => {
   const r = await runRound('crash-in-start', { SA_E2E_BREAK: 'crash-in-start' });
   assert.equal(r.code, 1, r.out.slice(-1500));

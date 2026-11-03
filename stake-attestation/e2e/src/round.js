@@ -20,9 +20,9 @@ import {
 import {
   AWARDS_WEI, BOND_WEI, ESCROW_WEI, GIT_HOST, JURY_AVERAGE, JUROR_SCORES, JUSTIFIER, POC_MARKER, REPORT_MARKER, WINDOWS, claimFolder, draftSpec, makeRepository,
 } from './fixtures.js';
-import { RoundStopped, requestStop, sleep, stopProcessesNaming, throwIfStopping, unlessStopped, waitUntil, within } from './proc.js';
+import { RoundStopped, groupAlive, requestStop, sleep, stopProcessesNaming, throwIfStopping, unlessStopped, waitUntil, within } from './proc.js';
 import {
-  arbiterHarness, cleanDockerConfig, leftovers, newRunnerToken, removeRunContainers, removeRunImages, startClient, startIpfs, startLateContainer, startRegistryPair, startServer,
+  arbiterHarness, cleanDockerConfig, leftovers, newRunnerToken, removeRunContainers, removeRunImages, startClient, startIpfs, startLateContainer, startRegistryPair, startServer, startSurvivor,
 } from './services.js';
 import { APP_DIR, arbiterCheckout, browserReady, compileContracts, E2E_DIR, installSiblings } from './setup.js';
 import { createTool } from './tool.js';
@@ -59,7 +59,7 @@ class CheckFailed extends Error {}
 /**
  * @param {object} [o]
  * @param {(line: string) => void} [o.log]
- * @param {string|null} [o.breakName] - SA_E2E_BREAK: break the round on purpose (runner-start, valid-claim-abstains, signal-in-scan, signal-in-start, crash-in-start)
+ * @param {string|null} [o.breakName] - SA_E2E_BREAK: break the round on purpose (runner-start, valid-claim-abstains, signal-in-scan, signal-in-start, crash-in-start, leader-dies, group-survives)
  * @param {boolean} [o.requireClassPlatform] - SA_E2E_REQUIRE_CLASS_PLATFORM=1: anything but linux/amd64 is a failure
  * @param {string} [o.logDir] - SA_E2E_LOG_DIR: the run's logs go in a new folder inside it, and nothing there is removed
  * @param {number} [o.stopBoundMs] - SA_E2E_STOP_BOUND_MS: STOP_BOUND_MS, shorter for the test of running past it
@@ -292,6 +292,20 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     one('client.up', (await fetch(`${client.url}/`)).ok, client.url);
     one('client.apiProxied', (await fetch(`${client.url}/api/status`)).ok, 'the client reaches the server under /api');
     log('[round] services up');
+    if (breakName === 'leader-dies') {
+      // The leader alone: next dev's next-server stays in its group, still answering, and nothing names the run.
+      const leader = aiNode.child.pid;
+      process.kill(leader, 'SIGKILL');
+      await waitUntil('the leader to die', async () => aiNode.exited() !== null, { timeoutMs: 15000 });
+      await sleep(500);
+      one('break.groupOutlivesItsLeader', groupAlive(leader), `group ${leader} ${groupAlive(leader) ? 'still has members' : 'is gone with its leader'}`);
+      throw new CheckFailed('leader-dies: ended here on purpose, as any failure ends a round');
+    }
+    if (breakName === 'group-survives') {
+      // Every check so far has passed and the main flow ends: only what is left can fail this run.
+      report.survivor = startSurvivor().pid;
+      return;
+    }
 
     const settleOutcome = async (fn, what, timeoutMs = CHAIN_WAIT_MS) => waitUntil(what, fn, { timeoutMs, everyMs: 300, proc: server });
 

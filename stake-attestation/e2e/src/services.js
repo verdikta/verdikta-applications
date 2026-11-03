@@ -72,6 +72,13 @@ export function startLateContainer({ instance, seconds, dockerConfigDir }) {
   return { name, pid: child.pid, done };
 }
 
+/** For SA_E2E_BREAK=group-survives: a process group of the harness's, with a child, that nothing here will stop. */
+export function startSurvivor() {
+  const child = spawn('sh', ['-c', 'sleep 300 & wait'], { detached: true, stdio: 'ignore' });
+  child.unref();
+  return child;
+}
+
 /**
  * A6a's registry:2, which listens on the daemon host's loopback: the daemon pushes to it and the runner
  * pulls from it. Under Docker Desktop that loopback is the VM's, so the builder's reads go through a

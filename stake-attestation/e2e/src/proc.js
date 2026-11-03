@@ -87,6 +87,16 @@ export function freePort() {
   });
 }
 
+/** Whether a process group still has members. */
+export function groupAlive(pgid) {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (err) {
+    return err.code !== 'ESRCH';
+  }
+}
+
 /** A long-running service. @returns {{ name, pid, tail(), exited(), close(), log }} */
 export function launch(name, argv, { cwd, env, logDir }) {
   const file = path.join(logDir, `${name}.log`);

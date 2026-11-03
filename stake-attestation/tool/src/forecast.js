@@ -65,6 +65,19 @@ export function settlesAs(gates, poc) {
   return null;
 }
 
+/** Fixed words: a gate's own detail can quote the finding, and a reason is printed under --no-pack too. */
+const LOCAL_REASONS = Object.freeze({
+  finding: 'finding.json does not validate',
+  inScope: 'an affected path is outside the stake\'s scope',
+  report: 'report.md is missing, empty, too short or not text',
+  applies: 'poc.patch is missing, is not a patch, or is over the listing\'s patch limit',
+});
+
+// What a runner calls a cause, a step, a code or a path, only when it looks like one.
+const CODE = /^[A-Za-z_][A-Za-z0-9_.:-]{0,63}$/;
+const PATH = /^(\/[A-Za-z0-9_.-]{1,64}){0,16}$/;
+const codeOf = (value, fallback = 'UNKNOWN') => (typeof value === 'string' && CODE.test(value) ? value : fallback);
+
 const gate = (name, status, detail, basis = 'local') => ({ name, status, basis, detail });
 
 function stepOutput(steps, name) {
@@ -106,10 +119,9 @@ export function buildForecast({ local, answer, spec, pocPatch, lint, priorFindin
     priorFindings,
     notes,
   };
-  const localFailed = local.filter((g) => g.status === 'fail');
   const localSettles = () => {
-    const s = localFailed.find((g) => ['finding', 'inScope', 'report', 'applies'].includes(g.name));
-    return s ? invalid(s.detail) : null;
+    const s = local.find((g) => g.status === 'fail' && Object.hasOwn(LOCAL_REASONS, g.name));
+    return s ? invalid(LOCAL_REASONS[s.name]) : null;
   };
   if (!answer) return { ...base, verdict: 'fail', settlesAs: localSettles() };
 
@@ -119,7 +131,7 @@ export function buildForecast({ local, answer, spec, pocPatch, lint, priorFindin
     return {
       ...base,
       verdict: 'refused',
-      refusals: issues.map((i) => ({ code: String(i?.code ?? 'UNKNOWN'), path: String(i?.path ?? ''), detail: String(i?.detail ?? '') })),
+      refusals: issues.map((i) => ({ code: codeOf(i?.code), path: typeof i?.path === 'string' && PATH.test(i.path) ? i.path : '', detail: String(i?.detail ?? '') })),
     };
   }
   base.runner = body.runner ?? null;
@@ -136,7 +148,7 @@ export function buildForecast({ local, answer, spec, pocPatch, lint, priorFindin
     return {
       ...base,
       verdict: 'abstain',
-      abstain: { cause: String(a.cause ?? 'unknown'), step: a.step ?? null, detail: a.detail ?? null, claimCanCause, cost: claimCanCause ? ABSTAIN_BY_CLAIM : ABSTAIN_BY_HOST },
+      abstain: { cause: codeOf(a.cause, 'unknown'), step: codeOf(a.step, null), detail: a.detail ?? null, claimCanCause, cost: claimCanCause ? ABSTAIN_BY_CLAIM : ABSTAIN_BY_HOST },
     };
   }
 
@@ -172,6 +184,7 @@ export function withoutProofText(f) {
     gates: f.gates.map((g) => (g.name === 'listingSigned' ? g : { ...g, detail: null })),
     tests: f.tests.map((t, i) => ({ id: `test ${i + 1}`, runs: t.runs, kind: t.kind, message: null })),
     abstain: f.abstain ? { ...f.abstain, detail: null } : null,
+    refusals: f.refusals ? f.refusals.map((i) => ({ ...i, detail: '' })) : null,
     build: f.build ? { compiler: f.build.compiler, pragmas: [], output: '' } : null,
     observable: null,
     lint: f.lint.map((l) => ({ code: l.code, detail: l.detail })),

@@ -217,7 +217,7 @@ export async function runStatus(ctx, { claimId, claimDir, wait = false, maxWaitM
     return finish(ctx, await readNow(ctx, id));
   }
 
-  await bounded(() => ctx.ensureChain());
+  await bounded((live) => ctx.ensureChain(live));
   const id = claimIdOf({ claimId, claimDir });
   const poll = ctx.pollMs ?? WATCH_POLL_MS;
   let last = null;

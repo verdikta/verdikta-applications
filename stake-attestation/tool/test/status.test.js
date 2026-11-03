@@ -162,6 +162,39 @@ test('a watch at its limit stops asking: an abandoned read starts nothing more, 
   const t0 = Date.now();
   await assert.rejects(w.hunter({ provider: stuck, signer: undefined, readTimeoutMs: 60_000 }).status({ claimId, wait: true, maxWaitMs: 100 }), (e) => e.code === 'RPC_UNAVAILABLE');
   assert.ok(Date.now() - t0 < 2000, 'the chain check is inside the limit');
+  // A chain id that arrives after the watch gave up: the next read is never asked for.
+  const later = [];
+  let answer = () => {};
+  const late = new Proxy(w.provider, {
+    get(target, prop) {
+      if (prop === 'send') return (...a) => new Promise((r) => { answer = () => r(target.send(...a)); });
+      if (prop === 'getCode') {
+        return (...a) => {
+          later.push('getCode');
+          return target.getCode(...a);
+        };
+      }
+      const v = target[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+  await assert.rejects(w.hunter({ provider: late, signer: undefined, readTimeoutMs: 60_000 }).status({ claimId, wait: true, maxWaitMs: 60 }), (e) => e.code === 'RPC_UNAVAILABLE');
+  answer();
+  await new Promise((r) => { setTimeout(r, 100); });
+  assert.deepEqual(later, []);
+});
+
+test('the CLI\'s first look at the chain is inside the time asked for', async () => {
+  const http = await import('node:http');
+  const server = http.createServer(() => { /* never answers */ });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const t0 = Date.now();
+  const r = await runCli(w, ['status', '1', '--wait', '--max-wait-ms', '300'], { keyVia: 'none', extra: { VERDIKTA_RPC_URL: `http://127.0.0.1:${server.address().port}` } });
+  server.closeAllConnections?.();
+  server.close();
+  assert.equal(r.code, 1, r.stderr);
+  assert.match(r.stderr, /RPC_UNAVAILABLE/);
+  assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0} ms`);
 });
 
 test('a --wait on a claim with nothing pending returns at once', async () => {

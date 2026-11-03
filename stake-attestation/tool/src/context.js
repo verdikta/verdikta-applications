@@ -80,7 +80,7 @@ export function makeContext(options = {}) {
   ctx.chainId = () => chainId;
 
   /** Reads the chain's id every time a verb starts: the only chains are the allowed ones. */
-  ctx.ensureChain = async () => {
+  ctx.ensureChain = async (live = () => true) => {
     if (!ctx.provider) throw fail('USAGE', 'This needs VERDIKTA_RPC_URL.');
     if (!isAddress(ctx.contract)) throw fail('USAGE', 'This needs the StakeAttestation address.');
     const raw = await ctx.rpc(() => ctx.provider.send('eth_chainId', []));
@@ -88,6 +88,7 @@ export function makeContext(options = {}) {
     if (!ALLOWED_CHAIN_IDS.includes(id)) throw fail('NETWORK_NOT_ALLOWED', `Chain id ${id}.`);
     chainId = id;
     if (!sa) sa = new Contract(ctx.contract, STAKE_ATTESTATION_ABI, ctx.provider);
+    if (!live()) throw fail('RPC_UNAVAILABLE', 'The time given is over.');
     const code = await ctx.rpc(() => ctx.provider.getCode(ctx.contract));
     if (code === '0x') throw fail('NOT_THE_CONTRACT');
     return id;

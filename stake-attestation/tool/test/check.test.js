@@ -57,18 +57,21 @@ test('a finding.json common refuses, or one out of scope, stops at the local gat
   assert.equal(runner.requests.length, 0);
 });
 
-test('the runner\'s refusal codes are shown by code, path and detail, none taken for the claim\'s failure', async () => {
+test('the runner\'s refusal codes are shown by code, path and detail, none taken for the claim\'s failure; odd ones lose their shape', async () => {
   runner.state.answer = () => refused([{ code: 'SOLC_NOT_OFFICIAL', path: '/spec/env/image', detail: 'svm/0.8.31/solc-0.8.31 is not the official build' }, { code: 'A_CODE_THIS_TOOL_HAS_NEVER_SEEN', path: '/x', detail: 'something new' }]);
   const r = await check(makeClaimDir());
   assert.equal(r.forecast.verdict, 'refused');
   assert.equal(r.forecast.settlesAs, null);
   assert.deepEqual(r.forecast.refusals.map((i) => i.code), ['SOLC_NOT_OFFICIAL', 'A_CODE_THIS_TOOL_HAS_NEVER_SEEN']);
-  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId), '--no-pack'], { runner });
+  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId)], { runner });
   assert.equal(cli.code, 1);
   assert.match(cli.stdout, /SOLC_NOT_OFFICIAL/);
   assert.match(cli.stdout, /\/spec\/env\/image/);
   assert.match(cli.stdout, /svm\/0\.8\.31\/solc-0\.8\.31 is not the official build/);
   assert.match(cli.stdout, /A_CODE_THIS_TOOL_HAS_NEVER_SEEN/);
+  runner.state.answer = () => refused([{ code: 'not a code: quoted text', path: 'not a path: quoted text', detail: 'x' }]);
+  const odd = await check(makeClaimDir());
+  assert.deepEqual(odd.forecast.refusals, [{ code: 'UNKNOWN', path: '', detail: 'x' }]);
   runner.state.answer = (req) => definitive(req.spec);
 });
 
@@ -249,6 +252,7 @@ test('--no-pack means no proof text anywhere: build output, messages, runner tex
     (req) => definitive(req.spec, { gates: { applies: GATES.pass('exit_code', `wrote ${M}`), testPathsOnly: GATES.pass('exit_code'), build: GATES.fail('exit_code', `failed at ${M}`) }, steps: [{ name: 'build', outcome: 'ok', exitCode: 1, stdout: { text: M }, stderr: { text: `Error at ${M}` } }], facts: { compiler: { solc: '0.8.31' } } }),
     (req) => definitive(req.spec, { facts: { poc: pocFacts({ tests: [{ id: `test/${M}.t.sol > E > test_drain()`, runs: ['fail', 'fail', 'fail'], kind: 'assertion', message: `balance ${M}` }] }) } }),
     (req) => abstaining(req.spec, 'oom', `killed near ${M}`, 'poc:1'),
+    () => refused([{ code: 'SCHEMA', path: '/report', detail: `quotes ${M}` }]),
   ];
   for (const answer of answers) {
     runner.state.answer = answer;
@@ -258,6 +262,14 @@ test('--no-pack means no proof text anywhere: build output, messages, runner tex
     }
     const shown = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId)], { runner });
     assert.equal(`${shown.stdout}${shown.stderr}`.includes(M), true, 'without the flag the hunter sees it');
+  }
+  // A claim that fails here before any run: its settlement reason is fixed words, whatever the finding says.
+  const out = makeClaimDir({ finding: { ...FINDING, affectedPaths: [`lib/${M}.sol`] } });
+  for (const extra of [[], ['--json']]) {
+    const cli = await runCli(w, ['check', out, '--listing', String(l.listingId), '--no-pack', ...extra], { runner });
+    assert.equal(cli.code, 1);
+    assert.match(cli.stdout, /INVALID/);
+    assert.equal(`${cli.stdout}${cli.stderr}`.includes(M), false, cli.stdout.slice(0, 400));
   }
   runner.state.answer = (req) => definitive(req.spec);
 });

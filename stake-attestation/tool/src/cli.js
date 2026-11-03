@@ -12,6 +12,7 @@ import { withoutProofText } from './forecast.js';
 import { createPinner } from './ipfs.js';
 import { forecastFooter } from './notices.js';
 import { plainText, scrubber } from './secrets.js';
+import { WATCH_MAX_MS } from './status.js';
 import { COMMANDS, USAGE } from './usage.js';
 
 export { COMMANDS } from './usage.js';
@@ -71,10 +72,10 @@ function walletKey(options, env) {
 }
 
 /** The chain's id without ethers, so a dead or strange RPC ends in an error and not in ethers' retry loop. */
-async function chainIdOf(url) {
+async function chainIdOf(url, timeoutMs) {
   const req = new FetchRequest(url);
   req.body = { jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] };
-  req.timeout = 30_000;
+  req.timeout = Math.max(1, Math.min(30_000, timeoutMs));
   try {
     const res = await req.send();
     const answer = res.bodyJson;
@@ -85,7 +86,7 @@ async function chainIdOf(url) {
   }
 }
 
-async function chainProvider(options, env) {
+async function chainProvider(options, env, timeoutMs) {
   const url = options['--rpc-url'] ?? env.VERDIKTA_RPC_URL ?? DEFAULT_RPC_URL;
   let parsed;
   try {
@@ -94,7 +95,7 @@ async function chainProvider(options, env) {
     throw usageError('VERDIKTA_RPC_URL is not a URL');
   }
   if (!['http:', 'https:'].includes(parsed.protocol)) throw usageError('VERDIKTA_RPC_URL is not an http(s) URL');
-  const chainId = await chainIdOf(url);
+  const chainId = await chainIdOf(url, timeoutMs);
   const network = Network.from(chainId);
   return new JsonRpcProvider(url, network, { staticNetwork: network, cacheTimeout: -1, batchMaxCount: 1 });
 }
@@ -138,7 +139,7 @@ function printForecast(out, { forecast: f, pack }, { noPack }) {
   for (const g of f.gates) out(`  ${g.status === 'pass' ? 'pass' : 'FAIL'}  ${g.name}${g.detail ? `: ${g.detail}` : ''}`);
   if (f.verdict === 'refused') {
     out('The runner refused the listing\'s package, before any of your claim ran. On the arbiters this is a requester error: no commit, and no round settles. Do not commit on it.');
-    for (const i of f.refusals) out(`  ${i.code} at ${i.path}: ${i.detail}`);
+    for (const i of f.refusals) out(`  ${i.code}${i.path ? ` at ${i.path}` : ''}${i.detail ? `: ${i.detail}` : ''}`);
   }
   if (f.verdict === 'abstain') {
     out(`ABSTAIN: ${f.abstain.cause}${f.abstain.step ? ` at ${f.abstain.step}` : ''}${f.abstain.detail ? `: ${f.abstain.detail}` : ''}`);
@@ -231,9 +232,9 @@ async function dispatch(verb, args, io, env, write) {
     if (!gateway) throw usageError(`${verb} needs an IPFS gateway: --gateway or VERDIKTA_IPFS_GATEWAY`);
     if (!env.VERDIKTA_PIN_BACKEND) throw usageError(`${verb} needs a pin target: VERDIKTA_PIN_BACKEND (kubo, filebase or pinata)`);
   };
-  const chainOptions = async () => {
+  const chainOptions = async (timeoutMs = 30_000) => {
     contractOf(options, env);
-    return { provider: await chainProvider(options, env), contract: contractOf(options, env) };
+    return { provider: await chainProvider(options, env, timeoutMs), contract: contractOf(options, env) };
   };
   const walletOptions = async () => {
     const { provider, contract } = await chainOptions();
@@ -296,8 +297,12 @@ async function dispatch(verb, args, io, env, write) {
       const target = claimTarget(positional);
       const maxWait = options['--max-wait-ms'];
       if (maxWait !== undefined && !/^[0-9]+$/.test(maxWait)) throw usageError('--max-wait-ms is a number');
-      const hunter = createHunter({ ...shared, ...(await chainOptions()) });
-      const r = await hunter.status({ ...target, wait: options['--wait'] === true, maxWaitMs: maxWait === undefined ? undefined : Number(maxWait) });
+      // A watch's time starts here: the first look at the chain is part of it.
+      const wait = options['--wait'] === true;
+      const started = Date.now();
+      const limit = Math.min(WATCH_MAX_MS, maxWait === undefined ? WATCH_MAX_MS : Number(maxWait));
+      const hunter = createHunter({ ...shared, ...(await chainOptions(wait ? limit : undefined)) });
+      const r = await hunter.status({ ...target, wait, maxWaitMs: wait ? Math.max(0, limit - (Date.now() - started)) : undefined });
       if (json) write(io.stdout, asJson(r));
       else printStatus(out, r);
       return r.timedOut ? 4 : 0;

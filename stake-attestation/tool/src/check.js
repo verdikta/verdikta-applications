@@ -5,6 +5,7 @@
 // the local archive stands in for the bCID, which only labels the run.
 import http from 'node:http';
 import https from 'node:https';
+import net from 'node:net';
 
 import { readSignedListing } from '@verdikta/stake-attestation-shared/builder-signature';
 import { readZipMember, zipDirectory } from '@verdikta/stake-attestation-shared/zip-read';
@@ -27,9 +28,10 @@ const CODE_CLASS = 'code-standard';
 const PRIOR_ARCHIVE_MAX_BYTES = 32 * 1024 * 1024;
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
+/** This machine, by address: a name that merely starts with 127. can resolve anywhere. */
 function isLoopback(url) {
   const host = url.hostname.replace(/^\[|\]$/g, '');
-  return host === 'localhost' || host === '::1' || /^127\./.test(host);
+  return host === 'localhost' || host === '::1' || (net.isIPv4(host) && host.startsWith('127.'));
 }
 
 /**

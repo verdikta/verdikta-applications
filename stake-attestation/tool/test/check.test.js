@@ -7,7 +7,7 @@ import fs from 'node:fs';
 
 import { buildForecast } from '../src/index.js';
 import { closeRpc, runCli } from './helpers/cli.js';
-import { FINDING, FIX_PATCH, JUSTIFICATION_CID, POC_PATCH, codeReview, makeClaimDir, makeWorld, vectorOf } from './helpers/world.js';
+import { FINDING, FIX_PATCH, JUSTIFICATION_CID, POC_MARKER, POC_PATCH, codeReview, makeClaimDir, makeWorld, vectorOf } from './helpers/world.js';
 import { GATES, IMAGE_SHA, PACK, TOKEN, abstaining, definitive, pocFacts, refused, startRunner } from './helpers/runner.js';
 
 const codeReviewKey = () => codeReview.createDevBuilderKey();
@@ -182,7 +182,7 @@ test('what a repository or a test printed reaches the terminal without control c
   delete gates.integrity;
   delete gates.claimedObservable;
   runner.state.answer = (req) => definitive(req.spec, { gates, facts: { poc: pocFacts({ tests: [{ id: 'test/E.t.sol > E > test_drain()', runs: ['error', 'error', 'error'], kind: 'error', message: 'bad \u001b[31m text' }] }) } });
-  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId), '--no-pack'], { runner });
+  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId)], { runner });
   // eslint-disable-next-line no-control-regex
   assert.doesNotMatch(`${cli.stdout}${cli.stderr}`, /[\u0000-\u0008\u000b-\u001f]/);
   assert.match(cli.stdout, /test_drain errored/);
@@ -207,6 +207,59 @@ test('the run does not go through fetch, whose header timeout (five minutes) is 
   const r = await hunter.check({ claimDir: makeClaimDir(), listingArchive: l.archives.listing });
   assert.equal(r.forecast.verdict, 'pass');
   assert.equal(runner.requests.at(-1).deadline, 780000);
+});
+
+test('a name that merely starts like a loopback address is not this machine', async () => {
+  for (const url of ['http://127.runner.example:8090', 'http://127.0.0.1.nip.example', 'http://127.0.0.1@runner.example', 'http://localhost.runner.example']) {
+    const hunter = w.hunter({ runner: { url, token: TOKEN }, signer: undefined });
+    await assert.rejects(hunter.check({ claimDir: makeClaimDir(), listingId: l.listingId }), (e) => e.code === 'RUNNER_NOT_LOCAL', url);
+  }
+});
+
+test('a definitive answer with no evidence in it is no pass: a broken runner is an error, not a forecast', async () => {
+  const bad = [
+    { outcome: 'definitive' },
+    { outcome: 'definitive', gates: {} },
+    { outcome: 'definitive', gates: { applies: GATES.pass('exit_code') } },
+    { outcome: 'definitive', gates: { ...GATES.allPass(), build: { status: 'maybe' } } },
+    { outcome: 'definitive', gates: GATES.allPass() }, // no facts, no image
+  ];
+  for (const body of bad) {
+    runner.state.answer = () => ({ status: 200, body });
+    await assert.rejects(check(makeClaimDir()), (e) => e.code === 'RUNNER_ANSWER_INVALID', JSON.stringify(body).slice(0, 60));
+  }
+  const noReproducedFacts = { ...GATES.allPass() };
+  delete noReproducedFacts.claimedObservable;
+  runner.state.answer = (req) => definitive(req.spec, { gates: noReproducedFacts });
+  await assert.rejects(check(makeClaimDir()), (e) => e.code === 'RUNNER_ANSWER_INVALID');
+  const nothingFailed = { ...GATES.allPass(), reproduces: GATES.fail('integrity', 'x'), integrity: GATES.pass('integrity') };
+  delete nothingFailed.claimedObservable;
+  runner.state.answer = (req) => definitive(req.spec, { gates: nothingFailed });
+  await assert.rejects(check(makeClaimDir()), (e) => e.code === 'RUNNER_ANSWER_INVALID', 'reproduces failed only through integrity, with no check failed: the arbiters abstain');
+  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId)], { runner: { url: runner.url } });
+  assert.equal(cli.code, 1);
+  assert.match(cli.stderr, /RUNNER_ANSWER_INVALID/);
+  assert.doesNotMatch(cli.stdout, /Every gate would pass/);
+  runner.state.answer = (req) => definitive(req.spec);
+});
+
+test('--no-pack means no proof text anywhere: build output, messages, runner text, names; the same under --json', async () => {
+  const M = POC_MARKER;
+  const answers = [
+    (req) => definitive(req.spec, { gates: { applies: GATES.pass('exit_code', `wrote ${M}`), testPathsOnly: GATES.pass('exit_code'), build: GATES.fail('exit_code', `failed at ${M}`) }, steps: [{ name: 'build', outcome: 'ok', exitCode: 1, stdout: { text: M }, stderr: { text: `Error at ${M}` } }], facts: { compiler: { solc: '0.8.31' } } }),
+    (req) => definitive(req.spec, { facts: { poc: pocFacts({ tests: [{ id: `test/${M}.t.sol > E > test_drain()`, runs: ['fail', 'fail', 'fail'], kind: 'assertion', message: `balance ${M}` }] }) } }),
+    (req) => abstaining(req.spec, 'oom', `killed near ${M}`, 'poc:1'),
+  ];
+  for (const answer of answers) {
+    runner.state.answer = answer;
+    for (const extra of [[], ['--json']]) {
+      const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId), '--no-pack', ...extra], { runner });
+      assert.equal(`${cli.stdout}${cli.stderr}`.includes(M), false, cli.stdout.slice(0, 400));
+    }
+    const shown = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId)], { runner });
+    assert.equal(`${shown.stdout}${shown.stderr}`.includes(M), true, 'without the flag the hunter sees it');
+  }
+  runner.state.answer = (req) => definitive(req.spec);
 });
 
 test('a real runner\'s definitive answer reads as a pass, on arm64 with no report and the run pattern from facts.poc', () => {
@@ -268,7 +321,7 @@ test('a PoC whose pragma the listing\'s release cannot compile: build fails, wit
   assert.equal(r.forecast.build.compiler, '0.7.6');
   assert.deepEqual(r.forecast.build.pragmas, ['^0.8.20']);
   assert.match(r.forecast.build.output, /incompatible versions/);
-  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId), '--no-pack'], { runner });
+  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId)], { runner });
   assert.match(cli.stdout, /0\.7\.6/);
   assert.match(cli.stdout, /\^0\.8\.20/);
   runner.state.answer = (req) => definitive(req.spec);
@@ -289,7 +342,7 @@ test('a static read warns before the run: no test the patch added named, another
   assert.ok(none.forecast.lint.some((x) => x.code === 'NO_ADDED_TEST_NAMED'));
   assert.ok(none.forecast.lint.some((x) => x.code === 'NOTHING_QUOTED'));
   const other = await check(makeClaimDir({ finding: { ...FINDING, poc: { command: 'forge test --match-test test_deposit_credits', observable: 'test_drain and test_deposit_credits both fail with "x"' } } }));
-  assert.ok(other.forecast.lint.some((x) => x.code === 'OTHER_TEST_NAMED' && /test_deposit_credits/.test(x.detail)));
+  assert.ok(other.forecast.lint.some((x) => x.code === 'OTHER_TEST_NAMED' && x.names.includes('test_deposit_credits')));
   const fine = await check(makeClaimDir());
   assert.deepEqual(fine.forecast.lint, []);
 });

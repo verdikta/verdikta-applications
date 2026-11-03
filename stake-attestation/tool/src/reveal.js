@@ -25,7 +25,7 @@ async function outcomeOf(ctx, state, topUpWei = null) {
     requestId: claim.requestId,
     topUpWei,
     tx: state.revealTx?.hash ?? null,
-    next: name === 'RoundFailed' ? failedRoundNext(await ctx.read('retriggerDeadline', [state.claimId])) : 'status --wait polls the evaluation, for up to 15 minutes.',
+    next: name === 'RoundFailed' ? failedRoundNext({ deadline: await ctx.read('retriggerDeadline', [state.claimId]), requestId: claim.requestId, roundStarted: claim.roundStarted }) : 'status --wait polls the evaluation, for up to 15 minutes.',
   };
 }
 

@@ -74,8 +74,9 @@ export function maxPatchBytes(spec) {
   return named === undefined ? codeReview.SPEC_LIMIT_MAXIMA.maxPatchBytes : named;
 }
 
+// Codes and places only: an issue's detail can quote the finding, and commit's output holds nothing of a claim.
 function issueCodes(issues) {
-  return issues.map((i) => `${i.code}${i.detail ? ` (${i.detail})` : ''}`).join('; ');
+  return issues.map((i) => `${i.code} at ${i.path}`).join('; ');
 }
 
 /** finding.json's text as an object, or the reason it is not. */
@@ -130,7 +131,7 @@ export function checkClaimInputs(inputs, spec) {
   if (parsed.problem) throw fail('FINDING_INVALID', parsed.problem);
   const verdict = codeReview.validateFinding(parsed.value, spec);
   if (!verdict.ok) throw fail('FINDING_INVALID', issueCodes(verdict.issues));
-  const warnings = verdict.warnings.map((w) => ({ code: w.code, detail: w.detail }));
+  const warnings = verdict.warnings.map((w) => ({ code: w.code, detail: `at ${w.path}` }));
 
   const badReport = reportProblem(inputs.report);
   if (badReport) throw fail('REPORT_INVALID', badReport);

@@ -3,6 +3,7 @@
 // decision Q35). The rule is mirrored over facts.poc, which carries the same fields as the report: on
 // linux/arm64 there is no report, and the report's own form folds what each run did (node A3b).
 import { codeReview } from './common.js';
+import { fail } from './errors.js';
 import { ABSTAIN_BY_CLAIM, ABSTAIN_BY_HOST } from './notices.js';
 import { addedPragmas, observableHelp } from './observable.js';
 
@@ -13,6 +14,28 @@ const DISPROVING = Object.freeze(['pass', 'error', 'skip', 'missing', 'duplicate
 const CLAIM_CAUSES = Object.freeze(['step_timeout', 'deadline', 'oom', 'pids_limit', 'sandbox_died', 'killed_by_signal']);
 
 const invalid = (reason) => ({ outcome: 'INVALID', bond: 'forfeited', award: 'none', reason });
+const unreadable = (why) => fail('RUNNER_ANSWER_INVALID', why);
+
+/**
+ * A definitive answer holds what its gates say or it is no answer: a gate runs exactly when the ones before it
+ * passed, so a missing one with none failed is a broken runner, as are a status other than the two, a decided
+ * reproduction with no run facts, and an image it does not name. A pass needs all six to say so.
+ */
+function assertReadable(body) {
+  const gates = body.gates;
+  if (!gates || typeof gates !== 'object' || Array.isArray(gates)) throw unreadable('It holds no gates.');
+  for (const name of RUNNER_GATES) {
+    const g = gates[name];
+    if (g !== undefined && g?.status !== 'pass' && g?.status !== 'fail') throw unreadable(`Gate ${name} says neither pass nor fail.`);
+  }
+  for (const name of ['applies', 'testPathsOnly', 'build', 'reproduces']) {
+    if (!gates[name]) throw unreadable(`Gate ${name} is missing, and no gate before it failed.`);
+    if (gates[name].status === 'fail') break;
+  }
+  if (gates.reproduces?.status === 'pass' && (!gates.integrity || !gates.claimedObservable)) throw unreadable('The proof reproduced, and a later gate is missing.');
+  if (gates.reproduces && !body.facts?.poc) throw unreadable('It decided the reproduction and holds no run facts.');
+  if (!body.image?.ref) throw unreadable('It does not name the image it ran.');
+}
 
 /**
  * @param {Record<string, { status: string }>} gates - the runner's
@@ -34,8 +57,10 @@ export function settlesAs(gates, poc) {
     const onItsOwn = !poc || poc.testCount === 0 || DISPROVING.some((key) => counts[key] > 0);
     if (onItsOwn) return invalid('the proof did not reproduce: a test the patch added passed, errored, was skipped, went missing or appeared twice on a run, or the patch added none');
     const checks = codeReview.INTEGRITY_CHECKS.filter((c) => poc.integrity?.[c] === false);
+    if (checks.length === 0) throw unreadable('The proof failed only through integrity, with no failed check.'); // the arbiters abstain on this too
     return { outcome: 'DUPLICATE', bond: 'returned', award: 'none', reason: `a failed integrity check (${checks.join(', ') || 'unnamed'}): bond back, no award, and no model is called. It says nothing of who caused it` };
   }
+  if (gates.reproduces?.status === 'pass' && failed('integrity')) throw unreadable('The proof reproduced with a failed integrity check.');
   if (failed('claimedObservable')) return invalid('the tests finding.json names are not the ones that failed, or the observable is not in the recorded failure');
   return null;
 }
@@ -115,6 +140,7 @@ export function buildForecast({ local, answer, spec, pocPatch, lint, priorFindin
     };
   }
 
+  assertReadable(body);
   const poc = body.facts?.poc;
   base.compiler = body.facts?.compiler?.solc ?? null;
   base.fix = body.facts?.fix ?? null;
@@ -127,7 +153,7 @@ export function buildForecast({ local, answer, spec, pocPatch, lint, priorFindin
   if (poc) base.observable = observableHelp(poc);
   const specDigest = digestOf(spec?.env?.image);
   const ranDigest = digestOf(body.image?.ref);
-  if (specDigest && body.image?.ref && ranDigest !== specDigest) {
+  if (ranDigest !== specDigest) {
     gates.push(gate('image', 'fail', `The runner reports ${body.image.ref}; the listing names ${spec.env.image}.`, 'runner'));
   }
   const anyFailed = gates.some((g) => g.status === 'fail');
@@ -135,3 +161,22 @@ export function buildForecast({ local, answer, spec, pocPatch, lint, priorFindin
 }
 
 export { gate };
+
+/**
+ * The forecast with nothing that can quote the proof: no runner text, no recorded message, no test name, no build
+ * output. Status, counts and codes stay. What --no-pack prints.
+ */
+export function withoutProofText(f) {
+  return {
+    ...f,
+    gates: f.gates.map((g) => (g.name === 'listingSigned' ? g : { ...g, detail: null })),
+    tests: f.tests.map((t, i) => ({ id: `test ${i + 1}`, runs: t.runs, kind: t.kind, message: null })),
+    abstain: f.abstain ? { ...f.abstain, detail: null } : null,
+    build: f.build ? { compiler: f.build.compiler, pragmas: [], output: '' } : null,
+    observable: null,
+    lint: f.lint.map((l) => ({ code: l.code, detail: l.detail })),
+    settlesAs: f.settlesAs,
+    fix: null,
+    notes: f.notes.filter((n) => !/^[A-Z_]+: /.test(n)),
+  };
+}

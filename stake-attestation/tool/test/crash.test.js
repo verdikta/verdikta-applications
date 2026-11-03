@@ -167,6 +167,32 @@ test('the same commit went out another way (a sped-up copy from the wallet): ado
   assert.equal(r.claimId, count + 1n);
 });
 
+test('a saved commit that may not have gone out is not sent if the files it needs are gone, wrong or exposed', async () => {
+  for (const attack of ['deleted', 'corrupted', 'chmod', 'symlink', 'archive']) {
+    const l = await w.listing();
+    const dir = makeClaimDir();
+    const killed = await child('commit', dir, l.listingId, 'commit:signed');
+    assert.equal(killed.signal, 'SIGKILL', attack);
+    const count = await w.claimCount();
+    const keys = statePath(dir, 'keys.json');
+    if (attack === 'deleted') fs.rmSync(keys);
+    if (attack === 'corrupted') fs.writeFileSync(keys, '{"contentKey":"0x00"}');
+    if (attack === 'chmod') fs.chmodSync(keys, 0o644);
+    if (attack === 'symlink') {
+      fs.renameSync(keys, `${keys}.moved`);
+      fs.symlinkSync(`${keys}.moved`, keys);
+    }
+    if (attack === 'archive') {
+      const a = fs.readFileSync(statePath(dir, 'archive.zip'));
+      a[10] ^= 1;
+      fs.writeFileSync(statePath(dir, 'archive.zip'), a);
+    }
+    const err = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true }).catch((e) => e);
+    assert.ok(['FILE_MISSING', 'FILE_CHANGED', 'FILE_NOT_PRIVATE'].includes(err.code), `${attack}: ${err.code}`);
+    assert.equal(await w.claimCount(), count, `${attack}: it paid`);
+  }
+});
+
 test('an adopted claim must be as deep as one of ours before the ciphertext is pinned', async () => {
   const l = await w.listing();
   const dir = makeClaimDir();

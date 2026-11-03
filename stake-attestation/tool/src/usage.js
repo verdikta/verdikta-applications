@@ -17,6 +17,7 @@ Commands:
 ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`).join('\n')}
 
   check <claim-dir> (--listing <id> | --listing-archive <file>) [--no-pack] [--remote-runner]
+                     --no-pack prints status and codes only: no pack, and nothing else that can quote the proof
   commit <claim-dir> --listing <id> [--yes] [--restart] [--accept-unread-pin]
   reveal <claim-dir> [--retrigger]
   status <claim-dir|claim-id> [--wait] [--max-wait-ms <n>]

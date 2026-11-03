@@ -119,6 +119,51 @@ test('a read that hangs does not hold the watch past its time', async () => {
   assert.ok(s.timedOut === true || s.code === 'RPC_UNAVAILABLE');
 });
 
+test('a watch at its limit stops asking: an abandoned read starts nothing more, and the first read of all is inside the limit too', async () => {
+  const { claimId } = await revealed();
+  let release = () => {};
+  let hold = false;
+  const asked = [];
+  const slow = new Proxy(w.provider, {
+    get(target, prop) {
+      if (prop === 'getBlock') {
+        return async (...a) => {
+          asked.push('getBlock');
+          if (hold) await new Promise((r) => { release = r; });
+          return target.getBlock(...a);
+        };
+      }
+      if (prop === 'call') {
+        return (...a) => {
+          asked.push('call');
+          return target.call(...a);
+        };
+      }
+      const v = target[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+  const hunter = w.hunter({ provider: slow, signer: undefined, pollMs: 5, readTimeoutMs: 40 });
+  hold = true;
+  const err = await hunter.status({ claimId, wait: true, maxWaitMs: 120 }).catch((e) => e);
+  assert.equal(err.code, 'RPC_UNAVAILABLE');
+  const before_ = asked.length;
+  hold = false;
+  release(); // the node answers at last, after the watch gave up
+  await new Promise((r) => { setTimeout(r, 100); });
+  assert.equal(asked.length, before_, 'a read started after the watch ended');
+  const stuck = new Proxy(w.provider, {
+    get(target, prop) {
+      if (prop === 'send') return () => new Promise(() => {});
+      const v = target[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+  const t0 = Date.now();
+  await assert.rejects(w.hunter({ provider: stuck, signer: undefined, readTimeoutMs: 60_000 }).status({ claimId, wait: true, maxWaitMs: 100 }), (e) => e.code === 'RPC_UNAVAILABLE');
+  assert.ok(Date.now() - t0 < 2000, 'the chain check is inside the limit');
+});
+
 test('a --wait on a claim with nothing pending returns at once', async () => {
   const l = await w.listing();
   const dir = makeClaimDir();
@@ -248,6 +293,29 @@ test('a failed round says it is one, what it cost and what to do: nothing on-cha
   assert.match(s.next, /says why/);
   assert.match(s.next, /check/);
   assert.ok(s.times.retriggerDeadline > 0n);
+});
+
+test('a refused request is not a paid round: nothing spent, the bond comes back if every attempt is refused (E6)', async () => {
+  const l = await w.listing();
+  const dir = makeClaimDir();
+  const { claimId } = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
+  await (await w.aggregator.setPaused(true)).wait();
+  const r = await w.hunter().reveal({ claimDir: dir });
+  await (await w.aggregator.setPaused(false)).wait();
+  assert.equal(r.state, 'RoundFailed');
+  for (const s of [r, await w.hunter({ signer: undefined }).status({ claimId })]) {
+    assert.match(s.next, /refused/);
+    assert.match(s.next, /nothing was spent/);
+    assert.match(s.next, /bond and the prepay come back/);
+    assert.doesNotMatch(s.next, /fresh prepay/);
+    assert.doesNotMatch(s.next, /base fees/);
+  }
+  const { failedRoundNext } = await import('../src/status.js');
+  const mixed = failedRoundNext({ deadline: 9n, requestId: `0x${'00'.repeat(32)}`, roundStarted: true });
+  assert.match(mixed, /prepay is still held/);
+  assert.match(mixed, /bond goes to the maker/);
+  const ran = failedRoundNext({ deadline: 9n, requestId: `0x${'11'.repeat(32)}`, roundStarted: true });
+  assert.match(ran, /fresh prepay/);
 });
 
 test('the CLI: status --wait exits 4 while pending, 0 when done; claim settles; --json is machine readable', async () => {

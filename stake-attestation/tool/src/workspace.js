@@ -71,7 +71,9 @@ export function openWorkspace(claimDir) {
     try {
       fd = fs.openSync(tmp, FLAGS.O_WRONLY | FLAGS.O_CREAT | FLAGS.O_EXCL | FLAGS.O_NOFOLLOW, 0o600);
       fs.fchmodSync(fd, 0o600);
-      fs.writeSync(fd, bytes);
+      // A write may take part of what it is given. All of it is on disk, measured, or nothing is saved.
+      for (let at = 0; at < bytes.length;) at += fs.writeSync(fd, bytes, at, bytes.length - at);
+      if (fs.fstatSync(fd).size !== bytes.length) throw new Error('short');
       fs.fsyncSync(fd);
     } catch {
       if (fd !== undefined) fs.closeSync(fd);
@@ -148,44 +150,47 @@ export function openWorkspace(claimDir) {
     }
   }
 
+  // A holder's own file, named by its pid: `lock.<pid>.<random>`. Created before the others are read, so of two runs
+  // that overlap at least one sees the other, and refuses (both may: run again). Nobody removes a file whose process
+  // is alive, so a live holder cannot lose its lock, whatever else is racing.
+  function lockFiles() {
+    return fs.readdirSync(dir).filter((name) => /^lock\.[0-9]+\.[0-9a-f]+$/.test(name));
+  }
+
   function takeLock() {
-    const lock = pathOf('lock');
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        const fd = fs.openSync(lock, FLAGS.O_WRONLY | FLAGS.O_CREAT | FLAGS.O_EXCL | FLAGS.O_NOFOLLOW, 0o600);
-        fs.writeSync(fd, String(process.pid));
-        fs.closeSync(fd);
-        return;
-      } catch (err) {
-        if (err.code !== 'EEXIST') throw fail('FILE_ERROR', 'the lock could not be taken');
-      }
-      let holder = Number.NaN;
-      try {
-        holder = Number.parseInt(fs.readFileSync(lock, 'utf8'), 10);
-      } catch { /* it just went */ }
-      if (Number.isInteger(holder) && holder > 0) {
-        try {
-          process.kill(holder, 0);
-          throw fail('FOLDER_BUSY', `It is process ${holder}. If no such run exists, remove ${pathOf('lock')}.`);
-        } catch (err) {
-          if (err.code === 'FOLDER_BUSY') throw err;
-          if (err.code !== 'ESRCH') throw fail('FOLDER_BUSY', `It is process ${holder}.`);
-        }
-      }
-      fs.rmSync(lock, { force: true }); // its holder died: a crash the tool resumes from
+    const mine = `lock.${process.pid}.${crypto.randomBytes(6).toString('hex')}`;
+    try {
+      fs.closeSync(fs.openSync(pathOf(mine), FLAGS.O_WRONLY | FLAGS.O_CREAT | FLAGS.O_EXCL | FLAGS.O_NOFOLLOW, 0o600));
+    } catch {
+      throw fail('FILE_ERROR', 'the lock could not be taken');
     }
-    throw fail('FOLDER_BUSY');
+    for (const other of lockFiles()) {
+      if (other === mine) continue;
+      const holder = Number.parseInt(other.split('.')[1], 10);
+      let alive = true;
+      try {
+        process.kill(holder, 0);
+      } catch (err) {
+        alive = err.code !== 'ESRCH';
+      }
+      if (alive) {
+        fs.rmSync(pathOf(mine), { force: true });
+        throw fail('FOLDER_BUSY', `It is process ${holder}. If no such run exists, remove ${pathOf(other)}.`);
+      }
+      fs.rmSync(pathOf(other), { force: true }); // its holder died: a crash the tool resumes from
+    }
+    return mine;
   }
 
   /** Runs `fn` holding the folder. A dead process's lock does not block a resume. */
   async function withLock(fn) {
     ensureDir();
-    takeLock();
+    const mine = takeLock();
     try {
       removeTemps();
       return await fn();
     } finally {
-      fs.rmSync(pathOf('lock'), { force: true });
+      fs.rmSync(pathOf(mine), { force: true });
     }
   }
 

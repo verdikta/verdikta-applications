@@ -15,7 +15,10 @@ import { FINDING, buildArchives, codeReview, makeClaimDir, makeWorld, sha256, sp
 
 let w;
 before(async () => { w = await makeWorld(); });
-after(async () => { await w.close(); });
+after(async () => {
+  await closeRpc(w);
+  await w.close();
+});
 
 const notAClaim = async (dir) => assert.equal(fs.existsSync(path.join(dir, '.verdikta-claim', 'keys.json')), false, 'no keys were drawn');
 
@@ -279,7 +282,6 @@ test('the commit must be at the required depth before the ciphertext is pinned',
 test('--json: stdout is the result alone, whatever notices were said', async () => {
   const l = await w.listing();
   const r = await runCli(w, ['commit', makeClaimDir(), '--listing', String(l.listingId), '--yes', '--json']);
-  await closeRpc(w);
   assert.equal(r.code, 0, r.stderr);
   assert.equal(JSON.parse(r.stdout).stage, 'disclosed');
   assert.ok(r.stderr.includes(LISTING_WARNING.proofFirst));
@@ -415,16 +417,81 @@ test('a second run after success changes nothing', async () => {
   assert.equal(w.ipfs.uploads.length, uploads);
 });
 
-test('two runs on one folder at once: the second is refused by the lock, and a dead holder\'s lock does not block a resume', async () => {
+test('a live holder\'s lock refuses a second run, and a dead holder\'s lock does not block a resume', async () => {
   const l = await w.listing();
   const dir = makeClaimDir();
-  fs.mkdirSync(path.join(dir, '.verdikta-claim'), { mode: 0o700 });
-  fs.writeFileSync(path.join(dir, '.verdikta-claim', 'lock'), String(process.ppid), { mode: 0o600 });
+  const folder = path.join(dir, '.verdikta-claim');
+  fs.mkdirSync(folder, { mode: 0o700 });
+  const live = path.join(folder, `lock.${process.ppid}.aaaa`);
+  fs.writeFileSync(live, '', { mode: 0o600 });
   await assert.rejects(w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true }), (e) => e.code === 'FOLDER_BUSY');
-  fs.writeFileSync(path.join(dir, '.verdikta-claim', 'lock'), '999999', { mode: 0o600 });
+  assert.ok(fs.existsSync(live), 'nobody removes a live holder\'s lock');
+  fs.rmSync(live);
+  fs.writeFileSync(path.join(folder, 'lock.999999.aaaa'), '', { mode: 0o600 });
   const r = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
   assert.equal(r.stage, 'disclosed');
-  assert.equal(fs.existsSync(path.join(dir, '.verdikta-claim', 'lock')), false);
+  assert.deepEqual(fs.readdirSync(folder).filter((n) => n.startsWith('lock')), []);
+});
+
+test('many runs started at once on one folder: never two claims, and a re-run finishes it', async () => {
+  const l = await w.listing();
+  const dir = makeClaimDir();
+  const count = await w.claimCount();
+  const runs = await Promise.all(Array.from({ length: 6 }, () => runCli(w, ['commit', dir, '--listing', String(l.listingId), '--yes'])));
+  const codes = runs.map((r) => r.code);
+  assert.ok(codes.every((c) => c === 0 || c === 1), codes.join());
+  for (const r of runs) if (r.code === 1) assert.match(r.stderr, /FOLDER_BUSY/);
+  assert.ok(await w.claimCount() <= count + 1n, 'the lock let two through');
+  const after = await runCli(w, ['commit', dir, '--listing', String(l.listingId), '--yes']);
+  assert.equal(after.code, 0, after.stderr);
+  assert.equal(await w.claimCount(), count + 1n);
+});
+
+test('a write that takes only part of what it is given still saves all of it', async () => {
+  const { openWorkspace } = await import('../src/workspace.js');
+  const dir = makeClaimDir();
+  const ws = openWorkspace(dir);
+  const real = fs.writeSync;
+  fs.writeSync = (fd, bytes, at = 0, length = bytes.length) => real(fd, bytes, at, Math.min(3, length));
+  try {
+    await ws.withLock(async () => ws.write('state.json', Buffer.from('{"version":1,"long":"enough to take several writes"}')));
+  } finally {
+    fs.writeSync = real;
+  }
+  assert.equal(ws.loadState().long, 'enough to take several writes');
+});
+
+test('a write the disk cuts short saves nothing: the old file stays, and the error says so', async () => {
+  const { openWorkspace } = await import('../src/workspace.js');
+  const dir = makeClaimDir();
+  const ws = openWorkspace(dir);
+  await ws.withLock(async () => ws.write('state.json', Buffer.from('{"version":1,"first":true}')));
+  const real = fs.writeSync;
+  fs.writeSync = () => { throw Object.assign(new Error('no space'), { code: 'ENOSPC' }); };
+  try {
+    await assert.rejects(ws.withLock(async () => ws.write('state.json', Buffer.from('{"version":1,"second":true}'))), (e) => e.code === 'FILE_ERROR');
+  } finally {
+    fs.writeSync = real;
+  }
+  assert.equal(ws.loadState().first, true);
+});
+
+test('a refusal names codes and places, not what the finding says', async () => {
+  const l = await w.listing();
+  const err = await w.hunter().commit({ claimDir: makeClaimDir({ finding: { ...FINDING, affectedPaths: ['lib/SECRET-PATH-MARKER.sol'] } }), listingId: l.listingId, acknowledge: true }).catch((e) => e);
+  assert.equal(err.code, 'FINDING_INVALID');
+  assert.match(err.message, /PATH_OUT_OF_SCOPE/);
+  assert.doesNotMatch(err.message, /SECRET-PATH-MARKER/);
+});
+
+test('commit\'s notices name nothing of the patch', async () => {
+  const l = await w.listing();
+  const notices = [];
+  const dir = makeClaimDir({ finding: { ...FINDING, poc: { command: 'forge test', observable: 'the vault is drained by anyone at all' } } });
+  await w.hunter({ onNotice: (t) => notices.push(t) }).commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
+  const text = notices.join('\n');
+  assert.match(text, /NO_ADDED_TEST_NAMED/);
+  assert.doesNotMatch(text, /test_drain/);
 });
 
 test('specFor is what common accepts', () => {

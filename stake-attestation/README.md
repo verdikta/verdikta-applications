@@ -738,7 +738,8 @@ verdikta-attest claim  ./claim                     # finalize, settle, withdraw:
 The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), never from an argument.
 
 - **`check`** runs the arbiters' code-runner minus the jury, on the request an arbiter would send, and prints the gate forecast
-  and the context pack. The pack quotes the proof in the clear, on this terminal only (`--no-pack` leaves it out). The runner must
+  and the context pack. The pack, build output and recorded messages quote the proof in the clear, on this terminal only
+  (`--no-pack` prints status and codes alone). The runner must
   be on this machine unless `--remote-runner` is passed, since it reads the plaintext. A failed gate says what it would settle as
   (`external-adapter/src/codeReview/settlement.js`). An **abstain** (a proof that loops or runs out of memory) is shown as one, with
   what it costs: every arbiter abstains the same way, each failed round costs the base fees, the bond goes to the maker if no

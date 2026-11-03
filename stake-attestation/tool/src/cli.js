@@ -8,6 +8,7 @@ import { FetchRequest, JsonRpcProvider, Network, Wallet, formatEther, isAddress 
 import { DEFAULT_RPC_URL } from './context.js';
 import { fail, ToolError } from './errors.js';
 import { createHunter } from './hunter.js';
+import { withoutProofText } from './forecast.js';
 import { createPinner } from './ipfs.js';
 import { forecastFooter } from './notices.js';
 import { plainText, scrubber } from './secrets.js';
@@ -131,6 +132,7 @@ const eth = (wei) => `${formatEther(wei)} ETH`;
 const when = (s) => (s === 0n || s === undefined ? '-' : `${s} (${new Date(Number(s) * 1000).toISOString()})`);
 
 function printForecast(out, { forecast: f, pack }, { noPack }) {
+  if (noPack) out('--no-pack: nothing that can quote your proof is printed, so this says status and codes only.');
   out(`Gate forecast: ${f.verdict.toUpperCase()}`);
   if (f.runner) out(`Runner ${f.runner.version} (${f.runner.runtime}, ${f.runner.platform})${f.image?.ref ? `, image ${f.image.ref}, ${f.image.cache}` : ''}`);
   for (const g of f.gates) out(`  ${g.status === 'pass' ? 'pass' : 'FAIL'}  ${g.name}${g.detail ? `: ${g.detail}` : ''}`);
@@ -145,13 +147,13 @@ function printForecast(out, { forecast: f, pack }, { noPack }) {
   if (f.reportUnavailable) out(`No report on this platform, only gates and the pack: ${f.reportUnavailable}. The class's platform is linux/amd64.`);
   if (f.compiler !== null && f.compiler !== undefined) out(`Compiler the run pinned: ${f.compiler === '' ? 'none named: the sources\' pragmas pick among the installed releases' : f.compiler}`);
   if (f.build) {
-    out(`The build failed. The listing's compiler: ${f.build.compiler || 'chosen by pragma'}. Your patch's pragmas: ${f.build.pragmas.join(', ') || 'none'}. A proof whose pragma that compiler cannot satisfy fails here.`);
+    out(`The build failed. The listing's compiler: ${f.build.compiler || 'chosen by pragma'}.${noPack ? '' : ` Your patch's pragmas: ${f.build.pragmas.join(', ') || 'none'}.`} A proof whose pragma that compiler cannot satisfy fails here.`);
     if (f.build.output) out(f.build.output);
   }
   for (const t of f.tests) out(`  ${t.id}: ${t.runs.join(', ')}${t.message ? `: ${t.message}` : ''}`);
   if (f.settlesAs) out(`Settles as ${f.settlesAs.outcome}, and the bond is ${f.settlesAs.bond}: ${f.settlesAs.reason}.`);
   if (f.verdict === 'pass') out('Every gate would pass, so the jury decides. The jury is not the gates.');
-  for (const l of f.lint) out(`Observable, ${l.code}: ${l.detail}`);
+  for (const l of f.lint) out(`Observable, ${l.code}: ${l.detail}${l.names?.length ? ` (${l.names.join(', ')})` : ''}`);
   if (f.observable && f.gates.some((g) => g.name === 'claimedObservable' && g.status === 'fail')) {
     for (const s of f.observable.suggestions) out(`A line that follows the rule: ${s}`);
   }
@@ -261,8 +263,10 @@ async function dispatch(verb, args, io, env, write) {
         }
       }
       const r = await hunter.check({ claimDir, listingId, listingArchive });
-      if (json) write(io.stdout, asJson({ forecast: r.forecast, pack: options['--no-pack'] ? null : r.pack }));
-      else printForecast(out, r, { noPack: options['--no-pack'] === true });
+      const noPack = options['--no-pack'] === true;
+      const shown = noPack ? { forecast: withoutProofText(r.forecast), pack: null } : r;
+      if (json) write(io.stdout, asJson({ forecast: shown.forecast, pack: shown.pack }));
+      else printForecast(out, shown, { noPack });
       return r.forecast.verdict === 'pass' ? 0 : 1;
     }
     case 'commit': {

@@ -202,12 +202,18 @@ export function makeContext(options = {}) {
     }
   };
 
-  /** A resume's view of saved bytes: mined, gone, or sent again and waited on. */
-  ctx.settleSaved = async (rec, options_ = {}) => {
+  /**
+   * A resume's view of saved bytes: mined, gone, or sent again and waited on. `beforeResend` runs only if they are
+   * about to go out again, and can refuse: sending them may be what spends the money.
+   */
+  ctx.settleSaved = async (rec, { beforeResend = null, ...options_ } = {}) => {
     const receipt = await ctx.rpc(() => ctx.provider.getTransactionReceipt(rec.hash));
     if (!receipt) {
       const next = await ctx.rpc(() => ctx.provider.getTransactionCount(rec.from, 'latest'));
-      if (next <= rec.nonce) await ctx.broadcast(rec);
+      if (next <= rec.nonce) {
+        if (beforeResend) beforeResend();
+        await ctx.broadcast(rec);
+      }
     }
     return ctx.waitMined(rec, options_);
   };

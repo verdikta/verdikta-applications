@@ -185,7 +185,13 @@ async function adoptClaim(ctx, ws, state, claimId) {
 
 /** A saved commit's fate: the claim it made, or that it made none and its nonce is gone. */
 async function settleCommit(ctx, ws, state) {
-  const outcome = await ctx.settleSaved(state.commitTx, { confirmations: ctx.confirmations });
+  // It may not have gone out yet: it pays the bond, and a claim without its keys loses it. So the same proof as
+  // before the first send, on what is on disk now.
+  const beforeResend = () => {
+    readProvenFiles(ctx, ws, state);
+    for (const name of ['archive.zip', 'keys.json', 'ciphertext.age']) ws.measure(name);
+  };
+  const outcome = await ctx.settleSaved(state.commitTx, { confirmations: ctx.confirmations, beforeResend });
   return finishCommitWait(ctx, ws, state, outcome);
 }
 

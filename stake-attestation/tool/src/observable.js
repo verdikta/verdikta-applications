@@ -61,7 +61,9 @@ export function addedPragmas(patch) {
 /**
  * What a static read can say of a finding against its patch. Advisory: the runner decides.
  * @param {{ finding: object, pocPatch: Buffer|string, baseline?: object }} o
- * @returns {{ code: 'NO_ADDED_TEST_NAMED'|'OTHER_TEST_NAMED'|'NOTHING_QUOTED', detail: string }[]}
+ * @returns {{ code: 'NO_ADDED_TEST_NAMED'|'OTHER_TEST_NAMED'|'NOTHING_QUOTED', detail: string, names?: string[] }[]} `names`,
+ *   apart from the text: they come from the patch or the finding, and only check prints them
+
  */
 export function lintObservable({ finding, pocPatch, baseline }) {
   const out = [];
@@ -72,10 +74,9 @@ export function lintObservable({ finding, pocPatch, baseline }) {
   const tokens = new Set([...`${command}\n${observable}`.matchAll(IDENTIFIER)].map((m) => m[0]));
   const others = [...tokens].filter((t) => known.has(t) && !added.has(t)).sort();
   if (![...tokens].some((t) => added.has(t))) {
-    const list = [...added].join(', ') || 'none that this read could find';
-    out.push({ code: 'NO_ADDED_TEST_NAMED', detail: `Name a test the patch adds in poc.command or poc.observable (it adds: ${list}); otherwise claimedObservable fails, and that settles INVALID.` });
+    out.push({ code: 'NO_ADDED_TEST_NAMED', detail: 'Name a test the patch adds in poc.command or poc.observable; otherwise claimedObservable fails, and that settles INVALID.', names: [...added] });
   }
-  for (const name of others) out.push({ code: 'OTHER_TEST_NAMED', detail: `${name} is named, and it is not a test the patch added; claimedObservable fails on any such name.` });
+  if (others.length) out.push({ code: 'OTHER_TEST_NAMED', detail: 'A test is named that the patch did not add; claimedObservable fails on any such name.', names: others });
   const quoted = [...observable.matchAll(QUOTED)].map((m) => squash(m[1])).filter((f) => f !== '');
   if (quoted.length === 0) out.push({ code: 'NOTHING_QUOTED', detail: 'Quote what forge prints, in double quotes: each quoted fragment must appear in the recorded failure on every run. Without a quote, the whole recorded message must appear in the observable as written.' });
   return out;

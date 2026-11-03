@@ -88,6 +88,27 @@ export async function waitUntil(what, ready, { timeoutMs, everyMs = 250, proc = 
   }
 }
 
+/**
+ * What a killed service left running. The server runs each builder step in a process group of its own,
+ * so stopping the server does not reach it. Everything of a run names the run's folder or its instance.
+ * @param {string[]} marks
+ * @returns {number[]} the pids signalled
+ */
+export function killProcessesNaming(marks) {
+  const ps = spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const pids = (ps.stdout ?? '').split('\n')
+    .map((line) => line.trim())
+    .filter((line) => marks.some((m) => line.includes(m)))
+    .map((line) => Number(line.split(/\s+/)[0]))
+    .filter((pid) => Number.isInteger(pid) && pid !== process.pid);
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch { /* gone */ }
+  }
+  return pids;
+}
+
 /** A command that must succeed; its output is the error when it does not. */
 export function must(cmd, args, { cwd, env, timeout = 900000 } = {}) {
   const r = spawnSync(cmd, args, { cwd, env, encoding: 'utf8', timeout, maxBuffer: 64 * 1024 * 1024 });

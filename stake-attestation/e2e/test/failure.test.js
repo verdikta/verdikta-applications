@@ -45,6 +45,12 @@ function alive(pid) {
   }
 }
 
+/** Lines of `ps` that name the run: the run's folder or its instance, whatever process group they are in. */
+function processesNaming(...marks) {
+  const ps = spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  return ps.stdout.split('\n').filter((l) => marks.some((m) => m && l.includes(m)));
+}
+
 function assertNothingLeft(report, out) {
   const instance = report?.instance ?? /instance (sae2e[0-9a-f]+)/.exec(out)?.[1];
   assert.ok(instance, `the run named its instance: ${out.slice(-500)}`);
@@ -53,7 +59,12 @@ function assertNothingLeft(report, out) {
   assert.deepEqual(containers, [], 'no container of the run');
   const images = docker('image', 'ls', '--format', '{{.Repository}}').stdout.split('\n').filter((l) => l.includes(`/${instance}/`));
   assert.deepEqual(images, [], 'no image of the run');
-  for (const { name, pid } of report?.pids ?? []) assert.equal(alive(pid), false, `${name} (${pid}) is still running`);
+  for (const { name, pid } of report?.pids ?? []) {
+    assert.equal(alive(pid), false, `${name} (${pid}) is still running`);
+    assert.equal(alive(-pid), false, `${name}'s process group (${pid}) still has members`);
+  }
+  assert.deepEqual(processesNaming(instance, report?.workDir), [], 'no process names the run');
+  if (report?.workDir) assert.equal(fs.existsSync(report.workDir), false, 'its folder is gone');
 }
 
 test('a service that will not start is a failure, not a skip: the code runner refuses its config', async () => {
@@ -88,6 +99,19 @@ test('stopped by a signal, it stops everything it started, and the exit code say
   assert.equal(r.code, 143, r.out.slice(-1500));
   assert.equal(r.report.signal, 'SIGTERM');
   assert.ok(r.report.pids.length >= 4, JSON.stringify(r.report.pids));
+  assertNothingLeft(r.report, r.out);
+});
+
+test('stopped in the middle of a build, it stops the builder too, though the builder has a process group of its own', async () => {
+  let timer = null;
+  const r = await runRound('signal-in-build', {}, {
+    onLine: (line, child) => {
+      if (!timer && line.includes('[round] list')) timer = setTimeout(() => child.kill('SIGTERM'), 3000);
+    },
+  });
+  assert.ok(timer, r.out.slice(-1500));
+  assert.equal(r.code, 143, r.out.slice(-1500));
+  assert.equal(r.report.signal, 'SIGTERM');
   assertNothingLeft(r.report, r.out);
 });
 

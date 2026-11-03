@@ -82,6 +82,13 @@ export async function removeRunImages(h, docker, instance) {
   return [...refs];
 }
 
+/** Every container of this run: the runner's by its instance label, a builder step's by its image, A6a's registry by name. */
+export async function removeRunContainers(h, docker, instance) {
+  const names = (await leftovers(h, docker, instance)).containers;
+  if (names.length) await h.runText(docker, ['rm', '--force', '--volumes', ...names], { timeoutMs: 120000 });
+  return names;
+}
+
 /** What of this run the daemon still holds: every name a check after the round looks for. */
 export async function leftovers(h, docker, instance) {
   const containers = await h.runText(docker, ['ps', '--all', '--format', '{{.Names}}\t{{.Image}}\t{{.Labels}}'], { timeoutMs: 30000 });
@@ -167,7 +174,7 @@ export async function startServer({ workDir, logDir, chain, ipfs, registry, runn
 }
 
 /** The production build of the client, for this run's chain, served by vite preview with /api proxied to the server. */
-export async function startClient({ logDir, chain, ipfs, serverUrl }) {
+export async function startClient({ workDir, logDir, chain, ipfs, serverUrl }) {
   const client = path.join(APP_DIR, 'client');
   const vite = path.join(client, 'node_modules', 'vite', 'bin', 'vite.js');
   const env = {
@@ -179,7 +186,7 @@ export async function startClient({ logDir, chain, ipfs, serverUrl }) {
     VITE_IPFS_GATEWAY: ipfs.url,
     SA_API_URL: serverUrl,
   };
-  const dist = path.join(logDir, '..', 'client-dist');
+  const dist = path.join(workDir, 'client-dist');
   must(process.execPath, [vite, 'build', '--logLevel', 'warn', '--outDir', dist, '--emptyOutDir'], { cwd: client, env });
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;

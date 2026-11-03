@@ -20,9 +20,9 @@ import {
 import {
   AWARDS_WEI, BOND_WEI, ESCROW_WEI, JURY_AVERAGE, JUROR_SCORES, JUSTIFIER, POC_MARKER, REPORT_MARKER, WINDOWS, claimFolder, draftSpec, makeRepository,
 } from './fixtures.js';
-import { waitUntil } from './proc.js';
+import { killProcessesNaming, waitUntil } from './proc.js';
 import {
-  arbiterHarness, cleanDockerConfig, leftovers, newRunnerToken, removeRunImages, startClient, startIpfs, startRegistryPair, startServer,
+  arbiterHarness, cleanDockerConfig, leftovers, newRunnerToken, removeRunContainers, removeRunImages, startClient, startIpfs, startRegistryPair, startServer,
 } from './services.js';
 import { APP_DIR, arbiterCheckout, browserReady, compileContracts, E2E_DIR, installSiblings } from './setup.js';
 import { createTool } from './tool.js';
@@ -53,8 +53,8 @@ class CheckFailed extends Error {}
 export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), breakName = process.env.SA_E2E_BREAK || null, requireClassPlatform = process.env.SA_E2E_REQUIRE_CLASS_PLATFORM === '1', logDir: logDirOption = process.env.SA_E2E_LOG_DIR || path.join(E2E_DIR, '.round', 'logs'), onFinished = () => {} } = {}) {
   const started = Date.now();
   const instance = `sae2e${crypto.randomBytes(4).toString('hex')}`;
-  const report = { ok: false, instance, breakName, stages: [], checks: [], pids: [], platform: null, classPlatform: null, arbiter: null, failure: null, leftovers: null, seconds: null };
   const workDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'sa-e2e-'));
+  const report = { ok: false, instance, workDir, breakName, stages: [], checks: [], pids: [], platform: null, classPlatform: null, arbiter: null, failure: null, signal: null, leftovers: null, seconds: null };
   fs.rmSync(logDirOption, { recursive: true, force: true });
   fs.mkdirSync(logDirOption, { recursive: true });
   const logDir = logDirOption;
@@ -143,6 +143,9 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const dockerInfo = await h.runText(docker, ['info', '--format', '{{.ServerVersion}}'], { timeoutMs: 30000 });
     one('docker.reachable', dockerInfo.exitCode === 0, dockerInfo.exitCode === 0 ? dockerInfo.stdout.trim() : dockerInfo.stderr);
     closers.push(async () => {
+      // Last, with every service stopped: what they could not stop for themselves.
+      killProcessesNaming([workDir, instance]);
+      await removeRunContainers(h, docker, instance);
       await removeRunImages(h, docker, instance);
       report.leftovers = await leftovers(h, docker, instance);
     });
@@ -196,7 +199,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const dockerConfig = cleanDockerConfig(workDir);
     server = track(await startServer({ workDir, logDir, chain, ipfs, registry, runnerProxyUrl: runnerProxy.url, runnerToken, platform: h.platform, repository, dockerConfig, instance }));
     closers.push(() => server.close());
-    const client = track(await startClient({ logDir, chain, ipfs, serverUrl: server.url }));
+    const client = track(await startClient({ workDir, logDir, chain, ipfs, serverUrl: server.url }));
     closers.push(() => client.close());
     one('client.up', (await fetch(`${client.url}/`)).ok, client.url);
     one('client.apiProxied', (await fetch(`${client.url}/api/status`)).ok, 'the client reaches the server under /api');
@@ -613,7 +616,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     report.ok = true;
     return report;
   } catch (err) {
-    if (report.signal) return new Promise(() => {}); // what failed is what the signal stopped: onSignal ends the process
+    if (report.signal) return report; // what failed is what the signal stopped: the finally below waits for onSignal
     report.failure = err instanceof CheckFailed ? err.message : `${err.name}: ${err.message}`;
     log(`[round] FAILED: ${report.failure}`);
     if (!(err instanceof CheckFailed)) log(err.stack ?? '');
@@ -623,11 +626,12 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     }
     return report;
   } finally {
-    if (!report.signal) {
-      await close();
-      process.removeListener('SIGINT', onSignal);
-      process.removeListener('SIGTERM', onSignal);
-      finish();
-    }
+    // A signal that came at any point owns the ending: it reports and exits with its own code.
+    if (report.signal) await new Promise(() => {});
+    await close();
+    if (report.signal) await new Promise(() => {});
+    process.removeListener('SIGINT', onSignal);
+    process.removeListener('SIGTERM', onSignal);
+    finish();
   }
 }

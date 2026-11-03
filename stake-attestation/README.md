@@ -885,7 +885,8 @@ on any CID it does not hold, and every service gets its own small environment. I
 by the run's instance, processes by pid, on success, on failure and on SIGINT or SIGTERM (the pinned images it pulled and BuildKit's cache
 stay, as any build's do). Logs stay in `e2e/.round/logs`
 (`SA_E2E_LOG_DIR`), and `--report <file>` writes the checks as JSON. `SA_E2E_ARBITER_DIR` runs another checkout, which must be at the
-pin unless `SA_E2E_ARBITER_UNPINNED=1`.
+pin unless `SA_E2E_ARBITER_UNPINNED=1`. `e2e/test/failure.test.js` breaks it on purpose (`SA_E2E_BREAK`: a runner that will not start, a jury that
+cannot be reached; SIGTERM while running and in the middle of a build) and reads the exit code.
 
 One listing of the builder's fixture takes three claims, in commit order: **a valid one** (every gate passes, the jury decides, HIGH,
 the award and bond after the dispute window), **a gate-failing one** (a PoC that edits source: the runner's `testPathsOnly`, INVALID at
@@ -944,6 +945,7 @@ their CIDs, works out what the oracles spent, and gives that to the mock. A roun
 | The keeper's selection and K dispatches inside exactly `SUBMISSION_GAS` | `setRequestGasCost(3M)`, a stand-in | **G2** measures it |
 | Base fee to K payees at request, bonus at finalize, refund = received − base − bonus | The same refund, computed here and set on the mock before it settles. Each oracle's fee is taken as the ceiling | `aggregatorRound.test.js`; `aggregatorEth.test.js` for the real one; **G2** reads the real fee |
 | A slot whose dispatch reverts is an uncredited no-show | All K dispatch | A larger refund, which the contract takes (`setRefundAmount` tests) |
+| An oracle inactive at finalize stays out of the sum and earns no bonus, though its CID stays in the list | Every oracle stays active | Dispatcher tests; the contract reads a vector and a string either way |
 | OracleRequest, Chainlink job, EA, `fulfillOracleRequestV`, `fulfill`: `gasLimit 6,000,000`, 2 confirmations | The bridge calls the EA with the job's body, up to the job's 840 s | **G2**: the real job and `ArbiterOperator` |
 | **The callback's gas.** The N-th reveal's `fulfill` runs `_finalizeAggregation` with keeper score updates. Out of gas there, the round waits for the timeout | `scriptResult` always fits | **G2**: the N-th `fulfill` under 6M. The contract's side of a late result: `scriptLateResult` tests |
 | **Timing.** One window from the request (900 s after G2's `setResponseTimeout`), commit and reveal shared; 3 to 6 minutes a round | The same window and rule on Hardhat's clock; a round takes seconds | **G2**: a cold cache, real jurors, §11's budget |

@@ -17,6 +17,8 @@ export const GENERATED_DIRS = new Set([
   'playwright-report',
   'test-results',
   'blob-report',
+  '.arbiter', // e2e: verdikta-arbiter's checkout at the pin
+  '.round', // e2e: the last run's logs
 ]);
 export const IGNORED_FILES = new Set(['package-lock.json', 'coverage.json', 'gasReporterOutput.json']);
 

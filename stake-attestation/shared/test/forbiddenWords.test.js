@@ -64,6 +64,8 @@ test('scanPaths walks source, UI strings and docs, skipping dependencies and bui
     'coverage/index.html': participle,
     'playwright-report/index.html': participle,
     'test-results/r.txt': participle,
+    '.arbiter/abc/README.md': participle,
+    '.round/logs/server.log': participle,
     'package-lock.json': JSON.stringify({ name: participle }),
     'img.png': Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]),
   });

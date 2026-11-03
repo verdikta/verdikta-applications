@@ -15,7 +15,7 @@ const ZERO_KEY32 = `0x${'00'.repeat(32)}`;
 /** Above SUBMISSION_GAS_NEEDED: the reveal's own work (measured 530k, more with prior findings). Only gas used is paid. */
 const REVEAL_OWN_GAS = 1_750_000n;
 
-async function outcomeOf(ctx, state, topUpWei = null) {
+async function outcomeOf(ctx, state, topUpWei = null, tx = state.revealTx?.hash ?? null) {
   const [claim, lens] = await Promise.all([ctx.readSettled('getClaim', [state.claimId]), ctx.read('claimState', [state.claimId])]);
   const name = CLAIM_STATES[Number(lens)];
   return {
@@ -24,7 +24,7 @@ async function outcomeOf(ctx, state, topUpWei = null) {
     bcid: claim.bcid,
     requestId: claim.requestId,
     topUpWei,
-    tx: state.revealTx?.hash ?? null,
+    tx,
     next: name === 'RoundFailed' ? failedRoundNext({ deadline: await ctx.read('retriggerDeadline', [state.claimId]), requestId: claim.requestId, roundStarted: claim.roundStarted }) : 'status --wait polls the evaluation, for up to 15 minutes.',
   };
 }
@@ -45,7 +45,7 @@ async function retrigger(ctx, ws, state) {
     await ctx.settleSaved(rec0);
     const after = { ...state, retriggerTx: null };
     ws.saveState(after);
-    return outcomeOf(ctx, after);
+    return outcomeOf(ctx, after, null, rec0.hash);
   }
   const { archive, ciphertext } = readProvenFiles(ctx, ws, state);
   const claim = await ctx.read('getClaim', [state.claimId]);
@@ -65,7 +65,7 @@ async function retrigger(ctx, ws, state) {
   await ctx.waitMined(rec);
   const after = { ...next, retriggerTx: null };
   ws.saveState(after);
-  return outcomeOf(ctx, after, topUp);
+  return outcomeOf(ctx, after, topUp, rec.hash);
 }
 
 /** reveal, or a resume of one. `retrigger`: send a failed round again instead. */

@@ -1,0 +1,144 @@
+// What a round is about: a Foundry repository with a real bug, the project's proof at the listed
+// commit naming the maker, the maker's draft, and the hunter's three claim folders.
+//
+// The repository is the builder's fixture (builder/test/fixtures/vault: Vault.deposit credits one wei
+// too many), so the round lists what P3a's tests build. Its foundry.toml names solc 0.8.31, so the
+// setup's forge installs an official release, which the listing check reads and the runner accepts.
+// Two things are added: the proof file (docs/control-proof.md), and a gas limit no test reaches, so a
+// looping proof runs into the runner's clock and not into forge's gas limit.
+import fs from 'node:fs';
+import path from 'node:path';
+
+import { APP_DIR } from './setup.js';
+import { git } from './proc.js';
+
+// On a host with no API the site knows, and named as one for this run: the record's fork label would
+// otherwise read api.github.com. The mirror stands for it (SA_CONTROL_GIT_MIRROR_DIR, repoMirrors).
+export const GIT_HOST = 'git.verdikta-e2e.invalid';
+export const REPO_URL = `https://${GIT_HOST}/acme/vault`;
+const FORGE_COMMANDS = Object.freeze({
+  framework: 'forge',
+  setup: 'forge build',
+  build: 'forge build',
+  test: 'forge test',
+  testFiles: 'forge test --match-path $FILES',
+  testIds: 'forge test --match-test $TEST_IDS',
+});
+export const BOND_WEI = 20000000000000000n; // 0.02 ETH
+export const AWARDS_WEI = Object.freeze({ LOW: 0n, MEDIUM: 10n ** 17n, HIGH: 4n * 10n ** 17n, CRITICAL: 2n * 10n ** 18n });
+export const ESCROW_WEI = 3n * 10n ** 18n;
+const HOUR = 3600;
+const DAY = 24 * HOUR;
+export const WINDOWS = Object.freeze({ fix: 14 * DAY, dispute: 72 * HOUR, grace: 48 * HOUR, reveal: 7 * DAY });
+
+/**
+ * The repository as a bare mirror, at <mirrorsDir>/<host>/<path>.git: where the server's control
+ * check looks (SA_CONTROL_GIT_MIRROR_DIR) and the builder's config points (repoMirrors).
+ * @returns {{ url: string, mirror: string, mirrorsDir: string, baseCommit: string }}
+ */
+export function makeRepository({ workDir, maker, proofMaker = maker }) {
+  const work = path.join(workDir, 'repository');
+  fs.cpSync(path.join(APP_DIR, 'builder', 'test', 'fixtures', 'vault'), work, { recursive: true });
+  fs.appendFileSync(path.join(work, 'foundry.toml'), 'gas_limit = "9223372036854775807"\n');
+  fs.mkdirSync(path.join(work, '.verdikta'), { recursive: true });
+  fs.writeFileSync(path.join(work, '.verdikta', 'stake-control.json'), `${JSON.stringify({ version: 1, maker: proofMaker })}\n`);
+  git(work, 'init', '-q', '-b', 'main');
+  git(work, 'add', '-A');
+  git(work, 'commit', '-q', '-m', 'the listed version');
+  const baseCommit = git(work, 'rev-parse', 'HEAD');
+  const mirrorsDir = path.join(workDir, 'mirrors');
+  const { host, pathname } = new URL(REPO_URL);
+  const mirror = path.join(mirrorsDir, host, `${pathname.slice(1)}.git`);
+  fs.mkdirSync(path.dirname(mirror), { recursive: true });
+  git(path.dirname(mirror), 'clone', '-q', '--bare', work, mirror);
+  git(mirror, 'config', 'uploadpack.allowFilter', 'true');
+  return { url: REPO_URL, mirror, mirrorsDir, baseCommit };
+}
+
+/** The maker's draft: design §7.1's default windows, and limits a loaded machine's slow step fits in. */
+export function draftSpec({ repo, baseCommit, disclosureKey }) {
+  return {
+    version: 1,
+    kind: 'bug',
+    repo,
+    baseCommit,
+    env: { from: 'foundry' },
+    attestation: 'attestation.json',
+    commands: { ...FORGE_COMMANDS },
+    baseline: 'baseline.json',
+    paths: { tests: ['test/**'], protected: ['foundry.toml', 'lib/**', '.gitignore'] },
+    // The check's defaults are three times one measured run (2 s and 3 s here): a machine busy with
+    // the rest of the round would abstain on them. A draft may ask for more.
+    limits: { cpus: 1, memoryMb: 2048, buildSeconds: 30, testSeconds: 15, runSeconds: 150 },
+    stake: {
+      awards: { LOW: '0', MEDIUM: '0.1 ETH', HIGH: '0.4 ETH', CRITICAL: '2 ETH' },
+      lowestClassCounted: 'MEDIUM',
+      bondWei: BOND_WEI.toString(),
+      fixWindowDays: WINDOWS.fix / DAY,
+      disputeWindowHours: WINDOWS.dispute / HOUR,
+      disclosureGraceHours: WINDOWS.grace / HOUR,
+      revealWindowDays: WINDOWS.reveal / DAY,
+      scope: { include: ['src/**'], exclude: ['test/**'] },
+      severityRubric: 'immunefi-v2.3',
+      disclosureKey,
+      valueAtRiskUsd: 1000,
+    },
+  };
+}
+
+const POC_HEADER = '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Vault} from "../src/Vault.sol";\nimport {Base} from "./Vm.sol";\n\n';
+export const REPORT_MARKER = 'E2E-REPORT-MARKER-3f7c: deposit credits one wei more than it receives';
+export const POC_MARKER = 'E2E-POC-MARKER-a91d';
+
+function addFile(file, text) {
+  const lines = text.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return `diff --git a/${file} b/${file}\nnew file mode 100644\n--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}`).join('\n')}\n`;
+}
+
+const FINDING = Object.freeze({
+  version: 1,
+  title: 'Vault.deposit over-credits',
+  claimedClass: 'HIGH',
+  rootCause: 'Vault.deposit credits one wei more than it receives, so balances overstate deposits and the vault can be drained.',
+  affectedPaths: ['src/Vault.sol'],
+  poc: {
+    command: 'forge test --match-test test_deposit_credits_exactly',
+    observable: 'test_deposit_credits_exactly fails at the committed hash with "2 != 1"',
+  },
+  fixIncluded: false,
+});
+
+const CLAIMS = Object.freeze({
+  // A proof that fails at the committed hash for the reason it names: every gate passes, the jury decides.
+  valid: {
+    finding: FINDING,
+    poc: addFile('test/Exploit.t.sol', `${POC_HEADER}contract ExploitTest is Base {\n    // ${POC_MARKER}\n    function test_deposit_credits_exactly() public {\n        Vault v = new Vault();\n        v.deposit(1);\n        vm.assertEq(v.balanceOf(address(this)), 1);\n    }\n}\n`),
+  },
+  // A proof that edits the code under test: the real runner's testPathsOnly gate.
+  gate: {
+    finding: { ...FINDING, title: 'Vault.deposit over-credits, a proof that edits the source' },
+    poc: 'diff --git a/src/Vault.sol b/src/Vault.sol\n--- a/src/Vault.sol\n+++ b/src/Vault.sol\n@@ -11,5 +11,5 @@\n \n     function deposit(uint256 amount) external {\n-        balanceOf[msg.sender] += amount + 1;\n+        balanceOf[msg.sender] += amount + 2;\n     }\n }\n',
+  },
+  // A proof that never ends: the runner's clock stops it, and every arbiter abstains the same way.
+  abstain: {
+    finding: { ...FINDING, title: 'Vault.deposit over-credits, a proof that never ends', poc: { command: 'forge test --match-test test_never_ends', observable: 'test_never_ends fails at the committed hash with "2 != 1"' } },
+    poc: addFile('test/Exploit.t.sol', `${POC_HEADER}contract ExploitTest is Base {\n    function test_never_ends() public {\n        uint256 i;\n        while (true) { i += 1; }\n    }\n}\n`),
+  },
+});
+
+/** The hunter's folder for one of the claims: finding.json, report.md, poc.patch. */
+export function claimFolder(workDir, name) {
+  const claim = CLAIMS[name];
+  const dir = path.join(workDir, `claim-${name}`);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'finding.json'), `${JSON.stringify(claim.finding, null, 2)}\n`);
+  fs.writeFileSync(path.join(dir, 'report.md'), `# ${claim.finding.title}\n\n${REPORT_MARKER}\n`);
+  fs.writeFileSync(path.join(dir, 'poc.patch'), claim.poc);
+  return dir;
+}
+
+/** Each juror's reply, weights 0.5 and 0.5, so only both together give the average the round asserts. */
+export const JUROR_SCORES = Object.freeze([[0, 0, 0, 0, 800000, 200000], [0, 0, 0, 0, 600000, 400000]]);
+export const JURY_AVERAGE = Object.freeze([0n, 0n, 0n, 0n, 700000n, 300000n]);
+export const JUSTIFIER = Object.freeze({ provider: 'openai', model: 'mock-justifier' });

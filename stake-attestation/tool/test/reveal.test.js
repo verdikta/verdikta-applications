@@ -143,6 +143,9 @@ test('a refused request: the reveal stands, RoundFailed, the tool says so; retri
   const r = await w.hunter().reveal({ claimDir: dir, retrigger: true });
   assert.equal(r.state, 'Revealed');
   assert.notEqual((await w.sa.getClaim(claimId)).requestId, `0x${'00'.repeat(32)}`);
+  // what it answers is the transaction it sent, not the first reveal's (found by the local round, P7)
+  assert.notEqual(r.tx, refused.tx);
+  assert.equal(w.sa.interface.parseTransaction(await w.provider.getTransaction(r.tx)).name, 'retrigger');
 });
 
 test('reveal knows only its own folder: no state, a refusal; another wallet, a refusal', async () => {

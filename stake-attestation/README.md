@@ -13,7 +13,7 @@ Build plan: [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md), the graph of one-PR node
 this application is built from; its errata, assumptions and decisions override
 the design where they differ.
 
-**Status:** scaffold, plus the contract's listing half, its claim lifecycle and
+**Status:** a local end-to-end round runs every piece below together (see "The local round"). Scaffold, plus the contract's listing half, its claim lifecycle and
 settlement: finalize by polling the aggregator, the six-outcome rule, payouts,
 depletion and owed awards; the environment builder; the server's listing
 flow, indexer, keeper, feed, record mirror and badge; and the client: the maker
@@ -73,6 +73,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 | `tool/` | `verdikta-attest`, the hunter's CLI and the library it wraps (P5): `check`, `commit`, `reveal`, `status`, `claim`. See "The hunter tool". | `npm test` |
 | `shared/` | Code shared by the packages (the banned-words helper, the rules of the project's proof, the warning every listing page carries, "did the builder sign this listing") and the app's repository checks. | `npm test` |
 | `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`; the baseline scan, for the maker only (P3b); `verdikta-control-check`, what git says about a listing's repository (P8); the listing's proof, refused before anything is built (P9). The reusable workflow that runs it is `.github/workflows/stake-attestation-builder.yml`. | `npm test`, `npm run test:docker` |
+| `e2e/` | The scripted local end-to-end round (P7): every piece together, with nothing live. See "The local round". | `npm test`, `npm run round` |
 | `docs/` | `BUILD_PLAN.md`, `control-proof.md` (the project's proof: what a listing needs, every refusal, what counts). | |
 
 Ports 5009 and 5176 are the next free ones after the apps in the repository's
@@ -90,6 +91,7 @@ cd stake-attestation/client && npm ci && npm test && npx playwright install chro
 cd stake-attestation/tool && npm ci && npm test
 cd stake-attestation/shared && npm ci && npm test
 cd stake-attestation/builder && npm ci && npm test && npm run test:docker
+cd stake-attestation/e2e && npm ci && npm test
 ```
 
 `npm run gas` in `onchain/` prints the gas report, `npm run coverage` runs
@@ -866,6 +868,114 @@ stand-in that also serves what the server pinned; and the production build. The 
 forwards to the local node's unlocked accounts. `SA_SCREENSHOTS=1` writes the screenshots under
 `client/test-results/screenshots/`, with every private-key field masked.
 
+## The local round
+
+`e2e/` (node P7) is the first time every piece runs together: one script, on one machine, with nothing live.
+
+```bash
+cd stake-attestation/e2e && npm ci && npm test     # the unit tests, the round, and the round broken on purpose
+cd stake-attestation/e2e && npm ci && npm run round # the round alone: exit 0, or 1 and why
+```
+
+It needs Docker and Node, and installs the rest itself: every package here from its lock file, verdikta-arbiter at the commit in
+`e2e/arbiter.pin.json` (fetched by id from its public repository, into `e2e/.arbiter/`), its contracts compiled, Chromium for
+the client's pages. It downloads images and packages (the pinned Foundry base, `registry:2`, Semgrep and gitleaks, solc 0.8.31 from
+binaries.soliditylang.org, npm) and uses no credential. It reaches no real chain, provider or pin service: the local IPFS fails a run
+on any CID it does not hold, and every service gets its own small environment. **What it promises about what it leaves:** after it exits, on success, failure, a crash or a signal, no process group it started and no container or
+image it labelled remains; and if one does, or it cannot say, the run has failed. That is the whole promise. A process it did not start is out of
+scope (an AI Node someone runs by hand on this machine, say), and so are the pinned images it pulled and BuildKit's cache, which stay as any build's do. A signal stops it in two phases: a flag that everything that only waits
+honours and the closers of what has started; then the main flow comes back, so that a step already on its way to creating something gets its closer,
+and the sweep runs last. That wait is bounded at 3 minutes, many times the 7 to 11 s the whole start stage takes, and past it the run has failed by
+name and the sweep runs anyway. A second signal changes nothing. Logs stay in a folder of the run's own under `e2e/.round/logs`,
+which is emptied, or under `SA_E2E_LOG_DIR`, where nothing is removed; and `--report <file>` writes the checks as JSON. `SA_E2E_ARBITER_DIR` runs another checkout, which must be at the
+pin unless `SA_E2E_ARBITER_UNPINNED=1`. `e2e/test/failure.test.js` breaks it on purpose (`SA_E2E_BREAK`: a runner that will not start, a jury that
+cannot be reached, a crash, a service whose leader dies, a live process group after every check passed; SIGTERM while running, mid-build, mid-scan, with EA requests out, twice during the startup, with a step that creates
+something after the signal, and with one that outlasts the bound) and reads the exit code.
+
+One listing of the builder's fixture takes three claims, in commit order: **a valid one** (every gate passes, the jury decides, HIGH,
+the award and bond after the dispute window), **a gate-failing one** (a PoC that edits source: the runner's `testPathsOnly`, INVALID at
+once, the bond to the maker, no model asked, the first claim among its prior findings) and **an abstaining one** (a PoC that never ends:
+the runner's clock stops it, no arbiter commits, the round times out and fails, a fresh prepay, it fails again, and at expiry the bond goes
+to the maker, erratum E6). The round fails on the first check that fails, and every check is a pure function with a test that hands it
+a tampered observation (`e2e/test/checks.test.js`).
+
+| Piece | Here |
+|---|---|
+| EVM, `StakeAttestation` and its libraries | Real: `hardhat node`, onchain's artifacts, blocks every second so confirmations are waited for |
+| Aggregator, keeper selection, reputation | **`MockVerdiktaAggregator` and the bridge** (below) |
+| Chainlink node, `ArbiterOperator` | **Absent**: the bridge calls the EA as the job does |
+| External Adapter, code runner, forge | Real, from the pin, under `runc`, dev trust with one explicit key |
+| AI Node | Real under `next dev`; **its LLM provider is the mock**, scripted per model, every call logged |
+| Registry | Real `registry:2`, local: A6a's, plus a sidecar over its storage for this machine's reads |
+| IPFS | **A stand-in**: A6a's local IPFS, real CIDv0s |
+| Builder, baseline scan, server, indexer, keeper, tool | Real, as a deployment starts them, with a per-run dev builder key |
+| Client | The production build; Chromium reads the record and the feed. Its wallet flows are its own Playwright tests |
+| Maker | A plain wallet: signs the request, `list`, `fund`, `release` |
+| Clock | **Forced** with `evm_increaseTime`: windows are moved past, never slept through |
+
+**What each platform covers.** A report exists only on `linux/amd64`, so on arm64 the runner answers `reportUnavailable` and the EA
+abstains. On arm64 the round therefore starts the runner through A6a's launcher (`dev-report-runner.js`), which names the class
+platform to the runner's own `buildReport`, and says so in its log. CI sets `SA_E2E_REQUIRE_CLASS_PLATFORM=1`, which fails anywhere else, so
+the launcher cannot stand in there.
+
+| | arm64 (a Mac) | linux/amd64 (CI) |
+|---|---|---|
+| Forge, gates, integrity checks, pack, pull by digest, builder, listing check, EA, AI Node, chain, server, keeper, client, tool | Yes, on the image's arm64 variant | Yes |
+| The runner's real report path, `src/index.js` as its entry point | No: the launcher | Yes |
+| `linux/amd64` forge, so the report hash a production arbiter gives | No | Yes |
+| The builder's single-platform build | No: an index, listed under `devOnly` in its report | Yes |
+| gVisor | No | No: `code-runner.yml` |
+
+**Moving the pin** is one line in `e2e/arbiter.pin.json` and a green round. It does not follow the branch. A node that adds to the runner's
+needs costs what it adds: A3c's pinned Semgrep image would be a further pull for this job, and a new honesty flag could change what the fixture
+settles as, which the round would show. P3a's Docker tests and `builder/action/pins.json` pin the runner on their own.
+
+**The docker CLI.** The builder here gets an empty `DOCKER_CONFIG`: the registry is local and open, and an operator's config can name a
+credential helper, which on a locked keychain waits for ever before a push reaches the registry.
+
+### The mock bridge
+
+`e2e/src/bridge.js` stands where the real network stands, and `e2e/src/aggregatorRound.js` is `ReputationAggregator.fulfill`,
+`_finalizeAggregation` and the settlement arithmetic, off-chain (verdikta-dispatcher at the commit in
+`e2e/test/fixtures/aggregator-lib.vectors.json`, whose answers came from the real `AggregatorLib`). For each request on the mock it runs K = 6
+jobs with the body of `chainlink-node/basicJobSpec`, reads only what the job reads, keeps the first M = 4 commits, asks those for their
+reveal as 32 lowercase hex, verifies each against its commitment, takes the first N = 3, clusters P = 2, floors their mean, comma-joins
+their CIDs, works out what the oracles spent, and gives that to the mock at the N-th reveal, as the real contract finalizes inside it, whatever jobs
+are still out. Those that land afterwards revert, as on the real contract. A round that fails stays open at the mock.
+
+| The real aggregator | The mock and the bridge | Who proves it |
+|---|---|---|
+| `selectOracles`: class, fee, reputation, entropy. It can revert | No selection. The bridge refuses a class other than `code-standard` | Dispatcher S1 and `keeper.test.js`; **G2**, a real selection on class 5555 |
+| A refused request leaves `RoundFailed`, the bond back if every attempt was refused | Reachable with `setPaused`, not in this round | `StakeAttestation.claims` tests |
+| The keeper's selection and K dispatches inside exactly `SUBMISSION_GAS` | `setRequestGasCost(3M)`, a stand-in | **G2** measures it |
+| Base fee to K payees at request, bonus at finalize, refund = received − base − bonus | The same refund, computed here and set on the mock before it settles. Each oracle's fee is taken as the ceiling | `aggregatorRound.test.js`; `aggregatorEth.test.js` for the real one; **G2** reads the real fee |
+| A slot whose dispatch reverts is an uncredited no-show | All K dispatch | A larger refund, which the contract takes (`setRefundAmount` tests) |
+| An oracle inactive at finalize stays out of the sum and earns no bonus, though its CID stays in the list | Every oracle stays active | Dispatcher tests; the contract reads a vector and a string either way |
+| OracleRequest, Chainlink job, EA, `fulfillOracleRequestV`, `fulfill`: `gasLimit 6,000,000`, 2 confirmations | The bridge calls the EA with the job's body, up to the job's 840 s | **G2**: the real job and `ArbiterOperator` |
+| **The callback's gas.** The N-th reveal's `fulfill` runs `_finalizeAggregation` with keeper score updates. Out of gas there, the round waits for the timeout | `scriptResult` always fits | **G2**: the N-th `fulfill` under 6M. The contract's side of a late result: `scriptLateResult` tests |
+| **Timing.** One window from the request (900 s after G2's `setResponseTimeout`), commit and reveal shared; 3 to 6 minutes a round | The same window and rule on Hardhat's clock; a round takes seconds | **G2**: a cold cache, real jurors, §11's budget |
+| **The failed round (E6).** `finalizeEvaluationTimeout`: commit phase, reveal phase, or enough responses after all | The same to a requester: `isComplete`, `failed`, the refund. Its phase is always "commit"; the late branch needs `scriptLateResult` | This round, commit phase; contract tests the rest; `aggregatorEth.test.js` the real one |
+| `getAggregationStatus`: real counts | Canned 1s. `StakeAttestation` reads only `isComplete`, and nothing else here reads it | Nothing depends on it |
+| While a round is open, `getEvaluation` answers a zero-filled scratch vector once a reveal has arrived, with `exists` false | An empty vector, with `exists` false | `_poll` reads the vector only when `exists` is true |
+| **`finalize` of a timed-out round** pays K score updates inside `finalizeEvaluationTimeout`, under `StakeAttestation`'s try/catch. Out of gas there is caught, and `finalize` then reverts "evaluation not ready" | Costs almost nothing | **G2**: the keeper's and the tool's gas estimate for a real timed-out round |
+| Reputation scores, penalties, entropy, `recordUsedOracles` | None | Dispatcher tests; not visible to a requester. §12's −20: **G2** |
+
+The same on both: the input limits, fund-from-credit, the request id, poll-only, the pull ledger, no `receive`, pause gating requests only.
+
+### What G2 must prove
+
+What this round cannot, because the real thing is not in it:
+
+- A real selection on class 5555 at `code-standard`'s fee, inside `SUBMISSION_GAS`.
+- The real Chainlink job and `ArbiterOperator`: the job's timeout, confirmations, the N-th `fulfill` under 6M gas.
+- `finalize` of a really timed-out round: the keeper's and the tool's gas estimates, with K score updates under the try/catch.
+- `setResponseTimeout(900)` on the real aggregator, and a real round inside it.
+- An identical report hash across hosts: several operators, and real clustering of real disagreement. One EA and scripted jurors say nothing about it.
+- gVisor in the same round; the AI Node's production build; real jurors with real latency.
+- Real pinning and gateways.
+- The −20 timeliness penalty on real abstaining operators (§12), and a real re-trigger.
+- The production builder key (C6), once it exists.
+
 ## CI
 
 `.github/workflows/stake-attestation.yml` runs on pull requests into `main` and
@@ -874,6 +984,7 @@ each package with `npm ci --ignore-scripts`, runs its tests, the Hardhat tests,
 the contract sizer, the coverage gate (a job of its own), the client's Playwright
 tests against local Hardhat and the server, the builder's Docker tests (a job of its own, with
 registry:2 and the pinned code-runner under runc), the banned-words check and actionlint
-(1.7.12, checksum pinned) over it and the reusable builder workflow, and uses no secrets. A new
+(1.7.12, checksum pinned) over it and the reusable builder workflow, the local round (a job of its own,
+on linux/amd64), and uses no secrets. A new
 package is added to the workflow and to `shared/test/repo/helpers.js` together;
 the workflow test fails until both list it.

@@ -18,6 +18,11 @@
 //   error      anything else (a builder or pinning failure, a result that does not check out):
 //              nothing is issued; the maker may submit again
 //
+// A listing over its share of the code-runner's request is refused, by the builder and again here (node
+// P11; shared/src/listingRequestSize.js): a claim must always fit beside it, because a request over the
+// limit makes every arbiter abstain and the bond then goes to the maker. The refusal states the size and
+// the bound, and /api/status counts it.
+//
 // An accepted build is not taken on its word. Before any archive is issued: the report must say
 // every step passed (for a contract, that the verified source matched), the built code_review.json
 // must keep every term the maker submitted (the builder fills only env.image, env.platform,
@@ -35,6 +40,7 @@ import crypto from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 
 import { PROOF_REFUSALS, repositoryProofReason } from '@verdikta/stake-attestation-shared/control-proof';
+import { listingParts, listingRequestRefusal } from '@verdikta/stake-attestation-shared/listing-request-size';
 
 import { codeReview } from '../common.js';
 import { CONTROL_REASONS, canonicalAddress, controlMessage, readAnswerFile } from '../control/facts.js';
@@ -252,6 +258,13 @@ export function createListingService({ config, builder, scanner, pinner, logger,
       if (!v.ok) stop('ARCHIVE_INVALID', `the ${role} archive would be refused by arbiters: ${v.issues.map((i) => `${i.code}: ${i.detail}`).join('; ')}`);
     }
 
+    // the size rule, from the files the archives hold: before the scan reads them or anything is pinned
+    const tooLarge = listingRequestRefusal(listingParts(files), { codeReview });
+    if (tooLarge) {
+      refuse(job, tooLarge.code, tooLarge.detail);
+      return;
+    }
+
     // between listing and open (design §8.3): the archives are fixed already, from the builder's
     // files alone, so nothing the scan finds can reach them
     await scan(job, archives.spec);
@@ -300,9 +313,9 @@ export function createListingService({ config, builder, scanner, pinner, logger,
     }
   }
 
-  /** Refused for its proof: a named code, and nothing built, signed or pinned. */
-  function refuse(job, code) {
-    set(job, { status: 'refused', refusal: { code, detail: CONTROL_REASONS[code] ?? PROOF_REFUSALS[code] ?? code } });
+  /** Refused by a named code, and nothing issued: for its proof, or for its size (which says the numbers). */
+  function refuse(job, code, detail = CONTROL_REASONS[code] ?? PROOF_REFUSALS[code] ?? code) {
+    set(job, { status: 'refused', refusal: { code, detail } });
     refusals.count([code]);
     logger.info(`listing ${job.id} refused: ${code}`);
   }

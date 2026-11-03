@@ -15,7 +15,9 @@
 //                   files and its build with trusted tools against the deployed code (src/sourceCheck.js)
 //   listingCheck    the code-runner's POST /v1/listing-checks: baseline.json, the timings, the
 //                   default limits, the harness proof; its refusals stop the listing
-//   finalSpec       code_review.json with env.image, env.platform, env.unpackedBytes and the limits
+//   finalSpec       code_review.json with env.image, env.platform, env.unpackedBytes and the limits;
+//                   a listing too large for the code-runner's request stops here (src/requestSize.js;
+//                   node P11), and known issues too large on their own already in the spec step
 //
 // Signing is a separate step (src/signing.js): it needs the key, and this process ran the maker's
 // setup.
@@ -37,6 +39,7 @@ import { commitTree } from './commitFiles.js';
 import { buildAtCommit } from './repoBuild.js';
 import { fetchSolc } from './solc.js';
 import { checkListingProof } from './listingProof.js';
+import { assertDraftFits, assertListingFits } from './requestSize.js';
 import { checkVerifiedSource } from './sourceCheck.js';
 import { checkDraft, checkKnownIssues, finalSpec, runnerSpec, serializeJson } from './spec.js';
 import { BUILDER_VERSION } from './version.js';
@@ -185,7 +188,9 @@ export async function buildListing({ draft, knownIssues = null, maker = null, de
       const v = checkDraft(draft);
       report.warnings.push(...v.warnings);
       if (!v.ok) throw new Refusal('SPEC_INVALID', `code_review.json does not validate: ${v.issues.map((i) => i.code).join(', ')}`, { issues: v.issues });
-      return checkKnownIssues(draft, knownIssues);
+      const checked = checkKnownIssues(draft, knownIssues);
+      assertDraftFits(draft, checked?.bytes ?? null);
+      return checked;
     });
     // before anything of the repository is fetched for a build, and whatever else the listing is
     await step(report, 'control', async () => {
@@ -248,6 +253,13 @@ export async function buildListing({ draft, knownIssues = null, maker = null, de
       files.set('code_review.json', serializeJson(spec));
       files.set(spec.baseline, serializeJson(lc.baseline));
       if (known) files.set(known.name, known.bytes);
+      assertListingFits({
+        files: { codeReview: files.get('code_review.json'), baseline: files.get(spec.baseline), knownIssues: known?.bytes ?? null },
+        trust: config.signing.key === 'dev' ? 'dev' : 'production',
+        runnerVersion: lc.runner?.version,
+        base: image.base,
+        report,
+      });
       report.files = Object.fromEntries([...files].map(([name, bytes]) => [name, sha256(bytes)]));
       report.limits = spec.limits;
       report.baseline = { tests: lc.baseline.tests.length, stable: lc.baseline.stable.length, unstable: lc.baseline.unstable };

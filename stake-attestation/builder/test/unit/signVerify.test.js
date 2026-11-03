@@ -79,7 +79,7 @@ test('sign checks the build\'s outputs before signing and records what it checke
   const report = JSON.parse(fs.readFileSync(path.join(l.out, 'validation-report.json'), 'utf8'));
   assert.deepEqual(report.signing.checks, [
     'REPORT_ACCEPTED', 'FILES_MATCH_REPORT', 'SPEC_VALID', 'BASELINE_VALID', 'LISTING_MATCHES_REPORT',
-    'STEPS_COMPLETE', 'IMAGE_MATCHES_REPORT', 'SIZES_WITHIN_LIMITS', 'BASE_PINNED', 'PROJECT_PROOF_STANDS',
+    'STEPS_COMPLETE', 'IMAGE_MATCHES_REPORT', 'SIZES_WITHIN_LIMITS', 'BASE_PINNED', 'PROJECT_PROOF_STANDS', 'LISTING_REQUEST_WITHIN_BOUND',
   ]);
   assert.deepEqual(report.signing.trusts.map((x) => x.code), ['LISTING_CHECK_RESULTS', 'UNPACKED_SIZE', 'BUILD_JOB', 'OUTPUTS_IN_TRANSIT', 'IMAGE_PUBLISHED']);
   for (const x of report.signing.trusts) assert.ok(x.detail.length > 20, x.code);

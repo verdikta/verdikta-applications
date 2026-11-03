@@ -129,6 +129,9 @@ test('the maker\'s validation report: every step, the image, validation, and wha
   assert.deepEqual(report.steps.map((s) => s.status), report.steps.map((s) => (s.name === 'verifiedSource' ? 'skipped' : 'ok')));
   assert.equal(report.listingCheck.checkId.length > 0, true);
   assert.deepEqual(report.baseline, { tests: 2, stable: 2, unstable: [] });
+  // the fixture repository's real suite, far inside the share of the code-runner's request a listing may take
+  assert.ok(report.listingRequest.parts.baseline < 1024, JSON.stringify(report.listingRequest));
+  assert.ok(report.listingRequest.bytes < report.listingRequest.maxBytes, JSON.stringify(report.listingRequest));
   assert.ok(!JSON.stringify(report).includes(runner.token), 'the runner token is not in the report');
   if (platforms.run !== 'linux/amd64') assert.ok(report.devOnly.some((d) => d.code === 'VALIDATED_ON_OTHER_PLATFORM'));
 });

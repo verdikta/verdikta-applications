@@ -121,7 +121,7 @@ if (config.mode === 'hang') {
   const knownIssues = opts['known-issues'] ? fs.readFileSync(opts['known-issues']) : null;
   fs.mkdirSync(opts.out, { recursive: true });
   if (config.mode === 'no-report') process.exit(1);
-  const outcome = { accepted: 'accepted', 'sign-fails': 'accepted', 'sign-refuses': 'accepted', 'refused-source': 'refused-source', error: 'error' }[config.mode];
+  const outcome = { accepted: 'accepted', 'sign-fails': 'accepted', 'sign-refuses': 'accepted', 'sign-too-large': 'accepted', 'refused-source': 'refused-source', error: 'error' }[config.mode];
   const { fakeBuilder } = await import('../helpers/fixtures.js');
   const deploymentProof = opts['control-proof'] ? JSON.parse(fs.readFileSync(opts['control-proof'], 'utf8')) : null;
   const r = await fakeBuilder({ outcome }).build({ draft, knownIssues, maker: opts.maker, deploymentProof });
@@ -150,6 +150,13 @@ if (config.mode === 'hang') {
   }
   const kept = JSON.parse(fs.readFileSync(path.join(opts.dir, '.signed.json'), 'utf8'));
   fs.rmSync(path.join(opts.dir, '.signed.json'));
+  if (config.mode === 'sign-too-large') {
+    // what sign does when the size rule refuses: the report says why, exit 2, nothing signed
+    const { tooLargeDetail } = await import('../helpers/fixtures.js');
+    const report = { ...kept.report, status: 'refused', attestation: null, refusals: [{ code: 'LISTING_REQUEST_TOO_LARGE', detail: tooLargeDetail(), step: 'sign' }] };
+    write(opts.dir, 'validation-report.json', json(report));
+    process.exit(2);
+  }
   const spec = JSON.parse(fs.readFileSync(path.join(opts.dir, 'code_review.json'), 'utf8'));
   write(opts.dir, spec.attestation, Buffer.from(kept.attestation));
   write(opts.dir, 'dev-trust.json', json(kept.devTrust));

@@ -81,10 +81,34 @@ jobs:
       - name: Install locked dependencies without lifecycle scripts
         working-directory: stake-attestation/builder
         run: npm ci --ignore-scripts
+      - name: Install gVisor (pinned, SHA-512 checked, systrap platform), which only the scan's own test uses
+        working-directory: stake-attestation/builder
+        run: |
+          set -euo pipefail
+          version=$(jq -r .gvisor.version action/pins.json)
+          sha512=$(jq -r .gvisor.sha512 action/pins.json)
+          curl -fsSL -o "$RUNNER_TEMP/gvisor.tar.bz2" "https://storage.googleapis.com/gvisor/releases/release/${version}/x86_64/gvisor.tar.bz2"
+          echo "${sha512}  $RUNNER_TEMP/gvisor.tar.bz2" | sha512sum -c -
+          dest="/opt/gvisor/${version}"
+          sudo mkdir -p "$dest" /var/lib/code-runner-scratch
+          sudo tar -xjf "$RUNNER_TEMP/gvisor.tar.bz2" -C "$dest"
+          cfg=/etc/docker/daemon.json
+          current='{}'
+          if [ -s "$cfg" ]; then current=$(sudo cat "$cfg"); fi
+          echo "$current" | jq --arg path "$dest/runsc" \
+            '.runtimes.runsc = {path: $path, runtimeArgs: ["--platform=systrap", "--overlay2=root:dir=/var/lib/code-runner-scratch,size=4g"]}' \
+            | sudo tee "$cfg" > /dev/null
+          sudo systemctl reload docker
+          for _ in $(seq 1 20); do
+            docker info --format '{{json .Runtimes}}' | jq -e '.runsc' > /dev/null && break
+            sleep 1
+          done
+          docker info --format '{{json .Runtimes}}' | jq -e '.runsc' > /dev/null
       - name: Docker tests
         working-directory: stake-attestation/builder
         env:
           CODE_RUNNER_RUNTIME: runc
+          SA_BUILDER_TEST_RUNSC: '1'
         run: npm run test:docker
 
   onchain:

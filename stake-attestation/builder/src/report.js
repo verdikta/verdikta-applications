@@ -25,6 +25,8 @@ export function newReport({ draft }) {
       artifact: ok && draft.artifact && typeof draft.artifact === 'object' ? draft.artifact : { kind: 'repo' },
     },
     steps: [],
+    // what the code-runner said of the commands before anything was built (src/runner.js, checkCommands)
+    commands: null,
     control: null,
     image: null,
     verifiedSource: null,

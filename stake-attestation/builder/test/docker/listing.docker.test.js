@@ -149,7 +149,7 @@ test('the sign step\'s checks pass on a real build\'s outputs: the pushed image 
   // The env image is read where this test's registry serves it; the base from its own registry.
   const registryFor = (repository) => createRegistryClient({ repository, apiUrl: repository === config.registry.repository ? regs.apiUrl : null });
   const v = await verifyForSigning({ files, report, dir: out, expectOutputs: outputsDigest(out), checkRegistry: true, registryFor });
-  for (const c of ['FILES_MATCH_REPORT', 'STEPS_COMPLETE', 'OUTPUTS_MATCH_BUILD', 'IMAGE_PUBLISHED', 'IMAGE_MATCHES_MEASUREMENTS', 'IMAGE_FROM_PINNED_BASE', 'IMAGE_LABELLED_WITH_COMMIT']) {
+  for (const c of ['FILES_MATCH_REPORT', 'STEPS_COMPLETE', 'COMMANDS_CHECKED', 'OUTPUTS_MATCH_BUILD', 'IMAGE_PUBLISHED', 'IMAGE_MATCHES_MEASUREMENTS', 'IMAGE_FROM_PINNED_BASE', 'IMAGE_LABELLED_WITH_COMMIT']) {
     assert.ok(v.checks.includes(c), c);
   }
   assert.deepEqual(v.trusts.map((x) => x.code), ['LISTING_CHECK_RESULTS', 'UNPACKED_SIZE', 'BUILD_JOB']);

@@ -16,7 +16,7 @@ import { explorerChain, createExplorer } from '../../src/explorer.js';
 import { deploymentMessage } from '../../src/listingProof.js';
 import { REPO, MAKER, attempt, config, deployment, stake } from '../helpers/proof.js';
 import { makeRepo, proofFile } from '../helpers/proofRepo.js';
-import { contractDraft, draftSpec } from '../helpers/specs.js';
+import { contractDraft, draftSpec, runnerWithGrammar } from '../helpers/specs.js';
 
 const STRANGER = getAddress('0xab8483f64d9c6d1ecf9b849ae677dd3315835cb2');
 
@@ -267,7 +267,7 @@ test('verdikta-build-env build without --maker: refused with its code and a repo
   fs.writeFileSync(path.join(dir, 'draft.json'), JSON.stringify(draftSpec()));
   fs.writeFileSync(path.join(dir, 'builder.json'), JSON.stringify(config()));
   const o = io();
-  const code = await main(['build', '--config', path.join(dir, 'builder.json'), '--spec', path.join(dir, 'draft.json'), '--out', path.join(dir, 'out')], { env: { CODE_RUNNER_TOKEN: 'x' }, stdout: o.stdout, stderr: o.stderr, deps: {} });
+  const code = await main(['build', '--config', path.join(dir, 'builder.json'), '--spec', path.join(dir, 'draft.json'), '--out', path.join(dir, 'out')], { env: { CODE_RUNNER_TOKEN: 'x' }, stdout: o.stdout, stderr: o.stderr, deps: { runner: runnerWithGrammar() } });
   assert.equal(code, 2, o.err);
   const report = JSON.parse(fs.readFileSync(path.join(dir, 'out', 'validation-report.json'), 'utf8'));
   assert.equal(report.status, 'refused');

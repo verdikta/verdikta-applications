@@ -1,6 +1,8 @@
 // A listing's build, end to end (design §8.2 steps 1-4; build plan A4):
 //
-//   spec            the draft against @verdikta/common's schema and what this builder hosts
+//   spec            the draft against @verdikta/common's schema and what this builder hosts, and its
+//                   commands against the grammar arbiters hold claims to, which only the code-runner
+//                   has: it answers before anything is read or built (src/runner.js, checkCommands)
 //   control         the project's proof (src/listingProof.js; node P9): the file at the commit naming
 //                   the maker, the commit on the repository's own refs, a contract's signature
 //   fetch           the listed commit's objects, by id, from the repository (or its mirror)
@@ -34,7 +36,7 @@ import { fetchListedCommit as fetchDefault } from './git.js';
 import { buildImage, imageSizeIssues, pushImage, unpackedBytes } from './image.js';
 import { createRegistryClient } from './registry.js';
 import { newReport, startStep } from './report.js';
-import { createRunnerClient, interpretListingCheck } from './runner.js';
+import { checkCommands, createRunnerClient, interpretListingCheck } from './runner.js';
 import { commitTree } from './commitFiles.js';
 import { buildAtCommit } from './repoBuild.js';
 import { fetchSolc } from './solc.js';
@@ -183,13 +185,21 @@ export async function buildListing({ draft, knownIssues = null, maker = null, de
     if (!ex) throw new BuilderError('EXPLORER_NOT_CONFIGURED', `no explorer is configured for chain ${chainId} (config explorers)`);
     return { ex, explorer: deps.explorerFor ? deps.explorerFor(chainId, ex) : createExplorer({ apiUrl: ex.apiUrl, apiKey: ex.apiKey(), chainId, timeoutMs: ex.timeoutMs }) };
   };
+  let client = null;
+  const runner = () => {
+    client ??= deps.runner ?? createRunnerClient({ url: config.runner.url, socket: config.runner.socket, token: config.runner.token(), timeoutMs: config.runner.deadlineMs + 60000 });
+    return client;
+  };
   try {
-    const known = await step(report, 'spec', () => {
+    const known = await step(report, 'spec', async () => {
       const v = checkDraft(draft);
       report.warnings.push(...v.warnings);
       if (!v.ok) throw new Refusal('SPEC_INVALID', `code_review.json does not validate: ${v.issues.map((i) => i.code).join(', ')}`, { issues: v.issues });
       const checked = checkKnownIssues(draft, knownIssues);
       assertDraftFits(draft, checked?.bytes ?? null);
+      const commands = await checkCommands({ runner: runner(), draft });
+      report.commands = { checkedBy: 'runner', canary: commands.canary, issues: commands.issues };
+      if (commands.issues.length) throw Object.assign(new Refusal(commands.issues[0].code, commands.issues[0].detail), { all: commands.issues });
       return checked;
     });
     // before anything of the repository is fetched for a build, and whatever else the listing is
@@ -224,12 +234,11 @@ export async function buildListing({ draft, knownIssues = null, maker = null, de
     });
 
     const lc = await step(report, 'listingCheck', async () => {
-      const runner = deps.runner ?? createRunnerClient({ url: config.runner.url, socket: config.runner.socket, token: config.runner.token(), timeoutMs: config.runner.deadlineMs + 60000 });
-      const answer = await runner.listingCheck({ spec: runnerSpec(draft, image.stagedRef), image: image.stagedRef, deadline: config.runner.deadlineMs });
+      const answer = await runner().listingCheck({ spec: runnerSpec(draft, image.stagedRef), image: image.stagedRef, deadline: config.runner.deadlineMs });
       const r = interpretListingCheck(answer, { spec: draft, image: image.stagedRef });
       report.listingCheck = {
         status: r.outcome, checkId: r.checkId, runner: r.runner, refusals: r.refusals ?? [], issues: r.issues ?? [], warnings: r.warnings,
-        abstain: r.abstain ?? null, timings: r.timings, limits: r.limits ?? null, unpackedBytes: r.unpackedBytes ?? null, suite: r.suite, harness: r.harness, checkout: r.checkout,
+        abstain: r.abstain ?? null, timings: r.timings, limits: r.limits ?? null, unpackedBytes: r.unpackedBytes ?? null, suite: r.suite, harness: r.harness, checkout: r.checkout, compilers: r.compilers,
       };
       if (r.outcome === 'abstained') {
         throw new BuilderError('LISTING_CHECK_ABSTAINED', `the code-runner decided nothing (${r.abstain.cause}${r.abstain.step ? ` at ${r.abstain.step}` : ''}): ${r.abstain.detail ?? ''}`.trim());

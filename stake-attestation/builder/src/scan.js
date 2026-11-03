@@ -205,12 +205,19 @@ export async function scanListing({ spec, config, deps = {}, workDir, agent = fa
       const r = await runTool({ docker, image: SCAN_TOOLS.semgrep.image, platform, argv: semgrepArgv(), stdin: scannerInput(input), tool: 'semgrep' });
       if (r.exitCode !== 0 && r.exitCode !== 1) throw new BuilderError('SCAN_TOOL_FAILED', `semgrep exited ${r.exitCode}`, { step: 'scan' });
       const s = parseSemgrep(r.stdout);
-      const analysed = new Set(s.scanned);
-      for (const f of forSemgrep) if (!analysed.has(f.path)) semNot.push({ path: f.path, detail: 'Semgrep did not analyse it' });
+      // Semgrep lists a file as scanned when it dropped its results at the match cap: that file is not analysed.
+      const capped = new Map();
+      for (const { path: p, rule } of s.capped) capped.set(p, [...(capped.get(p) ?? []), rule]);
+      const analysed = new Set(s.scanned.filter((p) => !capped.has(p)));
+      for (const f of forSemgrep) {
+        if (capped.has(f.path)) semNot.push({ path: f.path, detail: `past Semgrep's limit of matches of one rule in one file (${capped.get(f.path).join(', ')}), it drops every result for the file: not analysed` });
+        else if (!analysed.has(f.path)) semNot.push({ path: f.path, detail: 'Semgrep did not analyse it' });
+      }
       doc.tools.semgrep.status = 'ok';
       doc.tools.semgrep.analysed = forSemgrep.filter((f) => analysed.has(f.path)).length;
       doc.tools.semgrep.errors = s.errors;
       if (s.truncated) doc.tools.semgrep.truncated = true;
+      if (s.errorsTruncated) doc.tools.semgrep.errorsTruncated = true;
       found.push(...s.findings);
     } catch (err) {
       doc.tools.semgrep.status = 'failed';

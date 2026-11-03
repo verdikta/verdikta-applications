@@ -155,6 +155,27 @@ export function gateSettledChecks(prefix, { runnerCalls, aiCalls, providerCalls,
   ];
 }
 
+/**
+ * A claim a non-tamper integrity check settled: the proof ran on real forge and failed where a good one does, a
+ * check measured from outside it failed, no tamper flag fired, and nothing reached a model.
+ */
+export function integrityRunChecks(prefix, { runnerCalls, aiCalls, providerCalls, failedCheck, config = REAL_CONFIG }) {
+  const answer = runnerCalls[0]?.response;
+  const poc = answer?.report?.poc;
+  const integrity = poc?.integrity ?? {};
+  const tests = poc?.tests ?? [];
+  const failedChecks = Object.keys(integrity).filter((k) => integrity[k] === false);
+  return [
+    check(`${prefix}.runner.oneSandbox`, runnerCalls.length === 1, `${runnerCalls.length} run(s) for ${config.k} jobs`),
+    check(`${prefix}.runner.gateFailed`, answer?.outcome === 'definitive' && answer?.gates?.integrity?.status === 'fail' && answer?.gates?.reproduces?.status === 'fail', `integrity ${answer?.gates?.integrity?.status}, reproduces ${answer?.gates?.reproduces?.status}`),
+    check(`${prefix}.runner.reproducesOnlyThroughIntegrity`, answer?.gates?.reproduces?.basis === 'integrity', `reproduces failed on ${answer?.gates?.reproduces?.basis}`),
+    check(`${prefix}.runner.checkFailed`, failedChecks.includes(failedCheck), `failed: ${failedChecks.join(', ')}`),
+    check(`${prefix}.runner.noTamperFlag`, Array.isArray(integrity.tamperFlags) && integrity.tamperFlags.length === 0, JSON.stringify(integrity.tamperFlags ?? null)),
+    check(`${prefix}.runner.everyRunFailed`, tests.length > 0 && tests.every((t) => t.runs?.[0] === 'fail' && t.runs.every((r) => r === 'fail' || r === 'not-run')), JSON.stringify(tests.map((t) => t.runs))),
+    check(`${prefix}.noAi`, aiCalls.length === 0 && providerCalls.length === 0, `${aiCalls.length} AI Node call(s), ${providerCalls.length} provider call(s)`),
+  ];
+}
+
 /** Every upload the chain points at, not only the first: it holds the block, and says what the settlement says. */
 export function evidenceChecks(prefix, { uploads, evidences, settlement, source, reportSha256 = null, expectedCount }) {
   return [
@@ -214,6 +235,29 @@ export function recordChecks(prefix, view, { artifactHash, listingId, outcomes, 
     check(`${prefix}.record.terms`, listing?.state === 'Open' && listing?.bondWei === String(bondWei) && eq(listing?.awards, awards.map(String)), `${listing?.state}, bond ${listing?.bondWei}, awards ${JSON.stringify(listing?.awards)}`),
     check(`${prefix}.record.listingOutcomes`, eq(listing?.history?.outcomes, outcomes.map(String)), JSON.stringify(listing?.history?.outcomes)),
     check(`${prefix}.record.stakerNamed`, String(view?.badge?.message).includes('staker named by the repository: yes'), view?.badge?.message),
+  ];
+}
+
+/** What the API's record says of the claims that failed integrity (owner decision Q35, node P10), read from the real writer's uploads. */
+export function integrityRecordChecks(prefix, view, { listingId, failed, checks, note }) {
+  const got = view?.integrity?.listings?.[String(listingId)];
+  return [
+    check(`${prefix}.record.integrityFailed`, got?.failed === failed, `failed ${got?.failed}, expected ${failed}`),
+    check(`${prefix}.record.integrityChecks`, eq(got?.checks, checks), JSON.stringify(got?.checks ?? null)),
+    check(`${prefix}.record.integrityApart`, got?.otherDuplicates === 0 && got?.unread === 0 && got?.disagree === 0 && got?.late?.failed === 0, JSON.stringify({ otherDuplicates: got?.otherDuplicates, unread: got?.unread, disagree: got?.disagree, late: got?.late?.failed })),
+    check(`${prefix}.record.integrityNote`, view?.integrity?.note === note, 'the neutral words beside the count'),
+  ];
+}
+
+/** The same on the page. */
+export function integrityPageChecks(prefix, pages, { failed, check: name, count, note, bcid }) {
+  const r = pages?.record ?? {};
+  return [
+    check(`${prefix}.page.integrityFailed`, r.integrity === String(failed), r.integrity),
+    check(`${prefix}.page.integrityChecks`, String(r.integrityChecks).includes(`${name}: ${count}`), r.integrityChecks),
+    check(`${prefix}.page.integrityOther`, r.integrityOther === '0', r.integrityOther),
+    check(`${prefix}.page.integrityNote`, r.integrityNote === note, r.integrityNote),
+    check(`${prefix}.page.duplicateNotPublished`, !String(r.main).includes(bcid), 'a DUPLICATE is a count, not a publication'),
   ];
 }
 

@@ -59,7 +59,7 @@ export function otherArbiterPins({ appDir = APP_DIR, repoDir = REPO_DIR } = {}) 
   for (const file of [...walk(appDir), ...walk(path.join(repoDir, '.github', 'workflows'))]) {
     if (known.has(file)) continue;
     const text = fs.readFileSync(file, 'utf8');
-    if (NAMES_A_COMMIT.test(text) || /repository:\s*['"]?verdikta\/verdikta-arbiter/.test(text)) found.push(path.relative(repoDir, file));
+    if (NAMES_A_COMMIT.test(text) || (/\.ya?ml$/.test(file) && /repository:\s*['"]?verdikta\/verdikta-arbiter/.test(text))) found.push(path.relative(repoDir, file));
     else if (file.endsWith('.json') && /verdikta-arbiter/.test(text) && /"commit"\s*:/.test(text)) found.push(path.relative(repoDir, file));
   }
   return found;

@@ -1,5 +1,5 @@
 // What a round is about: a Foundry repository with a real bug, the project's proof at the listed
-// commit naming the maker, the maker's draft, and the hunter's three claim folders.
+// commit naming the maker, the maker's draft, and the hunter's four claim folders.
 //
 // The repository is the builder's fixture (builder/test/fixtures/vault: Vault.deposit credits one wei
 // too many), so the round lists what P3a's tests build. Its foundry.toml names solc 0.8.31, so the
@@ -119,6 +119,13 @@ const CLAIMS = Object.freeze({
   gate: {
     finding: { ...FINDING, title: 'Vault.deposit over-credits, a proof that edits the source' },
     poc: 'diff --git a/src/Vault.sol b/src/Vault.sol\n--- a/src/Vault.sol\n+++ b/src/Vault.sol\n@@ -11,5 +11,5 @@\n \n     function deposit(uint256 amount) external {\n-        balanceOf[msg.sender] += amount + 1;\n+        balanceOf[msg.sender] += amount + 2;\n     }\n }\n',
+  },
+  // A proof that fails at the committed hash for the same reason as the valid one, and on its way writes a path the
+  // listing protects: the runner's post-run checksums fail, and no tamper flag names .gitignore. So its results are not
+  // trusted, and it settles DUPLICATE: bond back, no award (owner decision Q35).
+  integrity: {
+    finding: { ...FINDING, title: 'Vault.deposit over-credits, a proof that writes a protected file' },
+    poc: addFile('test/Exploit.t.sol', `${POC_HEADER}interface VmFiles {\n    function writeFile(string calldata path, string calldata data) external;\n}\n\ncontract ExploitTest is Base {\n    /// forge-config: default.fs_permissions = [{ access = "read-write", path = "./.gitignore" }]\n    function test_deposit_credits_exactly() public {\n        VmFiles(address(vm)).writeFile(".gitignore", "out\\n");\n        Vault v = new Vault();\n        v.deposit(1);\n        vm.assertEq(v.balanceOf(address(this)), 1);\n    }\n}\n`),
   },
   // A proof that never ends: the runner's clock stops it, and every arbiter abstains the same way.
   abstain: {

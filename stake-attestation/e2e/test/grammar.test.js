@@ -4,6 +4,7 @@
 // parseCommand. This also says the pinned commit has what the node needs (A2c, A2d, A3c), by calling it.
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -141,6 +142,17 @@ describe('the builder\'s command check against verdikta-arbiter at the pin', () 
     assert.equal(SCAN_TOOLS.semgrep.image, SEMGREP.reference);
     assert.equal(SCAN_TOOLS.semgrep.version, SEMGREP.version);
     assert.equal(SCAN_TOOLS.rules.version, A('code-runner/src/scanner').RULES_VERSION);
+    const hash = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    assert.equal(hash(path.join(arbiter, 'code-runner', 'rules', SCAN_TOOLS.rules.file)), SCAN_TOOLS.rules.sha256, 'the same Solidity rules, byte for byte');
+  });
+
+  test('the workflow reads the arbiters\' default allowlist from the pinned runner\'s own rule', () => {
+    const list = services.pinnedAllowlist(path.join(arbiter, 'code-runner'));
+    assert.equal(list.defaults, A('code-runner/src/registry').DEFAULT_REGISTRY_ALLOWLIST);
+    assert.equal(list.allowed('ghcr.io/verdikta/stake-env'), true);
+    assert.equal(list.allowed('ghcr.io/acme/stake-env'), false);
+    assert.equal(services.publishTargetNote({ publishAs: 'ghcr.io/acme/stake-env', signing: 'production', arbiter: list }).refuse, true);
+    assert.equal(services.publishTargetNote({ publishAs: 'ghcr.io/verdikta/stake-env', signing: 'production', arbiter: list }), null);
   });
 
   test('the real /health of a runner with no Semgrep image is 503, and the workflow still takes it as able to check a listing', async () => {

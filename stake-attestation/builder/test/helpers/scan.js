@@ -37,7 +37,7 @@ const SENT = '__every_file_sent__';
 
 /** Semgrep's JSON; `scanned` (repository paths) defaults to every file it was given. */
 export function semgrepAnswer(results = [], errors = [], scanned = null) {
-  return JSON.stringify({ version: SCAN_TOOLS.semgrep.version, results, errors, paths: { scanned: scanned === null ? SENT : scanned.map((p) => `/work/src/${p}`) } });
+  return JSON.stringify({ version: SCAN_TOOLS.semgrep.version, results, errors, skipped_rules: [], paths: { scanned: scanned === null ? SENT : scanned.map((p) => `/work/src/${p}`) } });
 }
 
 function fillScanned(answer, stdin) {

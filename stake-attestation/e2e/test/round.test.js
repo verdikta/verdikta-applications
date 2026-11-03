@@ -86,7 +86,7 @@ test('node P12: a claim that fails a non-tamper integrity check on real forge se
 });
 
 test('node P12: the runner at the pin had the Semgrep image before it started, and the fixture settled as it did', () => {
-  has('semgrep.warmed', 'listing.officialCompiler', 'valid.report.everyGatePassed');
+  has('semgrep.warmed', 'listing.officialCompiler', 'listing.commandsAskedFirst', 'listing.shellPrefixRefused', 'valid.report.everyGatePassed');
   assert.match(detail('semgrep.warmed'), /sha256:/);
 });
 

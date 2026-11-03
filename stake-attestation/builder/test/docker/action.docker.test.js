@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { codeReview } from '../../src/common.js';
 import { REPORT_FILE } from '../../src/report.js';
 import { MAKER } from '../helpers/proof.js';
-import { PIN, fixtureDraft, fixtureRepo, newId } from './helpers.js';
+import { PIN, fixtureDraft, fixtureRepo, newId, removeImages } from './helpers.js';
 
 const BUILDER = fileURLToPath(new URL('../../', import.meta.url));
 const skip = process.platform === 'linux' ? false : 'the workflow\'s registry is on the host network, which only on Linux is this machine\'s';
@@ -49,7 +49,11 @@ function configWithMirror() {
 }
 
 test.after(() => {
-  if (started()) node(['action/services.js', 'stop', '--dir', work]);
+  if (started()) {
+    const repository = JSON.parse(fs.readFileSync(path.join(work, 'builder.json'), 'utf8')).registry.repository;
+    node(['action/services.js', 'stop', '--dir', work]);
+    removeImages(repository);
+  }
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

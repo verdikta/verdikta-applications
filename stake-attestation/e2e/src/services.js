@@ -10,13 +10,14 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { APP_DIR } from './setup.js';
-import { freePort, launch, must, noteGroup, noteLeaderExit, waitUntil } from './proc.js';
+import { freePort, launch, must, noteGroup, noteLeaderExit, onStop, waitUntil } from './proc.js';
 
 const require = createRequire(import.meta.url);
 
 /** registry:2 (2.8.3), the multi-platform index pinned by digest: the same pin as A6a's and the builder's. */
 const REGISTRY_IMAGE = 'registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373';
 const PIN_KEY = 'e2e-local-pin-key';
+const SEMGREP_PULL_MS = 1_500_000;
 
 /**
  * A6a's starters run each service as a group of its own and hand it back only once it is up, so one that
@@ -49,6 +50,7 @@ export function arbiterHarness(arbiterDir) {
     platform: dockerHelpers.PLATFORM,
     dockerHelpers,
     runText,
+    scanner: fromArbiter('code-runner/src/scanner.js'),
     startRegistry: fromArbiter('code-runner/test/docker/registry.js').startRegistry,
     startLocalIpfs: fromArbiter('e2e/src/l2/claim/local-ipfs.js').startLocalIpfs,
     startRecordingProxy: fromArbiter('e2e/src/l2/claim/recording-proxy.js').startRecordingProxy,
@@ -57,6 +59,28 @@ export function arbiterHarness(arbiterDir) {
     aiRequestChecks: fromArbiter('e2e/src/l2/claim/checks.js').aiRequestChecks,
     ...fromArbiter('e2e/src/l2/claim/services.js'),
   };
+}
+
+/**
+ * The Semgrep image a claim's scan needs, on the daemon before the runner starts. The runner never pulls it (on an
+ * arbiter's host the installer warms it, node A8), and its /health is 503 without it, which A6a's starter takes
+ * as a runner that did not come up. The reference is the checkout's own, so it moves with the pin. It is the
+ * image the baseline scan pulls, so this moves that pull earlier and adds none, and like the other pinned images it
+ * stays. A stop cuts the pull off.
+ * @returns {Promise<{ present: boolean, problem: string|null, digest: string|null }>} what the runner's own look says after it
+ */
+export async function warmSemgrep(h, docker, { platform, timeoutMs = SEMGREP_PULL_MS }) {
+  const status = await h.scanner.imageStatus({ docker, platform });
+  if (!status.problem) return status;
+  const stop = new AbortController();
+  const off = onStop(() => stop.abort());
+  try {
+    const r = await h.runText(docker, ['pull', '--platform', platform, status.image], { timeoutMs, signal: stop.signal });
+    if (r.exitCode !== 0) return { ...status, problem: `docker pull ${status.image} exited ${r.exitCode}: ${String(r.stderr).slice(0, 300)}` };
+  } finally {
+    off();
+  }
+  return h.scanner.imageStatus({ docker, platform });
 }
 
 export const startIpfs = (h) => h.startLocalIpfs({ pinKey: PIN_KEY }).then((ipfs) => ({ ...ipfs, pinKey: PIN_KEY }));

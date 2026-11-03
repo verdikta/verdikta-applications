@@ -245,8 +245,8 @@ test('Semgrep\'s answer comes from a file: its own stdout goes elsewhere, since 
   assert.match(script, /semgrep scan [^\n]*--output \/work\/semgrep\.json/);
   assert.match(script, /--disable-nosem/, 'a // nosemgrep in the maker\'s source does not shrink the scan');
   // Semgrep shares no descriptor with what carries the answer: it may leave a pipe non-blocking for what comes after.
-  assert.match(script, /semgrep scan [^\n]* > ?\/work\/semgrep\.out 2>&1/);
-  assert.match(script, /\ncat \/work\/semgrep\.json\n/);
+  assert.match(script, /semgrep scan [^\n]* > \/dev\/null 2>&1/);
+  assert.match(script, /\[ ! -e \/work\/semgrep\.json \] \|\| cat \/work\/semgrep\.json\n/);
   assert.match(script, /\nexit "\$rc"\n?$/, 'the tool\'s exit code is still the scan\'s');
 });
 

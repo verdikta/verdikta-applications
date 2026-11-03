@@ -11,12 +11,13 @@
 //   sign-config  <dir>/sign.json for the sign job: the dev key, or the production key from
 //                VERDIKTA_BUILDER_KEY
 //
-//   node action/services.js start --dir <dir> --publish-as <repository> --spec <draft> [--runtime runsc|runc] [--explorer-url <url>]
+//   node action/services.js start --dir <dir> --publish-as <repository> --spec <draft> [--runtime runsc|runc] [--signing dev|production] [--explorer-url <url>]
 //   node action/services.js stop --dir <dir>
 //   node action/services.js sign-config --dir <dir> --signing dev|production --publish-as <repository>
 import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -106,6 +107,47 @@ async function until(fn, timeoutMs, what) {
   }
 }
 
+/**
+ * Whether the code-runner can check a listing. Its /health is 503 whenever a run would not be admitted,
+ * and since node A3c that includes a host without the Semgrep image a claim's scan needs, which the
+ * runner never pulls. A listing check does not run the scanner, so a maker's build job does not pay
+ * for that image: its absence alone is no reason to wait. Anything beside it, or anything else, is.
+ * @param {{ status: number, json: object|null }} answer
+ */
+export function runnerAnswersListings({ status, json }) {
+  if (status === 200) return true;
+  if (status !== 503 || json?.service !== 'verdikta-code-runner' || !Array.isArray(json.reasons)) return false;
+  const scan = json.scanner;
+  return json.reasons.length === 1 && scan?.present === false && typeof scan.problem === 'string' && json.reasons[0] === scan.problem;
+}
+
+/**
+ * What to say about where the image will be published. An arbiter pulls only from its allowlist and
+ * abstains on anything else, and a claim that only gets abstentions ends with the bond to the maker.
+ * What an arbiter's list holds is its operator's, so this reads the one thing that can be read: the
+ * default of the runner at the pin. A development listing may be for arbiters set up otherwise, so it
+ * hears about it; a production signing is for arbiters as they are, and stops.
+ * @param {object} o
+ * @param {string} o.publishAs
+ * @param {string} o.signing
+ * @param {{ allowed: (repository: string) => boolean, defaults: string }} o.arbiter - the pinned runner's own rule
+ * @returns {{ refuse: boolean, text: string }|null}
+ */
+export function publishTargetNote({ publishAs, signing, arbiter }) {
+  if (arbiter.allowed(publishAs)) return null;
+  return {
+    refuse: signing === 'production',
+    text: `${publishAs} is not on the default registry allowlist of the pinned code-runner (${arbiter.defaults}): an arbiter on its defaults abstains on every claim on this listing, and a claim that only gets abstentions ends with the bond to the maker`,
+  };
+}
+
+/** The pinned runner's own allowlist rule, from its checkout. */
+export function pinnedAllowlist(runnerDir) {
+  const { DEFAULT_REGISTRY_ALLOWLIST, allowedBy, parseAllowlist, parseImageRef } = createRequire(path.join(runnerDir, 'package.json'))('./src/registry.js');
+  const { entries } = parseAllowlist(DEFAULT_REGISTRY_ALLOWLIST);
+  return { defaults: DEFAULT_REGISTRY_ALLOWLIST, allowed: (repository) => Boolean(allowedBy(parseImageRef(`${repository}@sha256:${'0'.repeat(64)}`), entries)) };
+}
+
 async function start(opts) {
   const dir = path.resolve(opts.dir);
   const spec = JSON.parse(fs.readFileSync(opts.spec, 'utf8'));
@@ -126,6 +168,10 @@ async function start(opts) {
   const runnerDir = path.join(arbiter, 'code-runner');
   sh('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: runnerDir });
 
+  const note = publishTargetNote({ publishAs: opts['publish-as'], signing: opts.signing ?? 'dev', arbiter: pinnedAllowlist(runnerDir) });
+  if (note?.refuse) throw new Error(note.text);
+  if (note) process.stdout.write(`::warning::${note.text}\n`);
+
   const token = crypto.randomBytes(32).toString('hex');
   fs.writeFileSync(path.join(dir, 'runner.token'), token, { mode: 0o600 });
   const runnerPort = await freePort();
@@ -140,7 +186,16 @@ async function start(opts) {
   child.unref();
   state.pid = child.pid;
   write();
-  await until(async () => (await fetch(`http://127.0.0.1:${runnerPort}/health`, { headers: { authorization: `Bearer ${token}` } })).status === 200, 120000, 'the code-runner');
+  let health = null;
+  try {
+    await until(async () => {
+      const r = await fetch(`http://127.0.0.1:${runnerPort}/health`, { headers: { authorization: `Bearer ${token}` } });
+      health = { status: r.status, json: await r.json().catch(() => null) };
+      return runnerAnswersListings(health);
+    }, 120000, 'the code-runner');
+  } catch (err) {
+    throw new Error(`${err.message}: ${JSON.stringify(health?.json?.reasons ?? health?.status ?? 'no answer')}`);
+  }
 
   const config = builderConfig({ dir, registryPort, runnerPort, publishAs: opts['publish-as'], spec, explorerUrl: opts['explorer-url'] || null });
   fs.writeFileSync(path.join(dir, 'builder.json'), `${JSON.stringify(config, null, 2)}\n`);
@@ -169,7 +224,7 @@ async function main(argv) {
       fs.mkdirSync(opts.dir, { recursive: true, mode: 0o700 });
       fs.writeFileSync(path.join(opts.dir, 'sign.json'), `${JSON.stringify(signConfig({ signing: opts.signing, publishAs: opts['publish-as'] }), null, 2)}\n`);
     } else {
-      process.stderr.write('usage: node action/services.js start --dir <dir> --publish-as <repository> --spec <draft> [--runtime runsc|runc] [--explorer-url <url>]\n'
+      process.stderr.write('usage: node action/services.js start --dir <dir> --publish-as <repository> --spec <draft> [--runtime runsc|runc] [--signing dev|production] [--explorer-url <url>]\n'
         + '       node action/services.js stop --dir <dir>\n'
         + '       node action/services.js sign-config --dir <dir> --signing dev|production --publish-as <repository>\n');
       return 64;

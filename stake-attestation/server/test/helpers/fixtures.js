@@ -7,6 +7,7 @@
 import crypto from 'node:crypto';
 
 import { Wallet } from 'ethers';
+import { LISTING_REQUEST_MAX_BYTES, listingRequestRefusal } from '@verdikta/stake-attestation-shared/listing-request-size';
 
 import { codeReview } from '../../src/common.js';
 import { loadConfig } from '../../src/config.js';
@@ -99,6 +100,12 @@ function baselineFor(baseCommit) {
   };
 }
 
+/** What the builder's size rule says of a listing one byte over the bound. */
+export function tooLargeDetail() {
+  const bound = LISTING_REQUEST_MAX_BYTES;
+  return listingRequestRefusal({ spec: {}, attestation: {}, knownIssues: [], baseline: { pad: 'x'.repeat(bound + 1 - 6 - 10) } }, { codeReview }).detail;
+}
+
 const STEPS = ['spec', 'control', 'fetch', 'build', 'size', 'push', 'registry', 'verifiedSource', 'listingCheck', 'finalSpec'];
 
 function reportFor(draft, statuses = {}, maker = MAKER, deploymentProof = null) {
@@ -150,9 +157,10 @@ export function builtSpec(draft) {
  * Two hooks stand in for a builder that misbehaves: `alterSpec(spec)` edits the built
  * code_review.json before it is written and signed (the attestation verifies over the edit), and
  * `tamper({ spec, report, files })` edits the accepted result after signing. `delayMs` holds the
- * build open (Infinity: until `release()`).
+ * build open (Infinity: until `release()`). `baseline`: the baseline.json the build writes and signs.
+ *   'refused-too-large'  the builder's size rule refuses it (node P11)
  */
-export function fakeBuilder({ outcome = 'accepted', alterSpec = null, tamper = null, delayMs = 0 } = {}) {
+export function fakeBuilder({ outcome = 'accepted', alterSpec = null, tamper = null, delayMs = 0, baseline = null } = {}) {
   const key = codeReview.createDevBuilderKey();
   const calls = [];
   let release = null;
@@ -181,6 +189,12 @@ export function fakeBuilder({ outcome = 'accepted', alterSpec = null, tamper = n
         report.refusals.push({ code: 'LISTING_TOO_HEAVY', detail: 'the suite needs more than runSeconds', step: 'listingCheck' });
         return { status: 'refused', report, files: null, devTrust: null };
       }
+      if (outcome === 'refused-too-large') {
+        const report = reportFor(draft, { finalSpec: 'failed' }, maker, deploymentProof);
+        report.status = 'refused';
+        report.refusals.push({ code: 'LISTING_REQUEST_TOO_LARGE', detail: tooLargeDetail(), step: 'finalSpec' });
+        return { status: 'refused', report, files: null, devTrust: null };
+      }
       if (outcome === 'error') {
         const report = reportFor(draft, { listingCheck: 'failed', finalSpec: 'pending' }, maker, deploymentProof);
         report.steps = report.steps.filter((s) => s.status !== 'pending');
@@ -192,7 +206,7 @@ export function fakeBuilder({ outcome = 'accepted', alterSpec = null, tamper = n
       alterSpec?.(spec);
       const files = {
         codeReview: serialize(spec),
-        baseline: serialize(baselineFor(spec.baseCommit)),
+        baseline: serialize(baseline ?? baselineFor(spec.baseCommit)),
         knownIssues: knownIssuesBytes ? Buffer.from(knownIssuesBytes) : null,
         attestation: null,
       };

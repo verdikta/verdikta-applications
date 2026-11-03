@@ -24,14 +24,15 @@ const ISSUE = { title: 'Rounding favours the vault on withdraw', class: 'LOW', p
 export const KNOWN_ISSUES = Buffer.from(`${JSON.stringify([{ id: codeReview.knownIssueId(ISSUE), ...ISSUE }], null, 2)}\n`);
 
 /**
- * Runs buildListing on `draft` with doubles and returns its result.
+ * Runs buildListing on `draft` with doubles and returns its result, whatever it was.
  * @param {object} [o]
  * @param {object} [o.draft]
  * @param {Buffer|null} [o.knownIssues]
  * @param {object} [o.registry] - config.registry
  * @param {object} [o.runner] - the code-runner's `runner` block in its answer
+ * @param {object|null} [o.baseline] - the baseline.json the code-runner answers with
  */
-export async function acceptedBuild({ draft = draftSpec(), knownIssues = null, registry = { repository: REPOSITORY }, runner, compressedBytes = 300000000, maker = MAKER, deploymentProof = null, chainFor } = {}) {
+export async function doubledBuild({ draft = draftSpec(), knownIssues = null, registry = { repository: REPOSITORY }, runner, compressedBytes = 300000000, maker = MAKER, deploymentProof = null, chainFor, baseline = null } = {}) {
   const config = parseConfig({
     registry,
     runner: { url: 'http://127.0.0.1:8090', tokenEnv: 'CODE_RUNNER_TOKEN' },
@@ -42,6 +43,7 @@ export async function acceptedBuild({ draft = draftSpec(), knownIssues = null, r
   // build at the commit as the fixture's files and artifact.
   const rec = recordedExplorer({ getsourcecode: 'getsourcecode-vault.json', getcode: 'getcode-vault.json' });
   const runs = [];
+  const fetches = [];
   // a contract listing's owner signs, on a chain double
   const owner = Wallet.createRandom();
   const contract = draft.artifact?.kind === 'contract';
@@ -56,7 +58,7 @@ export async function acceptedBuild({ draft = draftSpec(), knownIssues = null, r
       if (args[0] === 'history') return { stdout: '700000000\n100000000\n' };
       return {};
     }),
-    fetchListedCommit: async (req) => ({ gitDir: req.dir }),
+    fetchListedCommit: async (req) => { fetches.push(req); return { gitDir: req.dir }; },
     writeBuildContext: () => ({ dockerfile: 'FROM x' }),
     registry: { imageInfo: async (digest) => ({ digest, manifestDigest: MANIFEST_DIGEST, compressedBytes, platforms: ['linux/amd64'], config: { os: 'linux', architecture: 'amd64' }, volumes: [] }) },
     explorerFor: (chainId, cfg) => createExplorer({ apiUrl: rec.apiUrl, apiKey: cfg.apiKey(), chainId, fetch: rec.fetch, timeoutMs: 5000 }),
@@ -71,7 +73,7 @@ export async function acceptedBuild({ draft = draftSpec(), knownIssues = null, r
     runner: {
       listingCheck: async (body) => {
         runs.push(body);
-        const d = definitive(body.image, acceptedListing(draft.baseCommit), runner);
+        const d = definitive(body.image, acceptedListing(draft.baseCommit, baseline ? { baseline } : {}), runner);
         return { status: d.status, json: d.body };
       },
     },
@@ -79,11 +81,17 @@ export async function acceptedBuild({ draft = draftSpec(), knownIssues = null, r
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-accepted-'));
   try {
     const out = await buildListing({ draft, knownIssues, maker, deploymentProof: signed, config, deps, workDir });
-    if (out.status !== 'accepted') throw new Error(`the doubled build was ${out.status}: ${JSON.stringify(out.report.refusals ?? out.report.error)}`);
-    return { ...out, runs };
+    return { ...out, runs, fetches };
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
+}
+
+/** As doubledBuild, for a test that needs the build accepted. */
+export async function acceptedBuild(opts = {}) {
+  const out = await doubledBuild(opts);
+  if (out.status !== 'accepted') throw new Error(`the doubled build was ${out.status}: ${JSON.stringify(out.report.refusals ?? out.report.error)}`);
+  return out;
 }
 
 /** Writes an accepted build into `dir` (as `build` does) and returns its files' bytes. */

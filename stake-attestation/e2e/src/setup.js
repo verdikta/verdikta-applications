@@ -30,9 +30,12 @@ export function installSiblings(log) {
  * verdikta-arbiter at the pin, in e2e/.arbiter/<commit>: fetched by id with no credential (the
  * repository is public), or SA_E2E_ARBITER_DIR, which must be at the pin unless
  * SA_E2E_ARBITER_UNPINNED=1 says otherwise, and the report then names what ran.
+ * @param {Function} log
+ * @param {Record<string, string|undefined>} [env]
+ * @param {{ packages?: string[] }} [o] - which of its packages to install (default: all the round runs)
  * @returns {{ dir: string, commit: string, pinned: boolean }}
  */
-export function arbiterCheckout(log, env = process.env) {
+export function arbiterCheckout(log, env = process.env, { packages = ARBITER_PACKAGES } = {}) {
   let dir = env.SA_E2E_ARBITER_DIR;
   if (!dir) {
     dir = path.join(E2E_DIR, '.arbiter', PIN.commit.slice(0, 12));
@@ -51,7 +54,7 @@ export function arbiterCheckout(log, env = process.env) {
   if (!pinned && env.SA_E2E_ARBITER_UNPINNED !== '1') {
     throw new Error(`verdikta-arbiter at ${dir} is at ${commit}, not the pinned ${PIN.commit} (set SA_E2E_ARBITER_UNPINNED=1 to run another commit, or move arbiter.pin.json)`);
   }
-  for (const name of ARBITER_PACKAGES) {
+  for (const name of packages) {
     const pkg = path.join(dir, name);
     if (installed(pkg)) continue;
     log(`npm ci in verdikta-arbiter/${name}`);

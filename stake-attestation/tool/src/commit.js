@@ -125,6 +125,7 @@ async function findCommitted(ctx, state) {
 
 async function prepare(ctx, ws, listing, inputs, hunter, listingId) {
   const startBlock = await ctx.rpc(() => ctx.provider.getBlockNumber());
+  ws.keepAside();
   const built = buildClaimArchive(inputs);
   ws.write('archive.zip', built);
   await ctx.step('prepare:archive');

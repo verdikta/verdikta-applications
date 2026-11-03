@@ -200,6 +200,17 @@ export function openWorkspace(claimDir) {
     loadState,
     saveState,
     withLock,
+    /**
+     * Sets aside what a first draw would replace. With no state file these are a prepare that died, or a state file
+     * someone removed: nothing here can tell, and the keys of a sent commit cannot be made again, so nothing is deleted.
+     */
+    keepAside() {
+      const stamp = `${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
+      for (const name of ['archive.zip', 'keys.json', 'ciphertext.age']) {
+        if (readOptional(name) !== null) fs.renameSync(pathOf(name), pathOf(`${name}.set-aside-${stamp}`));
+      }
+      fsyncDir(dir);
+    },
     /** Removes a prepared claim's files: the caller has checked nothing was signed. */
     removePrepared() {
       for (const name of ['archive.zip', 'keys.json', 'ciphertext.age', 'state.json']) fs.rmSync(pathOf(name), { force: true });

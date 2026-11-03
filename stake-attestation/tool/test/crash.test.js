@@ -209,6 +209,19 @@ test('an RPC that lags behind its own receipt does not make a second commit', as
   assert.equal(await w.claimCount(), count + 1n);
 });
 
+test('a state file someone removed after a sent commit: the keys that commit needs are set aside, never overwritten', async () => {
+  const l = await w.listing();
+  const dir = makeClaimDir();
+  await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
+  const keys = fs.readFileSync(statePath(dir, 'keys.json'));
+  fs.rmSync(statePath(dir));
+  await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
+  const kept = fs.readdirSync(`${dir}/.verdikta-claim`).filter((n) => n.startsWith('keys.json.set-aside-'));
+  assert.equal(kept.length, 1);
+  assert.ok(fs.readFileSync(statePath(dir, kept[0])).equals(keys));
+  assert.equal(fs.statSync(statePath(dir, kept[0])).mode & 0o777, 0o600);
+});
+
 test('a state file in pieces is a refusal, not a fresh start that would draw new keys over a sent commit', async () => {
   const l = await w.listing();
   const dir = makeClaimDir();

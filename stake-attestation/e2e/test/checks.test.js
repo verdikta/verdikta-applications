@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { abstainEndChecks, abstainedRoundChecks, evidenceChecks, gateSettledChecks, juryPathChecks, moneyChecks, pageChecks, recordChecks, requestChecks, servedRoundChecks, settlementChecks } from '../src/checks.js';
+import { abstainEndChecks, abstainRunChecks, abstainedRoundChecks, evidenceChecks, gateSettledChecks, juryPathChecks, moneyChecks, pageChecks, recordChecks, requestChecks, servedRoundChecks, settlementChecks } from '../src/checks.js';
 
 const failing = (list) => list.filter((c) => !c.ok).map((c) => c.name);
 const allPass = (list) => assert.deepEqual(failing(list), []);
@@ -21,9 +21,11 @@ test('servedRoundChecks: K, M, N, P, or it fails', () => {
   fails(servedRoundChecks('x', served({ jobs: jobs('commit', 6) })), 'x.round.revealJobs');
   fails(servedRoundChecks('x', served({ reveals: 1 })), 'x.round.reveals');
   fails(servedRoundChecks('x', served({ justifications: 'QmA' })), 'x.round.clustered');
-  allPass(servedRoundChecks('x', served({ reverted: [{ phase: 'reveal', reason: 'AggregationComplete' }] })), 'the M - N late reveals revert, as on the real contract');
+  const late = (phase) => ({ phase, reason: 'AggregationComplete' });
+  allPass(servedRoundChecks('x', served({ reverted: [late('reveal')] })), 'the M - N late reveals revert, as on the real contract');
+  allPass(servedRoundChecks('x', served({ reverted: [late('reveal'), late('commit'), late('commit')] })), 'and so do the K - M commits that land after it finalized');
   fails(servedRoundChecks('x', served({ reverted: [{ phase: 'reveal', reason: 'MalformedPayload' }] })), 'x.round.noRevert');
-  fails(servedRoundChecks('x', served({ reverted: [{ phase: 'reveal', reason: 'AggregationComplete' }, { phase: 'reveal', reason: 'AggregationComplete' }] })), 'x.round.noRevert');
+  fails(servedRoundChecks('x', served({ reverted: [late('reveal'), late('reveal'), late('commit'), late('commit')] })), 'x.round.noRevert');
   fails(servedRoundChecks('x', served({ ignored: [{ reason: 'RevealHashMismatch' }] })), 'x.round.noBadReveal');
   allPass(servedRoundChecks('x', served({ ignored: [{ reason: 'commit after the reveal phase began' }] })));
 });
@@ -34,6 +36,19 @@ test('abstainedRoundChecks: an abstention stays an abstention', () => {
   fails(abstainedRoundChecks('x', { ...round, status: 'fulfilled' }), 'x.round.noVerdict');
   fails(abstainedRoundChecks('x', { ...round, commits: 1 }), 'x.round.allAbstained');
   fails(abstainedRoundChecks('x', { ...round, likelihoods: [1n] }), 'x.round.noResult');
+});
+
+test('abstainRunChecks: the arbiter ran it and abstained: an EA that is down leaves the same empty round', () => {
+  const job = (over = {}) => ({ status: 500, error: 'CODE_REVIEW_RUNNER_ABSTAIN: the runner abstained (cause step_timeout, step poc:1)', ...over });
+  const obs = { round: { jobs: [job(), job()] }, runnerCalls: [{ status: 503, response: { outcome: 'abstain', abstain: { cause: 'step_timeout' } } }], aiCalls: [], providerCalls: [], cause: 'step_timeout' };
+  allPass(abstainRunChecks('x', obs));
+  fails(abstainRunChecks('x', { ...obs, runnerCalls: [] }), 'x.runner.ranIt');
+  fails(abstainRunChecks('x', { ...obs, runnerCalls: [{ response: { outcome: 'abstain', abstain: { cause: 'oom' } } }] }), 'x.runner.ranIt');
+  fails(abstainRunChecks('x', { ...obs, runnerCalls: [{ response: { outcome: 'definitive' } }] }), 'x.runner.ranIt');
+  fails(abstainRunChecks('x', { ...obs, round: { jobs: [] } }), 'x.ea.abstained');
+  fails(abstainRunChecks('x', { ...obs, round: { jobs: [job({ status: 599, error: 'connect ECONNREFUSED' })] } }), 'x.ea.abstained');
+  fails(abstainRunChecks('x', { ...obs, round: { jobs: [job({ error: 'CODE_REVIEW_AI_ABSTAIN: the AI Node answered 503' })] } }), 'x.ea.abstained');
+  fails(abstainRunChecks('x', { ...obs, aiCalls: [{}] }), 'x.noAi');
 });
 
 test('requestChecks: the composition the contract owes', () => {
@@ -56,7 +71,7 @@ const juryObs = (over = {}) => ({
   providerCalls: providerCalls(),
   panel,
   justifier,
-  disclosureSecret: '0xsecret',
+  disclosureKeys: ['0xAA11', '0xbb22'],
   report: { classPlatform: true, classPlatformName: 'linux/amd64' },
   ...over,
 });
@@ -72,7 +87,13 @@ test('juryPathChecks: the sandbox ran, the jury was reached, the keys stayed out
   fails(juryPathChecks('x', juryObs({ providerCalls: [] })), 'x.jury.everyJuror');
   fails(juryPathChecks('x', juryObs({ providerCalls: providerCalls().map((c) => ({ ...c, outcome: 'failed' })) })), 'x.jury.everyJuror');
   fails(juryPathChecks('x', juryObs({ providerCalls: providerCalls().filter((c) => c.model !== 'j') })), 'x.jury.justifier');
-  fails(juryPathChecks('x', juryObs({ providerCalls: [...providerCalls().slice(1), { model: 'a', outcome: 'answered', prompt: 'verdikta-disclosure: 0xsecret' }] })), 'x.jury.keysNotSeen');
+  const withPrompt = (prompt) => juryObs({ providerCalls: [...providerCalls().slice(1), { model: 'a', outcome: 'answered', prompt }] });
+  fails(juryPathChecks('x', withPrompt('verdikta-disclosure: x')), 'x.jury.keysNotSeen');
+  fails(juryPathChecks('x', withPrompt('the content key is 0xaa11')), 'x.jury.keysNotSeen');
+  fails(juryPathChecks('x', withPrompt('the content key is AA11, with no prefix')), 'x.jury.keysNotSeen');
+  fails(juryPathChecks('x', withPrompt('the ephemeral key is 0xBB22')), 'x.jury.keysNotSeen');
+  fails(juryPathChecks('x', juryObs({ aiCalls: Array.from({ length: 6 }, () => ({ status: 200, request: { codeReview: {}, prompt: 'bb22' } })) })), 'x.jury.keysNotSeen');
+  fails(juryPathChecks('x', juryObs({ disclosureKeys: [] })), 'x.jury.keysKnown');
 });
 
 test('gateSettledChecks: a gate settled it, and no model was asked', () => {

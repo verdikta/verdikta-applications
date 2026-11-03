@@ -19,8 +19,9 @@ export function servedRoundChecks(prefix, round, config = REAL_CONFIG) {
     check(`${prefix}.round.revealJobs`, revealJobs.length === config.m, `${revealJobs.length} reveal jobs: only the first M commits are asked`),
     check(`${prefix}.round.reveals`, round?.reveals === config.n, `${round?.reveals} reveals before it finalized, N = ${config.n}`),
     check(`${prefix}.round.clustered`, round?.clustered === config.p && cids.length === config.p, `${round?.clustered} clustered, ${cids.length} justification CIDs, P = ${config.p}`),
-    // Only the M - N reveals that lose the race revert, on the real contract too: AggregationComplete.
-    check(`${prefix}.round.noRevert`, (round?.reverted ?? []).length <= config.m - config.n && (round?.reverted ?? []).every((r) => r.reason === 'AggregationComplete' && r.phase === 'reveal'), JSON.stringify(round?.reverted ?? [])),
+    // Only the jobs that lose the race revert, on the real contract too: the K - M late commits and the
+    // M - N late reveals that land after the N-th reveal finalized it (AggregationComplete comes first there).
+    check(`${prefix}.round.noRevert`, (round?.reverted ?? []).length <= config.k - config.n && (round?.reverted ?? []).every((r) => r.reason === 'AggregationComplete'), JSON.stringify(round?.reverted ?? [])),
     check(`${prefix}.round.noBadReveal`, !(round?.ignored ?? []).some((i) => /Reveal|Invalid/.test(i.reason)), JSON.stringify(round?.ignored ?? [])),
   ];
 }
@@ -31,6 +32,19 @@ export function abstainedRoundChecks(prefix, round, config = REAL_CONFIG) {
     check(`${prefix}.round.noVerdict`, round?.status === 'no-verdict', `status ${round?.status}`),
     check(`${prefix}.round.allAbstained`, round?.abstained === config.k && round?.commits === 0 && round?.reveals === 0, `${round?.abstained} of ${config.k} jobs with no transaction, ${round?.commits} commits, ${round?.reveals} reveals`),
     check(`${prefix}.round.noResult`, round?.likelihoods === null && round?.justifications === null, `likelihoods ${JSON.stringify(round?.likelihoods, big)}`),
+  ];
+}
+
+/**
+ * That the arbiter really ran the proof and really abstained: an EA that is down leaves the same empty
+ * round. What the runner answered the EA, and what the EA said about it, for every job of the round.
+ */
+export function abstainRunChecks(prefix, { round, runnerCalls, aiCalls, providerCalls, cause }) {
+  const jobs = round?.jobs ?? [];
+  return [
+    check(`${prefix}.runner.ranIt`, runnerCalls.length >= 1 && runnerCalls.every((c) => c.response?.outcome === 'abstain' && c.response?.abstain?.cause === cause), JSON.stringify(runnerCalls.map((c) => [c.status, c.response?.outcome, c.response?.abstain?.cause]))),
+    check(`${prefix}.ea.abstained`, jobs.length > 0 && jobs.every((j) => j.status === 500 && j.error.startsWith('CODE_REVIEW_RUNNER_ABSTAIN') && j.error.includes(cause)), JSON.stringify(jobs.map((j) => [j.status, j.error.slice(0, 60)]))),
+    check(`${prefix}.noAi`, aiCalls.length === 0 && providerCalls.length === 0, `${aiCalls.length} AI Node call(s), ${providerCalls.length} provider call(s)`),
   ];
 }
 
@@ -45,11 +59,17 @@ export function requestChecks(prefix, round, { listingCid, bcid, priorBcids = []
 }
 
 /** What the jury path really did: one sandbox for the operator's K jobs, a jury per job, the keys kept from every model. */
-export function juryPathChecks(prefix, { runnerCalls, aiCalls, providerCalls, panel, justifier, disclosureSecret, report, config = REAL_CONFIG }) {
+export function juryPathChecks(prefix, { runnerCalls, aiCalls, providerCalls, panel, justifier, disclosureKeys, report, config = REAL_CONFIG }) {
   const jurorCalls = providerCalls.filter((c) => panel.some((p) => p.model === c.model));
   const justifierCalls = providerCalls.filter((c) => c.model === justifier.model);
   const definitive = runnerCalls.length === 1 && runnerCalls[0].response?.outcome === 'definitive';
   const reportNow = runnerCalls[0]?.response?.report;
+  // Both keys of the line, in either spelling, in what any model was sent and in what the EA sent the AI Node.
+  const forms = (disclosureKeys ?? []).flatMap((k) => [String(k).toLowerCase(), String(k).toLowerCase().replace(/^0x/, '')]);
+  const holdsAKey = (text) => {
+    const t = String(text).toLowerCase();
+    return t.includes('verdikta-disclosure') || forms.some((f) => t.includes(f));
+  };
   return [
     check(`${prefix}.runner.oneSandbox`, runnerCalls.length === 1, `${runnerCalls.length} run(s) for ${config.k} jobs`),
     check(`${prefix}.runner.definitive`, definitive && Boolean(reportNow) && !runnerCalls[0].response.reportUnavailable, definitive ? `report ${runnerCalls[0].response.reportSha256}` : JSON.stringify(runnerCalls[0]?.response?.abstain ?? runnerCalls[0]?.status)),
@@ -57,7 +77,8 @@ export function juryPathChecks(prefix, { runnerCalls, aiCalls, providerCalls, pa
     check(`${prefix}.jury.perJob`, aiCalls.length === config.k && aiCalls.every((c) => c.status === 200 && c.request?.codeReview), `${aiCalls.length} AI Node calls, ${aiCalls.filter((c) => c.status === 200).length} answered`),
     check(`${prefix}.jury.everyJuror`, jurorCalls.length === config.k * panel.length && jurorCalls.every((c) => c.outcome === 'answered'), `${jurorCalls.length} juror calls, ${config.k} jobs x ${panel.length} jurors`),
     check(`${prefix}.jury.justifier`, justifierCalls.length === config.k, `${justifierCalls.length} justifier calls`),
-    check(`${prefix}.jury.keysNotSeen`, !providerCalls.some((c) => String(c.prompt).includes('verdikta-disclosure') || (disclosureSecret && String(c.prompt).includes(disclosureSecret))), 'no prompt carries the disclosure line or its keys'),
+    check(`${prefix}.jury.keysKnown`, (disclosureKeys ?? []).length === 2, `${(disclosureKeys ?? []).length} keys read from the request's line`),
+    check(`${prefix}.jury.keysNotSeen`, !providerCalls.some((c) => holdsAKey(c.prompt)) && !aiCalls.some((c) => holdsAKey(JSON.stringify(c.request))), 'no prompt and no AI Node request carries the disclosure line or either key'),
   ];
 }
 

@@ -68,35 +68,47 @@ export async function startRegistryPair(h, docker, instance) {
   }
 }
 
+/** A docker command whose answer the cleanup rests on: a failure is the round's, never an empty answer. */
+async function checked(h, docker, args, timeoutMs) {
+  const r = await h.runText(docker, args, { timeoutMs });
+  if (r.exitCode !== 0) throw new Error(`docker ${args.slice(0, 2).join(' ')} exited ${r.exitCode}: ${String(r.stderr).slice(0, 300)}`);
+  return r.stdout;
+}
+
 /** Every image of this run's repository on the daemon (the builder's tag, the runner's pull). */
 export async function removeRunImages(h, docker, instance) {
-  const ls = await h.runText(docker, ['image', 'ls', '--digests', '--format', '{{.Repository}}\t{{.Tag}}\t{{.Digest}}'], { timeoutMs: 60000 });
+  const listed = await checked(h, docker, ['image', 'ls', '--digests', '--format', '{{.Repository}}\t{{.Tag}}\t{{.Digest}}'], 60000);
   const refs = new Set();
-  for (const line of ls.stdout.split('\n').filter(Boolean)) {
+  for (const line of listed.split('\n').filter(Boolean)) {
     const [repo, tag, digest] = line.split('\t');
     if (!repo.includes(`/${instance}/`)) continue;
     if (tag && tag !== '<none>') refs.add(`${repo}:${tag}`);
     if (digest && digest !== '<none>') refs.add(`${repo}@${digest}`);
   }
-  if (refs.size) await h.runText(docker, ['image', 'rm', '--force', ...refs], { timeoutMs: 120000 });
+  if (refs.size) await checked(h, docker, ['image', 'rm', '--force', ...refs], 120000);
   return [...refs];
 }
 
-/** Every container of this run: the runner's by its instance label, a builder step's by its image, A6a's registry by name. */
-export async function removeRunContainers(h, docker, instance) {
-  const names = (await leftovers(h, docker, instance)).containers;
-  if (names.length) await h.runText(docker, ['rm', '--force', '--volumes', ...names], { timeoutMs: 120000 });
-  return names;
+/**
+ * What of this run the daemon still holds: a container whose name, image or labels name the instance
+ * (the runner's sandboxes, A6a's registry, a builder step on the run's image), one of `names` (a builder
+ * step on a shared image, named by its process), and the images of the run's repository.
+ * @throws {Error} when Docker cannot say: an inventory that failed is not an empty one
+ */
+export async function leftovers(h, docker, instance, names = []) {
+  const containers = await checked(h, docker, ['ps', '--all', '--format', '{{.Names}}\t{{.Image}}\t{{.Labels}}'], 30000);
+  const images = await checked(h, docker, ['image', 'ls', '--format', '{{.Repository}}'], 30000);
+  return {
+    containers: containers.split('\n').filter((l) => l.includes(instance) || names.includes(l.split('\t')[0])).map((l) => l.split('\t')[0]),
+    images: [...new Set(images.split('\n').filter((l) => l.includes(`/${instance}/`)))],
+  };
 }
 
-/** What of this run the daemon still holds: every name a check after the round looks for. */
-export async function leftovers(h, docker, instance) {
-  const containers = await h.runText(docker, ['ps', '--all', '--format', '{{.Names}}\t{{.Image}}\t{{.Labels}}'], { timeoutMs: 30000 });
-  const images = await h.runText(docker, ['image', 'ls', '--format', '{{.Repository}}'], { timeoutMs: 30000 });
-  return {
-    containers: containers.stdout.split('\n').filter((l) => l.includes(instance)).map((l) => l.split('\t')[0]),
-    images: [...new Set(images.stdout.split('\n').filter((l) => l.includes(`/${instance}/`)))],
-  };
+/** Removes what leftovers finds. */
+export async function removeRunContainers(h, docker, instance, names = []) {
+  const found = (await leftovers(h, docker, instance, names)).containers;
+  if (found.length) await checked(h, docker, ['rm', '--force', '--volumes', ...found], 120000);
+  return found;
 }
 
 /**

@@ -2,9 +2,10 @@
 // mock that record it. The real EA and the real mock are the round's (test/round.test.js).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 
 import { REAL_CONFIG, revealHashOf } from '../src/aggregatorRound.js';
-import { createBridge, readJobAnswer } from '../src/bridge.js';
+import { createBridge, evaluateOver, readJobAnswer } from '../src/bridge.js';
 
 const OPERATOR = '0x0000000000000000000000000000000000000001';
 const AGG = `0x${'ab'.repeat(32)}`;
@@ -103,6 +104,56 @@ test('the mock gets what the real contract would hold: the floored mean of the c
   const refunds = mock.sent.filter((s) => s.name === 'setRefundAmount').map((s) => s.args[0]);
   assert.deepEqual(refunds, [FEE * 6n, 0n], 'first what a timed-out round spends (the base fees), then what this one spent');
   assert.equal(record.spent, FEE * 12n);
+});
+
+test('the result goes out at the N-th reveal, as the real contract finalizes inside it: the jobs still out wait for nothing', async () => {
+  const mock = fakeMock();
+  const ea = honestEa();
+  const held = [];
+  const hold = (body) => new Promise((resolve) => { held.push(() => ea.evaluate(body).then(resolve)); });
+  let commits = 0;
+  let reveals = 0;
+  const evaluate = (body) => {
+    if (body.data.cid.startsWith('1:')) {
+      commits += 1;
+      return commits <= REAL_CONFIG.m ? ea.evaluate(body) : hold(body);
+    }
+    reveals += 1;
+    return reveals <= REAL_CONFIG.n ? ea.evaluate(body) : hold(body);
+  };
+  const bridge = createBridge({ mock, evaluate, operator: OPERATOR, requestedClass: CLASS, pollMs: 5 });
+  await bridge.start(0);
+  const record = await bridge.done(AGG);
+  assert.equal(record.status, 'fulfilled');
+  assert.equal(mock.sent.filter((s) => s.name === 'scriptResult').length, 1, 'published with three jobs still out');
+  assert.equal(record.quiet, false);
+  assert.equal(held.length, REAL_CONFIG.k - REAL_CONFIG.m + REAL_CONFIG.m - REAL_CONFIG.n);
+  held.forEach((go) => go());
+  const quiet = await bridge.quiet(AGG);
+  await bridge.stop();
+  assert.equal(quiet.quiet, true);
+  assert.equal(mock.sent.filter((s) => s.name === 'scriptResult').length, 1, 'and only once');
+  // Those that land after it finalized revert, as AggregationComplete, whatever phase they are of.
+  assert.deepEqual(quiet.reverted.map((r) => r.reason), ['AggregationComplete', 'AggregationComplete', 'AggregationComplete']);
+  assert.deepEqual(quiet.reverted.map((r) => r.phase).sort(), ['commit', 'commit', 'reveal']);
+});
+
+test('stopping does not wait for an EA that does not answer: every request still out is ended', async () => {
+  const sockets = new Set();
+  const server = http.createServer(() => { /* never answers */ });
+  server.on('connection', (s) => { sockets.add(s); });
+  await new Promise((r) => { server.listen(0, '127.0.0.1', r); });
+  const evaluate = evaluateOver(`http://127.0.0.1:${server.address().port}`);
+  const bridge = createBridge({ mock: fakeMock(), evaluate, operator: OPERATOR, requestedClass: CLASS, pollMs: 5 });
+  await bridge.start(0);
+  while (![...bridge.rounds.values()].some((r) => r.jobs.length === REAL_CONFIG.k)) await new Promise((r) => { setTimeout(r, 5); });
+  await new Promise((r) => { setTimeout(r, 50); });
+  const started = Date.now();
+  const cut = await bridge.stop();
+  assert.equal(cut, REAL_CONFIG.k);
+  assert.ok(Date.now() - started < 3000, `${Date.now() - started} ms`);
+  for (const s of sockets) s.destroy();
+  server.close();
 });
 
 test('the fee ceiling clamps as the real one does', async () => {

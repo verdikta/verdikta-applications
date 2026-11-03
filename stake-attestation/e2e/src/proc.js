@@ -88,25 +88,47 @@ export async function waitUntil(what, ready, { timeoutMs, everyMs = 250, proc = 
   }
 }
 
-/**
- * What a killed service left running. The server runs each builder step in a process group of its own,
- * so stopping the server does not reach it. Everything of a run names the run's folder or its instance.
- * @param {string[]} marks
- * @returns {number[]} the pids signalled
- */
-export function killProcessesNaming(marks) {
-  const ps = spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  const pids = (ps.stdout ?? '').split('\n')
-    .map((line) => line.trim())
-    .filter((line) => marks.some((m) => line.includes(m)))
-    .map((line) => Number(line.split(/\s+/)[0]))
-    .filter((pid) => Number.isInteger(pid) && pid !== process.pid);
-  for (const pid of pids) {
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch { /* gone */ }
+function processTable() {
+  const ps = spawnSync('ps', ['-axww', '-o', 'pid=,pgid=,command='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  if (ps.status !== 0) throw new Error(`ps exited ${ps.status ?? ps.signal ?? ps.error?.message}`);
+  return ps.stdout.split('\n').map((line) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line)).filter(Boolean)
+    .map((m) => ({ pid: Number(m[1]), pgid: Number(m[2]), command: m[3] }));
+}
+
+const signalled = (id, signal) => {
+  try {
+    process.kill(id, signal);
+    return true;
+  } catch {
+    return false;
   }
-  return pids;
+};
+
+/**
+ * What a stopped service left running. The server runs each builder step in a process group of its own,
+ * so stopping the server does not reach it. Such a step names the run's folder or instance, its docker
+ * CLI children are in its group, and they name the scanners' and sandboxes' containers (vab-<random>, with
+ * a generic label, on a daemon other runs share): read here, before anything is stopped, so those and
+ * no others are removed. Children of this process (the tool) are in its own group, and go one by one.
+ * @param {string[]} marks - text only this run's processes carry
+ * @returns {Promise<{ groups: number[], singles: number[], containers: string[] }>}
+ */
+export async function stopProcessesNaming(marks, { graceMs = 10000 } = {}) {
+  const table = processTable();
+  const ownGroup = table.find((r) => r.pid === process.pid)?.pgid;
+  const hits = table.filter((r) => r.pid !== process.pid && marks.some((m) => r.command.includes(m)));
+  const groups = [...new Set(hits.map((r) => r.pgid))].filter((g) => g !== ownGroup);
+  const singles = hits.filter((r) => r.pgid === ownGroup).map((r) => r.pid);
+  const members = table.filter((r) => groups.includes(r.pgid));
+  const containers = [...new Set([...hits, ...members].map((r) => /--name (vab-[0-9a-f]+)/.exec(r.command)?.[1]).filter(Boolean))];
+  // SIGTERM first: the docker CLI passes it to the container it is attached to.
+  for (const g of groups) signalled(-g, 'SIGTERM');
+  for (const p of singles) signalled(p, 'SIGTERM');
+  const until = Date.now() + graceMs;
+  const alive = () => [...groups.map((g) => -g), ...singles].filter((id) => signalled(id, 0));
+  while (alive().length && Date.now() < until) await sleep(100);
+  for (const id of alive()) signalled(id, 'SIGKILL');
+  return { groups, singles, containers };
 }
 
 /** A command that must succeed; its output is the error when it does not. */

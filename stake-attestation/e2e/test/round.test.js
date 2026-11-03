@@ -27,7 +27,7 @@ before(async () => {
     const child = spawn(process.execPath, ['bin/round.js', '--report', reportFile], {
       cwd: E2E,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, SA_E2E_LOG_DIR: process.env.SA_E2E_LOG_DIR ?? path.join(E2E, '.round', 'logs') },
+      env: process.env,
     });
     let out = '';
     child.stdout.on('data', (d) => { out += d; process.stderr.write(d); });
@@ -77,7 +77,7 @@ test('acceptance 2: the gate-failing claim settles INVALID with the bond to the 
 });
 
 test('an abstention is never a settled claim: rounds fail, a fresh prepay, then expiry with the bond to the maker (E6)', () => {
-  has('abstain.check.forecast', 'abstain.first.round.allAbstained', 'abstain.first.stillOpen', 'abstain.first.money.refundAtFinalize', 'abstain.retrigger.freshPrepay', 'abstain.second.round.allAbstained', 'abstain.keeper.expired', 'abstain.expiry.money.bondToMaker', 'abstain.expiry.money.hunterGetsNothing', 'abstain.never.judged', 'abstain.never.settled', 'abstain.ended.expired', 'abstain.nothingUploaded');
+  has('abstain.check.forecast', 'abstain.first.round.allAbstained', 'abstain.first.runner.ranIt', 'abstain.first.ea.abstained', 'abstain.first.noAi', 'abstain.second.runner.ranIt', 'abstain.second.ea.abstained', 'abstain.first.stillOpen', 'abstain.first.money.refundAtFinalize', 'abstain.retrigger.freshPrepay', 'abstain.second.round.allAbstained', 'abstain.keeper.expired', 'abstain.expiry.money.bondToMaker', 'abstain.expiry.money.hunterGetsNothing', 'abstain.never.judged', 'abstain.never.settled', 'abstain.ended.expired', 'abstain.nothingUploaded');
 });
 
 test('review focus: the bridge ran the real K, M, N and P, and what the real contract would do with the answers', () => {
@@ -89,7 +89,7 @@ test('review focus: the bridge ran the real K, M, N and P, and what the real con
 });
 
 test('nothing is a stand-in for a verdict: the runner, the jury and the evidence each say they ran', () => {
-  has('valid.runner.oneSandbox', 'valid.runner.definitive', 'valid.runner.reportPlatform', 'valid.jury.perJob', 'valid.jury.everyJuror', 'valid.jury.justifier', 'valid.jury.keysNotSeen', 'valid.evidence.uploads', 'valid.evidence.settlement', 'valid.evidence.reportHash');
+  has('valid.runner.oneSandbox', 'valid.runner.definitive', 'valid.runner.reportPlatform', 'valid.jury.perJob', 'valid.jury.everyJuror', 'valid.jury.justifier', 'valid.jury.keysKnown', 'valid.jury.keysNotSeen', 'valid.evidence.uploads', 'valid.evidence.settlement', 'valid.evidence.reportHash');
 });
 
 test('the embargo and the queue are the chain\'s and the tool\'s, not the script\'s order', () => {
@@ -111,6 +111,7 @@ test('on the class platform the runner\'s own entry point and report path; elsew
 
 test('it left nothing behind', () => {
   assert.deepEqual(report.leftovers, { containers: [], images: [] });
+  assert.deepEqual(report.cleanupFailures, []);
   const docker = (...args) => spawnSync('docker', args, { encoding: 'utf8', timeout: 60000, env: { ...process.env, DOCKER_CONFIG: tmp } });
   const containers = docker('ps', '--all', '--format', '{{.Names}}\t{{.Image}}\t{{.Labels}}').stdout.split('\n').filter((l) => l.includes(report.instance));
   assert.deepEqual(containers, []);

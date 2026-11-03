@@ -14,13 +14,13 @@ import { createBridge, evaluateOver } from './bridge.js';
 import { readPages } from './browser.js';
 import { startChain } from './chain.js';
 import {
-  abstainEndChecks, abstainedRoundChecks, evidenceChecks, gateSettledChecks, juryPathChecks, moneyChecks, pageChecks,
+  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, evidenceChecks, gateSettledChecks, juryPathChecks, moneyChecks, pageChecks,
   recordChecks, requestChecks, servedRoundChecks, settlementChecks,
 } from './checks.js';
 import {
   AWARDS_WEI, BOND_WEI, ESCROW_WEI, GIT_HOST, JURY_AVERAGE, JUROR_SCORES, JUSTIFIER, POC_MARKER, REPORT_MARKER, WINDOWS, claimFolder, draftSpec, makeRepository,
 } from './fixtures.js';
-import { killProcessesNaming, waitUntil } from './proc.js';
+import { stopProcessesNaming, waitUntil } from './proc.js';
 import {
   arbiterHarness, cleanDockerConfig, leftovers, newRunnerToken, removeRunContainers, removeRunImages, startClient, startIpfs, startRegistryPair, startServer,
 } from './services.js';
@@ -36,6 +36,7 @@ const REQUEST_GAS_STAND_IN = 3_000_000;
 const OUTCOMES = ['INVALID', 'DUPLICATE', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
 const CLAIM_STATES = ['Committed', 'Revealable', 'Revealed', 'Judged', 'Disputed', 'Settled', 'Expired', 'RoundFailed'];
 const EXPIRIES = ['None', 'Undisclosed', 'Unrevealed', 'RoundsFailed', 'SubmissionsRefused'];
+const DEFAULT_LOG_ROOT = path.join(E2E_DIR, '.round', 'logs');
 const LISTING_TIMEOUT_MS = 900_000;
 const CHAIN_WAIT_MS = 120_000;
 
@@ -44,23 +45,25 @@ class CheckFailed extends Error {}
 /**
  * @param {object} [o]
  * @param {(line: string) => void} [o.log]
- * @param {string|null} [o.breakName] - SA_E2E_BREAK: break the round on purpose (runner-start, valid-claim-abstains)
+ * @param {string|null} [o.breakName] - SA_E2E_BREAK: break the round on purpose (runner-start, valid-claim-abstains, signal-in-scan)
  * @param {boolean} [o.requireClassPlatform] - SA_E2E_REQUIRE_CLASS_PLATFORM=1: anything but linux/amd64 is a failure
- * @param {string} [o.logDir] - SA_E2E_LOG_DIR
+ * @param {string} [o.logDir] - SA_E2E_LOG_DIR: the run's logs go in a new folder inside it, and nothing there is removed
  * @param {(report: object) => void} [o.onFinished] - called with the report, on a signal too: a signal ends the process here
  * @returns {Promise<object>} the report
  */
-export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), breakName = process.env.SA_E2E_BREAK || null, requireClassPlatform = process.env.SA_E2E_REQUIRE_CLASS_PLATFORM === '1', logDir: logDirOption = process.env.SA_E2E_LOG_DIR || path.join(E2E_DIR, '.round', 'logs'), onFinished = () => {} } = {}) {
+export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), breakName = process.env.SA_E2E_BREAK || null, requireClassPlatform = process.env.SA_E2E_REQUIRE_CLASS_PLATFORM === '1', logDir: logRoot = process.env.SA_E2E_LOG_DIR || null, onFinished = () => {} } = {}) {
   const started = Date.now();
   const instance = `sae2e${crypto.randomBytes(4).toString('hex')}`;
   const workDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'sa-e2e-'));
-  const report = { ok: false, instance, workDir, breakName, stages: [], checks: [], pids: [], platform: null, classPlatform: null, arbiter: null, failure: null, signal: null, leftovers: null, seconds: null };
-  fs.rmSync(logDirOption, { recursive: true, force: true });
-  fs.mkdirSync(logDirOption, { recursive: true });
-  const logDir = logDirOption;
+  const report = { ok: false, instance, workDir, breakName, stages: [], checks: [], pids: [], platform: null, classPlatform: null, arbiter: null, failure: null, signal: null, leftovers: null, stopped: null, cancelledJobs: null, cleanupFailures: [], seconds: null };
+  // Its own folder under a directory someone named, which may hold anything: only the default, ours, is emptied.
+  if (!logRoot) fs.rmSync(DEFAULT_LOG_ROOT, { recursive: true, force: true });
+  const logDir = path.join(logRoot ?? DEFAULT_LOG_ROOT, instance);
+  fs.mkdirSync(logDir, { recursive: true });
   report.logDir = logDir;
 
   const closers = [];
+  let inventoryDue = false;
   let closing = null;
   const close = () => {
     closing ??= (async () => {
@@ -68,19 +71,28 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
         try {
           await c();
         } catch (err) {
+          report.cleanupFailures.push(err.message);
           log(`[round] cleanup: ${err.message}`);
         }
       }
-      fs.rmSync(workDir, { recursive: true, force: true });
+      try {
+        fs.rmSync(workDir, { recursive: true, force: true });
+      } catch (err) {
+        report.cleanupFailures.push(err.message);
+      }
     })();
     return closing;
   };
   const finish = () => {
     report.seconds = Math.round((Date.now() - started) / 1000);
-    // Whatever the checks said, a run that left something behind did not pass.
-    if (report.leftovers && (report.leftovers.containers.length || report.leftovers.images.length)) {
+    // Whatever the checks said, a run that left something behind, or cannot say that it did not, did not pass.
+    const notClean = report.cleanupFailures.length ? `the cleanup failed: ${report.cleanupFailures.join('; ')}`
+      : inventoryDue && !report.leftovers ? 'no inventory of what the run left'
+        : report.leftovers && (report.leftovers.containers.length || report.leftovers.images.length) ? `left behind: ${JSON.stringify(report.leftovers)}`
+          : null;
+    if (notClean) {
       report.ok = false;
-      report.failure = report.failure ?? `left behind: ${JSON.stringify(report.leftovers)}`;
+      report.failure = report.failure ?? notClean;
     }
     onFinished(report);
   };
@@ -142,12 +154,13 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     docker = h.dockerHelpers.dockerFor(dockerSettings);
     const dockerInfo = await h.runText(docker, ['info', '--format', '{{.ServerVersion}}'], { timeoutMs: 30000 });
     one('docker.reachable', dockerInfo.exitCode === 0, dockerInfo.exitCode === 0 ? dockerInfo.stdout.trim() : dockerInfo.stderr);
+    inventoryDue = true;
     closers.push(async () => {
       // Last, with every service stopped: what they could not stop for themselves.
-      killProcessesNaming([workDir, instance]);
-      await removeRunContainers(h, docker, instance);
+      report.stopped = await stopProcessesNaming([workDir, instance]);
+      await removeRunContainers(h, docker, instance, report.stopped.containers);
       await removeRunImages(h, docker, instance);
-      report.leftovers = await leftovers(h, docker, instance);
+      report.leftovers = await leftovers(h, docker, instance, report.stopped.containers);
     });
     log(`[round] instance ${instance}, platform ${h.platform}, ${report.classPlatform ? 'the runner\'s real entry point' : 'the A6a launcher in front of the runner (report built with the class platform named)'}`);
 
@@ -219,6 +232,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     };
     const follow = async (id) => waitUntil('waiting for the listing', async () => {
       const { json } = await server.get(`/api/listings/${id}`);
+      if (breakName === 'signal-in-scan' && json.status === 'scanning') process.kill(process.pid, 'SIGTERM');
       return ['ready', 'refused', 'error'].includes(json.status) ? json : null;
     }, { timeoutMs: LISTING_TIMEOUT_MS, everyMs: 1000, proc: server });
 
@@ -287,7 +301,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       requestedClass: codeReview.CODE_CLASSES['code-standard'].classId,
       log,
     });
-    closers.push(() => bridge.stop());
+    closers.push(async () => { report.cancelledJobs = await bridge.stop(); });
     await bridge.start(chain.fromBlock);
     one('mock.realFee', (await chain.aggregator.feeMultiplier()) === BigInt(REAL_CONFIG.k + REAL_CONFIG.bonus * REAL_CONFIG.p), 'maxTotalFee = fee x (K + B x P)');
 
@@ -325,10 +339,12 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       providerCalls: providerCalls().slice(before.provider),
     });
     const parsedLine = (addendum) => codeReview.parseDisclosureLine(String(addendum).split('\n')[0]).fields;
+    /** The claim's latest round, once every job of it has answered: what the checks read is the whole of it. */
     const roundOf = async (claimId) => {
       const events = await sa.queryFilter(sa.filters.EvaluationRequested(claimId), chain.fromBlock);
       const aggId = events[events.length - 1].args.requestId;
-      return bridge.done(aggId);
+      await bridge.done(aggId);
+      return bridge.quiet(aggId);
     };
     const recordView = async () => (await server.get(`/api/records/${artifactHash}`)).json;
 
@@ -401,7 +417,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       ...since(before1),
       panel,
       justifier: JUSTIFIER,
-      disclosureSecret: parsedLine(validRound.addendum)?.ephemeralKey,
+      disclosureKeys: [parsedLine(validRound.addendum)?.contentKey, parsedLine(validRound.addendum)?.ephemeralKey].filter(Boolean),
       report: { classPlatform: report.classPlatform, classPlatformName: CLASS_PLATFORM },
     }));
     one('valid.round.jurorAverage', JSON.stringify(validRound.likelihoods.map(String)) === JSON.stringify(JURY_AVERAGE.map(String)), JSON.stringify(validRound.likelihoods.map(String)));
@@ -514,12 +530,14 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     toolDone('commit', abstainCommit);
     const abstainId = BigInt(abstainCommit.json.claimId);
     await makerRelease(abstainId);
+    const before3 = counts();
     const abstainReveal = await tool('reveal', abstainDir);
     toolDone('reveal', abstainReveal);
     const hunterAfterAbstainReveal = await balance(hunter);
-    const pinsBeforeAbstain = ipfs.pins.length;
+    const pinsBeforeAbstain = ipfs.pins.length; // the reveal pinned the claim itself; the arbiters pin nothing
     const firstRound = await roundOf(abstainId);
     expect(abstainedRoundChecks('abstain.first', firstRound));
+    expect(abstainRunChecks('abstain.first', { round: firstRound, ...since(before3), cause: 'step_timeout' }));
 
     stage('abstain: the round times out at the aggregator');
     one('abstain.first.stillOpen', (await claimStateOf(abstainId)) === 'Revealed', 'an open round: nobody can finalize it yet');
@@ -541,8 +559,10 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     one('abstain.retrigger.freshPrepay', retriggerTx.value === firstRound.required && prepaid.prepayWei === firstRound.required && (await chain.aggregator.ethReceived(prepaid.requestId)) === firstRound.required, `sent ${retriggerTx.value}, the aggregator received ${await chain.aggregator.ethReceived(prepaid.requestId)}, the live fee is ${firstRound.required}`);
     one('abstain.retrigger.isTheHuntersTx', retriggerTx.from === hunter.address, retriggerTx.from);
     await stateIs(abstainId, 'Revealed');
+    const before4 = counts();
     const secondRound = await roundOf(abstainId);
     expect(abstainedRoundChecks('abstain.second', secondRound));
+    expect(abstainRunChecks('abstain.second', { round: secondRound, ...since(before4), cause: 'step_timeout' }));
     await chain.advance(RESPONSE_TIMEOUT_SECONDS + 1);
     await stateIs(abstainId, 'RoundFailed');
     expect(moneyChecks('abstain.second', [{ name: 'refundAtFinalize', before: afterRetrigger, after: await balance(hunter), expected: secondRound.required - secondRound.spent }]));

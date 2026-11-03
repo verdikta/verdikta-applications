@@ -883,10 +883,10 @@ the client's pages. It downloads images and packages (the pinned Foundry base, `
 binaries.soliditylang.org, npm) and uses no credential. It reaches no real chain, provider or pin service: the local IPFS fails a run
 on any CID it does not hold, and every service gets its own small environment. It leaves nothing behind: containers and images
 by the run's instance, processes by pid, on success, on failure and on SIGINT or SIGTERM (the pinned images it pulled and BuildKit's cache
-stay, as any build's do). Logs stay in `e2e/.round/logs`
-(`SA_E2E_LOG_DIR`), and `--report <file>` writes the checks as JSON. `SA_E2E_ARBITER_DIR` runs another checkout, which must be at the
+stay, as any build's do), and a cleanup that fails or cannot say fails the run. Logs stay in a folder of the run's own under `e2e/.round/logs`,
+which is emptied, or under `SA_E2E_LOG_DIR`, where nothing is removed; and `--report <file>` writes the checks as JSON. `SA_E2E_ARBITER_DIR` runs another checkout, which must be at the
 pin unless `SA_E2E_ARBITER_UNPINNED=1`. `e2e/test/failure.test.js` breaks it on purpose (`SA_E2E_BREAK`: a runner that will not start, a jury that
-cannot be reached; SIGTERM while running and in the middle of a build) and reads the exit code.
+cannot be reached; SIGTERM while running, mid-build, mid-scan and with EA requests out) and reads the exit code.
 
 One listing of the builder's fixture takes three claims, in commit order: **a valid one** (every gate passes, the jury decides, HIGH,
 the award and bond after the dispute window), **a gate-failing one** (a PoC that edits source: the runner's `testPathsOnly`, INVALID at
@@ -936,7 +936,8 @@ credential helper, which on a locked keychain waits for ever before a push reach
 `e2e/test/fixtures/aggregator-lib.vectors.json`, whose answers came from the real `AggregatorLib`). For each request on the mock it runs K = 6
 jobs with the body of `chainlink-node/basicJobSpec`, reads only what the job reads, keeps the first M = 4 commits, asks those for their
 reveal as 32 lowercase hex, verifies each against its commitment, takes the first N = 3, clusters P = 2, floors their mean, comma-joins
-their CIDs, works out what the oracles spent, and gives that to the mock. A round that fails stays open at the mock.
+their CIDs, works out what the oracles spent, and gives that to the mock at the N-th reveal, as the real contract finalizes inside it, whatever jobs
+are still out. Those that land afterwards revert, as on the real contract. A round that fails stays open at the mock.
 
 | The real aggregator | The mock and the bridge | Who proves it |
 |---|---|---|

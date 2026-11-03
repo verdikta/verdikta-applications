@@ -13,12 +13,14 @@ const E2E = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-e2e-failure-'));
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
+const logRoot = (name) => path.join(tmp, `${name}-logs`);
+
 function runRound(name, env = {}, { onLine } = {}) {
   const reportFile = path.join(tmp, `${name}.json`);
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['bin/round.js', '--report', reportFile], {
       cwd: E2E,
-      env: { ...process.env, SA_E2E_LOG_DIR: path.join(tmp, `${name}-logs`), ...env },
+      env: { ...process.env, SA_E2E_LOG_DIR: logRoot(name), ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';
@@ -47,7 +49,7 @@ function alive(pid) {
 
 /** Lines of `ps` that name the run: the run's folder or its instance, whatever process group they are in. */
 function processesNaming(...marks) {
-  const ps = spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const ps = spawnSync('ps', ['-axww', '-o', 'pid=,command='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   return ps.stdout.split('\n').filter((l) => marks.some((m) => m && l.includes(m)));
 }
 
@@ -68,11 +70,18 @@ function assertNothingLeft(report, out) {
 }
 
 test('a service that will not start is a failure, not a skip: the code runner refuses its config', async () => {
+  // A log directory someone named may hold anything: the run adds its own folder and removes nothing.
+  fs.mkdirSync(logRoot('runner-start'), { recursive: true });
+  const kept = path.join(logRoot('runner-start'), 'not-the-rounds.txt');
+  fs.writeFileSync(kept, 'kept');
   const r = await runRound('runner-start', { SA_E2E_BREAK: 'runner-start' });
   assert.equal(r.code, 1, r.out.slice(-1500));
   assert.equal(r.report.ok, false);
   assert.match(r.report.failure, /code-runner/);
   assert.match(r.out, /FAILED/);
+  assert.equal(fs.readFileSync(kept, 'utf8'), 'kept');
+  assert.equal(path.dirname(r.report.logDir), logRoot('runner-start'));
+  assert.ok(fs.existsSync(path.join(r.report.logDir, 'code-runner.log')));
   assertNothingLeft(r.report, r.out);
 });
 
@@ -112,6 +121,34 @@ test('stopped in the middle of a build, it stops the builder too, though the bui
   assert.ok(timer, r.out.slice(-1500));
   assert.equal(r.code, 143, r.out.slice(-1500));
   assert.equal(r.report.signal, 'SIGTERM');
+  assertNothingLeft(r.report, r.out);
+});
+
+test('stopped in the middle of the baseline scan, it stops the scanner, whose container names nothing of the run but its process does', async () => {
+  const r = await runRound('signal-in-scan', { SA_E2E_BREAK: 'signal-in-scan' });
+  assert.equal(r.code, 143, r.out.slice(-1500));
+  assert.equal(r.report.signal, 'SIGTERM');
+  assert.ok(r.report.stopped.groups.length >= 1, 'the builder step\'s own group was found and stopped');
+  assertNothingLeft(r.report, r.out);
+  const names = spawnSync('docker', ['ps', '--all', '--format', '{{.Names}}'], { encoding: 'utf8', timeout: 60000, env: { ...process.env, DOCKER_CONFIG: tmp } }).stdout.split('\n');
+  for (const name of r.report.stopped.containers) assert.ok(!names.includes(name), `${name} is still there`);
+});
+
+test('stopped with EA requests out, it ends them and does not wait for them', async () => {
+  let at = null;
+  const r = await runRound('signal-in-round', {}, {
+    onLine: (line, child) => {
+      // The first reveal that goes through. The bridge sees it within a poll, and the sandbox takes seconds.
+      if (!at && line.includes('verdikta-attest reveal -> exit 0')) {
+        at = Date.now();
+        setTimeout(() => child.kill('SIGTERM'), 2000);
+      }
+    },
+  });
+  assert.ok(at, r.out.slice(-1500));
+  assert.equal(r.code, 143, r.out.slice(-1500));
+  assert.ok(r.report.cancelledJobs >= 1, `${r.report.cancelledJobs} EA request(s) cut off`);
+  assert.ok(Date.now() - at < 120000, `${Date.now() - at} ms to stop`);
   assertNothingLeft(r.report, r.out);
 });
 

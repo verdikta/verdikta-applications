@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/verdikta/verdikta-arbiter.git",
+  "branch": "claude/stake-attestation",
+  "commit": "2c0e94a9686951c6accda0f3ed14746b312ed8a2",
+  "note": "The verdikta-arbiter commit this round runs: its external-adapter, ai-node and code-runner, and A6a's IPFS and registry harness under e2e/ and code-runner/test/docker/. Public repository, no secret. Moving it is a change to this file and a green round; see stake-attestation/README.md, The local round."
+}

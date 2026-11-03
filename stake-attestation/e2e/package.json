@@ -1,0 +1,20 @@
+{
+  "name": "@verdikta/stake-attestation-e2e",
+  "version": "0.1.0",
+  "description": "The scripted local end-to-end round of Verdikta stake attestation: every piece running together on one machine",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "round": "node bin/round.js",
+    "test": "node --test --test-concurrency=1 --test-timeout=2400000 test/*.test.js",
+    "test:unit": "node --test test/aggregatorRound.test.js test/bridge.test.js test/checks.test.js"
+  },
+  "dependencies": {
+    "@verdikta/common": "1.9.0-attest.1",
+    "ethers": "6.15.0"
+  }
+}

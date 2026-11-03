@@ -79,6 +79,7 @@ test('a service that will not start is a failure, not a skip: the code runner re
   assert.equal(r.report.ok, false);
   assert.match(r.report.failure, /code-runner/);
   assert.match(r.out, /FAILED/);
+  assert.deepEqual(r.report.leftovers.groups, []);
   assert.equal(fs.readFileSync(kept, 'utf8'), 'kept');
   assert.equal(path.dirname(r.report.logDir), logRoot('runner-start'));
   assert.ok(fs.existsSync(path.join(r.report.logDir, 'code-runner.log')));
@@ -148,8 +149,8 @@ test('a startup step that outlasts the bound fails the run, by name, and the swe
     assert.equal(r.report.ok, false);
     assert.match(r.report.failure, /had not stopped/);
     assert.ok(r.report.cleanupFailures.some((f) => /had not stopped/.test(f)), JSON.stringify(r.report.cleanupFailures));
-    assert.deepEqual(r.report.leftovers, { containers: [], images: [] }, 'the sweep ran');
-    assert.ok(alive(-late.pid), 'the step really was still out');
+    assert.deepEqual(r.report.leftovers, { containers: [], images: [], groups: [] }, 'the sweep ran, and the step\'s group is one of those it stops');
+    assert.equal(alive(-late.pid), false);
   } finally {
     if (late && alive(-late.pid)) process.kill(-late.pid, 'SIGKILL');
   }
@@ -201,11 +202,12 @@ test('a process group of the harness\'s still alive fails a run whose every chec
   try {
     assert.ok(r.report?.survivor, r.out.slice(-1500));
     assert.deepEqual(r.report.checks.filter((c) => !c.ok), [], 'no check failed: only what was left can fail this run');
-    assert.equal(alive(-r.report.survivor), true, 'the group really is alive');
     assert.equal(r.code, 1, 'a live group fails the run');
     assert.equal(r.report.ok, false);
     assert.deepEqual(r.report.leftovers.groups, [r.report.survivor]);
     assert.match(r.report.failure, /left behind/);
+    // The inventory saw it alive, because the sweep spared it for this test; the exit handler is the last word.
+    assert.equal(alive(-r.report.survivor), false);
   } finally {
     if (r.report?.survivor) killGroups([r.report.survivor]);
   }

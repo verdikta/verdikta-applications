@@ -37,6 +37,19 @@ export function servedRoundChecks(prefix, round, { vector, config = REAL_CONFIG 
   ];
 }
 
+/**
+ * The harness's promise, as the one thing that decides it: after exit no process group it started and no
+ * container or image it labelled remains, and if one does, or if it cannot say, the run has failed. A process
+ * it did not start is out of scope.
+ * @returns {string|null} why the run has not kept it
+ */
+export function cleanupVerdict({ cleanupFailures = [], inventoryDue = false, leftovers = null }) {
+  if (cleanupFailures.length) return `the cleanup failed: ${cleanupFailures.join('; ')}`;
+  if (inventoryDue && !leftovers) return 'no inventory of what the run left';
+  if (leftovers && (leftovers.containers.length || leftovers.images.length || leftovers.groups.length)) return `left behind: ${JSON.stringify(leftovers)}`;
+  return null;
+}
+
 /** A round no arbiter committed to: nothing recorded, and the bridge sent nothing to the mock. */
 export function abstainedRoundChecks(prefix, round, config = REAL_CONFIG) {
   return [

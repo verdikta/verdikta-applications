@@ -110,7 +110,7 @@ test('on the class platform the runner\'s own entry point and report path; elsew
 });
 
 test('it left nothing behind', () => {
-  assert.deepEqual(report.leftovers, { containers: [], images: [] });
+  assert.deepEqual(report.leftovers, { containers: [], images: [], groups: [] });
   assert.deepEqual(report.cleanupFailures, []);
   const docker = (...args) => spawnSync('docker', args, { encoding: 'utf8', timeout: 60000, env: { ...process.env, DOCKER_CONFIG: tmp } });
   const containers = docker('ps', '--all', '--format', '{{.Names}}\t{{.Image}}\t{{.Labels}}').stdout.split('\n').filter((l) => l.includes(report.instance));

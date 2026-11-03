@@ -14,13 +14,13 @@ import { createBridge, evaluateOver } from './bridge.js';
 import { readPages } from './browser.js';
 import { startChain } from './chain.js';
 import {
-  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, evidenceChecks, gateSettledChecks, juryPathChecks, moneyChecks, pageChecks,
+  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, evidenceChecks, gateSettledChecks, juryPathChecks, moneyChecks, pageChecks,
   recordChecks, requestChecks, servedRoundChecks, settlementChecks,
 } from './checks.js';
 import {
   AWARDS_WEI, BOND_WEI, ESCROW_WEI, GIT_HOST, JURY_AVERAGE, JUROR_SCORES, JUSTIFIER, POC_MARKER, REPORT_MARKER, WINDOWS, claimFolder, draftSpec, makeRepository,
 } from './fixtures.js';
-import { RoundStopped, groupAlive, requestStop, sleep, stopProcessesNaming, throwIfStopping, unlessStopped, waitUntil, within } from './proc.js';
+import { RoundStopped, groupAlive, liveGroups, requestStop, sleep, stopProcessGroups, stopProcessesNaming, throwIfStopping, unlessStopped, waitUntil, within } from './proc.js';
 import {
   arbiterHarness, cleanDockerConfig, leftovers, newRunnerToken, removeRunContainers, removeRunImages, startClient, startIpfs, startLateContainer, startRegistryPair, startServer, startSurvivor,
 } from './services.js';
@@ -113,10 +113,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
   const finish = () => {
     report.seconds = Math.round((Date.now() - started) / 1000);
     // Whatever the checks said, a run that left something behind, or cannot say that it did not, did not pass.
-    const notClean = report.cleanupFailures.length ? `the cleanup failed: ${report.cleanupFailures.join('; ')}`
-      : sweep && !report.leftovers ? 'no inventory of what the run left'
-        : report.leftovers && (report.leftovers.containers.length || report.leftovers.images.length) ? `left behind: ${JSON.stringify(report.leftovers)}`
-          : null;
+    const notClean = cleanupVerdict({ cleanupFailures: report.cleanupFailures, inventoryDue: sweep !== null, leftovers: report.leftovers });
     if (notClean) {
       report.ok = false;
       report.failure = report.failure ? `${report.failure}; ${notClean}` : notClean;
@@ -227,17 +224,23 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const dockerInfo = await h.runText(docker, ['info', '--format', '{{.ServerVersion}}'], { timeoutMs: 30000 });
     one('docker.reachable', dockerInfo.exitCode === 0, dockerInfo.exitCode === 0 ? dockerInfo.stdout.trim() : dockerInfo.stderr);
     sweep = async () => {
-      // With every service stopped and the main flow back: what they could not stop for themselves.
+      // With every service stopped and the main flow back: what they could not stop for themselves. Every group this
+      // run started, by its id, whether or not its leader is there; then what names the run, a builder step's group.
+      const ownGroups = liveGroups().filter((pgid) => pgid !== report.survivor);
+      const groups = await stopProcessGroups(ownGroups);
       report.stopped = await stopProcessesNaming([workDir, instance], { except: [logDir] });
       const named = report.stopped.containers;
-      let found = await removeRunContainers(h, docker, instance, named);
+      await removeRunContainers(h, docker, instance, named);
       // A docker CLI that was cut off can have a create on its way through the daemon: again, a moment later.
-      if (found.length || report.stopped.groups.length || report.stopped.singles.length) {
+      if (groups.stopped.length || report.stopped.groups.length || report.stopped.singles.length) {
         await sleep(2000);
-        found = await removeRunContainers(h, docker, instance, named);
+        await removeRunContainers(h, docker, instance, named);
       }
       await removeRunImages(h, docker, instance);
-      report.leftovers = await leftovers(h, docker, instance, named);
+      report.leftovers = {
+        ...await leftovers(h, docker, instance, named),
+        groups: [...new Set([...liveGroups(), ...report.stopped.groups.filter(groupAlive)])],
+      };
       fs.rmSync(dockerSettings.dockerConfigDir, { recursive: true, force: true });
     };
     log(`[round] instance ${instance}, platform ${h.platform}, ${report.classPlatform ? 'the runner\'s real entry point' : 'the A6a launcher in front of the runner (report built with the class platform named)'}`);

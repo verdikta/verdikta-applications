@@ -2,7 +2,7 @@
 // recording proxy, its service starters and registry helper, called as they are. This repository's
 // are started as a deployment would start them: their own entry points, configured by environment,
 // each given only what it needs.
-import { spawn } from 'node:child_process';
+import childProcess, { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { APP_DIR } from './setup.js';
-import { freePort, launch, must, waitUntil } from './proc.js';
+import { freePort, launch, must, noteGroup, noteLeaderExit, waitUntil } from './proc.js';
 
 const require = createRequire(import.meta.url);
 
@@ -18,10 +18,29 @@ const require = createRequire(import.meta.url);
 const REGISTRY_IMAGE = 'registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373';
 const PIN_KEY = 'e2e-local-pin-key';
 
+/**
+ * A6a's starters run each service as a group of its own and hand it back only once it is up, so one that
+ * fails on the way is never handed back. They read spawn when they load: so the round sees every group they
+ * start from the moment it exists, and none of them is left out of the sweep.
+ */
+function noteArbiterGroups() {
+  const real = childProcess.spawn;
+  childProcess.spawn = function spawnNoted(...args) {
+    const child = real.apply(this, args);
+    const options = args.find((a) => a && typeof a === 'object' && !Array.isArray(a));
+    if (options?.detached && child.pid) {
+      noteGroup(child.pid);
+      child.once('exit', () => noteLeaderExit(child.pid));
+    }
+    return child;
+  };
+}
+
 /** What the round takes from verdikta-arbiter's checkout, as it is there. */
 export function arbiterHarness(arbiterDir) {
   // code-runner/test/docker/helpers reads the runtime when it loads: runc, as A6a runs it.
   process.env.CODE_RUNNER_RUNTIME = 'runc';
+  noteArbiterGroups();
   const fromArbiter = (rel) => require(path.join(arbiterDir, rel));
   const dockerHelpers = fromArbiter('code-runner/test/docker/helpers.js');
   const { runText } = fromArbiter('code-runner/src/docker.js');
@@ -65,9 +84,14 @@ export function startLateContainer({ instance, seconds, dockerConfigDir }) {
       E2E_LATE_IMAGE: REGISTRY_IMAGE,
     },
   });
+  noteGroup(child.pid);
   const done = new Promise((resolve, reject) => {
     child.once('error', reject);
-    child.once('exit', (code) => (code === 0 ? resolve(name) : reject(new Error(`the late step exited ${code}`))));
+    child.once('exit', (code) => {
+      noteLeaderExit(child.pid);
+      if (code === 0) resolve(name);
+      else reject(new Error(`the late step exited ${code}`));
+    });
   });
   return { name, pid: child.pid, done };
 }
@@ -76,6 +100,7 @@ export function startLateContainer({ instance, seconds, dockerConfigDir }) {
 export function startSurvivor() {
   const child = spawn('sh', ['-c', 'sleep 300 & wait'], { detached: true, stdio: 'ignore' });
   child.unref();
+  noteGroup(child.pid);
   return child;
 }
 

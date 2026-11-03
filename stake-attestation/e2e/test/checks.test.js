@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { abstainEndChecks, abstainRunChecks, abstainedRoundChecks, evidenceChecks, gateSettledChecks, juryPathChecks, moneyChecks, pageChecks, recordChecks, requestChecks, servedRoundChecks, settlementChecks } from '../src/checks.js';
+import { abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, evidenceChecks, gateSettledChecks, juryPathChecks, moneyChecks, pageChecks, recordChecks, requestChecks, servedRoundChecks, settlementChecks } from '../src/checks.js';
 
 const failing = (list) => list.filter((c) => !c.ok).map((c) => c.name);
 const allPass = (list) => assert.deepEqual(failing(list), []);
@@ -13,6 +13,17 @@ const fails = (list, name) => assert.ok(failing(list).includes(name), `${name} s
 const VECTOR = [0n, 700000n, 300000n];
 const jobs = (phase, n) => Array.from({ length: n }, (_, slot) => ({ phase, slot, status: 200, scores: phase === 'reveal' ? VECTOR : null }));
 const served = (over = {}) => ({ status: 'fulfilled', jobs: [...jobs('commit', 6), ...jobs('reveal', 4)], commits: 4, reveals: 3, clustered: 2, justifications: 'QmA,QmB', likelihoods: VECTOR, reverted: [], ignored: [], abstained: 0, ...over });
+
+test('cleanupVerdict: the promise: nothing of the run left, or the run has failed, and an inventory it cannot give is a failure', () => {
+  const clean = { containers: [], images: [], groups: [] };
+  assert.equal(cleanupVerdict({ inventoryDue: true, leftovers: clean }), null);
+  assert.equal(cleanupVerdict({ inventoryDue: false, leftovers: null }), null, 'a run that failed before it reached Docker has nothing to say');
+  assert.match(cleanupVerdict({ inventoryDue: true, leftovers: { ...clean, groups: [123] } }), /left behind.*123/);
+  assert.match(cleanupVerdict({ inventoryDue: true, leftovers: { ...clean, containers: ['c'] } }), /left behind/);
+  assert.match(cleanupVerdict({ inventoryDue: true, leftovers: { ...clean, images: ['i'] } }), /left behind/);
+  assert.match(cleanupVerdict({ inventoryDue: true, leftovers: null }), /no inventory/);
+  assert.match(cleanupVerdict({ cleanupFailures: ['docker ps exited 1'], inventoryDue: true, leftovers: clean }), /docker ps exited 1/);
+});
 
 test('servedRoundChecks: K, M, N, P, or it fails', () => {
   allPass(servedRoundChecks('x', served(), { vector: VECTOR }));

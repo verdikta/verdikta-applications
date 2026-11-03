@@ -65,14 +65,30 @@ export function within(promise, ms, what) {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-const running = new Set();
+// Every process group this run started, by its id, whoever started it (noteGroup): a leader's death does not end
+// its group, so a group is only over when it has no members. Forgotten once it is seen empty, so a later use of the
+// number is never taken for it.
+const startedGroups = new Set();
 process.on('exit', () => {
-  for (const child of running) {
+  for (const pgid of startedGroups) {
     try {
-      process.kill(-child.pid, 'SIGKILL');
+      process.kill(-pgid, 'SIGKILL');
     } catch { /* gone */ }
   }
 });
+
+/** A process group this run started. @param {number} pgid - its leader's pid */
+export function noteGroup(pgid) {
+  startedGroups.add(pgid);
+}
+
+/** A group whose leader exited and which is empty is over. */
+export function noteLeaderExit(pgid) {
+  if (!groupAlive(pgid)) startedGroups.delete(pgid);
+}
+
+/** The groups this run started that still have members. */
+export const liveGroups = () => [...startedGroups].filter(groupAlive);
 
 export const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
 
@@ -97,39 +113,53 @@ export function groupAlive(pgid) {
   }
 }
 
+/**
+ * Stops process groups by id, whether or not their leaders are still there: SIGTERM, up to `graceMs`, then SIGKILL.
+ * @param {number[]} pgids
+ * @returns {Promise<{ stopped: number[], alive: number[] }>} those that had members, and those that still do
+ */
+export async function stopProcessGroups(pgids, { graceMs = 8000, killMs = 2000 } = {}) {
+  const stopped = pgids.filter(groupAlive);
+  const signalAll = (signal) => {
+    for (const pgid of stopped) {
+      try {
+        process.kill(-pgid, signal);
+      } catch { /* gone */ }
+    }
+  };
+  const until = async (ms) => {
+    const end = Date.now() + ms;
+    while (stopped.some(groupAlive) && Date.now() < end) await sleep(50);
+  };
+  signalAll('SIGTERM');
+  await until(graceMs);
+  if (stopped.some(groupAlive)) {
+    signalAll('SIGKILL');
+    await until(killMs);
+  }
+  for (const pgid of pgids) noteLeaderExit(pgid);
+  return { stopped, alive: stopped.filter(groupAlive) };
+}
+
 /** A long-running service. @returns {{ name, pid, tail(), exited(), close(), log }} */
 export function launch(name, argv, { cwd, env, logDir }) {
   const file = path.join(logDir, `${name}.log`);
   const out = fs.openSync(file, 'a');
   const child = spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: ['ignore', out, out] });
   fs.closeSync(out);
-  running.add(child);
+  if (child.pid) noteGroup(child.pid);
   let ended = null;
   child.once('exit', (code, signal) => {
     ended = { code, signal };
-    running.delete(child);
+    if (child.pid) noteLeaderExit(child.pid);
   });
   child.once('error', (err) => {
     ended = { code: null, signal: err.message };
-    running.delete(child);
   });
-  const close = () => new Promise((resolve) => {
-    if (ended || !child.pid) return resolve();
-    const done = () => resolve();
-    child.once('exit', done);
-    try {
-      process.kill(-child.pid, 'SIGTERM');
-    } catch {
-      return resolve();
-    }
-    setTimeout(() => {
-      try {
-        process.kill(-child.pid, 'SIGKILL');
-      } catch { /* gone */ }
-      setTimeout(done, 500);
-    }, 8000).unref();
-    return undefined;
-  });
+  // Its group, not its leader: a leader that died can have left the rest running.
+  const close = async () => {
+    if (child.pid) await stopProcessGroups([child.pid]);
+  };
   const tail = () => {
     try {
       return fs.readFileSync(file, 'utf8').slice(-6000);

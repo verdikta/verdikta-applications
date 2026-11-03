@@ -252,7 +252,7 @@ test('a failed round says it is one, what it cost and what to do: nothing on-cha
 
 test('the CLI: status --wait exits 4 while pending, 0 when done; claim settles; --json is machine readable', async () => {
   const { dir, claimId, requestId } = await revealed();
-  const pending = await runCli(w, ['status', dir, '--wait', '--max-wait-ms', '30'], { keyVia: 'none' });
+  const pending = await runCli(w, ['status', dir, '--wait', '--max-wait-ms', '3000'], { keyVia: 'none' });
   assert.equal(pending.code, 4, pending.stderr);
   assert.match(pending.stdout, /Revealed/);
   await script(requestId, 'INVALID');

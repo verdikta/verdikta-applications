@@ -35,8 +35,8 @@ function classify(claim, readings) {
   if (!cids) return { kind: UNREAD };
   const said = cids.map((cid) => readings[cid]);
   if (said.some((reading) => !reading?.says)) return { kind: UNREAD };
-  if (said.every((reading) => reading.says === 'other')) return { kind: PLAIN };
   const [first] = said;
+  if (said.every((reading) => reading.says === 'other' && reading.settlement === first.settlement)) return { kind: PLAIN };
   const agree = said.every((reading) => reading.says === 'integrity' && reading.checks.join() === first.checks?.join());
   return agree ? { kind: FAILED, checks: first.checks } : { kind: DISAGREE };
 }

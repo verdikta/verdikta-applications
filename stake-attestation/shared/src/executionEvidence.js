@@ -46,19 +46,26 @@ export function justificationCidsOf(text) {
   return cids.length <= MAX_JUSTIFICATION_CIDS && cids.every(isCidShaped) ? cids : null;
 }
 
-/** The first block's lines by name, a line that appears twice counting the first time; null: there is no block. */
-function blockFields(justification) {
+const WRITERS_LINE = /^[A-Za-z0-9-]+: /;
+
+/**
+ * The first block's lines by name, a line that appears twice counting the first time; null: there is no
+ * block. `writersForm` says whether every line is `Name: value`, with each name once, as the writer gives.
+ */
+function readBlock(justification) {
   if (typeof justification !== 'string') return null;
   const lines = justification.split('\n', MAX_BLOCK_LINES + 1);
   if (lines[0] !== EVIDENCE_HEADER) return null;
   const end = lines.indexOf(EVIDENCE_END);
   if (end < 0 || end >= MAX_BLOCK_LINES) return null;
   const fields = new Map();
+  let writersForm = true;
   for (const line of lines.slice(1, end)) {
     const at = line.indexOf(': ');
+    if (!WRITERS_LINE.test(line) || fields.has(line.slice(0, at))) writersForm = false;
     if (at > 0 && !fields.has(line.slice(0, at))) fields.set(line.slice(0, at), line.slice(at + 2));
   }
-  return fields;
+  return { fields, writersForm };
 }
 
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -72,8 +79,9 @@ const SHA256 = /^[0-9a-f]{64}$/;
  * @returns {null | { settlement: string, reportSha256: string|null, integrityFailedChecks: string[]|null, tamperFlags: string|null }}
  */
 export function readExecutionEvidence(justification, { integrityChecks }) {
-  const fields = blockFields(justification);
-  if (!fields) return null;
+  const block = readBlock(justification);
+  if (!block) return null;
+  const { fields } = block;
   const settlement = fields.get('Settlement');
   if (!/^(jury|DUPLICATE \(integrity\)|INVALID \([A-Za-z]{1,40}\))$/.test(settlement ?? '')) return null;
   const sha = fields.get('Report-SHA256');
@@ -90,20 +98,23 @@ export function readExecutionEvidence(justification, { integrityChecks }) {
 }
 
 /**
- * The checks a justification says the claim failed, for counting: only the form its writer gives. It
- * settles DUPLICATE (integrity), with a report hash, no tamper flag (a tamper flag settles INVALID) and
- * at least one check, each one of common's, once, in common's order. Anything else is null: one unknown
- * name makes the whole block unusable, not the part that is known. This says nothing about the outcome,
- * which only the chain says.
+ * The checks a justification says the claim failed, for counting: only the form its writer gives. Every
+ * line is `Name: value` with each name once; it settles DUPLICATE (integrity), with a report hash,
+ * `Tamper-Flags: none` (a tamper flag settles INVALID) and at least one check, each one of common's, once,
+ * in common's order. Anything else is null: one unknown name makes the whole block unusable, not the part
+ * that is known. What this accepts, readExecutionEvidence reads the same. This says nothing about the
+ * outcome, which only the chain says.
  * @param {unknown} justification
  * @param {{ integrityChecks: readonly string[] }} o - common's INTEGRITY_CHECKS
  * @returns {string[]|null}
  */
 export function integrityFailureOf(justification, { integrityChecks }) {
-  const fields = blockFields(justification);
-  if (!fields || fields.get('Settlement') !== 'DUPLICATE (integrity)') return null;
+  const block = readBlock(justification);
+  if (!block?.writersForm) return null;
+  const { fields } = block;
+  if (fields.get('Settlement') !== 'DUPLICATE (integrity)') return null;
   if (!SHA256.test(fields.get('Report-SHA256') ?? '')) return null;
-  if ((fields.get('Tamper-Flags') ?? 'none') !== 'none') return null;
+  if (fields.get('Tamper-Flags') !== 'none') return null;
   const names = (fields.get('Integrity-Failed-Checks') ?? '').split(',');
   let at = -1;
   for (const name of names) {

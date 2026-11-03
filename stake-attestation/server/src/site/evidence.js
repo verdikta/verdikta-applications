@@ -1,17 +1,19 @@
 // The justifications the record reads (node P10; src/record/integrity.js counts from the answers). A
 // justification is untrusted text from IPFS: anyone who gets a CID recorded chooses it. So only a settled
 // DUPLICATE's upload is ever fetched, the download and the reader are both held to byte caps, a run reads
-// a limited number, and what is kept is the outcome of the read: known check names, never text from the
-// upload. It runs beside the indexer (site/index.js), one run at a time and never inside a sync or a
+// a limited number, and what is kept is the outcome of the read: known check names and a settlement in
+// its writer's form, never other text from the upload. It runs beside the indexer (site/index.js), one run at a time and never inside a sync or a
 // request. Answers are kept by CID: a CID names its content, so a reorg cannot hand one claim another's
 // answer, and an answer is final.
 //
-// A read that fails is "could not read": a gateway down, a file over the cap, or bytes that are not JSON
-// (a gateway's error page can answer 200). It is tried again with a backoff, counted from the failure, up
-// to a cap, and until then the claim is a plain DUPLICATE, never an integrity failure. An upload that is
-// JSON and has no block in the writer's form is read, and says `other`. A gateway's bytes are checked
-// against the CID only when it names their hash (createGatewayFetcher): a dag-pb CID's aren't.
-import { MAX_JUSTIFICATION_UPLOAD_BYTES, integrityFailureOf, justificationCidsOf } from '@verdikta/stake-attestation-shared';
+// A read that fails is "could not read": a gateway down, a file over the cap, or an answer with no
+// justification in it (a gateway's error can answer 200, as a page or as JSON). It is tried again with a
+// backoff, counted from the failure, up to a cap, and until then the claim is a plain DUPLICATE, never an
+// integrity failure. An upload with a justification is read, and final: it either has an integrity block
+// in the writer's form or says `other`, with the settlement its block states, so arbiters that differ
+// can be told from arbiters that agree. A gateway's bytes are checked against the CID only when it names
+// their hash (createGatewayFetcher): a dag-pb CID's aren't.
+import { MAX_JUSTIFICATION_UPLOAD_BYTES, integrityFailureOf, justificationCidsOf, readExecutionEvidence } from '@verdikta/stake-attestation-shared';
 
 import { codeReview } from '../common.js';
 import { isSettledDuplicate } from '../record/integrity.js';
@@ -26,7 +28,8 @@ export const createJustificationFetcher = ({ gateways, timeoutMs }, logger, opti
 /**
  * What an upload says of integrity.
  * @param {Buffer} bytes
- * @returns {{ says: 'integrity', checks: string[] } | { says: 'other' } | null} null: it could not be read
+ * @returns {{ says: 'integrity', checks: string[] } | { says: 'other', settlement: string|null } | null}
+ *   `settlement`: what the block states, in its writer's form, or null for no block; null: it could not be read
  */
 export function readUpload(bytes) {
   if (bytes.length > MAX_JUSTIFICATION_UPLOAD_BYTES) return null;
@@ -36,8 +39,12 @@ export function readUpload(bytes) {
   } catch {
     return null;
   }
-  const checks = integrityFailureOf(upload?.justification, { integrityChecks: codeReview.INTEGRITY_CHECKS });
-  return checks ? { says: 'integrity', checks } : { says: 'other' };
+  const justification = upload?.justification;
+  if (typeof justification !== 'string') return null;
+  const integrityChecks = codeReview.INTEGRITY_CHECKS;
+  const checks = integrityFailureOf(justification, { integrityChecks });
+  if (checks) return { says: 'integrity', checks };
+  return { says: 'other', settlement: readExecutionEvidence(justification, { integrityChecks })?.settlement ?? null };
 }
 
 /**
@@ -63,7 +70,7 @@ export async function refreshEvidence({ fetchJustification, store, claims, now, 
     .sort((a, b) => (known[a]?.nextAt ?? 0) - (known[b]?.nextAt ?? 0));
   for (const cid of due.slice(0, MAX_FETCHES_PER_RUN)) {
     let reading = null;
-    let why = 'it is not JSON, or is over the cap';
+    let why = 'no justification in it, or over the cap';
     try {
       reading = readUpload(Buffer.from(await fetchJustification(cid)));
     } catch (err) {

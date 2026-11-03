@@ -183,6 +183,8 @@ describe('the record says apart which claims failed integrity', () => {
       ['a settlement of jury with checks named', { settlement: 'jury' }],
       ['a settlement of INVALID with checks named', { settlement: 'INVALID (integrity)' }],
       ['a hash that is no hash', { sha: 'not-a-hash' }],
+      ['a tamper flag out of the writer\'s form', { tamper: 'none\nTamper-Flags:report-path=1' }],
+      ['a tamper flag on a second line', { tamper: 'none\nTamper-Flags: report-path=1' }],
     ];
     for (const [name, over] of BLOCKS) {
       test(`${name}: a plain DUPLICATE, and nothing of it stored`, async () => {
@@ -190,7 +192,9 @@ describe('the record says apart which claims failed integrity', () => {
         const { cid } = await claimed(ctx, l.listingId, 'DUPLICATE', uploadBytes(evidenceBlock(over)));
         await settled(site);
         assert.deepEqual(await entry(l), none({ otherDuplicates: 1 }));
-        assert.deepEqual(site.store.state.evidence[cid], { says: 'other' });
+        const stored = site.store.state.evidence[cid];
+        assert.equal(stored.says, 'other');
+        assert.deepEqual(Object.keys(stored).sort(), ['says', 'settlement'], 'nothing of its checks is kept');
       });
     }
 
@@ -202,7 +206,7 @@ describe('the record says apart which claims failed integrity', () => {
       assert.deepEqual(await entry(l), none({ otherDuplicates: 1 }));
     });
 
-    test('text that is not JSON, or JSON with no justification: never an integrity failure, and never a crash', async () => {
+    test('text that is not JSON, or JSON with no justification: could not read, never an integrity failure, and never a crash', async () => {
       const l = await listing(ctx, { escrowWei: 5n * 10n ** 18n });
       await claimed(ctx, l.listingId, 'DUPLICATE', Buffer.from(evidenceBlock()));
       await claimed(ctx, l.listingId, 'DUPLICATE', Buffer.from('<html>a gateway\'s error page</html>'));
@@ -210,10 +214,15 @@ describe('the record says apart which claims failed integrity', () => {
       await claimed(ctx, l.listingId, 'DUPLICATE', Buffer.from(JSON.stringify({ justification: 42 })));
       await claimed(ctx, l.listingId, 'DUPLICATE', Buffer.from('null'));
       await settled(site);
-      const e = await entry(l);
-      assert.equal(e.failed, 0);
-      assert.equal(e.otherDuplicates, 5);
-      assert.deepEqual(e.checks, []);
+      assert.deepEqual(await entry(l), none({ otherDuplicates: 5, unread: 5 }));
+    });
+
+    test('a justification with no block at all is read and final: a plain DUPLICATE, not one still to read', async () => {
+      const l = await listing(ctx);
+      const { cid } = await claimed(ctx, l.listingId, 'DUPLICATE', uploadBytes('The jurors read this as a repeat.'));
+      await settled(site);
+      assert.deepEqual(await entry(l), none({ otherDuplicates: 1 }));
+      assert.deepEqual(site.store.state.evidence[cid], { says: 'other', settlement: null });
     });
 
     test('the metadata is not read: it can say integrity failed and the block still decides', async () => {
@@ -263,6 +272,29 @@ describe('the record says apart which claims failed integrity', () => {
       await claimed(ctx, l.listingId, 'DUPLICATE', `${a},${b}`);
       await settled(site);
       assert.deepEqual(await entry(l), none({ otherDuplicates: 1, disagree: 1 }));
+    });
+
+    test('neither says integrity but they differ on the settlement: plain, and measured', async () => {
+      const blocks = [
+        [uploadBytes(evidenceBlock({ settlement: 'jury', checks: 'none' })), uploadBytes(evidenceBlock({ settlement: 'INVALID (build)', checks: 'none' }))],
+        [uploadBytes(evidenceBlock({ settlement: 'INVALID (build)', checks: 'none' })), uploadBytes(evidenceBlock({ settlement: 'INVALID (applies)', checks: 'none' }))],
+        [uploadBytes(evidenceBlock({ settlement: 'jury', checks: 'none' })), uploadBytes('No block in this one.')],
+      ];
+      for (const [one, other] of blocks) {
+        const l = await listing(ctx);
+        await claimed(ctx, l.listingId, 'DUPLICATE', `${await pin(ctx, one)},${await pin(ctx, other)}`);
+        await settled(site);
+        assert.deepEqual(await entry(l), none({ otherDuplicates: 1, disagree: 1 }));
+      }
+    });
+
+    test('two jury verdicts with their own text and hash agree: plain, not measured as a disagreement', async () => {
+      const l = await listing(ctx);
+      const a = await pin(ctx, uploadBytes(`${evidenceBlock({ settlement: 'jury', checks: 'none', sha: 'a'.repeat(64) })}\n\nOne panel's words.`));
+      const b = await pin(ctx, uploadBytes(`${evidenceBlock({ settlement: 'jury', checks: 'none', sha: 'b'.repeat(64) })}\n\nAnother panel's words.`));
+      await claimed(ctx, l.listingId, 'DUPLICATE', `${a},${b}`);
+      await settled(site);
+      assert.deepEqual(await entry(l), none({ otherDuplicates: 1 }));
     });
 
     test('a list with an entry that is not a CID, or too many entries, is not fetched at all: plain, and unread', async () => {
@@ -383,6 +415,32 @@ describe('reading in the background, with bounds', () => {
       t += 100_000_000;
       await settled(site);
       assert.equal(asked.length, reads, 'an answer is final: a CID is its content');
+    } finally {
+      site.close();
+    }
+  });
+
+  test('a gateway\'s answer with no justification in it is tried again, and the real upload then counts', async () => {
+    let t = Date.now();
+    const answers = [Buffer.from(JSON.stringify({ error: 'rate limited' })), Buffer.from('null'), Buffer.from(JSON.stringify({ justification: null })), Buffer.from('<html></html>')];
+    let target = null;
+    const site = siteFor(ctx, {
+      now: () => t,
+      env: { SA_MAX_STALENESS_SECONDS: '100000000', SA_ARCHIVE_RETRY_MS: '1000' },
+      fetchJustification: async (cid) => (cid === target ? answers.shift() : null) ?? ctx.pinner.get(cid),
+    });
+    try {
+      const l = await listing(ctx);
+      const { cid } = await claimed(ctx, l.listingId, 'DUPLICATE', integrityUpload({ sha: '0'.repeat(64) }));
+      target = cid;
+      await settled(site);
+      for (let attempt = 1; attempt <= 4; attempt += 1) {
+        assert.deepEqual((await site.record(l.artifactHash)).integrity.listings[String(l.listingId)], none({ otherDuplicates: 1, unread: 1 }), `attempt ${attempt}`);
+        assert.equal(site.store.state.evidence[cid].attempts, attempt);
+        t += 1000 * 2 ** (attempt - 1);
+        await settled(site);
+      }
+      assert.equal((await site.record(l.artifactHash)).integrity.listings[String(l.listingId)].failed, 1);
     } finally {
       site.close();
     }
@@ -660,10 +718,13 @@ describe('the fold on its own', () => {
     assert.deepEqual(out({}), none({ otherDuplicates: 1, unread: 1 }));
     assert.deepEqual(out(undefined), none({ otherDuplicates: 1, unread: 1 }), 'a state file from before this node');
     assert.deepEqual(out({ [A]: { unread: true, attempts: 3, nextAt: 9 } }), none({ otherDuplicates: 1, unread: 1 }));
-    assert.deepEqual(out({ [A]: { says: 'other' } }), none({ otherDuplicates: 1 }));
+    assert.deepEqual(out({ [A]: { says: 'other', settlement: 'jury' } }), none({ otherDuplicates: 1 }));
     assert.deepEqual(out({}, undefined), none({ otherDuplicates: 1, unread: 1 }), 'a Settled with no verdict event seen');
-    assert.deepEqual(out({ [A]: { says: 'other' }, [B]: { says: 'other' } }, `${A},${B}`), none({ otherDuplicates: 1 }));
-    assert.deepEqual(out({ [A]: { says: 'other' } }, `${A},${B}`), none({ otherDuplicates: 1, unread: 1 }));
+    const jury = { says: 'other', settlement: 'jury' };
+    assert.deepEqual(out({ [A]: jury, [B]: jury }, `${A},${B}`), none({ otherDuplicates: 1 }));
+    assert.deepEqual(out({ [A]: jury, [B]: { says: 'other', settlement: 'INVALID (build)' } }, `${A},${B}`), none({ otherDuplicates: 1, disagree: 1 }));
+    assert.deepEqual(out({ [A]: jury, [B]: { says: 'other', settlement: null } }, `${A},${B}`), none({ otherDuplicates: 1, disagree: 1 }));
+    assert.deepEqual(out({ [A]: jury }, `${A},${B}`), none({ otherDuplicates: 1, unread: 1 }));
   });
 
   test('checks come out in common\'s order, and a claim can name several', () => {

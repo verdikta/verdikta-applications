@@ -72,9 +72,10 @@ test('a block with no end line, or longer than any the writer gives, is no block
   const padded = realBlock().replace(`\n${EVIDENCE_END}`, `${'\nHonesty-Flags: 0'.repeat(MAX_BLOCK_LINES)}\n${EVIDENCE_END}`);
   assert.equal(failure(padded), null);
   assert.equal(read(padded), null);
-  const atTheLimit = [EVIDENCE_HEADER, 'Settlement: DUPLICATE (integrity)', `Report-SHA256: ${'a'.repeat(64)}`, 'Integrity-Failed-Checks: exitConsistent', ...Array(MAX_BLOCK_LINES - 5).fill('Honesty-Flags: 0'), EVIDENCE_END].join('\n');
+  const atTheLimit = [EVIDENCE_HEADER, 'Settlement: DUPLICATE (integrity)', `Report-SHA256: ${'a'.repeat(64)}`, 'Integrity-Failed-Checks: exitConsistent', 'Tamper-Flags: none', ...Array.from({ length: MAX_BLOCK_LINES - 6 }, (_, i) => `Line-${i}: 0`), EVIDENCE_END].join('\n');
+  assert.equal(atTheLimit.split('\n').length, MAX_BLOCK_LINES);
   assert.deepEqual(failure(atTheLimit), ['exitConsistent']);
-  assert.equal(failure(atTheLimit.replace(EVIDENCE_END, `Honesty-Flags: 0\n${EVIDENCE_END}`)), null);
+  assert.equal(failure(atTheLimit.replace(EVIDENCE_END, `One-More: 0\n${EVIDENCE_END}`)), null);
 });
 
 test('a check name must be one of common\'s: one unknown name makes the whole block plain, not the part that is known', () => {
@@ -100,8 +101,8 @@ test('a block that contradicts itself is plain: integrity with no failed check, 
   assert.equal(failure(realBlock({ settlement: 'duplicate (integrity)' })), null);
 });
 
-test('a line missing from the block makes it plain: the settlement, the hash, the checks', () => {
-  for (const name of ['Settlement', 'Report-SHA256', 'Integrity-Failed-Checks']) {
+test('a line missing from the block makes it plain: the settlement, the hash, the checks, the flags', () => {
+  for (const name of ['Settlement', 'Report-SHA256', 'Integrity-Failed-Checks', 'Tamper-Flags']) {
     const text = realBlock().split('\n').filter((l) => !l.startsWith(`${name}: `)).join('\n');
     assert.equal(failure(text), null, name);
   }
@@ -109,10 +110,42 @@ test('a line missing from the block makes it plain: the settlement, the hash, th
   assert.equal(failure(realBlock({ sha: 'F'.repeat(64) })), null, 'in the writer\'s lower case');
 });
 
-test('a line repeated counts the first time, in both readers: there is one rule', () => {
-  const twice = `${EVIDENCE_HEADER}\nSettlement: jury\nSettlement: DUPLICATE (integrity)\nReport-SHA256: ${'a'.repeat(64)}\nIntegrity-Failed-Checks: exitConsistent\n${EVIDENCE_END}`;
-  assert.equal(read(twice).settlement, 'jury');
-  assert.equal(failure(twice), null);
+test('a line repeated: the reader for a person takes the first, and the count takes nothing, whichever came first', () => {
+  const twice = (line, again) => realBlock().replace(line, `${line}\n${again}`);
+  const cases = [
+    twice('Settlement: DUPLICATE (integrity)', 'Settlement: jury'),
+    twice('Tamper-Flags: none', 'Tamper-Flags: report-path=1'),
+    twice('Integrity-Failed-Checks: frameworkUnchanged,dependenciesUnchanged', 'Integrity-Failed-Checks: exitConsistent'),
+    twice(`Report-SHA256: ${'f'.repeat(64)}`, `Report-SHA256: ${'e'.repeat(64)}`),
+    twice('Honesty-Flags: 0', 'Honesty-Flags: 0'),
+  ];
+  for (const text of cases) assert.equal(failure(text), null, text);
+  assert.equal(read(cases[0]).settlement, 'DUPLICATE (integrity)', 'the first');
+  assert.equal(read(realBlock().replace('Settlement: DUPLICATE (integrity)', 'Settlement: jury\nSettlement: DUPLICATE (integrity)')).settlement, 'jury', 'the first');
+  assert.equal(failure(realBlock().replace('Settlement: DUPLICATE (integrity)', 'Settlement: jury\nSettlement: DUPLICATE (integrity)')), null);
+});
+
+test('a line not in the writer\'s form makes it plain: no space, no name, a blank line, a flag that hides from the parser', () => {
+  for (const [line, odd] of [
+    ['Tamper-Flags: none', 'Tamper-Flags: none\nTamper-Flags:report-path=1'],
+    ['Tamper-Flags: none', 'Tamper-Flags:report-path=1'],
+    ['Tamper-Flags: none', 'Tamper-Flags:  none'],
+    ['Honesty-Flags: 0', 'Honesty-Flags: 0\n'],
+    ['Honesty-Flags: 0', 'something a jury wrote'],
+    ['Honesty-Flags: 0', ': no name'],
+    ['Settlement: DUPLICATE (integrity)', 'Settlement:DUPLICATE (integrity)\nSettlement: DUPLICATE (integrity)'],
+  ]) {
+    assert.equal(failure(realBlock().replace(line, odd)), null, odd);
+  }
+});
+
+test('whatever the count accepts, the reader for a person reads the same', () => {
+  for (const checks of ['identityComplete', 'frameworkUnchanged,dependenciesUnchanged', INTEGRITY_CHECKS.join(',')]) {
+    const text = realBlock({ checks });
+    assert.deepEqual(read(text).integrityFailedChecks, failure(text));
+    assert.equal(read(text).settlement, 'DUPLICATE (integrity)');
+    assert.equal(read(text).tamperFlags, 'none');
+  }
 });
 
 test('anything that is not a string reads as nothing, and does not throw', () => {

@@ -450,18 +450,20 @@ when all of these hold:
 - its last verdict's `justificationCid` (a dispute round's replaces the first) is a list of at most 16 CIDs;
 - **every** CID on it has been read: the aggregator joins the clustered oracles', and reading only the first
   would let that one arbiter move the count;
-- each one starts with the block, in the writer's form: `Execution evidence v1` is the very first line, the
-  settlement is `DUPLICATE (integrity)`, there is no tamper flag, and at least one check is named, each one of
-  common's `INTEGRITY_CHECKS`, once, in common's order. One unknown name makes the whole block plain. Jury text
-  after the block is never read, and neither is the upload's `metadata`;
+- each one starts with the block, in the writer's form: `Execution evidence v1` is the very first line, every
+  line of the block is `Name: value` with each name once, the settlement is `DUPLICATE (integrity)`, it says
+  `Tamper-Flags: none`, and at least one check is named, each one of common's `INTEGRITY_CHECKS`, once, in
+  common's order. One unknown name makes the whole block plain. Jury text after the block is never read, and
+  neither is the upload's `metadata`;
 - they all name the same checks. Report hashes are not compared, since a hash can differ between hosts.
 
-Anything else is a plain DUPLICATE, never an integrity failure: `disagree` counts the claims whose arbiters'
-blocks differ, and `unread` the ones with a malformed list or a read not done. A failed read (a gateway down, a
-file over the cap, bytes that are not JSON) is tried again after `SA_ARCHIVE_RETRY_MS`, doubling up to 6 hours;
-an answer is final, because a CID names its content. The reads run beside the indexer, one run at a time and
-at most 8 fetches a run, each download stopped at 4 MiB; no request and no sync waits for one. The store keeps
-only the outcome of each read, by CID: known check names, never text from the upload.
+Anything else is a plain DUPLICATE, never an integrity failure: `disagree` counts the claims whose arbiters
+state different settlements or checks, and `unread` the ones with a malformed list or a read not done. A failed
+read (a gateway down, a file over the cap, an answer with no justification in it) is tried again after
+`SA_ARCHIVE_RETRY_MS`, doubling up to 6 hours; an answer with a justification is final, because a CID names its
+content. The reads run beside the indexer, one run at a time and at most 8 fetches a run, each download stopped
+at 4 MiB; no request and no sync waits for one. The store keeps only the outcome of each read, by CID: known
+check names and a settlement in its writer's form, never other text from the upload.
 
 **What the count does not say.** It counts claims that failed a check. It does not say who or what caused a
 failure, and a hunter's own failed run raises it too, so it proves nothing about a listing. If every clustered

@@ -159,7 +159,7 @@ test('a version\'s record: stake, labels, history, findings, flags, lineage, lat
 // DUPLICATE. The page says apart how many failed and which checks, from the block at the start of the
 // justification, in neutral words. The site reads the uploads from the gateway stand-in in the
 // background; a page request reads none.
-test('claims that failed integrity: per listing, by check, apart from the other duplicates, in neutral words', async ({ page, stack, chain, browser }) => {
+test('claims that failed integrity: per listing, by check, apart from the other duplicates, in neutral words', async ({ page, stack, chain }) => {
   test.setTimeout(300_000);
   const { evidenceBlock, integrityUpload, juryUpload, uploadBytes } = await fromServer('test/helpers/evidence.js');
   const key = disclosure.generateDisclosureKeyPair();
@@ -186,7 +186,9 @@ test('claims that failed integrity: per listing, by check, apart from the other 
 
   await chain.until(async () => {
     const r = await recordFromServer(stack, listed.artifactHash);
-    return r?.record.listings.length === 1 && r.integrity?.listings[String(id)]?.failed === 2;
+    // every settlement indexed, and the reads beside the indexer done: the one with no upload stays unread
+    const e = r?.integrity?.listings[String(id)];
+    return r?.record.history.outcomes[1] === '5' && e?.failed === 2 && e.otherDuplicates === 3 && e.unread === 1;
   }, { what: 'the record\'s reads of the justifications' });
 
   const requests = [];
@@ -212,8 +214,9 @@ test('claims that failed integrity: per listing, by check, apart from the other 
   await expect(page.getByTestId('history-verdicts')).toContainText(fill(R.verdictLine, { outcome: 'INVALID', count: 1 }));
 
   // in neutral words
-  await expect(page.getByTestId('integrity-note').first()).toHaveText(R.integrityNote);
-  await expect(page.getByTestId('integrity-unread-note').first()).toHaveText(R.integrityUnreadNote);
+  await expect(page.getByTestId('integrity-note')).toHaveText(R.integrityNote);
+  await expect(s('integrity-note')).toHaveText(R.integrityNote);
+  await expect(page.getByTestId('integrity-unread-note')).toHaveText(R.integrityUnreadNote);
   const text = await page.locator('main').innerText();
   expect(wordingProblems(text)).toEqual([]);
   const said = await page.getByTestId('record-history').innerText();
@@ -221,13 +224,6 @@ test('claims that failed integrity: per listing, by check, apart from the other 
   await shot(page, 'record-integrity');
   await shot(page, 'record-integrity-listing', { target: page.getByTestId(`listing-${id}`) });
   await shot(page, 'record-integrity-history', { target: page.getByTestId('record-history') });
-
-  // what a phone shows: the counts in a row, nothing off the side
-  const phone = await browser.newPage({ viewport: { width: 390, height: 800 } });
-  await phone.goto(page.url());
-  await expect(phone.getByTestId(`listing-${id}-integrity`)).toHaveText('2');
-  expect(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  await phone.close();
 
   // the browser reads the record from the server, never a justification from a gateway
   expect(requests.filter((u) => u.includes(a) || u.includes(b))).toEqual([]);

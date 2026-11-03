@@ -226,9 +226,11 @@ test('claims that failed integrity: per listing, and apart from the other duplic
       },
     },
   });
-  assert.deepEqual(v.listings[0].integrity, { failed: '2', checks: [['identityComplete', '1'], ['frameworkUnchanged', '2']], otherDuplicates: '1', unread: '0' });
-  assert.deepEqual(v.listings[1].integrity, { failed: '1', checks: [['exitConsistent', '1']], otherDuplicates: '1', unread: '1' });
+  assert.deepEqual(v.listings[0].integrity, { failed: '2', checks: [['identityComplete', '1'], ['frameworkUnchanged', '2']], otherDuplicates: '1', unread: '0', lateFailed: '0', lateChecks: [] });
+  assert.deepEqual(v.listings[1].integrity, { failed: '1', checks: [['exitConsistent', '1']], otherDuplicates: '1', unread: '1', lateFailed: '1', lateChecks: [['exitConsistent', '1']] });
   assert.equal(v.history.integrityFailed, '3');
+  assert.deepEqual(v.history.integrityChecks, [['identityComplete', '1'], ['frameworkUnchanged', '2'], ['exitConsistent', '1']]);
+  assert.deepEqual(v.later.integrityChecks, [['exitConsistent', '1']]);
   assert.equal(v.history.duplicates, '2', 'the other duplicates');
   assert.equal(v.history.integrityUnread, '1');
   assert.equal(v.later.integrityFailed, '1');
@@ -248,7 +250,7 @@ test('an answer that disagrees counts with what could not be read, as one line o
 test('a record with no integrity field (a server from before it): every duplicate stays where the chain counts it, and it fails no one', () => {
   const l = listing({ history: history({ outcomes: ['0', '3', '0', '0', '0', '0'] }) });
   const v = recordView(view({ listings: [l], hist: history({ outcomes: ['0', '3', '0', '0', '0', '0'] }) }));
-  assert.deepEqual(v.listings[0].integrity, { failed: '0', checks: [], otherDuplicates: '3', unread: '0' });
+  assert.deepEqual(v.listings[0].integrity, { failed: '0', checks: [], otherDuplicates: '3', unread: '0', lateFailed: '0', lateChecks: [] });
   assert.equal(v.history.duplicates, '3');
   assert.equal(v.history.integrityFailed, '0');
   assert.equal(v.later.integrityFailed, '0');

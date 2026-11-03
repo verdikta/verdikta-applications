@@ -12,6 +12,7 @@
     "./control-proof": "./src/controlProof.js",
     "./builder-signature": "./src/builderSignature.js",
     "./listing-request-size": "./src/listingRequestSize.js",
+    "./execution-evidence": "./src/executionEvidence.js",
     "./zip": "./src/zip.js",
     "./zip-read": "./src/zipRead.js"
   },

@@ -64,13 +64,17 @@ export function project(events) {
       if (l) l.closed = true;
     }
     if (e.name === 'Committed' || e.name === 'LateClaim') {
-      claims.set(a.claimId, { claimId: a.claimId, listingId: a.listingId, late: e.name === 'LateClaim', state: 'Committed', disclosed: false, outcome: null, published: false });
+      claims.set(a.claimId, { claimId: a.claimId, listingId: a.listingId, late: e.name === 'LateClaim', state: 'Committed', disclosed: false, outcome: null, justificationCid: null, published: false });
     }
     const c = a.claimId !== undefined ? claims.get(a.claimId) : undefined;
     if (!c) continue;
     if (e.name === 'Disclosed') c.disclosed = true;
     if (CLAIM_STATE[e.name]) c.state = CLAIM_STATE[e.name];
-    if (e.name === 'Judged' || e.name === 'DisputeJudged') c.outcome = a.outcome;
+    if (e.name === 'Judged' || e.name === 'DisputeJudged') {
+      c.outcome = a.outcome;
+      // the verdict that stands: a dispute round's replaces the first, and a failed one has no CID
+      c.justificationCid = a.justificationCid;
+    }
     if (e.name === 'Settled') {
       c.outcome = a.outcome;
       c.published = outcomeRank(a.outcome) >= LOW;

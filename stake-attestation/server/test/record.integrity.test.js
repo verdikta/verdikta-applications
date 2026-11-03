@@ -74,11 +74,12 @@ describe('the record says apart which claims failed integrity', () => {
   test('per listing: the count and each check\'s name, from the machine-readable form', async () => {
     const baseCommit = freshCommit();
     const one = await listing(ctx, { spec: { baseCommit }, escrowWei: 5n * 10n ** 18n });
-    const two = await listing(ctx, { spec: { baseCommit }, escrowWei: 5n * 10n ** 18n });
-    assert.equal(one.artifactHash, two.artifactHash, 'two listings of one hash, both counting');
     await claimed(ctx, one.listingId, 'DUPLICATE', integrityUpload({ checks: 'frameworkUnchanged,dependenciesUnchanged' }));
     await claimed(ctx, one.listingId, 'DUPLICATE', integrityUpload({ checks: 'frameworkUnchanged', sha: 'b'.repeat(64) }));
     await claimed(ctx, one.listingId, 'DUPLICATE', juryUpload());
+    await (await ctx.sa.connect(ctx.maker).close(one.listingId)).wait();
+    const two = await listing(ctx, { spec: { baseCommit } });
+    assert.equal(one.artifactHash, two.artifactHash, 'two listings of one hash, both counting');
     await claimed(ctx, two.listingId, 'DUPLICATE', integrityUpload({ checks: 'identityComplete' }));
     await settled(site);
     const v = await view(one.artifactHash);
@@ -129,7 +130,6 @@ describe('the record says apart which claims failed integrity', () => {
 
   test('an outcome that is not DUPLICATE on-chain never counts, whatever the text says, and its upload is never read', async () => {
     const l = await listing(ctx, { escrowWei: 5n * 10n ** 18n });
-    const forged = integrityUpload();
     for (const outcome of ['INVALID', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']) {
       const before2 = fetched.length;
       const { cid } = await claimed(ctx, l.listingId, outcome, uploadBytes(`${evidenceBlock()}\n${outcome}`));
@@ -137,7 +137,6 @@ describe('the record says apart which claims failed integrity', () => {
       assert.deepEqual((await entry(l)).failed, 0, outcome);
       assert.equal(fetched.slice(before2).includes(cid), false, `the upload of a claim settled ${outcome} is not read`);
     }
-    assert.ok(forged.length > 0);
   });
 
   test('a DUPLICATE verdict not settled yet does not count: the record counts settled claims, as the chain does', async () => {
@@ -447,24 +446,23 @@ describe('reading in the background, with bounds', () => {
     }
   });
 
-  test('a run reads at most its limit, and one failing upload does not starve the rest', async () => {
-    const cids = Array.from({ length: MAX_FETCHES_PER_RUN * 2 + 1 }, (_, i) => `bafkrei${String(i).padStart(52, 'a')}`.replace(/[0189]/g, 'b'));
-    assert.equal(new Set(cids).size >= MAX_FETCHES_PER_RUN + 1, true);
-    const claims = cids.map((cid, i) => ({ claimId: String(i + 1), listingId: '1', state: 'Settled', outcome: 'DUPLICATE', justificationCid: cid }));
+  test('a run reads at most its limit, and uploads that keep failing do not starve the rest', async () => {
+    const cids = Array.from({ length: MAX_FETCHES_PER_RUN * 2 + 1 }, (_, i) => `bafkrei${String(i).padStart(52, 'a')}`);
+    const claims = cids.map((justificationCid, i) => ({ claimId: String(i + 1), listingId: '1', state: 'Settled', outcome: 'DUPLICATE', justificationCid }));
     const asked = [];
-    const store = { locked: true, state: { evidence: {} }, transact(fn) { const r = fn(this.state); return r; } };
+    const store = { locked: true, state: { evidence: {} }, transact(fn) { return fn(this.state); } };
     let t = 1000;
     const args = { store, claims, now: () => t, retryMs: 1000, logger: { warn() {} }, fetchJustification: async (cid) => { asked.push(cid); throw new Error('down'); } };
     await refreshEvidence(args);
-    assert.equal(asked.length, MAX_FETCHES_PER_RUN);
+    assert.deepEqual(asked, cids.slice(0, MAX_FETCHES_PER_RUN));
     await refreshEvidence(args);
-    assert.equal(asked.length, MAX_FETCHES_PER_RUN * 2, 'the next run takes the next ones, while the failed ones wait');
-    assert.equal(new Set(asked).size, asked.length);
+    assert.deepEqual(asked, cids.slice(0, MAX_FETCHES_PER_RUN * 2), 'the next run takes the next ones, while the failed ones wait');
     t += 1000;
-    const before2 = asked.length;
+    asked.length = 0;
     await refreshEvidence(args);
-    assert.equal(asked.slice(before2).filter((c) => !store.state.evidence[c] || store.state.evidence[c].attempts === 1).length, MAX_FETCHES_PER_RUN, 'never asked first, then the longest waiting');
-    assert.ok(asked.slice(before2, before2 + 1).every((c) => store.state.evidence[c].attempts === 1), 'the one never asked goes first');
+    assert.equal(asked.length, MAX_FETCHES_PER_RUN);
+    assert.equal(asked[0], cids.at(-1), 'the one never asked goes first');
+    assert.deepEqual(asked.slice(1), cids.slice(0, MAX_FETCHES_PER_RUN - 1), 'then the ones waiting longest');
   });
 
   test('a closed site stores nothing from a read still running', async () => {

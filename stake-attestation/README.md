@@ -864,9 +864,10 @@ goes in a URL.
   artifact (hash, kind, repository and commit from the Listed event, and whether the host says it
   is a fork), each stake that counts (state, labels,
   award table, lowest class counted, bond, escrow, owed, declared value at risk and the top
-  award's share of it, the times, days open, predecessor and successor), the history (claims,
-  claims judged, verdicts by outcome, duplicates, released, expired, disputes and their
-  outcomes, days since the last valid finding), the valid findings, what was found later (late
+  award's share of it, the times, days open, predecessor and successor, and the claims that failed
+  integrity with each check's name, apart from its other duplicates), the history (claims,
+  claims judged, verdicts by outcome, claims that failed integrity, other duplicates, released,
+  expired, disputes and their outcomes, days since the last valid finding), the valid findings, what was found later (late
   claims), the bad-disclosure flags with what became of each claim, and the badge with its
   Markdown and HTML embed. Any other listing of the hash shows apart, as not counted, with why
   and no amount. Then the diligence text: what a record says and does not (design

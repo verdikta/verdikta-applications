@@ -32,6 +32,8 @@ const neighbour = (id, hash) => (BigInt(id) === 0n ? null : { id: String(id), ha
 /** No fact from the server reads as "no", the fact's default. */
 const NOT_CHECKED = Object.freeze({ subject: 'repository', proof: 'no', reason: 'NOT_CHECKED_YET', detail: null, repository: null, deployment: null });
 
+const checksOf = (checks) => (checks ?? []).map(({ check, count }) => [check, String(count)]);
+
 /**
  * A listing's claims that failed integrity (node P10), apart from the other duplicates, whose count is
  * the chain's less those. `unread` holds what could not be read and what the arbiters said differently:
@@ -48,8 +50,6 @@ function integrityView(l, entry) {
     lateChecks: checksOf(entry?.late?.checks),
   };
 }
-
-const checksOf = (checks) => (checks ?? []).map(({ check, count }) => [check, String(count)]);
 
 function listingView(l, label, blockTimestamp, control, integrity) {
   const opened = Number(l.openedAt);

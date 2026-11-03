@@ -167,6 +167,20 @@ test('the same commit went out another way (a sped-up copy from the wallet): ado
   assert.equal(r.claimId, count + 1n);
 });
 
+test('an adopted claim must be as deep as one of ours before the ciphertext is pinned', async () => {
+  const l = await w.listing();
+  const dir = makeClaimDir();
+  const killed = await child('commit', dir, l.listingId, 'prepare:saved');
+  assert.equal(killed.signal, 'SIGKILL');
+  const saved = readJson(statePath(dir));
+  await (await w.sa.connect(w.hunterWallet).commit(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+  const uploads = w.ipfs.uploads.length;
+  let waits = 0;
+  const r = await w.hunter({ confirmations: 3, sleep: async () => { waits += 1; assert.equal(w.ipfs.uploads.length, uploads); await w.mine(); } }).commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
+  assert.equal(r.stage, 'disclosed');
+  assert.ok(waits >= 2);
+});
+
 test('an RPC that lags behind its own receipt does not make a second commit', async () => {
   const l = await w.listing();
   const dir = makeClaimDir();

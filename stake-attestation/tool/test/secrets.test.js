@@ -77,6 +77,23 @@ test('an RPC that quotes every request back in its errors, at each verb: nothing
   }
 });
 
+test('the CLI\'s signed reveal bounced by an RPC that quotes it: no key on the terminal, and the same run finishes it after', async () => {
+  const l = await w.listing();
+  const dir = makeClaimDir();
+  await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
+  const secrets = secretsOf(dir);
+  rpc.options.echoOnly = ['eth_sendRawTransaction'];
+  const bounced = await runCli(w, ['reveal', dir], { extra });
+  rpc.options.echoOnly = null;
+  assert.equal(bounced.code, 1, bounced.stderr);
+  assert.match(bounced.stderr, /RPC_UNAVAILABLE/);
+  assertNoForms(`${bounced.stdout}\n${bounced.stderr}`, secrets, 'reveal under an echoing send');
+  assert.equal(bounced.stderr.includes('rejected:'), false);
+  const done = await runCli(w, ['reveal', dir], { extra });
+  assert.equal(done.code, 0, done.stderr);
+  assert.match(done.stdout, /Revealed/);
+});
+
 test('the signed reveal bounced by an RPC that quotes it: the error is ours, without the calldata', async () => {
   const l = await w.listing();
   const dir = makeClaimDir();

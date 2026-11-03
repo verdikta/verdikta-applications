@@ -122,7 +122,7 @@ export async function deployStakeAttestation(hre) {
  */
 export async function startRpc(hre) {
   const calls = [];
-  const options = { echoErrors: false, down: false };
+  const options = { echoErrors: false, echoOnly: null, down: false };
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
@@ -136,7 +136,7 @@ export async function startRpc(hre) {
       }
       const one = async (call) => {
         calls.push(call);
-        if (options.echoErrors) return { jsonrpc: '2.0', id: call.id, error: { code: -32000, message: `rejected: ${text}`, data: text } };
+        if (options.echoErrors || options.echoOnly?.includes(call.method)) return { jsonrpc: '2.0', id: call.id, error: { code: -32000, message: `rejected: ${text}`, data: text } };
         try {
           const result = await hre.network.provider.send(call.method, call.params ?? []);
           return { jsonrpc: '2.0', id: call.id, result };

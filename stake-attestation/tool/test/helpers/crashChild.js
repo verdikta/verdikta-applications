@@ -18,6 +18,7 @@ const hunter = createHunter({
   waitMs: 8000,
   readBackMs: 50,
   receiptGraceMs: 20,
+  onNotice: () => {},
   onStep: (step) => {
     if (step === env.CRASH_STEP) process.kill(process.pid, 'SIGKILL');
   },

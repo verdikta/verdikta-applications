@@ -70,7 +70,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 | `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
 | `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`; the baseline scan between listing and open, its findings served to the maker's wallet only (P4b2); the indexer, keeper, listing feed, record mirror, labels and badge (P4b1) over one deployment; the project's proof, refused listing attempts counted by reason, what counts on the record, the fork label (P8, P9). | `npm test`, `npm run test:builder`, `npm run abi` |
 | `client/` | Vite + React site, port 5176: the maker's listing flow, the disclosure key made in the browser, and decrypt-and-check (P6a); the record page, the badge embed, the feed, the maker's release, roll forward and dispute, pending evaluations watched, the baseline scan read (P6b). | `npm test`, `npx playwright test` |
-| `tool/` | `verdikta-attest`, the hunter's CLI: `check`, `commit`, `reveal`, `status`, `claim` arrive in P5. | `npm test` |
+| `tool/` | `verdikta-attest`, the hunter's CLI and the library it wraps (P5): `check`, `commit`, `reveal`, `status`, `claim`. See "The hunter tool". | `npm test` |
 | `shared/` | Code shared by the packages (the banned-words helper, the rules of the project's proof, the warning every listing page carries, "did the builder sign this listing") and the app's repository checks. | `npm test` |
 | `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`; the baseline scan, for the maker only (P3b); `verdikta-control-check`, what git says about a listing's repository (P8); the listing's proof, refused before anything is built (P9). The reusable workflow that runs it is `.github/workflows/stake-attestation-builder.yml`. | `npm test`, `npm run test:docker` |
 | `docs/` | `BUILD_PLAN.md`, `control-proof.md` (the project's proof: what a listing needs, every refusal, what counts). | |
@@ -716,6 +716,49 @@ the caller's credit before `msg.value`, and settles through scripted results or
 `finalizeEvaluationTimeout`. Its test controls stand in for the real contract's
 owner settings and its oracles; the contract's header lists them. A fault the
 real contract cannot produce is not added to the mock.
+
+## The hunter tool
+
+`tool/` (node P5) is the hunter's side of a claim, a CLI and a library (`createHunter`, `src/hunter.js`): the CLI only parses
+arguments and prints. Base Sepolia and local nodes only, for now: any other chain is refused.
+
+A claim folder holds `finding.json`, `report.md`, `poc.patch` and optionally `fix.patch`.
+
+```bash
+export VERDIKTA_CONTRACT=0x…  VERDIKTA_IPFS_GATEWAY=https://…  VERDIKTA_PIN_BACKEND=pinata  VERDIKTA_PIN_TOKEN=…
+export CODE_RUNNER_URL=http://127.0.0.1:8090  CODE_RUNNER_TOKEN=…   # for check
+verdikta-attest check  ./claim --listing 12        # free, and nothing leaves this machine
+verdikta-attest commit ./claim --listing 12 --yes  # bond + prepay; asks for --yes after saying what that means
+verdikta-attest status ./claim                     # the fix window, and what comes next
+verdikta-attest reveal ./claim
+verdikta-attest status ./claim --wait              # polls the evaluation, up to 15 minutes
+verdikta-attest claim  ./claim                     # finalize, settle, withdraw: whatever is due
+```
+
+The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), never from an argument.
+
+- **`check`** runs the arbiters' code-runner minus the jury, on the request an arbiter would send, and prints the gate forecast
+  and the context pack. The pack quotes the proof in the clear, on this terminal only (`--no-pack` leaves it out). The runner must
+  be on this machine unless `--remote-runner` is passed, since it reads the plaintext. A failed gate says what it would settle as
+  (`external-adapter/src/codeReview/settlement.js`). An **abstain** (a proof that loops or runs out of memory) is shown as one, with
+  what it costs: every arbiter abstains the same way, each failed round costs the base fees, the bond goes to the maker if no
+  round settles, and nothing on-chain or on IPFS says why, so `check` is the only place to see it. On `linux/arm64` there is no
+  report, only gates and the pack. The forecast does not catch a trap keyed on the date: the runner fakes no clock.
+- **`commit`** refuses a listing the builder did not sign, or whose on-chain key or terms are not what was signed; says P9's warning
+  and the §8.6 diligence text; draws fresh keys; and leaves `archive.zip`, `keys.json`, `ciphertext.age` and `state.json` in
+  `<claim>/.verdikta-claim/` at 0600. **Back that folder up: without its keys a claim cannot be revealed, and the bond is lost.**
+  It sends `commit` with the bond and the live fee, and only once that is mined pins the ciphertext and calls `disclose`.
+- **Run it again.** A stopped `commit` or `reveal`, at any point, goes on from what was saved. It sends the saved transaction
+  again rather than a second one: the contract takes the same hashes twice, for a second bond.
+- **`reveal`** refuses before the fix window ends or out of commit order, before the plaintext is pinned. `reveal --retrigger`
+  sends a failed round again.
+- **`status`** reads a judged claim's reason from the first block of its justification only (`Execution evidence v1`); jury text
+  after it can say anything, and is not read.
+
+A pinned file is held to the chain: its bytes are hashed against the on-chain commitment before the upload and read back through
+the gateway after it, and a raw CID (`bafkrei…`) is recomputed. So a gateway the arbiters cannot reach is the hunter's to avoid:
+read-back through a local gateway proves less than one through a public one. Exit codes: 0 done, 1 refused or failed, 2 usage,
+3 `--yes` needed, 4 still pending (run the same command again).
 
 ## The client
 

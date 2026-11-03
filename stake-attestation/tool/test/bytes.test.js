@@ -73,7 +73,9 @@ test('the gateway is down: a resumable stop with the time left, then the same fl
   const r = await w.hunter({ onNotice: (t) => notices.push(t) }).commit({ claimDir: dir, acceptUnreadPin: true });
   assert.equal(r.stage, 'disclosed');
   assert.match(notices.join('\n'), /could not be read back/);
+  w.ipfs.faults.gatewayDown = false;
   const tree = await committedNotPinned();
+  w.ipfs.faults.gatewayDown = true;
   w.ipfs.faults.treeCid = true;
   await assert.rejects(w.hunter().commit({ claimDir: tree.dir, acceptUnreadPin: true }), (e) => e.code === 'PIN_NOT_READABLE', 'no override when nothing here can recompute the CID');
 });

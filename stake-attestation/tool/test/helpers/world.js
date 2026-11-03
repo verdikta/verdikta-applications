@@ -240,6 +240,7 @@ export async function makeWorld() {
         waitMs: 4000,
         readBackMs: 50,
         receiptGraceMs: 20,
+        onNotice: () => {},
         ...options,
       });
     },

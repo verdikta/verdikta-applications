@@ -18,5 +18,6 @@ module.exports = {
     artifacts: path.join(work, 'artifacts'),
     cache: path.join(work, 'cache'),
   },
-  networks: { hardhat: {} },
+  // A live node takes a transaction that will revert and mines it; Hardhat would throw from the send.
+  networks: { hardhat: { throwOnTransactionFailures: false } },
 };

@@ -10,7 +10,7 @@ import path from 'node:path';
 
 import { LISTING_WARNING } from '@verdikta/stake-attestation-shared/listing-warning';
 
-import { statePath } from './helpers/cli.js';
+import { closeRpc, runCli, statePath } from './helpers/cli.js';
 import { FINDING, buildArchives, codeReview, makeClaimDir, makeWorld, sha256, specFor, tmpDir } from './helpers/world.js';
 
 let w;
@@ -62,6 +62,14 @@ test('the archive is the claim contract: manifest, primary, finding, report, pat
   assert.equal(report.startsWith(primary.query), true, 'the query is the report text');
   assert.equal(readZipMember(built, entries.get('report.md'), 1e6).toString(), report);
   assert.ok(buildClaimArchive({ finding: Buffer.from('{}'), report: Buffer.from(report), pocPatch: Buffer.from('p') }).length > 0);
+  // common's own validators on it, as the EA's triage runs them (utils/bcidValidation.js)
+  const { createRequire } = await import('node:module');
+  const { validator } = createRequire(import.meta.url)('@verdikta/common');
+  const extracted = tmpDir('sa-extract-');
+  for (const [name, entry] of entries) fs.writeFileSync(path.join(extracted, name), readZipMember(built, entry, 1e6));
+  const manifest = JSON.parse(fs.readFileSync(path.join(extracted, 'manifest.json'), 'utf8'));
+  await validator.validateManifest(manifest, { extractedPath: extracted });
+  await validator.validateCompleteWorkflow(manifest, fs.readFileSync(path.join(extracted, 'primary_query.json'), 'utf8'));
   assert.ok(built.equals(buildClaimArchive({ finding: Buffer.from(JSON.stringify(FINDING)), report: Buffer.from(report), pocPatch: Buffer.from('diff --git a/t b/t\n'), fixPatch: Buffer.from('fix') })), 'the same claim, the same bytes');
 });
 
@@ -172,6 +180,14 @@ test('on-chain terms other than the signed ones are refused too: another bond, a
   }
 });
 
+test('a library caller with nowhere to put the warning is refused: it cannot be skipped by accident', async () => {
+  const l = await w.listing();
+  const dir = makeClaimDir();
+  const count = await w.claimCount();
+  await assert.rejects(w.hunter({ onNotice: null }).commit({ claimDir: dir, listingId: l.listingId, acknowledge: true }), (e) => e.code === 'USAGE');
+  assert.equal(await w.claimCount(), count);
+});
+
 test('a listing that takes no commits, or does not allow this hunter, is refused with the contract\'s reason', async () => {
   const unfunded = await w.listing({ fund: false });
   await assert.rejects(w.hunter().commit({ claimDir: makeClaimDir(), listingId: unfunded.listingId, acknowledge: true }), (e) => e.code === 'LISTING_NOT_ACCEPTING');
@@ -242,6 +258,31 @@ test('the state folder itself must be private: a wider folder, or a link, is ref
   const other = makeClaimDir();
   fs.symlinkSync(tmpDir(), path.join(other, '.verdikta-claim'));
   await assert.rejects(w.hunter().commit({ claimDir: other, listingId: l.listingId, acknowledge: true }), (e) => e.code === 'FILE_NOT_PRIVATE');
+});
+
+test('the commit must be at the required depth before the ciphertext is pinned', async () => {
+  const l = await w.listing();
+  const dir = makeClaimDir();
+  const uploads = w.ipfs.uploads.length;
+  let atMined = null;
+  let polls = 0;
+  const r = await w.hunter({
+    confirmations: 3,
+    sleep: async () => { polls += 1; assert.equal(w.ipfs.uploads.length, uploads, 'no pin while it waits'); await w.mine(); },
+    onStep: async (s) => { if (s === 'commit:mined') atMined = await w.provider.getBlockNumber(); },
+  }).commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
+  const receipt = await w.provider.getTransactionReceipt(r.commitTx);
+  assert.ok(polls >= 2);
+  assert.ok(atMined - receipt.blockNumber + 1 >= 3);
+});
+
+test('--json: stdout is the result alone, whatever notices were said', async () => {
+  const l = await w.listing();
+  const r = await runCli(w, ['commit', makeClaimDir(), '--listing', String(l.listingId), '--yes', '--json']);
+  await closeRpc(w);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).stage, 'disclosed');
+  assert.ok(r.stderr.includes(LISTING_WARNING.proofFirst));
 });
 
 test('the live fee: a rise before the read is paid, and the prepay goes up with it', async () => {

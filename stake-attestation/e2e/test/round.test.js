@@ -81,7 +81,7 @@ test('an abstention is never a settled claim: rounds fail, a fresh prepay, then 
 });
 
 test('review focus: the bridge ran the real K, M, N and P, and what the real contract would do with the answers', () => {
-  has('valid.round.polled', 'valid.round.commits', 'valid.round.revealJobs', 'valid.round.reveals', 'valid.round.clustered', 'valid.round.noRevert', 'valid.round.noBadReveal', 'valid.round.jurorAverage', 'valid.request.cids', 'valid.request.disclosureLine', 'gate.request.cids');
+  has('valid.round.polled', 'valid.round.commits', 'valid.round.revealJobs', 'valid.round.reveals', 'valid.round.clustered', 'valid.round.noRevert', 'valid.round.noBadReveal', 'valid.round.noAbstain', 'valid.round.vector', 'valid.round.everyRevealSame', 'valid.request.cids', 'valid.request.disclosureLine', 'valid.request.oracle', 'gate.request.cids', 'gate.round.vector', 'gate.round.everyRevealSame');
   assert.match(detail('valid.round.polled'), new RegExp(`K = ${REAL_CONFIG.k}`));
   assert.match(detail('valid.round.commits'), new RegExp(`M = ${REAL_CONFIG.m}`));
   assert.match(detail('valid.round.reveals'), new RegExp(`N = ${REAL_CONFIG.n}`));
@@ -89,7 +89,7 @@ test('review focus: the bridge ran the real K, M, N and P, and what the real con
 });
 
 test('nothing is a stand-in for a verdict: the runner, the jury and the evidence each say they ran', () => {
-  has('valid.report.everyGatePassed', 'valid.runner.oneSandbox', 'valid.runner.definitive', 'valid.runner.reportPlatform', 'valid.jury.perJob', 'valid.jury.panelAskedEveryJob', 'valid.jury.everyJuror', 'valid.jury.onlyThePanel', 'valid.jury.everyJobAverage', 'valid.jury.everyJurorInEveryAnswer', 'valid.jury.everyCallSawEvidence', 'valid.jury.codeModeSettings', 'valid.jury.onePrompt', 'valid.jury.justifier', 'valid.jury.keysKnown', 'valid.jury.keysNotSeen', 'valid.evidence.uploads', 'valid.evidence.settlement', 'valid.evidence.reportHash', 'valid.evidence.source', 'valid.round.everyRevealTheAverage');
+  has('valid.report.everyGatePassed', 'valid.runner.oneSandbox', 'valid.runner.definitive', 'valid.runner.reportPlatform', 'valid.jury.perJob', 'valid.jury.panelAskedEveryJob', 'valid.jury.everyJuror', 'valid.jury.onlyThePanel', 'valid.jury.everyJobAverage', 'valid.jury.everyJurorInEveryAnswer', 'valid.jury.everyCallSawEvidence', 'valid.jury.codeModeSettings', 'valid.jury.onePrompt', 'valid.jury.justifier', 'valid.jury.keysKnown', 'valid.jury.keysNotSeen', 'valid.evidence.uploads', 'valid.evidence.settlement', 'valid.evidence.reportHash', 'valid.evidence.source');
 });
 
 test('the embargo and the queue are the chain\'s and the tool\'s, not the script\'s order', () => {

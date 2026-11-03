@@ -3,6 +3,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
+import { RoundStopped, isStopping, onStop } from './proc.js';
 import { APP_DIR } from './setup.js';
 
 const BIN = path.join(APP_DIR, 'tool', 'bin', 'verdikta-attest.js');
@@ -27,15 +28,24 @@ export function createTool({ chain, ipfs, runnerUrl, runnerToken, devKey, log })
   /** @returns {Promise<{ code: number|null, json: object|null, stdout: string, stderr: string }>} */
   return function tool(...args) {
     return new Promise((resolve, reject) => {
+      if (isStopping()) {
+        reject(new RoundStopped());
+        return;
+      }
       const started = Date.now();
       const child = spawn(process.execPath, [BIN, ...args, '--json'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      const off = onStop(() => child.kill('SIGKILL'));
       let stdout = '';
       let stderr = '';
       child.stdout.on('data', (d) => { stdout += d; });
       child.stderr.on('data', (d) => { stderr += d; });
       const timer = setTimeout(() => child.kill('SIGKILL'), TOOL_TIMEOUT_MS);
-      child.once('error', reject);
+      child.once('error', (err) => {
+        off();
+        reject(err);
+      });
       child.once('close', (code) => {
+        off();
         clearTimeout(timer);
         let json = null;
         try {

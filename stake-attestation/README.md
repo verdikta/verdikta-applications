@@ -882,11 +882,15 @@ It needs Docker and Node, and installs the rest itself: every package here from 
 the client's pages. It downloads images and packages (the pinned Foundry base, `registry:2`, Semgrep and gitleaks, solc 0.8.31 from
 binaries.soliditylang.org, npm) and uses no credential. It reaches no real chain, provider or pin service: the local IPFS fails a run
 on any CID it does not hold, and every service gets its own small environment. It leaves nothing behind: containers and images
-by the run's instance, processes by pid, on success, on failure and on SIGINT or SIGTERM (the pinned images it pulled and BuildKit's cache
-stay, as any build's do), and a cleanup that fails or cannot say fails the run. Logs stay in a folder of the run's own under `e2e/.round/logs`,
+by the run's instance, processes by pid, on success, on failure, on a crash and on a signal (the pinned images it pulled and BuildKit's cache
+stay, as any build's do), and a cleanup that fails or cannot say fails the run. A signal stops it in two phases: a flag that everything that only waits
+honours and the closers of what has started; then the main flow comes back, so that a step already on its way to creating something gets its closer,
+and the sweep runs last. That wait is bounded at 3 minutes, many times the 7 to 11 s the whole start stage takes, and past it the run has failed by
+name and the sweep runs anyway. A second signal changes nothing. Logs stay in a folder of the run's own under `e2e/.round/logs`,
 which is emptied, or under `SA_E2E_LOG_DIR`, where nothing is removed; and `--report <file>` writes the checks as JSON. `SA_E2E_ARBITER_DIR` runs another checkout, which must be at the
 pin unless `SA_E2E_ARBITER_UNPINNED=1`. `e2e/test/failure.test.js` breaks it on purpose (`SA_E2E_BREAK`: a runner that will not start, a jury that
-cannot be reached; SIGTERM while running, mid-build, mid-scan and with EA requests out) and reads the exit code.
+cannot be reached, a crash; SIGTERM while running, mid-build, mid-scan, with EA requests out, twice during the startup, with a step that creates
+something after the signal, and with one that outlasts the bound) and reads the exit code.
 
 One listing of the builder's fixture takes three claims, in commit order: **a valid one** (every gate passes, the jury decides, HIGH,
 the award and bond after the dispute window), **a gate-failing one** (a PoC that edits source: the runner's `testPathsOnly`, INVALID at

@@ -11,7 +11,7 @@
   "scripts": {
     "round": "node bin/round.js",
     "test": "node --test --test-concurrency=1 --test-timeout=2400000 test/*.test.js",
-    "test:unit": "node --test test/aggregatorRound.test.js test/bridge.test.js test/checks.test.js"
+    "test:unit": "node --test test/aggregatorRound.test.js test/bridge.test.js test/checks.test.js test/proc.test.js"
   },
   "dependencies": {
     "@verdikta/common": "1.9.0-attest.1",

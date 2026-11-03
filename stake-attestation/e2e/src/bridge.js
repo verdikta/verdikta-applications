@@ -140,6 +140,7 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
       required: null,
       spent: null,
       quiet: false,
+      oracle: null,
     };
     rounds.set(aggId, record);
     const cids = [...await mock.getRequestCids(aggId)];
@@ -147,6 +148,7 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
     record.cids = cids;
     record.addendum = params.addendum;
     record.requestedClass = BigInt(params.requestedClass);
+    record.oracle = { alpha: params.alpha, maxFee: params.maxFee, estimatedBaseCost: params.estimatedBaseCost, maxFeeBasedScaling: params.maxFeeBasedScaling };
     // The real keeper's selection would have reverted the request: no job is registered there.
     if (record.requestedClass !== BigInt(requestedClass)) throw new Error(`a request on class ${record.requestedClass}: no job here serves it, and the real keeper would have refused it`);
     const ceiling = await mock.maxOracleFee();
@@ -175,7 +177,7 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
     const job = (slot, cid, phase) => {
       if (stopped) return Promise.resolve(); // a stopping round starts nothing it would have to wait for
       const started = Date.now();
-      const entry = { slot, phase, status: null, ms: null, outcome: null, error: null };
+      const entry = { slot, phase, status: null, ms: null, outcome: null, error: null, scores: null };
       record.jobs.push(entry);
       const running = evaluate({ id: crypto.randomUUID(), data: { cid, aggId: hexOf(aggId) } }).then(
         (answer) => answer,
@@ -192,6 +194,7 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
           log(`[bridge] ${phase} slot ${slot}: no transaction (HTTP ${answer.status})`);
           return undefined;
         }
+        if (phase === 'reveal') entry.scores = parsed.response;
         const effect = round.fulfill(slot, parsed.response, parsed.cid);
         entry.outcome = effect.kind;
         if (effect.kind === 'ignored') record.ignored.push({ slot, phase, reason: effect.reason });
@@ -265,11 +268,12 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
     },
     /** Any failure of the bridge itself, for the round to fail on. */
     failure: () => fatal,
-    /** Stops watching and ends every job still out. @returns {Promise<number>} the jobs it cut off */
+    /** Stops watching, ends every job still out, and tells whoever waits. @returns {Promise<number>} the jobs it cut off */
     async stop() {
       stopped = true;
       if (timer) clearTimeout(timer);
       const cut = evaluate.cancelAll?.() ?? 0;
+      if (!fatal) failAll(new Error('the bridge was stopped'));
       await polling; // what it found starts nothing now
       await Promise.allSettled([...inflight]);
       return cut;

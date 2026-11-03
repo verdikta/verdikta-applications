@@ -2,8 +2,10 @@
 // its own, so the flag set here is set for this file only.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 
-import { RoundStopped, isStopping, onStop, requestStop, sleep, throwIfStopping, unlessStopped, waitUntil, within } from '../src/proc.js';
+import { RoundStopped, isStopping, onStop, requestStop, sleep, stopProcessesNaming, throwIfStopping, unlessStopped, waitUntil, within } from '../src/proc.js';
 
 test('within: an answer, a failure, or its own time running out, which names what ran out', async () => {
   assert.equal(await within(Promise.resolve(7), 1000, 'a thing'), 7);
@@ -15,6 +17,36 @@ test('waitUntil before a stop: it waits, gives the value, and says when it timed
   let n = 0;
   assert.equal(await waitUntil('counting', async () => { n += 1; return n > 2 ? 'done' : null; }, { timeoutMs: 1000, everyMs: 1 }), 'done');
   await assert.rejects(waitUntil('never', async () => false, { timeoutMs: 20, everyMs: 1 }), /timed out after 20 ms never/);
+});
+
+test('stopping by name: the process that names the run and its whole group, a docker CLI\'s container read off it first, and not someone\'s tail of the logs', async () => {
+  const mark = `mark${crypto.randomBytes(6).toString('hex')}`;
+  const alive = (id) => {
+    try {
+      process.kill(id, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // A group leader that names the run, and a child in its group that does not: `sh -c` holds the script, which names the mark.
+  const step = spawn('sh', ['-c', `sleep 60 & wait # ${mark} --name vab-0123abcd`], { detached: true, stdio: 'ignore' });
+  const tail = spawn('sh', ['-c', `sleep 60 # ${mark}/logs`], { detached: true, stdio: 'ignore' });
+  try {
+    await sleep(200);
+    assert.equal(alive(-step.pid), true);
+    const r = await stopProcessesNaming([mark], { except: [`${mark}/logs`], graceMs: 3000 });
+    assert.deepEqual(r.groups, [step.pid]);
+    assert.deepEqual(r.containers, ['vab-0123abcd']);
+    assert.equal(alive(-step.pid), false, 'the whole group is gone');
+    assert.equal(alive(tail.pid), true, 'someone\'s tail stays');
+  } finally {
+    for (const c of [step, tail]) {
+      try {
+        process.kill(-c.pid, 'SIGKILL');
+      } catch { /* gone */ }
+    }
+  }
 });
 
 test('a stop reaches whatever is waiting: waitUntil at once, even on a read that hangs, and what asked to be told', async () => {

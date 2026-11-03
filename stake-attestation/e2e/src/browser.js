@@ -1,8 +1,10 @@
 // The client's pages in a real browser, reading what the round did: the record and the feed.
 // Read-only: the maker's and hunter's actions go through the API, the tool and a plain wallet here, and
 // the client's own wallet flows have their Playwright tests against this same contract (node P6b).
-export async function readPages(chromium, clientUrl, { artifactHash, listingId }) {
-  const browser = await chromium.launch();
+export async function readPages(chromium, clientUrl, { artifactHash, listingId, onBrowser = () => {} }) {
+  // The round's own stop closes it (onBrowser): Playwright's handlers would act on a signal by themselves.
+  const browser = await chromium.launch({ handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false });
+  onBrowser(browser);
   try {
     const page = await browser.newPage();
     const errors = [];

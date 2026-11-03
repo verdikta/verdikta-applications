@@ -173,6 +173,15 @@ test('a signal somewhere in the real startup, and another while it stops: one ex
   assertNothingLeft(r.report, r.out);
 });
 
+test('a crash in the round, not a signal, stops everything the same way, and exits 1', async () => {
+  const r = await runRound('crash-in-start', { SA_E2E_BREAK: 'crash-in-start' });
+  assert.equal(r.code, 1, r.out.slice(-1500));
+  assert.equal(r.report.ok, false);
+  assert.match(r.report.crash, /a crash on purpose/);
+  assert.match(r.report.failure, /stopped by a crash/);
+  assertNothingLeft(r.report, r.out);
+});
+
 test('stopped in the middle of a build, it stops the builder too, though the builder has a process group of its own', async () => {
   let timer = null;
   const r = await runRound('signal-in-build', {}, {

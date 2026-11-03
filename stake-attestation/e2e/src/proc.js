@@ -6,6 +6,65 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 
+// The stop flag. A signal sets it, and whatever is waiting gives up: a waitUntil at its next look or
+// its read in hand, a tool run, whatever asked with onStop. What cannot be interrupted, such as an A6a
+// starter on its way to creating something, is left to finish, because then it gets its closer.
+export class RoundStopped extends Error {
+  constructor() {
+    super('the round is stopping');
+    this.name = 'RoundStopped';
+  }
+}
+
+let stopping = false;
+const stopListeners = new Set();
+export const isStopping = () => stopping;
+
+export function requestStop() {
+  if (stopping) return;
+  stopping = true;
+  for (const fn of [...stopListeners]) fn();
+  stopListeners.clear();
+}
+
+/** Calls `fn` when the stop comes, or at once if it has. @returns {() => void} takes it off again */
+export function onStop(fn) {
+  if (stopping) {
+    fn();
+    return () => {};
+  }
+  stopListeners.add(fn);
+  return () => stopListeners.delete(fn);
+}
+
+export function throwIfStopping() {
+  if (stopping) throw new RoundStopped();
+}
+
+/**
+ * The promise, or a RoundStopped as soon as the round is stopping: for what would only be waited on, a
+ * read or a receipt, which starts nothing. Never for a step that creates something: that one is
+ * awaited to its end so that it gets its closer.
+ */
+export function unlessStopped(promise) {
+  // the answer that loses the race still has a handler
+  Promise.resolve(promise).catch(() => {});
+  if (stopping) return Promise.reject(new RoundStopped());
+  let off = () => {};
+  const stopped = new Promise((_, reject) => { off = onStop(() => reject(new RoundStopped())); });
+  return Promise.race([promise, stopped]).finally(off);
+}
+
+/** The promise, or a rejection naming `what` when `ms` run out. */
+export function within(promise, ms, what) {
+  let timer;
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} took more than ${ms} ms`)), ms);
+  });
+  Promise.resolve(promise).catch(() => {});
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
 const running = new Set();
 process.on('exit', () => {
   for (const child of running) {
@@ -71,16 +130,18 @@ export function launch(name, argv, { cwd, env, logDir }) {
   return { name, pid: child.pid, tail, exited: () => ended, close, log: file };
 }
 
-/** Polls until `ready()` gives something true, the process died, or time runs out; each says which. */
+/** Polls until `ready()` gives something true, the process died, the round is stopping, or time runs out; each says which. */
 export async function waitUntil(what, ready, { timeoutMs, everyMs = 250, proc = null }) {
   const until = Date.now() + timeoutMs;
   let last = null;
   for (;;) {
+    throwIfStopping();
     if (proc?.exited()) throw new Error(`${proc.name} exited ${JSON.stringify(proc.exited())} while ${what}:\n${proc.tail()}`);
     try {
-      const v = await ready();
+      const v = await unlessStopped(ready());
       if (v) return v;
     } catch (err) {
+      if (err instanceof RoundStopped) throw err;
       last = err;
     }
     if (Date.now() > until) throw new Error(`timed out after ${timeoutMs} ms ${what}${last ? ` (${last.message})` : ''}${proc ? `:\n${proc.tail()}` : ''}`);
@@ -89,7 +150,7 @@ export async function waitUntil(what, ready, { timeoutMs, everyMs = 250, proc = 
 }
 
 function processTable() {
-  const ps = spawnSync('ps', ['-axww', '-o', 'pid=,pgid=,command='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const ps = spawnSync('ps', ['-axww', '-o', 'pid=,pgid=,command='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 30000 });
   if (ps.status !== 0) throw new Error(`ps exited ${ps.status ?? ps.signal ?? ps.error?.message}`);
   return ps.stdout.split('\n').map((line) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line)).filter(Boolean)
     .map((m) => ({ pid: Number(m[1]), pgid: Number(m[2]), command: m[3] }));
@@ -111,12 +172,15 @@ const signalled = (id, signal) => {
  * a generic label, on a daemon other runs share): read here, before anything is stopped, so those and
  * no others are removed. Children of this process (the tool) are in its own group, and go one by one.
  * @param {string[]} marks - text only this run's processes carry
+ * @param {object} [o]
+ * @param {string[]} [o.except] - a command line holding one of these is not the run's: someone's tail of its logs
+ * @param {number} [o.graceMs]
  * @returns {Promise<{ groups: number[], singles: number[], containers: string[] }>}
  */
-export async function stopProcessesNaming(marks, { graceMs = 10000 } = {}) {
+export async function stopProcessesNaming(marks, { except = [], graceMs = 10000 } = {}) {
   const table = processTable();
   const ownGroup = table.find((r) => r.pid === process.pid)?.pgid;
-  const hits = table.filter((r) => r.pid !== process.pid && marks.some((m) => r.command.includes(m)));
+  const hits = table.filter((r) => r.pid !== process.pid && marks.some((m) => r.command.includes(m)) && !except.some((e) => r.command.includes(e)));
   const groups = [...new Set(hits.map((r) => r.pgid))].filter((g) => g !== ownGroup);
   const singles = hits.filter((r) => r.pgid === ownGroup).map((r) => r.pid);
   const members = table.filter((r) => groups.includes(r.pgid));

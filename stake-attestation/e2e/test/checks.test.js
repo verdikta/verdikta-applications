@@ -10,30 +10,37 @@ const failing = (list) => list.filter((c) => !c.ok).map((c) => c.name);
 const allPass = (list) => assert.deepEqual(failing(list), []);
 const fails = (list, name) => assert.ok(failing(list).includes(name), `${name} should fail: ${JSON.stringify(failing(list))}`);
 
-const jobs = (phase, n) => Array.from({ length: n }, (_, slot) => ({ phase, slot, status: 200, scores: phase === 'reveal' ? [0n, 700000n, 300000n] : null }));
-const served = (over = {}) => ({ status: 'fulfilled', jobs: [...jobs('commit', 6), ...jobs('reveal', 4)], commits: 4, reveals: 3, clustered: 2, justifications: 'QmA,QmB', reverted: [], ignored: [], abstained: 0, ...over });
+const VECTOR = [0n, 700000n, 300000n];
+const jobs = (phase, n) => Array.from({ length: n }, (_, slot) => ({ phase, slot, status: 200, scores: phase === 'reveal' ? VECTOR : null }));
+const served = (over = {}) => ({ status: 'fulfilled', jobs: [...jobs('commit', 6), ...jobs('reveal', 4)], commits: 4, reveals: 3, clustered: 2, justifications: 'QmA,QmB', likelihoods: VECTOR, reverted: [], ignored: [], abstained: 0, ...over });
 
 test('servedRoundChecks: K, M, N, P, or it fails', () => {
-  allPass(servedRoundChecks('x', served()));
-  fails(servedRoundChecks('x', served({ status: 'no-verdict' })), 'x.round.fulfilled');
-  fails(servedRoundChecks('x', served({ jobs: jobs('commit', 1) })), 'x.round.polled');
-  fails(servedRoundChecks('x', served({ commits: 1 })), 'x.round.commits');
-  fails(servedRoundChecks('x', served({ jobs: jobs('commit', 6) })), 'x.round.revealJobs');
-  fails(servedRoundChecks('x', served({ reveals: 1 })), 'x.round.reveals');
-  fails(servedRoundChecks('x', served({ justifications: 'QmA' })), 'x.round.clustered');
+  allPass(servedRoundChecks('x', served(), { vector: VECTOR }));
+  fails(servedRoundChecks('x', served({ status: 'no-verdict' }), { vector: VECTOR }), 'x.round.fulfilled');
+  fails(servedRoundChecks('x', served({ jobs: jobs('commit', 1) }), { vector: VECTOR }), 'x.round.polled');
+  fails(servedRoundChecks('x', served({ commits: 1 }), { vector: VECTOR }), 'x.round.commits');
+  fails(servedRoundChecks('x', served({ jobs: jobs('commit', 6) }), { vector: VECTOR }), 'x.round.revealJobs');
+  fails(servedRoundChecks('x', served({ reveals: 1 }), { vector: VECTOR }), 'x.round.reveals');
+  fails(servedRoundChecks('x', served({ justifications: 'QmA' }), { vector: VECTOR }), 'x.round.clustered');
   const late = (phase) => ({ phase, reason: 'AggregationComplete' });
-  allPass(servedRoundChecks('x', served({ reverted: [late('reveal')] })), 'the M - N late reveals revert, as on the real contract');
-  allPass(servedRoundChecks('x', served({ reverted: [late('reveal'), late('commit'), late('commit')] })), 'and so do the K - M commits that land after it finalized');
-  fails(servedRoundChecks('x', served({ reverted: [{ phase: 'reveal', reason: 'MalformedPayload' }] })), 'x.round.noRevert');
-  fails(servedRoundChecks('x', served({ reverted: [late('reveal'), late('reveal'), late('commit'), late('commit')] })), 'x.round.noRevert');
-  fails(servedRoundChecks('x', served({ ignored: [{ reason: 'RevealHashMismatch' }] })), 'x.round.noBadReveal');
-  allPass(servedRoundChecks('x', served({ ignored: [{ reason: 'commit after the reveal phase began' }] })));
+  allPass(servedRoundChecks('x', served({ reverted: [late('reveal')] }), { vector: VECTOR }), 'the M - N late reveals revert, as on the real contract');
+  allPass(servedRoundChecks('x', served({ reverted: [late('reveal'), late('commit'), late('commit')] }), { vector: VECTOR }), 'and so do the K - M commits that land after it finalized');
+  fails(servedRoundChecks('x', served({ reverted: [{ phase: 'reveal', reason: 'MalformedPayload' }] }), { vector: VECTOR }), 'x.round.noRevert');
+  fails(servedRoundChecks('x', served({ reverted: [late('reveal'), late('reveal'), late('commit'), late('commit')] }), { vector: VECTOR }), 'x.round.noRevert');
+  fails(servedRoundChecks('x', served({ ignored: [{ reason: 'RevealHashMismatch' }] }), { vector: VECTOR }), 'x.round.noBadReveal');
+  allPass(servedRoundChecks('x', served({ ignored: [{ reason: 'commit after the reveal phase began' }] }), { vector: VECTOR }));
   // One job in six going wrong must not hide behind the others: M commits and N reveals can still come.
-  fails(servedRoundChecks('x', served({ ignored: [{ reason: 'zero commit' }] })), 'x.round.noBadReveal');
-  fails(servedRoundChecks('x', served({ abstained: 1 })), 'x.round.noAbstain');
+  fails(servedRoundChecks('x', served({ ignored: [{ reason: 'zero commit' }] }), { vector: VECTOR }), 'x.round.noBadReveal');
+  fails(servedRoundChecks('x', served({ abstained: 1 }), { vector: VECTOR }), 'x.round.noAbstain');
+  // What the mock was given, and what every reveal said: the one that lost the race is outside the mean.
+  fails(servedRoundChecks('x', served({ likelihoods: [0n, 800000n, 200000n] }), { vector: VECTOR }), 'x.round.vector');
+  fails(servedRoundChecks('x', served({ likelihoods: null }), { vector: VECTOR }), 'x.round.vector');
+  const reveals = jobs('reveal', 4);
+  reveals[3] = { ...reveals[3], scores: [1000000n, 0n, 0n] };
+  fails(servedRoundChecks('x', served({ jobs: [...jobs('commit', 6), ...reveals] }), { vector: VECTOR }), 'x.round.everyRevealSame');
   const same = (phase, n) => Array.from({ length: n }, () => ({ phase, slot: 0, status: 200 }));
-  fails(servedRoundChecks('x', served({ jobs: [...same('commit', 6), ...jobs('reveal', 4)] })), 'x.round.polled');
-  fails(servedRoundChecks('x', served({ jobs: [...jobs('commit', 6), ...same('reveal', 4)] })), 'x.round.revealJobs');
+  fails(servedRoundChecks('x', served({ jobs: [...same('commit', 6), ...jobs('reveal', 4)] }), { vector: VECTOR }), 'x.round.polled');
+  fails(servedRoundChecks('x', served({ jobs: [...jobs('commit', 6), ...same('reveal', 4)] }), { vector: VECTOR }), 'x.round.revealJobs');
 });
 
 test('abstainedRoundChecks: an abstention stays an abstention', () => {
@@ -73,7 +80,7 @@ test('requestChecks: the composition the contract owes', () => {
 const AVERAGE = [0n, 700000n, 300000n];
 const panel = [{ provider: 'p', model: 'a', weight: 0.5 }, { provider: 'q', model: 'b', weight: 0.5 }];
 const justifier = { provider: 'o', model: 'j' };
-const PROMPT = 'the claim, hash h, MARK-1, MARK-2';
+const PROMPT = 'the claim, REPORT-HASH, MARK-1, MARK-2';
 const OPTIONS = { webAccess: false, signal: true, maxTokens: 8000, effort: 'high' };
 const jurorCall = (who, over = {}) => ({ provider: who.provider, model: who.model, outcome: 'answered', prompt: PROMPT, options: { ...OPTIONS }, ...over });
 const justifierCall = (over = {}) => ({ provider: 'o', model: 'j', outcome: 'answered', prompt: 'write it up', options: { webAccess: false, signal: true }, ...over });
@@ -83,12 +90,12 @@ const aiCall = (over = {}) => ({
   request: { codeReview: {}, models: panel.map((p) => ({ provider: p.provider, model: p.model, weight: p.weight, count: 1 })) },
   response: {
     scores: [{ score: 0 }, { score: 700000 }, { score: 300000 }],
-    metadata: { model_results: panel.map((p) => ({ provider: p.provider, model: p.model, status: 'success' })) },
+    model_results: panel.map((p) => ({ provider: p.provider, model: p.model, status: 'success' })),
     ...over,
   },
 });
 const juryObs = (over = {}) => ({
-  runnerCalls: [{ response: { outcome: 'definitive', report: {}, reportSha256: 'h', runner: { platform: 'linux/amd64' } } }],
+  runnerCalls: [{ response: { outcome: 'definitive', report: {}, reportSha256: 'REPORT-HASH', runner: { platform: 'linux/amd64' } } }],
   aiCalls: Array.from({ length: 6 }, () => aiCall()),
   providerCalls: providerCalls(),
   panel,
@@ -109,7 +116,7 @@ test('juryPathChecks: the sandbox ran, the jury was reached, the keys stayed out
   fails(juryPathChecks('x', juryObs({ runnerCalls: [{ response: { outcome: 'abstain', abstain: { cause: 'oom' } } }] })), 'x.runner.definitive');
   fails(juryPathChecks('x', juryObs({ runnerCalls: [{ response: { outcome: 'definitive', report: null, reportUnavailable: 'linux/arm64', runner: { platform: 'linux/amd64' } } }] })), 'x.runner.definitive');
   fails(juryPathChecks('x', juryObs({ runnerCalls: [{ response: { outcome: 'definitive', report: {}, runner: { platform: 'linux/arm64' } } }] })), 'x.runner.reportPlatform');
-  allPass(juryPathChecks('x', juryObs({ runnerCalls: [{ response: { outcome: 'definitive', report: {}, reportSha256: 'h', runner: { platform: 'linux/arm64' } } }], report: { classPlatform: false } })));
+  allPass(juryPathChecks('x', juryObs({ runnerCalls: [{ response: { outcome: 'definitive', report: {}, reportSha256: 'REPORT-HASH', runner: { platform: 'linux/arm64' } } }], report: { classPlatform: false } })));
   fails(juryPathChecks('x', juryObs({ aiCalls: [] })), 'x.jury.perJob');
   fails(juryPathChecks('x', juryObs({ providerCalls: [] })), 'x.jury.everyJuror');
   const failed = providerCalls().map((c) => (c.model === 'a' ? { ...c, outcome: 'failed' } : c));
@@ -148,14 +155,15 @@ test('juryPathChecks: one job that went wrong does not hide behind the others', 
   const oneJuror = aiCall();
   oneJuror.request.models = oneJuror.request.models.slice(0, 1);
   fails(juryPathChecks('x', oneOf(oneJuror)), 'x.jury.panelAskedEveryJob');
-  fails(juryPathChecks('x', oneOf(aiCall({ metadata: { model_results: [{ provider: 'p', model: 'a', status: 'success' }] } }))), 'x.jury.everyJurorInEveryAnswer');
-  fails(juryPathChecks('x', oneOf(aiCall({ metadata: { model_results: [{ provider: 'p', model: 'a', status: 'success' }, { provider: 'q', model: 'b', status: 'parsing_error' }] } }))), 'x.jury.everyJurorInEveryAnswer');
+  fails(juryPathChecks('x', oneOf(aiCall({ model_results: [{ provider: 'p', model: 'a', status: 'success' }] }))), 'x.jury.everyJurorInEveryAnswer');
+  fails(juryPathChecks('x', oneOf(aiCall({ model_results: [{ provider: 'p', model: 'a', status: 'success' }, { provider: 'q', model: 'b', status: 'parsing_error' }] }))), 'x.jury.everyJurorInEveryAnswer');
 });
 
 test('juryPathChecks: every juror\'s every call saw the evidence, under code mode\'s settings, on one prompt', () => {
   const one = (over) => juryObs({ providerCalls: [...providerCalls().slice(1), jurorCall(panel[0], over)] });
   fails(juryPathChecks('x', one({ prompt: 'the claim, MARK-1, MARK-2' })), 'x.jury.everyCallSawEvidence');
-  fails(juryPathChecks('x', one({ prompt: 'the claim, hash h, MARK-2' })), 'x.jury.everyCallSawEvidence');
+  fails(juryPathChecks('x', one({ prompt: 'the claim, REPORT-HASH, MARK-2' })), 'x.jury.everyCallSawEvidence');
+  fails(juryPathChecks('x', juryObs({ markers: [] })), 'x.jury.everyCallSawEvidence');
   fails(juryPathChecks('x', one({ options: { ...OPTIONS, webAccess: true } })), 'x.jury.codeModeSettings');
   fails(juryPathChecks('x', one({ options: { ...OPTIONS, signal: false } })), 'x.jury.codeModeSettings');
   fails(juryPathChecks('x', one({ options: { ...OPTIONS, maxTokens: 100 } })), 'x.jury.codeModeSettings');

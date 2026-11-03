@@ -6,23 +6,34 @@ import { REAL_CONFIG } from './aggregatorRound.js';
 const check = (name, ok, detail = '') => ({ name, ok: Boolean(ok), detail: String(detail) });
 const eq = (a, b) => JSON.stringify(a, big) === JSON.stringify(b, big);
 function big(_k, v) { return typeof v === 'bigint' ? v.toString() : v; }
+const sameVector = (a, b) => a != null && b != null && eq(a.map(String), b.map(String));
 
-/** A round the real rules finished: K polled, the first M commits, the first N reveals, P clustered. */
-export function servedRoundChecks(prefix, round, config = REAL_CONFIG) {
+const distinctSlots = (jobs) => new Set(jobs.map((j) => j.slot)).size;
+
+/**
+ * A round the real rules finished: K polled, the first M commits, the first N reveals, P clustered. Counted
+ * job by job: M commits and N reveals can still come with a job in six gone wrong, and that must show.
+ */
+export function servedRoundChecks(prefix, round, { vector, config = REAL_CONFIG }) {
   const cids = String(round?.justifications ?? '').split(',').filter(Boolean);
   const commitJobs = (round?.jobs ?? []).filter((j) => j.phase === 'commit');
   const revealJobs = (round?.jobs ?? []).filter((j) => j.phase === 'reveal');
   return [
     check(`${prefix}.round.fulfilled`, round?.status === 'fulfilled', `status ${round?.status}, ${round?.abstained} job(s) with no transaction`),
-    check(`${prefix}.round.polled`, commitJobs.length === config.k, `${commitJobs.length} commit jobs, K = ${config.k}`),
+    check(`${prefix}.round.polled`, commitJobs.length === config.k && distinctSlots(commitJobs) === config.k, `${commitJobs.length} commit jobs on ${distinctSlots(commitJobs)} slots, K = ${config.k}`),
+    check(`${prefix}.round.noAbstain`, round?.abstained === 0, `${round?.abstained} job(s) with no transaction`),
     check(`${prefix}.round.commits`, round?.commits === config.m, `${round?.commits} commits recorded, M = ${config.m}`),
-    check(`${prefix}.round.revealJobs`, revealJobs.length === config.m, `${revealJobs.length} reveal jobs: only the first M commits are asked`),
+    check(`${prefix}.round.revealJobs`, revealJobs.length === config.m && distinctSlots(revealJobs) === config.m, `${revealJobs.length} reveal jobs on ${distinctSlots(revealJobs)} slots: only the first M commits are asked`),
     check(`${prefix}.round.reveals`, round?.reveals === config.n, `${round?.reveals} reveals before it finalized, N = ${config.n}`),
     check(`${prefix}.round.clustered`, round?.clustered === config.p && cids.length === config.p, `${round?.clustered} clustered, ${cids.length} justification CIDs, P = ${config.p}`),
     // Only the jobs that lose the race revert, on the real contract too: the K - M late commits and the
     // M - N late reveals that land after the N-th reveal finalized it (AggregationComplete comes first there).
     check(`${prefix}.round.noRevert`, (round?.reverted ?? []).length <= config.k - config.n && (round?.reverted ?? []).every((r) => r.reason === 'AggregationComplete'), JSON.stringify(round?.reverted ?? [])),
-    check(`${prefix}.round.noBadReveal`, !(round?.ignored ?? []).some((i) => /Reveal|Invalid/.test(i.reason)), JSON.stringify(round?.ignored ?? [])),
+    // And what is ignored is only a commit that came after the reveal phase began: never a bad reveal or a zero commit.
+    check(`${prefix}.round.noBadReveal`, (round?.ignored ?? []).every((i) => i.reason === 'commit after the reveal phase began'), JSON.stringify(round?.ignored ?? [])),
+    check(`${prefix}.round.vector`, sameVector(round?.likelihoods, vector), `the mock was given ${JSON.stringify(round?.likelihoods ?? null, big)}`),
+    // Every reveal, the one that lost the race too: the mean of a cluster shows only two of them.
+    check(`${prefix}.round.everyRevealSame`, revealJobs.length > 0 && revealJobs.every((j) => sameVector(j.scores, vector)), JSON.stringify(revealJobs.map((j) => j.scores), big)),
   ];
 }
 
@@ -49,34 +60,73 @@ export function abstainRunChecks(prefix, { round, runnerCalls, aiCalls, provider
 }
 
 /** The request the contract sent: design §13.3 with errata E1 and E2, read at the aggregator. */
-export function requestChecks(prefix, round, { listingCid, bcid, priorBcids = [], requestedClass, disclosure }) {
+export function requestChecks(prefix, round, { listingCid, bcid, priorBcids = [], requestedClass, disclosure, oracle }) {
   const line = disclosure?.parsed;
+  const asked = round?.oracle;
   return [
     check(`${prefix}.request.cids`, eq(round?.cids, [listingCid, bcid, ...priorBcids]), JSON.stringify(round?.cids)),
     check(`${prefix}.request.class`, BigInt(round?.requestedClass ?? -1) === BigInt(requestedClass), String(round?.requestedClass)),
     check(`${prefix}.request.disclosureLine`, Boolean(line) && line.archiveSha256 === disclosure.archiveSha256 && line.ciphertextSha256 === disclosure.ciphertextSha256 && line.ciphertextCid === disclosure.ciphertextCid, round?.addendum ? `${round.addendum.split(' ')[0]} ...` : 'no addendum'),
+    check(`${prefix}.request.oracle`, Boolean(asked) && BigInt(asked.alpha) === BigInt(oracle.alpha) && BigInt(asked.maxFee) === BigInt(oracle.maxOracleFee) && BigInt(asked.estimatedBaseCost) === BigInt(oracle.estimatedBaseCost) && BigInt(asked.maxFeeBasedScaling) === BigInt(oracle.maxFeeBasedScaling), JSON.stringify(asked ?? null, big)),
   ];
 }
 
-/** What the jury path really did: one sandbox for the operator's K jobs, a jury per job, the keys kept from every model. */
-export function juryPathChecks(prefix, { runnerCalls, aiCalls, providerCalls, panel, justifier, disclosureKeys, report, config = REAL_CONFIG }) {
-  const jurorCalls = providerCalls.filter((c) => panel.some((p) => p.model === c.model));
-  const justifierCalls = providerCalls.filter((c) => c.model === justifier.model);
+const jurorKey = (c) => `${c.provider}:${c.model}`;
+/** How many times each prompt was sent, as one comparable value. */
+const promptCounts = (calls) => {
+  const seen = new Map();
+  for (const c of calls) seen.set(c.prompt, (seen.get(c.prompt) ?? 0) + 1);
+  return JSON.stringify([...seen.entries()].sort((x, y) => (x[0] < y[0] ? -1 : 1)));
+};
+
+/**
+ * What the jury path really did: one sandbox for the operator's K jobs, and a jury per job. Every count here
+ * is per juror and every look is per call or per job, never a total: the chain shows only the winning
+ * cluster, so a job or a juror gone wrong outside it would show nowhere else.
+ */
+export function juryPathChecks(prefix, { runnerCalls, aiCalls, providerCalls, panel, justifier, disclosureKeys, markers, average, maxTokens, report, config = REAL_CONFIG }) {
   const definitive = runnerCalls.length === 1 && runnerCalls[0].response?.outcome === 'definitive';
-  const reportNow = runnerCalls[0]?.response?.report;
+  const answer = runnerCalls[0]?.response;
+  const reportHash = answer?.reportSha256;
+  const callsOf = (juror) => providerCalls.filter((c) => jurorKey(c) === jurorKey(juror));
+  const jurorCalls = panel.flatMap(callsOf);
+  const justifierCalls = callsOf(justifier);
+  const known = new Set([...panel, justifier].map(jurorKey));
+  const everyJuror = panel.map((p) => {
+    const calls = callsOf(p);
+    return { juror: jurorKey(p), calls: calls.length, answered: calls.filter((c) => c.outcome === 'answered').length };
+  });
   // Both keys of the line, in either spelling, in what any model was sent and in what the EA sent the AI Node.
   const forms = (disclosureKeys ?? []).flatMap((k) => [String(k).toLowerCase(), String(k).toLowerCase().replace(/^0x/, '')]);
   const holdsAKey = (text) => {
     const t = String(text).toLowerCase();
     return t.includes('verdikta-disclosure') || forms.some((f) => t.includes(f));
   };
+  const panelKeys = panel.map(jurorKey).sort();
+  const askedOf = (c) => (c.request?.models ?? []).map(jurorKey).sort();
+  const scoresOf = (c) => (c.response?.scores ?? []).map((s) => s.score);
+  const resultsOf = (c) => c.response?.model_results ?? [];
+  const everyJurorAnswered = (c) => {
+    const results = resultsOf(c);
+    return results.length === panel.length && panelKeys.every((k) => results.some((r) => jurorKey(r) === k && r.status === 'success'));
+  };
+  const seesEvidence = (c) => String(c.prompt).includes(reportHash ?? '\0') && (markers ?? []).length > 0 && markers.every((m) => String(c.prompt).includes(m));
+  const jurorSettings = (c) => c.options?.webAccess === false && c.options?.signal === true && c.options?.maxTokens === maxTokens && c.options?.effort === 'high';
+  const justifierSettings = (c) => c.options?.webAccess === false && c.options?.signal === true;
   return [
     check(`${prefix}.runner.oneSandbox`, runnerCalls.length === 1, `${runnerCalls.length} run(s) for ${config.k} jobs`),
-    check(`${prefix}.runner.definitive`, definitive && Boolean(reportNow) && !runnerCalls[0].response.reportUnavailable, definitive ? `report ${runnerCalls[0].response.reportSha256}` : JSON.stringify(runnerCalls[0]?.response?.abstain ?? runnerCalls[0]?.status)),
-    check(`${prefix}.runner.reportPlatform`, !report?.classPlatform || (runnerCalls[0]?.response?.runner?.platform === report.classPlatformName), `the runner answered on ${runnerCalls[0]?.response?.runner?.platform}`),
+    check(`${prefix}.runner.definitive`, definitive && Boolean(answer?.report) && !answer.reportUnavailable, definitive ? `report ${reportHash}` : JSON.stringify(answer?.abstain ?? runnerCalls[0]?.status)),
+    check(`${prefix}.runner.reportPlatform`, !report?.classPlatform || (answer?.runner?.platform === report.classPlatformName), `the runner answered on ${answer?.runner?.platform}`),
     check(`${prefix}.jury.perJob`, aiCalls.length === config.k && aiCalls.every((c) => c.status === 200 && c.request?.codeReview), `${aiCalls.length} AI Node calls, ${aiCalls.filter((c) => c.status === 200).length} answered`),
-    check(`${prefix}.jury.everyJuror`, jurorCalls.length === config.k * panel.length && jurorCalls.every((c) => c.outcome === 'answered'), `${jurorCalls.length} juror calls, ${config.k} jobs x ${panel.length} jurors`),
-    check(`${prefix}.jury.justifier`, justifierCalls.length === config.k, `${justifierCalls.length} justifier calls`),
+    check(`${prefix}.jury.panelAskedEveryJob`, aiCalls.length > 0 && aiCalls.every((c) => eq(askedOf(c), panelKeys)), `each job asked for ${panelKeys.join(', ')}`),
+    check(`${prefix}.jury.everyJuror`, panel.length > 0 && everyJuror.every((j) => j.calls === config.k && j.answered === config.k), `K = ${config.k}: ${JSON.stringify(everyJuror)}`),
+    check(`${prefix}.jury.onlyThePanel`, providerCalls.every((c) => known.has(jurorKey(c))), [...new Set(providerCalls.map(jurorKey))].join(', ')),
+    check(`${prefix}.jury.everyJobAverage`, aiCalls.length > 0 && aiCalls.every((c) => sameVector(scoresOf(c), average)), `every job's answer is the jurors' weighted average ${(average ?? []).join(',')}: ${JSON.stringify(aiCalls.map(scoresOf))}`),
+    check(`${prefix}.jury.everyJurorInEveryAnswer`, aiCalls.length > 0 && aiCalls.every(everyJurorAnswered), JSON.stringify(aiCalls.map((c) => resultsOf(c).map((r) => [r.model, r.status])))),
+    check(`${prefix}.jury.everyCallSawEvidence`, jurorCalls.length > 0 && jurorCalls.every(seesEvidence), `each of ${jurorCalls.length} prompts holds the report's hash and ${(markers ?? []).length} marker(s) from the report and the pack`),
+    check(`${prefix}.jury.codeModeSettings`, jurorCalls.length > 0 && jurorCalls.every(jurorSettings) && justifierCalls.every(justifierSettings), `web off, an abort signal, and for each juror ${maxTokens} tokens and effort high`),
+    check(`${prefix}.jury.onePrompt`, panel.length > 0 && panel.every((p) => promptCounts(callsOf(p)) === promptCounts(callsOf(panel[0]))), 'each juror was sent the same prompts, as many times'),
+    check(`${prefix}.jury.justifier`, justifierCalls.length === config.k && justifierCalls.every((c) => c.outcome === 'answered'), `${justifierCalls.length} justifier calls`),
     check(`${prefix}.jury.keysKnown`, (disclosureKeys ?? []).length === 2, `${(disclosureKeys ?? []).length} keys read from the request's line`),
     check(`${prefix}.jury.keysNotSeen`, !providerCalls.some((c) => holdsAKey(c.prompt)) && !aiCalls.some((c) => holdsAKey(JSON.stringify(c.request))), 'no prompt and no AI Node request carries the disclosure line or either key'),
   ];
@@ -92,12 +142,13 @@ export function gateSettledChecks(prefix, { runnerCalls, aiCalls, providerCalls,
   ];
 }
 
-/** Every upload the chain points at holds the block, and the first says what the settlement says. */
-export function evidenceChecks(prefix, { uploads, evidence, settlement, reportSha256 = null }) {
+/** Every upload the chain points at, not only the first: it holds the block, and says what the settlement says. */
+export function evidenceChecks(prefix, { uploads, evidences, settlement, source, reportSha256 = null, expectedCount }) {
   return [
-    check(`${prefix}.evidence.uploads`, uploads.length > 0 && uploads.every((u) => typeof u?.justification === 'string' && u.justification.startsWith('Execution evidence v1')), `${uploads.length} upload(s)`),
-    check(`${prefix}.evidence.settlement`, evidence?.settlement === settlement, `read ${evidence?.settlement}, expected ${settlement}`),
-    check(`${prefix}.evidence.reportHash`, reportSha256 === null || evidence?.reportSha256 === reportSha256, `evidence ${evidence?.reportSha256}, runner ${reportSha256}`),
+    check(`${prefix}.evidence.uploads`, uploads.length === expectedCount && uploads.every((u) => typeof u?.justification === 'string' && u.justification.startsWith('Execution evidence v1')), `${uploads.length} upload(s), ${expectedCount} expected`),
+    check(`${prefix}.evidence.settlement`, evidences.length > 0 && evidences.every((e) => e?.settlement === settlement), `read ${JSON.stringify(evidences.map((e) => e?.settlement))}, expected ${settlement}`),
+    check(`${prefix}.evidence.reportHash`, reportSha256 === null || (evidences.length > 0 && evidences.every((e) => e?.reportSha256 === reportSha256)), `evidence ${JSON.stringify(evidences.map((e) => e?.reportSha256))}, runner ${reportSha256}`),
+    check(`${prefix}.evidence.source`, uploads.length > 0 && uploads.every((u) => u?.metadata?.verdict_source === source), `read ${JSON.stringify(uploads.map((u) => u?.metadata?.verdict_source))}, expected ${source}`),
   ];
 }
 
@@ -133,7 +184,7 @@ export function abstainEndChecks(prefix, { state, expiry, judgedEvents, settledE
 }
 
 /** The API's record against what the round did, field by field. */
-export function recordChecks(prefix, view, { artifactHash, listingId, outcomes, claims, released, noVerdict, findings, escrowWei }) {
+export function recordChecks(prefix, view, { artifactHash, listingId, outcomes, claims, released, noVerdict, findings, escrowWei, bondWei, awards }) {
   const rec = view?.record ?? {};
   const history = rec.history ?? {};
   const listing = (rec.listings ?? []).find((l) => l.listingId === String(listingId));
@@ -147,17 +198,23 @@ export function recordChecks(prefix, view, { artifactHash, listingId, outcomes, 
     check(`${prefix}.record.noVerdictCount`, history.noVerdict === String(noVerdict), `noVerdict ${history.noVerdict}`),
     check(`${prefix}.record.findings`, eq((rec.findings ?? []).map((f) => ({ claimId: f.claimId, outcome: f.outcome, paidWei: f.paidWei, owedWei: f.owedWei, bcid: f.bcid })), findings), JSON.stringify(rec.findings ?? [], big)),
     check(`${prefix}.record.escrow`, listing?.escrowWei === String(escrowWei), `escrow ${listing?.escrowWei}, expected ${escrowWei}`),
+    check(`${prefix}.record.terms`, listing?.state === 'Open' && listing?.bondWei === String(bondWei) && eq(listing?.awards, awards.map(String)), `${listing?.state}, bond ${listing?.bondWei}, awards ${JSON.stringify(listing?.awards)}`),
+    check(`${prefix}.record.listingOutcomes`, eq(listing?.history?.outcomes, outcomes.map(String)), JSON.stringify(listing?.history?.outcomes)),
     check(`${prefix}.record.stakerNamed`, String(view?.badge?.message).includes('staker named by the repository: yes'), view?.badge?.message),
   ];
 }
 
 /** What the browser read off the client's pages, against the same facts. */
-export function pageChecks(prefix, pages, { artifactHash, claims, verdicts, noVerdict, findingBcid, invalidBcid }) {
+export function pageChecks(prefix, pages, { artifactHash, claims, judged, released, state, verdicts, noVerdict, findingBcid, invalidBcid }) {
   const r = pages?.record ?? {};
+  const verdictLines = String(r.verdicts).split('\n').map((l) => l.trim());
   return [
     check(`${prefix}.page.hash`, r.hash === artifactHash.toLowerCase(), r.hash),
     check(`${prefix}.page.claims`, r.claims === String(claims) && r.pending === '0', `claims ${r.claims}, pending ${r.pending}`),
-    check(`${prefix}.page.verdicts`, verdicts.every((v) => String(r.verdicts).includes(v)), r.verdicts),
+    check(`${prefix}.page.judged`, r.judged === String(judged), r.judged),
+    check(`${prefix}.page.released`, r.released === String(released), r.released),
+    check(`${prefix}.page.state`, r.state === state, r.state),
+    check(`${prefix}.page.verdicts`, verdicts.every((v) => verdictLines.includes(v)), r.verdicts),
     check(`${prefix}.page.noVerdict`, r.noVerdict === String(noVerdict), r.noVerdict),
     check(`${prefix}.page.finding`, String(r.findings).includes(findingBcid) && String(r.findings).includes('HIGH'), 'the valid finding is listed'),
     check(`${prefix}.page.invalidNotPublished`, !String(r.main).includes(invalidBcid), 'an INVALID claim is a count, not a publication'),

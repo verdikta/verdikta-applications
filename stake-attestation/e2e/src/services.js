@@ -34,6 +34,8 @@ export function arbiterHarness(arbiterDir) {
     startLocalIpfs: fromArbiter('e2e/src/l2/claim/local-ipfs.js').startLocalIpfs,
     startRecordingProxy: fromArbiter('e2e/src/l2/claim/recording-proxy.js').startRecordingProxy,
     pullChecks: fromArbiter('e2e/src/l2/claim/checks.js').pullChecks,
+    gatesPassed: fromArbiter('e2e/src/l2/claim/checks.js').gatesPassed,
+    aiRequestChecks: fromArbiter('e2e/src/l2/claim/checks.js').aiRequestChecks,
     ...fromArbiter('e2e/src/l2/claim/services.js'),
   };
 }
@@ -209,7 +211,12 @@ export async function startServer({ workDir, logDir, chain, ipfs, registry, runn
     SA_CONTROL_RETRY_MS: '1000',
   };
   const proc = launch('server', [process.execPath, 'src/index.js'], { cwd: path.join(APP_DIR, 'server'), env, logDir });
-  await waitUntil('waiting for the server', async () => (await fetch(`${url}/health`)).ok, { timeoutMs: 60000, proc });
+  try {
+    await waitUntil('waiting for the server', async () => (await fetch(`${url}/health`)).ok, { timeoutMs: 60000, proc });
+  } catch (err) {
+    await proc.close();
+    throw err;
+  }
   const post = (route, body) => fetch(`${url}${route}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const get = async (route) => {
     const res = await fetch(`${url}${route}`);
@@ -236,7 +243,12 @@ export async function startClient({ workDir, logDir, chain, ipfs, serverUrl }) {
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
   const proc = launch('client', [process.execPath, vite, 'preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort', '--outDir', dist], { cwd: client, env, logDir });
-  await waitUntil('waiting for the client', async () => (await fetch(url)).ok, { timeoutMs: 60000, proc });
+  try {
+    await waitUntil('waiting for the client', async () => (await fetch(url)).ok, { timeoutMs: 60000, proc });
+  } catch (err) {
+    await proc.close();
+    throw err;
+  }
   return { url, ...proc };
 }
 

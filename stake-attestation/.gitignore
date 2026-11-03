@@ -19,5 +19,8 @@ client/.e2e/
 # The server's chain tests: onchain/contracts copied in, compiled on the in-process network
 server/.hardhat/
 
+# The tool's chain tests: the same, for the hunter tool
+tool/.hardhat/
+
 # The server's indexer and keeper state (SA_DATA_DIR default)
 server/data/

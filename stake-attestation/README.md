@@ -843,6 +843,33 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
 - **`status`** reads a judged claim's reason from the first block of its justification only (`Execution evidence v1`); jury text
   after it can say anything, and is not read.
 
+**What `finding.json` names.** `check` and `commit` warn, from a static read of the patch and before anything runs, of what
+would fail the runner's `claimedObservable` gate. The gate decides (`code-runner/src/observable.js`, design §10.1); the rule is
+its own:
+
+- `poc.command` and `poc.observable` are text. The runner never runs the command, so what counts is what the text spells, and
+  nothing follows a shell. Name a test the patch adds and no other test: a name counts wherever it is spelled, in a filter, a
+  path or a quote, and a name built at run time is not read.
+- A word that is exactly one of forge's test-function prefixes (`test`, `invariant`, `statefulFuzz`, `table`, `check`, `prove`)
+  names nothing in either field, unless the patch adds a test of that name. A plain `forge test` names no test, even on a
+  listing with a baseline test called `test()`, and it is no name for the PoC's test either.
+- In `poc.command` an identifier ending in `$` counts as itself and as what comes before it, so `^test_x$` names `test_x`. In
+  `poc.observable` it counts as itself only: `$` belongs to a Solidity identifier there.
+- Quote what forge prints, in double quotes: each quoted fragment must appear in the recorded failure on every run.
+
+The warning is a one-line read of the patch's added lines (`function` and a name under one of those prefixes), by design. It
+does not read Solidity and it can't see forge's list of tests or the recorded failure; the `check` command, with a runner, gives
+the gate's answer. So:
+
+- A word that is exactly a prefix never satisfies the warning by itself, though the gate counts it when forge ran it as a test
+  the patch added. Whether forge runs a function called `check` or `test` is what a static read can't tell, so when the patch
+  declares one and the text names no longer added name, `NO_ADDED_TEST_NAMED` says so. Name the test by a longer name, or run
+  `check`.
+- A longer name is taken as the patch's test on the read's word. The warning can be wrong for a helper, an interface's
+  declaration or a comment under a longer name, a name on the line after `function`, the second test on a line, a test inherited
+  from elsewhere, a baseline test's declaration edited, `check...` and `prove...` tests (forge's only with symbolic entry points
+  on), and an observable that holds the whole message with nothing quoted.
+
 A pinned file is held to the chain: its bytes are hashed against the on-chain commitment before the upload and read back through
 the gateway after it, and a raw CID (`bafkrei…`) is recomputed. So a gateway the arbiters cannot reach is the hunter's to avoid:
 read-back through a local gateway proves less than one through a public one. Exit codes: 0 done, 1 refused or failed, 2 usage,

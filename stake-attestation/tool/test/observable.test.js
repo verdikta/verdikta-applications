@@ -190,6 +190,28 @@ test('a declaration on a line the patch left alone is not one it adds', () => {
   assert.deepEqual(addedTests(changeOf('+/*', '   function test_kept() public { }', '+*/')), []);
 });
 
+test('a string a hunk leaves open runs past its end, in either quote and either line ending', () => {
+  for (const [quote, end] of [['"', ''], ["'", ''], ['"', '\r'], ["'", '\r']]) {
+    for (const hunk of [
+      // Open on a line the patch left alone, with the added line in it, and closed below the hunk.
+      [`   string s = ${quote}first \\${end}`, `+    function test() public { } \\${end}`],
+      // Open on an added line.
+      [`+  string s = ${quote}first \\${end}`, `+    function test() public { } \\${end}`],
+      // And what would end the hunk with no line ending at all.
+      [`+  string s = ${quote}first \\${end}`, `+    function test() public { }${end}`],
+    ]) {
+      const patch = changeOf('+contract E { function test_drain() public { } }', ...hunk);
+      assert.deepEqual(addedTests(patch), ['test_drain'], JSON.stringify(hunk));
+      assert.deepEqual(addedTests(patch.trimEnd()), ['test_drain'], JSON.stringify(hunk));
+      assert.deepEqual(codes(run('forge test', 'fails with "vault drained"', { patch })), ['NO_ADDED_TEST_NAMED'], JSON.stringify(hunk));
+    }
+  }
+});
+
+test('a string left open reaches no further than its hunk', () => {
+  assert.deepEqual(addedTests(changeOf('+  string s = "first \\', '@@ -20,1 +20,1 @@', '+contract E { function test_drain() public { } }')), ['test_drain']);
+});
+
 test('hunks are read apart, and files too: what one leaves open does not reach the next', () => {
   const hunks = changeOf('+/* opened here, closed below this hunk', '@@ -20,1 +20,1 @@', '+contract E { function test_drain() public { } }');
   assert.deepEqual(addedTests(hunks), ['test_drain']);
@@ -234,8 +256,9 @@ test('the tool reads a test as added by its name in the patch, not by forge\'s l
   // A baseline test's declaration edited: the same identity, so the runner does not count it as added.
   const edited = ['diff --git a/test/Vault.t.sol b/test/Vault.t.sol', '--- a/test/Vault.t.sol', '+++ b/test/Vault.t.sol', '@@ -1,1 +1,1 @@', '-  function test_deposit() public { }', '+  function test_deposit() external { }', ''].join('\n');
   assert.deepEqual(run('forge test --mt test_deposit', 'fails with "vault drained"', { patch: edited }), []);
-  // An added line in a comment opened above the hunk: the hunk doesn't show the comment.
+  // An added line in a comment or a string opened above the hunk: the hunk doesn't show its start.
   assert.deepEqual(addedTests(changeOf('   * first', '+  function test_x() public { }', '   */')), ['test_x']);
+  assert.deepEqual(addedTests(changeOf('   first \\', '+  function test_x() public { } \\', '   last";')), ['test_x']);
   // check and prove are forge's only with symbolic entry points on, which the listing's config decides.
   assert.deepEqual(run('forge test --mt check_x', 'fails with "vault drained"', { added: ['check_x'] }), []);
 });

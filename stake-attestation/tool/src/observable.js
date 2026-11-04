@@ -21,7 +21,7 @@
 // It is a warning's read, not a compiler, and it can't see forge's list of tests: a test it misses costs a warning the
 // hunter need not act on, and a function it counts that forge does not run costs a warning the hunter should have had.
 // Both can happen where a patch and its text can't say: a test inherited from elsewhere, a baseline test's declaration
-// edited, a comment opened above the hunk, and `check` and `prove`, which are forge's only with symbolic entry points on.
+// edited, a comment or a string opened above the hunk, and `check` and `prove`, which are forge's only with symbolic entry points on.
 // test/helpers/observableTable.js holds the runner's table, with what the runner answers on each case, and
 // test/observable.test.js holds the tool to it.
 
@@ -33,9 +33,9 @@ export const TEST_FUNCTION_PREFIXES = Object.freeze(['test', 'invariant', 'state
 
 // A function with a body and a test-function prefix: the name, and what comes before the body.
 const TEST_DECLARATION = new RegExp(`\\bfunction\\s+((?:${TEST_FUNCTION_PREFIXES.join('|')})[A-Za-z0-9_$]*)\\s*\\(([^{;]*)\\{`, 'dg');
-// What can spell a declaration without being one, whichever opens first: a comment (one a hunk leaves open runs past its
-// end) and a string (`\` and a line ending go on to the next line).
-const NOT_CODE = /\/\*[\s\S]*?(?:\*\/|$)|\/\/[^\n]*|"(?:[^"\\\n]|\\(?:\r\n|[\s\S]))*"|'(?:[^'\\\n]|\\(?:\r\n|[\s\S]))*'/g;
+// What can spell a declaration without being one, whichever opens first: a comment, and a string, where `\` and a line
+// ending go on to the next line. Either one a hunk leaves open runs past its end.
+const NOT_CODE = /\/\*[\s\S]*?(?:\*\/|$)|\/\/[^\n]*|"(?:[^"\\\n]|\\(?:\r\n|[\s\S]|$))*(?:"|\s*$)|'(?:[^'\\\n]|\\(?:\r\n|[\s\S]|$))*(?:'|\s*$)/g;
 const PRAGMA = /^\+\s*pragma\s+solidity\s+([^;]+);/;
 const IDENTIFIER = /[A-Za-z_$][A-Za-z0-9_$]*/g;
 const QUOTED = /"([^"]*)"/g;

@@ -112,6 +112,7 @@ test('table: the runner\'s before-and-after matrix, in its form', () => {
 for (const [what, lines] of [
   ['an internal helper', ['contract E {', '  function test() internal { }', '  function test_drain() public { }', '}']],
   ['a private helper', ['contract E {', '  function test(uint256 a) private view returns (uint256) { return a; }', '  function test_drain() public { }', '}']],
+  ['a free function', ['function test(uint256 a) pure returns (uint256) { return a; }', 'contract E { function test_drain() public { } }']],
   ['an interface\'s declaration', ['interface I {', '  function test() external;', '}', 'contract E { function test_drain() public { } }']],
   ['a declaration with no body', ['abstract contract A {', '  function test() public virtual;', '}', 'contract E { function test_drain() public { } }']],
   ['a helper written over several lines', ['contract E {', '  function test(', '    uint256 a', '  ) internal {', '  }', '  function test_drain() public { }', '}']],
@@ -160,6 +161,11 @@ test('every test on a line is read', () => {
 
 test('a baseline test of the same name as one the patch adds is the added one, by name, as in the runner', () => {
   assert.deepEqual(run('forge test --mt test_deposit', 'fails with "vault drained"', { added: ['test_deposit'] }), []);
+});
+
+test('a Solidity path git quotes is still Solidity', () => {
+  const quoted = ['diff --git "a/test/\\303\\251.t.sol" "b/test/\\303\\251.t.sol"', 'new file mode 100644', '--- /dev/null', '+++ "b/test/\\303\\251.t.sol"', '@@ -0,0 +1,1 @@', '+contract E { function test_drain() public { } }', ''].join('\n');
+  assert.deepEqual(addedTests(quoted), ['test_drain']);
 });
 
 test('only added lines of Solidity are read', () => {

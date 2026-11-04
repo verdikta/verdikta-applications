@@ -17,8 +17,9 @@ export const BASELINE = Object.freeze([...RUNNER_PREFIXES, 'test_deposit']);
 export const OBSERVABLE = 'test_drain fails at the committed hash with "vault drained"';
 const ADDED = Object.freeze(['test_drain']);
 
-const passes = (...named) => ({ status: 'pass', named });
-const fails = (...named) => ({ status: 'fail', named });
+// `named` is sorted, as the gate returns it.
+const passes = (...named) => ({ status: 'pass', named: named.sort() });
+const fails = (...named) => ({ status: 'fail', named: named.sort() });
 
 const everyPrefix = (row) => RUNNER_PREFIXES.flatMap(row);
 

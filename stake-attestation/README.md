@@ -857,9 +857,18 @@ its own:
   `poc.observable` it counts as itself only: `$` belongs to a Solidity identifier there.
 - Quote what forge prints, in double quotes: each quoted fragment must appear in the recorded failure on every run.
 
-The read sees the patch, not forge's list of tests or the recorded failure, so a warning can be wrong where they differ: a test
-inherited from elsewhere, a baseline test's declaration edited, an added line in a comment or a string opened above its hunk, `check` and
-`prove` tests (forge's only with symbolic entry points on), or an observable that holds the whole message with nothing quoted. The `check` command, with a runner, answers those.
+The warning is a one-line read of the patch's added lines (`function` and a name under one of those prefixes), by design. It
+does not read Solidity and it can't see forge's list of tests or the recorded failure; the `check` command, with a runner, gives
+the gate's answer. So:
+
+- A word that is exactly a prefix never satisfies the warning by itself, though the gate counts it when forge ran it as a test
+  the patch added. Whether forge runs a function called `check` or `test` is what a static read can't tell, so when the patch
+  declares one and the text names no longer added name, `NO_ADDED_TEST_NAMED` says so. Name the test by a longer name, or run
+  `check`.
+- A longer name is taken as the patch's test on the read's word. The warning can be wrong for a helper, an interface's
+  declaration or a comment under a longer name, a name on the line after `function`, the second test on a line, a test inherited
+  from elsewhere, a baseline test's declaration edited, `check...` and `prove...` tests (forge's only with symbolic entry points
+  on), and an observable that holds the whole message with nothing quoted.
 
 A pinned file is held to the chain: its bytes are hashed against the on-chain commitment before the upload and read back through
 the gateway after it, and a raw CID (`bafkrei…`) is recomputed. So a gateway the arbiters cannot reach is the hunter's to avoid:

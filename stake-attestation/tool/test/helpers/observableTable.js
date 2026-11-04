@@ -7,6 +7,10 @@
 // answers are written down, and the pull request that brought this file says how they were compared with the runner.
 //
 // `from` says where a group came from: the runner's table, or added here for a part of the rule that table only implies.
+//
+// `stated: true` marks the one place the tool differs from the runner on purpose (a design review under owner decision
+// Q38): a real added test called exactly a prefix, named only by that word. The runner passes, and the tool warns, because a
+// static read can't tell whether forge runs a function of that name. Every other row matches the runner.
 
 /** forge's test-function prefixes, as code-runner/src/forge.js TEST_FUNCTION_PREFIXES has them at f1adbed. */
 export const RUNNER_PREFIXES = Object.freeze(['test', 'invariant', 'statefulFuzz', 'table', 'check', 'prove']);
@@ -134,14 +138,21 @@ export const TABLE = Object.freeze([
   {
     group: 'a test the patch added is named wherever the text spells it, and a prefix that is one counts',
     from: 'runner',
+    stated: true,
     added: ['test'],
     runner: passes('test'),
     rows: [
       ['in forge test', 'forge test', 'fails with "vault drained"'],
       ['in a path', 'forge test --match-path test/x.t.sol', 'fails with "vault drained"'],
       ['in prose', 'forge build', 'the test fails with "vault drained"'],
-      ['nowhere in the text', 'forge build', 'fails with "vault drained"', fails()],
     ],
+  },
+  {
+    group: 'a test the patch added and a prefix that is one, nowhere in the text',
+    from: 'runner',
+    added: ['test'],
+    runner: fails(),
+    rows: [['nowhere in the text', 'forge build', 'fails with "vault drained"']],
   },
   {
     group: 'a test the patch added, beside another',
@@ -199,13 +210,21 @@ export const TABLE = Object.freeze([
   ...RUNNER_PREFIXES.map((p) => ({
     group: `a prefix the patch adds as a test counts: ${p}`,
     from: 'here',
+    stated: true,
     added: [p],
     runner: passes(p),
     rows: [
       ['in the command', `forge build --mt ${p}`, 'fails with "vault drained"'],
+      ['anchored in the command', `forge build --mt '^${p}$'`, 'fails with "vault drained"'],
       ['in the observable', 'forge build', `${p}: fails with "vault drained"`],
-      ['nowhere', 'forge build', 'fails with "vault drained"', fails()],
     ],
+  })),
+  ...RUNNER_PREFIXES.map((p) => ({
+    group: `a prefix the patch adds as a test, nowhere in the text: ${p}`,
+    from: 'here',
+    added: [p],
+    runner: fails(),
+    rows: [['nowhere', 'forge build', 'fails with "vault drained"']],
   })),
   {
     group: '`$` in the observable is itself only',
@@ -261,6 +280,7 @@ export function tableCases() {
   return TABLE.flatMap((g) => g.rows.map(([what, command, observable = OBSERVABLE, runner = g.runner]) => ({
     title: `${g.group}: ${what}`,
     from: g.from,
+    stated: g.stated ?? false,
     command,
     observable,
     added: g.added ?? ADDED,

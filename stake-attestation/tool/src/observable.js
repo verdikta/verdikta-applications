@@ -15,13 +15,22 @@
 //   - with nothing quoted, the recorded message appears in the observable as written.
 //
 // The gate is the runner's and is what counts. Here: a static read of the patch that warns before anything runs,
-// and after a run, a line built from what was recorded. The read counts a function as a test the patch adds when an
-// added line of a Solidity file holds its name under a test-function prefix, it is public or external, and it has a
-// body. It reads each hunk whole, since a comment can close or a body open on a line the patch left alone.
-// It is a warning's read, not a compiler, and it can't see forge's list of tests: a test it misses costs a warning the
-// hunter need not act on, and a function it counts that forge does not run costs a warning the hunter should have had.
-// Both can happen where a patch and its text can't say: a test inherited from elsewhere, a baseline test's declaration
-// edited, a comment or a string opened above the hunk, and `check` and `prove`, which are forge's only with symbolic entry points on.
+// and after a run, a line built from what was recorded.
+//
+// The read is one line at a time, by design (a design review under owner decision Q38): an added line of a Solidity
+// file with `function` and a name under a test-function prefix. It does not read Solidity, so it can't tell a test
+// from an internal helper, an interface's declaration, a comment or a string, and it can't see forge's list of tests.
+// The tool only warns, and the check command with a runner gives the gate's answer. So:
+//
+//   - a word that is exactly a prefix never satisfies this lint by itself, though the gate counts it when forge ran it
+//     as a test the patch added. Whether forge runs a function called `check` or `test` is what a static read can't tell,
+//     so when the patch declares one and the text names no longer added name, NO_ADDED_TEST_NAMED says that. This is
+//     the one place the lint differs from the gate on purpose;
+//   - a longer name is taken as the patch's test on the read's word. Where that is wrong the lint is too, and these are
+//     stated limits with check as the answer: a helper, an interface's declaration or a comment under a longer name; a
+//     name on the line after `function`, or the second test on a line; a test inherited from elsewhere; a baseline
+//     test's declaration edited; and `check` and `prove`, which are forge's only with symbolic entry points on.
+//
 // test/helpers/observableTable.js holds the runner's table, with what the runner answers on each case, and
 // test/observable.test.js holds the tool to it.
 
@@ -31,11 +40,7 @@
  */
 export const TEST_FUNCTION_PREFIXES = Object.freeze(['test', 'invariant', 'statefulFuzz', 'table', 'check', 'prove']);
 
-// A function with a body and a test-function prefix: the name, and what comes before the body.
-const TEST_DECLARATION = new RegExp(`\\bfunction\\s+((?:${TEST_FUNCTION_PREFIXES.join('|')})[A-Za-z0-9_$]*)\\s*\\(([^{;]*)\\{`, 'dg');
-// What can spell a declaration without being one, whichever opens first: a comment, and a string, where `\` and a line
-// ending go on to the next line. Either one a hunk leaves open runs past its end.
-const NOT_CODE = /\/\*[\s\S]*?(?:\*\/|$)|\/\/[^\n]*|"(?:[^"\\\n]|\\(?:\r\n|[\s\S]|$))*(?:"|\s*$)|'(?:[^'\\\n]|\\(?:\r\n|[\s\S]|$))*(?:'|\s*$)/g;
+const ADDED_TEST = new RegExp(`^\\+.*?\\bfunction\\s+((?:${TEST_FUNCTION_PREFIXES.join('|')})[A-Za-z0-9_$]*)\\s*\\(`);
 const PRAGMA = /^\+\s*pragma\s+solidity\s+([^;]+);/;
 const IDENTIFIER = /[A-Za-z_$][A-Za-z0-9_$]*/g;
 const QUOTED = /"([^"]*)"/g;
@@ -58,52 +63,25 @@ const commandIdentifiers = (command) => identifiers(command).flatMap((t) => (t.e
 /** A field of poc as the runner takes it: text, or nothing to read. */
 const textOf = (value) => (typeof value === 'string' ? value : '');
 
-/** The hunks of the patch's Solidity files, each as its lines in the new file: added (`+`) and context. */
-function solidityHunks(patch) {
-  const hunks = [];
+function addedLinesOfSolidity(patch) {
+  const out = [];
   let inSolidity = false;
-  let hunk = null;
   for (const line of String(patch).split('\n')) {
     if (line.startsWith('+++ ')) {
       inSolidity = /\.sol"?\s*$/.test(line);
-      hunk = null;
-    } else if (inSolidity && line.startsWith('@@')) {
-      hunk = [];
-      hunks.push(hunk);
-    } else if (hunk && (line === '' || line.startsWith('+') || line.startsWith(' '))) {
-      hunk.push(line);
+      continue;
     }
+    if (inSolidity && line.startsWith('+')) out.push(line);
   }
-  return hunks;
+  return out;
 }
 
-function addedLinesOfSolidity(patch) {
-  return solidityHunks(patch).flat().filter((line) => line.startsWith('+'));
-}
-
-/** What a declaration says after its parameters, with every parenthesised part gone: a function type's visibility is not its own. */
-function attributesOf(signature) {
-  let rest = `(${signature}`;
-  for (let before = null; before !== rest;) {
-    before = rest;
-    rest = rest.replace(/\([^()]*\)/g, ' ');
-  }
-  return rest;
-}
-
-/**
- * The test functions the patch's added lines declare. forge runs a public or external function with a body: an internal
- * helper, a free function, an interface's declaration, a comment or a string is no test of that name, whatever it spells.
- */
+/** The functions under a test-function prefix that the patch's added lines declare, a line at a time: see the top of this file. */
 export function addedTests(patch) {
   const names = new Set();
-  for (const lines of solidityHunks(patch)) {
-    // Comments and strings blanked, line for line, so a position in the code is on the line it was.
-    const code = lines.map((line) => line.slice(1)).join('\n').replace(NOT_CODE, (m) => m.replace(/[^\r\n]/g, ' '));
-    for (const m of code.matchAll(TEST_DECLARATION)) {
-      const lineOfName = code.slice(0, m.indices[1][0]).split('\n').length - 1;
-      if (lines[lineOfName].startsWith('+') && /\b(?:public|external)\b/.test(attributesOf(m[2]))) names.add(m[1]);
-    }
+  for (const line of addedLinesOfSolidity(patch)) {
+    const m = ADDED_TEST.exec(line);
+    if (m) names.add(m[1]);
   }
   return [...names].sort();
 }
@@ -130,12 +108,19 @@ export function lintObservable({ finding, pocPatch, baseline }) {
   const command = textOf(finding?.poc?.command);
   const observable = textOf(finding?.poc?.observable);
   const added = new Set(addedTests(Buffer.isBuffer(pocPatch) ? pocPatch.toString('utf8') : pocPatch));
-  // A prefix alone is no name, unless the patch added a test called that.
+  // A prefix alone is no other test's name.
   const known = new Set((baseline?.tests ?? []).map((t) => functionName(t.id)).filter((n) => !TEST_FUNCTION_PREFIXES.includes(n)));
   const spelled = new Set([...commandIdentifiers(command), ...identifiers(observable)]);
   const others = [...spelled].filter((t) => known.has(t) && !added.has(t)).sort();
-  if (![...spelled].some((t) => added.has(t))) {
-    out.push({ code: 'NO_ADDED_TEST_NAMED', detail: `Name a test the patch adds in poc.command or poc.observable; otherwise claimedObservable fails, and that settles INVALID. A word that is exactly one of forge's test prefixes (${TEST_FUNCTION_PREFIXES.join(', ')}) names nothing, unless the patch adds a test of that name: a plain forge test names no test.`, names: [...added] });
+  // A prefix alone never satisfies the lint: this read can't tell whether forge runs a function of that name.
+  const isPrefix = (t) => TEST_FUNCTION_PREFIXES.includes(t);
+  const declared = [...spelled].filter((t) => added.has(t));
+  if (!declared.some((t) => !isPrefix(t))) {
+    if (declared.length) {
+      out.push({ code: 'NO_ADDED_TEST_NAMED', detail: 'The patch declares a function called this, and poc.command and poc.observable name no longer added name. The runner counts this word only if forge ran it as a test the patch added, and a static read can\'t tell: it could be a helper, an interface\'s declaration or a comment. Name the test by a longer name, or run check with a runner to see the gate\'s answer.', names: declared.sort() });
+    } else {
+      out.push({ code: 'NO_ADDED_TEST_NAMED', detail: `Name a test the patch adds in poc.command or poc.observable; otherwise claimedObservable fails, and that settles INVALID. A word that is exactly one of forge's test prefixes (${TEST_FUNCTION_PREFIXES.join(', ')}) names nothing, unless the patch adds a test of that name: a plain forge test names no test.`, names: [...added] });
+    }
   }
   if (others.length) out.push({ code: 'OTHER_TEST_NAMED', detail: 'A test is named that the patch did not add; claimedObservable fails on any such name. Both fields are read as text: a name counts wherever it is spelled, in a filter, a path or a quote.', names: others });
   const quoted = [...observable.matchAll(QUOTED)].map((m) => squash(m[1])).filter((f) => f !== '');

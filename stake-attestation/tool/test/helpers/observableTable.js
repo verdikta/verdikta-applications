@@ -238,7 +238,7 @@ export const TABLE = Object.freeze([
   },
 ]);
 
-/** Finding shapes with no text to read, as `[what, finding, runner, warns]`. */
+/** Finding shapes with no text to read, as `[what, finding, runner]`. */
 export const NO_TEXT = Object.freeze([
   ['no poc', {}, fails()],
   ['no observable', { poc: { command: 'forge test --mt test_drain' } }, fails()],

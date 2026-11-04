@@ -510,9 +510,16 @@ block holds `gitHosts` (the site's `SA_CONTROL_GIT_HOSTS`), `timeoutMs` and `max
 
 1. **spec**: the draft against `@verdikta/common`'s `validateCodeReviewSpec` (with stand-ins
    for the fields the builder fills) and what the Foundry MVP hosts: `env.from: "foundry"`,
-   `commands.framework: "forge"`, `build`, `testFiles` with `$FILES`, `testIds` with
-   `$TEST_IDS`; `known_issues.json` when the draft names one, in strict UTF-8 as arbiters read it, and
-   not too large on its own (see "A listing's size").
+   `commands.framework: "forge"`; `known_issues.json` when the draft names one, in strict UTF-8 as arbiters read it, and
+   not too large on its own (see "A listing's size"). Then **the commands**, by the rule arbiters hold
+   claims to (owner decision Q31): `commands.build` is plain `forge build`, `test`, `testFiles` and `testIds` plain
+   `forge test`, each with flags from an allowlist, and no shell. The builder holds no copy of that rule. It
+   asks the code-runner, in a request that cannot start a run, so what it refuses here is what a
+   claim's runner would refuse, by the same code (`COMMAND_NOT_ALLOWED`, `COMMAND_MISSING`, `COMMAND_INVALID`,
+   `COMMAND_PLACEHOLDER`), before the `control` step, the fetch or the maker's setup. It first sends a shell in front of each of the
+   four: a runner that lets one through has not got the grammar and stops the build (`RUNNER_WITHOUT_GRAMMAR`). The
+   report's `commands` records this, and `sign` refuses a report that does not (`COMMANDS_NOT_CHECKED`).
+   `commands.setup` is free-form: it runs only while the image is built.
 2. **fetch**: the listed commit's objects, by id (shallow when the server allows it), from
    `repo` or a configured mirror of it, into a bare repository. git runs with no system or
    global config, no hooks or credential prompt, https only (and the local transport for a
@@ -600,8 +607,8 @@ can't be imported from here, so what is its own is pinned in that file, each num
 re-running the build (`src/verifyBuild.js`) and refuses on the first failure, writing nothing:
 the report accepted the listing; the files are the bytes it accepted; `code_review.json`, the
 baseline and `known_issues.json` validate; the report is about this repository, commit and
-artifact, records every step of a build (the verified-source match for a contract) and an
-accepted listing check; it names the image, platform, base and sizes `code_review.json` names,
+artifact, records every step of a build (the verified-source match for a contract), a runner with
+the commands' grammar that took these commands, and an accepted listing check; it names the image, platform, base and sizes `code_review.json` names,
 inside the class limits. `--expect-outputs <hex>` also requires the folder to be byte for byte
 the one `verdikta-build-env digest --dir out/` digested in the build job. `--check-registry` reads
 the image `code_review.json` names from its registry without a credential, as arbiters pull it,
@@ -683,6 +690,12 @@ own configuration files at the root. Each tool's `notScanned` names, with the re
 did not read: over Semgrep's 2 MB or the secret scanner's 5 MB per-file limit, missing from what
 Semgrep reports it analysed, or skipped by the secret scanner (its built-in allowlist of lock
 files and `node_modules`, binary files, archives, empty files), in the words of its trace log.
+What verdikta-arbiter's code-runner measured of Semgrep 1.181.0 (its README, "What the runner forces"), a maker's scan
+gets the same way, so it isn't quietly smaller than it looks. Its answer comes from a file: under gVisor its stdout can be cut at 64 KiB with exit 0. CI runs
+this under `runsc` too, and a cut answer of any size does not parse, so it fails the scan. `--disable-nosem`: a `// nosemgrep` in
+the source drops no finding. A rule named in `skipped_rules`, or an answer from another release, fails the scan.
+And past 10,000 matches of one rule in one file Semgrep drops every result for the file with exit 0, so that file goes in `notScanned`
+with the rule, and out of `analysed`, as does any other file Semgrep reports an error on (a rule past its time or memory, a parse failure), in fixed words.
 `--agent` adds the one inexpensive agent pass, **off by default**: the model named in
 `scan.agent` (`{ "provider", "model", "apiUrl"?, "apiKeyEnv" }`, a model of common's
 `code-standard` pool served over a chat-completions API: OpenRouter, OpenAI or xAI) reads the
@@ -730,7 +743,9 @@ repository, so one run can build several listings). Its outputs are `image` and
    (SHA-512-checked; `builder/action/pins.json`, which also pins registry:2, skopeo and the
    code-runner's commit), and starts with `builder/action/services.js` a
    registry:2 on the runner's loopback and the code-runner of verdikta-arbiter at the pinned
-   commit with a token made for the run. `build` pushes to that registry with no credential,
+   commit with a token made for the run. A listing check does not run the scanner, so the job does not pull the Semgrep image a
+   claim needs: `services.js` takes a `/health` of 503 whose only reason is that image, and nothing else, as up. `build` asks that runner about the
+   commands, pushes to that registry with no credential,
    validates there and names `publish-repository` in `code_review.json` (`registry.publishAs`);
    the image leaves in skopeo's `dir:` layout (`builder/action/image.js export`: the pinned skopeo,
    `--preserve-digests`; unlike its `oci:` layout this reads back any manifest type, and `docker
@@ -744,6 +759,10 @@ repository, so one run can build several listings). Its outputs are `image` and
    `VERDIKTA_BUILDER_KEY` is the production key, read only when `signing` is `production`):
    checks out the builder only, downloads only the output folder, and runs `sign
    --expect-outputs <the build job's digest> --check-registry`.
+
+**Where the image is published.** An arbiter pulls only from its `CODE_RUNNER_REGISTRY_ALLOWLIST` and abstains on anything else, and a claim that
+only gets abstentions ends with the bond to the maker. What an operator's list holds can't be read from here, but the default of the runner at the pin
+can (`ghcr.io/verdikta`): `services.js` warns when `publish-repository` is off it, and with `signing: production` it stops.
 
 The workflow has no trigger of its own and nothing in this repository calls it: publishing under
 Verdikta's registry namespace is owner gate G1. Its tests read its YAML and unit-test the scripts
@@ -759,9 +778,13 @@ an adversarial listing whose setup rewrites a tracked source, links an untracked
 plants a `solc`; and listings that pin another solc or turn the optimizer off), and validates it on the code-runner
 from verdikta-arbiter at the commit pinned in `test/docker/code-runner.pin.json`, started as a
 sidecar on loopback with its own token and environment (`SA_CODE_RUNNER_DIR` points at a
-checkout of that commit's `code-runner/`; otherwise the tests fetch it). The fixture's setup lets
-forge download solc (the build's network) and its build command passes only where the sandbox
-has no route out, so an accepted listing shows the network was there at setup and nowhere after.
+checkout of that commit's `code-runner/`; otherwise the tests fetch it). The fixture's commands are plain `forge`,
+its setup lets forge download an official solc (the build's network), and one of its tests asks through ffi
+for the routes it has, so a listing accepted with that test stable shows the network was there at setup and on none of the
+suite's runs. Shell-prefixed commands are refused there by the runner's own code, and an image holding a changed `solc` or a
+`vyper` is refused by name (`SOLC_NOT_OFFICIAL`, `VYPER_NOT_SUPPORTED`). `test/docker/action.docker.test.js` runs the reusable workflow's
+`services.js` for real, on Linux, where the Semgrep image a claim needs may not be there yet. `SA_BUILDER_TEST_RUNSC=1`, on a daemon
+with `runsc`, also runs the real Semgrep under gVisor.
 The Docker tests also run `sign`'s checks on that build, the registry read included, and the
 scan with the real pinned Semgrep, rules and secret scanner over the fixture plus planted bugs
 and a secret written at run time (`test/fixtures/scan`). The scan's and the agent pass's unit
@@ -942,7 +965,7 @@ cd stake-attestation/e2e && npm ci && npm run round # the round alone: exit 0, o
 
 It needs Docker and Node, and installs the rest itself: every package here from its lock file, verdikta-arbiter at the commit in
 `e2e/arbiter.pin.json` (fetched by id from its public repository, into `e2e/.arbiter/`), its contracts compiled, Chromium for
-the client's pages. It downloads images and packages (the pinned Foundry base, `registry:2`, Semgrep and gitleaks, solc 0.8.31 from
+the client's pages. It downloads images and packages (the pinned Foundry base, `registry:2`, Semgrep, which the runner needs before it starts, and gitleaks, solc 0.8.31 from
 binaries.soliditylang.org, npm) and uses no credential. It reaches no real chain, provider or pin service: the local IPFS fails a run
 on any CID it does not hold, and every service gets its own small environment. **What it promises about what it leaves:** after it exits, on success, failure, a crash or a signal, no process group it started and no container or
 image it labelled remains; and if one does, or it cannot say, the run has failed. That is the whole promise. A process it did not start is out of
@@ -955,9 +978,11 @@ pin unless `SA_E2E_ARBITER_UNPINNED=1`. `e2e/test/failure.test.js` breaks it on 
 cannot be reached, a crash, a service whose leader dies, a live process group after every check passed; SIGTERM while running, mid-build, mid-scan, with EA requests out, twice during the startup, with a step that creates
 something after the signal, and with one that outlasts the bound) and reads the exit code.
 
-One listing of the builder's fixture takes three claims, in commit order: **a valid one** (every gate passes, the jury decides, HIGH,
+One listing of the builder's fixture takes four claims, in commit order: **a valid one** (every gate passes, the jury decides, HIGH,
 the award and bond after the dispute window), **a gate-failing one** (a PoC that edits source: the runner's `testPathsOnly`, INVALID at
-once, the bond to the maker, no model asked, the first claim among its prior findings) and **an abstaining one** (a PoC that never ends:
+once, the bond to the maker, no model asked, the first claim among its prior findings), **one that fails an integrity check** (a PoC that fails as the valid
+one does and writes `.gitignore`, a path the listing protects, on real forge: `protectedPathsUnchanged`, no tamper flag, DUPLICATE at once, the bond back, no model asked; its check
+name reaches the API and the page from the real writer's justifications, through the real reader) and **an abstaining one** (a PoC that never ends:
 the runner's clock stops it, no arbiter commits, the round times out and fails, a fresh prepay, it fails again, and at expiry the bond goes
 to the maker, erratum E6). The round fails on the first check that fails, and every check is a pure function with a test that hands it
 a tampered observation (`e2e/test/checks.test.js`).
@@ -989,12 +1014,25 @@ the launcher cannot stand in there.
 | The builder's single-platform build | No: an index, listed under `devOnly` in its report | Yes |
 | gVisor | No | No: `code-runner.yml` |
 
-**Moving the pin** is one line in `e2e/arbiter.pin.json` and a green round. It does not follow the branch. A node that adds to the runner's
-needs costs what it adds: A3c's pinned Semgrep image would be a further pull for this job, and a new honesty flag could change what the fixture
-settles as, which the round would show. P3a's Docker tests and `builder/action/pins.json` pin the runner on their own.
-
 **The docker CLI.** The builder here gets an empty `DOCKER_CONFIG`: the registry is local and open, and an operator's config can name a
 credential helper, which on a locked keychain waits for ever before a push reaches the registry.
+
+### Moving the arbiter pin
+
+Three files name one verdikta-arbiter commit: `builder/action/pins.json` (the runner the reusable workflow starts),
+`builder/test/docker/code-runner.pin.json` (P3a's Docker tests) and `e2e/arbiter.pin.json` (this round). `builder/test/unit/pins.test.js` fails if they
+differ, or if a fourth file names a commit of its own. None of them follows the branch. To move it:
+
+1. Choose a commit on the arbiter's `claude/stake-attestation` branch. It must have node A2c and A3c, which `e2e/test/grammar.test.js` checks by calling them.
+2. Put the whole commit in all three files, in one change.
+3. Run `cd builder && npm test`, `cd builder && npm run test:docker` and `cd e2e && npm test`: all three, and a green `builder-docker` and `e2e` on CI. `e2e/test/requestSize.test.js` holds
+   `shared/src/listingRequestSize.js` to the code at the pin: if a number moved, update that copy. The round shows whether a new honesty flag changed what the fixture settles as.
+
+**It must move before launch to whatever arbiter commit the canaries run.** The site's listing check and the arbiters must hold listings to one rule, and nothing can check that from here: a runner's
+version is `0.1.0` at every commit so far, so nothing it answers names its commit. The builder's own check is a floor (a shell in front of a command refused, the image's compilers read), not a commit. A site's runner (`runner.url` in its `builder.json`) is its operator's to keep at that commit.
+
+A pin costs what the runner needs: the round warms the Semgrep image a claim's scan needs before its runner starts, because `/health` is 503 without it. It is the image the baseline scan pulls (a test holds the two digests equal), so that pull of about 1.6 GB moves
+to the round's `prepare` stage and is not a second one. The `builder-docker` job already pulled it for its scan test, and a maker's run of the reusable workflow does not pull it at all.
 
 ### The mock bridge
 
@@ -1046,7 +1084,7 @@ What this round cannot, because the real thing is not in it:
 each package with `npm ci --ignore-scripts`, runs its tests, the Hardhat tests,
 the contract sizer, the coverage gate (a job of its own), the client's Playwright
 tests against local Hardhat and the server, the builder's Docker tests (a job of its own, with
-registry:2 and the pinned code-runner under runc), the banned-words check and actionlint
+registry:2 and the pinned code-runner under runc, and gVisor for the real Semgrep's answer), the banned-words check and actionlint
 (1.7.12, checksum pinned) over it and the reusable builder workflow, the local round (a job of its own,
 on linux/amd64), and uses no secrets. A new
 package is added to the workflow and to `shared/test/repo/helpers.js` together;

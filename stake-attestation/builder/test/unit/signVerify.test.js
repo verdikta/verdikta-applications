@@ -79,7 +79,7 @@ test('sign checks the build\'s outputs before signing and records what it checke
   const report = JSON.parse(fs.readFileSync(path.join(l.out, 'validation-report.json'), 'utf8'));
   assert.deepEqual(report.signing.checks, [
     'REPORT_ACCEPTED', 'FILES_MATCH_REPORT', 'SPEC_VALID', 'BASELINE_VALID', 'LISTING_MATCHES_REPORT',
-    'STEPS_COMPLETE', 'IMAGE_MATCHES_REPORT', 'SIZES_WITHIN_LIMITS', 'BASE_PINNED', 'PROJECT_PROOF_STANDS', 'LISTING_REQUEST_WITHIN_BOUND',
+    'STEPS_COMPLETE', 'COMMANDS_CHECKED', 'IMAGE_MATCHES_REPORT', 'SIZES_WITHIN_LIMITS', 'BASE_PINNED', 'PROJECT_PROOF_STANDS', 'LISTING_REQUEST_WITHIN_BOUND',
   ]);
   assert.deepEqual(report.signing.trusts.map((x) => x.code), ['LISTING_CHECK_RESULTS', 'UNPACKED_SIZE', 'BUILD_JOB', 'OUTPUTS_IN_TRANSIT', 'IMAGE_PUBLISHED']);
   for (const x of report.signing.trusts) assert.ok(x.detail.length > 20, x.code);
@@ -130,6 +130,10 @@ test('a report that disagrees with the files or with itself is not signed', asyn
     ['LISTING_MISMATCH', (l) => l.edit('validation-report.json', (r) => ({ ...r, listing: { ...r.listing, artifact: { kind: 'contract', address: '0x5f2A00000000000000000000000000000000C0dE', chainId: 8453 } } }))],
     ['STEPS_INCOMPLETE', (l) => l.edit('validation-report.json', (r) => ({ ...r, steps: r.steps.filter((s) => s.name !== 'listingCheck') }))],
     ['STEPS_INCOMPLETE', (l) => l.edit('validation-report.json', (r) => ({ ...r, listingCheck: { ...r.listingCheck, status: 'refused' } }))],
+    // The command check (src/runner.js): a report that does not record it, or records a runner without the grammar.
+    ['COMMANDS_NOT_CHECKED', (l) => l.edit('validation-report.json', (r) => { const { commands, ...rest } = r; return rest; })],
+    ['COMMANDS_NOT_CHECKED', (l) => l.edit('validation-report.json', (r) => ({ ...r, commands: { ...r.commands, canary: null } }))],
+    ['COMMANDS_NOT_CHECKED', (l) => l.edit('validation-report.json', (r) => ({ ...r, commands: { ...r.commands, issues: [{ code: 'COMMAND_NOT_ALLOWED' }] } }))],
     ['BASE_NOT_PINNED', (l) => l.edit('validation-report.json', (r) => ({ ...r, image: { ...r.image, base: 'ghcr.io/foundry-rs/foundry:latest' } }))],
     ['SIGNING_NOT_ACCEPTED', (l) => l.edit('validation-report.json', (r) => ({ ...r, status: 'error' }))],
     ['SIGNING_REPORT_MISMATCH', (l) => l.edit('baseline.json', (b) => ({ ...b, unstable: [b.stable[0]] }))],

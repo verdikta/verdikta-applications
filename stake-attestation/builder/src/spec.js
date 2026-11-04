@@ -67,10 +67,6 @@ export function checkDraft(draft) {
   if (c.framework !== undefined && c.framework !== 'forge') {
     issues.push({ code: 'FRAMEWORK_UNSUPPORTED', path: '/commands/framework', detail: 'this release hosts Foundry listings only (commands.framework "forge")' });
   }
-  for (const [name, placeholder] of [['build', null], ['testFiles', '$FILES'], ['testIds', '$TEST_IDS']]) {
-    if (typeof c[name] !== 'string' || !c[name]) issues.push({ code: 'COMMAND_MISSING', path: `/commands/${name}`, detail: `a listing must declare commands.${name}: claims run it` });
-    else if (placeholder && !c[name].includes(placeholder)) issues.push({ code: 'COMMAND_PLACEHOLDER', path: `/commands/${name}`, detail: `commands.${name} must use ${placeholder}` });
-  }
   if (typeof draft.repo === 'string') {
     try {
       const u = new URL(draft.repo);

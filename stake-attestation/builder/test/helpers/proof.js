@@ -11,7 +11,7 @@ import { BuilderError } from '../../src/errors.js';
 import { buildListing } from '../../src/pipeline.js';
 import { createExplorer } from '../../src/explorer.js';
 import { FIXTURES, fakeDocker, readFixture, recordedExplorer } from './fakes.js';
-import { acceptedListing, definitive, draftSpec } from './specs.js';
+import { acceptedListing, cannotRun, commandCheckAnswer, definitive, draftSpec } from './specs.js';
 import { proofFile } from './proofRepo.js';
 
 export const REPO = 'https://github.com/acme/vault';
@@ -75,7 +75,7 @@ export async function attempt({ h, commit, draft, maker = MAKER, repoUrl = REPO,
     fetchListedCommit: async (req) => { calls.fetch.push(req); return { gitDir: req.dir }; },
     writeBuildContext: () => ({ dockerfile: 'FROM x' }),
     registry: { imageInfo: async (digest) => ({ digest, manifestDigest: digest, compressedBytes: 300000000, platforms: ['linux/amd64'], config: { os: 'linux', architecture: 'amd64' }, volumes: [] }) },
-    runner: { listingCheck: async () => { const d = definitive(IMAGE, acceptedListing(spec.baseCommit)); return { status: d.status, json: d.body }; } },
+    runner: { listingCheck: async (body) => { if (cannotRun(body)) return commandCheckAnswer(body); const d = definitive(IMAGE, acceptedListing(spec.baseCommit)); return { status: d.status, json: d.body }; } },
     explorerFor: (chainId, cfg) => createExplorer({ apiUrl: rec.apiUrl, apiKey: cfg.apiKey(), chainId, fetch: rec.fetch, timeoutMs: 5000 }),
     buildRepo: async (req) => ({
       files: new Map(req.paths.map((p) => [p, fs.readFileSync(path.join(FIXTURES, 'vault', p))])),

@@ -122,17 +122,32 @@ export const GITLEAKS_MAX_MB = 5;
 /** Files that would change what the secret scanner does if they were in its folder. */
 export const GITLEAKS_CONFIG_FILES = Object.freeze(['.gitleaks.toml', '.gitleaksignore']);
 
+/** Where Semgrep writes its answer. */
+const SEMGREP_ANSWER = '/work/semgrep.json';
+
 /**
- * Semgrep's argv: offline, no metrics or version check, the pinned rules, JSON on stdout. It
- * runs from /work/src with an empty .semgrepignore there, which replaces Semgrep's default
- * exclusions (test/, tests/, vendor/, node_modules/, ...): every file it is given is a target.
+ * Semgrep's argv: offline, no metrics or version check, the pinned rules. It runs from /work/src with
+ * an empty .semgrepignore there, which replaces Semgrep's default exclusions (test/, tests/, vendor/,
+ * node_modules/, ...): every file it is given is a target.
+ *
+ * What verdikta-arbiter's code-runner measured of Semgrep 1.181.0 (its README, "What the runner
+ * forces") and a maker's scan would otherwise lose without a word:
+ *
+ * - Under gVisor its stdout is cut at 65,536 bytes with exit 0. So the answer is written to a file
+ *   and `cat` gives it, in the sandbox's one stdout, which Semgrep never held: it could leave a shared
+ *   pipe non-blocking for what comes after. A strict prefix of a JSON object does not parse, so a cut
+ *   however it came is a failed scan (parseSemgrep), never a smaller one.
+ * - `// nosemgrep` in the source drops a finding: --disable-nosem.
  */
 export function semgrepArgv() {
   const script = [
     ...UNPACK,
     'cd /work/src',
     ': > /work/src/.semgrepignore',
-    `exec semgrep scan --config /work/rules/${SCAN_TOOLS.rules.file} --json --quiet --metrics off --disable-version-check --no-git-ignore --timeout 30 --max-target-bytes ${SEMGREP_MAX_BYTES} --jobs 2 /work/src`,
+    'rc=0',
+    `semgrep scan --config /work/rules/${SCAN_TOOLS.rules.file} --json --quiet --output ${SEMGREP_ANSWER} --metrics off --disable-version-check --disable-nosem --no-git-ignore --timeout 30 --max-target-bytes ${SEMGREP_MAX_BYTES} --jobs 2 /work/src > /dev/null 2>&1 || rc=$?`,
+    `[ ! -e ${SEMGREP_ANSWER} ] || cat ${SEMGREP_ANSWER}`,
+    'exit "$rc"',
     '',
   ].join('\n');
   return ['/bin/sh', '-c', script, 'vab-semgrep'];
@@ -169,22 +184,51 @@ function json(stdout, tool) {
   }
 }
 
+/** Why an error on a file means it was not read as a clean file is: fixed words, since an error's message can quote the source. */
+function unreadWords(kind, rule) {
+  switch (kind) {
+    case 'Too many matches': return `past Semgrep's limit of matches of one rule in one file (${rule}), it drops every result for the file: not analysed`;
+    case 'Timeout': return `a rule ran past Semgrep's time limit on this file (${rule}): not wholly analysed`;
+    case 'Out of memory': return `a rule ran out of memory on this file (${rule}): not wholly analysed`;
+    case 'PartialParsing': return 'Semgrep could not parse part of it: not wholly analysed';
+    case 'Syntax error': case 'Lexical error': case 'Other syntax error': case 'Parse error': return 'Semgrep could not parse it: not analysed';
+    default: return 'Semgrep reports an error on it: not wholly analysed';
+  }
+}
+
+/** A rule's id, without the folder Semgrep puts in front of it. */
+function ruleName(id) {
+  const s = String(id ?? '');
+  const at = s.indexOf('verdikta.');
+  return at > 0 ? s.slice(at) : s;
+}
+
 /**
  * Semgrep's JSON: its results as findings, the files it analysed, and its errors (a file it could
- * not parse, say) by kind and place only: an error's message can quote the source.
+ * not parse, say) by kind and place only: an error's message can quote the source. Beside them, what
+ * it did not do and says only here (verdikta-arbiter's code-runner reads these the same way):
+ *
+ * - `skipped_rules`: a rule it skipped found nothing, and reads like one that looked. The rules and
+ *   the tool are pinned, so this is the tool's failure, not a fact about the maker's code.
+ * - An error on a file says it was not read as a clean file is: past 10,000 matches of one rule in one
+ *   file it drops every result for the file, with exit 0, and still lists the file as scanned; a
+ *   rule past its time or memory found what it found so far; a file it could not parse holds no finding
+ *   in the part it could not. `unread` names each such file and why, in fixed words.
+ *
  * @throws {BuilderError} SCAN_TOOL_FAILED
  */
 export function parseSemgrep(stdout) {
   const out = json(stdout, 'semgrep');
   if (!out || !Array.isArray(out.results) || !Array.isArray(out.errors)) throw failed('semgrep', 'its output has no results');
+  if (out.version !== SCAN_TOOLS.semgrep.version) throw failed('semgrep', `it reports version ${cut(JSON.stringify(out.version), 40)}, not the pinned ${SCAN_TOOLS.semgrep.version}`);
+  if (!Array.isArray(out.skipped_rules)) throw failed('semgrep', 'its output does not say which rules it skipped');
+  if (out.skipped_rules.length > 0) throw failed('semgrep', `it skipped rules: ${cut(out.skipped_rules.map((r) => ruleName(r?.rule_id)).join(', '))}`);
   // A rule's message is the pinned rules file's text: none of them names a metavariable, so no
   // finding carries source text (test/unit/scan.test.js).
   const findings = out.results.slice(0, MAX_FINDINGS).map((r) => {
-    const id = String(r.check_id ?? '');
-    const at = id.indexOf('verdikta.');
     return {
       tool: 'semgrep',
-      rule: at > 0 ? id.slice(at) : id,
+      rule: ruleName(r.check_id),
       severity: String(r.extra?.severity ?? 'INFO').toLowerCase(),
       path: repoPath(r.path),
       line: Number(r.start?.line) || 0,
@@ -201,9 +245,15 @@ export function parseSemgrep(stdout) {
       ...(Number.isSafeInteger(line) && line > 0 ? { line } : {}),
     };
   });
+  const unread = new Map();
+  for (const e of out.errors) {
+    if (!e?.path) continue;
+    const p = repoPath(e.path);
+    unread.set(p, [...(unread.get(p) ?? []), unreadWords(Array.isArray(e.type) ? e.type[0] : e.type, cut(ruleName(e.rule_id), 100))]);
+  }
   const scanned = Array.isArray(out.paths?.scanned) ? out.paths.scanned.map(repoPath) : null;
   if (!scanned) throw failed('semgrep', 'its output does not list the files it analysed');
-  return { findings, errors, scanned, truncated: out.results.length > MAX_FINDINGS };
+  return { findings, errors, unread: new Map([...unread].map(([p, words]) => [p, [...new Set(words)].join('; ')])), scanned, truncated: out.results.length > MAX_FINDINGS, errorsTruncated: out.errors.length > MAX_ERRORS };
 }
 
 const LOG_PATH = /\spath=("(?:[^"\\]|\\.)*"|\S+)/;

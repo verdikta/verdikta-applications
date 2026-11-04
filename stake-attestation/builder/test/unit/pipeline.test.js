@@ -17,7 +17,7 @@ import { buildListing } from '../../src/pipeline.js';
 import { createExplorer } from '../../src/explorer.js';
 import { FIXTURES, fakeDocker, readFixture, recordedExplorer, sha256 } from '../helpers/fakes.js';
 import { MAKER, deployment, provenAnswer, stake } from '../helpers/proof.js';
-import { BASE_COMMIT, abstained, acceptedListing, contractDraft, definitive, draftSpec, refusedListing } from '../helpers/specs.js';
+import { BASE_COMMIT, abstained, acceptedListing, cannotRun, commandCheckAnswer, contractDraft, definitive, draftSpec, refusedListing } from '../helpers/specs.js';
 
 const DIGEST = `sha256:${'2'.repeat(64)}`;
 const REPOSITORY = 'ghcr.io/verdikta/stake-env';
@@ -58,6 +58,7 @@ function harness(over = {}) {
     },
     runner: {
       listingCheck: async (body) => {
+        if (cannotRun(body)) return commandCheckAnswer(body);
         calls.runner.push(body);
         const d = (over.runnerAnswer ?? (() => definitive(IMAGE, acceptedListing())))(body);
         return { status: d.status, json: d.body };
@@ -135,7 +136,6 @@ test('a draft common rejects, or one the MVP builder cannot host, is refused bef
     draftSpec({ attestation: 'code_review.json' }),
     draftSpec({ baseline: '../baseline.json' }),
     draftSpec({ env: { from: 'node22' } }),
-    draftSpec({ commands: { framework: 'forge', test: 'forge test' } }),
     draftSpec({ repo: 'http://github.com/acme/vault' }),
     draftSpec({ stake: { ...draftSpec().stake, lowestClassCounted: 'LOW' } }),
   ]) {
@@ -146,6 +146,12 @@ test('a draft common rejects, or one the MVP builder cannot host, is refused bef
     assert.equal(docker.calls.length, 0);
     assert.equal(calls.fetch.length, 0);
   }
+  // What the commands must be is the runner's to say, by its code, as early (test/unit/commands.test.js).
+  const { status, report, docker, calls } = await build(draftSpec({ commands: { framework: 'forge', test: 'forge test' } }));
+  assert.equal(status, 'refused');
+  assert.deepEqual(report.refusals.map((r) => r.code), ['COMMAND_MISSING', 'COMMAND_MISSING', 'COMMAND_MISSING']);
+  assert.equal(docker.calls.length, 0);
+  assert.equal(calls.fetch.length, 0);
 });
 
 test('above 6 GB unpacked: refused before the push', async () => {

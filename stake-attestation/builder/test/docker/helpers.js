@@ -200,6 +200,48 @@ export async function startCodeRunner({ id, registryHost, platform }) {
   return { url, token, commit, health, stop, log: () => log };
 }
 
+/**
+ * Files that make the fixture's suite say whether it has a route out: its only way to look is ffi, which the
+ * maker turned on here, and a test that fails is not stable. So an accepted listing with this test stable shows
+ * that the suite ran with no route, on each of its three runs.
+ */
+export function noRouteTest() {
+  const toml = fs.readFileSync(path.join(FIXTURES, 'vault', 'foundry.toml'), 'utf8');
+  return {
+    'foundry.toml': `${toml}ffi = true\n`,
+    'test/Routes.t.sol': [
+      '// SPDX-License-Identifier: MIT',
+      'pragma solidity ^0.8.24;',
+      '',
+      'interface VmFfi {',
+      '    function ffi(string[] calldata commandInput) external returns (bytes memory);',
+      '}',
+      '',
+      'contract RoutesTest {',
+      '    VmFfi internal constant vm = VmFfi(address(uint160(uint256(keccak256("hevm cheat code")))));',
+      '',
+      '    function test_no_route_out() public {',
+      '        string[] memory command = new string[](3);',
+      '        command[0] = "sh";',
+      '        command[1] = "-c";',
+      '        command[2] = "tail -n +2 /proc/net/route | grep -c . || true";',
+      '        require(keccak256(vm.ffi(command)) == keccak256(bytes("0")), "a route out");',
+      '    }',
+      '}',
+      '',
+    ].join('\n'),
+  };
+}
+
+/** Files that make the suite run past what a claim could ever afford: a test that never ends, no gas limit it reaches. */
+export function neverEndingTest() {
+  const toml = fs.readFileSync(path.join(FIXTURES, 'vault', 'foundry.toml'), 'utf8');
+  return {
+    'foundry.toml': `${toml}gas_limit = "9223372036854775807"\n`,
+    'test/Slow.t.sol': '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\ncontract SlowTest {\n    function test_never_ends() public pure {\n        uint256 i;\n        while (true) {\n            i += 1;\n        }\n    }\n}\n',
+  };
+}
+
 /** The fixture's draft code_review.json: setup has network; build and test must not. */
 export function fixtureDraft(baseCommit, recipient, over = {}) {
   return {
@@ -212,9 +254,10 @@ export function fixtureDraft(baseCommit, recipient, over = {}) {
     commands: {
       framework: 'forge',
       // At build time: count the IPv4 routes the setup can use (none without a network), and let forge fetch solc.
+      // The setup is the one command the grammar does not read: it runs only while the image is built.
       setup: 'tail -n +2 /proc/net/route | grep -c . > setup-routes.txt; forge build',
-      // At validation: build only where there is no route out.
-      build: '[ "$(tail -n +2 /proc/net/route | grep -c .)" = 0 ] && forge build',
+      // What a claim's runner takes (owner decision Q31): plain forge, with flags from its allowlist.
+      build: 'forge build',
       test: 'forge test',
       testFiles: 'forge test --match-path $FILES',
       testIds: 'forge test --match-test $TEST_IDS',

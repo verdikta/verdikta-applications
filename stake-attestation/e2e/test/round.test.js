@@ -76,6 +76,20 @@ test('acceptance 2: the gate-failing claim settles INVALID with the bond to the 
   assert.match(detail('gate.evidence.settlement'), /INVALID \(testPathsOnly\)/);
 });
 
+test('node P12: a claim that fails a non-tamper integrity check on real forge settles DUPLICATE, bond back, and the record counts it under the check it names', () => {
+  has('integrity.check.forecast', 'integrity.runner.gateFailed', 'integrity.runner.reproducesOnlyThroughIntegrity', 'integrity.runner.checkFailed', 'integrity.runner.noTamperFlag', 'integrity.runner.everyRunFailed', 'integrity.noAi');
+  has('integrity.evidence.uploads', 'integrity.evidence.settlement', 'integrity.evidence.source', 'integrity.status.readsTheBlock', 'integrity.settled.outcome', 'integrity.settled.noDisputeWindow');
+  has('integrity.money.bondBack', 'integrity.money.makerUntouched', 'integrity.record.integrityFailed', 'integrity.record.integrityChecks', 'integrity.record.integrityApart', 'final.page.integrityFailed', 'final.page.integrityChecks', 'final.page.duplicateNotPublished');
+  assert.match(detail('integrity.evidence.settlement'), /DUPLICATE \(integrity\)/);
+  assert.match(detail('integrity.record.integrityChecks'), /protectedPathsUnchanged/);
+  assert.equal(report.stages.findIndex((s) => s.name === 'integrity: reveal, DUPLICATE, the bond back') > report.stages.findIndex((s) => s.name === 'gate: reveal, INVALID, the bond to the maker'), true);
+});
+
+test('node P12: the runner at the pin had the Semgrep image before it started, and the fixture settled as it did', () => {
+  has('semgrep.warmed', 'listing.officialCompiler', 'listing.commandsAskedFirst', 'listing.shellPrefixRefused', 'valid.report.everyGatePassed');
+  assert.match(detail('semgrep.warmed'), /sha256:/);
+});
+
 test('an abstention is never a settled claim: rounds fail, a fresh prepay, then expiry with the bond to the maker (E6)', () => {
   has('abstain.check.forecast', 'abstain.first.round.allAbstained', 'abstain.first.runner.ranIt', 'abstain.first.ea.abstained', 'abstain.first.noAi', 'abstain.second.runner.ranIt', 'abstain.second.ea.abstained', 'abstain.first.stillOpen', 'abstain.first.money.refundAtFinalize', 'abstain.retrigger.freshPrepay', 'abstain.second.round.allAbstained', 'abstain.keeper.expired', 'abstain.expiry.money.bondToMaker', 'abstain.expiry.money.hunterGetsNothing', 'abstain.never.judged', 'abstain.never.settled', 'abstain.ended.expired', 'abstain.nothingUploaded');
 });

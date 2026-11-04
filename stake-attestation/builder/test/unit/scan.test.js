@@ -236,3 +236,82 @@ test('nothing in scope goes unscanned unsaid: Semgrep\'s default exclusions are 
     { path: 'src/package-lock.json', detail: 'the secret scanner: skipping file: global allowlist' },
   ]);
 });
+
+// From A3c's measurements of Semgrep 1.181.0 (verdikta-arbiter code-runner/README.md, "What the runner
+// forces"), where they apply to a maker's scan. Real Semgrep: test/docker/scan.docker.test.js.
+test('Semgrep\'s answer comes from a file: its own stdout goes elsewhere, since gVisor can cut it at 64 KiB with exit 0', async () => {
+  const { runs } = await scan();
+  const script = runs[0].args.at(-2);
+  assert.match(script, /semgrep scan [^\n]*--output \/work\/semgrep\.json/);
+  assert.match(script, /--disable-nosem/, 'a // nosemgrep in the maker\'s source does not shrink the scan');
+  // Semgrep shares no descriptor with what carries the answer: it may leave a pipe non-blocking for what comes after.
+  assert.match(script, /semgrep scan [^\n]* > \/dev\/null 2>&1/);
+  assert.match(script, /\[ ! -e \/work\/semgrep\.json \] \|\| cat \/work\/semgrep\.json\n/);
+  assert.match(script, /\nexit "\$rc"\n?$/, 'the tool\'s exit code is still the scan\'s');
+});
+
+test('a cut answer is a failed scan, never a smaller one', async () => {
+  const whole = semgrepAnswer([semgrepResult({ rule: 'verdikta.solidity.selfdestruct', path: 'src/Vault.sol', line: 1 })]);
+  for (const at of [1, Math.floor(whole.length / 2), whole.length - 1]) {
+    const { status, doc } = await scan(FILES, { semgrep: { stdout: whole.slice(0, at) } });
+    assert.equal(status, 'error', `cut at ${at}`);
+    assert.equal(doc.error.code, 'SCAN_TOOL_FAILED');
+    assert.equal(doc.tools.semgrep.status, 'failed');
+  }
+});
+
+test('a skipped rule fails the scan: it found nothing, and says so only in skipped_rules', async () => {
+  const answer = (skipped) => JSON.stringify({ ...JSON.parse(semgrepAnswer([], [], ['src/Vault.sol', 'src/lib/Math.sol'])), skipped_rules: skipped });
+  const ok = await scan(FILES, { semgrep: { stdout: answer([]) } });
+  assert.equal(ok.status, 'ok');
+  const skipped = await scan(FILES, { semgrep: { stdout: answer([{ rule_id: 'verdikta.solidity.selfdestruct', details: 'x', position: {} }]) } });
+  assert.equal(skipped.status, 'error');
+  assert.equal(skipped.doc.error.code, 'SCAN_TOOL_FAILED');
+  assert.match(skipped.doc.error.detail, /skipped/);
+  const missing = JSON.parse(answer([]));
+  delete missing.skipped_rules;
+  assert.equal((await scan(FILES, { semgrep: { stdout: JSON.stringify(missing) } })).status, 'error', 'an answer that does not say');
+});
+
+test('an answer from another release of Semgrep than the pin is not read', async () => {
+  const other = { ...JSON.parse(semgrepAnswer([], [], ['src/Vault.sol', 'src/lib/Math.sol'])), version: '1.2.3' };
+  const { status, doc } = await scan(FILES, { semgrep: { stdout: JSON.stringify(other) } });
+  assert.equal(status, 'error');
+  assert.match(doc.error.detail, /1\.2\.3/);
+});
+
+test('a match cap is stated: the file\'s results were dropped, so it is named as not analysed, with the rule; it is not counted as analysed', async () => {
+  const rule = 'verdikta.solidity.tx-origin-auth';
+  const { status, doc } = await scan(FILES, {
+    semgrep: { stdout: semgrepAnswer(
+      [semgrepResult({ rule, path: 'src/lib/Math.sol', line: 3 })],
+      [{ type: 'Too many matches', rule_id: rule, level: 'warn', path: '/work/src/src/Vault.sol', message: 'a line of the source' }],
+      ['src/Vault.sol', 'src/lib/Math.sol'],
+    ) },
+  });
+  assert.equal(status, 'ok');
+  assert.equal(doc.tools.semgrep.analysed, 1);
+  assert.deepEqual(doc.tools.semgrep.notScanned, [{ path: 'src/Vault.sol', detail: `past Semgrep's limit of matches of one rule in one file (${rule}), it drops every result for the file: not analysed` }]);
+  assert.deepEqual(doc.tools.semgrep.errors, [{ type: 'Too many matches', level: 'warn', path: 'src/Vault.sol' }]);
+  assert.ok(!JSON.stringify(doc).includes('a line of the source'), 'the message can quote the source');
+  // The other ways a file is not read as a clean one is: in fixed words, and not in what was analysed.
+  for (const [type, words] of [
+    ['Timeout', /time limit[^:]*: not wholly analysed/],
+    ['Out of memory', /out of memory[^:]*: not wholly analysed/],
+    ['Syntax error', /could not parse it: not analysed/],
+    [['PartialParsing', []], /could not parse part of it: not wholly analysed/],
+    ['A kind this release has not seen', /reports an error on it: not wholly analysed/],
+  ]) {
+    const one = await scan(FILES, { semgrep: { stdout: semgrepAnswer([], [{ type, rule_id: rule, level: 'warn', path: '/work/src/src/Vault.sol', message: 'a line of the source' }], ['src/Vault.sol', 'src/lib/Math.sol']) } });
+    assert.equal(one.status, 'ok');
+    assert.equal(one.doc.tools.semgrep.analysed, 1, String(type));
+    assert.equal(one.doc.tools.semgrep.notScanned.length, 1, String(type));
+    assert.match(one.doc.tools.semgrep.notScanned[0].detail, words);
+    assert.ok(!JSON.stringify(one.doc).includes('a line of the source'));
+  }
+  // Whichever cap comes first: a report of more errors than are kept says so, and no capped file is lost with them.
+  const many = Array.from({ length: 60 }, (_, i) => ({ type: 'Syntax error', level: 'warn', path: `/work/src/src/E${i}.sol` }));
+  const capped = await scan(FILES, { semgrep: { stdout: semgrepAnswer([], [...many, { type: 'Too many matches', rule_id: rule, level: 'warn', path: '/work/src/src/Vault.sol' }], ['src/Vault.sol', 'src/lib/Math.sol']) } });
+  assert.equal(capped.doc.tools.semgrep.errorsTruncated, true);
+  assert.ok(capped.doc.tools.semgrep.notScanned.some((n) => n.path === 'src/Vault.sol'));
+});

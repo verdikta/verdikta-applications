@@ -19,6 +19,21 @@ test('verdikta-arbiter is pinned to a whole commit, fetched by id from its publi
   assert.match(setup, /PIN\.repository, PIN\.commit/);
 });
 
+test('the round runs the commit the builder\'s workflow and its Docker tests run: three files, one commit', () => {
+  const read = (file) => JSON.parse(fs.readFileSync(path.join(E2E, '..', file), 'utf8'));
+  const round = read('e2e/arbiter.pin.json');
+  assert.equal(read('builder/action/pins.json').codeRunner.commit, round.commit);
+  assert.equal(read('builder/test/docker/code-runner.pin.json').commit, round.commit);
+  assert.equal(read('builder/test/docker/code-runner.pin.json').branch, round.branch);
+});
+
+test('CI runs the scan under gVisor: its answer is whole there too, measured and not assumed', () => {
+  const docker = /\n {2}builder-docker:\n([\s\S]*?)(?=\n {2}[a-z0-9-]+:\n|\n*$)/.exec(workflow)?.[1] ?? '';
+  assert.match(docker, /SA_BUILDER_TEST_RUNSC: '1'/);
+  assert.match(docker, /gvisor\.tar\.bz2/);
+  assert.match(docker, /sha512sum -c/);
+});
+
 test('CI has a job for the round, on the class platform, with no secret', () => {
   assert.ok(job, 'no e2e job in the workflow');
   assert.match(job, /runs-on: ubuntu-24\.04/);

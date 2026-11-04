@@ -1,7 +1,7 @@
 // The round itself: every piece running together, on this machine, against a local chain, a local
 // registry and a local IPFS, with no key that means anything. list -> fund -> commit -> release ->
-// reveal -> judge (finalize) -> settle -> record, for a claim the jury decides, one the gates settle
-// and one every arbiter abstains on. The first failed check, a service that will not start, or any
+// reveal -> judge (finalize) -> settle -> record, for a claim the jury decides, one the gates settle, one
+// a non-tamper integrity check settles and one every arbiter abstains on. The first failed check, a service that will not start, or any
 // error ends the round: exit 1, with everything it started stopped and removed.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -14,7 +14,7 @@ import { createBridge, evaluateOver } from './bridge.js';
 import { readPages } from './browser.js';
 import { startChain } from './chain.js';
 import {
-  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, evidenceChecks, gateSettledChecks, juryPathChecks, moneyChecks, pageChecks,
+  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, evidenceChecks, gateSettledChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, moneyChecks, pageChecks,
   recordChecks, requestChecks, servedRoundChecks, settlementChecks,
 } from './checks.js';
 import {
@@ -22,7 +22,7 @@ import {
 } from './fixtures.js';
 import { RoundStopped, groupAlive, liveGroups, requestStop, sleep, stopProcessGroups, stopProcessesNaming, throwIfStopping, unlessStopped, waitUntil, within } from './proc.js';
 import {
-  arbiterHarness, cleanDockerConfig, leftovers, newRunnerToken, removeRunContainers, removeRunImages, startClient, startIpfs, startLateContainer, startRegistryPair, startServer, startSurvivor,
+  arbiterHarness, cleanDockerConfig, leftovers, newRunnerToken, removeRunContainers, removeRunImages, startClient, startIpfs, startLateContainer, startRegistryPair, startServer, startSurvivor, warmSemgrep,
 } from './services.js';
 import { APP_DIR, arbiterCheckout, browserReady, compileContracts, E2E_DIR, installSiblings } from './setup.js';
 import { createTool } from './tool.js';
@@ -37,6 +37,9 @@ const REQUEST_GAS_STAND_IN = 3_000_000;
 const EA_DEADLINE_LIMIT_MS = 780_000;
 const OUTCOMES = ['INVALID', 'DUPLICATE', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
 const INVALID_VECTOR = Object.freeze([1000000n, 0n, 0n, 0n, 0n, 0n]);
+const DUPLICATE_VECTOR = Object.freeze([0n, 1000000n, 0n, 0n, 0n, 0n]);
+/** What the integrity claim's proof changes: it writes .gitignore, which the round's draft protects. */
+const INTEGRITY_CHECK = 'protectedPathsUnchanged';
 const CLAIM_STATES = ['Committed', 'Revealable', 'Revealed', 'Judged', 'Disputed', 'Settled', 'Expired', 'RoundFailed'];
 const EXPIRIES = ['None', 'Undisclosed', 'Unrevealed', 'RoundsFailed', 'SubmissionsRefused'];
 const DEFAULT_LOG_ROOT = path.join(E2E_DIR, '.round', 'logs');
@@ -244,6 +247,9 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       fs.rmSync(dockerSettings.dockerConfigDir, { recursive: true, force: true });
     };
     log(`[round] instance ${instance}, platform ${h.platform}, ${report.classPlatform ? 'the runner\'s real entry point' : 'the A6a launcher in front of the runner (report built with the class platform named)'}`);
+    const semgrep = await warmSemgrep(h, docker, { platform: h.platform });
+    throwIfStopping();
+    one('semgrep.warmed', semgrep.problem === null && semgrep.present === true, semgrep.problem ?? `${semgrep.image}, ${semgrep.platform}`);
 
     stage('start');
     chain = await owned(startChain({ logDir }), (c) => c.close());
@@ -334,11 +340,17 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const refused = refusedRes.status === 202 ? await follow((await refusedRes.json()).id) : await refusedRes.json();
     one('listing.proofRefusesAnotherWallet', refused.status === 'refused' && refused.refusal?.code === 'PROOF_NAMES_ANOTHER_ADDRESS', JSON.stringify(refused.refusal ?? refused));
 
+    // Q31, on the site's whole path: a command a claim's runner refuses is refused here by the same code, and nothing is built.
+    const shellRes = await submit(maker, { spec: { ...draft, commands: { ...draft.commands, build: 'true; forge build' } }, allowlist: [], maker: maker.address });
+    const shell = shellRes.status === 202 ? await follow((await shellRes.json()).id) : await shellRes.json();
+    one('listing.shellPrefixRefused', shell.status === 'refused' && shell.validationReport?.refusals?.[0]?.code === 'COMMAND_NOT_ALLOWED' && shell.validationReport.steps?.length === 1, JSON.stringify(shell.validationReport?.refusals ?? shell).slice(0, 400));
+
     const accepted = await submit(maker, { spec: draft, allowlist: [], maker: maker.address });
     one('listing.accepted', accepted.status === 202, `HTTP ${accepted.status}`);
     const view = await follow((await accepted.json()).id);
     one('listing.ready', view.status === 'ready', JSON.stringify({ status: view.status, error: view.error, refusal: view.refusal, refusals: view.validationReport?.refusals }));
     const validation = view.validationReport;
+    one('listing.commandsAskedFirst', validation.commands?.canary === 'COMMAND_NOT_ALLOWED' && validation.commands.issues?.length === 0 && validation.steps[0]?.name === 'spec', JSON.stringify(validation.commands ?? null));
     const stepNames = validation.steps.filter((s) => s.status === 'ok').map((s) => s.name);
     one('listing.realBuilder', ['spec', 'control', 'fetch', 'build', 'size', 'push', 'registry', 'listingCheck', 'finalSpec'].every((s) => stepNames.includes(s)), stepNames.join(', '));
     const checkAnswer = runnerProxy.post('/v1/listing-checks').find((c) => c.status === 200)?.response;
@@ -634,6 +646,71 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       { name: 'hunter', before: hunterAfterGateReveal, after: await balance(hunter), expected: gateRound.required - gateRound.spent },
     ]));
 
+    // ---------------------------------------------------------------- a claim a non-tamper integrity check settles
+    stage('integrity: check, commit, release');
+    const integrityDir = claimFolder(workDir, 'integrity');
+    const integrityCheck = await tool('check', integrityDir, '--listing', String(listingId));
+    one('integrity.check.forecast', integrityCheck.code === 1 && integrityCheck.json?.forecast?.verdict === 'fail' && integrityCheck.json.forecast.settlesAs?.outcome === 'DUPLICATE' && integrityCheck.json.forecast.settlesAs?.bond === 'returned', `${integrityCheck.json?.forecast?.verdict}, settles as ${integrityCheck.json?.forecast?.settlesAs?.outcome}, bond ${integrityCheck.json?.forecast?.settlesAs?.bond}: ${integrityCheck.stderr.slice(0, 200)}`);
+    const integrityCommit = await tool('commit', integrityDir, '--listing', String(listingId), '--yes');
+    toolDone('commit', integrityCommit);
+    const integrityId = BigInt(integrityCommit.json.claimId);
+    await makerRelease(integrityId);
+
+    stage('integrity: reveal, DUPLICATE, the bond back');
+    const beforeIntegrity = counts();
+    const integrityReveal = await tool('reveal', integrityDir);
+    toolDone('reveal', integrityReveal);
+    const hunterAfterIntegrityReveal = await balanceAfterTx(hunter, integrityReveal.json.tx);
+    const makerBeforeIntegrity = await balanceAfterTx(maker, integrityReveal.json.tx);
+    const integrityRound = await roundOf(integrityId);
+    const integrityClaim = await sa.getClaim(integrityId);
+    expect(requestChecks('integrity', integrityRound, {
+      listingCid: view.list.listingCid,
+      bcid: integrityClaim.bcid,
+      priorBcids: [validFinal.bcid],
+      requestedClass: codeReview.CODE_CLASSES['code-standard'].classId,
+      oracle: view.list.params.oracle,
+      disclosure: { parsed: parsedLine(integrityRound.addendum), archiveSha256: integrityClaim.archiveHash, ciphertextSha256: integrityClaim.ciphertextSha256, ciphertextCid: integrityClaim.ciphertextCid },
+    }));
+    expect(servedRoundChecks('integrity', integrityRound, { vector: DUPLICATE_VECTOR }));
+    const integrityPath = since(beforeIntegrity);
+    expect(integrityRunChecks('integrity', { ...integrityPath, failedCheck: INTEGRITY_CHECK }));
+    await stateIs(integrityId, 'Settled');
+    const integrityJudged = (await eventOf('Judged', integrityId))[0];
+    const integritySettled = (await eventOf('Settled', integrityId))[0];
+    const integrityFinal = await sa.getClaim(integrityId);
+    // The real writer's bytes, read by the reader the record and the tool use: the first time they meet.
+    const integrityUploads = uploadsOf(integrityJudged.args.justificationCid);
+    const integrityEvidences = integrityUploads.map((u) => readExecutionEvidence(u?.justification));
+    expect(evidenceChecks('integrity', { uploads: integrityUploads, evidences: integrityEvidences, settlement: 'DUPLICATE (integrity)', source: 'code-review-integrity', reportSha256: integrityPath.runnerCalls[0]?.response?.reportSha256 ?? null, expectedCount: REAL_CONFIG.p }));
+    one('integrity.evidence.failedChecks', integrityEvidences.every((e) => JSON.stringify(e?.integrityFailedChecks) === JSON.stringify([INTEGRITY_CHECK]) && e?.tamperFlags === 'none'), JSON.stringify(integrityEvidences.map((e) => [e?.integrityFailedChecks, e?.tamperFlags])));
+    const integrityStatus = await tool('status', integrityDir);
+    one('integrity.status.readsTheBlock', integrityStatus.json?.evidence?.settlement === 'DUPLICATE (integrity)' && integrityStatus.json.evidence.integrityFailedChecks?.includes(INTEGRITY_CHECK), JSON.stringify(integrityStatus.json?.evidence));
+    expect(settlementChecks('integrity', {
+      state: await claimStateOf(integrityId),
+      outcome: OUTCOMES[Number(integrityFinal.outcome)],
+      expectedOutcome: 'DUPLICATE',
+      finalizeFrom: await senderOf(integrityJudged),
+      settleFrom: await senderOf(integritySettled),
+      keeper: chain.accounts.keeper.address,
+      vector: integrityFinal.vector.map((v) => BigInt(v)),
+      expectedVector: [...DUPLICATE_VECTOR],
+    }));
+    const secondsToSettleIntegrity = (await provider.getBlock(integritySettled.blockNumber)).timestamp - (await provider.getBlock(integrityJudged.blockNumber)).timestamp;
+    one('integrity.settled.noDisputeWindow', secondsToSettleIntegrity < WINDOWS.dispute, `${secondsToSettleIntegrity} s on the chain's clock after the verdict: a DUPLICATE does not wait out the ${WINDOWS.dispute} s window`);
+    expect(moneyChecks('integrity', [
+      { name: 'bondBack', before: hunterAfterIntegrityReveal, after: await balance(hunter), expected: BOND_WEI + (integrityRound.required - integrityRound.spent) },
+      { name: 'makerUntouched', before: makerBeforeIntegrity, after: await balance(maker), expected: 0n },
+    ]));
+    // The record reads the justifications beside the indexer, so it says this a moment after the chain does.
+    const recordWithIntegrity = await settleOutcome(async () => {
+      const r = await recordView();
+      const read = r.integrity?.listings?.[String(listingId)];
+      return read && read.failed + read.otherDuplicates === 1 && read.unread === 0 ? r : null;
+    }, 'waiting for the record to read the claim\'s justifications');
+    const { INTEGRITY_NOTE } = await import(path.join(APP_DIR, 'shared', 'src', 'executionEvidence.js'));
+    expect(integrityRecordChecks('integrity', recordWithIntegrity, { listingId, failed: 1, checks: [{ check: INTEGRITY_CHECK, count: 1 }], note: INTEGRITY_NOTE }));
+
     // ---------------------------------------------------------------- a claim every arbiter abstains on (E6)
     stage('abstain: check, commit, reveal');
     const abstainDir = claimFolder(workDir, 'abstain');
@@ -698,7 +775,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const finalView = await settleOutcome(async () => {
       const r = await recordView();
       return r.record?.history?.noVerdict === '1' && r.record?.history?.outcomes?.[0] === '1' ? r : null;
-    }, 'waiting for the record to show all three claims');
+    }, 'waiting for the record to show all four claims');
     expect(abstainEndChecks('abstain', {
       state: await claimStateOf(abstainId),
       expiry: EXPIRIES[Number(abstainFinal.expiry)],
@@ -711,9 +788,9 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     expect(recordChecks('final', finalView, {
       artifactHash,
       listingId,
-      outcomes: [1, 0, 0, 0, 1, 0],
-      claims: 3,
-      released: 3,
+      outcomes: [1, 1, 0, 0, 1, 0],
+      claims: 4,
+      released: 4,
       noVerdict: 1,
       findings: [{ claimId: String(validId), outcome: 'HIGH', paidWei: AWARDS_WEI.HIGH.toString(), owedWei: '0', bcid: validFinal.bcid }],
       escrowWei: ESCROW_WEI - AWARDS_WEI.HIGH,
@@ -730,18 +807,20 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const fullOf = (claimId) => events.filter((e) => e.claimId === String(claimId) && e.name === 'Judged');
     one('final.events.validPublished', fullOf(validId)[0]?.args?.justificationCid === judgedEvent.args.justificationCid, 'a valid finding\'s events are in full');
     one('final.events.invalidHidden', !JSON.stringify(events.filter((e) => e.claimId === String(gateId))).includes(gateFinal.bcid), 'an INVALID claim\'s events keep only their ids');
+    one('final.events.duplicateHidden', !JSON.stringify(events.filter((e) => e.claimId === String(integrityId))).includes(integrityFinal.bcid), 'so do a DUPLICATE\'s');
     const status = (await server.get('/api/status')).json;
     one('final.keeper.noError', status.keeper?.enabled === true && status.keeper?.error === null && status.keeper?.address === chain.accounts.keeper.address, JSON.stringify(status.keeper?.error));
     one('final.indexer.confirms', status.indexer?.confirmations === 2 && status.indexer?.fresh === true, `confirmations ${status.indexer?.confirmations}, fresh ${status.indexer?.fresh}`);
 
     const pages = await readPages(chromium, client.url, { artifactHash, listingId, onBrowser: (b) => closers.push(() => b.close()) });
+    expect(integrityPageChecks('final', pages, { failed: 1, check: INTEGRITY_CHECK, count: 1, note: INTEGRITY_NOTE, bcid: integrityFinal.bcid }));
     expect(pageChecks('final', pages, {
       artifactHash,
-      claims: 3,
-      judged: 2,
-      released: 3,
+      claims: 4,
+      judged: 3,
+      released: 4,
       state: 'open',
-      verdicts: ['INVALID: 1', 'DUPLICATE: 0', 'LOW: 0', 'MEDIUM: 0', 'HIGH: 1', 'CRITICAL: 0'],
+      verdicts: ['INVALID: 1', 'DUPLICATE: 1', 'LOW: 0', 'MEDIUM: 0', 'HIGH: 1', 'CRITICAL: 0'],
       noVerdict: 1,
       findingBcid: validFinal.bcid,
       invalidBcid: gateFinal.bcid,

@@ -10,13 +10,14 @@ name: Stake attestation builder
 #         builder-ref: <commit>
 #         spec: listing/code_review.json
 #         maker: <the wallet that will send list(), named in the listed commit's .verdikta/stake-control.json>
-#         publish-repository: ghcr.io/<owner>/stake-env
+#         publish-repository: ghcr.io/<owner>/stake-env   # one the arbiters' registry allowlist holds (the build says when its default does not)
 #       permissions:
 #         contents: read
 #         packages: write
 #
-# Three jobs. build runs the maker's setup and holds no secret: the image goes to a registry:2 on
-# the runner's loopback and is validated by the pinned code-runner there; the image (skopeo's dir
+# Three jobs. build runs the maker's setup and holds no secret: the pinned code-runner reads the
+# commands before anything is fetched, the image goes to a registry:2 on the runner's loopback and
+# is validated by that code-runner there; the image (skopeo's dir
 # layout) and the output folder leave as artifacts, with their digests as job outputs. publish
 # runs none of the maker's code: it checks the layout against the digest and copies it byte for
 # byte to publish-repository, which must be readable without a credential, as arbiters pull it.
@@ -185,9 +186,10 @@ jobs:
         env:
           PUBLISH_REPOSITORY: ${{ inputs.publish-repository }}
           RUNTIME: ${{ inputs.runtime }}
+          SIGNING: ${{ inputs.signing }}
           SPEC: ${{ inputs.spec }}
           EXPLORER_API_URL: ${{ inputs.explorer-api-url }}
-        run: node "$VAB_BUILDER/action/services.js" start --dir "$VAB_WORK" --publish-as "$PUBLISH_REPOSITORY" --spec "listing-source/$SPEC" --runtime "$RUNTIME" --explorer-url "$EXPLORER_API_URL"
+        run: node "$VAB_BUILDER/action/services.js" start --dir "$VAB_WORK" --publish-as "$PUBLISH_REPOSITORY" --spec "listing-source/$SPEC" --runtime "$RUNTIME" --signing "$SIGNING" --explorer-url "$EXPLORER_API_URL"
       - name: Build, push to the loopback registry and validate
         id: build
         env:

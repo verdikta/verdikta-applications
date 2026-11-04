@@ -6,8 +6,10 @@
 //                          nothing is signed for a listing without it
 //   always                 the report accepted the listing; the files are the bytes it accepted;
 //                          code_review.json, the baseline and known_issues.json validate; the report
-//                          is about this listing, has every step of a build in order, and names the
-//                          image, sizes and base code_review.json names, inside the class limits
+//                          is about this listing, has every step of a build in order, records that the
+//                          runner it asked has the grammar arbiters hold claims to and refused none of
+//                          the commands, and names the image, sizes and base code_review.json names,
+//                          inside the class limits
 //   --expect-outputs <h>   the folder is byte for byte the one the build job digested (outputsDigest)
 //   --check-registry       the image code_review.json names is readable from its registry without a
 //                          credential (as arbiters pull it), is the manifest and size the build
@@ -31,7 +33,7 @@ const STEPS = Object.freeze(['spec', 'control', 'fetch', 'build', 'size', 'push'
 const IMAGE_REF = /^(.+)@(sha256:[0-9a-f]{64})$/;
 
 const TRUSTS = Object.freeze({
-  LISTING_CHECK_RESULTS: 'baseline.json, the timings, the default limits and the harness proof are the code-runner\'s answer as the build job recorded it, from the runner, runtime and platform the report names; repeating the check needs the image and a runner',
+  LISTING_CHECK_RESULTS: 'baseline.json, the timings, the default limits, the harness proof and what it said of the commands are the code-runner\'s answer as the build job recorded it, from the runner, runtime and platform the report names; repeating the check needs the image and a runner',
   DEPLOYMENT_ROLE: 'that the signer named in the report is the deployment\'s owner or deployer was read from the chain in the build job; its signature is checked again here unless the signer is a contract',
   VERIFIED_SOURCE: 'the comparison of the explorer\'s verified source and deployed code with the build at baseCommit ran in the build job; only its recorded result is seen here',
   UNPACKED_SIZE: 'env.unpackedBytes is the build\'s and the runner\'s measurement of the unpacked image; measuring it again needs the image unpacked',
@@ -125,6 +127,12 @@ export async function verifyForSigning({ files, report, dir, expectOutputs = nul
   if (report.listingCheck?.status !== 'accepted') refuse('STEPS_INCOMPLETE', 'the report does not record an accepted listing check');
   if (contract && report.verifiedSource?.status !== 'match') refuse('STEPS_INCOMPLETE', 'the report does not record a verified-source match for this contract listing');
   pass('STEPS_COMPLETE');
+
+  const c = report.commands;
+  if (c?.checkedBy !== 'runner' || c.canary !== 'COMMAND_NOT_ALLOWED' || !Array.isArray(c.issues) || c.issues.length > 0) {
+    refuse('COMMANDS_NOT_CHECKED', 'the report does not record that a code-runner with the grammar arbiters hold claims to took these commands');
+  }
+  pass('COMMANDS_CHECKED');
 
   const img = report.image ?? {};
   const m = IMAGE_REF.exec(String(spec.env?.image ?? ''));

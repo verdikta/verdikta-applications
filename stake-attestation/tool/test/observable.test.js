@@ -112,6 +112,10 @@ test('table: the runner\'s before-and-after matrix, in its form', () => {
 for (const [what, lines] of [
   ['an internal helper', ['contract E {', '  function test() internal { }', '  function test_drain() public { }', '}']],
   ['a private helper', ['contract E {', '  function test(uint256 a) private view returns (uint256) { return a; }', '  function test_drain() public { }', '}']],
+  ['an internal helper taking an external function', ['contract E {', '  function test(function() external callback) internal { callback(); }', '  function test_drain() public { }', '}']],
+  ['an internal helper returning an external function', ['contract E {', '  function test() internal returns (function() external) { }', '  function test_drain() public { }', '}']],
+  ['a free function taking an external function', ['function test(function() external callback) { callback(); }', 'contract E { function test_drain() public { } }']],
+  ['a free function returning an external function', ['function test() pure returns (function() external) { }', 'contract E { function test_drain() public { } }']],
   ['a free function', ['function test(uint256 a) pure returns (uint256) { return a; }', 'contract E { function test_drain() public { } }']],
   ['an interface\'s declaration', ['interface I {', '  function test() external;', '}', 'contract E { function test_drain() public { } }']],
   ['a declaration with no body', ['abstract contract A {', '  function test() public virtual;', '}', 'contract E { function test_drain() public { } }']],
@@ -120,6 +124,10 @@ for (const [what, lines] of [
   ['a comment after code', ['contract E {', '  uint256 x; // function test() public { }', '  function test_drain() public { }', '}']],
   ['a block comment', ['contract E {', '  /* function test() public { }', '     function test() public { } */', '  function test_drain() public { }', '}']],
   ['a string', ['contract E {', '  string s = "function test() public { }";', '  function test_drain() public { }', '}']],
+  ['a string in single quotes', ['contract E {', "  string s = 'function test() public { }';", '  function test_drain() public { }', '}']],
+  ['a string that goes on to the next line', ['contract E {', '  string s = "first \\', '    function test() public { }";', '  function test_drain() public { }', '}']],
+  ['the same, with CRLF line endings', ['contract E {\r', '  string s = "first \\\r', '    function test() public { }";\r', '  function test_drain() public { }\r', '}\r']],
+  ['a comment the hunk leaves open', ['contract E {', '  function test_drain() public { }', '  /* first', '  function test() public { }']],
 ]) {
   test(`what the patch adds that is no test does not make the word a name: ${what}`, () => {
     const patch = patchOf(...lines);
@@ -141,6 +149,8 @@ for (const [what, lines] of [
   ['a test of its own name, public', ['contract E {', '  function test() public { assert(false); }', '}']],
   ['external and view', ['contract E {', '  function test() external view { assert(false); }', '}']],
   ['a fuzz test', ['contract E {', '  function test(uint256 a) public { assert(a == 0); }', '}']],
+  ['taking an external function', ['contract E {', '  function test(function() external callback) public { callback(); }', '}']],
+  ['returning an external function', ['contract E {', '  function test() public returns (function() external) { assert(false); }', '}']],
   ['with a modifier and a return', ['contract E {', '  function test() public only(1) returns (uint256) { assert(false); }', '}']],
   ['written over several lines', ['contract E {', '  function test(', '    uint256 a', '  )', '    public', '  {', '    assert(a == 0);', '  }', '}']],
   ['the name on the next line', ['contract E {', '  function', '    test() public { assert(false); }', '}']],
@@ -154,6 +164,38 @@ for (const [what, lines] of [
     assert.deepEqual(run('forge test', 'fails with "vault drained"', { patch, known: ['test', 'test_deposit'] }), []);
   });
 }
+
+/** A hunk of a change to an existing file, from its lines as the diff has them. */
+function changeOf(...lines) {
+  return ['diff --git a/test/E.t.sol b/test/E.t.sol', '--- a/test/E.t.sol', '+++ b/test/E.t.sol', '@@ -1,9 +1,9 @@', ...lines, ''].join('\n');
+}
+
+test('a hunk is read whole: a comment closes on a line the patch left alone', () => {
+  const patch = changeOf('-/* old heading', '+/* new heading', '   more of it', ' */', '+contract E { function test_drain() public { } }', '+/* a later comment */');
+  assert.deepEqual(addedTests(patch), ['test_drain']);
+  assert.deepEqual(run('forge test --mt test_drain', 'fails with "vault drained"', { patch }), []);
+});
+
+test('a hunk is read whole: a body opens on a line the patch left alone', () => {
+  // A helper renamed to a test: a new test to forge, with its visibility or its brace unchanged.
+  assert.deepEqual(addedTests(changeOf('-  function helper() public', '+  function test_drain() public', '   {', '   }')), ['test_drain']);
+  assert.deepEqual(addedTests(changeOf('-  function helper(', '+  function test_drain(', '     uint256 a', '   ) public {', '   }')), ['test_drain']);
+  assert.deepEqual(addedTests(changeOf('-  function helper(', '+  function test_drain(', '     uint256 a', '   ) internal {', '   }')), []);
+});
+
+test('a declaration on a line the patch left alone is not one it adds', () => {
+  assert.deepEqual(addedTests(changeOf('   function test_kept() public {', '+    uint256 a = 1;', '   }')), []);
+  assert.deepEqual(addedTests(changeOf(' contract E {', '   function test_kept() public { }', '+  function test_new() public { }', ' }')), ['test_new']);
+  // One the comment around it was taken from, or added to.
+  assert.deepEqual(addedTests(changeOf('+/*', '   function test_kept() public { }', '+*/')), []);
+});
+
+test('hunks are read apart, and files too: what one leaves open does not reach the next', () => {
+  const hunks = changeOf('+/* opened here, closed below this hunk', '@@ -20,1 +20,1 @@', '+contract E { function test_drain() public { } }');
+  assert.deepEqual(addedTests(hunks), ['test_drain']);
+  const files = [changeOf('+/* opened here, closed below this hunk'), changeOf('+contract E { function test_drain() public { } }')].join('');
+  assert.deepEqual(addedTests(files), ['test_drain']);
+});
 
 test('every test on a line is read', () => {
   assert.deepEqual(addedTests(patchOf('contract E { function test_a() public { } function test_b() public { } }')), ['test_a', 'test_b']);
@@ -192,6 +234,8 @@ test('the tool reads a test as added by its name in the patch, not by forge\'s l
   // A baseline test's declaration edited: the same identity, so the runner does not count it as added.
   const edited = ['diff --git a/test/Vault.t.sol b/test/Vault.t.sol', '--- a/test/Vault.t.sol', '+++ b/test/Vault.t.sol', '@@ -1,1 +1,1 @@', '-  function test_deposit() public { }', '+  function test_deposit() external { }', ''].join('\n');
   assert.deepEqual(run('forge test --mt test_deposit', 'fails with "vault drained"', { patch: edited }), []);
+  // An added line in a comment opened above the hunk: the hunk doesn't show the comment.
+  assert.deepEqual(addedTests(changeOf('   * first', '+  function test_x() public { }', '   */')), ['test_x']);
   // check and prove are forge's only with symbolic entry points on, which the listing's config decides.
   assert.deepEqual(run('forge test --mt check_x', 'fails with "vault drained"', { added: ['check_x'] }), []);
 });

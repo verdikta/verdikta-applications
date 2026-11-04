@@ -858,8 +858,8 @@ its own:
 - Quote what forge prints, in double quotes: each quoted fragment must appear in the recorded failure on every run.
 
 The read sees the patch, not forge's list of tests or the recorded failure, so a warning can be wrong where they differ: a test
-inherited from elsewhere, a baseline test's declaration edited, `check` and `prove` tests (forge's only with symbolic entry
-points on), or an observable that holds the whole message with nothing quoted. The `check` command, with a runner, answers those.
+inherited from elsewhere, a baseline test's declaration edited, an added line in a comment opened above its hunk, `check` and
+`prove` tests (forge's only with symbolic entry points on), or an observable that holds the whole message with nothing quoted. The `check` command, with a runner, answers those.
 
 A pinned file is held to the chain: its bytes are hashed against the on-chain commitment before the upload and read back through
 the gateway after it, and a raw CID (`bafkrei…`) is recomputed. So a gateway the arbiters cannot reach is the hunter's to avoid:

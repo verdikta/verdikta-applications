@@ -15,13 +15,15 @@
 //   - with nothing quoted, the recorded message appears in the observable as written.
 //
 // The gate is the runner's and is what counts. Here: a static read of the patch that warns before anything runs,
-// and after a run, a line built from what was recorded. The read counts a function as a test the patch adds when
-// an added line of Solidity declares it, public or external and with a body, under a test-function prefix.
-// It can't see forge's list of tests: a test it misses costs a warning the hunter need not act on, and a function
-// it counts that forge does not run costs a warning the hunter should have had. Both can happen where a patch and
-// its text can't say: a test inherited from elsewhere, a baseline test's declaration edited, and `check` and `prove`,
-// which are forge's only with symbolic entry points on. test/helpers/observableTable.js holds the runner's table,
-// with what the runner answers on each case, and test/observable.test.js holds the tool to it.
+// and after a run, a line built from what was recorded. The read counts a function as a test the patch adds when an
+// added line of a Solidity file holds its name under a test-function prefix, it is public or external, and it has a
+// body. It reads each hunk whole, since a comment can close or a body open on a line the patch left alone.
+// It is a warning's read, not a compiler, and it can't see forge's list of tests: a test it misses costs a warning the
+// hunter need not act on, and a function it counts that forge does not run costs a warning the hunter should have had.
+// Both can happen where a patch and its text can't say: a test inherited from elsewhere, a baseline test's declaration
+// edited, a comment opened above the hunk, and `check` and `prove`, which are forge's only with symbolic entry points on.
+// test/helpers/observableTable.js holds the runner's table, with what the runner answers on each case, and
+// test/observable.test.js holds the tool to it.
 
 /**
  * forge's test-function prefixes, the one list here. The runner's forge.js TEST_FUNCTION_PREFIXES has the same six words in
@@ -30,9 +32,10 @@
 export const TEST_FUNCTION_PREFIXES = Object.freeze(['test', 'invariant', 'statefulFuzz', 'table', 'check', 'prove']);
 
 // A function with a body and a test-function prefix: the name, and what comes before the body.
-const TEST_DECLARATION = new RegExp(`\\bfunction\\s+((?:${TEST_FUNCTION_PREFIXES.join('|')})[A-Za-z0-9_$]*)\\s*\\(([^{;]*)\\{`, 'g');
-// What can spell a declaration without being one: comments and string literals, whichever opens first.
-const NOT_CODE = /\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g;
+const TEST_DECLARATION = new RegExp(`\\bfunction\\s+((?:${TEST_FUNCTION_PREFIXES.join('|')})[A-Za-z0-9_$]*)\\s*\\(([^{;]*)\\{`, 'dg');
+// What can spell a declaration without being one, whichever opens first: a comment (one a hunk leaves open runs past its
+// end) and a string (`\` and a line ending go on to the next line).
+const NOT_CODE = /\/\*[\s\S]*?(?:\*\/|$)|\/\/[^\n]*|"(?:[^"\\\n]|\\(?:\r\n|[\s\S]))*"|'(?:[^'\\\n]|\\(?:\r\n|[\s\S]))*'/g;
 const PRAGMA = /^\+\s*pragma\s+solidity\s+([^;]+);/;
 const IDENTIFIER = /[A-Za-z_$][A-Za-z0-9_$]*/g;
 const QUOTED = /"([^"]*)"/g;
@@ -55,17 +58,37 @@ const commandIdentifiers = (command) => identifiers(command).flatMap((t) => (t.e
 /** A field of poc as the runner takes it: text, or nothing to read. */
 const textOf = (value) => (typeof value === 'string' ? value : '');
 
-function addedLinesOfSolidity(patch) {
-  const out = [];
+/** The hunks of the patch's Solidity files, each as its lines in the new file: added (`+`) and context. */
+function solidityHunks(patch) {
+  const hunks = [];
   let inSolidity = false;
+  let hunk = null;
   for (const line of String(patch).split('\n')) {
     if (line.startsWith('+++ ')) {
       inSolidity = /\.sol"?\s*$/.test(line);
-      continue;
+      hunk = null;
+    } else if (inSolidity && line.startsWith('@@')) {
+      hunk = [];
+      hunks.push(hunk);
+    } else if (hunk && (line === '' || line.startsWith('+') || line.startsWith(' '))) {
+      hunk.push(line);
     }
-    if (inSolidity && line.startsWith('+')) out.push(line);
   }
-  return out;
+  return hunks;
+}
+
+function addedLinesOfSolidity(patch) {
+  return solidityHunks(patch).flat().filter((line) => line.startsWith('+'));
+}
+
+/** What a declaration says after its parameters, with every parenthesised part gone: a function type's visibility is not its own. */
+function attributesOf(signature) {
+  let rest = `(${signature}`;
+  for (let before = null; before !== rest;) {
+    before = rest;
+    rest = rest.replace(/\([^()]*\)/g, ' ');
+  }
+  return rest;
 }
 
 /**
@@ -73,10 +96,14 @@ function addedLinesOfSolidity(patch) {
  * helper, a free function, an interface's declaration, a comment or a string is no test of that name, whatever it spells.
  */
 export function addedTests(patch) {
-  const code = addedLinesOfSolidity(patch).map((line) => line.slice(1)).join('\n').replace(NOT_CODE, ' ');
   const names = new Set();
-  for (const [, name, signature] of code.matchAll(TEST_DECLARATION)) {
-    if (/\b(?:public|external)\b/.test(signature)) names.add(name);
+  for (const lines of solidityHunks(patch)) {
+    // Comments and strings blanked, line for line, so a position in the code is on the line it was.
+    const code = lines.map((line) => line.slice(1)).join('\n').replace(NOT_CODE, (m) => m.replace(/[^\r\n]/g, ' '));
+    for (const m of code.matchAll(TEST_DECLARATION)) {
+      const lineOfName = code.slice(0, m.indices[1][0]).split('\n').length - 1;
+      if (lines[lineOfName].startsWith('+') && /\b(?:public|external)\b/.test(attributesOf(m[2]))) names.add(m[1]);
+    }
   }
   return [...names].sort();
 }

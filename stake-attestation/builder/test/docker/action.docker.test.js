@@ -4,7 +4,7 @@
 // shell-prefixed command is refused by the pinned runner before the maker's setup; a plain listing is accepted.
 //
 // services.js puts the registry on the host network, and only on Linux is that this machine's: Docker Desktop's
-// is the VM's.
+// is the VM's. And it builds for the class platform, as the workflow does, with no other in its config.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -20,7 +20,7 @@ import { MAKER } from '../helpers/proof.js';
 import { PIN, fixtureDraft, fixtureRepo, newId, removeImages } from './helpers.js';
 
 const BUILDER = fileURLToPath(new URL('../../', import.meta.url));
-const skip = process.platform === 'linux' ? false : 'the workflow\'s registry is on the host network, which only on Linux is this machine\'s';
+const skip = process.platform === 'linux' && os.arch() === 'x64' ? false : 'the workflow\'s registry is on the host network and its build is for linux/amd64: this runs on linux/amd64 only';
 const id = newId();
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${id}-`));
 const work = path.join(dir, 'vab');
@@ -50,12 +50,14 @@ function configWithMirror() {
 }
 
 test.after(() => {
-  if (started()) {
-    const repository = JSON.parse(fs.readFileSync(path.join(work, 'builder.json'), 'utf8')).registry.repository;
-    node(['action/services.js', 'stop', '--dir', work]);
-    removeImages(repository);
+  try {
+    // services.json is there from the moment something is running; builder.json only once it all came up.
+    if (started()) node(['action/services.js', 'stop', '--dir', work]);
+    const config = path.join(work, 'builder.json');
+    if (fs.existsSync(config)) removeImages(JSON.parse(fs.readFileSync(config, 'utf8')).registry.repository);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
-  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('services.js starts the runner at the pin, whether or not this host has the Semgrep image a claim needs', { skip, timeout: 1500000 }, () => {

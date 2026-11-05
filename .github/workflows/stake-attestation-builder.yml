@@ -22,9 +22,16 @@ name: Stake attestation builder
 # runs none of the maker's code: it checks the layout against the digest and copies it byte for
 # byte to publish-repository, which must be readable without a credential, as arbiters pull it.
 # sign receives only the build's outputs: it checks them against the build job's digest, the
-# report and the published image, then signs attestation.json (a dev key unless signing is
-# production, whose key lives in the signing environment). The baseline scan is not run here: its
-# findings are the maker's, and this workflow's logs and artifacts can be public.
+# report and the published image, then signs attestation.json with a key made for the run. The
+# baseline scan is not run here: its findings are the maker's, and this workflow's logs and
+# artifacts can be public.
+#
+# This file can't reach the production key: no job here can mint a cloud identity and it reads no
+# secret, so a caller grants it nothing beyond the above. With signing: production it builds and
+# publishes for production and stops; stake-attestation-builder-sign.yml signs, as the next job of
+# Verdikta's own caller (stake-attestation/docs/builder-kms-signing.md). GitHub checks a called job's
+# id-token permission against the caller before anything runs, whatever the job's condition, which is
+# why that job has a file of its own: in this file, every maker would have to grant it.
 #
 # It has no trigger of its own and nothing in this repository calls it: publishing an image in
 # Verdikta's own registry namespace is owner gate G1.
@@ -68,31 +75,28 @@ on:
         type: string
         default: ''
       signing:
-        description: dev (a key made for the run, accepted only under dev trust) or production (VERDIKTA_BUILDER_KEY from the signing environment).
+        description: dev (a key made for the run, accepted only under dev trust) or production (no signature here; stake-attestation-builder-sign.yml signs with the KMS key, as the caller's next job).
         required: false
         type: string
         default: dev
-      signing-environment:
-        description: The environment the sign job runs in; a production key is that environment's secret.
-        required: false
-        type: string
-        default: stake-attestation-signing
       artifact-name:
         description: The prefix of this invocation's artifact names (letters, digits, . _ -). By default one derived from spec, known-issues and publish-repository, so a caller that runs the workflow for several listings in one run gets distinct artifacts; set it when one run builds the same listing twice.
         required: false
         type: string
         default: ''
-    secrets:
-      VERDIKTA_BUILDER_KEY:
-        description: The production builder key (PKCS#8 PEM, Ed25519). Only the sign job reads it, and only when signing is production.
-        required: false
     outputs:
       image:
         description: The env image, by digest, as code_review.json names it.
         value: ${{ jobs.build.outputs.image }}
       signed-artifact:
-        description: The artifact holding the signed listing files.
+        description: The artifact holding the signed listing files. With signing production, stake-attestation-builder-sign.yml uploads it.
         value: ${{ format('{0}-listing-signed', jobs.build.outputs.artifact-id) }}
+      artifact-id:
+        description: The prefix of this invocation's artifact names, for stake-attestation-builder-sign.yml.
+        value: ${{ jobs.build.outputs.artifact-id }}
+      outputs-sha256:
+        description: The digest of the output folder, which stake-attestation-builder-sign.yml checks before it signs. Empty unless signing is production, so a listing that skipped production's checks at the build can't be handed on to be signed.
+        value: ${{ inputs.signing == 'production' && jobs.build.outputs.outputs-sha256 || '' }}
 
 permissions: {}
 
@@ -271,9 +275,9 @@ jobs:
   sign:
     name: Sign attestation.json
     needs: [build, publish]
+    if: inputs.signing != 'production'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    environment: ${{ inputs.signing-environment }}
     permissions:
       contents: read
     steps:
@@ -303,13 +307,11 @@ jobs:
           path: ${{ env.VAB_OUT }}
       - name: The signing config
         env:
-          SIGNING: ${{ inputs.signing }}
           PUBLISH_REPOSITORY: ${{ inputs.publish-repository }}
-        run: node "$VAB_BUILDER/action/services.js" sign-config --dir "$VAB_WORK" --signing "$SIGNING" --publish-as "$PUBLISH_REPOSITORY"
+        run: node "$VAB_BUILDER/action/services.js" sign-config --dir "$VAB_WORK" --signing dev --publish-as "$PUBLISH_REPOSITORY"
       - name: Check the build's outputs and the published image, then sign
         env:
           OUTPUTS_SHA256: ${{ needs.build.outputs.outputs-sha256 }}
-          VERDIKTA_BUILDER_KEY: ${{ inputs.signing == 'production' && secrets.VERDIKTA_BUILDER_KEY || '' }}
           MAKER: ${{ inputs.maker }}
         run: node "$VAB_BUILDER/bin/verdikta-build-env.js" sign --config "$VAB_WORK/sign.json" --dir "$VAB_OUT" --maker "$MAKER" --expect-outputs "$OUTPUTS_SHA256" --check-registry
       - name: Upload the signed listing files

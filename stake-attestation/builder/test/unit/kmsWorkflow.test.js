@@ -40,7 +40,8 @@ test('production signing has a workflow of its own: one job, called only by a ca
 });
 
 test('the workflow a maker calls can\'t mint a cloud identity at all, reads no secret, and doesn\'t sign in production', () => {
-  assert.doesNotMatch(mainText, /id-token/);
+  assert.doesNotMatch(JSON.stringify(mainWf.jobs), /id-token/);
+  assert.doesNotMatch(mainText, /id-token:\s*write/);
   assert.doesNotMatch(mainText, /secrets\./);
   assert.equal(mainWf.on.workflow_call.secrets, undefined);
   assert.equal(mainWf.on.workflow_call.inputs['signing-environment'], undefined);
@@ -52,7 +53,9 @@ test('the workflow a maker calls can\'t mint a cloud identity at all, reads no s
   assert.deepEqual(mainWf.jobs.sign.permissions, { contents: 'read' });
   // The next job of a production caller gets what it needs to check the build's outputs.
   assert.equal(mainWf.on.workflow_call.outputs['artifact-id'].value, '${{ jobs.build.outputs.artifact-id }}');
-  assert.equal(mainWf.on.workflow_call.outputs['outputs-sha256'].value, '${{ jobs.build.outputs.outputs-sha256 }}');
+  // Empty unless the build ran under production's checks (the publish target, the trusted key), and the signing
+  // workflow's first step refuses an empty digest: a listing built as dev can't be handed on to be signed.
+  assert.equal(mainWf.on.workflow_call.outputs['outputs-sha256'].value, "${{ inputs.signing == 'production' && jobs.build.outputs.outputs-sha256 || '' }}");
 });
 
 test('no other job in any workflow here asks for a cloud identity, and CI has no way to reach the key', () => {
@@ -128,6 +131,7 @@ function runGuard({ env = {}, claims = { job_workflow_sha: COMMIT, job_workflow_
     env: {
       PATH: `${dir}${path.delimiter}${process.env.PATH}`,
       BUILDER_REF: COMMIT,
+      OUTPUTS_SHA256: 'd'.repeat(64),
       EVENT_NAME: 'workflow_dispatch',
       VERDIKTA_KMS_KEY_ARN: 'set',
       VERDIKTA_KMS_ROLE_ARN: 'set',
@@ -189,6 +193,15 @@ test('a pull-request or other outside trigger is refused, whatever the environme
   assert.equal(runGuard({ env: { EVENT_NAME: 'repository_dispatch' } }).status, 0);
 });
 
+test('a listing built without production\'s checks hands on no digest, and nothing is signed without one', () => {
+  for (const digest of ['', 'not-a-digest', 'D'.repeat(64), 'd'.repeat(63)]) {
+    const r = runGuard({ env: { OUTPUTS_SHA256: digest } });
+    assert.equal(r.status, 1, digest);
+    assert.match(r.stdout, /outputs-sha256/);
+  }
+  assert.equal(GUARD.env.OUTPUTS_SHA256, '${{ inputs.outputs-sha256 }}');
+});
+
 test('a maker\'s caller doesn\'t hold the references: refused here, before the AWS trust policy would refuse it', () => {
   for (const name of ['VERDIKTA_KMS_KEY_ARN', 'VERDIKTA_KMS_ROLE_ARN']) {
     const r = runGuard({ env: { [name]: '' } });
@@ -198,9 +211,9 @@ test('a maker\'s caller doesn\'t hold the references: refused here, before the A
 });
 
 test('a token endpoint that fails or answers nonsense is a refusal', () => {
-  assert.equal(runGuard({ curl: '#!/bin/sh\nexit 22\n' }).status, 1);
-  assert.equal(runGuard({ curl: '#!/bin/sh\nprintf "{}"\n' }).status, 1);
-  assert.equal(runGuard({ curl: '#!/bin/sh\nprintf "{\\"value\\":\\"no-dots\\"}"\n' }).status, 1);
+  for (const curl of ['#!/bin/sh\nexit 22\n', '#!/bin/sh\nprintf "{}"\n', '#!/bin/sh\nprintf "{\\"value\\":\\"no-dots\\"}"\n']) {
+    assert.notEqual(runGuard({ curl }).status, 0, curl);
+  }
 });
 
 test('the signing workflow is linted and scanned in CI, and CI runs on a change to it', () => {

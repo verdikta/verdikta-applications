@@ -1,0 +1,156 @@
+name: Stake attestation builder, production signing
+# Signs a listing's attestation.json with the production builder key, which stays in AWS KMS (owner, Q5
+# and Q47; stake-attestation/docs/builder-kms-signing.md). Verdikta's own caller runs this as the next job
+# after stake-attestation-builder.yml with signing: production, at one commit of this repository:
+#
+#   sign:
+#     needs: listing
+#     uses: verdikta/verdikta-applications/.github/workflows/stake-attestation-builder-sign.yml@<commit>
+#     permissions:
+#       contents: read
+#       id-token: write
+#     with:
+#       builder-ref: <the same commit>
+#       artifact-id: ${{ needs.listing.outputs.artifact-id }}
+#       outputs-sha256: ${{ needs.listing.outputs.outputs-sha256 }}
+#       maker: <the wallet that will send list()>
+#       publish-repository: <the repository the listing's image was published to>
+#     secrets:
+#       VERDIKTA_KMS_KEY_ARN: ${{ secrets.VERDIKTA_KMS_KEY_ARN }}
+#       VERDIKTA_KMS_ROLE_ARN: ${{ secrets.VERDIKTA_KMS_ROLE_ARN }}
+#
+# One job, in a protected environment of the caller's repository, on a machine of its own. It runs none of
+# the maker's code and holds no cloud credential: the only thing that can turn its identity into a signature
+# is the AWS trust policy, which names the caller's repository, this environment and this file at a commit.
+# A maker's or a fork's caller can call this file, and gets nowhere: AWS refuses its identity. The references
+# are secrets, not variables, because GitHub prints a step's env in the log and a caller's log can be public.
+#
+# It has no trigger of its own and nothing in this repository calls it: the access is owner gate G1.
+on:
+  workflow_call:
+    inputs:
+      builder-ref:
+        description: The verdikta-applications commit this workflow is called at; the job refuses any other.
+        required: true
+        type: string
+      artifact-id:
+        description: The listing's artifact-id output from stake-attestation-builder.yml.
+        required: true
+        type: string
+      outputs-sha256:
+        description: The listing's outputs-sha256 output from stake-attestation-builder.yml.
+        required: true
+        type: string
+      maker:
+        description: The wallet that will send list(), as given to stake-attestation-builder.yml.
+        required: true
+        type: string
+      publish-repository:
+        description: The repository the listing's image was published to, as given to stake-attestation-builder.yml.
+        required: true
+        type: string
+    secrets:
+      VERDIKTA_KMS_KEY_ARN:
+        description: The ARN of the builder key in KMS. A reference, not key material; a secret so it stays out of logs.
+        required: true
+      VERDIKTA_KMS_ROLE_ARN:
+        description: The ARN of the IAM role this job assumes by OIDC. A reference, not a credential; a secret so it stays out of logs.
+        required: true
+    outputs:
+      signed-artifact:
+        description: The artifact holding the signed listing files.
+        value: ${{ jobs.sign.outputs.signed-artifact }}
+
+permissions: {}
+
+jobs:
+  sign:
+    name: Sign attestation.json with the KMS key
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: stake-attestation-signing
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      signed-artifact: ${{ format('{0}-listing-signed', inputs.artifact-id) }}
+    steps:
+      # Before any checkout, so it is the code the trust policy's commit pins. builder-ref is an input: without
+      # this check that pin would bind only this YAML, and the job would run whatever code the input named.
+      # github.job_workflow_sha is empty in a called workflow, so the commit is read from the job's own OIDC
+      # claims, in a token for an audience AWS doesn't trust. The token is not printed or kept.
+      - name: Refuse unless this is a reviewed trigger, with the key's references, at this workflow's own commit
+        env:
+          BUILDER_REF: ${{ inputs.builder-ref }}
+          OUTPUTS_SHA256: ${{ inputs.outputs-sha256 }}
+          EVENT_NAME: ${{ github.event_name }}
+          VERDIKTA_KMS_KEY_ARN: ${{ secrets.VERDIKTA_KMS_KEY_ARN }}
+          VERDIKTA_KMS_ROLE_ARN: ${{ secrets.VERDIKTA_KMS_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            workflow_dispatch|repository_dispatch) ;;
+            *) echo "::error::production signing runs only from workflow_dispatch or repository_dispatch, not ${EVENT_NAME:-an unnamed event}"; exit 1 ;;
+          esac
+          if ! printf '%s' "$OUTPUTS_SHA256" | grep -Eq '^[0-9a-f]{64}$'; then
+            echo "::error::outputs-sha256 is not a digest: it comes from a stake-attestation-builder.yml run with signing: production, whose checks a listing must have passed"
+            exit 1
+          fi
+          for name in VERDIKTA_KMS_KEY_ARN VERDIKTA_KMS_ROLE_ARN; do
+            if [ -z "${!name}" ]; then echo "::error::$name is empty: production signing is Verdikta's, and only its signing environment holds these references"; exit 1; fi
+          done
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error::this job has no OIDC token to ask for: it needs id-token: write, which a fork's pull request does not get and a caller has to grant"
+            exit 1
+          fi
+          answer=$(curl -fsS --max-time 20 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=verdikta-builder-self-check")
+          claims=$(jq -c '.value | split(".")[1] | gsub("-";"+") | gsub("_";"/") | @base64d | fromjson' <<<"$answer")
+          workflow_sha=$(jq -r '.job_workflow_sha // ""' <<<"$claims")
+          if [ -z "$workflow_sha" ] || [ "$workflow_sha" != "$BUILDER_REF" ]; then
+            echo "::error::builder-ref must be the commit this workflow is called at (${workflow_sha:-unknown}): the code that signs is the code the trust policy pins"
+            exit 1
+          fi
+          # What the AWS trust policy will compare, for anyone reading an AccessDenied: names, no secret.
+          echo "this job's identity: sub=$(jq -r '.sub // ""' <<<"$claims") job_workflow_ref=$(jq -r '.job_workflow_ref // ""' <<<"$claims")"
+      - name: Paths
+        run: |
+          {
+            echo "VAB_WORK=$RUNNER_TEMP/vab"
+            echo "VAB_OUT=$RUNNER_TEMP/vab-out"
+            echo "VAB_BUILDER=$GITHUB_WORKSPACE/verdikta-builder/stake-attestation/builder"
+          } >> "$GITHUB_ENV"
+      - name: Check out the builder (never the calling repository)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: verdikta/verdikta-applications
+          ref: ${{ inputs.builder-ref }}
+          path: verdikta-builder
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install the builder's locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --prefix "$VAB_BUILDER"
+      - name: Download the build's outputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ inputs.artifact-id }}-listing
+          path: ${{ env.VAB_OUT }}
+      - name: The signing config (the KMS signer, once common's trusted set holds the pinned key)
+        env:
+          PUBLISH_REPOSITORY: ${{ inputs.publish-repository }}
+        run: node "$VAB_BUILDER/action/services.js" sign-config --dir "$VAB_WORK" --signing production --publish-as "$PUBLISH_REPOSITORY"
+      - name: Check the build's outputs and the published image, then sign
+        env:
+          OUTPUTS_SHA256: ${{ inputs.outputs-sha256 }}
+          MAKER: ${{ inputs.maker }}
+          VERDIKTA_KMS_KEY_ARN: ${{ secrets.VERDIKTA_KMS_KEY_ARN }}
+          VERDIKTA_KMS_ROLE_ARN: ${{ secrets.VERDIKTA_KMS_ROLE_ARN }}
+        run: node "$VAB_BUILDER/bin/verdikta-build-env.js" sign --config "$VAB_WORK/sign.json" --dir "$VAB_OUT" --maker "$MAKER" --expect-outputs "$OUTPUTS_SHA256" --check-registry
+      - name: Upload the signed listing files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.artifact-id }}-listing-signed
+          path: ${{ env.VAB_OUT }}
+          if-no-files-found: error
+          include-hidden-files: true

@@ -14,6 +14,7 @@ const { getContractService } = require('../utils/contractService');
 const { classMap } = require('@verdikta/common');
 const { summarizeTemplateUsage } = require('../utils/templateUsage');
 const hunterLinks = require('../utils/hunterLinks');
+const scoreSpread = require('../utils/scoreSpread');
 
 /**
  * GET /api/analytics/overview
@@ -287,6 +288,38 @@ router.get('/hunters/connections', async (req, res) => {
     logger.error('[analytics/hunters/connections] error', { msg: error.message });
     return res.status(500).json({
       error: 'Failed to get hunter connections',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/analytics/score-spread?days=14
+ * How far apart the arbiters' scores are for the same submission in the same
+ * round: per-round standard deviation over the 3 or 4 verified reveals,
+ * pooled and per day, plus every round (worst first) and a per-bounty roll-up.
+ * Served from the background collection in utils/scoreSpread.js; never waits on RPC.
+ */
+router.get('/score-spread', async (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(scoreSpread.MAX_REPORT_DAYS, parseInt(req.query.days, 10) || 14));
+    const cacheKey = `analytics_score_spread_${days}`;
+    const cached = analyticsCache.get(cacheKey);
+    if (cached) {
+      return res.json({ success: true, data: cached.data, cached: true, cachedAt: cached.timestamp });
+    }
+    const [state, listed] = await Promise.all([scoreSpread.readState(), jobStorage.listJobs({})]);
+    const data = {
+      ...scoreSpread.buildReport(state, listed.jobs || listed, { days }),
+      status: scoreSpread.getStatus(),
+      generatedAt: Date.now()
+    };
+    analyticsCache.set(cacheKey, data);
+    return res.json({ success: true, data, cached: false });
+  } catch (error) {
+    logger.error('[analytics/score-spread] error', { msg: error.message });
+    return res.status(500).json({
+      error: 'Failed to get arbiter score spread',
       details: error.message
     });
   }

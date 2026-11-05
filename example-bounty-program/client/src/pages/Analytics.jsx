@@ -29,6 +29,7 @@ import {
   Link2
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
+import ScoreSpreadSection from '../components/ScoreSpreadSection';
 import { apiService } from '../services/api';
 import { config } from '../config';
 import {
@@ -878,6 +879,9 @@ function Analytics() {
           )}
         </div>
       </section>
+
+      {/* Arbiter Score Spread: per-round sd of the 3-4 reveals, 14-day trend, worst-case drill-down */}
+      <ScoreSpreadSection refreshKey={lastUpdated?.getTime()} />
 
       {/* System Health Section */}
       <section className="analytics-section">

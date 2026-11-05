@@ -566,6 +566,15 @@ async uploadRubric(rubricJson, classId = 128) {
   },
 
   /**
+   * Get arbiter score spread per evaluation round (cached background analysis)
+   * @param {number} days - look-back window in days (1-30)
+   */
+  async getScoreSpread(days = 14) {
+    const response = await api.get('/api/analytics/score-spread', { params: { days } });
+    return response.data;
+  },
+
+  /**
    * Get system health information
    */
   async getSystemHealth() {

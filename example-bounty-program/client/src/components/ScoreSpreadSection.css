@@ -1,0 +1,326 @@
+/* Arbiter Score Spread section (/analytics). Chart colors validated for the light
+   (#f8fafc) and dark (#0f172a) chart surfaces; same hues as the Response Timing
+   charts on arbiters.verdikta.org. */
+.analytics .spread-root {
+  --spread-series-1: #2a78d6;
+  --spread-series-2: #eb6834;
+}
+@media (prefers-color-scheme: dark) {
+  .analytics .spread-root {
+    --spread-series-1: #3987e5;
+    --spread-series-2: #d95926;
+  }
+}
+
+.analytics .spread-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.analytics .spread-window {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.analytics .spread-window button,
+.analytics .spread-tabs button {
+  background: var(--bg);
+  color: var(--text-secondary);
+  border: none;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.analytics .spread-window button + button {
+  border-left: 1px solid var(--border);
+}
+.analytics .spread-window button.active,
+.analytics .spread-tabs button.active {
+  background: var(--bg-secondary);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Charts */
+.analytics .spread-chart {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  padding: 0.9rem 1rem 0.5rem;
+}
+.analytics .spread-chart svg {
+  display: block;
+  height: auto;
+}
+.analytics .spread-chart svg * {
+  pointer-events: none;
+}
+.analytics .spread-chart svg.is-pointing {
+  cursor: pointer;
+}
+.analytics .spread-chart-wrap {
+  position: relative;
+}
+.analytics .spread-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.35rem;
+}
+.analytics .spread-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.analytics .spread-legend-note {
+  margin-left: auto;
+}
+.analytics .spread-linekey {
+  display: inline-block;
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+}
+.analytics .spread-dotkey {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--spread-series-1);
+  opacity: 0.7;
+}
+.analytics .spread-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.analytics .spread-ref {
+  stroke: var(--text-secondary);
+  stroke-width: 1;
+  opacity: 0.6;
+}
+.analytics .spread-axis {
+  font-size: 10px;
+  fill: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.analytics .spread-crosshair {
+  stroke: var(--text-secondary);
+  stroke-width: 1;
+  opacity: 0.5;
+}
+.analytics .spread-dot {
+  fill: var(--spread-series-1);
+  fill-opacity: 0.6;
+  stroke: var(--bg-secondary);
+  stroke-width: 2;
+}
+.analytics .spread-dot.selected {
+  fill-opacity: 1;
+  stroke: var(--text);
+  stroke-width: 2;
+}
+.analytics .spread-tooltip {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 14px));
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 2;
+}
+.analytics .spread-tooltip.below {
+  transform: translate(-50%, 14px);
+}
+.analytics .spread-tooltip-value {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.analytics .spread-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.15rem;
+}
+
+/* Drill-down */
+.analytics .spread-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+  margin-bottom: 0.75rem;
+}
+.analytics .spread-tabs {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.analytics .spread-tabs button + button {
+  border-left: 1px solid var(--border);
+}
+.analytics .spread-filter,
+.analytics .spread-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.analytics .spread-filter input,
+.analytics .spread-sort select {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 0.3rem 0.5rem;
+  font-size: 0.8rem;
+}
+.analytics .spread-filter input {
+  width: 5.5rem;
+}
+.analytics .spread-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+.analytics .spread-filter-summary {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+.analytics .spread-table th.num,
+.analytics .spread-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.analytics .spread-table td {
+  vertical-align: middle;
+}
+.analytics .spread-table .spread-row {
+  cursor: pointer;
+}
+.analytics .spread-table .spread-row:hover td,
+.analytics .spread-table .spread-row.open td {
+  background: var(--bg-secondary);
+}
+.analytics .spread-expand {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+}
+.analytics .spread-linkish {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--primary);
+  font-weight: 600;
+  cursor: pointer;
+  font-size: inherit;
+}
+.analytics .spread-bounty-cell {
+  max-width: 260px;
+}
+.analytics .spread-title {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.analytics .spread-strip {
+  display: block;
+}
+.analytics .spread-strip-track {
+  stroke: var(--border);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.analytics .spread-strip-threshold {
+  stroke: var(--text-secondary);
+  stroke-width: 1.5;
+}
+.analytics .spread-strip-dot {
+  fill: var(--spread-series-1);
+  fill-opacity: 0.75;
+  stroke: var(--bg);
+  stroke-width: 1.5;
+}
+.analytics .spread-strip-dot.late {
+  fill: var(--bg);
+  fill-opacity: 1;
+  stroke: var(--spread-series-1);
+  stroke-width: 1.5;
+}
+.analytics .spread-detail-row > td {
+  background: var(--bg-secondary);
+  padding: 0.5rem 0.75rem 1rem 2.5rem;
+}
+.analytics .spread-detail table {
+  width: auto;
+  min-width: 60%;
+}
+.analytics .spread-detail th,
+.analytics .spread-detail td {
+  padding: 0.4rem 0.75rem;
+}
+.analytics .spread-detail a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+.analytics .spread-detail-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  margin-top: 0.6rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.analytics .spread-muted {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+.analytics .spread-far {
+  font-weight: 700;
+}
+.analytics .spread-more {
+  margin-top: 0.75rem;
+}
+.analytics .spread-footnote {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+@media (max-width: 768px) {
+  .analytics .spread-legend-note {
+    margin-left: 0;
+  }
+  .analytics .spread-detail-row > td {
+    padding-left: 0.75rem;
+  }
+}

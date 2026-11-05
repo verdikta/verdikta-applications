@@ -1,0 +1,40 @@
+{
+  "status": 200,
+  "ms": 23865,
+  "scores": [
+    {
+      "outcome": "NO_WINNER",
+      "score": 1050
+    },
+    {
+      "outcome": "SIDE_A",
+      "score": 997400
+    },
+    {
+      "outcome": "SIDE_B",
+      "score": 1550
+    }
+  ],
+  "justification": "Based on the aggregated decision vector [1050, 997400, 1550] and the supporting justifications from the individual models gpt-5.6-terra and claude-sonnet-5, the result of this event should favor SIDE_A, indicating a win for the New England Patriots.\n\nBoth models independently corroborate the outcome using multiple authoritative sources:\n\n1. The model gpt-5.6-terra assigns a very high score to SIDE_A (999800), confirming that the game held on October 18, 2026, at Gillette Stadium concluded with the Patriots securing a victory over the Jets by a score of 26-19. This assertion is strongly supported by major sports reporting and statistical sources, namely NFL and CBS Sports, which are renowned for accurate and timely updates on game outcomes. The model further clarifies that the NO_WINNER and SIDE_B options are implausible given the definitive conclusion of the event and the absence of any details supporting a Jets victory.\n\n2. Similarly, claude-sonnet-5 provides a highly detailed analysis, attributing 995000 to SIDE_A due to multiple independent and reputable sources including NFL.com, ESPN, CBS Sports, and others, all consistently reporting the Patriots' win. The exhaustive verification across platforms eliminates any potential discrepancies or updates indicating the event was incomplete or tied, clearly establishing the Patriots as the victors. The absence of evidence supporting a Jets victory further invalidates the SIDE_B scenario.\n\nIntegrating the insights from both models leads us to conclude with high confidence that the result of the game is decisively a win for SIDE_A, the New England Patriots, with no ambiguity or credible reports suggesting otherwise. The aggregation quantitatively reflects this, assigning the overwhelming majority of the decision vector's magnitude to SIDE_A, further signifying the confidence in this outcome based on the comprehensive cross-referencing of reliable sports information sources.",
+  "metadata": {
+    "models_requested": 2,
+    "models_successful": 2,
+    "models_failed": 0,
+    "success_threshold_met": true,
+    "total_duration_ms": 23855
+  },
+  "model_results": [
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-terra",
+      "status": "success",
+      "duration_ms": 13303
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-5",
+      "status": "success",
+      "duration_ms": 20749
+    }
+  ]
+}

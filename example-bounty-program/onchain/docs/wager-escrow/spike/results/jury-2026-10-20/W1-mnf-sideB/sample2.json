@@ -1,0 +1,40 @@
+{
+  "status": 200,
+  "ms": 32834,
+  "scores": [
+    {
+      "outcome": "NO_WINNER",
+      "score": 2550
+    },
+    {
+      "outcome": "SIDE_A",
+      "score": 2500
+    },
+    {
+      "outcome": "SIDE_B",
+      "score": 994949
+    }
+  ],
+  "justification": "Based on the aggregated decision vector [2550, 2500.5, 994949.5] and the detailed justifications provided by the individual models, a comprehensive justification for the result is as follows:\n\nThe event in question is a completed NFL game between the San Francisco 49ers and the Washington Commanders. Multiple independent and reputable sources have confirmed the result, with the final score being 23-17 in favor of the San Francisco 49ers. This final score is consistently reported across various established platforms, including ESPN, CBS Sports, Sports Illustrated, the 49ers' official team website, NBC Washington, Yahoo Sports, VAVEL, and a wire-syndicated newspaper report. These sources comprehensively confirm the final score and the game's conclusion, thereby offering a robust and reliable basis for determining the outcome of the event.\n\nIn evaluating the decision vector:\n\n1. **NO_WINNER**: This option scored the lowest (2550) because the event is definitively not a tie or unresolved scenario. The confirmed final score from widely trusted sports reporting sites clearly indicates a completed match with a definitive winner.\n\n2. **SIDE_A (Washington Commanders)**: This option scored slightly higher (2500.5) than NO_WINNER but still at a minimal level because it is clear from the aggregated evidence that the Washington Commanders lost the game. The few points attributed here likely account for the very slim possibility of a reporting error, although no such error has been identified or substantiated in this case.\n\n3. **SIDE_B (San Francisco 49ers)**: This option scored overwhelmingly higher (994949.5), which strongly favors a resolution in favor of the San Francisco 49ers. This decision is supported by the uniformity and reliability of the final score reports indicating a 49ers victory. The justification provided by the models details a broad and corroborated consensus across independent and primary sources, eliminating reasonable doubt about the game's outcome.\n\nIn conclusion, the aggregated decision vector and corresponding model justifications collectively reinforce the consensus that SIDE_B (San Francisco 49ers) is the definitive result. These outcomes are rooted in cross-verified data from multiple trustworthy sources, eliminating significant uncertainty and validating the integrity and accuracy of the reported final score — 23-17 in favor of the 49ers.",
+  "metadata": {
+    "models_requested": 2,
+    "models_successful": 2,
+    "models_failed": 0,
+    "success_threshold_met": true,
+    "total_duration_ms": 32819
+  },
+  "model_results": [
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-terra",
+      "status": "success",
+      "duration_ms": 7459
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-5",
+      "status": "success",
+      "duration_ms": 28805
+    }
+  ]
+}

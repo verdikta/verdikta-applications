@@ -1,0 +1,40 @@
+{
+  "status": 200,
+  "ms": 22207,
+  "scores": [
+    {
+      "outcome": "NO_WINNER",
+      "score": 10050
+    },
+    {
+      "outcome": "SIDE_A",
+      "score": 979900
+    },
+    {
+      "outcome": "SIDE_B",
+      "score": 10050
+    }
+  ],
+  "justification": "Based on the aggregated decision vector [10050,979900,10050], where SIDE_A scores 979900 and both NO_WINNER and SIDE_B score 10050, the decision strongly favors SIDE_A. Here's a comprehensive justification for this result:\n\n1. **Game Outcome Verification**: \n   - Both models, gpt-5.6-terra and claude-sonnet-5, independently verify the final score of the game between the Washington Commanders and the San Francisco 49ers as 23-17 in favor of the 49ers. Multiple reputable sources, including NFL.com, CBS Sports, NBC Sports, Yahoo Sports, and the official team website for the 49ers, confirm this game outcome. This consistent verification from numerous and reliable sources ensures the accuracy of the game result.\n\n2. **Analysis of the Spread**:\n   - The point spread in question is Washington +6.5. To cover this spread, Washington's final score plus the spread (17 + 6.5 = 23.5) must exceed San Francisco's final score of 23. By this calculation, Washington does indeed cover the spread by half a point (23.5 > 23).\n\n3. **Scoring Breakdown**:\n   - **SIDE_A (Washington +6.5)**: The score of 979900 reflects the overwhelming evidence that Washington covers the spread. Both models affirm that Washington, bolstered by the 6.5 points, exceeds San Francisco's score, thus constituting a win for SIDE_A.\n   - **NO_WINNER**: Scored at 10050, this option is rated low by both models because the game is clearly complete, and the result is conclusively documented as final across all consulted sources. There is no ambiguity or pending result that would otherwise warrant a higher NO_WINNER score.\n   - **SIDE_B (San Francisco -6.5)**: Also scored at 10050, SIDE_B does not cover because San Francisco needed to win by more than 6.5 points to cover the spread, and a victory margin of only 6 points falls short of covering.\n\n4. **Conclusion**:\n   - With comprehensive cross-verification from multiple, independent, and reputable sources, the game’s final score stands at 23-17. The aggregate analysis correctly identifies Washington +6.5 as the winning side because the adjusted score (Washington's 17 + 6.5 points) surpasses San Francisco's 23. The decision reflects a robust, data-supported conclusion, confirming SIDE_A as the winner.\n\nIn summary, by consistently relying on myriad credible sources and sound mathematical analysis, the decision vector accurately supports SIDE_A as the prevailing outcome for the given game and spread.",
+  "metadata": {
+    "models_requested": 2,
+    "models_successful": 2,
+    "models_failed": 0,
+    "success_threshold_met": true,
+    "total_duration_ms": 22195
+  },
+  "model_results": [
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-terra",
+      "status": "success",
+      "duration_ms": 14091
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-5",
+      "status": "success",
+      "duration_ms": 17258
+    }
+  ]
+}

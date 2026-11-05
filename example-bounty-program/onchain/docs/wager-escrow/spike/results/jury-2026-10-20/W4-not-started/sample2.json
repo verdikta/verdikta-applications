@@ -1,0 +1,40 @@
+{
+  "status": 200,
+  "ms": 21208,
+  "scores": [
+    {
+      "outcome": "NO_WINNER",
+      "score": 974900
+    },
+    {
+      "outcome": "SIDE_A",
+      "score": 12550
+    },
+    {
+      "outcome": "SIDE_B",
+      "score": 12550
+    }
+  ],
+  "justification": "Upon examination of the aggregated decision vector [974900,12550,12550], it reflects a collective output heavily favoring NO_WINNER, with SIDE_A and SIDE_B receiving only minimal weight. The reasoning is rooted in the primary directive derived from both model justifications: the absence of an officially confirmed final result for the Celtics vs. Pistons game scheduled for October 20, 2026.\n\n### Justifications from Individual Models:\n\n1. **Model gpt-5.6-terra:**\n   - This model identifies that all consulted official NBA-related sources, such as the NBA game page and scoreboard, list the Celtics-Pistons match as scheduled or upcoming.\n   - The CBS Sports scoreboard corroborates this by showing both teams at 0-0, without a final score or designation as 'Final'.\n   - Without official confirmation of game completion, this model strongly leans towards NO_WINNER, attributing only minimal weight to either team due to lack of verified final win evidence.\n\n2. **Model claude-sonnet-5:**\n   - Similarly, this model reports that a variety of sports sources (CBS Sports, ESPN, Fox Sports, theScore, Yahoo Sports) depict the game as not yet completed.\n   - CBS Sports displays pre-game betting odds rather than any conclusive game results, while ESPN presents team records as '0-0', focusing on game information rather than final outcomes.\n   - Based on provisioned wager rules, the requirement is clear: to declare a winner, the retrieval of an official final result, typically indicated by 'Final' or 'Final OT', is necessary. Absent such evidence, NO_WINNER stands as the presumed result.\n   - The model also exercises caution by assigning minimal weight to the possibility that the match might have finished shortly after its search database was updated, yet it reinforces NO_WINNER based on stringent evidentiary standards.\n\n### Summary and Result:\n\nThe comprehensive analysis across models suggests that there is an overwhelming consensus on NO_WINNER due to conclusive gaps in sourcing a confirmed game conclusion. With high aggregated weight [974900] directed to NO_WINNER, and minor consideration for potential candidate completions that could not be substantiated [12550 each to SIDE_A and SIDE_B], the outcome strongly favors NO_WINNER.\n\nInference is consistent with a lack of verified data, supporting that no authoritative sources affirmed the finality of the game outcome during model references. Thus, under the rules specified for prediction assertions within the described context, NO_WINNER is the most justifiable conclusion.",
+  "metadata": {
+    "models_requested": 2,
+    "models_successful": 2,
+    "models_failed": 0,
+    "success_threshold_met": true,
+    "total_duration_ms": 21197
+  },
+  "model_results": [
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-terra",
+      "status": "success",
+      "duration_ms": 13354
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-5",
+      "status": "success",
+      "duration_ms": 15750
+    }
+  ]
+}

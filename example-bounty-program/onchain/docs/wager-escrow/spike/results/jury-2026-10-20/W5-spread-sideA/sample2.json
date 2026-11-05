@@ -1,0 +1,40 @@
+{
+  "status": 200,
+  "ms": 33768,
+  "scores": [
+    {
+      "outcome": "NO_WINNER",
+      "score": 5250
+    },
+    {
+      "outcome": "SIDE_A",
+      "score": 989500
+    },
+    {
+      "outcome": "SIDE_B",
+      "score": 5250
+    }
+  ],
+  "justification": "Based on the aggregated decision vector [5250,989500,5250] and the justifications from the individual models, the comprehensive conclusion is that SIDE_A (Washington Commanders +6.5) is the correct result.\n\nHere's the in-depth reasoning:\n\n1. **Final Score Confirmation**:\n   - Multiple reputable sources, including NFL.com, the official 49ers site, footballdb.com, pro-football-reference.com, Vavel, and Bleacher Report, have confirmed the final score as San Francisco 49ers 23, Washington Commanders 17. The consistency across these sources reinforces the accuracy of the reported outcome.\n\n2. **Game Status**:\n   - The game is marked as 'FINAL' by these sources, indicating that it was completed without issues such as postponement or incompletion.\n\n3. **Point Spread Analysis**:\n   - In betting terms, SIDE_A refers to Washington Commanders with a +6.5-point spread. To determine if SIDE_A covers the spread, Washington's score (17) is added to the 6.5-point spread, totaling 23.5.\n   - San Francisco's score is 23, which is less than Washington's adjusted score of 23.5. Therefore, Washington covers the spread by half a point.\n\n4. **Model Decision Scores**:\n   - The decision vector [5250,989500,5250] reflects the aggregated confidence from individual models. SIDE_A received the highest aggregated confidence score (989500), indicating strong consensus for Washington covering the spread.\n   - NO_WINNER and SIDE_B both received very low scores (5250 each), reaffirming that there was a clear winner against the spread and that SIDE_B (San Francisco covering the spread) is not possible given the score differential.\n\n5. **Conclusion**:\n   - Given the confirmation of the game result and point spread analysis, Washington, benefiting from the +6.5 spread, covered successfully. San Francisco, although they won the game outright, did not win by more than 6.5 points and thus did not cover.\n   - The aggregation of model outputs strongly supports SIDE_A as the outcome, ensuring confidence in the decision-making process and its reliance on thoroughly verified information.\n\nIn summary, all evidence and analysis support SIDE_A as the correct outcome, with Washington Commanders covering the spread.",
+  "metadata": {
+    "models_requested": 2,
+    "models_successful": 2,
+    "models_failed": 0,
+    "success_threshold_met": true,
+    "total_duration_ms": 33756
+  },
+  "model_results": [
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-terra",
+      "status": "success",
+      "duration_ms": 8495
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-5",
+      "status": "success",
+      "duration_ms": 30001
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "status": 200,
+  "ms": 25531,
+  "scores": [
+    {
+      "outcome": "NO_WINNER",
+      "score": 989950
+    },
+    {
+      "outcome": "SIDE_A",
+      "score": 5025
+    },
+    {
+      "outcome": "SIDE_B",
+      "score": 5025
+    }
+  ],
+  "justification": "The decision vector provided, [989950,5025,5025], indicates a strong confidence in the outcome labeled as NO_WINNER, with very minimal probability allocated to SIDE_A (Giants win) and SIDE_B (Commanders win). The comprehensive justification for this result draws on the aggregated justifications provided by the individual models:\n\n1. **Consistent Game Outcome Reporting:** Both models cite multiple independent and reputable sources, including NFL.com, the Commanders’ official game page, ESPN, Footballdb.com, Covers.com, Fox Sports, and corroborated by Wikipedia, all reporting that the October 11, 2026, Giants-at-Commanders game concluded in a 27-27 tie after overtime. The consistent reporting across these sources adds significant credibility to the outcome being a tie.\n\n2. **Game Result in Betting Context:** In this specific betting context, the outcome of a tie directly aligns with the market definition of NO_WINNER. This condition is crucial as neither team achieved a decisive victory, confirming that neither SIDE_A nor SIDE_B satisfies the requirement to secure a win.\n\n3. **Quarter-by-Quarter Scoring Consistency:** The scoring details, including the breakdown of points per quarter, are consistently matched across ESPN, Footballdb, and Covers.com. This uniformity in specific game details among reputable platforms strengthens the legitimacy of the tie result.\n\n4. **Minimal Residual Probabilities:** Both models mention the allocation of minor probabilities to SIDE_A and SIDE_B as a theoretical safeguard against potential undiscovered errors in the reported sources. However, due to the overwhelming evidence from multiple reliable and independent sources, these probabilities remain minuscule, reflecting a robust consensus on the game ending in a tie.\n\nGiven all these points, the decision aligns with a conclusion of NO_WINNER with near certainty, supported by comprehensive and corroborative evidence from authoritative sports reporting organizations.",
+  "metadata": {
+    "models_requested": 2,
+    "models_successful": 2,
+    "models_failed": 0,
+    "success_threshold_met": true,
+    "total_duration_ms": 25517
+  },
+  "model_results": [
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-terra",
+      "status": "success",
+      "duration_ms": 6788
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-5",
+      "status": "success",
+      "duration_ms": 21423
+    }
+  ]
+}

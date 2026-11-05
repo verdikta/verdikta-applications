@@ -1,0 +1,99 @@
+{
+ "jury": [
+  {
+   "provider": "OpenAI",
+   "model": "gpt-5.6-terra",
+   "weight": 0.5,
+   "runs": 1
+  },
+  {
+   "provider": "Anthropic",
+   "model": "claude-sonnet-5",
+   "weight": 0.5,
+   "runs": 1
+  }
+ ],
+ "cases": [
+  {
+   "id": "W1-mnf-sideB",
+   "expect": "SIDE_B",
+   "terms": {
+    "wagerId": "VW-SPIKE-WSH-SF-20261019",
+    "event": "NFL 2026 regular season, Monday Night Football: Washington Commanders (WSH) at San Francisco 49ers (SF), Levi's Stadium, Santa Clara, California.",
+    "start": "2026-10-20T00:15:00Z",
+    "market": "straight-up winner on the official final score, overtime included. No point spread.",
+    "sideA": "the Washington Commanders win",
+    "sideB": "the San Francisco 49ers win",
+    "sources": [
+     "https://www.nfl.com/scores/",
+     "https://www.cbssports.com/nfl/scoreboard/"
+    ]
+   }
+  },
+  {
+   "id": "W2-nyj-ne-sideA",
+   "expect": "SIDE_A",
+   "terms": {
+    "wagerId": "VW-SPIKE-NYJ-NE-20261018",
+    "event": "NFL 2026 regular season: New York Jets (NYJ) at New England Patriots (NE), Gillette Stadium, Foxborough, Massachusetts.",
+    "start": "2026-10-18T17:00:00Z",
+    "market": "straight-up winner on the official final score, overtime included. No point spread.",
+    "sideA": "the New England Patriots win",
+    "sideB": "the New York Jets win",
+    "sources": [
+     "https://www.nfl.com/scores/",
+     "https://www.cbssports.com/nfl/scoreboard/"
+    ]
+   }
+  },
+  {
+   "id": "W3-tie-nowinner",
+   "expect": "NO_WINNER",
+   "terms": {
+    "wagerId": "VW-SPIKE-NYG-WSH-20261011",
+    "event": "NFL 2026 regular season: New York Giants (NYG) at Washington Commanders (WSH), Northwest Stadium, Landover, Maryland.",
+    "start": "2026-10-11T17:00:00Z",
+    "market": "straight-up winner on the official final score, overtime included. No point spread.",
+    "sideA": "the New York Giants win",
+    "sideB": "the Washington Commanders win",
+    "sources": [
+     "https://www.nfl.com/scores/",
+     "https://www.cbssports.com/nfl/scoreboard/"
+    ]
+   }
+  },
+  {
+   "id": "W4-not-started",
+   "expect": "NO_WINNER",
+   "terms": {
+    "wagerId": "VW-SPIKE-BOS-DET-20261020",
+    "event": "NBA 2026-27 regular season: Boston Celtics (BOS) at Detroit Pistons (DET), Little Caesars Arena, Detroit, Michigan.",
+    "start": "2026-10-20T23:00:00Z",
+    "market": "straight-up winner on the official final score, overtime included. No point spread.",
+    "sideA": "the Boston Celtics win",
+    "sideB": "the Detroit Pistons win",
+    "sources": [
+     "https://www.nba.com/games",
+     "https://www.cbssports.com/nba/scoreboard/"
+    ]
+   }
+  },
+  {
+   "id": "W5-spread-sideA",
+   "expect": "SIDE_A",
+   "terms": {
+    "wagerId": "VW-SPIKE-WSH-SF-SPREAD",
+    "event": "NFL 2026 regular season, Monday Night Football: Washington Commanders (WSH) at San Francisco 49ers (SF), Levi's Stadium, Santa Clara, California.",
+    "start": "2026-10-20T00:15:00Z",
+    "market": "point spread on the official final score, overtime included: Washington Commanders +6.5 points.",
+    "sideA": "the Washington Commanders cover: their final score plus 6.5 is greater than the 49ers' final score",
+    "sideB": "the San Francisco 49ers cover: their final score is greater than the Commanders' final score plus 6.5",
+    "noWinner": "the event not completed with an official final result (a spread of 6.5 cannot push)",
+    "sources": [
+     "https://www.nfl.com/scores/",
+     "https://www.cbssports.com/nfl/scoreboard/"
+    ]
+   }
+  }
+ ]
+}

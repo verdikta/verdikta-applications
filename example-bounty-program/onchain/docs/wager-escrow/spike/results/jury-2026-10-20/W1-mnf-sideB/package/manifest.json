@@ -1,0 +1,25 @@
+{
+  "version": "1.0",
+  "name": "VW-SPIKE-WSH-SF-20261019 - wager-escrow-v1",
+  "primary": {
+    "filename": "primary_query.json"
+  },
+  "juryParameters": {
+    "NUMBER_OF_OUTCOMES": 3,
+    "AI_NODES": [
+      {
+        "AI_MODEL": "gpt-5.6-terra",
+        "AI_PROVIDER": "OpenAI",
+        "NO_COUNTS": 1,
+        "WEIGHT": 0.5
+      },
+      {
+        "AI_MODEL": "claude-sonnet-5",
+        "AI_PROVIDER": "Anthropic",
+        "NO_COUNTS": 1,
+        "WEIGHT": 0.5
+      }
+    ],
+    "ITERATIONS": 1
+  }
+}

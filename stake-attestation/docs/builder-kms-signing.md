@@ -114,7 +114,8 @@ run of Verdikta's caller, follows it, and collects what it signed. The caller is
 | past a deadline | `error`, `RUN_DEADLINE`, `APPROVAL_DEADLINE` |
 
 The baseline scan stays on the server: its findings are the maker's alone, and the run's logs can be public. A server
-with no builder config says the scan errored, and the listing goes on.
+with no builder config says the scan errored, and the listing goes on. Scans have places of their own, as many as there
+are build slots, and a scan that had to be stopped keeps its place until the server restarts.
 
 **Deadlines and slots.** A slot is held only while a run uses a runner. A run's time not waiting for a person has a
 deadline of 3 h, against job limits that add up to 145 min, and is cancelled at it. A run waiting for a person holds no

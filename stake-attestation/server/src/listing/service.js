@@ -197,6 +197,24 @@ export function createListingService({ config, builder, scanner, pinner, logger,
   // Any run started may end up waiting, so its place is held from the start: the bound is hard.
   const backlogFull = () => workflow && awaiting + running >= config.builds.maxAwaiting;
 
+  // With the workflow backend a build gives its slot back before the baseline scan, which still runs on this host
+  // (its findings are the maker's alone). So scans get places of their own, as many as there are slots, and a scan
+  // that had to be stopped keeps its place until the server restarts, as a stopped local build keeps its slot.
+  let scanPlaces = 0;
+  const scanWaiters = [];
+  const takeScanPlace = () => {
+    if (scanPlaces < config.builds.maxConcurrent) {
+      scanPlaces += 1;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => scanWaiters.push(resolve));
+  };
+  const giveScanPlace = () => {
+    const next = scanWaiters.shift();
+    if (next) next();
+    else scanPlaces -= 1;
+  };
+
   /** Lets go of the job's build slot, if it has one, and lets the queue move. */
   function releaseSlot(job) {
     if (job.slot) {
@@ -230,9 +248,9 @@ export function createListingService({ config, builder, scanner, pinner, logger,
   });
 
   function holdSlot(job, what, code) {
-    // With the workflow backend a stopped step here is a local scan, and no run: it holds no build slot.
+    // With the workflow backend a stopped step here is a local scan: it keeps its scan place, and holds no build slot.
     if (workflow) {
-      logger.error(`listing ${job.id}: the builder's ${what} had to be stopped (${logCode(code)}). Check the Docker host for containers labelled io.verdikta.builder=1.`);
+      logger.error(`listing ${job.id}: the builder's ${what} had to be stopped (${logCode(code)}); its scan place stays taken until the server restarts. Check the Docker host for containers labelled io.verdikta.builder=1.`);
       return;
     }
     // What the builder started may still be running under the Docker daemon: the slot stays
@@ -247,6 +265,7 @@ export function createListingService({ config, builder, scanner, pinner, logger,
     if (job.scan.status !== 'pending') return;
     set(job, { status: 'scanning' });
     job.scan = { status: 'running' };
+    if (workflow) await takeScanPlace();
     let r;
     try {
       r = await scanner.scan({ spec: structuredClone(spec) });
@@ -256,6 +275,7 @@ export function createListingService({ config, builder, scanner, pinner, logger,
       r = { status: 'error', doc: null, error: { code: 'SCAN_FAILED', detail: 'the baseline scan could not be run' } };
     }
     if (r?.holdSlot) holdSlot(job, 'scan', r.error?.code);
+    else if (workflow) giveScanPlace();
     const doc = r?.doc ?? null;
     const ok = r?.status === 'ok' && doc?.status === 'ok';
     const error = doc ? null : (r?.error ?? { code: 'SCAN_FAILED', detail: 'the baseline scan returned nothing' });

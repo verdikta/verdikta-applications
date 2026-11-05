@@ -10,7 +10,7 @@ import { decodeSiteRequest } from '@verdikta/stake-attestation-shared/site-reque
 
 import { codeReview } from '../src/common.js';
 import { ConfigError, loadConfig } from '../src/config.js';
-import { draftSpec, listingRequest } from './helpers/fixtures.js';
+import { draftSpec, fakeBuilder, listingRequest } from './helpers/fixtures.js';
 import { SUCCESS, failed, startGithubStub } from './helpers/githubStub.js';
 import { proofFile } from './helpers/gitRepo.js';
 import { quietLogger, startApi } from './helpers/http.js';
@@ -312,6 +312,50 @@ describe('build slots', () => {
     const b = await submit(second, wallets[1], 'two');
     await until(second, b.json.id, 'building');
     assert.equal(stub.state.dispatches.length, 2);
+  });
+});
+
+describe('the baseline scan, which stays on this host', () => {
+  // The workflow backend with a stand-in builder whose archives verify under dev trust, so a listing reaches its scan
+  // in this process; the scan's places are what is under test, not the trust.
+  async function scanning({ scanner, concurrent = '1' }) {
+    const naming = namingEveryone();
+    const stub = await startGithubStub();
+    open.push(() => stub.close());
+    const env = workflowEnv(stub, { SA_MAX_CONCURRENT_BUILDS: concurrent });
+    const config = { ...loadConfig(env), trust: Object.freeze({ mode: 'dev' }) };
+    const s = await startApi({ config, env, builder: fakeBuilder(), scanner, checkRepository: naming.check });
+    open.push(() => s.close());
+    return { s, naming };
+  }
+
+  test('scans get places of their own: no more run at once than there are slots, though builds gave theirs back', async () => {
+    let now = 0;
+    let most = 0;
+    const scanner = fakeScanner({ delayMs: 40, onScan: () => { now += 1; most = Math.max(most, now); setTimeout(() => { now -= 1; }, 39); } });
+    const { s, naming } = await scanning({ scanner });
+    const ids = [];
+    for (let i = 0; i < 3; i += 1) {
+      naming.set(wallets[i].address);
+      ids.push((await submit(s, wallets[i], `scan${i}`)).json.id);
+    }
+    for (const id of ids) assert.equal((await s.settle(id)).status, 'ready');
+    assert.equal(scanner.calls.length, 3);
+    assert.equal(most, 1);
+  });
+
+  test('a scan that had to be stopped keeps its place until a restart: the next one waits, as a stopped local build keeps its slot', async () => {
+    const scanner = fakeScanner({ outcome: 'step-error', holdSlot: true });
+    const { s, naming } = await scanning({ scanner });
+    naming.set(wallets[0].address);
+    const a = await submit(s, wallets[0], 'held');
+    await s.settle(a.json.id);
+    naming.set(wallets[1].address);
+    const b = await submit(s, wallets[1], 'next');
+    await until(s, b.json.id, 'scanning');
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal((await (await s.get(`/api/listings/${b.json.id}`)).json()).status, 'scanning');
+    assert.equal(scanner.calls.length, 1);
   });
 });
 

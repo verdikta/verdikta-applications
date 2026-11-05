@@ -82,21 +82,37 @@ test('sign with a dev key: attestation.json and the dev trust set; the report re
   cleanup(dir);
 });
 
-test('sign with a production key from the environment: nothing is written while the key is not in common\'s set, and the key is never shown', async () => {
+test('sign with a PEM key from the environment: dev trust, the key read once and removed, and never shown', async () => {
   const dir = tmp();
-  await acceptedDir(dir);
+  const { cr, bl } = await acceptedDir(dir);
   const { privateKey } = crypto.generateKeyPairSync('ed25519');
   const pem = privateKey.export({ format: 'pem', type: 'pkcs8' });
   const body = pem.split('\n').slice(1, -2).join('');
   const env = { VERDIKTA_BUILDER_KEY: pem };
   const t = io();
   const code = await main(['sign', '--config', configFile(dir, { env: 'VERDIKTA_BUILDER_KEY' }), '--dir', dir, '--maker', MAKER], { env, ...t, deps: { checkRepositoryControl: provenAnswer() } });
+  assert.equal(code, 0, t.err);
+  assert.equal(env.VERDIKTA_BUILDER_KEY, undefined, 'read once and removed');
+  const attestation = JSON.parse(fs.readFileSync(path.join(dir, 'attestation.json')));
+  assert.equal(attestation.trust, 'dev');
+  assert.equal(codeReview.validateAttestation(attestation, { files: { codeReview: cr, baseline: bl } }).ok, false, 'production verification refuses it');
+  const everything = `${allText(dir)}\n${t.out}\n${t.err}`;
+  assert.ok(!everything.includes(body) && !everything.includes('PRIVATE KEY'));
+  cleanup(dir);
+});
+
+test('sign with a production signer whose key is not in common\'s set: nothing is written, and the signer is never started', async () => {
+  const dir = tmp();
+  await acceptedDir(dir);
+  const { publicKey } = crypto.generateKeyPairSync('ed25519');
+  const raw = Buffer.from(publicKey.export({ format: 'jwk' }).x, 'base64url').toString('base64');
+  const asked = `${dir}-asked`;
+  const t = io();
+  const code = await main(['sign', '--config', configFile(dir, { command: ['/bin/sh', '-c', `touch "${asked}"`], publicKey: raw }), '--dir', dir, '--maker', MAKER], { env: {}, ...t, deps: { checkRepositoryControl: provenAnswer() } });
   assert.equal(code, 1);
   assert.match(t.err, /SIGNING_KEY_NOT_TRUSTED/);
   assert.equal(fs.existsSync(path.join(dir, 'attestation.json')), false);
-  assert.equal(env.VERDIKTA_BUILDER_KEY, undefined, 'read once and removed');
-  const everything = `${allText(dir)}\n${t.out}\n${t.err}`;
-  assert.ok(!everything.includes(body) && !everything.includes('PRIVATE KEY'));
+  assert.equal(fs.existsSync(asked), false);
   cleanup(dir);
 });
 

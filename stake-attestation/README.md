@@ -626,16 +626,17 @@ to vouch for, so a production key signs only in Verdikta's own workflow.
 | Value | Trust | |
 |---|---|---|
 | `"dev"` (default) | `dev` | A fresh Ed25519 key per run, in memory only. Its public key is written to `dev-trust.json`, the `{ dev: true, keys }` option `validateAttestation` takes; production verification refuses its attestations (build plan A6). |
-| `{ "env": "VERDIKTA_BUILDER_KEY" }` | `production` | The production key as a deploy secret: a PKCS#8 PEM Ed25519 key in that environment variable, filled from the deployment's secret store or KMS. Read once and removed from the environment, so no child process inherits it. |
-| `{ "command": ["/usr/local/bin/kms-sign", "..."], "publicKey": "<base64 of the 32 raw bytes>", "env": ["AWS_PROFILE"] }` | `production` | An external signer, the KMS interface: the builder writes the signing bytes (`verdikta-attestation/v1`, a newline, the canonical JSON of the statement) to its stdin and reads the 64-byte signature, base64, from its stdout. The key never enters the builder; the signer gets `PATH`, `HOME` and the variables listed; every signature is checked against `publicKey`. |
+| `{ "env": "SOME_TEST_KEY" }` | `dev` | A dev or test key: a PKCS#8 PEM Ed25519 key in that environment variable. Read once and removed from the environment, so no child process inherits it. It signs with dev trust, so production verification refuses what it signs whatever the key. |
+| `{ "command": ["/usr/local/bin/kms-sign", "..."], "publicKey": "<base64 of the 32 raw bytes>", "env": ["AWS_PROFILE"] }` | `production` | An external signer, the KMS interface and the only production route: the builder writes the signing bytes (`verdikta-attestation/v1`, a newline, the canonical JSON of the statement) to its stdin and reads the 64-byte signature, base64, from its stdout. The key never enters the builder; the signer gets `PATH`, `HOME` and the variables listed; every signature is checked against `publicKey`. |
 
-The production key is never in code or config (decision D4). It signs only what production
-verification would accept: its id must be in `@verdikta/common`'s trusted-builder set (empty
-until node C6, so today every production signing is refused and nothing is written), and the
-listing must have been validated under gVisor on linux/amd64. `build` refuses to start while
-the `env` key is in its environment (it runs the maker's setup), and `run` refuses a production
-key: signing is its own step, as design §20 decision 3 has it. No private key is written,
-logged or put in the report.
+The production key stays in KMS and is never in code or config (decision D4, owner Q47;
+`docs/builder-kms-signing.md`). It signs only what production verification would accept: its id
+must be in `@verdikta/common`'s trusted-builder set, checked before the signer is asked for
+anything (the release the builder pins doesn't hold the key yet, so today every production signing
+is refused and nothing is written), and the listing must have been validated under gVisor on
+linux/amd64. `build` refuses to start while the `env` key is in its environment (it runs the
+maker's setup), and `run` refuses anything but a key made for the run: signing is its own step, as
+design §20 decision 3 has it. No private key is written, logged or put in the report.
 
 **Config** (`builder.json`; paths relative to it):
 
@@ -644,7 +645,7 @@ logged or put in the report.
   "registry": { "repository": "ghcr.io/verdikta/stake-env" },
   "runner": { "socket": "/run/verdikta-code-runner/runner.sock", "tokenFile": "/run/secrets/code-runner-token" },
   "explorers": { "8453": { "apiUrl": "https://api.etherscan.io/v2/api", "apiKeyEnv": "ETHERSCAN_API_KEY" } },
-  "signing": { "key": { "env": "VERDIKTA_BUILDER_KEY" } }
+  "signing": { "key": { "command": ["/usr/local/bin/kms-sign"], "publicKey": "<base64 of the 32 raw bytes>", "env": ["AWS_PROFILE"] } }
 }
 ```
 
@@ -734,8 +735,9 @@ without a credential), `runtime` (`runsc` by default; a production key needs gVi
 `explorer-api-url` (a keyless Etherscan-shaped API for a contract listing's chain, so the build
 job holds no explorer key), `signing` (`dev` by default, or `production`) and `artifact-name`
 (the prefix of its artifacts' names: by default one derived from the spec, known issues and
-repository, so one run can build several listings). Its outputs are `image` and
-`signed-artifact`, the artifact holding the signed listing files. Three jobs:
+repository, so one run can build several listings). Its outputs are `image`, `signed-artifact`
+(the artifact holding the signed listing files), and `artifact-id` and `outputs-sha256` for the
+signing workflow below. Three jobs:
 
 1. **build**, `contents: read` and no secret: checks out the builder and only the draft and the
    known issues of the calling repository (the builder fetches the listed commit itself), blocks
@@ -755,18 +757,28 @@ repository, so one run can build several listings). Its outputs are `image` and
    publish` checks the layout holds exactly the digest `code_review.json` names, with every
    manifest and blob intact, pushes it byte for byte with the job's token in an auth file of its
    own (never on a command line), and reads it back without a credential.
-3. **sign**, in the `signing-environment` (default `stake-attestation-signing`, whose secret
-   `VERDIKTA_BUILDER_KEY` is the production key, read only when `signing` is `production`):
-   checks out the builder only, downloads only the output folder, and runs `sign
-   --expect-outputs <the build job's digest> --check-registry`.
+3. **sign**, skipped with `signing: production`, with a key made for the run: checks out the
+   builder only, downloads only the output folder, and runs `sign --expect-outputs <the build
+   job's digest> --check-registry`.
+
+**Production signing** is `.github/workflows/stake-attestation-builder-sign.yml`, which Verdikta's
+own caller runs as its next job. It is the same `sign` with the KMS key, through the builder's command
+route (`builder/action/kms-sign.js`), in the protected environment `stake-attestation-signing`, by
+GitHub OIDC with no long-lived cloud credential. It is the only job here with `id-token: write`, and it
+is a file of its own because GitHub checks that permission against the caller before anything
+runs, so a job in the builder workflow would make every maker grant it. A maker's caller can run
+the builder workflow, with a dev key, and can't reach the key: `docs/builder-kms-signing.md` says
+what stops each caller, what that relies on, and the owner's steps at G1.
 
 **Where the image is published.** An arbiter pulls only from its `CODE_RUNNER_REGISTRY_ALLOWLIST` and abstains on anything else, and a claim that
 only gets abstentions ends with the bond to the maker. What an operator's list holds can't be read from here, but the default of the runner at the pin
 can (`ghcr.io/verdikta`): `services.js` warns when `publish-repository` is off it, and with `signing: production` it stops.
 
-The workflow has no trigger of its own and nothing in this repository calls it: publishing under
-Verdikta's registry namespace is owner gate G1. Its tests read its YAML and unit-test the scripts
-it calls (`test/unit/action.test.js`); `test/docker/image.docker.test.js` runs the image hand-off
+Neither workflow has a trigger of its own and nothing in this repository calls them: publishing under
+Verdikta's registry namespace and the key's access are owner gate G1. Their tests read their YAML and
+unit-test the scripts they call (`test/unit/action.test.js`, `test/unit/kmsSigning.test.js` and
+`test/unit/kmsWorkflow.test.js`, which runs the KMS signer against a stub `aws` and never a cloud; the
+real check is opt-in, `builder/action/kms-live-check.js`); `test/docker/image.docker.test.js` runs the image hand-off
 with the same script and skopeo between two throwaway registry:2 (a Docker schema-2 image, an OCI
 image and a multi-platform index); CI lints it with a pinned actionlint.
 

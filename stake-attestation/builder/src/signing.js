@@ -4,18 +4,18 @@
 //   "dev"                          a fresh Ed25519 key for this run, in memory only. Its attestations
 //                                  say trust "dev" and verify only under validateAttestation's
 //                                  explicit dev trust, with the public key from dev-trust.json.
-//   { "env": "NAME" }              the production key as a deploy secret: a PKCS#8 PEM Ed25519 key in
-//                                  the environment variable NAME (filled from the deployment's secret
-//                                  store or KMS). It is read once and removed from the environment,
-//                                  so no child process inherits it.
-//   { "command": [argv...],        an external signer, the KMS interface: the builder writes the bytes
-//     "publicKey": "<base64>",       to sign on its stdin and reads the 64-byte Ed25519 signature,
-//     "env": ["NAME", ...] }         base64, from its stdout. The private key never enters the builder;
-//                                  the signer gets PATH, HOME and only the variables listed. Every
-//                                  signature is checked against publicKey before it is used.
-// A configured key signs with trust "production" and only what production verification accepts:
-// its id must be in @verdikta/common's trusted-builder set (empty until node C6), and the listing
-// must have been validated under gVisor on linux/amd64. Nothing here writes a file: the caller
+//   { "env": "NAME" }              a dev or test key: a PKCS#8 PEM Ed25519 key in the environment variable
+//                                  NAME. It signs with dev trust, so whatever its key, production
+//                                  verification refuses what it signs (owner, Q47). It is read once and
+//                                  removed from the environment, so no child process inherits it.
+//   { "command": [argv...],        an external signer, the KMS interface and the only production route: the
+//     "publicKey": "<base64>",       builder writes the bytes to sign on its stdin and reads the 64-byte
+//     "env": ["NAME", ...] }         Ed25519 signature, base64, from its stdout. The private key never enters
+//                                  the builder; the signer gets PATH, HOME and only the variables listed.
+//                                  Every signature is checked against publicKey before it is used.
+// A signer signs with trust "production" and only what production verification accepts: its key must be in
+// @verdikta/common's trusted-builder set, which is checked before the signer is asked for anything, and the
+// listing must have been validated under gVisor on linux/amd64. Nothing here writes a file: the caller
 // writes the attestation, which holds a signature and a key id, never key material.
 import crypto from 'node:crypto';
 
@@ -51,6 +51,27 @@ function makeKey({ trust, publicKey, source, sign }) {
   });
 }
 
+/** The trust a config's `signing.key` signs with: production only through an external signer. */
+export function signingTrust(spec) {
+  return spec && typeof spec === 'object' && spec.command !== undefined ? 'production' : 'dev';
+}
+
+/**
+ * Why @verdikta/common's production set wouldn't accept this key for a new signature, or null. An id is
+ * derived from its key, so an id that isn't is refused too. `trusted` is a parameter for the callers that
+ * must say this before common's verification runs; that verification reads only common's own set.
+ * @param {{ keyId: string, publicKey: string }} key
+ * @param {ReadonlyArray<{ keyId: string, publicKey: string, retiredAt?: string }>} [trusted]
+ * @returns {string|null}
+ */
+export function productionKeyProblem({ keyId, publicKey }, trusted = codeReview.PRODUCTION_BUILDER_KEYS) {
+  if (codeReview.builderKeyId(publicKey) !== keyId) return `the key id ${keyId} is not the SHA-256 of its public key`;
+  const entry = trusted.find((k) => k.keyId === keyId && k.publicKey === publicKey);
+  if (!entry) return `the key ${keyId} is not in @verdikta/common's production trusted-builder set, so arbiters would refuse what it signs`;
+  if (entry.retiredAt && Date.parse(entry.retiredAt) <= Date.now()) return `the key ${keyId} was retired from @verdikta/common's production trusted-builder set at ${entry.retiredAt}`;
+  return null;
+}
+
 /**
  * @param {'dev'|{ env: string }|{ command: string[], publicKey: string, env?: string[] }} spec - config `signing.key`
  * @param {{ env?: Record<string,string|undefined> }} [o] - where an `env` key is read from (and removed)
@@ -74,7 +95,7 @@ export function loadSigningKey(spec, { env = process.env } = {}) {
     }
     if (key.asymmetricKeyType !== 'ed25519') throw new BuilderError('SIGNING_KEY_INVALID', `the key in ${name} is not an Ed25519 key`);
     const publicKey = rawPublicKey(crypto.createPublicKey(key));
-    return makeKey({ trust: 'production', publicKey, source: `environment variable ${name}`, sign: async (bytes) => crypto.sign(null, bytes, key) });
+    return makeKey({ trust: 'dev', publicKey, source: `environment variable ${name}`, sign: async (bytes) => crypto.sign(null, bytes, key) });
   }
   if (spec && typeof spec === 'object' && spec.command !== undefined) {
     const argv = spec.command;
@@ -166,6 +187,12 @@ export async function attest({ files, report, key, issuedAt }) {
     base: report.image?.base,
   });
   assertStatementFits(files, statement);
+  if (key.trust === 'production') {
+    const problem = productionKeyProblem(key);
+    if (problem) {
+      throw new BuilderError('SIGNING_KEY_NOT_TRUSTED', `${problem}; the signer was not asked and nothing was written`, { step: 'sign', issues: [{ code: 'ATTESTATION_UNTRUSTED_KEY', detail: problem }] });
+    }
+  }
   const signature = await key.sign(codeReview.attestationSigningBytes(statement));
   const attestation = { ...statement, signature: { algorithm: 'Ed25519', keyId: key.keyId, value: Buffer.from(signature).toString('base64') } };
   const validation = codeReview.validateAttestation(attestation, {

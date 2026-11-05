@@ -8,8 +8,8 @@
 //                for this run); and <dir>/builder.json, which points the builder at both and names
 //                the repository the publish job will copy the image to (registry.publishAs)
 //   stop         stops both
-//   sign-config  <dir>/sign.json for the sign job: the dev key, or the production key from
-//                VERDIKTA_BUILDER_KEY
+//   sign-config  <dir>/sign.json for a sign job: the dev key, or the KMS signer (action/kms-sign.js)
+//                with the pinned public key, once @verdikta/common's trusted set holds that key
 //
 //   node action/services.js start --dir <dir> --publish-as <repository> --spec <draft> [--runtime runsc|runc] [--signing dev|production] [--explorer-url <url>]
 //   node action/services.js stop --dir <dir>
@@ -23,12 +23,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parseConfig } from '../src/config.js';
+import { productionKeyProblem } from '../src/signing.js';
 
 export const ACTION_PINS = Object.freeze(JSON.parse(fs.readFileSync(new URL('./pins.json', import.meta.url), 'utf8')));
 
 const STAGING_NAME = 'stake-env';
 const RUNTIMES = new Set(['runsc', 'runc']);
 const LABEL = 'io.verdikta.builder.action=1';
+const KMS_SIGNER = fileURLToPath(new URL('./kms-sign.js', import.meta.url));
+/** What the signer may see of the sign step's environment; the route gives it PATH and HOME besides. */
+export const KMS_SIGNER_ENV = Object.freeze(['VERDIKTA_KMS_KEY_ARN', 'VERDIKTA_KMS_ROLE_ARN', 'ACTIONS_ID_TOKEN_REQUEST_URL', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'GITHUB_RUN_ID']);
 
 /**
  * The build job's builder config: push to and read from the loopback registry, validate on the
@@ -46,13 +50,37 @@ export function builderConfig({ dir, registryPort, runnerPort, publishAs, spec, 
   return raw;
 }
 
-/** The sign job's config. The runner entry is required by the config's schema; sign never contacts it. */
-export function signConfig({ signing, publishAs }) {
+/**
+ * The signing mode, exactly. GitHub's expressions compare strings without regard to case, so the workflow's
+ * own conditions take `Production` for production, while the rules here would take it for not production:
+ * that build would skip production's checks and still hand its digest on to be signed.
+ */
+export function signingMode(signing) {
+  if (signing !== 'dev' && signing !== 'production') throw new Error('signing must be exactly dev or production');
+  return signing;
+}
+
+/**
+ * Stops a production run while @verdikta/common's trusted set doesn't hold the pinned key: every arbiter
+ * would refuse what it signs. A test may name the set; verification itself reads only common's.
+ */
+function assertBuilderKeyTrusted(trustedKeys) {
+  const problem = productionKeyProblem(ACTION_PINS.builderKey, trustedKeys);
+  if (problem) throw new Error(`SIGNING_KEY_NOT_TRUSTED: ${problem}`);
+}
+
+/**
+ * A sign job's config. Production is the KMS signer through the builder's command route, never a key in
+ * the environment: the config holds names only, and the runner entry is there for the config's schema
+ * (sign never contacts it).
+ */
+export function signConfig({ signing, publishAs, trustedKeys }) {
   if (signing !== 'dev' && signing !== 'production') throw new TypeError('signing must be dev or production');
+  if (signing === 'production') assertBuilderKeyTrusted(trustedKeys);
   const raw = {
     registry: { repository: publishAs },
     runner: { url: 'http://127.0.0.1:9', tokenEnv: 'UNUSED_RUNNER_TOKEN' },
-    signing: { key: signing === 'dev' ? 'dev' : { env: 'VERDIKTA_BUILDER_KEY' } },
+    signing: { key: signing === 'dev' ? 'dev' : { command: [process.execPath, KMS_SIGNER], publicKey: ACTION_PINS.builderKey.publicKey, env: [...KMS_SIGNER_ENV] } },
   };
   parseConfig(raw, { baseDir: '/', env: {} });
   return raw;
@@ -149,6 +177,9 @@ export function pinnedAllowlist(runnerDir) {
 }
 
 async function start(opts) {
+  const signing = signingMode(opts.signing ?? 'dev');
+  // Before anything is built or published: a production listing that can't be signed should stop here.
+  if (signing === 'production') assertBuilderKeyTrusted();
   const dir = path.resolve(opts.dir);
   const spec = JSON.parse(fs.readFileSync(opts.spec, 'utf8'));
   fs.mkdirSync(path.join(dir, 'tmp'), { recursive: true, mode: 0o700 });
@@ -168,7 +199,7 @@ async function start(opts) {
   const runnerDir = path.join(arbiter, 'code-runner');
   sh('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: runnerDir });
 
-  const note = publishTargetNote({ publishAs: opts['publish-as'], signing: opts.signing ?? 'dev', arbiter: pinnedAllowlist(runnerDir) });
+  const note = publishTargetNote({ publishAs: opts['publish-as'], signing, arbiter: pinnedAllowlist(runnerDir) });
   if (note?.refuse) throw new Error(note.text);
   if (note) process.stdout.write(`::warning::${note.text}\n`);
 

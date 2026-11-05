@@ -42,6 +42,7 @@ import { buildAtCommit } from './repoBuild.js';
 import { fetchSolc } from './solc.js';
 import { checkListingProof } from './listingProof.js';
 import { assertDraftFits, assertListingFits } from './requestSize.js';
+import { signingTrust } from './signing.js';
 import { checkVerifiedSource } from './sourceCheck.js';
 import { checkDraft, checkKnownIssues, finalSpec, runnerSpec, serializeJson } from './spec.js';
 import { BUILDER_VERSION } from './version.js';
@@ -264,7 +265,7 @@ export async function buildListing({ draft, knownIssues = null, maker = null, de
       if (known) files.set(known.name, known.bytes);
       assertListingFits({
         files: { codeReview: files.get('code_review.json'), baseline: files.get(spec.baseline), knownIssues: known?.bytes ?? null },
-        trust: config.signing.key === 'dev' ? 'dev' : 'production',
+        trust: signingTrust(config.signing.key),
         runnerVersion: lc.runner?.version,
         base: image.base,
         report,

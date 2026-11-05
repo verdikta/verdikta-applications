@@ -149,6 +149,8 @@ export const STRINGS = {
       queued: 'waiting for a build slot',
       checking: 'checking the project\'s proof at the listed commit',
       building: 'building and validating the environment',
+      awaiting_approval: 'waiting for a reviewer to approve the signature',
+      signing: 'signing the listing',
       pinning: 'pinning the listing and dispute archives',
       ready: 'ready to list',
       refused: 'refused by the builder',

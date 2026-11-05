@@ -23,6 +23,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parseConfig } from '../src/config.js';
+import { neutralize } from '../src/logSafe.js';
 import { productionKeyProblem } from '../src/signing.js';
 
 export const ACTION_PINS = Object.freeze(JSON.parse(fs.readFileSync(new URL('./pins.json', import.meta.url), 'utf8')));
@@ -262,7 +263,7 @@ async function main(argv) {
     }
     return 0;
   } catch (err) {
-    process.stderr.write(`services: ${err.message}\n`);
+    process.stderr.write(neutralize(`services: ${err.message}\n`));
     return 1;
   }
 }

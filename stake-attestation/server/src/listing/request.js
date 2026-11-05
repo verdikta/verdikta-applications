@@ -21,6 +21,7 @@ import crypto from 'node:crypto';
 
 import { getAddress, isAddress } from 'ethers';
 import { DEFAULT_GIT_HOSTS, PROOF_REFUSALS, proofFieldProblem, repoUrlCheck } from '@verdikta/stake-attestation-shared/control-proof';
+import { serializeKnownIssues } from '@verdikta/stake-attestation-shared/site-request';
 
 import { codeReview } from '../common.js';
 import { canonicalAddress } from '../control/facts.js';
@@ -57,10 +58,7 @@ export function withStandIns(draft) {
   };
 }
 
-/** known_issues.json as the archive will hold it: two-space JSON and a final newline, as the builder writes files. */
-export function serializeKnownIssues(list) {
-  return Buffer.from(`${JSON.stringify(list, null, 2)}\n`, 'utf8');
-}
+export { serializeKnownIssues };
 
 /** The maker's address, checksummed: every listing names one. */
 function makerOf(raw, issues) {
@@ -99,7 +97,7 @@ function allowlistOf(raw, issues) {
 /**
  * @param {unknown} body - the parsed JSON body
  * @param {{ gitHosts?: string[] }} [o] - the hosts the site reads a repository from
- * @returns {{ draft: object, knownIssues: { list: object[], bytes: Buffer }|null, allowlist: string[], maker: string, deploymentProof: object|null, disclosureKey: { recipient: string, bytes32: string }, digest: string }}
+ * @returns {{ draft: object, knownIssues: { list: object[], bytes: Buffer }|null, allowlist: string[], maker: string, deploymentProof: object|null, disclosureKey: { recipient: string, bytes32: string }, signedBody: string, digest: string }}
  * @throws {RequestError} with every issue found
  */
 export function parseListingRequest(body, { gitHosts = DEFAULT_GIT_HOSTS } = {}) {
@@ -178,11 +176,9 @@ export function parseListingRequest(body, { gitHosts = DEFAULT_GIT_HOSTS } = {})
     }
   }
   if (issues.length) throw new RequestError(issues);
-  return { draft, knownIssues, allowlist, maker, deploymentProof, disclosureKey, digest: requestDigest(body) };
-}
-
-/** What the maker's wallet signs for: the whole request but its signature, as it was sent. */
-function requestDigest(body) {
   const { auth, ...signed } = body;
-  return crypto.createHash('sha256').update(JSON.stringify(signed)).digest('hex');
+  // What the maker's wallet signs for: the whole request but its signature, as it was sent. The signing
+  // workflow gets these bytes and checks the signature again (node P15).
+  const signedBody = JSON.stringify(signed);
+  return { draft, knownIssues, allowlist, maker, deploymentProof, disclosureKey, signedBody, digest: crypto.createHash('sha256').update(signedBody).digest('hex') };
 }

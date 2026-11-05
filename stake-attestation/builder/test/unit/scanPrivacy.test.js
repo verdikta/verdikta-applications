@@ -186,12 +186,12 @@ test('the agent pass\'s candidates reach the maker\'s file only', async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('no public artifact: the reusable builder workflow never runs the scan, and uploads only the listing folder and the image', () => {
+test('no public artifact: the reusable builder workflow never runs the scan, and uploads only the draft, the listing folder and the image', () => {
   const text = fs.readFileSync(path.join(REPO_ROOT, '.github', 'workflows', 'stake-attestation-builder.yml'), 'utf8');
   assert.doesNotMatch(text, /verdikta-build-env(\.js)?"?\s+scan\b/);
   assert.equal(text.includes(SCAN_FILE), false);
   const wf = parseYaml(text);
   const uploads = Object.values(wf.jobs).flatMap((j) => j.steps).filter((s) => String(s.uses ?? '').startsWith('actions/upload-artifact@'));
   assert.ok(uploads.length >= 2);
-  for (const u of uploads) assert.ok(['${{ env.VAB_OUT }}', '${{ env.VAB_IMAGE }}'].includes(u.with.path), `an upload of ${u.with.path}`);
+  for (const u of uploads) assert.ok(['listing-source', '${{ env.VAB_OUT }}', '${{ env.VAB_IMAGE }}'].includes(u.with.path), `an upload of ${u.with.path}`);
 });

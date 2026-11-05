@@ -1,0 +1,73 @@
+name: Stake attestation site build
+# The caller a site's listing runs in (node P15; stake-attestation/docs/builder-kms-signing.md). This file is not a
+# workflow here: the owner copies it to .github/workflows/ on the protected main of Verdikta's dedicated caller
+# repository, with every BUILDER_COMMIT replaced by one commit of verdikta-applications:
+#
+#   sed 's/BUILDER_COMMIT/<commit>/g' stake-attestation/builder/caller/stake-attestation-site-build.yml
+#
+# The trust policy names this file's name and that commit, so changing either is a reviewed change on the owner's side.
+# The server starts it with a token that has Actions write on the repository, and that token can start or cancel any
+# workflow there: the repository holds this one and nothing else.
+#
+# What a dispatch can choose is the listing, inside `request`, and nothing about what runs: the workflows, the
+# commit, the environment and where the image goes are written here. The request comes as base64 of gzip, and is
+# the exact bytes the maker's wallet signed for, which the source and sign jobs check. The explorer of a contract
+# listing comes from a repository variable the server's token can't change, by the chain the signed request names.
+#
+# With required reviewers on the environment the run waits at `sign`, a state the site shows; with them off it
+# doesn't. Nothing here changes either way.
+run-name: ${{ inputs.correlation-id }}
+on:
+  workflow_dispatch:
+    inputs:
+      correlation-id:
+        description: The site's id for this run, <site>-<listing id>. It is the run's name, how the server finds it again.
+        required: true
+        type: string
+      request:
+        description: The listing request the maker's wallet signed, as base64 of gzip.
+        required: true
+        type: string
+      auth:
+        description: The wallet's signature and its challenge's fields, as base64.
+        required: true
+        type: string
+      maker:
+        description: The wallet that will send list(), as the request names it.
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  listing:
+    uses: verdikta/verdikta-applications/.github/workflows/stake-attestation-builder.yml@BUILDER_COMMIT
+    permissions:
+      contents: read
+      packages: write
+    with:
+      builder-ref: BUILDER_COMMIT
+      site-request: ${{ inputs.request }}
+      site-auth: ${{ inputs.auth }}
+      maker: ${{ inputs.maker }}
+      publish-repository: ghcr.io/verdikta/stake-env
+      signing: production
+      artifact-name: site
+      site-explorers: ${{ vars.STAKE_ATTESTATION_EXPLORERS }}
+  sign:
+    needs: listing
+    uses: verdikta/verdikta-applications/.github/workflows/stake-attestation-builder-sign.yml@BUILDER_COMMIT
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      builder-ref: BUILDER_COMMIT
+      artifact-id: ${{ needs.listing.outputs.artifact-id }}
+      outputs-sha256: ${{ needs.listing.outputs.outputs-sha256 }}
+      maker: ${{ inputs.maker }}
+      publish-repository: ghcr.io/verdikta/stake-env
+      site-request: ${{ inputs.request }}
+      site-auth: ${{ inputs.auth }}
+    secrets:
+      VERDIKTA_KMS_KEY_ARN: ${{ secrets.VERDIKTA_KMS_KEY_ARN }}
+      VERDIKTA_KMS_ROLE_ARN: ${{ secrets.VERDIKTA_KMS_ROLE_ARN }}

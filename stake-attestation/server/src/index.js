@@ -35,7 +35,10 @@ if (config.chain) {
   }
 }
 
-createApp({ config, logger, site }).listen(config.port, config.host, () => {
+const app = createApp({ config, logger, site });
+// What the last server started and nothing follows now is cancelled first (node P15).
+app.buildRuns?.start();
+app.listen(config.port, config.host, () => {
   const chain = config.chain ? `, chain ${config.chain.chainId} at ${config.chain.address}, keeper ${site.keeper ? site.keeper.address : 'off'}` : '';
-  console.log(`stake-attestation server listening on http://${config.host}:${config.port} (pinning: ${config.pinning.backend}, trust: ${config.trust.mode}${chain})`);
+  console.log(`stake-attestation server listening on http://${config.host}:${config.port} (pinning: ${config.pinning.backend}, trust: ${config.trust.mode}, builds: ${config.builds.backend}${chain})`);
 });

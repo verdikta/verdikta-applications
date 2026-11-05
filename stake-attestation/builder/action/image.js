@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 import { dockerEnv } from '../src/docker.js';
 import { BuilderError } from '../src/errors.js';
+import { neutralize } from '../src/logSafe.js';
 import { isLoopbackHost } from '../src/net.js';
 
 const PINS = JSON.parse(fs.readFileSync(new URL('./pins.json', import.meta.url), 'utf8'));
@@ -203,7 +204,7 @@ async function main(argv) {
     }
     return 0;
   } catch (err) {
-    process.stderr.write(`image: ${err.message}\n`);
+    process.stderr.write(neutralize(`image: ${err.message}\n`));
     return 1;
   }
 }

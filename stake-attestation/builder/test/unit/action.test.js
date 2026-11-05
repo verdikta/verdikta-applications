@@ -36,11 +36,12 @@ const runs = (name) => steps(name).filter((s) => s.run).map((s) => s.run).join('
 test('a reusable workflow: it runs only when another workflow calls it, and nothing in this repository does (G1)', () => {
   assert.deepEqual(Object.keys(wf.on), ['workflow_call']);
   const inputs = wf.on.workflow_call.inputs;
-  for (const name of ['builder-ref', 'spec', 'publish-repository']) assert.equal(inputs[name].required, true, name);
+  for (const name of ['builder-ref', 'publish-repository']) assert.equal(inputs[name].required, true, name);
+  assert.equal(inputs.spec.required, false, 'a site\'s request comes in its place; the source job refuses neither and both (test/unit/siteWorkflow.test.js)');
   assert.equal(inputs['publish-repository'].default, undefined, 'no default registry: the caller names its own');
   assert.equal(inputs.signing.default, 'dev');
   assert.equal(inputs.runtime.default, 'runsc');
-  assert.doesNotMatch(text, /ghcr\.io\/verdikta\b/);
+  assert.doesNotMatch(text.slice(text.indexOf('\njobs:')), /ghcr\.io\/verdikta\b/, 'no job names a registry either');
   assert.deepEqual(wf.permissions, {}, 'each job asks for what it needs');
   for (const f of fs.readdirSync(WORKFLOWS)) {
     if (f === path.basename(FILE)) continue;
@@ -49,19 +50,21 @@ test('a reusable workflow: it runs only when another workflow calls it, and noth
 });
 
 test('artifact names are this invocation\'s: a caller may build several listings in one run', () => {
-  const names = steps('build').find((s) => s.id === 'names');
+  const names = steps('source').find((s) => s.id === 'names');
   assert.match(names.run, /sha256sum/);
   for (const k of ['SPEC', 'KNOWN_ISSUES', 'PUBLISH_REPOSITORY', 'ARTIFACT_NAME']) assert.ok(names.env[k], k);
-  assert.equal(job('build').outputs['artifact-id'], '${{ steps.names.outputs.id }}');
+  assert.equal(job('source').outputs['artifact-id'], '${{ steps.names.outputs.id }}');
+  assert.equal(job('build').outputs['artifact-id'], '${{ needs.source.outputs.artifact-id }}');
   const all = Object.entries(wf.jobs).flatMap(([n, j]) => j.steps.map((s) => [n, s])).filter(([, s]) => /actions\/(upload|download)-artifact@/.test(String(s.uses ?? '')));
-  assert.equal(all.length, 5);
-  for (const [n, s] of all) assert.match(s.with.name, n === 'build' ? /^\$\{\{ steps\.names\.outputs\.id \}\}-/ : /^\$\{\{ needs\.build\.outputs\.artifact-id \}\}-/, `${n}: ${s.with.name}`);
+  assert.equal(all.length, 7);
+  const prefix = { source: /^\$\{\{ steps\.names\.outputs\.id \}\}-/, build: /^\$\{\{ needs\.source\.outputs\.artifact-id \}\}-/ };
+  for (const [n, s] of all) assert.match(s.with.name, prefix[n] ?? /^\$\{\{ needs\.build\.outputs\.artifact-id \}\}-/, `${n}: ${s.with.name}`);
   assert.match(wf.on.workflow_call.outputs['signed-artifact'].value, /artifact-id/);
 });
 
 test('every upload keeps hidden files: a listing may name its files with a leading dot', () => {
   const uploads = Object.values(wf.jobs).flatMap((j) => j.steps).filter((s) => String(s.uses ?? '').startsWith('actions/upload-artifact@'));
-  assert.equal(uploads.length, 3);
+  assert.equal(uploads.length, 4);
   for (const u of uploads) assert.equal(u.with['include-hidden-files'], true, u.with.name);
 });
 
@@ -71,21 +74,22 @@ test('every action it uses is pinned to a commit', () => {
   }
 });
 
-test('the build job holds no secret, reads the repositories only, and runs the same builder', () => {
+test('the build job holds no secret and no token scope, and runs the same builder; the source job alone reads the caller', () => {
   const b = job('build');
-  assert.deepEqual(b.permissions, { contents: 'read' });
+  assert.deepEqual(b.permissions, {});
   assert.equal(b.environment, undefined);
   const body = JSON.stringify(b);
   assert.doesNotMatch(body, /secrets\./);
   assert.doesNotMatch(body, /github\.token/);
   const checkouts = uses('build', 'actions/checkout');
-  assert.equal(checkouts.length, 2);
-  for (const c of checkouts) assert.equal(c.with['persist-credentials'], false, 'no token left in .git/config');
-  const builder = checkouts.find((c) => c.with.repository === SELF);
-  assert.equal(builder.with.ref, '${{ inputs.builder-ref }}');
+  assert.equal(checkouts.length, 1);
+  assert.equal(checkouts[0].with['persist-credentials'], false, 'no token left in .git/config');
+  assert.equal(checkouts[0].with.repository, SELF);
+  assert.equal(checkouts[0].with.ref, '${{ inputs.builder-ref }}');
   // The caller's repository: only the draft and the known issues, not its code (the builder fetches
-  // the listed commit itself).
-  const caller = checkouts.find((c) => c.with.repository === undefined);
+  // the listed commit itself), on a machine that runs none of the maker's code.
+  const caller = uses('source', 'actions/checkout').find((c) => c.with.repository === undefined);
+  assert.equal(caller.with['persist-credentials'], false);
   assert.match(caller.with['sparse-checkout'], /inputs\.spec/);
   assert.equal(caller.with['sparse-checkout-cone-mode'], false);
   const r = runs('build');

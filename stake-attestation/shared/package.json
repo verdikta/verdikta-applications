@@ -14,7 +14,9 @@
     "./listing-request-size": "./src/listingRequestSize.js",
     "./execution-evidence": "./src/executionEvidence.js",
     "./zip": "./src/zip.js",
-    "./zip-read": "./src/zipRead.js"
+    "./zip-read": "./src/zipRead.js",
+    "./auth-message": "./src/authMessage.js",
+    "./site-request": "./src/siteRequest.js"
   },
   "bin": {
     "check-forbidden-words": "bin/check-forbidden-words.js"

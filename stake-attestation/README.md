@@ -727,21 +727,23 @@ the scan: its logs and artifacts can be public. The site runs it on its own host
 `.github/workflows/stake-attestation-builder.yml` runs the same builder for a maker's CI or for
 the site's own workflow (design §8.2, §20 decision 3). A repository calls it at a commit of this
 one and passes that commit as `builder-ref`, with `spec` (the draft's path in the calling
-repository), `known-issues`, `maker` (required: the wallet that will send `list()`, named in the
+repository; Verdikta's caller passes `site-request` and `site-auth` instead), `known-issues`, `maker` (required: the wallet that will send `list()`, named in the
 listed commit's `.verdikta/stake-control.json`, or the build refuses the listing),
 `deployment-proof` (a contract listing's signature, as a file in the calling repository),
-`publish-repository` (e.g. `ghcr.io/<owner>/stake-env`, readable
-without a credential), `runtime` (`runsc` by default; a production key needs gVisor),
+`publish-repository` (readable without a credential; a listing signed in production has its image in
+`ghcr.io/verdikta/stake-env`, pushed by this workflow as a job of Verdikta's own caller), `runtime` (`runsc` by default; a production key needs gVisor),
 `explorer-api-url` (a keyless Etherscan-shaped API for a contract listing's chain, so the build
 job holds no explorer key), `signing` (`dev` by default, or `production`) and `artifact-name`
 (the prefix of its artifacts' names: by default one derived from the spec, known issues and
 repository, so one run can build several listings). Its outputs are `image`, `signed-artifact`
 (the artifact holding the signed listing files), and `artifact-id` and `outputs-sha256` for the
-signing workflow below. Three jobs:
+signing workflow below. Four jobs:
 
-1. **build**, `contents: read` and no secret: checks out the builder and only the draft and the
-   known issues of the calling repository (the builder fetches the listed commit itself), blocks
-   the runner's metadata addresses from containers, installs common's gVisor release
+1. **source**, runs none of the maker's code: checks out only the draft and the known issues of the
+   calling repository, or opens the site's request after checking the maker's wallet signed it
+   (`builder/action/site-request.js`), and hands those files on as an artifact.
+2. **build**, `permissions: {}` and no secret: checks out the builder (the builder fetches the listed
+   commit itself), blocks the runner's metadata addresses from containers, installs common's gVisor release
    (SHA-512-checked; `builder/action/pins.json`, which also pins registry:2, skopeo and the
    code-runner's commit), and starts with `builder/action/services.js` a
    registry:2 on the runner's loopback and the code-runner of verdikta-arbiter at the pinned
@@ -753,11 +755,11 @@ signing workflow below. Three jobs:
    `--preserve-digests`; unlike its `oci:` layout this reads back any manifest type, and `docker
    push` writes Docker schema-2) and the output folder as artifacts, the image and the folder's
    digest as job outputs.
-2. **publish**, `packages: write`, runs none of the maker's code: `builder/action/image.js
+3. **publish**, `packages: write`, runs none of the maker's code: `builder/action/image.js
    publish` checks the layout holds exactly the digest `code_review.json` names, with every
    manifest and blob intact, pushes it byte for byte with the job's token in an auth file of its
    own (never on a command line), and reads it back without a credential.
-3. **sign**, skipped with `signing: production`, with a key made for the run: checks out the
+4. **sign**, skipped with `signing: production`, with a key made for the run: checks out the
    builder only, downloads only the output folder, and runs `sign --expect-outputs <the build
    job's digest> --check-registry`.
 
@@ -769,6 +771,12 @@ is a file of its own because GitHub checks that permission against the caller be
 runs, so a job in the builder workflow would make every maker grant it. A maker's caller can run
 the builder workflow, with a dev key, and can't reach the key: `docs/builder-kms-signing.md` says
 what stops each caller, what that relies on, and the owner's steps at G1.
+
+**The site's route.** With `SA_BUILD_BACKEND=workflow` the server starts Verdikta's caller
+(`builder/caller/stake-attestation-site-build.yml`) by `workflow_dispatch`, follows the run, and verifies what it signed
+under `@verdikta/common`'s production set before offering it. The limits per wallet, per repository owner and overall,
+the deadlines, the sweep for runs nothing follows, what the server's token can really do, and what still stands with
+required reviewers off are in `docs/builder-kms-signing.md`. So is the rule that this key is testnet-only.
 
 **Where the image is published.** An arbiter pulls only from its `CODE_RUNNER_REGISTRY_ALLOWLIST` and abstains on anything else, and a claim that
 only gets abstentions ends with the bond to the maker. What an operator's list holds can't be read from here, but the default of the runner at the pin

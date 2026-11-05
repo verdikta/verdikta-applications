@@ -23,19 +23,9 @@
 // signatures from externally owned accounts are checked (no EIP-1271 contract wallets).
 import crypto from 'node:crypto';
 import { getAddress, isAddress, verifyMessage } from 'ethers';
+import { AUTH_ACTIONS, AUTH_MESSAGE_VERSION, AUTH_TITLE, authMessageText } from '@verdikta/stake-attestation-shared/auth-message';
 
-export const AUTH_MESSAGE_VERSION = 1;
-export const AUTH_TITLE = 'Verdikta stake attestation: sign in';
-const NOT_A_TRANSACTION = 'This is not a transaction: it costs nothing and moves no funds.';
-
-/** The actions a challenge may name, each with the statement the wallet shows. */
-export const AUTH_ACTIONS = Object.freeze({
-  'read-scan': 'Sign to read the baseline scan of a listing you made.',
-  // node P6b: the maker's dispute statement, pinned by the server (src/dispute/statement.js)
-  'pin-dispute': 'Sign to pin the statement of a dispute you file against a verdict on your listing.',
-  // node P9: the listing request names this wallet as its maker (src/listing/service.js)
-  'list-version': 'Sign to ask the site to build and sign a listing of a version, with this wallet as its maker.',
-});
+export { AUTH_ACTIONS, AUTH_MESSAGE_VERSION, AUTH_TITLE };
 
 const ACTION = /^[a-z][a-z-]{0,31}$/;
 const RESOURCE = /^[a-z][a-z-]{0,31}:[0-9A-Za-z._-]{1,128}$/;
@@ -77,18 +67,7 @@ export function authMessage({ action, resource, address, nonce, issuedAt, expire
   const signer = checkedAddress(address);
   if (typeof nonce !== 'string' || !NONCE.test(nonce)) throw new TypeError('the nonce is 32 lowercase hex digits');
   for (const t of [issuedAt, expiresAt]) if (typeof t !== 'string' || !TIME.test(t)) throw new TypeError('times are UTC ISO 8601 in whole seconds, ending in Z');
-  return [
-    AUTH_TITLE,
-    `${AUTH_ACTIONS[action]} ${NOT_A_TRANSACTION}`,
-    '',
-    `Version: ${AUTH_MESSAGE_VERSION}`,
-    `Action: ${action}`,
-    `Resource: ${resource}`,
-    `Address: ${signer}`,
-    `Nonce: ${nonce}`,
-    `Issued At: ${issuedAt}`,
-    `Expiration Time: ${expiresAt}`,
-  ].join('\n');
+  return authMessageText({ action, resource, address: signer, nonce, issuedAt, expiresAt });
 }
 
 const refuse = (status, code, detail) => ({ ok: false, status, code, detail });
@@ -142,7 +121,7 @@ export function createWalletAuth({ ttlMs = 300000, maxOutstanding = 10000, maxPe
     /**
      * Checks a signed challenge for `action` on `resource`. The nonce is used up by any attempt
      * that names it.
-     * @returns {{ ok: true, address: string } | { ok: false, status: 400|401|403, code: string, detail: string }}
+     * @returns {{ ok: true, address: string, issuedAt: string, expiresAt: string } | { ok: false, status: 400|401|403, code: string, detail: string }}
      */
     verify({ action, resource, nonce, signature } = {}) {
       const malformed = () => refuse(400, 'AUTH_REQUEST_INVALID', 'send { nonce, signature }: the challenge\'s nonce and the wallet\'s signature of its message, as 0x hex');
@@ -161,7 +140,7 @@ export function createWalletAuth({ ttlMs = 300000, maxOutstanding = 10000, maxPe
         return refuse(401, 'SIGNATURE_INVALID', 'the signature is not a valid signature of the challenge\'s message');
       }
       if (signer !== c.address) return refuse(403, 'WRONG_ADDRESS', `the message is signed by ${signer}, not by ${c.address}`);
-      return { ok: true, address: signer };
+      return { ok: true, address: signer, issuedAt: c.issuedAt, expiresAt: c.expiresAt };
     },
   };
 }

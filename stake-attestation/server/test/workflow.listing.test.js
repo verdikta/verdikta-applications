@@ -8,8 +8,9 @@ import path from 'node:path';
 import { Wallet } from 'ethers';
 import { decodeSiteRequest } from '@verdikta/stake-attestation-shared/site-request';
 
+import { codeReview } from '../src/common.js';
 import { ConfigError, loadConfig } from '../src/config.js';
-import { draftSpec, knownIssues, listingRequest } from './helpers/fixtures.js';
+import { draftSpec, listingRequest } from './helpers/fixtures.js';
 import { SUCCESS, failed, startGithubStub } from './helpers/githubStub.js';
 import { proofFile } from './helpers/gitRepo.js';
 import { quietLogger, startApi } from './helpers/http.js';
@@ -96,8 +97,11 @@ describe('what gates a build', () => {
   test('a request a dispatch could not carry is refused at the challenge, before the wallet signs', async () => {
     const { stub, s } = await setup();
     const body = request(wallets[0]);
-    const template = knownIssues()[0];
-    body.knownIssues = Array.from({ length: 200 }, (_, i) => ({ ...template, id: `KI-${i}`, title: Array.from({ length: 30 }, () => Math.random().toString(36).slice(2)).join(' ').slice(0, 190) }));
+    const noise = () => Array.from({ length: 12 }, () => Math.random().toString(36).slice(2)).join(' ');
+    body.knownIssues = Array.from({ length: 200 }, () => {
+      const b = { title: noise().slice(0, 100), class: 'LOW', paths: ['src/Vault.sol'], description: `${noise()} ${noise()} ${noise()} ${noise()}` };
+      return { id: codeReview.knownIssueId(b), ...b };
+    });
     const res = await s.post('/api/listings/challenge', body);
     const json = await res.json();
     assert.equal(res.status, 400);
@@ -198,6 +202,16 @@ describe('the limits', () => {
     await s.settle(next.json.id);
   });
 
+  test('/api/status says how much of the budget is used, in numbers', async () => {
+    const naming = namingEveryone();
+    const { s } = await setup({ checkRepository: naming.check, env: { SA_BUILD_LIMIT_OVERALL: '4' } });
+    naming.set(wallets[0].address);
+    await s.settle((await submit(s, wallets[0])).json.id);
+    const body = await (await s.get('/api/status')).json();
+    assert.deepEqual(body.listings.builds, { windowMs: 86400000, used: 1, overall: 4 });
+    assert.doesNotMatch(JSON.stringify(body.listings.builds), /0x/);
+  });
+
   test('without the workflow backend there are no limits: the local flow is as it was', async () => {
     const config = loadConfig({ SA_ATTESTATION_TRUST: 'dev', SA_CHAIN_ID: '31337', SA_PINNING: 'mock' });
     assert.equal(config.builds.backend, 'local');
@@ -287,7 +301,7 @@ describe('what is offered', () => {
   test('an archive signed by a key outside common\'s production set is refused, and nothing is pinned or offered', async () => {
     const naming = namingEveryone();
     const body = request(wallets[0]);
-    const { folder } = await signedListing({ draft: body.spec });
+    const { folder } = await signedListing({ draft: body.spec, maker: wallets[0].address });
     const stub2 = await startGithubStub({ script: () => ({ statuses: ['in_progress', SUCCESS], artifacts: { [SIGNED_ARTIFACT]: zipOf(folder) } }) });
     open.push(() => stub2.close());
     const env = workflowEnv(stub2);
@@ -308,7 +322,7 @@ describe('what is offered', () => {
   test('a dev-signed archive is refused the same way: dev trust does not exist on this backend', async () => {
     const naming = namingEveryone();
     const body = request(wallets[0]);
-    const { folder } = await signedListing({ draft: body.spec, trust: 'dev' });
+    const { folder } = await signedListing({ draft: body.spec, maker: wallets[0].address, trust: 'dev' });
     const stub = await startGithubStub({ script: () => ({ statuses: [SUCCESS], artifacts: { [SIGNED_ARTIFACT]: zipOf({ ...folder, 'dev-trust.json': '{"dev":true,"keys":[]}' }) } }) });
     open.push(() => stub.close());
     const env = workflowEnv(stub);
@@ -323,7 +337,7 @@ describe('what is offered', () => {
   test('a built spec that changes what the wallet signed is refused before it is verified or pinned', async () => {
     const naming = namingEveryone();
     const body = request(wallets[0]);
-    const { folder } = await signedListing({ draft: body.spec, alterSpec: (spec) => { spec.stake.disclosureKey = 'someone else'; } });
+    const { folder } = await signedListing({ draft: body.spec, maker: wallets[0].address, alterSpec: (spec) => { spec.stake.disclosureKey = 'someone else'; } });
     const stub = await startGithubStub({ script: () => ({ statuses: [SUCCESS], artifacts: { [SIGNED_ARTIFACT]: zipOf(folder) } }) });
     open.push(() => stub.close());
     const env = workflowEnv(stub);
@@ -364,6 +378,8 @@ describe('the configuration', () => {
     assert.throws(() => loadConfig({ ...base, SA_BUILD_WORKFLOW_FILE: '../../evil.yml' }), ConfigError);
     assert.throws(() => loadConfig({ ...base, SA_BUILD_WORKFLOW_TOKEN: '' }), ConfigError);
     assert.throws(() => loadConfig({ ...base, SA_ATTESTATION_TRUST: 'dev' }), ConfigError);
+    assert.throws(() => loadConfig({ ...base, SA_CHAIN_ID: '8453' }), /testnet-only/, 'the key is testnet-only (owner, 2026-11-05)');
+    assert.throws(() => loadConfig({ ...base, SA_CHAIN_ID: '' }), /testnet-only/);
     assert.throws(() => loadConfig({ ...base, SA_BUILD_BACKEND: 'other' }), ConfigError);
     assert.throws(() => loadConfig({ ...base, SA_GITHUB_API_URL: 'http://api.github.example' }), ConfigError);
     assert.throws(() => loadConfig({ ...base, SA_BUILD_WORKFLOW_SITE: 'Has Space' }), ConfigError);

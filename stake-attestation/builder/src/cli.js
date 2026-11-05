@@ -16,6 +16,7 @@ import path from 'node:path';
 
 import { loadConfig } from './config.js';
 import { BuilderError, Refusal } from './errors.js';
+import { guarded } from './logSafe.js';
 import { DEV_TRUST_FILE, outputsDigest, readOutputs, writeOutputs } from './outputs.js';
 import { recheckForSigning } from './listingProof.js';
 import { buildListing } from './pipeline.js';
@@ -198,7 +199,10 @@ async function build({ opts, config, out, deps }) {
  * @param {{ env?: object, stdout?: { write(s: string): unknown }, stderr?: { write(s: string): unknown }, deps?: object }} [io]
  * @returns {Promise<number>} the exit status
  */
-export async function main(argv, { env = process.env, stdout = process.stdout, stderr = process.stderr, deps } = {}) {
+export async function main(argv, { env = process.env, stdout: rawOut = process.stdout, stderr: rawErr = process.stderr, deps } = {}) {
+  // What goes to a step's output can quote a maker's text, and a runner reads its lines as workflow commands.
+  const stdout = guarded(rawOut);
+  const stderr = guarded(rawErr);
   const first = argv[0];
   if (first === '-h' || first === '--help') {
     stdout.write(USAGE);

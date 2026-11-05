@@ -190,7 +190,7 @@ test('a pull-request or other outside trigger is refused, whatever the environme
     assert.match(r.stdout, /workflow_dispatch/);
   }
   assert.equal(runGuard({ env: { EVENT_NAME: 'workflow_dispatch' } }).status, 0);
-  assert.equal(runGuard({ env: { EVENT_NAME: 'repository_dispatch' } }).status, 0);
+  assert.equal(runGuard({ env: { EVENT_NAME: 'repository_dispatch' } }).status, 1, 'the caller has one trigger');
 });
 
 test('a listing built without production\'s checks hands on no digest, and nothing is signed without one', () => {

@@ -6,7 +6,10 @@
 //              or owner signed. No proof: refused, with a named code, nothing built, signed or pinned
 //   building   the environment builder (node P3a) builds and pushes the env image, checks a
 //              contract's verified source, validates the listing on the arbiters' code-runner,
-//              then signs attestation.json in a separate step
+//              then signs attestation.json in a separate step. With the workflow backend (node P15)
+//              this is a run of Verdikta's caller, which the view links:
+//   awaiting_approval  a required reviewer has the run. It holds no build slot, and no runner either
+//   signing            the reviewer approved it, and the signing job runs
 //   refused    the builder refused the listing: the validation report says why; nothing is built
 //              or pinned (a failed verified-source check ends here)
 //   scanning   the build was accepted, its result checked (below) and both archives built and
@@ -30,6 +33,11 @@
 // archives must pass validateArchive.js (common's checks, as arbiters run them, with the
 // attestation verified under the configured trust).
 //
+// The workflow backend keeps every rule above, and three of its own. A build is charged against limits per
+// wallet, per repository owner and overall (buildBudget.js), since a wallet costs nothing and these are Verdikta's
+// runners; only a run that started stays charged. A slot is held only while a run uses a runner: never while a
+// reviewer has it, and never past its deadline. And a listing's image is under ghcr.io/verdikta (builder/workflow.js).
+//
 // The baseline scan is the maker's alone. Its document is kept in the job, apart from everything
 // the view shows, and handed out only through scanAccess() to the route that checks the maker's
 // signature. The view carries the scan's status and when it finished, never a finding, a count or
@@ -37,22 +45,23 @@
 // log gets the scan's outcome and the builder's error code. A scan that fails does not stop the
 // listing: the scan is not a judgement, and the maker reads why it failed.
 import crypto from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
 
 import { PROOF_REFUSALS, repositoryProofReason } from '@verdikta/stake-attestation-shared/control-proof';
 import { listingParts, listingRequestRefusal } from '@verdikta/stake-attestation-shared/listing-request-size';
+import { specChanges as changesFrom } from '@verdikta/stake-attestation-shared/site-request';
 
 import { codeReview } from '../common.js';
 import { CONTROL_REASONS, canonicalAddress, controlMessage, readAnswerFile } from '../control/facts.js';
 import { buildListingArchives } from './archives.js';
+import { BuildLimitError } from './buildBudget.js';
 import { artifactHashOf, artifactOf, listArguments } from './listParams.js';
 import { RefusalCounter } from './refusals.js';
 import { RequestError, parseListingRequest } from './request.js';
 import { validateListingArchive } from './validateArchive.js';
 
 const STEPS_ALWAYS_OK = ['spec', 'control', 'fetch', 'build', 'size', 'push', 'registry', 'listingCheck', 'finalSpec'];
-const BUILDER_FILLS = new Set(['env', 'limits', 'attestation', 'baseline']);
 const MAX_KEPT = 500;
+const TERMINAL = Object.freeze(['ready', 'refused', 'error']);
 const LIST_ACTION = 'list-version';
 const CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 /** An error code fit for the log: a fixed identifier, never text that could quote a finding. */
@@ -106,16 +115,7 @@ export function reportProblem(draft, report, maker) {
 
 /** The paths where the built code_review.json differs from the maker's draft beyond what the builder fills. */
 export function specChanges(draft, built) {
-  const out = [];
-  for (const k of new Set([...Object.keys(draft), ...Object.keys(built)])) {
-    if (BUILDER_FILLS.has(k)) continue;
-    if (!isDeepStrictEqual(draft[k], built[k])) out.push(`/${k}`);
-  }
-  if (built.env?.from !== draft.env?.from) out.push('/env/from');
-  if (built.attestation !== (draft.attestation ?? codeReview.ATTESTATION_FILE)) out.push('/attestation');
-  if (built.baseline !== (draft.baseline ?? codeReview.BASELINE_FILE)) out.push('/baseline');
-  for (const [k, v] of Object.entries(draft.limits ?? {})) if (built.limits?.[k] !== v) out.push(`/limits/${k}`);
-  return out;
+  return changesFrom(draft, built, { attestationFile: codeReview.ATTESTATION_FILE, baselineFile: codeReview.BASELINE_FILE });
 }
 
 /** What anyone with the listing's id may know of its scan. */
@@ -137,16 +137,23 @@ function publicScan(scan) {
  *   checkDeployment(listing, proof) (stores a proof that counts; throws ControlError for one that does
  *   not), stake ({ chainId, address }, or null: no deployment configured), noteDevTrust(devTrust)
  * @param {RefusalCounter} [o.refusals] - refused attempts by reason, for /api/status
+ * @param {object|null} [o.budget] - the workflow backend's limits (buildBudget.js)
  */
-export function createListingService({ config, builder, scanner, pinner, logger, auth, proofs, refusals = new RefusalCounter() }) {
+export function createListingService({ config, builder, scanner, pinner, logger, auth, proofs, refusals = new RefusalCounter(), budget = null }) {
   const jobs = new Map();
   const queue = [];
   let running = 0;
+  // runs a reviewer has: they hold no slot, so they are bounded apart
+  let awaiting = 0;
+  const workflow = config.builds.backend === 'workflow';
 
   /** The request, or its refusal counted by each reason. */
   function parse(body) {
     try {
-      return parseListingRequest(body, { gitHosts: config.control.gitHosts });
+      const request = parseListingRequest(body, { gitHosts: config.control.gitHosts });
+      const problem = builder.requestProblem?.(request);
+      if (problem) throw new RequestError([problem]);
+      return request;
     } catch (err) {
       if (err instanceof RequestError) refusals.count(err.issues.map((i) => i.code));
       throw err;
@@ -170,6 +177,7 @@ export function createListingService({ config, builder, scanner, pinner, logger,
       artifactHash: job.artifactHash,
       disclosureKey: job.request.disclosureKey,
       validationReport: job.report ?? null,
+      run: job.run ?? null,
       error: job.error ?? null,
       archives: ready ? job.archives : null,
       list: ready ? job.list : null,
@@ -182,11 +190,50 @@ export function createListingService({ config, builder, scanner, pinner, logger,
     if (jobs.size <= MAX_KEPT) return;
     for (const [id, job] of jobs) {
       if (jobs.size <= MAX_KEPT) break;
-      if (['ready', 'refused', 'error'].includes(job.status)) jobs.delete(id);
+      if (TERMINAL.includes(job.status)) jobs.delete(id);
     }
   }
 
+  const backlogFull = () => workflow && awaiting >= config.builds.maxAwaiting;
+
+  /** Lets go of the job's build slot, if it has one, and lets the queue move. */
+  function releaseSlot(job) {
+    if (job.slot) {
+      job.slot = false;
+      running -= 1;
+    }
+    pump();
+  }
+
+  function endAwaiting(job) {
+    if (job.awaiting) {
+      job.awaiting = false;
+      awaiting -= 1;
+    }
+  }
+
+  const buildHooks = (job) => ({
+    onRun: (run) => set(job, { run }),
+    onState(state) {
+      if (state === 'awaiting_approval') {
+        job.awaiting = true;
+        awaiting += 1;
+        set(job, { status: state });
+        releaseSlot(job);
+      } else {
+        endAwaiting(job);
+        set(job, { status: state });
+        pump();
+      }
+    },
+  });
+
   function holdSlot(job, what, code) {
+    // With the workflow backend a stopped step here is a local scan, and no run: it holds no build slot.
+    if (workflow) {
+      logger.error(`listing ${job.id}: the builder's ${what} had to be stopped (${logCode(code)}). Check the Docker host for containers labelled io.verdikta.builder=1.`);
+      return;
+    }
     // What the builder started may still be running under the Docker daemon: the slot stays
     // taken, so builds never run beyond SA_MAX_CONCURRENT_BUILDS, until an operator has
     // checked the Docker host and restarted the server.
@@ -362,8 +409,39 @@ export function createListingService({ config, builder, scanner, pinner, logger,
     }
   }
 
+  /**
+   * The repository owner's share of the limits, now that the proof says the repository is the maker's.
+   * @returns {boolean} whether the build goes on
+   */
+  function chargeOwner(job) {
+    if (!budget) return true;
+    const u = new URL(job.request.draft.repo);
+    const owner = `${u.hostname}/${u.pathname.split('/')[1]}`.toLowerCase();
+    for (const other of jobs.values()) {
+      if (other !== job && other.owner === owner && !TERMINAL.includes(other.status)) {
+        budget.release(job.id);
+        refuse(job, 'REPO_OWNER_BUILD_IN_PROGRESS', 'a build of this repository owner\'s is running; try again when it has ended');
+        return false;
+      }
+    }
+    try {
+      budget.chargeOwner(job.id, owner);
+      job.owner = owner;
+      return true;
+    } catch (err) {
+      if (!(err instanceof BuildLimitError)) throw err;
+      budget.release(job.id);
+      refuse(job, err.code, err.detail);
+      return false;
+    }
+  }
+
   async function runSteps(job) {
-    if (!(await checkProof(job))) return;
+    if (!(await checkProof(job))) {
+      budget?.release(job.id);
+      return;
+    }
+    if (!chargeOwner(job)) return;
     set(job, { status: 'building' });
     let r;
     const proof = job.request.deploymentProof;
@@ -374,11 +452,21 @@ export function createListingService({ config, builder, scanner, pinner, logger,
         knownIssues: job.request.knownIssues ? Buffer.from(job.request.knownIssues.bytes) : null,
         maker: job.request.maker,
         deploymentProof: proof ? { ...proof, stakeChainId: proofs.stake?.chainId ?? null, stakeContract: proofs.stake?.address ?? null } : null,
-      });
+        jobId: job.id,
+        signedBody: job.request.signedBody,
+        auth: job.auth,
+      }, buildHooks(job));
     } catch (err) {
       logger.error(`listing ${job.id}: the builder failed: ${err?.message ?? err}`);
       set(job, { status: 'error', error: { code: 'BUILDER_FAILED', detail: 'the environment builder could not be run' } });
       return;
+    } finally {
+      endAwaiting(job);
+    }
+    // nothing after this uses a runner, and a run that did not start costs nothing
+    if (workflow) {
+      if (r.notStarted) budget?.release(job.id);
+      releaseSlot(job);
     }
     set(job, { report: r.report ?? null });
     if (r.holdSlot) holdSlot(job, 'build', r.error?.code);
@@ -405,12 +493,13 @@ export function createListingService({ config, builder, scanner, pinner, logger,
   }
 
   function pump() {
-    while (running < config.builds.maxConcurrent && queue.length) {
+    while (running < config.builds.maxConcurrent && !backlogFull() && queue.length) {
       const job = queue.shift();
       running += 1;
+      job.slot = true;
       run(job).finally(() => {
-        if (!job.holdsSlot) running -= 1;
-        pump();
+        if (job.holdsSlot) pump();
+        else releaseSlot(job);
       });
     }
   }
@@ -455,14 +544,28 @@ export function createListingService({ config, builder, scanner, pinner, logger,
         refusals.count(['MAKER_SIGNATURE_INVALID']);
         throw new MakerSignatureError(v.status, 'MAKER_SIGNATURE_INVALID', `${PROOF_REFUSALS.MAKER_SIGNATURE_INVALID} ${v.detail}`);
       }
-      if (running >= config.builds.maxConcurrent && queue.length >= config.builds.maxQueued) throw new QueueFullError();
+      if ((running >= config.builds.maxConcurrent || backlogFull()) && queue.length >= config.builds.maxQueued) throw new QueueFullError();
+      const id = crypto.randomBytes(16).toString('hex');
+      // Only once the wallet has signed: no one can use up another wallet's attempts.
+      if (budget) {
+        try {
+          for (const other of jobs.values()) {
+            if (other.request.maker === request.maker && !TERMINAL.includes(other.status)) throw new BuildLimitError(429, 'MAKER_BUILD_IN_PROGRESS', 'a build of this wallet\'s is running; try again when it has ended');
+          }
+          budget.admit(id, request.maker);
+        } catch (err) {
+          if (err instanceof BuildLimitError) refusals.count([err.code]);
+          throw err;
+        }
+      }
       const at = now();
       const job = {
-        id: crypto.randomBytes(16).toString('hex'),
+        id,
         status: 'queued',
         createdAt: at,
         updatedAt: at,
         request,
+        auth: { nonce: a.nonce, signature: a.signature, issuedAt: v.issuedAt, expiresAt: v.expiresAt },
         artifactHash: artifactHashOf(artifactOf(request.draft)),
         scan: { status: 'pending' },
       };
@@ -475,6 +578,8 @@ export function createListingService({ config, builder, scanner, pinner, logger,
     },
     /** Refused attempts by reason, as /api/status states them. */
     refusedCounts: () => refusals.view(),
+    /** How much of the build limits is used, in numbers, as /api/status states it; null with no limits. */
+    buildUsage: () => budget?.view() ?? null,
     get(id) {
       const job = jobs.get(id);
       return job ? view(job) : null;

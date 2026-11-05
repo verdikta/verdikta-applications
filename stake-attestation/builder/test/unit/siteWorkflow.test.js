@@ -143,7 +143,7 @@ describe('the build job runs a stranger\'s setup', () => {
   test('the request is opened on a machine that runs nothing of the maker\'s, and leaves as files', () => {
     const s = builder.jobs.source;
     assert.deepEqual(s.permissions, { contents: 'read' });
-    const open = steps('source').find((x) => /site-request\.js" unpack/.test(x.run ?? ''));
+    const open = steps('source').find((x) => /site-request\.js unpack/.test(x.run ?? ''));
     assert.equal(open.if, "inputs.site-request != ''");
     assert.equal(open.env.SITE_REQUEST, '${{ inputs.site-request }}');
     assert.equal(open.env.SITE_AUTH, '${{ inputs.site-auth }}');

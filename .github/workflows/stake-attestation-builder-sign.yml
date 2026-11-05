@@ -14,7 +14,9 @@ name: Stake attestation builder, production signing
 #       artifact-id: ${{ needs.listing.outputs.artifact-id }}
 #       outputs-sha256: ${{ needs.listing.outputs.outputs-sha256 }}
 #       maker: <the wallet that will send list()>
-#       publish-repository: <the repository the listing's image was published to>
+#       publish-repository: ghcr.io/verdikta/stake-env
+#       site-request: <the listing request the maker's wallet signed>
+#       site-auth: <the wallet's signature>
 #     secrets:
 #       VERDIKTA_KMS_KEY_ARN: ${{ secrets.VERDIKTA_KMS_KEY_ARN }}
 #       VERDIKTA_KMS_ROLE_ARN: ${{ secrets.VERDIKTA_KMS_ROLE_ARN }}
@@ -24,6 +26,11 @@ name: Stake attestation builder, production signing
 # is the AWS trust policy, which names the caller's repository, this environment and this file at a commit.
 # A maker's or a fork's caller can call this file, and gets nowhere: AWS refuses its identity. The references
 # are secrets, not variables, because GitHub prints a step's env in the log and a caller's log can be public.
+#
+# It signs only for a wallet-signed request whose terms the build kept (builder/action/site-request.js check), so a
+# holder of the caller's Actions token can't name a wallet it doesn't hold. With required reviewers on the environment
+# this job waits for a person; with them off it runs at once, and nothing here changes
+# (stake-attestation/docs/builder-kms-signing.md says what stands then, and what doesn't).
 #
 # It has no trigger of its own and nothing in this repository calls it: the access is owner gate G1.
 on:
@@ -47,6 +54,14 @@ on:
         type: string
       publish-repository:
         description: The repository the listing's image was published to, as given to stake-attestation-builder.yml.
+        required: true
+        type: string
+      site-request:
+        description: The listing request the maker's wallet signed, as base64 of gzip, as given to stake-attestation-builder.yml.
+        required: true
+        type: string
+      site-auth:
+        description: The wallet's signature and its challenge's fields, as base64.
         required: true
         type: string
     secrets:
@@ -89,8 +104,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$EVENT_NAME" in
-            workflow_dispatch|repository_dispatch) ;;
-            *) echo "::error::production signing runs only from workflow_dispatch or repository_dispatch, not ${EVENT_NAME:-an unnamed event}"; exit 1 ;;
+            workflow_dispatch) ;;
+            *) echo "::error::production signing runs only from workflow_dispatch, not ${EVENT_NAME:-an unnamed event}"; exit 1 ;;
           esac
           if ! printf '%s' "$OUTPUTS_SHA256" | grep -Eq '^[0-9a-f]{64}$'; then
             echo "::error::outputs-sha256 is not a digest: it comes from a stake-attestation-builder.yml run with signing: production, whose checks a listing must have passed"
@@ -136,6 +151,13 @@ jobs:
         with:
           name: ${{ inputs.artifact-id }}-listing
           path: ${{ env.VAB_OUT }}
+      - name: The maker's wallet signed this request, and the build kept its terms
+        env:
+          SITE_REQUEST: ${{ inputs.site-request }}
+          SITE_AUTH: ${{ inputs.site-auth }}
+          MAKER: ${{ inputs.maker }}
+          PUBLISH_REPOSITORY: ${{ inputs.publish-repository }}
+        run: node "$VAB_BUILDER/action/site-request.js" check --dir "$VAB_OUT" --publish-as "$PUBLISH_REPOSITORY"
       - name: The signing config (the KMS signer, once common's trusted set holds the pinned key)
         env:
           PUBLISH_REPOSITORY: ${{ inputs.publish-repository }}

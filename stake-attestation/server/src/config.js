@@ -32,6 +32,31 @@
 //   SA_BUILDER_GRACE_MS            after SIGTERM, before SIGKILL (30000)
 //   SA_MAX_CONCURRENT_BUILDS       builds run at once (1)
 //   SA_MAX_QUEUED_BUILDS           builds waiting before POST /api/listings answers 429 (8)
+//   SA_BUILD_BACKEND               local (default): the builder's command line, on this host | workflow: a run of
+//                                  Verdikta's caller, signed in KMS (node P15; docs/builder-kms-signing.md). It takes
+//                                  production trust only, and is refused on Base mainnet: its key is testnet-only
+//
+// With SA_BUILD_BACKEND=workflow:
+//
+//   SA_BUILD_WORKFLOW_REPO         the caller repository, owner/name
+//   SA_BUILD_WORKFLOW_FILE         its workflow file (stake-attestation-site-build.yml); runs start from main
+//   SA_BUILD_WORKFLOW_TOKEN        a token with Actions read and write on that repository. Read when used and never
+//                                  kept here. Its real reach is in docs/builder-kms-signing.md
+//   SA_BUILD_WORKFLOW_SITE         this site's prefix in a run's name (site): a server cancels only runs under its own
+//   SA_GITHUB_API_URL              GitHub's API (https://api.github.com)
+//   SA_BUILD_POLL_MS               between reads of a run (30000)
+//   SA_BUILD_FIND_MS               how long a run may take to appear (300000)
+//   SA_BUILD_RUN_DEADLINE_MS       a run's time not waiting for a reviewer, then it is cancelled (10800000, 3 h)
+//   SA_BUILD_APPROVAL_DEADLINE_MS  a reviewer's time, then it is cancelled (259200000, 72 h)
+//   SA_BUILD_SWEEP_MS              between sweeps for runs nothing follows (300000)
+//   SA_BUILD_MAX_AWAITING          runs waiting for a reviewer before no new one starts (8)
+//   SA_BUILD_LIMIT_PER_WALLET      a wallet's attempts in the window (3)
+//   SA_BUILD_LIMIT_PER_REPO_OWNER  builds in the window per <host>/<owner> (5)
+//   SA_BUILD_LIMIT_OVERALL         builds in the window (20)
+//   SA_BUILD_LIMIT_WINDOW_MS       the window (86400000, 1 day)
+//   SA_BUILD_ARTIFACT_MAX_BYTES    the largest artifact collected (67108864, 64 MiB)
+//   SA_DATA_DIR                    holds the limits' counts (build-budget.json)
+//
 //   SA_ORACLE_MAX_FEE_WEI, SA_ORACLE_DISPUTE_MAX_FEE_WEI, SA_ORACLE_BASE_COST_WEI,
 //   SA_ORACLE_ALPHA, SA_ORACLE_MAX_FEE_SCALING
 //                                  the oracle parameters list() takes (design §10.8; the class is
@@ -105,6 +130,7 @@ import { getAddress } from 'ethers';
 import { DEFAULT_GIT_HOSTS } from '@verdikta/stake-attestation-shared/control-proof';
 
 import { codeReview } from './common.js';
+import { BUILD_BUDGET_FILE } from './listing/buildBudget.js';
 import { BACKENDS } from './pinning/index.js';
 import { LABEL_PLACEHOLDERS } from './record/labels.js';
 
@@ -232,6 +258,55 @@ function controlConfig(env, production) {
     recheckMs: integer(env, 'SA_CONTROL_RECHECK_MS', 86400000, { min: 1 }),
     rpcTimeoutMs: integer(env, 'SA_CONTROL_RPC_TIMEOUT_MS', 10000, { min: 1 }),
     forkTimeoutMs: integer(env, 'SA_CONTROL_FORK_TIMEOUT_MS', 10000, { min: 1 }),
+  });
+}
+
+const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
+const WORKFLOW_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.ya?ml$/;
+
+function buildsConfig(env, trustMode, chainId) {
+  const base = {
+    maxConcurrent: integer(env, 'SA_MAX_CONCURRENT_BUILDS', 1, { min: 1, max: 16 }),
+    maxQueued: integer(env, 'SA_MAX_QUEUED_BUILDS', 8, { min: 0, max: 1000 }),
+  };
+  const backend = env.SA_BUILD_BACKEND || 'local';
+  if (!['local', 'workflow'].includes(backend)) fail('SA_BUILD_BACKEND must be local or workflow');
+  if (backend === 'local') return Object.freeze({ ...base, backend, workflow: null, limits: null, maxAwaiting: null, stateFile: null });
+  if (trustMode !== 'production') fail('SA_BUILD_BACKEND=workflow takes production trust only: the signing workflow signs with the production key');
+  // Its key signs for anyone who passes the gates, so it is testnet-only (docs/builder-kms-signing.md): Base mainnet gets another key and another decision.
+  if (chainId === null || chainId === MAINNET_CHAIN_ID) fail('SA_BUILD_BACKEND=workflow needs SA_CHAIN_ID, and is refused on Base mainnet: the key it signs with is testnet-only');
+  const repo = env.SA_BUILD_WORKFLOW_REPO;
+  if (typeof repo !== 'string' || !REPOSITORY.test(repo) || repo.split('/')[1].startsWith('.')) fail('SA_BUILD_WORKFLOW_REPO must name the caller repository, owner/name');
+  const file = env.SA_BUILD_WORKFLOW_FILE || 'stake-attestation-site-build.yml';
+  if (!WORKFLOW_FILE.test(file)) fail('SA_BUILD_WORKFLOW_FILE must be a workflow\'s file name');
+  if (typeof env.SA_BUILD_WORKFLOW_TOKEN !== 'string' || !env.SA_BUILD_WORKFLOW_TOKEN.trim()) fail('SA_BUILD_BACKEND=workflow needs its token in SA_BUILD_WORKFLOW_TOKEN');
+  const site = env.SA_BUILD_WORKFLOW_SITE || 'site';
+  if (!/^[a-z0-9]{1,16}$/.test(site)) fail('SA_BUILD_WORKFLOW_SITE must be 1 to 16 lowercase letters and digits');
+  return Object.freeze({
+    ...base,
+    backend,
+    workflow: Object.freeze({
+      apiUrl: serviceUrl(env, 'SA_GITHUB_API_URL', 'https://api.github.com'),
+      repo,
+      file,
+      ref: 'main',
+      tokenEnv: 'SA_BUILD_WORKFLOW_TOKEN',
+      site,
+      pollMs: integer(env, 'SA_BUILD_POLL_MS', 30000, { min: 1 }),
+      findMs: integer(env, 'SA_BUILD_FIND_MS', 300000, { min: 1 }),
+      runDeadlineMs: integer(env, 'SA_BUILD_RUN_DEADLINE_MS', 10800000, { min: 1 }),
+      approvalDeadlineMs: integer(env, 'SA_BUILD_APPROVAL_DEADLINE_MS', 259200000, { min: 1 }),
+      sweepMs: integer(env, 'SA_BUILD_SWEEP_MS', 300000, { min: 1 }),
+      artifactMaxBytes: integer(env, 'SA_BUILD_ARTIFACT_MAX_BYTES', 64 * 1024 * 1024, { min: 1024 }),
+    }),
+    maxAwaiting: integer(env, 'SA_BUILD_MAX_AWAITING', 8, { min: 1, max: 1000 }),
+    limits: Object.freeze({
+      perWallet: integer(env, 'SA_BUILD_LIMIT_PER_WALLET', 3, { min: 1 }),
+      perRepoOwner: integer(env, 'SA_BUILD_LIMIT_PER_REPO_OWNER', 5, { min: 1 }),
+      overall: integer(env, 'SA_BUILD_LIMIT_OVERALL', 20, { min: 1 }),
+      windowMs: integer(env, 'SA_BUILD_LIMIT_WINDOW_MS', 86400000, { min: 1 }),
+    }),
+    stateFile: path.join(path.resolve(env.SA_DATA_DIR || path.join(here, '..', 'data')), BUILD_BUDGET_FILE),
   });
 }
 
@@ -371,10 +446,7 @@ export function loadConfig(env = process.env) {
       graceMs: integer(env, 'SA_BUILDER_GRACE_MS', 30000, { min: 100 }),
     }),
     auth: Object.freeze({ challengeTtlMs }),
-    builds: Object.freeze({
-      maxConcurrent: integer(env, 'SA_MAX_CONCURRENT_BUILDS', 1, { min: 1, max: 16 }),
-      maxQueued: integer(env, 'SA_MAX_QUEUED_BUILDS', 8, { min: 0, max: 1000 }),
-    }),
+    builds: buildsConfig(env, trustMode, chainId),
     chain,
     keeper: keeperConfig(env),
     labels: labelsConfig(env),

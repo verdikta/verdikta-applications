@@ -3,10 +3,12 @@ import express from 'express';
 
 import { AuthError, createWalletAuth } from './auth/walletAuth.js';
 import { createCliBuilder } from './builder/cli.js';
+import { createWorkflowBuilder } from './builder/workflow.js';
 import { disputeStatementRouter } from './dispute/statement.js';
 import { loadConfig } from './config.js';
 import { ControlError as ListingControlError } from './control/index.js';
 import { createRepositoryChecker } from './control/gitCheck.js';
+import { BuildLimitError, createBuildBudget } from './listing/buildBudget.js';
 import { RefusalCounter } from './listing/refusals.js';
 import { RequestError } from './listing/request.js';
 import { MakerSignatureError, QueueFullError, createListingService } from './listing/service.js';
@@ -39,8 +41,9 @@ const consoleLogger = {
  *                            message the maker's wallet signs for this request; 400 an invalid request
  *   POST /api/listings       the same with auth: { nonce, signature } -> 202 { id, status, ... };
  *                            400 an invalid request (no build started), 401/403 the maker's wallet did
- *                            not sign it, 429 the build queue is full. The listing's page then says
- *                            what became of it: refused for its proof, with a named code, or built
+ *                            not sign it, 429 the build queue is full or a build limit is reached
+ *                            (workflow backend), 503 the limits can't be kept. The listing's page then
+ *                            says what became of it: refused for its proof, with a named code, or built
  *   POST /api/listings/deployment-message  { maker, repo, baseCommit, chainId, address } -> 200 the
  *                            message a contract listing's deployer or owner signs
  *   GET  /api/listings/:id   the listing's status, refusal, validation report and, once ready, both
@@ -72,8 +75,9 @@ const consoleLogger = {
  *   GET  /api/feed/events?after=&limit=  the contract's events of listings and claims (§13.4)
  *   GET  /api/records/:hash            recordByHash for an artifact hash, its labels, its history
  *   GET  /api/records/:hash/badge.svg  the hash's badge (§4.1)
- *   GET  /api/status                   the indexer's cursor, the keeper's state, and refused listing
- *                                      attempts by reason (no address or repository in the counts)
+ *   GET  /api/status                   the indexer's cursor, the keeper's state, refused listing attempts
+ *                                      by reason, and how much of the build limits is used (numbers: no
+ *                                      address or repository)
  *
  * and a contract listing's control proof (node P8; src/control/, docs/control-proof.md). Anyone may
  * send one: it speaks for itself. The record states the message to sign:
@@ -98,9 +102,11 @@ const consoleLogger = {
  *   control check's command line, src/control/gitCheck.js)
  * @param {Function} [o.checkDeployment] - a contract listing's signature, checked on its chain and kept
  *   if it counts (default: the site's; with no deployment configured there is nothing it can bind to)
+ * @param {Record<string, string|undefined>} [o.env] - where the workflow backend's token is read
  */
-export function createApp({ config = loadConfig(process.env), builder, scanner, pinner, auth, logger = consoleLogger, site = null, checkRepository, checkDeployment } = {}) {
-  const cli = builder && scanner ? null : createCliBuilder(config.builder, { logger });
+export function createApp({ config = loadConfig(process.env), builder, scanner, pinner, auth, logger = consoleLogger, site = null, checkRepository, checkDeployment, env = process.env } = {}) {
+  const buildRuns = !builder && config.builds.backend === 'workflow' ? createWorkflowBuilder(config.builds.workflow, { env, logger }) : null;
+  const cli = (builder || buildRuns) && scanner ? null : createCliBuilder(config.builder, { logger });
   const pins = pinner ?? createPinner(config.pinning);
   const signIn = auth ?? createWalletAuth({ ttlMs: config.auth.challengeTtlMs });
   // anyone can ask for a listing's challenge, so those wait apart: a flood of them cannot take a
@@ -111,8 +117,9 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
   };
   const listings = createListingService({
     config,
-    builder: builder ?? cli,
+    builder: builder ?? buildRuns ?? cli,
     scanner: scanner ?? cli,
+    budget: config.builds.limits ? createBuildBudget({ file: config.builds.stateFile, limits: config.builds.limits, logger }) : null,
     pinner: pins,
     logger,
     auth: listingSignIn,
@@ -138,6 +145,7 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
       if (err instanceof RequestError) return res.status(400).json({ error: err.code, issues: err.issues });
       if (err instanceof MakerSignatureError) return res.status(err.status).json({ error: err.code, detail: err.detail });
       if (err instanceof QueueFullError) return res.status(429).json({ error: err.code, detail: err.message });
+      if (err instanceof BuildLimitError) return res.status(err.status).json({ error: err.code, detail: err.detail });
       if (err instanceof AuthError) return res.status(err.status).json({ error: err.code, detail: err.detail });
       logger.error(`POST ${name}: ${err?.stack ?? err}`);
       return res.status(500).json({ error: 'INTERNAL' });
@@ -262,8 +270,11 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
 
   app.get('/api/status', (req, res, next) => {
     if (site) return next();
-    return res.status(503).json({ error: 'CHAIN_NOT_CONFIGURED', listings: { refused: listings.refusedCounts() } });
-  }, chainRoute(async (_req, res) => res.json(site.status())));
+    return res.status(503).json({ error: 'CHAIN_NOT_CONFIGURED', listings: { refused: listings.refusedCounts(), builds: listings.buildUsage() } });
+  }, chainRoute(async (_req, res) => {
+    const status = site.status();
+    return res.json({ ...status, listings: { ...status.listings, builds: listings.buildUsage() } });
+  }));
 
   // body-parser's errors: a body that is not JSON, or one over the limit
   app.use((err, _req, res, next) => {
@@ -273,6 +284,8 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
   });
 
   app.listings = listings;
+  // the workflow backend's sweep for runs nothing follows: src/index.js starts it
+  app.buildRuns = buildRuns;
   app.site = site;
   return app;
 }

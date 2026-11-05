@@ -82,9 +82,17 @@ test('a state file that cannot be read or written refuses builds: a limit nobody
   fs.writeFileSync(file, '{ not json');
   refuses(() => make().admit('j1', A), 'BUILD_BUDGET_UNAVAILABLE', 503);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-budget-'));
-  const gone = createBuildBudget({ file: path.join(dir, 'missing', 'build-budget.json'), limits: LIMITS, now: () => 1, logger: { error() {} } });
+  fs.writeFileSync(path.join(dir, 'a-file'), '');
+  const gone = createBuildBudget({ file: path.join(dir, 'a-file', 'build-budget.json'), limits: LIMITS, now: () => 1, logger: { error() {} } });
   refuses(() => gone.admit('j1', A), 'BUILD_BUDGET_UNAVAILABLE', 503);
   gone.release('j1');
+});
+
+test('its folder is made if it is not there', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-budget-'));
+  const budget = createBuildBudget({ file: path.join(dir, 'data', 'build-budget.json'), limits: LIMITS, now: () => 1, logger: { error() {} } });
+  budget.admit('j1', A);
+  assert.ok(fs.existsSync(path.join(dir, 'data', 'build-budget.json')));
 });
 
 test('the view holds numbers, never an address', () => {

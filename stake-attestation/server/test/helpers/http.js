@@ -12,7 +12,8 @@ const TERMINAL = new Set(['ready', 'refused', 'error']);
  *   (src/auth/walletAuth.js) with a clock of the test's; `site`: the indexer's site
  *   (src/site/index.js), for the feed, record and badge routes; `checkRepository`: what git says of a
  *   listing's repository (by default a file naming the request's maker, on main; no host is reached);
- *   `checkDeployment`: a contract's signature on its chain (by default it counts)
+ *   `checkDeployment`: a contract's signature on its chain (by default it counts); `env`: where the
+ *   workflow backend reads its token
  * @returns {Promise<{ base: string, pinner: object, app: object, close(): Promise<void>, post(path: string, body: unknown): Promise<Response>, get(path: string): Promise<Response>, settle(id: string): Promise<object> }>}
  */
 export async function startApi({
@@ -25,11 +26,12 @@ export async function startApi({
   site,
   checkRepository,
   checkDeployment = site ? undefined : async () => ({ ok: true }),
+  env,
 }) {
   // by default the project names whoever the last request names as its maker
   let named = MAKER;
   const check = checkRepository ?? (async () => ({ reachable: true, ref: 'refs/heads/main', file: { blob: 'b'.repeat(40), text: proofFile(named), problem: null } }));
-  const app = createApp({ config, builder, pinner, logger, scanner, auth, site, checkRepository: check, checkDeployment });
+  const app = createApp({ config, builder, pinner, logger, scanner, auth, site, checkRepository: check, checkDeployment, env });
   const server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;

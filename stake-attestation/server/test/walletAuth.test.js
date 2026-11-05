@@ -82,7 +82,7 @@ describe('createWalletAuth', () => {
     const auth = createWalletAuth();
     const maker = wallet();
     const { c, signature } = await signed(auth, maker);
-    assert.deepEqual(auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature }), { ok: true, address: maker.address });
+    assert.deepEqual(auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature }), { ok: true, address: maker.address, issuedAt: c.issuedAt, expiresAt: c.expiresAt });
   });
 
   test('another wallet signs the same challenge: 403', async () => {

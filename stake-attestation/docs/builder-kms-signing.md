@@ -356,8 +356,9 @@ required reviewer: `SA_BUILD_WORKFLOW_TOKEN` in the server's environment, with `
 token can do".
 
 The pin: this repository's packages pin `@verdikta/common` `1.9.0-attest.3`, which holds this key, so production signing
-is no longer refused as `SIGNING_KEY_NOT_TRUSTED`. `<commit>` has to be at or after that change. The arbiter pins move
-separately.
+is no longer refused as `SIGNING_KEY_NOT_TRUSTED`. `<commit>` has to be at or after that change. `e2e` stays on the
+release the arbiter at `e2e/arbiter.pin.json` uses, since its tests hold the two to one release, and it moves with the
+arbiter pins, at G1.
 
 **7. The live check, opt-in.** This one reaches the real KMS, and it's the only code here that does. It signs a
 throwaway message under a context of its own, which can't pass for an attestation, and verifies the answer against the

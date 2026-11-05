@@ -101,7 +101,7 @@ run of Verdikta's caller, follows it, and collects what it signed. The caller is
 | The run | The listing's job |
 |---|---|
 | queued or running | `building`, with `run.url` |
-| waiting for a required reviewer | `awaiting_approval`: visible, not a failure, holding no slot |
+| waiting for a required reviewer | `awaiting_approval`: visible, not a failure; the run keeps its slot |
 | running again, once approved | `signing` |
 | succeeded, and the archives verify | `scanning`, `pinning`, `ready` |
 | succeeded, and an archive doesn't verify | `error`, `ARCHIVE_INVALID` |
@@ -114,16 +114,15 @@ run of Verdikta's caller, follows it, and collects what it signed. The caller is
 | past a deadline | `error`, `RUN_DEADLINE`, `APPROVAL_DEADLINE` |
 
 The baseline scan stays on the server: its findings are the maker's alone, and the run's logs can be public. A server
-with no builder config says the scan errored, and the listing goes on. Scans have places of their own, as many as there
-are build slots, and a scan that had to be stopped keeps its place until the server restarts.
+with no builder config says the scan errored, and the listing goes on.
 
-**Deadlines and slots.** A slot is held only while a run uses a runner. A run's time not waiting for a person has a
-deadline of 3 h, against job limits that add up to 145 min, and is cancelled at it. A run waiting for a person holds no
-slot, and at most 8 can wait: a run's place is held from its start, so no more than 8 are ever waiting or on their way to it. If nobody answers in 72 h, the run is cancelled, nothing is
-signed, and the maker has to submit again: that counts as another build, and the image it published stays. GitHub's own
-limit on that wait is longer (predicted: 30 days). So at most 8 listings can wait at once, and a stranger able to fill
-those places with git-host accounts stops new builds until a reviewer clears them or 72 h pass. That place is only
-reachable with reviewers on.
+**Deadlines and slots.** A build holds its slot (one, by default) from admission until it has completely finished:
+its run, any wait for a reviewer, and its baseline scan on this host. A scan whose cleanup the scanner can't confirm keeps
+the slot until the server restarts. A run's time not waiting for a person has a deadline of 3 h, against job limits that
+add up to 145 min, and is cancelled at it. A run waiting for a person is cancelled at 72 h: nothing is signed, the maker
+has to submit again (that counts as another build), and the image it published stays. GitHub's own limit on that wait is
+longer (predicted: 30 days). So with reviewers on, a waiting run holds up the next build until a reviewer answers or 72 h
+pass; with them off, no run waits.
 
 **A lost run or a restart.** Jobs live in memory, so a restart abandons what it started. A sweep, at start and every 5
 min, cancels any active run under this site's prefix that no live build owns, however old (it asks for active runs by
@@ -139,8 +138,7 @@ name, is left alone. A restart gives nothing back: the attempts stay charged, an
 | A repository's owner on its git host: 5 builds in 24 h, and one in flight | once the proof stands | doesn't get round it; several git-host accounts do |
 | Everyone: 20 builds in 24 h | at the request, given back if no run starts; a request queued past the window keeps its place | nothing gets round it |
 
-One slot and those limits bound the spend at about 29 job-hours a day: at most 24 h of `source`, `build` and `publish`,
-and 20 × 15 min of `sign`. A public repository's standard runners bill no minutes (predicted), so what's at risk is the
+One slot bounds the spend at one run at a time, so at most 24 job-hours a day, and the overall limit at 20 runs. A public repository's standard runners bill no minutes (predicted), so what's at risk is the
 org's concurrency and GitHub's terms, not an invoice.
 
 **This does not stop a stranger.** A wallet costs nothing, a proof file costs a commit, and a git-host account costs an

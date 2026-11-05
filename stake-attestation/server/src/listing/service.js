@@ -8,7 +8,7 @@
 //              contract's verified source, validates the listing on the arbiters' code-runner,
 //              then signs attestation.json in a separate step. With the workflow backend (node P15)
 //              this is a run of Verdikta's caller, which the view links:
-//   awaiting_approval  a required reviewer has the run. It holds no build slot, and no runner either
+//   awaiting_approval  a required reviewer has the run; it keeps its build slot
 //   signing            the reviewer approved it, and the signing job runs
 //   refused    the builder refused the listing: the validation report says why; nothing is built
 //              or pinned (a failed verified-source check ends here)
@@ -33,10 +33,12 @@
 // archives must pass validateArchive.js (common's checks, as arbiters run them, with the
 // attestation verified under the configured trust).
 //
-// The workflow backend keeps every rule above, and three of its own. A build is charged against limits per
-// wallet, per repository owner and overall (buildBudget.js), since a wallet costs nothing and these are Verdikta's
-// runners; only a run that started stays charged. A slot is held only while a run uses a runner: never while a
-// reviewer has it, and never past its deadline. And a listing's image is under ghcr.io/verdikta (builder/workflow.js).
+// The workflow backend keeps every rule above, slots included: a build holds its slot from admission until it has
+// completely finished, its wait for a reviewer and its local baseline scan with it, so a waiting run blocks the next
+// build until it is approved or cancelled at its deadline. It adds two rules of its own. A build is charged against
+// limits per wallet, per repository owner and overall (buildBudget.js), since a wallet costs nothing and these are
+// Verdikta's runners; only a run that started stays charged. And a listing's image is under ghcr.io/verdikta
+// (builder/workflow.js).
 //
 // The baseline scan is the maker's alone. Its document is kept in the job, apart from everything
 // the view shows, and handed out only through scanAccess() to the route that checks the maker's
@@ -143,8 +145,6 @@ export function createListingService({ config, builder, scanner, pinner, logger,
   const jobs = new Map();
   const queue = [];
   let running = 0;
-  // runs a reviewer has: they hold no slot, so they are bounded apart (backlogFull)
-  let awaiting = 0;
   const workflow = config.builds.backend === 'workflow';
 
   /** The request, or its refusal counted by each reason. */
@@ -194,65 +194,13 @@ export function createListingService({ config, builder, scanner, pinner, logger,
     }
   }
 
-  // Any run started may end up waiting, so its place is held from the start: the bound is hard.
-  const backlogFull = () => workflow && awaiting + running >= config.builds.maxAwaiting;
-
-  // With the workflow backend a build gives its slot back before the baseline scan, which still runs on this host
-  // (its findings are the maker's alone). So scans get places of their own, as many as there are slots, and a scan
-  // that had to be stopped keeps its place until the server restarts, as a stopped local build keeps its slot.
-  let scanPlaces = 0;
-  const scanWaiters = [];
-  const takeScanPlace = () => {
-    if (scanPlaces < config.builds.maxConcurrent) {
-      scanPlaces += 1;
-      return Promise.resolve();
-    }
-    return new Promise((resolve) => scanWaiters.push(resolve));
-  };
-  const giveScanPlace = () => {
-    const next = scanWaiters.shift();
-    if (next) next();
-    else scanPlaces -= 1;
-  };
-
-  /** Lets go of the job's build slot, if it has one, and lets the queue move. */
-  function releaseSlot(job) {
-    if (job.slot) {
-      job.slot = false;
-      running -= 1;
-    }
-    pump();
-  }
-
-  function endAwaiting(job) {
-    if (job.awaiting) {
-      job.awaiting = false;
-      awaiting -= 1;
-    }
-  }
-
+  // A run's states, for the view: the slot stays the job's throughout.
   const buildHooks = (job) => ({
     onRun: (run) => set(job, { run }),
-    onState(state) {
-      if (state === 'awaiting_approval') {
-        job.awaiting = true;
-        awaiting += 1;
-        set(job, { status: state });
-        releaseSlot(job);
-      } else {
-        endAwaiting(job);
-        set(job, { status: state });
-        pump();
-      }
-    },
+    onState: (state) => set(job, { status: state }),
   });
 
   function holdSlot(job, what, code) {
-    // With the workflow backend a stopped step here is a local scan: it keeps its scan place, and holds no build slot.
-    if (workflow) {
-      logger.error(`listing ${job.id}: the builder's ${what} had to be stopped (${logCode(code)}); its scan place stays taken until the server restarts. Check the Docker host for containers labelled io.verdikta.builder=1.`);
-      return;
-    }
     // What the builder started may still be running under the Docker daemon: the slot stays
     // taken, so builds never run beyond SA_MAX_CONCURRENT_BUILDS, until an operator has
     // checked the Docker host and restarted the server.
@@ -265,7 +213,6 @@ export function createListingService({ config, builder, scanner, pinner, logger,
     if (job.scan.status !== 'pending') return;
     set(job, { status: 'scanning' });
     job.scan = { status: 'running' };
-    if (workflow) await takeScanPlace();
     let r;
     try {
       r = await scanner.scan({ spec: structuredClone(spec) });
@@ -275,7 +222,6 @@ export function createListingService({ config, builder, scanner, pinner, logger,
       r = { status: 'error', doc: null, error: { code: 'SCAN_FAILED', detail: 'the baseline scan could not be run' } };
     }
     if (r?.holdSlot) holdSlot(job, 'scan', r.error?.code);
-    else if (workflow) giveScanPlace();
     const doc = r?.doc ?? null;
     const ok = r?.status === 'ok' && doc?.status === 'ok';
     const error = doc ? null : (r?.error ?? { code: 'SCAN_FAILED', detail: 'the baseline scan returned nothing' });
@@ -481,14 +427,9 @@ export function createListingService({ config, builder, scanner, pinner, logger,
       logger.error(`listing ${job.id}: the builder failed: ${err?.message ?? err}`);
       set(job, { status: 'error', error: { code: 'BUILDER_FAILED', detail: 'the environment builder could not be run' } });
       return;
-    } finally {
-      endAwaiting(job);
     }
-    // nothing after this uses a runner, and a run that did not start costs nothing
-    if (workflow) {
-      if (r.notStarted) budget?.release(job.id);
-      releaseSlot(job);
-    }
+    // a run that did not start costs nothing
+    if (workflow && r.notStarted) budget?.release(job.id);
     set(job, { report: r.report ?? null });
     if (r.holdSlot) holdSlot(job, 'build', r.error?.code);
     if (r.status === 'refused') {
@@ -514,13 +455,12 @@ export function createListingService({ config, builder, scanner, pinner, logger,
   }
 
   function pump() {
-    while (running < config.builds.maxConcurrent && !backlogFull() && queue.length) {
+    while (running < config.builds.maxConcurrent && queue.length) {
       const job = queue.shift();
       running += 1;
-      job.slot = true;
       run(job).finally(() => {
-        if (job.holdsSlot) pump();
-        else releaseSlot(job);
+        if (!job.holdsSlot) running -= 1;
+        pump();
       });
     }
   }
@@ -565,7 +505,7 @@ export function createListingService({ config, builder, scanner, pinner, logger,
         refusals.count(['MAKER_SIGNATURE_INVALID']);
         throw new MakerSignatureError(v.status, 'MAKER_SIGNATURE_INVALID', `${PROOF_REFUSALS.MAKER_SIGNATURE_INVALID} ${v.detail}`);
       }
-      if ((running >= config.builds.maxConcurrent || backlogFull()) && queue.length >= config.builds.maxQueued) throw new QueueFullError();
+      if (running >= config.builds.maxConcurrent && queue.length >= config.builds.maxQueued) throw new QueueFullError();
       const id = crypto.randomBytes(16).toString('hex');
       // Only once the wallet has signed: no one can use up another wallet's attempts.
       if (budget) {

@@ -40,14 +40,19 @@ async function setup({ env: over = {}, script, checkRepository, logger = quietLo
 
 const request = (wallet, owner = 'acme') => listingRequest({ maker: wallet.address, spec: draftSpec({ repo: `https://github.com/${owner}/vault` }) });
 
+/** The wallet that submitted for each repository: its file names that wallet, whatever was asked since. */
+const signers = new Map();
+
 /** Whoever signs, the project's file names them. */
 function namingEveryone() {
   let last = null;
-  return { set: (a) => { last = a; }, check: async () => ({ reachable: true, ref: 'refs/heads/main', file: { blob: 'b'.repeat(40), text: proofFile(last), problem: null } }) };
+  return { set: (a) => { last = a; }, check: async ({ repo }) => ({ reachable: true, ref: 'refs/heads/main', file: { blob: 'b'.repeat(40), text: proofFile(signers.get(repo) ?? last), problem: null } }) };
 }
 
 async function submit(s, wallet, owner) {
-  const res = await s.submit(request(wallet, owner), { wallet });
+  const body = request(wallet, owner);
+  signers.set(body.spec.repo, wallet.address);
+  const res = await s.submit(body, { wallet });
   return { res, json: await res.json() };
 }
 const until = async (s, id, status, ms = 3000) => {
@@ -221,13 +226,9 @@ describe('the limits', () => {
 });
 
 describe('build slots', () => {
-  test('waiting for a person is a visible state and holds no slot: the next listing builds, and the backlog of waiting runs is bounded', async () => {
+  test('waiting for a person is a visible state, not a failure, and keeps the only slot until it is approved', async () => {
     const naming = namingEveryone();
-    const { stub, s } = await setup({
-      checkRepository: naming.check,
-      script: () => ({ statuses: ['in_progress', 'waiting'] }),
-      env: { SA_BUILD_MAX_AWAITING: '2', SA_MAX_QUEUED_BUILDS: '1', SA_BUILD_APPROVAL_DEADLINE_MS: '400' },
-    });
+    const { stub, s } = await setup({ checkRepository: naming.check, script: () => ({ statuses: ['in_progress', 'waiting'] }) });
     naming.set(wallets[0].address);
     const a = await submit(s, wallets[0], 'one');
     const waiting = await until(s, a.json.id, 'awaiting_approval');
@@ -235,40 +236,28 @@ describe('build slots', () => {
     assert.equal(waiting.error, null);
     naming.set(wallets[1].address);
     const b = await submit(s, wallets[1], 'two');
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal((await (await s.get(`/api/listings/${b.json.id}`)).json()).status, 'queued');
+    assert.equal(stub.state.dispatches.length, 1, 'the waiting run holds the slot');
+    // a reviewer approves, and the run goes on to its end
+    [...stub.state.runs.values()][0].statuses = ['in_progress', 'in_progress', failed()];
+    await until(s, a.json.id, 'signing');
+    await s.settle(a.json.id);
     await until(s, b.json.id, 'awaiting_approval');
-    assert.equal(stub.state.dispatches.length, 2, 'the first run\'s wait did not hold the only slot');
-    naming.set(wallets[2].address);
-    const c = await submit(s, wallets[2], 'three');
-    assert.equal(c.res.status, 202);
-    await new Promise((r) => setTimeout(r, 30));
-    assert.equal(stub.state.dispatches.length, 2, 'no third run while the backlog is full');
-    assert.equal((await (await s.get(`/api/listings/${c.json.id}`)).json()).status, 'queued');
-    const d = await submit(s, wallets[3], 'four');
-    assert.equal(d.res.status, 429, 'and the queue stays bounded');
-    assert.equal(d.json.error, 'BUILD_QUEUE_FULL');
-    const timedOut = await s.settle(a.json.id);
-    assert.equal(timedOut.error.code, 'APPROVAL_DEADLINE');
-    assert.equal(timedOut.status, 'error');
-    await until(s, c.json.id, 'awaiting_approval');
-    assert.equal(stub.state.dispatches.length, 3, 'the wait ended, so the queue moved');
+    assert.equal(stub.state.dispatches.length, 2, 'the slot came back when the run ended');
   });
 
-  test('the backlog\'s bound is hard: a place is held from a run\'s start, whatever the slots', async () => {
+  test('a waiting run nobody approves is cancelled at its deadline, and then the next build starts', async () => {
     const naming = namingEveryone();
-    const { stub, s } = await setup({
-      checkRepository: naming.check,
-      script: () => ({ statuses: ['in_progress', 'in_progress', 'in_progress', 'waiting'] }),
-      env: { SA_BUILD_MAX_AWAITING: '2', SA_MAX_CONCURRENT_BUILDS: '3', SA_BUILD_APPROVAL_DEADLINE_MS: '150' },
-    });
-    const views = [];
-    for (let i = 0; i < 3; i += 1) {
-      naming.set(wallets[i].address);
-      views.push(await submit(s, wallets[i], `owner${i}`));
-    }
-    await until(s, views[0].json.id, 'awaiting_approval');
-    await until(s, views[1].json.id, 'awaiting_approval');
-    assert.equal(stub.state.dispatches.length, 2, 'three slots, two places');
-    assert.equal((await (await s.get(`/api/listings/${views[2].json.id}`)).json()).status, 'queued');
+    const { stub, s } = await setup({ checkRepository: naming.check, script: () => ({ statuses: ['in_progress', 'waiting'] }), env: { SA_BUILD_APPROVAL_DEADLINE_MS: '80' } });
+    naming.set(wallets[0].address);
+    const a = await submit(s, wallets[0], 'one');
+    naming.set(wallets[1].address);
+    const b = await submit(s, wallets[1], 'two');
+    assert.equal((await s.settle(a.json.id)).error.code, 'APPROVAL_DEADLINE');
+    assert.ok(stub.state.cancels.length >= 1);
+    await until(s, b.json.id, 'awaiting_approval');
+    assert.equal(stub.state.dispatches.length, 2);
   });
 
   test('a hung run gives up its slot at the deadline, the run is cancelled, and the next listing builds', async () => {
@@ -315,21 +304,22 @@ describe('build slots', () => {
   });
 });
 
-describe('the baseline scan, which stays on this host', () => {
+describe('the baseline scan, which stays on this host, inside the build\'s slot', () => {
   // The workflow backend with a stand-in builder whose archives verify under dev trust, so a listing reaches its scan
-  // in this process; the scan's places are what is under test, not the trust.
-  async function scanning({ scanner, concurrent = '1' }) {
+  // in this process; the slot is what is under test, not the trust.
+  async function scanning({ scanner }) {
     const naming = namingEveryone();
     const stub = await startGithubStub();
     open.push(() => stub.close());
-    const env = workflowEnv(stub, { SA_MAX_CONCURRENT_BUILDS: concurrent });
+    const env = workflowEnv(stub, { SA_MAX_CONCURRENT_BUILDS: '1' });
     const config = { ...loadConfig(env), trust: Object.freeze({ mode: 'dev' }) };
-    const s = await startApi({ config, env, builder: fakeBuilder(), scanner, checkRepository: naming.check });
+    const builder = fakeBuilder();
+    const s = await startApi({ config, env, builder, scanner, checkRepository: naming.check });
     open.push(() => s.close());
-    return { s, naming };
+    return { s, naming, builder };
   }
 
-  test('scans get places of their own: no more run at once than there are slots, though builds gave theirs back', async () => {
+  test('completions one after another never run two scans together: a build keeps its slot through its scan', async () => {
     let now = 0;
     let most = 0;
     const scanner = fakeScanner({ delayMs: 40, onScan: () => { now += 1; most = Math.max(most, now); setTimeout(() => { now -= 1; }, 39); } });
@@ -344,17 +334,17 @@ describe('the baseline scan, which stays on this host', () => {
     assert.equal(most, 1);
   });
 
-  test('a scan that had to be stopped keeps its place until a restart: the next one waits, as a stopped local build keeps its slot', async () => {
+  test('a scan whose cleanup the scanner can\'t confirm keeps the slot until a restart: the next build waits', async () => {
     const scanner = fakeScanner({ outcome: 'step-error', holdSlot: true });
-    const { s, naming } = await scanning({ scanner });
+    const { s, naming, builder } = await scanning({ scanner });
     naming.set(wallets[0].address);
     const a = await submit(s, wallets[0], 'held');
     await s.settle(a.json.id);
     naming.set(wallets[1].address);
     const b = await submit(s, wallets[1], 'next');
-    await until(s, b.json.id, 'scanning');
     await new Promise((r) => setTimeout(r, 50));
-    assert.equal((await (await s.get(`/api/listings/${b.json.id}`)).json()).status, 'scanning');
+    assert.equal((await (await s.get(`/api/listings/${b.json.id}`)).json()).status, 'queued');
+    assert.equal(builder.calls.length, 1);
     assert.equal(scanner.calls.length, 1);
   });
 });

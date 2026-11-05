@@ -47,9 +47,9 @@
 //   SA_BUILD_POLL_MS               between reads of a run (30000)
 //   SA_BUILD_FIND_MS               how long a run may take to appear (300000)
 //   SA_BUILD_RUN_DEADLINE_MS       a run's time not waiting for a reviewer, then it is cancelled (10800000, 3 h)
-//   SA_BUILD_APPROVAL_DEADLINE_MS  a reviewer's time, then it is cancelled (259200000, 72 h)
+//   SA_BUILD_APPROVAL_DEADLINE_MS  a reviewer's time, then it is cancelled (259200000, 72 h). A waiting run keeps its
+//                                  build slot, so this is how long it can hold up the next build
 //   SA_BUILD_SWEEP_MS              between sweeps for runs nothing follows (300000)
-//   SA_BUILD_MAX_AWAITING          runs waiting for a reviewer before no new one starts (8)
 //   SA_BUILD_LIMIT_PER_WALLET      a wallet's attempts in the window (3)
 //   SA_BUILD_LIMIT_PER_REPO_OWNER  builds in the window per <host>/<owner> (5)
 //   SA_BUILD_LIMIT_OVERALL         builds in the window (20)
@@ -271,7 +271,7 @@ function buildsConfig(env, trustMode, chainId) {
   };
   const backend = env.SA_BUILD_BACKEND || 'local';
   if (!['local', 'workflow'].includes(backend)) fail('SA_BUILD_BACKEND must be local or workflow');
-  if (backend === 'local') return Object.freeze({ ...base, backend, workflow: null, limits: null, maxAwaiting: null, stateFile: null });
+  if (backend === 'local') return Object.freeze({ ...base, backend, workflow: null, limits: null, stateFile: null });
   if (trustMode !== 'production') fail('SA_BUILD_BACKEND=workflow takes production trust only: the signing workflow signs with the production key');
   // Its key signs for anyone who passes the gates, so it is testnet-only (docs/builder-kms-signing.md): Base mainnet gets another key and another decision.
   if (chainId === null || chainId === MAINNET_CHAIN_ID) fail('SA_BUILD_BACKEND=workflow needs SA_CHAIN_ID, and is refused on Base mainnet: the key it signs with is testnet-only');
@@ -299,7 +299,6 @@ function buildsConfig(env, trustMode, chainId) {
       sweepMs: integer(env, 'SA_BUILD_SWEEP_MS', 300000, { min: 1 }),
       artifactMaxBytes: integer(env, 'SA_BUILD_ARTIFACT_MAX_BYTES', 64 * 1024 * 1024, { min: 1024 }),
     }),
-    maxAwaiting: integer(env, 'SA_BUILD_MAX_AWAITING', 8, { min: 1, max: 1000 }),
     limits: Object.freeze({
       perWallet: integer(env, 'SA_BUILD_LIMIT_PER_WALLET', 3, { min: 1 }),
       perRepoOwner: integer(env, 'SA_BUILD_LIMIT_PER_REPO_OWNER', 5, { min: 1 }),

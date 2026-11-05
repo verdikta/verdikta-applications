@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { codeReview } from '../../src/common.js';
 import { parseConfig } from '../../src/config.js';
 import { attest, loadSigningKey, productionKeyProblem, signingTrust } from '../../src/signing.js';
-import { ACTION_PINS, KMS_SIGNER_ENV, signConfig } from '../../action/services.js';
+import { ACTION_PINS, KMS_SIGNER_ENV, signConfig, signingMode } from '../../action/services.js';
 import { KMS_RAW_MESSAGE_BYTES, kmsSignArgs } from '../../action/kms-sign.js';
 import { liveCheck } from '../../action/kms-live-check.js';
 import { ACCOUNT, KEY_ARN, ROLE_ARN, SIGNER, ed25519Pair, installAwsStub, oidcEndpoint, runSigner } from '../helpers/awsStub.js';
@@ -27,6 +27,7 @@ const PUBLISH_AS = 'ghcr.io/verdikta/stake-env';
 const CLI_IN_PROCESS = fileURLToPath(new URL('../helpers/signInProcess.js', import.meta.url));
 const VERIFY_IN_PROCESS = fileURLToPath(new URL('../helpers/verifyInProcess.js', import.meta.url));
 const TRUST_STUB = fileURLToPath(new URL('../helpers/trustStub.cjs', import.meta.url));
+const SERVICES = fileURLToPath(new URL('../../action/services.js', import.meta.url));
 const LIVE_CHECK = fileURLToPath(new URL('../../action/kms-live-check.js', import.meta.url));
 // What this checkout's pinned @verdikta/common holds. A release holding the key isn't published yet, so
 // today this is false; the tests below say what must be true on each side of moving the pin.
@@ -226,6 +227,22 @@ test('signConfig: production names the KMS signer through the command route, and
   assert.deepEqual(parsed.signing.key.command, [process.execPath, SIGNER]);
   assert.equal(loadSigningKey(parsed.signing.key, { env: {} }).trust, 'production');
   assert.deepEqual(signConfig({ signing: 'dev', publishAs: PUBLISH_AS }).signing, { key: 'dev' });
+});
+
+test('the signing mode is exact: GitHub\'s conditions ignore case, so Production would look like production to them and not to the build\'s checks', () => {
+  assert.equal(signingMode('dev'), 'dev');
+  assert.equal(signingMode('production'), 'production');
+  for (const mode of ['Production', 'PRODUCTION', 'DEV', 'prod', '', undefined]) assert.throws(() => signingMode(mode), /exactly/, String(mode));
+  // start refuses it first, before Docker, a checkout or anything else: no digest is ever handed on.
+  const dir = tmp();
+  try {
+    const r = spawnSync(process.execPath, [SERVICES, 'start', '--dir', dir, '--publish-as', PUBLISH_AS, '--spec', path.join(dir, 'none.json'), '--signing', 'Production'], { encoding: 'utf8' });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /exactly dev or production/);
+    assert.deepEqual(fs.readdirSync(dir), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('a config holds names only: no key reference, account or token in sign.json', () => {

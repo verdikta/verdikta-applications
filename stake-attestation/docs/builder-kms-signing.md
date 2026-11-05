@@ -86,7 +86,8 @@ if the account doesn't have it.
     "Condition": {
       "StringEquals": {
         "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-        "token.actions.githubusercontent.com:sub": "repo:verdikta/<caller>:environment:stake-attestation-signing",
+        "token.actions.githubusercontent.com:sub": "<the subject, below>",
+        "token.actions.githubusercontent.com:environment": "stake-attestation-signing",
         "token.actions.githubusercontent.com:repository_id": "<the caller's numeric repository id>",
         "token.actions.githubusercontent.com:ref": "refs/heads/main",
         "token.actions.githubusercontent.com:job_workflow_ref": "verdikta/verdikta-applications/.github/workflows/stake-attestation-builder-sign.yml@<commit>"
@@ -95,6 +96,15 @@ if the account doesn't have it.
   }]
 }
 ```
+
+The subject takes one of two forms, and IAM requires it (it must also not be only a wildcard):
+
+- A repository created before July 15, 2026, not opted in to immutable subject claims, and not renamed or transferred
+  since: `repo:verdikta/<caller>:environment:stake-attestation-signing`.
+- Any other repository: `repo:verdikta@<owner-id>/<caller>@<repository-id>:environment:stake-attestation-signing`.
+
+Use the form the caller's repository has. A wrong one denies every signature, and fails safe. The job's first step
+prints the `sub` it presents, so a first run tells you which it is.
 
 Its only permission:
 

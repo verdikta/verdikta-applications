@@ -51,6 +51,16 @@ export function builderConfig({ dir, registryPort, runnerPort, publishAs, spec, 
 }
 
 /**
+ * The signing mode, exactly. GitHub's expressions compare strings without regard to case, so the workflow's
+ * own conditions take `Production` for production, while the rules here would take it for not production:
+ * that build would skip production's checks and still hand its digest on to be signed.
+ */
+export function signingMode(signing) {
+  if (signing !== 'dev' && signing !== 'production') throw new Error('signing must be exactly dev or production');
+  return signing;
+}
+
+/**
  * Stops a production run while @verdikta/common's trusted set doesn't hold the pinned key: every arbiter
  * would refuse what it signs. A test may name the set; verification itself reads only common's.
  */
@@ -167,8 +177,9 @@ export function pinnedAllowlist(runnerDir) {
 }
 
 async function start(opts) {
+  const signing = signingMode(opts.signing ?? 'dev');
   // Before anything is built or published: a production listing that can't be signed should stop here.
-  if (opts.signing === 'production') assertBuilderKeyTrusted();
+  if (signing === 'production') assertBuilderKeyTrusted();
   const dir = path.resolve(opts.dir);
   const spec = JSON.parse(fs.readFileSync(opts.spec, 'utf8'));
   fs.mkdirSync(path.join(dir, 'tmp'), { recursive: true, mode: 0o700 });
@@ -188,7 +199,7 @@ async function start(opts) {
   const runnerDir = path.join(arbiter, 'code-runner');
   sh('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: runnerDir });
 
-  const note = publishTargetNote({ publishAs: opts['publish-as'], signing: opts.signing ?? 'dev', arbiter: pinnedAllowlist(runnerDir) });
+  const note = publishTargetNote({ publishAs: opts['publish-as'], signing, arbiter: pinnedAllowlist(runnerDir) });
   if (note?.refuse) throw new Error(note.text);
   if (note) process.stdout.write(`::warning::${note.text}\n`);
 

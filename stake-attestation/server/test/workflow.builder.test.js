@@ -45,10 +45,9 @@ describe('the dispatch', () => {
     const [{ body, authorization, accept }] = stub.state.dispatches;
     assert.equal(body.ref, 'main');
     assert.deepEqual(Object.keys(body).sort(), ['inputs', 'ref']);
-    assert.deepEqual(Object.keys(body.inputs).sort(), ['auth', 'chain-id', 'correlation-id', 'maker', 'request']);
+    assert.deepEqual(Object.keys(body.inputs).sort(), ['auth', 'correlation-id', 'maker', 'request']);
     assert.equal(body.inputs['correlation-id'], `testnet-${input.jobId}`);
     assert.equal(body.inputs.maker, input.maker);
-    assert.equal(body.inputs['chain-id'], '');
     for (const k of ['request', 'auth']) assert.match(body.inputs[k], /^[A-Za-z0-9+/]+={0,2}$/, k);
     assert.equal(decodeSiteRequest(body.inputs.request), input.signedBody, 'the bytes the wallet signed for, exactly');
     assert.equal(decodeSiteAuth(body.inputs.auth).nonce, input.auth.nonce);
@@ -58,15 +57,14 @@ describe('the dispatch', () => {
     assert.ok(stub.state.reads.filter((r) => r.path.endsWith('/dispatches')).every((r) => r.path === `/repos/${stub.repo}/actions/workflows/${stub.file}/dispatches`));
   });
 
-  test('a contract listing names its chain, so the caller can pick the explorer from its own variable; the URL is never an input', async () => {
+  test('a contract listing sends its stake deployment, and nothing that chooses an explorer: the source job picks by the signed chain', async () => {
     const draft = { ...draftSpec(), artifact: { kind: 'contract', chainId: 84532, address: '0x5B38Da6a701c568545dCfcB03FcB875f56beddC4' } };
     const input = buildInput({ draft });
     input.deploymentProof = { signer: draft.artifact.address, signature: `0x${'1'.repeat(130)}`, creationTx: null, stakeChainId: 84532, stakeContract: draft.artifact.address };
     const { stub, builder } = await setup({ stub: { script: () => ({ statuses: [failed()] }) } });
     await builder.build(input);
     const { inputs } = stub.state.dispatches[0].body;
-    assert.equal(inputs['chain-id'], '84532');
-    assert.equal(Object.keys(inputs).some((k) => /explorer|url/i.test(k)), false);
+    assert.equal(Object.keys(inputs).some((k) => /explorer|url|chain/i.test(k)), false);
     const auth = decodeSiteAuth(inputs.auth);
     assert.equal(auth.stakeChainId, 84532);
     assert.equal(auth.stakeContract, draft.artifact.address);
@@ -241,6 +239,14 @@ describe('a restart', () => {
     assert.deepEqual([...stub.state.cancels].sort(), mine.map((r) => r.id).sort());
     assert.equal(stub.state.cancels.includes(done.id), false);
     for (const r of others) assert.equal(stub.state.cancels.includes(r.id), false, r.display_title);
+  });
+
+  test('an old run stays in reach however many runs came after it: re-run, or left over from an outage', async () => {
+    const { stub, builder } = await setup();
+    const old = stub.addRun({ display_title: `testnet-${'1'.repeat(32)}`, status: 'in_progress' });
+    for (let i = 0; i < 350; i += 1) stub.addRun({ display_title: `testnet-${'2'.repeat(32)}`, status: 'completed', conclusion: 'success' });
+    await builder.sweep();
+    assert.deepEqual(stub.state.cancels, [old.id]);
   });
 
   test('the sweep leaves alone a run it is following or still looking for, and cancels a second run under the same id', async () => {

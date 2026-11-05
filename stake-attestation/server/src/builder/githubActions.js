@@ -91,9 +91,9 @@ export function createGithubActions({ apiUrl, repo, file, ref, tokenEnv, request
       const answer = await call('POST', `${workflow}/dispatches`, { body: { ref, inputs } });
       return Number.isSafeInteger(answer?.workflow_run_id) ? answer.workflow_run_id : null;
     },
-    /** The workflow's runs from the branch, by dispatch, newest first. */
-    async listRuns({ page = 1, perPage = 100 } = {}) {
-      const q = new URLSearchParams({ event: 'workflow_dispatch', branch: ref, per_page: String(perPage), page: String(page) });
+    /** The workflow's runs from the branch, by dispatch, newest first; with `status`, only those. */
+    async listRuns({ status, page = 1, perPage = 100 } = {}) {
+      const q = new URLSearchParams({ event: 'workflow_dispatch', branch: ref, per_page: String(perPage), page: String(page), ...(status ? { status } : {}) });
       const answer = await call('GET', `${workflow}/runs?${q}`);
       return Array.isArray(answer?.workflow_runs) ? answer.workflow_runs : [];
     },

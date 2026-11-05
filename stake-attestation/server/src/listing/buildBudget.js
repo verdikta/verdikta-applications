@@ -57,12 +57,15 @@ export function createBuildBudget({ file, limits, now = Date.now, logger }) {
   } catch { /* the write says so, and refuses */ }
   let entries = read(file);
   if (entries === null) logger.error(`the build limits' state (${BUILD_BUDGET_FILE}) cannot be read: no build starts until it is fixed or removed`);
+  // reservations of this server's queued requests, which may wait longer than the window: they stay until their
+  // build starts or they are given back. A restart loses those requests, so their entries then age out as usual.
+  const waiting = new Set();
   const hours = Math.round(limits.windowMs / 3600000);
   const unavailable = () => new BuildLimitError(503, 'BUILD_BUDGET_UNAVAILABLE', 'the site cannot keep its build limits just now, so it starts no build; try again later');
 
   const current = () => {
     const from = now() - limits.windowMs;
-    entries = entries.filter((e) => e.at >= from);
+    entries = entries.filter((e) => e.at >= from || waiting.has(e.id));
     return entries;
   };
   /** Whether the file now says what memory says. */
@@ -104,10 +107,11 @@ export function createBuildBudget({ file, limits, now = Date.now, logger }) {
         list.pop();
         throw unavailable();
       }
+      waiting.add(id);
     },
 
     /**
-     * The repository's owner, once the proof stands and before the run starts.
+     * The repository's owner, once the proof stands and before the run starts. The window counts from here.
      * @throws {BuildLimitError} REPO_OWNER_BUILD_LIMIT, BUILD_BUDGET_UNAVAILABLE
      */
     chargeOwner(id, owner) {
@@ -117,15 +121,19 @@ export function createBuildBudget({ file, limits, now = Date.now, logger }) {
         throw new BuildLimitError(429, 'REPO_OWNER_BUILD_LIMIT', `this repository's owner has had its ${limits.perRepoOwner} builds in ${hours} h; try again later`);
       }
       const entry = list.find((e) => e.id === id);
-      if (entry) entry.owner = owner;
+      if (!entry) throw unavailable();
+      const was = { owner: entry.owner, at: entry.at };
+      Object.assign(entry, { owner, at: now() });
       if (!write()) {
-        if (entry) entry.owner = null;
+        Object.assign(entry, was);
         throw unavailable();
       }
+      waiting.delete(id);
     },
 
     /** No run started: its overall and owner places go back. The wallet's attempt stays spent. */
     release(id) {
+      waiting.delete(id);
       const entry = entries?.find((e) => e.id === id);
       if (!entry) return;
       entry.counted = false;

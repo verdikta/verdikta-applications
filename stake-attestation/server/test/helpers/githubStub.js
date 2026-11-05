@@ -80,7 +80,8 @@ export async function startGithubStub({ repo = REPO, file = FILE, answer = 204, 
         return res.end();
       }
       if (req.method === 'GET' && rest === `/workflows/${file}/runs`) {
-        const all = [...state.runs.values()].map((r) => r.run).reverse();
+        const wanted = url.searchParams.get('status');
+        const all = [...state.runs.values()].map((r) => r.run).filter((r) => !wanted || r.status === wanted).reverse();
         const page = Number(url.searchParams.get('page') ?? 1);
         const per = Number(url.searchParams.get('per_page') ?? 30);
         return json(res, 200, { total_count: all.length, workflow_runs: all.slice((page - 1) * per, page * per) });

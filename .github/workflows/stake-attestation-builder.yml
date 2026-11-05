@@ -64,6 +64,11 @@ on:
         required: false
         type: string
         default: ''
+      site-explorers:
+        description: With site-request, a JSON object from chain id to a keyless explorer API. The source job picks by the chain the signed request names, so no input can choose it.
+        required: false
+        type: string
+        default: ''
       known-issues:
         description: Path, in the calling repository, of known_issues.json, when the draft names one.
         required: false
@@ -130,6 +135,7 @@ jobs:
       spec: ${{ steps.site.outputs.spec || inputs.spec }}
       known-issues: ${{ steps.site.outputs.known-issues || inputs.known-issues }}
       deployment-proof: ${{ steps.site.outputs.deployment-proof || inputs.deployment-proof }}
+      explorer-api-url: ${{ steps.site.outputs.explorer-api-url || inputs.explorer-api-url }}
     steps:
       - name: One source for the draft
         env:
@@ -175,6 +181,7 @@ jobs:
         env:
           SITE_REQUEST: ${{ inputs.site-request }}
           SITE_AUTH: ${{ inputs.site-auth }}
+          SITE_EXPLORERS: ${{ inputs.site-explorers }}
           MAKER: ${{ inputs.maker }}
         run: node verdikta-builder/stake-attestation/builder/action/site-request.js unpack --out listing-source
       - name: Check out the draft and its known issues (the builder fetches the listed commit itself)
@@ -269,7 +276,7 @@ jobs:
           RUNTIME: ${{ inputs.runtime }}
           SIGNING: ${{ inputs.signing }}
           SPEC: ${{ needs.source.outputs.spec }}
-          EXPLORER_API_URL: ${{ inputs.explorer-api-url }}
+          EXPLORER_API_URL: ${{ needs.source.outputs.explorer-api-url }}
         run: node "$VAB_BUILDER/action/services.js" start --dir "$VAB_WORK" --publish-as "$PUBLISH_REPOSITORY" --spec "listing-source/$SPEC" --runtime "$RUNTIME" --signing "$SIGNING" --explorer-url "$EXPLORER_API_URL"
       - name: Build, push to the loopback registry and validate
         id: build

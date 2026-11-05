@@ -253,6 +253,24 @@ describe('build slots', () => {
     assert.equal(stub.state.dispatches.length, 3, 'the wait ended, so the queue moved');
   });
 
+  test('the backlog\'s bound is hard: a place is held from a run\'s start, whatever the slots', async () => {
+    const naming = namingEveryone();
+    const { stub, s } = await setup({
+      checkRepository: naming.check,
+      script: () => ({ statuses: ['in_progress', 'in_progress', 'in_progress', 'waiting'] }),
+      env: { SA_BUILD_MAX_AWAITING: '2', SA_MAX_CONCURRENT_BUILDS: '3', SA_BUILD_APPROVAL_DEADLINE_MS: '150' },
+    });
+    const views = [];
+    for (let i = 0; i < 3; i += 1) {
+      naming.set(wallets[i].address);
+      views.push(await submit(s, wallets[i], `owner${i}`));
+    }
+    await until(s, views[0].json.id, 'awaiting_approval');
+    await until(s, views[1].json.id, 'awaiting_approval');
+    assert.equal(stub.state.dispatches.length, 2, 'three slots, two places');
+    assert.equal((await (await s.get(`/api/listings/${views[2].json.id}`)).json()).status, 'queued');
+  });
+
   test('a hung run gives up its slot at the deadline, the run is cancelled, and the next listing builds', async () => {
     const naming = namingEveryone();
     const { stub, s } = await setup({ checkRepository: naming.check, script: () => ({ statuses: ['in_progress'] }), env: { SA_BUILD_RUN_DEADLINE_MS: '60' } });

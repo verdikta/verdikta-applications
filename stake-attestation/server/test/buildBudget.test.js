@@ -26,6 +26,7 @@ test('a wallet gets its number of attempts in the window, and then the next wind
   budget.admit('j2', A);
   refuses(() => budget.admit('j3', A), 'MAKER_BUILD_LIMIT');
   budget.admit('j4', B);
+  for (const id of ['j1', 'j2', 'j4']) budget.chargeOwner(id, `github.com/${id}`);
   clock.t += WINDOW + 1;
   budget.admit('j5', A);
 });
@@ -86,6 +87,24 @@ test('a state file that cannot be read or written refuses builds: a limit nobody
   const gone = createBuildBudget({ file: path.join(dir, 'a-file', 'build-budget.json'), limits: LIMITS, now: () => 1, logger: { error() {} } });
   refuses(() => gone.admit('j1', A), 'BUILD_BUDGET_UNAVAILABLE', 503);
   gone.release('j1');
+});
+
+test('a request queued past the window keeps its place, and is charged when it starts: nothing runs uncounted', () => {
+  const { budget, clock, make, file } = setup({ limits: { ...LIMITS, overall: 1 } });
+  budget.admit('queued', A);
+  clock.t += WINDOW * 3;
+  refuses(() => budget.admit('next', B), 'BUILD_BUDGET_EXHAUSTED');
+  budget.chargeOwner('queued', 'github.com/acme');
+  const entry = JSON.parse(fs.readFileSync(file, 'utf8')).entries.find((e) => e.id === 'queued');
+  assert.deepEqual([entry.owner, entry.at], ['github.com/acme', clock.t], 'the window counts from the start of the build');
+  refuses(() => budget.admit('next', B), 'BUILD_BUDGET_EXHAUSTED');
+  clock.t += WINDOW + 1;
+  budget.admit('next', B);
+  // a restart loses queued requests, so what they held ages out
+  budget.release('next');
+  budget.admit('lost', '0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db');
+  clock.t += WINDOW + 1;
+  make().admit('after', '0x78731D3Ca6b7E34aC0F824c42a7cC18A495cabaB');
 });
 
 test('its folder is made if it is not there', () => {

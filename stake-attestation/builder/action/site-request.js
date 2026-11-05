@@ -2,14 +2,16 @@
 // A listing request from the site, in Verdikta's caller (node P15; docs/builder-kms-signing.md). The request is a
 // stranger's, and a token holder could send anything as one, so two jobs that run nothing of the maker's check it:
 //
-//   unpack  the source job: the request is the maker's wallet's, and leaves as files at fixed names
+//   unpack  the source job: the request is the maker's wallet's, and leaves as files at fixed names. A contract
+//           listing's explorer is picked from SITE_EXPLORERS by the chain the signed request names, so nothing a
+//           dispatch sends can read one chain's deployment and attest it for another
 //   check   the sign job, on the build's output folder: again the maker's wallet's, and the built files keep every
 //           term it signed. An image anywhere but the repository the job names is refused
 //
 // So a stolen token gets no signature for a wallet it doesn't hold, and a build job that lied changes no term. Both
 // read SITE_REQUEST, SITE_AUTH and MAKER from the environment, never from an argument.
 //
-//   node action/site-request.js unpack --out <dir>      (writes spec, known-issues, deployment-proof to GITHUB_OUTPUT)
+//   node action/site-request.js unpack --out <dir>      (writes spec, known-issues, deployment-proof, explorer-api-url to GITHUB_OUTPUT)
 //   node action/site-request.js check --dir <dir> --publish-as <repository>
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,18 +24,38 @@ import { codeReview } from '../src/common.js';
 import { neutralize } from '../src/logSafe.js';
 
 const PLAIN_NAME = /^(?!\.\.?$)[A-Za-z0-9._-]{1,255}$/;
+const EXPLORER_URL = /^https:\/\/[A-Za-z0-9.-]+(?:\/[A-Za-z0-9._~/-]*)?$/;
 const fail = (code, detail) => { throw new SiteRequestError(code, detail); };
 
 /**
- * @param {{ request: string, auth: string, maker: string, out: string }} o
- * @returns {{ spec: string, knownIssues: string, deploymentProof: string }} file names in `out`, '' for none
+ * The explorer of the chain a contract listing names: what the owner's variable says, in the form it may take.
+ * @returns {string} '' for a repository listing, or a chain the variable doesn't hold: the build then says so
  * @throws {SiteRequestError}
  */
-export function unpackSiteRequest({ request, auth, maker, out }) {
+function explorerFor(spec, explorers) {
+  if (spec.artifact?.kind !== 'contract' || !explorers) return '';
+  let map;
+  try {
+    map = JSON.parse(explorers);
+  } catch {
+    fail('SITE_EXPLORERS_INVALID', 'STAKE_ATTESTATION_EXPLORERS is not JSON');
+  }
+  const url = map && typeof map === 'object' && Object.hasOwn(map, String(spec.artifact.chainId)) ? map[String(spec.artifact.chainId)] : '';
+  if (url && (typeof url !== 'string' || !EXPLORER_URL.test(url))) fail('SITE_EXPLORERS_INVALID', 'an explorer in STAKE_ATTESTATION_EXPLORERS is not a plain https URL');
+  return url;
+}
+
+/**
+ * @param {{ request: string, auth: string, maker: string, out: string, explorers?: string }} o
+ * @returns {{ spec: string, knownIssues: string, deploymentProof: string, explorerApiUrl: string }} file names in `out`, '' for none, and the explorer
+ * @throws {SiteRequestError}
+ */
+export function unpackSiteRequest({ request, auth, maker, out, explorers = '' }) {
   const { body, auth: a } = verifySiteRequest({ request, auth, maker }, { verifyMessage, getAddress });
+  const explorerApiUrl = explorerFor(body.spec, explorers);
   fs.mkdirSync(out, { recursive: true });
   fs.writeFileSync(path.join(out, 'draft.json'), `${JSON.stringify(body.spec, null, 2)}\n`);
-  const names = { spec: 'draft.json', knownIssues: '', deploymentProof: '' };
+  const names = { spec: 'draft.json', knownIssues: '', deploymentProof: '', explorerApiUrl };
   if (body.knownIssues !== undefined && body.knownIssues !== null) {
     names.knownIssues = 'known_issues.json';
     fs.writeFileSync(path.join(out, names.knownIssues), serializeKnownIssues(body.knownIssues));
@@ -82,8 +104,8 @@ function main(argv, env = process.env) {
   const sent = { request: env.SITE_REQUEST, auth: env.SITE_AUTH, maker: env.MAKER };
   try {
     if (command === 'unpack' && opts.out && env.GITHUB_OUTPUT) {
-      const n = unpackSiteRequest({ ...sent, out: opts.out });
-      fs.appendFileSync(env.GITHUB_OUTPUT, `spec=${n.spec}\nknown-issues=${n.knownIssues}\ndeployment-proof=${n.deploymentProof}\n`);
+      const n = unpackSiteRequest({ ...sent, out: opts.out, explorers: env.SITE_EXPLORERS });
+      fs.appendFileSync(env.GITHUB_OUTPUT, `spec=${n.spec}\nknown-issues=${n.knownIssues}\ndeployment-proof=${n.deploymentProof}\nexplorer-api-url=${n.explorerApiUrl}\n`);
       process.stdout.write('the maker\'s wallet signed this request\n');
     } else if (command === 'check' && opts.dir && opts['publish-as']) {
       checkSignedFiles({ ...sent, dir: opts.dir, publishAs: opts['publish-as'] });

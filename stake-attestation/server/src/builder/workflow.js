@@ -28,7 +28,9 @@ const PLAIN_NAME = /^(?!\.\.?$)[A-Za-z0-9._-]{1,255}$/;
 const IMAGE_NAMESPACE = 'ghcr.io/verdikta/';
 const MEMBER_MAX_BYTES = 16 * 1024 * 1024;
 const COLLECT_ATTEMPTS = 5;
-const SWEEP_PAGES = 3;
+const ACTIVE_STATUSES = Object.freeze(['queued', 'in_progress', 'waiting', 'requested', 'pending']);
+/** Pages of runs in one active state: more than a site can have, given the limits. */
+const SWEEP_PAGES = 10;
 const PER_PAGE = 100;
 /** A challenge's fields and a stake deployment, encoded, at their longest. */
 const AUTH_CHARS = 512;
@@ -111,13 +113,12 @@ export function createWorkflowBuilder(cfg, { env = process.env, logger }) {
   /** One of ours: started on the branch, by dispatch, in this repository. A title alone says nothing. */
   const fromUs = (run) => run?.event === 'workflow_dispatch' && run.head_branch === cfg.ref && String(run.repository?.full_name ?? cfg.repo).toLowerCase() === cfg.repo.toLowerCase();
 
-  function inputsFor({ jobId, signedBody, auth, maker, draft, deploymentProof }) {
+  function inputsFor({ jobId, signedBody, auth, maker, deploymentProof }) {
     return {
       'correlation-id': `${cfg.site}-${jobId}`,
       request: encodeSiteRequest(signedBody),
       auth: encodeSiteAuth({ ...auth, stakeChainId: deploymentProof?.stakeChainId ?? null, stakeContract: deploymentProof?.stakeContract ?? null }),
       maker,
-      'chain-id': draft.artifact?.kind === 'contract' ? String(draft.artifact.chainId) : '',
     };
   }
 
@@ -241,28 +242,30 @@ export function createWorkflowBuilder(cfg, { env = process.env, logger }) {
     return errored(conclusion ? `RUN_${conclusion.toUpperCase()}` : 'RUN_FAILED', `the run ended ${conclusion ?? 'without a conclusion the site reads'}; nothing was issued`);
   }
 
-  /** Cancels this site's active runs that no live build owns. Never throws on GitHub's account. */
+  /** Cancels this site's active runs that no live build owns, however old. Never throws on GitHub's account. */
   async function sweep() {
     const seen = new Set();
     try {
-      for (let page = 1; page <= SWEEP_PAGES; page += 1) {
-        const runs = await api.listRuns({ page, perPage: PER_PAGE });
-        for (const run of runs) {
-          seen.add(run.id);
-          if (run.status === 'completed' || !own.test(run.display_title ?? '') || !fromUs(run)) continue;
-          const owner = live.get(run.display_title);
-          if (owner === null || owner === run.id) continue;
-          const tries = (cancelTries.get(run.id) ?? 0) + 1;
-          cancelTries.set(run.id, tries);
-          try {
-            if (tries > 2) await api.forceCancel(run.id);
-            else await api.cancel(run.id);
-            logger.info(`sweep: cancelled run ${run.id}, which no build follows`);
-          } catch (err) {
-            logger.warn(`sweep: run ${run.id}: ${logCode(err)}`);
+      for (const status of ACTIVE_STATUSES) {
+        for (let page = 1; page <= SWEEP_PAGES; page += 1) {
+          const runs = await api.listRuns({ status, page, perPage: PER_PAGE });
+          for (const run of runs) {
+            seen.add(run.id);
+            if (run.status === 'completed' || !own.test(run.display_title ?? '') || !fromUs(run)) continue;
+            const owner = live.get(run.display_title);
+            if (owner === null || owner === run.id) continue;
+            const tries = (cancelTries.get(run.id) ?? 0) + 1;
+            cancelTries.set(run.id, tries);
+            try {
+              if (tries > 2) await api.forceCancel(run.id);
+              else await api.cancel(run.id);
+              logger.info(`sweep: cancelled run ${run.id}, which no build follows`);
+            } catch (err) {
+              logger.warn(`sweep: run ${run.id}: ${logCode(err)}`);
+            }
           }
+          if (runs.length < PER_PAGE) break;
         }
-        if (runs.length < PER_PAGE) break;
       }
       for (const id of cancelTries.keys()) if (!seen.has(id)) cancelTries.delete(id);
     } catch (err) {
@@ -282,7 +285,7 @@ export function createWorkflowBuilder(cfg, { env = process.env, logger }) {
     },
 
     /**
-     * @param {{ jobId: string, signedBody: string, auth: object, maker: string, draft: object, deploymentProof: object|null }} input
+     * @param {{ jobId: string, signedBody: string, auth: object, maker: string, deploymentProof: object|null }} input
      * @param {{ onRun?: Function, onState?: Function }} [hooks]
      */
     async build(input, hooks = {}) {

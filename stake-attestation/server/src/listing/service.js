@@ -143,7 +143,7 @@ export function createListingService({ config, builder, scanner, pinner, logger,
   const jobs = new Map();
   const queue = [];
   let running = 0;
-  // runs a reviewer has: they hold no slot, so they are bounded apart
+  // runs a reviewer has: they hold no slot, so they are bounded apart (backlogFull)
   let awaiting = 0;
   const workflow = config.builds.backend === 'workflow';
 
@@ -194,7 +194,8 @@ export function createListingService({ config, builder, scanner, pinner, logger,
     }
   }
 
-  const backlogFull = () => workflow && awaiting >= config.builds.maxAwaiting;
+  // Any run started may end up waiting, so its place is held from the start: the bound is hard.
+  const backlogFull = () => workflow && awaiting + running >= config.builds.maxAwaiting;
 
   /** Lets go of the job's build slot, if it has one, and lets the queue move. */
   function releaseSlot(job) {

@@ -42,7 +42,7 @@ describe('the caller, which the owner copies', () => {
   test('it starts only by workflow_dispatch, and asks for nothing at the top', () => {
     assert.deepEqual(Object.keys(caller.on), ['workflow_dispatch']);
     assert.deepEqual(caller.permissions, {});
-    assert.deepEqual(Object.keys(caller.on.workflow_dispatch.inputs).sort(), ['auth', 'chain-id', 'correlation-id', 'maker', 'request']);
+    assert.deepEqual(Object.keys(caller.on.workflow_dispatch.inputs).sort(), ['auth', 'correlation-id', 'maker', 'request']);
     assert.equal(caller['run-name'], '${{ inputs.correlation-id }}', 'how a server finds its run, also after a restart');
   });
 
@@ -79,8 +79,11 @@ describe('the caller, which the owner copies', () => {
       assert.equal(j.with['site-auth'], '${{ inputs.auth }}');
       assert.equal(j.with.maker, '${{ inputs.maker }}');
     }
-    assert.match(listing.with['explorer-api-url'], /^\$\{\{ fromJSON\(vars\.STAKE_ATTESTATION_EXPLORERS \|\| '\{\}'\)\[inputs\.chain-id\] \|\| '' \}\}$/);
-    assert.equal(Object.keys(caller.on.workflow_dispatch.inputs).some((k) => /explorer|url|ref|repo|file/i.test(k)), false);
+    assert.equal(listing.with['site-explorers'], '${{ vars.STAKE_ATTESTATION_EXPLORERS }}');
+    assert.equal(listing.with['explorer-api-url'], undefined);
+    assert.equal(Object.keys(caller.on.workflow_dispatch.inputs).some((k) => /explorer|chain|url|ref|repo|file/i.test(k)), false);
+    const start = steps('build').find((s) => /services\.js" start\b/.test(s.run ?? ''));
+    assert.equal(start.env.EXPLORER_API_URL, '${{ needs.source.outputs.explorer-api-url }}');
   });
 
   test('its name is the one the trust policy compares', () => {
@@ -247,7 +250,7 @@ describe('the source job opens the request', () => {
     const { request, auth } = await signedBy(WALLET, signedJson);
     const out = tmp();
     const r = unpackSiteRequest({ request, auth, maker: WALLET.address, out });
-    assert.deepEqual(r, { spec: 'draft.json', knownIssues: 'known_issues.json', deploymentProof: '' });
+    assert.deepEqual(r, { spec: 'draft.json', knownIssues: 'known_issues.json', deploymentProof: '', explorerApiUrl: '' });
     const body = JSON.parse(signedJson);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(out, 'draft.json'), 'utf8')), body.spec);
     assert.deepEqual(fs.readFileSync(path.join(out, 'known_issues.json')), serializeKnownIssues(ISSUES));
@@ -262,6 +265,24 @@ describe('the source job opens the request', () => {
     const r = unpackSiteRequest({ request, auth, maker: WALLET.address, out });
     assert.equal(r.deploymentProof, 'control-proof.json');
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(out, 'control-proof.json'), 'utf8')), { signer: WALLET.address, signature: proof.signature, creationTx: null, stakeChainId: 84532, stakeContract: WALLET.address });
+  });
+
+  test('a contract listing\'s explorer is the one for the chain the wallet signed: nothing sent can read one chain and attest another', async () => {
+    const spec = contractDraft();
+    const proof = { signer: WALLET.address, signature: `0x${'1'.repeat(130)}` };
+    const signedJson = requestOf({ spec, knownIssues: null, deploymentProof: proof });
+    const { request, auth } = await signedBy(WALLET, signedJson, { stake: { stakeChainId: 84532, stakeContract: WALLET.address } });
+    const chain = String(spec.artifact.chainId);
+    const go = (explorers) => unpackSiteRequest({ request, auth, maker: WALLET.address, out: tmp(), explorers });
+    assert.equal(go(JSON.stringify({ [chain]: 'https://right.example/api', 999999: 'https://wrong.example/api' })).explorerApiUrl, 'https://right.example/api');
+    assert.equal(go(JSON.stringify({ 999999: 'https://wrong.example/api' })).explorerApiUrl, '', 'none for its chain: the build refuses by its own code');
+    assert.equal(go('').explorerApiUrl, '');
+    for (const bad of ['{', JSON.stringify({ [chain]: 'http://plain.example' }), JSON.stringify({ [chain]: 'https://x.example/a\nspec=evil' }), JSON.stringify({ [chain]: 42 })]) {
+      assert.throws(() => go(bad), (e) => e.code === 'SITE_EXPLORERS_INVALID', bad);
+    }
+    const repoListing = requestOf();
+    const signed = await signedBy(WALLET, repoListing);
+    assert.equal(unpackSiteRequest({ ...signed, maker: WALLET.address, out: tmp(), explorers: '{' }).explorerApiUrl, '', 'a repository listing reads no explorer');
   });
 
   test('a stolen token names a project\'s maker and a key of its own: without that wallet\'s signature, nothing starts', async () => {
@@ -282,7 +303,7 @@ describe('the source job opens the request', () => {
     const outputs = path.join(dir, 'outputs');
     fs.writeFileSync(outputs, '');
     execFileSync(process.execPath, [SCRIPT, 'unpack', '--out', path.join(dir, 'source')], { env: { PATH: process.env.PATH, SITE_REQUEST: request, SITE_AUTH: auth, MAKER: WALLET.address, GITHUB_OUTPUT: outputs } });
-    assert.deepEqual(fs.readFileSync(outputs, 'utf8').trim().split('\n').sort(), ['deployment-proof=', 'known-issues=known_issues.json', 'spec=draft.json']);
+    assert.deepEqual(fs.readFileSync(outputs, 'utf8').trim().split('\n').sort(), ['deployment-proof=', 'explorer-api-url=', 'known-issues=known_issues.json', 'spec=draft.json']);
     const r = spawnSync(process.execPath, [SCRIPT, 'unpack', '--out', path.join(dir, 'other')], { encoding: 'utf8', env: { PATH: process.env.PATH, SITE_REQUEST: '$(curl evil)', SITE_AUTH: auth, MAKER: WALLET.address, GITHUB_OUTPUT: outputs } });
     assert.equal(r.status, 1);
     assert.match(r.stderr, /SITE_REQUEST_INVALID/);

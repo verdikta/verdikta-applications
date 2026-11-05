@@ -12,7 +12,7 @@ name: Stake attestation site build
 # What a dispatch can choose is the listing, inside `request`, and nothing about what runs: the workflows, the
 # commit, the environment and where the image goes are written here. The request comes as base64 of gzip, and is
 # the exact bytes the maker's wallet signed for, which the source and sign jobs check. The explorer of a contract
-# listing's chain comes from a repository variable, which the server's token can't change.
+# listing comes from a repository variable the server's token can't change, by the chain the signed request names.
 #
 # With required reviewers on the environment the run waits at `sign`, a state the site shows; with them off it
 # doesn't. Nothing here changes either way.
@@ -36,11 +36,6 @@ on:
         description: The wallet that will send list(), as the request names it.
         required: true
         type: string
-      chain-id:
-        description: A contract listing's chain, which picks its explorer from STAKE_ATTESTATION_EXPLORERS. Empty for a repository listing.
-        required: false
-        type: string
-        default: ''
 
 permissions: {}
 
@@ -58,7 +53,7 @@ jobs:
       publish-repository: ghcr.io/verdikta/stake-env
       signing: production
       artifact-name: site
-      explorer-api-url: ${{ fromJSON(vars.STAKE_ATTESTATION_EXPLORERS || '{}')[inputs.chain-id] || '' }}
+      site-explorers: ${{ vars.STAKE_ATTESTATION_EXPLORERS }}
   sign:
     needs: listing
     uses: verdikta/verdikta-applications/.github/workflows/stake-attestation-builder-sign.yml@BUILDER_COMMIT

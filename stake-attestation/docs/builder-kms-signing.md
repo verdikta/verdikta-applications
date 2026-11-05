@@ -118,14 +118,15 @@ with no builder config says the scan errored, and the listing goes on.
 
 **Deadlines and slots.** A slot is held only while a run uses a runner. A run's time not waiting for a person has a
 deadline of 3 h, against job limits that add up to 145 min, and is cancelled at it. A run waiting for a person holds no
-slot, and at most 8 can wait before no new one starts. If nobody answers in 72 h, the run is cancelled, nothing is
+slot, and at most 8 can wait: a run's place is held from its start, so no more than 8 are ever waiting or on their way to it. If nobody answers in 72 h, the run is cancelled, nothing is
 signed, and the maker has to submit again: that counts as another build, and the image it published stays. GitHub's own
 limit on that wait is longer (predicted: 30 days). So at most 8 listings can wait at once, and a stranger able to fill
 those places with git-host accounts stops new builds until a reviewer clears them or 72 h pass. That place is only
 reachable with reviewers on.
 
 **A lost run or a restart.** Jobs live in memory, so a restart abandons what it started. A sweep, at start and every 5
-min, cancels any active run under this site's prefix that no live build owns, and forces the cancel after two tries.
+min, cancels any active run under this site's prefix that no live build owns, however old (it asks for active runs by
+state), and forces the cancel after two tries.
 This also covers a run that appeared late and a dispatch whose answer was lost. A person's test by hand, under another
 name, is left alone. A restart gives nothing back: the attempts stay charged, and the counts live in `build-budget.json`.
 
@@ -135,7 +136,7 @@ name, is left alone. A restart gives nothing back: the attempts stay charged, an
 |---|---|---|
 | A wallet: 3 attempts in 24 h, and one in flight | once the wallet has signed; a refused proof still costs its wallet the attempt | gets round it |
 | A repository's owner on its git host: 5 builds in 24 h, and one in flight | once the proof stands | doesn't get round it; several git-host accounts do |
-| Everyone: 20 builds in 24 h | at the request, given back if no run starts | nothing gets round it |
+| Everyone: 20 builds in 24 h | at the request, given back if no run starts; a request queued past the window keeps its place | nothing gets round it |
 
 One slot and those limits bound the spend at about 29 job-hours a day: at most 24 h of `source`, `build` and `publish`,
 and 20 × 15 min of `sign`. A public repository's standard runners bill no minutes (predicted), so what's at risk is the
@@ -147,11 +148,12 @@ makers then wait for the next window. Requests with bad proofs from fresh wallet
 they can keep the queue full, each for up to the 2 min a proof check may take. What would stop them is a paid gate (a fee or deposit before the build), an
 allowlist of makers, or a person approving before the build. None is built here.
 
-**Inputs.** A dispatch's only inputs are the correlation id, the request and the wallet's signature as base64, the
-maker's address, and a chain id. A step takes them through its `env`, never `${{ }}` inside `run` (pinned by a test).
+**Inputs.** A dispatch's only inputs are the correlation id, the request and the wallet's signature as base64, and the
+maker's address. A step takes them through its `env`, never `${{ }}` inside `run` (pinned by a test).
 The workflow files, the commit, the environment and where the image goes are written in the caller. A request over
-what a dispatch can carry is refused at the challenge, as `DISPATCH_REQUEST_TOO_LARGE`. An explorer comes from a
-repository variable, chosen by chain, so no input names one.
+what a dispatch can carry is refused at the challenge, as `DISPATCH_REQUEST_TOO_LARGE`. A contract listing's explorer
+comes from a repository variable the token can't change, by the chain the signed request names, so nothing sent can
+read one chain's deployment and attest it for another.
 
 **Where the image goes.** A listing's image goes to `ghcr.io/verdikta/stake-env`, pushed by the builder workflow (owner
 decision Q42 (a)), and arbiters' default allowlist stays as it is. **A stranger's image lands there before any review**,

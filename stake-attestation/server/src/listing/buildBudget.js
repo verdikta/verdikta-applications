@@ -65,7 +65,7 @@ export function createBuildBudget({ file, limits, now = Date.now, logger }) {
 
   const current = () => {
     const from = now() - limits.windowMs;
-    entries = entries.filter((e) => e.at >= from || waiting.has(e.id));
+    entries = entries.filter((e) => Math.max(e.at, e.startedAt ?? 0) >= from || waiting.has(e.id));
     return entries;
   };
   /** Whether the file now says what memory says. */
@@ -96,7 +96,8 @@ export function createBuildBudget({ file, limits, now = Date.now, logger }) {
     admit(id, maker) {
       if (entries === null) throw unavailable();
       const list = current();
-      if (list.filter((e) => e.maker === maker).length >= limits.perWallet) {
+      const from = now() - limits.windowMs;
+      if (list.filter((e) => e.maker === maker && (e.at >= from || waiting.has(e.id))).length >= limits.perWallet) {
         throw new BuildLimitError(429, 'MAKER_BUILD_LIMIT', `this wallet has used its ${limits.perWallet} build attempts in ${hours} h; try again later`);
       }
       if (list.filter((e) => e.counted).length >= limits.overall) {
@@ -111,7 +112,8 @@ export function createBuildBudget({ file, limits, now = Date.now, logger }) {
     },
 
     /**
-     * The repository's owner, once the proof stands and before the run starts. The window counts from here.
+     * The repository's owner, once the proof stands and before the run starts. For the owner and overall limits the
+     * window counts from here; a wallet's attempt keeps the time it was made.
      * @throws {BuildLimitError} REPO_OWNER_BUILD_LIMIT, BUILD_BUDGET_UNAVAILABLE
      */
     chargeOwner(id, owner) {
@@ -122,10 +124,11 @@ export function createBuildBudget({ file, limits, now = Date.now, logger }) {
       }
       const entry = list.find((e) => e.id === id);
       if (!entry) throw unavailable();
-      const was = { owner: entry.owner, at: entry.at };
-      Object.assign(entry, { owner, at: now() });
+      entry.owner = owner;
+      entry.startedAt = now();
       if (!write()) {
-        Object.assign(entry, was);
+        entry.owner = null;
+        delete entry.startedAt;
         throw unavailable();
       }
       waiting.delete(id);

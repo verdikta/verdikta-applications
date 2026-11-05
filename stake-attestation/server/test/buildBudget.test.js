@@ -96,7 +96,8 @@ test('a request queued past the window keeps its place, and is charged when it s
   refuses(() => budget.admit('next', B), 'BUILD_BUDGET_EXHAUSTED');
   budget.chargeOwner('queued', 'github.com/acme');
   const entry = JSON.parse(fs.readFileSync(file, 'utf8')).entries.find((e) => e.id === 'queued');
-  assert.deepEqual([entry.owner, entry.at], ['github.com/acme', clock.t], 'the window counts from the start of the build');
+  assert.deepEqual([entry.owner, entry.startedAt], ['github.com/acme', clock.t], 'the overall window counts from the start of the build');
+  assert.equal(entry.at, clock.t - WINDOW * 3, 'and the wallet\'s attempt keeps its own time');
   refuses(() => budget.admit('next', B), 'BUILD_BUDGET_EXHAUSTED');
   clock.t += WINDOW + 1;
   budget.admit('next', B);
@@ -105,6 +106,16 @@ test('a request queued past the window keeps its place, and is charged when it s
   budget.admit('lost', '0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db');
   clock.t += WINDOW + 1;
   make().admit('after', '0x78731D3Ca6b7E34aC0F824c42a7cC18A495cabaB');
+});
+
+test('a wallet\'s attempt counts from when it was made, however long it queued', () => {
+  const { budget, clock } = setup({ limits: { ...LIMITS, perWallet: 1, overall: 10 } });
+  budget.admit('j1', A);
+  refuses(() => budget.admit('j2', A), 'MAKER_BUILD_LIMIT');
+  clock.t += WINDOW * 2;
+  refuses(() => budget.admit('j2', A), 'MAKER_BUILD_LIMIT');
+  budget.chargeOwner('j1', 'github.com/acme');
+  budget.admit('j3', A);
 });
 
 test('its folder is made if it is not there', () => {

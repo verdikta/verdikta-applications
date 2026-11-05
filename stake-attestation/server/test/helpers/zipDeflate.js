@@ -5,8 +5,12 @@ import zlib from 'node:zlib';
 
 import { crc32 } from '../../src/zip.js';
 
-/** @param {{ name: string, bytes: Buffer, declaredSize?: number }[]} entries */
-export function zipDeflated(entries) {
+/**
+ * @param {{ name: string, bytes: Buffer, declaredSize?: number }[]} entries
+ * @param {{ descriptors?: boolean }} [o] - sizes and CRC after each member and only in the central
+ *   directory, as a streaming writer leaves them (actions/upload-artifact's archives)
+ */
+export function zipDeflated(entries, { descriptors = false } = {}) {
   const locals = [];
   const centrals = [];
   let offset = 0;
@@ -18,18 +22,30 @@ export function zipDeflated(entries) {
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
-    local.writeUInt16LE(0x0800, 6);
+    local.writeUInt16LE(descriptors ? 0x0808 : 0x0800, 6);
     local.writeUInt16LE(8, 8);
-    local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(data.length, 18);
-    local.writeUInt32LE(size, 22);
+    if (!descriptors) {
+      local.writeUInt32LE(crc, 14);
+      local.writeUInt32LE(data.length, 18);
+      local.writeUInt32LE(size, 22);
+    }
     local.writeUInt16LE(nameBytes.length, 26);
     locals.push(local, nameBytes, data);
+    let trailer = 0;
+    if (descriptors) {
+      const d = Buffer.alloc(16);
+      d.writeUInt32LE(0x08074b50, 0);
+      d.writeUInt32LE(crc, 4);
+      d.writeUInt32LE(data.length, 8);
+      d.writeUInt32LE(size, 12);
+      locals.push(d);
+      trailer = d.length;
+    }
     const central = Buffer.alloc(46);
     central.writeUInt32LE(0x02014b50, 0);
     central.writeUInt16LE(20, 4);
     central.writeUInt16LE(20, 6);
-    central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(descriptors ? 0x0808 : 0x0800, 8);
     central.writeUInt16LE(8, 10);
     central.writeUInt32LE(crc, 16);
     central.writeUInt32LE(data.length, 20);
@@ -37,7 +53,7 @@ export function zipDeflated(entries) {
     central.writeUInt16LE(nameBytes.length, 28);
     central.writeUInt32LE(offset, 42);
     centrals.push(central, nameBytes);
-    offset += local.length + nameBytes.length + data.length;
+    offset += local.length + nameBytes.length + data.length + trailer;
   }
   const directory = Buffer.concat(centrals);
   const end = Buffer.alloc(22);

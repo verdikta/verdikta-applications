@@ -1,7 +1,8 @@
 // Acceptance 4: attestation.json is signed with an Ed25519 key from config. A dev key is generated
-// per run and never leaves memory; the production key is a deploy secret (an environment
-// variable, or an external signer such as a KMS command, so the key never enters the builder).
-// The output passes validateAttestation in dev trust and fails it in production trust.
+// per run and never leaves memory, a PEM in an environment variable is a dev or test key, and the
+// production key is held by an external signer such as a KMS command, so it never enters the builder
+// (node P14; test/unit/kmsSigning.test.js). The output passes validateAttestation in dev trust and
+// fails it in production trust.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -81,15 +82,15 @@ test('the statement binds the image, platform, size, listing, file hashes, runne
   assert.equal(attestation.tools.semgrepRules, codeReview.SEMGREP_RULES_VERSION);
 });
 
-test('an environment key is read once, removed from the environment, and never shown', async () => {
+test('an environment key is a dev or test key: read once, removed from the environment, and never shown', async () => {
   const { pem, publicKey } = pemPair();
   const env = { VERDIKTA_BUILDER_KEY: pem, OTHER: 'x' };
   const key = loadSigningKey({ env: 'VERDIKTA_BUILDER_KEY' }, { env });
   assert.equal(env.VERDIKTA_BUILDER_KEY, undefined, 'child processes cannot inherit it');
   assert.equal(env.OTHER, 'x');
-  assert.equal(key.trust, 'production');
+  assert.equal(key.trust, 'dev');
   assert.equal(key.publicKey, publicKey);
-  assert.equal(key.devTrust(), null);
+  assert.deepEqual(key.devTrust(), { dev: true, keys: [{ publicKey }] });
   assert.ok(!JSON.stringify(key).includes('PRIVATE'));
   assert.throws(() => loadSigningKey({ env: 'MISSING_KEY' }, { env: {} }), /MISSING_KEY/);
   const bad = { BAD: '-----BEGIN PRIVATE KEY-----\nnot-a-key-at-all\n-----END PRIVATE KEY-----\n' };
@@ -99,8 +100,8 @@ test('an environment key is read once, removed from the environment, and never s
 });
 
 test('a production key whose id is not in @verdikta/common\'s trusted-builder set signs nothing (production verification would refuse it)', async () => {
-  const { pem } = pemPair();
-  const key = loadSigningKey({ env: 'K' }, { env: { K: pem } });
+  const { publicKey } = pemPair();
+  const key = loadSigningKey({ command: [process.execPath, SIGNER], publicKey });
   const { files, report } = accepted();
   await assert.rejects(attest({ files, report, key }), (err) => {
     assert.equal(err.code, 'SIGNING_KEY_NOT_TRUSTED');
@@ -132,8 +133,8 @@ test('an external signer (the KMS interface) signs the bytes on stdin; the build
 });
 
 test('a production key never signs a validation that ran in dev-only conditions', async () => {
-  const { pem } = pemPair();
-  const key = loadSigningKey({ env: 'K' }, { env: { K: pem } });
+  const { publicKey } = pemPair();
+  const key = loadSigningKey({ command: [process.execPath, SIGNER], publicKey });
   const { files, report } = accepted({ devOnly: [{ code: 'VALIDATED_ON_OTHER_PLATFORM', detail: 'linux/arm64' }] });
   await assert.rejects(attest({ files, report, key }), { code: 'SIGNING_DEV_ONLY_VALIDATION' });
   const runc = accepted({ runner: { version: '0.1.0', runtime: 'runc', platform: 'linux/amd64' } });

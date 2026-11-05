@@ -120,7 +120,6 @@ test('the image is published by a job of its own, which runs none of the maker\'
 test('signing is a separate job that receives only the build\'s outputs and checks them before it signs', () => {
   const s = job('sign');
   assert.deepEqual([s.needs].flat().sort(), ['build', 'publish']);
-  assert.equal(s.environment, '${{ inputs.signing-environment }}');
   assert.deepEqual(s.permissions, { contents: 'read' });
   for (const c of uses('sign', 'actions/checkout')) {
     assert.equal(c.with.repository, SELF, 'the builder only, never the caller\'s repository');
@@ -130,12 +129,10 @@ test('signing is a separate job that receives only the build\'s outputs and chec
   const step = steps('sign').find((x) => /verdikta-build-env\.js" sign\b/.test(x.run ?? ''));
   assert.match(step.run, /--expect-outputs "\$OUTPUTS_SHA256" --check-registry/);
   assert.equal(step.env.OUTPUTS_SHA256, '${{ needs.build.outputs.outputs-sha256 }}');
-  assert.match(step.env.VERDIKTA_BUILDER_KEY, /inputs\.signing == 'production' && secrets\.VERDIKTA_BUILDER_KEY/);
-  // The only secret the workflow reads, and only in this step.
-  const refs = [...text.matchAll(/secrets\.([A-Za-z_]+)/g)].map((m) => m[1]);
-  assert.deepEqual([...new Set(refs)], ['VERDIKTA_BUILDER_KEY']);
-  assert.equal(JSON.stringify(Object.fromEntries(Object.entries(wf.jobs).filter(([n]) => n !== 'sign'))).includes('secrets.'), false);
-  assert.ok(wf.on.workflow_call.secrets.VERDIKTA_BUILDER_KEY.required === false);
+  // This job signs with a key made for the run. A production signature is the signing workflow's
+  // (stake-attestation-builder-sign.yml; test/unit/kmsWorkflow.test.js): this file reads no secret at all.
+  assert.match(steps('sign').find((x) => /services\.js" sign-config/.test(x.run ?? '')).run, /--signing dev\b/);
+  assert.doesNotMatch(text, /secrets\./);
 });
 
 test('pins: the code-runner the Docker tests run, registry:2 by digest, common\'s gVisor release with its SHA-512', () => {
@@ -163,7 +160,6 @@ test('services.js writes a build config the builder accepts: a loopback staging 
   assert.deepEqual(contract.explorers, { 8453: { apiUrl: 'https://base.blockscout.com/api' } }, 'a keyless explorer: no key in the build job');
   assert.throws(() => builderConfig({ dir, registryPort: 41000, runnerPort: 42000, publishAs: 'ghcr.io/acme/stake-env:latest', spec: draftSpec() }));
   assert.deepEqual(signConfig({ signing: 'dev', publishAs: 'ghcr.io/acme/stake-env' }).signing, { key: 'dev' });
-  assert.deepEqual(signConfig({ signing: 'production', publishAs: 'ghcr.io/acme/stake-env' }).signing, { key: { env: 'VERDIKTA_BUILDER_KEY' } });
   assert.throws(() => signConfig({ signing: 'maybe', publishAs: 'ghcr.io/acme/stake-env' }));
 });
 

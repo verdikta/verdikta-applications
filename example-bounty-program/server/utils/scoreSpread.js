@@ -47,8 +47,12 @@ const MAX_REPORT_DAYS = LOOKBACK_DAYS;
 // A round's reveals (including a late 4th) land within minutes of the request.
 // Rounds younger than this are re-read on the next pass; older ones are final.
 const SETTLE_SECONDS = 60 * 60;
-const EVENT_WINDOW_BLOCKS = 2400;  // blocks after the request to look for reveals (~80 min on Base)
-const PRE_REQUEST_BLOCKS = 60;     // slack before the estimated request block
+// Windows are in seconds and converted with the block time measured near the
+// round: Base Sepolia's block time changed (2 s -> 0.2 s), so a count of blocks
+// means different spans of time on different dates and networks.
+const EVENT_WINDOW_SECONDS = 30 * 60; // after the request: commits, reveals, a late 4th reveal
+const PRE_REQUEST_SECONDS = 60;       // slack before the located request block
+const LOG_CHUNK_BLOCKS = 9000;        // keyless/public RPCs reject eth_getLogs over 10,000 blocks
 const ROUND_PARALLEL = 3;
 // Round sd at or below this: the arbiters agree. Above OUTLIER_SD: one or more
 // arbiters disagree strongly (usually one outlier, which the closest-pair rule drops).
@@ -360,6 +364,57 @@ async function withRetry(fn, tries = 4) {
   throw err;
 }
 
+/** getLogs over [fromBlock, toBlock] in chunks under the RPC's range cap, in block order. */
+async function getLogsChunked(provider, filter, fromBlock, toBlock) {
+  const out = [];
+  for (let start = fromBlock; start <= toBlock; start += LOG_CHUNK_BLOCKS) {
+    const end = Math.min(toBlock, start + LOG_CHUNK_BLOCKS - 1);
+    out.push(...await withRetry(() => provider.getLogs({ ...filter, fromBlock: start, toBlock: end })));
+  }
+  return out;
+}
+
+async function blockTimestamp(ctx, n) {
+  ctx.tsCache = ctx.tsCache || new Map();
+  if (!ctx.tsCache.has(n)) {
+    const b = await withRetry(() => ctx.provider.getBlock(n));
+    if (!b) throw new Error(`block ${n} not returned by the RPC`);
+    ctx.tsCache.set(n, Number(b.timestamp));
+  }
+  return ctx.tsCache.get(n);
+}
+
+/**
+ * The block mined at (or just before) unix time `ts`, and the block time around it.
+ * Starts from a constant-block-time guess and corrects it with real block
+ * timestamps. Each step is a secant step using the local block time, kept inside a
+ * bracket [lo, hi] known to contain the answer; a step that would leave the bracket
+ * bisects instead. So a block-time change inside the look-back (Base Sepolia went
+ * from 2 s to 0.2 s) cannot make the search oscillate. Usually 2-3 steps.
+ */
+async function locateBlock(ctx, ts) {
+  const { head, headTs } = ctx;
+  let lo = 0;
+  let hi = head;
+  if (ts >= headTs) return { block: head, blockTime: ctx.blockTime };
+  let n = Math.max(1, Math.min(head - 1, head - Math.round((headTs - ts) / ctx.blockTime)));
+  let bt = ctx.blockTime;
+  for (let i = 0; i < 48; i++) {
+    const t = await blockTimestamp(ctx, n);
+    const back = Math.max(0, n - 300);
+    const tBack = await blockTimestamp(ctx, back);
+    if (n > back && t > tBack) bt = (t - tBack) / (n - back);
+    const diff = ts - t;
+    if (Math.abs(diff) <= Math.max(2, bt)) break;
+    if (diff > 0) lo = n; else hi = n;
+    if (hi - lo <= 1) { n = lo; break; }
+    let next = n + Math.round(diff / bt);
+    if (next <= lo || next >= hi) next = Math.floor((lo + hi) / 2);
+    n = next;
+  }
+  return { block: n, blockTime: bt };
+}
+
 /**
  * Read one round's reveals. ctx = { provider, aggregator (address), head, headTs, blockTime }.
  * `hintTs` (the submission time) decides when an unknown aggId is final.
@@ -367,7 +422,7 @@ async function withRetry(fn, tries = 4) {
  * never cached half-read; it is retried on the next pass.
  */
 async function fetchRound(ctx, aggId, hintTs = 0) {
-  const { provider, head, headTs, blockTime } = ctx;
+  const { provider, head, headTs } = ctx;
   const aggAddr = lc(ctx.aggregator);
   aggId = lc(aggId);
 
@@ -381,12 +436,12 @@ async function fetchRound(ctx, aggId, hintTs = 0) {
     return { aggId, notFound: true, fetchedAt, settled: hintTs > 0 && headTs - hintTs > SETTLE_SECONDS, reveals: [] };
   }
 
-  // Base has a fixed block time, so the request block is known to within a few blocks.
-  const est = head - Math.round((headTs - startTs) / blockTime);
-  const fromBlock = Math.max(0, est - PRE_REQUEST_BLOCKS);
-  const toBlock = Math.min(head, est + EVENT_WINDOW_BLOCKS);
+  const at = await locateBlock(ctx, startTs);
+  const windowBlocks = Math.ceil(EVENT_WINDOW_SECONDS / at.blockTime);
+  const fromBlock = Math.max(0, at.block - Math.ceil(PRE_REQUEST_SECONDS / at.blockTime));
+  const toBlock = Math.min(head, at.block + windowBlocks);
   const topics = [ROUND_EVENTS.map((n) => AGG_IFACE.getEvent(n).topicHash), aggId];
-  const logs = await withRetry(() => provider.getLogs({ address: aggAddr, topics, fromBlock, toBlock }));
+  const logs = await getLogsChunked(provider, { address: aggAddr, topics }, fromBlock, toBlock);
   logs.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
 
   const selected = {};
@@ -416,6 +471,9 @@ async function fetchRound(ctx, aggId, hintTs = 0) {
       default: break;
     }
   }
+  // The aggregator has this round (startTs > 0), so its request event exists; not
+  // finding it means the window missed. Throw so the round is retried, not cached.
+  if (reqBlock == null) throw new Error(`request event not found in blocks ${fromBlock}-${toBlock}`);
 
   // Pair each reveal dispatch with its operator requestId: dispatchOracleRequest emits
   // ChainlinkRequested(id), then the aggregator emits RevealRequestDispatched(aggId, slot).
@@ -443,12 +501,10 @@ async function fetchRound(ctx, aggId, hintTs = 0) {
   if (slotByRequest.size) {
     const operators = [...new Set([...slotByRequest.values()].map((s) => selected[s]?.oracle).filter(Boolean))];
     const respTopic = OPERATOR_IFACE.getEvent('OracleResponse').topicHash;
-    const respLogs = operators.length ? await withRetry(() => provider.getLogs({
+    const respLogs = operators.length ? await getLogsChunked(provider, {
       address: operators,
-      topics: [respTopic, [...slotByRequest.keys()]],
-      fromBlock: revealReqBlock,
-      toBlock: Math.min(head, revealReqBlock + EVENT_WINDOW_BLOCKS)
-    })) : [];
+      topics: [respTopic, [...slotByRequest.keys()]]
+    }, revealReqBlock, Math.min(head, revealReqBlock + windowBlocks)) : [];
     for (const l of respLogs) {
       const rid = lc(l.topics[1]);
       const slot = slotByRequest.get(rid);
@@ -534,7 +590,9 @@ async function runCollection(targets, provider, aggregator, { file = STATE_FILE,
     const byId = new Map(targets
       .filter((t) => isRoundId(t.aggId) && (t.ts || 0) >= from)
       .map((t) => [lc(t.aggId), t]));
-    const todo = [...byId.keys()].filter((id) => !state.rounds[id]?.settled);
+    // Re-read rounds cached before the request-event check existed (reqBlock missing).
+    const final = (r) => r?.settled && (r.notFound || r.reqBlock != null);
+    const todo = [...byId.keys()].filter((id) => !final(state.rounds[id]));
     status.total = todo.length;
     if (todo.length) {
       const head = await withRetry(() => provider.getBlockNumber());
@@ -618,6 +676,7 @@ module.exports = {
   // exported for tests
   roundSpread,
   pooled,
+  locateBlock,
   decodeOperatorFulfill,
   parseCidSalt,
   revealCommitHash,

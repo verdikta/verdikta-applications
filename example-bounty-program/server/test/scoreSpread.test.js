@@ -114,6 +114,7 @@ function fixture() {
       { submissionId: 3, verdiktaAggId: id(6), submittedAt: NOW - 600 } // not collected yet
     ] }
   ];
+  for (const r of Object.values(rounds)) r.reqBlock = 1000;
   return { state: { version: 1, rounds, lastRunAt: 5, lastError: null }, jobs };
 }
 
@@ -208,6 +209,42 @@ describe('runCollection', () => {
     expect(Object.keys(after.rounds)).not.toContain(id(8)); // aged out of the 30-day look-back
     expect(Object.keys(after.rounds)).toContain(id(4));
     expect(after.rounds[id(1)].reveals).toHaveLength(4);
+  });
+
+  test('re-reads a cached round whose request event was never found', async () => {
+    const { state } = fixture();
+    state.rounds[id(9)] = { aggId: id(9), startTs: NOW - DAY, settled: true, reqBlock: null, reveals: [] };
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'spread-')), 'state.json');
+    fs.writeFileSync(file, JSON.stringify(state));
+    const boom = jest.fn(async () => { throw new Error('rpc down'); });
+    const provider = { getBlockNumber: boom, getBlock: boom, call: boom, getLogs: boom };
+    const targets = [id(1), id(9)].map((a) => ({ aggId: a, ts: NOW - DAY }));
+    await expect(ss.runCollection(targets, provider, '0x' + '44'.repeat(20), { file, now: NOW })).rejects.toThrow('rpc down');
+    expect(boom).toHaveBeenCalled(); // only id(9) was due, so the pass went to the RPC
+  });
+});
+
+describe('locateBlock', () => {
+  // A chain whose block time drops from 2 s to 0.2 s at block 1,000,000.
+  const T0 = 1_700_000_000;
+  const SWITCH = 1_000_000;
+  const tsOf = (n) => (n <= SWITCH ? T0 + 2 * n : T0 + 2 * SWITCH + Math.floor((n - SWITCH) / 5));
+  const head = SWITCH + 5_000_000;
+  const fakeProvider = () => {
+    const calls = { n: 0 };
+    return { calls, getBlock: async (n) => { calls.n++; return { number: n, timestamp: tsOf(n) }; } };
+  };
+
+  test.each([
+    ['after the change', SWITCH + 1_234_567],
+    ['before the change', 400_000],
+    ['right at the change', SWITCH + 3]
+  ])('finds the block %s', async (_label, target) => {
+    const provider = fakeProvider();
+    const ctx = { provider, head, headTs: tsOf(head), blockTime: 0.2 };
+    const at = await ss.locateBlock(ctx, tsOf(target));
+    expect(Math.abs(tsOf(at.block) - tsOf(target))).toBeLessThanOrEqual(2);
+    expect(provider.calls.n).toBeLessThanOrEqual(100);
   });
 });
 

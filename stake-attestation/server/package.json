@@ -1,0 +1,19 @@
+{
+  "name": "@verdikta/stake-attestation-server",
+  "version": "0.1.0",
+  "description": "API server for the Verdikta stake-attestation site",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^4.22.3"
+  }
+}

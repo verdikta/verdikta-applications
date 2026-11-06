@@ -4,11 +4,13 @@
 .analytics .spread-root {
   --spread-series-1: #2a78d6;
   --spread-series-2: #eb6834;
+  --spread-series-3: #1baf7a;
 }
 @media (prefers-color-scheme: dark) {
   .analytics .spread-root {
     --spread-series-1: #3987e5;
     --spread-series-2: #d95926;
+    --spread-series-3: #199e70;
   }
 }
 

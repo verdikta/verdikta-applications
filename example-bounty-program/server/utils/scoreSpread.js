@@ -186,6 +186,36 @@ function roundSpread(reveals) {
   };
 }
 
+/**
+ * Spread of a round's counted reveals with unclustered outliers removed.
+ * The aggregator (AggregatorLib.findBestCluster, cluster size P = 2) sets the score
+ * from the closest pair of counted reveals by squared distance between raw score
+ * vectors (first strict minimum in reveal order). Any other counted reveal is kept
+ * unless its accept score is more than FAR_GAP from the pair's mean; the spread is
+ * then computed over what is kept (the pair alone: var = Δ²/2 on 1 degree of freedom).
+ * Measuring the closest pair alone would be biased low (it is the tightest of three
+ * pairs), so a reveal that agrees with the pair stays in. `reveals` must be in reveal
+ * order. Returns { n, var, sd, dropped } or null when fewer than two usable reveals.
+ */
+function clusteredSpread(reveals) {
+  const all = roundSpread(reveals);
+  if (!all) return null;
+  const used = new Set(all.used);
+  const usable = reveals.filter((r) => used.has(r.slot)); // same order as all.accept
+  const vecs = usable.map((r) => r.scores.map(Number));
+  let best = null;
+  for (let i = 0; i < usable.length - 1; i++) {
+    for (let j = i + 1; j < usable.length; j++) {
+      const d = vecs[i].reduce((acc, v, k) => acc + (v - vecs[j][k]) ** 2, 0);
+      if (!best || d < best.d) best = { d, i, j };
+    }
+  }
+  const pairMean = (all.accept[best.i] + all.accept[best.j]) / 2;
+  const kept = usable.filter((_, k) => k === best.i || k === best.j || Math.abs(all.accept[k] - pairMean) <= FAR_GAP);
+  const sp = kept.length === usable.length ? all : roundSpread(kept);
+  return { n: sp.n, var: sp.var, sd: sp.sd, dropped: usable.length - kept.length };
+}
+
 /** Pooled per-response sd plus distribution of round sds over [{ n, var }]. */
 function pooled(rs) {
   let ss = 0;
@@ -235,7 +265,9 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
       const verified = rec.reveals.filter((r) => r.hashOk === true && r.scores);
       const sp = roundSpread(verified);
       if (!sp) { coverage.tooFewReveals++; continue; }
-      const counted = roundSpread(verified.filter((r) => r.counted));
+      const countedReveals = verified.filter((r) => r.counted);
+      const counted = roundSpread(countedReveals);
+      const clustered = clusteredSpread([...countedReveals].sort((a, b) => (a.block || 0) - (b.block || 0) || a.slot - b.slot));
       const acceptBySlot = Object.fromEntries(sp.used.map((slot, i) => [slot, sp.accept[i]]));
       samples.push({
         jobId: job.jobId,
@@ -253,6 +285,10 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
         countedN: counted ? counted.n : 0,
         countedSd: counted ? round2(counted.sd) : null,
         countedVar: counted ? counted.var : null,
+        clusteredN: clustered ? clustered.n : 0,
+        clusteredSd: clustered ? round2(clustered.sd) : null,
+        clusteredVar: clustered ? clustered.var : null,
+        clusteredDropped: clustered ? clustered.dropped : 0,
         median: round2(sp.median),
         range: round2(sp.range),
         maxDev: round2(sp.maxDev),
@@ -273,9 +309,13 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
   }
   samples.sort((a, b) => b.sd - a.sd || b.ts - a.ts);
 
-  const strip = (rs, counted) => rs
-    .filter((s) => (counted ? s.countedVar != null : true))
-    .map((s) => (counted ? { n: s.countedN, var: s.countedVar } : { n: s.n, var: s.var }));
+  // mode: all verified reveals (default), 'counted' (the aggregator's 3), or
+  // 'clustered' (counted, minus a reveal far from the clustered pair).
+  const strip = (rs, mode) => rs
+    .filter((s) => (mode === 'counted' ? s.countedVar != null : mode === 'clustered' ? s.clusteredVar != null : true))
+    .map((s) => (mode === 'counted' ? { n: s.countedN, var: s.countedVar }
+      : mode === 'clustered' ? { n: s.clusteredN, var: s.clusteredVar }
+        : { n: s.n, var: s.var }));
 
   // Daily buckets measured back from `now` (newest = daysAgo 0), like the arbiters
   // site's Response Timing chart.
@@ -283,8 +323,11 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
   for (let d = windowDays - 1; d >= 0; d--) {
     const hi = now - d * 86400;
     const lo = hi - 86400;
-    const p = pooled(strip(samples.filter((s) => s.ts > lo && s.ts <= hi)));
-    daily.push({ daysAgo: d, rounds: p.rounds, pooledSd: p.pooledSd, medianRoundSd: p.medianRoundSd, p90RoundSd: p.p90RoundSd });
+    const day = samples.filter((s) => s.ts > lo && s.ts <= hi);
+    const p = pooled(strip(day));
+    const c = pooled(strip(day, 'clustered'));
+    daily.push({ daysAgo: d, rounds: p.rounds, pooledSd: p.pooledSd, medianRoundSd: p.medianRoundSd, p90RoundSd: p.p90RoundSd,
+      clusteredPooledSd: c.pooledSd });
   }
 
   // First half vs second half of the window: is the spread coming down?
@@ -336,7 +379,11 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
     to: now,
     thresholds: { agreeSd: AGREE_SD, outlierSd: OUTLIER_SD, farGap: FAR_GAP },
     summary: pooled(strip(samples)),
-    summaryCounted: pooled(strip(samples, true)),
+    summaryCounted: pooled(strip(samples, 'counted')),
+    summaryClustered: {
+      ...pooled(strip(samples, 'clustered')),
+      droppedRounds: samples.filter((s) => s.clusteredDropped > 0).length
+    },
     revealCounts: {
       three: samples.filter((s) => s.n === 3).length,
       four: samples.filter((s) => s.n === 4).length,
@@ -346,7 +393,7 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
     daily,
     bounties,
     arbiters,
-    samples: samples.map(({ var: _v, countedVar: _cv, ...s }) => s),
+    samples: samples.map(({ var: _v, countedVar: _cv, clusteredVar: _clv, ...s }) => s),
     coverage,
     lastRunAt: state?.lastRunAt || null,
     lastError: state?.lastError || null
@@ -676,6 +723,7 @@ module.exports = {
   MAX_REPORT_DAYS,
   // exported for tests
   roundSpread,
+  clusteredSpread,
   pooled,
   locateBlock,
   decodeOperatorFulfill,

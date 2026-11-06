@@ -86,6 +86,39 @@ describe('roundSpread', () => {
   });
 });
 
+describe('clusteredSpread (unclustered outliers excluded)', () => {
+  const r3 = (a, b, c) => [reveal(0, a), reveal(1, b), reveal(2, c)];
+
+  test('keeps a third reveal that agrees with the clustered pair', () => {
+    const c = ss.clusteredSpread(r3(90, 92, 91));
+    expect(c).toMatchObject({ n: 3, dropped: 0 });
+    expect(c.sd).toBeCloseTo(sd([90, 92, 91]), 6);
+  });
+
+  test('drops a third reveal far from the pair; the pair alone gives var = Δ²/2', () => {
+    const c = ss.clusteredSpread(r3(90, 40, 92));
+    expect(c).toMatchObject({ n: 2, dropped: 1 });
+    expect(c.var).toBeCloseTo(2 ** 2 / 2, 6);
+  });
+
+  test('the cutoff is FAR_GAP from the pair mean, inclusive', () => {
+    expect(ss.clusteredSpread(r3(80, 82, 96)).dropped).toBe(0); // 15 from 81
+    expect(ss.clusteredSpread(r3(80, 82, 96.5)).dropped).toBe(1);
+  });
+
+  test('pairs by squared distance on the raw vectors, like the aggregator', () => {
+    // 50 and 70 are 20 apart; 70 and 88 are 18 apart, so (70, 88) clusters and 50 (29 off) drops.
+    const c = ss.clusteredSpread(r3(50, 70, 88));
+    expect(c).toMatchObject({ n: 2, dropped: 1 });
+    expect(c.var).toBeCloseTo(18 ** 2 / 2, 6);
+  });
+
+  test('two reveals: the pair itself, nothing dropped; one reveal: null', () => {
+    expect(ss.clusteredSpread([reveal(0, 70), reveal(1, 74)])).toMatchObject({ n: 2, dropped: 0 });
+    expect(ss.clusteredSpread([reveal(0, 70)])).toBeNull();
+  });
+});
+
 function fixture() {
   const rounds = {
     [id(1)]: { aggId: id(1), startTs: NOW - 1 * DAY - 100, settled: true, finalAccept: 91,
@@ -145,6 +178,14 @@ describe('buildReport', () => {
     expect(rep.summary.pooledSd).toBeCloseTo(pooled, 2);
     // Round sds 25.3, 2.83, 0 against the SD-4 goal: two agree, one is an outlier.
     expect(rep.summary).toMatchObject({ rounds: 3, reveals: 9, agreeFrac: 0.67, outlierFrac: 0.33 });
+    // Outliers excluded: only the counted reveals, and 40 was never counted in id(1); no drops.
+    const cvars = [[90, 92, 91], [70, 74], [80, 80, 80]].map((x) => [x.length - 1, sd(x) ** 2]);
+    const cpooled = Math.sqrt(cvars.reduce((s, [d, v]) => s + d * v, 0) / cvars.reduce((s, [d]) => s + d, 0));
+    expect(rep.summaryClustered.pooledSd).toBeCloseTo(cpooled, 2);
+    expect(rep.summaryClustered).toMatchObject({ rounds: 3, droppedRounds: 0 });
+    expect(worst).toMatchObject({ clusteredN: 3, clusteredDropped: 0 });
+    expect(worst.clusteredVar).toBeUndefined();
+    expect(rep.daily.find((d) => d.daysAgo === 1).clusteredPooledSd).toBeCloseTo(1, 2);
 
     expect(rep.daily).toHaveLength(14);
     expect(rep.daily[13].daysAgo).toBe(0);

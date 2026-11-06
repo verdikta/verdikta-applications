@@ -9,7 +9,7 @@
  *   - stat tiles: pooled sd (the per-response noise), median and 90th
  *     percentile round sd, share of rounds that agree / have an outlier,
  *     and the earlier-half vs recent-half change;
- *   - daily chart: pooled and median round sd per day, like the Response
+ *   - daily chart: pooled, median round, and outliers-excluded pooled sd per day, like the Response
  *     Timing chart on arbiters.verdikta.org/analytics;
  *   - round chart: every round as a dot at its sd; click one to open it below;
  *   - drill-down: rounds worst first (filter by bounty #, sort, expand a row
@@ -26,10 +26,54 @@ import './ScoreSpreadSection.css';
 
 const WINDOWS = [7, 14, 30];
 const PAGE = 20;
+// Legend mouseovers. x = an arbiter's accept score (0–100), x̄ = the round's mean,
+// n = the round's verified reveals (3 or 4), s = the round's SD.
 const SERIES = {
-  pooled: { label: 'Pooled SD', cssVar: 'var(--spread-series-1)' },
-  median: { label: 'Median round SD', cssVar: 'var(--spread-series-2)' }
+  pooled: {
+    label: 'Pooled SD',
+    cssVar: 'var(--spread-series-1)',
+    help: () => pooledHelp('the day\'s rounds')
+  },
+  median: {
+    label: 'Median round SD',
+    cssVar: 'var(--spread-series-2)',
+    help: [
+      'Median round SD: the spread of a typical round that day.',
+      '',
+      'Each round: s = √( Σ (x − x̄)² / (n − 1) )',
+      'Line value: the median of the day\'s s values',
+      '',
+      'Half of the day\'s rounds are tighter than this. One outlier round barely moves it.'
+    ].join('\n')
+  },
+  clustered: {
+    label: 'Pooled SD, outliers excluded',
+    cssVar: 'var(--spread-series-3)',
+    help: (farGap) => clusteredHelp(farGap, 'the day\'s rounds')
+  }
 };
+
+// Shared by the legend items and the stat tiles; `over` names the rounds pooled.
+function pooledHelp(over) {
+  return [
+    `Pooled SD: the typical distance of one arbiter's score from its round's mean, over ${over}.`,
+    '',
+    'Pooled: SD = √( sum of every score\'s squared distance from its round\'s mean ÷ (total reveals − number of rounds) )',
+    '',
+    'Every reveal counts equally, so a single round with one far-off arbiter pulls it up.'
+  ].join('\n');
+}
+
+function clusteredHelp(farGap, over) {
+  return [
+    `Pooled SD, outliers excluded: the pooled SD over only the reveals that set the score, over ${over}.`,
+    '',
+    'Each round keeps the two closest of its counted reveals (the pair the aggregator clusters), plus the',
+    `third unless its score is more than ${farGap} points from the pair's mean. The late 4th reveal is never used.`,
+    '',
+    'Pooled: SD = √( sum of every kept score\'s squared distance from its round\'s kept mean ÷ (kept reveals − number of rounds) )'
+  ].join('\n');
+}
 
 const fmtSd = (v) => (v == null || !Number.isFinite(v) ? '—' : v.toFixed(1));
 const fmtPct = (v) => (v == null ? '—' : `${Math.round(v * 100)}%`);
@@ -74,7 +118,7 @@ function ThresholdLines({ x1, x2, yAt, agreeSd, outlierSd }) {
 // ---------------------------------------------------------------------------
 // Daily chart: pooled and median round sd per day (one axis, both in points)
 // ---------------------------------------------------------------------------
-function SpreadDailyChart({ daily, generatedAt, agreeSd, outlierSd }) {
+function SpreadDailyChart({ daily, generatedAt, agreeSd, outlierSd, farGap }) {
   const [hoverIdx, setHoverIdx] = useState(null);
   const svgRef = useRef(null);
   if (!daily || daily.length < 2 || !daily.some((d) => d.rounds > 0)) return null;
@@ -86,7 +130,7 @@ function SpreadDailyChart({ daily, generatedAt, agreeSd, outlierSd }) {
   const plotW = width - margin.left - margin.right;
   const n = daily.length;
   const xAt = (i) => margin.left + (i / (n - 1)) * plotW;
-  const vals = daily.flatMap((d) => [d.pooledSd, d.medianRoundSd]).filter((v) => v != null)
+  const vals = daily.flatMap((d) => [d.pooledSd, d.medianRoundSd, d.clusteredPooledSd]).filter((v) => v != null)
     .concat([agreeSd, outlierSd].filter((v) => v != null));
   const step = niceStep(Math.max(5, ...vals));
   const yMax = Math.max(step, Math.ceil(Math.max(5, ...vals) / step) * step);
@@ -101,7 +145,8 @@ function SpreadDailyChart({ daily, generatedAt, agreeSd, outlierSd }) {
 
   const series = [
     { key: 'pooledSd', ...SERIES.pooled },
-    { key: 'medianRoundSd', ...SERIES.median }
+    { key: 'medianRoundSd', ...SERIES.median },
+    { key: 'clusteredPooledSd', ...SERIES.clustered }
   ];
   const linePath = (key) => {
     let path = '';
@@ -129,13 +174,13 @@ function SpreadDailyChart({ daily, generatedAt, agreeSd, outlierSd }) {
     <div className="spread-chart">
       <div className="spread-legend">
         {series.map((s) => (
-          <span key={s.key} className="spread-legend-item"><span className="spread-linekey" style={{ background: s.cssVar }} />{s.label}</span>
+          <span key={s.key} className="spread-legend-item" title={typeof s.help === 'function' ? s.help(farGap) : s.help}><span className="spread-linekey" style={{ background: s.cssVar }} /><span className="tooltip-header">{s.label}</span></span>
         ))}
         <span className="spread-legend-note">per day · accept score, points out of 100</span>
       </div>
       <div className="spread-chart-wrap">
         <svg viewBox={`0 0 ${width} ${height}`} width="100%" role="img" ref={svgRef}
-          aria-label="Pooled and median arbiter score standard deviation per day"
+          aria-label="Pooled, median, and outliers-excluded pooled arbiter score standard deviation per day"
           onPointerMove={onPointerMove} onPointerLeave={() => setHoverIdx(null)}>
           {yTicks.map((v) => (
             <g key={v}>
@@ -424,10 +469,16 @@ export default function ScoreSpreadSection({ refreshKey }) {
         ) : (
           <>
             <div className="stat-grid">
-              <div className="stat-card" title="Per-response standard deviation pooled over every round: sqrt(sum (n-1)·var / sum (n-1)). Large disagreements dominate it.">
+              <div className="stat-card" title={pooledHelp('every round in the window')}>
                 <div className="stat-value">{fmtSd(s.pooledSd)}</div>
                 <div className="stat-label">Pooled SD</div>
               </div>
+              {data.summaryClustered && (
+                <div className="stat-card" title={`${clusteredHelp(data.thresholds.farGap, 'every round in the window')}\n\n${data.summaryClustered.droppedRounds} of ${data.summaryClustered.rounds} rounds had their third reveal excluded.`}>
+                  <div className="stat-value">{fmtSd(data.summaryClustered.pooledSd)}</div>
+                  <div className="stat-label">Pooled SD, outliers excluded</div>
+                </div>
+              )}
               <div className="stat-card" title="The typical round: half of the rounds have a smaller standard deviation than this">
                 <div className="stat-value">{fmtSd(s.medianRoundSd)}</div>
                 <div className="stat-label">Median round SD</div>
@@ -461,7 +512,7 @@ export default function ScoreSpreadSection({ refreshKey }) {
             </div>
 
             <SpreadDailyChart daily={data.daily} generatedAt={data.generatedAt}
-              agreeSd={data.thresholds.agreeSd} outlierSd={data.thresholds.outlierSd} />
+              agreeSd={data.thresholds.agreeSd} outlierSd={data.thresholds.outlierSd} farGap={data.thresholds.farGap} />
             <RoundScatter samples={data.samples} from={data.from} to={data.to}
               agreeSd={data.thresholds.agreeSd} outlierSd={data.thresholds.outlierSd}
               selectedKey={expanded} onSelect={openSample} />

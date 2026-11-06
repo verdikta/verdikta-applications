@@ -1,0 +1,5 @@
+{
+ "status": "0",
+ "message": "NOTOK",
+ "result": "Max calls per sec rate limit reached (5/sec)"
+}

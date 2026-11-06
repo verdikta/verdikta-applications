@@ -1,0 +1,321 @@
+name: Stake attestation builder
+# The reusable environment-image builder of the stake-attestation app (design §8.2, §20 decision 3;
+# stake-attestation/README.md, "The reusable builder workflow"). A maker's repository calls it at a
+# commit of this repository, and passes the same commit as builder-ref:
+#
+#   jobs:
+#     listing:
+#       uses: verdikta/verdikta-applications/.github/workflows/stake-attestation-builder.yml@<commit>
+#       with:
+#         builder-ref: <commit>
+#         spec: listing/code_review.json
+#         maker: <the wallet that will send list(), named in the listed commit's .verdikta/stake-control.json>
+#         publish-repository: ghcr.io/<owner>/stake-env   # one the arbiters' registry allowlist holds (the build says when its default does not)
+#       permissions:
+#         contents: read
+#         packages: write
+#
+# Three jobs. build runs the maker's setup and holds no secret: the pinned code-runner reads the
+# commands before anything is fetched, the image goes to a registry:2 on the runner's loopback and
+# is validated by that code-runner there; the image (skopeo's dir
+# layout) and the output folder leave as artifacts, with their digests as job outputs. publish
+# runs none of the maker's code: it checks the layout against the digest and copies it byte for
+# byte to publish-repository, which must be readable without a credential, as arbiters pull it.
+# sign receives only the build's outputs: it checks them against the build job's digest, the
+# report and the published image, then signs attestation.json (a dev key unless signing is
+# production, whose key lives in the signing environment). The baseline scan is not run here: its
+# findings are the maker's, and this workflow's logs and artifacts can be public.
+#
+# It has no trigger of its own and nothing in this repository calls it: publishing an image in
+# Verdikta's own registry namespace is owner gate G1.
+on:
+  workflow_call:
+    inputs:
+      builder-ref:
+        description: The verdikta-applications commit this workflow is called at; the builder runs from there.
+        required: true
+        type: string
+      spec:
+        description: Path, in the calling repository, of the maker's draft code_review.json.
+        required: true
+        type: string
+      known-issues:
+        description: Path, in the calling repository, of known_issues.json, when the draft names one.
+        required: false
+        type: string
+        default: ''
+      maker:
+        description: The wallet that will send list(). The repository's .verdikta/stake-control.json at the listed commit must name this address, or the build refuses the listing (stake-attestation/docs/control-proof.md).
+        required: true
+        type: string
+      deployment-proof:
+        description: For a contract listing, the path, in the calling repository, of its deployer's or owner's signature, JSON { signer, signature, creationTx?, stakeChainId, stakeContract }.
+        required: false
+        type: string
+        default: ''
+      publish-repository:
+        description: Where the env image is published for arbiters, e.g. ghcr.io/<owner>/stake-env. It must be readable without a credential.
+        required: true
+        type: string
+      runtime:
+        description: The code-runner's runtime, runsc (gVisor, which a production key requires) or runc.
+        required: false
+        type: string
+        default: runsc
+      explorer-api-url:
+        description: For a contract listing, a keyless explorer API in the Etherscan shape for its chain (Blockscout's, say); the build job holds no key.
+        required: false
+        type: string
+        default: ''
+      signing:
+        description: dev (a key made for the run, accepted only under dev trust) or production (VERDIKTA_BUILDER_KEY from the signing environment).
+        required: false
+        type: string
+        default: dev
+      signing-environment:
+        description: The environment the sign job runs in; a production key is that environment's secret.
+        required: false
+        type: string
+        default: stake-attestation-signing
+      artifact-name:
+        description: The prefix of this invocation's artifact names (letters, digits, . _ -). By default one derived from spec, known-issues and publish-repository, so a caller that runs the workflow for several listings in one run gets distinct artifacts; set it when one run builds the same listing twice.
+        required: false
+        type: string
+        default: ''
+    secrets:
+      VERDIKTA_BUILDER_KEY:
+        description: The production builder key (PKCS#8 PEM, Ed25519). Only the sign job reads it, and only when signing is production.
+        required: false
+    outputs:
+      image:
+        description: The env image, by digest, as code_review.json names it.
+        value: ${{ jobs.build.outputs.image }}
+      signed-artifact:
+        description: The artifact holding the signed listing files.
+        value: ${{ format('{0}-listing-signed', jobs.build.outputs.artifact-id) }}
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build and validate (no secrets)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      image: ${{ steps.build.outputs.image }}
+      outputs-sha256: ${{ steps.digest.outputs.sha256 }}
+      artifact-id: ${{ steps.names.outputs.id }}
+    steps:
+      - name: Paths
+        run: |
+          {
+            echo "VAB_WORK=$RUNNER_TEMP/vab"
+            echo "VAB_OUT=$RUNNER_TEMP/vab-out"
+            echo "VAB_IMAGE=$RUNNER_TEMP/vab-image"
+            echo "VAB_BUILDER=$GITHUB_WORKSPACE/verdikta-builder/stake-attestation/builder"
+          } >> "$GITHUB_ENV"
+      - name: Artifact names for this invocation (artifacts share the calling run's namespace)
+        id: names
+        env:
+          ARTIFACT_NAME: ${{ inputs.artifact-name }}
+          SPEC: ${{ inputs.spec }}
+          KNOWN_ISSUES: ${{ inputs.known-issues }}
+          PUBLISH_REPOSITORY: ${{ inputs.publish-repository }}
+        run: |
+          set -euo pipefail
+          if [ -n "$ARTIFACT_NAME" ]; then
+            if ! printf '%s' "$ARTIFACT_NAME" | grep -Eq '^[A-Za-z0-9._-]{1,64}$'; then echo "::error::artifact-name must be 1-64 letters, digits, . _ or -"; exit 1; fi
+            id="$ARTIFACT_NAME"
+          else
+            id="vab-$(printf '%s\n%s\n%s' "$SPEC" "$KNOWN_ISSUES" "$PUBLISH_REPOSITORY" | sha256sum | cut -c1-16)"
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - name: Check out the builder
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: verdikta/verdikta-applications
+          ref: ${{ inputs.builder-ref }}
+          path: verdikta-builder
+          persist-credentials: false
+      - name: Check out the draft and its known issues (the builder fetches the listed commit itself)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: listing-source
+          persist-credentials: false
+          sparse-checkout: |
+            ${{ inputs.spec }}
+            ${{ inputs.known-issues }}
+            ${{ inputs.deployment-proof }}
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install the builder's locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --prefix "$VAB_BUILDER"
+      - name: Keep the build's containers off the host's metadata services
+        # The maker's setup runs with network: it must reach nothing private from this runner.
+        run: |
+          sudo iptables -I DOCKER-USER -d 169.254.169.254 -j DROP
+          sudo iptables -I DOCKER-USER -d 168.63.129.16 -j DROP
+      - name: Install gVisor (pinned, SHA-512 checked, systrap platform)
+        if: inputs.runtime == 'runsc'
+        run: |
+          set -euo pipefail
+          version=$(jq -r .gvisor.version "$VAB_BUILDER/action/pins.json")
+          sha512=$(jq -r .gvisor.sha512 "$VAB_BUILDER/action/pins.json")
+          curl -fsSL -o "$RUNNER_TEMP/gvisor.tar.bz2" "https://storage.googleapis.com/gvisor/releases/release/${version}/x86_64/gvisor.tar.bz2"
+          echo "${sha512}  $RUNNER_TEMP/gvisor.tar.bz2" | sha512sum -c -
+          dest="/opt/gvisor/${version}"
+          sudo mkdir -p "$dest" /var/lib/code-runner-scratch
+          sudo tar -xjf "$RUNNER_TEMP/gvisor.tar.bz2" -C "$dest"
+          cfg=/etc/docker/daemon.json
+          current='{}'
+          if [ -s "$cfg" ]; then current=$(sudo cat "$cfg"); fi
+          echo "$current" | jq --arg path "$dest/runsc" \
+            '.runtimes.runsc = {path: $path, runtimeArgs: ["--platform=systrap", "--overlay2=root:dir=/var/lib/code-runner-scratch,size=4g"]}' \
+            | sudo tee "$cfg" > /dev/null
+          sudo systemctl reload docker
+          for _ in $(seq 1 20); do
+            docker info --format '{{json .Runtimes}}' | jq -e '.runsc' > /dev/null && break
+            sleep 1
+          done
+          docker info --format '{{json .Runtimes}}' | jq -e '.runsc' > /dev/null
+      - name: Start registry:2 and the code-runner on the runner's loopback
+        env:
+          PUBLISH_REPOSITORY: ${{ inputs.publish-repository }}
+          RUNTIME: ${{ inputs.runtime }}
+          SIGNING: ${{ inputs.signing }}
+          SPEC: ${{ inputs.spec }}
+          EXPLORER_API_URL: ${{ inputs.explorer-api-url }}
+        run: node "$VAB_BUILDER/action/services.js" start --dir "$VAB_WORK" --publish-as "$PUBLISH_REPOSITORY" --spec "listing-source/$SPEC" --runtime "$RUNTIME" --signing "$SIGNING" --explorer-url "$EXPLORER_API_URL"
+      - name: Build, push to the loopback registry and validate
+        id: build
+        env:
+          SPEC: ${{ inputs.spec }}
+          KNOWN_ISSUES: ${{ inputs.known-issues }}
+          MAKER: ${{ inputs.maker }}
+          DEPLOYMENT_PROOF: ${{ inputs.deployment-proof }}
+        run: |
+          set -euo pipefail
+          known=()
+          if [ -n "$KNOWN_ISSUES" ]; then known=(--known-issues "listing-source/$KNOWN_ISSUES"); fi
+          proof=()
+          if [ -n "$DEPLOYMENT_PROOF" ]; then proof=(--control-proof "listing-source/$DEPLOYMENT_PROOF"); fi
+          node "$VAB_BUILDER/bin/verdikta-build-env.js" build --config "$VAB_WORK/builder.json" --spec "listing-source/$SPEC" "${known[@]}" "${proof[@]}" --maker "$MAKER" --out "$VAB_OUT"
+          echo "image=$(jq -r .env.image "$VAB_OUT/code_review.json")" >> "$GITHUB_OUTPUT"
+      - name: Export the validated image, byte for byte (skopeo's dir layout keeps any manifest type)
+        run: node "$VAB_BUILDER/action/image.js" export --from "$(jq -r .image.stagedRef "$VAB_OUT/validation-report.json")" --dir "$VAB_IMAGE"
+      - name: Digest of the output folder, for the sign job
+        id: digest
+        run: echo "sha256=$(node "$VAB_BUILDER/bin/verdikta-build-env.js" digest --dir "$VAB_OUT")" >> "$GITHUB_OUTPUT"
+      - name: Upload the output folder (the listing's files and the validation report)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.names.outputs.id }}-listing
+          path: ${{ env.VAB_OUT }}
+          if-no-files-found: ignore
+          # A listing may name its files with a leading dot (.attestation.json, say).
+          include-hidden-files: true
+      - name: Upload the image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.names.outputs.id }}-env-image
+          path: ${{ env.VAB_IMAGE }}
+          if-no-files-found: error
+          include-hidden-files: true
+      - name: Stop the services
+        if: always()
+        run: node "$VAB_BUILDER/action/services.js" stop --dir "$VAB_WORK"
+
+  publish:
+    name: Publish the env image
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Paths
+        run: |
+          {
+            echo "VAB_IMAGE=$RUNNER_TEMP/vab-image"
+            echo "VAB_BUILDER=$GITHUB_WORKSPACE/verdikta-builder/stake-attestation/builder"
+          } >> "$GITHUB_ENV"
+      - name: Check out the builder
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: verdikta/verdikta-applications
+          ref: ${{ inputs.builder-ref }}
+          path: verdikta-builder
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Download the image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.build.outputs.artifact-id }}-env-image
+          path: ${{ env.VAB_IMAGE }}
+      - name: Check the layout against the digest code_review.json names, push it byte for byte, read it back without a credential
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          PUBLISH_REPOSITORY: ${{ inputs.publish-repository }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: node "$VAB_BUILDER/action/image.js" publish --dir "$VAB_IMAGE" --image "$IMAGE" --to "$PUBLISH_REPOSITORY"
+
+  sign:
+    name: Sign attestation.json
+    needs: [build, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: ${{ inputs.signing-environment }}
+    permissions:
+      contents: read
+    steps:
+      - name: Paths
+        run: |
+          {
+            echo "VAB_WORK=$RUNNER_TEMP/vab"
+            echo "VAB_OUT=$RUNNER_TEMP/vab-out"
+            echo "VAB_BUILDER=$GITHUB_WORKSPACE/verdikta-builder/stake-attestation/builder"
+          } >> "$GITHUB_ENV"
+      - name: Check out the builder (never the calling repository)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: verdikta/verdikta-applications
+          ref: ${{ inputs.builder-ref }}
+          path: verdikta-builder
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install the builder's locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --prefix "$VAB_BUILDER"
+      - name: Download the build's outputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.build.outputs.artifact-id }}-listing
+          path: ${{ env.VAB_OUT }}
+      - name: The signing config
+        env:
+          SIGNING: ${{ inputs.signing }}
+          PUBLISH_REPOSITORY: ${{ inputs.publish-repository }}
+        run: node "$VAB_BUILDER/action/services.js" sign-config --dir "$VAB_WORK" --signing "$SIGNING" --publish-as "$PUBLISH_REPOSITORY"
+      - name: Check the build's outputs and the published image, then sign
+        env:
+          OUTPUTS_SHA256: ${{ needs.build.outputs.outputs-sha256 }}
+          VERDIKTA_BUILDER_KEY: ${{ inputs.signing == 'production' && secrets.VERDIKTA_BUILDER_KEY || '' }}
+          MAKER: ${{ inputs.maker }}
+        run: node "$VAB_BUILDER/bin/verdikta-build-env.js" sign --config "$VAB_WORK/sign.json" --dir "$VAB_OUT" --maker "$MAKER" --expect-outputs "$OUTPUTS_SHA256" --check-registry
+      - name: Upload the signed listing files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ needs.build.outputs.artifact-id }}-listing-signed
+          path: ${{ env.VAB_OUT }}
+          if-no-files-found: error
+          include-hidden-files: true

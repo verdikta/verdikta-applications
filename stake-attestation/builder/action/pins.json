@@ -1,0 +1,18 @@
+{
+  "note": "What the reusable builder workflow runs beside the builder. codeRunner is the verdikta-arbiter commit whose code-runner validates the listing (the same commit as test/docker/code-runner.pin.json and e2e/arbiter.pin.json: test/unit/pins.test.js; README, Moving the arbiter pin); registry is registry:2 2.8.3, the multi-platform index; skopeo is quay.io/skopeo/stable v1.13.3 (the multi-platform index), which moves the image between the jobs and to its registry; gvisor is @verdikta/common's GVISOR_RELEASE and the SHA-512 of its x86_64 gvisor.tar.bz2.",
+  "codeRunner": {
+    "repository": "https://github.com/verdikta/verdikta-arbiter.git",
+    "commit": "88790ed7b099a01bfbffa041f3cf25504d0c31c2"
+  },
+  "registry": {
+    "image": "registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
+  },
+  "skopeo": {
+    "image": "quay.io/skopeo/stable@sha256:4853591bd1d2a13c6fd1ede57fa234503d08a6f7a0e0f455dcffd5c920fc8fba",
+    "version": "v1.13.3"
+  },
+  "gvisor": {
+    "version": "20260921.0",
+    "sha512": "7c899979bed334f0987888c41e545cede8e1f7e67a257978c8de244c3867e32bc30d08491e9af36720273c502acd01d8d86c9844ebcbe125790c43fe6bdf563e"
+  }
+}

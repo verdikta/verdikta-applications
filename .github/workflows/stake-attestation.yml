@@ -1,0 +1,218 @@
+name: Stake attestation
+on:
+  pull_request:
+    branches:
+      - main
+      - claude/stake-attestation
+    paths:
+      - 'stake-attestation/**'
+      - '.github/workflows/stake-attestation.yml'
+      - '.github/workflows/stake-attestation-builder.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: stake-attestation-${{ github.ref }}
+  cancel-in-progress: true
+# No job reads a secret: contracts run on the in-process Hardhat network, the client's
+# production build against that network and the server (its builder stubbed), the builder
+# against a local registry:2, recorded explorer responses and a per-run dev signing key.
+jobs:
+  shared:
+    name: Shared helper, scope and wording
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0 # the scope test diffs against the pull request's base branch
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: stake-attestation/shared
+        run: npm ci --ignore-scripts
+      - name: Helper, package, workflow, docs and scope tests
+        working-directory: stake-attestation/shared
+        run: npm test
+      - name: No banned words in source, UI strings or docs
+        run: node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .github/workflows/stake-attestation.yml .github/workflows/stake-attestation-builder.yml
+      - name: Lint the workflows, the reusable builder's included (actionlint 1.7.12, checksum pinned; the runner's shellcheck)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" .github/workflows/stake-attestation.yml .github/workflows/stake-attestation-builder.yml
+
+  packages:
+    name: ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [server, tool, builder]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: stake-attestation/${{ matrix.package }}
+        run: npm ci --ignore-scripts
+      - name: Test
+        working-directory: stake-attestation/${{ matrix.package }}
+        run: npm test
+
+  builder-docker:
+    name: Builder against Docker, registry:2 and the code-runner
+    # Builds the fixture listing's env image, pushes it to a throwaway registry:2, compiles it for
+    # the verified-source check (recorded explorer responses, no live explorer), and validates it
+    # on the code-runner from verdikta-arbiter at the commit in
+    # stake-attestation/builder/test/docker/code-runner.pin.json, run as a sidecar under runc.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: stake-attestation/builder
+        run: npm ci --ignore-scripts
+      - name: Install gVisor (pinned, SHA-512 checked, systrap platform), which only the scan's own test uses
+        working-directory: stake-attestation/builder
+        run: |
+          set -euo pipefail
+          version=$(jq -r .gvisor.version action/pins.json)
+          sha512=$(jq -r .gvisor.sha512 action/pins.json)
+          curl -fsSL -o "$RUNNER_TEMP/gvisor.tar.bz2" "https://storage.googleapis.com/gvisor/releases/release/${version}/x86_64/gvisor.tar.bz2"
+          echo "${sha512}  $RUNNER_TEMP/gvisor.tar.bz2" | sha512sum -c -
+          dest="/opt/gvisor/${version}"
+          sudo mkdir -p "$dest" /var/lib/code-runner-scratch
+          sudo tar -xjf "$RUNNER_TEMP/gvisor.tar.bz2" -C "$dest"
+          cfg=/etc/docker/daemon.json
+          current='{}'
+          if [ -s "$cfg" ]; then current=$(sudo cat "$cfg"); fi
+          echo "$current" | jq --arg path "$dest/runsc" \
+            '.runtimes.runsc = {path: $path, runtimeArgs: ["--platform=systrap", "--overlay2=root:dir=/var/lib/code-runner-scratch,size=4g"]}' \
+            | sudo tee "$cfg" > /dev/null
+          sudo systemctl reload docker
+          for _ in $(seq 1 20); do
+            docker info --format '{{json .Runtimes}}' | jq -e '.runsc' > /dev/null && break
+            sleep 1
+          done
+          docker info --format '{{json .Runtimes}}' | jq -e '.runsc' > /dev/null
+      - name: Docker tests
+        working-directory: stake-attestation/builder
+        env:
+          CODE_RUNNER_RUNTIME: runc
+          SA_BUILDER_TEST_RUNSC: '1'
+        run: npm run test:docker
+
+  onchain:
+    name: Contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: stake-attestation/onchain
+        run: npm ci --ignore-scripts
+      - name: Hardhat tests
+        working-directory: stake-attestation/onchain
+        run: npx hardhat test
+      - name: Contract sizes (EIP-170; the sizer is strict and fails above 24 KiB)
+        working-directory: stake-attestation/onchain
+        run: npx hardhat size-contracts
+
+  onchain-coverage:
+    name: Contract coverage (95% of lines)
+    runs-on: ubuntu-latest
+    # solidity-coverage traces every step of the whole suite: about 10 minutes on a laptop.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: stake-attestation/onchain
+        run: npm ci --ignore-scripts
+      - name: Coverage gate (fails below 95% line coverage on a contract)
+        working-directory: stake-attestation/onchain
+        run: npm run coverage:check
+
+  client:
+    name: Client
+    # Playwright 1.59 (the version the bounty client uses) has no browser build for
+    # ubuntu-latest's 26.04; move with the Playwright version.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: stake-attestation/client
+        run: npm ci --ignore-scripts
+      - name: Unit tests
+        working-directory: stake-attestation/client
+        run: npm test
+      - name: Install the server's locked dependencies (the Playwright stack runs the server and Hardhat from it)
+        working-directory: stake-attestation/server
+        run: npm ci --ignore-scripts
+      - name: Playwright tests against the production build, local Hardhat and the server
+        working-directory: stake-attestation/client
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+
+  e2e:
+    name: The local round (every piece together)
+    # One script: Hardhat, StakeAttestation and the poll-only mock aggregator bridged to the real External
+    # Adapter, AI Node (mock provider) and code runner of verdikta-arbiter at the commit in
+    # stake-attestation/e2e/arbiter.pin.json (public, fetched by id), the real server, keeper, builder,
+    # tool and client. Local registry, local IPFS, no secret. SA_E2E_REQUIRE_CLASS_PLATFORM fails it on
+    # anything but linux/amd64, so the runner's own report path runs here and A6a's launcher cannot.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Install the client's locked dependencies, for the browser that reads its pages
+        working-directory: stake-attestation/client
+        run: |
+          npm ci --ignore-scripts
+          npx playwright install --with-deps chromium
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: stake-attestation/e2e
+        run: npm ci --ignore-scripts
+      - name: The round, and the round broken on purpose
+        working-directory: stake-attestation/e2e
+        env:
+          SA_E2E_REQUIRE_CLASS_PLATFORM: '1'
+          SA_E2E_LOG_DIR: ${{ runner.temp }}/round-logs
+        run: npm test
+      - name: No container left behind
+        if: always()
+        run: |
+          left=$(docker ps --all --format '{{.Names}} {{.Image}} {{.Labels}}' | grep -E 'sae2e' || true)
+          if [ -n "$left" ]; then
+            echo "::error::containers left behind: $left"
+            exit 1
+          fi
+      - name: Keep the service logs
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4
+        with:
+          name: round-logs
+          path: ${{ runner.temp }}/round-logs
+          if-no-files-found: ignore

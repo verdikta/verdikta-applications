@@ -2,7 +2,7 @@
  * Blockchain Sync Service — Event-Based
  *
  * Replaces the old full-scan approach with event-driven sync:
- *   Phase A — getBlockNumber() + getEventsSince() (2 RPC calls)
+ *   Phase A — getBlockNumber() + getEventsSince() (1 + one getLogs per 10K blocks)
  *   Phase B — Process events locally (0 RPC for most events)
  *   Phase C — Hot polling: check oracle results for pending submissions (P calls)
  *   Phase D — Belt-and-suspenders bountyCount() check (1 call)

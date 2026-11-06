@@ -106,7 +106,7 @@ function ThresholdLines({ x1, x2, yAt, agreeSd, outlierSd }) {
       <text x={x2} y={yAt(v) - 5} className="spread-axis" textAnchor="end">{label}</text>
     </g>
   );
-  if (agreeSd === outlierSd) return line(agreeSd, 'spread-ref spread-ref-agree', `SD ≤ ${agreeSd}`);
+  if (agreeSd === outlierSd) return line(agreeSd, 'spread-ref spread-ref-agree', `SD = ${agreeSd}`);
   return (
     <>
       {line(outlierSd, 'spread-ref', `outlier (SD > ${outlierSd})`)}

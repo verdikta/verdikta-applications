@@ -143,7 +143,8 @@ describe('buildReport', () => {
     const vars = [[90, 92, 91, 40], [70, 74], [80, 80, 80]].map((a) => [a.length - 1, sd(a) ** 2]);
     const pooled = Math.sqrt(vars.reduce((s, [d, v]) => s + d * v, 0) / vars.reduce((s, [d]) => s + d, 0));
     expect(rep.summary.pooledSd).toBeCloseTo(pooled, 2);
-    expect(rep.summary).toMatchObject({ rounds: 3, reveals: 9, agreeFrac: 0.33, outlierFrac: 0.33 });
+    // Round sds 25.3, 2.83, 0 against the SD-4 goal: two agree, one is an outlier.
+    expect(rep.summary).toMatchObject({ rounds: 3, reveals: 9, agreeFrac: 0.67, outlierFrac: 0.33 });
 
     expect(rep.daily).toHaveLength(14);
     expect(rep.daily[13].daysAgo).toBe(0);

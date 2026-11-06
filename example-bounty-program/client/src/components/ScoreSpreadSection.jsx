@@ -51,9 +51,30 @@ const outcomeLabel = (s) => {
 };
 
 // ---------------------------------------------------------------------------
+// Agree / outlier threshold lines, shared by both charts. Equal thresholds
+// (the usual case) draw one dashed line; otherwise agree is dashed, outlier solid.
+// ---------------------------------------------------------------------------
+function ThresholdLines({ x1, x2, yAt, agreeSd, outlierSd }) {
+  if (agreeSd == null || outlierSd == null) return null;
+  const line = (v, cls, label) => (
+    <g key={cls}>
+      <line x1={x1} x2={x2} y1={yAt(v)} y2={yAt(v)} className={cls} />
+      <text x={x2} y={yAt(v) - 5} className="spread-axis" textAnchor="end">{label}</text>
+    </g>
+  );
+  if (agreeSd === outlierSd) return line(agreeSd, 'spread-ref spread-ref-agree', `SD ≤ ${agreeSd}`);
+  return (
+    <>
+      {line(outlierSd, 'spread-ref', `outlier (SD > ${outlierSd})`)}
+      {line(agreeSd, 'spread-ref spread-ref-agree', `agree (SD ≤ ${agreeSd})`)}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Daily chart: pooled and median round sd per day (one axis, both in points)
 // ---------------------------------------------------------------------------
-function SpreadDailyChart({ daily, generatedAt }) {
+function SpreadDailyChart({ daily, generatedAt, agreeSd, outlierSd }) {
   const [hoverIdx, setHoverIdx] = useState(null);
   const svgRef = useRef(null);
   if (!daily || daily.length < 2 || !daily.some((d) => d.rounds > 0)) return null;
@@ -65,7 +86,8 @@ function SpreadDailyChart({ daily, generatedAt }) {
   const plotW = width - margin.left - margin.right;
   const n = daily.length;
   const xAt = (i) => margin.left + (i / (n - 1)) * plotW;
-  const vals = daily.flatMap((d) => [d.pooledSd, d.medianRoundSd]).filter((v) => v != null);
+  const vals = daily.flatMap((d) => [d.pooledSd, d.medianRoundSd]).filter((v) => v != null)
+    .concat([agreeSd, outlierSd].filter((v) => v != null));
   const step = niceStep(Math.max(5, ...vals));
   const yMax = Math.max(step, Math.ceil(Math.max(5, ...vals) / step) * step);
   const yAt = (v) => margin.top + plotH - (v / yMax) * plotH;
@@ -124,6 +146,7 @@ function SpreadDailyChart({ daily, generatedAt }) {
           {daily.map((d, i) => showLabel(i) && (
             <text key={i} x={xAt(i)} y={margin.top + plotH + 16} className="spread-axis" textAnchor="middle">{labelFor(d)}</text>
           ))}
+          <ThresholdLines x1={margin.left} x2={margin.left + plotW} yAt={yAt} agreeSd={agreeSd} outlierSd={outlierSd} />
           {h && <line x1={xAt(hoverIdx)} x2={xAt(hoverIdx)} y1={margin.top} y2={margin.top + plotH} className="spread-crosshair" />}
           {series.map((s) => (
             <g key={s.key}>
@@ -158,7 +181,7 @@ function SpreadDailyChart({ daily, generatedAt }) {
 // ---------------------------------------------------------------------------
 // Round chart: every round as a dot at (time, round sd). Click to drill in.
 // ---------------------------------------------------------------------------
-function RoundScatter({ samples, from, to, outlierSd, selectedKey, onSelect }) {
+function RoundScatter({ samples, from, to, agreeSd, outlierSd, selectedKey, onSelect }) {
   const [hover, setHover] = useState(null);
   const svgRef = useRef(null);
   if (!samples.length) return null;
@@ -168,7 +191,7 @@ function RoundScatter({ samples, from, to, outlierSd, selectedKey, onSelect }) {
   const plotH = 170;
   const height = margin.top + plotH + margin.bottom;
   const plotW = width - margin.left - margin.right;
-  const maxSd = Math.max(outlierSd, ...samples.map((s) => s.sd));
+  const maxSd = Math.max(outlierSd, agreeSd, ...samples.map((s) => s.sd));
   const step = niceStep(maxSd);
   const yMax = Math.ceil(maxSd / step) * step;
   const xAt = (ts) => margin.left + ((ts - from) / Math.max(1, to - from)) * plotW;
@@ -211,8 +234,7 @@ function RoundScatter({ samples, from, to, outlierSd, selectedKey, onSelect }) {
               <text x={margin.left - 8} y={yAt(v)} className="spread-axis" dominantBaseline="middle" textAnchor="end">{v}</text>
             </g>
           ))}
-          <line x1={margin.left} x2={margin.left + plotW} y1={yAt(outlierSd)} y2={yAt(outlierSd)} className="spread-ref" />
-          <text x={margin.left + plotW} y={yAt(outlierSd) - 5} className="spread-axis" textAnchor="end">outlier (SD &gt; {outlierSd})</text>
+          <ThresholdLines x1={margin.left} x2={margin.left + plotW} yAt={yAt} agreeSd={agreeSd} outlierSd={outlierSd} />
           {xTicks.map((t) => (
             <text key={t} x={xAt(t)} y={margin.top + plotH + 16} className="spread-axis" textAnchor="middle">{fmtDate(t)}</text>
           ))}
@@ -418,7 +440,7 @@ export default function ScoreSpreadSection({ refreshKey }) {
                 <div className="stat-value">{fmtPct(s.agreeFrac)}</div>
                 <div className="stat-label">Rounds in agreement</div>
               </div>
-              <div className="stat-card" title={`Rounds whose standard deviation is above ${data.thresholds.outlierSd} points, usually one arbiter far from the rest`}>
+              <div className="stat-card" title={`Rounds whose standard deviation is above ${data.thresholds.outlierSd} points, often one arbiter far from the rest`}>
                 <div className="stat-value">{fmtPct(s.outlierFrac)}</div>
                 <div className="stat-label">Rounds with an outlier</div>
               </div>
@@ -438,8 +460,10 @@ export default function ScoreSpreadSection({ refreshKey }) {
               </div>
             </div>
 
-            <SpreadDailyChart daily={data.daily} generatedAt={data.generatedAt} />
-            <RoundScatter samples={data.samples} from={data.from} to={data.to} outlierSd={data.thresholds.outlierSd}
+            <SpreadDailyChart daily={data.daily} generatedAt={data.generatedAt}
+              agreeSd={data.thresholds.agreeSd} outlierSd={data.thresholds.outlierSd} />
+            <RoundScatter samples={data.samples} from={data.from} to={data.to}
+              agreeSd={data.thresholds.agreeSd} outlierSd={data.thresholds.outlierSd}
               selectedKey={expanded} onSelect={openSample} />
 
             <div className="spread-drill" ref={tableRef}>

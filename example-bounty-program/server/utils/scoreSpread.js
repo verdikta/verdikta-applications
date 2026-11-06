@@ -54,10 +54,11 @@ const EVENT_WINDOW_SECONDS = 30 * 60; // after the request: commits, reveals, a 
 const PRE_REQUEST_SECONDS = 60;       // slack before the located request block
 const LOG_CHUNK_BLOCKS = 9000;        // keyless/public RPCs reject eth_getLogs over 10,000 blocks
 const ROUND_PARALLEL = 3;
-// Round sd at or below this: the arbiters agree. Above OUTLIER_SD: one or more
-// arbiters disagree strongly (usually one outlier, which the closest-pair rule drops).
-const AGREE_SD = 2;
-const OUTLIER_SD = 10;
+// Round sd at or below AGREE_SD: the arbiters agree. Above OUTLIER_SD: one or more
+// arbiters disagree (often one outlier, which the closest-pair rule drops).
+// Both sit at the goal, SD 4, so every round either meets it or counts as an outlier.
+const AGREE_SD = 4;
+const OUTLIER_SD = 4;
 // An arbiter's score this far from the other arbiters' mean in the same round counts as far off.
 const FAR_GAP = 15;
 const ACCEPT_INDEX = 1;            // BountyEscrow: scores[0] = reject, scores[1] = accept

@@ -104,6 +104,9 @@
   stroke-width: 1;
   opacity: 0.6;
 }
+.analytics .spread-ref-agree {
+  stroke-dasharray: 4 3;
+}
 .analytics .spread-axis {
   font-size: 10px;
   fill: var(--text-secondary);

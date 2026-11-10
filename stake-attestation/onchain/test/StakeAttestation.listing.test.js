@@ -847,7 +847,7 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
       await expect(sa.connect(maker).setFeeRecipient(maker.address)).to.be.revertedWithCustomError(sa, "OwnableUnauthorizedAccount");
     });
 
-    it("the owner's only powers are the listing fee and the fee recipient", async function () {
+    it("the owner's only powers are the listing fee, the fee recipient, the narrow-INVALID floor and the confirmation size (errata E8, E9)", async function () {
       const { sa, maker } = await loadFixture(deploy);
       // Every state-changing entry point. A new one must be added here with its authorization.
       const mutating = sa.interface.fragments
@@ -858,6 +858,7 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
         "acceptOwnership", // Ownable2Step: the pending owner takes over; no other power
         "close", // maker only
         "commit", // anyone allowed on the listing, for themselves (P2b)
+        "confirm", // anyone: a judged award above the listing's size, paid from its escrow (P17, erratum E9)
         "disclose", // the claim's hunter (P2b)
         "dispute", // the listing's maker, on its own claim's valid verdict (P2d)
         "expire", // anyone, once the claim's deadline has passed (P2b; failed rounds P2d)
@@ -870,14 +871,16 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
         "recoverLeftoverEth", // anyone: pays a wallet's recovered prepay to its recorded funder (P2d)
         "release", // the listing's maker (P2b)
         "renew", // maker only
-        "renounceOwnership", // owner: gives up the two powers below
+        "renounceOwnership", // owner: gives up the four powers below
         "retrigger", // the claim's hunter, on its own failed round (P2d)
         "reveal", // the claim's hunter (P2b)
         "rollForward", // the listing's maker (P2b)
+        "setConfirmAboveWei", // owner: copied onto listings made after it (P17, erratum E9)
         "setFeeRecipient", // owner
         "setListingFee", // owner
+        "setNarrowInvalidFloor", // owner, 250,000 to THRESHOLD: copied onto listings made after it (P17, erratum E8)
         "settle", // anyone: moves a judged claim's funds by the settlement rule (P2c)
-        "transferOwnership", // owner: hands over the two powers
+        "transferOwnership", // owner: hands over the four powers
         "withdraw", // msg.sender's own pull balance
       ]);
       // Program values the owner can never change: no setter exists for any of them.
@@ -887,7 +890,9 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
       expect(await sa.PAYOUT_GAS_LIMIT()).to.equal(120_000n);
       for (const name of mutating) {
         // a setter is set<Capital>...; settle() is not one
-        expect(name, "no setter beyond the fee and its recipient").to.not.match(/^set(?=[A-Z])(?!ListingFee$|FeeRecipient$)/);
+        expect(name, "no setter beyond the fee, its recipient, the floor and the size").to.not.match(
+          /^set(?=[A-Z])(?!ListingFee$|FeeRecipient$|NarrowInvalidFloor$|ConfirmAboveWei$)/,
+        );
       }
       const owner = await ethers.getSigner(await sa.owner());
       expect(owner.address).to.not.equal(maker.address);
@@ -905,9 +910,12 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
       await expect(sa.connect(owner).close(id)).to.be.revertedWith("not maker");
       await expect(sa.connect(owner).withdraw()).to.be.revertedWith("nothing to withdraw");
 
-      // Everything the owner may do, then: the listing and the escrow are untouched.
+      // Everything the owner may do, then: the listing and the escrow are untouched. The floor
+      // and the size (errata E8, E9) reach only listings made after them.
       await sa.connect(owner).setListingFee(parseEther("5"));
       await sa.connect(owner).setFeeRecipient(owner.address);
+      await sa.connect(owner).setNarrowInvalidFloor(250_000n);
+      await sa.connect(owner).setConfirmAboveWei(parseEther("1000"));
       await sa.connect(owner).transferOwnership(other.address);
       await sa.connect(other).acceptOwnership();
       expect(bigintJson(await sa.getListing(id))).to.equal(before);

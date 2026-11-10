@@ -127,7 +127,13 @@ async function linkedFactory(hre, name) {
 
 export const LISTING_FEE_WEI = 10n ** 16n; // 0.01 ETH, the in-process deploy script's default
 
-/** A fresh deployment: the mock aggregator and StakeAttestation, read through the merged ABI. */
+/**
+ * A fresh deployment: the mock aggregator and StakeAttestation, read through the merged ABI.
+ * The owner then sets the confirmation size (erratum E9, node P17) above any award, so no listing
+ * these tests make waits for a confirmation: the keeper does not call confirm() yet (node P18),
+ * and the awards they pay settle as they did before the erratum. The narrow-INVALID floor keeps
+ * its default, THRESHOLD: an empty band, every INVALID forfeits as before.
+ */
 export async function deployStakeAttestation(hre) {
   const [owner, maker, hunter, feeRecipient] = await hre.ethers.getSigners();
   const aggregator = await (await hre.ethers.getContractFactory('MockVerdiktaAggregator')).deploy();
@@ -135,5 +141,6 @@ export async function deployStakeAttestation(hre) {
   const deployed = await factory.deploy(await aggregator.getAddress(), owner.address, feeRecipient.address, LISTING_FEE_WEI);
   await deployed.waitForDeployment();
   const sa = new hre.ethers.Contract(await deployed.getAddress(), mergedAbi(hre), owner);
+  await (await sa.setConfirmAboveWei(hre.ethers.MaxUint256)).wait();
   return { sa, aggregator, owner, maker, hunter, feeRecipient };
 }

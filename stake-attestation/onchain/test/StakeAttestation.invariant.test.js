@@ -85,7 +85,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
   const reached = {}; // events emitted, over every seed
   const reachedP17 = {}; // the safeguards' events, over the P17 seeds
 
-  const SEEDS = [[11, false], [2026, false], [0xbeef, false], [7, false], [424242, false], [0x5afe, true], [1710, true], [0xc0f1, true]];
+  const SEEDS = [[11, false], [2026, false], [0xbeef, false], [7, false], [424242, false], [1710, true], [17, true], [0x10ad, true]];
   for (const [seed, safeguards] of SEEDS) {
     it(`seed ${seed}${safeguards ? " with the safeguards (P17)" : ""}: balance == escrow + held bonds + held prepays + withdrawable credits + fee balance after every step`, async function () {
       const { sa, aggregator, owner, feeRecipient, makers, hunters, contracts } = await loadFixture(setup);
@@ -375,32 +375,85 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       const bag2 = Object.entries({ dispute: 1, retrigger: 3, recover: 2, faults: 2 }).flatMap(([k, w]) => Array(w).fill(k));
       const bag3 = Object.entries({ lateClaim: 3, flag: 1 }).flatMap(([k, w]) => Array(w).fill(k));
       const safeguardActions = {
-        async program() {
-          const floor = r4.pick([250_000n, 350_000n, 420_000n, 500_000n, BigInt(T)]);
-          const size = r4.pick([0n, 0n, parseEther("0.002"), parseEther("0.03"), parseEther("100")]);
+        // The owner's program values: the first set confirms most awards and has a band; later
+        // ones anything in bounds, and only the listings made after them take them.
+        async program(first = false) {
+          const floor = first ? r4.pick([250_000n, 350_000n, 420_000n]) : r4.pick([250_000n, 350_000n, 420_000n, 500_000n, BigInt(T)]);
+          const size = first ? r4.pick([0n, parseEther("0.002")]) : r4.pick([0n, 0n, parseEther("0.002"), parseEther("0.03"), parseEther("100")]);
           await attempt("program", () => sa.connect(owner).setNarrowInvalidFloor(floor));
           await attempt("program", () => sa.connect(owner).setConfirmAboveWei(size));
         },
+        // Take a listing's head claim through its round to a verdict near the safeguards' edges:
+        // a counted class (a confirmation's candidate), LOW, an INVALID inside or below the band.
+        async drive() {
+          for (const { id } of shuffled(listings)) {
+            const head = (await sa.getListing(id)).headClaim;
+            if (head === 0n) continue;
+            const k = await sa.getClaim(head);
+            if (k.state !== ClaimState.Committed || k.disclosedAt === 0n) continue;
+            const c = claims.find((x) => x.id === head);
+            const [, revealableAt, revealDeadline] = await sa.claimTimes(head);
+            const now = BigInt(await time.latest());
+            if (revealDeadline !== 0n && now + 1n >= revealDeadline) {
+              // Its reveal window passed while the clock jumped: expire it, so the queue moves on.
+              await attempt("expire", () => send(r4.pick(hunters), "expire", [head]));
+              continue;
+            }
+            if (revealableAt > now + 1n) await time.increaseTo(revealableAt);
+            await attempt("reveal", async () => send(c.hunter, "reveal", [head, H.BCID, H.CK, H.EK], await sa.revealTopUp(head)));
+            if ((await sa.getClaim(head)).state !== ClaimState.Revealed) return;
+            const m = r4.int(200_000, 500_000);
+            const band = [SCALE - m, 0, 0, m, 0, 0];
+            const vector = r4.pick([H.oneHot(3), H.oneHot(4), H.oneHot(5), H.oneHot(3), H.oneHot(4), H.oneHot(2), H.oneHot(0), band, band]);
+            const { requestId } = await sa.getClaim(head);
+            await attempt("result", () => aggregator.scriptResult(requestId, vector, JUSTIFICATION));
+            await attempt("finalize", () => send(r4.pick(plainSigners), "finalize", [head]));
+            // An INVALID settles at once, as the keeper would settle it.
+            const j = await sa.getClaim(head);
+            if (j.state === ClaimState.Judged && j.outcome === 0n) await attempt("settle", () => send(r4.pick(hunters), "settle", [head]));
+            return;
+          }
+        },
+        // confirm a claim that awaits its confirmation, moving the clock to its window if none is open.
         async confirm() {
           const judged = await claimsIn([ClaimState.Judged]);
           if (!judged.length) return;
           const now = BigInt(await time.latest());
           const ready = [];
+          let earliest = 0n;
           for (const c of judged) {
             const [opensAt, deadline] = await sa.confirmWindow(c.id);
-            if (opensAt !== 0n && now + 1n >= opensAt && now + 1n < deadline) ready.push(c);
+            if (opensAt === 0n || now + 1n >= deadline) continue;
+            if (now + 1n >= opensAt) ready.push(c);
+            else if (earliest === 0n || opensAt < earliest) earliest = opensAt;
           }
-          if (!ready.length && r4.next() < 0.5) await time.increase(r4.pick([24 * 3600, 4 * 86400]));
-          const c = ready.length && r4.next() < 0.8 ? r4.pick(ready) : r4.pick(judged);
-          await attempt("confirm", () => send(r4.pick([...makers, ...hunters]), "confirm", [c.id]));
+          if (!ready.length && earliest !== 0n && r4.next() < 0.7) {
+            await time.increaseTo(earliest);
+            for (const c of judged) {
+              const [opensAt, deadline] = await sa.confirmWindow(c.id);
+              if (opensAt !== 0n && opensAt <= earliest + 1n && earliest + 1n < deadline) ready.push(c);
+            }
+          }
+          // Mostly one whose window is open; now and then any judged claim, to be refused.
+          const c = ready.length && r4.next() < 0.9 ? r4.pick(ready) : r4.next() < 0.3 ? r4.pick(judged) : null;
+          if (c) await attempt("confirm", () => send(r4.pick([...makers, ...hunters]), "confirm", [c.id]));
         },
-        async lateWait() {
-          await time.increase(r4.pick([24 * 3600, 3 * 86400, 4 * 86400]));
+        // settle a claim that awaits its confirmation from its deadline: the first verdict stands.
+        async settleLate() {
+          const waiting = [];
+          for (const c of await claimsIn([ClaimState.Judged])) {
+            const [, deadline] = await sa.confirmWindow(c.id);
+            if (deadline !== 0n) waiting.push({ c, deadline });
+          }
+          if (!waiting.length) return;
+          const { c, deadline } = r4.pick(waiting);
+          if (deadline > BigInt(await time.latest()) + 1n) await time.increaseTo(deadline);
+          await attempt("settle", () => send(r4.pick(hunters), "settle", [c.id]));
         },
       };
-      const bag4 = Object.entries({ program: 1, confirm: 5, lateWait: 1 }).flatMap(([k, w]) => Array(w).fill(k));
+      const bag4 = Object.entries({ program: 1, drive: 6, confirm: 5, settleLate: 1 }).flatMap(([k, w]) => Array(w).fill(k));
 
-      if (safeguards) await safeguardActions.program(); // the first listing takes these values
+      if (safeguards) await safeguardActions.program(true); // the first listing takes these values
       await actions.list();
       await checkInvariant(0, "list");
       for (let step = 1; step <= 300; step++) {
@@ -417,7 +470,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           await later[extra]();
           await checkInvariant(step, extra);
         }
-        if (safeguards && r4.next() < 0.3) {
+        if (safeguards && r4.next() < 0.5) {
           const extra = r4.pick(bag4);
           await safeguardActions[extra]();
           await checkInvariant(step, extra);

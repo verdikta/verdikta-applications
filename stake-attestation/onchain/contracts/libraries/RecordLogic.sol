@@ -112,6 +112,9 @@ library RecordLogic {
         lr.successor = succ;
         if (succ != 0) lr.successorHash = listings[succ].artifactHash;
         _history(l, lr.history);
+        // Errata E8 and E9: the listing's own values, as list() copied them.
+        lr.narrowInvalidFloor = l.narrowInvalidFloor;
+        lr.confirmAboveWei = l.confirmAboveWei;
     }
 
     /// @dev The listing's counters, written into `h` (already allocated, zero).
@@ -128,6 +131,12 @@ library RecordLogic {
         h.disputesNoVerdict = l.disputesNoVerdict;
         h.lateClaims = l.lateClaims;
         h.lateExpired = l.lateExpired;
+        h.narrowInvalid = l.narrowInvalidClaims;
+        h.confirmationRounds = l.confirmationRounds;
+        h.confirmationsHeld = l.confirmationsHeld;
+        h.confirmationsOverturned = l.confirmationsOverturned;
+        h.confirmationsNoVerdict = l.confirmationsNoVerdict;
+        h.lateNarrowInvalid = l.lateNarrowInvalid;
         for (uint256 o = 0; o < 6; ) {
             h.outcomes[o] = l.outcomeCounts[o];
             h.lateOutcomes[o] = l.lateOutcomeCounts[o];
@@ -149,6 +158,12 @@ library RecordLogic {
         total.disputesNoVerdict += h.disputesNoVerdict;
         total.lateClaims += h.lateClaims;
         total.lateExpired += h.lateExpired;
+        total.narrowInvalid += h.narrowInvalid;
+        total.confirmationRounds += h.confirmationRounds;
+        total.confirmationsHeld += h.confirmationsHeld;
+        total.confirmationsOverturned += h.confirmationsOverturned;
+        total.confirmationsNoVerdict += h.confirmationsNoVerdict;
+        total.lateNarrowInvalid += h.lateNarrowInvalid;
         for (uint256 o = 0; o < 6; ) {
             total.outcomes[o] += h.outcomes[o];
             total.lateOutcomes[o] += h.lateOutcomes[o];
@@ -192,6 +207,7 @@ library RecordLogic {
                 f.revealedAt = c.revealedAt;
                 f.settledAt = c.settledAt;
                 f.bcid = c.bcid;
+                f.disputeKind = c.disputeKind;
                 unchecked { ++j; }
             }
             base += len;

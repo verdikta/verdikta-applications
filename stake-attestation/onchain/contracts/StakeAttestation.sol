@@ -34,7 +34,12 @@ import {RecordLogic} from "./libraries/RecordLogic.sol";
 ///         commit-shaped, no award, recorded under `later`) and the record (recordByHash and
 ///         recordPage in the lens, read by the linked library RecordLogic through recordData).
 ///         close() refuses while pendingClaims or owedWei is non-zero (decision D8); a late claim
-///         is not one of pendingClaims, since no award rides on it.
+///         is not one of pendingClaims, since no award rides on it. P17: the settlement safeguards
+///         of the design's 2026-11-10 errata (Q70, mechanics Q72): E8, a narrow INVALID (valid mass
+///         at or above the listing's narrowInvalidFloor) returns the bond; E9, a claim round's
+///         verdict whose table award is above the listing's confirmAboveWei waits for a
+///         dispute-panel verdict (the maker's dispute, or confirm, funded from the escrow) or the
+///         confirmation deadline before it pays. The hunter's appeal (E7) is a later node.
 ///
 ///         Size (EIP-170): the claim functions' bodies are the linked library ClaimLogic, the
 ///         record's reader the linked library RecordLogic, and derived views (claim state,
@@ -43,11 +48,14 @@ import {RecordLogic} from "./libraries/RecordLogic.sol";
 ///         RecordLogic, before this contract (deploy/01_deploy_stake_attestation.js).
 ///
 ///         Program values are fixed per deployment (assumption A5): the window bounds, the
-///         listing period, THRESHOLD, the payout gas cap. The contract owner has exactly two
-///         powers, the listing fee and its recipient, and both apply from the next fund or
-///         renew; the owner has no path to any escrow, bond, prepay, pull balance, threshold or
-///         listing's terms. Badge labels (scanned, staked, under-staked, invited) and their
-///         floors are computed off-chain from the record.
+///         listing period, THRESHOLD, the payout gas cap. The contract owner has exactly four
+///         powers: the listing fee and its recipient, both applying from the next fund or renew,
+///         and (errata E8, E9; A5 and D8 as amended) the narrow-INVALID floor and the
+///         confirmation size, each within bounds, which list() copies onto the listings made
+///         after the change, so a live listing and its pending claims keep the values its
+///         hunters committed under. The owner has no path to any escrow, bond, prepay, pull
+///         balance, threshold or listing's terms. Badge labels (scanned, staked, under-staked,
+///         invited) and their floors are computed off-chain from the record.
 ///
 ///         Every outgoing transfer goes through _payOrCredit (gas-capped, falling back to the
 ///         pull ledger) or withdraw(). ETH-moving entry points are non-reentrant.
@@ -173,6 +181,16 @@ contract StakeAttestation is Ownable2Step {
         uint64  lateClaims;          // late claims made
         uint64  lateExpired;         // late claims expired, whatever the reason (Claim.expiry says)
         uint32[6] lateOutcomeCounts; // settled late claims by Outcome
+        // the settlement safeguards (P17, errata E8 and E9): list() copies the two program values,
+        // so the owner's later changes never reach this listing or its claims
+        uint256 narrowInvalidFloor;  // E8: an INVALID with at least this valid mass returns the bond
+        uint256 confirmAboveWei;     // E9: a claim round's award above this waits for the dispute panel
+        uint64  narrowInvalidClaims; // settled INVALID with the bond back (within outcomeCounts[INVALID])
+        uint64  lateNarrowInvalid;   // the same for late claims (within lateOutcomeCounts[INVALID])
+        uint64  confirmationRounds;  // confirmation rounds started (confirm), each paid from escrowWei
+        uint64  confirmationsHeld;   // a confirmation's verdict was the same outcome
+        uint64  confirmationsOverturned; // a confirmation's different outcome replaced the first
+        uint64  confirmationsNoVerdict;  // paid from the confirmation deadline with no panel verdict
     }
 
     /// @notice A claim's life (design §13.1, errata E4-E6, decision D5). Order is ABI: append only.
@@ -199,9 +217,19 @@ contract StakeAttestation is Ownable2Step {
     ///         settled no verdict: the first verdict stands). Order is ABI: append only.
     enum DisputeResult { None, Pending, Held, Overturned, NoVerdict }
 
+    /// @notice Which dispute-panel round a claim's dispute fields (dispute, disputedOutcome,
+    ///         disputedAt, disputeEndedAt, disputeWallet, disputeRequestId) describe: None until one
+    ///         starts; Maker, the maker's dispute (dispute()); Confirmation, the escrow-funded
+    ///         confirmation of an award above the listing's confirmAboveWei (confirm(), erratum E9),
+    ///         which may follow a maker's dispute or a confirmation that settled no verdict. Order is
+    ///         ABI: append only (the hunter's appeal, erratum E7, is appended after Confirmation).
+    enum DisputeKind { None, Maker, Confirmation }
+
     /// @notice Who funded an EvaluationWallet clone, for which claim: the hunter for each of a
-    ///         claim's rounds, the maker for its dispute. A wallet makes one request, so its
-    ///         unspent prepay (the aggregator's ethOwed credit to it) is this funder's.
+    ///         claim's rounds, the maker for its dispute, and this contract (the listing's escrow)
+    ///         for a confirmation (erratum E9). A wallet makes one request, so its unspent prepay
+    ///         (the aggregator's ethOwed credit to it) is this funder's; a confirmation's goes back
+    ///         as a top-up of the listing would (ClaimLogic.topUp), or to the maker once it closed.
     struct WalletInfo {
         address funder;
         uint64  claimId;
@@ -259,8 +287,10 @@ contract StakeAttestation is Ownable2Step {
         uint64  disputeEndedAt;      // when the second finalize read the dispute round
         // late claims (P2e, decision D6)
         bool    late;                // made by lateClaim on a Rolled or Closed listing: no award
-        address disputeWallet;       // the dispute's EvaluationWallet clone (the maker's)
+        address disputeWallet;       // the dispute-panel round's EvaluationWallet clone
         bytes32 disputeRequestId;
+        // the settlement safeguards (P17, erratum E9)
+        DisputeKind disputeKind;     // whose dispute-panel round the dispute fields describe
     }
 
     // ------------------------------------------------------------------
@@ -287,6 +317,13 @@ contract StakeAttestation is Ownable2Step {
         uint256 lateClaims;           // later: late claims made
         uint256[6] lateOutcomes;      // later: settled late claims, by Outcome
         uint256 lateExpired;          // later: late claims expired
+        // the settlement safeguards (P17, errata E8 and E9), apart from the maker's disputes
+        uint256 narrowInvalid;        // settled INVALID with the bond back: within outcomes[INVALID]
+        uint256 confirmationRounds;   // confirmation rounds started, each paid from the escrow
+        uint256 confirmationsHeld;    // a confirmation's verdict was the same outcome
+        uint256 confirmationsOverturned; // a confirmation's outcome replaced the first
+        uint256 confirmationsNoVerdict;  // paid from the confirmation deadline with no panel verdict
+        uint256 lateNarrowInvalid;    // later: within lateOutcomes[INVALID]
     }
 
     /// @notice One listing of the hash: the stake, its money, its lineage and its own counts.
@@ -314,6 +351,8 @@ contract StakeAttestation is Ownable2Step {
         uint256 successor;            // the listing that fixed this one (0 = none)
         bytes32 successorHash;
         History history;
+        uint256 narrowInvalidFloor;   // erratum E8, fixed at listing
+        uint256 confirmAboveWei;      // erratum E9, fixed at listing
     }
 
     /// @notice A valid finding: a settled claim with an outcome LOW..CRITICAL (published from
@@ -330,6 +369,7 @@ contract StakeAttestation is Ownable2Step {
         uint64  revealedAt;
         uint64  settledAt;
         string  bcid;                 // the revealed archive
+        DisputeKind disputeKind;      // whose dispute-panel round `dispute` describes (erratum E9)
     }
 
     /// @notice A bad-disclosure flag (design §14): the maker's statement, with what became of
@@ -378,6 +418,9 @@ contract StakeAttestation is Ownable2Step {
     uint256 public constant SCORE_SCALE = ClaimRules.SCORE_SCALE;
     uint256 public constant MIN_SCORE_SUM = ClaimRules.MIN_SCORE_SUM;
     uint256 public constant THRESHOLD = ClaimRules.THRESHOLD;
+
+    /// @notice Erratum E8's floor is set between this and THRESHOLD (the empty band, the default).
+    uint256 public constant MIN_NARROW_INVALID_FLOOR = ClaimRules.MIN_NARROW_INVALID_FLOOR;
 
     /// @notice One listing fee buys this much live listing (fund opens it, renew extends it).
     uint256 public constant LISTING_PERIOD = 30 days;
@@ -473,6 +516,16 @@ contract StakeAttestation is Ownable2Step {
     ///         change applies from the next fee; what already accrued stays with its recipient.
     address public feeRecipient;
 
+    /// @notice Erratum E8: the narrow-INVALID floor the next list() copies onto its listing. An
+    ///         INVALID whose valid mass is at least the listing's floor returns the bond. Owner-set,
+    ///         from MIN_NARROW_INVALID_FLOOR to THRESHOLD; THRESHOLD (the default) is the empty band.
+    uint256 public narrowInvalidFloor;
+
+    /// @notice Erratum E9: the confirmation size, in wei, the next list() copies onto its listing.
+    ///         A claim round's verdict whose table award is above the listing's size waits for the
+    ///         dispute panel. Owner-set, any amount; 0 (the default) confirms every counted award.
+    uint256 public confirmAboveWei;
+
     /// @notice Listing ids run 1..listingCount (0 means "no listing" in every reference).
     uint256 public listingCount;
 
@@ -562,6 +615,12 @@ contract StakeAttestation is Ownable2Step {
 
     event ListingFeeSet(uint256 previousFeeWei, uint256 newFeeWei);
     event FeeRecipientSet(address indexed previousRecipient, address indexed newRecipient);
+
+    /// @notice The owner set the narrow-INVALID floor (erratum E8) for listings made from now on.
+    event NarrowInvalidFloorSet(uint256 previousFloor, uint256 newFloor);
+
+    /// @notice The owner set the confirmation size (erratum E9) for listings made from now on.
+    event ConfirmAboveWeiSet(uint256 previousWei, uint256 newWei);
 
     /// @notice A direct payment couldn't be delivered and was credited to the pull ledger instead.
     event PaymentDeferred(address indexed to, uint256 amount);
@@ -674,6 +733,25 @@ contract StakeAttestation is Ownable2Step {
     ///         SubmissionFailed follows in the same transaction.
     event Retriggered(uint256 indexed claimId, uint256 indexed listingId);
 
+    /// @notice A confirmation round started (erratum E9): the dispute panel re-judges a claim
+    ///         round's verdict whose award is above the listing's size, through `wallet`, funded
+    ///         with `prepayWei` from the listing's escrow. DisputeJudged or DisputeFailed ends it.
+    event ConfirmationRequested(uint256 indexed claimId, uint256 indexed listingId, address wallet, bytes32 requestId, uint256 prepayWei);
+
+    /// @notice A confirmation's unspent prepay came back (LeftoverRefunded names this contract as
+    ///         its funder) and went where a top-up goes: to owed awards in commit order (OwedPaid),
+    ///         then to the escrow; or, once the listing had closed, to the maker's pull balance.
+    event ConfirmationRefunded(uint256 indexed claimId, uint256 indexed listingId, uint256 toOwedWei, uint256 toEscrowWei, uint256 toMakerWei);
+
+    /// @notice settle paid a verdict that awaited a confirmation from the confirmation deadline,
+    ///         with no round open and no dispute-panel verdict: the record's confirmation with no
+    ///         verdict (erratum E9).
+    event ConfirmationNoVerdict(uint256 indexed claimId, uint256 indexed listingId);
+
+    /// @notice settle returned an INVALID's bond: its valid mass was at least the listing's floor
+    ///         (erratum E8). Nothing is awarded or published; Settled carries the outcome.
+    event NarrowInvalid(uint256 indexed claimId, uint256 indexed listingId, uint256 validMass);
+
     // ------------------------------------------------------------------
 
     constructor(
@@ -688,8 +766,11 @@ contract StakeAttestation is Ownable2Step {
         verdikta = verdikta_;
         feeRecipient = feeRecipient_;
         listingFeeWei = listingFeeWei_;
+        narrowInvalidFloor = THRESHOLD; // the empty band until the owner sets it (erratum E8)
         emit FeeRecipientSet(address(0), feeRecipient_);
         emit ListingFeeSet(0, listingFeeWei_);
+        emit NarrowInvalidFloorSet(0, THRESHOLD);
+        emit ConfirmAboveWeiSet(0, 0);
         // Both creation codes live in this contract's initcode, not in the runtime bytecode
         // that EIP-170 caps.
         lens = new StakeAttestationLens(verdikta_);
@@ -756,6 +837,9 @@ contract StakeAttestation is Ownable2Step {
         l.valueAtRiskUsd = p.valueAtRiskUsd;
         l.knownIssueIds = knownIssueIds;
         l.oracle = p.oracle;
+        // Errata E8, E9: the program values as of now, for this listing's whole life.
+        l.narrowInvalidFloor = narrowInvalidFloor;
+        l.confirmAboveWei = confirmAboveWei;
         for (uint256 i = 0; i < p.allowlist.length; ) {
             address hunter = p.allowlist[i];
             require(hunter != address(0) && !_allowed[listingId][hunter], "bad allowlist");
@@ -817,17 +901,7 @@ contract StakeAttestation is Ownable2Step {
             emit Opened(listingId, l.artifactHash, escrow, until);
         } else {
             require(msg.value > 0, "no value");
-            uint256 amount = msg.value;
-            if (l.owedWei != 0) {
-                amount = ClaimLogic.payOwed(_claims, l, _owedClaims[listingId], withdrawable, listingId, amount);
-            }
-            uint256 escrow = l.escrowWei + amount;
-            l.escrowWei = escrow;
-            emit Funded(listingId, msg.sender, amount, escrow);
-            if (s == ListingState.Depleted && escrow >= l.awards[3] && l.owedWei == 0) {
-                l.state = ListingState.Open;
-                emit Reopened(listingId, escrow);
-            }
+            ClaimLogic.topUp(_claims, l, _owedClaims[listingId], withdrawable, listingId, msg.value, msg.sender);
         }
     }
 
@@ -1074,6 +1148,31 @@ contract StakeAttestation is Ownable2Step {
         );
     }
 
+    /// @notice Start a claim's confirmation (erratum E9; anyone may call, the site's keeper does):
+    ///         the dispute panel re-judges a claim round's verdict whose table award is above the
+    ///         listing's confirmAboveWei. For a Judged claim, not late, with no dispute-panel
+    ///         verdict (undisputed, or its maker's dispute or an earlier confirmation settled
+    ///         none), from judgedAt + disputeWindow until the confirmation deadline, judgedAt +
+    ///         disputeWindow + revealWindow (the lens's confirmWindow). A maker's dispute inside
+    ///         the dispute window is the confirmation, so none starts before the window ends.
+    /// @dev The prepay is the live dispute fee (the lens's disputeFee), out of escrowWei into a
+    ///      fresh EvaluationWallet clone whose funder is this contract; refused while anything is
+    ///      owed on the listing (the escrow is then empty: owed awards come first) or when the
+    ///      escrow holds less than the fee. It may leave an Open listing below the top award:
+    ///      Depleted, as after a payout. The request is the dispute's without the dispute line:
+    ///      cids = [disputeCid, the claim's bcid, the prior findings its round carried], addendum
+    ///      = the E1 line, sent with exactly SUBMISSION_GAS and not caught, so a refusal reverts
+    ///      and changes nothing. Judged -> Disputed, of the Confirmation kind; the second finalize
+    ///      reads it, and its unspent prepay goes back as a top-up would.
+    function confirm(uint256 claimId) external nonReentrant {
+        Claim storage c = _mustClaim(claimId);
+        uint256 listingId = c.listingId;
+        ClaimLogic.confirm(
+            _claims, _listings[listingId], _validFindings[listingId], walletInfo, claimId, verdikta,
+            address(walletImplementation)
+        );
+    }
+
     // ------------------------------------------------------------------
     //                    judgement and settlement (P2c)
     // ------------------------------------------------------------------
@@ -1083,21 +1182,29 @@ contract StakeAttestation is Ownable2Step {
     ///         "evaluation not ready" while the round is open; otherwise never fails on the
     ///         round's content. A claim round: a verdict makes the claim Judged (outcome by
     ///         ClaimRules.judge; the dispute window starts), a round over without one (timed out,
-    ///         or a vector of the wrong length or sum) makes it RoundFailed. A dispute round (the
-    ///         second finalize, final): a verdict replaces the first (Held or Overturned), none
-    ///         leaves the first standing (NoVerdict); the claim is Judged and settles at once.
-    ///         Then the round's unspent prepay goes to its wallet's funder.
+    ///         or a vector of the wrong length or sum) makes it RoundFailed. A dispute-panel round
+    ///         (the maker's dispute or a confirmation; the second finalize, final): a verdict
+    ///         replaces the first (Held or Overturned) and the claim settles at once; none leaves
+    ///         the first standing (NoVerdict), and a claim above the listing's size then still
+    ///         awaits its confirmation (erratum E9). Then the round's unspent prepay goes to its
+    ///         wallet's funder: the hunter, the maker, or, for a confirmation, the listing as a
+    ///         top-up would (owed awards first, then the escrow).
     function finalize(uint256 claimId) external nonReentrant {
         Claim storage c = _mustClaim(claimId);
-        (address payee, uint256 refunded) = ClaimLogic.finalize(c, _listings[c.listingId], claimId, verdikta);
+        uint256 listingId = c.listingId;
+        (address payee, uint256 refunded) = ClaimLogic.finalize(
+            _claims, _listings[listingId], _owedClaims[listingId], withdrawable, claimId, verdikta
+        );
         _payOrCredit(payee, refunded);
     }
 
     /// @notice Settle a judged claim and move its funds (design §8.7, §13.2; ClaimLogic.settle).
-    ///         Anyone may call. INVALID (bond to the maker) and DUPLICATE (bond back) at once;
-    ///         a valid outcome after the dispute window, or at once once a dispute of it ended
-    ///         (the second finalize is final): bond back plus the award at or above
-    ///         lowestClassCounted, from the escrow, any shortfall owed. The claim leaves the
+    ///         Anyone may call. INVALID (bond to the maker, or back when narrow, erratum E8) and
+    ///         DUPLICATE (bond back) at once; a valid outcome after the dispute window, or at once
+    ///         once a dispute of it ended (the second finalize is final): bond back plus the award
+    ///         at or above lowestClassCounted, from the escrow, any shortfall owed. A claim round's
+    ///         award above the listing's confirmAboveWei (erratum E9) waits for a dispute-panel
+    ///         verdict, or for the confirmation deadline with no round open. The claim leaves the
     ///         commit-order queue, so the next claim may reveal.
     function settle(uint256 claimId) external nonReentrant {
         Claim storage c = _mustClaim(claimId);
@@ -1114,14 +1221,17 @@ contract StakeAttestation is Ownable2Step {
     ///         the round is open, when the prepay is still reserved at the aggregator); the
     ///         wallet's refundLeftoverEth is idempotent, so this also recovers ETH that reaches
     ///         a wallet after its round; full gas, and the wallet's or aggregator's revert is not
-    ///         swallowed, so a caller sees why a retry failed.
+    ///         swallowed, so a caller sees why a retry failed. A confirmation's wallet (funded by
+    ///         this contract, erratum E9) goes back as a top-up of its listing: owed awards first
+    ///         in commit order, then escrowWei; to the maker's pull balance once it has closed.
     function recoverLeftoverEth(address wallet) external nonReentrant {
-        (address funder, uint256 amount) = ClaimLogic.recoverLeftover(_claims, walletInfo, wallet);
+        (address funder, uint256 amount) =
+            ClaimLogic.recoverLeftover(_claims, _listings, _owedClaims, withdrawable, walletInfo, wallet);
         _payOrCredit(funder, amount);
     }
 
     // ------------------------------------------------------------------
-    //                 owner: the listing fee and its recipient only
+    //     owner: the listing fee, its recipient, the floor and the size
     // ------------------------------------------------------------------
 
     /// @notice Set the listing fee charged by the next opening fund() and renew().
@@ -1136,6 +1246,23 @@ contract StakeAttestation is Ownable2Step {
         require(newRecipient != address(0) && newRecipient != address(this), "bad fee recipient");
         emit FeeRecipientSet(feeRecipient, newRecipient);
         feeRecipient = newRecipient;
+    }
+
+    /// @notice Set the narrow-INVALID floor (erratum E8) the next list() copies, from
+    ///         MIN_NARROW_INVALID_FLOOR to THRESHOLD (the empty band). Live listings and their
+    ///         pending claims keep their own.
+    function setNarrowInvalidFloor(uint256 newFloor) external onlyOwner {
+        require(newFloor >= MIN_NARROW_INVALID_FLOOR && newFloor <= THRESHOLD, "floor out of bounds");
+        emit NarrowInvalidFloorSet(narrowInvalidFloor, newFloor);
+        narrowInvalidFloor = newFloor;
+    }
+
+    /// @notice Set the confirmation size (erratum E9) the next list() copies, any amount in wei
+    ///         (the award table's unit: the contract has no price feed). Live listings and their
+    ///         pending claims keep their own.
+    function setConfirmAboveWei(uint256 newWei) external onlyOwner {
+        emit ConfirmAboveWeiSet(confirmAboveWei, newWei);
+        confirmAboveWei = newWei;
     }
 
     // ------------------------------------------------------------------

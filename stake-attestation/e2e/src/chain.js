@@ -3,7 +3,7 @@
 // linked to them), and MockVerdiktaAggregator. Every account is Hardhat's public test mnemonic.
 import fs from 'node:fs';
 import path from 'node:path';
-import { ContractFactory, Contract, HDNodeWallet, JsonRpcProvider, Wallet } from 'ethers';
+import { ContractFactory, Contract, HDNodeWallet, JsonRpcProvider, MaxUint256, Wallet } from 'ethers';
 
 import { APP_DIR, E2E_DIR } from './setup.js';
 import { freePort, launch, waitUntil } from './proc.js';
@@ -67,6 +67,10 @@ export async function startChain({ logDir }) {
     }
     const fromBlock = await provider.getBlockNumber();
     const stake = await deploy(artifact('StakeAttestation.sol/StakeAttestation.json'), accounts.deployer, [await aggregatorAdmin.getAddress(), accounts.deployer.address, accounts.feeRecipient.address, LISTING_FEE_WEI], libraries);
+    // The confirmation size (erratum E9, node P17) above any award, so the round's valid claim pays
+    // after its dispute window as before: the keeper does not call confirm() yet (node P18). The
+    // narrow-INVALID floor keeps its default, THRESHOLD, so every INVALID forfeits as before.
+    await (await stake.setConfirmAboveWei(MaxUint256)).wait();
     const contract = await stake.getAddress();
     const sa = new Contract(contract, mergedAbi(), provider);
     return {

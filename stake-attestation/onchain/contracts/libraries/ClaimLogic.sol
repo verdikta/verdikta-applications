@@ -25,6 +25,11 @@ import {ClaimRules} from "./ClaimRules.sol";
 ///      of the listing's pendingClaims (resolve), and its counts go to the listing's `later`
 ///      (lateClaims, lateOutcomeCounts, lateExpired) instead of the history: never claimsCommitted,
 ///      outcomeCounts, releasedClaims, the expiry counts or the dispute counts.
+///
+///      The settlement safeguards (P17, the design's 2026-11-10 errata E8 and E9) are settle's
+///      narrow INVALID and its wait for a confirmation, confirm, the dispute-panel branch of
+///      finalize serving both kinds of round, and topUp, through which fund and a confirmation's
+///      leftover both reach a listing (owed awards first, then the escrow).
 library ClaimLogic {
     /// @notice Commit: store the two hashes, the bond and the prepay; join the tail of the
     ///         listing's commit-order queue (erratum E5, decision D5). The caller has checked
@@ -274,47 +279,69 @@ library ClaimLogic {
         require(c.dispute == StakeAttestation.DisputeResult.None, "already disputed");
         require(uint8(c.outcome) >= ClaimRules.LOW, "not a valid outcome");
         require(block.timestamp < uint256(c.judgedAt) + l.disputeWindow, "dispute window over");
-        StakeAttestation.OracleParams memory o = _effectiveOracle(l.oracle, l.oracle.disputeMaxOracleFee, verdikta);
-        uint256 live = verdikta.maxTotalFee(o.maxOracleFee);
-        require(live > 0, "bad budget");
+        uint256 live = _panelFee(l, verdikta);
         require(value >= live, "prepay below fee");
-
-        address wallet = _newWallet(wallets, walletImplementation, maker, claimId);
-        c.state = StakeAttestation.ClaimState.Disputed;
-        c.dispute = StakeAttestation.DisputeResult.Pending;
-        c.disputedOutcome = c.outcome;
-        c.disputedAt = uint64(block.timestamp);
-        c.disputeWallet = wallet;
         if (!c.late) l.disputesFiled += 1;
-
-        // Erratum E2: the dispute archive first, then what the claim's own round carried (no
-        // claim on the listing can have settled since: this one has headed the queue from its
-        // reveal); the statement by CID in the addendum's second line, never as text.
-        string[] memory cids = _requestCids(claims, l.disputeCid, prior, c.bcid);
-        string memory addendum = string.concat(_disclosureLine(c), "\nverdikta-dispute: ", statementCid);
-        // Exactly SUBMISSION_GAS, as a claim round's request, so what the aggregator does with
-        // the request cannot depend on the maker's gas limit. Not caught: a refusal (or a
-        // request that needs more) reverts the dispute, so nothing is recorded and the maker
-        // may try again inside the window.
-        require(gasleft() >= ClaimRules.SUBMISSION_GAS_NEEDED, "gas below SUBMISSION_GAS_NEEDED");
-        bytes32 requestId = EvaluationWallet(payable(wallet)).startEvaluation{value: value, gas: ClaimRules.SUBMISSION_GAS}(
-            cids,
-            addendum,
-            o.alpha,
-            o.maxOracleFee,
-            o.estimatedBaseCost,
-            o.maxFeeBasedScaling,
-            o.requestedClass
+        // The statement by CID in the addendum's second line, never as text (erratum E2).
+        (address wallet, bytes32 requestId) = _startPanelRound(
+            claims, l, prior, wallets, claimId, maker, StakeAttestation.DisputeKind.Maker, value,
+            string.concat(_disclosureLine(c), "\nverdikta-dispute: ", statementCid), verdikta, walletImplementation
         );
-        c.disputeRequestId = requestId;
         emit StakeAttestation.Disputed(claimId, c.listingId, statementCid, wallet, requestId, value);
+    }
+
+    /// @notice Start a claim's confirmation (see StakeAttestation.confirm; erratum E9). The caller
+    ///         holds the non-reentrancy lock. The prepay is the live dispute fee, out of the
+    ///         listing's escrow; the wallet's funder is this contract (address(this) under
+    ///         delegatecall), so its leftover goes back to the listing.
+    function confirm(
+        mapping(uint256 => StakeAttestation.Claim) storage claims,
+        StakeAttestation.Listing storage l,
+        uint256[] storage prior,
+        mapping(address => StakeAttestation.WalletInfo) storage wallets,
+        uint256 claimId,
+        IVerdiktaAggregator verdikta,
+        address walletImplementation
+    ) external {
+        StakeAttestation.Claim storage c = claims[claimId];
+        require(c.state == StakeAttestation.ClaimState.Judged, "not judged");
+        require(awaitsConfirmation(c, l), "no confirmation due");
+        uint256 opensAt = uint256(c.judgedAt) + l.disputeWindow;
+        require(block.timestamp >= opensAt, "dispute window open");
+        require(block.timestamp < opensAt + l.revealWindow, "confirmation deadline over");
+        // While anything is owed the escrow is empty (settle owes only what the escrow could not
+        // pay; a top-up pays owed awards first), so a confirmation's prepay never comes ahead of
+        // an award already owed. Checked, not just implied.
+        require(l.owedWei == 0, "awards owed");
+        uint256 fee = _panelFee(l, verdikta);
+        uint256 escrow = l.escrowWei;
+        require(escrow >= fee, "escrow below fee");
+        escrow -= fee;
+        l.escrowWei = escrow;
+        uint256 listingId = c.listingId;
+        if (l.state == StakeAttestation.ListingState.Open && escrow < l.awards[3]) {
+            l.state = StakeAttestation.ListingState.Depleted;
+            emit StakeAttestation.Depleted(listingId, escrow);
+        }
+        l.confirmationRounds += 1;
+        // The dispute's request without the dispute line: the E1 line alone.
+        (address wallet, bytes32 requestId) = _startPanelRound(
+            claims, l, prior, wallets, claimId, address(this), StakeAttestation.DisputeKind.Confirmation, fee,
+            _disclosureLine(c), verdikta, walletImplementation
+        );
+        emit StakeAttestation.ConfirmationRequested(claimId, listingId, wallet, requestId, fee);
     }
 
     /// @notice Recover a wallet's unspent prepay for its funder (see
     ///         StakeAttestation.recoverLeftoverEth). The caller holds the non-reentrancy lock and
     ///         pays `refunded` to `funder`.
+    /// @param owed the owed claims of every listing (StakeAttestation._owedClaims): a
+    ///        confirmation's leftover goes to its listing as a top-up would (erratum E9)
     function recoverLeftover(
         mapping(uint256 => StakeAttestation.Claim) storage claims,
+        mapping(uint256 => StakeAttestation.Listing) storage listings,
+        mapping(uint256 => uint256[]) storage owed,
+        mapping(address => uint256) storage withdrawable,
         mapping(address => StakeAttestation.WalletInfo) storage wallets,
         address wallet
     ) external returns (address funder, uint256 refunded) {
@@ -324,7 +351,7 @@ library ClaimLogic {
         StakeAttestation.Claim storage c = claims[w.claimId];
         StakeAttestation.ClaimState s = c.state;
         // A claim's rounds run one at a time, so its open round, if any, is its current
-        // wallet's (a claim round) or its dispute wallet's.
+        // wallet's (a claim round) or its dispute wallet's (a dispute-panel round of either kind).
         require(
             !(s == StakeAttestation.ClaimState.Revealed && wallet == c.evalWallet)
                 && !(s == StakeAttestation.ClaimState.Disputed && wallet == c.disputeWallet),
@@ -333,6 +360,12 @@ library ClaimLogic {
         refunded = EvaluationWallet(payable(wallet)).refundLeftoverEth();
         require(refunded > 0, "nothing to recover");
         emit StakeAttestation.LeftoverRefunded(w.claimId, funder, refunded);
+        if (funder == address(this)) {
+            // A confirmation's (erratum E9): the listing's, applied here; nothing for the caller to pay.
+            uint256 listingId = c.listingId;
+            _returnToListing(claims, listings[listingId], owed[listingId], withdrawable, w.claimId, listingId, refunded);
+            (funder, refunded) = (address(0), 0);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -349,20 +382,29 @@ library ClaimLogic {
     ///         - A claim round's verdict is stored with its outcome and judgedAt, which starts the
     ///           dispute window; a failed claim round makes the claim RoundFailed (erratum E6),
     ///           and its first failure starts the re-trigger window.
-    ///         - A dispute round's verdict is final and replaces the first (Held when the outcome
-    ///           is the same, the record's failed dispute; else Overturned); a failed dispute
-    ///           round leaves the first verdict standing (NoVerdict). Either way the claim is
-    ///           Judged again and settle may follow at once.
+    ///         - A dispute-panel round's verdict (the maker's dispute or a confirmation, erratum
+    ///           E9) is final and replaces the first (Held when the outcome is the same, the
+    ///           record's failed dispute; else Overturned); a failed round leaves the first
+    ///           verdict standing (NoVerdict). Either way the claim is Judged again; settle may
+    ///           follow at once unless the claim still awaits its confirmation. Each kind is
+    ///           counted apart; a confirmation with no verdict is counted when settle pays it.
     ///         Either way the round is over, so its wallet's unspent prepay is recovered (best
-    ///         effort, gas-capped) for the caller to pay to the wallet's funder.
+    ///         effort, gas-capped) for the caller to pay to the wallet's funder; a confirmation's
+    ///         goes back to the listing here, as a top-up would.
+    /// @param owedQ        the listing's owed claims (StakeAttestation._owedClaims)
+    /// @param withdrawable StakeAttestation.withdrawable
     /// @return payee    the round's funder: the hunter for a claim round, the maker for a dispute
+    ///                  (address(0) for a confirmation, whose leftover was applied here)
     /// @return refunded the wallet's recovered balance (0 if there was none or recovery failed)
     function finalize(
-        StakeAttestation.Claim storage c,
+        mapping(uint256 => StakeAttestation.Claim) storage claims,
         StakeAttestation.Listing storage l,
+        uint256[] storage owedQ,
+        mapping(address => uint256) storage withdrawable,
         uint256 claimId,
         IVerdiktaAggregator verdikta
     ) external returns (address payee, uint256 refunded) {
+        StakeAttestation.Claim storage c = claims[claimId];
         bool disputed = c.state == StakeAttestation.ClaimState.Disputed;
         require(disputed || c.state == StakeAttestation.ClaimState.Revealed, "not revealed");
         bytes32 requestId = disputed ? c.disputeRequestId : c.requestId;
@@ -397,25 +439,30 @@ library ClaimLogic {
             }
         } else {
             wallet = c.disputeWallet;
-            payee = l.maker;
+            // A confirmation is never a late claim's (no award), so only the maker's kind can be.
+            bool confirmation = c.disputeKind == StakeAttestation.DisputeKind.Confirmation;
+            payee = confirmation ? address(this) : l.maker;
             c.state = StakeAttestation.ClaimState.Judged;
             c.disputeEndedAt = uint64(block.timestamp);
             if (verdict) {
-                StakeAttestation.DisputeResult result = outcome == uint8(c.disputedOutcome)
-                    ? StakeAttestation.DisputeResult.Held
-                    : StakeAttestation.DisputeResult.Overturned;
-                c.dispute = result;
+                bool held = outcome == uint8(c.disputedOutcome);
+                c.dispute = held ? StakeAttestation.DisputeResult.Held : StakeAttestation.DisputeResult.Overturned;
                 // A late claim's dispute is on its finding, never in the history's counts.
-                if (!c.late) {
-                    if (result == StakeAttestation.DisputeResult.Held) l.disputesHeld += 1;
+                if (confirmation) {
+                    if (held) l.confirmationsHeld += 1;
+                    else l.confirmationsOverturned += 1;
+                } else if (!c.late) {
+                    if (held) l.disputesHeld += 1;
                     else l.disputesOverturned += 1;
                 }
                 emit StakeAttestation.DisputeJudged(
-                    claimId, listingId, result, StakeAttestation.Outcome(outcome), packed, justification
+                    claimId, listingId, c.dispute, StakeAttestation.Outcome(outcome), packed, justification
                 );
             } else {
                 c.dispute = StakeAttestation.DisputeResult.NoVerdict;
-                if (!c.late) l.disputesNoVerdict += 1;
+                // A confirmation with no verdict is the record's once settle pays the first
+                // verdict at the deadline (one per claim, however many rounds failed).
+                if (!confirmation && !c.late) l.disputesNoVerdict += 1;
                 emit StakeAttestation.DisputeFailed(claimId, listingId, requestId, ok);
             }
         }
@@ -430,6 +477,10 @@ library ClaimLogic {
             emit StakeAttestation.LeftoverRefunded(claimId, payee, amount);
         } catch {
             emit StakeAttestation.RefundDeferred(claimId, wallet);
+        }
+        if (payee == address(this)) {
+            _returnToListing(claims, l, owedQ, withdrawable, claimId, listingId, refunded);
+            (payee, refunded) = (address(0), 0);
         }
     }
 
@@ -447,6 +498,13 @@ library ClaimLogic {
     ///           an Open listing's escrow below the top award makes it Depleted.
     ///         - a late claim (decision D6): no award at any class, so the bond alone, and it is
     ///           counted under later (lateOutcomeCounts); a valid one is still published.
+    ///         Erratum E8: an INVALID whose valid mass (of the vector settle applies, the dispute
+    ///         panel's once it replaced the first) is at least the listing's narrowInvalidFloor
+    ///         returns the bond to the hunter instead, with no award, counted as narrow within
+    ///         INVALID. Erratum E9: a claim that awaits its confirmation (awaitsConfirmation) is
+    ///         refused until the confirmation deadline, then pays its first verdict, counted as a
+    ///         confirmation with no verdict; while a round is open the claim is Disputed and
+    ///         refused as not judged.
     /// @param valid  the listing's valid findings (StakeAttestation._validFindings)
     /// @param owedQ  the listing's owed claims, in settlement order (StakeAttestation._owedClaims)
     function settle(
@@ -459,8 +517,19 @@ library ClaimLogic {
         StakeAttestation.Claim storage c = claims[claimId];
         require(c.state == StakeAttestation.ClaimState.Judged, "not judged");
         uint8 outcome = uint8(c.outcome);
+        uint256 listingId = c.listingId;
         if (outcome >= ClaimRules.LOW && c.dispute == StakeAttestation.DisputeResult.None) {
             require(block.timestamp >= uint256(c.judgedAt) + l.disputeWindow, "dispute window open");
+        }
+        if (awaitsConfirmation(c, l)) {
+            // Erratum E9: from the deadline, with no round open (the claim is Judged) and no
+            // dispute-panel verdict, the first verdict pays.
+            require(
+                block.timestamp >= ClaimRules.confirmDeadline(c.judgedAt, l.disputeWindow, l.revealWindow),
+                "awaiting confirmation"
+            );
+            l.confirmationsNoVerdict += 1;
+            emit StakeAttestation.ConfirmationNoVerdict(claimId, listingId);
         }
         c.state = StakeAttestation.ClaimState.Settled;
         c.settledAt = uint64(block.timestamp);
@@ -470,7 +539,19 @@ library ClaimLogic {
         else l.outcomeCounts[outcome] += 1;
 
         address hunter = c.hunter;
-        payee = outcome == ClaimRules.INVALID ? l.maker : hunter;
+        payee = hunter;
+        if (outcome == ClaimRules.INVALID) {
+            // Erratum E8. A gate failure or a tamper flag has all the mass on INVALID: never narrow.
+            uint32[6] memory v = c.vector;
+            uint256 mass = uint256(v[2]) + v[3] + v[4] + v[5];
+            if (ClaimRules.isNarrowInvalid(outcome, mass, l.narrowInvalidFloor)) {
+                if (late) l.lateNarrowInvalid += 1;
+                else l.narrowInvalidClaims += 1;
+                emit StakeAttestation.NarrowInvalid(claimId, listingId, mass);
+            } else {
+                payee = l.maker;
+            }
+        }
         amount = c.bondWei;
         uint256 paid;
         uint256 owed;
@@ -494,11 +575,36 @@ library ClaimLogic {
                 amount += paid;
                 if (l.state == StakeAttestation.ListingState.Open && escrow < l.awards[3]) {
                     l.state = StakeAttestation.ListingState.Depleted;
-                    emit StakeAttestation.Depleted(c.listingId, escrow);
+                    emit StakeAttestation.Depleted(listingId, escrow);
                 }
             }
         }
-        emit StakeAttestation.Settled(claimId, c.listingId, hunter, StakeAttestation.Outcome(outcome), paid, owed);
+        emit StakeAttestation.Settled(claimId, listingId, hunter, StakeAttestation.Outcome(outcome), paid, owed);
+    }
+
+    /// @notice A top-up of a listing that has opened (fund's, or a confirmation's leftover,
+    ///         erratum E9): first what the listing owes, claim by claim in commit order (payOwed),
+    ///         then the rest to escrowWei. A Depleted listing reopens once its escrow is back at
+    ///         the top award and nothing is owed; a Rolled one stays Rolled. Emits Funded when a
+    ///         `funder` (the maker) sent it.
+    /// @return rest what reached the escrow
+    function topUp(
+        mapping(uint256 => StakeAttestation.Claim) storage claims,
+        StakeAttestation.Listing storage l,
+        uint256[] storage owedQ,
+        mapping(address => uint256) storage withdrawable,
+        uint256 listingId,
+        uint256 amount,
+        address funder
+    ) public returns (uint256 rest) {
+        rest = l.owedWei != 0 ? payOwed(claims, l, owedQ, withdrawable, listingId, amount) : amount;
+        uint256 escrow = l.escrowWei + rest;
+        l.escrowWei = escrow;
+        if (funder != address(0)) emit StakeAttestation.Funded(listingId, funder, rest, escrow);
+        if (l.state == StakeAttestation.ListingState.Depleted && escrow >= l.awards[3] && l.owedWei == 0) {
+            l.state = StakeAttestation.ListingState.Open;
+            emit StakeAttestation.Reopened(listingId, escrow);
+        }
     }
 
     /// @notice A top-up first pays what the listing owes, claim by claim in commit order (claims
@@ -513,7 +619,7 @@ library ClaimLogic {
         mapping(address => uint256) storage withdrawable,
         uint256 listingId,
         uint256 amount
-    ) external returns (uint256 rest) {
+    ) internal returns (uint256 rest) {
         uint256 i = l.owedCursor;
         uint256 n = owedQ.length;
         uint256 total = l.owedWei;
@@ -568,6 +674,22 @@ library ClaimLogic {
         c.prevInOrder = 0;
         c.nextInOrder = 0;
         if (!c.late) l.pendingClaims -= 1;
+    }
+
+    /// @dev Erratum E9: a judged claim that waits for the dispute panel before it pays (the
+    ///      rule ClaimRules.awaitsConfirmation states; the lens applies the same one). While no
+    ///      dispute-panel verdict has replaced it (dispute None, or NoVerdict), `outcome` is the
+    ///      claim round's.
+    function awaitsConfirmation(StakeAttestation.Claim storage c, StakeAttestation.Listing storage l)
+        internal view returns (bool)
+    {
+        StakeAttestation.DisputeResult d = c.dispute;
+        return ClaimRules.awaitsConfirmation(
+            ClaimRules.awardFor(l.awards, uint8(l.lowestClassCounted), uint8(c.outcome)),
+            l.confirmAboveWei,
+            c.late,
+            d == StakeAttestation.DisputeResult.Held || d == StakeAttestation.DisputeResult.Overturned
+        );
     }
 
     function revealableAt(StakeAttestation.Claim storage c, StakeAttestation.Listing storage l)
@@ -642,6 +764,80 @@ library ClaimLogic {
             if (c.failedAt == 0) c.failedAt = uint64(block.timestamp);
             emit StakeAttestation.SubmissionFailed(claimId, wallet, reason);
         }
+    }
+
+    /// @dev Start a dispute-panel round (the maker's dispute, or a confirmation): a fresh
+    ///      EvaluationWallet clone funded with `value` by `funder`; the claim goes Judged ->
+    ///      Disputed with the round's `kind`. Erratum E2's request: the dispute archive first,
+    ///      then what the claim's own round carried (no claim on the listing can have settled
+    ///      since: this one has headed the queue from its reveal), and `addendum`. Exactly
+    ///      SUBMISSION_GAS, as a claim round's request, so what the aggregator does with it cannot
+    ///      depend on the caller's gas limit. Not caught: a refusal (or a request that needs more)
+    ///      reverts the call, so nothing is recorded and it may be tried again in its window.
+    function _startPanelRound(
+        mapping(uint256 => StakeAttestation.Claim) storage claims,
+        StakeAttestation.Listing storage l,
+        uint256[] storage prior,
+        mapping(address => StakeAttestation.WalletInfo) storage wallets,
+        uint256 claimId,
+        address funder,
+        StakeAttestation.DisputeKind kind,
+        uint256 value,
+        string memory addendum,
+        IVerdiktaAggregator verdikta,
+        address walletImplementation
+    ) private returns (address wallet, bytes32 requestId) {
+        StakeAttestation.Claim storage c = claims[claimId];
+        StakeAttestation.OracleParams memory o = _effectiveOracle(l.oracle, l.oracle.disputeMaxOracleFee, verdikta);
+        wallet = _newWallet(wallets, walletImplementation, funder, claimId);
+        c.state = StakeAttestation.ClaimState.Disputed;
+        c.dispute = StakeAttestation.DisputeResult.Pending;
+        c.disputeKind = kind;
+        c.disputedOutcome = c.outcome;
+        c.disputedAt = uint64(block.timestamp);
+        c.disputeWallet = wallet;
+        string[] memory cids = _requestCids(claims, l.disputeCid, prior, c.bcid);
+        require(gasleft() >= ClaimRules.SUBMISSION_GAS_NEEDED, "gas below SUBMISSION_GAS_NEEDED");
+        requestId = EvaluationWallet(payable(wallet)).startEvaluation{value: value, gas: ClaimRules.SUBMISSION_GAS}(
+            cids,
+            addendum,
+            o.alpha,
+            o.maxOracleFee,
+            o.estimatedBaseCost,
+            o.maxFeeBasedScaling,
+            o.requestedClass
+        );
+        c.disputeRequestId = requestId;
+    }
+
+    /// @dev The dispute panel's live fee: the aggregator's maxTotalFee for the listing's
+    ///      (clamped) disputeMaxOracleFee, the lens's disputeFee. Reverts "bad budget" at 0.
+    function _panelFee(StakeAttestation.Listing storage l, IVerdiktaAggregator verdikta) private view returns (uint256 fee) {
+        fee = verdikta.maxTotalFee(ClaimRules.effectiveFee(l.oracle.disputeMaxOracleFee, verdikta.maxOracleFee()));
+        require(fee > 0, "bad budget");
+    }
+
+    /// @dev Erratum E9: a confirmation's unspent prepay goes back to its listing as a top-up would
+    ///      (topUp: owed awards first in commit order, then the escrow, reopening a Depleted
+    ///      listing), or to the maker's pull balance once the listing has closed, since no escrow
+    ///      is left to hold it. A Closed listing owes nothing: close() refuses while anything is.
+    function _returnToListing(
+        mapping(uint256 => StakeAttestation.Claim) storage claims,
+        StakeAttestation.Listing storage l,
+        uint256[] storage owedQ,
+        mapping(address => uint256) storage withdrawable,
+        uint256 claimId,
+        uint256 listingId,
+        uint256 amount
+    ) private {
+        if (amount == 0) return;
+        if (l.state == StakeAttestation.ListingState.Closed) {
+            withdrawable[l.maker] += amount;
+            emit StakeAttestation.ConfirmationRefunded(claimId, listingId, 0, 0, amount);
+            return;
+        }
+        uint256 rest = topUp(claims, l, owedQ, withdrawable, listingId, amount, address(0));
+        emit StakeAttestation.ConfirmationRefunded(claimId, listingId, amount - rest, rest, 0);
     }
 
     /// @dev A fresh EvaluationWallet clone for one request, its funder on record (walletInfo).

@@ -779,9 +779,9 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       await time.setNextBlockTimestamp(opensAt + 1n);
       await expect(sa.connect(hunters[1]).reveal(b.claimId, BCID, H.CK, H.EK)).to.be.revertedWith("earlier claim unresolved");
       await expect(sa.connect(maker).close(id)).to.be.revertedWith("claims pending");
-      await time.setNextBlockTimestamp(deadline - 1n);
+      await time.setNextBlockTimestamp(deadline - 2n); // a reverted transaction is mined too
       await expect(sa.connect(hunters[1]).reveal(b.claimId, BCID, H.CK, H.EK)).to.be.revertedWith("earlier claim unresolved");
-      const conf = await confirmAs(sa, other, a.claimId);
+      const conf = await confirmAs(sa, other, a.claimId); // at deadline - 1
       await expect(sa.connect(maker).close(id)).to.be.revertedWith("claims pending");
       await aggregator.scriptResult(conf.requestId, V.HIGH.map(BigInt), JUSTIFICATION);
       await sa.finalize(a.claimId);

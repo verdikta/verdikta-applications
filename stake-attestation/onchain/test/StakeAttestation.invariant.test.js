@@ -33,8 +33,12 @@
 // fourth stream calls confirm: its prepay leaves the escrow for the round and its leftover comes
 // back as a top-up would (owed awards first), so the equation is unchanged and an owing listing
 // still has no escrow. The record is checked for the narrow INVALIDs and the confirmations too.
+// Under solidity-coverage those three seeds are skipped (the coverage job's time limit: the
+// suite already takes most of it); StakeAttestation.safeguards.test.js covers every line they
+// reach, and `npx hardhat test` runs them.
 const { expect } = require("chai");
-const { ethers } = require("hardhat");
+const hre = require("hardhat");
+const { ethers } = hre;
 const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 const H = require("./helpers/claims");
 const { rng, split } = require("./helpers/random");
@@ -88,6 +92,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
   const SEEDS = [[11, false], [2026, false], [0xbeef, false], [7, false], [424242, false], [1710, true], [17, true], [0x10ad, true]];
   for (const [seed, safeguards] of SEEDS) {
     it(`seed ${seed}${safeguards ? " with the safeguards (P17)" : ""}: balance == escrow + held bonds + held prepays + withdrawable credits + fee balance after every step`, async function () {
+      if (safeguards && hre.__SOLIDITY_COVERAGE_RUNNING) this.skip();
       const { sa, aggregator, owner, feeRecipient, makers, hunters, contracts } = await loadFixture(setup);
       const r = rng(seed);
       // P2d's actions draw from their own stream and run as extra steps, so the P2c sequence
@@ -597,6 +602,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
 
   it("the sequences reached every path that moves money", function () {
     for (const ev of REACHED) expect(reached[ev] || 0, `${ev} ${JSON.stringify(reached)}`).to.be.greaterThan(0);
+    if (hre.__SOLIDITY_COVERAGE_RUNNING) return; // the safeguards' seeds did not run
     for (const ev of REACHED_P17) expect(reachedP17[ev] || 0, `${ev} ${JSON.stringify(reachedP17)}`).to.be.greaterThan(0);
   });
 });

@@ -70,6 +70,26 @@ describe("StakeAttestation: final sweep (P2e)", function () {
       await run("finalize", sa.connect(other).finalize(a), "DisputeJudged");
       await run("settle", sa.connect(other).settle(a), "Settled");
 
+      // A confirmation (erratum E9): a claim judged above the listing's size, after the dispute
+      // window. The owner's two program values first, so the listing takes them.
+      await run("setConfirmAboveWei", sa.connect(owner).setConfirmAboveWei(0n), "ConfirmAboveWeiSet");
+      await run("setNarrowInvalidFloor", sa.connect(owner).setNarrowInvalidFloor(350_000n), "NarrowInvalidFloorSet");
+      const cp = params({ artifact: atCommit(freshCommit()) });
+      rc = await (await sa.connect(maker).list(cp, LISTING_CID, DISPUTE_CID, [])).wait();
+      const cl = eventsOf(sa, rc, "Listed")[0].args.listingId;
+      await sa.connect(maker).fund(cl, LISTING_FEE, { value: LISTING_FEE + 2n * TOP });
+      rc = await (await sa.connect(hunters[4]).commit(cl, ARCHIVE, CT, { value: BOND + FEE })).wait();
+      const k = claimIdOf(rc, "Committed");
+      await sa.connect(hunters[4]).disclose(k, CT_CID);
+      await sa.connect(hunters[4]).reveal(k, BCID, CK, EK);
+      await aggregator.scriptResult((await sa.getClaim(k)).requestId, V.HIGH, JUSTIFICATION);
+      await sa.connect(other).finalize(k);
+      await time.increase(72 * 3600);
+      await run("confirm", sa.connect(other).confirm(k), "ConfirmationRequested");
+      await aggregator.scriptResult((await sa.getClaim(k)).disputeRequestId, V.HIGH, JUSTIFICATION);
+      await sa.connect(other).finalize(k);
+      await sa.connect(other).settle(k);
+
       // A failed round, re-triggered, whose leftover recovery is deferred and then retried.
       rc = await (await sa.connect(hunters[1]).commit(id, ARCHIVE, CT, { value: BOND + FEE })).wait();
       const b = claimIdOf(rc, "Committed");
@@ -99,7 +119,7 @@ describe("StakeAttestation: final sweep (P2e)", function () {
       await run("lateClaim", sa.connect(hunters[3]).lateClaim(id, ARCHIVE, CT, { value: BOND + FEE }), "LateClaim");
       await run("close", sa.connect(maker).close(id), "Closed");
 
-      // The owner's two powers, and Ownable2Step.
+      // The owner's other two powers, and Ownable2Step.
       await run("setListingFee", sa.connect(owner).setListingFee(1n), "ListingFeeSet");
       await run("setFeeRecipient", sa.connect(owner).setFeeRecipient(other.address), "FeeRecipientSet");
       await run("transferOwnership", sa.connect(owner).transferOwnership(other.address), "OwnershipTransferStarted");

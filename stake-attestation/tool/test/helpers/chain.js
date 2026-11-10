@@ -112,6 +112,9 @@ export async function deployStakeAttestation(hre) {
   const deployed = await factory.deploy(await aggregator.getAddress(), owner.address, feeRecipient.address, LISTING_FEE_WEI);
   await deployed.waitForDeployment();
   const sa = new hre.ethers.Contract(await deployed.getAddress(), mergedAbi(hre), owner);
+  // The confirmation size (erratum E9, node P17) above any award: no claim these tests settle waits
+  // for a confirmation, which the tool does not start yet (node P18); the floor keeps its default.
+  await (await sa.setConfirmAboveWei(hre.ethers.MaxUint256)).wait();
   return { sa, aggregator, owner, maker, feeRecipient };
 }
 

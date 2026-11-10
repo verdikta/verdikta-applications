@@ -67,7 +67,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 
 | Folder | What | Test |
 |---|---|---|
-| `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
+| `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e; the narrow INVALID and the confirmation, P17) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
 | `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`; the baseline scan between listing and open, its findings served to the maker's wallet only (P4b2); the indexer, keeper, listing feed, record mirror, labels and badge (P4b1) over one deployment; the project's proof, refused listing attempts counted by reason, what counts on the record, the fork label (P8, P9). | `npm test`, `npm run test:builder`, `npm run abi` |
 | `client/` | Vite + React site, port 5176: the maker's listing flow, the disclosure key made in the browser, and decrypt-and-check (P6a); the record page, the badge embed, the feed, the maker's release, roll forward and dispute, pending evaluations watched, the baseline scan read (P6b). | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI and the library it wraps (P5): `check`, `commit`, `reveal`, `status`, `claim`. See "The hunter tool". | `npm test` |
@@ -126,7 +126,8 @@ escrow once no claim is pending and nothing is owed.
   `createBounty` checks them, for the claim fee and the dispute fee.
 - **Fees and the owner.** The listing fee accrues to the fee recipient's pull
   balance (`withdraw`), never to the escrow. The owner can set the fee and the
-  recipient, both applying from the next fund or renew, and nothing else; the
+  recipient, both applying from the next fund or renew, and the two settlement
+  safeguards' values below, for later listings only, and nothing else; the
   opening `fund` takes the fee the maker expects, so a fee change cannot take
   part of the escrow.
 - **Payments** go through a gas-capped send that falls back to the pull
@@ -171,6 +172,37 @@ the one-line disclosure addendum of erratum E1.
   ...) are in `StakeAttestationLens`, answered at the contract's address
   through its fallback. Their time and fee rules are one library, `ClaimRules`.
 
+## The contract: settlement safeguards
+
+Two of the design's 2026-11-10 errata (Q70, mechanics Q72), node P17. Both rest on
+a program value the owner sets (`setNarrowInvalidFloor`, `setConfirmAboveWei`, each
+with an event) that `list` copies onto the listing, so a change reaches only listings
+made after it; `getListing` and the record show a listing's values.
+
+- **A narrow INVALID returns the bond** (E8). An INVALID whose valid mass (LOW to
+  CRITICAL of the vector `settle` applies) is at least the listing's
+  `narrowInvalidFloor` gets the bond back, with no award and nothing published, and
+  is counted as narrow within INVALID. The floor is 250,000 to `THRESHOLD`; the
+  default, `THRESHOLD`, is the empty band. A gate failure or tamper flag puts all the
+  mass on INVALID, so it is never narrow. The lens's `judgeVector` says whether a
+  vector is.
+- **Above a set award, the dispute panel confirms a valid outcome before it pays**
+  (E9). A claim round's verdict whose table award is above the listing's
+  `confirmAboveWei` (default 0: every counted award) waits for a dispute-panel
+  verdict. A maker's dispute inside the dispute window is the confirmation; otherwise
+  anyone calls `confirm(claimId)` from the end of the window until the confirmation
+  deadline, `judgedAt + disputeWindow + revealWindow` (the lens's `confirmWindow`).
+  The listing's escrow pays the round (the live `disputeFee`; refused while anything
+  is owed or when the escrow holds less), which can leave an Open listing Depleted;
+  the request is the dispute's without the dispute line. The panel's verdict is final
+  and settles at once. A round with no verdict lets `confirm` run again until the
+  deadline, and from the deadline, with no round open, the first verdict pays and is
+  recorded as a confirmation with no verdict. The round's unspent prepay goes back as
+  `fund` applies a top-up (owed awards first, then the escrow) or, once the listing
+  has closed, to the maker's pull balance. Late claims and classes below
+  `lowestClassCounted` never wait. Until the keeper calls `confirm` (node P18), the
+  server's, tool's and round's test deployments set the size above every award.
+
 ## The contract: late claims and the record
 
 A finding on a version whose stake has rolled forward or closed is a **late
@@ -187,12 +219,14 @@ stake earned while it took commits, and it does not hold `close()`.
 
 `recordByHash(artifactHash)` returns the record of design §4.1 for a hash:
 every listing of it (state, times, lapsed, invited, award table, bond, escrow,
-owed, value at risk, lineage with the neighbours' hashes, its own counts),
+owed, value at risk, lineage with the neighbours' hashes, its own counts, its
+narrow-INVALID floor and confirmation size),
 `active` (those not closed), the history summed over them (claims, pending,
 settled by outcome, released, undisclosed, unrevealed, no verdict, disputes and
-their results, and `later`), every valid finding (class, paid, owed,
-revealed-at, settled-at, bCID, dispute result) and every bad-disclosure flag
-with what became of the claim. It states facts; the labels (scanned, staked,
+their results, narrow INVALIDs, confirmation rounds and their results, and
+`later`), every valid finding (class, paid, owed,
+revealed-at, settled-at, bCID, dispute result and the dispute-panel round's
+kind) and every bad-disclosure flag with what became of the claim. It states facts; the labels (scanned, staked,
 under-staked, invited, a false flag) are computed off-chain. A record of 300
 claims costs about 4.2M gas to read; a longer one is paged with
 `recordPage(artifactHash, listingOffset, listingLimit, itemOffset, itemLimit)`:

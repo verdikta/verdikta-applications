@@ -25,8 +25,20 @@
 // it is not one of pendingClaims (it never holds close). At the end the record of every listing
 // (recordByHash) is checked against the claims themselves: every count, the findings in
 // settlement order with what each was paid and owed, and the flags in the order raised.
+//
+// P17 adds the settlement safeguards (errata E8, E9) on seeds of their own, so the five seeds
+// above keep their sequences (their listings are made at the fixture's size, the top award, and
+// the default floor, so none of their claims is confirmed or narrow). On the new seeds the owner
+// sets the narrow-INVALID floor and the confirmation size at random, between listings, and a
+// fourth stream calls confirm: its prepay leaves the escrow for the round and its leftover comes
+// back as a top-up would (owed awards first), so the equation is unchanged and an owing listing
+// still has no escrow. The record is checked for the narrow INVALIDs and the confirmations too.
+// Under solidity-coverage those three seeds are skipped (the coverage job's time limit: the
+// suite already takes most of it); StakeAttestation.safeguards.test.js covers every line they
+// reach, and `npx hardhat test` runs them.
 const { expect } = require("chai");
-const { ethers } = require("hardhat");
+const hre = require("hardhat");
+const { ethers } = hre;
 const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 const H = require("./helpers/claims");
 const { rng, split } = require("./helpers/random");
@@ -40,6 +52,7 @@ const REACHED = [
   "SubmissionFailed", "Disputed", "DisputeJudged", "DisputeFailed", "Retriggered", "RefundDeferred",
   "LateClaim", "Flagged",
 ];
+const REACHED_P17 = ["ConfirmationRequested", "NarrowInvalid", "ConfirmationRefunded", "ConfirmationNoVerdict"];
 const UNRESOLVED = new Set([ClaimState.Committed, ClaimState.Revealed, ClaimState.Judged, ClaimState.Disputed, ClaimState.RoundFailed]);
 
 async function setup() {
@@ -74,16 +87,21 @@ function randomVector(r) {
 describe("StakeAttestation: funds conservation under random call sequences (P2c, P2d)", function () {
   this.timeout(1_800_000);
   const reached = {}; // events emitted, over every seed
+  const reachedP17 = {}; // the safeguards' events, over the P17 seeds
 
-  for (const seed of [11, 2026, 0xbeef, 7, 424242]) {
-    it(`seed ${seed}: balance == escrow + held bonds + held prepays + withdrawable credits + fee balance after every step`, async function () {
-      const { sa, aggregator, feeRecipient, makers, hunters, contracts } = await loadFixture(setup);
+  const SEEDS = [[11, false], [2026, false], [0xbeef, false], [7, false], [424242, false], [1710, true], [17, true], [0x10ad, true]];
+  for (const [seed, safeguards] of SEEDS) {
+    it(`seed ${seed}${safeguards ? " with the safeguards (P17)" : ""}: balance == escrow + held bonds + held prepays + withdrawable credits + fee balance after every step`, async function () {
+      if (safeguards && hre.__SOLIDITY_COVERAGE_RUNNING) this.skip();
+      const { sa, aggregator, owner, feeRecipient, makers, hunters, contracts } = await loadFixture(setup);
       const r = rng(seed);
       // P2d's actions draw from their own stream and run as extra steps, so the P2c sequence
       // keeps its pace (they still change the state it acts on).
       const r2 = rng(seed ^ 0x5eed);
       // P2e's actions (late claims, flags) draw from a third stream, for the same reason.
       const r3 = rng(seed ^ 0x2e2e);
+      // P17's (the owner's program values, confirm) a fourth, used on the safeguards' seeds only.
+      const r4 = rng(seed ^ 0x1717);
       const listings = []; // { id, maker }
       const claims = []; // { id, listingId, hunter }
       const accounts = [...new Set([...makers, ...hunters].map((a) => a.target ?? a.address))];
@@ -157,7 +175,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       // Every EvaluationWallet clone the contract created: claim rounds (accepted or refused) and disputes.
       const walletsSeen = async () => {
         const out = new Set();
-        for (const name of ["EvaluationRequested", "SubmissionFailed", "Disputed"]) {
+        for (const name of ["EvaluationRequested", "SubmissionFailed", "Disputed", "ConfirmationRequested"]) {
           for (const ev of await sa.queryFilter(sa.filters[name]())) out.add(ev.args.wallet);
         }
         return [...out];
@@ -361,7 +379,86 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       const bag = Object.entries(weights).flatMap(([k, w]) => Array(w).fill(k));
       const bag2 = Object.entries({ dispute: 1, retrigger: 3, recover: 2, faults: 2 }).flatMap(([k, w]) => Array(w).fill(k));
       const bag3 = Object.entries({ lateClaim: 3, flag: 1 }).flatMap(([k, w]) => Array(w).fill(k));
+      const safeguardActions = {
+        // The owner's program values: the first set confirms most awards and has a band; later
+        // ones anything in bounds, and only the listings made after them take them.
+        async program(first = false) {
+          const floor = first ? r4.pick([250_000n, 350_000n, 420_000n]) : r4.pick([250_000n, 350_000n, 420_000n, 500_000n, BigInt(T)]);
+          const size = first ? r4.pick([0n, parseEther("0.002")]) : r4.pick([0n, 0n, parseEther("0.002"), parseEther("0.03"), parseEther("100")]);
+          await attempt("program", () => sa.connect(owner).setNarrowInvalidFloor(floor));
+          await attempt("program", () => sa.connect(owner).setConfirmAboveWei(size));
+        },
+        // Take a listing's head claim through its round to a verdict near the safeguards' edges:
+        // a counted class (a confirmation's candidate), LOW, an INVALID inside or below the band.
+        async drive() {
+          for (const { id } of shuffled(listings)) {
+            const head = (await sa.getListing(id)).headClaim;
+            if (head === 0n) continue;
+            const k = await sa.getClaim(head);
+            if (k.state !== ClaimState.Committed || k.disclosedAt === 0n) continue;
+            const c = claims.find((x) => x.id === head);
+            const [, revealableAt, revealDeadline] = await sa.claimTimes(head);
+            const now = BigInt(await time.latest());
+            if (revealDeadline !== 0n && now + 1n >= revealDeadline) {
+              // Its reveal window passed while the clock jumped: expire it, so the queue moves on.
+              await attempt("expire", () => send(r4.pick(hunters), "expire", [head]));
+              continue;
+            }
+            if (revealableAt > now + 1n) await time.increaseTo(revealableAt);
+            await attempt("reveal", async () => send(c.hunter, "reveal", [head, H.BCID, H.CK, H.EK], await sa.revealTopUp(head)));
+            if ((await sa.getClaim(head)).state !== ClaimState.Revealed) return;
+            const m = r4.int(200_000, 500_000);
+            const band = [SCALE - m, 0, 0, m, 0, 0];
+            const vector = r4.pick([H.oneHot(3), H.oneHot(4), H.oneHot(5), H.oneHot(3), H.oneHot(4), H.oneHot(2), H.oneHot(0), band, band]);
+            const { requestId } = await sa.getClaim(head);
+            await attempt("result", () => aggregator.scriptResult(requestId, vector, JUSTIFICATION));
+            await attempt("finalize", () => send(r4.pick(plainSigners), "finalize", [head]));
+            // An INVALID settles at once, as the keeper would settle it.
+            const j = await sa.getClaim(head);
+            if (j.state === ClaimState.Judged && j.outcome === 0n) await attempt("settle", () => send(r4.pick(hunters), "settle", [head]));
+            return;
+          }
+        },
+        // confirm a claim that awaits its confirmation, moving the clock to its window if none is open.
+        async confirm() {
+          const judged = await claimsIn([ClaimState.Judged]);
+          if (!judged.length) return;
+          const now = BigInt(await time.latest());
+          const ready = [];
+          let earliest = 0n;
+          for (const c of judged) {
+            const [opensAt, deadline] = await sa.confirmWindow(c.id);
+            if (opensAt === 0n || now + 1n >= deadline) continue;
+            if (now + 1n >= opensAt) ready.push(c);
+            else if (earliest === 0n || opensAt < earliest) earliest = opensAt;
+          }
+          if (!ready.length && earliest !== 0n && r4.next() < 0.7) {
+            await time.increaseTo(earliest);
+            for (const c of judged) {
+              const [opensAt, deadline] = await sa.confirmWindow(c.id);
+              if (opensAt !== 0n && opensAt <= earliest + 1n && earliest + 1n < deadline) ready.push(c);
+            }
+          }
+          // Mostly one whose window is open; now and then any judged claim, to be refused.
+          const c = ready.length && r4.next() < 0.9 ? r4.pick(ready) : r4.next() < 0.3 ? r4.pick(judged) : null;
+          if (c) await attempt("confirm", () => send(r4.pick([...makers, ...hunters]), "confirm", [c.id]));
+        },
+        // settle a claim that awaits its confirmation from its deadline: the first verdict stands.
+        async settleLate() {
+          const waiting = [];
+          for (const c of await claimsIn([ClaimState.Judged])) {
+            const [, deadline] = await sa.confirmWindow(c.id);
+            if (deadline !== 0n) waiting.push({ c, deadline });
+          }
+          if (!waiting.length) return;
+          const { c, deadline } = r4.pick(waiting);
+          if (deadline > BigInt(await time.latest()) + 1n) await time.increaseTo(deadline);
+          await attempt("settle", () => send(r4.pick(hunters), "settle", [c.id]));
+        },
+      };
+      const bag4 = Object.entries({ program: 1, drive: 6, confirm: 5, settleLate: 1 }).flatMap(([k, w]) => Array(w).fill(k));
 
+      if (safeguards) await safeguardActions.program(true); // the first listing takes these values
       await actions.list();
       await checkInvariant(0, "list");
       for (let step = 1; step <= 300; step++) {
@@ -376,6 +473,11 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         if (r3.next() < 0.2) {
           const extra = r3.pick(bag3);
           await later[extra]();
+          await checkInvariant(step, extra);
+        }
+        if (safeguards && r4.next() < 0.5) {
+          const extra = r4.pick(bag4);
+          await safeguardActions[extra]();
           await checkInvariant(step, extra);
         }
       }
@@ -413,6 +515,9 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
 
       // The record (P2e) of every listing, against the claims themselves.
       const flaggedInOrder = (await sa.queryFilter(sa.filters.Flagged())).map((e) => e.args.claimId);
+      const makerDisputed = (await sa.queryFilter(sa.filters.Disputed())).map((e) => e.args.claimId);
+      const confirmationsOf = (await sa.queryFilter(sa.filters.ConfirmationRequested())).map((e) => e.args.claimId);
+      const count = (xs, id) => BigInt(xs.filter((x) => x === id).length);
       for (const { id } of listings) {
         const mine = [];
         for (const c of claims.filter((x) => x.listingId === id)) mine.push({ id: c.id, k: await sa.getClaim(c.id) });
@@ -421,7 +526,8 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         const n = (xs, f) => BigInt(xs.filter(f).length);
         const byOutcome = (xs) => [0, 1, 2, 3, 4, 5].map((o) => n(xs, (c) => c.k.state === ClaimState.Settled && c.k.outcome === BigInt(o)));
         const expired = (xs, ...why) => n(xs, (c) => c.k.state === ClaimState.Expired && why.includes(c.k.expiry));
-        const rec = await sa.recordByHash((await sa.getListing(id)).artifactHash);
+        const l0 = await sa.getListing(id);
+        const rec = await sa.recordByHash(l0.artifactHash);
         const at = `seed ${seed} listing ${id}`;
         if ((await sa.getListing(id)).openedAt === 0n) {
           // Never funded: no stake, no claims, not on the record.
@@ -437,9 +543,23 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           expect(h.undisclosed, `${at} undisclosed`).to.equal(expired(stake, 1n));
           expect(h.unrevealed, `${at} unrevealed`).to.equal(expired(stake, 2n));
           expect(h.noVerdict, `${at} noVerdict`).to.equal(expired(stake, 3n, 4n));
-          expect(h.disputes, `${at} disputes`).to.equal(n(stake, (c) => c.k.dispute !== 0n));
+          // The maker's disputes (one per claim at most) apart from the confirmations (P17): a
+          // maker's dispute with no verdict may be followed by a confirmation, which then names
+          // the claim's round, so the maker's no-verdict count is what is left of its disputes.
+          const disputes = stake.reduce((a, c) => a + count(makerDisputed, c.id), 0n);
+          const maker = (d) => n(stake, (c) => c.k.disputeKind === 1n && c.k.dispute === d);
+          expect(h.disputes, `${at} disputes`).to.equal(disputes);
           expect([h.disputesHeld, h.disputesOverturned, h.disputesNoVerdict], `${at} dispute results`)
-            .to.deep.equal([2n, 3n, 4n].map((d) => n(stake, (c) => c.k.dispute === d)));
+            .to.deep.equal([maker(2n), maker(3n), disputes - maker(2n) - maker(3n) - maker(1n)]);
+          const conf = (d) => n(stake, (c) => c.k.disputeKind === 2n && c.k.dispute === d);
+          expect(h.confirmationRounds, `${at} confirmation rounds`).to.equal(stake.reduce((a, c) => a + count(confirmationsOf, c.id), 0n));
+          expect([h.confirmationsHeld, h.confirmationsOverturned], `${at} confirmation results`).to.deep.equal([conf(2n), conf(3n)]);
+          const awardOf = (c) => (c.k.outcome >= l0.lowestClassCounted ? l0.awards[Number(c.k.outcome) - 2] : 0n);
+          expect(h.confirmationsNoVerdict, `${at} confirmations with no verdict`).to.equal(n(stake, (c) => c.k.state === ClaimState.Settled
+            && c.k.outcome >= 2n && (c.k.dispute === 0n || c.k.dispute === 4n) && awardOf(c) > l0.confirmAboveWei));
+          const mass = (c) => [2, 3, 4, 5].reduce((a, i) => a + BigInt(c.k.vector[i]), 0n);
+          const narrow = (xs) => n(xs, (c) => c.k.state === ClaimState.Settled && c.k.outcome === 0n && mass(c) >= l0.narrowInvalidFloor);
+          expect([h.narrowInvalid, h.lateNarrowInvalid], `${at} narrow INVALIDs`).to.deep.equal([narrow(stake), narrow(late)]);
           expect(h.lateClaims, `${at} lateClaims`).to.equal(BigInt(late.length));
           expect([...h.lateOutcomes], `${at} lateOutcomes`).to.deep.equal(byOutcome(late));
           expect(h.lateExpired, `${at} lateExpired`).to.equal(expired(late, 1n, 2n, 3n, 4n));
@@ -450,8 +570,8 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         expect(rec.findingCount).to.equal(BigInt(valid.length));
         for (const [i, f] of [...rec.findings].entries()) {
           const k = valid[i].k;
-          expect([f.outcome, f.late, f.paidWei, f.owedWei, f.dispute, f.revealedAt, f.settledAt, f.bcid, f.hunter], `${at} finding ${f.claimId}`)
-            .to.deep.equal([k.outcome, k.late, k.paidWei, k.owedWei, k.dispute, k.revealedAt, k.settledAt, k.bcid, k.hunter]);
+          expect([f.outcome, f.late, f.paidWei, f.owedWei, f.dispute, f.disputeKind, f.revealedAt, f.settledAt, f.bcid, f.hunter], `${at} finding ${f.claimId}`)
+            .to.deep.equal([k.outcome, k.late, k.paidWei, k.owedWei, k.dispute, k.disputeKind, k.revealedAt, k.settledAt, k.bcid, k.hunter]);
         }
         // Flags: every flagged claim, in the order raised.
         const ids = new Set(mine.map((c) => c.id));
@@ -459,6 +579,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         expect(n(mine, (c) => c.k.flaggedBadDisclosure)).to.equal(rec.flagCount);
         const l = await sa.getListing(id);
         expect([rec.listings[0].escrowWei, rec.listings[0].owedWei, rec.listings[0].state], `${at} money`).to.deep.equal([l.escrowWei, l.owedWei, l.state]);
+        expect([rec.listings[0].narrowInvalidFloor, rec.listings[0].confirmAboveWei], `${at} program values`).to.deep.equal([l.narrowInvalidFloor, l.confirmAboveWei]);
       }
 
       // The sequence must have reached the paths that move money.
@@ -467,6 +588,12 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       }
       expect(stats.ok.plainEth || 0).to.equal(0);
       for (const ev of REACHED) reached[ev] = (reached[ev] || 0) + (await sa.queryFilter(sa.filters[ev]())).length;
+      if (safeguards) {
+        for (const ev of REACHED_P17) reachedP17[ev] = (reachedP17[ev] || 0) + (await sa.queryFilter(sa.filters[ev]())).length;
+      } else {
+        // The original seeds never confirm and never return an INVALID's bond.
+        for (const ev of REACHED_P17) expect((await sa.queryFilter(sa.filters[ev]())).length, `seed ${seed}: ${ev}`).to.equal(0);
+      }
       const states = await Promise.all(listings.map(async ({ id }) => (await sa.getListing(id)).state));
       expect(states.length).to.be.greaterThan(1);
       expect(Object.values(ListingState)).to.include.members([...new Set(states)]);
@@ -475,5 +602,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
 
   it("the sequences reached every path that moves money", function () {
     for (const ev of REACHED) expect(reached[ev] || 0, `${ev} ${JSON.stringify(reached)}`).to.be.greaterThan(0);
+    if (hre.__SOLIDITY_COVERAGE_RUNNING) return; // the safeguards' seeds did not run
+    for (const ev of REACHED_P17) expect(reachedP17[ev] || 0, `${ev} ${JSON.stringify(reachedP17)}`).to.be.greaterThan(0);
   });
 });

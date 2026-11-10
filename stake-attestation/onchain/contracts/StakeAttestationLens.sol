@@ -86,36 +86,61 @@ contract StakeAttestationLens {
     }
 
     /// @notice How a jury vector would settle under a listing's terms: the rule finalize and
-    ///         settle apply (ClaimRules.judge and awardFor), for a site or tool to preview.
+    ///         settle apply (ClaimRules.judge, awardFor and isNarrowInvalid), for a site or tool
+    ///         to preview.
     /// @return wellFormed false when the vector is no verdict (finalize would fail the round)
     /// @return outcome    the settled outcome (INVALID when not wellFormed)
     /// @return awardWei   the award the outcome earns: awards[class] at or above
     ///                    lowestClassCounted, else 0 (what settle pays, before any shortfall)
+    /// @return narrow     an INVALID whose valid mass is at least the listing's
+    ///                    narrowInvalidFloor (erratum E8): its bond would come back
     function judgeVector(uint256 listingId, uint256[] calldata vector)
-        external view returns (bool wellFormed, StakeAttestation.Outcome outcome, uint256 awardWei)
+        external view returns (bool wellFormed, StakeAttestation.Outcome outcome, uint256 awardWei, bool narrow)
     {
         StakeAttestation.Listing memory l = host.getListing(listingId);
         uint8 o;
         (wellFormed, o) = ClaimRules.judge(vector);
         outcome = StakeAttestation.Outcome(o);
-        if (wellFormed) awardWei = ClaimRules.awardFor(l.awards, uint8(l.lowestClassCounted), o);
+        if (wellFormed) {
+            awardWei = ClaimRules.awardFor(l.awards, uint8(l.lowestClassCounted), o);
+            narrow = ClaimRules.isNarrowInvalid(o, vector[2] + vector[3] + vector[4] + vector[5], l.narrowInvalidFloor);
+        }
     }
 
     /// @notice When settle() accepts a Judged claim: at once (judgedAt) for INVALID and
     ///         DUPLICATE, at the end of the dispute window for a valid outcome, at once
-    ///         (disputeEndedAt) once a dispute of it ended. 0 for a claim that is not Judged
-    ///         (a Disputed claim waits for its dispute round's finalize).
+    ///         (disputeEndedAt) once a dispute-panel round of it ended. A claim that awaits its
+    ///         confirmation (erratum E9; confirmWindow) at the confirmation deadline, unless a
+    ///         dispute-panel verdict comes first. 0 for a claim that is not Judged (a Disputed
+    ///         claim waits for its round's finalize).
     function settleableAt(uint256 claimId) external view returns (uint256) {
         StakeAttestation.Claim memory c = host.getClaim(claimId);
         if (c.state != StakeAttestation.ClaimState.Judged) return 0;
+        StakeAttestation.Listing memory l = host.getListing(c.listingId);
+        (, uint256 deadline) = _confirmWindow(c, l);
+        if (deadline != 0) return deadline;
         if (c.dispute != StakeAttestation.DisputeResult.None) return c.disputeEndedAt;
         if (uint8(c.outcome) < ClaimRules.LOW) return c.judgedAt;
-        return uint256(c.judgedAt) + host.getListing(c.listingId).disputeWindow;
+        return uint256(c.judgedAt) + l.disputeWindow;
     }
 
-    /// @notice What dispute() takes now: the aggregator's live maxTotalFee for the listing's
-    ///         (clamped) disputeMaxOracleFee. More is accepted; it funds the dispute's request
-    ///         and its unspent part comes back to the maker.
+    /// @notice A claim that awaits its confirmation (erratum E9): a claim round's verdict, not a
+    ///         late claim's, whose table award is above the listing's confirmAboveWei and that no
+    ///         dispute-panel verdict has replaced. confirm() takes it from `opensAt` (the end of
+    ///         the dispute window) until `deadline`; from the deadline, with no round open, settle
+    ///         pays the first verdict. While a dispute-panel round is open (Disputed) the window
+    ///         is reported too, for the case that the round settles no verdict. (0, 0) for a claim
+    ///         that is not Judged or Disputed, or needs no confirmation.
+    function confirmWindow(uint256 claimId) external view returns (uint256 opensAt, uint256 deadline) {
+        StakeAttestation.Claim memory c = host.getClaim(claimId);
+        if (c.state != StakeAttestation.ClaimState.Judged && c.state != StakeAttestation.ClaimState.Disputed) return (0, 0);
+        return _confirmWindow(c, host.getListing(c.listingId));
+    }
+
+    /// @notice What dispute() takes now, and what confirm() takes from the escrow (erratum E9):
+    ///         the aggregator's live maxTotalFee for the listing's (clamped) disputeMaxOracleFee.
+    ///         More is accepted by dispute(); it funds the dispute's request and its unspent part
+    ///         comes back to the maker.
     function disputeFee(uint256 listingId) external view returns (uint256) {
         StakeAttestation.Listing memory l = host.getListing(listingId);
         return verdikta.maxTotalFee(ClaimRules.effectiveFee(l.oracle.disputeMaxOracleFee, verdikta.maxOracleFee()));
@@ -208,6 +233,22 @@ contract StakeAttestationLens {
         return abi.decode(
             host.recordData(artifactHash, listingOffset, listingLimit, itemOffset, itemLimit), (StakeAttestation.Record)
         );
+    }
+
+    /// @dev confirmWindow for a Judged or Disputed claim: ClaimLogic.awaitsConfirmation's rule.
+    function _confirmWindow(StakeAttestation.Claim memory c, StakeAttestation.Listing memory l)
+        private pure returns (uint256 opensAt, uint256 deadline)
+    {
+        StakeAttestation.DisputeResult d = c.dispute;
+        bool due = ClaimRules.awaitsConfirmation(
+            ClaimRules.awardFor(l.awards, uint8(l.lowestClassCounted), uint8(c.outcome)),
+            l.confirmAboveWei,
+            c.late,
+            d == StakeAttestation.DisputeResult.Held || d == StakeAttestation.DisputeResult.Overturned
+        );
+        if (!due) return (0, 0);
+        opensAt = uint256(c.judgedAt) + l.disputeWindow;
+        deadline = ClaimRules.confirmDeadline(c.judgedAt, l.disputeWindow, l.revealWindow);
     }
 
     function _revealableAt(StakeAttestation.Claim memory c, StakeAttestation.Listing memory l)

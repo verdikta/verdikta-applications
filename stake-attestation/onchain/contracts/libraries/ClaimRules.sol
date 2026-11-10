@@ -38,6 +38,11 @@ library ClaimRules {
     uint8 internal constant DUPLICATE = 1;
     uint8 internal constant LOW = 2;
 
+    /// @notice Erratum E8 (2026-11-10, Q72): the lowest narrow-INVALID floor the contract owner
+    ///         may set; the highest is THRESHOLD, the empty band. A gate failure or a tamper flag
+    ///         puts all the mass on INVALID (valid mass 0), so it is never narrow at any floor.
+    uint256 internal constant MIN_NARROW_INVALID_FLOOR = 250_000;
+
     /// @notice Gas for the inline recovery of a round's unspent prepay (the wallet pulls its
     ///         ethOwed and hands it back), as BountyEscrow's INLINE_REFUND_GAS_LIMIT.
     uint256 internal constant INLINE_REFUND_GAS_LIMIT = 200_000;
@@ -127,5 +132,31 @@ library ClaimRules {
     function awardFor(uint256[4] memory awards, uint8 lowestCounted, uint8 outcome) internal pure returns (uint256) {
         if (outcome < LOW || outcome < lowestCounted) return 0;
         return awards[outcome - LOW];
+    }
+
+    /// @notice Erratum E8: an INVALID whose valid mass (LOW + MEDIUM + HIGH + CRITICAL of the
+    ///         vector settle applies) is at least the listing's floor is narrow, and its bond
+    ///         comes back. INVALID already means the valid mass is below THRESHOLD, so the band
+    ///         is [floor, THRESHOLD - 1], empty at a floor of THRESHOLD.
+    function isNarrowInvalid(uint8 outcome, uint256 validMass, uint256 floor) internal pure returns (bool) {
+        return outcome == INVALID && validMass >= floor;
+    }
+
+    /// @notice Erratum E9: whether a judged claim's verdict waits for the dispute panel before it
+    ///         pays: no dispute-panel verdict yet (`panelVerdict` false), not a late claim, and a
+    ///         table award above the listing's confirmAboveWei. The table's award, not what the
+    ///         escrow can pay now, since a shortfall is owed in full later; a class below
+    ///         lowestClassCounted has award 0 and never waits.
+    function awaitsConfirmation(uint256 award, uint256 confirmAboveWei, bool late, bool panelVerdict)
+        internal pure returns (bool)
+    {
+        return !late && !panelVerdict && award > confirmAboveWei;
+    }
+
+    /// @notice Erratum E9: confirm is open from the end of the dispute window until this time,
+    ///         the confirmation deadline. From it on, with no round open and no dispute-panel
+    ///         verdict, the first verdict pays.
+    function confirmDeadline(uint64 judgedAt, uint32 disputeWindow, uint32 revealWindow) internal pure returns (uint256) {
+        return uint256(judgedAt) + disputeWindow + revealWindow;
     }
 }

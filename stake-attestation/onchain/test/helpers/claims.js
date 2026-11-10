@@ -18,6 +18,8 @@ const ClaimState = {
 };
 const Expiry = { None: 0n, Undisclosed: 1n, Unrevealed: 2n, RoundsFailed: 3n, SubmissionsRefused: 4n };
 const DisputeResult = { None: 0n, Pending: 1n, Held: 2n, Overturned: 3n, NoVerdict: 4n };
+// Which dispute-panel round a claim's dispute fields describe (errata E7-E9; P16 appends Appeal).
+const DisputeKind = { None: 0n, Maker: 1n, Confirmation: 2n };
 
 const HOUR = 3600n;
 const DAY = 24n * HOUR;
@@ -106,13 +108,27 @@ function mergedAbi(name) {
   ];
 }
 
-async function deploy() {
+// The contract with its program values as deployed (erratum E8's floor at THRESHOLD, an empty
+// band; erratum E9's size at 0, so every counted award waits for a confirmation).
+async function deployDefaults() {
   const [owner, maker, other, feeRecipient, ...hunters] = await ethers.getSigners();
   const aggregator = await (await ethers.getContractFactory("MockVerdiktaAggregator")).deploy();
   const args = [aggregator.target, owner.address, feeRecipient.address, LISTING_FEE];
   const saDeployed = await (await linkedFactory("StakeAttestation")).deploy(...args);
   const sa = new ethers.Contract(saDeployed.target, mergedAbi("StakeAttestation"), owner);
   return { owner, maker, other, feeRecipient, hunters, hunter: hunters[0], aggregator, sa };
+}
+
+// The fixture the tests written before erratum E9 run on (P2a-P2e): the owner sets the
+// confirmation size to the default listing's top award, so every award those tests pay is at or
+// below it and settles as it did before (E9: "an award exactly at the size, and one below it: no
+// confirmation; they settle as today"). The floor stays THRESHOLD, the default: every INVALID
+// forfeits, as before E8. The safeguards' own tests start from deployDefaults.
+const LEGACY_CONFIRM_ABOVE_WEI = TOP;
+async function deploy() {
+  const f = await deployDefaults();
+  await f.sa.connect(f.owner).setConfirmAboveWei(LEGACY_CONFIRM_ABOVE_WEI);
+  return f;
 }
 
 function eventsOf(contract, receipt, name) {
@@ -197,6 +213,13 @@ async function judgeDisputeAs(sa, aggregator, caller, claimId, vector, justifica
   return { rc, at: await blockTime(rc) };
 }
 
+// anyone starts a judged claim's confirmation (erratum E9), paid from the listing's escrow
+async function confirmAs(sa, caller, claimId, overrides = {}) {
+  const rc = await (await sa.connect(caller).confirm(claimId, overrides)).wait();
+  const ev = eventsOf(sa, rc, "ConfirmationRequested")[0];
+  return { rc, requestId: ev.args.requestId, wallet: ev.args.wallet, prepayWei: ev.args.prepayWei, at: await blockTime(rc) };
+}
+
 // past the dispute window of a claim judged at `judgedAt`
 async function afterDisputeWindow(sa, claimId) {
   const c = await sa.getClaim(claimId);
@@ -235,12 +258,12 @@ const findingIds = (r) => [...r.findings].map((f) => f.claimId);
 const flagIds = (r) => [...r.flags].map((f) => f.claimId);
 
 module.exports = {
-  ListingState, Outcome, OUTCOME_NAMES, ClaimState, Expiry, DisputeResult,
+  ListingState, Outcome, OUTCOME_NAMES, ClaimState, Expiry, DisputeResult, DisputeKind,
   HOUR, DAY, FIX, DISPUTE, GRACE, REVEAL, SCALE, T,
   LISTING_CID, DISPUTE_CID, CT_CID, BCID, JUSTIFICATION, STATEMENT_CID, REPO, COMMIT,
   ARCHIVE, CT, CK, EK, LISTING_FEE, AWARDS, TOP, BOND, ORACLE, FEE, DISPUTE_FEE, V, oneHot,
-  atCommit, freshCommit, params, mergedAbi, deploy, eventsOf, blockTime,
+  atCommit, freshCommit, params, mergedAbi, deploy, deployDefaults, LEGACY_CONFIRM_ABOVE_WEI, eventsOf, blockTime,
   listAs, openListing, commitAs, claimAs, revealAs, revealedClaim, judgeAs, afterDisputeWindow,
-  disputeAs, judgeDisputeAs, lateAs, lateClaimAs,
+  disputeAs, judgeDisputeAs, confirmAs, lateAs, lateClaimAs,
   recordOf, listingIn, outcomesOf, lateOutcomesOf, findingIds, flagIds,
 };

@@ -605,7 +605,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     one('valid.badge', badge.ok && recordAfterValid.badge?.state === 'finding', recordAfterValid.badge?.message);
 
     // ---------------------------------------------------------------- a claim the gates settle
-    stage('gate: reveal, INVALID, the bond to the maker');
+    stage('gate: reveal, INVALID, the appeal window, the bond to the maker');
     const before2 = counts();
     const gateReveal = await tool('reveal', gateDir);
     toolDone('reveal', gateReveal);
@@ -623,6 +623,14 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     }));
     expect(servedRoundChecks('gate', gateRound, { vector: INVALID_VECTOR }));
     expect(gateSettledChecks('gate', { ...since(before2), gate: 'testPathsOnly' }));
+    // A claim round's INVALID waits out its appeal window, the dispute window, before anyone but its hunter
+    // may settle it (erratum E7, node P16): the keeper leaves it alone until then. The hunter does not appeal
+    // here (the tool's appeal is node P18's).
+    await stateIs(gateId, 'Judged');
+    const gateKeeperRunsBefore = (await server.get('/api/status')).json.keeper?.lastRun?.at ?? 0;
+    await settleOutcome(async () => ((await server.get('/api/status')).json.keeper?.lastRun?.at ?? 0) > gateKeeperRunsBefore + 1000, 'waiting for keeper cycles');
+    one('gate.settle.waitsAppealWindow', (await claimStateOf(gateId)) === 'Judged', 'the keeper leaves a claim round\'s INVALID alone inside its appeal window');
+    await chain.advance(WINDOWS.dispute + 1);
     await stateIs(gateId, 'Settled');
     const gateJudged = (await eventOf('Judged', gateId))[0];
     const gateSettled = (await eventOf('Settled', gateId))[0];
@@ -640,7 +648,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       expectedVector: [...INVALID_VECTOR],
     }));
     const secondsToSettle = (await provider.getBlock(gateSettled.blockNumber)).timestamp - (await provider.getBlock(gateJudged.blockNumber)).timestamp;
-    one('gate.settled.noDisputeWindow', secondsToSettle < WINDOWS.dispute, `${secondsToSettle} s on the chain's clock after the verdict: an INVALID does not wait out the ${WINDOWS.dispute} s window`);
+    one('gate.settled.afterAppealWindow', secondsToSettle >= WINDOWS.dispute, `${secondsToSettle} s on the chain's clock after the verdict: a claim round's INVALID waits out the ${WINDOWS.dispute} s appeal window`);
     expect(moneyChecks('gate', [
       { name: 'bondToMaker', before: makerBeforeGate, after: await balance(maker), expected: BOND_WEI },
       { name: 'hunter', before: hunterAfterGateReveal, after: await balance(hunter), expected: gateRound.required - gateRound.spent },

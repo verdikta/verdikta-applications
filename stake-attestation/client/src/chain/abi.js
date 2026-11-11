@@ -14,14 +14,16 @@ const LISTING = '(address maker, uint8 state, uint8 artifactKind, uint8 lowestCl
   + 'uint64 unrevealedClaims, uint32[6] outcomeCounts, uint64 owedCursor, uint64 noVerdictClaims, uint64 disputesFiled, uint64 disputesHeld, '
   + 'uint64 disputesOverturned, uint64 disputesNoVerdict, uint64 closedAt, uint64 releasedClaims, uint64 lateClaims, uint64 lateExpired, '
   + 'uint32[6] lateOutcomeCounts, uint256 narrowInvalidFloor, uint256 confirmAboveWei, uint64 narrowInvalidClaims, uint64 lateNarrowInvalid, '
-  + 'uint64 confirmationRounds, uint64 confirmationsHeld, uint64 confirmationsOverturned, uint64 confirmationsNoVerdict)';
+  + 'uint64 confirmationRounds, uint64 confirmationsHeld, uint64 confirmationsOverturned, uint64 confirmationsNoVerdict, '
+  + 'uint64 appealsFiled, uint64 appealsHeld, uint64 appealsOverturned, uint64 appealsNoVerdict, uint64 lateAppealsFiled, uint64 lateAppealsHeld, '
+  + 'uint64 lateAppealsOverturned, uint64 lateAppealsNoVerdict)';
 
 const CLAIM = '(address hunter, uint64 committedAt, uint8 state, uint8 expiry, bool flaggedBadDisclosure, bool released, uint64 listingId, '
   + 'uint64 disclosedAt, uint64 fixWindowEnd, uint64 revealedAt, uint64 prevInOrder, uint64 nextInOrder, bytes16 contentKey, address evalWallet, '
   + 'bool disclosedAfterRoll, uint128 bondWei, uint128 prepayWei, bytes32 archiveHash, bytes32 ciphertextSha256, bytes32 ephemeralKey, '
   + 'bytes32 requestId, string ciphertextCid, string bcid, uint32[6] vector, uint64 judgedAt, uint64 settledAt, uint8 outcome, uint128 paidWei, '
   + 'uint128 owedWei, uint64 failedAt, bool roundStarted, uint8 dispute, uint8 disputedOutcome, uint64 disputedAt, uint64 disputeEndedAt, '
-  + 'bool late, address disputeWallet, bytes32 disputeRequestId, uint8 disputeKind)';
+  + 'bool late, address disputeWallet, bytes32 disputeRequestId, uint8 disputeKind, bool appealRetriggered)';
 
 export const STAKE_ATTESTATION_ABI = Object.freeze([
   `function list(${LIST_PARAMS} p, string listingCid, string disputeCid, bytes32[] knownIssueIds) returns (uint256 listingId)`,

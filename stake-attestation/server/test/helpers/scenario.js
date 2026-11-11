@@ -236,10 +236,19 @@ export async function settle(ctx, claimId, caller = ctx.other) {
   await (await ctx.sa.connect(caller).settle(claimId)).wait();
 }
 
-/** finalize with `outcome`, then settle once the claim may settle (after the dispute window for a valid one). */
+/**
+ * finalize with `outcome`, then settle once the claim may settle (after the dispute window for a
+ * valid one). A claim round's INVALID waits out its appeal window unless its hunter settles it,
+ * which waives the appeal (erratum E7, node P16): here the hunter does, so the clock is as before.
+ */
 export async function judgeAndSettle(ctx, claimId, outcome, { justification } = {}) {
   await verdict(ctx, claimId, outcome, { justification });
   await finalize(ctx, claimId);
+  if (outcome === 'INVALID') {
+    const { hunter } = await ctx.sa.getClaim(claimId);
+    await settle(ctx, claimId, await ctx.hre.ethers.getSigner(hunter));
+    return;
+  }
   const at = Number(await ctx.sa.settleableAt(claimId));
   const now = await latestTimestamp(ctx);
   if (now < at) await increaseTime(ctx, at - now);

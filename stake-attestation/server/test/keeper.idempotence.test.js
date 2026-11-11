@@ -16,17 +16,20 @@ import {
 
 const FAST = { SA_KEEPER_TX_TIMEOUT_MS: '200', SA_KEEPER_REPLACE_AFTER_MS: '600000' };
 
-async function judgedInvalid(ctx) {
+// A claim whose round's verdict is in: the keeper finalizes it on one cycle and settles it on the
+// next. A DUPLICATE, which settles at once: a claim round's INVALID now waits out its appeal
+// window before the keeper settles it (erratum E7, node P16).
+async function judgedDuplicate(ctx) {
   const { listingId } = await listing(ctx);
   const claimId = await revealedClaim(ctx, ctx.hunters[0], listingId);
-  await verdict(ctx, claimId, 'INVALID');
+  await verdict(ctx, claimId, 'DUPLICATE');
   return claimId;
 }
 
 describe('two keepers', () => {
   test('with the same key, at the same time: each call is mined once and nothing reverts', async () => {
     const ctx = await chainContext();
-    const claimId = await judgedInvalid(ctx);
+    const claimId = await judgedDuplicate(ctx);
     const a = siteFor(ctx, { env: FAST });
     const b = siteFor(ctx, { env: FAST });
     try {
@@ -59,7 +62,7 @@ describe('two keepers', () => {
 
   test('with another key, one after the other: the second reads the claim on-chain and sends nothing', async () => {
     const ctx = await chainContext();
-    const claimId = await judgedInvalid(ctx);
+    const claimId = await judgedDuplicate(ctx);
     const a = siteFor(ctx);
     const b = siteFor(ctx, { env: { SA_KEEPER_PRIVATE_KEY: ctx.keyOf(10) } });
     try {
@@ -82,7 +85,7 @@ describe('two keepers', () => {
 describe('another caller acts first', () => {
   test('the keeper reads the claim before sending and skips what is done', async () => {
     const ctx = await chainContext();
-    const claimId = await judgedInvalid(ctx);
+    const claimId = await judgedDuplicate(ctx);
     const site = siteFor(ctx);
     try {
       await site.sync(); // indexed: Revealed, due for finalize
@@ -100,7 +103,7 @@ describe('another caller acts first', () => {
 describe('a retry after a timeout', () => {
   test('waits for the transaction in flight and sends nothing at a new nonce', async () => {
     const ctx = await chainContext();
-    const claimId = await judgedInvalid(ctx);
+    const claimId = await judgedDuplicate(ctx);
     const site = siteFor(ctx, { env: FAST });
     try {
       await site.sync();
@@ -135,7 +138,7 @@ describe('a retry after a timeout', () => {
 
   test('past SA_KEEPER_REPLACE_AFTER_MS re-sends the same call at the same nonce, with higher fees', async () => {
     const ctx = await chainContext();
-    const claimId = await judgedInvalid(ctx);
+    const claimId = await judgedDuplicate(ctx);
     const site = siteFor(ctx, { env: { ...FAST, SA_KEEPER_REPLACE_AFTER_MS: '0' } });
     try {
       await site.sync();
@@ -164,7 +167,7 @@ describe('a retry after a timeout', () => {
 
   test('a call that stopped being due while it waited is replaced by a transfer to itself, not left to revert', async () => {
     const ctx = await chainContext();
-    const claimId = await judgedInvalid(ctx);
+    const claimId = await judgedDuplicate(ctx);
     const site = siteFor(ctx, { env: { ...FAST, SA_KEEPER_REPLACE_AFTER_MS: '0' } });
     try {
       await site.sync();
@@ -194,7 +197,7 @@ describe('a retry after a timeout', () => {
 
   test('call, cancel, call: a call due again after its cancellation vanished is re-sent with the call\'s gas, not 21000', async () => {
     const ctx = await chainContext();
-    const claimId = await judgedInvalid(ctx);
+    const claimId = await judgedDuplicate(ctx);
     const site = siteFor(ctx, { env: { ...FAST, SA_KEEPER_REPLACE_AFTER_MS: '0' } });
     const drop = async (hash) => {
       try {
@@ -235,7 +238,7 @@ describe('a retry after a timeout', () => {
 
   test('a transaction the network dropped is re-checked: sent again only if the call is still due', async () => {
     const ctx = await chainContext();
-    const claimId = await judgedInvalid(ctx);
+    const claimId = await judgedDuplicate(ctx);
     const site = siteFor(ctx, { env: FAST });
     try {
       await site.sync();
@@ -258,7 +261,7 @@ describe('a retry after a timeout', () => {
 describe('a restart with a transaction in flight', () => {
   test('the new process finds it in the store and waits for it instead of sending another', async () => {
     const ctx = await chainContext();
-    const claimId = await judgedInvalid(ctx);
+    const claimId = await judgedDuplicate(ctx);
     const dir = tmpDir();
     const first = siteFor(ctx, { dir, env: FAST });
     await first.sync();
@@ -288,7 +291,7 @@ describe('a restart with a transaction in flight', () => {
 
   test('a crash after the transaction was recorded but before it was broadcast: it is broadcast on restart if still due', async () => {
     const ctx = await chainContext();
-    const claimId = await judgedInvalid(ctx);
+    const claimId = await judgedDuplicate(ctx);
     const dir = tmpDir();
     const crash = () => { throw Object.assign(new Error('the process died here'), { code: 'TEST_CRASH' }); };
     const first = siteFor(ctx, { dir, env: FAST, keeperHooks: { beforeBroadcast: crash } });
@@ -311,10 +314,10 @@ describe('a restart with a transaction in flight', () => {
 describe('a record the keeper cannot act on any more', () => {
   test('after the key changed, the old key\'s call is never sent again while it can still mine, even unseen by this node', async () => {
     const ctx = await chainContext();
-    const claimId = await judgedInvalid(ctx);
+    const claimId = await judgedDuplicate(ctx);
     const other = await listing(ctx);
     const otherClaim = await revealedClaim(ctx, ctx.hunters[1], other.listingId);
-    await verdict(ctx, otherClaim, 'INVALID');
+    await verdict(ctx, otherClaim, 'DUPLICATE');
     const dir = tmpDir();
     const oldKey = siteFor(ctx, { dir, env: FAST });
     await oldKey.sync();
@@ -353,7 +356,7 @@ describe('a record the keeper cannot act on any more', () => {
 
   test('a reorg that drops a mined transaction under one still queued: the stale call is cancelled and the gap filled, nothing reverts', async () => {
     const ctx = await chainContext();
-    const claimId = await judgedInvalid(ctx);
+    const claimId = await judgedDuplicate(ctx);
     const site = siteFor(ctx, { env: FAST });
     try {
       await site.sync();
@@ -419,7 +422,7 @@ describe('a record the keeper cannot act on any more', () => {
 
   test('a cancellation the node refuses leaves the gap open: no nonce is filled under the stale call', async () => {
     const ctx = await chainContext();
-    const claimId = await judgedInvalid(ctx);
+    const claimId = await judgedDuplicate(ctx);
     let refuse = true;
     const provider = new Proxy(ctx.provider, {
       get(target, prop) {
@@ -453,7 +456,7 @@ describe('a record the keeper cannot act on any more', () => {
 
   test('a cancellation recorded but never broadcast (a crash) is sent on restart before the gap is filled', async () => {
     const ctx = await chainContext();
-    const claimId = await judgedInvalid(ctx);
+    const claimId = await judgedDuplicate(ctx);
     const dir = tmpDir();
     const crashOnCancel = (attempt) => {
       if (attempt.kind === 'cancel') throw Object.assign(new Error('the process died here'), { code: 'TEST_CRASH' });

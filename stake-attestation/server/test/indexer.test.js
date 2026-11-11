@@ -41,7 +41,7 @@ describe('the indexer stores every event the contract emitted, field for field',
     await (await ctx.sa.connect(h1).retrigger(failed, { value: await ctx.sa.retriggerTopUp(failed), gasLimit: 12_000_000 })).wait();
     await verdict(ctx, failed, 'INVALID');
     await finalize(ctx, failed);
-    await settle(ctx, failed);
+    await settle(ctx, failed, h1); // the hunter's waiver of the appeal (erratum E7, node P16)
 
     const windowed = await listing(ctx, { stake: { fixWindowDays: 1, disclosureGraceHours: 24 } });
     const flagged = await commit(ctx, h2, windowed.listingId);

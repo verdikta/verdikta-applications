@@ -20,6 +20,8 @@ test('the app folder holds exactly the known packages', () => {
 // with its integrity hash. Moving it is one change to all six, with the arbiter pin (README, "Moving the arbiter pin").
 const COMMON = '@verdikta/common';
 const COMMON_RELEASE = '1.9.0-attest.5';
+// the registry's own (npm view @verdikta/common@1.9.0-attest.5 dist.integrity): it moves with the release
+const COMMON_INTEGRITY = 'sha512-AQjH2x/tr7WwaJpPdbvJB077fbUQCom2skEFgJ2L2owbaQUvy9TsMeCgLhtk47dPB0LrN/QwtRP/aT+6V66DuA==';
 const COMMON_READERS = ['onchain', 'server', 'client', 'tool', 'builder', 'e2e'];
 
 test(`the packages that read ${COMMON} pin exactly ${COMMON_RELEASE}, locked to the registry with an integrity hash`, () => {
@@ -36,7 +38,7 @@ test(`the packages that read ${COMMON} pin exactly ${COMMON_RELEASE}, locked to 
     assert.ok(locked, `${pkg}/package-lock.json locks ${COMMON}`);
     assert.equal(locked.version, COMMON_RELEASE, `${pkg}/package-lock.json`);
     assert.equal(locked.resolved, `https://registry.npmjs.org/${COMMON}/-/common-${COMMON_RELEASE}.tgz`, `${pkg}/package-lock.json`);
-    assert.match(locked.integrity ?? '', /^sha512-[A-Za-z0-9+/]{86}==$/, `${pkg}/package-lock.json`);
+    assert.equal(locked.integrity, COMMON_INTEGRITY, `${pkg}/package-lock.json`);
     // one copy: nothing in the tree brings a release of its own
     const others = Object.keys(lock.packages).filter((k) => k !== `node_modules/${COMMON}` && k.endsWith(`node_modules/${COMMON}`));
     assert.deepEqual(others, [], `${pkg}/package-lock.json`);

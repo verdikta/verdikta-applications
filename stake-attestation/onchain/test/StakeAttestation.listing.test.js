@@ -856,6 +856,7 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
         .sort();
       expect(mutating).to.deep.equal([
         "acceptOwnership", // Ownable2Step: the pending owner takes over; no other power
+        "appeal", // the claim's hunter, on its own claim round's INVALID (P16, erratum E7)
         "close", // maker only
         "commit", // anyone allowed on the listing, for themselves (P2b)
         "confirm", // anyone: a judged award above the listing's size, paid from its escrow (P17, erratum E9)
@@ -872,7 +873,7 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
         "release", // the listing's maker (P2b)
         "renew", // maker only
         "renounceOwnership", // owner: gives up the four powers below
-        "retrigger", // the claim's hunter, on its own failed round (P2d)
+        "retrigger", // the claim's hunter, on its own failed round (P2d) or failed appeal round (P16)
         "reveal", // the claim's hunter (P2b)
         "rollForward", // the listing's maker (P2b)
         "setConfirmAboveWei", // owner: copied onto listings made after it (P17, erratum E9)

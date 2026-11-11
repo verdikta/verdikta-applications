@@ -18,8 +18,9 @@ const ClaimState = {
 };
 const Expiry = { None: 0n, Undisclosed: 1n, Unrevealed: 2n, RoundsFailed: 3n, SubmissionsRefused: 4n };
 const DisputeResult = { None: 0n, Pending: 1n, Held: 2n, Overturned: 3n, NoVerdict: 4n };
-// Which dispute-panel round a claim's dispute fields describe (errata E7-E9; P16 appends Appeal).
-const DisputeKind = { None: 0n, Maker: 1n, Confirmation: 2n };
+// Which dispute-panel round a claim's dispute fields describe (errata E7-E9): the maker's dispute,
+// the escrow's confirmation (P17), the hunter's appeal (P16).
+const DisputeKind = { None: 0n, Maker: 1n, Confirmation: 2n, Appeal: 3n };
 
 const HOUR = 3600n;
 const DAY = 24n * HOUR;
@@ -220,6 +221,16 @@ async function confirmAs(sa, caller, claimId, overrides = {}) {
   return { rc, requestId: ev.args.requestId, wallet: ev.args.wallet, prepayWei: ev.args.prepayWei, at: await blockTime(rc) };
 }
 
+// the hunter appeals a claim round's INVALID (erratum E7), or with `retrigger` re-triggers the
+// appeal's round after one with no verdict, paying the live dispute fee unless `value` says otherwise
+async function appealAs(sa, hunter, claimId, { value, retrigger = false, ...overrides } = {}) {
+  const { listingId } = await sa.getClaim(claimId);
+  const v = value === undefined ? await sa.disputeFee(listingId) : value;
+  const rc = await (await sa.connect(hunter)[retrigger ? "retrigger" : "appeal"](claimId, { value: v, ...overrides })).wait();
+  const ev = eventsOf(sa, rc, "Appealed")[0];
+  return { rc, requestId: ev.args.requestId, wallet: ev.args.wallet, prepayWei: ev.args.prepayWei, at: await blockTime(rc) };
+}
+
 // past the dispute window of a claim judged at `judgedAt`
 async function afterDisputeWindow(sa, claimId) {
   const c = await sa.getClaim(claimId);
@@ -264,6 +275,6 @@ module.exports = {
   ARCHIVE, CT, CK, EK, LISTING_FEE, AWARDS, TOP, BOND, ORACLE, FEE, DISPUTE_FEE, V, oneHot,
   atCommit, freshCommit, params, mergedAbi, deploy, deployDefaults, LEGACY_CONFIRM_ABOVE_WEI, eventsOf, blockTime,
   listAs, openListing, commitAs, claimAs, revealAs, revealedClaim, judgeAs, afterDisputeWindow,
-  disputeAs, judgeDisputeAs, confirmAs, lateAs, lateClaimAs,
+  disputeAs, judgeDisputeAs, confirmAs, appealAs, lateAs, lateClaimAs,
   recordOf, listingIn, outcomesOf, lateOutcomesOf, findingIds, flagIds,
 };

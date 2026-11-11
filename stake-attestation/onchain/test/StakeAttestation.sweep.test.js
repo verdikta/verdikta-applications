@@ -90,6 +90,18 @@ describe("StakeAttestation: final sweep (P2e)", function () {
       await sa.connect(other).finalize(k);
       await sa.connect(other).settle(k);
 
+      // The hunter's appeal (erratum E7): a claim round's INVALID, appealed, held, settled.
+      rc = await (await sa.connect(hunters[5]).commit(cl, ARCHIVE, CT, { value: BOND + FEE })).wait();
+      const ap = claimIdOf(rc, "Committed");
+      await sa.connect(hunters[5]).disclose(ap, CT_CID);
+      await sa.connect(hunters[5]).reveal(ap, BCID, CK, EK);
+      await aggregator.scriptResult((await sa.getClaim(ap)).requestId, V.INVALID, JUSTIFICATION);
+      await sa.connect(other).finalize(ap);
+      await run("appeal", sa.connect(hunters[5]).appeal(ap, { value: DISPUTE_FEE }), "Appealed");
+      await aggregator.scriptResult((await sa.getClaim(ap)).disputeRequestId, V.INVALID, JUSTIFICATION);
+      await sa.connect(other).finalize(ap);
+      await sa.connect(other).settle(ap);
+
       // A failed round, re-triggered, whose leftover recovery is deferred and then retried.
       rc = await (await sa.connect(hunters[1]).commit(id, ARCHIVE, CT, { value: BOND + FEE })).wait();
       const b = claimIdOf(rc, "Committed");

@@ -91,7 +91,7 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       await revealAs(sa, hunter, claimId);
       await judgeAs(sa, aggregator, hunter, claimId, V.INVALID);
       await expect(sa.finalize(claimId)).to.be.revertedWith("not revealed");
-      await sa.settle(claimId);
+      await sa.connect(hunter).settle(claimId); // the hunter's waiver of the appeal (erratum E7)
       await expect(sa.finalize(claimId)).to.be.revertedWith("not revealed");
       await expect(sa.finalize(99n)).to.be.revertedWith("bad claimId");
     });
@@ -301,13 +301,17 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
 
   // ------------------------------------------------------------------ settle
   describe("settle()", function () {
-    it("INVALID and DUPLICATE settle at once, by anyone: no dispute is possible on them", async function () {
+    it("DUPLICATE settles at once, by anyone; a claim round's INVALID once its appeal window (the dispute window) has ended, or at once by the hunter (erratum E7): no maker's dispute is possible on either", async function () {
       const { sa, aggregator, maker, other, hunters } = await loadFixture(deploy);
       const id = await openListing(sa, maker);
       const a = await judgedClaim(sa, aggregator, hunters[0], id, V.INVALID);
-      expect(await sa.settleableAt(a)).to.equal((await sa.getClaim(a)).judgedAt);
+      const { judgedAt } = await sa.getClaim(a);
+      expect(await sa.settleableAt(a)).to.equal(judgedAt + DISPUTE);
+      await expect(sa.connect(other).settle(a)).to.be.revertedWith("appeal window open");
+      await time.setNextBlockTimestamp(judgedAt + DISPUTE);
       await expect(sa.connect(other).settle(a)).to.emit(sa, "Settled").withArgs(a, id, hunters[0].address, Outcome.INVALID, 0n, 0n);
       const b = await judgedClaim(sa, aggregator, hunters[1], id, V.DUPLICATE);
+      expect(await sa.settleableAt(b)).to.equal((await sa.getClaim(b)).judgedAt);
       await expect(sa.connect(other).settle(b)).to.emit(sa, "Settled").withArgs(b, id, hunters[1].address, Outcome.DUPLICATE, 0n, 0n);
       expect((await sa.getClaim(a)).state).to.equal(ClaimState.Settled);
       expect((await sa.getClaim(b)).state).to.equal(ClaimState.Settled);
@@ -418,6 +422,7 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       await act(hunterC, "disclose", [a, H.CT_CID]);
       await act(hunterC, "reveal", [a, BCID, H.CK, H.EK]);
       await judgeAs(sa, aggregator, owner, a, V.INVALID);
+      await afterDisputeWindow(sa, a); // the appeal window (erratum E7)
       await expect(sa.settle(a)).to.emit(sa, "PaymentDeferred").withArgs(makerC.target, BOND);
       expect(await sa.withdrawable(makerC.target)).to.equal(BOND);
 
@@ -603,7 +608,8 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
         expect(BigInt(codeReview.settleBugOutcome(vector, COMMON_STAKE).outcomeIndex)).to.equal(outcome);
         const hunter = hunters[i % 4];
         const claimId = await judgedClaim(sa, aggregator, hunter, id, vector, { bcid: cidOf(i) });
-        const tx = sa.settle(claimId); // at once
+        // At once: by anyone for a DUPLICATE, by the hunter (the waiver, erratum E7) for an INVALID.
+        const tx = (outcome === Outcome.INVALID ? sa.connect(hunter) : sa).settle(claimId);
         const bondTo = outcome === Outcome.INVALID ? maker : hunter;
         await expect(tx).to.changeEtherBalance(bondTo, BOND);
         await expect(tx).to.emit(sa, "Settled").withArgs(claimId, id, hunter.address, outcome, 0n, 0n);
@@ -674,7 +680,8 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       for (const [i, vector] of [V.INVALID, [400000, 200000, 300000, 100000, 0, 0]].entries()) {
         expect(codeReview.settleBugOutcome(vector, COMMON_STAKE).bond).to.equal("forfeited");
         const claimId = await judgedClaim(sa, aggregator, hunters[i], id, vector, { bcid: cidOf(i) });
-        await expect(sa.settle(claimId)).to.changeEtherBalances([maker, hunters[i], sa], [BOND, 0n, -BOND]);
+        // The hunter's waiver of the appeal (erratum E7).
+        await expect(sa.connect(hunters[i]).settle(claimId)).to.changeEtherBalances([maker, hunters[i], sa], [BOND, 0n, -BOND]);
       }
       const l = await sa.getListing(id);
       expect(l.outcomeCounts[0]).to.equal(2n);
@@ -767,7 +774,7 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       // A gate failure arrives as the full mass on INVALID (design §8.7).
       await aggregator.scriptResult(requestId, V.INVALID, JUSTIFICATION);
       await expect(sa.connect(other).finalize(claimId)).to.changeEtherBalance(hunter, unspent); // only what the oracles left
-      const tx = sa.connect(other).settle(claimId);
+      const tx = sa.connect(hunter).settle(claimId); // the hunter's waiver of the appeal (erratum E7)
       await expect(tx).to.changeEtherBalances([maker, hunter, sa], [BOND, 0n, -BOND]);
       await expect(tx).to.emit(sa, "Settled").withArgs(claimId, id, hunter.address, Outcome.INVALID, 0n, 0n);
       expect(await aggregator.ethReceived(requestId)).to.equal(FEE); // the prepay funded the round
@@ -783,7 +790,8 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       const { claimId, requestId } = await revealedClaim(sa, hunter, id);
       await aggregator.scriptResult(requestId, vector, JUSTIFICATION);
       await expect(sa.connect(other).finalize(claimId)).to.changeEtherBalance(hunter, 0n); // nothing left unspent
-      await expect(sa.connect(other).settle(claimId)).to.changeEtherBalances([maker, hunter], [BOND, 0n]);
+      // The hunter's waiver of the appeal (erratum E7).
+      await expect(sa.connect(hunter).settle(claimId)).to.changeEtherBalances([maker, hunter], [BOND, 0n]);
       expect((await sa.getClaim(claimId)).outcome).to.equal(Outcome.INVALID);
       const r = await recordOf(sa, id); // P2e: counted INVALID, not published
       expect([outcomesOf(r.history)[0], r.findingCount]).to.deep.equal([1n, 0n]);

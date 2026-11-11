@@ -36,6 +36,18 @@
 // Under solidity-coverage those three seeds are skipped (the coverage job's time limit: the
 // suite already takes most of it); StakeAttestation.safeguards.test.js covers every line they
 // reach, and `npx hardhat test` runs them.
+//
+// P16 adds the hunter's appeal (erratum E7). A claim round's INVALID now waits out the appeal
+// window unless its hunter settles it, so the sequences above take other paths than before
+// (their equation and their checks are unchanged), and the P17 drive settles an INVALID as its
+// hunter, the waiver. Three more seeds run the appeal on a fifth stream with the safeguards:
+// appeals (now and then by someone else, or out of their window, to be refused), appeal rounds
+// judged at random (held, narrow, overturned, timed out, malformed), their one re-trigger, and
+// INVALIDs settled by their hunter or by anyone from settleableAt. An appeal's prepay goes
+// straight to its request from the hunter, so the equation is unchanged; refund attribution
+// covers its wallets; the record is checked for the appeals by result; and no claim gets a
+// second dispute-panel verdict. Skipped under solidity-coverage, as P17's are:
+// StakeAttestation.appeal.test.js covers every line they reach.
 const { expect } = require("chai");
 const hre = require("hardhat");
 const { ethers } = hre;
@@ -53,6 +65,7 @@ const REACHED = [
   "LateClaim", "Flagged",
 ];
 const REACHED_P17 = ["ConfirmationRequested", "NarrowInvalid", "ConfirmationRefunded", "ConfirmationNoVerdict"];
+const REACHED_P16 = ["Appealed"];
 const UNRESOLVED = new Set([ClaimState.Committed, ClaimState.Revealed, ClaimState.Judged, ClaimState.Disputed, ClaimState.RoundFailed]);
 
 async function setup() {
@@ -88,10 +101,15 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
   this.timeout(1_800_000);
   const reached = {}; // events emitted, over every seed
   const reachedP17 = {}; // the safeguards' events, over the P17 seeds
+  const reachedP16 = {}; // the appeal's events and results, over the P16 seeds
 
-  const SEEDS = [[11, false], [2026, false], [0xbeef, false], [7, false], [424242, false], [1710, true], [17, true], [0x10ad, true]];
-  for (const [seed, safeguards] of SEEDS) {
-    it(`seed ${seed}${safeguards ? " with the safeguards (P17)" : ""}: balance == escrow + held bonds + held prepays + withdrawable credits + fee balance after every step`, async function () {
+  const SEEDS = [
+    [11, false], [2026, false], [0xbeef, false], [7, false], [424242, false], [1710, true], [17, true], [0x10ad, true],
+    [1616, true, true], [0xa99e, true, true], [70707, true, true],
+  ];
+  for (const [seed, safeguards, appeals = false] of SEEDS) {
+    const label = appeals ? " with the safeguards and the appeal (P16)" : safeguards ? " with the safeguards (P17)" : "";
+    it(`seed ${seed}${label}: balance == escrow + held bonds + held prepays + withdrawable credits + fee balance after every step`, async function () {
       if (safeguards && hre.__SOLIDITY_COVERAGE_RUNNING) this.skip();
       const { sa, aggregator, owner, feeRecipient, makers, hunters, contracts } = await loadFixture(setup);
       const r = rng(seed);
@@ -102,6 +120,8 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       const r3 = rng(seed ^ 0x2e2e);
       // P17's (the owner's program values, confirm) a fourth, used on the safeguards' seeds only.
       const r4 = rng(seed ^ 0x1717);
+      // P16's (the appeal) a fifth, used on the appeal's seeds only.
+      const r5 = rng(seed ^ 0x1616);
       const listings = []; // { id, maker }
       const claims = []; // { id, listingId, hunter }
       const accounts = [...new Set([...makers, ...hunters].map((a) => a.target ?? a.address))];
@@ -175,7 +195,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       // Every EvaluationWallet clone the contract created: claim rounds (accepted or refused) and disputes.
       const walletsSeen = async () => {
         const out = new Set();
-        for (const name of ["EvaluationRequested", "SubmissionFailed", "Disputed", "ConfirmationRequested"]) {
+        for (const name of ["EvaluationRequested", "SubmissionFailed", "Disputed", "ConfirmationRequested", "Appealed"]) {
           for (const ev of await sa.queryFilter(sa.filters[name]())) out.add(ev.args.wallet);
         }
         return [...out];
@@ -413,9 +433,13 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
             const { requestId } = await sa.getClaim(head);
             await attempt("result", () => aggregator.scriptResult(requestId, vector, JUSTIFICATION));
             await attempt("finalize", () => send(r4.pick(plainSigners), "finalize", [head]));
-            // An INVALID settles at once, as the keeper would settle it.
+            // An INVALID settles at once, by its hunter, who waives the appeal (erratum E7, P16). The
+            // draw is kept, so the stream keeps its pace.
             const j = await sa.getClaim(head);
-            if (j.state === ClaimState.Judged && j.outcome === 0n) await attempt("settle", () => send(r4.pick(hunters), "settle", [head]));
+            if (j.state === ClaimState.Judged && j.outcome === 0n) {
+              r4.pick(hunters);
+              await attempt("settle", () => send(c.hunter, "settle", [head]));
+            }
             return;
           }
         },
@@ -457,6 +481,106 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         },
       };
       const bag4 = Object.entries({ program: 1, drive: 6, confirm: 5, settleLate: 1 }).flatMap(([k, w]) => Array(w).fill(k));
+      const appealActions = {
+        // Take a listing's head claim through its round to a verdict, mostly an INVALID (often
+        // narrow), and most often appeal it at once, before another stream settles it.
+        async drive() {
+          for (const { id } of shuffled(listings)) {
+            const head = (await sa.getListing(id)).headClaim;
+            if (head === 0n) continue;
+            const k = await sa.getClaim(head);
+            if (k.state !== ClaimState.Committed || k.disclosedAt === 0n) continue;
+            const c = claims.find((x) => x.id === head);
+            const [, revealableAt, revealDeadline] = await sa.claimTimes(head);
+            const now = BigInt(await time.latest());
+            if (revealDeadline !== 0n && now + 1n >= revealDeadline) {
+              await attempt("expire", () => send(r5.pick(hunters), "expire", [head]));
+              continue;
+            }
+            if (revealableAt > now + 1n) await time.increaseTo(revealableAt);
+            await attempt("reveal", async () => send(c.hunter, "reveal", [head, H.BCID, H.CK, H.EK], await sa.revealTopUp(head)));
+            if ((await sa.getClaim(head)).state !== ClaimState.Revealed) return;
+            const m = r5.int(200_000, 500_000);
+            const vector = r5.pick([H.oneHot(0), H.oneHot(0), [SCALE - m, 0, 0, m, 0, 0], [SCALE - m, 0, 0, m, 0, 0], H.oneHot(1), H.oneHot(4)]);
+            const { requestId } = await sa.getClaim(head);
+            await attempt("result", () => aggregator.scriptResult(requestId, vector, JUSTIFICATION));
+            await attempt("finalize", () => send(r5.pick(plainSigners), "finalize", [head]));
+            const j = await sa.getClaim(head);
+            if (j.state === ClaimState.Judged && j.outcome === 0n && r5.next() < 0.75) {
+              const fee = (await sa.disputeFee(id)) + BigInt(r5.pick([0, 0, 0, 777]));
+              await attempt("appeal", () => send(c.hunter, "appeal", [head], fee));
+            }
+            return;
+          }
+        },
+        // The hunter appeals a Judged INVALID inside its window; now and then someone else, or a
+        // claim outside its window, to be refused.
+        async appeal() {
+          const judged = await claimsIn([ClaimState.Judged]);
+          if (!judged.length) return;
+          const now = BigInt(await time.latest());
+          const ready = [];
+          for (const c of judged) {
+            const d = await sa.appealDeadline(c.id);
+            if (d !== 0n && now + 1n < d) ready.push(c);
+          }
+          const c = ready.length && r5.next() < 0.9 ? r5.pick(ready) : r5.pick(judged);
+          const who = r5.next() < 0.85 ? c.hunter : r5.pick([...makers, ...hunters]);
+          const fee = (await sa.disputeFee(c.listingId)) + BigInt(r5.pick([0, 0, 0, 777]));
+          await attempt("appeal", () => send(who, "appeal", [c.id], fee));
+        },
+        // An open appeal round ends: held, narrow, overturned, a DUPLICATE, timed out or malformed.
+        async judgeAppeal() {
+          const open = [];
+          for (const c of await claimsIn([ClaimState.Disputed])) if ((await sa.getClaim(c.id)).disputeKind === 3n) open.push(c);
+          if (!open.length) return;
+          const c = r5.pick(open);
+          const k = await sa.getClaim(c.id);
+          const m = r5.int(200_000, 500_000);
+          const outcome = r5.int(0, 9);
+          if (outcome < 2) {
+            await time.increase(301); // the mock's response timeout: no verdict
+          } else {
+            const vector = [null, null, H.oneHot(0), [SCALE - m, 0, 0, m, 0, 0], H.oneHot(1), H.oneHot(2), H.oneHot(3), H.oneHot(4), H.oneHot(5), [1, 2, 3]][outcome];
+            await attempt("result", () => aggregator.scriptResult(k.disputeRequestId, vector, JUSTIFICATION));
+          }
+          await attempt("finalize", () => send(r5.pick(plainSigners), "finalize", [c.id]));
+          // No verdict: most often the hunter re-triggers at once.
+          if ((await sa.retriggerDeadline(c.id)) !== 0n && r5.next() < 0.6) {
+            await attempt("appealRetrigger", async () => send(c.hunter, "retrigger", [c.id], await sa.retriggerTopUp(c.id)));
+          }
+        },
+        // The appeal's one re-trigger, mostly by the hunter inside its window.
+        async retriggerAppeal() {
+          const now = BigInt(await time.latest());
+          const ready = [];
+          for (const c of await claimsIn([ClaimState.Judged])) {
+            if ((await sa.getClaim(c.id)).disputeKind !== 3n) continue;
+            const d = await sa.retriggerDeadline(c.id);
+            if (d !== 0n && (now + 1n < d || r5.next() < 0.1)) ready.push(c);
+          }
+          if (!ready.length) return;
+          const c = r5.pick(ready);
+          const who = r5.next() < 0.9 ? c.hunter : r5.pick([...makers, ...hunters]);
+          const topUp = (await sa.retriggerTopUp(c.id)) + BigInt(r5.pick([0, 0, 333]));
+          await attempt("appealRetrigger", () => send(who, "retrigger", [c.id], topUp));
+        },
+        // A Judged INVALID settles: by its hunter (the waiver), or by anyone, mostly from settleableAt.
+        async settleInvalid() {
+          const invalid = [];
+          for (const c of await claimsIn([ClaimState.Judged])) if ((await sa.getClaim(c.id)).outcome === 0n) invalid.push(c);
+          if (!invalid.length) return;
+          const c = r5.pick(invalid);
+          if (r5.next() < 0.4) {
+            await attempt("settle", () => send(c.hunter, "settle", [c.id]));
+            return;
+          }
+          const at = await sa.settleableAt(c.id);
+          if (at > BigInt(await time.latest()) + 1n && r5.next() < 0.7) await time.increaseTo(at);
+          await attempt("settle", () => send(r5.pick([...makers, ...hunters]), "settle", [c.id]));
+        },
+      };
+      const bag5 = Object.entries({ drive: 5, appeal: 3, judgeAppeal: 6, retriggerAppeal: 2, settleInvalid: 3 }).flatMap(([k, w]) => Array(w).fill(k));
 
       if (safeguards) await safeguardActions.program(true); // the first listing takes these values
       await actions.list();
@@ -479,6 +603,11 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           const extra = r4.pick(bag4);
           await safeguardActions[extra]();
           await checkInvariant(step, extra);
+        }
+        if (appeals && r5.next() < 0.6) {
+          const extra = r5.pick(bag5);
+          await appealActions[extra]();
+          await checkInvariant(step, `appeal ${extra}`);
         }
       }
       // Drain: every round finalized, every wallet recovered, then refund attribution.
@@ -557,6 +686,18 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           const awardOf = (c) => (c.k.outcome >= l0.lowestClassCounted ? l0.awards[Number(c.k.outcome) - 2] : 0n);
           expect(h.confirmationsNoVerdict, `${at} confirmations with no verdict`).to.equal(n(stake, (c) => c.k.state === ClaimState.Settled
             && c.k.outcome >= 2n && (c.k.dispute === 0n || c.k.dispute === 4n) && awardOf(c) > l0.confirmAboveWei));
+          // The hunter's appeals (P16), one per claim at most, apart from the maker's disputes
+          // and the confirmations: held and overturned at their verdict, no verdict at settle.
+          for (const [xs, filed, held, overturned, none, who] of [
+            [stake, h.appeals, h.appealsHeld, h.appealsOverturned, h.appealsNoVerdict, "appeals"],
+            [late, h.lateAppeals, h.lateAppealsHeld, h.lateAppealsOverturned, h.lateAppealsNoVerdict, "late appeals"],
+          ]) {
+            const appealed = (f) => n(xs, (c) => c.k.disputeKind === 3n && f(c));
+            expect([filed, held, overturned, none], `${at} ${who}`).to.deep.equal([
+              appealed(() => true), appealed((c) => c.k.dispute === 2n), appealed((c) => c.k.dispute === 3n),
+              appealed((c) => c.k.dispute === 4n && c.k.state === ClaimState.Settled),
+            ]);
+          }
           const mass = (c) => [2, 3, 4, 5].reduce((a, i) => a + BigInt(c.k.vector[i]), 0n);
           const narrow = (xs) => n(xs, (c) => c.k.state === ClaimState.Settled && c.k.outcome === 0n && mass(c) >= l0.narrowInvalidFloor);
           expect([h.narrowInvalid, h.lateNarrowInvalid], `${at} narrow INVALIDs`).to.deep.equal([narrow(stake), narrow(late)]);
@@ -582,12 +723,27 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         expect([rec.listings[0].narrowInvalidFloor, rec.listings[0].confirmAboveWei], `${at} program values`).to.deep.equal([l.narrowInvalidFloor, l.confirmAboveWei]);
       }
 
+      // One dispute-panel verdict per claim (erratum E7): never two DisputeJudged for a claim.
+      const verdicts = (await sa.queryFilter(sa.filters.DisputeJudged())).map((e) => e.args.claimId);
+      for (const c of claims) expect(count(verdicts, c.id) <= 1n, `seed ${seed} claim ${c.id}: dispute-panel verdicts`).to.equal(true);
+
       // The sequence must have reached the paths that move money.
       for (const name of ["commit", "reveal", "finalize", "settle"]) {
         expect(stats.ok[name] || 0, `seed ${seed}: ${name} succeeded ${JSON.stringify(stats)}`).to.be.greaterThan(0);
       }
       expect(stats.ok.plainEth || 0).to.equal(0);
       for (const ev of REACHED) reached[ev] = (reached[ev] || 0) + (await sa.queryFilter(sa.filters[ev]())).length;
+      if (appeals) {
+        for (const ev of REACHED_P16) reachedP16[ev] = (reachedP16[ev] || 0) + (await sa.queryFilter(sa.filters[ev]())).length;
+        for (const name of ["appeal", "appealRetrigger"]) reachedP16[name] = (reachedP16[name] || 0) + (stats.ok[name] || 0);
+        for (const c of claims) {
+          const k = await sa.getClaim(c.id);
+          if (k.disputeKind === 3n) reachedP16[`result${k.dispute}`] = (reachedP16[`result${k.dispute}`] || 0) + 1;
+        }
+      } else {
+        // The other seeds make no appeal.
+        for (const ev of REACHED_P16) expect((await sa.queryFilter(sa.filters[ev]())).length, `seed ${seed}: ${ev}`).to.equal(0);
+      }
       if (safeguards) {
         for (const ev of REACHED_P17) reachedP17[ev] = (reachedP17[ev] || 0) + (await sa.queryFilter(sa.filters[ev]())).length;
       } else {
@@ -604,5 +760,9 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
     for (const ev of REACHED) expect(reached[ev] || 0, `${ev} ${JSON.stringify(reached)}`).to.be.greaterThan(0);
     if (hre.__SOLIDITY_COVERAGE_RUNNING) return; // the safeguards' seeds did not run
     for (const ev of REACHED_P17) expect(reachedP17[ev] || 0, `${ev} ${JSON.stringify(reachedP17)}`).to.be.greaterThan(0);
+    // The appeal's seeds made appeals and re-triggers, and their results: held, overturned, no verdict.
+    for (const k of [...REACHED_P16, "appeal", "appealRetrigger", "result2", "result3", "result4"]) {
+      expect(reachedP16[k] || 0, `${k} ${JSON.stringify(reachedP16)}`).to.be.greaterThan(0);
+    }
   });
 });

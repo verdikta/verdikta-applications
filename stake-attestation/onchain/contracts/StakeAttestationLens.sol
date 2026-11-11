@@ -107,21 +107,40 @@ contract StakeAttestationLens {
         }
     }
 
-    /// @notice When settle() accepts a Judged claim: at once (judgedAt) for INVALID and
-    ///         DUPLICATE, at the end of the dispute window for a valid outcome, at once
-    ///         (disputeEndedAt) once a dispute-panel round of it ended. A claim that awaits its
-    ///         confirmation (erratum E9; confirmWindow) at the confirmation deadline, unless a
-    ///         dispute-panel verdict comes first. 0 for a claim that is not Judged (a Disputed
-    ///         claim waits for its round's finalize).
+    /// @notice When settle() accepts a Judged claim from anyone: at once (judgedAt) for a
+    ///         DUPLICATE; at the end of the dispute window for a valid outcome, and for a claim
+    ///         round's INVALID, whose appeal window it is (erratum E7); at once (disputeEndedAt)
+    ///         once a dispute-panel round of it ended, except an appeal's round with no verdict
+    ///         whose re-trigger is unused, at the end of its re-trigger window (retriggerDeadline).
+    ///         A claim that awaits its confirmation (erratum E9; confirmWindow) at the confirmation
+    ///         deadline, unless a dispute-panel verdict comes first. 0 for a claim that is not
+    ///         Judged (a Disputed claim waits for its round's finalize). The hunter may settle an
+    ///         INVALID before this time, which waives the appeal or its re-trigger.
     function settleableAt(uint256 claimId) external view returns (uint256) {
         StakeAttestation.Claim memory c = host.getClaim(claimId);
         if (c.state != StakeAttestation.ClaimState.Judged) return 0;
         StakeAttestation.Listing memory l = host.getListing(c.listingId);
         (, uint256 deadline) = _confirmWindow(c, l);
         if (deadline != 0) return deadline;
+        if (_appealRetriggerable(c)) return ClaimRules.retriggerDeadline(c.disputeEndedAt, l.revealWindow);
         if (c.dispute != StakeAttestation.DisputeResult.None) return c.disputeEndedAt;
-        if (uint8(c.outcome) < ClaimRules.LOW) return c.judgedAt;
+        if (c.outcome == StakeAttestation.Outcome.DUPLICATE) return c.judgedAt;
         return uint256(c.judgedAt) + l.disputeWindow;
+    }
+
+    /// @notice The hunter may appeal the claim's INVALID (erratum E7) before this time:
+    ///         judgedAt + disputeWindow for a Judged claim whose claim round settled INVALID and
+    ///         that no dispute-panel round has judged; 0 when no appeal is possible (not Judged,
+    ///         not INVALID, or appealed already, or an INVALID a maker's dispute or a
+    ///         confirmation produced: one dispute-panel verdict per claim). The appeal costs
+    ///         disputeFee, and so does its one re-trigger (retriggerDeadline, retriggerTopUp).
+    function appealDeadline(uint256 claimId) external view returns (uint256) {
+        StakeAttestation.Claim memory c = host.getClaim(claimId);
+        if (
+            c.state != StakeAttestation.ClaimState.Judged || c.outcome != StakeAttestation.Outcome.INVALID
+                || c.dispute != StakeAttestation.DisputeResult.None
+        ) return 0;
+        return uint256(c.judgedAt) + host.getListing(c.listingId).disputeWindow;
     }
 
     /// @notice A claim that awaits its confirmation (erratum E9): a claim round's verdict, not a
@@ -137,13 +156,13 @@ contract StakeAttestationLens {
         return _confirmWindow(c, host.getListing(c.listingId));
     }
 
-    /// @notice What dispute() takes now, and what confirm() takes from the escrow (erratum E9):
-    ///         the aggregator's live maxTotalFee for the listing's (clamped) disputeMaxOracleFee.
-    ///         More is accepted by dispute(); it funds the dispute's request and its unspent part
-    ///         comes back to the maker.
+    /// @notice What dispute() takes now, what confirm() takes from the escrow (erratum E9), and
+    ///         what appeal() and an appeal's retrigger take from the hunter (erratum E7): the
+    ///         aggregator's live maxTotalFee for the listing's (clamped) disputeMaxOracleFee. More
+    ///         is accepted by dispute() and appeal(); it funds the round's request and its unspent
+    ///         part comes back to whoever paid it.
     function disputeFee(uint256 listingId) external view returns (uint256) {
-        StakeAttestation.Listing memory l = host.getListing(listingId);
-        return verdikta.maxTotalFee(ClaimRules.effectiveFee(l.oracle.disputeMaxOracleFee, verdikta.maxOracleFee()));
+        return _disputeFee(host.getListing(listingId));
     }
 
     /// @notice The maker may dispute the claim before this time: judgedAt + disputeWindow for a
@@ -160,21 +179,29 @@ contract StakeAttestationLens {
 
     /// @notice A RoundFailed claim's re-trigger window (erratum E6): the hunter may retrigger
     ///         before this time, and anyone may expire the claim from it on (the bond to the
-    ///         maker if a round ran, roundStarted; else back to the hunter). 0 unless RoundFailed.
+    ///         maker if a round ran, roundStarted; else back to the hunter). For a Judged claim
+    ///         whose appeal's round settled no verdict and whose one re-trigger is unused (erratum
+    ///         E7), the end of that re-trigger's window, revealWindow from the round's end: from
+    ///         it on, anyone may settle the INVALID. 0 otherwise.
     function retriggerDeadline(uint256 claimId) external view returns (uint256) {
         StakeAttestation.Claim memory c = host.getClaim(claimId);
-        if (c.state != StakeAttestation.ClaimState.RoundFailed) return 0;
-        return ClaimRules.retriggerDeadline(c.failedAt, host.getListing(c.listingId).revealWindow);
+        uint32 window = host.getListing(c.listingId).revealWindow;
+        if (c.state == StakeAttestation.ClaimState.RoundFailed) return ClaimRules.retriggerDeadline(c.failedAt, window);
+        if (_appealRetriggerable(c)) return ClaimRules.retriggerDeadline(c.disputeEndedAt, window);
+        return 0;
     }
 
     /// @notice The ETH retrigger() needs now: the live maxTotalFee less the prepay a refused
     ///         submission left held (a round that ran spent its prepay, so a fresh one is due in
-    ///         full). 0 for a claim that is not RoundFailed.
+    ///         full); for an appeal's re-trigger (erratum E7), the live disputeFee in full. 0 for
+    ///         a claim that can be re-triggered in neither way.
     function retriggerTopUp(uint256 claimId) external view returns (uint256) {
         StakeAttestation.Claim memory c = host.getClaim(claimId);
+        StakeAttestation.Listing memory l = host.getListing(c.listingId);
+        if (_appealRetriggerable(c)) return _disputeFee(l);
         if (c.state != StakeAttestation.ClaimState.RoundFailed) return 0;
         uint256 held = c.requestId == bytes32(0) ? c.prepayWei : 0;
-        uint256 live = _liveFee(host.getListing(c.listingId));
+        uint256 live = _liveFee(l);
         return live > held ? live - held : 0;
     }
 
@@ -255,6 +282,17 @@ contract StakeAttestationLens {
         private pure returns (uint256)
     {
         return ClaimRules.revealableAt(c.disclosedAt, c.fixWindowEnd, c.disclosedAfterRoll, l.rolledAt);
+    }
+
+    /// @dev Erratum E7: a Judged claim whose appeal's round settled no verdict, its one
+    ///      re-trigger unused (ClaimLogic.retrigger's appeal branch; its window is the caller's).
+    function _appealRetriggerable(StakeAttestation.Claim memory c) private pure returns (bool) {
+        return c.state == StakeAttestation.ClaimState.Judged && c.disputeKind == StakeAttestation.DisputeKind.Appeal
+            && c.dispute == StakeAttestation.DisputeResult.NoVerdict && !c.appealRetriggered;
+    }
+
+    function _disputeFee(StakeAttestation.Listing memory l) private view returns (uint256) {
+        return verdikta.maxTotalFee(ClaimRules.effectiveFee(l.oracle.disputeMaxOracleFee, verdikta.maxOracleFee()));
     }
 
     function _liveFee(StakeAttestation.Listing memory l) private view returns (uint256) {

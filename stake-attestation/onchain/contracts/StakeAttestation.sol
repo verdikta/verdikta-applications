@@ -39,11 +39,14 @@ import {RecordLogic} from "./libraries/RecordLogic.sol";
 ///         at or above the listing's narrowInvalidFloor) returns the bond; E9, a claim round's
 ///         verdict whose table award is above the listing's confirmAboveWei waits for a
 ///         dispute-panel verdict (the maker's dispute, or confirm, funded from the escrow) or the
-///         confirmation deadline before it pays. The hunter's appeal (E7) is a later node.
+///         confirmation deadline before it pays. P16: E7, the hunter's appeal of a claim round's
+///         INVALID, once, to the dispute panel, at the hunter's cost (appeal, and one retrigger of
+///         an appeal round that settled no verdict); a claim round's INVALID waits out the appeal
+///         window before anyone but the hunter may settle it (decision D5 as amended).
 ///
-///         Size (EIP-170): the claim functions' bodies are the linked library ClaimLogic, the
-///         record's reader the linked library RecordLogic, and derived views (claim state,
-///         deadlines, quotes, the record) live in StakeAttestationLens, served at this address
+///         Size (EIP-170): the claim functions' bodies (and list's oracle check) are the linked
+///         library ClaimLogic, the record's reader the linked library RecordLogic, and derived
+///         views (claim state, deadlines, quotes, the record) live in StakeAttestationLens, served at this address
 ///         through the fallback as BountyEscrow's are. Deploy and link ClaimLogic, then
 ///         RecordLogic, before this contract (deploy/01_deploy_stake_attestation.js).
 ///
@@ -191,6 +194,16 @@ contract StakeAttestation is Ownable2Step {
         uint64  confirmationsHeld;   // a confirmation's verdict was the same outcome
         uint64  confirmationsOverturned; // a confirmation's different outcome replaced the first
         uint64  confirmationsNoVerdict;  // paid from the confirmation deadline with no panel verdict
+        // the hunter's appeal (P16, erratum E7), apart from the maker's disputes and the
+        // confirmations, each appeal once by its final result; a late claim's under `later`
+        uint64  appealsFiled;        // appeals made (appeal); a re-trigger is the same appeal
+        uint64  appealsHeld;         // the panel's verdict was INVALID again
+        uint64  appealsOverturned;   // the panel's different outcome replaced the INVALID
+        uint64  appealsNoVerdict;    // no round of the appeal settled a verdict: the INVALID stood (at settle)
+        uint64  lateAppealsFiled;    // the same four for late claims
+        uint64  lateAppealsHeld;
+        uint64  lateAppealsOverturned;
+        uint64  lateAppealsNoVerdict;
     }
 
     /// @notice A claim's life (design §13.1, errata E4-E6, decision D5). Order is ABI: append only.
@@ -221,13 +234,15 @@ contract StakeAttestation is Ownable2Step {
     ///         disputedAt, disputeEndedAt, disputeWallet, disputeRequestId) describe: None until one
     ///         starts; Maker, the maker's dispute (dispute()); Confirmation, the escrow-funded
     ///         confirmation of an award above the listing's confirmAboveWei (confirm(), erratum E9),
-    ///         which may follow a maker's dispute or a confirmation that settled no verdict. Order is
-    ///         ABI: append only (the hunter's appeal, erratum E7, is appended after Confirmation).
-    enum DisputeKind { None, Maker, Confirmation }
+    ///         which may follow a maker's dispute or a confirmation that settled no verdict; Appeal,
+    ///         the hunter's appeal of a claim round's INVALID (appeal(), erratum E7), and its one
+    ///         re-trigger (retrigger) after a round with no verdict. Order is ABI: append only.
+    enum DisputeKind { None, Maker, Confirmation, Appeal }
 
     /// @notice Who funded an EvaluationWallet clone, for which claim: the hunter for each of a
-    ///         claim's rounds, the maker for its dispute, and this contract (the listing's escrow)
-    ///         for a confirmation (erratum E9). A wallet makes one request, so its unspent prepay
+    ///         claim's rounds and for its appeal's (erratum E7), the maker for its dispute, and
+    ///         this contract (the listing's escrow) for a confirmation (erratum E9). A wallet makes
+    ///         one request, so its unspent prepay
     ///         (the aggregator's ethOwed credit to it) is this funder's; a confirmation's goes back
     ///         as a top-up of the listing would (ClaimLogic.topUp), or to the maker once it closed.
     struct WalletInfo {
@@ -291,6 +306,8 @@ contract StakeAttestation is Ownable2Step {
         bytes32 disputeRequestId;
         // the settlement safeguards (P17, erratum E9)
         DisputeKind disputeKind;     // whose dispute-panel round the dispute fields describe
+        // the hunter's appeal (P16, erratum E7)
+        bool    appealRetriggered;   // the appeal's one re-trigger has been used
     }
 
     // ------------------------------------------------------------------
@@ -324,6 +341,15 @@ contract StakeAttestation is Ownable2Step {
         uint256 confirmationsOverturned; // a confirmation's outcome replaced the first
         uint256 confirmationsNoVerdict;  // paid from the confirmation deadline with no panel verdict
         uint256 lateNarrowInvalid;    // later: within lateOutcomes[INVALID]
+        // the hunter's appeal (P16, erratum E7), apart from the maker's disputes and the confirmations
+        uint256 appeals;              // appeals made, each counted once below by its final result
+        uint256 appealsHeld;          // the panel's verdict was INVALID again
+        uint256 appealsOverturned;    // the panel's outcome replaced the INVALID
+        uint256 appealsNoVerdict;     // no round of the appeal settled a verdict: the INVALID stood
+        uint256 lateAppeals;          // later: the same four for late claims
+        uint256 lateAppealsHeld;
+        uint256 lateAppealsOverturned;
+        uint256 lateAppealsNoVerdict;
     }
 
     /// @notice One listing of the hash: the stake, its money, its lineage and its own counts.
@@ -444,8 +470,8 @@ contract StakeAttestation is Ownable2Step {
     uint256 public constant MAX_REPO_LENGTH = 512;
 
     /// @notice Bounds on maker-chosen oracle settings, as BountyEscrow's createBounty checks.
-    uint256 public constant MAX_ALPHA = 1000;
-    uint256 public constant MAX_FEE_SCALING_FACTOR = 1000;
+    uint256 public constant MAX_ALPHA = ClaimRules.MAX_ALPHA;
+    uint256 public constant MAX_FEE_SCALING_FACTOR = ClaimRules.MAX_FEE_SCALING_FACTOR;
 
     /// @notice Gas forwarded to a recipient when the contract pays out directly (_payOrCredit).
     /// @dev    As in BountyEscrow: capping it makes close-out and settlement cost independent of
@@ -567,9 +593,10 @@ contract StakeAttestation is Ownable2Step {
     mapping(bytes32 => uint256[]) internal _openedByHash;
 
     /// @notice Every EvaluationWallet clone this contract created => its funder and claim (zero
-    ///         for any other address). Written when the clone is made: by reveal and retrigger
-    ///         (the hunter) and by dispute (the maker). recoverLeftoverEth pays what a wallet
-    ///         recovers to its funder, so no refund can reach another payer.
+    ///         for any other address). Written when the clone is made: by reveal, retrigger and
+    ///         appeal (the hunter), by dispute (the maker) and by confirm (this contract).
+    ///         recoverLeftoverEth pays what a wallet recovers to its funder, so no refund can reach
+    ///         another payer.
     mapping(address => WalletInfo) public walletInfo;
 
     // Non-reentrancy guard (1 = unlocked, 2 = locked), as BountyEscrow's.
@@ -677,8 +704,9 @@ contract StakeAttestation is Ownable2Step {
     ///         the hunter.
     event Expired(uint256 indexed claimId, uint256 indexed listingId, Expiry reason);
 
-    /// @notice finalize read a verdict: the claim is Judged and the dispute window runs from now
-    ///         (a valid outcome); INVALID and DUPLICATE may be settled at once.
+    /// @notice finalize read a verdict: the claim is Judged and the dispute window runs from now:
+    ///         the maker's for a valid outcome, the hunter's appeal window for an INVALID (erratum
+    ///         E7; settled at once only by the hunter). A DUPLICATE may be settled at once.
     event Judged(uint256 indexed claimId, uint256 indexed listingId, Outcome outcome, uint32[6] vector, string justificationCid);
 
     /// @notice finalize found the round over without a verdict: no result (timed out), or a
@@ -695,7 +723,7 @@ contract StakeAttestation is Ownable2Step {
     event OwedPaid(uint256 indexed claimId, uint256 indexed listingId, address indexed hunter, uint256 amountWei, uint256 stillOwedWei);
 
     /// @notice A round's unspent prepay came back from its wallet, for the wallet's funder: the
-    ///         hunter for a claim round, the maker for a dispute (walletInfo).
+    ///         hunter for a claim round or an appeal, the maker for a dispute (walletInfo).
     event LeftoverRefunded(uint256 indexed claimId, address indexed funder, uint256 amountWei);
 
     /// @notice The inline recovery of a round's unspent prepay failed; it waits in `wallet`'s
@@ -730,8 +758,15 @@ contract StakeAttestation is Ownable2Step {
     event DisputeFailed(uint256 indexed claimId, uint256 indexed listingId, bytes32 requestId, bool malformed);
 
     /// @notice The hunter re-triggered a failed round (erratum E6); EvaluationRequested or
-    ///         SubmissionFailed follows in the same transaction.
+    ///         SubmissionFailed follows in the same transaction. For an appeal's round with no
+    ///         verdict (erratum E7), Appealed follows.
     event Retriggered(uint256 indexed claimId, uint256 indexed listingId);
+
+    /// @notice The hunter appealed a claim round's INVALID (erratum E7), or re-triggered the
+    ///         appeal's round after one with no verdict (Retriggered precedes it): the dispute
+    ///         panel re-judges the claim through `wallet`, funded by the hunter with `prepayWei`.
+    ///         DisputeJudged or DisputeFailed ends the round.
+    event Appealed(uint256 indexed claimId, uint256 indexed listingId, address wallet, bytes32 requestId, uint256 prepayWei);
 
     /// @notice A confirmation round started (erratum E9): the dispute panel re-judges a claim
     ///         round's verdict whose award is above the listing's size, through `wallet`, funded
@@ -811,7 +846,7 @@ contract StakeAttestation is Ownable2Step {
         require(p.disclosureKey != bytes32(0), "no disclosure key");
         _checkAwards(p.awards, p.lowestClassCounted);
         _checkWindows(p.fixWindow, p.disputeWindow, p.disclosureGrace, p.revealWindow);
-        _checkOracle(p.oracle);
+        ClaimLogic.checkOracle(p.oracle, address(verdikta));
         _checkKnownIssues(knownIssueIds);
         require(p.allowlist.length <= MAX_ALLOWLIST, "allowlist too long");
         require(activeListingOf[artifactHash][msg.sender] == 0, "active listing exists");
@@ -1115,6 +1150,14 @@ contract StakeAttestation is Ownable2Step {
     ///      request. The request is the reveal's (same cids and disclosure line), sent as reveal
     ///      sends it: a fresh EvaluationWallet clone, exactly SUBMISSION_GAS, try/catch (refused
     ///      again: the claim stays RoundFailed and holds the prepay).
+    ///      Erratum E7: it also re-triggers, ONCE, the hunter's appeal whose round settled no
+    ///      verdict (the claim Judged, its dispute NoVerdict of the Appeal kind), before
+    ///      revealWindow has passed since that round ended (disputeEndedAt; the lens's
+    ///      retriggerDeadline). The failed round's prepay was spent, so msg.value is a fresh one
+    ///      in full, at least the live dispute fee (the lens's retriggerTopUp quotes disputeFee),
+    ///      all of it through a fresh EvaluationWallet clone whose funder is the hunter. The
+    ///      request is the appeal's, sent as appeal sends it, not caught: a refusal reverts,
+    ///      nothing is recorded and the re-trigger stays available inside its window.
     function retrigger(uint256 claimId) external payable nonReentrant {
         Claim storage c = _mustClaim(claimId);
         uint256 listingId = c.listingId;
@@ -1126,7 +1169,8 @@ contract StakeAttestation is Ownable2Step {
 
     /// @notice The maker disputes a valid verdict (design §13.2): once per claim, while it is
     ///         Judged with an outcome LOW..CRITICAL, before disputeWindow has passed since
-    ///         judgedAt. The dispute panel re-judges it; the second finalize is final.
+    ///         judgedAt. The dispute panel re-judges it; the second finalize is final. Never a
+    ///         valid outcome an appeal produced (erratum E7): one dispute-panel verdict per claim.
     /// @param statementCid the maker's statement, pinned (erratum E2: at most 4 KB, never inline);
     ///        the request names it in the addendum's second line, "verdikta-dispute: <cid>"
     /// @dev Payable: msg.value must be at least the live maxTotalFee for the listing's (clamped)
@@ -1145,6 +1189,33 @@ contract StakeAttestation is Ownable2Step {
         ClaimLogic.dispute(
             _claims, _listings[listingId], _validFindings[listingId], walletInfo, claimId, statementCid, msg.value,
             verdikta, address(walletImplementation)
+        );
+    }
+
+    /// @notice The hunter appeals the INVALID its claim round settled (erratum E7): once, to the
+    ///         dispute panel, while the claim is Judged INVALID with no dispute-panel round yet
+    ///         (dispute None: never an INVALID a maker's dispute or a confirmation produced), before
+    ///         judgedAt + disputeWindow (the lens's appealDeadline). Late claims may appeal. The
+    ///         second finalize is final: held, the bond goes to the maker unless the panel's vector
+    ///         is a narrow INVALID (erratum E8); overturned, the panel's outcome settles at once and
+    ///         a counted class pays its award with no confirmation (E9). A round with no verdict
+    ///         may be re-triggered once (retrigger). No statement: the panel reads the claim as it
+    ///         was revealed, and its report.md is the hunter's argument (owner, 2026-11-10).
+    /// @dev Payable: msg.value must be at least the live dispute fee (the lens's disputeFee) and
+    ///      all of it funds the request through a fresh EvaluationWallet clone whose funder is
+    ///      the hunter: the hunter bears the round's spent prepay whatever the result, and its
+    ///      unspent part comes back to the hunter at finalize (or recoverLeftoverEth). Nothing
+    ///      comes from the escrow or the bond. The request is the dispute's without the dispute
+    ///      line: cids = [disputeCid, the claim's bcid, the prior findings its round carried],
+    ///      addendum = the E1 line. Exactly SUBMISSION_GAS, not caught: a refusal reverts the
+    ///      appeal, nothing is recorded and the hunter may try again inside the window.
+    ///      Judged -> Disputed, of the Appeal kind.
+    function appeal(uint256 claimId) external payable nonReentrant {
+        Claim storage c = _mustClaim(claimId);
+        uint256 listingId = c.listingId;
+        ClaimLogic.appeal(
+            _claims, _listings[listingId], _validFindings[listingId], walletInfo, claimId, msg.value, verdikta,
+            address(walletImplementation)
         );
     }
 
@@ -1183,12 +1254,13 @@ contract StakeAttestation is Ownable2Step {
     ///         round's content. A claim round: a verdict makes the claim Judged (outcome by
     ///         ClaimRules.judge; the dispute window starts), a round over without one (timed out,
     ///         or a vector of the wrong length or sum) makes it RoundFailed. A dispute-panel round
-    ///         (the maker's dispute or a confirmation; the second finalize, final): a verdict
-    ///         replaces the first (Held or Overturned) and the claim settles at once; none leaves
-    ///         the first standing (NoVerdict), and a claim above the listing's size then still
-    ///         awaits its confirmation (erratum E9). Then the round's unspent prepay goes to its
-    ///         wallet's funder: the hunter, the maker, or, for a confirmation, the listing as a
-    ///         top-up would (owed awards first, then the escrow).
+    ///         (the maker's dispute, a confirmation or the hunter's appeal; the second finalize,
+    ///         final): a verdict replaces the first (Held or Overturned) and the claim settles at
+    ///         once; none leaves the first standing (NoVerdict), and a claim above the listing's
+    ///         size then still awaits its confirmation (erratum E9), an appeal its one re-trigger
+    ///         (erratum E7). Then the round's unspent prepay goes to its wallet's funder: the
+    ///         hunter (a claim round or an appeal), the maker, or, for a confirmation, the listing
+    ///         as a top-up would (owed awards first, then the escrow).
     function finalize(uint256 claimId) external nonReentrant {
         Claim storage c = _mustClaim(claimId);
         uint256 listingId = c.listingId;
@@ -1199,13 +1271,17 @@ contract StakeAttestation is Ownable2Step {
     }
 
     /// @notice Settle a judged claim and move its funds (design §8.7, §13.2; ClaimLogic.settle).
-    ///         Anyone may call. INVALID (bond to the maker, or back when narrow, erratum E8) and
-    ///         DUPLICATE (bond back) at once; a valid outcome after the dispute window, or at once
-    ///         once a dispute of it ended (the second finalize is final): bond back plus the award
-    ///         at or above lowestClassCounted, from the escrow, any shortfall owed. A claim round's
-    ///         award above the listing's confirmAboveWei (erratum E9) waits for a dispute-panel
-    ///         verdict, or for the confirmation deadline with no round open. The claim leaves the
-    ///         commit-order queue, so the next claim may reveal.
+    ///         Anyone may call. DUPLICATE (bond back) at once; a valid outcome after the dispute
+    ///         window, or at once once a dispute of it ended (the second finalize is final): bond
+    ///         back plus the award at or above lowestClassCounted, from the escrow, any shortfall
+    ///         owed. INVALID (bond to the maker, or back when narrow, erratum E8): a claim round's
+    ///         after the appeal window (judgedAt + disputeWindow), one whose appeal settled no
+    ///         verdict after its re-trigger window, and at once after an appeal's verdict or its
+    ///         re-triggered round (erratum E7); the hunter may settle it at any time, which waives
+    ///         the appeal or the re-trigger. A claim round's award above the listing's
+    ///         confirmAboveWei (erratum E9) waits for a dispute-panel verdict, or for the
+    ///         confirmation deadline with no round open. The claim leaves the commit-order queue,
+    ///         so the next claim may reveal.
     function settle(uint256 claimId) external nonReentrant {
         Claim storage c = _mustClaim(claimId);
         uint256 listingId = c.listingId;
@@ -1216,7 +1292,7 @@ contract StakeAttestation is Ownable2Step {
     }
 
     /// @notice Retry the recovery of a wallet's unspent prepay and pay it to the wallet's funder
-    ///         (walletInfo: the hunter for a claim round, the maker for a dispute). Anyone may
+    ///         (walletInfo: the hunter for a claim round or an appeal, the maker for a dispute). Anyone may
     ///         call. As BountyEscrow.recoverLeftoverEth: for a round that is over (refused while
     ///         the round is open, when the prepay is still reserved at the aggregator); the
     ///         wallet's refundLeftoverEth is idempotent, so this also recovers ETH that reaches
@@ -1432,25 +1508,6 @@ contract StakeAttestation is Ownable2Step {
         require(disputeWindow <= MAX_WINDOW, "dispute window too long");
         require(revealWindow >= MIN_REVEAL_WINDOW, "reveal window too short");
         require(revealWindow <= MAX_WINDOW, "reveal window too long");
-    }
-
-    /// @dev BountyEscrow.createBounty's checks, applied to both fees: reject anything the
-    ///      aggregator or keeper would reject when a request is sent, so a bad listing fails at
-    ///      listing instead of stranding hunters at reveal or the maker at dispute.
-    function _checkOracle(OracleParams calldata o) private view {
-        uint256 ceiling = verdikta.maxOracleFee();
-        require(o.maxOracleFee > 0, "bad oracle fee");
-        require(o.maxOracleFee <= ceiling, "oracle fee above ceiling");
-        require(o.disputeMaxOracleFee > 0, "bad dispute oracle fee");
-        require(o.disputeMaxOracleFee <= ceiling, "dispute oracle fee above ceiling");
-        require(o.estimatedBaseCost < o.maxOracleFee, "base cost must be below fee");
-        require(o.estimatedBaseCost < o.disputeMaxOracleFee, "base cost must be below dispute fee");
-        require(o.maxFeeBasedScaling >= 1 && o.maxFeeBasedScaling <= MAX_FEE_SCALING_FACTOR, "bad fee scaling");
-        require(o.alpha <= MAX_ALPHA, "bad alpha");
-        require(
-            verdikta.maxTotalFee(o.maxOracleFee) > 0 && verdikta.maxTotalFee(o.disputeMaxOracleFee) > 0,
-            "bad budget"
-        );
     }
 
     /// @dev Non-zero and strictly ascending: a canonical set with no duplicates, checked in one pass.

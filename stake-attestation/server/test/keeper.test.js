@@ -1,8 +1,8 @@
 // Acceptance 1, the keeper (node P4b1, erratum E4): finalize and settle are called when due and
 // never before. finalize is due once the aggregator's round is over (a verdict, or a timeout,
 // which leaves the claim RoundFailed); settle once the claim is Judged and settleableAt has come
-// (at once for INVALID and DUPLICATE and after a dispute, after the dispute window for a valid
-// verdict). expire only when SA_KEEPER_EXPIRE=on. The key comes from the environment only.
+// (at once for a DUPLICATE and after a dispute, after the dispute window for a valid verdict and,
+// erratum E7 (node P16), after the appeal window, the same length, for a claim round's INVALID). expire only when SA_KEEPER_EXPIRE=on. The key comes from the environment only.
 // Duplicates, retries and restarts: keeper.idempotence.test.js.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -61,7 +61,7 @@ describe('finalize and settle when due', () => {
     }
   });
 
-  test('INVALID and DUPLICATE settle on the cycle after finalize, with no wait', async () => {
+  test('DUPLICATE settles on the cycle after finalize, with no wait; a claim round\'s INVALID once its appeal window has passed (erratum E7)', async () => {
     const ctx = await chainContext();
     const { listingId } = await listing(ctx);
     const site = siteFor(ctx);
@@ -69,6 +69,12 @@ describe('finalize and settle when due', () => {
       const invalid = await revealedClaim(ctx, ctx.hunters[0], listingId);
       await verdict(ctx, invalid, 'INVALID');
       assert.deepEqual((await cycle(site)).sent.map((s) => s.action), ['finalize']);
+      assert.deepEqual((await cycle(site)).sent, [], 'the hunter may still appeal it');
+      assert.equal(await stateOf(ctx, invalid), 'Judged');
+      const c = await ctx.sa.getClaim(invalid);
+      const { disputeWindow } = await ctx.sa.getListing(listingId);
+      assert.equal(await ctx.sa.settleableAt(invalid), c.judgedAt + disputeWindow);
+      await increaseTime(ctx, Number(disputeWindow));
       assert.deepEqual((await cycle(site)).sent.map((s) => s.action), ['settle']);
       assert.equal(await stateOf(ctx, invalid), 'Settled');
 

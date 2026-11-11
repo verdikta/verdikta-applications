@@ -270,6 +270,9 @@ describe("StakeAttestation: late claims (P2e, decision D6)", function () {
         if (k.valid) {
           await expect(sa.settle(claimId)).to.be.revertedWith("dispute window open"); // the maker may dispute it
           await afterDisputeWindow(sa, claimId);
+        } else if (k.outcome === Outcome.INVALID) {
+          await expect(sa.settle(claimId)).to.be.revertedWith("appeal window open"); // the hunter may appeal it (erratum E7)
+          await afterDisputeWindow(sa, claimId);
         }
         const tx = sa.connect(other).settle(claimId);
         const toMaker = k.bondTo === "maker" ? BOND : 0n;
@@ -377,7 +380,7 @@ describe("StakeAttestation: late claims (P2e, decision D6)", function () {
       await sa.connect(maker).release(early.claimId);
       await revealAs(sa, hunters[0], early.claimId, { bcid: cidOf(1) });
       await judgeAs(sa, aggregator, other, early.claimId, V.INVALID);
-      await sa.settle(early.claimId);
+      await sa.connect(hunters[0]).settle(early.claimId); // the hunter's waiver of the appeal (erratum E7)
       await expect(sa.connect(maker).close(id)).to.emit(sa, "Closed").withArgs(id, maker.address, TOP);
       const before = await recordOf(sa, id);
 

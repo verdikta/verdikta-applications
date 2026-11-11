@@ -23,6 +23,11 @@ library ClaimRules {
     ///      and finishing either branch afterwards.
     uint256 internal constant SUBMISSION_GAS_NEEDED = SUBMISSION_GAS + SUBMISSION_GAS / 63 + 100_000;
 
+    /// @notice Bounds on maker-chosen oracle settings, as BountyEscrow's createBounty checks
+    ///         (ClaimLogic.checkOracle applies them at list).
+    uint256 internal constant MAX_ALPHA = 1000;
+    uint256 internal constant MAX_FEE_SCALING_FACTOR = 1000;
+
     /// @notice Settlement (design §8.7): the jury's vector over [INVALID, DUPLICATE, LOW, MEDIUM,
     ///         HIGH, CRITICAL] sums to SCORE_SCALE, less the aggregator's flooring loss (it
     ///         averages the clustered reveals with integer division, losing under one unit on

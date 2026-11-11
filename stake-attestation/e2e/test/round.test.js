@@ -71,8 +71,8 @@ test('acceptance 2: list, fund, commit, release, reveal, judge, settle, record, 
   has('final.record.outcomes', 'final.record.findings', 'final.record.isTheChains', 'final.page.finding');
 });
 
-test('acceptance 2: the gate-failing claim settles INVALID with the bond to the maker, and no model was asked', () => {
-  has('gate.check.forecast', 'gate.runner.gateFailed', 'gate.noAi', 'gate.evidence.settlement', 'gate.settled.outcome', 'gate.money.bondToMaker', 'gate.money.hunter', 'gate.settled.noDisputeWindow');
+test('acceptance 2: the gate-failing claim settles INVALID with the bond to the maker, after its appeal window (erratum E7), and no model was asked', () => {
+  has('gate.check.forecast', 'gate.runner.gateFailed', 'gate.noAi', 'gate.evidence.settlement', 'gate.settled.outcome', 'gate.money.bondToMaker', 'gate.money.hunter', 'gate.settle.waitsAppealWindow', 'gate.settled.afterAppealWindow');
   assert.match(detail('gate.evidence.settlement'), /INVALID \(testPathsOnly\)/);
 });
 
@@ -82,7 +82,7 @@ test('node P12: a claim that fails a non-tamper integrity check on real forge se
   has('integrity.money.bondBack', 'integrity.money.makerUntouched', 'integrity.record.integrityFailed', 'integrity.record.integrityChecks', 'integrity.record.integrityApart', 'final.page.integrityFailed', 'final.page.integrityChecks', 'final.page.duplicateNotPublished');
   assert.match(detail('integrity.evidence.settlement'), /DUPLICATE \(integrity\)/);
   assert.match(detail('integrity.record.integrityChecks'), /protectedPathsUnchanged/);
-  assert.equal(report.stages.findIndex((s) => s.name === 'integrity: reveal, DUPLICATE, the bond back') > report.stages.findIndex((s) => s.name === 'gate: reveal, INVALID, the bond to the maker'), true);
+  assert.equal(report.stages.findIndex((s) => s.name === 'integrity: reveal, DUPLICATE, the bond back') > report.stages.findIndex((s) => s.name === 'gate: reveal, INVALID, the appeal window, the bond to the maker'), true);
 });
 
 test('node P12: the runner at the pin had the Semgrep image before it started, and the fixture settled as it did', () => {

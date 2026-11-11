@@ -360,6 +360,13 @@ test('the CLI: status --wait exits 4 while pending, 0 when done; claim settles; 
   const ready = await runCli(w, ['status', String(claimId), '--wait', '--json'], { keyVia: 'none' });
   assert.equal(ready.code, 0, ready.stderr);
   assert.equal(JSON.parse(ready.stdout).ready, 'finalize');
+  // A claim round's INVALID waits out its appeal window (erratum E7, node P16): claim finalizes
+  // it now and settles it once the window has passed (the tool's own appeal is node P18's).
+  const judged = await runCli(w, ['claim', dir]);
+  assert.equal(judged.code, 0, judged.stderr);
+  assert.match(judged.stdout, /Judged INVALID/);
+  assert.doesNotMatch(judged.stdout, /Settled/);
+  await w.increase((await w.sa.settleableAt(claimId)) - (await w.chainNow()));
   const claimed = await runCli(w, ['claim', dir]);
   assert.equal(claimed.code, 0, claimed.stderr);
   assert.match(claimed.stdout, /Settled/);

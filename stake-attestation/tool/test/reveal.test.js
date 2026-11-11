@@ -43,7 +43,9 @@ test('out of commit order: refused while an earlier claim is unresolved, naming 
   const req = (await w.sa.getClaim(a.claimId)).requestId;
   await (await w.aggregator.scriptResult(req, vectorOf('INVALID'), JUSTIFICATION_CID)).wait();
   await (await w.sa.finalize(a.claimId)).wait();
-  await (await w.sa.settle(a.claimId)).wait();
+  // A claim round's INVALID waits out its appeal window unless its hunter settles it, which
+  // waives the appeal (erratum E7, node P16): the hunter does, so the clock is as before.
+  await (await w.sa.connect(w.hunterWallet).settle(a.claimId)).wait();
   const r = await w.hunter().reveal({ claimDir: second });
   assert.equal(r.state, 'Revealed');
 });

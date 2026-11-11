@@ -938,10 +938,11 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       expect(await sa.settleableAt(claimId)).to.equal(at);
       await sa.settle(claimId);
 
-      // An INVALID verdict has no dispute deadline.
+      // An INVALID verdict has no dispute deadline; its appeal window (erratum E7) is the same length.
       const j = await judgedClaim(sa, aggregator, hunters[1], id, V.INVALID);
       expect(await sa.disputeDeadline(j.claimId)).to.equal(0n);
-      await sa.settle(j.claimId);
+      expect(await sa.settleableAt(j.claimId)).to.equal(j.judgedAt + DISPUTE);
+      await sa.connect(hunters[1]).settle(j.claimId); // the hunter's waiver
 
       const f = await failedClaim(sa, aggregator, hunters[2], id, "refused");
       expect(await sa.retriggerDeadline(f.claimId)).to.equal(f.failedAt + REVEAL);

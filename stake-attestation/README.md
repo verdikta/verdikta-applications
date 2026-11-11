@@ -67,7 +67,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 
 | Folder | What | Test |
 |---|---|---|
-| `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e; the narrow INVALID and the confirmation, P17) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
+| `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e; the narrow INVALID and the confirmation, P17; the hunter's appeal, P16) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
 | `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`; the baseline scan between listing and open, its findings served to the maker's wallet only (P4b2); the indexer, keeper, listing feed, record mirror, labels and badge (P4b1) over one deployment; the project's proof, refused listing attempts counted by reason, what counts on the record, the fork label (P8, P9). | `npm test`, `npm run test:builder`, `npm run abi` |
 | `client/` | Vite + React site, port 5176: the maker's listing flow, the disclosure key made in the browser, and decrypt-and-check (P6a); the record page, the badge embed, the feed, the maker's release, roll forward and dispute, pending evaluations watched, the baseline scan read (P6b). | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI and the library it wraps (P5): `check`, `commit`, `reveal`, `status`, `claim`. See "The hunter tool". | `npm test` |
@@ -174,10 +174,44 @@ the one-line disclosure addendum of erratum E1.
 
 ## The contract: settlement safeguards
 
-Two of the design's 2026-11-10 errata (Q70, mechanics Q72), node P17. Both rest on
+The design's 2026-11-10 errata (Q70, mechanics Q72): the narrow INVALID and the
+confirmation (node P17), and the hunter's appeal (node P16). Each claim gets at most
+one dispute-panel verdict, whichever side asked for it, and that verdict is final;
+whoever asks for a dispute-panel round bears its spent prepay, and the confirmation is
+paid from the escrow. The first two rest on
 a program value the owner sets (`setNarrowInvalidFloor`, `setConfirmAboveWei`, each
 with an event) that `list` copies onto the listing, so a change reaches only listings
 made after it; `getListing` and the record show a listing's values.
+
+- **The hunter may appeal an INVALID** (E7). `appeal(claimId)`, payable, is the
+  claim's hunter's, once, on a claim its claim round left `Judged` INVALID with no
+  dispute-panel round, before `judgedAt + disputeWindow` (the lens's
+  `appealDeadline`); late claims may appeal. The prepay is at least the live
+  `disputeFee`, all of it through a fresh `EvaluationWallet` clone the hunter funds,
+  so the unspent part comes back to the hunter at `finalize` (or
+  `recoverLeftoverEth`) and nothing comes from the escrow or the bond. The request is
+  the dispute's without the dispute line: no statement, the claim's `report.md` is
+  the hunter's argument (owner, 2026-11-10). It is sent with exactly `SUBMISSION_GAS`
+  and not caught, so a refusal reverts and the appeal stays available. The second
+  `finalize` is final: held, the bond goes to the maker unless the panel's vector is a
+  narrow INVALID; overturned, the panel's outcome settles at once, a counted class
+  with its award under `settle`'s escrow and owed rules and no confirmation. An
+  appeal round with no verdict gets one re-trigger, the hunter's, through `retrigger`,
+  until `revealWindow` after that round ended (`retriggerDeadline`), with a fresh full
+  prepay (`retriggerTopUp` quotes `disputeFee`); a second round with no verdict
+  leaves the INVALID standing. **A claim round's INVALID waits** (decision D5 as
+  amended): `settle` refuses it, until the appeal window ends or an appeal's
+  re-trigger window ends, from anyone but its hunter, who waives the appeal by
+  settling; meanwhile the claim heads the commit-order queue, so the next reveal
+  waits and `close` is refused. `settleableAt` reports when anyone may settle. The
+  maker may not dispute a valid outcome an appeal produced, the hunter may not
+  appeal an INVALID a maker's dispute or a confirmation produced, and a DUPLICATE is
+  not appealable and settles at once. The record counts appeals by final result
+  (`appeals`, `appealsHeld`, `appealsOverturned`, `appealsNoVerdict`; a late
+  claim's under `later`) apart from the maker's disputes and the confirmations, and
+  a finding names its round's kind (`DisputeKind.Appeal`). Until the keeper and the
+  tool know the appeal (node P18), the keeper settles an INVALID from
+  `settleableAt`, after the window.
 
 - **A narrow INVALID returns the bond** (E8). An INVALID whose valid mass (LOW to
   CRITICAL of the vector `settle` applies) is at least the listing's

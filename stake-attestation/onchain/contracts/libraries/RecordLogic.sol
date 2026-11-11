@@ -137,6 +137,15 @@ library RecordLogic {
         h.confirmationsOverturned = l.confirmationsOverturned;
         h.confirmationsNoVerdict = l.confirmationsNoVerdict;
         h.lateNarrowInvalid = l.lateNarrowInvalid;
+        // Erratum E7: the hunter's appeals, apart from the maker's disputes and the confirmations.
+        h.appeals = l.appealsFiled;
+        h.appealsHeld = l.appealsHeld;
+        h.appealsOverturned = l.appealsOverturned;
+        h.appealsNoVerdict = l.appealsNoVerdict;
+        h.lateAppeals = l.lateAppealsFiled;
+        h.lateAppealsHeld = l.lateAppealsHeld;
+        h.lateAppealsOverturned = l.lateAppealsOverturned;
+        h.lateAppealsNoVerdict = l.lateAppealsNoVerdict;
         for (uint256 o = 0; o < 6; ) {
             h.outcomes[o] = l.outcomeCounts[o];
             h.lateOutcomes[o] = l.lateOutcomeCounts[o];
@@ -164,6 +173,14 @@ library RecordLogic {
         total.confirmationsOverturned += h.confirmationsOverturned;
         total.confirmationsNoVerdict += h.confirmationsNoVerdict;
         total.lateNarrowInvalid += h.lateNarrowInvalid;
+        total.appeals += h.appeals;
+        total.appealsHeld += h.appealsHeld;
+        total.appealsOverturned += h.appealsOverturned;
+        total.appealsNoVerdict += h.appealsNoVerdict;
+        total.lateAppeals += h.lateAppeals;
+        total.lateAppealsHeld += h.lateAppealsHeld;
+        total.lateAppealsOverturned += h.lateAppealsOverturned;
+        total.lateAppealsNoVerdict += h.lateAppealsNoVerdict;
         for (uint256 o = 0; o < 6; ) {
             total.outcomes[o] += h.outcomes[o];
             total.lateOutcomes[o] += h.lateOutcomes[o];

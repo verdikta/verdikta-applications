@@ -26,7 +26,7 @@ export const ENUMS = Object.freeze({
   ClaimState: Object.freeze(['Committed', 'Revealable', 'Revealed', 'Judged', 'Disputed', 'Settled', 'Expired', 'RoundFailed']),
   Expiry: Object.freeze(['None', 'Undisclosed', 'Unrevealed', 'RoundsFailed', 'SubmissionsRefused']),
   DisputeResult: Object.freeze(['None', 'Pending', 'Held', 'Overturned', 'NoVerdict']),
-  DisputeKind: Object.freeze(['None', 'Maker', 'Confirmation']),
+  DisputeKind: Object.freeze(['None', 'Maker', 'Confirmation', 'Appeal']),
 });
 
 /** The severity classes, as Outcome names from LOW up: awards[] is indexed by class - LOW. */

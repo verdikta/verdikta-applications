@@ -299,7 +299,7 @@ describe("StakeAttestation: the record (P2e, design §4.1, §13.4)", function ()
       await time.setNextBlockTimestamp(pending.disclosedAt + FIX);
       await revealAs(sa, hunters[3], pending.claimId);
       await judgeAs(sa, aggregator, hunters[3], pending.claimId, V.INVALID);
-      await sa.settle(pending.claimId);
+      await sa.connect(hunters[3]).settle(pending.claimId); // the hunter's waiver of the appeal (erratum E7)
       await sa.connect(maker).close(id);
       const late = await lateClaimAs(sa, hunters[4], id);
       await sa.connect(maker).flagBadDisclosure(late.claimId);
@@ -488,7 +488,8 @@ describe("StakeAttestation: the record (P2e, design §4.1, §13.4)", function ()
         await aggregator.scriptResult(requestId, plan(i).map(BigInt), JUSTIFICATION);
         await sa.connect(other).finalize(claimId);
         if (plan(i) === V.LOW || plan(i) === V.MEDIUM) await time.increase(DISPUTE);
-        await sa.connect(other).settle(claimId);
+        // An INVALID by its hunter, who waives the appeal (erratum E7), so the clock is as before.
+        await sa.connect(plan(i) === V.INVALID ? hunter : other).settle(claimId);
       }
       const h = await hashOf(sa, id);
       const full = await sa.recordByHash(h);

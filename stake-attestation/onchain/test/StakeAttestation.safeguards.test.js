@@ -150,10 +150,11 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       // The old listing's pending claim: a narrow INVALID under its floor, bond back.
       await revealAs(sa, hunters[0], pending.claimId);
       await judgeAs(sa, aggregator, hunters[0], pending.claimId, invalidWith(FLOOR));
-      await expect(sa.connect(other).settle(pending.claimId)).to.changeEtherBalances([hunters[0], maker], [BOND, 0n]);
+      // Settled by the hunter, who waives the appeal (erratum E7, node P16).
+      await expect(sa.connect(hunters[0]).settle(pending.claimId)).to.changeEtherBalances([hunters[0], maker], [BOND, 0n]);
       // The same vector on the later listing forfeits: its band is empty.
       const { claimId } = await judged(sa, aggregator, hunters[1], later, invalidWith(FLOOR));
-      await expect(sa.connect(other).settle(claimId)).to.changeEtherBalances([hunters[1], maker], [0n, BOND]);
+      await expect(sa.connect(hunters[1]).settle(claimId)).to.changeEtherBalances([hunters[1], maker], [0n, BOND]);
     });
 
     it("the owner changes the size after a listing: the listing and its pending claims keep the old size", async function () {
@@ -195,7 +196,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
         const { claimId } = await judged(sa, aggregator, hunter, id, k.vector);
         expect((await sa.getClaim(claimId)).outcome, `case ${i}`).to.equal(Outcome.INVALID);
         const [hunterGets, makerGets] = k.narrow ? [BOND, 0n] : [0n, BOND];
-        const tx = sa.connect(other).settle(claimId); // at once: INVALID waits for no window
+        const tx = sa.connect(hunter).settle(claimId); // at once: the hunter waives the appeal (erratum E7, node P16)
         await expect(tx).to.changeEtherBalances([hunter, maker], [hunterGets, makerGets]);
         await expect(tx).to.emit(sa, "Settled").withArgs(claimId, id, hunter.address, Outcome.INVALID, 0n, 0n);
         if (k.narrow) await expect(tx).to.emit(sa, "NarrowInvalid").withArgs(claimId, id, k.mass);
@@ -213,7 +214,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
         await setProgram(sa, owner, { floor });
         const id = await openListing(sa, maker, params({ artifact: atCommit(freshCommit()) }));
         const { claimId } = await judged(sa, aggregator, hunters[i], id, V.INVALID);
-        const tx = sa.connect(other).settle(claimId);
+        const tx = sa.connect(hunters[i]).settle(claimId); // the hunter's waiver of the appeal (erratum E7)
         await expect(tx, `floor ${floor}`).to.changeEtherBalances([hunters[i], maker], [0n, BOND]);
         await expect(tx).to.not.emit(sa, "NarrowInvalid");
         expect((await sa.getListing(id)).narrowInvalidClaims).to.equal(0n);
@@ -242,7 +243,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       // The largest valid mass an INVALID can have (500,000), the floor's minimum, and a gate failure.
       for (const [i, vector] of [SPLIT_50_50, invalidWith(MIN_FLOOR), invalidWith(THRESHOLD - 1n), V.INVALID].entries()) {
         const { claimId } = await judged(sa, aggregator, hunters[i], id, vector);
-        const tx = sa.connect(other).settle(claimId);
+        const tx = sa.connect(hunters[i]).settle(claimId); // the hunter's waiver of the appeal (erratum E7)
         await expect(tx, `vector ${vector}`).to.changeEtherBalances([hunters[i], maker], [0n, BOND]);
         await expect(tx).to.not.emit(sa, "NarrowInvalid");
       }
@@ -279,7 +280,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       const id = await openListing(sa, maker);
       for (const [i, vector] of [invalidWith(FLOOR), V.INVALID, invalidWith(420_000)].entries()) {
         const { claimId } = await judged(sa, aggregator, hunters[i], id, vector);
-        await sa.connect(other).settle(claimId);
+        await sa.connect(hunters[i]).settle(claimId); // the hunter's waiver of the appeal (erratum E7)
       }
       const l = await sa.getListing(id);
       expect([...l.outcomeCounts].map(BigInt)).to.deep.equal([3n, 0n, 0n, 0n, 0n, 0n]);
@@ -302,7 +303,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
         const { claimId } = await lateClaimAs(sa, hunters[i], id);
         await revealAs(sa, hunters[i], claimId);
         await judgeAs(sa, aggregator, hunters[i], claimId, k.v);
-        const tx = sa.connect(other).settle(claimId);
+        const tx = sa.connect(hunters[i]).settle(claimId); // the hunter's waiver of the appeal (erratum E7)
         await expect(tx).to.changeEtherBalances([hunters[i], maker], k.narrow ? [BOND, 0n] : [0n, BOND]);
       }
       const l = await sa.getListing(id);
@@ -849,7 +850,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       for (const v of [V.INVALID, V.DUPLICATE]) {
         const k = await judged(sa, aggregator, hunters[1], id, v);
         await expect(sa.connect(other).confirm(k.claimId)).to.be.revertedWith("no confirmation due");
-        await sa.settle(k.claimId);
+        await sa.connect(hunters[1]).settle(k.claimId); // an INVALID's hunter waives its appeal (erratum E7)
       }
     });
   });
@@ -949,12 +950,12 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       expect(await sa.settleableAt(k.claimId)).to.equal(k.judgedAt + DISPUTE);
     });
 
-    it("ClaimState and DisputeResult keep their values; DisputeKind is new; the new fields are appended to Listing and Claim", async function () {
+    it("ClaimState and DisputeResult keep their values; DisputeKind is new (node P16 appends Appeal); the new fields are appended to Listing and Claim", async function () {
       const src = fs.readFileSync(path.join(__dirname, "..", "contracts", "StakeAttestation.sol"), "utf8");
       const enumOf = (name) => src.match(new RegExp(`enum ${name} \\{([^}]*)\\}`))[1].split(",").map((s) => s.trim());
       expect(enumOf("ClaimState")).to.deep.equal(["Committed", "Revealable", "Revealed", "Judged", "Disputed", "Settled", "Expired", "RoundFailed"]);
       expect(enumOf("DisputeResult")).to.deep.equal(["None", "Pending", "Held", "Overturned", "NoVerdict"]);
-      expect(enumOf("DisputeKind")).to.deep.equal(["None", "Maker", "Confirmation"]);
+      expect(enumOf("DisputeKind")).to.deep.equal(["None", "Maker", "Confirmation", "Appeal"]);
 
       const { sa } = await loadFixture(deployDefaults);
       const names = (fn) => sa.interface.getFunction(fn).outputs[0].components.map((c) => c.name);
@@ -975,12 +976,18 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
         "vector", "judgedAt", "settledAt", "outcome", "paidWei", "owedWei", "failedAt", "roundStarted", "dispute",
         "disputedOutcome", "disputedAt", "disputeEndedAt", "late", "disputeWallet", "disputeRequestId",
       ];
+      // Node P16's (the hunter's appeal), appended after this node's.
+      const LISTING_P16 = [
+        "appealsFiled", "appealsHeld", "appealsOverturned", "appealsNoVerdict",
+        "lateAppealsFiled", "lateAppealsHeld", "lateAppealsOverturned", "lateAppealsNoVerdict",
+      ];
       expect(names("getListing")).to.deep.equal([
         ...LISTING_BEFORE,
         "narrowInvalidFloor", "confirmAboveWei", "narrowInvalidClaims", "lateNarrowInvalid", "confirmationRounds",
         "confirmationsHeld", "confirmationsOverturned", "confirmationsNoVerdict",
+        ...LISTING_P16,
       ]);
-      expect(names("getClaim")).to.deep.equal([...CLAIM_BEFORE, "disputeKind"]);
+      expect(names("getClaim")).to.deep.equal([...CLAIM_BEFORE, "disputeKind", "appealRetriggered"]);
     });
 
     it("declares an event for every state change this node adds", async function () {

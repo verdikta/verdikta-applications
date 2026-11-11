@@ -30,6 +30,13 @@ import {ClaimRules} from "./ClaimRules.sol";
 ///      narrow INVALID and its wait for a confirmation, confirm, the dispute-panel branch of
 ///      finalize serving both kinds of round, and topUp, through which fund and a confirmation's
 ///      leftover both reach a listing (owed awards first, then the escrow).
+///
+///      list's oracle check (checkOracle) is here too, for the size limit (P16).
+///
+///      The hunter's appeal (P16, erratum E7) is appeal, retrigger's second branch (the appeal's
+///      one re-trigger), the third kind of round in finalize's dispute-panel branch, and settle's
+///      wait on a claim round's INVALID: until the appeal window ends, or an appeal with no
+///      verdict until its re-trigger window ends, only the hunter may settle it (the waiver).
 library ClaimLogic {
     /// @notice Commit: store the two hashes, the bond and the prepay; join the tail of the
     ///         listing's commit-order queue (erratum E5, decision D5). The caller has checked
@@ -93,6 +100,30 @@ library ClaimLogic {
             l.claimsCommitted += 1;
             emit StakeAttestation.Committed(claimId, listingId, msg.sender, archiveHash, ciphertextSha256, bond, prepay);
         }
+    }
+
+    /// @notice StakeAttestation.list's check of the oracle settings (here for the size limit, P16):
+    ///         BountyEscrow.createBounty's checks, applied to both fees: reject anything the
+    ///         aggregator or keeper would reject when a request is sent, so a bad listing fails at
+    ///         listing instead of stranding hunters at reveal or the maker at dispute. A view: it
+    ///         reads the aggregator's live ceiling and budget, and changes nothing. The only
+    ///         function here without a storage argument, so it is in the library's ABI: the
+    ///         aggregator is an address there, a type every ABI reader accepts.
+    function checkOracle(StakeAttestation.OracleParams calldata o, address aggregator) external view {
+        IVerdiktaAggregator verdikta = IVerdiktaAggregator(aggregator);
+        uint256 ceiling = verdikta.maxOracleFee();
+        require(o.maxOracleFee > 0, "bad oracle fee");
+        require(o.maxOracleFee <= ceiling, "oracle fee above ceiling");
+        require(o.disputeMaxOracleFee > 0, "bad dispute oracle fee");
+        require(o.disputeMaxOracleFee <= ceiling, "dispute oracle fee above ceiling");
+        require(o.estimatedBaseCost < o.maxOracleFee, "base cost must be below fee");
+        require(o.estimatedBaseCost < o.disputeMaxOracleFee, "base cost must be below dispute fee");
+        require(o.maxFeeBasedScaling >= 1 && o.maxFeeBasedScaling <= ClaimRules.MAX_FEE_SCALING_FACTOR, "bad fee scaling");
+        require(o.alpha <= ClaimRules.MAX_ALPHA, "bad alpha");
+        require(
+            verdikta.maxTotalFee(o.maxOracleFee) > 0 && verdikta.maxTotalFee(o.disputeMaxOracleFee) > 0,
+            "bad budget"
+        );
     }
 
     /// @notice Disclose: the ciphertext CID, within DISCLOSE_WINDOW of the commit; the fix window
@@ -181,8 +212,9 @@ library ClaimLogic {
         _submit(claims, l, prior, wallets, claimId, uint256(c.prepayWei) + value, verdikta, walletImplementation);
     }
 
-    /// @notice Re-trigger a failed round (see StakeAttestation.retrigger; erratum E6). The
-    ///         caller holds the non-reentrancy lock.
+    /// @notice Re-trigger a failed round (see StakeAttestation.retrigger; erratum E6), or, once,
+    ///         an appeal whose round settled no verdict (erratum E7). The caller holds the
+    ///         non-reentrancy lock.
     /// @param value msg.value: the fresh prepay, or the top-up of a refused submission's held one
     function retrigger(
         mapping(uint256 => StakeAttestation.Claim) storage claims,
@@ -196,6 +228,21 @@ library ClaimLogic {
     ) external {
         StakeAttestation.Claim storage c = claims[claimId];
         require(msg.sender == c.hunter, "not hunter");
+        if (c.state == StakeAttestation.ClaimState.Judged) {
+            // Erratum E7: the appeal's round settled no verdict, so it gave none; its one
+            // re-trigger can still give the claim's one dispute-panel verdict. Its window runs
+            // revealWindow from that round's end, as E6's from a failed claim round.
+            require(
+                c.disputeKind == StakeAttestation.DisputeKind.Appeal && c.dispute == StakeAttestation.DisputeResult.NoVerdict,
+                "not failed"
+            );
+            require(!c.appealRetriggered, "already retriggered");
+            require(block.timestamp < ClaimRules.retriggerDeadline(c.disputeEndedAt, l.revealWindow), "retrigger window over");
+            c.appealRetriggered = true;
+            emit StakeAttestation.Retriggered(claimId, c.listingId);
+            _appealRound(claims, l, prior, wallets, claimId, value, verdikta, walletImplementation);
+            return;
+        }
         require(c.state == StakeAttestation.ClaimState.RoundFailed, "not failed");
         require(block.timestamp < ClaimRules.retriggerDeadline(c.failedAt, l.revealWindow), "retrigger window over");
         // A refused submission (requestId 0) left its prepay here; a round that ran spent it.
@@ -332,6 +379,32 @@ library ClaimLogic {
         emit StakeAttestation.ConfirmationRequested(claimId, listingId, wallet, requestId, fee);
     }
 
+    /// @notice The hunter appeals a claim round's INVALID (see StakeAttestation.appeal; erratum
+    ///         E7). The caller holds the non-reentrancy lock.
+    /// @param value msg.value: the appeal's prepay, all of it sent with the request
+    function appeal(
+        mapping(uint256 => StakeAttestation.Claim) storage claims,
+        StakeAttestation.Listing storage l,
+        uint256[] storage prior,
+        mapping(address => StakeAttestation.WalletInfo) storage wallets,
+        uint256 claimId,
+        uint256 value,
+        IVerdiktaAggregator verdikta,
+        address walletImplementation
+    ) external {
+        StakeAttestation.Claim storage c = claims[claimId];
+        require(msg.sender == c.hunter, "not hunter");
+        require(c.state == StakeAttestation.ClaimState.Judged, "not judged");
+        // One dispute-panel verdict per claim: never an INVALID a maker's dispute or a
+        // confirmation produced, and never a second appeal.
+        require(c.dispute == StakeAttestation.DisputeResult.None, "already disputed");
+        require(c.outcome == StakeAttestation.Outcome.INVALID, "not INVALID");
+        require(block.timestamp < uint256(c.judgedAt) + l.disputeWindow, "appeal window over");
+        if (c.late) l.lateAppealsFiled += 1;
+        else l.appealsFiled += 1;
+        _appealRound(claims, l, prior, wallets, claimId, value, verdikta, walletImplementation);
+    }
+
     /// @notice Recover a wallet's unspent prepay for its funder (see
     ///         StakeAttestation.recoverLeftoverEth). The caller holds the non-reentrancy lock and
     ///         pays `refunded` to `funder`.
@@ -439,18 +512,31 @@ library ClaimLogic {
             }
         } else {
             wallet = c.disputeWallet;
-            // A confirmation is never a late claim's (no award), so only the maker's kind can be.
-            bool confirmation = c.disputeKind == StakeAttestation.DisputeKind.Confirmation;
-            payee = confirmation ? address(this) : l.maker;
+            // A confirmation is never a late claim's (no award); a maker's dispute or an appeal
+            // may be. Whoever asked for the round funded it (erratum E7's principle).
+            StakeAttestation.DisputeKind kind = c.disputeKind;
+            bool confirmation = kind == StakeAttestation.DisputeKind.Confirmation;
+            bool appealed = kind == StakeAttestation.DisputeKind.Appeal;
+            payee = confirmation ? address(this) : appealed ? c.hunter : l.maker;
             c.state = StakeAttestation.ClaimState.Judged;
             c.disputeEndedAt = uint64(block.timestamp);
             if (verdict) {
                 bool held = outcome == uint8(c.disputedOutcome);
                 c.dispute = held ? StakeAttestation.DisputeResult.Held : StakeAttestation.DisputeResult.Overturned;
-                // A late claim's dispute is on its finding, never in the history's counts.
+                // A late claim's dispute is on its finding, never in the history's counts; its
+                // appeal is counted under `later`.
                 if (confirmation) {
                     if (held) l.confirmationsHeld += 1;
                     else l.confirmationsOverturned += 1;
+                } else if (appealed) {
+                    if (c.late) {
+                        if (held) l.lateAppealsHeld += 1;
+                        else l.lateAppealsOverturned += 1;
+                    } else if (held) {
+                        l.appealsHeld += 1;
+                    } else {
+                        l.appealsOverturned += 1;
+                    }
                 } else if (!c.late) {
                     if (held) l.disputesHeld += 1;
                     else l.disputesOverturned += 1;
@@ -460,9 +546,9 @@ library ClaimLogic {
                 );
             } else {
                 c.dispute = StakeAttestation.DisputeResult.NoVerdict;
-                // A confirmation with no verdict is the record's once settle pays the first
-                // verdict at the deadline (one per claim, however many rounds failed).
-                if (!confirmation && !c.late) l.disputesNoVerdict += 1;
+                // A confirmation or an appeal with no verdict is the record's once settle applies
+                // the first verdict (one per claim, however many rounds failed).
+                if (kind == StakeAttestation.DisputeKind.Maker && !c.late) l.disputesNoVerdict += 1;
                 emit StakeAttestation.DisputeFailed(claimId, listingId, requestId, ok);
             }
         }
@@ -484,9 +570,13 @@ library ClaimLogic {
         }
     }
 
-    /// @notice Settle a judged claim (design §8.7, §13.2; decision D5). INVALID and DUPLICATE at
-    ///         once, a valid outcome once the dispute window from judgedAt has ended, or at once
-    ///         after a dispute (its second finalize was final, and there is one dispute). The claim
+    /// @notice Settle a judged claim (design §8.7, §13.2; decision D5 as erratum E7 amends it).
+    ///         DUPLICATE at once, a valid outcome once the dispute window from judgedAt has ended,
+    ///         or at once after a dispute (its second finalize was final, and there is one
+    ///         dispute). A claim round's INVALID once the appeal window (the same window) has
+    ///         ended, one whose appeal settled no verdict once its re-trigger window has ended, and
+    ///         at once after the appeal's verdict or its re-triggered round; the hunter at any
+    ///         time, which waives the appeal or the re-trigger (erratum E7). The claim
     ///         leaves the commit-order queue (resolve), is counted by outcome, and a valid one
     ///         joins the listing's valid findings (published: later requests carry it).
     ///         Funds, returned for the caller to pay (one payee):
@@ -518,8 +608,26 @@ library ClaimLogic {
         require(c.state == StakeAttestation.ClaimState.Judged, "not judged");
         uint8 outcome = uint8(c.outcome);
         uint256 listingId = c.listingId;
-        if (outcome >= ClaimRules.LOW && c.dispute == StakeAttestation.DisputeResult.None) {
+        StakeAttestation.DisputeResult d = c.dispute;
+        address hunter = c.hunter;
+        if (outcome >= ClaimRules.LOW && d == StakeAttestation.DisputeResult.None) {
             require(block.timestamp >= uint256(c.judgedAt) + l.disputeWindow, "dispute window open");
+        }
+        // Erratum E7. An appeal whose rounds settled no verdict leaves the claim round's INVALID
+        // (the maker disputes, and a confirmation confirms, only a valid outcome).
+        bool appealNoVerdict = c.disputeKind == StakeAttestation.DisputeKind.Appeal
+            && d == StakeAttestation.DisputeResult.NoVerdict;
+        if (outcome == ClaimRules.INVALID && msg.sender != hunter) {
+            // Until the appeal window ends, or an appeal with no verdict's re-trigger window, only
+            // the hunter may settle it, which waives them; the claim heads the queue meanwhile.
+            if (d == StakeAttestation.DisputeResult.None) {
+                require(block.timestamp >= uint256(c.judgedAt) + l.disputeWindow, "appeal window open");
+            } else if (appealNoVerdict && !c.appealRetriggered) {
+                require(
+                    block.timestamp >= ClaimRules.retriggerDeadline(c.disputeEndedAt, l.revealWindow),
+                    "retrigger window open"
+                );
+            }
         }
         if (awaitsConfirmation(c, l)) {
             // Erratum E9: from the deadline, with no round open (the claim is Judged) and no
@@ -537,8 +645,12 @@ library ClaimLogic {
         bool late = c.late;
         if (late) l.lateOutcomeCounts[outcome] += 1;
         else l.outcomeCounts[outcome] += 1;
+        if (appealNoVerdict) {
+            // Erratum E7: the appeal's final result, once per claim: the INVALID stood.
+            if (late) l.lateAppealsNoVerdict += 1;
+            else l.appealsNoVerdict += 1;
+        }
 
-        address hunter = c.hunter;
         payee = hunter;
         if (outcome == ClaimRules.INVALID) {
             // Erratum E8. A gate failure or a tamper flag has all the mass on INVALID: never narrow.
@@ -766,7 +878,7 @@ library ClaimLogic {
         }
     }
 
-    /// @dev Start a dispute-panel round (the maker's dispute, or a confirmation): a fresh
+    /// @dev Start a dispute-panel round (the maker's dispute, a confirmation or an appeal): a fresh
     ///      EvaluationWallet clone funded with `value` by `funder`; the claim goes Judged ->
     ///      Disputed with the round's `kind`. Erratum E2's request: the dispute archive first,
     ///      then what the claim's own round carried (no claim on the listing can have settled
@@ -815,6 +927,28 @@ library ClaimLogic {
     function _panelFee(StakeAttestation.Listing storage l, IVerdiktaAggregator verdikta) private view returns (uint256 fee) {
         fee = verdikta.maxTotalFee(ClaimRules.effectiveFee(l.oracle.disputeMaxOracleFee, verdikta.maxOracleFee()));
         require(fee > 0, "bad budget");
+    }
+
+    /// @dev Erratum E7: an appeal's round (appeal, and its re-trigger): `value`, at least the live
+    ///      dispute fee, all through a fresh wallet funded by the hunter; the dispute's request
+    ///      without the dispute line, as a confirmation's (the E1 line alone: no statement).
+    function _appealRound(
+        mapping(uint256 => StakeAttestation.Claim) storage claims,
+        StakeAttestation.Listing storage l,
+        uint256[] storage prior,
+        mapping(address => StakeAttestation.WalletInfo) storage wallets,
+        uint256 claimId,
+        uint256 value,
+        IVerdiktaAggregator verdikta,
+        address walletImplementation
+    ) private {
+        require(value >= _panelFee(l, verdikta), "prepay below fee");
+        StakeAttestation.Claim storage c = claims[claimId];
+        (address wallet, bytes32 requestId) = _startPanelRound(
+            claims, l, prior, wallets, claimId, c.hunter, StakeAttestation.DisputeKind.Appeal, value,
+            _disclosureLine(c), verdikta, walletImplementation
+        );
+        emit StakeAttestation.Appealed(claimId, c.listingId, wallet, requestId, value);
     }
 
     /// @dev Erratum E9: a confirmation's unspent prepay goes back to its listing as a top-up would

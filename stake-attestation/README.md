@@ -300,10 +300,9 @@ any build it decodes the disclosure key with common's `parseDisclosureKey`, chec
 validator (over the builder's stand-ins for the fields the builder measures) and refuses what
 `list()` would refuse or could not encode (decision D8's windows, a repository URL that is not
 printable ASCII within 512 bytes, an amount beyond uint256, a value at risk that is not whole
-dollars, more than 256 known issues), file names that collide with each other, with an
-archive member or with the builder's own files, and a draft naming `stake.documents`, which common takes
-and this site does not offer yet (`STAKE_DOCUMENTS_NOT_OFFERED`, the builder's and the hunter tool's code too):
-400 with the issues.
+dollars, more than 256 known issues) and file names that collide with each other, with an
+archive member or with the builder's own files: 400 with the issues. A bad entry of `stake.documents`
+(below) is reported at its own path, `/spec/stake/documents/<index>`, with common's own code for it.
 Otherwise it answers 202 with an id, and `GET /api/listings/:id` follows the listing:
 
 | Status | |
@@ -330,8 +329,24 @@ it, and counted by reason on `/api/status`.
 **What a known issue does** (owner, 2026-11-10, Q73 #5; common's claim query, version 2). A claim whose root cause is a
 listed known issue settles DUPLICATE, its bond back and no award, whatever the entry says about why: an entry that calls
 the behaviour intended or accepted is a known issue all the same. To mark a behaviour as no bug at all, leave it off known
-issues and document it as intended in the code (NatSpec), so a claim about it then falls under INVALID: the behaviour its
-PoC asserts is not required of the code. The site's listing form says both at its known-issues fields.
+issues and document it as intended in the code (NatSpec) or in a listing document (`stake.documents`, below), so a claim
+about it then falls under INVALID: the behaviour its PoC asserts is not required of the code. The site's listing form says
+both at its known-issues fields.
+
+**Documents** (owner decision Q61 (a); node P20). A draft may name, in `stake.documents`, up to 16 globs for the
+files where its code's requirements are written: the README, specs, interface docs, such as `README.md` or `docs/**`.
+The jurors' first question is whether the behaviour a PoC asserts is required of the code at all, and these are the
+maker's own statement of it: the arbiters' code-runner reads the files at the listed commit and puts them in the
+jurors' context pack right after the in-scope source (common's `selectDocuments`, at most 32 files of at most
+1,000,000 bytes of UTF-8 text each). The rules are `@verdikta/common`'s (`docs/CODE_REVIEW_SPECIFICATION.md`,
+"Stake documents"), and nothing here copies them: the listing form checks each line in the browser with common's
+`documentGlobProblem` and shows the code common's validator gives it (`STAKE_DOCUMENT_OUTSIDE_REPOSITORY`,
+`STAKE_DOCUMENT_NOT_PLAIN`, `STAKE_DOCUMENT_GLOB_INVALID`, `STAKE_DOCUMENT_DUPLICATE`), and the API passes the draft
+through common's validator, as for every field. Documents never widen the scope: a finding's affected paths must still
+be in scope, and the claim's query is the same with or without them. Which files the tier reads is decided at the
+listed commit, so the builder's report lists them before anything is funded (below), and the feed and the record show
+each listing's globs. A listing without documents is unchanged, byte for byte. A report can be accepted only with the
+builder's `documents` step when the draft names documents, and never with one when it names none.
 
 **The archives.** Both hold `manifest.json` (`codeReview`, the primary file and the panel),
 `primary_query.json` (`buildClaimQuery(spec)` and the six outcomes) and the builder's
@@ -455,9 +470,9 @@ the indexed block are both within `SA_MAX_STALENESS_SECONDS` (600).
 
 | Route | |
 |---|---|
-| `GET /api/feed` | every listing that counts and takes commits (a builder's signature and the project's proof, [`docs/control-proof.md`](docs/control-proof.md); Open, its paid period not over), and `notCounted`, the others apart: hash, artifact, image and scope (from its listing archive, used only when the archive is the listing the chain stores), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed and lapsed listings are not in it (design §15) |
+| `GET /api/feed` | every listing that counts and takes commits (a builder's signature and the project's proof, [`docs/control-proof.md`](docs/control-proof.md); Open, its paid period not over), and `notCounted`, the others apart: hash, artifact, image, scope and `documents`, the listing's document globs (from its listing archive, used only when the archive is the listing the chain stores; `[]` when it names none), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed and lapsed listings are not in it (design §15) |
 | `GET /api/feed/events?after=&limit=` | the contract's events of listings and claims, in chain order (design §13.4: the feed is those events), paged by `next` (`<block>:<logIndex>`) |
-| `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), over the listings that count (`notCounted` holds the others, apart; `artifact` and `fork` say what the record is of), read in `recordPage` pages when it is long; `labels`; `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding; `integrity`: per listing, the claims that failed integrity, by check, apart from the other duplicates (below). 404 for a hash with no opened listing |
+| `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), over the listings that count (`notCounted` holds the others, apart; `artifact` and `fork` say what the record is of; `documents` each counted listing's document globs, from its archive), read in `recordPage` pages when it is long; `labels`; `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding; `integrity`: per listing, the claims that failed integrity, by check, apart from the other duplicates (below). 404 for a hash with no opened listing |
 | `GET /api/records/:hash/badge.svg` | the badge; "record unavailable" when the record is not fresh or cannot be read |
 | `GET /api/status` | the indexer's cursor, the keeper's address, transaction in flight and last result, and refused listing attempts by reason (`listings.refused`: no address or repository name, kept beside the state) |
 
@@ -608,9 +623,8 @@ checked through the explorer the verified-source check reads. The config's optio
 block holds `gitHosts` (the site's `SA_CONTROL_GIT_HOSTS`), `timeoutMs` and `maxBytes`.
 
 1. **spec**: the draft against `@verdikta/common`'s `validateCodeReviewSpec` (with stand-ins
-   for the fields the builder fills) and what the Foundry MVP hosts: `env.from: "foundry"`,
-   `commands.framework: "forge"`, and no `stake.documents` yet (common takes it since 1.9.0-attest.4; refused as
-   `STAKE_DOCUMENTS_NOT_OFFERED`, which `sign` repeats); `known_issues.json` when the draft names one, in strict UTF-8 as arbiters read it, and
+   for the fields the builder fills; its `stake.documents` entries too, each by common's own code) and what the Foundry MVP hosts: `env.from: "foundry"`,
+   `commands.framework: "forge"`; `known_issues.json` when the draft names one, in strict UTF-8 as arbiters read it, and
    not too large on its own (see "A listing's size"). Then **the commands**, by the rule arbiters hold
    claims to (owner decision Q31): `commands.build` is plain `forge build`, `test`, `testFiles` and `testIds` plain
    `forge test`, each with flags from an allowlist, and no shell. The builder holds no copy of that rule. It
@@ -624,6 +638,18 @@ block holds `gitHosts` (the site's `SA_CONTROL_GIT_HOSTS`), `timeoutMs` and `max
    `repo` or a configured mirror of it, into a bare repository. git runs with no system or
    global config, no hooks or credential prompt, https only (and the local transport for a
    mirror path); nothing of the maker's tree is checked out on the host.
+   - **documents**, only for a draft that names `stake.documents` (`src/documents.js`; node P20): the builder chooses
+     them as the runner does, with common's `selectDocuments` over every path of the listed commit, as `git ls-tree -r`
+     lists them at `baseCommit` from the objects just fetched (never a work tree, which a maker's setup could change),
+     with no affected paths, since a listing has no claim yet. The report's `documents` says, for the maker, the files
+     the tier would read, in order (`read`), those past the 32-file cap (`pastCap`), and those skipped, each with its
+     reason (`symlink`, `submodule`, `notAFile`, `tooLarge` over 1,000,000 bytes, `notText` by common's `isDocumentText`),
+     and `unmatched` the globs that match no file, each also a `STAKE_DOCUMENT_MATCHES_NOTHING` warning: a warning,
+     not a refusal. A file a claim names in scope is read with the source instead. Globs that cost common's step meter
+     too much to match are refused here as `DOCUMENTS_MATCH_TOO_COSTLY`, before the maker's setup runs or anything is
+     built, so a listing never stalls the arbiters on its claims (they would treat it as the requester's broken
+     package), and `sign` repeats the refusal. A listing that names no documents (or an empty list) has no such step
+     and no `documents` in its report.
 3. **build**: `docker build` of a two-stage Dockerfile. The `setup` stage is FROM the foundry
    base pinned in `@verdikta/common` (`BASE_IMAGE_PINS.foundry`, by digest), checks out the
    commit and its submodules at `/repo` (a submodule git cannot fetch is left to the setup, as
@@ -679,7 +705,10 @@ block holds `gitHosts` (the site's `SA_CONTROL_GIT_HOSTS`), `timeoutMs` and `max
 Exit status 0 accepted, 2 refused (the report says why, with the build's log when the setup
 failed), 1 error. `verdikta-build-env sign --config builder.json --dir out/ --maker <address>` then
 reads the project's proof again and signs `attestation.json` (`createAttestationStatement` over the exact bytes written, Ed25519) and
-records it in the report; `run` does both in one process, with a dev key only.
+records it in the report; `run` does both in one process, with a dev key only. For a listing that names documents,
+`sign` repeats their selection first: it fetches the listed commit again by id, runs common's `selectDocuments` over its
+own entries, refuses `DOCUMENTS_MATCH_TOO_COSTLY` by that code, signs only a report whose `documents` is what that
+selection gives (`SIGNING_REPORT_MISMATCH` otherwise), and records `DOCUMENTS_SELECTED` among its checks.
 
 **A listing's size.** For each claim an arbiter's External Adapter sends the code-runner one JSON
 body, and the runner answers 413 above 16 MiB (16,777,216 bytes). The listing's `code_review.json`,
@@ -939,6 +968,10 @@ tied to a file and line; its INVALID includes a claim whose PoC asserts a behavi
 - A section headed `## Requirement` says where the code is required to behave as the PoC asserts: a file and line, or a
   listing document. If nothing in the code or the listing states it, say so there.
 
+A listing document is one of the files its `stake.documents` names (node P20): the feed and the record show a listing's
+globs, and `check` shows which files the jurors would read. Citing one is pointing at the maker's own statement of what
+the code must do; documents never widen the scope, and the claim's query is the same with or without them.
+
 No gate reads the section, and the claim's schema and archive are as they were: `check` warns, and refuses nothing, when
 `report.md` has no `## Requirement` section, or one with nothing under its heading, and `commit` says so again before it
 pays. The heading is read as CommonMark reads an ATX heading, at any depth (`#` to `######`) and in any case, with
@@ -967,8 +1000,13 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   (`external-adapter/src/codeReview/settlement.js`). An **abstain** (a proof that loops or runs out of memory) is shown as one, with
   what it costs: every arbiter abstains the same way, each failed round costs the base fees, the bond goes to the maker if no
   round settles, and nothing on-chain or on IPFS says why, so `check` is the only place to see it. On `linux/arm64` there is no
-  report, only gates and the pack. The forecast does not catch a trap keyed on the date: the runner fakes no clock. A listing
-  that names `stake.documents` is refused (`STAKE_DOCUMENTS_NOT_OFFERED`): the tool does not offer them yet.
+  report, only gates and the pack. The forecast does not catch a trap keyed on the date: the runner fakes no clock. On a
+  listing that names `stake.documents`, the request carries the spec as signed, so the runner reads the documents from the
+  listed commit, and the forecast's `documents` gives the listing's globs and the **documents tier** the runner built for
+  this run (its rank, status, files read and each reason a file was left out, `--no-pack` included); the pack, printed
+  in full, holds the files. The tool works none of it out itself: what it shows is the runner's answer, and its tests
+  hold it to a pack recorded from the runner at the pin (`tool/test/fixtures/runner-answers/documents.record.cjs`). A
+  listing that names no documents checks as it did, with no `documents` in the forecast.
 - **`commit`** refuses a listing the builder did not sign, or whose on-chain key or terms are not what was signed; says P9's warning
   and the §8.6 diligence text; draws fresh keys; and leaves `archive.zip`, `keys.json`, `ciphertext.age` and `state.json` in
   `<claim>/.verdikta-claim/` at 0600. **Back that folder up: without its keys a claim cannot be revealed, and the bond is lost.**
@@ -1038,13 +1076,18 @@ read-back through a local gateway proves less than one through a public one. Exi
 goes in a URL.
 
 - **Listing** (`#/list`): the artifact (a repository, or a deployed contract with its chain),
-  scope, award table, lowest class counted, bond, windows (design §7.1's defaults: 14 days, 30
+  scope, documents (up to 16 globs, one per line, for where the code's requirements are written; each line checked
+  in the browser with common's `documentGlobProblem` and shown by common's code, `client/src/lib/documents.js`; the
+  help says what to name and that documents never widen the scope), award table, lowest class counted, bond, windows
+  (design §7.1's defaults: 14 days, 30
   for a contract, 72 h, 48 h, 7 days), invited hunters, known issues (their ids are common's
-  `knownIssueId`; the fields say what a known issue settles as, as "The listing API" does) and
+  `knownIssueId`; the fields say what a known issue settles as, as "The listing API" does, and that a behaviour meant as
+  no bug is documented as intended in NatSpec or a listing document) and
   the declared value at risk. The form holds the windows to decision D8
   (fix window 0 to 90 days, dispute 24 to 2160 hours, reveal 3 to 90 days, grace no longer than
   the fix window) and leaves every other rule to the server, whose issues it shows. It follows
-  the listing through `GET /api/listings/:id`, shows the validation report, and once ready
+  the listing through `GET /api/listings/:id`, shows the validation report (with the documents the jurors would read,
+  for a listing that names them), and once ready
   sends `list()` with the server's arguments and `fund()` with `feeDue()` plus the escrow
   through the maker's wallet. `list()` is sent only when those arguments carry the maker's own
   disclosure key and terms, and not when the maker already has an active listing of the
@@ -1093,8 +1136,8 @@ goes in a URL.
   claim is a count.
 - **The feed** (`#/feed`, design §15): `GET /api/feed`, every listing that takes claims, with
   its artifact, hash, labels, award table, lowest class counted, bond, windows, times, days
-  open, claims so far, escrow remaining, value at risk, image and scope, and links to its record
-  and its page.
+  open, claims so far, escrow remaining, value at risk, image, scope and where its requirements are said to be
+  written (its document globs), and links to its record and its page. The record page shows each stake's globs too.
 - **A claim** (`#/claim/<claimId>`): its state and times from the chain (the lens's derived
   state and `claimTimes`), and the maker's actions through the wallet, each after reading the
   claim again: **release** inside the fix window of a disclosed claim, and **dispute** of a
@@ -1184,7 +1227,12 @@ the record, **a second gate-failing claim is appealed through the tool** (`claim
 `appeal` prints the live fee and needs `--yes`, the dispute panel's round runs the same gates and holds the INVALID, and the keeper
 settles it by that result, inside the window, the bond to the maker and the spent prepay the hunter's), and **a narrow INVALID**
 (the valid claim's proof again, scored by the jury just short of valid: 50 points of valid mass, the lens's `judgeVector` says
-narrow, the keeper waits out the appeal window and settle returns the bond). The round fails on the first check that fails, and
+narrow, the keeper waits out the appeal window and settle returns the bond). Last, **a second listing that names its documents**
+(node P20): the same repository at a commit that adds a README, a spec and a binary file under `docs/`, listed through the site with
+`stake.documents` (`README.md`, `docs/**` and a glob that matches nothing): the real builder's `documents` step reads the two text
+files, skips the binary one as not text and warns of the glob, and the hunter's `check` on that listing's archive gets the pack the real
+runner at the pin builds, with the documents tier right after the source holding the two files in order. The first listing names no
+documents, and its packs have no documents tier. The round fails on the first check that fails, and
 every check is a pure function with a test that hands it a tampered observation (`e2e/test/checks.test.js`).
 
 | Piece | Here |
@@ -1227,6 +1275,9 @@ differ, or if a fourth file names a commit of its own. None of them follows the 
 2. Put the whole commit in all three files, in one change.
 3. Run `cd builder && npm test`, `cd builder && npm run test:docker` and `cd e2e && npm test`: all three, and a green `builder-docker` and `e2e` on CI. `e2e/test/requestSize.test.js` holds
    `shared/src/listingRequestSize.js` to the code at the pin: if a number moved, update that copy. The round shows whether a new honesty flag changed what the fixture settles as.
+4. Record the documents pack the tool's tests read again, from the runner at the new pin:
+   `node tool/test/fixtures/runner-answers/documents.record.cjs e2e/.arbiter/<commit>/code-runner tool/test/fixtures/runner-answers/documents.pack.json <commit, 7 characters>`
+   (`tool/test/check.test.js` fails until its commit is the pin's).
 
 **It must move before launch to whatever arbiter commit the canaries run.** The site's listing check and the arbiters must hold listings to one rule, and nothing can check that from here: a runner's
 version does not move with each commit (`0.3.0` at this pin), so nothing it answers names its commit. The builder's own check is a floor (a shell in front of a command refused, the image's compilers read), not a commit. A site's runner (`runner.url` in its `builder.json`) is its operator's to keep at that commit.

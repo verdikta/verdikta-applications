@@ -196,6 +196,24 @@ test('what a repository or a test printed reaches the terminal without control c
 // with logs and file text trimmed: the mock above must not drift from what the runner answers.
 const recorded = (name) => JSON.parse(fs.readFileSync(new URL(`./fixtures/runner-answers/${name}.answer.json`, import.meta.url), 'utf8'));
 
+// Node P21: common takes stake.documents since 1.9.0-attest.4, and the tool offers it only from node P20. check
+// refuses a signed listing that names it, from the chain and from a file alike, by that one code, before any run.
+test('check refuses a listing naming stake.documents, by one code, before any run: documents are not offered yet', async () => {
+  const withDocuments = await w.listing({ stake: { documents: ['README.md'] } });
+  assert.deepEqual(withDocuments.spec.stake.documents, ['README.md']);
+  runner.requests.length = 0;
+  for (const over of [{ listingId: withDocuments.listingId }, { listingId: undefined, listingArchive: withDocuments.archives.listing }]) {
+    const err = await check(makeClaimDir(), over).then(() => null, (e) => e);
+    assert.ok(err, `refused: ${Object.keys(over)}`);
+    assert.equal(err.code, 'STAKE_DOCUMENTS_NOT_OFFERED');
+    assert.match(err.message, /documents are not offered yet/i);
+  }
+  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(withDocuments.listingId)], { runner });
+  assert.equal(cli.code, 1);
+  assert.match(cli.stderr, /STAKE_DOCUMENTS_NOT_OFFERED: .*documents are not offered yet/i);
+  assert.equal(runner.requests.length, 0, 'the runner was not asked');
+});
+
 test('no run on a listing a commit would refuse: its image is one nobody attested', async () => {
   const unsigned = await w.listing({ signWith: codeReviewKey() });
   runner.requests.length = 0;

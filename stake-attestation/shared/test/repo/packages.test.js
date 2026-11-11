@@ -15,6 +15,35 @@ test('the app folder holds exactly the known packages', () => {
   assert.deepEqual(found, [...PACKAGES].sort());
 });
 
+// Node P21: every package that reads @verdikta/common reads one release of it, the one the arbiters at the pin run
+// (e2e/test/requestSize.test.js holds e2e's to the arbiter's), pinned exactly and locked to the registry's tarball
+// with its integrity hash. Moving it is one change to all six, with the arbiter pin (README, "Moving the arbiter pin").
+const COMMON = '@verdikta/common';
+const COMMON_RELEASE = '1.9.0-attest.5';
+const COMMON_READERS = ['onchain', 'server', 'client', 'tool', 'builder', 'e2e'];
+
+test(`the packages that read ${COMMON} pin exactly ${COMMON_RELEASE}, locked to the registry with an integrity hash`, () => {
+  const readers = [];
+  for (const pkg of PACKAGES) {
+    const dir = path.join(APP_DIR, pkg);
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    const pinned = manifest.dependencies?.[COMMON] ?? manifest.devDependencies?.[COMMON];
+    if (pinned === undefined) continue;
+    readers.push(pkg);
+    assert.equal(pinned, COMMON_RELEASE, `${pkg}/package.json pins ${COMMON} ${pinned}`);
+    const lock = JSON.parse(fs.readFileSync(path.join(dir, 'package-lock.json'), 'utf8'));
+    const locked = lock.packages[`node_modules/${COMMON}`];
+    assert.ok(locked, `${pkg}/package-lock.json locks ${COMMON}`);
+    assert.equal(locked.version, COMMON_RELEASE, `${pkg}/package-lock.json`);
+    assert.equal(locked.resolved, `https://registry.npmjs.org/${COMMON}/-/common-${COMMON_RELEASE}.tgz`, `${pkg}/package-lock.json`);
+    assert.match(locked.integrity ?? '', /^sha512-[A-Za-z0-9+/]{86}==$/, `${pkg}/package-lock.json`);
+    // one copy: nothing in the tree brings a release of its own
+    const others = Object.keys(lock.packages).filter((k) => k !== `node_modules/${COMMON}` && k.endsWith(`node_modules/${COMMON}`));
+    assert.deepEqual(others, [], `${pkg}/package-lock.json`);
+  }
+  assert.deepEqual(readers.sort(), [...COMMON_READERS].sort());
+});
+
 for (const pkg of PACKAGES) {
   test(`${pkg}: package.json, a v3 lockfile that matches it, a test script`, () => {
     const dir = path.join(APP_DIR, pkg);

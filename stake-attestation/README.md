@@ -34,9 +34,9 @@ nodes named in the plan.
 
 ## A separate site
 
-This is its own application, with its own domain, API and contract (design §20,
-decision 18). It shares the Verdikta aggregator, the code ClassIDs and the
-arbiter network with the bounty program, and may use library code from
+This is its own application, with its own API and contract (design §20, decision 18), served
+from its own origin, https://verifiers.verdikta.org (owner, 2026-11-11). It shares the Verdikta
+aggregator, the code ClassIDs and the arbiter network with the bounty program, and may use library code from
 `example-bounty-program/` as a dependency, but never adds routes or flows to
 bounties.verdikta.org. `BountyEscrow` is untouched. A test in
 `shared/test/repo/scope.test.js` fails a change that edits files outside this
@@ -300,8 +300,10 @@ any build it decodes the disclosure key with common's `parseDisclosureKey`, chec
 validator (over the builder's stand-ins for the fields the builder measures) and refuses what
 `list()` would refuse or could not encode (decision D8's windows, a repository URL that is not
 printable ASCII within 512 bytes, an amount beyond uint256, a value at risk that is not whole
-dollars, more than 256 known issues) and file names that collide with each other, with an
-archive member or with the builder's own files: 400 with the issues.
+dollars, more than 256 known issues), file names that collide with each other, with an
+archive member or with the builder's own files, and a draft naming `stake.documents`, which common takes
+and this site does not offer yet (`STAKE_DOCUMENTS_NOT_OFFERED`, the builder's and the hunter tool's code too):
+400 with the issues.
 Otherwise it answers 202 with an id, and `GET /api/listings/:id` follows the listing:
 
 | Status | |
@@ -607,7 +609,8 @@ block holds `gitHosts` (the site's `SA_CONTROL_GIT_HOSTS`), `timeoutMs` and `max
 
 1. **spec**: the draft against `@verdikta/common`'s `validateCodeReviewSpec` (with stand-ins
    for the fields the builder fills) and what the Foundry MVP hosts: `env.from: "foundry"`,
-   `commands.framework: "forge"`; `known_issues.json` when the draft names one, in strict UTF-8 as arbiters read it, and
+   `commands.framework: "forge"`, and no `stake.documents` yet (common takes it since 1.9.0-attest.4; refused as
+   `STAKE_DOCUMENTS_NOT_OFFERED`, which `sign` repeats); `known_issues.json` when the draft names one, in strict UTF-8 as arbiters read it, and
    not too large on its own (see "A listing's size"). Then **the commands**, by the rule arbiters hold
    claims to (owner decision Q31): `commands.build` is plain `forge build`, `test`, `testFiles` and `testIds` plain
    `forge test`, each with flags from an allowlist, and no shell. The builder holds no copy of that rule. It
@@ -964,7 +967,8 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   (`external-adapter/src/codeReview/settlement.js`). An **abstain** (a proof that loops or runs out of memory) is shown as one, with
   what it costs: every arbiter abstains the same way, each failed round costs the base fees, the bond goes to the maker if no
   round settles, and nothing on-chain or on IPFS says why, so `check` is the only place to see it. On `linux/arm64` there is no
-  report, only gates and the pack. The forecast does not catch a trap keyed on the date: the runner fakes no clock.
+  report, only gates and the pack. The forecast does not catch a trap keyed on the date: the runner fakes no clock. A listing
+  that names `stake.documents` is refused (`STAKE_DOCUMENTS_NOT_OFFERED`): the tool does not offer them yet.
 - **`commit`** refuses a listing the builder did not sign, or whose on-chain key or terms are not what was signed; says P9's warning
   and the §8.6 diligence text; draws fresh keys; and leaves `archive.zip`, `keys.json`, `ciphertext.age` and `state.json` in
   `<claim>/.verdikta-claim/` at 0600. **Back that folder up: without its keys a claim cannot be revealed, and the bond is lost.**
@@ -1225,7 +1229,7 @@ differ, or if a fourth file names a commit of its own. None of them follows the 
    `shared/src/listingRequestSize.js` to the code at the pin: if a number moved, update that copy. The round shows whether a new honesty flag changed what the fixture settles as.
 
 **It must move before launch to whatever arbiter commit the canaries run.** The site's listing check and the arbiters must hold listings to one rule, and nothing can check that from here: a runner's
-version is `0.1.0` at every commit so far, so nothing it answers names its commit. The builder's own check is a floor (a shell in front of a command refused, the image's compilers read), not a commit. A site's runner (`runner.url` in its `builder.json`) is its operator's to keep at that commit.
+version does not move with each commit (`0.3.0` at this pin), so nothing it answers names its commit. The builder's own check is a floor (a shell in front of a command refused, the image's compilers read), not a commit. A site's runner (`runner.url` in its `builder.json`) is its operator's to keep at that commit.
 
 A pin costs what the runner needs: the round warms the Semgrep image a claim's scan needs before its runner starts, because `/health` is 503 without it. It is the image the baseline scan pulls (a test holds the two digests equal), so that pull of about 1.6 GB moves
 to the round's `prepare` stage and is not a second one. The `builder-docker` job already pulled it for its scan test, and a maker's run of the reusable workflow does not pull it at all.

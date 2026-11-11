@@ -922,8 +922,9 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     one('appeal.status.kind', appealStatus.json?.disputeKind === 'Appeal' && appealStatus.json?.dispute === 'Held' && appealStatus.json?.bond === 'forfeited' && appealStatus.json?.state === 'Settled', `${appealStatus.json?.disputeKind}, ${appealStatus.json?.dispute}, bond ${appealStatus.json?.bond}`);
     const recordAfterAppeal = await settleOutcome(async () => {
       const r = await recordView();
-      return r.record?.history?.appeals === '1' ? r : null;
-    }, 'waiting for the record to count the appeal');
+      // appeals counts at appeal(), its result at finalize, the outcome at settle: wait for the last
+      return r.record?.history?.appealsHeld === '1' && r.record?.history?.outcomes?.[0] === '2' ? r : null;
+    }, 'waiting for the record to count the appeal and its settlement');
     const appealHistory = recordAfterAppeal.record.history;
     one('appeal.record.appeals', appealHistory.appeals === '1' && appealHistory.appealsHeld === '1' && appealHistory.appealsOverturned === '0' && appealHistory.outcomes[0] === '2' && appealHistory.disputes === '0', `appeals ${appealHistory.appeals}, held ${appealHistory.appealsHeld}; INVALID ${appealHistory.outcomes[0]}; maker's disputes ${appealHistory.disputes}`);
 

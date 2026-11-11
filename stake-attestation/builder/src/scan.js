@@ -27,7 +27,7 @@ import {
   GITLEAKS_CONFIG_FILES, GITLEAKS_MAX_MB, SCAN_TOOLS, SEMGREP_MAX_BYTES,
   gitleaksArgv, loadRules, parseGitleaks, parseGitleaksLog, parseSemgrep, scannerInput, semgrepArgv,
 } from './scanTools.js';
-import { checkDraft, serializeJson } from './spec.js';
+import { checkDraft, draftRefusal, serializeJson } from './spec.js';
 import { BUILDER_VERSION } from './version.js';
 
 export { SCAN_FILE };
@@ -176,7 +176,10 @@ export async function scanListing({ spec, config, deps = {}, workDir, agent = fa
   let tmp = null;
   try {
     const v = checkDraft(spec);
-    if (!v.ok) throw new BuilderError('SPEC_INVALID', `code_review.json does not validate: ${v.issues.map((i) => i.code).join(', ')}`, { step: 'scan' });
+    if (!v.ok) {
+      const refused = draftRefusal(v);
+      throw new BuilderError(refused.code, refused.detail, { step: 'scan' });
+    }
     if (agent && !config.scan.agent) throw new BuilderError('AGENT_NOT_CONFIGURED', 'the agent pass needs scan.agent in the config', { step: 'scan' });
     const rules = loadRules(deps.rulesDir);
     const docker = deps.docker ?? createDocker({ bin: config.docker.bin, host: config.docker.host });

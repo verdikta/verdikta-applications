@@ -28,8 +28,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { STAKE_DOCUMENTS_NOT_OFFERED } from '@verdikta/stake-attestation-shared/stake-documents';
-
 import { codeReview } from './common.js';
 import { baseImageRefs, writeBuildContext as writeContextDefault } from './dockerfile.js';
 import { createDocker } from './docker.js';
@@ -47,7 +45,7 @@ import { checkListingProof } from './listingProof.js';
 import { assertDraftFits, assertListingFits } from './requestSize.js';
 import { signingTrust } from './signing.js';
 import { checkVerifiedSource } from './sourceCheck.js';
-import { checkDraft, checkKnownIssues, finalSpec, runnerSpec, serializeJson } from './spec.js';
+import { checkDraft, checkKnownIssues, draftRefusal, finalSpec, runnerSpec, serializeJson } from './spec.js';
 import { BUILDER_VERSION } from './version.js';
 
 const CLASS_PLATFORM = codeReview.CLASS_HARD_LIMITS.platform;
@@ -198,10 +196,10 @@ export async function buildListing({ draft, knownIssues = null, maker = null, de
     const known = await step(report, 'spec', async () => {
       const v = checkDraft(draft);
       report.warnings.push(...v.warnings);
-      // A draft naming stake.documents is refused by that code: common takes the field, so it is not a validation failure.
-      const documents = v.issues.find((i) => i.code === STAKE_DOCUMENTS_NOT_OFFERED);
-      if (documents) throw new Refusal(documents.code, documents.detail, { issues: v.issues });
-      if (!v.ok) throw new Refusal('SPEC_INVALID', `code_review.json does not validate: ${v.issues.map((i) => i.code).join(', ')}`, { issues: v.issues });
+      if (!v.ok) {
+        const refused = draftRefusal(v);
+        throw new Refusal(refused.code, refused.detail, { issues: v.issues });
+      }
       const checked = checkKnownIssues(draft, knownIssues);
       assertDraftFits(draft, checked?.bytes ?? null);
       const commands = await checkCommands({ runner: runner(), draft });

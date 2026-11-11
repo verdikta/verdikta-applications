@@ -35,7 +35,7 @@ test('the consequence sentence is the decided one, word for word, in the help, t
 });
 
 test('the help and the README describe report.md\'s "## Requirement" section, and where nothing states it, the hunter says so', () => {
-  for (const [where, text] of [['help', USAGE], ['README', flat(HUNTER)], ['the text itself', REQUIREMENT]]) {
+  for (const [where, text] of [['help', flat(USAGE)], ['README', flat(HUNTER)], ['the text itself', REQUIREMENT]]) {
     assert.ok(text.includes('## Requirement'), where);
     assert.match(text, /where the code is required to behave as (the|your) PoC asserts/, where);
     assert.match(text, /a file and line, or a listing document/, where);

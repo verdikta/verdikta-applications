@@ -155,6 +155,7 @@ function printForecast(out, { forecast: f, pack }, { noPack }) {
   if (f.settlesAs) out(`Settles as ${f.settlesAs.outcome}, and the bond is ${f.settlesAs.bond}: ${f.settlesAs.reason}.`);
   if (f.verdict === 'pass') out('Every gate would pass, so the jury decides. The jury is not the gates.');
   for (const l of f.lint) out(`Observable, ${l.code}: ${l.detail}${l.names?.length ? ` (${l.names.join(', ')})` : ''}`);
+  for (const r of f.reportWarnings ?? []) out(`report.md, ${r.code}: ${r.detail}`);
   if (f.observable && f.gates.some((g) => g.name === 'claimedObservable' && g.status === 'fail')) {
     for (const s of f.observable.suggestions) out(`A line that follows the rule: ${s}`);
   }
@@ -288,7 +289,7 @@ async function dispatch(verb, args, io, env, write) {
       const claimDir = needsDir();
       needsIpfs();
       const hunter = createHunter({ ...shared, ...(await walletOptions()), pinner: pinnerOf(env, scrub) });
-      const r = await hunter.reveal({ claimDir, retrigger: options['--retrigger'] === true });
+      const r = await hunter.reveal({ claimDir, retrigger: options['--retrigger'] === true, acknowledge: options['--yes'] === true });
       if (json) write(io.stdout, asJson(r));
       else {
         out(`Claim ${r.claimId}: ${r.state}.`);

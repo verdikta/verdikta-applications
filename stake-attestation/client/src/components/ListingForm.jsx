@@ -119,6 +119,7 @@ export function ListingForm({ form, setForm, issues, keyPanel, proofPanel = null
       <fieldset>
         <legend>{L.sections.knownIssues}</legend>
         <p className="hint">{L.hints.knownIssues}</p>
+        <p className="hint">{L.hints.knownIssuesIntended}</p>
         <KnownIssuesEditor rows={form.knownIssues} onChange={set('knownIssues')} />
       </fieldset>
 

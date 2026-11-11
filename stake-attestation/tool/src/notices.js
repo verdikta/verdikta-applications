@@ -14,6 +14,15 @@ export const DILIGENCE = Object.freeze([
   'The award is for the committed hash, not for the fixed version.',
 ]);
 
+/**
+ * How report.md is written (owner, 2026-11-10). Q73 #4: the claim query classes a finding by the consequence the PoC
+ * demonstrates, or that follows from it by reasoning the claim sets out; this sentence is the owner's, word for word.
+ * Q73 #2: the report says where the code is required to behave as the PoC asserts, and says so when nothing states it.
+ * No gate reads the section: check and commit warn without it (report.js), and refuse nothing.
+ */
+export const CONSEQUENCE = 'Make the PoC demonstrate the consequence you claim; the jury classes by what it shows.';
+export const REQUIREMENT = 'In report.md, a section headed "## Requirement" says where the code is required to behave as your PoC asserts: a file and line, or a listing document. If nothing in the code or the listing states it, say so there.';
+
 export const DATE_TRAP = 'The forecast does not catch a trap keyed on the date: the runner fakes no clock, so what repository code or a vyper does on a later day may differ.';
 export const INTEGRITY_COSTS = 'A tamper flag costs the bond, even beside another failed check. Any other failed integrity check returns the bond, with no award.';
 
@@ -36,6 +45,8 @@ export function commitNotice(t) {
     '',
     'Before you commit',
     ...DILIGENCE.map((line) => `- ${line}`),
+    `- ${CONSEQUENCE}`,
+    `- ${REQUIREMENT}`,
     `- ${DATE_TRAP}`,
     `- ${INTEGRITY_COSTS}`,
     `- A proof that loops, or runs out of memory or processes, makes every arbiter abstain. ${ABSTAIN_COSTS}`,
@@ -76,6 +87,21 @@ export function appealNotice(a) {
     verdict,
     `If the round settles no verdict, you may re-trigger it once, for a fresh fee in full, until ${a.revealWindow} s after it ended: run appeal again.`,
     `Appeal before ${a.deadline} on the chain's clock.`,
+  ].join('\n');
+}
+
+/**
+ * What a claim round's re-trigger (design §12, erratum E6) costs and does, said before anything is sent. The value is
+ * the lens's retriggerTopUp: the live maximum fee less what a refused submission left held, so after a round that ran
+ * it is a fresh prepay in full.
+ * @param {{ claimId: bigint, valueWei: bigint, deadline: bigint }} r
+ */
+export function retriggerNotice({ claimId, valueWei, deadline }) {
+  return [
+    `Re-trigger claim ${claimId}'s failed round: the request its reveal sent goes to the arbiters again, as a new round.`,
+    `This sends ${eth(valueWei)} from this wallet: the top-up the contract quotes now, the live maximum fee less any prepay a refused submission left held. A round that ran took its prepay, so after one this is a fresh prepay in full.`,
+    `If this round fails too: ${ABSTAIN_COSTS}`,
+    `Re-trigger before ${deadline} on the chain's clock: a round that fails again does not move that time.`,
   ].join('\n');
 }
 

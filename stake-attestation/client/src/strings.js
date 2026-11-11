@@ -94,8 +94,14 @@ export const STRINGS = {
         'Defaults: a 14-day fix window (30 for a deployed contract), a 72-hour dispute window, ' +
         'a 48-hour disclosure grace and a 7-day reveal window. A 0-day fix window is allowed.',
       allowlist: 'An invited listing is shown on the record as invited.',
+      // owner, 2026-11-10 (Q73 #5): a listed root cause is DUPLICATE whatever the entry says; no bug at all is NatSpec
       knownIssues:
-        'Known issues are public and fixed at listing. A claim whose root cause is one of them settles as a duplicate.',
+        'Known issues are public and fixed at listing. A claim whose root cause is one of them settles DUPLICATE (the ' +
+        'hunter\'s bond back, no award), whatever the entry says about why: an entry that calls the behaviour intended or ' +
+        'accepted is a known issue all the same.',
+      knownIssuesIntended:
+        'To mark a behaviour as no bug at all, leave it off known issues and document it as intended in the code (NatSpec): ' +
+        'a claim about it then falls under INVALID.',
       valueAtRisk: 'A declaration the record shows beside the stake, in whole dollars.',
       control:
         'Every listing needs the project\'s proof, with no exception. Commit .verdikta/stake-control.json holding {format} ' +

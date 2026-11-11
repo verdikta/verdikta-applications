@@ -325,6 +325,12 @@ share of the code-runner's request ([A listing's size](#the-environment-builder)
 `LISTING_REQUEST_TOO_LARGE`, with the size and the bound, whichever of the builder and the server finds
 it, and counted by reason on `/api/status`.
 
+**What a known issue does** (owner, 2026-11-10, Q73 #5; common's claim query, version 2). A claim whose root cause is a
+listed known issue settles DUPLICATE, its bond back and no award, whatever the entry says about why: an entry that calls
+the behaviour intended or accepted is a known issue all the same. To mark a behaviour as no bug at all, leave it off known
+issues and document it as intended in the code (NatSpec), so a claim about it then falls under INVALID: the behaviour its
+PoC asserts is not required of the code. The site's listing form says both at its known-issues fields.
+
 **The archives.** Both hold `manifest.json` (`codeReview`, the primary file and the panel),
 `primary_query.json` (`buildClaimQuery(spec)` and the six outcomes) and the builder's
 `code_review.json`, `attestation.json`, `baseline.json` and `known_issues.json`, byte for byte.
@@ -922,6 +928,20 @@ arguments and prints. Base Sepolia and local nodes only, for now: any other chai
 
 A claim folder holds `finding.json`, `report.md`, `poc.patch` and optionally `fix.patch`.
 
+**What `report.md` says** (owner, 2026-11-10, Q73 #2 and #4). Common's claim query (version 2) classes a finding by the
+consequence the proof of concept demonstrates, or that follows from it by a concrete line of reasoning the claim sets out,
+tied to a file and line; its INVALID includes a claim whose PoC asserts a behaviour the code is not required to have. So:
+
+- Make the PoC demonstrate the consequence you claim; the jury classes by what it shows.
+- A section headed `## Requirement` says where the code is required to behave as the PoC asserts: a file and line, or a
+  listing document. If nothing in the code or the listing states it, say so there.
+
+No gate reads the section, and the claim's schema and archive are as they were: `check` warns, and refuses nothing, when
+`report.md` has no `## Requirement` section, or one with nothing under its heading, and `commit` says so again before it
+pays. The heading is read as CommonMark reads an ATX heading, at any depth (`#` to `######`) and in any case, with
+Requirement or Requirements as its first word (`## Requirement: src/Vault.sol:42` counts); a setext heading, bold text and
+lines inside a fenced code block are not read as one (`tool/src/report.js`).
+
 ```bash
 export VERDIKTA_CONTRACT=0x…  VERDIKTA_IPFS_GATEWAY=https://…  VERDIKTA_PIN_BACKEND=pinata  VERDIKTA_PIN_TOKEN=…
 export CODE_RUNNER_URL=http://127.0.0.1:8090  CODE_RUNNER_TOKEN=…   # for check
@@ -930,6 +950,7 @@ verdikta-attest commit ./claim --listing 12 --yes  # bond + prepay; asks for --y
 verdikta-attest status ./claim                     # the fix window, and what comes next
 verdikta-attest reveal ./claim
 verdikta-attest status ./claim --wait              # polls the evaluation, up to 15 minutes
+verdikta-attest reveal ./claim --retrigger --yes   # a failed round again, for the live top-up; asks for --yes after saying what it costs
 verdikta-attest claim  ./claim                     # finalize, settle, withdraw: whatever is due
 verdikta-attest appeal ./claim --yes               # an INVALID to the dispute panel, for the live dispute fee
 ```
@@ -951,7 +972,11 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
 - **Run it again.** A stopped `commit` or `reveal`, at any point, goes on from what was saved. It sends the saved transaction
   again rather than a second one: the contract takes the same hashes twice, for a second bond.
 - **`reveal`** refuses before the fix window ends or out of commit order, before the plaintext is pinned. `reveal --retrigger`
-  sends a failed round again.
+  sends a failed round again. It pays the lens's `retriggerTopUp` (the live maximum fee less any prepay a refused submission
+  left held, so after a round that ran a fresh prepay in full), and, as `commit` and `appeal`, prints what it costs and sends
+  nothing without `--yes`; the amount printed is the amount sent. Its balance check and dry run come first. A saved
+  re-trigger this run would send again asks for `--yes` too; one whose nonce is used, or that the node already holds, is
+  only waited for.
 - **`status`** reads a judged claim's reason from the first block of its justification only (`Execution evidence v1`); jury text
   after it can say anything, and is not read. It shows the settlement safeguards (errata E7-E9), each from the lens: the appeal
   window (`appealDeadline`), the dispute-panel round's kind and result, a confirmation's window (`confirmWindow`), an appeal's
@@ -1011,7 +1036,8 @@ goes in a URL.
 - **Listing** (`#/list`): the artifact (a repository, or a deployed contract with its chain),
   scope, award table, lowest class counted, bond, windows (design §7.1's defaults: 14 days, 30
   for a contract, 72 h, 48 h, 7 days), invited hunters, known issues (their ids are common's
-  `knownIssueId`) and the declared value at risk. The form holds the windows to decision D8
+  `knownIssueId`; the fields say what a known issue settles as, as "The listing API" does) and
+  the declared value at risk. The form holds the windows to decision D8
   (fix window 0 to 90 days, dispute 24 to 2160 hours, reveal 3 to 90 days, grace no longer than
   the fix window) and leaves every other rule to the server, whose issues it shows. It follows
   the listing through `GET /api/listings/:id`, shows the validation report, and once ready

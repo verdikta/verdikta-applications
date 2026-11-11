@@ -7,6 +7,7 @@ import { fail } from './errors.js';
 import { isCidShaped } from './ipfs.js';
 import { ABSTAIN_BY_CLAIM, ABSTAIN_BY_HOST } from './notices.js';
 import { addedPragmas, observableHelp } from './observable.js';
+import { REQUIREMENT_WARNINGS } from './report.js';
 
 const RUNNER_GATES = Object.freeze(['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity', 'claimedObservable']);
 /** Runs that disprove a reproduction by themselves; `notRun` only ever follows a failure that did. */
@@ -98,8 +99,9 @@ const digestOf = (ref) => /@(sha256:[0-9a-f]{64})$/.exec(String(ref ?? ''))?.[1]
  * @param {object[]} o.lint
  * @param {object} o.priorFindings
  * @param {string[]} o.notes
+ * @param {{ code: string, detail: string }[]} [o.reportWarnings] - report.md read for advice (report.js): fixed words, never a gate
  */
-export function buildForecast({ local, answer, spec, pocPatch, lint, priorFindings, notes = [] }) {
+export function buildForecast({ local, answer, spec, pocPatch, lint, priorFindings, notes = [], reportWarnings = [] }) {
   const gates = [...local];
   const base = {
     verdict: 'pass',
@@ -116,6 +118,7 @@ export function buildForecast({ local, answer, spec, pocPatch, lint, priorFindin
     build: null,
     observable: null,
     lint,
+    reportWarnings,
     fix: null,
     priorFindings,
     notes,
@@ -201,6 +204,8 @@ export function withoutProofText(f) {
     build: f.build ? { compiler: null, pragmas: [], output: '' } : null,
     observable: null,
     lint: f.lint.map((l) => ({ code: l.code, detail: l.detail })),
+    // report.js's fixed words, looked up by code: nothing of the report itself
+    reportWarnings: (f.reportWarnings ?? []).filter((r) => Object.hasOwn(REQUIREMENT_WARNINGS, r.code)).map((r) => ({ code: r.code, detail: REQUIREMENT_WARNINGS[r.code] })),
     fix: null,
     priorFindings: f.priorFindings ? { read: f.priorFindings.read, unread: (f.priorFindings.unread ?? []).filter(isCidShaped), total: f.priorFindings.total } : null,
     notes: [],

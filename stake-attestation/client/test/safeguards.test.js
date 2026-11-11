@@ -6,6 +6,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import fs from 'node:fs';
+
+import { DISPUTE_KINDS } from '../src/chain/abi.js';
 import { safeguardTerms, safeguardView } from '../src/lib/claimActions.js';
 import { recordView } from '../src/lib/record.js';
 import { STRINGS, fill } from '../src/strings.js';
@@ -132,4 +135,12 @@ test('the strings the safeguards add: neutral, and each names what the contract 
   for (const key of ['appeals', 'appealResults', 'confirmations', 'confirmationResults', 'narrowInvalid', 'lateAppeals', 'lateNarrowInvalid', 'narrowFloor', 'confirmSize']) assert.equal(typeof STRINGS.record[key], 'string', key);
   const all = [C.roundKind, C.appealUntil, C.appealOver, C.appealRetrigger, C.waiver, C.confirmation, C.bond, C.narrow, ...Object.values(C.confirmationStates), ...Object.values(C.bonds), STRINGS.chain.band, STRINGS.chain.bandEmpty, STRINGS.chain.size, STRINGS.chain.sizeAll];
   for (const s of all) assert.deepEqual(wordingProblems(s), [], s);
+});
+
+test('the dispute-panel round kinds are the contract\'s, in declaration order, each with its words', () => {
+  const source = fs.readFileSync(new URL('../../onchain/contracts/StakeAttestation.sol', import.meta.url), 'utf8');
+  const declared = /enum DisputeKind \{([^}]*)\}/.exec(source)[1].split(',').map((x) => x.trim());
+  assert.deepEqual(DISPUTE_KINDS, declared);
+  for (const k of declared) assert.equal(typeof STRINGS.enums.disputeKinds[k], 'string', k);
+  for (const r of ['None', 'Pending', 'Held', 'Overturned', 'NoVerdict']) assert.equal(typeof STRINGS.enums.panelResults[r], 'string', r);
 });

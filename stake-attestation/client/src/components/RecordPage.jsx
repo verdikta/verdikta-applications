@@ -82,6 +82,8 @@ function Stake({ l }) {
         { id: f('escrow'), label: R.escrow, value: eth(l.escrowWei) },
         BigInt(l.owedWei) > 0n ? { id: f('owed'), label: R.owed, value: eth(l.owedWei) } : null,
         { id: f('value-at-risk'), label: R.valueAtRisk, value: l.valueAtRiskUsd === null ? R.notDeclared : fill(R.usd, { usd: formatWhole(l.valueAtRiskUsd) }) },
+        // node P20: where the listing says its requirements are written
+        { id: f('documents'), label: R.documents, value: l.documents.length ? <><span className="mono">{l.documents.join(', ')}</span> <span className="hint">{R.documentsNote}</span></> : R.documentsNone },
         l.sharePct !== null ? { id: f('share'), label: R.shareLabel, value: fill(R.share, { usd: formatWhole(l.stakeUsd), share: l.sharePct }) } : null,
         { id: f('listed'), label: R.listedAt, value: when(l.listedAt) },
         { id: f('opened'), label: R.openedAt, value: when(l.openedAt) },

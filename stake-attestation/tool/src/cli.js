@@ -4,6 +4,7 @@
 // one by its kind alone, since its message could quote anything.
 import fs from 'node:fs';
 import { FetchRequest, JsonRpcProvider, Network, Wallet, formatEther, isAddress } from 'ethers';
+import { STAKE_DOCUMENTS_NOTE } from '@verdikta/stake-attestation-shared/stake-documents';
 
 import { DEFAULT_RPC_URL } from './context.js';
 import { fail, ToolError } from './errors.js';
@@ -161,6 +162,13 @@ function printForecast(out, { forecast: f, pack }, { noPack }) {
   }
   for (const h of f.observable?.hints ?? []) out(h);
   if (f.priorFindings?.unread?.length) out(`Prior findings not read, so this pack lacks them: ${f.priorFindings.unread.join(', ')}`);
+  if (f.documents) {
+    // node P20: what the listing names, and the tier the runner built from it (forecast.js)
+    out(`Documents the listing names: ${f.documents.globs.join(', ')}. ${STAKE_DOCUMENTS_NOTE}`);
+    const t = f.documents.tier;
+    const left = t ? Object.entries(t.omitted).map(([reason, n]) => `${reason} ${n}`).join(', ') : '';
+    out(t ? `Documents tier (the runner's): tier ${t.rank}, ${t.status}, ${t.delivered} of ${t.asked} files${left ? ` (${left})` : ''}` : 'Documents tier (the runner\'s): none: the runner built no pack for this run.');
+  }
   for (const n of f.notes) out(n);
   out(forecastFooter());
   if (pack && !noPack) {

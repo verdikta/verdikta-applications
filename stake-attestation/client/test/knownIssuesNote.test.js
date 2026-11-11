@@ -1,7 +1,7 @@
 // Node P19 (owner, 2026-11-10, Q73 #5): the listing form says, at its known-issues fields, what a known issue does.
 // A claim whose root cause is a listed known issue settles DUPLICATE whatever the entry says about why; a behaviour
 // meant as no bug at all stays off known issues and is documented as intended in the code (NatSpec), so a claim
-// about it falls under INVALID. The listing documents field is node P20's and is not named here.
+// about it falls under INVALID. Node P20: a listing document is the second place to say so, after NatSpec.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -24,11 +24,9 @@ test('the known-issues hint: a behaviour meant as no bug stays off the list and 
   assert.match(H.knownIssuesIntended, /falls under INVALID/);
 });
 
-test('neither names a listing documents field, which is node P20\'s', () => {
-  for (const text of [H.knownIssues, H.knownIssuesIntended]) {
-    assert.doesNotMatch(text, /\bdocuments\b/i);
-    assert.doesNotMatch(text, /document field/i);
-  }
+test('the intended-behaviour hint names a listing document as the second place, after NatSpec (node P20)', () => {
+  assert.match(H.knownIssuesIntended, /in the code \(NatSpec\) or in a listing document/);
+  assert.doesNotMatch(H.knownIssues, /\bdocuments?\b/i, 'the known-issues hint itself is about known issues');
 });
 
 test('the form shows both at the known-issues fields', () => {

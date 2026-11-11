@@ -205,9 +205,10 @@ const FORECAST_KEYS = ['verdict', 'gates', 'settlesAs', 'refusals', 'abstain', '
 
 test('the recorded pack is the runner\'s at the pin: common\'s tiers in order, the documents right after the source', () => {
   assert.deepEqual(DOCUMENTS.contextPack.tiers.map((t) => t.name), [...codeReview.CONTEXT_PACK_TIERS]);
-  assert.match(DOCUMENTS.recordedFrom, /^verdikta-arbiter 28f3cb98c48716d770a9097251a411a49582bd0b code-runner/);
+  assert.match(DOCUMENTS.recordedFrom, /^verdikta-arbiter code-runner at the arbiter pin/);
   const pin = JSON.parse(fs.readFileSync(new URL('../../e2e/arbiter.pin.json', import.meta.url), 'utf8'));
-  assert.ok(DOCUMENTS.recordedFrom.includes(pin.commit), 'recorded at the arbiter pin: re-record it when the pin moves');
+  assert.match(DOCUMENTS.arbiterCommit, /^[0-9a-f]{7}$/);
+  assert.ok(pin.commit.startsWith(DOCUMENTS.arbiterCommit), 'recorded at the arbiter pin: record it again (documents.record.cjs) when the pin moves');
 });
 
 test('check runs on a listing naming stake.documents, and its forecast shows the documents tier the runner built', async () => {

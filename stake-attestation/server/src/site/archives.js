@@ -7,10 +7,14 @@
 // listing's image and scope only when it is that listing (src/control/counting.js, per listing, since
 // two listings may name one CID).
 //
+// Node P20: it also gives the listing's document globs (stake.documents), so a hunter sees where its requirements
+// are said to be written: none when it names none, and none read from an archive stored before they were.
+//
 // Node P9: reading it also answers "did the builder sign this listing", with the check the hunter
 // tool reuses (shared/src/builderSignature.js), under the trust the arbiters apply here: production's
 // trusted-builder set, or under dev trust only the keys this site's own signing step made.
 import { readSignedListing } from '@verdikta/stake-attestation-shared/builder-signature';
+import { documentGlobs } from '@verdikta/stake-attestation-shared/stake-documents';
 
 import { DEFAULT_IPFS_GATEWAYS, codeReview } from '../common.js';
 import { disclosureKeyBytes32, signedTerms } from '../listing/listParams.js';
@@ -72,7 +76,7 @@ export function createGatewayFetcher({ gateways, timeoutMs, maxBytes }, logger =
  * @param {Buffer} bytes
  * @param {string} listingCid
  * @param {{ maxBytes?: number, devKeys?: object[] }} [o]
- * @returns {{ ok: true, repo: string, baseCommit: string, artifact: object, disclosureKey: string, image: string|null, platform: string|null, scope: object, terms: object, signed: object } | { ok: false, error: string }}
+ * @returns {{ ok: true, repo: string, baseCommit: string, artifact: object, disclosureKey: string, image: string|null, platform: string|null, scope: object, documents: string[], terms: object, signed: object } | { ok: false, error: string }}
  */
 export function readListingArchive(bytes, listingCid, { maxBytes = Infinity, devKeys = null } = {}) {
   if (bytes.length > maxBytes) return { ok: false, error: 'ARCHIVE_TOO_LARGE' };
@@ -98,6 +102,7 @@ export function readListingArchive(bytes, listingCid, { maxBytes = Infinity, dev
     image: spec.env?.image ?? null,
     platform: spec.env?.platform ?? null,
     scope,
+    documents: documentGlobs(spec),
     terms,
     signed: read.signed ? { ok: true, role: read.role, filesSha256: read.filesSha256, keyId: read.keyId, trust: read.trust, issuedAt: read.issuedAt } : { ok: false },
   };
@@ -150,11 +155,11 @@ export async function refreshArchives({ fetchArchive, store, listings, now, maxB
  * @param {{ artifact: { repo: string, baseCommit: string }, disclosureKey: string }} listing - on-chain
  */
 export function archiveFields(known, listing) {
-  const none = (error) => ({ image: null, scope: null, archive: { ok: false, error } });
+  const none = (error) => ({ image: null, scope: null, documents: null, archive: { ok: false, error } });
   if (!known) return none('ARCHIVE_UNAVAILABLE');
   if (!known.ok) return none(known.error);
   if (known.repo !== listing.artifact.repo || known.baseCommit !== listing.artifact.baseCommit || known.disclosureKey !== listing.disclosureKey.toLowerCase()) {
     return none('ARCHIVE_MISMATCH');
   }
-  return { image: known.image, scope: known.scope, archive: { ok: true } };
+  return { image: known.image, scope: known.scope, documents: known.documents ?? [], archive: { ok: true } };
 }

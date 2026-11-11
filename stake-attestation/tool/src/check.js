@@ -8,7 +8,6 @@ import https from 'node:https';
 import net from 'node:net';
 
 import { readSignedListing } from '@verdikta/stake-attestation-shared/builder-signature';
-import { STAKE_DOCUMENTS_NOT_OFFERED, stakeDocumentsIssue } from '@verdikta/stake-attestation-shared/stake-documents';
 import { readZipMember, zipDirectory } from '@verdikta/stake-attestation-shared/zip-read';
 
 import { buildClaimArchive, cutText, maxPatchBytes, parseFinding, pocProblem, readClaimInputs, reportProblem } from './archive.js';
@@ -140,10 +139,9 @@ export async function runCheck(ctx, { claimDir, listingId, listingArchive, deadl
   }
   // No run on a listing a commit would refuse: its image is one nobody attested, and this is the hunter's machine.
   if (local[0].status === 'fail') return { forecast: buildForecast({ local, answer: null, spec: listing.spec, pocPatch: Buffer.alloc(0), lint: [], priorFindings, notes: [] }), pack: null, run: null };
+  // A listing that names stake.documents (node P20) is sent with its spec as signed, as the External Adapter sends it:
+  // the runner reads the documents from the listed commit, and the forecast shows the tier it built (forecast.js).
   const { spec } = listing;
-  // Nor on one naming stake.documents, which this tool does not offer yet (node P20): its forecast would be of a
-  // pack without them. The site and the builder refuse such a listing by the same code.
-  if (stakeDocumentsIssue(spec)) throw fail(STAKE_DOCUMENTS_NOT_OFFERED, listingArchive === undefined ? `Listing ${listingId}.` : undefined);
   if (!/@sha256:[0-9a-f]{64}$/.test(String(spec.env?.image ?? ''))) throw fail('LISTING_ARCHIVE_INVALID', 'Its image is not named by digest.');
   const files = runnerFilesOf(listing.listingBytes, spec);
 

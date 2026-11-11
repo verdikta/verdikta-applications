@@ -2,6 +2,7 @@
 // Placeholders are {name}; fill() puts values in. No string here is built from parts.
 import { INTEGRITY_NOTE } from '@verdikta/stake-attestation-shared/execution-evidence';
 import { LISTING_WARNING } from '@verdikta/stake-attestation-shared/listing-warning';
+import { STAKE_DOCUMENTS_NOTE } from '@verdikta/stake-attestation-shared/stake-documents';
 
 /** The control proof file's content (docs/control-proof.md), for the {format} placeholders. */
 export const CONTROL_FILE_FORMAT = '{"version":1,"maker":"<address>"}';
@@ -48,6 +49,7 @@ export const STRINGS = {
     sections: {
       artifact: 'Artifact',
       scope: 'Scope',
+      documents: 'Documents',
       awards: 'Award table',
       bond: 'Hunter bond',
       windows: 'Windows',
@@ -67,6 +69,7 @@ export const STRINGS = {
       chainId: 'Chain id',
       scopeInclude: 'In scope (one glob per line)',
       scopeExclude: 'Out of scope (one glob per line)',
+      documents: 'Where the code\'s requirements are written (one glob per line, at most 16; optional)',
       award: '{class} award (ETH)',
       lowestClassCounted: 'Lowest class counted',
       bond: 'Hunter bond (ETH)',
@@ -100,8 +103,13 @@ export const STRINGS = {
         'hunter\'s bond back, no award), whatever the entry says about why: an entry that calls the behaviour intended or ' +
         'accepted is a known issue all the same.',
       knownIssuesIntended:
-        'To mark a behaviour as no bug at all, leave it off known issues and document it as intended in the code (NatSpec): ' +
-        'a claim about it then falls under INVALID.',
+        'To mark a behaviour as no bug at all, leave it off known issues and document it as intended in the code (NatSpec) ' +
+        'or in a listing document (Documents, above): a claim about it then falls under INVALID.',
+      // owner decision Q61 (a): the field common takes; the runner adds the files to the jurors' context pack
+      documents:
+        'Name the files where your code\'s requirements are written: the README, specs, interface docs, such as README.md ' +
+        'or docs/**. The jurors read them, from the listed commit, right after the source a claim names, to see what the ' +
+        'code is required to do. ' + STAKE_DOCUMENTS_NOTE + ' The validation report lists the files they would read.',
       valueAtRisk: 'A declaration the record shows beside the stake, in whole dollars.',
       control:
         'Every listing needs the project\'s proof, with no exception. Commit .verdikta/stake-control.json holding {format} ' +
@@ -116,6 +124,15 @@ export const STRINGS = {
       grace: 'The disclosure grace cannot be longer than the fix window.',
       revealWindow: 'The reveal window is 3 to 90 days (at least 72 hours).',
       amount: 'Enter an amount in ETH, such as 0.4.',
+    },
+    // each line of the documents field common refuses, by common's code (lib/documents.js)
+    documentIssue: 'Line {line} ({entry}): {code}: {text}',
+    documentCodes: {
+      STAKE_DOCUMENT_OUTSIDE_REPOSITORY: 'a document is a file of the listed commit, named by its path from the repository root: no leading "/" and no ".." segment.',
+      STAKE_DOCUMENT_NOT_PLAIN: 'write the path as git lists it: no "." or empty segment, no leading "./" or trailing "/", no backslash.',
+      STAKE_DOCUMENT_GLOB_INVALID: 'a glob is 1 to 512 characters with no whitespace.',
+      STAKE_DOCUMENT_DUPLICATE: 'the same as an earlier line; name each glob once.',
+      tooMany: 'At most {max} documents.',
     },
     knownIssues: {
       add: 'Add a known issue',
@@ -193,6 +210,7 @@ export const STRINGS = {
       spec: 'Spec checked',
       control: 'The project\'s proof checked at the listed commit',
       fetch: 'Repository fetched at the commit',
+      documents: 'Documents chosen at the listed commit',
       build: 'Environment image built',
       size: 'Image size checked',
       push: 'Image pushed',
@@ -209,6 +227,23 @@ export const STRINGS = {
     devTrust: 'Signed with a development key: arbiters accept it only on a development network.',
     limits: 'Sandbox limits: {limits}',
     none: 'The builder has not reported yet.',
+    // node P20: the builder's documents step, as the runner would choose them for a claim
+    documentsTitle: 'Documents the jurors would read',
+    documentsIntro: 'Chosen from the listed commit with the arbiters\' own selection, in the order the jurors read them. A file a claim names in scope is read with the source instead.',
+    documentsRead: 'Read: {files}',
+    documentsPastCap: 'Past the 32-file cap, left out: {files}',
+    documentsSkipped: 'Skipped: {files}',
+    documentsUnmatched: 'Matches no file: {globs}',
+    documentsNone: 'none',
+    documentsSkippedFile: '{path} ({reason})',
+    documentsReasons: {
+      symlink: 'a symbolic link',
+      submodule: 'a submodule',
+      notAFile: 'not a regular file',
+      tooLarge: 'over 1,000,000 bytes',
+      notText: 'not UTF-8 text',
+      notAskable: 'a path with a line break',
+    },
   },
   chain: {
     readyTitle: 'Ready to list',
@@ -495,6 +530,8 @@ export const STRINGS = {
     image: 'Environment image',
     scope: 'Scope',
     scopeLine: 'in: {include}; out: {exclude}',
+    documents: 'Where its requirements are written',
+    documentsNone: 'no documents named',
     noArchive: 'not read from the listing archive ({reason})',
     record: 'Record of this hash',
     listing: 'Listing page',
@@ -531,6 +568,9 @@ export const STRINGS = {
     owed: 'Owed to hunters',
     valueAtRisk: 'Declared value at risk',
     notDeclared: 'not declared',
+    documents: 'Where its requirements are written',
+    documentsNone: 'no documents named',
+    documentsNote: STAKE_DOCUMENTS_NOTE,
     usd: '{usd} USD',
     shareLabel: 'Top award in USD',
     share: '{usd} USD at the block\'s ETH/USD price, {share}% of the declared value at risk',

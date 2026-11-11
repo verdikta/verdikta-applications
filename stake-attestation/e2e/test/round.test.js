@@ -125,6 +125,14 @@ test('the embargo and the queue are the chain\'s and the tool\'s, not the script
   has('valid.embargo.noArbiterYet', 'valid.embargo.revealRefused', 'valid.plaintext.pinnedOnlyAtReveal', 'gate.order.waitsItsTurn', 'valid.settle.waitsDisputeWindow', 'listing.proofRefusesAnotherWallet', 'valid.disclosure.makerDecrypts', 'valid.disclosure.notReadable');
 });
 
+test('node P20: a listing that names its documents is built and checked, and the pack the runner at the pin built has the documents tier with the expected files; the first listing\'s pack has none', () => {
+  has('documents.listing.accepted', 'documents.listing.ready', 'documents.listing.documentsStep', 'documents.listing.read', 'documents.listing.skipped', 'documents.listing.unmatchedWarned');
+  has('documents.check.passes', 'documents.request.documents', 'documents.pack.isTheRunners', 'documents.pack.documentsTier', 'documents.pack.documentFiles', 'documents.forecast.documents');
+  has('valid.pack.noDocumentsTier');
+  assert.match(detail('documents.pack.documentFiles'), /README\.md.*docs\/spec\.md/);
+  assert.match(detail('documents.pack.documentFiles'), /notText/);
+});
+
 test('nothing live: every CID came from the local IPFS, every model call from the mock provider, the image from the local registry', () => {
   has('live.noHostApi', 'live.ipfsNoMisses', 'live.providerIsTheMock', 'live.image.pulled', 'live.image.byDigest');
 });

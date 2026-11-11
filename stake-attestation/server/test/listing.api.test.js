@@ -77,8 +77,10 @@ describe('POST /api/listings, then GET /api/listings/:id', () => {
     assert.deepEqual(builder.calls[0].draft.stake.documents, ['README.md', 'docs/**']);
     assert.deepEqual(view.validationReport.steps.map((x) => x.name), ['spec', 'control', 'fetch', 'documents', 'build', 'size', 'push', 'registry', 'verifiedSource', 'listingCheck', 'finalSpec']);
     assert.deepEqual(view.validationReport.documents.globs, ['README.md', 'docs/**']);
-    const member = view.archives.listing.members.find((m) => m.name === 'code_review.json');
-    assert.ok(member, JSON.stringify(view.archives.listing.members.map((m) => m.name)));
+    const { zipDirectory, readZipMember } = await import('../src/zipRead.js');
+    const bytes = s.pinner.pins[0].bytes;
+    const spec = JSON.parse(Buffer.from(readZipMember(bytes, zipDirectory(bytes).get('code_review.json'), 8 * 1024 * 1024)).toString('utf8'));
+    assert.deepEqual(spec.stake.documents, ['README.md', 'docs/**']);
 
     const plain = fakeBuilder();
     const s2 = await api({ builder: plain });

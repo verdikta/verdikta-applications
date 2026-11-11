@@ -70,7 +70,7 @@ export function submoduleHttpsUrl(raw, superUrl) {
 }
 
 /** The blobs' bytes, by id, through one `git cat-file --batch`. */
-async function readBlobs(gitDir, ids, timeoutMs) {
+export async function readBlobs(gitDir, ids, timeoutMs) {
   const out = new Map();
   if (ids.length === 0) return out;
   const r = await git(gitDir, ['cat-file', '--batch'], { timeoutMs, maxBytes: MAX_BYTES + 64 * ids.length + 1024, stdin: `${ids.join('\n')}\n` });
@@ -84,6 +84,36 @@ async function readBlobs(gitDir, ids, timeoutMs) {
     const n = Number(size);
     out.set(id, buf.subarray(nl + 1, nl + 1 + n));
     at = nl + 1 + n + 1;
+  }
+  return out;
+}
+
+/**
+ * The listed commit's own entries, as `git ls-tree -r` lists them at it: each file and symbolic link with its mode,
+ * object and size, and each submodule as one entry (a gitlink, never what is inside it), in git's order, from the
+ * objects in `gitDir` and never from a work tree. A path is its bytes as git keeps them; `path` is that text when it
+ * is UTF-8 in its one spelling, else null (the runner takes no other path as a document candidate either).
+ * @param {{ gitDir: string, commit: string, timeoutMs?: number }} o
+ * @returns {Promise<{ path: string|null, mode: string, type: string, id: string, size: number|null }[]>}
+ * @throws {BuilderError} SOURCE_READ_FAILED
+ */
+export async function listedEntries({ gitDir, commit, timeoutMs = 600000 }) {
+  const r = await git(gitDir, ['ls-tree', '-r', '-z', '-l', '--full-tree', commit], { timeoutMs, maxBytes: 256 * 1024 * 1024 });
+  if (r.exitCode !== 0 || r.stdoutTruncated) throw new BuilderError('SOURCE_READ_FAILED', `git ls-tree ${commit}: ${tail(r.stderr, 500).trim() || 'the output was cut'}`);
+  const out = [];
+  const buf = r.stdout;
+  let at = 0;
+  while (at < buf.length) {
+    let end = buf.indexOf(0, at);
+    if (end === -1) end = buf.length;
+    const rec = buf.subarray(at, end);
+    at = end + 1;
+    if (rec.length === 0) continue;
+    const tab = rec.indexOf(0x09);
+    const [mode, type, id, size] = rec.subarray(0, tab).toString('latin1').split(/ +/);
+    const bytes = rec.subarray(tab + 1);
+    const text = bytes.toString('utf8');
+    out.push({ path: Buffer.from(text, 'utf8').equals(bytes) ? text : null, mode, type, id, size: /^[0-9]+$/.test(size) ? Number(size) : null });
   }
   return out;
 }

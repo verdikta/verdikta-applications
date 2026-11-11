@@ -400,6 +400,8 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       artifact: first ? { kind: first.artifact.kind, repo: first.artifact.repo, baseCommit: first.artifact.baseCommit, chainId: first.artifact.chainId, address: first.artifact.address } : null,
       fork: first ? control.forkOf(state, first.artifact.repo) : null,
       control: facts,
+      // node P20: each counted listing's document globs, from its listing archive (counted: it is that listing's)
+      documents: Object.fromEntries([...counted].map((id) => [id, state.archives[known.get(id)?.listingCid]?.documents ?? []])),
       notCounted: {
         listings: apart.map((l) => {
           const id = String(l.listingId);

@@ -5,9 +5,10 @@
 //   before these           the project's proof, read again (src/listingProof.js recheckForSigning):
 //                          nothing is signed for a listing without it
 //   always                 the report accepted the listing; the files are the bytes it accepted;
-//                          code_review.json, the baseline and known_issues.json validate, and
-//                          code_review.json names no stake.documents (not offered yet); the report
-//                          is about this listing, has every step of a build in order, records that the
+//                          code_review.json, the baseline and known_issues.json validate; the report
+//                          is about this listing, has every step of a build in order (the documents
+//                          step too exactly when code_review.json names documents, with an account
+//                          of the documents it names), records that the
 //                          runner it asked has the grammar arbiters hold claims to and refused none of
 //                          the commands, and names the image, sizes and base code_review.json names,
 //                          inside the class limits
@@ -22,7 +23,7 @@
 // measurement, and that the build job ran this builder unmodified.
 import crypto from 'node:crypto';
 
-import { stakeDocumentsIssue } from '@verdikta/stake-attestation-shared/stake-documents';
+import { documentGlobs, namesDocuments } from '@verdikta/stake-attestation-shared/stake-documents';
 
 import { codeReview } from './common.js';
 import { BuilderError } from './errors.js';
@@ -33,6 +34,8 @@ import { readJsonFile } from './spec.js';
 const CLASS = codeReview.CLASS_HARD_LIMITS;
 const PIN = codeReview.BASE_IMAGE_PINS.foundry;
 const STEPS = Object.freeze(['spec', 'control', 'fetch', 'build', 'size', 'push', 'registry', 'verifiedSource', 'listingCheck', 'finalSpec']);
+/** A listing that names documents (node P20): the documents step right after the fetch. */
+const DOCUMENT_STEPS = Object.freeze([...STEPS.slice(0, 3), 'documents', ...STEPS.slice(3)]);
 const IMAGE_REF = /^(.+)@(sha256:[0-9a-f]{64})$/;
 
 const TRUSTS = Object.freeze({
@@ -85,9 +88,6 @@ export async function verifyForSigning({ files, report, dir, expectOutputs = nul
 
   const sv = codeReview.validateCodeReviewSpec(spec);
   if (!sv.ok) refuse('SPEC_INVALID', `code_review.json does not validate: ${sv.issues.map((i) => i.code).join(', ')}`);
-  // what the build refuses at its spec step, so that nothing naming stake.documents is signed, however it was made
-  const documents = stakeDocumentsIssue(spec);
-  if (documents) refuse(documents.code, documents.detail);
   pass('SPEC_VALID');
   let baseline;
   try {
@@ -125,13 +125,20 @@ export async function verifyForSigning({ files, report, dir, expectOutputs = nul
   const steps = Array.isArray(report.steps) ? report.steps : [];
   const contract = kind === 'contract';
   const ran = steps.map((s) => s?.name);
-  if (ran.join(',') !== STEPS.join(',')) refuse('STEPS_INCOMPLETE', `the report's steps are ${ran.join(', ') || 'none'}, not a whole build (${STEPS.join(', ')})`);
+  const documents = namesDocuments(spec);
+  const whole = documents ? DOCUMENT_STEPS : STEPS;
+  if (ran.join(',') !== whole.join(',')) refuse('STEPS_INCOMPLETE', `the report's steps are ${ran.join(', ') || 'none'}, not a whole build (${whole.join(', ')})`);
   for (const s of steps) {
     const want = s.name === 'verifiedSource' && !contract ? 'skipped' : 'ok';
     if (s.status !== want) refuse('STEPS_INCOMPLETE', `the report's ${s.name} step is ${s.status}, not ${want}`);
   }
   if (report.listingCheck?.status !== 'accepted') refuse('STEPS_INCOMPLETE', 'the report does not record an accepted listing check');
   if (contract && report.verifiedSource?.status !== 'match') refuse('STEPS_INCOMPLETE', 'the report does not record a verified-source match for this contract listing');
+  // the documents' account is of the documents code_review.json names; sign holds it to a fresh selection (src/documents.js)
+  if (documents && JSON.stringify(report.documents?.globs) !== JSON.stringify(documentGlobs(spec))) {
+    refuse('SIGNING_REPORT_MISMATCH', 'the report\'s documents are not the ones code_review.json names');
+  }
+  if (!documents && report.documents !== undefined) refuse('SIGNING_REPORT_MISMATCH', 'the report has an account of documents code_review.json does not name');
   pass('STEPS_COMPLETE');
 
   const c = report.commands;

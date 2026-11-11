@@ -5,7 +5,9 @@
 // too many), so the round lists what P3a's tests build. Its foundry.toml names solc 0.8.31, so the
 // setup's forge installs an official release, which the listing check reads and the runner accepts.
 // Two things are added: the proof file (docs/control-proof.md), and a gas limit no test reaches, so a
-// looping proof runs into the runner's clock and not into forge's gas limit.
+// looping proof runs into the runner's clock and not into forge's gas limit. Node P20: a second commit on top
+// adds the maker's documents, for the round's second listing, which names them (stake.documents); the first
+// listing is the first commit, as before.
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -32,9 +34,22 @@ const DAY = 24 * HOUR;
 export const WINDOWS = Object.freeze({ fix: 14 * DAY, dispute: 72 * HOUR, grace: 48 * HOUR, reveal: 7 * DAY });
 
 /**
+ * Node P20 (owner decision Q61 (a)): the documents listing's globs, the files its commit adds for them, and what the
+ * runner's tier is then expected to hold: the two text files in the listing's order, the binary one left out as not
+ * text, and a glob that matches nothing (a warning in the builder's report, never a refusal).
+ */
+export const DOCUMENT_GLOBS = Object.freeze(['README.md', 'docs/**', 'SPEC/**']);
+const DOCUMENT_FILES = Object.freeze({
+  'README.md': '# Vault\n\nA deposit credits exactly the amount it receives: balanceOf grows by the amount, and by nothing more.\n',
+  'docs/spec.md': '# Vault specification\n\ndeposit(amount) adds exactly amount to the sender\'s balanceOf.\n',
+  'docs/diagram.bin': Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]),
+});
+export const DOCUMENTS_EXPECTED = Object.freeze({ read: ['README.md', 'docs/spec.md'], skipped: [['docs/diagram.bin', 'notText']], unmatched: ['SPEC/**'], omitted: { notText: 1 } });
+
+/**
  * The repository as a bare mirror, at <mirrorsDir>/<host>/<path>.git: where the server's control
  * check looks (SA_CONTROL_GIT_MIRROR_DIR) and the builder's config points (repoMirrors).
- * @returns {{ url: string, mirror: string, mirrorsDir: string, baseCommit: string }}
+ * @returns {{ url: string, mirror: string, mirrorsDir: string, baseCommit: string, documentsCommit: string }}
  */
 export function makeRepository({ workDir, maker, proofMaker = maker }) {
   const work = path.join(workDir, 'repository');
@@ -46,17 +61,24 @@ export function makeRepository({ workDir, maker, proofMaker = maker }) {
   git(work, 'add', '-A');
   git(work, 'commit', '-q', '-m', 'the listed version');
   const baseCommit = git(work, 'rev-parse', 'HEAD');
+  for (const [file, bytes] of Object.entries(DOCUMENT_FILES)) {
+    fs.mkdirSync(path.dirname(path.join(work, file)), { recursive: true });
+    fs.writeFileSync(path.join(work, file), bytes);
+  }
+  git(work, 'add', '-A');
+  git(work, 'commit', '-q', '-m', 'the listed version, with its documents');
+  const documentsCommit = git(work, 'rev-parse', 'HEAD');
   const mirrorsDir = path.join(workDir, 'mirrors');
   const { host, pathname } = new URL(REPO_URL);
   const mirror = path.join(mirrorsDir, host, `${pathname.slice(1)}.git`);
   fs.mkdirSync(path.dirname(mirror), { recursive: true });
   git(path.dirname(mirror), 'clone', '-q', '--bare', work, mirror);
   git(mirror, 'config', 'uploadpack.allowFilter', 'true');
-  return { url: REPO_URL, mirror, mirrorsDir, baseCommit };
+  return { url: REPO_URL, mirror, mirrorsDir, baseCommit, documentsCommit };
 }
 
 /** The maker's draft: design §7.1's default windows, and limits a loaded machine's slow step fits in. */
-export function draftSpec({ repo, baseCommit, disclosureKey }) {
+export function draftSpec({ repo, baseCommit, disclosureKey, documents = null }) {
   return {
     version: 1,
     kind: 'bug',
@@ -79,6 +101,7 @@ export function draftSpec({ repo, baseCommit, disclosureKey }) {
       disclosureGraceHours: WINDOWS.grace / HOUR,
       revealWindowDays: WINDOWS.reveal / DAY,
       scope: { include: ['src/**'], exclude: ['test/**'] },
+      ...(documents ? { documents: [...documents] } : {}),
       severityRubric: 'immunefi-v2.3',
       disclosureKey,
       valueAtRiskUsd: 1000,
@@ -137,6 +160,11 @@ const CLAIMS = Object.freeze({
   // all INVALID this time (JUROR_SEQUENCE), so the average is an INVALID with 50 points of valid mass: narrow.
   narrow: {
     finding: { ...FINDING, title: 'Vault.deposit over-credits, a second report of the same proof' },
+    poc: null, // the valid claim's (claimFolder)
+  },
+  // Node P20: the valid claim's proof, checked by the hunter on the listing that names its documents.
+  documents: {
+    finding: { ...FINDING, title: 'Vault.deposit over-credits, on the listing that names its documents' },
     poc: null, // the valid claim's (claimFolder)
   },
   // A proof that never ends: the runner's clock stops it, and every arbiter abstains the same way.

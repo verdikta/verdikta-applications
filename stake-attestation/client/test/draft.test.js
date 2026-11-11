@@ -190,12 +190,14 @@ test('list() is sent only with the maker\'s own key and terms: listMismatches na
 // an empty field is no field at all, so a listing without documents is the request it was. A line common refuses
 // is the form's own issue, and the form sends nothing until it is fixed.
 test('the documents field: up to 16 globs, one per line, as stake.documents after the scope; none, no field', () => {
-  const none = toListingRequest(filled());
+  const form = filled();
+  const none = toListingRequest(form);
   assert.equal(Object.hasOwn(none.spec.stake, 'documents'), false);
   assert.equal(Object.hasOwn(initialForm(), 'documents'), true);
-  const blank = toListingRequest(filled({ documents: '\n  \n' }));
+  const blank = toListingRequest({ ...form, documents: '\n  \n' });
   assert.deepEqual(blank, none);
-  const r = toListingRequest(filled({ documents: 'README.md\n docs/** \n\n' }));
+  assert.equal(JSON.stringify(blank), JSON.stringify(none), 'byte for byte');
+  const r = toListingRequest({ ...form, documents: 'README.md\n docs/** \n\n' });
   assert.deepEqual(r.spec.stake.documents, ['README.md', 'docs/**']);
   const keys = Object.keys(r.spec.stake);
   assert.equal(keys.indexOf('documents'), keys.indexOf('scope') + 1);

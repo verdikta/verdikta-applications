@@ -976,7 +976,7 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   left held, so after a round that ran a fresh prepay in full), and, as `commit` and `appeal`, prints what it costs and sends
   nothing without `--yes`; the amount printed is the amount sent. Its balance check and dry run come first. A saved
   re-trigger this run would send again asks for `--yes` too; one whose nonce is used, or that the node already holds, is
-  only waited for.
+  only waited for, never sent again. On a claim with no failed round, `--retrigger` refuses and never reveals.
 - **`status`** reads a judged claim's reason from the first block of its justification only (`Execution evidence v1`); jury text
   after it can say anything, and is not read. It shows the settlement safeguards (errata E7-E9), each from the lens: the appeal
   window (`appealDeadline`), the dispute-panel round's kind and result, a confirmation's window (`confirmWindow`), an appeal's

@@ -45,7 +45,8 @@ async function ensureServed(ctx, cid, bytes, sha256, name) {
  * says what it costs and sends nothing without `acknowledge` (node P19). Everything that could stop it comes first:
  * the files against the chain, the wallet's balance and a dry run at the send's own gas limit and value. The amount
  * the notice names is the amount sent. Saved bytes this run would send again need `acknowledge` too; bytes whose nonce
- * is used, or that the node already holds, are only waited for, since nothing more goes out.
+ * is used, or that the node already holds, are only waited for and never sent again: a node that dropped them since
+ * leaves them to a run that asks.
  */
 async function retrigger(ctx, ws, state, acknowledge) {
   const hunter = await ctx.hunterAddress();
@@ -58,8 +59,9 @@ async function retrigger(ctx, ws, state, acknowledge) {
       // the bytes a run that had --yes signed: sent again only with --yes on this run too
       ctx.notice(retriggerNotice({ claimId: state.claimId, valueWei: BigInt(rec0.value), deadline: await ctx.read('retriggerDeadline', [state.claimId]) }));
       if (!acknowledge) throw fail('NEEDS_ACKNOWLEDGEMENT');
+      await ctx.broadcast(rec0);
     }
-    await ctx.settleSaved(rec0);
+    await ctx.waitMined(rec0);
     const after = { ...state, retriggerTx: null };
     ws.saveState(after);
     return outcomeOf(ctx, after, null, rec0.hash);
@@ -115,6 +117,8 @@ export async function runReveal(ctx, { claimDir, retrigger: wantRetrigger = fals
       const c = await ctx.read('getClaim', [state.claimId]);
       throw fail('CLAIM_ENDED', `Expired: ${EXPIRIES[Number(c.expiry)]}.`);
     }
+    // --retrigger never reveals: what would pin the plaintext and pay is a plain reveal, asked for as one
+    if (wantRetrigger && (lens === 'Committed' || lens === 'Revealable')) throw fail('NOT_RETRIGGERABLE', `It is ${lens}.`);
 
     // A reveal already signed decides first: it is the same call, at its nonce.
     if (state.revealTx?.raw && (lens === 'Committed' || lens === 'Revealable')) {

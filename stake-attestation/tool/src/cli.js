@@ -19,7 +19,7 @@ export { COMMANDS } from './usage.js';
 
 const { version } = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
-const FLAGS = new Set(['--json', '--no-pack', '--remote-runner', '--yes', '--restart', '--accept-unread-pin', '--retrigger', '--wait']);
+const FLAGS = new Set(['--json', '--no-pack', '--remote-runner', '--yes', '--restart', '--accept-unread-pin', '--retrigger', '--wait', '--waive-appeal']);
 const VALUES = new Set(['--listing', '--listing-archive', '--key-file', '--rpc-url', '--contract', '--gateway', '--max-wait-ms']);
 
 function usageError(text) {
@@ -182,6 +182,11 @@ function printStatus(out, s) {
   out(`Claim ${s.claimId} on listing ${s.listingId}: ${s.state}${s.outcome ? ` ${s.outcome}` : ''}`);
   if (s.times.revealableAt) out(`Revealable at ${when(s.times.revealableAt)}`);
   if (s.times.revealDeadline) out(`Reveal before ${when(s.times.revealDeadline)}`);
+  if (s.disputeKind && s.disputeKind !== 'None') out(`Round kind: ${s.disputeKind}${s.dispute && s.dispute !== 'None' ? ` (${s.dispute})` : ''}`);
+  if (s.times.appealDeadline) out(`Appeal before ${when(s.times.appealDeadline)}: appeal shows the cost`);
+  if (s.times.confirmDeadline) out(`Confirmation by the dispute panel: from ${when(s.times.confirmOpensAt)}, until ${when(s.times.confirmDeadline)}`);
+  if (s.narrow === true) out('A narrow INVALID: its valid mass is at least the listing\'s floor, so its bond comes back when it settles');
+  if (s.bond) out(`Bond: ${s.bond === 'returned' ? 'returned to the hunter' : 'to the maker'}`);
   if (s.times.settleableAt) out(`Settleable at ${when(s.times.settleableAt)}`);
   if (s.times.retriggerDeadline) out(`Re-trigger before ${when(s.times.retriggerDeadline)}`);
   if (s.paidWei) out(`Paid ${eth(s.paidWei)}`);
@@ -310,11 +315,23 @@ async function dispatch(verb, args, io, env, write) {
     case 'claim': {
       const target = claimTarget(positional);
       const hunter = createHunter({ ...shared, ...(await walletOptions()) });
-      const r = await hunter.claim(target);
+      const r = await hunter.claim({ ...target, waiveAppeal: options['--waive-appeal'] === true });
       if (json) write(io.stdout, asJson(r));
       else {
         for (const s of r.sent) out(`Sent ${s.action}: ${s.tx}`);
         printStatus(out, r);
+      }
+      return 0;
+    }
+    case 'appeal': {
+      const target = claimTarget(positional);
+      const hunter = createHunter({ ...shared, ...(await walletOptions()) });
+      const r = await hunter.appeal({ ...target, acknowledge: options['--yes'] === true });
+      if (json) write(io.stdout, asJson(r));
+      else {
+        out(`Sent ${r.action === 'retrigger' ? 'the appeal\'s re-trigger' : 'the appeal'}: ${r.tx}`);
+        out(`Paid ${eth(r.valueWei)} for the dispute panel's round. Claim ${r.claimId}: ${r.state}${r.disputeKind !== 'None' ? `, ${r.disputeKind} (${r.dispute})` : ''}.`);
+        out(r.next);
       }
       return 0;
     }

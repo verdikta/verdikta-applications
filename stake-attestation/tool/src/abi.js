@@ -15,3 +15,5 @@ export const OUTCOMES = Object.freeze(['INVALID', 'DUPLICATE', 'LOW', 'MEDIUM', 
 export const EXPIRIES = Object.freeze(['None', 'Undisclosed', 'Unrevealed', 'RoundsFailed', 'SubmissionsRefused']);
 export const LISTING_STATES = Object.freeze(['Listed', 'Open', 'Depleted', 'Rolled', 'Closed']);
 export const DISPUTE_RESULTS = Object.freeze(['None', 'Pending', 'Held', 'Overturned', 'NoVerdict']);
+/** Which dispute-panel round a claim's dispute fields describe (errata E7, E9). */
+export const DISPUTE_KINDS = Object.freeze(['None', 'Maker', 'Confirmation', 'Appeal']);

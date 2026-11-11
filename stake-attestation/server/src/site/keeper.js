@@ -1,7 +1,16 @@
 // The keeper (node P4b1, erratum E4): the aggregator never calls back, so the site calls
 // finalize(claimId) once a claim's round is over, settle(claimId) once a judged claim may settle,
 // and, with SA_KEEPER_EXPIRE=on, expire(claimId) once a claim nobody can advance may be expired.
-// All three are permissionless and move funds by the claim's record, never by the caller.
+// Erratum E9 (node P18): it also calls confirm(claimId) on a Judged claim that awaits the dispute
+// panel's confirmation, while the lens's confirmWindow is open (and not in its last
+// CONFIRM_MARGIN_SECONDS), and again after a round with no verdict until the deadline
+// (SA_KEEPER_CONFIRM=off turns that off; the escrow pays the round).
+// All four are permissionless and move funds by the claim's record, never by the caller.
+//
+// finalize serves every round, the dispute panel's three kinds (the maker's dispute, a
+// confirmation, the hunter's appeal) included. settle is sent only from the lens's settleableAt,
+// the time anyone may settle: never earlier, though a keeper whose key is the claim's hunter could,
+// since the hunter's own settle of an INVALID inside its window waives the appeal (erratum E7).
 //
 // Idempotence. The indexed events only say which claims to look at. Before every send the keeper
 // reads the claim on-chain and simulates the call at the latest block; a call that would revert is
@@ -25,7 +34,11 @@ import { ENUMS, stakeAttestation } from '../chain/abi.js';
 const POLL_MS = 100;
 const BUMP_NUM = 9n; // fees x 9/8 (+1 wei) for a replacement: above the 10% nodes require
 const BUMP_DEN = 8n;
-const ACTION_STATES = Object.freeze({ finalize: ['Revealed', 'Disputed'], settle: ['Judged'], expire: ['Committed', 'RoundFailed'] });
+// confirm is the one call that stops being due as time passes (its window closes at the deadline):
+// it is not sent this close to the deadline, so it cannot reach a block after it and revert there
+// (from the deadline settle pays the first verdict, so a round not started costs nobody anything)
+export const CONFIRM_MARGIN_SECONDS = 120n;
+const ACTION_STATES = Object.freeze({ finalize: ['Revealed', 'Disputed'], confirm: ['Judged'], settle: ['Judged'], expire: ['Committed', 'RoundFailed'] });
 
 export class KeeperError extends Error {
   constructor(code, detail) {
@@ -79,6 +92,12 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
 
   const tx = (to, data) => ({ from: address, to, data, blockTag: 'latest' });
   const callData = (action, claimId) => stakeAttestation.encodeFunctionData(action, [claimId]);
+  const lens = async (fn, claimId) => stakeAttestation.decodeFunctionResult(fn, await provider.call(tx(chain.address, stakeAttestation.encodeFunctionData(fn, [claimId]))));
+  /** Whether this keeper sends `action` at all: expire and confirm each have their switch. */
+  const allowed = (action) => (action !== 'expire' || cfg.expire) && (action !== 'confirm' || cfg.confirm);
+  // the order a Judged claim's actions are tried in; confirm and settle are never due together
+  // (settleableAt is the confirmation deadline while one is awaited, and confirm closes at it)
+  const ORDER = ['finalize', 'confirm', 'settle', 'expire'];
 
   async function claimState(claimId) {
     const c = await provider.call(tx(chain.address, stakeAttestation.encodeFunctionData('getClaim', [claimId])));
@@ -86,14 +105,22 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     return ENUMS.ClaimState[Number(claim.state)];
   }
 
-  /** Whether `action` on the claim would succeed now: the stored state allows it and a simulation passes. */
+  /**
+   * Whether `action` on the claim would succeed now: the stored state allows it, the lens's time
+   * for it has come (settle: settleableAt; confirm: inside confirmWindow), and a simulation passes.
+   */
   async function isDue(action, claimId, known = null) {
     const state = known ?? await claimState(claimId);
     if (!ACTION_STATES[action].includes(state)) return false;
     if (action === 'settle') {
-      const [at] = stakeAttestation.decodeFunctionResult('settleableAt', await provider.call(tx(chain.address, stakeAttestation.encodeFunctionData('settleableAt', [claimId]))));
+      const [at] = await lens('settleableAt', claimId);
       const latest = await provider.getBlock('latest');
       if (at === 0n || at > BigInt(latest.timestamp)) return false;
+    }
+    if (action === 'confirm') {
+      const [opensAt, deadline] = await lens('confirmWindow', claimId);
+      const now = BigInt((await provider.getBlock('latest')).timestamp);
+      if (deadline === 0n || now < opensAt || now + CONFIRM_MARGIN_SECONDS >= deadline) return false;
     }
     try {
       await provider.call(tx(chain.address, callData(action, claimId)));
@@ -106,8 +133,9 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
   /** The action due for a claim now, by its on-chain state, or null. */
   async function dueAction(claimId) {
     const state = await claimState(claimId);
-    for (const action of ['finalize', 'settle', ...(cfg.expire ? ['expire'] : [])]) {
-      if (ACTION_STATES[action].includes(state)) return (await isDue(action, claimId, state)) ? action : null;
+    for (const action of ORDER) {
+      if (!allowed(action) || !ACTION_STATES[action].includes(state)) continue;
+      if (await isDue(action, claimId, state)) return action;
     }
     return null;
   }
@@ -260,8 +288,7 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
    */
   async function fillGap(inflight, accountNonce, sent) {
     logger.warn(`keeper: the account's nonce is ${accountNonce}, below the ${inflight.action}(${inflight.claimId}) at ${inflight.nonce}: a reorg dropped an earlier transaction`);
-    const allowed = inflight.action !== 'expire' || cfg.expire;
-    const due = allowed && await isDue(inflight.action, inflight.claimId);
+    const due = allowed(inflight.action) && await isDue(inflight.action, inflight.claimId);
     if (!due) {
       const calls = inflight.attempts.filter((a) => a.kind !== 'cancel');
       const cancels = inflight.attempts.filter((a) => a.kind === 'cancel');
@@ -298,8 +325,7 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     const known = await someKnown(inflight.attempts);
     const newest = inflight.attempts.at(-1);
     if (known && now() - newest.sentAt < cfg.replaceAfterMs) return settleInflight(inflight, cfg.txTimeoutMs);
-    const allowed = inflight.action !== 'expire' || cfg.expire;
-    const due = allowed && await isDue(inflight.action, inflight.claimId);
+    const due = allowed(inflight.action) && await isDue(inflight.action, inflight.claimId);
     if (!due && !known) {
       finish(inflight, 'dropped', null); // nothing of ours is pending, and nothing is due
       return 'done';

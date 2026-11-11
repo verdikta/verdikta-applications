@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
-import { CLAIM_STATES, DISPUTE_RESULTS, OUTCOMES } from '../chain/abi.js';
+import { CLAIM_STATES, DISPUTE_KINDS, DISPUTE_RESULTS, OUTCOMES } from '../chain/abi.js';
 import { WalletError, chainReader, stakeAttestation } from '../chain/wallet.js';
 import { ApiError, disputeStatementChallenge, pinDisputeStatement } from '../lib/api.js';
-import { disputeOffer, pendingRound, releaseOffer, roundOver } from '../lib/claimActions.js';
+import { disputeOffer, pendingRound, releaseOffer, roundOver, safeguardView } from '../lib/claimActions.js';
 import { errorReason, formatEth, formatTime } from '../lib/format.js';
 import { POLL_MS, READ_TIMEOUT_MS, WATCH_MS, watchUntil, withTimeout } from '../lib/poll.js';
 import { MAX_STATEMENT_BYTES, checkStatement, cidMatches, statementSha256 } from '../lib/statement.js';
@@ -24,9 +24,11 @@ const when = (t) => (t === 0n ? C.notYet : formatTime(t));
 /**
  * The claim as the chain has it at one block, the latest, read through `provider` (the site's
  * reader by default, the wallet's just before a transaction): the stored claim, its listing, the
- * lens's derived state (Revealable) and times, the dispute deadline, and that block's time as
- * the clock. One block, so a finalize mined between two reads never pairs a new state with the
- * old claim. Null for no such claim.
+ * lens's derived state (Revealable) and times, the dispute deadline, the settlement safeguards'
+ * views (errata E7-E9: settleableAt, appealDeadline, retriggerDeadline, confirmWindow, and
+ * judgeVector of the claim's vector under its listing's terms), and that block's time as the
+ * clock. One block, so a finalize mined between two reads never pairs a new state with the old
+ * claim. Null for no such claim.
  */
 async function readClaim(claimId, provider = null) {
   const p = provider ?? await chainReader();
@@ -37,11 +39,35 @@ async function readClaim(claimId, provider = null) {
   const at = { blockTag: Number(block.number) };
   if (id === 0n || id > (await sa.claimCount(at))) return null;
   const claim = await sa.getClaim(id, at);
-  const [listing, state, times, deadline] = await Promise.all([
+  const judged = claim.judgedAt !== 0n;
+  const [listing, state, times, deadline, settleableAt, appealDeadline, retriggerDeadline, confirm, judgement] = await Promise.all([
     sa.getListing(claim.listingId, at), sa.claimState(id, at), sa.claimTimes(id, at), sa.disputeDeadline(id, at),
+    sa.settleableAt(id, at), sa.appealDeadline(id, at), sa.retriggerDeadline(id, at), sa.confirmWindow(id, at),
+    judged ? sa.judgeVector(claim.listingId, [...claim.vector], at) : null,
   ]);
-  return { claim, listing, state: CLAIM_STATES[Number(state)], times, deadline, now: BigInt(block.timestamp), block: at.blockTag };
+  const safeguards = {
+    settleableAt,
+    appealDeadline,
+    retriggerDeadline,
+    confirmOpensAt: confirm.opensAt,
+    confirmDeadline: confirm.deadline,
+    narrow: judgement?.wellFormed ? judgement.narrow : null,
+    awardWei: judgement?.wellFormed ? judgement.awardWei : 0n,
+  };
+  return { claim, listing, state: CLAIM_STATES[Number(state)], times, deadline, safeguards, now: BigInt(block.timestamp), block: at.blockTag };
 }
+
+/** What the safeguards say of this read (lib/claimActions.js safeguardView). */
+const safeguardsOf = (d) => safeguardView({
+  state: d.state,
+  outcome: d.claim.judgedAt !== 0n ? OUTCOMES[Number(d.claim.outcome)] : null,
+  dispute: DISPUTE_RESULTS[Number(d.claim.dispute)],
+  disputeKind: DISPUTE_KINDS[Number(d.claim.disputeKind)],
+  late: d.claim.late,
+  now: d.now,
+  ...d.safeguards,
+  confirmAboveWei: d.listing.confirmAboveWei,
+});
 
 const releaseArgs = (d) => ({ disclosedAt: d.claim.disclosedAt, state: d.state, revealableAt: d.times.revealableAt, now: d.now });
 const disputeArgs = (d) => ({ state: d.state, outcome: OUTCOMES[Number(d.claim.outcome)], dispute: DISPUTE_RESULTS[Number(d.claim.dispute)], deadline: d.deadline, now: d.now });
@@ -61,7 +87,7 @@ const disputeOf = (d) => DISPUTE_RESULTS[Number(d.claim.dispute)];
  * re-check. `at` is when the round was requested, 0 when the page's read does not show it yet (a
  * dispute this page sent, read from before it was mined).
  */
-function PendingWatch({ claimId, kind, at, onData }) {
+function PendingWatch({ claimId, kind, panel = 'Maker', at, onData }) {
   const [timedOut, setTimedOut] = useState(false);
   const [round, setRound] = useState(0);
   const latest = useRef(onData);
@@ -86,7 +112,7 @@ function PendingWatch({ claimId, kind, at, onData }) {
         <p>
           {at === 0n
             ? fill(P.disputeSent, { seconds: POLL_MS / 1000, minutes })
-            : fill(kind === 'dispute' ? P.dispute : P.claim, { time: formatTime(at), seconds: POLL_MS / 1000, minutes })}
+            : fill(kind === 'dispute' ? ({ Appeal: P.appeal, Confirmation: P.confirmation }[panel] ?? P.dispute) : P.claim, { time: formatTime(at), seconds: POLL_MS / 1000, minutes })}
         </p>
       )}
       {!timedOut && <p className="hint">{P.typical}</p>}
@@ -280,7 +306,10 @@ function ClaimLookup() {
 /**
  * One claim (#/claim/<id>): its state and times as the chain holds them, a pending round watched
  * for up to 15 minutes, and the maker's actions: release in the fix window, dispute of a valid
- * verdict. Every transaction goes through the maker's wallet after the claim is read again.
+ * verdict. Every transaction goes through the maker's wallet after the claim is read again. The
+ * settlement safeguards (errata E7-E9) are shown as the lens reports them: the hunter's appeal
+ * window and its waiver, the dispute-panel round's kind, a confirmation's state and deadline, a
+ * narrow INVALID, and the bond once settle has moved it. The hunter appeals with the tool.
  */
 export function ClaimPage({ claimId }) {
   const headingId = useId();
@@ -368,6 +397,9 @@ export function ClaimPage({ claimId }) {
   const listingId = String(c.listingId);
   const judged = c.judgedAt !== 0n;
   const dispute = DISPUTE_RESULTS[Number(c.dispute)];
+  const kind = DISPUTE_KINDS[Number(c.disputeKind)];
+  const g = safeguardsOf(d);
+  const at = (t) => (t === null ? C.notYet : formatTime(t));
   // a dispute this page sent is watched even while the page's last read predates it
   const pending = pendingRound(d.state) ?? (sent.dispute && dispute === 'None' ? 'dispute' : null);
   return (
@@ -386,17 +418,25 @@ export function ClaimPage({ claimId }) {
           { id: 'claim-revealed', label: C.revealedAt, value: when(c.revealedAt) },
           { id: 'claim-judged', label: C.judgedAt, value: when(c.judgedAt) },
           judged ? { id: 'claim-outcome', label: C.outcome, value: OUTCOMES[Number(c.outcome)] } : null,
-          dispute !== 'None' ? { id: 'claim-dispute', label: C.dispute, value: E.disputes[dispute] ?? dispute } : null,
+          dispute !== 'None' && (kind === 'Maker' || kind === 'None') ? { id: 'claim-dispute', label: C.dispute, value: E.disputes[dispute] ?? dispute } : null,
+          // the settlement safeguards (errata E7-E9): each row from the contract's own reads
+          g.roundKind !== 'None' ? { id: 'claim-round-kind', label: C.roundKind, value: fill(C.roundKindLine, { kind: E.disputeKinds[g.roundKind], result: E.panelResults[dispute] ?? dispute }) } : null,
+          g.appeal ? { id: 'claim-appeal', label: C.appeal, value: fill(g.appeal.open ? C.appealUntil : C.appealOver, { time: formatTime(g.appeal.until) }) } : null,
+          g.appealRetrigger ? { id: 'claim-appeal-retrigger', label: C.appeal, value: fill(C.appealRetrigger, { time: formatTime(g.appealRetrigger.until) }) } : null,
+          g.confirmation ? { id: 'claim-confirmation', label: C.confirmation, value: fill(C.confirmationStates[g.confirmation.state], { opensAt: at(g.confirmation.opensAt), deadline: at(g.confirmation.deadline) }) } : null,
+          g.narrow !== null && g.bond === null ? { id: 'claim-narrow', label: C.narrow, value: g.narrow ? C.narrowYes : C.narrowNo } : null,
           { id: 'claim-settled', label: C.settledAt, value: when(c.settledAt) },
           c.settledAt !== 0n ? { id: 'claim-paid', label: C.paid, value: fill(STRINGS.record.eth, { eth: formatEth(c.paidWei) }) } : null,
+          g.bond ? { id: 'claim-bond', label: C.bond, value: C.bonds[g.bond] } : null,
         ]} />
+        {g.waiver && <p className="hint" data-testid="claim-waiver">{fill(C.waiver, { time: formatTime(d.safeguards.settleableAt) })}</p>}
         <p className="actions">
           <a href={`#/fund/${listingId}`}>{fill(C.listingPage, { id: listingId })}</a>
           {c.disclosedAt !== 0n && <a href={`#/check/${claimId}`}>{C.checkPage}</a>}
         </p>
       </section>
       {notices}
-      {pending && <PendingWatch key={pending} claimId={claimId} kind={pending} at={pending === 'dispute' ? c.disputedAt : c.revealedAt} onData={onData} />}
+      {pending && <PendingWatch key={pending} claimId={claimId} kind={pending} panel={kind} at={pending === 'dispute' ? c.disputedAt : c.revealedAt} onData={onData} />}
       {!sent.release && <ReleasePanel claimId={claimId} data={d} onData={onData} onSent={onSent} />}
       {!sent.dispute && <DisputePanel claimId={claimId} data={d} onData={onData} onSent={onSent} />}
     </>

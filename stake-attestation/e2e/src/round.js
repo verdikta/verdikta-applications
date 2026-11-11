@@ -1,12 +1,17 @@
 // The round itself: every piece running together, on this machine, against a local chain, a local
 // registry and a local IPFS, with no key that means anything. list -> fund -> commit -> release ->
 // reveal -> judge (finalize) -> settle -> record, for a claim the jury decides, one the gates settle, one
-// a non-tamper integrity check settles and one every arbiter abstains on. The first failed check, a service that will not start, or any
+// a non-tamper integrity check settles and one every arbiter abstains on. Node P18 adds the settlement
+// safeguards (errata E7-E9): the valid HIGH is above the listing's confirmation size, so the keeper starts
+// the dispute panel's confirmation after the dispute window; a second gate-failing claim is appealed through
+// the tool and settles by the panel's result; and a claim the jury scores just short of valid is a narrow
+// INVALID whose bond comes back. The first failed check, a service that will not start, or any
 // error ends the round: exit 1, with everything it started stopped and removed.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { formatEther } from 'ethers';
 
 import { codeReview } from './common.js';
 import { REAL_CONFIG } from './aggregatorRound.js';
@@ -18,7 +23,7 @@ import {
   recordChecks, requestChecks, servedRoundChecks, settlementChecks,
 } from './checks.js';
 import {
-  AWARDS_WEI, BOND_WEI, ESCROW_WEI, GIT_HOST, JURY_AVERAGE, JUROR_SCORES, JUSTIFIER, POC_MARKER, REPORT_MARKER, WINDOWS, claimFolder, draftSpec, makeRepository,
+  AWARDS_WEI, BOND_WEI, ESCROW_WEI, GIT_HOST, JURY_AVERAGE, JUROR_SCORES, JUSTIFIER, NARROW_AVERAGE, NARROW_SCORES, POC_MARKER, REPORT_MARKER, WINDOWS, claimFolder, draftSpec, makeRepository,
 } from './fixtures.js';
 import { RoundStopped, groupAlive, liveGroups, requestStop, sleep, stopProcessGroups, stopProcessesNaming, throwIfStopping, unlessStopped, waitUntil, within } from './proc.js';
 import {
@@ -41,6 +46,8 @@ const DUPLICATE_VECTOR = Object.freeze([0n, 1000000n, 0n, 0n, 0n, 0n]);
 /** What the integrity claim's proof changes: it writes .gitignore, which the round's draft protects. */
 const INTEGRITY_CHECK = 'protectedPathsUnchanged';
 const CLAIM_STATES = ['Committed', 'Revealable', 'Revealed', 'Judged', 'Disputed', 'Settled', 'Expired', 'RoundFailed'];
+const DISPUTE_RESULTS = ['None', 'Pending', 'Held', 'Overturned', 'NoVerdict'];
+const DISPUTE_KINDS = ['None', 'Maker', 'Confirmation', 'Appeal'];
 const EXPIRIES = ['None', 'Undisclosed', 'Unrevealed', 'RoundsFailed', 'SubmissionsRefused'];
 const DEFAULT_LOG_ROOT = path.join(E2E_DIR, '.round', 'logs');
 /**
@@ -283,11 +290,17 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const hunterRunner = await owned(h.startRecordingProxy(runner.url), (p) => p.close());
 
     const panel = codeReview.CODE_STANDARD_PANEL.AI_NODES.map((n) => ({ provider: n.AI_PROVIDER, model: n.AI_MODEL, weight: n.WEIGHT }));
+    // the listing's dispute archive carries the dispute panel: the valid claim's confirmation (erratum E9) asks it
+    const disputePanel = codeReview.CODE_STANDARD_DISPUTE_PANEL.AI_NODES.map((n) => ({ provider: n.AI_PROVIDER, model: n.AI_MODEL, weight: n.WEIGHT }));
+    const juror = (model, scores) => ({ scores: [...scores], justification: `Mock juror ${model}: the deposit over-credits.` });
     const script = {
-      [panel[0].model]: { scores: [...JUROR_SCORES[0]], justification: `Mock juror ${panel[0].model}: the deposit over-credits.` },
-      [panel[1].model]: { scores: [...JUROR_SCORES[1]], justification: `Mock juror ${panel[1].model}: the deposit over-credits.` },
+      [panel[0].model]: juror(panel[0].model, JUROR_SCORES[0]),
+      // the valid claim's K jobs, one call each, then the narrow claim's (the last entry repeats): fixtures.js
+      [panel[1].model]: [...Array.from({ length: REAL_CONFIG.k }, () => juror(panel[1].model, JUROR_SCORES[1])), juror(panel[1].model, NARROW_SCORES)],
       [JUSTIFIER.model]: { reply: 'Mock justification: the panel finds the over-credit a HIGH.' },
     };
+    // the dispute panel's other jurors answer as the claim panel's second: the confirmation's average is the claim's
+    for (const n of disputePanel) script[n.model] ??= juror(n.model, JUROR_SCORES[1]);
     const callLog = path.join(logDir, 'provider-calls.jsonl');
     aiNode = track(await owned(h.startAiNode({ logDir, callLog, script, justifierModel: `${JUSTIFIER.provider}:${JUSTIFIER.model}` }), (a) => a.close()));
     const aiProxy = await owned(h.startRecordingProxy(aiNode.url), (p) => p.close());
@@ -559,12 +572,31 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     one('valid.refund.atFinalize', (await eventOf('LeftoverRefunded', validId))[0]?.args.amountWei === validRound.required - validRound.spent, `${(await eventOf('LeftoverRefunded', validId))[0]?.args.amountWei}`);
 
     stage('valid: dispute window, then settle');
+    // Erratum E9 (node P18): the HIGH award is above the listing's size, so it waits for the dispute panel
+    const [confirmOpensAt, confirmDeadline] = await sa.confirmWindow(validId);
+    one('valid.confirm.awaits', confirmDeadline > 0n && (await sa.settleableAt(validId)) === confirmDeadline && confirmDeadline - confirmOpensAt === BigInt(WINDOWS.reveal), `confirm from ${confirmOpensAt} until ${confirmDeadline}; settleable at ${await sa.settleableAt(validId)}`);
     const keeperRunsBefore = (await server.get('/api/status')).json.keeper?.lastRun?.at ?? 0;
     await settleOutcome(async () => ((await server.get('/api/status')).json.keeper?.lastRun?.at ?? 0) > keeperRunsBefore + 1000, 'waiting for keeper cycles');
-    one('valid.settle.waitsDisputeWindow', (await claimStateOf(validId)) === 'Judged', 'the keeper leaves a valid verdict alone inside the dispute window');
+    one('valid.settle.waitsDisputeWindow', (await claimStateOf(validId)) === 'Judged' && (await eventOf('ConfirmationRequested', validId)).length === 0, 'the keeper leaves a valid verdict alone inside the dispute window, and starts no confirmation in it');
+    const escrowBeforeConfirm = (await sa.getListing(listingId)).escrowWei;
     await chain.advance(WINDOWS.dispute + 1);
+    // the keeper starts the confirmation, the listing's escrow paying it
+    const confirmEvent = await settleOutcome(async () => (await eventOf('ConfirmationRequested', validId))[0] ?? null, 'waiting for the keeper to call confirm');
+    one('valid.confirm.byKeeper', (await senderOf(confirmEvent)) === chain.accounts.keeper.address, `confirm from ${await senderOf(confirmEvent)}`);
+    const confirmRound = await bridge.quiet(confirmEvent.args.requestId);
+    one('valid.confirm.request.disputeArchive', confirmRound.cids[0] === view.list.disputeCid && confirmRound.cids[1] === validClaim.bcid && confirmRound.cids.length === 2, JSON.stringify(confirmRound.cids));
+    one('valid.confirm.request.noDisputeLine', parsedLine(confirmRound.addendum) !== null && JSON.stringify(parsedLine(confirmRound.addendum)) === JSON.stringify(parsedLine(validRound.addendum)), `the claim's E1 line alone: ${String(confirmRound.addendum).slice(0, 120)}`);
+    const escrowAtConfirm = (await sa.getListing(listingId, { blockTag: confirmEvent.blockNumber })).escrowWei;
+    one('valid.confirm.escrowPaid', confirmEvent.args.prepayWei === confirmRound.required && escrowAtConfirm === escrowBeforeConfirm - confirmEvent.args.prepayWei, `prepay ${confirmEvent.args.prepayWei}, the live fee ${confirmRound.required}; escrow ${escrowBeforeConfirm} -> ${escrowAtConfirm}`);
     await stateIs(validId, 'Settled');
+    const confirmJudged = (await eventOf('DisputeJudged', validId))[0];
+    one('valid.confirm.held', DISPUTE_RESULTS[Number(confirmJudged?.args.result)] === 'Held' && OUTCOMES[Number(confirmJudged?.args.outcome)] === 'HIGH' && DISPUTE_KINDS[Number((await sa.getClaim(validId)).disputeKind)] === 'Confirmation', `${DISPUTE_RESULTS[Number(confirmJudged?.args.result)]}: ${OUTCOMES[Number(confirmJudged?.args.outcome)]}`);
+    one('valid.confirm.keeperFinalized', (await senderOf(confirmJudged)) === chain.accounts.keeper.address, `the second finalize from ${await senderOf(confirmJudged)}`);
     const settledValid = (await eventOf('Settled', validId))[0];
+    one('valid.confirm.settledAfter', settledValid.blockNumber >= confirmJudged.blockNumber && (await provider.getBlock(settledValid.blockNumber)).timestamp < Number(confirmDeadline), `settled at block ${settledValid.blockNumber}, the panel's verdict at ${confirmJudged.blockNumber}, before the deadline`);
+    // what the round spent of the escrow: its prepay less what came back as a top-up
+    const confirmRefund = (await eventOf('ConfirmationRefunded', validId))[0];
+    const confirmSpent = confirmEvent.args.prepayWei - (confirmRefund ? confirmRefund.args.toOwedWei + confirmRefund.args.toEscrowWei + confirmRefund.args.toMakerWei : 0n);
     const hunterAfterSettle = await balance(hunter);
     const validFinal = await sa.getClaim(validId);
     expect(settlementChecks('valid', {
@@ -596,10 +628,12 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       released: 2,
       noVerdict: 0,
       findings: [{ claimId: String(validId), outcome: 'HIGH', paidWei: AWARDS_WEI.HIGH.toString(), owedWei: '0', bcid: validFinal.bcid }],
-      escrowWei: ESCROW_WEI - AWARDS_WEI.HIGH,
+      escrowWei: ESCROW_WEI - AWARDS_WEI.HIGH - confirmSpent,
       bondWei: BOND_WEI,
       awards: [AWARDS_WEI.LOW, AWARDS_WEI.MEDIUM, AWARDS_WEI.HIGH, AWARDS_WEI.CRITICAL],
     }).filter((c) => !c.name.endsWith('.record.claims')));
+    const confirmedHistory = recordAfterValid.record.history;
+    one('valid.record.confirmations', confirmedHistory.confirmationRounds === '1' && confirmedHistory.confirmationsHeld === '1' && confirmedHistory.confirmationsNoVerdict === '0' && recordAfterValid.record.findings[0]?.disputeKind === 'Confirmation' && recordAfterValid.record.listings[0]?.confirmAboveWei === AWARDS_WEI.MEDIUM.toString(), `rounds ${confirmedHistory.confirmationRounds}, held ${confirmedHistory.confirmationsHeld}; the finding's round ${recordAfterValid.record.findings[0]?.disputeKind}`);
     one('valid.record.pendingIsTheNextClaim', recordAfterValid.record.history.claims === '2' && recordAfterValid.record.history.pending === '1', `claims ${recordAfterValid.record.history.claims}, pending ${recordAfterValid.record.history.pending}`);
     const badge = await fetch(`${server.url}/api/records/${artifactHash}/badge.svg`);
     one('valid.badge', badge.ok && recordAfterValid.badge?.state === 'finding', recordAfterValid.badge?.message);
@@ -801,7 +835,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       released: 4,
       noVerdict: 1,
       findings: [{ claimId: String(validId), outcome: 'HIGH', paidWei: AWARDS_WEI.HIGH.toString(), owedWei: '0', bcid: validFinal.bcid }],
-      escrowWei: ESCROW_WEI - AWARDS_WEI.HIGH,
+      escrowWei: ESCROW_WEI - AWARDS_WEI.HIGH - confirmSpent,
       bondWei: BOND_WEI,
       awards: [AWARDS_WEI.LOW, AWARDS_WEI.MEDIUM, AWARDS_WEI.HIGH, AWARDS_WEI.CRITICAL],
     }));
@@ -821,6 +855,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     one('final.indexer.confirms', status.indexer?.confirmations === 2 && status.indexer?.fresh === true, `confirmations ${status.indexer?.confirmations}, fresh ${status.indexer?.fresh}`);
 
     const pages = await readPages(chromium, client.url, { artifactHash, listingId, onBrowser: (b) => closers.push(() => b.close()) });
+    one('final.page.confirmations', pages.record.confirmations === '1' && pages.record.confirmationResults.includes('same outcome 1'), `${pages.record.confirmations}: ${pages.record.confirmationResults}`);
     expect(integrityPageChecks('final', pages, { failed: 1, check: INTEGRITY_CHECK, count: 1, note: INTEGRITY_NOTE, bcid: integrityFinal.bcid }));
     expect(pageChecks('final', pages, {
       artifactHash,
@@ -834,12 +869,112 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       invalidBcid: gateFinal.bcid,
     }));
 
+    // ---------------------------------------------------------------- a claim its hunter appeals (E7, node P18)
+    stage('appeal: check, commit, reveal, INVALID');
+    const appealDir = claimFolder(workDir, 'appeal');
+    const appealCheck = await tool('check', appealDir, '--listing', String(listingId));
+    one('appeal.check.forecast', appealCheck.code === 1 && appealCheck.json?.forecast?.verdict === 'fail' && appealCheck.json.forecast.settlesAs?.outcome === 'INVALID', `${appealCheck.json?.forecast?.verdict}, settles as ${appealCheck.json?.forecast?.settlesAs?.outcome}`);
+    const appealCommit = await tool('commit', appealDir, '--listing', String(listingId), '--yes');
+    toolDone('commit', appealCommit);
+    const appealId = BigInt(appealCommit.json.claimId);
+    await makerRelease(appealId);
+    const appealReveal = await tool('reveal', appealDir);
+    toolDone('reveal', appealReveal);
+    const appealClaimRound = await roundOf(appealId);
+    expect(servedRoundChecks('appeal', appealClaimRound, { vector: INVALID_VECTOR }));
+    await stateIs(appealId, 'Judged');
+    const appealJudged = (await eventOf('Judged', appealId))[0];
+    const appealClaim = await sa.getClaim(appealId);
+
+    stage('appeal: the waiver, the cost, the appeal through the tool');
+    // the hunter's own settle inside the window waives the appeal: the tool says so and sends nothing without the flag
+    const waiverRun = await tool('claim', appealDir);
+    one('appeal.waiver.warned', waiverRun.code === 0 && /waives the appeal/.test(waiverRun.stderr) && /--waive-appeal/.test(waiverRun.stderr) && (waiverRun.json?.sent ?? []).every((x) => x.action !== 'settle') && (await claimStateOf(appealId)) === 'Judged', `exit ${waiverRun.code}, sent ${JSON.stringify(waiverRun.json?.sent)}: ${waiverRun.stderr.slice(0, 300)}`);
+    const liveFee = await sa.disputeFee(listingId);
+    const noYes = await tool('appeal', appealDir);
+    one('appeal.tool.needsYes', noYes.code === 3 && noYes.stderr.includes(`${formatEther(liveFee)} ETH`) && /--yes/.test(noYes.stderr) && (await eventOf('Appealed', appealId)).length === 0, `exit ${noYes.code}: ${noYes.stderr.slice(0, 300)}`);
+    const appealRun = await tool('appeal', appealDir, '--yes');
+    toolDone('appeal', appealRun);
+    one('appeal.tool.appealed', appealRun.json?.action === 'appeal' && appealRun.json?.disputeKind === 'Appeal', JSON.stringify(appealRun.json));
+    const appealTx = await provider.getTransaction(appealRun.json.tx);
+    const appealed = (await eventOf('Appealed', appealId))[0];
+    one('appeal.tool.paidTheLiveFee', appealTx.value === liveFee && appealTx.from === hunter.address && appealed?.args.prepayWei === liveFee, `sent ${appealTx.value} from ${appealTx.from}, the live dispute fee ${liveFee}`);
+    const hunterAfterAppeal = await balanceAfterTx(hunter, appealRun.json.tx);
+    const makerBeforeAppeal = await balanceAfterTx(maker, appealRun.json.tx);
+
+    stage('appeal: the dispute panel holds it, and it settles by that result');
+    const appealRound = await bridge.quiet(appealed.args.requestId);
+    one('appeal.request.disputeArchive', appealRound.cids[0] === view.list.disputeCid && appealRound.cids[1] === appealClaim.bcid && JSON.stringify(parsedLine(appealRound.addendum)) === JSON.stringify(parsedLine(appealClaimRound.addendum)), `${JSON.stringify(appealRound.cids)}, the E1 line alone`);
+    await stateIs(appealId, 'Settled');
+    const appealPanel = (await eventOf('DisputeJudged', appealId))[0];
+    one('appeal.panel.held', DISPUTE_RESULTS[Number(appealPanel?.args.result)] === 'Held' && OUTCOMES[Number(appealPanel?.args.outcome)] === 'INVALID', `${DISPUTE_RESULTS[Number(appealPanel?.args.result)]}: ${OUTCOMES[Number(appealPanel?.args.outcome)]}`);
+    one('appeal.keeper.finalized', (await senderOf(appealPanel)) === chain.accounts.keeper.address, `the second finalize from ${await senderOf(appealPanel)}`);
+    const appealSettled = (await eventOf('Settled', appealId))[0];
+    one('appeal.keeper.settledByThePanel', (await senderOf(appealSettled)) === chain.accounts.keeper.address && appealSettled.blockNumber >= appealPanel.blockNumber, `settle from ${await senderOf(appealSettled)} at block ${appealSettled.blockNumber}, the panel's verdict at ${appealPanel.blockNumber}`);
+    const appealSeconds = (await provider.getBlock(appealSettled.blockNumber)).timestamp - (await provider.getBlock(appealJudged.blockNumber)).timestamp;
+    one('appeal.settled.insideTheWindow', appealSeconds < WINDOWS.dispute, `${appealSeconds} s after the claim round's verdict: the panel's verdict settled it, not the end of the ${WINDOWS.dispute} s window`);
+    expect(moneyChecks('appeal', [
+      { name: 'bondToMaker', before: makerBeforeAppeal, after: await balance(maker), expected: BOND_WEI },
+      // the hunter bears the round's spent prepay: only its unspent part came back, at finalize
+      { name: 'hunterBearsThePrepay', before: hunterAfterAppeal, after: await balance(hunter), expected: appealRound.required - appealRound.spent },
+    ]));
+    const appealStatus = await tool('status', appealDir);
+    one('appeal.status.kind', appealStatus.json?.disputeKind === 'Appeal' && appealStatus.json?.dispute === 'Held' && appealStatus.json?.bond === 'forfeited' && appealStatus.json?.state === 'Settled', `${appealStatus.json?.disputeKind}, ${appealStatus.json?.dispute}, bond ${appealStatus.json?.bond}`);
+    const recordAfterAppeal = await settleOutcome(async () => {
+      const r = await recordView();
+      return r.record?.history?.appeals === '1' ? r : null;
+    }, 'waiting for the record to count the appeal');
+    const appealHistory = recordAfterAppeal.record.history;
+    one('appeal.record.appeals', appealHistory.appeals === '1' && appealHistory.appealsHeld === '1' && appealHistory.appealsOverturned === '0' && appealHistory.outcomes[0] === '2' && appealHistory.disputes === '0', `appeals ${appealHistory.appeals}, held ${appealHistory.appealsHeld}; INVALID ${appealHistory.outcomes[0]}; maker's disputes ${appealHistory.disputes}`);
+
+    // ---------------------------------------------------------------- a narrow INVALID (E8, node P18)
+    stage('narrow: commit, reveal, the jury short of valid');
+    const narrowDir = claimFolder(workDir, 'narrow');
+    const narrowCommit = await tool('commit', narrowDir, '--listing', String(listingId), '--yes');
+    toolDone('commit', narrowCommit);
+    const narrowId = BigInt(narrowCommit.json.claimId);
+    await makerRelease(narrowId);
+    const narrowReveal = await tool('reveal', narrowDir);
+    toolDone('reveal', narrowReveal);
+    const narrowRound = await roundOf(narrowId);
+    expect(servedRoundChecks('narrow', narrowRound, { vector: NARROW_AVERAGE }));
+    await stateIs(narrowId, 'Judged');
+    const narrowJudged = (await eventOf('Judged', narrowId))[0];
+    one('narrow.judged.outcome', OUTCOMES[Number(narrowJudged.args.outcome)] === 'INVALID', OUTCOMES[Number(narrowJudged.args.outcome)]);
+    const narrowVector = [...(await sa.getClaim(narrowId)).vector].map(BigInt);
+    const judgement = await sa.judgeVector(listingId, narrowVector);
+    const listingNow2 = await sa.getListing(listingId);
+    one('narrow.judged.narrow', judgement.wellFormed && Number(judgement.outcome) === 0 && judgement.narrow === true, `the lens's judgeVector: ${OUTCOMES[Number(judgement.outcome)]}, narrow ${judgement.narrow}, valid mass ${narrowVector.slice(2).reduce((a, b) => a + b, 0n)} at the listing's floor ${listingNow2.narrowInvalidFloor}`);
+    const narrowStatus = await tool('status', narrowDir);
+    one('narrow.status.narrow', narrowStatus.json?.narrow === true && /bond comes back/.test(narrowStatus.json?.next ?? '') && BigInt(narrowStatus.json?.times?.appealDeadline ?? 0) > 0n, `narrow ${narrowStatus.json?.narrow}: ${narrowStatus.json?.next}`);
+
+    stage('narrow: the appeal window, then the bond back');
+    const narrowRunsBefore = (await server.get('/api/status')).json.keeper?.lastRun?.at ?? 0;
+    await settleOutcome(async () => ((await server.get('/api/status')).json.keeper?.lastRun?.at ?? 0) > narrowRunsBefore + 1000, 'waiting for keeper cycles');
+    one('narrow.settle.waitsAppealWindow', (await claimStateOf(narrowId)) === 'Judged', 'the keeper leaves a claim round\'s INVALID alone inside its appeal window');
+    const hunterBeforeNarrow = await balance(hunter);
+    const makerBeforeNarrow = await balance(maker);
+    await chain.advance(WINDOWS.dispute + 1);
+    await stateIs(narrowId, 'Settled');
+    const narrowEvent = (await eventOf('NarrowInvalid', narrowId))[0];
+    one('narrow.event', Boolean(narrowEvent) && narrowEvent.args.validMass === narrowVector.slice(2).reduce((a, b) => a + b, 0n) && (await senderOf(narrowEvent)) === chain.accounts.keeper.address, `NarrowInvalid, valid mass ${narrowEvent?.args.validMass}, settled by ${await senderOf(narrowEvent)}`);
+    expect(moneyChecks('narrow', [
+      { name: 'bondBack', before: hunterBeforeNarrow, after: await balance(hunter), expected: BOND_WEI },
+      { name: 'makerUntouched', before: makerBeforeNarrow, after: await balance(maker), expected: 0n },
+    ]));
+    const recordAfterNarrow = await settleOutcome(async () => {
+      const r = await recordView();
+      return r.record?.history?.narrowInvalid === '1' ? r : null;
+    }, 'waiting for the record to count the narrow INVALID');
+    const narrowHistory = recordAfterNarrow.record.history;
+    one('narrow.record.narrowInvalid', narrowHistory.narrowInvalid === '1' && narrowHistory.outcomes[0] === '3' && recordAfterNarrow.record.listings[0]?.narrowInvalidFloor === listingNow2.narrowInvalidFloor.toString() && !recordAfterNarrow.record.findings.some((f) => f.claimId === String(narrowId)), `narrow ${narrowHistory.narrowInvalid} within INVALID ${narrowHistory.outcomes[0]}, floor ${recordAfterNarrow.record.listings[0]?.narrowInvalidFloor}, not published`);
+
     // ---------------------------------------------------------------- nothing live
     stage('nothing live');
     one('live.noHostApi', new URL(repository.url).host === GIT_HOST && finalView.fork?.status === 'unknown' && finalView.fork?.host === null, `the fork label: status ${finalView.fork?.status}, host ${finalView.fork?.host}: a host with no API (null is the checker's answer before any request), so it asked nobody`);
     one('live.ipfsNoMisses', ipfs.misses.length === 0, ipfs.misses.join(', ') || `${ipfs.fetches.length} fetches, ${ipfs.pins.length} pins, all here`);
     const everyProviderCall = providerCalls();
-    one('live.providerIsTheMock', everyProviderCall.length > 0 && everyProviderCall.every((c) => [...panel.map((p) => p.model), JUSTIFIER.model].includes(c.model) && c.outcome === 'answered'), `${everyProviderCall.length} calls, every one logged by the mock provider`);
+    one('live.providerIsTheMock', everyProviderCall.length > 0 && everyProviderCall.every((c) => [...panel.map((p) => p.model), ...disputePanel.map((p) => p.model), JUSTIFIER.model].includes(c.model) && c.outcome === 'answered'), `${everyProviderCall.length} calls, every one logged by the mock provider`);
     const firstCheck = hunterRunner.post('/v1/runs')[0]?.response;
     for (const c of h.pullChecks(firstCheck, await registry.manifestRequests(), validation.image.ref)) one(`live.${c.name}`, c.ok, c.detail);
   };

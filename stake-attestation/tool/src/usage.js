@@ -5,6 +5,7 @@ export const COMMANDS = {
   reveal: 'Pin the plaintext claim and reveal it once it is revealable',
   status: 'Show a claim\'s state and its pending evaluation',
   claim: 'Finalize, settle and withdraw a claim\'s payout',
+  appeal: 'Appeal an INVALID to the dispute panel, or re-trigger the appeal\'s round',
 };
 
 export const USAGE = `Usage: verdikta-attest <command> [options]
@@ -21,7 +22,10 @@ ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`)
   commit <claim-dir> --listing <id> [--yes] [--restart] [--accept-unread-pin]
   reveal <claim-dir> [--retrigger]
   status <claim-dir|claim-id> [--wait] [--max-wait-ms <n>]
-  claim <claim-dir|claim-id>
+  claim <claim-dir|claim-id> [--waive-appeal]
+                     --waive-appeal settles your own INVALID before anyone else may, which waives its appeal
+  appeal <claim-dir|claim-id> [--yes]
+                     pays the live dispute fee for one round of the dispute panel; prints it, and sends only with --yes
 
 A claim folder holds finding.json, report.md, poc.patch and optionally fix.patch. commit keeps its
 files in <claim-dir>/.verdikta-claim/: back that folder up, since losing its keys forfeits the bond.

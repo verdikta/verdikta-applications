@@ -217,6 +217,11 @@ export const STRINGS = {
     open: 'Open to every hunter',
     knownIssues: 'Known issues: {count}',
     valueAtRisk: 'Declared value at risk: {usd} USD',
+    // errata E8 and E9: the two values list() copied from the program when the listing was made
+    band: 'Narrow INVALID band: an INVALID with at least {floor} of 1,000,000 ({points} points) of valid mass gets its bond back, with no award',
+    bandEmpty: 'Narrow INVALID band: empty, so every INVALID forfeits its bond to the maker',
+    size: 'Confirmation size: an award above {size} ETH waits for the dispute panel to confirm it before it pays, the round paid from the escrow',
+    sizeAll: 'Confirmation size: 0, so every counted award waits for the dispute panel to confirm it before it pays, the round paid from the escrow',
     mismatch: 'The server\'s list() arguments differ from what you entered ({fields}). Nothing was sent; validate again.',
     list: 'List on-chain',
     notTheMaker: 'Nothing was sent: this listing was built for {maker}, the wallet the project names, and your wallet is {account}. From another wallet it would not count. Switch back and list again.',
@@ -406,6 +411,15 @@ export const STRINGS = {
       NoVerdict: 'disputed; the dispute round ended without a verdict and the first verdict stands',
     },
     kinds: { Repo: 'repository', Contract: 'deployed contract' },
+    // which dispute-panel round a claim's dispute fields describe (errata E7, E9)
+    disputeKinds: { None: 'none', Maker: 'the maker\'s dispute', Confirmation: 'the confirmation', Appeal: 'the hunter\'s appeal' },
+    panelResults: {
+      None: 'none',
+      Pending: 'its round is open',
+      Held: 'the dispute panel gave the same outcome',
+      Overturned: 'the dispute panel replaced the outcome',
+      NoVerdict: 'its round ended without a verdict',
+    },
   },
   labels: {
     scanned: 'scanned',
@@ -548,6 +562,23 @@ export const STRINGS = {
     disputes: 'Disputes filed',
     disputeResults: 'Dispute outcomes',
     disputeLine: 'same outcome {held}, outcome replaced {overturned}, no verdict {noVerdict}',
+    // the settlement safeguards (errata E7-E9), counted apart from the maker's disputes, each by its final result
+    appeals: 'Appeals of an INVALID by its hunter',
+    appealResults: 'Appeal outcomes',
+    appealLine: 'INVALID again {held}, outcome replaced {overturned}, no verdict {noVerdict}',
+    confirmations: 'Confirmation rounds, paid from the escrow',
+    confirmationResults: 'Confirmation outcomes',
+    confirmationLine: 'same outcome {held}, outcome replaced {overturned}, paid from the deadline with no verdict {noVerdict}',
+    narrowInvalid: 'INVALID verdicts in the narrow band, bond returned (counted within INVALID)',
+    lateAppeals: 'Late claims\' appeals',
+    lateNarrowInvalid: 'Late claims\' INVALID verdicts in the narrow band, bond returned',
+    narrowFloor: 'Narrow INVALID floor',
+    narrowFloorLine: '{floor} of 1,000,000 ({points} points) of valid mass',
+    narrowFloorEmpty: 'the empty band: every INVALID forfeits its bond',
+    confirmSize: 'Confirmation size',
+    confirmSizeLine: 'awards above {size} ETH wait for the dispute panel',
+    confirmSizeAll: '0: every counted award waits for the dispute panel',
+    findingRound: '{kind}: {result}',
     daysSince: 'Days since the last valid finding',
     noValidFinding: 'no valid finding recorded',
     findings: 'Valid findings',
@@ -680,6 +711,35 @@ export const STRINGS = {
     notMaker: 'Only the listing\'s maker ({maker}) can do this; your wallet is {account}.',
     failed: 'The transaction failed: {reason}',
     changed: 'Nothing was sent: the claim changed on-chain since this page read it. It has been read again.',
+    // the settlement safeguards (design §13.2, errata E7-E9), each from the contract's own reads
+    roundKind: 'Dispute-panel round',
+    roundKindLine: '{kind}: {result}',
+    appeal: 'Appeal window',
+    appealUntil: 'The hunter may appeal this INVALID to the dispute panel until {time}, paying the live dispute fee.',
+    appealOver: 'The appeal window ended at {time}.',
+    appealRetrigger: 'The appeal\'s round ended without a verdict: the hunter may re-trigger it once, for a fresh fee, until {time}.',
+    waiver:
+      'Until {time} only the hunter may settle this INVALID, and a hunter who settles it before then waives the appeal. ' +
+      'From then on anyone may settle it, the site\'s keeper included, and nothing is waived.',
+    confirmation: 'Confirmation',
+    confirmationStates: {
+      awaiting: 'the award is above the listing\'s confirmation size: the dispute panel confirms it before it pays. A round may start from {opensAt}, the end of the dispute window; if none returns a verdict, the first verdict pays from {deadline}.',
+      open: 'awaits the dispute panel\'s confirmation: anyone may start a round until {deadline}, and the site\'s keeper does. If none returns a verdict, the first verdict pays from then.',
+      pending: 'a round of the dispute panel is open; the confirmation deadline is {deadline}.',
+      closed: 'the confirmation deadline, {deadline}, has passed: with no round open, the first verdict pays.',
+      held: 'the dispute panel confirmed the outcome.',
+      overturned: 'the dispute panel replaced the outcome, and its outcome settled.',
+      noVerdict: 'no round of the dispute panel returned a verdict before the deadline, so the first verdict paid.',
+    },
+    narrow: 'Narrow INVALID',
+    narrowYes: 'yes: its valid mass is at least the listing\'s floor, so the bond comes back if this verdict settles',
+    narrowNo: 'no: the bond goes to the maker if this verdict settles',
+    bond: 'Bond',
+    bonds: {
+      returned: 'returned to the hunter',
+      returnedNarrow: 'returned to the hunter: a narrow INVALID, with no award',
+      forfeited: 'forfeited to the maker',
+    },
   },
   release: {
     title: 'Release',
@@ -712,8 +772,9 @@ export const STRINGS = {
     title: 'Dispute',
     intro:
       'You may dispute a valid verdict once, until {deadline}. A stronger panel re-judges the claim, and its ' +
-      'outcome is final. A dispute that turns the outcome INVALID forfeits the hunter\'s bond to you; one that ' +
-      'holds is recorded as a failed dispute.',
+      'outcome is final. A dispute that turns the outcome INVALID forfeits the hunter\'s bond to you, unless the ' +
+      'panel\'s verdict is a narrow INVALID, whose bond goes back to the hunter; one that holds is recorded as a failed dispute. ' +
+      'Above the listing\'s confirmation size, your dispute is the confirmation.',
     prepay: 'Escalation prepay: {fee} ETH, the dispute panel\'s maxTotalFee read from the chain. What the oracles do not spend comes back to you.',
     prepayLoading: 'Reading the escalation prepay…',
     statement: 'Your statement (at most {max} bytes of UTF-8 text)',
@@ -740,6 +801,8 @@ export const STRINGS = {
     claim: 'The claim was revealed at {time} and its evaluation requested. Waiting for the arbiters\' verdict: this page reads the chain every {seconds} seconds for up to {minutes} minutes.',
     dispute: 'The claim was disputed at {time} and the dispute panel\'s evaluation requested. Waiting for its verdict: this page reads the chain every {seconds} seconds for up to {minutes} minutes.',
     disputeSent: 'The dispute was sent. Waiting for the dispute panel\'s verdict: this page reads the chain every {seconds} seconds for up to {minutes} minutes.',
+    appeal: 'The hunter appealed at {time} and the dispute panel\'s evaluation is requested. Waiting for its verdict: this page reads the chain every {seconds} seconds for up to {minutes} minutes.',
+    confirmation: 'The confirmation round started at {time}, paid from the escrow, and the dispute panel\'s evaluation is requested. Waiting for its verdict: this page reads the chain every {seconds} seconds for up to {minutes} minutes.',
     typical: 'A verdict usually takes 3 to 6 minutes, and the site\'s keeper records it on-chain.',
     timedOut:
       'No verdict was recorded in {minutes} minutes of checking. The arbiters may still be working, or the round may ' +

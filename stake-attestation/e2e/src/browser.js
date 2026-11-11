@@ -25,6 +25,9 @@ export async function readPages(chromium, clientUrl, { artifactHash, listingId, 
       integrityOther: await text('history-duplicates'),
       integrityNote: await text('integrity-note'),
       findings: await text('record-findings'),
+      // node P18: the settlement safeguards' counts, the contract's
+      confirmations: await text('history-confirmations'),
+      confirmationResults: await text('history-confirmation-results'),
       state: await text(`listing-${listingId}-state`),
       main: await page.locator('main').innerText(),
     };

@@ -9,7 +9,7 @@
 // the block only says why.
 import { MAX_JUSTIFICATION_UPLOAD_BYTES, justificationCidOf, readExecutionEvidence as readEvidenceBlock } from '@verdikta/stake-attestation-shared/execution-evidence';
 
-import { CLAIM_STATES, DISPUTE_RESULTS, EXPIRIES, OUTCOMES } from './abi.js';
+import { CLAIM_STATES, DISPUTE_KINDS, DISPUTE_RESULTS, EXPIRIES, OUTCOMES } from './abi.js';
 import { codeReview } from './common.js';
 import { within } from './context.js';
 import { fail } from './errors.js';
@@ -56,7 +56,7 @@ export function failedRoundNext({ deadline, requestId, roundStarted }) {
 }
 
 // `live` says whether anyone still wants this answer: a read abandoned at the deadline starts nothing more.
-async function snapshot(ctx, claimId, live = () => true) {
+export async function snapshot(ctx, claimId, live = () => true) {
   const step = (fn) => {
     if (!live()) throw fail('RPC_UNAVAILABLE', 'The time given is over.');
     return fn();
@@ -70,16 +70,33 @@ async function snapshot(ctx, claimId, live = () => true) {
   const judged = lens === 'Judged' || lens === 'Settled' || lens === 'Disputed';
   const settleableAt = lens === 'Judged' ? await read('settleableAt') : 0n;
   const disputeDeadline = lens === 'Judged' ? await read('disputeDeadline') : 0n;
-  const retriggerDeadline = lens === 'RoundFailed' ? await read('retriggerDeadline') : 0n;
+  // a failed claim round's, or (erratum E7) the one re-trigger of an appeal whose round settled no verdict
+  const retriggerDeadline = lens === 'RoundFailed' || lens === 'Judged' ? await read('retriggerDeadline') : 0n;
+  // the settlement safeguards (errata E7-E9), each from the lens: the appeal window, the confirmation's
+  // window, and whether the vector is a narrow INVALID under the listing's floor (judgeVector)
+  const appealDeadline = lens === 'Judged' ? await read('appealDeadline') : 0n;
+  const [confirmOpensAt, confirmDeadline] = lens === 'Judged' || lens === 'Disputed' ? await read('confirmWindow') : [0n, 0n];
+  const outcome = judged ? OUTCOMES[Number(claim.outcome)] : null;
+  let narrow = null;
+  if (outcome === 'INVALID') {
+    const j = await step(() => ctx.read('judgeVector', [claim.listingId, [...claim.vector].map(BigInt)], at));
+    narrow = j.wellFormed ? j.narrow : null;
+  }
+  // settle's own rule for the bond, once it has run: an INVALID's to the maker unless narrow (erratum E8)
+  const bond = lens === 'Settled' ? (outcome === 'INVALID' && narrow !== true ? 'forfeited' : 'returned') : null;
   return {
     claimId: BigInt(claimId),
     listingId: claim.listingId,
     hunter: claim.hunter,
     state: lens,
     chainTime: BigInt(block.timestamp),
-    outcome: judged ? OUTCOMES[Number(claim.outcome)] : null,
+    outcome,
     expiry: lens === 'Expired' ? EXPIRIES[Number(claim.expiry)] : null,
     dispute: DISPUTE_RESULTS[Number(claim.dispute)],
+    disputeKind: DISPUTE_KINDS[Number(claim.disputeKind)],
+    late: claim.late,
+    narrow,
+    bond,
     disclosedAt: claim.disclosedAt,
     ciphertextCid: claim.ciphertextCid,
     bcid: claim.bcid,
@@ -97,6 +114,9 @@ async function snapshot(ctx, claimId, live = () => true) {
       settleableAt,
       disputeDeadline,
       retriggerDeadline,
+      appealDeadline,
+      confirmOpensAt,
+      confirmDeadline,
     },
     pending: lens === 'Revealed' || lens === 'Disputed',
     ready: null,
@@ -117,6 +137,27 @@ async function finalizeReady(ctx, claimId) {
   }
 }
 
+const PANEL_ROUND = Object.freeze({ Maker: 'The maker\'s dispute round', Confirmation: 'The dispute panel\'s confirmation round', Appeal: 'Your appeal\'s round' });
+
+/** A Judged claim: what may come next, by the lens's times (errata E7-E9). */
+function judgedNext(s) {
+  const t = s.times;
+  const head = `Judged ${s.outcome}${s.narrow ? ', a narrow INVALID: if it stands, the bond comes back' : ''}.`;
+  if (s.outcome === 'INVALID' && t.appealDeadline > s.chainTime) {
+    return `${head} You may appeal it to the dispute panel until ${t.appealDeadline} on the chain's clock: appeal shows what it costs (the live dispute fee) and sends it with --yes. Anyone may settle it from then. Settling it yourself before then waives the appeal: claim --waive-appeal does that.`;
+  }
+  if (s.outcome === 'INVALID' && s.disputeKind === 'Appeal' && s.dispute === 'NoVerdict' && t.retriggerDeadline > s.chainTime) {
+    return `${head} Your appeal's round settled no verdict. appeal re-triggers it once, for a fresh fee in full, before ${t.retriggerDeadline} on the chain's clock. Anyone may settle the INVALID from then; settling it yourself before then waives the re-trigger: claim --waive-appeal does that.`;
+  }
+  if (t.confirmDeadline !== 0n) {
+    if (s.chainTime < t.confirmOpensAt) return `${head} The award is above the listing's confirmation size, so the dispute panel confirms it before it pays: a round may start from ${t.confirmOpensAt} on the chain's clock, the end of the dispute window (anyone may call confirm, and the site's keeper does). If no round returns a verdict, the first verdict pays from ${t.confirmDeadline}.`;
+    if (s.chainTime < t.confirmDeadline) return `${head} It awaits the dispute panel's confirmation: anyone may call confirm until ${t.confirmDeadline} on the chain's clock, and the site's keeper does. If no round returns a verdict, the first verdict pays from then.`;
+    return `${head} The confirmation deadline has passed with no verdict from the dispute panel: run claim to settle the first verdict.`;
+  }
+  if (t.settleableAt > s.chainTime) return `${head} The dispute window runs until ${t.settleableAt} on the chain's clock; run claim after that to settle.`;
+  return `${head} Run claim to settle.`;
+}
+
 function nextFor(s) {
   switch (s.state) {
     case 'Committed':
@@ -125,14 +166,16 @@ function nextFor(s) {
     case 'Revealable':
       return s.times.revealDeadline === 0n ? 'Revealable once every earlier claim on the listing is settled or expired: reveal then.' : `Run reveal before ${s.times.revealDeadline} on the chain's clock, or the bond goes to the maker.`;
     case 'Revealed':
-    case 'Disputed':
+    case 'Disputed': {
       if (s.ready === 'finalize') return 'The round is over: run claim to record it.';
-      if (s.timedOut) return 'The round is still open after the time given. It may be running slowly; run status --wait again, and claim once it is over.';
-      return 'The round is still open: the arbiters are at work, usually for 3 to 6 minutes and at most about 15. status --wait polls it.';
+      const round = s.state === 'Disputed' ? `${PANEL_ROUND[s.disputeKind] ?? 'The dispute panel\'s round'} is open` : 'The round is still open';
+      if (s.timedOut) return `${round} after the time given. It may be running slowly; run status --wait again, and claim once it is over.`;
+      return `${round}: the arbiters are at work, usually for 3 to 6 minutes and at most about 15. status --wait polls it.`;
+    }
     case 'Judged':
-      if (s.times.settleableAt > s.chainTime) return `Judged ${s.outcome}. The dispute window runs until ${s.times.settleableAt} on the chain's clock; run claim after that to settle.`;
-      return `Judged ${s.outcome}. Run claim to settle.`;
+      return judgedNext(s);
     case 'Settled':
+      if (s.outcome === 'INVALID') return s.bond === 'returned' ? 'Settled INVALID, a narrow INVALID: the bond came back, with no award.' : 'Settled INVALID: the bond went to the maker.';
       return s.owedWei > 0n ? `Settled ${s.outcome}, with ${s.owedWei} wei of the award still owed: the maker's next fund pays it.` : `Settled ${s.outcome}.`;
     case 'Expired':
       return `Expired (${s.expiry}).`;

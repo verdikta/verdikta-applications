@@ -93,7 +93,7 @@
 //   SA_BADGE_FLOOR_WEI             PLACEHOLDER (record/labels.js): below it a stake is only "scanned"
 //   SA_UNDER_STAKED_RATIO_BPS      PLACEHOLDER (record/labels.js): the share of a declared value at
 //                                  risk below which a stake is "under-staked", in basis points
-//   SA_KEEPER                      on (default) | off: call finalize and settle when due
+//   SA_KEEPER                      on (default) | off: call finalize, confirm and settle when due
 //   SA_KEEPER_PRIVATE_KEY          the keeper's key. Read when the keeper starts, never kept here
 //   SA_KEEPER_POLL_MS              between keeper cycles (30000)
 //   SA_KEEPER_TX_TIMEOUT_MS        how long a cycle waits for a receipt (120000)
@@ -101,6 +101,8 @@
 //                                  with higher fees (180000)
 //   SA_KEEPER_MAX_FEE_PER_GAS_WEI  the most the keeper pays per gas (10000000000, 10 gwei)
 //   SA_KEEPER_EXPIRE               off (default) | on: also expire claims nobody can advance
+//   SA_KEEPER_CONFIRM              on (default) | off: call confirm on a claim that awaits the dispute
+//                                  panel's confirmation (erratum E9; the listing's escrow pays it)
 //
 // The control facts (node P8; src/control/, docs/control-proof.md):
 //
@@ -358,6 +360,7 @@ function keeperConfig(env) {
     replaceAfterMs: integer(env, 'SA_KEEPER_REPLACE_AFTER_MS', 180000),
     maxFeePerGasWei: wei(env, 'SA_KEEPER_MAX_FEE_PER_GAS_WEI', '10000000000'),
     expire: onOff(env, 'SA_KEEPER_EXPIRE', false),
+    confirm: onOff(env, 'SA_KEEPER_CONFIRM', true),
   });
 }
 

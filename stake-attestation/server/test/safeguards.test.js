@@ -14,6 +14,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { CONFIRM_MARGIN_SECONDS } from '../src/site/keeper.js';
 import { project } from '../src/site/projection.js';
 import {
   chainContext, commit, disclose, dispute, finalize, HOUR, increaseTime, JUSTIFICATION, keeperTransactions, latestTimestamp, listing,
@@ -128,8 +129,8 @@ describe('the keeper calls confirm (erratum E9)', () => {
       await increaseTime(ctx, 301);
       assert.deepEqual(actions(await cycle(site)), [['finalize', String(claimId)]]);
 
-      // the window closes: confirm would revert, so it is never sent; settle waits for the deadline
-      await untilAt(ctx, deadline - 30n);
+      // a round may still start shortly before the deadline, and runs to its finalize after it
+      await untilAt(ctx, deadline - CONFIRM_MARGIN_SECONDS - 60n);
       const r = await cycle(site);
       assert.deepEqual(actions(r), [['confirm', String(claimId)]], 'a round may still start before the deadline');
       await increaseTime(ctx, 301);
@@ -142,6 +143,26 @@ describe('the keeper calls confirm (erratum E9)', () => {
       assert.equal(await ctx.hre.ethers.provider.getBalance(hunter) - before, l.bondWei + l.awards[1], 'bond back plus the MEDIUM award');
       assert.equal(l.confirmationsNoVerdict, 1n);
       assert.ok((await keeperTransactions(ctx)).every((t) => t.status === 1), 'nothing the keeper sent reverted');
+    } finally {
+      site.close();
+    }
+  });
+
+  test('this close to the deadline confirm is not sent, so it cannot be mined after it and revert; settle follows at the deadline', async () => {
+    const ctx = await confirmedListingContext();
+    const { listingId } = await confirmedListing(ctx);
+    const claimId = await revealedClaim(ctx, ctx.hunters[0], listingId);
+    const site = siteFor(ctx);
+    try {
+      await verdict(ctx, claimId, 'HIGH');
+      await cycle(site);
+      const [, deadline] = await ctx.sa.confirmWindow(claimId);
+      await untilAt(ctx, deadline - CONFIRM_MARGIN_SECONDS + 10n);
+      await ctx.sa.connect(ctx.other).confirm.staticCall(claimId); // still open on the chain
+      assert.deepEqual((await cycle(site)).sent, [], 'inside the margin: not sent');
+      await untilAt(ctx, deadline);
+      assert.deepEqual(actions(await cycle(site)), [['settle', String(claimId)]]);
+      assert.equal((await ctx.sa.getListing(listingId)).confirmationRounds, 0n);
     } finally {
       site.close();
     }
@@ -390,7 +411,7 @@ describe('the indexer and the projection', () => {
       // the program values: a band from 25 points, and every counted award confirmed
       await program(ctx, { size: 0n, floor: FLOOR });
       const banded = await listing(ctx, { escrowWei: 10n ** 19n });
-      await program(ctx, { size: 2n ** 256n - 1n });
+      await program(ctx, { size: 2n ** 256n - 1n, floor: THRESHOLD });
       const plain = await listing(ctx);
 
       // banded: a confirmed HIGH, an appealed INVALID that is held narrow, a deep INVALID the hunter waives
@@ -405,6 +426,7 @@ describe('the indexer and the projection', () => {
       assert.deepEqual(awaiting.confirmation, { status: 'Awaiting', rounds: 0, opensAt: Number(opensAt), deadline: Number(deadline) });
       assert.equal(awaiting.appealDeadline, null, 'a valid outcome has no appeal window');
       await untilAt(ctx, opensAt);
+      await (await ctx.aggregator.setRefundAmount(10n ** 12n)).wait(); // some prepay unspent: it goes back to the escrow
       await (await ctx.sa.connect(ctx.other).confirm(confirmed, { gasLimit: APPEAL_GAS })).wait();
       await verdict(ctx, confirmed, 'HIGH', { dispute: true });
       await finalize(ctx, confirmed);
@@ -460,9 +482,9 @@ describe('the indexer and the projection', () => {
       }
       assert.equal(p.listings.get(String(banded.listingId)).narrowInvalidFloor, String(FLOOR));
       assert.equal(p.listings.get(String(banded.listingId)).confirmAboveWei, '0');
-      assert.equal(p.listings.get(String(plain.listingId)).narrowInvalidFloor, String(FLOOR), 'the floor set before it');
+      assert.equal(p.listings.get(String(plain.listingId)).narrowInvalidFloor, String(THRESHOLD), 'the empty band, set back before it');
       assert.equal(p.listings.get(String(plain.listingId)).confirmAboveWei, String(2n ** 256n - 1n));
-      assert.deepEqual(p.program, { narrowInvalidFloor: String(FLOOR), confirmAboveWei: String(2n ** 256n - 1n) }, 'the values the next listing gets, from the setter events');
+      assert.deepEqual(p.program, { narrowInvalidFloor: String(THRESHOLD), confirmAboveWei: String(2n ** 256n - 1n) }, 'the values the next listing gets, from the setter events');
 
       const c1 = p.claims.get(String(confirmed));
       assert.equal(c1.disputeKind, 'Confirmation');
@@ -489,7 +511,6 @@ describe('the indexer and the projection', () => {
       const c4 = p.claims.get(String(plainInvalid));
       assert.equal(c4.narrowInvalid, null, 'the same vector under an empty band');
       assert.equal(c4.bond, 'forfeited');
-      assert.equal(p.listings.get(String(plain.listingId)).narrowInvalidFloor === String(THRESHOLD), false);
 
       // the feed's events of an INVALID keep only its ids, the new ones too
       const feed = site.events({ limit: 1000 }).events;
@@ -515,7 +536,9 @@ describe('the indexer and the projection', () => {
     try {
       await second.sync();
       assert.deepEqual(project(second.store.state.events).listings.get(String(l.listingId)), before);
-      assert.equal(second.status().program.confirmAboveWei, null, 'the setter events came before SA_FROM_BLOCK: not known here');
+      // the constructor's NarrowInvalidFloorSet came before SA_FROM_BLOCK: not known here; the size
+      // the test deployment set is in the first block read
+      assert.deepEqual(second.status().program, { narrowInvalidFloor: null, confirmAboveWei: String(2n ** 256n - 1n) });
     } finally {
       second.close();
     }

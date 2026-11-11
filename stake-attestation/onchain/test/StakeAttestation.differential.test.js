@@ -130,10 +130,10 @@ function malformed(r) {
   }
 }
 
-// The narrow-INVALID floors a listing is also judged under (erratum E8), besides the default the
-// contract deploys with, THRESHOLD (the empty band, every INVALID forfeits): common's lowest, one
-// inside the band, and the band's top, where only a valid mass of exactly THRESHOLD - 1 is narrow.
-// list() copies the program's floor onto each listing. The floor decides `narrow` and the bond only.
+// The narrow-INVALID floors besides the default the contract deploys with, THRESHOLD (the empty
+// band: every INVALID forfeits), that the listings below are judged under (erratum E8): common's
+// lowest, one inside the band, and the band's top, where only a valid mass of exactly THRESHOLD - 1
+// is narrow. The floor decides `narrow` and the bond only, never the outcome or the award.
 const FLOORS = [codeReview.NARROW_INVALID_FLOOR_MIN, 350_000, T - 1];
 const invalidWith = (mass) => [SCALE - mass, 0, 0, mass, 0, 0]; // INVALID with exactly `mass` valid, on MEDIUM
 // Each floor's edges: valid mass at it and one below, an INVALID/DUPLICATE tie inside the band
@@ -145,23 +145,26 @@ const FLOOR_EDGE_VECTORS = [
   [0, SCALE, 0, 0, 0, 0],
 ];
 
-// The listing terms the vectors are settled under, with common's stake for each.
+// The listing terms the vectors are settled under, with common's stake for each, and the floor
+// list() copies onto each listing from the program. One listing per floor, so a vector is judged
+// under every floor at no extra call (the coverage job runs these under instrumentation).
 const STAKES = [
-  { awards: AWARDS, lowest: Outcome.MEDIUM }, // common's code_review.bug.json
-  { awards: [parseEther("0.05"), ...AWARDS.slice(1)], lowest: Outcome.LOW },
-  { awards: [parseEther("0.05"), ...AWARDS.slice(1)], lowest: Outcome.HIGH },
-  { awards: [parseEther("0.05"), ...AWARDS.slice(1)], lowest: Outcome.CRITICAL },
-  { awards: [7n, 7n, 7n, 7n], lowest: Outcome.LOW },
+  { awards: AWARDS, lowest: Outcome.MEDIUM, floor: T }, // common's code_review.bug.json, the default floor
+  { awards: [parseEther("0.05"), ...AWARDS.slice(1)], lowest: Outcome.LOW, floor: FLOORS[0] },
+  { awards: [parseEther("0.05"), ...AWARDS.slice(1)], lowest: Outcome.HIGH, floor: FLOORS[1] },
+  { awards: [parseEther("0.05"), ...AWARDS.slice(1)], lowest: Outcome.CRITICAL, floor: FLOORS[2] },
+  { awards: [7n, 7n, 7n, 7n], lowest: Outcome.LOW, floor: T },
 ];
+const LOWEST = STAKES[1]; // the stake judged under common's lowest floor
 const commonStake = ({ awards, lowest }) => ({
   awards: { LOW: String(awards[0]), MEDIUM: String(awards[1]), HIGH: String(awards[2]), CRITICAL: String(awards[3]) },
   lowestClassCounted: OUTCOMES[Number(lowest)],
 });
 
-// common's verdict, or null where it refuses the vector; `floor` absent is common's default, THRESHOLD.
-function commonVerdict(vector, stake, floor) {
+// common's verdict under the stake's floor, or null where it refuses the vector.
+function commonVerdict(vector, stake) {
   try {
-    return codeReview.settleBugOutcome(vector, commonStake(stake), floor === undefined ? {} : { narrowInvalidFloor: floor });
+    return codeReview.settleBugOutcome(vector, commonStake(stake), { narrowInvalidFloor: stake.floor });
   } catch (e) {
     if (e instanceof TypeError) return null;
     throw e;
@@ -174,15 +177,12 @@ async function deployWithStakes() {
   const f = await H.deploy();
   expect(await f.sa.narrowInvalidFloor()).to.equal(BigInt(T));
   const ids = [];
-  for (const s of STAKES) ids.push(await listWith(f, s));
-  // the first stake again under each other floor, which list() copies from the program
-  const floored = [];
-  for (const floor of FLOORS) {
-    await f.sa.connect(f.owner).setNarrowInvalidFloor(floor);
-    floored.push(await listWith(f, STAKES[0]));
-    expect((await f.sa.getListing(floored.at(-1))).narrowInvalidFloor).to.equal(BigInt(floor));
+  for (const s of STAKES) {
+    await f.sa.connect(f.owner).setNarrowInvalidFloor(s.floor);
+    ids.push(await listWith(f, s));
+    expect((await f.sa.getListing(ids.at(-1))).narrowInvalidFloor).to.equal(BigInt(s.floor));
   }
-  return { ...f, ids, floored };
+  return { ...f, ids };
 }
 
 function expectSame(got, want, label) {
@@ -198,12 +198,9 @@ function expectSame(got, want, label) {
   expect(got.narrow, `${label}: narrow (${want.bond})`).to.equal(want.narrow);
 }
 
-async function compare(sa, ids, floored, vector, label) {
+async function compare(sa, ids, vector, label) {
   for (let k = 0; k < STAKES.length; k++) {
-    expectSame(await sa.judgeVector(ids[k], vector), commonVerdict(vector, STAKES[k]), `${label} [${vector}] stake ${k}`);
-  }
-  for (let j = 0; j < FLOORS.length; j++) {
-    expectSame(await sa.judgeVector(floored[j], vector), commonVerdict(vector, STAKES[0], FLOORS[j]), `${label} [${vector}] floor ${FLOORS[j]}`);
+    expectSame(await sa.judgeVector(ids[k], vector), commonVerdict(vector, STAKES[k]), `${label} [${vector}] stake ${k}, floor ${STAKES[k].floor}`);
   }
   return commonVerdict(vector, STAKES[0]) !== null;
 }
@@ -212,23 +209,23 @@ describe("StakeAttestation: settlement equals @verdikta/common settleBugOutcome 
   this.timeout(1_200_000);
 
   it("on common's fixture vectors, under five award tables and four floors, and on each floor's edges", async function () {
-    const { sa, ids, floored } = await loadFixture(deployWithStakes);
+    const { sa, ids } = await loadFixture(deployWithStakes);
     expect(await sa.THRESHOLD()).to.equal(BigInt(codeReview.DEFAULT_SETTLEMENT_THRESHOLD));
     expect(await sa.MIN_SCORE_SUM()).to.equal(BigInt(codeReview.OUTCOME_MASS_MIN_TOTAL));
     expect(await sa.MIN_NARROW_INVALID_FLOOR()).to.equal(BigInt(codeReview.NARROW_INVALID_FLOOR_MIN));
-    for (const v of COMMON_FIXTURE_VECTORS) await compare(sa, ids, floored, v, "fixture");
-    const narrow = FLOORS.map(() => 0);
+    for (const v of COMMON_FIXTURE_VECTORS) await compare(sa, ids, v, "fixture");
+    const narrow = STAKES.map(() => 0);
     for (const v of FLOOR_EDGE_VECTORS) {
-      expect(await compare(sa, ids, floored, v, "floor edge")).to.equal(true);
-      FLOORS.forEach((f, j) => { if (commonVerdict(v, STAKES[0], f).narrow) narrow[j]++; });
+      expect(await compare(sa, ids, v, "floor edge")).to.equal(true);
+      STAKES.forEach((s, k) => { if (commonVerdict(v, s).narrow) narrow[k]++; });
     }
-    // the edges reach a narrow INVALID under every floor, and one just short of it
-    for (const n of narrow) expect(n).to.be.greaterThan(0);
-    expect(commonVerdict(invalidWith(FLOORS[0] - 1), STAKES[0], FLOORS[0]).narrow).to.equal(false);
+    // the edges reach a narrow INVALID under every floor of the band, and none at THRESHOLD
+    STAKES.forEach((s, k) => (s.floor === T ? expect(narrow[k]).to.equal(0) : expect(narrow[k]).to.be.greaterThan(0)));
+    expect(commonVerdict(invalidWith(FLOORS[0] - 1), LOWEST).narrow).to.equal(false);
   });
 
   it("on >= 1,000 random well-formed vectors weighted to the threshold, the ties and the flooring loss, and on malformed ones", async function () {
-    const { sa, ids, floored } = await loadFixture(deployWithStakes);
+    const { sa, ids } = await loadFixture(deployWithStakes);
     const seed = 0x5a7c2026;
     const r = rng(seed);
     const names = Object.keys(GENERATORS);
@@ -237,7 +234,7 @@ describe("StakeAttestation: settlement equals @verdikta/common settleBugOutcome 
     for (let i = 0; i < 1200; i++) {
       const name = names[i % names.length];
       const v = GENERATORS[name](r);
-      expect(await compare(sa, ids, floored, v, `seed ${seed} #${i} ${name}`)).to.equal(true);
+      expect(await compare(sa, ids, v, `seed ${seed} #${i} ${name}`)).to.equal(true);
       wellFormed++;
       const valid = v[2] + v[3] + v[4] + v[5];
       if (valid === T) seen.exactThreshold++;
@@ -245,13 +242,13 @@ describe("StakeAttestation: settlement equals @verdikta/common settleBugOutcome 
       if (v[0] === v[1] && valid < T) seen.invDupTie++;
       if (v.reduce((a, b) => a + b, 0) < SCALE) seen.flooringLoss++;
       seen.byOutcome[commonVerdict(v, STAKES[0]).outcomeIndex]++;
-      const atLowest = commonVerdict(v, STAKES[0], FLOORS[0]);
+      const atLowest = commonVerdict(v, LOWEST);
       if (atLowest.narrow) seen.narrowAtLowest++;
       else if (atLowest.outcome === "INVALID") seen.invalidBelowLowest++;
     }
     for (let i = 0; i < 150; i++) {
       const v = malformed(r);
-      expect(await compare(sa, ids, floored, v, `seed ${seed} malformed #${i}`)).to.equal(false);
+      expect(await compare(sa, ids, v, `seed ${seed} malformed #${i}`)).to.equal(false);
     }
     expect(wellFormed).to.be.at.least(1000);
     // The generators really reach the edges and every outcome.
@@ -271,8 +268,8 @@ describe("StakeAttestation: settlement equals @verdikta/common settleBugOutcome 
     await sa.connect(owner).setNarrowInvalidFloor(FLOORS[0]);
     const lowId = await H.openListing(sa, maker, H.params({ artifact: H.atCommit(H.freshCommit()) }), { escrow: 2n * TOP });
     const claims = [
-      { listingId: id, floor: undefined, ...(await H.revealedClaim(sa, hunter, id)) },
-      { listingId: lowId, floor: FLOORS[0], ...(await H.revealedClaim(sa, hunter, lowId)) },
+      { listingId: id, stake: STAKES[0], ...(await H.revealedClaim(sa, hunter, id)) },
+      { listingId: lowId, stake: { ...STAKES[0], floor: FLOORS[0] }, ...(await H.revealedClaim(sa, hunter, lowId)) },
     ];
     const r = rng(0x00c0ffee);
     const names = Object.keys(GENERATORS);
@@ -290,8 +287,8 @@ describe("StakeAttestation: settlement equals @verdikta/common settleBugOutcome 
         await sa.finalize(k.claimId);
       }
       for (const k of claims) {
-        const label = `[${v}] floor ${k.floor ?? T}`;
-        const want = commonVerdict(v, STAKES[0], k.floor);
+        const label = `[${v}] floor ${k.stake.floor}`;
+        const want = commonVerdict(v, k.stake);
         const c = await sa.getClaim(k.claimId);
         if (want === null) {
           expect(c.state, label).to.equal(ClaimState.RoundFailed);

@@ -958,12 +958,13 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   (`disputeFee`; `retriggerTopUp` for the re-trigger), prints what it costs and what the panel's verdict does, and, as `commit`,
   sends nothing without `--yes`; the amount printed is the amount sent, all of it from the hunter, its spent part theirs whatever
   the result. The claim, the wallet's balance and a dry run come first; the signed call is saved in the claim folder before it is
-  sent, so a re-run sends the same bytes (again only with `--yes`), and by claim id a wallet with a transaction still pending is
-  refused. Only the claim's hunter may appeal; a DUPLICATE, a valid outcome, an INVALID the dispute panel gave and a closed
+  sent, so a re-run sends the same bytes, after the same checks and again only with `--yes`; saved bytes that could no longer
+  succeed are dropped only once the node no longer holds them, and a wallet with a transaction still pending is refused. Only the claim's hunter may appeal; a DUPLICATE, a valid outcome, an INVALID the dispute panel gave and a closed
   window are refused before anything is sent.
 - **Settling your own INVALID early waives the appeal.** Until the lens's `settleableAt` only the hunter may settle a claim
   round's INVALID (or one whose appeal settled no verdict), and doing so gives up the appeal (or its re-trigger). `claim` says so
-  and settles it only with `--waive-appeal`; the library's `settle` refuses with `NEEDS_WAIVER` unless `{ waiveAppeal: true }`.
+  and settles it only with `--waive-appeal`; the library's `settle` refuses with `NEEDS_WAIVER` unless `{ waiveAppeal: true }`,
+  and refuses a claim not judged yet, which could become such an INVALID before the settle is mined.
   From `settleableAt` on anyone may settle it, the site's keeper does, and nothing is waived.
 
 **What `finding.json` names.** `check` and `commit` warn, from a static read of the patch and before anything runs, of what

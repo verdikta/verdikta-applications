@@ -728,7 +728,7 @@ export const STRINGS = {
       pending: 'a round of the dispute panel is open; the confirmation deadline is {deadline}.',
       closed: 'the confirmation deadline, {deadline}, has passed: with no round open, the first verdict pays.',
       held: 'the dispute panel confirmed the outcome.',
-      overturned: 'the dispute panel replaced the outcome, and its outcome settled.',
+      overturned: 'the dispute panel replaced the outcome: the panel\'s outcome is the one settle applies.',
       noVerdict: 'no round of the dispute panel returned a verdict before the deadline, so the first verdict paid.',
     },
     narrow: 'Narrow INVALID',

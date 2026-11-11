@@ -17,8 +17,8 @@ import assert from 'node:assert/strict';
 import { CONFIRM_MARGIN_SECONDS } from '../src/site/keeper.js';
 import { project } from '../src/site/projection.js';
 import {
-  chainContext, commit, disclose, dispute, finalize, HOUR, increaseTime, JUSTIFICATION, keeperTransactions, latestTimestamp, listing,
-  reveal, revealedClaim, settle, siteFor, tmpDir, verdict,
+  automine, chainContext, commit, disclose, dispute, finalize, HOUR, increaseTime, JUSTIFICATION, keeperTransactions, latestTimestamp, listing,
+  mine, pendingKeeperTransactions, reveal, revealedClaim, rpc, settle, siteFor, tmpDir, verdict,
 } from './helpers/scenario.js';
 
 const ClaimState = ['Committed', 'Revealable', 'Revealed', 'Judged', 'Disputed', 'Settled', 'Expired', 'RoundFailed'];
@@ -378,6 +378,35 @@ describe('confirm keeps the keeper\'s idempotence', () => {
       assert.equal((await ctx.sa.getListing(listingId)).confirmationRounds, 1n);
     } finally {
       second.close();
+    }
+  });
+
+  test('a pending confirm, however young, whose window comes within the margin is replaced by a transfer to itself, never mined after the deadline', async () => {
+    const ctx = await confirmedListingContext();
+    const { claimId } = await dueForConfirm(ctx);
+    const [, deadline] = await ctx.sa.confirmWindow(claimId);
+    const site = siteFor(ctx, { env: { SA_KEEPER_TX_TIMEOUT_MS: '200', SA_KEEPER_REPLACE_AFTER_MS: '600000' } });
+    try {
+      await site.sync();
+      await automine(ctx, false);
+      const first = await site.keep();
+      assert.equal(first.pending.action, 'confirm');
+      const [pending] = await pendingKeeperTransactions(ctx);
+      // the confirm waits in the network while the chain's clock reaches the margin
+      await rpc(ctx, 'hardhat_dropTransaction', [pending.hash]);
+      await rpc(ctx, 'evm_setNextBlockTimestamp', [Number(deadline - CONFIRM_MARGIN_SECONDS + 5n)]);
+      await mine(ctx);
+      await rpc(ctx, 'eth_sendRawTransaction', [site.store.state.keeper.inflight.attempts.at(-1).raw]);
+      const r = await site.keep();
+      assert.deepEqual(r.sent.map((x) => x.action), ['cancel'], 'young, but closing: replaced now');
+      await mine(ctx);
+      await automine(ctx, true);
+      await site.keep();
+      assert.deepEqual((await keeperTransactions(ctx)).map((t) => [t.fn, t.status]), [['cancel', 1]], 'the confirm never reached a block');
+      assert.equal(await stateOf(ctx, claimId), 'Judged');
+    } finally {
+      await automine(ctx, true);
+      site.close();
     }
   });
 

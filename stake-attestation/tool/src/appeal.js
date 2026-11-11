@@ -6,14 +6,14 @@
 // Everything that could stop it comes first: the claim read at one block (whose it is, its state and the lens's
 // windows), the wallet's balance, and a dry run of the call at the send's own gas limit and value. The amount the
 // notice names is the amount sent. The signed call is saved in the claim folder before it is sent, so a re-run sends
-// the same bytes at their nonce; with a claim id and no folder, a wallet with a transaction still pending is refused,
-// since it may be this appeal. The contract allows one appeal and one re-trigger per claim, so a second call could
-// only revert.
+// the same bytes at their nonce, after the same checks and only with --yes; saved bytes that could no longer succeed
+// are forgotten only once the node holds them no more. A wallet with a transaction still pending is refused, since it
+// may be this appeal. The contract allows one appeal and one re-trigger per claim, so a second call could only revert.
 import { CLAIM_STATES, DISPUTE_KINDS, DISPUTE_RESULTS, OUTCOMES } from './abi.js';
 import { bindingOf, checkBinding } from './commit.js';
-import { fail } from './errors.js';
+import { fail, revertReasonOf } from './errors.js';
 import { appealNotice } from './notices.js';
-import { formatEther } from 'ethers';
+import { Transaction, formatEther } from 'ethers';
 import { openWorkspace } from './workspace.js';
 
 /** Above SUBMISSION_GAS_NEEDED: the call's own work, as reveal's. Only the gas used is paid. */
@@ -66,8 +66,10 @@ async function resultOf(ctx, claimId, rec, { receipt, gone }) {
   const state = CLAIM_STATES[Number(await ctx.read('claimState', [claimId]))];
   const kind = DISPUTE_KINDS[Number(claim.disputeKind)];
   const dispute = DISPUTE_RESULTS[Number(claim.dispute)];
-  // the nonce went to another transaction: the appeal is in only if the chain says so
-  if ((receipt && receipt.status !== 1) || (gone && !(kind === 'Appeal' && (state === 'Disputed' || dispute !== 'Pending')))) {
+  // the nonce went to another transaction: the call is in only if the chain says so (an appeal leaves
+  // its kind on the claim; a re-trigger, whose claim was an appeal already, its appealRetriggered)
+  const inPlace = rec.action === 'retrigger' ? claim.appealRetriggered === true : kind === 'Appeal';
+  if ((receipt && receipt.status !== 1) || (gone && !inPlace)) {
     throw fail('APPEAL_REVERTED', `Transaction ${rec.hash}.`);
   }
   return {
@@ -84,52 +86,92 @@ async function resultOf(ctx, claimId, rec, { receipt, gone }) {
   };
 }
 
+/**
+ * What would stop a send of `data` with `value` and `gasLimit` now: the wallet's balance, then a dry run. Throws
+ * INSUFFICIENT_FUNDS or APPEAL_REFUSED; `maxFeePerGas` is the one the send would pay at most.
+ */
+async function preflight(ctx, hunter, { data, value, gasLimit, maxFeePerGas }) {
+  const balance = await ctx.rpc(() => ctx.provider.getBalance(hunter));
+  if (balance < value + gasLimit * maxFeePerGas) throw fail('INSUFFICIENT_FUNDS', `It needs ${formatEther(value)} ETH and its gas limit's worth of ETH, though only the gas used is paid.`);
+  // the request goes to the aggregator uncaught, so its refusal reverts the call with a reason that is not the
+  // contract's: still a refusal, said without the node's text (errors.js)
+  await ctx.rpc(async () => {
+    try {
+      return await ctx.provider.call({ from: hunter, to: ctx.contract, data, value, gasLimit });
+    } catch (err) {
+      if (err?.code === 'CALL_EXCEPTION' && !revertReasonOf(err)) throw fail('APPEAL_REFUSED', 'The request was refused before any round started.');
+      throw err;
+    }
+  }).catch((err) => {
+    if (err.code === 'CONTRACT_REFUSED') throw fail('APPEAL_REFUSED', err.detail);
+    throw err;
+  });
+}
+
+/**
+ * Saved bytes whose nonce is not used yet: sent again only while they would still succeed, with --yes on this run too.
+ * Bytes that would not, and that the node does not hold, are forgotten, and a new call may be signed at their nonce;
+ * bytes the node holds stay saved, and the run stops until their nonce is used: a second call signed meanwhile would
+ * queue behind them.
+ * @returns {Promise<object|null>} the result, or null when the saved bytes were forgotten
+ */
+async function resumeUnmined(ctx, claimId, hunter, acknowledge, store, saved) {
+  const now = await readAppeal(ctx, claimId);
+  const tx = Transaction.from(saved.raw);
+  let still = now.action === saved.action && tx.value >= now.valueWei;
+  if (still) {
+    try {
+      await preflight(ctx, hunter, { data: tx.data, value: tx.value, gasLimit: tx.gasLimit, maxFeePerGas: tx.maxFeePerGas ?? 0n });
+    } catch (err) {
+      if (err.code !== 'APPEAL_REFUSED' && err.code !== 'INSUFFICIENT_FUNDS') throw err;
+      still = false;
+      if (!(await ctx.rpc(() => ctx.provider.getTransaction(saved.hash)))) {
+        store.save(null);
+        throw err;
+      }
+    }
+  }
+  if (!still) {
+    if (await ctx.rpc(() => ctx.provider.getTransaction(saved.hash))) throw fail('WALLET_BUSY', `The saved ${saved.action}, transaction ${saved.hash}, can no longer succeed and is still pending: once its nonce is used, run appeal again.`);
+    store.save(null);
+    return null;
+  }
+  // the bytes a run that had --yes signed: sent again only with --yes on this run too
+  ctx.notice(appealNotice({ ...now, valueWei: tx.value }));
+  if (!acknowledge) throw fail('NEEDS_ACKNOWLEDGEMENT');
+  const r = await ctx.settleSaved(saved);
+  store.save(null);
+  return resultOf(ctx, claimId, saved, r);
+}
+
 /** One appeal or re-trigger: a saved one first, else read, check, say the cost, and send only with acknowledge. */
 async function appealOnce(ctx, claimId, hunter, acknowledge, store) {
   const saved = store?.saved?.raw ? store.saved : null;
   if (saved) {
     const receipt = await ctx.rpc(() => ctx.provider.getTransactionReceipt(saved.hash));
     const used = Boolean(receipt) || (await ctx.rpc(() => ctx.provider.getTransactionCount(saved.from, 'latest'))) > saved.nonce;
-    if (!used) {
-      // sending the saved bytes again pays: only while the same call is still what the claim allows
-      const now = await readAppeal(ctx, claimId);
-      if (now.action !== saved.action || BigInt(saved.value) < now.valueWei) {
-        store.save(null);
-        if (!now.action) throw fail('NOT_APPEALABLE', now.why);
-      } else {
-        // the bytes a run that had --yes signed: sent again only with --yes on this run too
-        ctx.notice(appealNotice({ ...now, valueWei: BigInt(saved.value) }));
-        if (!acknowledge) throw fail('NEEDS_ACKNOWLEDGEMENT');
-        const r = await ctx.settleSaved(saved);
-        store.save(null);
-        return resultOf(ctx, claimId, saved, r);
-      }
-    } else {
+    if (used) {
       const r = await ctx.waitMined(saved);
       store.save(null);
       return resultOf(ctx, claimId, saved, r);
     }
+    const resumed = await resumeUnmined(ctx, claimId, hunter, acknowledge, store, saved);
+    if (resumed) return resumed;
   }
 
   const a = await readAppeal(ctx, claimId);
   if (!same(a.hunter, hunter)) throw fail('NOT_YOUR_CLAIM', `Claim ${claimId}'s hunter is ${a.hunter}.`);
   if (!a.action) throw fail('NOT_APPEALABLE', a.why);
-  if (!store) {
-    const [latest, pending] = await Promise.all([
-      ctx.rpc(() => ctx.provider.getTransactionCount(hunter, 'latest')),
-      ctx.rpc(() => ctx.provider.getTransactionCount(hunter, 'pending')),
-    ]);
-    if (pending > latest) throw fail('WALLET_BUSY');
-  }
+  // a transaction of this wallet still pending may be this appeal, sent by a run that kept nothing
+  const [latest, pending] = await Promise.all([
+    ctx.rpc(() => ctx.provider.getTransactionCount(hunter, 'latest')),
+    ctx.rpc(() => ctx.provider.getTransactionCount(hunter, 'pending')),
+  ]);
+  if (pending > latest) throw fail('WALLET_BUSY');
   const gasLimit = (await ctx.read('SUBMISSION_GAS_NEEDED')) + APPEAL_OWN_GAS;
   const fee = await ctx.feeCap();
-  const balance = await ctx.rpc(() => ctx.provider.getBalance(hunter));
-  if (balance < a.valueWei + gasLimit * fee.maxFeePerGas) throw fail('INSUFFICIENT_FUNDS', `It needs ${formatEther(a.valueWei)} ETH and its gas limit's worth of ETH, though only the gas used is paid.`);
   const data = ctx.encode(a.action, [claimId]);
-  await ctx.dryRun({ data, value: a.valueWei, gasLimit }).catch((err) => {
-    if (err.code === 'CONTRACT_REFUSED') throw fail('APPEAL_REFUSED', err.detail);
-    throw err;
-  });
+  await preflight(ctx, hunter, { data, value: a.valueWei, gasLimit, maxFeePerGas: fee.maxFeePerGas });
   // Before anything is signed, and on every run from which one may go out.
   ctx.notice(appealNotice(a));
   if (!acknowledge) throw fail('NEEDS_ACKNOWLEDGEMENT');

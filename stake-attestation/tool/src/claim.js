@@ -48,7 +48,11 @@ export function waiverOf(s, hunter) {
 export async function runSettle(ctx, claimId, { waiveAppeal = false } = {}) {
   const hunter = await ctx.hunterAddress();
   await ctx.ensureChain();
-  const waiver = waiverOf(await snapshot(ctx, claimId), hunter);
+  const now = await snapshot(ctx, claimId);
+  // settle takes only a Judged claim; one that is not yet may become a claim round's INVALID (or an
+  // appeal with no verdict) a moment later, and the hunter's settle would then waive its appeal unasked
+  if (now.state !== 'Judged') throw fail('NOT_READY', `The claim is ${now.state}: settle takes a judged claim.`);
+  const waiver = waiverOf(now, hunter);
   if (waiver) {
     ctx.notice(waiverNotice(waiver));
     if (!waiveAppeal) throw fail('NEEDS_WAIVER', `Anyone may settle it from ${waiver.until} on the chain's clock.`);

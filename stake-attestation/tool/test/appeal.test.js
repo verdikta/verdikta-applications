@@ -10,7 +10,9 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { closeRpc, runCli } from './helpers/cli.js';
+import fs from 'node:fs';
+
+import { closeRpc, readJson, runCli, statePath } from './helpers/cli.js';
 import { JUSTIFICATION_CID, makeClaimDir, makeWorld, vectorOf } from './helpers/world.js';
 
 let w;
@@ -241,4 +243,79 @@ test('status: the appeal window, the round kind, a narrow INVALID with its bond,
     await (await owner(w.sa).setConfirmAboveWei(w.hre.ethers.MaxUint256)).wait();
     await (await owner(w.sa).setNarrowInvalidFloor(500001n)).wait();
   }
+});
+
+/** A signed call saved in the claim folder as a run that died before sending it would leave it. */
+async function saveSigned(dir, claimId, action, value) {
+  const nonce = await w.provider.getTransactionCount(w.hunterWallet.address, 'pending');
+  const fee = await w.provider.getFeeData();
+  const raw = await w.hunterWallet.signTransaction({
+    type: 2, chainId: 31337n, nonce, to: w.address, data: w.sa.interface.encodeFunctionData(action, [claimId]), value, gasLimit: 12_000_000n,
+    maxFeePerGas: fee.maxFeePerGas, maxPriorityFeePerGas: fee.maxPriorityFeePerGas,
+  });
+  const rec = { hash: w.hre.ethers.Transaction.from(raw).hash, raw, nonce, from: w.hunterWallet.address, value: value.toString(), gasLimit: '12000000', action };
+  const file = statePath(dir);
+  fs.writeFileSync(file, `${JSON.stringify({ ...readJson(file), appealTx: rec }, null, 2)}\n`, { mode: 0o600 });
+  return rec;
+}
+
+test('saved appeal bytes are sent again only after the same checks and with --yes; bytes the contract would now refuse are not sent', async () => {
+  const { dir, claimId, l } = await judged();
+  const fee = await w.sa.disputeFee(l.listingId);
+  // the aggregator refuses requests now: the saved appeal would revert, and the node does not hold it
+  await saveSigned(dir, claimId, 'appeal', fee);
+  await (await w.aggregator.setPaused(true)).wait();
+  try {
+    const refused = await w.hunter().appeal({ claimDir: dir, acknowledge: true }).catch((e) => e);
+    assert.equal(refused.code, 'APPEAL_REFUSED');
+    assert.equal(readJson(statePath(dir)).appealTx, null, 'forgotten: nothing holds it');
+    assert.equal(KINDS[Number((await w.sa.getClaim(claimId)).disputeKind)], 'None', 'nothing sent');
+  } finally {
+    await (await w.aggregator.setPaused(false)).wait();
+  }
+  const rec = await saveSigned(dir, claimId, 'appeal', fee);
+  await assert.rejects(w.hunter().appeal({ claimDir: dir }), (e) => e.code === 'NEEDS_ACKNOWLEDGEMENT');
+  assert.equal(readJson(statePath(dir)).appealTx.hash, rec.hash, 'kept');
+  const r = await w.hunter().appeal({ claimDir: dir, acknowledge: true });
+  assert.equal(r.tx, rec.hash, 'the saved bytes, not a second call');
+  assert.equal(KINDS[Number((await w.sa.getClaim(claimId)).disputeKind)], 'Appeal');
+});
+
+test('saved bytes the node still holds are kept while they could no longer succeed, and no second call is signed behind them', async () => {
+  const { dir, claimId, l } = await judged();
+  const fee = await w.sa.disputeFee(l.listingId);
+  await w.rpc('evm_setAutomine', [false]);
+  try {
+    const rec = await saveSigned(dir, claimId, 'appeal', fee - 1n); // below the live fee: it would revert
+    await w.provider.broadcastTransaction(rec.raw);
+    const busy = await w.hunter().appeal({ claimDir: dir, acknowledge: true }).catch((e) => e);
+    assert.equal(busy.code, 'WALLET_BUSY');
+    assert.equal(readJson(statePath(dir)).appealTx.hash, rec.hash, 'kept while it is pending');
+    await w.rpc('hardhat_dropTransaction', [rec.hash]);
+  } finally {
+    await w.rpc('evm_setAutomine', [true]);
+  }
+  const r = await w.hunter().appeal({ claimDir: dir, acknowledge: true });
+  assert.equal(r.action, 'appeal');
+  assert.equal((await w.provider.getTransaction(r.tx)).value, fee);
+});
+
+test('a saved re-trigger whose nonce another transaction used is not reported as sent', async () => {
+  const { dir, claimId } = await judged();
+  await w.hunter().appeal({ claimDir: dir, acknowledge: true });
+  await w.increase(await w.aggregator.responseTimeoutSeconds() + 1n);
+  await (await w.sa.finalize(claimId)).wait();
+  const rec = await saveSigned(dir, claimId, 'retrigger', await w.sa.retriggerTopUp(claimId));
+  // the nonce goes to something else of this wallet's
+  await (await w.hunterWallet.sendTransaction({ to: w.hunterWallet.address, value: 0n, nonce: rec.nonce })).wait();
+  const r = await w.hunter().appeal({ claimDir: dir, acknowledge: true }).catch((e) => e);
+  assert.equal(r.code, 'APPEAL_REVERTED');
+  assert.equal((await w.sa.getClaim(claimId)).appealRetriggered, false);
+});
+
+test('settle refuses a claim that is not judged yet: one finalized a moment later could otherwise be waived unasked', async () => {
+  const { claimId } = await revealed();
+  const r = await w.hunter().settle(claimId).catch((e) => e);
+  assert.equal(r.code, 'NOT_READY');
+  assert.match(r.message, /Revealed/);
 });

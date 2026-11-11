@@ -35,7 +35,9 @@ const POLL_MS = 100;
 const BUMP_NUM = 9n; // fees x 9/8 (+1 wei) for a replacement: above the 10% nodes require
 const BUMP_DEN = 8n;
 // confirm is the one call that stops being due as time passes (its window closes at the deadline):
-// it is not sent this close to the deadline, so it cannot reach a block after it and revert there
+// it is not sent this close to the deadline, nor closer than a cycle's receipt wait
+// (SA_KEEPER_TX_TIMEOUT_MS), and a pending one that comes this close is replaced by a transfer to
+// itself at once, whatever its age, so it cannot reach a block after the deadline and revert there
 // (from the deadline settle pays the first verdict, so a round not started costs nobody anything)
 export const CONFIRM_MARGIN_SECONDS = 120n;
 const ACTION_STATES = Object.freeze({ finalize: ['Revealed', 'Disputed'], confirm: ['Judged'], settle: ['Judged'], expire: ['Committed', 'RoundFailed'] });
@@ -98,6 +100,10 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
   // the order a Judged claim's actions are tried in; confirm and settle are never due together
   // (settleableAt is the confirmation deadline while one is awaited, and confirm closes at it)
   const ORDER = ['finalize', 'confirm', 'settle', 'expire'];
+  const confirmMargin = (() => {
+    const wait = BigInt(Math.ceil(cfg.txTimeoutMs / 1000));
+    return wait > CONFIRM_MARGIN_SECONDS ? wait : CONFIRM_MARGIN_SECONDS;
+  })();
 
   async function claimState(claimId) {
     const c = await provider.call(tx(chain.address, stakeAttestation.encodeFunctionData('getClaim', [claimId])));
@@ -120,7 +126,7 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     if (action === 'confirm') {
       const [opensAt, deadline] = await lens('confirmWindow', claimId);
       const now = BigInt((await provider.getBlock('latest')).timestamp);
-      if (deadline === 0n || now < opensAt || now + CONFIRM_MARGIN_SECONDS >= deadline) return false;
+      if (deadline === 0n || now < opensAt || now + confirmMargin >= deadline) return false;
     }
     try {
       await provider.call(tx(chain.address, callData(action, claimId)));
@@ -324,7 +330,10 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     if (nonce < inflight.nonce) return fillGap(inflight, nonce, sent);
     const known = await someKnown(inflight.attempts);
     const newest = inflight.attempts.at(-1);
-    if (known && now() - newest.sentAt < cfg.replaceAfterMs) return settleInflight(inflight, cfg.txTimeoutMs);
+    // a young attempt is waited for; but a confirm whose window is closing is not left pending
+    // to be mined after its deadline: once it is no longer due it is replaced now, below
+    const closing = inflight.action === 'confirm' && !(await isDue('confirm', inflight.claimId));
+    if (known && now() - newest.sentAt < cfg.replaceAfterMs && !closing) return settleInflight(inflight, cfg.txTimeoutMs);
     const due = allowed(inflight.action) && await isDue(inflight.action, inflight.claimId);
     if (!due && !known) {
       finish(inflight, 'dropped', null); // nothing of ours is pending, and nothing is due

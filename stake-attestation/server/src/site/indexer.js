@@ -152,11 +152,13 @@ export function createIndexer({ provider, store, chain, logger }) {
       };
       events.push(event);
     }
-    const again = await provider.getBlock(to);
-    if (!again || again.hash !== last.hash) throw new IndexerError('REORG_RETRY', `block ${to} changed while the range was read`);
+    // the listings' terms are read inside the range, before its last block is checked again: a reorg
+    // while they are read fails the chunk, here or at that check
     for (const e of events) {
       if (e.name === 'Listed') e.terms = await termsAt(e.args.listingId, e.blockNumber, e.blockHash);
     }
+    const again = await provider.getBlock(to);
+    if (!again || again.hash !== last.hash) throw new IndexerError('REORG_RETRY', `block ${to} changed while the range was read`);
     events.sort((a, b) => a.blockNumber - b.blockNumber || a.logIndex - b.logIndex);
     // every header read here is on the chain that ends at `to` (whose hash did not change), so
     // each is a place a later rollback can stop at

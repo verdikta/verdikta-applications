@@ -70,7 +70,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 | `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e; the narrow INVALID and the confirmation, P17; the hunter's appeal, P16) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
 | `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`; the baseline scan between listing and open, its findings served to the maker's wallet only (P4b2); the indexer, keeper, listing feed, record mirror, labels and badge (P4b1) over one deployment; the project's proof, refused listing attempts counted by reason, what counts on the record, the fork label (P8, P9). | `npm test`, `npm run test:builder`, `npm run abi` |
 | `client/` | Vite + React site, port 5176: the maker's listing flow, the disclosure key made in the browser, and decrypt-and-check (P6a); the record page, the badge embed, the feed, the maker's release, roll forward and dispute, pending evaluations watched, the baseline scan read (P6b). | `npm test`, `npx playwright test` |
-| `tool/` | `verdikta-attest`, the hunter's CLI and the library it wraps (P5): `check`, `commit`, `reveal`, `status`, `claim`. See "The hunter tool". | `npm test` |
+| `tool/` | `verdikta-attest`, the hunter's CLI and the library it wraps (P5): `check`, `commit`, `reveal`, `status`, `claim`, and `appeal` (P18). See "The hunter tool". | `npm test` |
 | `shared/` | Code shared by the packages (the banned-words helper, the rules of the project's proof, the warning every listing page carries, "did the builder sign this listing") and the app's repository checks. | `npm test` |
 | `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`; the baseline scan, for the maker only (P3b); `verdikta-control-check`, what git says about a listing's repository (P8); the listing's proof, refused before anything is built (P9). The reusable workflow that runs it is `.github/workflows/stake-attestation-builder.yml`. | `npm test`, `npm run test:docker` |
 | `e2e/` | The scripted local end-to-end round (P7): every piece together, with nothing live. See "The local round". | `npm test`, `npm run round` |
@@ -209,9 +209,10 @@ made after it; `getListing` and the record show a listing's values.
   not appealable and settles at once. The record counts appeals by final result
   (`appeals`, `appealsHeld`, `appealsOverturned`, `appealsNoVerdict`; a late
   claim's under `later`) apart from the maker's disputes and the confirmations, and
-  a finding names its round's kind (`DisputeKind.Appeal`). Until the keeper and the
-  tool know the appeal (node P18), the keeper settles an INVALID from
-  `settleableAt`, after the window.
+  a finding names its round's kind (`DisputeKind.Appeal`). The site's keeper finalizes an
+  appeal's round and settles an INVALID only from `settleableAt`, so it never waives an
+  appeal; the hunter appeals and re-triggers with the tool's `appeal` (node P18, "The
+  hunter tool").
 
 - **A narrow INVALID returns the bond** (E8). An INVALID whose valid mass (LOW to
   CRITICAL of the vector `settle` applies) is at least the listing's
@@ -234,8 +235,9 @@ made after it; `getListing` and the record show a listing's values.
   recorded as a confirmation with no verdict. The round's unspent prepay goes back as
   `fund` applies a top-up (owed awards first, then the escrow) or, once the listing
   has closed, to the maker's pull balance. Late claims and classes below
-  `lowestClassCounted` never wait. Until the keeper calls `confirm` (node P18), the
-  server's, tool's and round's test deployments set the size above every award.
+  `lowestClassCounted` never wait. The site's keeper calls `confirm` (node P18, "The feed, the
+  record and the badge"); the server's and tool's test deployments set the size above every
+  award unless a test sets it, and the local round sets it below its HIGH award.
 
 ## The contract: late claims and the record
 
@@ -467,11 +469,32 @@ committed chunk. Each sync asks the endpoint for its chain id (`eth_chainId`; th
 request cache is off) and compares the cursor's stored block hash with the chain's; after a
 reorg it rolls back to the newest block it read (within `SA_REORG_WINDOW_BLOCKS`) that is still
 on the chain, drops the events after it and reads again from there, or from `SA_FROM_BLOCK` if
-none is. A chunk whose blocks changed while it was read is not committed.
+none is. A chunk whose blocks changed while it was read is not committed. Each `Listed` event is
+stored with `terms`, the listing's fixed windows, award table, narrow-INVALID floor and
+confirmation size, read once with `getListing` at that event's block by its hash, and dropped with
+it on a reorg; nothing else of a stored event is not the log's.
+
+**The projection** (`server/src/site/projection.js`, node P18) folds the settlement safeguards'
+events (`Appealed`, `ConfirmationRequested`, `ConfirmationRefunded`, `ConfirmationNoVerdict`,
+`NarrowInvalid`, `NarrowInvalidFloorSet`, `ConfirmAboveWeiSet`) into each claim's dispute-panel
+round kind and result, its appeal window and the appeal's re-trigger deadline, its confirmation's
+state, window and rounds, a narrow INVALID and where settle sent the bond; each listing carries its
+floor and size, and `/api/status` the program values the next listing gets (`program`, null for
+one set before `SA_FROM_BLOCK`). The keeper reads every claim on-chain before it acts; none of this
+is published for a claim that is not a valid finding.
 
 **The keeper** (erratum E4: the aggregator never calls back) calls `finalize` when a claim's
-round is over and `settle` when a judged claim may settle, and `expire` only with
-`SA_KEEPER_EXPIRE=on`. Its key is `SA_KEEPER_PRIVATE_KEY`, read when it starts (`SA_KEEPER=off`
+round is over, every dispute-panel round's included (the maker's dispute, a confirmation, an
+appeal), and `settle` when a judged claim may settle, from the lens's `settleableAt` and never
+earlier, so it never waives a hunter's appeal (erratum E7), whatever its key; `confirm` (erratum
+E9, node P18) on a Judged claim that awaits its confirmation, while the lens's `confirmWindow` is
+open, and again after a round with no verdict until the deadline (`SA_KEEPER_CONFIRM=off` turns it
+off; the listing's escrow pays the round, and a confirm the escrow cannot pay is never sent). A
+broadcast transaction cannot be recalled, so a confirm is sent only two keeper cycles (receipt wait
+plus poll interval, 150 s each with the defaults) and two minutes before the deadline, and one still
+pending within one cycle and two minutes of it is replaced by a transfer to itself at once, whatever
+its age (`confirmMargins`, `server/src/site/keeper.js`); and
+`expire` only with `SA_KEEPER_EXPIRE=on`. Its key is `SA_KEEPER_PRIVATE_KEY`, read when it starts (`SA_KEEPER=off`
 turns it off). It reads each claim on-chain and simulates the call before sending it, keeps one
 transaction in flight at its next confirmed nonce, recorded before it is broadcast, and
 resolves that record first in the next cycle or process: waited for, re-sent at the same nonce
@@ -908,6 +931,7 @@ verdikta-attest status ./claim                     # the fix window, and what co
 verdikta-attest reveal ./claim
 verdikta-attest status ./claim --wait              # polls the evaluation, up to 15 minutes
 verdikta-attest claim  ./claim                     # finalize, settle, withdraw: whatever is due
+verdikta-attest appeal ./claim --yes               # an INVALID to the dispute panel, for the live dispute fee
 ```
 
 The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), never from an argument.
@@ -929,7 +953,22 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
 - **`reveal`** refuses before the fix window ends or out of commit order, before the plaintext is pinned. `reveal --retrigger`
   sends a failed round again.
 - **`status`** reads a judged claim's reason from the first block of its justification only (`Execution evidence v1`); jury text
-  after it can say anything, and is not read.
+  after it can say anything, and is not read. It shows the settlement safeguards (errata E7-E9), each from the lens: the appeal
+  window (`appealDeadline`), the dispute-panel round's kind and result, a confirmation's window (`confirmWindow`), an appeal's
+  re-trigger deadline, whether an INVALID is narrow (`judgeVector` under the listing's floor) and, once settled, where the bond went.
+- **`appeal`** (erratum E7, node P18) appeals the claim's INVALID to the listing's dispute panel, once, inside the appeal window,
+  or re-triggers, once, an appeal whose round settled no verdict, inside its window. It reads the live dispute fee from the lens
+  (`disputeFee`; `retriggerTopUp` for the re-trigger), prints what it costs and what the panel's verdict does, and, as `commit`,
+  sends nothing without `--yes`; the amount printed is the amount sent, all of it from the hunter, its spent part theirs whatever
+  the result. The claim, the wallet's balance and a dry run come first; the signed call is saved in the claim folder before it is
+  sent, so a re-run sends the same bytes, after the same checks and again only with `--yes`; saved bytes that could no longer
+  succeed are dropped only once the node no longer holds them, and a wallet with a transaction still pending is refused. Only the claim's hunter may appeal; a DUPLICATE, a valid outcome, an INVALID the dispute panel gave and a closed
+  window are refused before anything is sent.
+- **Settling your own INVALID early waives the appeal.** Until the lens's `settleableAt` only the hunter may settle a claim
+  round's INVALID (or one whose appeal settled no verdict), and doing so gives up the appeal (or its re-trigger). `claim` says so
+  and settles it only with `--waive-appeal`; the library's `settle` refuses with `NEEDS_WAIVER` unless `{ waiveAppeal: true }`,
+  and refuses a claim not judged yet, which could become such an INVALID before the settle is mined.
+  From `settleableAt` on anyone may settle it, the site's keeper does, and nothing is waived.
 
 **What `finding.json` names.** `check` and `commit` warn, from a static read of the patch and before anything runs, of what
 would fail the runner's `claimedObservable` gate. The gate decides (`code-runner/src/observable.js`, design §10.1); the rule is
@@ -961,7 +1000,7 @@ the gate's answer. So:
 A pinned file is held to the chain: its bytes are hashed against the on-chain commitment before the upload and read back through
 the gateway after it, and a raw CID (`bafkrei…`) is recomputed. So a gateway the arbiters cannot reach is the hunter's to avoid:
 read-back through a local gateway proves less than one through a public one. Exit codes: 0 done, 1 refused or failed, 2 usage,
-3 `--yes` needed, 4 still pending (run the same command again).
+3 `--yes` (or `--waive-appeal`) needed, 4 still pending (run the same command again).
 
 ## The client
 
@@ -986,6 +1025,15 @@ goes in a URL.
   baseline scan has finished, the page asks for its sign-in challenge, the wallet signs it with
   `personal_sign`, and the findings are shown on the page to that wallet only, never stored,
   and only while it stays the connected wallet.
+- **The settlement safeguards** (node P18, errata E7-E9), each from the contract's own reads. A
+  listing's page states the narrow-INVALID floor and the confirmation size `list()` copied onto
+  it; a claim's page, from the lens at one block (`appealDeadline`, `settleableAt`,
+  `retriggerDeadline`, `confirmWindow`, `judgeVector`), the hunter's appeal window and that a
+  hunter who settles their own INVALID before `settleableAt` waives the appeal, the dispute-panel
+  round's kind and result, a confirmation's state and deadline, whether an INVALID is narrow and,
+  only once settle has moved it, where the bond went; the record page the appeals, the
+  confirmations and the narrow INVALIDs by result, each listing's floor and size, and a finding's
+  round kind (`client/e2e/safeguards.spec.js`). The hunter appeals with the tool, not the site.
 - **A listing's page** (`#/fund/<listingId>`): its stored terms and, while it is Listed, the
   opening `fund()`, so a maker who leaves between `list()` and `fund()` can come back. Just
   before sending, the listing's state and fee are read at one block through the wallet: unless
@@ -1099,8 +1147,15 @@ once, the bond to the maker, no model asked, the first claim among its prior fin
 one does and writes `.gitignore`, a path the listing protects, on real forge: `protectedPathsUnchanged`, no tamper flag, DUPLICATE at once, the bond back, no model asked; its check
 name reaches the API and the page from the real writer's justifications, through the real reader) and **an abstaining one** (a PoC that never ends:
 the runner's clock stops it, no arbiter commits, the round times out and fails, a fresh prepay, it fails again, and at expiry the bond goes
-to the maker, erratum E6). The round fails on the first check that fails, and every check is a pure function with a test that hands it
-a tampered observation (`e2e/test/checks.test.js`).
+to the maker, erratum E6). The settlement safeguards (node P18, errata E7-E9): the listing copies a confirmation size of MEDIUM's
+award and a narrow-INVALID floor of 25 points, so **the valid HIGH is confirmed** (after its dispute window the site's keeper calls
+`confirm`, the escrow pays the dispute panel's round, the panel holds it, and the keeper finalizes and settles it); then, after
+the record, **a second gate-failing claim is appealed through the tool** (`claim` warns that settling it early waives the appeal,
+`appeal` prints the live fee and needs `--yes`, the dispute panel's round runs the same gates and holds the INVALID, and the keeper
+settles it by that result, inside the window, the bond to the maker and the spent prepay the hunter's), and **a narrow INVALID**
+(the valid claim's proof again, scored by the jury just short of valid: 50 points of valid mass, the lens's `judgeVector` says
+narrow, the keeper waits out the appeal window and settle returns the bond). The round fails on the first check that fails, and
+every check is a pure function with a test that hands it a tampered observation (`e2e/test/checks.test.js`).
 
 | Piece | Here |
 |---|---|

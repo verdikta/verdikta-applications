@@ -3,8 +3,9 @@
 // linked to them), and MockVerdiktaAggregator. Every account is Hardhat's public test mnemonic.
 import fs from 'node:fs';
 import path from 'node:path';
-import { ContractFactory, Contract, HDNodeWallet, JsonRpcProvider, MaxUint256, Wallet } from 'ethers';
+import { ContractFactory, Contract, HDNodeWallet, JsonRpcProvider, Wallet } from 'ethers';
 
+import { CONFIRM_ABOVE_WEI, NARROW_FLOOR } from './fixtures.js';
 import { APP_DIR, E2E_DIR } from './setup.js';
 import { freePort, launch, waitUntil } from './proc.js';
 
@@ -67,10 +68,12 @@ export async function startChain({ logDir }) {
     }
     const fromBlock = await provider.getBlockNumber();
     const stake = await deploy(artifact('StakeAttestation.sol/StakeAttestation.json'), accounts.deployer, [await aggregatorAdmin.getAddress(), accounts.deployer.address, accounts.feeRecipient.address, LISTING_FEE_WEI], libraries);
-    // The confirmation size (erratum E9, node P17) above any award, so the round's valid claim pays
-    // after its dispute window as before: the keeper does not call confirm() yet (node P18). The
-    // narrow-INVALID floor keeps its default, THRESHOLD, so every INVALID forfeits as before.
-    await (await stake.setConfirmAboveWei(MaxUint256)).wait();
+    // Node P18: the program values the round's listing copies. The confirmation size (erratum E9) is
+    // MEDIUM's award, so the valid HIGH waits for the dispute panel's confirmation, which the site's
+    // keeper starts after the dispute window; the narrow-INVALID floor (erratum E8) is 25 points, so the
+    // round's narrow INVALID gets its bond back, while a gate's INVALID (all its mass on INVALID) does not.
+    await (await stake.setConfirmAboveWei(CONFIRM_ABOVE_WEI)).wait();
+    await (await stake.setNarrowInvalidFloor(NARROW_FLOOR)).wait();
     const contract = await stake.getAddress();
     const sa = new Contract(contract, mergedAbi(), provider);
     return {

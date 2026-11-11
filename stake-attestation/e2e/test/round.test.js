@@ -85,6 +85,21 @@ test('node P12: a claim that fails a non-tamper integrity check on real forge se
   assert.equal(report.stages.findIndex((s) => s.name === 'integrity: reveal, DUPLICATE, the bond back') > report.stages.findIndex((s) => s.name === 'gate: reveal, INVALID, the appeal window, the bond to the maker'), true);
 });
 
+test('node P18: an award above the listing\'s size is confirmed by the dispute panel, the keeper calling confirm after the dispute window, paid from the escrow', () => {
+  has('valid.settle.waitsDisputeWindow', 'valid.confirm.awaits', 'valid.confirm.byKeeper', 'valid.confirm.request.disputeArchive', 'valid.confirm.request.noDisputeLine', 'valid.confirm.escrowPaid', 'valid.confirm.held', 'valid.confirm.keeperFinalized', 'valid.confirm.settledAfter', 'valid.record.confirmations');
+  assert.match(detail('valid.confirm.held'), /Held/);
+});
+
+test('node P18: an INVALID appealed through the tool, after its explicit --yes, and settled by the dispute panel\'s result', () => {
+  has('appeal.check.forecast', 'appeal.waiver.warned', 'appeal.tool.needsYes', 'appeal.tool.appealed', 'appeal.tool.paidTheLiveFee', 'appeal.request.disputeArchive', 'appeal.panel.held', 'appeal.keeper.finalized', 'appeal.keeper.settledByThePanel', 'appeal.settled.insideTheWindow', 'appeal.money.bondToMaker', 'appeal.money.hunterBearsThePrepay', 'appeal.status.kind', 'appeal.record.appeals');
+  assert.match(detail('appeal.panel.held'), /INVALID/);
+});
+
+test('node P18: a narrow INVALID, read from the contract, waits out its appeal window and gets its bond back', () => {
+  has('narrow.judged.outcome', 'narrow.judged.narrow', 'narrow.status.narrow', 'narrow.settle.waitsAppealWindow', 'narrow.event', 'narrow.money.bondBack', 'narrow.money.makerUntouched', 'narrow.record.narrowInvalid');
+  assert.match(detail('narrow.judged.narrow'), /narrow/);
+});
+
 test('node P12: the runner at the pin had the Semgrep image before it started, and the fixture settled as it did', () => {
   has('semgrep.warmed', 'listing.officialCompiler', 'listing.commandsAskedFirst', 'listing.shellPrefixRefused', 'valid.report.everyGatePassed');
   assert.match(detail('semgrep.warmed'), /sha256:/);

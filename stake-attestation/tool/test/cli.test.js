@@ -25,10 +25,11 @@ test('--help prints usage and the hunter commands, exit 0', async () => {
   const res = spawnSync(process.execPath, [bin, '--help'], { encoding: 'utf8' });
   assert.equal(res.status, 0, res.stderr);
   assert.match(res.stdout, /^Usage: verdikta-attest <command> \[options\]/);
-  for (const name of ['check', 'commit', 'reveal', 'status', 'claim']) {
+  for (const name of ['check', 'commit', 'reveal', 'status', 'claim', 'appeal']) {
     assert.match(res.stdout, new RegExp(`^  ${name}\\s`, 'm'), name);
   }
-  assert.deepEqual(Object.keys(COMMANDS), ['check', 'commit', 'reveal', 'status', 'claim']);
+  // node P18 adds appeal, the hunter's appeal of an INVALID (erratum E7)
+  assert.deepEqual(Object.keys(COMMANDS), ['check', 'commit', 'reveal', 'status', 'claim', 'appeal']);
   assert.equal((await capture(['-h'])).code, 0);
 });
 

@@ -127,6 +127,18 @@ const CLAIMS = Object.freeze({
     finding: { ...FINDING, title: 'Vault.deposit over-credits, a proof that writes a protected file' },
     poc: addFile('test/Exploit.t.sol', `${POC_HEADER}interface VmFiles {\n    function writeFile(string calldata path, string calldata data) external;\n}\n\ncontract ExploitTest is Base {\n    /// forge-config: default.fs_permissions = [{ access = "read-write", path = "./.gitignore" }]\n    function test_deposit_credits_exactly() public {\n        VmFiles(address(vm)).writeFile(".gitignore", "out\\n");\n        Vault v = new Vault();\n        v.deposit(1);\n        vm.assertEq(v.balanceOf(address(this)), 1);\n    }\n}\n`),
   },
+  // Node P18, erratum E7: a second proof that edits the code under test, which its hunter appeals through the tool.
+  // The dispute panel's round runs the same gates, so the panel holds the INVALID and it settles by that result.
+  appeal: {
+    finding: { ...FINDING, title: 'Vault.deposit over-credits, a proof that edits the source, appealed' },
+    poc: 'diff --git a/src/Vault.sol b/src/Vault.sol\n--- a/src/Vault.sol\n+++ b/src/Vault.sol\n@@ -11,5 +11,5 @@\n \n     function deposit(uint256 amount) external {\n-        balanceOf[msg.sender] += amount + 1;\n+        balanceOf[msg.sender] += amount + 3;\n     }\n }\n',
+  },
+  // Node P18, erratum E8: the valid claim's proof again, every gate passing; the jury's second juror scores it
+  // all INVALID this time (JUROR_SEQUENCE), so the average is an INVALID with 50 points of valid mass: narrow.
+  narrow: {
+    finding: { ...FINDING, title: 'Vault.deposit over-credits, a second report of the same proof' },
+    poc: null, // the valid claim's (claimFolder)
+  },
   // A proof that never ends: the runner's clock stops it, and every arbiter abstains the same way.
   abstain: {
     finding: { ...FINDING, title: 'Vault.deposit over-credits, a proof that never ends', poc: { command: 'forge test --match-test test_never_ends', observable: 'test_never_ends fails at the committed hash with "2 != 1"' } },
@@ -141,11 +153,23 @@ export function claimFolder(workDir, name) {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'finding.json'), `${JSON.stringify(claim.finding, null, 2)}\n`);
   fs.writeFileSync(path.join(dir, 'report.md'), `# ${claim.finding.title}\n\n${REPORT_MARKER}\n`);
-  fs.writeFileSync(path.join(dir, 'poc.patch'), claim.poc);
+  fs.writeFileSync(path.join(dir, 'poc.patch'), claim.poc ?? CLAIMS.valid.poc);
   return dir;
 }
 
 /** Each juror's reply, weights 0.5 and 0.5, so only both together give the average the round asserts. */
 export const JUROR_SCORES = Object.freeze([[0, 0, 0, 0, 800000, 200000], [0, 0, 0, 0, 600000, 400000]]);
 export const JURY_AVERAGE = Object.freeze([0n, 0n, 0n, 0n, 700000n, 300000n]);
+/**
+ * Node P18, erratum E8. The claim panel's second juror answers JUROR_SCORES[1] for the valid claim's K jobs, and
+ * then NARROW_SCORES: with the first juror's [0, 0, 0, 0, 800000, 200000] the narrow claim's average is
+ * NARROW_AVERAGE, an INVALID (no class reaches THRESHOLD, and INVALID outweighs DUPLICATE) with 500,000 of valid
+ * mass, inside the band of the round's floor (NARROW_FLOOR, 25 points) up to THRESHOLD - 1: its bond comes back.
+ * No other claim of the round reaches the claim panel's jury: the gates settle the others, or they abstain.
+ */
+export const NARROW_SCORES = Object.freeze([1000000, 0, 0, 0, 0, 0]);
+export const NARROW_AVERAGE = Object.freeze([500000n, 0n, 0n, 0n, 400000n, 100000n]);
+export const NARROW_FLOOR = 250000n;
+/** Node P18, erratum E9: awards above MEDIUM's wait for the dispute panel's confirmation, so the valid HIGH does. */
+export const CONFIRM_ABOVE_WEI = AWARDS_WEI.MEDIUM;
 export const JUSTIFIER = Object.freeze({ provider: 'openai', model: 'mock-justifier' });

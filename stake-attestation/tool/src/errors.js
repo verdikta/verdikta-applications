@@ -3,6 +3,8 @@
 // puts a transaction's calldata in its messages, and at reveal that calldata holds the keys. So a ToolError has
 // no `cause`, and what is known of a failure from outside is a code or an allow-listed revert reason.
 export const ERROR_TEXTS = Object.freeze({
+  APPEAL_REFUSED: 'The contract would refuse this appeal. Nothing was sent.',
+  APPEAL_REVERTED: 'The appeal transaction reverted. Run appeal again to see where the claim stands.',
   ARCHIVE_INVALID: 'The listing archive is not, byte for byte, what the listing flow issues for its files, so the builder did not sign this listing. Refused.',
   ARCHIVE_MISMATCH: 'What the chain holds for this listing is not what its signed archive says: another artifact, disclosure key or terms. A proof encrypted to it could cost the bond at the arbiters\' gate. Refused.',
   ARCHIVE_NOT_CID: 'The gateway answered bytes that are not this CID.',
@@ -30,6 +32,9 @@ export const ERROR_TEXTS = Object.freeze({
   NEEDS_ACKNOWLEDGEMENT: 'Read the above, then run again with --yes. Nothing was sent.',
   NETWORK_NOT_ALLOWED: 'This tool is for Base Sepolia and local nodes for now. Refused.',
   NOTHING_TO_WITHDRAW: 'This wallet has nothing to withdraw.',
+  NOT_APPEALABLE: 'This claim cannot be appealed now. Nothing was sent.',
+  NOT_YOUR_CLAIM: 'This wallet is not the claim\'s hunter, and only the hunter may appeal. Nothing was sent.',
+  NEEDS_WAIVER: 'Settling your own INVALID now waives the appeal. Read the above, then run again with --waive-appeal. Nothing was sent.',
   NOT_ALLOWED: 'This listing is invited, and this wallet is not on its list.',
   NOT_DISCLOSED: 'This claim has not been disclosed. Run commit again to finish it, before the disclose window ends. The plaintext was not pinned.',
   NOT_READY: 'Not ready yet.',
@@ -62,12 +67,13 @@ export const ERROR_TEXTS = Object.freeze({
   STATE_MISMATCH: 'This folder belongs to another wallet, listing, chain or contract.',
   TX_PENDING: 'The transaction is not mined yet. It stays saved: run the same command again to wait for it, and no second one is sent.',
   USAGE: 'Usage error.',
+  WALLET_BUSY: 'A transaction of this wallet is not mined yet, and it may be this appeal: run appeal again once it is. Nothing was sent.',
   WALLET_KEY_FILE: 'The wallet key file must be a regular file only you can read (0600 or 0400).',
   WALLET_KEY_INVALID: 'The wallet key is not 32 bytes of hex.',
   WALLET_KEY_MISSING: 'This needs a wallet: VERDIKTA_WALLET_KEY in the environment, or --key-file <path>.',
 });
 
-const EXIT = Object.freeze({ USAGE: 2, NEEDS_ACKNOWLEDGEMENT: 3, TX_PENDING: 4 });
+const EXIT = Object.freeze({ USAGE: 2, NEEDS_ACKNOWLEDGEMENT: 3, NEEDS_WAIVER: 3, TX_PENDING: 4, WALLET_BUSY: 4 });
 
 export class ToolError extends Error {
   /**

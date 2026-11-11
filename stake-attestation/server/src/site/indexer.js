@@ -12,8 +12,15 @@
 //   checkpoint left on the chain it re-reads from the deployment block. A chunk is committed
 //   only if the chain did not move under it: its first block's parent is the cursor, each log's
 //   block hash is the chain's, and its last block's hash is the same before and after the read.
+// - A listing's terms (node P18). A Listed event names the artifact only; the windows, the award
+//   table and the two values erratum E8 and E9 copy onto it (its narrow-INVALID floor and its
+//   confirmation size) are fixed at list() and in getListing alone. So each Listed event is stored
+//   with `terms`, read once at the event's own block by its hash (EIP-1898), committed with its
+//   chunk and dropped with it on a reorg. The projection derives each claim's appeal window and
+//   confirmation deadline from them; nothing else of the stored event changes.
 import { stakeAttestation } from '../chain/abi.js';
-import { eventArgsJson } from '../chain/codec.js';
+import { eventArgsJson, outputJson } from '../chain/codec.js';
+import { readerAt } from '../chain/read.js';
 
 export class IndexerError extends Error {
   constructor(code, detail) {
@@ -25,6 +32,18 @@ export class IndexerError extends Error {
 
 const checkpointOf = (b) => ({ number: b.number, hash: b.hash, timestamp: b.timestamp });
 
+/** What a listing fixed at list(), as getListing has it: the terms the projection needs. */
+export function listingTerms(l) {
+  return {
+    disputeWindow: Number(l.disputeWindow),
+    revealWindow: Number(l.revealWindow),
+    awards: [...l.awards],
+    lowestClassCounted: l.lowestClassCounted,
+    narrowInvalidFloor: l.narrowInvalidFloor,
+    confirmAboveWei: l.confirmAboveWei,
+  };
+}
+
 /**
  * @param {object} o
  * @param {import('ethers').Provider} o.provider
@@ -34,6 +53,19 @@ const checkpointOf = (b) => ({ number: b.number, hash: b.hash, timestamp: b.time
  */
 export function createIndexer({ provider, store, chain, logger }) {
   let hasCode = false;
+
+  /** A listing's fixed terms at its Listed block, by the block's hash: a block a reorg orphaned fails the read. */
+  async function termsAt(listingId, blockNumber, blockHash) {
+    let l;
+    try {
+      l = outputJson('getListing', (await readerAt(provider, stakeAttestation, chain.address, blockHash)('getListing', [listingId]))[0]);
+    } catch (err) {
+      const b = await provider.getBlock(blockNumber);
+      if (!b || b.hash !== blockHash) throw new IndexerError('REORG_RETRY', `block ${blockNumber} changed while listing ${listingId} was read`);
+      throw new IndexerError('LISTING_TERMS_UNREADABLE', `listing ${listingId} could not be read at block ${blockNumber} (${err?.code ?? 'error'})`);
+    }
+    return listingTerms(l);
+  }
 
   async function mustBlock(number) {
     const b = await provider.getBlock(number);
@@ -109,7 +141,7 @@ export function createIndexer({ provider, store, chain, logger }) {
         logger.warn(`indexer: a log at ${log.transactionHash}:${log.index} matches no StakeAttestation event; skipped`);
         continue;
       }
-      events.push({
+      const event = {
         name: parsed.name,
         blockNumber: log.blockNumber,
         blockHash: log.blockHash,
@@ -117,7 +149,13 @@ export function createIndexer({ provider, store, chain, logger }) {
         txHash: log.transactionHash,
         timestamp: block.timestamp,
         args: eventArgsJson(parsed),
-      });
+      };
+      events.push(event);
+    }
+    // the listings' terms are read inside the range, before its last block is checked again: a reorg
+    // while they are read fails the chunk, here or at that check
+    for (const e of events) {
+      if (e.name === 'Listed') e.terms = await termsAt(e.args.listingId, e.blockNumber, e.blockHash);
     }
     const again = await provider.getBlock(to);
     if (!again || again.hash !== last.hash) throw new IndexerError('REORG_RETRY', `block ${to} changed while the range was read`);

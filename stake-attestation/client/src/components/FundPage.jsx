@@ -2,7 +2,8 @@ import { useEffect, useId, useState } from 'react';
 
 import { LISTING_STATES } from '../chain/abi.js';
 import { WalletError, chainReader, stakeAttestation } from '../chain/wallet.js';
-import { errorReason, formatEth, formatTime } from '../lib/format.js';
+import { safeguardTerms } from '../lib/claimActions.js';
+import { errorReason, formatEth, formatTime, formatWhole } from '../lib/format.js';
 import { STRINGS, fill } from '../strings.js';
 import { TextField } from './Field.jsx';
 import { FundListing } from './FundListing.jsx';
@@ -70,6 +71,8 @@ export function FundPage({ listingId }) {
 
   const l = loaded.listing;
   const state = LISTING_STATES[Number(l.state)];
+  // errata E8 and E9: the floor and the size list() copied onto this listing, for its whole life
+  const terms = safeguardTerms(l);
   return (
     <>
       {header}
@@ -87,6 +90,8 @@ export function FundPage({ listingId }) {
           <li>{fill(STRINGS.chain.windows, { fix: Number(l.fixWindow) / 86400, dispute: Number(l.disputeWindow) / 3600, grace: Number(l.disclosureGrace) / 3600, reveal: Number(l.revealWindow) / 86400 })}</li>
           <li>{l.allowlist.length ? fill(STRINGS.chain.allowlist, { count: l.allowlist.length }) : STRINGS.chain.open}</li>
           <li>{fill(STRINGS.chain.knownIssues, { count: l.knownIssueIds.length })}</li>
+          <li data-testid="listing-band">{terms.band.empty ? STRINGS.chain.bandEmpty : fill(STRINGS.chain.band, { floor: formatWhole(terms.band.floor), points: terms.band.points })}</li>
+          <li data-testid="listing-size">{terms.size.all ? STRINGS.chain.sizeAll : fill(STRINGS.chain.size, { size: formatEth(terms.size.wei) })}</li>
         </ul>
       </section>
       {state === 'Listed' && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} onOpened={() => setOpenedHere(true)} />}

@@ -53,3 +53,38 @@ export function forecastFooter() {
 }
 
 export const REMOTE_RUNNER_NOTICE = 'This runner is not on this machine as far as the tool can tell, and it reads the plaintext of your claim: an unfixed finding, in the hands of whoever runs it.';
+
+/**
+ * What an appeal (erratum E7) or its one re-trigger costs and does, said before anything is sent.
+ * @param {{ action: 'appeal'|'retrigger', claimId: bigint, valueWei: bigint, deadline: bigint, revealWindow: bigint }} a
+ */
+export function appealNotice(a) {
+  const pays = `This sends ${eth(a.valueWei)} from this wallet: the live dispute fee the contract quotes now, all of it the prepay of one round of the listing's dispute panel. The prepay is spent whatever the result: you bear what the round spends, and the unspent part comes back to this wallet when the round is finalized. Nothing of it comes from the escrow or the bond.`;
+  const verdict = 'The panel reads the claim as it was revealed, and its report.md is your argument. Its verdict is final: held, the INVALID stands and the bond goes to the maker, unless the panel\'s vector is a narrow INVALID, whose bond comes back; overturned, the panel\'s outcome settles at once, a counted class with its award.';
+  if (a.action === 'retrigger') {
+    return [
+      `Re-trigger the appeal of claim ${a.claimId}: its round settled no verdict, and this is its one re-trigger.`,
+      `${pays} The failed round's prepay was spent, so this one is a fresh fee in full.`,
+      verdict,
+      'If this round settles no verdict too, the INVALID stands, narrow or not by its own vector.',
+      `Re-trigger before ${a.deadline} on the chain's clock.`,
+    ].join('\n');
+  }
+  return [
+    `Appeal claim ${a.claimId}'s INVALID to the dispute panel, once.`,
+    pays,
+    verdict,
+    `If the round settles no verdict, you may re-trigger it once, for a fresh fee in full, until ${a.revealWindow} s after it ended: run appeal again.`,
+    `Appeal before ${a.deadline} on the chain's clock.`,
+  ].join('\n');
+}
+
+/**
+ * A hunter who settles their own INVALID before anyone else may waives the appeal (erratum E7), or the appeal's one
+ * re-trigger when its round settled no verdict.
+ * @param {{ what: 'appeal'|'retrigger', until: bigint }} w
+ */
+export function waiverNotice({ what, until }) {
+  const gives = what === 'retrigger' ? 'waives the appeal\'s re-trigger, the round your appeal has left' : 'waives the appeal';
+  return `Settling your own INVALID now ${gives}: until ${until} on the chain's clock only you may settle it, and the INVALID then stands as it is. From then on anyone may settle it, and nothing is waived.`;
+}

@@ -3,6 +3,7 @@ import { Fragment, useEffect, useId, useState } from 'react';
 import { CONFIG } from '../config.js';
 import { getRecord } from '../lib/api.js';
 import { formatEth, formatTime, formatWhole } from '../lib/format.js';
+import { safeguardTerms } from '../lib/claimActions.js';
 import { recordView } from '../lib/record.js';
 import { STRINGS, fill } from '../strings.js';
 import { BadgeEmbed } from './BadgeEmbed.jsx';
@@ -53,6 +54,16 @@ const checkList = (checks, testId) => (
   </ul>
 );
 
+/** A listing's floor and size (errata E8, E9), as the record states them; nothing for a record from before them. */
+function termRows(l, f) {
+  if (l.narrowInvalidFloor === null || l.confirmAboveWei === null) return [];
+  const t = safeguardTerms(l);
+  return [
+    { id: f('narrow-floor'), label: R.narrowFloor, value: t.band.empty ? R.narrowFloorEmpty : fill(R.narrowFloorLine, { floor: formatWhole(t.band.floor), points: t.band.points }) },
+    { id: f('confirm-size'), label: R.confirmSize, value: t.size.all ? R.confirmSizeAll : fill(R.confirmSizeLine, { size: formatEth(t.size.wei) }) },
+  ];
+}
+
 function Stake({ l }) {
   const id = useId();
   const f = (name) => `listing-${l.id}-${name}`;
@@ -67,6 +78,7 @@ function Stake({ l }) {
         { id: f('awards'), label: R.awards, value: fill(R.awardsLine, Object.fromEntries(Object.entries(l.awards).map(([c, w]) => [c, formatEth(w)]))) },
         { id: f('lowest'), label: R.lowest, value: l.lowest },
         { id: f('bond'), label: R.bond, value: eth(l.bondWei) },
+        ...termRows(l, f),
         { id: f('escrow'), label: R.escrow, value: eth(l.escrowWei) },
         BigInt(l.owedWei) > 0n ? { id: f('owed'), label: R.owed, value: eth(l.owedWei) } : null,
         { id: f('value-at-risk'), label: R.valueAtRisk, value: l.valueAtRiskUsd === null ? R.notDeclared : fill(R.usd, { usd: formatWhole(l.valueAtRiskUsd) }) },
@@ -157,7 +169,7 @@ function FindingsTable({ findings, testId, rowId }) {
             <tr key={x.claimId} data-testid={`${rowId}-${x.claimId}`}>
               <td>{x.claimId}</td><td>{x.outcome}</td><td>{x.listingId}</td><td className="mono">{x.hunter}</td>
               <td>{eth(x.paidWei)}</td><td>{eth(x.owedWei)}</td><td>{when(x.revealedAt)}</td><td>{when(x.settledAt)}</td>
-              <td>{E.disputes[x.dispute] ?? x.dispute}</td><td>{archiveLink(x.bcid)}</td>
+              <td>{x.disputeKind === 'None' || x.disputeKind === 'Maker' ? (E.disputes[x.dispute] ?? x.dispute) : fill(R.findingRound, { kind: E.disputeKinds[x.disputeKind], result: E.panelResults[x.dispute] ?? x.dispute })}</td><td>{archiveLink(x.bcid)}</td>
             </tr>
           ))}
         </tbody>
@@ -211,6 +223,12 @@ function Record({ v, onChanged }) {
           { id: 'history-no-verdict', label: R.noVerdict, value: h.noVerdict },
           { id: 'history-disputes', label: R.disputes, value: h.disputes.filed },
           { id: 'history-dispute-results', label: R.disputeResults, value: fill(R.disputeLine, h.disputes) },
+          // the settlement safeguards (errata E7-E9): the contract's own counts, apart from the maker's disputes
+          { id: 'history-appeals', label: R.appeals, value: h.appeals.filed },
+          { id: 'history-appeal-results', label: R.appealResults, value: fill(R.appealLine, h.appeals) },
+          { id: 'history-confirmations', label: R.confirmations, value: h.confirmations.rounds },
+          { id: 'history-confirmation-results', label: R.confirmationResults, value: fill(R.confirmationLine, h.confirmations) },
+          { id: 'history-narrow-invalid', label: R.narrowInvalid, value: h.narrowInvalid },
           { id: 'history-days-since', label: R.daysSince, value: h.daysSinceLastValidFinding === null ? R.noValidFinding : String(h.daysSinceLastValidFinding) },
         ]} />
         <p className="hint" data-testid="integrity-note">{R.integrityNote}</p>
@@ -232,6 +250,8 @@ function Record({ v, onChanged }) {
           v.later.integrityChecks.length > 0 ? { id: 'later-integrity-checks-row', label: R.integrityLateChecks, value: checkList(v.later.integrityChecks, 'later-integrity-checks') } : null,
           BigInt(v.later.integrityUnread) > 0n ? { id: 'later-integrity-unread', label: R.integrityUnread, value: v.later.integrityUnread } : null,
           { id: 'later-expired', label: R.lateExpired, value: v.later.expired },
+          BigInt(v.later.appeals.filed) > 0n ? { id: 'later-appeals', label: R.lateAppeals, value: fill(R.appealLine, v.later.appeals) } : null,
+          BigInt(v.later.narrowInvalid) > 0n ? { id: 'later-narrow-invalid', label: R.lateNarrowInvalid, value: v.later.narrowInvalid } : null,
         ]} />
         {v.later.findings.length ? <FindingsTable findings={v.later.findings} testId="record-later-findings" rowId="late-finding" /> : <p>{R.noLaterFindings}</p>}
       </section>

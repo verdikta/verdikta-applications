@@ -79,6 +79,21 @@ function listingView(l, label, blockTimestamp, control, integrity) {
     daysOpen: Math.max(0, Math.floor((end - opened) / DAY)),
     predecessor: neighbour(l.predecessor, l.predecessorHash),
     successor: neighbour(l.successor, l.successorHash),
+    // errata E8 and E9: fixed at list() (null in a record from before them)
+    narrowInvalidFloor: l.narrowInvalidFloor === undefined ? null : String(l.narrowInvalidFloor),
+    confirmAboveWei: l.confirmAboveWei === undefined ? null : String(l.confirmAboveWei),
+  };
+}
+
+/** A count the record may not have (one read before the safeguards): 0. */
+const count = (x) => String(x ?? 0);
+
+/** The safeguards' counts of a history (errata E7-E9), each by its final result. */
+function safeguardCounts(h) {
+  return {
+    appeals: { filed: count(h.appeals), held: count(h.appealsHeld), overturned: count(h.appealsOverturned), noVerdict: count(h.appealsNoVerdict) },
+    confirmations: { rounds: count(h.confirmationRounds), held: count(h.confirmationsHeld), overturned: count(h.confirmationsOverturned), noVerdict: count(h.confirmationsNoVerdict) },
+    narrowInvalid: count(h.narrowInvalid),
   };
 }
 
@@ -103,6 +118,8 @@ function findingView(f) {
     revealedAt: time(f.revealedAt),
     settledAt: time(f.settledAt),
     bcid: f.bcid,
+    // whose dispute-panel round `dispute` describes (erratum E9): None, Maker, Confirmation or Appeal
+    disputeKind: f.disputeKind ?? 'None',
   };
 }
 
@@ -138,6 +155,7 @@ export function recordView(view) {
       unrevealed: String(h.unrevealed),
       noVerdict: String(h.noVerdict),
       disputes: { filed: String(h.disputes), held: String(h.disputesHeld), overturned: String(h.disputesOverturned), noVerdict: String(h.disputesNoVerdict) },
+      ...safeguardCounts(h),
       daysSinceLastValidFinding: history.daysSinceLastValidFinding,
     },
     findings: record.findings.filter((f) => !f.late).map(findingView),
@@ -148,6 +166,8 @@ export function recordView(view) {
       integrityChecks: checkTotals(integrity.map((e) => e.late.checks)),
       integrityUnread: String(sum((e) => e.late.unread) + sum((e) => e.late.disagree)),
       expired: String(h.lateExpired),
+      appeals: { filed: count(h.lateAppeals), held: count(h.lateAppealsHeld), overturned: count(h.lateAppealsOverturned), noVerdict: count(h.lateAppealsNoVerdict) },
+      narrowInvalid: count(h.lateNarrowInvalid),
       findings: record.findings.filter((f) => f.late).map(findingView),
     },
     flags: record.flags.map((f) => ({

@@ -130,12 +130,13 @@ describe('the keeper calls confirm (erratum E9)', () => {
       assert.deepEqual(actions(await cycle(site)), [['finalize', String(claimId)]]);
 
       // a round may still start shortly before the deadline, and runs to its finalize after it
-      await untilAt(ctx, deadline - CONFIRM_MARGIN_SECONDS - 60n);
+      await untilAt(ctx, deadline - site.keeper.confirmMargins.send - 60n);
       const r = await cycle(site);
       assert.deepEqual(actions(r), [['confirm', String(claimId)]], 'a round may still start before the deadline');
       await increaseTime(ctx, 301);
       assert.deepEqual(actions(await cycle(site)), [['finalize', String(claimId)]]);
-      assert.ok(BigInt(await latestTimestamp(ctx)) >= deadline);
+      assert.deepEqual((await cycle(site)).sent, [], 'too close to the deadline for another round, and not yet settleable');
+      await untilAt(ctx, deadline);
       const hunter = ctx.hunters[0].address;
       const before = await ctx.hre.ethers.provider.getBalance(hunter);
       assert.deepEqual(actions(await cycle(site)), [['settle', String(claimId)]], 'from the deadline the first verdict pays');
@@ -157,7 +158,9 @@ describe('the keeper calls confirm (erratum E9)', () => {
       await verdict(ctx, claimId, 'HIGH');
       await cycle(site);
       const [, deadline] = await ctx.sa.confirmWindow(claimId);
-      await untilAt(ctx, deadline - CONFIRM_MARGIN_SECONDS + 10n);
+      const { send } = site.keeper.confirmMargins;
+      assert.equal(send, CONFIRM_MARGIN_SECONDS + 2n * (120n + 30n), 'with the defaults: two cycles of 120 s and 30 s, and two minutes');
+      await untilAt(ctx, deadline - send + 10n);
       await ctx.sa.connect(ctx.other).confirm.staticCall(claimId); // still open on the chain
       assert.deepEqual((await cycle(site)).sent, [], 'inside the margin: not sent');
       await untilAt(ctx, deadline);
@@ -381,22 +384,29 @@ describe('confirm keeps the keeper\'s idempotence', () => {
     }
   });
 
-  test('a pending confirm, however young, whose window comes within the margin is replaced by a transfer to itself, never mined after the deadline', async () => {
+  test('a pending confirm, however young, whose window comes within the cancel margin is replaced by a transfer to itself, never mined after the deadline', async () => {
     const ctx = await confirmedListingContext();
     const { claimId } = await dueForConfirm(ctx);
     const [, deadline] = await ctx.sa.confirmWindow(claimId);
     const site = siteFor(ctx, { env: { SA_KEEPER_TX_TIMEOUT_MS: '200', SA_KEEPER_REPLACE_AFTER_MS: '600000' } });
+    const { cancel, send } = site.keeper.confirmMargins;
+    assert.ok(send - cancel >= 30n, 'a confirm sent is seen again at least once before it must be replaced');
+    // the confirm waits in the network while the chain's clock moves to `at`
+    const waitInTheNetworkUntil = async (at) => {
+      const [pending] = await pendingKeeperTransactions(ctx);
+      await rpc(ctx, 'hardhat_dropTransaction', [pending.hash]);
+      await rpc(ctx, 'evm_setNextBlockTimestamp', [Number(at)]);
+      await mine(ctx);
+      await rpc(ctx, 'eth_sendRawTransaction', [site.store.state.keeper.inflight.attempts.at(-1).raw]);
+    };
     try {
       await site.sync();
       await automine(ctx, false);
       const first = await site.keep();
       assert.equal(first.pending.action, 'confirm');
-      const [pending] = await pendingKeeperTransactions(ctx);
-      // the confirm waits in the network while the chain's clock reaches the margin
-      await rpc(ctx, 'hardhat_dropTransaction', [pending.hash]);
-      await rpc(ctx, 'evm_setNextBlockTimestamp', [Number(deadline - CONFIRM_MARGIN_SECONDS + 5n)]);
-      await mine(ctx);
-      await rpc(ctx, 'eth_sendRawTransaction', [site.store.state.keeper.inflight.attempts.at(-1).raw]);
+      await waitInTheNetworkUntil(deadline - send + 5n);
+      assert.deepEqual((await site.keep()).sent, [], 'no longer to be sent, but still clear of the deadline: waited for');
+      await waitInTheNetworkUntil(deadline - cancel + 5n);
       const r = await site.keep();
       assert.deepEqual(r.sent.map((x) => x.action), ['cancel'], 'young, but closing: replaced now');
       await mine(ctx);

@@ -488,9 +488,12 @@ round is over, every dispute-panel round's included (the maker's dispute, a conf
 appeal), and `settle` when a judged claim may settle, from the lens's `settleableAt` and never
 earlier, so it never waives a hunter's appeal (erratum E7), whatever its key; `confirm` (erratum
 E9, node P18) on a Judged claim that awaits its confirmation, while the lens's `confirmWindow` is
-open, and again after a round with no verdict until the deadline, but not in its last two minutes,
-so a confirm is never mined after the deadline to revert there (`SA_KEEPER_CONFIRM=off` turns it
-off; the listing's escrow pays the round, and a confirm the escrow cannot pay is never sent); and
+open, and again after a round with no verdict until the deadline (`SA_KEEPER_CONFIRM=off` turns it
+off; the listing's escrow pays the round, and a confirm the escrow cannot pay is never sent). A
+broadcast transaction cannot be recalled, so a confirm is sent only two keeper cycles (receipt wait
+plus poll interval, 150 s each with the defaults) and two minutes before the deadline, and one still
+pending within one cycle and two minutes of it is replaced by a transfer to itself at once, whatever
+its age (`confirmMargins`, `server/src/site/keeper.js`); and
 `expire` only with `SA_KEEPER_EXPIRE=on`. Its key is `SA_KEEPER_PRIVATE_KEY`, read when it starts (`SA_KEEPER=off`
 turns it off). It reads each claim on-chain and simulates the call before sending it, keeps one
 transaction in flight at its next confirmed nonce, recorded before it is broadcast, and

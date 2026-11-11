@@ -87,6 +87,13 @@ test('the form holds the D8 bounds, and a 0-day fix window is allowed with no gr
   await expect(submit).toBeEnabled();
 });
 
+// Node P19 (owner, 2026-11-10, Q73 #5): what a known issue settles as, and how a maker marks a behaviour as no bug.
+test('the known-issues fields say a listed root cause settles DUPLICATE, and how to mark a behaviour as no bug at all', async ({ page }) => {
+  const known = page.getByRole('group', { name: STRINGS.listing.sections.knownIssues, exact: true });
+  await expect(known.getByText(STRINGS.listing.hints.knownIssues)).toBeVisible();
+  await expect(known.getByText(STRINGS.listing.hints.knownIssuesIntended)).toBeVisible();
+});
+
 test('a maker lists and funds a repository version: server validation, report, list() and fund()', async ({ page, stack, chain }) => {
   const { recipient } = await generateAndSaveKey(page);
   // HIGH below MEDIUM: the client leaves the award rules to the server, which refuses them

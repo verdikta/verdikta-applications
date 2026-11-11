@@ -980,6 +980,9 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     // the real builder chooses them as the runner does and reports it, and the hunter's check on that listing gets
     // the pack the real runner at the pin builds, with the documents tier right after the source.
     stage('documents: a listing that names them');
+    // The pull check below is of the first listing's image: after its push, the runs pulled it by digest. This listing
+    // pushes an image of its own, so what the registry was asked is read before it.
+    const firstListingManifests = await registry.manifestRequests();
     const docsDraft = draftSpec({ repo: repository.url, baseCommit: repository.documentsCommit, disclosureKey: disclosure.recipient, documents: DOCUMENT_GLOBS });
     const docsRes = await submit(maker, { spec: docsDraft, allowlist: [], maker: maker.address });
     one('documents.listing.accepted', docsRes.status === 202, `HTTP ${docsRes.status}`);
@@ -1003,7 +1006,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const everyProviderCall = providerCalls();
     one('live.providerIsTheMock', everyProviderCall.length > 0 && everyProviderCall.every((c) => [...panel.map((p) => p.model), ...disputePanel.map((p) => p.model), JUSTIFIER.model].includes(c.model) && c.outcome === 'answered'), `${everyProviderCall.length} calls, every one logged by the mock provider`);
     const firstCheck = hunterRunner.post('/v1/runs')[0]?.response;
-    for (const c of h.pullChecks(firstCheck, await registry.manifestRequests(), validation.image.ref)) one(`live.${c.name}`, c.ok, c.detail);
+    for (const c of h.pullChecks(firstCheck, firstListingManifests, validation.image.ref)) one(`live.${c.name}`, c.ok, c.detail);
   };
 
   // The main flow never rejects: a stop waits on it, and what ends it is the report's.

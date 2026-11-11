@@ -2,9 +2,11 @@
 // decisions 10 and 11; build plan erratum E4 for the 999,995-1,000,000 sum range): the same
 // outcome, class and award on common's fixture vectors and on >= 1,000 random vectors weighted
 // to the edges (exact threshold, ties, the flooring loss), and the same refusals (a vector common
-// rejects is a failed round on-chain). The rule runs through the lens's judgeVector, which
-// compiles the same ClaimRules.judge that finalize and settle use; a sample also goes through
-// finalize and settle end to end.
+// rejects is a failed round on-chain). The narrow INVALID too (erratum E8; common knows the floor
+// since 1.9.0-attest.4): under the default floor and under three others, the same `narrow` and so
+// the same bond. The rule runs through the lens's judgeVector, which compiles the same
+// ClaimRules.judge and isNarrowInvalid that finalize and settle use; a sample also goes through
+// finalize and settle end to end, under the default floor and common's lowest.
 const { expect } = require("chai");
 const { ethers, network } = require("hardhat");
 const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
@@ -128,6 +130,21 @@ function malformed(r) {
   }
 }
 
+// The narrow-INVALID floors a listing is also judged under (erratum E8), besides the default the
+// contract deploys with, THRESHOLD (the empty band, every INVALID forfeits): common's lowest, one
+// inside the band, and the band's top, where only a valid mass of exactly THRESHOLD - 1 is narrow.
+// list() copies the program's floor onto each listing. The floor decides `narrow` and the bond only.
+const FLOORS = [codeReview.NARROW_INVALID_FLOOR_MIN, 350_000, T - 1];
+const invalidWith = (mass) => [SCALE - mass, 0, 0, mass, 0, 0]; // INVALID with exactly `mass` valid, on MEDIUM
+// Each floor's edges: valid mass at it and one below, an INVALID/DUPLICATE tie inside the band
+// (DUPLICATE, never narrow), and all the mass on DUPLICATE or INVALID (a gate failure: never narrow).
+const FLOOR_EDGE_VECTORS = [
+  ...FLOORS.flatMap((f) => [invalidWith(f), invalidWith(f - 1), [(SCALE - f) / 2, (SCALE - f) / 2, 0, f, 0, 0].map(Math.floor)]),
+  [0, SCALE - 350_000, 0, 350_000, 0, 0],
+  [SCALE, 0, 0, 0, 0, 0],
+  [0, SCALE, 0, 0, 0, 0],
+];
+
 // The listing terms the vectors are settled under, with common's stake for each.
 const STAKES = [
   { awards: AWARDS, lowest: Outcome.MEDIUM }, // common's code_review.bug.json
@@ -141,37 +158,52 @@ const commonStake = ({ awards, lowest }) => ({
   lowestClassCounted: OUTCOMES[Number(lowest)],
 });
 
-// common's verdict, or null where it refuses the vector.
-function commonVerdict(vector, stake) {
+// common's verdict, or null where it refuses the vector; `floor` absent is common's default, THRESHOLD.
+function commonVerdict(vector, stake, floor) {
   try {
-    return codeReview.settleBugOutcome(vector, commonStake(stake));
+    return codeReview.settleBugOutcome(vector, commonStake(stake), floor === undefined ? {} : { narrowInvalidFloor: floor });
   } catch (e) {
     if (e instanceof TypeError) return null;
     throw e;
   }
 }
 
+const listWith = (f, s) => H.listAs(f.sa, f.maker, H.params({ artifact: H.atCommit(H.freshCommit()), awards: s.awards, lowestClassCounted: s.lowest }));
+
 async function deployWithStakes() {
   const f = await H.deploy();
+  expect(await f.sa.narrowInvalidFloor()).to.equal(BigInt(T));
   const ids = [];
-  for (const s of STAKES) {
-    ids.push(await H.listAs(f.sa, f.maker, H.params({ artifact: H.atCommit(H.freshCommit()), awards: s.awards, lowestClassCounted: s.lowest })));
+  for (const s of STAKES) ids.push(await listWith(f, s));
+  // the first stake again under each other floor, which list() copies from the program
+  const floored = [];
+  for (const floor of FLOORS) {
+    await f.sa.connect(f.owner).setNarrowInvalidFloor(floor);
+    floored.push(await listWith(f, STAKES[0]));
+    expect((await f.sa.getListing(floored.at(-1))).narrowInvalidFloor).to.equal(BigInt(floor));
   }
-  return { ...f, ids };
+  return { ...f, ids, floored };
 }
 
-async function compare(sa, ids, vector, label) {
+function expectSame(got, want, label) {
+  if (want === null) {
+    expect(got.wellFormed, `${label}: common refuses it`).to.equal(false);
+    expect(got.awardWei).to.equal(0n);
+    expect(got.narrow).to.equal(false);
+    return;
+  }
+  expect(got.wellFormed, label).to.equal(true);
+  expect(got.outcome, `${label}: ${want.outcome}`).to.equal(BigInt(want.outcomeIndex));
+  expect(got.awardWei, `${label}: award`).to.equal(want.paidWei);
+  expect(got.narrow, `${label}: narrow (${want.bond})`).to.equal(want.narrow);
+}
+
+async function compare(sa, ids, floored, vector, label) {
   for (let k = 0; k < STAKES.length; k++) {
-    const want = commonVerdict(vector, STAKES[k]);
-    const got = await sa.judgeVector(ids[k], vector);
-    if (want === null) {
-      expect(got.wellFormed, `${label} [${vector}] stake ${k}: common refuses it`).to.equal(false);
-      expect(got.awardWei).to.equal(0n);
-      continue;
-    }
-    expect(got.wellFormed, `${label} [${vector}] stake ${k}`).to.equal(true);
-    expect(got.outcome, `${label} [${vector}] stake ${k}: ${want.outcome}`).to.equal(BigInt(want.outcomeIndex));
-    expect(got.awardWei, `${label} [${vector}] stake ${k}: award`).to.equal(want.paidWei);
+    expectSame(await sa.judgeVector(ids[k], vector), commonVerdict(vector, STAKES[k]), `${label} [${vector}] stake ${k}`);
+  }
+  for (let j = 0; j < FLOORS.length; j++) {
+    expectSame(await sa.judgeVector(floored[j], vector), commonVerdict(vector, STAKES[0], FLOORS[j]), `${label} [${vector}] floor ${FLOORS[j]}`);
   }
   return commonVerdict(vector, STAKES[0]) !== null;
 }
@@ -179,24 +211,33 @@ async function compare(sa, ids, vector, label) {
 describe("StakeAttestation: settlement equals @verdikta/common settleBugOutcome (differential)", function () {
   this.timeout(1_200_000);
 
-  it("on common's fixture vectors, under five award tables", async function () {
-    const { sa, ids } = await loadFixture(deployWithStakes);
+  it("on common's fixture vectors, under five award tables and four floors, and on each floor's edges", async function () {
+    const { sa, ids, floored } = await loadFixture(deployWithStakes);
     expect(await sa.THRESHOLD()).to.equal(BigInt(codeReview.DEFAULT_SETTLEMENT_THRESHOLD));
     expect(await sa.MIN_SCORE_SUM()).to.equal(BigInt(codeReview.OUTCOME_MASS_MIN_TOTAL));
-    for (const v of COMMON_FIXTURE_VECTORS) await compare(sa, ids, v, "fixture");
+    expect(await sa.MIN_NARROW_INVALID_FLOOR()).to.equal(BigInt(codeReview.NARROW_INVALID_FLOOR_MIN));
+    for (const v of COMMON_FIXTURE_VECTORS) await compare(sa, ids, floored, v, "fixture");
+    const narrow = FLOORS.map(() => 0);
+    for (const v of FLOOR_EDGE_VECTORS) {
+      expect(await compare(sa, ids, floored, v, "floor edge")).to.equal(true);
+      FLOORS.forEach((f, j) => { if (commonVerdict(v, STAKES[0], f).narrow) narrow[j]++; });
+    }
+    // the edges reach a narrow INVALID under every floor, and one just short of it
+    for (const n of narrow) expect(n).to.be.greaterThan(0);
+    expect(commonVerdict(invalidWith(FLOORS[0] - 1), STAKES[0], FLOORS[0]).narrow).to.equal(false);
   });
 
   it("on >= 1,000 random well-formed vectors weighted to the threshold, the ties and the flooring loss, and on malformed ones", async function () {
-    const { sa, ids } = await loadFixture(deployWithStakes);
+    const { sa, ids, floored } = await loadFixture(deployWithStakes);
     const seed = 0x5a7c2026;
     const r = rng(seed);
     const names = Object.keys(GENERATORS);
-    const seen = { exactThreshold: 0, oneBelow: 0, invDupTie: 0, flooringLoss: 0, byOutcome: [0, 0, 0, 0, 0, 0] };
+    const seen = { exactThreshold: 0, oneBelow: 0, invDupTie: 0, flooringLoss: 0, narrowAtLowest: 0, invalidBelowLowest: 0, byOutcome: [0, 0, 0, 0, 0, 0] };
     let wellFormed = 0;
     for (let i = 0; i < 1200; i++) {
       const name = names[i % names.length];
       const v = GENERATORS[name](r);
-      expect(await compare(sa, ids, v, `seed ${seed} #${i} ${name}`)).to.equal(true);
+      expect(await compare(sa, ids, floored, v, `seed ${seed} #${i} ${name}`)).to.equal(true);
       wellFormed++;
       const valid = v[2] + v[3] + v[4] + v[5];
       if (valid === T) seen.exactThreshold++;
@@ -204,10 +245,13 @@ describe("StakeAttestation: settlement equals @verdikta/common settleBugOutcome 
       if (v[0] === v[1] && valid < T) seen.invDupTie++;
       if (v.reduce((a, b) => a + b, 0) < SCALE) seen.flooringLoss++;
       seen.byOutcome[commonVerdict(v, STAKES[0]).outcomeIndex]++;
+      const atLowest = commonVerdict(v, STAKES[0], FLOORS[0]);
+      if (atLowest.narrow) seen.narrowAtLowest++;
+      else if (atLowest.outcome === "INVALID") seen.invalidBelowLowest++;
     }
     for (let i = 0; i < 150; i++) {
       const v = malformed(r);
-      expect(await compare(sa, ids, v, `seed ${seed} malformed #${i}`)).to.equal(false);
+      expect(await compare(sa, ids, floored, v, `seed ${seed} malformed #${i}`)).to.equal(false);
     }
     expect(wellFormed).to.be.at.least(1000);
     // The generators really reach the edges and every outcome.
@@ -215,46 +259,65 @@ describe("StakeAttestation: settlement equals @verdikta/common settleBugOutcome 
     expect(seen.oneBelow).to.be.greaterThan(20);
     expect(seen.invDupTie).to.be.greaterThan(20);
     expect(seen.flooringLoss).to.be.greaterThan(500);
+    expect(seen.narrowAtLowest).to.be.greaterThan(20);
+    expect(seen.invalidBelowLowest).to.be.greaterThan(20);
     for (const n of seen.byOutcome) expect(n).to.be.greaterThan(20);
   });
 
-  it("end to end: finalize and settle pay what common pays, and fail the rounds common refuses", async function () {
-    const { sa, aggregator, maker, hunter } = await loadFixture(H.deploy);
+  it("end to end: finalize and settle pay what common pays, the bond included, and fail the rounds common refuses", async function () {
+    const { sa, aggregator, owner, maker, hunter } = await loadFixture(H.deploy);
+    // one claim under the default floor (every INVALID forfeits), one under common's lowest
     const id = await H.openListing(sa, maker, H.params(), { escrow: 2n * TOP });
-    const { claimId, requestId } = await H.revealedClaim(sa, hunter, id);
+    await sa.connect(owner).setNarrowInvalidFloor(FLOORS[0]);
+    const lowId = await H.openListing(sa, maker, H.params({ artifact: H.atCommit(H.freshCommit()) }), { escrow: 2n * TOP });
+    const claims = [
+      { listingId: id, floor: undefined, ...(await H.revealedClaim(sa, hunter, id)) },
+      { listingId: lowId, floor: FLOORS[0], ...(await H.revealedClaim(sa, hunter, lowId)) },
+    ];
     const r = rng(0x00c0ffee);
     const names = Object.keys(GENERATORS);
     const sample = [
       ...COMMON_FIXTURE_VECTORS,
+      ...FLOOR_EDGE_VECTORS,
       ...Array.from({ length: 24 }, (_, i) => GENERATORS[names[i % names.length]](r)),
     ].filter((v) => v.length >= 2 && v.length <= 20); // what a real round can deliver
-    const seen = { judged: 0, failed: 0, paid: 0 };
+    const seen = { judged: 0, failed: 0, paid: 0, narrow: 0, forfeited: 0 };
     for (const v of sample) {
-      const want = commonVerdict(v, STAKES[0]);
       const snap = await network.provider.send("evm_snapshot");
-      await aggregator.scriptResult(requestId, v, JUSTIFICATION);
-      await sa.finalize(claimId);
-      const c = await sa.getClaim(claimId);
-      if (want === null) {
-        expect(c.state, `[${v}]`).to.equal(ClaimState.RoundFailed);
-        seen.failed++;
-      } else {
+      // both rounds finalize before the clock moves past either dispute window
+      for (const k of claims) {
+        await aggregator.scriptResult(k.requestId, v, JUSTIFICATION);
+        await sa.finalize(k.claimId);
+      }
+      for (const k of claims) {
+        const label = `[${v}] floor ${k.floor ?? T}`;
+        const want = commonVerdict(v, STAKES[0], k.floor);
+        const c = await sa.getClaim(k.claimId);
+        if (want === null) {
+          expect(c.state, label).to.equal(ClaimState.RoundFailed);
+          seen.failed++;
+          continue;
+        }
         seen.judged++;
         if (want.paidWei > 0n) seen.paid++;
-        expect(c.state, `[${v}]`).to.equal(ClaimState.Judged);
-        expect(c.outcome, `[${v}]`).to.equal(BigInt(want.outcomeIndex));
-        await H.afterDisputeWindow(sa, claimId);
+        if (want.narrow) seen.narrow++;
+        if (want.bond === "forfeited") seen.forfeited++;
+        expect(c.state, label).to.equal(ClaimState.Judged);
+        expect(c.outcome, label).to.equal(BigInt(want.outcomeIndex));
+        await H.afterDisputeWindow(sa, k.claimId);
         const toHunter = want.bond === "returned" ? BOND + want.paidWei : 0n;
         const toMaker = want.bond === "forfeited" ? BOND : 0n;
-        await expect(sa.settle(claimId), `[${v}]`).to.changeEtherBalances([hunter, maker], [toHunter, toMaker]);
-        expect((await sa.getClaim(claimId)).paidWei).to.equal(want.paidWei);
-        const published = (await sa.validFindings(id)).length === 1;
-        expect(published, `[${v}] published`).to.equal(want.published);
+        await expect(sa.settle(k.claimId), label).to.changeEtherBalances([hunter, maker], [toHunter, toMaker]);
+        expect((await sa.getClaim(k.claimId)).paidWei).to.equal(want.paidWei);
+        const published = (await sa.validFindings(k.listingId)).length === 1;
+        expect(published, `${label} published`).to.equal(want.published);
       }
       await network.provider.send("evm_revert", [snap]);
     }
-    expect(seen.judged).to.be.greaterThan(30);
-    expect(seen.paid).to.be.greaterThan(10);
-    expect(seen.failed).to.be.greaterThan(3);
+    expect(seen.judged).to.be.greaterThan(60);
+    expect(seen.paid).to.be.greaterThan(20);
+    expect(seen.failed).to.be.greaterThan(6);
+    expect(seen.narrow).to.be.greaterThan(3);
+    expect(seen.forfeited).to.be.greaterThan(3);
   });
 });

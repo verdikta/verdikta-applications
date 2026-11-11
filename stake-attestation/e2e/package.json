@@ -14,7 +14,7 @@
     "test:unit": "node --test test/aggregatorRound.test.js test/bridge.test.js test/checks.test.js test/proc.test.js"
   },
   "dependencies": {
-    "@verdikta/common": "1.9.0-attest.1",
+    "@verdikta/common": "1.9.0-attest.5",
     "ethers": "6.15.0"
   }
 }

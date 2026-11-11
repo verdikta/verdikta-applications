@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, evidenceChecks, gateSettledChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, moneyChecks, pageChecks, recordChecks, requestChecks, servedRoundChecks, settlementChecks } from '../src/checks.js';
+import { abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, documentsListingChecks, documentsPackChecks, noDocumentsTierChecks, evidenceChecks, gateSettledChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, moneyChecks, pageChecks, recordChecks, requestChecks, servedRoundChecks, settlementChecks } from '../src/checks.js';
 
 const failing = (list) => list.filter((c) => !c.ok).map((c) => c.name);
 const allPass = (list) => assert.deepEqual(failing(list), []);
@@ -342,4 +342,63 @@ test('integrityPageChecks: what the browser read: the count, the check, the note
   fails(integrityPageChecks('x', r({ integrityOther: '1' }), o), 'x.page.integrityOther');
   fails(integrityPageChecks('x', r({ integrityNote: 'the maker set a trap' }), o), 'x.page.integrityNote');
   fails(integrityPageChecks('x', r({ main: 'it names QmDup' }), o), 'x.page.duplicateNotPublished');
+});
+
+// Node P20: one listing of the round names documents. The builder's report says what the tier would read, and the
+// hunter's check shows the pack the real runner at the pin built for it: the documents tier, right after the source,
+// with the expected files in order and the binary one left out as not text. The round's other listing names none,
+// and its packs have no documents tier.
+const DOCUMENT_LABEL = 'the maker\'s document at the listed commit (stake.documents): ';
+const TIERS = ['poc', 'claim', 'source', 'documents', 'callSites', 'knownIssues', 'priorFindings', 'fix', 'tree'];
+const docsPack = (over = {}) => ({
+  tiers: TIERS.map((name, i) => ({ rank: i + 1, name, status: 'full', asked: name === 'documents' ? 3 : 1, delivered: name === 'documents' ? 2 : 1, omitted: name === 'documents' ? { notText: 1 } : {}, cut: 0 })),
+  files: [
+    { name: '00-manifest.json', tier: 'manifest', text: '{}' },
+    { name: '04-document-001.txt', tier: 'documents', text: `# ${DOCUMENT_LABEL}README.md\n# Vault\n` },
+    { name: '04-document-002.txt', tier: 'documents', text: `# ${DOCUMENT_LABEL}docs/spec.md\nspec\n` },
+  ],
+  ...over,
+});
+const docsCheck = (pack = docsPack()) => ({ code: 0, json: { forecast: { verdict: 'pass', documents: { globs: ['README.md', 'docs/**', 'SPEC/**'], tier: { rank: 4, status: 'full', asked: 3, delivered: 2, omitted: { notText: 1 }, cut: 0 } } }, pack } });
+const DOCS_EXPECTED = { globs: ['README.md', 'docs/**', 'SPEC/**'], files: ['README.md', 'docs/spec.md'], omitted: { notText: 1 } };
+
+test('documentsPackChecks: the runner\'s documents tier, at rank 4, with the expected files in order, as the tool shows it', () => {
+  const runnerAnswer = { contextPack: docsPack() };
+  const sent = { spec: { stake: { documents: DOCS_EXPECTED.globs } } };
+  allPass(documentsPackChecks('d', { check: docsCheck(), runnerAnswer, sent, ...DOCS_EXPECTED }));
+  fails(documentsPackChecks('d', { check: { ...docsCheck(), code: 1 }, runnerAnswer, sent, ...DOCS_EXPECTED }), 'd.check.passes');
+  fails(documentsPackChecks('d', { check: docsCheck(docsPack({ tiers: docsPack().tiers.filter((t) => t.name !== 'documents') })), runnerAnswer, sent, ...DOCS_EXPECTED }), 'd.pack.documentsTier');
+  const swapped = docsPack();
+  swapped.files = [swapped.files[0], swapped.files[2], swapped.files[1]];
+  fails(documentsPackChecks('d', { check: docsCheck(swapped), runnerAnswer: { contextPack: swapped }, sent, ...DOCS_EXPECTED }), 'd.pack.documentFiles');
+  const moved = docsPack();
+  moved.tiers = [...moved.tiers.slice(0, 2), moved.tiers[3], moved.tiers[2], ...moved.tiers.slice(4)];
+  fails(documentsPackChecks('d', { check: docsCheck(moved), runnerAnswer: { contextPack: moved }, sent, ...DOCS_EXPECTED }), 'd.pack.documentsTier');
+  fails(documentsPackChecks('d', { check: docsCheck(), runnerAnswer: { contextPack: { ...docsPack(), files: [] } }, sent, ...DOCS_EXPECTED }), 'd.pack.isTheRunners');
+  fails(documentsPackChecks('d', { check: docsCheck(), runnerAnswer, sent: { spec: { stake: {} } }, ...DOCS_EXPECTED }), 'd.request.documents');
+  const forecast = docsCheck();
+  forecast.json.forecast.documents.tier.delivered = 3;
+  fails(documentsPackChecks('d', { check: forecast, runnerAnswer, sent, ...DOCS_EXPECTED }), 'd.forecast.documents');
+});
+
+test('documentsListingChecks: the builder\'s documents step, read, skipped and unmatched, and its warning', () => {
+  const report = {
+    steps: [{ name: 'spec', status: 'ok' }, { name: 'control', status: 'ok' }, { name: 'fetch', status: 'ok' }, { name: 'documents', status: 'ok' }, { name: 'build', status: 'ok' }],
+    documents: { globs: DOCS_EXPECTED.globs, candidates: 9, read: [{ path: 'README.md', bytes: 8 }, { path: 'docs/spec.md', bytes: 5 }], pastCap: [], skipped: [{ path: 'docs/diagram.bin', reason: 'notText', bytes: 7 }], unmatched: [{ index: 2, glob: 'SPEC/**' }] },
+    warnings: [{ code: 'STAKE_DOCUMENT_MATCHES_NOTHING', path: '/stake/documents/2', detail: '"SPEC/**" matches nothing' }],
+  };
+  const expected = { read: ['README.md', 'docs/spec.md'], skipped: [['docs/diagram.bin', 'notText']], unmatched: ['SPEC/**'] };
+  allPass(documentsListingChecks('d', { status: 'ready', validationReport: report }, expected));
+  fails(documentsListingChecks('d', { status: 'refused', validationReport: report }, expected), 'd.listing.ready');
+  fails(documentsListingChecks('d', { status: 'ready', validationReport: { ...report, steps: report.steps.filter((x) => x.name !== 'documents') } }, expected), 'd.listing.documentsStep');
+  fails(documentsListingChecks('d', { status: 'ready', validationReport: { ...report, documents: { ...report.documents, read: [] } } }, expected), 'd.listing.read');
+  fails(documentsListingChecks('d', { status: 'ready', validationReport: { ...report, documents: { ...report.documents, skipped: [] } } }, expected), 'd.listing.skipped');
+  fails(documentsListingChecks('d', { status: 'ready', validationReport: { ...report, warnings: [] } }, expected), 'd.listing.unmatchedWarned');
+});
+
+test('noDocumentsTierChecks: a pack for a listing without documents has no documents tier, and its ranks run 1-8', () => {
+  const plain = { tiers: TIERS.filter((t) => t !== 'documents').map((name, i) => ({ rank: i + 1, name })), files: [{ name: '00-manifest.json', tier: 'manifest', text: '{}' }] };
+  allPass(noDocumentsTierChecks('v', plain));
+  fails(noDocumentsTierChecks('v', docsPack()), 'v.pack.noDocumentsTier');
+  fails(noDocumentsTierChecks('v', null), 'v.pack.noDocumentsTier');
 });

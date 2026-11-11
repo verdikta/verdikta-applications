@@ -35,6 +35,7 @@ describe('GET /api/feed', () => {
   let contract;
   let deployed;
   let successor;
+  let documented;
   const gone = {};
   let invalidClaim;
   let pendingClaim;
@@ -59,6 +60,8 @@ describe('GET /api/feed', () => {
     gone.rolled = await listing(ctx);
     successor = await listing(ctx);
     await (await ctx.sa.connect(ctx.maker).rollForward(gone.rolled.listingId, successor.listingId)).wait();
+    // node P20: a listing that names its documents
+    documented = await listing(ctx, { stake: { documents: ['README.md', 'docs/**'] } });
     gone.depleted = await listing(ctx);
     const big = await revealedClaim(ctx, ctx.hunters[2], gone.depleted.listingId);
     await judgeAndSettle(ctx, big, 'CRITICAL');
@@ -84,7 +87,7 @@ describe('GET /api/feed', () => {
     assert.equal(res.status, 200);
     const body = await res.json();
     const ids = body.listings.map((l) => l.listingId).sort();
-    assert.deepEqual(ids, [open, renewed, contract, successor].map((l) => String(l.listingId)).sort());
+    assert.deepEqual(ids, [open, renewed, contract, successor, documented].map((l) => String(l.listingId)).sort());
     for (const [why, l] of Object.entries(gone)) assert.equal(ids.includes(String(l.listingId)), false, `${why} is not in the feed`);
     for (const id of ids) assert.equal(await ctx.sa.acceptsCommits(id), true);
     assert.equal(body.block.number, site.store.state.cursor.number);
@@ -130,6 +133,16 @@ describe('GET /api/feed', () => {
     assert.equal(entry.listingCid, open.listingCid);
     assert.equal(entry.disputeCid, open.disputeCid);
     assert.equal(entry.disclosureKey, onchain.disclosureKey);
+  });
+
+  // Node P20: a hunter sees where a listing says its requirements are written, from its listing archive.
+  test('each entry names the listing\'s document globs, from its archive: none for a listing that names none', async () => {
+    const body = await (await api.get('/api/feed')).json();
+    const entry = (l) => body.listings.find((x) => x.listingId === String(l.listingId));
+    assert.deepEqual(entry(documented).documents, ['README.md', 'docs/**']);
+    assert.deepEqual(entry(documented).documents, documented.spec.stake.documents);
+    assert.deepEqual(entry(open).documents, []);
+    assert.equal(Object.hasOwn(open.spec.stake, 'documents'), false);
   });
 
   test('a contract listing carries its deployment', async () => {
@@ -315,7 +328,7 @@ describe('reading a listing archive without extracting it', () => {
 
   test('the archive the flow issues reads; the same members deflated, or under one folder, are not what it issues', () => {
     const r = readListingArchive(zipStored(members), 'QmNotARawCidSoNoHashCheckXXXXXXXXXXXXXXXXXXXXXX');
-    assert.deepEqual({ ok: r.ok, image: r.image, scope: r.scope }, { ok: true, image: IMAGE, scope: spec().stake.scope });
+    assert.deepEqual({ ok: r.ok, image: r.image, scope: r.scope, documents: r.documents }, { ok: true, image: IMAGE, scope: spec().stake.scope, documents: [] });
     assert.equal(r.baseCommit, spec().baseCommit);
     for (const bytes of [zipDeflated(members), zipDeflated(members.map((m) => ({ ...m, name: `listing/${m.name}` })))]) {
       assert.deepEqual(readListingArchive(bytes, 'QmNotARawCidSoNoHashCheckXXXXXXXXXXXXXXXXXXXXXX'), { ok: false, error: 'ARCHIVE_INVALID' });

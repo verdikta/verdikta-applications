@@ -108,8 +108,13 @@ export function tooLargeDetail() {
 
 const STEPS = ['spec', 'control', 'fetch', 'build', 'size', 'push', 'registry', 'verifiedSource', 'listingCheck', 'finalSpec'];
 
+/** Whether a draft names documents (stake.documents, a list with an entry), as the builder and the runner read it. */
+const namesDocuments = (draft) => Array.isArray(draft.stake?.documents) && draft.stake.documents.length > 0;
+
 function reportFor(draft, statuses = {}, maker = MAKER, deploymentProof = null) {
   const contract = draft.artifact?.kind === 'contract';
+  // node P20: the builder's documents step, right after the fetch, only when the draft names documents
+  const steps = namesDocuments(draft) ? [...STEPS.slice(0, 3), 'documents', ...STEPS.slice(3)] : STEPS;
   return {
     version: 1,
     kind: 'verdikta-listing-validation',
@@ -117,7 +122,7 @@ function reportFor(draft, statuses = {}, maker = MAKER, deploymentProof = null) 
     createdAt: '2026-11-02T00:00:00Z',
     status: 'pending',
     listing: { repo: draft.repo, baseCommit: draft.baseCommit, artifact: draft.artifact ?? { kind: 'repo' } },
-    steps: STEPS.map((name) => ({
+    steps: steps.map((name) => ({
       name,
       status: statuses[name] ?? (name === 'verifiedSource' && !contract ? 'skipped' : 'ok'),
       durationMs: 1,
@@ -127,6 +132,9 @@ function reportFor(draft, statuses = {}, maker = MAKER, deploymentProof = null) 
     image: { ref: IMAGE, digest: IMAGE.split('@')[1], platform: 'linux/amd64', unpackedBytes: { builder: 812000000, runner: 812000000, attested: 812000000 } },
     verifiedSource: contract ? { status: 'match', issues: [], warnings: [] } : null,
     listingCheck: { status: 'accepted', runner: { version: '0.1.0', runtime: 'runsc', platform: 'linux/amd64' } },
+    ...(namesDocuments(draft) ? {
+      documents: { globs: [...draft.stake.documents], candidates: 4, read: [{ path: 'README.md', bytes: 120 }], pastCap: [], skipped: [], unmatched: [] },
+    } : {}),
     baseline: null,
     limits: null,
     files: null,

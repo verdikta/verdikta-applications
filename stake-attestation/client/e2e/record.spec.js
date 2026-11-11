@@ -84,6 +84,8 @@ test('a version\'s record: stake, labels, history, findings, flags, lineage, lat
   await expect(s('bond')).toHaveText(fill(R.eth, { eth: '0.02' }));
   await expect(s('escrow')).toHaveText(fill(R.eth, { eth: '4.6' }));
   await expect(s('value-at-risk')).toHaveText(fill(R.usd, { usd: '1,250,000' }));
+  // node P20: the listing's documents; this one names none
+  await expect(s('documents')).toHaveText(R.documentsNone);
   await expect(s('share')).toHaveText(fill(R.share, { usd: '4,840', share: '0.38' }));
   await expect(s('opened')).toHaveText(at(listing.openedAt));
   await expect(s('funded-until')).toHaveText(at(listing.fundedUntil));

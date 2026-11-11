@@ -31,8 +31,9 @@ export const KNOWN_ISSUES = Buffer.from(`${JSON.stringify([{ id: codeReview.know
  * @param {object} [o.registry] - config.registry
  * @param {object} [o.runner] - the code-runner's `runner` block in its answer
  * @param {object|null} [o.baseline] - the baseline.json the code-runner answers with
+ * @param {object} [o.deps] - doubles that replace these
  */
-export async function doubledBuild({ draft = draftSpec(), knownIssues = null, registry = { repository: REPOSITORY }, runner, compressedBytes = 300000000, maker = MAKER, deploymentProof = null, chainFor, baseline = null } = {}) {
+export async function doubledBuild({ draft = draftSpec(), knownIssues = null, registry = { repository: REPOSITORY }, runner, compressedBytes = 300000000, maker = MAKER, deploymentProof = null, chainFor, baseline = null, deps: extraDeps = {} } = {}) {
   const config = parseConfig({
     registry,
     runner: { url: 'http://127.0.0.1:8090', tokenEnv: 'CODE_RUNNER_TOKEN' },
@@ -78,6 +79,8 @@ export async function doubledBuild({ draft = draftSpec(), knownIssues = null, re
         return { status: d.status, json: d.body };
       },
     },
+    // e.g. a fetchListedCommit that fetches a real repository (test/helpers/gitTree.js), for a draft naming documents
+    ...extraDeps,
   };
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-accepted-'));
   try {

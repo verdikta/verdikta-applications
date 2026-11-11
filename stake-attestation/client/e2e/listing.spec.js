@@ -94,6 +94,26 @@ test('the known-issues fields say a listed root cause settles DUPLICATE, and how
   await expect(known.getByText(STRINGS.listing.hints.knownIssuesIntended)).toBeVisible();
 });
 
+// Node P20 (owner decision Q61 (a); Q73 #5): the documents field. Each line is checked in the browser with common's
+// documentGlobProblem and shown by common's code; the help says what to name and that documents never widen the scope.
+test('the documents field: a line common refuses shows its code and holds the form; a listing that names documents validates', async ({ page, stack }) => {
+  const docs = page.getByRole('group', { name: STRINGS.listing.sections.documents, exact: true });
+  await expect(docs.getByText(STRINGS.listing.hints.documents)).toBeVisible();
+  const submit = page.getByRole('button', { name: STRINGS.listing.submit });
+  await fillListing(page, await repoTerms(stack));
+  await generateAndSaveKey(page);
+  await expect(submit).toBeEnabled();
+  await field(page, F.documents).fill('README.md\n./docs/**\nREADME.md');
+  await expect(docs).toContainText('STAKE_DOCUMENT_NOT_PLAIN');
+  await expect(docs).toContainText('STAKE_DOCUMENT_DUPLICATE');
+  await expect(submit).toBeDisabled();
+  await field(page, F.documents).fill('README.md\ndocs/**');
+  await expect(docs).not.toContainText('STAKE_DOCUMENT_');
+  await validate(page, 'ready');
+  await expect(page.getByTestId('report-step-documents')).toHaveText(fill(STRINGS.report.step, { name: STRINGS.report.stepNames.documents, status: 'ok' }));
+  await expect(page.getByRole('region', { name: STRINGS.report.documentsTitle })).toContainText('README.md');
+});
+
 test('a maker lists and funds a repository version: server validation, report, list() and fund()', async ({ page, stack, chain }) => {
   const { recipient } = await generateAndSaveKey(page);
   // HIGH below MEDIUM: the client leaves the award rules to the server, which refuses them

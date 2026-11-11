@@ -1,0 +1,181 @@
+{
+ "recordedFrom": "verdikta-arbiter 28f3cb98c48716d770a9097251a411a49582bd0b code-runner: a claim run through its own run engine and pack code (test/helpers/claimRun.js runClaim, over git objects test/helpers/gitStore.js writes, in its fake sandbox), on a listing whose stake.documents is the one below; the listed commit holds README.md, docs/spec.md and docs/diagram.bin (not text)",
+ "documents": [
+  "README.md",
+  "docs/**",
+  "SPEC/**"
+ ],
+ "contextPack": {
+  "version": 1,
+  "codeClass": "code-standard",
+  "budgetTokens": 60000,
+  "usedTokens": 1156,
+  "sha256": "1e30b873150fa27407f343b0d8dce44072b62d9fabbc0c6dc45b55df395b413d",
+  "tiers": [
+   {
+    "rank": 1,
+    "name": "poc",
+    "status": "full",
+    "asked": 2,
+    "delivered": 2,
+    "omitted": {},
+    "cut": 0,
+    "bytes": 805,
+    "bytesIncluded": 805,
+    "tokens": 202
+   },
+   {
+    "rank": 2,
+    "name": "claim",
+    "status": "full",
+    "asked": 2,
+    "delivered": 2,
+    "omitted": {},
+    "cut": 0,
+    "bytes": 717,
+    "bytesIncluded": 717,
+    "tokens": 180
+   },
+   {
+    "rank": 3,
+    "name": "source",
+    "status": "full",
+    "asked": 1,
+    "delivered": 1,
+    "omitted": {},
+    "cut": 0,
+    "bytes": 207,
+    "bytesIncluded": 207,
+    "tokens": 52
+   },
+   {
+    "rank": 4,
+    "name": "documents",
+    "status": "full",
+    "asked": 3,
+    "delivered": 2,
+    "omitted": {
+     "notText": 1
+    },
+    "cut": 0,
+    "bytes": 611,
+    "bytesIncluded": 611,
+    "tokens": 153
+   },
+   {
+    "rank": 5,
+    "name": "callSites",
+    "status": "empty",
+    "asked": 0,
+    "delivered": 0,
+    "omitted": {},
+    "cut": 0,
+    "symbols": {
+     "found": 0,
+     "withSites": 0,
+     "noSites": 0,
+     "overCap": 0,
+     "longLines": 0
+    },
+    "bytes": 0,
+    "bytesIncluded": 0,
+    "tokens": 0
+   },
+   {
+    "rank": 6,
+    "name": "knownIssues",
+    "status": "empty",
+    "asked": 0,
+    "delivered": 0,
+    "omitted": {},
+    "cut": 0,
+    "bytes": 0,
+    "bytesIncluded": 0,
+    "tokens": 0
+   },
+   {
+    "rank": 7,
+    "name": "priorFindings",
+    "status": "empty",
+    "asked": 0,
+    "delivered": 0,
+    "omitted": {},
+    "cut": 0,
+    "bytes": 0,
+    "bytesIncluded": 0,
+    "tokens": 0
+   },
+   {
+    "rank": 8,
+    "name": "fix",
+    "status": "empty",
+    "asked": 0,
+    "delivered": 0,
+    "omitted": {},
+    "cut": 0,
+    "bytes": 0,
+    "bytesIncluded": 0,
+    "tokens": 0
+   },
+   {
+    "rank": 9,
+    "name": "tree",
+    "status": "full",
+    "asked": 1,
+    "delivered": 1,
+    "omitted": {},
+    "cut": 0,
+    "bytes": 404,
+    "bytesIncluded": 404,
+    "tokens": 101
+   }
+  ],
+  "files": [
+   {
+    "name": "00-manifest.json",
+    "tier": "manifest",
+    "text": "{\"budgetTokens\":60000,\"codeClass\":\"code-standard\",\"note\":\"The pack's tiers, in priority order. For each: asked = delivered + the sum of omitted, and cut counts what was delivered in part. A tier marked dropped or truncated lost something to a cap, a read limit, a size bound or the budget; what it left out is no evidence of anything.\",\"schema\":\"verdikta.context-pack/1\",\"tiers\":[{\"asked\":2,\"bytes\":805,\"bytesIncluded\":805,\"cut\":0,\"delivered\":2,\"name\":\"poc\",\"omitted\":{},\"rank\":1,\"status\":\"full\",\"tokens\":202},{\"asked\":2,\"bytes\":717,\"bytesIncluded\":717,\"cut\":0,\"delivered\":2,\"name\":\"claim\",\"omitted\":{},\"rank\":2,\"status\":\"full\",\"tokens\":180},{\"asked\":1,\"bytes\":207,\"bytesIncluded\":207,\"cut\":0,\"delivered\":1,\"name\":\"source\",\"omitted\":{},\"rank\":3,\"status\":\"full\",\"tokens\":52},{\"asked\":3,\"bytes\":611,\"bytesIncluded\":611,\"cut\":0,\"delivered\":2,\"name\":\"documents\",\"omitted\":{\"notText\":1},\"rank\":4,\"status\":\"full\",\"tokens\":153},{\"asked\":0,\"bytes\":0,\"bytesIncluded\":0,\"cut\":0,\"delivered\":0,\"name\":\"callSites\",\"omitted\":{},\"rank\":5,\"status\":\"empty\",\"symbols\":{\"found\":0,\"longLines\":0,\"noSites\":0,\"overCap\":0,\"withSites\":0},\"tokens\":0},{\"asked\":0,\"bytes\":0,\"bytesIncluded\":0,\"cut\":0,\"delivered\":0,\"name\":\"knownIssues\",\"omitted\":{},\"rank\":6,\"status\":\"empty\",\"tokens\":0},{\"asked\":0,\"bytes\":0,\"bytesIncluded\":0,\"cut\":0,\"delivered\":0,\"name\":\"priorFindings\",\"omitted\":{},\"rank\":7,\"status\":\"empty\",\"tokens\":0},{\"asked\":0,\"bytes\":0,\"bytesIncluded\":0,\"cut\":0,\"delivered\":0,\"name\":\"fix\",\"omitted\":{},\"rank\":8,\"status\":\"empty\",\"tokens\":0},{\"asked\":1,\"bytes\":404,\"bytesIncluded\":404,\"cut\":0,\"delivered\":1,\"name\":\"tree\",\"omitted\":{},\"rank\":9,\"status\":\"full\",\"tokens\":101}],\"tokenRule\":\"ceil(UTF-8 bytes / 4), with a fixed allowance per file\"}"
+   },
+   {
+    "name": "01-poc-diff.patch",
+    "tier": "poc",
+    "text": "# poc.patch with function context (git diff -W), written by the hunter\ndiff --git a/test/Exploit.t.sol b/test/Exploit.t.sol\nnew file mode 100644\nindex 0000000..95fbe20\n--- /dev/null\n+++ b/test/Exploit.t.sol\n@@ -0,0 +1,3 @@\n+pragma solidity ^0.8.0;\n+contract ExploitTest { function test_drain() public { revert(\"vault drained\"); } }\n+// end\n"
+   },
+   {
+    "name": "01-poc-file-001.txt",
+    "tier": "poc",
+    "text": "# poc file: test/Exploit.t.sol\npragma solidity ^0.8.0;\ncontract ExploitTest { function test_drain() public { revert(\"vault drained\"); } }\n// end\n"
+   },
+   {
+    "name": "02-finding.txt",
+    "tier": "claim",
+    "text": "# finding.json, written by the hunter\n{\"affectedPaths\":[\"src/Vault.sol\"],\"claimedClass\":\"HIGH\",\"poc\":{\"command\":\"forge test --match-test test_drain\",\"observable\":\"test_drain fails at the committed hash with \\\"vault drained\\\"\"},\"rootCause\":\"Vault.deposit credits one wei more than it receives, so balances overstate deposits.\",\"version\":1}"
+   },
+   {
+    "name": "02-report.txt",
+    "tier": "claim",
+    "text": "# report.md, written by the hunter\n# Reentrancy in deposit\n"
+   },
+   {
+    "name": "03-source-001.txt",
+    "tier": "source",
+    "text": "# source file: src/Vault.sol\ncontract Vault {}\n"
+   },
+   {
+    "name": "04-document-001.txt",
+    "tier": "documents",
+    "text": "# the maker's document at the listed commit (stake.documents): README.md\n# Vault\nA deposit credits exactly the amount it receives.\n"
+   },
+   {
+    "name": "04-document-002.txt",
+    "tier": "documents",
+    "text": "# the maker's document at the listed commit (stake.documents): docs/spec.md\n# Vault specification\nbalanceOf grows by the amount deposited, and by nothing more.\n"
+   },
+   {
+    "name": "09-tree.txt",
+    "tier": "tree",
+    "text": "# a shallow file tree of the listed commit (2 levels)\n.gitmodules\nREADME.md\ndocs/ (2 files)\n  docs/diagram.bin\n  docs/spec.md\nfoundry.toml\nlib/ (2 files)\n  lib/forge-std/ (2 files)\nsrc/ (1 file)\n  src/Vault.sol\ntest/ (1 file)\n  test/Vault.t.sol"
+   }
+  ]
+ }
+}

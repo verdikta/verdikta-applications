@@ -196,22 +196,98 @@ test('what a repository or a test printed reaches the terminal without control c
 // with logs and file text trimmed: the mock above must not drift from what the runner answers.
 const recorded = (name) => JSON.parse(fs.readFileSync(new URL(`./fixtures/runner-answers/${name}.answer.json`, import.meta.url), 'utf8'));
 
-// Node P21: common takes stake.documents since 1.9.0-attest.4, and the tool offers it only from node P20. check
-// refuses a signed listing that names it, from the chain and from a file alike, by that one code, before any run.
-test('check refuses a listing naming stake.documents, by one code, before any run: documents are not offered yet', async () => {
-  const withDocuments = await w.listing({ stake: { documents: ['README.md'] } });
-  assert.deepEqual(withDocuments.spec.stake.documents, ['README.md']);
-  runner.requests.length = 0;
-  for (const over of [{ listingId: withDocuments.listingId }, { listingId: undefined, listingArchive: withDocuments.archives.listing }]) {
-    const err = await check(makeClaimDir(), over).then(() => null, (e) => e);
-    assert.ok(err, `refused: ${Object.keys(over)}`);
-    assert.equal(err.code, 'STAKE_DOCUMENTS_NOT_OFFERED');
-    assert.match(err.message, /documents are not offered yet/i);
+// Node P20: check runs on a listing that names stake.documents. The request is the one the External Adapter sends,
+// with the spec as signed, so the runner reads the documents from the listed commit; and the forecast shows the
+// documents tier the runner built, from its answer, never one the tool works out itself. The pack below was recorded
+// from the runner at the pin (fixtures/runner-answers/documents.pack.json says how).
+const DOCUMENTS = JSON.parse(fs.readFileSync(new URL('./fixtures/runner-answers/documents.pack.json', import.meta.url), 'utf8'));
+const FORECAST_KEYS = ['verdict', 'gates', 'settlesAs', 'refusals', 'abstain', 'reportUnavailable', 'reportSha256', 'runner', 'image', 'compiler', 'tests', 'build', 'observable', 'lint', 'reportWarnings', 'fix', 'priorFindings', 'notes'];
+
+test('the recorded pack is the runner\'s at the pin: common\'s tiers in order, the documents right after the source', () => {
+  assert.deepEqual(DOCUMENTS.contextPack.tiers.map((t) => t.name), [...codeReview.CONTEXT_PACK_TIERS]);
+  assert.match(DOCUMENTS.recordedFrom, /^verdikta-arbiter 28f3cb98c48716d770a9097251a411a49582bd0b code-runner/);
+  const pin = JSON.parse(fs.readFileSync(new URL('../../e2e/arbiter.pin.json', import.meta.url), 'utf8'));
+  assert.ok(DOCUMENTS.recordedFrom.includes(pin.commit), 'recorded at the arbiter pin: re-record it when the pin moves');
+});
+
+test('check runs on a listing naming stake.documents, and its forecast shows the documents tier the runner built', async () => {
+  const withDocuments = await w.listing({ stake: { documents: DOCUMENTS.documents } });
+  runner.state.answer = (req) => definitive(req.spec, { contextPack: DOCUMENTS.contextPack });
+  try {
+    for (const over of [{ listingId: withDocuments.listingId }, { listingId: undefined, listingArchive: withDocuments.archives.listing }]) {
+      runner.requests.length = 0;
+      const r = await check(makeClaimDir(), over);
+      assert.equal(runner.requests.length, 1, 'the runner was asked');
+      assert.deepEqual(runner.requests[0].spec, withDocuments.spec, 'the spec as signed, documents and all');
+      assert.deepEqual(runner.requests[0].spec.stake.documents, DOCUMENTS.documents);
+      assert.equal(r.forecast.verdict, 'pass');
+      const tier = DOCUMENTS.contextPack.tiers.find((t) => t.name === 'documents');
+      assert.deepEqual(r.forecast.documents, {
+        globs: DOCUMENTS.documents,
+        tier: { rank: tier.rank, status: tier.status, asked: tier.asked, delivered: tier.delivered, omitted: tier.omitted, cut: tier.cut },
+      });
+      assert.deepEqual(r.forecast.documents.tier, { rank: 4, status: 'full', asked: 3, delivered: 2, omitted: { notText: 1 }, cut: 0 });
+      assert.deepEqual(r.pack, DOCUMENTS.contextPack, 'the pack is the runner\'s, as it answered');
+    }
+    const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(withDocuments.listingId)], { runner });
+    assert.equal(cli.code, 0, cli.stderr);
+    assert.match(cli.stdout, /Documents the listing names: README\.md, docs\/\*\*, SPEC\/\*\*/);
+    assert.match(cli.stdout, /never widen the scope/);
+    assert.match(cli.stdout, /Documents tier \(the runner's\): tier 4, full, 2 of 3 files \(notText 1\)/);
+    assert.match(cli.stdout, /tier 4 documents: full, 2 of 3/);
+    assert.match(cli.stdout, /--- 04-document-001\.txt \(documents\) ---\n# the maker's document at the listed commit \(stake\.documents\): README\.md/);
+    // status and codes only: the counts, and nothing of the pack
+    const quiet = await runCli(w, ['check', makeClaimDir(), '--listing', String(withDocuments.listingId), '--no-pack', '--json'], { runner });
+    assert.equal(quiet.code, 0, quiet.stderr);
+    const json = JSON.parse(quiet.stdout);
+    assert.equal(json.pack, null);
+    assert.deepEqual(json.forecast.documents, { globs: DOCUMENTS.documents, tier: { rank: 4, status: 'full', asked: 3, delivered: 2, omitted: { notText: 1 }, cut: 0 } });
+    assert.doesNotMatch(quiet.stdout, /balanceOf grows/);
+  } finally {
+    runner.state.answer = (req) => definitive(req.spec);
   }
-  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(withDocuments.listingId)], { runner });
-  assert.equal(cli.code, 1);
-  assert.match(cli.stderr, /STAKE_DOCUMENTS_NOT_OFFERED: .*documents are not offered yet/i);
-  assert.equal(runner.requests.length, 0, 'the runner was not asked');
+});
+
+test('a listing naming documents whose run made no pack: the forecast names the globs and says the runner built no tier', async () => {
+  const withDocuments = await w.listing({ stake: { documents: ['README.md'] } });
+  runner.state.answer = (req) => refused([{ code: 'DOCUMENTS_MATCH_TOO_COSTLY', path: '/spec/stake/documents', detail: 'DOCUMENTS_MATCH_TOO_COSTLY: matching stake.documents takes more than 50000000 automaton steps' }]);
+  try {
+    const r = await check(makeClaimDir(), { listingId: withDocuments.listingId });
+    assert.equal(r.forecast.verdict, 'refused');
+    assert.deepEqual(r.forecast.documents, { globs: ['README.md'], tier: null });
+    assert.deepEqual(r.forecast.refusals.map((i) => i.code), ['DOCUMENTS_MATCH_TOO_COSTLY']);
+    const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(withDocuments.listingId)], { runner });
+    assert.match(cli.stdout, /Documents tier \(the runner's\): none: the runner built no pack/);
+    assert.match(cli.stdout, /DOCUMENTS_MATCH_TOO_COSTLY at \/spec\/stake\/documents/);
+  } finally {
+    runner.state.answer = (req) => definitive(req.spec);
+  }
+});
+
+test('a listing without documents checks as before: the same request, no documents field in the forecast, no documents line', async () => {
+  runner.requests.length = 0;
+  const r = await check(makeClaimDir());
+  assert.equal(Object.hasOwn(runner.requests[0].spec.stake, 'documents'), false);
+  assert.deepEqual(Object.keys(r.forecast), FORECAST_KEYS);
+  assert.deepEqual(Object.keys(withoutProofText(r.forecast)), FORECAST_KEYS);
+  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId)], { runner });
+  assert.equal(cli.code, 0, cli.stderr);
+  assert.doesNotMatch(cli.stdout, /Documents/);
+});
+
+test('--no-pack never prints a document\'s text: the documents field holds the listing\'s globs and the tier\'s counts only', () => {
+  const M = 'DOCUMENT-TEXT-MARKER-5e1d';
+  const pack = structuredClone(DOCUMENTS.contextPack);
+  for (const f of pack.files) f.text = `${f.text}${M}`;
+  const tier = pack.tiers.find((t) => t.name === 'documents');
+  tier.status = `${M} status`;
+  tier.omitted = { [`${M} reason`]: 1, notText: 'many' };
+  const a = definitive({ env: { image: IMAGE_SHA }, stake: { documents: DOCUMENTS.documents } }, { contextPack: pack });
+  a.body.image = { ref: `x@sha256:${IMAGE_SHA}` };
+  const f = buildForecast({ local: [], answer: a, spec: { env: { image: `x@sha256:${IMAGE_SHA}` }, stake: { documents: DOCUMENTS.documents } }, pocPatch: Buffer.from(POC_PATCH), lint: [], priorFindings: { read: 0, unread: [], total: 0 } });
+  const out = JSON.stringify(withoutProofText(f));
+  assert.equal(out.includes(M), false, out);
+  assert.deepEqual(withoutProofText(f).documents, { globs: DOCUMENTS.documents, tier: { rank: 4, status: 'unknown', asked: 3, delivered: 2, omitted: {}, cut: 0 } });
 });
 
 test('no run on a listing a commit would refuse: its image is one nobody attested', async () => {

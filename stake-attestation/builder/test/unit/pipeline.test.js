@@ -18,6 +18,7 @@ import { createExplorer } from '../../src/explorer.js';
 import { FIXTURES, fakeDocker, readFixture, recordedExplorer, sha256 } from '../helpers/fakes.js';
 import { MAKER, deployment, provenAnswer, stake } from '../helpers/proof.js';
 import { BASE_COMMIT, abstained, acceptedListing, cannotRun, commandCheckAnswer, contractDraft, definitive, draftSpec, refusedListing } from '../helpers/specs.js';
+import { fetchingFrom, repositoryOf, treePaths } from '../helpers/gitTree.js';
 
 const DIGEST = `sha256:${'2'.repeat(64)}`;
 const REPOSITORY = 'ghcr.io/verdikta/stake-env';
@@ -154,23 +155,123 @@ test('a draft common rejects, or one the MVP builder cannot host, is refused bef
   assert.equal(calls.fetch.length, 0);
 });
 
-// Node P21: common takes stake.documents since 1.9.0-attest.4; this builder offers it only from node P20. A draft
-// that names it, an empty list too, is refused at the spec step by that one code, before the runner is asked
-// anything or the repository is fetched: never signed with the documents unread, nor without them.
-test('a draft naming stake.documents is refused before anything else: documents are not offered yet', async () => {
-  for (const documents of [['README.md'], ['docs/**', 'SPEC.md'], []]) {
-    let asked = 0;
-    const runner = { listingCheck: async () => { asked += 1; throw new Error('the runner was asked'); } };
-    const draft = draftSpec({ stake: { ...draftSpec().stake, documents } });
-    const { status, report, docker, calls, files } = await build(draft, { deps: { runner } });
+// Node P20: the documents step. After the fetch and before the build, the builder picks the listing's documents as the
+// runner does, with common's selectDocuments over the listed commit's own entries (git ls-tree -r at baseCommit, from
+// the objects it fetched by id), with no affected paths, and reports what the tier would read, what is past the cap
+// and what is skipped, and why. A glob that matches nothing is a warning; matching that costs past common's step meter
+// is refused by its own code, before anything is built or signed.
+const { selectDocuments, STAKE_DOCUMENT_LIMITS } = codeReview;
+const MAX = STAKE_DOCUMENT_LIMITS.maxFileBytes;
+const DOCUMENT_FILES = {
+  'README.md': '# Vault\nA deposit credits exactly the amount it receives.\n',
+  'docs/a.md': 'A\n',
+  'docs/b.md': 'B\n',
+  'docs/big.md': 'b'.repeat(MAX + 1),
+  'docs/bin.dat': Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]),
+  'docs/latin1.md': Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]),
+  'docs/link.md': { link: '../README.md' },
+  'docs/run.sh': { exec: '#!/bin/sh\necho run\n' },
+  'docs/sub': { gitlink: 'f'.repeat(40) },
+  'foundry.toml': '[profile.default]\n',
+  'src/Other.sol': 'contract Other {}\n',
+  'src/Vault.sol': 'contract Vault {}\n',
+};
+
+async function documentsBuild(files, documents, { later = null } = {}) {
+  const repo = repositoryOf(files);
+  const base = repo.commit;
+  if (later) repo.commitOn(later);
+  const fetches = [];
+  const draft = draftSpec({ baseCommit: base, stake: { ...draftSpec().stake, documents } });
+  try {
+    const out = await build(draft, { deps: { fetchListedCommit: fetchingFrom(repo, fetches) }, runnerAnswer: () => definitive(IMAGE, acceptedListing(base)) });
+    return { ...out, repo, base, draft, fetches, paths: treePaths(repo, base) };
+  } finally {
+    repo.cleanup();
+  }
+}
+
+test('a draft naming stake.documents: common\'s selection over the listed commit\'s own tree, read, past the cap and skipped, before the build', async () => {
+  const documents = ['README.md', 'docs/**', 'SPEC/**', 'src/Other.sol'];
+  // a later commit on the branch, with other files: only the listed commit's own entries are candidates
+  const { status, report, files, draft, paths, fetches } = await documentsBuild(DOCUMENT_FILES, documents, { later: { 'README.md': 'later\n', 'docs/later.md': 'L\n' } });
+  assert.equal(status, 'accepted', JSON.stringify(report.refusals ?? report.error));
+  assert.equal(fetches.length, 1);
+  assert.deepEqual(report.steps.map((x) => [x.name, x.status]).slice(0, 5), [['spec', 'ok'], ['control', 'ok'], ['fetch', 'ok'], ['documents', 'ok'], ['build', 'ok']]);
+  const selection = selectDocuments(paths, draft.stake, []);
+  assert.deepEqual(selection.paths, ['README.md', 'docs/a.md', 'docs/b.md', 'docs/big.md', 'docs/bin.dat', 'docs/latin1.md', 'docs/link.md', 'docs/run.sh', 'docs/sub', 'src/Other.sol']);
+  assert.deepEqual(report.documents, {
+    globs: documents,
+    candidates: paths.length,
+    read: [
+      { path: 'README.md', bytes: Buffer.byteLength(DOCUMENT_FILES['README.md']) },
+      { path: 'docs/a.md', bytes: 2 },
+      { path: 'docs/b.md', bytes: 2 },
+      { path: 'docs/run.sh', bytes: Buffer.byteLength(DOCUMENT_FILES['docs/run.sh'].exec) },
+      { path: 'src/Other.sol', bytes: Buffer.byteLength(DOCUMENT_FILES['src/Other.sol']) },
+    ],
+    pastCap: [],
+    skipped: [
+      { path: 'docs/big.md', reason: 'tooLarge', bytes: MAX + 1 },
+      { path: 'docs/bin.dat', reason: 'notText', bytes: 6 },
+      { path: 'docs/latin1.md', reason: 'notText', bytes: 5 },
+      { path: 'docs/link.md', reason: 'symlink' },
+      { path: 'docs/sub', reason: 'submodule' },
+    ],
+    unmatched: [{ index: 2, glob: 'SPEC/**' }],
+  });
+  assert.ok(!JSON.stringify(report.documents).includes('docs/later.md'), 'the later commit\'s file is no candidate');
+  // the warning, for the maker: no refusal
+  const warning = report.warnings.find((x) => x.code === 'STAKE_DOCUMENT_MATCHES_NOTHING');
+  assert.equal(warning.path, '/stake/documents/2');
+  assert.match(warning.detail, /SPEC\/\*\*/);
+  assert.equal(report.refusals.length, 0);
+  // the field is kept as the maker wrote it
+  assert.deepEqual(JSON.parse(files.get('code_review.json')).stake.documents, documents);
+});
+
+test('past common\'s 32 files the rest are past the cap, by name, in the selection\'s order', async () => {
+  const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`docs/f${String(i).padStart(2, '0')}.md`, `doc ${i}\n`]));
+  const { status, report } = await documentsBuild({ ...many, 'src/Vault.sol': 'contract Vault {}\n' }, ['docs/**']);
+  assert.equal(status, 'accepted', JSON.stringify(report.refusals));
+  assert.equal(report.documents.read.length, STAKE_DOCUMENT_LIMITS.maxFiles);
+  assert.equal(report.documents.read.at(-1).path, 'docs/f31.md');
+  assert.deepEqual(report.documents.pastCap, Array.from({ length: 8 }, (_, i) => `docs/f${32 + i}.md`));
+  assert.deepEqual(report.documents.unmatched, []);
+});
+
+test('globs too costly to match are refused as DOCUMENTS_MATCH_TOO_COSTLY at the documents step, before anything is built or signed', async () => {
+  const deep = Array(14).fill('a'.repeat(200)).join('/');
+  const files = { 'src/Vault.sol': 'contract Vault {}\n', ...Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`${deep}/a${i}b`, 'x\n'])) };
+  let asked = 0;
+  const repo = repositoryOf(files);
+  try {
+    const draft = draftSpec({ baseCommit: repo.commit, stake: { ...draftSpec().stake, documents: ['README.md', `a${'**a'.repeat(150)}**b`] } });
+    assert.equal(codeReview.validateCodeReviewSpec({ ...draft, env: { from: 'foundry', image: IMAGE, platform: 'linux/amd64', unpackedBytes: 1 } }).ok, true, 'common takes the globs');
+    assert.throws(() => selectDocuments(treePaths(repo, repo.commit), draft.stake, []), (e) => e instanceof RangeError && e.code === 'DOCUMENTS_MATCH_TOO_COSTLY');
+    const runner = { listingCheck: async (body) => { if (cannotRun(body)) return commandCheckAnswer(body); asked += 1; throw new Error('the listing check was asked'); } };
+    const { status, report, docker, files: out } = await build(draft, { deps: { fetchListedCommit: fetchingFrom(repo), runner } });
     assert.equal(status, 'refused', JSON.stringify(report.error));
-    assert.deepEqual(report.refusals.map((r) => [r.step, r.code]), [['spec', 'STAKE_DOCUMENTS_NOT_OFFERED']]);
-    assert.match(report.refusals[0].detail, /documents are not offered yet/i);
-    assert.deepEqual(report.refusals[0].issues.map((i) => [i.code, i.path]), [['STAKE_DOCUMENTS_NOT_OFFERED', '/stake/documents']]);
-    assert.equal(asked, 0, 'the runner was not asked');
-    assert.equal(docker.calls.length, 0);
-    assert.equal(calls.fetch.length, 0);
-    assert.equal(files.size, 0);
+    assert.deepEqual(report.refusals.map((r) => [r.step, r.code]), [['documents', 'DOCUMENTS_MATCH_TOO_COSTLY']]);
+    assert.match(report.refusals[0].detail, /DOCUMENTS_MATCH_TOO_COSTLY/);
+    assert.deepEqual(report.steps.map((x) => [x.name, x.status]), [['spec', 'ok'], ['control', 'ok'], ['fetch', 'ok'], ['documents', 'failed']]);
+    assert.equal(asked, 0, 'no listing check');
+    assert.equal(docker.calls.filter((c) => c.args[0] !== 'image').length, 0, 'nothing built');
+    assert.equal(out.size, 0);
+    assert.equal(Object.hasOwn(report, 'documents'), false);
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test('a draft without documents, or with an empty list, has no documents step and no documents section', async () => {
+  for (const draft of [draftSpec(), draftSpec({ stake: { ...draftSpec().stake, documents: [] } })]) {
+    const { status, report, files } = await build(draft);
+    assert.equal(status, 'accepted', JSON.stringify(report.refusals));
+    assert.deepEqual(report.steps.map((x) => x.name), ['spec', 'control', 'fetch', 'build', 'size', 'push', 'registry', 'verifiedSource', 'listingCheck', 'finalSpec']);
+    assert.equal(Object.hasOwn(report, 'documents'), false);
+    assert.equal(report.warnings.some((x) => /DOCUMENT/.test(x.code)), false);
+    assert.deepEqual(JSON.parse(files.get('code_review.json')).stake.documents, draft.stake.documents);
   }
 });
 

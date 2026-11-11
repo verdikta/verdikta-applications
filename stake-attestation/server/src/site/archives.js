@@ -23,6 +23,11 @@ import { disclosureKeyBytes32, signedTerms } from '../listing/listParams.js';
 import { isRawSha256Cid, rawCid } from '../pinning/cid.js';
 
 const quiet = { info() {}, warn() {}, error() {}, debug() {} };
+const isObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+/** JSON with every object's keys in order: what an answer says, whatever order it was stored in. */
+const canonical = (v) => JSON.stringify(v, (_k, x) => (isObject(x) ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, x[k]])) : x));
+/** An answer's facts but its documents and their read's backoff: what a read again for documents must leave as they were. */
+const factsOf = ({ documents: _d, documentsAttempts: _a, documentsRetryAt: _r, ...facts }) => canonical(facts);
 const RETRY_MAX_MS = 6 * 3600_000;
 const MAX_PER_SYNC = 8;
 
@@ -136,25 +141,29 @@ export async function refreshArchives({ fetchArchive, store, listings, now, maxB
     if (tried >= MAX_PER_SYNC) break;
     tried += 1;
     let result;
+    // A read again for documents keeps the stored answer as it was unless it reads the same facts, with documents: a
+    // gateway that fails, or answers bytes that are not that archive (a CID that is not raw sha2-256 is not checked
+    // against them), says nothing against what was checked. The listing still counts, its documents stay unknown,
+    // and the read is tried again after a backoff of its own.
+    const keep = (why) => {
+      const attempts = (known.documentsAttempts ?? 0) + 1;
+      const delay = Math.min(RETRY_MAX_MS, retryMs * 2 ** (attempts - 1));
+      logger.warn(`feed: listing archive ${cid} could not be read again for its documents (${why}); kept as it was, retry in ${Math.round(delay / 1000)} s`);
+      return { ...known, documentsAttempts: attempts, documentsRetryAt: now() + delay };
+    };
     try {
       const bytes = Buffer.from(await fetchArchive(cid));
       result = readListingArchive(bytes, cid, { maxBytes, devKeys: devKeys() });
+      if (refreshing && !(result.ok && factsOf(result) === factsOf(known))) result = keep(result.ok ? 'the answer read other facts' : result.error);
     } catch (err) {
       if (refreshing) {
-        // kept as it was: the listing still counts as it did, and its documents stay unknown until a read succeeds
-        const attempts = (known.documentsAttempts ?? 0) + 1;
+        result = keep(String(err?.message ?? err).slice(0, 200));
+      } else {
+        const attempts = (known?.attempts ?? 0) + 1;
         const delay = Math.min(RETRY_MAX_MS, retryMs * 2 ** (attempts - 1));
-        if (!store.locked) return;
-        store.transact((s) => {
-          s.archives[cid] = { ...known, documentsAttempts: attempts, documentsRetryAt: now() + delay };
-        });
-        logger.warn(`feed: listing archive ${cid} could not be read again for its documents (${String(err?.message ?? err).slice(0, 200)}); kept as it was, retry in ${Math.round(delay / 1000)} s`);
-        continue;
+        result = { ok: false, error: 'ARCHIVE_UNAVAILABLE', attempts, retryAt: now() + delay };
+        logger.warn(`feed: listing archive ${cid} could not be fetched (${String(err?.message ?? err).slice(0, 200)}); retry in ${Math.round(delay / 1000)} s`);
       }
-      const attempts = (known?.attempts ?? 0) + 1;
-      const delay = Math.min(RETRY_MAX_MS, retryMs * 2 ** (attempts - 1));
-      result = { ok: false, error: 'ARCHIVE_UNAVAILABLE', attempts, retryAt: now() + delay };
-      logger.warn(`feed: listing archive ${cid} could not be fetched (${String(err?.message ?? err).slice(0, 200)}); retry in ${Math.round(delay / 1000)} s`);
     }
     if (!store.locked) return; // the site closed while this fetch ran
     store.transact((s) => {

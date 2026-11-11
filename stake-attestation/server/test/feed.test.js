@@ -389,6 +389,40 @@ test('an archive answer whose read again for documents fails is kept as it was, 
   assert.equal(store.state.archives[listingCid].documentsRetryAt, undefined);
 });
 
+// R1-F1, round 2: a CID that is not raw sha2-256 is not checked against the bytes a gateway answers, so a read again can
+// get bytes that are not that archive, with no error. The stored answer is kept then too: a read again for documents
+// replaces it only when it reads the same facts, with documents.
+test('a read again for documents that gets other bytes, or another listing\'s archive, keeps the stored answer as it was', async () => {
+  const { refreshArchives } = await import('../src/site/archives.js');
+  const make = async (over) => {
+    const draft = draftSpec(over);
+    delete draft.stake.knownIssues;
+    const built = await fakeBuilder().build({ draft, knownIssues: null });
+    return { built, bytes: buildListingArchives(built.files).listing.bytes };
+  };
+  const mine = await make();
+  const other = await make({ baseCommit: 'e'.repeat(40) });
+  const cid = 'QmNotARawCidSoNoHashCheckXXXXXXXXXXXXXXXXXXXXXX';
+  const devKeys = [...mine.built.devTrust.keys, ...other.built.devTrust.keys];
+  const { documents: _d, ...known } = readListingArchive(mine.bytes, cid, { devKeys });
+  assert.equal(known.ok, true);
+  const quiet = { warn() {}, info() {}, debug() {} };
+  for (const [what, answer] of [['bytes that are not an archive', Buffer.from('<html>not found</html>')], ['another listing\'s archive', other.bytes]]) {
+    const store = { locked: true, state: { archives: { [cid]: { ...known } } }, transact(fn) { fn(this.state); } };
+    await refreshArchives({ fetchArchive: async () => answer, store, listings: [{ listingCid: cid, disputeCid: cid }], now: () => 0, maxBytes: 1 << 24, retryMs: 1000, logger: quiet, devKeys: () => devKeys });
+    const kept = store.state.archives[cid];
+    assert.equal(kept.ok, true, what);
+    assert.equal(kept.baseCommit, known.baseCommit, what);
+    assert.equal(Object.hasOwn(kept, 'documents'), false, what);
+    assert.equal(kept.documentsRetryAt, 1000, what);
+  }
+  // and the stored facts in another key order are the same facts
+  const reordered = Object.fromEntries(Object.entries(known).reverse());
+  const store = { locked: true, state: { archives: { [cid]: reordered } }, transact(fn) { fn(this.state); } };
+  await refreshArchives({ fetchArchive: async () => mine.bytes, store, listings: [{ listingCid: cid, disputeCid: cid }], now: () => 0, maxBytes: 1 << 24, retryMs: 1000, logger: quiet, devKeys: () => devKeys });
+  assert.deepEqual(store.state.archives[cid].documents, []);
+});
+
 describe('reading a listing archive without extracting it', () => {
   let members;
   before(async () => {

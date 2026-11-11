@@ -25,6 +25,21 @@ test('README says this is a separate site and the bounty program is untouched', 
   assert.match(text, /decision 18/);
 });
 
+// Node P21 (owner, 2026-11-11): the site's origin is decided, and the section names it and no other domain for
+// the site. The one other name it holds is the bounty program's, which this site never adds to.
+test('README\'s "A separate site" names https://verifiers.verdikta.org as the site\'s origin, and no other domain for it', () => {
+  const text = fs.readFileSync(README, 'utf8');
+  const start = text.indexOf('\n## A separate site\n');
+  assert.ok(start >= 0, 'README: ## A separate site');
+  const section = text.slice(start, text.indexOf('\n## ', start + 1)).replace(/\s+/g, ' ');
+  assert.match(section, /https:\/\/verifiers\.verdikta\.org\b/);
+  assert.match(section, /\borigin\b/);
+  assert.doesNotMatch(section, /its own domain/);
+  const hosts = [...section.matchAll(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/gi)].map((m) => m[0].toLowerCase())
+    .filter((h) => !/\.(?:js|json|md|sol|yml)$/.test(h));
+  assert.deepEqual([...new Set(hosts)].sort(), ['bounties.verdikta.org', 'verifiers.verdikta.org']);
+});
+
 test('docs/BUILD_PLAN.md is the build plan', () => {
   const text = fs.readFileSync(PLAN, 'utf8');
   assert.match(text, /^# Stake attestation MVP — build plan$/m);

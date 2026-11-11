@@ -4,7 +4,10 @@
 // env.platform, env.unpackedBytes and, unless they set them, the limits (the code-runner's
 // defaults). The draft is checked with @verdikta/common's validator before anything is fetched
 // or built, with stand-ins for the fields the builder fills, and against what this builder (the
-// Foundry MVP, design §20 decision 17) can host.
+// Foundry MVP, design §20 decision 17) can host: not stake.documents yet, which common takes
+// (shared's STAKE_DOCUMENTS_NOT_OFFERED, node P21).
+import { STAKE_DOCUMENTS_NOT_OFFERED, stakeDocumentsIssue } from '@verdikta/stake-attestation-shared/stake-documents';
+
 import { codeReview } from './common.js';
 import { Refusal } from './errors.js';
 
@@ -62,6 +65,9 @@ export function checkDraft(draft) {
   const v = codeReview.validateCodeReviewSpec(withStandIns(draft));
   issues.push(...v.issues);
   warnings.push(...v.warnings);
+  // common takes stake.documents; this builder does not offer it yet (node P20), and says so by its own code
+  const documents = stakeDocumentsIssue(draft);
+  if (documents) issues.push(documents);
 
   const c = isObject(draft.commands) ? draft.commands : {};
   if (c.framework !== undefined && c.framework !== 'forge') {
@@ -90,6 +96,18 @@ export function checkDraft(draft) {
   const used = names.map(([, n]) => n).filter((n) => typeof n === 'string');
   if (new Set(used).size !== used.length) issues.push({ code: 'FILE_NAME_INVALID', path: '/', detail: 'attestation, baseline and known-issues files need distinct names' });
   return { ok: issues.length === 0, issues, warnings };
+}
+
+/**
+ * What a draft checkDraft did not accept is refused as: a draft naming stake.documents by that code (common
+ * takes the field, so it is not a validation failure), anything else as SPEC_INVALID.
+ * @param {{ issues: object[] }} v - checkDraft's answer, not ok
+ * @returns {{ code: string, detail: string }}
+ */
+export function draftRefusal(v) {
+  const documents = v.issues.find((i) => i.code === STAKE_DOCUMENTS_NOT_OFFERED);
+  if (documents) return { code: documents.code, detail: documents.detail };
+  return { code: 'SPEC_INVALID', detail: `code_review.json does not validate: ${v.issues.map((i) => i.code).join(', ')}` };
 }
 
 /**

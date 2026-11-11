@@ -154,6 +154,26 @@ test('a draft common rejects, or one the MVP builder cannot host, is refused bef
   assert.equal(calls.fetch.length, 0);
 });
 
+// Node P21: common takes stake.documents since 1.9.0-attest.4; this builder offers it only from node P20. A draft
+// that names it, an empty list too, is refused at the spec step by that one code, before the runner is asked
+// anything or the repository is fetched: never signed with the documents unread, nor without them.
+test('a draft naming stake.documents is refused before anything else: documents are not offered yet', async () => {
+  for (const documents of [['README.md'], ['docs/**', 'SPEC.md'], []]) {
+    let asked = 0;
+    const runner = { listingCheck: async () => { asked += 1; throw new Error('the runner was asked'); } };
+    const draft = draftSpec({ stake: { ...draftSpec().stake, documents } });
+    const { status, report, docker, calls, files } = await build(draft, { deps: { runner } });
+    assert.equal(status, 'refused', JSON.stringify(report.error));
+    assert.deepEqual(report.refusals.map((r) => [r.step, r.code]), [['spec', 'STAKE_DOCUMENTS_NOT_OFFERED']]);
+    assert.match(report.refusals[0].detail, /documents are not offered yet/i);
+    assert.deepEqual(report.refusals[0].issues.map((i) => [i.code, i.path]), [['STAKE_DOCUMENTS_NOT_OFFERED', '/stake/documents']]);
+    assert.equal(asked, 0, 'the runner was not asked');
+    assert.equal(docker.calls.length, 0);
+    assert.equal(calls.fetch.length, 0);
+    assert.equal(files.size, 0);
+  }
+});
+
 test('above 6 GB unpacked: refused before the push', async () => {
   const { status, report, docker } = await build(draftSpec(), { unpacked: 6000000000 });
   assert.equal(status, 'refused');

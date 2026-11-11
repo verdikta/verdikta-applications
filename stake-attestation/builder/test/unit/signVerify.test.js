@@ -166,6 +166,23 @@ function sha256hex(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
 }
 
+// Node P21: the build refuses a draft naming stake.documents (test/unit/pipeline.test.js), and sign repeats it,
+// so a folder that names them is never signed, however it was made: nothing is signed with the documents unread.
+test('a code_review.json naming stake.documents, which the report vouches for, is not signed: documents are not offered yet', async () => {
+  const l = await listing();
+  l.edit('code_review.json', (s) => ({ ...s, stake: { ...s.stake, documents: ['README.md'] } }));
+  const spec = JSON.parse(fs.readFileSync(path.join(l.out, 'code_review.json'), 'utf8'));
+  assert.equal(codeReview.validateCodeReviewSpec(spec).ok, true, 'common takes the field');
+  const bytes = fs.readFileSync(path.join(l.out, 'code_review.json'));
+  l.edit('validation-report.json', (r) => ({ ...r, files: { ...r.files, 'code_review.json': sha256hex(bytes) } }));
+  const { code, t, attested } = await sign(l);
+  assert.equal(code, 1);
+  assert.match(t.err, /STAKE_DOCUMENTS_NOT_OFFERED/);
+  assert.match(t.err, /documents are not offered yet/i);
+  assert.equal(attested, false);
+  l.cleanup();
+});
+
 test('--expect-outputs: the folder must be the one the build job digested; any change in transit refuses', async () => {
   const l = await listing();
   const t0 = io();

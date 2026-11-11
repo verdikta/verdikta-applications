@@ -1,6 +1,7 @@
 // A listing's build, end to end (design §8.2 steps 1-4; build plan A4):
 //
-//   spec            the draft against @verdikta/common's schema and what this builder hosts, and its
+//   spec            the draft against @verdikta/common's schema and what this builder hosts (not
+//                   stake.documents yet: STAKE_DOCUMENTS_NOT_OFFERED, node P21), and its
 //                   commands against the grammar arbiters hold claims to, which only the code-runner
 //                   has: it answers before anything is read or built (src/runner.js, checkCommands)
 //   control         the project's proof (src/listingProof.js; node P9): the file at the commit naming
@@ -44,7 +45,7 @@ import { checkListingProof } from './listingProof.js';
 import { assertDraftFits, assertListingFits } from './requestSize.js';
 import { signingTrust } from './signing.js';
 import { checkVerifiedSource } from './sourceCheck.js';
-import { checkDraft, checkKnownIssues, finalSpec, runnerSpec, serializeJson } from './spec.js';
+import { checkDraft, checkKnownIssues, draftRefusal, finalSpec, runnerSpec, serializeJson } from './spec.js';
 import { BUILDER_VERSION } from './version.js';
 
 const CLASS_PLATFORM = codeReview.CLASS_HARD_LIMITS.platform;
@@ -195,7 +196,10 @@ export async function buildListing({ draft, knownIssues = null, maker = null, de
     const known = await step(report, 'spec', async () => {
       const v = checkDraft(draft);
       report.warnings.push(...v.warnings);
-      if (!v.ok) throw new Refusal('SPEC_INVALID', `code_review.json does not validate: ${v.issues.map((i) => i.code).join(', ')}`, { issues: v.issues });
+      if (!v.ok) {
+        const refused = draftRefusal(v);
+        throw new Refusal(refused.code, refused.detail, { issues: v.issues });
+      }
       const checked = checkKnownIssues(draft, knownIssues);
       assertDraftFits(draft, checked?.bytes ?? null);
       const commands = await checkCommands({ runner: runner(), draft });

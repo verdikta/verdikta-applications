@@ -354,10 +354,10 @@ required reviewer: `SA_BUILD_WORKFLOW_TOKEN` in the server's environment, with `
 `SA_BUILD_WORKFLOW_REPO=verdikta/<caller>`, and `SA_BUILD_WORKFLOW_SITE` naming this site. Its reach is under "What the
 token can do".
 
-The pin: this repository's packages pin `@verdikta/common` `1.9.0-attest.3`, which holds this key, so production signing
-is no longer refused as `SIGNING_KEY_NOT_TRUSTED`. `<commit>` has to be at or after that change. `e2e` stays on the
-release the arbiter at `e2e/arbiter.pin.json` uses, since its tests hold the two to one release, and it moves with the
-arbiter pins, at G1.
+The pin: this repository's packages pin `@verdikta/common` `1.9.0-attest.5`, which holds this key (it has since
+`1.9.0-attest.3`), so production signing is no longer refused as `SIGNING_KEY_NOT_TRUSTED`. `<commit>` has to be at or
+after the change that first pinned `1.9.0-attest.3`. `e2e` is on the same release, the one the arbiter at
+`e2e/arbiter.pin.json` uses, since its tests hold the two to one release, and it moves with the arbiter pins.
 
 **7. The live check, opt-in.** This one reaches the real KMS, and it's the only code here that does. It signs a
 throwaway message under a context of its own, which can't pass for an attestation, and verifies the answer against the

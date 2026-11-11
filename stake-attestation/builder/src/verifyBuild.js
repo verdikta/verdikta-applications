@@ -5,7 +5,8 @@
 //   before these           the project's proof, read again (src/listingProof.js recheckForSigning):
 //                          nothing is signed for a listing without it
 //   always                 the report accepted the listing; the files are the bytes it accepted;
-//                          code_review.json, the baseline and known_issues.json validate; the report
+//                          code_review.json, the baseline and known_issues.json validate, and
+//                          code_review.json names no stake.documents (not offered yet); the report
 //                          is about this listing, has every step of a build in order, records that the
 //                          runner it asked has the grammar arbiters hold claims to and refused none of
 //                          the commands, and names the image, sizes and base code_review.json names,
@@ -20,6 +21,8 @@
 // (baseline, timings, limits, harness proof), the verified-source comparison, the unpacked-size
 // measurement, and that the build job ran this builder unmodified.
 import crypto from 'node:crypto';
+
+import { stakeDocumentsIssue } from '@verdikta/stake-attestation-shared/stake-documents';
 
 import { codeReview } from './common.js';
 import { BuilderError } from './errors.js';
@@ -82,6 +85,9 @@ export async function verifyForSigning({ files, report, dir, expectOutputs = nul
 
   const sv = codeReview.validateCodeReviewSpec(spec);
   if (!sv.ok) refuse('SPEC_INVALID', `code_review.json does not validate: ${sv.issues.map((i) => i.code).join(', ')}`);
+  // what the build refuses at its spec step, so that nothing naming stake.documents is signed, however it was made
+  const documents = stakeDocumentsIssue(spec);
+  if (documents) refuse(documents.code, documents.detail);
   pass('SPEC_VALID');
   let baseline;
   try {

@@ -2,6 +2,8 @@
 // caller. No error relays the text of an ethers error, an RPC, a pin service or a runner's credentials: ethers
 // puts a transaction's calldata in its messages, and at reveal that calldata holds the keys. So a ToolError has
 // no `cause`, and what is known of a failure from outside is a code or an allow-listed revert reason.
+import { STAKE_DOCUMENTS_DETAIL, STAKE_DOCUMENTS_NOT_OFFERED } from '@verdikta/stake-attestation-shared/stake-documents';
+
 export const ERROR_TEXTS = Object.freeze({
   APPEAL_REFUSED: 'The contract would refuse this appeal. Nothing was sent.',
   APPEAL_REVERTED: 'The appeal transaction reverted. Run appeal again to see where the claim stands.',
@@ -64,6 +66,8 @@ export const ERROR_TEXTS = Object.freeze({
   RUNNER_NOT_LOCAL: 'CODE_RUNNER_URL is not this machine, and a runner reads the plaintext claim. Pass --remote-runner if you mean it.',
   RUNNER_UNAUTHORIZED: 'The code-runner refused the token in CODE_RUNNER_TOKEN.',
   RUNNER_UNREACHABLE: 'The code-runner could not be reached at CODE_RUNNER_URL.',
+  // the site's and the builder's text, by the same code (shared/src/stakeDocuments.js; node P21)
+  [STAKE_DOCUMENTS_NOT_OFFERED]: `${STAKE_DOCUMENTS_DETAIL} check does not run on it.`,
   STATE_INVALID: 'state.json cannot be read. It was left as it is; nothing was drawn or sent.',
   STATE_MISMATCH: 'This folder belongs to another wallet, listing, chain or contract.',
   TX_PENDING: 'The transaction is not mined yet. It stays saved: run the same command again to wait for it, and no second one is sent.',

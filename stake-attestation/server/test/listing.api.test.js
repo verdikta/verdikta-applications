@@ -209,6 +209,31 @@ describe('requests refused before any build (400)', () => {
     });
   }
 
+  // Node P21: common takes stake.documents since 1.9.0-attest.4, and the site offers it only from node P20. A
+  // draft that names it, an empty list too, is refused by that one code alone (common has nothing against the
+  // field), never built with it or without it, and the refusal is counted by reason.
+  test('a draft naming stake.documents is refused: documents are not offered yet', async () => {
+    const builder = fakeBuilder();
+    const s = await api({ builder });
+    let n = 0;
+    for (const documents of [['README.md'], ['docs/**', 'SPEC.md'], []]) {
+      const body = listingRequest();
+      body.spec.stake.documents = documents;
+      const { res, json } = await submit(s, body);
+      n += 1;
+      assert.equal(res.status, 400, JSON.stringify(json));
+      assert.equal(json.error, 'LISTING_REQUEST_INVALID');
+      assert.equal(json.issues.length, 1, JSON.stringify(json.issues));
+      const [issue] = json.issues;
+      assert.equal(issue.code, 'STAKE_DOCUMENTS_NOT_OFFERED');
+      assert.equal(issue.path, '/spec/stake/documents');
+      assert.match(issue.detail, /documents are not offered yet/i);
+      assert.equal(builder.calls.length, 0, 'no build was started');
+    }
+    const refused = (await (await s.get('/api/status')).json()).listings.refused;
+    assert.equal(refused.byReason.STAKE_DOCUMENTS_NOT_OFFERED, n);
+  });
+
   test('a body that is not JSON is 400, a body over the limit 413', async () => {
     const s = await api({ builder: fakeBuilder() });
     const bad = await s.submit('{ not json');

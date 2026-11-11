@@ -24,6 +24,7 @@ const { expect } = require("chai");
 const hre = require("hardhat");
 const { ethers, network } = hre;
 const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const { codeReview } = require("@verdikta/common");
 const H = require("./helpers/claims");
 
 const {
@@ -37,7 +38,7 @@ const { MaxUint256 } = ethers;
 
 const THRESHOLD = BigInt(T);
 const FLOOR = 350_000n;
-const MIN_FLOOR = 250_000n;
+const MIN_FLOOR = BigInt(codeReview.NARROW_INVALID_FLOOR_MIN); // 250,000: common's, which the contract's must equal
 const DF = DISPUTE_FEE; // what one dispute-panel round costs on the default listing
 const cidOf = (i) => `Qm${"S".repeat(42)}${String(i).padStart(2, "0")}`;
 

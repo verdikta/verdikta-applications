@@ -85,6 +85,15 @@ test('rules that are not the pinned bytes are refused before anything runs', asy
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// Node P21: the scan refuses what the build refuses, by the same code: stake.documents is not offered yet.
+test('a spec naming stake.documents is not scanned: documents are not offered yet', async () => {
+  const { status, doc, docker } = await scan(FILES, { spec: draftSpec({ stake: { ...spec().stake, documents: ['README.md'] } }) });
+  assert.equal(status, 'error');
+  assert.equal(doc.error.code, 'STAKE_DOCUMENTS_NOT_OFFERED');
+  assert.match(doc.error.detail, /documents are not offered yet/i);
+  assert.equal(docker.calls.length, 0);
+});
+
 test('both scanners run in a sandbox with no network, a read-only root and uid 10001, from the pinned digests, never pulling at run time', async () => {
   const { status, runs, docker } = await scan(FILES, { present: false });
   assert.equal(status, 'ok');

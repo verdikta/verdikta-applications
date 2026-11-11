@@ -6,7 +6,7 @@
   },
   "codeRunner": {
     "repository": "https://github.com/verdikta/verdikta-arbiter.git",
-    "commit": "88790ed7b099a01bfbffa041f3cf25504d0c31c2"
+    "commit": "28f3cb98c48716d770a9097251a411a49582bd0b"
   },
   "registry": {
     "image": "registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"

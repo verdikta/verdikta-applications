@@ -16,12 +16,15 @@
 // disclosure key is decoded with common's parseDisclosureKey: a key no hunter can encrypt to is
 // refused before anything is built. What list() would refuse (the windows, the allowlist, the
 // number of known issues) and a claim query too long for a primary file are refused here too,
-// so a build is never spent on a listing that could not go on-chain.
+// so a build is never spent on a listing that could not go on-chain. So is a draft naming
+// stake.documents, which common takes and this site does not offer yet (shared's
+// STAKE_DOCUMENTS_NOT_OFFERED, node P21).
 import crypto from 'node:crypto';
 
 import { getAddress, isAddress } from 'ethers';
 import { DEFAULT_GIT_HOSTS, PROOF_REFUSALS, proofFieldProblem, repoUrlCheck } from '@verdikta/stake-attestation-shared/control-proof';
 import { serializeKnownIssues } from '@verdikta/stake-attestation-shared/site-request';
+import { stakeDocumentsIssue } from '@verdikta/stake-attestation-shared/stake-documents';
 
 import { codeReview } from '../common.js';
 import { canonicalAddress } from '../control/facts.js';
@@ -121,6 +124,9 @@ export function parseListingRequest(body, { gitHosts = DEFAULT_GIT_HOSTS } = {})
   const standIn = withStandIns(draft);
   const v = codeReview.validateCodeReviewSpec(standIn);
   for (const i of v.issues) issues.push({ code: 'SPEC_INVALID', path: `/spec${i.path === '/' ? '' : i.path}`, detail: `${i.code}: ${i.detail}` });
+  // common takes stake.documents; this site does not offer it yet (node P20), and says so by its own code
+  const documents = stakeDocumentsIssue(draft);
+  if (documents) issues.push({ ...documents, path: `/spec${documents.path}` });
 
   const names = [
     ['attestation', standIn.attestation],

@@ -38,3 +38,17 @@ test('docs/BUILD_PLAN.md is the build plan', () => {
 test('docs/BUILD_PLAN.md is byte-identical to the task copy', { skip: !process.env.SA_TASK_BUILD_PLAN }, () => {
   assert.ok(fs.readFileSync(PLAN).equals(fs.readFileSync(process.env.SA_TASK_BUILD_PLAN)));
 });
+
+// Node P19 (owner, 2026-11-10, Q73 #5): the README's listing section says what a known issue does. The listing
+// documents field is node P20's and is not named yet.
+test('README\'s listing section: a listed root cause settles DUPLICATE whatever the entry says; no bug at all is NatSpec, not a known issue', () => {
+  const text = fs.readFileSync(README, 'utf8');
+  const start = text.indexOf('\n## The listing API\n');
+  assert.ok(start >= 0);
+  const listing = text.slice(start, text.indexOf('\n## ', start + 1)).replace(/\s+/g, ' ');
+  assert.match(listing, /A claim whose root cause is a listed known issue settles DUPLICATE/);
+  assert.match(listing, /whatever the entry says about why/);
+  assert.match(listing, /To mark a behaviour as no bug at all, leave it off known issues and document it as intended in the code \(NatSpec\)/);
+  assert.match(listing, /a claim about it then falls under INVALID/);
+  assert.doesNotMatch(listing, /documents field/i);
+});

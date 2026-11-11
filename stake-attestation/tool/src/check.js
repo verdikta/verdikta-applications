@@ -18,6 +18,7 @@ import { fetchArchive, inspectListing, runnerFilesOf } from './listing.js';
 import { isCidShaped, rawCid } from './ipfs.js';
 import { lintObservable } from './observable.js';
 import { REMOTE_RUNNER_NOTICE } from './notices.js';
+import { requirementWarnings } from './report.js';
 
 /** What an arbiter gives a run at most: the EA's deadline is receipt + 780 s. */
 const RUN_DEADLINE_MS = 780_000;
@@ -143,6 +144,8 @@ export async function runCheck(ctx, { claimDir, listingId, listingArchive, deadl
   const files = runnerFilesOf(listing.listingBytes, spec);
 
   const inputs = readClaimInputs(claimDir);
+  // Advice only (owner, 2026-11-10, Q73 #2): no gate reads the section, so it changes no forecast.
+  const reportWarnings = requirementWarnings(inputs.report);
   const parsed = parseFinding(inputs.finding);
   const verdict = parsed.problem ? null : codeReview.validateFinding(parsed.value, spec);
   const schema = parsed.problem ? null : codeReview.validateFinding(parsed.value);
@@ -155,7 +158,7 @@ export async function runCheck(ctx, { claimDir, listingId, listingArchive, deadl
   const pocPatch = inputs.pocPatch ?? Buffer.alloc(0);
   const lint = schema?.ok ? lintObservable({ finding: parsed.value, pocPatch, baseline: files.baseline }) : [];
   const limit = maxPatchBytes(spec);
-  const stop = (extra = []) => ({ forecast: buildForecast({ local: [...local, ...extra], answer: null, spec, pocPatch, lint, priorFindings, notes }), pack: null, run: null });
+  const stop = (extra = []) => ({ forecast: buildForecast({ local: [...local, ...extra], answer: null, spec, pocPatch, lint, priorFindings, notes, reportWarnings }), pack: null, run: null });
   if (!schema?.ok || !inScope) return stop();
   const badReport = reportProblem(inputs.report);
   if (badReport) return stop([gate('report', 'fail', badReport)]);
@@ -187,6 +190,6 @@ export async function runCheck(ctx, { claimDir, listingId, listingArchive, deadl
     codeClass: CODE_CLASS,
   };
   const answer = await callRunner(ctx, request);
-  const forecast = buildForecast({ local, answer, spec, pocPatch, lint, priorFindings, notes });
+  const forecast = buildForecast({ local, answer, spec, pocPatch, lint, priorFindings, notes, reportWarnings });
   return { forecast, pack: answer.body?.contextPack ?? null, run: { runId: answer.body?.runId ?? null } };
 }

@@ -106,7 +106,7 @@ test('node P12: the runner at the pin had the Semgrep image before it started, a
 });
 
 test('an abstention is never a settled claim: rounds fail, a fresh prepay, then expiry with the bond to the maker (E6)', () => {
-  has('abstain.check.forecast', 'abstain.first.round.allAbstained', 'abstain.first.runner.ranIt', 'abstain.first.ea.abstained', 'abstain.first.noAi', 'abstain.second.runner.ranIt', 'abstain.second.ea.abstained', 'abstain.first.stillOpen', 'abstain.first.money.refundAtFinalize', 'abstain.retrigger.freshPrepay', 'abstain.second.round.allAbstained', 'abstain.keeper.expired', 'abstain.expiry.money.bondToMaker', 'abstain.expiry.money.hunterGetsNothing', 'abstain.never.judged', 'abstain.never.settled', 'abstain.ended.expired', 'abstain.nothingUploaded');
+  has('abstain.check.forecast', 'abstain.first.round.allAbstained', 'abstain.first.runner.ranIt', 'abstain.first.ea.abstained', 'abstain.first.noAi', 'abstain.second.runner.ranIt', 'abstain.second.ea.abstained', 'abstain.first.stillOpen', 'abstain.first.money.refundAtFinalize', 'abstain.retrigger.asksYes', 'abstain.retrigger.freshPrepay', 'abstain.second.round.allAbstained', 'abstain.keeper.expired', 'abstain.expiry.money.bondToMaker', 'abstain.expiry.money.hunterGetsNothing', 'abstain.never.judged', 'abstain.never.settled', 'abstain.ended.expired', 'abstain.nothingUploaded');
 });
 
 test('review focus: the bridge ran the real K, M, N and P, and what the real contract would do with the answers', () => {

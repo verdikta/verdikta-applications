@@ -50,9 +50,9 @@ async function readEvidence(ctx, claim, live = () => true) {
 export function failedRoundNext({ deadline, requestId, roundStarted }) {
   const refused = /^0x0+$/.test(String(requestId));
   const when = `before ${deadline} on the chain's clock`;
-  if (refused && !roundStarted) return `The aggregator refused the request, so no round ran and nothing was spent: it holds no fault of your claim's. reveal --retrigger sends it again ${when}, with only what the live fee has risen by. If every attempt is refused, anyone may expire the claim from then on, and the bond and the prepay come back to you.`;
-  if (refused) return `The aggregator refused this attempt, so the prepay is still held. An earlier round ran: ${ABSTAIN_COSTS} reveal --retrigger sends it again ${when}.`;
-  return `The round failed, and it may be your proof or a host: ${ABSTAIN_COSTS} Run check on this claim to see whether it abstains there. reveal --retrigger sends the round again, with a fresh prepay, ${when}.`;
+  if (refused && !roundStarted) return `The aggregator refused the request, so no round ran and nothing was spent: it holds no fault of your claim's. reveal --retrigger says what that costs and, with --yes, sends it again ${when}: only what the live fee has risen by. If every attempt is refused, anyone may expire the claim from then on, and the bond and the prepay come back to you.`;
+  if (refused) return `The aggregator refused this attempt, so the prepay is still held. An earlier round ran: ${ABSTAIN_COSTS} reveal --retrigger says what it costs and, with --yes, sends it again ${when}.`;
+  return `The round failed, and it may be your proof or a host: ${ABSTAIN_COSTS} Run check on this claim to see whether it abstains there. reveal --retrigger says what it costs and, with --yes, sends the round again, with a fresh prepay, ${when}.`;
 }
 
 // `live` says whether anyone still wants this answer: a read abandoned at the deadline starts nothing more.

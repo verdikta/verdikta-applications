@@ -497,3 +497,20 @@ test('commit\'s notices name nothing of the patch', async () => {
 test('specFor is what common accepts', () => {
   assert.equal(codeReview.validateCodeReviewSpec(specFor({ baseCommit: 'a'.repeat(40), recipient: codeReview.generateDisclosureKeyPair().recipient })).ok, true);
 });
+
+// Node P19 (owner, 2026-11-10, Q73 #2 and #4): the notice commit prints before it pays carries the consequence
+// sentence, and commit repeats check's warning of a report.md with no "## Requirement" section, refusing nothing.
+test('before it pays, commit says to make the PoC demonstrate the consequence, and warns of a report.md with no requirement section without refusing', async () => {
+  const l = await w.listing();
+  const notices = [];
+  const dir = makeClaimDir();
+  await assert.rejects(w.hunter({ onNotice: (t) => notices.push(t) }).commit({ claimDir: dir, listingId: l.listingId }), (e) => e.code === 'NEEDS_ACKNOWLEDGEMENT');
+  const text = notices.join('\n');
+  assert.ok(text.includes('Make the PoC demonstrate the consequence you claim; the jury classes by what it shows.'));
+  assert.match(text, /NO_REQUIREMENT_SECTION: .*## Requirement/);
+  const r = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
+  assert.equal(r.stage, 'disclosed', 'committed all the same');
+  const quiet = [];
+  await w.hunter({ onNotice: (t) => quiet.push(t) }).commit({ claimDir: makeClaimDir({ report: '# Title\n\nThe vault is drained.\n\n## Requirement\n\nNothing in the code or the listing states it.\n' }), listingId: l.listingId, acknowledge: true });
+  assert.doesNotMatch(quiet.join('\n'), /REQUIREMENT_SECTION/);
+});

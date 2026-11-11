@@ -1,4 +1,16 @@
 // The hunter's commands, and the help text.
+import { CONSEQUENCE, REQUIREMENT } from './notices.js';
+
+/** Words to lines of at most `width` columns. */
+function wrap(text, width = 100) {
+  const lines = [];
+  for (const word of text.split(' ')) {
+    if (lines.length > 0 && lines.at(-1).length + 1 + word.length <= width) lines[lines.length - 1] += ` ${word}`;
+    else lines.push(word);
+  }
+  return lines.join('\n');
+}
+
 export const COMMANDS = {
   check: 'Run the arbiters\' pipeline minus the jury on a claim, locally',
   commit: 'Encrypt a claim to the maker\'s disclosure key, commit it on-chain, then pin and disclose it',
@@ -20,7 +32,8 @@ ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`)
   check <claim-dir> (--listing <id> | --listing-archive <file>) [--no-pack] [--remote-runner]
                      --no-pack prints status and codes only: no pack, and nothing else that can quote the proof
   commit <claim-dir> --listing <id> [--yes] [--restart] [--accept-unread-pin]
-  reveal <claim-dir> [--retrigger]
+  reveal <claim-dir> [--retrigger] [--yes]
+                     --retrigger pays the top-up to send a failed round again; prints it, and sends only with --yes
   status <claim-dir|claim-id> [--wait] [--max-wait-ms <n>]
   claim <claim-dir|claim-id> [--waive-appeal]
                      --waive-appeal settles your own INVALID before anyone else may, which waives its appeal
@@ -30,6 +43,11 @@ ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`)
 A claim folder holds finding.json, report.md, poc.patch and optionally fix.patch. commit keeps its
 files in <claim-dir>/.verdikta-claim/: back that folder up, since losing its keys forfeits the bond.
 A run that stops can be run again: it goes on from what was saved, and never pays twice.
+
+Writing report.md:
+${CONSEQUENCE}
+${wrap(REQUIREMENT)}
+check warns, and refuses nothing, when report.md has no such section; commit says so again.
 
 Options:
   --json             Print the result as JSON

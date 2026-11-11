@@ -783,8 +783,11 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     one('abstain.status.saysRetrigger', failedStatus.json?.state === 'RoundFailed' && /--retrigger/.test(failedStatus.json?.next ?? ''), failedStatus.json?.next);
 
     stage('abstain: re-trigger, a fresh prepay, and it fails again');
+    // it pays, so, as commit and appeal, it says what it costs and sends nothing without --yes (node P19)
+    const unasked = await tool('reveal', abstainDir, '--retrigger');
+    one('abstain.retrigger.asksYes', unasked.code === 3 && /--yes/.test(unasked.stderr) && /Re-trigger claim/.test(unasked.stderr) && (await claimStateOf(abstainId)) === 'RoundFailed', `exit ${unasked.code}: ${unasked.stderr.slice(0, 400)}`);
     const before4 = counts();
-    const retrigger = await tool('reveal', abstainDir, '--retrigger');
+    const retrigger = await tool('reveal', abstainDir, '--retrigger', '--yes');
     toolDone('retrigger', retrigger);
     const afterRetrigger = await balanceAfterTx(hunter, retrigger.json.tx);
     const retriggerTx = await provider.getTransaction(retrigger.json.tx);

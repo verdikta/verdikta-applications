@@ -6,6 +6,7 @@
 import { CLAIM_STATES, EXPIRIES } from './abi.js';
 import { bindingOf, checkBinding, pinVerified, readBack, readProvenFiles } from './commit.js';
 import { fail } from './errors.js';
+import { retriggerNotice } from './notices.js';
 import { rawCid, sha256Hex0x } from './ipfs.js';
 import { failedRoundNext } from './status.js';
 import { openWorkspace } from './workspace.js';
@@ -39,25 +40,50 @@ async function ensureServed(ctx, cid, bytes, sha256, name) {
   }
 }
 
-async function retrigger(ctx, ws, state) {
+/**
+ * A claim round's re-trigger (design §12, erratum E6). It pays the lens's retriggerTopUp, so, as commit and appeal, it
+ * says what it costs and sends nothing without `acknowledge` (node P19). Everything that could stop it comes first:
+ * the files against the chain, the wallet's balance and a dry run at the send's own gas limit and value. The amount
+ * the notice names is the amount sent. Saved bytes this run would send again need `acknowledge` too; bytes whose nonce
+ * is used, or that the node already holds, are only waited for and never sent again: a node that dropped them since
+ * leaves them to a run that asks.
+ */
+async function retrigger(ctx, ws, state, acknowledge) {
+  const hunter = await ctx.hunterAddress();
   const rec0 = state.retriggerTx;
   if (rec0?.raw) {
-    await ctx.settleSaved(rec0);
+    const receipt = await ctx.rpc(() => ctx.provider.getTransactionReceipt(rec0.hash));
+    const used = Boolean(receipt) || (await ctx.rpc(() => ctx.provider.getTransactionCount(rec0.from, 'latest'))) > rec0.nonce;
+    const held = !used && Boolean(await ctx.rpc(() => ctx.provider.getTransaction(rec0.hash)));
+    if (!used && !held) {
+      // the bytes a run that had --yes signed: sent again only with --yes on this run too
+      ctx.notice(retriggerNotice({ claimId: state.claimId, valueWei: BigInt(rec0.value), deadline: await ctx.read('retriggerDeadline', [state.claimId]) }));
+      if (!acknowledge) throw fail('NEEDS_ACKNOWLEDGEMENT');
+      await ctx.broadcast(rec0);
+    }
+    await ctx.waitMined(rec0);
     const after = { ...state, retriggerTx: null };
     ws.saveState(after);
     return outcomeOf(ctx, after, null, rec0.hash);
   }
   const { archive, ciphertext } = readProvenFiles(ctx, ws, state);
-  const claim = await ctx.read('getClaim', [state.claimId]);
-  await ensureServed(ctx, claim.ciphertextCid, ciphertext, claim.ciphertextSha256, 'ciphertext.age');
-  await ensureServed(ctx, claim.bcid, archive, claim.archiveHash, 'archive.zip');
   const topUp = await ctx.read('retriggerTopUp', [state.claimId]);
+  const deadline = await ctx.read('retriggerDeadline', [state.claimId]);
   const gasLimit = (await ctx.read('SUBMISSION_GAS_NEEDED')) + REVEAL_OWN_GAS;
+  const fee = await ctx.feeCap();
+  const balance = await ctx.rpc(() => ctx.provider.getBalance(hunter));
+  if (balance < topUp + gasLimit * fee.maxFeePerGas) throw fail('INSUFFICIENT_FUNDS', 'A re-trigger needs its top-up and its gas limit\'s worth of ETH, though only the gas used is paid.');
   const data = ctx.encode('retrigger', [state.claimId]);
   await ctx.dryRun({ data, value: topUp, gasLimit }).catch((err) => {
     if (err.code === 'CONTRACT_REFUSED') throw fail('RETRIGGER_REFUSED', err.detail);
     throw err;
   });
+  // Before anything is signed or pinned, and on every run from which one may go out.
+  ctx.notice(retriggerNotice({ claimId: state.claimId, valueWei: topUp, deadline }));
+  if (!acknowledge) throw fail('NEEDS_ACKNOWLEDGEMENT');
+  const claim = await ctx.read('getClaim', [state.claimId]);
+  await ensureServed(ctx, claim.ciphertextCid, ciphertext, claim.ciphertextSha256, 'ciphertext.age');
+  await ensureServed(ctx, claim.bcid, archive, claim.archiveHash, 'archive.zip');
   const rec = await ctx.sign({ data, value: topUp, gasLimit });
   const next = { ...state, retriggerTx: rec };
   ws.saveState(next);
@@ -68,9 +94,14 @@ async function retrigger(ctx, ws, state) {
   return outcomeOf(ctx, after, topUp, rec.hash);
 }
 
-/** reveal, or a resume of one. `retrigger`: send a failed round again instead. */
-export async function runReveal(ctx, { claimDir, retrigger: wantRetrigger = false }) {
+/**
+ * reveal, or a resume of one. `retrigger`: send a failed round again instead, which pays, so only with `acknowledge`.
+ * @param {{ claimDir: string, retrigger?: boolean, acknowledge?: boolean }} o
+ */
+export async function runReveal(ctx, { claimDir, retrigger: wantRetrigger = false, acknowledge = false }) {
   const hunter = await ctx.hunterAddress();
+  // What a re-trigger costs must reach someone: a library caller gives it somewhere to go.
+  if (wantRetrigger && !ctx.onNotice) throw fail('USAGE', 'reveal --retrigger needs onNotice, for what must be said before anyone pays.');
   await ctx.ensureChain();
   const ws = openWorkspace(claimDir);
   if (!ws.exists()) throw fail('NO_CLAIM_HERE');
@@ -81,11 +112,13 @@ export async function runReveal(ctx, { claimDir, retrigger: wantRetrigger = fals
     if (!state.claimId) throw fail('NOT_DISCLOSED', 'Nothing has been committed yet: run commit again.');
 
     let lens = CLAIM_STATES[Number(await ctx.readSettled('claimState', [state.claimId]))];
-    if (lens === 'RoundFailed') return wantRetrigger ? retrigger(ctx, ws, state) : outcomeOf(ctx, state);
+    if (lens === 'RoundFailed') return wantRetrigger ? retrigger(ctx, ws, state, acknowledge) : outcomeOf(ctx, state);
     if (lens === 'Expired') {
       const c = await ctx.read('getClaim', [state.claimId]);
       throw fail('CLAIM_ENDED', `Expired: ${EXPIRIES[Number(c.expiry)]}.`);
     }
+    // --retrigger never reveals: what would pin the plaintext and pay is a plain reveal, asked for as one
+    if (wantRetrigger && (lens === 'Committed' || lens === 'Revealable')) throw fail('NOT_RETRIGGERABLE', `It is ${lens}.`);
 
     // A reveal already signed decides first: it is the same call, at its nonce.
     if (state.revealTx?.raw && (lens === 'Committed' || lens === 'Revealable')) {

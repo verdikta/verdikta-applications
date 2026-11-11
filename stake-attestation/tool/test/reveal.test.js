@@ -142,7 +142,7 @@ test('a refused request: the reveal stands, RoundFailed, the tool says so; retri
   await (await w.aggregator.setPaused(false)).wait();
   const again = await w.hunter().reveal({ claimDir: dir });
   assert.equal(again.state, 'RoundFailed', 'a plain re-run changes nothing');
-  const r = await w.hunter().reveal({ claimDir: dir, retrigger: true });
+  const r = await w.hunter().reveal({ claimDir: dir, retrigger: true, acknowledge: true });
   assert.equal(r.state, 'Revealed');
   assert.notEqual((await w.sa.getClaim(claimId)).requestId, `0x${'00'.repeat(32)}`);
   // what it answers is the transaction it sent, not the first reveal's (found by the local round, P7)
@@ -177,4 +177,147 @@ test('an already revealed claim is a no-op, and an expired one says so', async (
   await w.increase(8 * 86400);
   await (await w.sa.expire(late.claimId)).wait();
   await assert.rejects(w.hunter().reveal({ claimDir: late.dir }), (e) => e.code === 'CLAIM_ENDED');
+});
+
+// Node P19: reveal --retrigger pays a fresh round's prepay (the lens's retriggerTopUp), so, as commit and appeal, it
+// prints what it costs and sends nothing without --yes (the library: `acknowledge`).
+const failedRound = async () => {
+  const { dir, claimId } = await committed();
+  await w.hunter().reveal({ claimDir: dir });
+  await w.increase(await w.aggregator.responseTimeoutSeconds() + 1n);
+  await (await w.sa.finalize(claimId)).wait();
+  assert.equal(await w.sa.claimState(claimId), ROUND_FAILED);
+  return { dir, claimId };
+};
+const ROUND_FAILED = 7n; // the lens's claimState
+const nonceOf = () => w.provider.getTransactionCount(w.hunterWallet.address, 'latest');
+
+test('reveal --retrigger prints the top-up it sends and sends nothing without --yes, as commit and appeal', async () => {
+  const { dir, claimId } = await failedRound();
+  const topUp = await w.sa.retriggerTopUp(claimId);
+  assert.ok(topUp > 0n, 'a round that ran spent its prepay: a fresh one in full');
+  const notices = [];
+  const nonce = await nonceOf();
+  await assert.rejects(w.hunter({ onNotice: (t) => notices.push(t) }).reveal({ claimDir: dir, retrigger: true }), (e) => e.code === 'NEEDS_ACKNOWLEDGEMENT' && e.exitCode === 3);
+  const text = notices.join('\n');
+  assert.ok(text.includes(`${w.hre.ethers.formatEther(topUp)} ETH`), 'the cost, in ETH');
+  assert.match(text, /Re-trigger claim/);
+  assert.match(text, /base fees/, 'what a round that fails again costs');
+  assert.match(text, new RegExp(String(await w.sa.retriggerDeadline(claimId))), 'until when');
+  assert.equal(await nonceOf(), nonce, 'nothing sent');
+  assert.equal(await w.sa.claimState(claimId), ROUND_FAILED);
+  assert.equal(readJson(statePath(dir)).retriggerTx ?? null, null, 'nothing signed');
+
+  const cli = await runCli(w, ['reveal', dir, '--retrigger']);
+  assert.equal(cli.code, 3, cli.stderr);
+  assert.ok(cli.stdout.includes(`${w.hre.ethers.formatEther(topUp)} ETH`));
+  assert.match(cli.stderr, /--yes/);
+  assert.equal(await nonceOf(), nonce);
+  assert.equal(await w.sa.claimState(claimId), ROUND_FAILED);
+
+  const yes = await runCli(w, ['reveal', dir, '--retrigger', '--yes', '--json']);
+  assert.equal(yes.code, 0, yes.stderr);
+  const r = JSON.parse(yes.stdout);
+  assert.equal(r.state, 'Revealed');
+  const tx = await w.provider.getTransaction(r.tx);
+  assert.equal(w.sa.interface.parseTransaction(tx).name, 'retrigger');
+  assert.equal(tx.value, topUp, 'the amount printed is the amount sent');
+});
+
+test('a re-trigger signed by a run that stopped before sending it asks for --yes again; bytes the node holds are only waited for', async () => {
+  const { dir, claimId } = await failedRound();
+  const topUp = await w.sa.retriggerTopUp(claimId);
+  const nonce = await w.provider.getTransactionCount(w.hunterWallet.address, 'pending');
+  const fee = await w.provider.getFeeData();
+  const raw = await w.hunterWallet.signTransaction({
+    type: 2, chainId: 31337n, nonce, to: w.address, data: w.sa.interface.encodeFunctionData('retrigger', [claimId]), value: topUp, gasLimit: 12_000_000n,
+    maxFeePerGas: fee.maxFeePerGas, maxPriorityFeePerGas: fee.maxPriorityFeePerGas,
+  });
+  const rec = { hash: w.hre.ethers.Transaction.from(raw).hash, raw, nonce, from: w.hunterWallet.address, value: topUp.toString(), gasLimit: '12000000' };
+  const file = statePath(dir);
+  fs.writeFileSync(file, `${JSON.stringify({ ...readJson(file), retriggerTx: rec }, null, 2)}\n`, { mode: 0o600 });
+
+  const notices = [];
+  await assert.rejects(w.hunter({ onNotice: (t) => notices.push(t) }).reveal({ claimDir: dir, retrigger: true }), (e) => e.code === 'NEEDS_ACKNOWLEDGEMENT');
+  assert.ok(notices.join('\n').includes(`${w.hre.ethers.formatEther(topUp)} ETH`));
+  assert.equal(await w.provider.getTransaction(rec.hash), null, 'not sent');
+  assert.equal(readJson(file).retriggerTx.hash, rec.hash, 'kept');
+
+  // once the node holds them, this run sends nothing (R1-F1): no --yes, and no broadcast of them either
+  await w.rpc('evm_setAutomine', [false]);
+  const sent = [];
+  const broadcast = w.provider.broadcastTransaction;
+  try {
+    await w.provider.broadcastTransaction(rec.raw);
+    w.provider.broadcastTransaction = (raw) => {
+      sent.push(raw);
+      return broadcast.call(w.provider, raw);
+    };
+    const waiting = w.hunter().reveal({ claimDir: dir, retrigger: true });
+    await new Promise((resolve) => { setTimeout(resolve, 200); });
+    await w.rpc('evm_mine', []);
+    const r = await waiting;
+    assert.equal(r.tx, rec.hash, 'the saved bytes, not a second call');
+    assert.equal(r.state, 'Revealed');
+    assert.deepEqual(sent, [], 'only waited for');
+  } finally {
+    delete w.provider.broadcastTransaction;
+    await w.rpc('evm_setAutomine', [true]);
+  }
+  assert.equal(w.provider.broadcastTransaction, broadcast);
+});
+
+test('saved re-trigger bytes the node dropped while this run read are not sent again without --yes', async () => {
+  const { dir, claimId } = await failedRound();
+  const topUp = await w.sa.retriggerTopUp(claimId);
+  const nonce = await w.provider.getTransactionCount(w.hunterWallet.address, 'pending');
+  const fee = await w.provider.getFeeData();
+  const raw = await w.hunterWallet.signTransaction({
+    type: 2, chainId: 31337n, nonce, to: w.address, data: w.sa.interface.encodeFunctionData('retrigger', [claimId]), value: topUp, gasLimit: 12_000_000n,
+    maxFeePerGas: fee.maxFeePerGas, maxPriorityFeePerGas: fee.maxPriorityFeePerGas,
+  });
+  const rec = { hash: w.hre.ethers.Transaction.from(raw).hash, raw, nonce, from: w.hunterWallet.address, value: topUp.toString(), gasLimit: '12000000' };
+  const file = statePath(dir);
+  fs.writeFileSync(file, `${JSON.stringify({ ...readJson(file), retriggerTx: rec }, null, 2)}\n`, { mode: 0o600 });
+  await w.rpc('evm_setAutomine', [false]);
+  try {
+    await w.provider.broadcastTransaction(rec.raw);
+    const waiting = w.hunter({ waitMs: 600 }).reveal({ claimDir: dir, retrigger: true }).catch((e) => e);
+    await new Promise((resolve) => { setTimeout(resolve, 150); });
+    await w.rpc('hardhat_dropTransaction', [rec.hash]);
+    const err = await waiting;
+    // dropped while it waited: TX_PENDING; dropped before it looked: the notice and NEEDS_ACKNOWLEDGEMENT. Never a send.
+    assert.ok(['TX_PENDING', 'NEEDS_ACKNOWLEDGEMENT'].includes(err.code), err.code);
+    assert.equal(await w.provider.getTransaction(rec.hash), null);
+  } finally {
+    await w.rpc('evm_setAutomine', [true]);
+  }
+  assert.equal(readJson(file).retriggerTx.hash, rec.hash, 'kept');
+  // the next run sees bytes nobody holds: it says the cost and asks again
+  await assert.rejects(w.hunter().reveal({ claimDir: dir, retrigger: true }), (e) => e.code === 'NEEDS_ACKNOWLEDGEMENT');
+  const r = await w.hunter().reveal({ claimDir: dir, retrigger: true, acknowledge: true });
+  assert.equal(r.tx, rec.hash);
+  assert.equal(r.state, 'Revealed');
+});
+
+test('--retrigger on a claim with no failed round never reveals: nothing pinned, signed or paid, --yes or not (R1-F2)', async () => {
+  const { dir, claimId } = await committed();
+  assert.equal(await w.sa.claimState(claimId), 1n, 'Revealable');
+  const uploads = w.ipfs.uploads.length;
+  const nonce = await nonceOf();
+  for (const acknowledge of [false, true]) {
+    await assert.rejects(w.hunter().reveal({ claimDir: dir, retrigger: true, acknowledge }), (e) => e.code === 'NOT_RETRIGGERABLE' && /Revealable/.test(e.message));
+  }
+  const cli = await runCli(w, ['reveal', dir, '--retrigger']);
+  assert.equal(cli.code, 1, cli.stderr);
+  assert.match(cli.stderr, /NOT_RETRIGGERABLE/);
+  assert.equal(w.ipfs.uploads.length, uploads, 'the plaintext stays on this machine');
+  assert.equal(await nonceOf(), nonce);
+  assert.equal(await w.sa.claimState(claimId), 1n);
+  assert.equal((await w.hunter().reveal({ claimDir: dir })).state, 'Revealed', 'a plain reveal still reveals');
+});
+
+test('reveal --retrigger needs somewhere to say its cost', async () => {
+  const { dir } = await failedRound();
+  await assert.rejects(w.hunter({ onNotice: undefined }).reveal({ claimDir: dir, retrigger: true, acknowledge: true }), (e) => e.code === 'USAGE');
 });

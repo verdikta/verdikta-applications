@@ -16,6 +16,7 @@ import { fail, ToolError } from './errors.js';
 import { rawCid, isRawSha256Cid, isStorableCid, sha256Hex0x, gatewayGet } from './ipfs.js';
 import { archiveDisclosureKeyHex, readListing, runnerFilesOf, termsForNotice } from './listing.js';
 import { commitNotice } from './notices.js';
+import { requirementWarnings } from './report.js';
 import { lintObservable } from './observable.js';
 import { openWorkspace } from './workspace.js';
 
@@ -376,7 +377,8 @@ async function readyToCommit(ctx, ws, state, listingId, hunter, acknowledge) {
   // Before any key is drawn, and on every run from which a commit may go out.
   ctx.notice(commitNotice(termsForNotice(listing, price)));
   const { baseline } = runnerFilesOf(listing.listingBytes, listing.spec);
-  for (const w of [...warnings, ...lintObservable({ finding, pocPatch: inputs.pocPatch, baseline })]) ctx.notice(`${w.code}: ${w.detail}`);
+  // report.md's requirement section is advice (owner, 2026-11-10, Q73 #2): said again here, never a refusal
+  for (const w of [...warnings, ...lintObservable({ finding, pocPatch: inputs.pocPatch, baseline }), ...requirementWarnings(inputs.report)]) ctx.notice(`${w.code}: ${w.detail}`);
   if (!acknowledge) throw fail('NEEDS_ACKNOWLEDGEMENT');
   return { listing, inputs };
 }

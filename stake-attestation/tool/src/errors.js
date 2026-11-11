@@ -38,6 +38,7 @@ export const ERROR_TEXTS = Object.freeze({
   NOT_ALLOWED: 'This listing is invited, and this wallet is not on its list.',
   NOT_DISCLOSED: 'This claim has not been disclosed. Run commit again to finish it, before the disclose window ends. The plaintext was not pinned.',
   NOT_READY: 'Not ready yet.',
+  NOT_RETRIGGERABLE: 'This claim has no failed round to re-trigger. Nothing was pinned or sent: run reveal without --retrigger to reveal it.',
   NOT_REVEALABLE_YET: 'The fix window is still open. The plaintext was not pinned.',
   NOT_SIGNED_BY_BUILDER: 'The builder did not sign this listing: its attestation does not verify. Arbiters would not judge a claim on it. Refused.',
   NOT_THE_CONTRACT: 'There is no StakeAttestation at that address on this chain.',

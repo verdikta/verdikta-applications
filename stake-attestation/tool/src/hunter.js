@@ -30,7 +30,11 @@ export function createHunter(options = {}) {
     check: (o) => runCheck(ctx, o),
     /** @param {{ claimDir: string, listingId?: bigint, acknowledge?: boolean, restart?: boolean, acceptUnreadPin?: boolean }} o */
     commit: (o) => runCommit(ctx, o),
-    /** @param {{ claimDir: string, retrigger?: boolean }} o */
+    /**
+     * reveal, or with `retrigger` a failed round's re-trigger: that pays the lens's retriggerTopUp, so it says the cost
+     * through onNotice and sends only with `acknowledge`.
+     * @param {{ claimDir: string, retrigger?: boolean, acknowledge?: boolean }} o
+     */
     reveal: (o) => runReveal(ctx, o),
     /** @param {{ claimId?: bigint, claimDir?: string, wait?: boolean, maxWaitMs?: number }} o */
     status: (o) => runStatus(ctx, o),

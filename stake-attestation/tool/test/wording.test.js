@@ -56,3 +56,17 @@ test('the notices and every error message pass the wording check', async () => {
     assert.deepEqual(wordingProblems(text), [], text);
   }
 });
+
+test('node P19\'s texts pass the wording check: the requirement and consequence guidance, its warnings, the re-trigger notice', async () => {
+  const { CONSEQUENCE, REQUIREMENT, retriggerNotice } = await import('../src/index.js');
+  const { requirementWarnings } = await import('../src/report.js');
+  const texts = [
+    CONSEQUENCE,
+    REQUIREMENT,
+    ...requirementWarnings(Buffer.from('# Title\n\nNo section here at all.\n')).map((x) => x.detail),
+    ...requirementWarnings(Buffer.from('# Title\n\n## Requirement\n')).map((x) => x.detail),
+    retriggerNotice({ claimId: 3n, valueWei: 10n ** 15n, deadline: 1_900_000_000n }),
+  ];
+  assert.equal(texts.length, 5);
+  for (const text of texts) assert.deepEqual(wordingProblems(text), [], text);
+});

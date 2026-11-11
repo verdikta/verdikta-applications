@@ -495,3 +495,41 @@ test('the CLI prints the forecast and the pack; --no-pack leaves the pack out; -
   assert.equal(out.forecast.verdict, 'pass');
   assert.ok(out.pack.files.length);
 });
+
+// Node P19 (owner, 2026-11-10, Q73 #2): report.md says where the code is required to behave as the PoC asserts, in a
+// "## Requirement" section. The EA requires no such section, so check warns of a missing or empty one and refuses
+// nothing for it: the forecast, the run and the exit code are what they would be with the section.
+const WITH_REQUIREMENT = '# Reentrancy in withdraw\n\nThe attacker re-enters withdraw from its fallback and takes the whole balance.\n\n## Requirement\n\nsrc/Vault.sol:12: the NatSpec of withdraw says it pays the caller\'s own balance and no more.\n';
+
+test('check warns, and refuses nothing, when report.md has no "## Requirement" section; with one, no warning', async () => {
+  runner.requests.length = 0;
+  const without = await check(makeClaimDir());
+  assert.equal(without.forecast.verdict, 'pass');
+  assert.equal(runner.requests.length, 1, 'the run went ahead');
+  assert.deepEqual(without.forecast.reportWarnings.map((x) => x.code), ['NO_REQUIREMENT_SECTION']);
+  assert.match(without.forecast.reportWarnings[0].detail, /## Requirement/);
+  const withIt = await check(makeClaimDir({ report: WITH_REQUIREMENT }));
+  assert.equal(withIt.forecast.verdict, 'pass');
+  assert.deepEqual(withIt.forecast.reportWarnings, []);
+
+  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId)], { runner });
+  assert.equal(cli.code, 0, cli.stderr);
+  assert.match(cli.stdout, /NO_REQUIREMENT_SECTION/);
+  assert.match(cli.stdout, /## Requirement/);
+  const clean = await runCli(w, ['check', makeClaimDir({ report: WITH_REQUIREMENT }), '--listing', String(l.listingId)], { runner });
+  assert.equal(clean.code, 0, clean.stderr);
+  assert.doesNotMatch(clean.stdout, /REQUIREMENT_SECTION/);
+});
+
+test('the requirement warning is fixed words: --no-pack and --json keep it; a gate that fails before the run keeps it too', async () => {
+  const quiet = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId), '--no-pack'], { runner });
+  assert.equal(quiet.code, 0, quiet.stderr);
+  assert.match(quiet.stdout, /NO_REQUIREMENT_SECTION/);
+  const json = JSON.parse((await runCli(w, ['check', makeClaimDir({ report: '# Title\n\n## Requirement\n\n## Impact\n\nThe vault is drained by anyone.\n' }), '--listing', String(l.listingId), '--no-pack', '--json'], { runner })).stdout);
+  assert.deepEqual(json.forecast.reportWarnings.map((x) => x.code), ['EMPTY_REQUIREMENT_SECTION']);
+  runner.requests.length = 0;
+  const out = await check(makeClaimDir({ finding: { ...FINDING, affectedPaths: ['lib/Other.sol'] } }));
+  assert.equal(out.forecast.verdict, 'fail');
+  assert.equal(runner.requests.length, 0);
+  assert.deepEqual(out.forecast.reportWarnings.map((x) => x.code), ['NO_REQUIREMENT_SECTION']);
+});

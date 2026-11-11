@@ -339,6 +339,56 @@ test('an archive answer stored before documents were read is read again; one rea
   assert.equal(fetched, 1, 'read once');
 });
 
+// R1-F1: the read again can fail at a gateway. The answer stored before is kept as it was (it was the listing's, its
+// signature and terms checked), so the listing still counts; its documents stay unknown, never none, and the read
+// is tried again after a backoff of its own.
+test('an archive answer whose read again for documents fails is kept as it was, its documents unknown, and retried after a backoff', async () => {
+  const { refreshArchives, archiveFields } = await import('../src/site/archives.js');
+  const { notCountedReason } = await import('../src/control/counting.js');
+  const draft = draftSpec();
+  delete draft.stake.knownIssues;
+  const built = await fakeBuilder().build({ draft, knownIssues: null });
+  const archives = buildListingArchives(built.files);
+  const listingCid = rawCid(archives.listing.bytes);
+  const disputeCid = rawCid(archives.dispute.bytes);
+  const strip = ({ documents: _d, ...rest }) => rest;
+  const devKeys = built.devTrust.keys;
+  const known = strip(readListingArchive(archives.listing.bytes, listingCid, { devKeys }));
+  const dispute = strip(readListingArchive(archives.dispute.bytes, disputeCid, { devKeys }));
+  assert.equal(known.signed.ok, true);
+  const store = { locked: true, state: { archives: { [listingCid]: known, [disputeCid]: dispute } }, transact(fn) { fn(this.state); } };
+  let clock = 0;
+  let fail = true;
+  let fetched = 0;
+  const fetchArchive = async (cid) => {
+    fetched += 1;
+    if (fail) throw new Error('gateway timeout');
+    return cid === listingCid ? archives.listing.bytes : archives.dispute.bytes;
+  };
+  const quiet = { warn() {}, info() {}, debug() {} };
+  const refresh = () => refreshArchives({ fetchArchive, store, listings: [{ listingCid, disputeCid }], now: () => clock, maxBytes: 1 << 24, retryMs: 1000, logger: quiet, devKeys: () => devKeys });
+  await refresh();
+  assert.equal(fetched, 2);
+  const kept = store.state.archives[listingCid];
+  assert.equal(kept.ok, true, 'still the listing\'s answer');
+  assert.deepEqual({ ...kept, documentsAttempts: undefined, documentsRetryAt: undefined }, { ...known, documentsAttempts: undefined, documentsRetryAt: undefined });
+  assert.equal(kept.documentsRetryAt, 1000);
+  const artifact = { repo: known.repo, baseCommit: known.baseCommit };
+  const fields = archiveFields(kept, { artifact, disclosureKey: known.disclosureKey });
+  assert.deepEqual(fields.archive, { ok: true });
+  assert.equal(fields.documents, null, 'unknown, not none');
+  assert.equal(notCountedReason({ known: kept, dispute: store.state.archives[disputeCid], artifact: { ...artifact, kind: 'Repo' }, fact: { proof: 'yes' }, terms: { ok: true } }), null, 'it still counts');
+  // before the backoff, nothing is fetched; after it, the read succeeds and the documents are known
+  await refresh();
+  assert.equal(fetched, 2);
+  clock = 1001;
+  fail = false;
+  await refresh();
+  assert.equal(fetched, 4);
+  assert.deepEqual(store.state.archives[listingCid].documents, []);
+  assert.equal(store.state.archives[listingCid].documentsRetryAt, undefined);
+});
+
 describe('reading a listing archive without extracting it', () => {
   let members;
   before(async () => {

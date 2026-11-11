@@ -22,9 +22,14 @@ const PROBLEM_CODES = Object.freeze({
   notPlain: 'STAKE_DOCUMENT_NOT_PLAIN',
 });
 
+/** The field's entries with the textarea line each is on (from 1): one per line, each trimmed, blank lines dropped. */
+export function numberedLines(text) {
+  return String(text).split('\n').map((s, i) => ({ line: i + 1, text: s.trim() })).filter((x) => x.text !== '');
+}
+
 /** The field's entries: one per line, each trimmed, blank lines dropped. */
 export function documentLines(text) {
-  return String(text).split('\n').map((s) => s.trim()).filter(Boolean);
+  return numberedLines(text).map((x) => x.text);
 }
 
 /**

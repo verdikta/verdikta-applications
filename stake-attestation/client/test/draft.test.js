@@ -208,6 +208,9 @@ test('the documents field: up to 16 globs, one per line, as stake.documents afte
 test('a document line common refuses is the form\'s issue, by common\'s code, and blocks the request', () => {
   assert.equal(formIssues(filled({ documents: 'README.md' })).documents, undefined);
   const issues = formIssues(filled({ documents: 'README.md\n./docs/**\nREADME.md' }));
-  assert.deepEqual(issues.documents.map((i) => [i.index, i.code]), [[1, 'STAKE_DOCUMENT_NOT_PLAIN'], [2, 'STAKE_DOCUMENT_DUPLICATE']]);
+  assert.deepEqual(issues.documents.map((i) => [i.index, i.line, i.code]), [[1, 2, 'STAKE_DOCUMENT_NOT_PLAIN'], [2, 3, 'STAKE_DOCUMENT_DUPLICATE']]);
+  // R1-F2: the line is the textarea's, blank lines counted
+  const spaced = formIssues(filled({ documents: 'README.md\n\n  \n/invalid' }));
+  assert.deepEqual(spaced.documents.map((i) => [i.index, i.line, i.code]), [[1, 4, 'STAKE_DOCUMENT_OUTSIDE_REPOSITORY']]);
   assert.throws(() => toListingRequest(filled({ documents: '/etc/passwd' })), /documents/);
 });

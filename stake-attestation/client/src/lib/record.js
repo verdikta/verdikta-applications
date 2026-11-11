@@ -64,7 +64,8 @@ function listingView(l, label, blockTimestamp, control, integrity, documents) {
     control: control ?? NOT_CHECKED,
     integrity: integrityView(l, integrity),
     // node P20: the listing's document globs, as the server read them from its listing archive
-    documents: Array.isArray(documents) ? documents.filter((g) => typeof g === 'string') : [],
+    // null: not known (a server from before them, or an archive not read again yet), never shown as none
+    documents: Array.isArray(documents) ? documents.filter((g) => typeof g === 'string') : null,
     awards: Object.fromEntries(CLASSES.map((c, i) => [c, String(l.awards[i])])),
     lowest: l.lowestClassCounted,
     bondWei: String(l.bondWei),

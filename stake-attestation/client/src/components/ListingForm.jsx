@@ -20,7 +20,7 @@ function documentsText(issues) {
   if (!Array.isArray(issues) || issues.length === 0) return null;
   return issues.map((i) => (i.index === null
     ? fill(L.documentCodes.tooMany, { max: MAX_DOCUMENTS })
-    : fill(L.documentIssue, { line: i.index + 1, entry: JSON.stringify(i.entry), code: i.code, text: L.documentCodes[i.code] }))).join(' ');
+    : fill(L.documentIssue, { line: i.line, entry: JSON.stringify(i.entry), code: i.code, text: L.documentCodes[i.code] }))).join(' ');
 }
 
 /** The message under a field: the window bounds always, an amount only once something is typed. */

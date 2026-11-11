@@ -8,7 +8,9 @@
 // two listings may name one CID).
 //
 // Node P20: it also gives the listing's document globs (stake.documents), so a hunter sees where its requirements
-// are said to be written: none when it names none, and none read from an archive stored before they were.
+// are said to be written: none when it names none. An answer stored before they were read is read again, and kept
+// as it was while that read fails: its signature and terms were checked, and a gateway that fails says nothing
+// against them. Until then its documents are not known (null), never shown as none.
 //
 // Node P9: reading it also answers "did the builder sign this listing", with the check the hunter
 // tool reuses (shared/src/builderSignature.js), under the trust the arbiters apply here: production's
@@ -102,7 +104,7 @@ export function readListingArchive(bytes, listingCid, { maxBytes = Infinity, dev
     image: spec.env?.image ?? null,
     platform: spec.env?.platform ?? null,
     scope,
-    documents: documentGlobs(spec),
+    documents: documentGlobs(spec).filter((g) => typeof g === 'string'),
     terms,
     signed: read.signed ? { ok: true, role: read.role, filesSha256: read.filesSha256, keyId: read.keyId, trust: read.trust, issuedAt: read.issuedAt } : { ok: false },
   };
@@ -127,8 +129,9 @@ export async function refreshArchives({ fetchArchive, store, listings, now, maxB
   for (const cid of cids) {
     const known = store.state.archives[cid];
     // an answer from before the builder's signature was read is read again, and one from before its documents were
-    // (node P20), so a listing that names them is never shown as naming none
-    const answered = known && ((known.ok && known.signed && Array.isArray(known.documents)) || (!known.ok && (known.error !== 'ARCHIVE_UNAVAILABLE' || known.retryAt > now())));
+    // (node P20), so a listing that names them is never shown as naming none; that one with a backoff of its own
+    const refreshing = Boolean(known?.ok && known.signed && !Array.isArray(known.documents));
+    const answered = known && ((known.ok && known.signed && (Array.isArray(known.documents) || known.documentsRetryAt > now())) || (!known.ok && (known.error !== 'ARCHIVE_UNAVAILABLE' || known.retryAt > now())));
     if (answered) continue;
     if (tried >= MAX_PER_SYNC) break;
     tried += 1;
@@ -137,6 +140,17 @@ export async function refreshArchives({ fetchArchive, store, listings, now, maxB
       const bytes = Buffer.from(await fetchArchive(cid));
       result = readListingArchive(bytes, cid, { maxBytes, devKeys: devKeys() });
     } catch (err) {
+      if (refreshing) {
+        // kept as it was: the listing still counts as it did, and its documents stay unknown until a read succeeds
+        const attempts = (known.documentsAttempts ?? 0) + 1;
+        const delay = Math.min(RETRY_MAX_MS, retryMs * 2 ** (attempts - 1));
+        if (!store.locked) return;
+        store.transact((s) => {
+          s.archives[cid] = { ...known, documentsAttempts: attempts, documentsRetryAt: now() + delay };
+        });
+        logger.warn(`feed: listing archive ${cid} could not be read again for its documents (${String(err?.message ?? err).slice(0, 200)}); kept as it was, retry in ${Math.round(delay / 1000)} s`);
+        continue;
+      }
       const attempts = (known?.attempts ?? 0) + 1;
       const delay = Math.min(RETRY_MAX_MS, retryMs * 2 ** (attempts - 1));
       result = { ok: false, error: 'ARCHIVE_UNAVAILABLE', attempts, retryAt: now() + delay };
@@ -162,5 +176,6 @@ export function archiveFields(known, listing) {
   if (known.repo !== listing.artifact.repo || known.baseCommit !== listing.artifact.baseCommit || known.disclosureKey !== listing.disclosureKey.toLowerCase()) {
     return none('ARCHIVE_MISMATCH');
   }
-  return { image: known.image, scope: known.scope, documents: known.documents ?? [], archive: { ok: true } };
+  // documents not yet read from an answer stored before they were: unknown, never none
+  return { image: known.image, scope: known.scope, documents: Array.isArray(known.documents) ? known.documents : null, archive: { ok: true } };
 }

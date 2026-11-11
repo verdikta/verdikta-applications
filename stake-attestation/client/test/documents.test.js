@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import common from '@verdikta/common';
 
-import { MAX_DOCUMENTS, documentIssues, documentLines } from '../src/lib/documents.js';
+import { MAX_DOCUMENTS, documentIssues, documentLines, numberedLines } from '../src/lib/documents.js';
 import { STRINGS, fill } from '../src/strings.js';
 
 const { codeReview } = common;
@@ -46,6 +46,7 @@ test('at most 16 entries, as common\'s schema holds them', () => {
 
 test('lines are the field\'s entries: one per line, trimmed, blank lines dropped; none is no field', () => {
   assert.deepEqual(documentLines(' README.md \n\n docs/**\r\n'), ['README.md', 'docs/**']);
+  assert.deepEqual(numberedLines(' README.md \n\n docs/**\r\n'), [{ line: 1, text: 'README.md' }, { line: 3, text: 'docs/**' }]);
   assert.deepEqual(documentLines('\n  \n'), []);
   assert.deepEqual(documentLines(''), []);
 });
@@ -74,6 +75,7 @@ test('the feed and the record page name a listing\'s documents, and say none whe
   for (const S of [STRINGS.feed, STRINGS.record]) {
     assert.equal(typeof S.documents, 'string');
     assert.equal(typeof S.documentsNone, 'string');
+    assert.equal(typeof S.documentsUnread, 'string');
   }
   assert.match(STRINGS.record.documentsNote, /never widen the scope/);
 });

@@ -10,7 +10,7 @@
 // documents field is checked with @verdikta/common's documentGlobProblem (lib/documents.js; node P20).
 import { parseEther } from 'ethers';
 
-import { documentIssues, documentLines } from './documents.js';
+import { documentIssues, documentLines, numberedLines } from './documents.js';
 import { knownIssueEntry } from './knownIssues.js';
 
 export const SEVERITY_CLASSES = Object.freeze(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
@@ -124,8 +124,9 @@ export function formIssues(form) {
   if (form.valueAtRiskUsd.trim() !== '' && whole(form.valueAtRiskUsd.trim()) === null) out.valueAtRiskUsd = 'wholeNumber';
   for (const c of SEVERITY_CLASSES) if (!ETH.test(String(form.awards[c]).trim())) out[`awards.${c}`] = 'amount';
   if (!ETH.test(form.bond.trim())) out.bond = 'amount';
-  // each line common would refuse, at its index, by common's code
-  const documents = documentIssues(documentLines(form.documents ?? ''));
+  // each line common would refuse, at its index, by common's code, with the textarea line it is on
+  const lines = numberedLines(form.documents ?? '');
+  const documents = documentIssues(lines.map((x) => x.text)).map((i) => ({ ...i, line: i.index === null ? null : lines[i.index].line }));
   if (documents.length) out.documents = documents;
   return out;
 }

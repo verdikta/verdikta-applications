@@ -54,7 +54,7 @@ function Entry({ e }) {
         { id: f('image'), label: F.image, value: e.image ? <span className="mono">{e.image}</span> : noArchive },
         { id: f('scope'), label: F.scope, value: e.scope ? fill(F.scopeLine, { include: e.scope.include.join(', '), exclude: e.scope.exclude.join(', ') || R.none }) : noArchive },
         // node P20: where the listing says its requirements are written
-        { id: f('documents'), label: F.documents, value: Array.isArray(e.documents) ? (e.documents.length ? <span className="mono">{e.documents.join(', ')}</span> : F.documentsNone) : noArchive },
+        { id: f('documents'), label: F.documents, value: Array.isArray(e.documents) ? (e.documents.length ? <span className="mono">{e.documents.join(', ')}</span> : F.documentsNone) : e.archive?.ok ? F.documentsUnread : noArchive },
       ]} />
       <p className="actions">
         <a href={`#/record/${e.artifactHash.toLowerCase()}`}>{F.record}</a>

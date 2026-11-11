@@ -401,7 +401,11 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       fork: first ? control.forkOf(state, first.artifact.repo) : null,
       control: facts,
       // node P20: each counted listing's document globs, from its listing archive (counted: it is that listing's)
-      documents: Object.fromEntries([...counted].map((id) => [id, state.archives[known.get(id)?.listingCid]?.documents ?? []])),
+      // (null while an archive answer stored before documents were read has not been read again)
+      documents: Object.fromEntries([...counted].map((id) => {
+        const globs = state.archives[known.get(id)?.listingCid]?.documents;
+        return [id, Array.isArray(globs) ? globs : null];
+      })),
       notCounted: {
         listings: apart.map((l) => {
           const id = String(l.listingId);

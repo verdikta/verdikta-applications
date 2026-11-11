@@ -316,6 +316,29 @@ describe('archive reads run beside the indexer', () => {
   });
 });
 
+// Node P20: an archive's answer stored before documents were read has no `documents`, and is read again, so a listing
+// that names them is never shown as naming none. One read since is kept, content addressed, as before.
+test('an archive answer stored before documents were read is read again; one read since is not', async () => {
+  const { refreshArchives } = await import('../src/site/archives.js');
+  const draft = draftSpec({ stake: { ...draftSpec().stake, documents: ['README.md'] } });
+  delete draft.stake.knownIssues;
+  const built = await fakeBuilder().build({ draft, knownIssues: null });
+  const bytes = buildListingArchives(built.files).listing.bytes;
+  const cid = rawCid(bytes);
+  const fresh = readListingArchive(bytes, cid);
+  assert.deepEqual(fresh.documents, ['README.md']);
+  const { documents: _none, ...before } = fresh;
+  const store = { locked: true, state: { archives: { [cid]: before } }, transact(fn) { fn(this.state); } };
+  let fetched = 0;
+  const fetchArchive = async () => { fetched += 1; return bytes; };
+  const quiet = { warn() {}, info() {}, debug() {} };
+  await refreshArchives({ fetchArchive, store, listings: [{ listingCid: cid, disputeCid: cid }], now: () => 0, maxBytes: 1 << 24, retryMs: 1000, logger: quiet });
+  assert.equal(fetched, 1);
+  assert.deepEqual(store.state.archives[cid].documents, ['README.md']);
+  await refreshArchives({ fetchArchive, store, listings: [{ listingCid: cid, disputeCid: cid }], now: () => 0, maxBytes: 1 << 24, retryMs: 1000, logger: quiet });
+  assert.equal(fetched, 1, 'read once');
+});
+
 describe('reading a listing archive without extracting it', () => {
   let members;
   before(async () => {

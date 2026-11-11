@@ -126,8 +126,9 @@ export async function refreshArchives({ fetchArchive, store, listings, now, maxB
   const cids = [...new Set(listings.flatMap((l) => [l.listingCid, l.disputeCid]))];
   for (const cid of cids) {
     const known = store.state.archives[cid];
-    // an answer from before the builder's signature was read is read again
-    const answered = known && ((known.ok && known.signed) || (!known.ok && (known.error !== 'ARCHIVE_UNAVAILABLE' || known.retryAt > now())));
+    // an answer from before the builder's signature was read is read again, and one from before its documents were
+    // (node P20), so a listing that names them is never shown as naming none
+    const answered = known && ((known.ok && known.signed && Array.isArray(known.documents)) || (!known.ok && (known.error !== 'ARCHIVE_UNAVAILABLE' || known.retryAt > now())));
     if (answered) continue;
     if (tried >= MAX_PER_SYNC) break;
     tried += 1;

@@ -1,15 +1,16 @@
 // The deploy kit's headers on the built client (node P23). Under playwright.csp.config.js the stack serves the
 // production build with the headers of deploy/nginx/verifiers.verdikta.org-headers.conf, the file nginx includes, and
 // every other spec's flows then run under them: e2e/support/fixtures.js fails a test on any violation. These check the
-// headers are really there, that the policy served is the include file's (its two off-origin sources, the RPC endpoint
-// and the gateway of deploy/client.env, mapped to this stack's stand-ins, and a report-uri for this run added; nothing
+// headers are really there, that the policy served is the include file's (its off-origin sources, the RPC endpoint and
+// each gateway of deploy/client.env, mapped to this stack's stand-ins, and a report-uri for this run added; nothing
 // else changed), and that a violation is seen when one happens, so a quiet run means something.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { mapConnectSources, parseEnvFile, parseHeaderInclude } from '@verdikta/stake-attestation-shared/deploy-kit';
+import { mapConnectSources, parseCsp, parseEnvFile, parseHeaderInclude } from '@verdikta/stake-attestation-shared/deploy-kit';
 
+import { parseGateways } from '../src/config.js';
 import { expect, test } from './support/fixtures.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -22,14 +23,23 @@ const origin = (u) => new URL(u).origin;
 test.describe('the deploy kit\'s headers', () => {
   test.skip(({ csp }) => !csp, 'runs under playwright.csp.config.js, with the kit\'s headers');
 
+  const KIT_GATEWAYS = parseGateways(CLIENT_ENV.get('VITE_IPFS_GATEWAY'));
   /** The policy this stack must serve, worked out here from the include file and deploy/client.env. */
   const expected = (stack) => `${mapConnectSources(HEADERS.find((h) => h.name === 'Content-Security-Policy').value, {
     [origin(CLIENT_ENV.get('VITE_SA_RPC_URL'))]: origin(stack.rpcUrl),
-    [origin(CLIENT_ENV.get('VITE_IPFS_GATEWAY'))]: origin(stack.gatewayUrl),
+    ...Object.fromEntries(KIT_GATEWAYS.map((g, i) => [g, origin(stack.gatewayUrls[i])])),
   })}; report-uri /__csp-report`;
 
-  test('the policy served is the include file\'s, with only the two off-origin sources mapped to this stack', async ({ stack }) => {
+  test('the policy served is the include file\'s, with only the off-origin sources mapped to this stack', async ({ stack }) => {
     expect(stack.csp.policy).toBe(expected(stack));
+  });
+
+  test('each gateway of deploy/client.env has a stand-in of its own, in order, and the build asks exactly those', async ({ stack }) => {
+    expect(KIT_GATEWAYS.length).toBeGreaterThan(0);
+    expect(stack.gatewayUrls).toHaveLength(KIT_GATEWAYS.length);
+    expect(new Set(stack.gatewayUrls.map(origin)).size).toBe(KIT_GATEWAYS.length);
+    const connect = new Map(parseCsp(stack.csp.policy)).get('connect-src');
+    expect(connect).toEqual(["'self'", origin(stack.rpcUrl), ...stack.gatewayUrls.map(origin)]);
   });
 
   test('the page, an asset, an API answer and a 404 all carry every header of the include file', async ({ request, stack }) => {

@@ -7,6 +7,7 @@ import disclosure from '@verdikta/common/src/codeReview/disclosure.js';
 
 import { checkDisclosure, flagOffer } from '../src/lib/check.js';
 import { disclosureKeyBytes32 } from '../src/lib/disclosure.js';
+import { fetchCiphertext } from '../src/lib/fetchCiphertext.js';
 
 const maker = disclosure.generateDisclosureKeyPair();
 const listingKey = disclosureKeyBytes32(maker.recipient);
@@ -89,6 +90,57 @@ test('a ciphertext the gateway cannot deliver is unavailable', async () => {
   assert.equal(r.verdict, 'unavailable');
   assert.deepEqual(r.reason, { key: 'http', vars: { status: 404 } });
   assert.deepEqual(r.steps, { key: 'passed', fetch: 'failed', ciphertext: 'skipped', decrypt: 'skipped', plaintext: 'skipped' });
+});
+
+// The check page's fetch over a list of gateways (src/lib/fetchCiphertext.js): the next gateway only when one fails to
+// deliver, never because its bytes fail a check. A gateway's wrong bytes are a bad disclosure, as with one gateway.
+const CID = `bafkrei${'b'.repeat(52)}`;
+const FIRST = 'https://first.gateway.example';
+const SECOND = 'https://second.gateway.example';
+
+function overGateways(claim, answers) {
+  const asked = [];
+  const fetchImpl = async (url) => {
+    const origin = new URL(url).origin;
+    asked.push(origin);
+    return answers[origin]();
+  };
+  const r = checkDisclosure({ identity: maker.identity, listingKey, claim: { ...claim, ciphertextCid: CID }, fetchCiphertext: (cid) => fetchCiphertext([FIRST, SECOND], cid, { fetchImpl }) });
+  return r.then((result) => ({ result, asked }));
+}
+
+test('over two gateways, a first that cannot deliver gives way to the second, and its copy is checked', async () => {
+  const { claim, ciphertext } = claimFor();
+  const { result, asked } = await overGateways(claim, {
+    [FIRST]: () => new Response('', { status: 502 }),
+    [SECOND]: () => new Response(ciphertext),
+  });
+  assert.equal(result.verdict, 'match');
+  assert.deepEqual(asked, [FIRST, SECOND]);
+});
+
+test('over two gateways, wrong bytes from the first are a bad disclosure: the second, with the right copy, is not asked', async () => {
+  const { claim, ciphertext } = claimFor();
+  const { result, asked } = await overGateways(claim, {
+    [FIRST]: () => new Response(new TextEncoder().encode('not the ciphertext')),
+    [SECOND]: () => new Response(ciphertext),
+  });
+  assert.equal(result.verdict, 'bad');
+  assert.equal(result.reason.key, 'ciphertext');
+  assert.deepEqual(result.steps, { key: 'passed', fetch: 'passed', ciphertext: 'failed', decrypt: 'skipped', plaintext: 'skipped' });
+  assert.deepEqual(asked, [FIRST]);
+  assert.equal(flagOffer({ verdict: result.verdict, now: 1n, disclosedAt: 1n, disclosureGrace: 10n, flagged: false }).offer, true, 'the flag offer is as with one gateway');
+});
+
+test('over two gateways that both fail, the copy is unavailable and the reason is the second\'s', async () => {
+  const { claim } = claimFor();
+  const { result, asked } = await overGateways(claim, {
+    [FIRST]: () => { throw new TypeError('fetch failed'); },
+    [SECOND]: () => new Response('', { status: 404 }),
+  });
+  assert.equal(result.verdict, 'unavailable');
+  assert.deepEqual(result.reason, { key: 'http', vars: { status: 404 } });
+  assert.deepEqual(asked, [FIRST, SECOND]);
 });
 
 test('the flag is offered for a bad or unavailable copy, before the grace ends, once', () => {

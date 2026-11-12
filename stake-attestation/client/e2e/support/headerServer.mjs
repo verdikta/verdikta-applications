@@ -2,15 +2,17 @@
 // the production build from client/dist, sends /api to the stack's server, and puts every header of the deploy kit's
 // include file (../deploy/nginx/verifiers.verdikta.org-headers.conf, parsed by shared's parseHeaderInclude, which
 // refuses any line it cannot read) on every answer, as nginx's `add_header ... always` does: a page, an asset, an API
-// answer, a 404. The one header that differs is the policy, and only as kitHeaders says: its two off-origin sources
-// (deploy/client.env's RPC endpoint and gateway) mapped to this stack's stand-ins, and a report-uri for this run, whose
-// reports it keeps in .e2e/csp-reports.json for the run's teardown (e2e/support/cspTeardown.mjs).
+// answer, a 404. The one header that differs is the policy, and only as kitHeaders says: its off-origin sources
+// (deploy/client.env's RPC endpoint and each of its gateways) mapped to this stack's stand-ins, and a report-uri for
+// this run, whose reports it keeps in .e2e/csp-reports.json for the run's teardown (e2e/support/cspTeardown.mjs).
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { mapConnectSources, parseEnvFile, parseHeaderInclude } from '@verdikta/stake-attestation-shared/deploy-kit';
+
+import { parseGateways } from '../../src/config.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const KIT = path.resolve(here, '..', '..', '..', 'deploy');
@@ -33,22 +35,36 @@ const TYPES = {
 const HOP = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer']);
 
 const origin = (u) => new URL(u).origin;
+const kitEnv = () => parseEnvFile(fs.readFileSync(path.join(KIT, 'client.env'), 'utf8'));
+
+/** deploy/client.env's gateways, in order, read as the client reads them: the stack starts a stand-in for each. */
+export const kitGateways = () => parseGateways(kitEnv().get('VITE_IPFS_GATEWAY'));
 
 /**
- * The deploy kit's headers for this stack: the include file's, with the policy's RPC endpoint and gateway mapped to
- * `rpcUrl` and `gatewayUrl`, and a report-uri added. Nothing else of any header changes.
+ * The policy's off-origin sources and their stand-ins: deploy/client.env's RPC endpoint to `rpcUrl`, and its gateways,
+ * in order, to `gatewayUrls`, one stand-in each.
+ * @returns {Record<string, string>}
+ */
+export function standIns({ rpcUrl, gatewayUrls }) {
+  const gateways = kitGateways();
+  if (gateways.length !== gatewayUrls.length) throw new Error(`deploy/client.env names ${gateways.length} gateways and the stack has ${gatewayUrls.length} stand-ins: one each`);
+  const map = { [origin(kitEnv().get('VITE_SA_RPC_URL'))]: origin(rpcUrl) };
+  gateways.forEach((g, i) => { map[g] = origin(gatewayUrls[i]); });
+  if (new Set(Object.values(map)).size !== Object.keys(map).length) throw new Error('each off-origin source has a stand-in of its own');
+  return map;
+}
+
+/**
+ * The deploy kit's headers for this stack: the include file's, with the policy's RPC endpoint and gateways mapped to
+ * `rpcUrl` and `gatewayUrls` (standIns), and a report-uri added. Nothing else of any header changes.
  * @returns {{ name: string, value: string }[]}
  */
-export function kitHeaders({ rpcUrl, gatewayUrl }) {
+export function kitHeaders({ rpcUrl, gatewayUrls }) {
   const headers = parseHeaderInclude(fs.readFileSync(path.join(KIT, 'nginx', 'verifiers.verdikta.org-headers.conf'), 'utf8'));
-  const env = parseEnvFile(fs.readFileSync(path.join(KIT, 'client.env'), 'utf8'));
   if (!headers.every((h) => h.always)) throw new Error('every header of the include file is `always`, so this server puts each on every answer');
   return headers.map(({ name, value }) => {
     if (name !== 'Content-Security-Policy') return { name, value };
-    const mapped = mapConnectSources(value, {
-      [origin(env.get('VITE_SA_RPC_URL'))]: origin(rpcUrl),
-      [origin(env.get('VITE_IPFS_GATEWAY'))]: origin(gatewayUrl),
-    });
+    const mapped = mapConnectSources(value, standIns({ rpcUrl, gatewayUrls }));
     return { name, value: `${mapped}; report-uri ${REPORT_PATH}` };
   });
 }

@@ -270,9 +270,11 @@ export function chainOf(stack) {
     /**
      * A hunter's claim: encrypt `archive` to `recipient`, commit sha256(`commitArchive`) and
      * sha256(ciphertext), then (once the commit is mined, erratum E5) put `served` (the ciphertext
-     * unless given) on the gateway under the ciphertext's CID and disclose that CID.
+     * unless given) on the first gateway stand-in under the ciphertext's CID and disclose that CID.
+     * `servedBy` sets each stand-in's answer instead, in the build's order: bytes, 'ciphertext', a
+     * status it answers (a failing gateway), or null for nothing put (it answers 404).
      */
-    async claim({ listingId, archive, recipient, commitArchive = archive, served = null, disclose = true, late = false }) {
+    async claim({ listingId, archive, recipient, commitArchive = archive, served = null, servedBy = null, disclose = true, late = false }) {
       const { rawCid } = await fromServer('src/pinning/cid.js');
       const keys = disclosure.generateDisclosureSecrets();
       const ciphertext = disclosure.encryptForDisclosure(archive, recipient, keys);
@@ -284,8 +286,15 @@ export function chainOf(stack) {
       const claimId = events(rc, late ? 'LateClaim' : 'Committed')[0].args.claimId;
       if (!disclose) return { claimId, ciphertext, archiveHash, ciphertextSha256, cid: null, keys, archive };
       const cid = rawCid(ciphertext);
-      const put = await fetch(`${stack.gatewayUrl}/ipfs/${cid}`, { method: 'PUT', body: served ?? ciphertext });
-      expect(put.status).toBe(201);
+      const answers = servedBy ?? [served ?? 'ciphertext'];
+      expect(answers.length, 'one answer at most for each gateway stand-in').toBeLessThanOrEqual(stack.gatewayUrls.length);
+      for (const [i, answer] of answers.entries()) {
+        if (answer === null) continue;
+        const put = await fetch(`${stack.gatewayUrls[i]}/ipfs/${cid}`, typeof answer === 'number'
+          ? { method: 'PUT', headers: { 'x-stand-in-status': String(answer) } }
+          : { method: 'PUT', body: answer === 'ciphertext' ? ciphertext : answer });
+        expect(put.status).toBe(201);
+      }
       await (await hunter.disclose(claimId, cid)).wait();
       return { claimId, ciphertext, archiveHash, ciphertextSha256, cid, keys, archive };
     },

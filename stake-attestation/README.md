@@ -303,7 +303,7 @@ The kit deploys nothing by itself.
 | `deploy/systemd/user@.service.d/delegate.conf` | `/etc/systemd/system/user@.service.d/` | cgroup v2 delegation, so rootless Docker applies the scan's limits |
 | `deploy/server.env.example` | `/etc/verdikta-verifiers/server.env` (root:verifiers, 0640) | the server's environment: every variable it reads, for Base Sepolia, production trust, the workflow backend and Pinata, with the secrets left empty |
 | `deploy/builder.json` | `/etc/verdikta-verifiers/builder.json` | the builder config the scan reads |
-| `deploy/client.env` | `client/.env.production.local` in the checkout | the client's build: Base Sepolia, its RPC endpoint and its IPFS gateway |
+| `deploy/client.env` | `client/.env.production.local` in the checkout | the client's build: Base Sepolia, its RPC endpoint and its IPFS gateways |
 | `deploy/check-scan-limits.mjs` | run from the checkout | whether the scan's memory, pids and cpu limits hold under the host's Docker |
 
 ### The host
@@ -312,8 +312,30 @@ What the code needs:
 
 - **Linux on amd64, with systemd and cgroup v2**: Ubuntu 24.04 LTS or Debian 12, whose paths the kit uses. amd64,
   because the baseline scan pulls and runs `linux/amd64` images, the class platform.
-- **Node.js 22 LTS** at `/usr/bin/node` (the packages need 20 or later; CI runs 22), from nodejs.org's releases: the
-  distribution's is older.
+- **Node.js 22 LTS** at `/usr/bin/node` (the packages need 20 or later; CI runs 22), from nodejs.org's release
+  tarball: the distribution's is older. The tarball installs nothing by itself. Check `SHASUMS256.txt.asc`'s signature
+  with `gpgv` against the keyring of nodejs/release-keys, then the tarball's sha256 against the signed sums, and only
+  then unpack it under `/usr/local/lib/nodejs` and link `node`, `npm` and `npx` into `/usr/bin` (the unit's
+  `ExecStart` is `/usr/bin/node`). The check is nodejs/node's README's ("Verifying binaries"), and the whole is one
+  `&&` chain, so a failed check unpacks nothing:
+
+  ```bash
+  VERSION=v22.x.y   # the release in https://nodejs.org/dist/latest-v22.x/
+  DISTRO=linux-x64
+  cd "$(mktemp -d)" \
+  && curl -fsLo nodejs-keyring.kbx https://github.com/nodejs/release-keys/raw/HEAD/gpg/pubring.kbx \
+  && curl -fsO "https://nodejs.org/dist/${VERSION}/SHASUMS256.txt.asc" \
+  && curl -fsO "https://nodejs.org/dist/${VERSION}/node-${VERSION}-${DISTRO}.tar.gz" \
+  && gpgv --keyring=./nodejs-keyring.kbx --output SHASUMS256.txt < SHASUMS256.txt.asc \
+  && grep " node-${VERSION}-${DISTRO}.tar.gz\$" SHASUMS256.txt | sha256sum --check - \
+  && sudo mkdir -p /usr/local/lib/nodejs \
+  && sudo tar -xzf "node-${VERSION}-${DISTRO}.tar.gz" -C /usr/local/lib/nodejs \
+  && for b in node npm npx; do sudo ln -sf "/usr/local/lib/nodejs/node-${VERSION}-${DISTRO}/bin/$b" "/usr/bin/$b"; done
+  ```
+
+  `gpgv` exits non-zero, which ends the chain, unless a key in that keyring signed `SHASUMS256.txt.asc`, and
+  `sha256sum` checks the tarball against the sums `gpgv` wrote out of it. apt does not patch a tarball install: a
+  Node.js security release is installed the same way, with its version, and the server restarted on it.
 - **git**: the server's control check and the scan's fetch run the `git` binary (`builder/src/git.js`).
 - **Rootless Docker** for the service user, with cgroup v2 delegation of `cpu`, `memory` and `pids`
   (`delegate.conf`). The scan (`builder/src/scan.js`, `builder/src/docker.js`) pulls Semgrep and gitleaks by digest
@@ -375,13 +397,21 @@ set (`memory.max` 4294967296). By hand, for memory alone: `docker run --rm --mem
    sudo install -D -m 0644 deploy/systemd/user@.service.d/delegate.conf /etc/systemd/system/user@.service.d/delegate.conf
    sudo systemctl daemon-reload
    sudo loginctl enable-linger verifiers   # its user manager, and so its Docker, starts at boot
-   # Docker Engine with its rootless extras and uidmap, from Docker's apt repository; then, as the user:
+   # Docker Engine, its rootless extras and what they need, once Docker's apt repository is added (Docker's install
+   # steps for Ubuntu); then, as the user:
+   sudo apt-get install docker-ce docker-ce-cli containerd.io docker-ce-rootless-extras uidmap dbus-user-session
    sudo -u verifiers XDG_RUNTIME_DIR=/run/user/$(id -u verifiers) dockerd-rootless-setuptool.sh install
-   sudo systemctl disable --now docker.service docker.socket   # nothing here runs containers as root
+   sudo systemctl disable --now docker.service docker.socket containerd.service   # nothing here runs containers as root
    sudo install -d -m 0750 -o root -g verifiers /etc/verdikta-verifiers
    sudo install -m 0640 -o root -g verifiers deploy/server.env.example /etc/verdikta-verifiers/server.env
    sudo install -m 0644 deploy/builder.json /etc/verdikta-verifiers/builder.json
    ```
+
+   Docker's packages enable and start root's `containerd.service` (from `containerd.io`) as well as `docker.service`
+   and `docker.socket`, so the `systemctl` line stops all three: the rootless daemon runs a containerd of its own, and
+   root's would only keep running as root with nothing to do. On Ubuntu 24.04, `docker-ce-rootless-extras` ships and
+   loads an AppArmor profile for `rootlesskit`, which lets it make the user namespaces the distribution otherwise
+   refuses an unprivileged program: no profile of your own is needed, and that restriction stays on.
 
    Then fill in the empty settings of `server.env`; a comment above each says where it comes from: the address and
    block from step 1, a Base Sepolia RPC endpoint, the keeper's key (an account of its own with a little Base Sepolia
@@ -461,20 +491,26 @@ a 60 s timeout).
 ### The Content-Security-Policy
 
 The header file allows exactly what the built client loads and connects to: its own scripts, stylesheet and images
-(the badge), `/api`, and the two off-origin URLs its build calls, the RPC endpoint and the IPFS gateway of
+(the badge), `/api`, and the off-origin URLs its build calls, the RPC endpoint and each IPFS gateway of
 `deploy/client.env`, by origin. No `unsafe-inline` or `unsafe-eval`, no wildcard, `frame-ancestors 'none'`,
 `base-uri 'none'`, `object-src 'none'`, `form-action 'none'`. The build has no inline script or style (index.html loads
 one module), so there is no hash or nonce to go stale. A browser wallet works under it: an extension puts its provider
 in the page as a content script, which the page's policy does not govern, and its RPC traffic leaves from the
 extension. HSTS (a year, no preload),
 `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and a Permissions-Policy denying every feature the
-site does not use are in the same file. Changing the RPC endpoint or the gateway is a change to `client.env` and to the
+site does not use are in the same file. Changing the RPC endpoint or a gateway is a change to `client.env` and to the
 header file together: `shared/test/repo/deploy.test.js` holds them to each other.
 
+The check page asks the gateways of `VITE_IPFS_GATEWAY` (`https://gateway.pinata.cloud,https://ipfs.io`) in that
+order, and the next only when one fails to deliver: a network error, an answer that is not 2xx, or no whole body
+within 60 s, so at most 2 minutes for the two (`client/src/lib/fetchCiphertext.js`). A body that arrives is checked as
+it is against the claim's `ciphertextSha256` on the chain: wrong bytes are a bad disclosure, never retried at another
+gateway, so the list adds no trust. The record page links an archive to the first.
+
 `npm run test:e2e:csp` in `client/` serves the production build with exactly that file's headers
-(`e2e/support/headerServer.mjs`: the two off-origin sources mapped to the test stack's stand-ins and a report-uri added,
-nothing else changed) and runs every Playwright flow, failing on any `securitypolicyviolation` event, CSP console
-error or report. CI runs it, `nginx -t` on the site config as installed (a throwaway certificate at certbot's paths),
+(`e2e/support/headerServer.mjs`: the RPC endpoint and each gateway mapped to a stand-in of the test stack's own and a
+report-uri added, nothing else changed) and runs every Playwright flow, failing on any `securitypolicyviolation` event,
+CSP console error or report. CI runs it, `nginx -t` on the site config as installed (a throwaway certificate at certbot's paths),
 and nginx itself in front of a stub server (`shared/test/deploy/nginxLive.test.js`): the redirect, the headers on every
 kind of answer, the proxy, the body limits and the rate limits, polling included.
 
@@ -1368,7 +1404,8 @@ goes in a URL.
   session and fails if any carries the key in any encoding. A maker with an age key already
   enters its public half instead.
 - **Decrypt-and-check** (`#/check/<claimId>`): reads the claim and its listing from the chain,
-  fetches the disclosed ciphertext from `VITE_IPFS_GATEWAY`, checks its SHA-256 against the
+  fetches the disclosed ciphertext from the gateways of `VITE_IPFS_GATEWAY` (in order, the next only
+  when one fails to deliver, never because its bytes are wrong), checks its SHA-256 against the
   commitment, decrypts it with the maker's private key (pasted or loaded from the key file)
   using common's `decryptDisclosure`, and compares the plaintext's SHA-256 with the committed
   archive hash, all in the browser. A key that is not the listing's is the maker's mistake and
@@ -1376,7 +1413,8 @@ goes in a URL.
   `flagBadDisclosure` through the wallet while the chain's clock is inside the grace period.
 
 **Config** is Vite's build environment: `VITE_SA_CHAIN_ID`, `VITE_SA_CONTRACT`,
-`VITE_SA_RPC_URL` (reads; without it, reads go through the wallet) and `VITE_IPFS_GATEWAY`.
+`VITE_SA_RPC_URL` (reads; without it, reads go through the wallet) and `VITE_IPFS_GATEWAY` (one
+gateway origin or several, comma-separated; the record page links to the first).
 The API is same-origin under `/api`; `vite` and `vite preview` proxy it to `SA_API_URL`
 (default `http://127.0.0.1:5009`).
 
@@ -1394,7 +1432,8 @@ enum names against the contract and the wording. `npx playwright test` starts
 server's chain tests deploy it, behind Hardhat's JSON-RPC server; the real API server with
 mock pinning, dev trust and the server's own fake builder CLI as its builder, and its chain side
 (indexer, keeper, feed, record mirror, badge, a Chainlink ETH/USD stand-in); an IPFS gateway
-stand-in that also serves what the server pinned; and the production build. The browser's wallet is an injected EIP-1193 provider that
+stand-in for each gateway of `deploy/client.env`, in its order, each also serving what the server
+pinned; and the production build. The browser's wallet is an injected EIP-1193 provider that
 forwards to the local node's unlocked accounts. `SA_SCREENSHOTS=1` writes the screenshots under
 `client/test-results/screenshots/`, with every private-key field masked. `npm run test:e2e:csp` runs the same flows
 again under the deploy kit's headers and fails on any Content-Security-Policy violation ("Running the site").

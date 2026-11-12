@@ -5,8 +5,11 @@
 //   chain    the in-process Hardhat network with StakeAttestation and the mock aggregator,
 //            deployed as the server's chain tests deploy it (server/test/helpers/chain.js),
 //            behind Hardhat's own JSON-RPC server: the browser's test wallet and the tests use it
-//   gateway  an IPFS gateway stand-in for the ciphertexts hunters pin: GET /ipfs/<cid> serves
-//            what a test PUT there. Only the tests PUT; the client only reads.
+//   gateways IPFS gateway stand-ins for the ciphertexts hunters pin, one for each gateway of
+//            deploy/client.env, in its order (the build asks them in that order): GET /ipfs/<cid>
+//            serves what a test PUT on that stand-in, or answers the status a test PUT there with
+//            x-stand-in-status. Only the tests PUT; the client only reads. Each also serves what
+//            the server pinned.
 //   api      the real server (server/src/app.js, configured by its own loadConfig) with mock
 //            pinning, dev trust and, as its builder, server/test/fixtures/fake-builder-cli.js:
 //            the stand-in the server's builder tests run, which keeps the builder's command
@@ -15,15 +18,16 @@
 //            only the bare repositories in .e2e/mirrors. Its chain side (node P4b1) runs too: the indexer,
 //            the keeper (finalize and settle, signing with Hardhat's 10th test account, derived
 //            here from Hardhat's public test mnemonic), the feed, the record mirror and the
-//            badge, with a Chainlink ETH/USD stand-in for the labels. The gateway serves what
+//            badge, with a Chainlink ETH/USD stand-in for the labels. The gateways serve what
 //            the server pinned (listing archives, dispute statements) besides what tests PUT.
 //   client   the production build (vite build, given the addresses above), served by
 //            vite preview on 5176 with /api proxied to the api; with SA_E2E_CSP=1
 //            (playwright.csp.config.js) by e2e/support/headerServer.mjs instead, with the deploy
 //            kit's headers on every answer (node P23)
 //
-// It writes .e2e/stack.json (untracked) for the tests: the URLs, the contract, the accounts and
-// the merged ABI. No key, no secret and no live network: everything is local and per run.
+// It writes .e2e/stack.json (untracked) for the tests: the URLs (gatewayUrls in order, gatewayUrl
+// the first), the contract, the accounts and the merged ABI. No key, no secret and no live
+// network: everything is local and per run.
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -108,19 +112,25 @@ function startGateway(pinned) {
       return res.end();
     }
     if (req.method === 'GET') {
-      const bytes = store.get(m[1]) ?? pinned.get(m[1]);
-      if (!bytes) {
+      const held = store.get(m[1]) ?? pinned.get(m[1]);
+      if (!held) {
         res.statusCode = 404;
         return res.end('not found');
       }
+      if (typeof held.status === 'number') {
+        res.statusCode = held.status;
+        return res.end();
+      }
       res.setHeader('content-type', 'application/octet-stream');
-      return res.end(bytes);
+      return res.end(held);
     }
     if (req.method === 'PUT') {
+      const status = req.headers['x-stand-in-status'];
       const parts = [];
       req.on('data', (c) => parts.push(c));
       req.on('end', () => {
-        store.set(m[1], Buffer.concat(parts));
+        // a status instead of bytes: this stand-in answers it for the CID, as a failing gateway would
+        store.set(m[1], status ? { status: Number(status) } : Buffer.concat(parts));
         res.statusCode = 201;
         res.end();
       });
@@ -223,12 +233,17 @@ async function main() {
   const chain = await startChain();
   const { createMockPinner } = await fromServer('src/pinning/index.js');
   const pinner = createMockPinner();
-  const gateway = await startGateway(pinner);
+  // a stand-in for each gateway the deploy kit's build asks, so both runs build the client as the kit does
+  const { kitGateways } = await import('./headerServer.mjs');
+  const gateways = [];
+  for (let i = 0; i < Math.max(1, kitGateways().length); i += 1) gateways.push(await startGateway(pinner));
+  const [gateway] = gateways;
   const api = await startApi(chain, pinner, gateway);
   // no key in the file: the keeper's stays in this process
   const stack = {
     chainId: CHAIN_ID,
     rpcUrl: chain.rpcUrl,
+    gatewayUrls: gateways.map((g) => g.url),
     gatewayUrl: gateway.url,
     apiUrl: api.url,
     clientUrl: `http://127.0.0.1:${CLIENT_PORT}`,
@@ -246,13 +261,13 @@ async function main() {
     aggregatorAbi: chain.aggregatorAbi,
   };
   fs.writeFileSync(path.join(STACK_DIR, 'stack.json'), JSON.stringify(stack, null, 2));
-  log(`chain ${chain.rpcUrl}, contract ${chain.contract}, gateway ${gateway.url}, api ${api.url}`);
+  log(`chain ${chain.rpcUrl}, contract ${chain.contract}, gateways ${gateways.map((g) => g.url).join(' ')}, api ${api.url}`);
 
   const clientEnv = {
     VITE_SA_CHAIN_ID: String(CHAIN_ID),
     VITE_SA_CONTRACT: chain.contract,
     VITE_SA_RPC_URL: chain.rpcUrl,
-    VITE_IPFS_GATEWAY: gateway.url,
+    VITE_IPFS_GATEWAY: gateways.map((g) => g.url).join(','),
     SA_API_URL: api.url,
   };
   const build = vite(['build', '--logLevel', 'warn'], clientEnv);
@@ -265,7 +280,7 @@ async function main() {
   let stop;
   if (process.env.SA_E2E_CSP === '1') {
     const { kitHeaders, startHeaderServer } = await import('./headerServer.mjs');
-    const headers = kitHeaders({ rpcUrl: chain.rpcUrl, gatewayUrl: gateway.url });
+    const headers = kitHeaders({ rpcUrl: chain.rpcUrl, gatewayUrls: gateways.map((g) => g.url) });
     const policy = headers.find((h) => h.name === 'Content-Security-Policy').value;
     fs.writeFileSync(path.join(STACK_DIR, 'stack.json'), JSON.stringify({ ...stack, csp: { policy, headers } }, null, 2));
     const server = await startHeaderServer({ dist: path.join(CLIENT, 'dist'), port: CLIENT_PORT, apiUrl: api.url, headers, reportsFile: path.join(STACK_DIR, 'csp-reports.json') });
@@ -283,7 +298,7 @@ async function main() {
   stop = async (exitCode) => {
     closeClient();
     api.site.close();
-    await Promise.allSettled([chain.rpc.close(), new Promise((r) => gateway.server.close(r)), new Promise((r) => api.server.close(r))]);
+    await Promise.allSettled([chain.rpc.close(), ...gateways.map((g) => new Promise((r) => g.server.close(r))), new Promise((r) => api.server.close(r))]);
     process.exit(exitCode);
   };
   for (const sig of ['SIGTERM', 'SIGINT']) process.once(sig, () => stop(0));

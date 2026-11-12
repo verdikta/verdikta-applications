@@ -1,0 +1,17 @@
+{
+  "name": "@verdikta/stake-attestation-tool",
+  "version": "0.1.0",
+  "description": "Hunter tool for Verdikta stake attestation: check, commit and reveal claims",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "verdikta-attest": "bin/verdikta-attest.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

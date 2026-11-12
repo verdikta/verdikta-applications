@@ -316,15 +316,26 @@ class VerdiktaService {
 
   /**
    * Walk the ReputationKeeper registry once: identity (address, jobId, classes)
-   * + getOracleInfo for every index. Memoized for `maxAgeMs` so repeated
-   * oracle-checks don't re-walk the registry. A single unreadable index yields
-   * an error sentinel rather than failing the whole dataset.
+   * + getOracleInfo + getRecentScores for every index. Memoized for `maxAgeMs`
+   * so repeated oracle-checks / analytics loads don't re-walk the registry, and
+   * concurrent callers share one in-flight walk. Each read is retried against
+   * transient RPC errors (Infura 429s). A single unreadable index yields an
+   * error sentinel rather than failing the whole dataset; a walk with any such
+   * sentinel is returned but not memoized, so the next call retries it.
    */
   async getAllOracles({ maxAgeMs = 60000 } = {}) {
     if (this._oraclesCache && Date.now() - this._oraclesCache.ts < maxAgeMs) {
       return this._oraclesCache.data;
     }
-    const count = await this.getOracleCount();
+    if (this._oraclesInFlight) return this._oraclesInFlight;
+    this._oraclesInFlight = this._walkOracles().finally(() => {
+      this._oraclesInFlight = null;
+    });
+    return this._oraclesInFlight;
+  }
+
+  async _walkOracles() {
+    const count = await this._withRetry(() => this.getOracleCount(), 'getOracleCount');
     const oracles = [];
     const batchSize = 4;
     for (let i = 0; i < count; i += batchSize) {
@@ -332,18 +343,25 @@ class VerdiktaService {
       const batch = [];
       for (let j = i; j < batchEnd; j++) {
         const index = j;
-        batch.push(
-          this.getOracleAtIndex(index)
-            .then(o => this.getOracleInfo(o.oracle, o.jobId).then(info => ({ index, ...o, ...info })))
-            .catch(err => {
-              logger.warn('[verdikta] Failed to read oracle, skipping', { index, msg: err.message });
-              return { index, error: err.message };
-            })
-        );
+        batch.push((async () => {
+          try {
+            const o = await this._withRetry(() => this.getOracleAtIndex(index), `oracleAtIndex ${index}`);
+            const [info, recentScores] = await Promise.all([
+              this._withRetry(() => this.getOracleInfo(o.oracle, o.jobId), `oracleInfo ${index}`),
+              this.getRecentScores(o.oracle, o.jobId) // already non-throwing ([] on failure)
+            ]);
+            return { index, ...o, ...info, recentScores };
+          } catch (err) {
+            logger.warn('[verdikta] Failed to read oracle, skipping', { index, msg: err.message });
+            return { index, error: err.message };
+          }
+        })());
       }
       oracles.push(...(await Promise.all(batch)));
     }
-    this._oraclesCache = { data: oracles, ts: Date.now() };
+    if (!oracles.some(o => o.error)) {
+      this._oraclesCache = { data: oracles, ts: Date.now() };
+    }
     return oracles;
   }
 
@@ -544,52 +562,6 @@ class VerdiktaService {
     }
 
     return { isUnresponsive: false, reason: null };
-  }
-
-  /**
-   * Get all oracles with their info (batched for efficiency)
-   */
-  async getAllOracles() {
-    try {
-      const count = await this.getOracleCount();
-      logger.info('Fetching all oracles', { count });
-
-      const oracles = [];
-
-      // Fetch in batches to avoid overwhelming the RPC
-      const batchSize = 10;
-      for (let i = 0; i < count; i += batchSize) {
-        const batchEnd = Math.min(i + batchSize, count);
-        const batchPromises = [];
-
-        for (let j = i; j < batchEnd; j++) {
-          batchPromises.push(this.getOracleAtIndex(j));
-        }
-
-        const batchResults = await Promise.all(batchPromises);
-
-        // Get detailed info and recent scores for each oracle
-        const infoPromises = batchResults.map(o =>
-          Promise.all([
-            this.getOracleInfo(o.oracle, o.jobId),
-            this.getRecentScores(o.oracle, o.jobId)
-          ])
-            .then(([info, recentScores]) => ({ ...o, ...info, recentScores }))
-            .catch(err => {
-              logger.warn('Failed to get oracle info', { oracle: o.oracle, msg: err.message });
-              return { ...o, error: err.message };
-            })
-        );
-
-        const oraclesWithInfo = await Promise.all(infoPromises);
-        oracles.push(...oraclesWithInfo);
-      }
-
-      return oracles;
-    } catch (error) {
-      logger.error('Failed to get all oracles', { msg: error.message });
-      throw error;
-    }
   }
 
   /**

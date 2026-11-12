@@ -389,13 +389,18 @@ router.post('/refresh', async (req, res) => {
 /**
  * Get arbiter/oracle analytics from ReputationKeeper contract
  */
+// Last successful arbiter read. A transient RPC failure (e.g. Infura 429
+// "Too Many Requests") serves this, marked stale, instead of dropping the page to
+// class-only data — and caching that degraded result for the full cache TTL.
+let lastGoodArbiterAnalytics = null;
+
 async function getArbiterAnalytics() {
   const verdiktaService = getVerdiktaService();
 
   // If Verdikta service is not configured, return class data from classMap only
   if (!verdiktaService) {
     logger.info('Verdikta service not available, returning class-only data');
-    return getClassOnlyAnalytics();
+    return getClassOnlyAnalytics('Verdikta aggregator not configured - showing class information only');
   }
 
   try {
@@ -413,23 +418,32 @@ async function getArbiterAnalytics() {
       };
     }
 
-    return {
+    const result = {
       byClass: enrichedByClass,
       totalOracles: arbiterData.totalOracles,
       verdiktaConnected: true,
       timestamp: arbiterData.timestamp
     };
+    lastGoodArbiterAnalytics = result;
+    return result;
   } catch (error) {
     logger.error('Failed to get arbiter analytics from contract', { msg: error.message });
-    // Fall back to class-only data
-    return getClassOnlyAnalytics();
+    if (lastGoodArbiterAnalytics) {
+      return {
+        ...lastGoodArbiterAnalytics,
+        stale: true,
+        message: 'Live arbiter data temporarily unavailable (blockchain RPC error) - showing the last successful read'
+      };
+    }
+    // Nothing read yet since startup: fall back to class-only data
+    return getClassOnlyAnalytics('Arbiter data temporarily unavailable (blockchain RPC error) - showing class information only. Try Refresh in a minute.');
   }
 }
 
 /**
  * Get class information without oracle data (fallback when Verdikta not available)
  */
-function getClassOnlyAnalytics() {
+function getClassOnlyAnalytics(message) {
   const classes = classMap.listClasses({});
   const byClass = {};
 
@@ -454,7 +468,7 @@ function getClassOnlyAnalytics() {
     byClass,
     totalOracles: null,
     verdiktaConnected: false,
-    message: 'Verdikta aggregator not configured - showing class information only',
+    message,
     timestamp: Date.now()
   };
 }

@@ -448,7 +448,7 @@ function Analytics() {
       {/* Arbiter Availability Section */}
       <section className="analytics-section">
         <h2 title="Six non-blocked arbiter queries will be made, with duplicate selection if necessary, and four must respond."><Users size={20} className="inline-icon" /> Arbiter Availability</h2>
-        {!data?.arbiters?.verdiktaConnected && (
+        {(!data?.arbiters?.verdiktaConnected || data?.arbiters?.stale) && (
           <div className="info-banner">
             <AlertTriangle size={16} />
             <span>{data?.arbiters?.message || 'Verdikta aggregator not connected'}</span>

@@ -49,7 +49,8 @@ body {
 
 .top nav {
   display: flex;
-  gap: 1rem;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
 }
 
 .top a {
@@ -292,7 +293,8 @@ dd {
   gap: 0.25rem 1rem;
 }
 
-.table-wrap {
+.table-wrap,
+.badge-wrap {
   overflow-x: auto;
 }
 
@@ -330,4 +332,27 @@ th {
 
 .actions a {
   color: var(--accent);
+}
+
+/* A phone: nothing is wider than the screen. Each fact's label sits above its value, and a hash, an
+   address, a key or a figure longer than the line wraps rather than running past the edge. Wider
+   screens keep the layout above. */
+@media (max-width: 40rem) {
+  .page {
+    overflow-wrap: break-word;
+  }
+
+  .wallet,
+  dd {
+    overflow-wrap: anywhere;
+  }
+
+  dl {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  dd {
+    margin-bottom: 0.4rem;
+  }
 }

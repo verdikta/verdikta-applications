@@ -20,7 +20,8 @@ export function BadgeEmbed({ hash }) {
     <section className="claim" aria-labelledby={id} data-testid="badge-panel">
       <h3 id={id}>{B.title}</h3>
       <p className="hint">{B.intro}</p>
-      <p><img src={badgePath(h)} alt={B.alt} data-testid="badge" /></p>
+      {/* full size, as it shows where it is embedded: on a narrow screen it scrolls in its own row */}
+      <p className="badge-wrap"><img src={badgePath(h)} alt={B.alt} data-testid="badge" /></p>
       <TextField label={B.markdown} value={`[![${B.alt}](${svg})](${page})`} readOnly mono testId="badge-markdown" multiline rows={2} />
       <TextField label={B.html} value={`<a href="${page}"><img src="${svg}" alt="${B.alt}"></a>`} readOnly mono testId="badge-html" multiline rows={2} />
     </section>

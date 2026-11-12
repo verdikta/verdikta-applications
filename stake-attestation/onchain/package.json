@@ -16,6 +16,7 @@
     "size": "hardhat size-contracts",
     "deploy:base-sepolia": "./deploy_testnet.sh",
     "deploy:base": "./deploy_mainnet.sh",
+    "smoke": "node scripts/smoke.js",
     "clean": "hardhat clean"
   },
   "devDependencies": {

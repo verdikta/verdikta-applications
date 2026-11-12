@@ -175,6 +175,58 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
           npx playwright test
+      - name: The same flows under the deploy kit's Content-Security-Policy and headers (deploy/nginx), failing on any violation
+        working-directory: stake-attestation/client
+        run: npx playwright test --config playwright.csp.config.js
+
+  deploy:
+    name: Deploy kit (nginx -t, and the site config against a stub server)
+    # The site's nginx config as the host installs it (README "Running the site"), with a throwaway self-signed
+    # certificate at certbot's paths: nginx -t, then nginx itself in front of a stub on 127.0.0.1:5009, so the
+    # redirect, the headers, the proxy, the body limits and the rate limits are what the README says.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: nginx from the distribution, as the host has it
+        run: |
+          set -euo pipefail
+          if ! command -v nginx > /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y nginx
+          fi
+          nginx -v
+      - name: Install the kit's nginx files where the host has them, with a throwaway certificate at certbot's paths
+        run: |
+          set -euo pipefail
+          live=/etc/letsencrypt/live/verifiers.verdikta.org
+          sudo mkdir -p "$live" /etc/nginx/snippets /etc/nginx/sites-available /etc/nginx/sites-enabled \
+            /var/www/verifiers.verdikta.org/assets /var/www/html/.well-known/acme-challenge
+          sudo openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=verifiers.verdikta.org \
+            -keyout "$live/privkey.pem" -out "$live/fullchain.pem"
+          sudo cp stake-attestation/deploy/nginx/verifiers.verdikta.org.conf /etc/nginx/sites-available/verifiers.verdikta.org
+          sudo ln -sf /etc/nginx/sites-available/verifiers.verdikta.org /etc/nginx/sites-enabled/verifiers.verdikta.org
+          sudo cp stake-attestation/deploy/nginx/verifiers.verdikta.org-headers.conf /etc/nginx/snippets/
+          sudo rm -f /etc/nginx/sites-enabled/default
+      - name: nginx -t
+        run: sudo nginx -t
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: stake-attestation/shared
+        run: npm ci --ignore-scripts
+      - name: The site config, live, in front of a stub server
+        working-directory: stake-attestation/shared
+        env:
+          SA_DEPLOY_NGINX_LIVE: '1'
+        run: |
+          set -euo pipefail
+          echo '<!doctype html><title>stand-in</title>' | sudo tee /var/www/verifiers.verdikta.org/index.html > /dev/null
+          echo 'export {};' | sudo tee /var/www/verifiers.verdikta.org/assets/index-test.js > /dev/null
+          echo 'test-token' | sudo tee /var/www/html/.well-known/acme-challenge/test-token > /dev/null
+          sudo systemctl restart nginx
+          node --test test/deploy/nginxLive.test.js
 
   e2e:
     name: The local round (every piece together)

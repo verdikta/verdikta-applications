@@ -373,6 +373,10 @@ export function archiveBytes(label) {
 
 export { disclosure };
 
+// What counts as a CSP violation on the console: Chromium's "Refused to ... because it violates the following Content
+// Security Policy directive", and its errors about the Permissions-Policy header, which the deploy kit's file sets too.
+const POLICY_CONSOLE = /Content[ -]Security[ -]Policy|Permissions-Policy/i;
+
 export const test = base.extend({
   stack: [async ({}, use) => use(readStack()), { scope: 'worker' }],
   chain: [async ({ stack }, use) => {
@@ -380,4 +384,37 @@ export const test = base.extend({
     await use(chain);
     chain.provider.destroy();
   }, { scope: 'worker' }],
+  // true under playwright.csp.config.js: the build is served with the deploy kit's headers (node P23)
+  csp: [false, { option: true }],
+  /**
+   * Every page of every test, in any run: a securitypolicyviolation event, or a CSP or Permissions-Policy error on the
+   * console, fails the test. Under playwright.csp.config.js each document must also carry the policy the stack serves,
+   * the deploy kit's own (e2e/support/headerServer.mjs), so a run where it is missing cannot pass for one that holds.
+   * A test that makes a violation on purpose empties `violations` itself.
+   */
+  cspWatch: [async ({ context, csp }, use) => {
+    const violations = [];
+    const documents = [];
+    await context.exposeBinding('__saCspViolation', (_source, v) => { violations.push(v); });
+    await context.addInitScript(() => {
+      document.addEventListener('securitypolicyviolation', (e) => {
+        window.__saCspViolation({ directive: e.effectiveDirective, blocked: e.blockedURI, source: e.sourceFile, line: e.lineNumber, sample: e.sample, page: document.location.href });
+      }, true);
+    });
+    const watch = (page) => {
+      page.on('console', (m) => { if (POLICY_CONSOLE.test(m.text())) violations.push({ console: m.type(), text: m.text(), page: page.url() }); });
+      page.on('response', (r) => {
+        if (r.request().resourceType() === 'document') documents.push({ url: r.url(), policy: r.headers()['content-security-policy'] ?? null });
+      });
+    };
+    context.on('page', watch);
+    for (const p of context.pages()) watch(p);
+    await use({ violations, documents });
+    expect(violations, 'Content-Security-Policy violations').toEqual([]);
+    if (csp) {
+      const served = readStack().csp?.policy;
+      expect(served, 'the stack serves the deploy kit\'s policy (SA_E2E_CSP=1)').toBeTruthy();
+      for (const d of documents) expect(d.policy, d.url).toBe(served);
+    }
+  }, { auto: true }],
 });

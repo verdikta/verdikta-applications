@@ -17,7 +17,8 @@
     "./zip-read": "./src/zipRead.js",
     "./auth-message": "./src/authMessage.js",
     "./site-request": "./src/siteRequest.js",
-    "./stake-documents": "./src/stakeDocuments.js"
+    "./stake-documents": "./src/stakeDocuments.js",
+    "./deploy-kit": "./src/deployKit.js"
   },
   "bin": {
     "check-forbidden-words": "bin/check-forbidden-words.js"

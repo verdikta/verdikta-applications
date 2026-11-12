@@ -18,7 +18,9 @@
 //            badge, with a Chainlink ETH/USD stand-in for the labels. The gateway serves what
 //            the server pinned (listing archives, dispute statements) besides what tests PUT.
 //   client   the production build (vite build, given the addresses above), served by
-//            vite preview on 5176 with /api proxied to the api
+//            vite preview on 5176 with /api proxied to the api; with SA_E2E_CSP=1
+//            (playwright.csp.config.js) by e2e/support/headerServer.mjs instead, with the deploy
+//            kit's headers on every answer (node P23)
 //
 // It writes .e2e/stack.json (untracked) for the tests: the URLs, the contract, the accounts and
 // the merged ABI. No key, no secret and no live network: everything is local and per run.
@@ -256,18 +258,34 @@ async function main() {
   const build = vite(['build', '--logLevel', 'warn'], clientEnv);
   const code = await new Promise((resolve) => build.once('exit', resolve));
   if (code !== 0) throw new Error(`vite build exited ${code}`);
-  const preview = vite(['preview', '--host', '127.0.0.1', '--port', String(CLIENT_PORT), '--strictPort'], clientEnv);
 
-  const stop = async (exitCode) => {
-    preview.kill('SIGTERM');
+  // SA_E2E_CSP=1 (playwright.csp.config.js): the same build, served with the deploy kit's headers instead of by
+  // vite preview (node P23; e2e/support/headerServer.mjs); otherwise vite preview, as before
+  let closeClient;
+  let stop;
+  if (process.env.SA_E2E_CSP === '1') {
+    const { kitHeaders, startHeaderServer } = await import('./headerServer.mjs');
+    const headers = kitHeaders({ rpcUrl: chain.rpcUrl, gatewayUrl: gateway.url });
+    const policy = headers.find((h) => h.name === 'Content-Security-Policy').value;
+    fs.writeFileSync(path.join(STACK_DIR, 'stack.json'), JSON.stringify({ ...stack, csp: { policy, headers } }, null, 2));
+    const server = await startHeaderServer({ dist: path.join(CLIENT, 'dist'), port: CLIENT_PORT, apiUrl: api.url, headers, reportsFile: path.join(STACK_DIR, 'csp-reports.json') });
+    log(`serving the build with the deploy kit's headers; Content-Security-Policy: ${policy}`);
+    closeClient = () => new Promise((r) => server.close(r));
+  } else {
+    const preview = vite(['preview', '--host', '127.0.0.1', '--port', String(CLIENT_PORT), '--strictPort'], clientEnv);
+    closeClient = () => preview.kill('SIGTERM');
+    preview.once('exit', (c) => {
+      log(`vite preview exited ${c}`);
+      stop(1);
+    });
+  }
+
+  stop = async (exitCode) => {
+    closeClient();
     api.site.close();
     await Promise.allSettled([chain.rpc.close(), new Promise((r) => gateway.server.close(r)), new Promise((r) => api.server.close(r))]);
     process.exit(exitCode);
   };
-  preview.once('exit', (c) => {
-    log(`vite preview exited ${c}`);
-    stop(1);
-  });
   for (const sig of ['SIGTERM', 'SIGINT']) process.once(sig, () => stop(0));
 }
 

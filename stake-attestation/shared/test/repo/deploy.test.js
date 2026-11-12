@@ -9,9 +9,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { parseCsp, parseEnvFile, parseHeaderInclude, parseNginx } from '../../src/deployKit.js';
 import { APP_DIR } from './helpers.js';
+
+// The client's own reader of VITE_IPFS_GATEWAY, so these tests read the list as the build does.
+const { parseGateways } = await import(pathToFileURL(path.join(APP_DIR, 'client', 'src', 'config.js')).href);
 
 const DEPLOY = path.join(APP_DIR, 'deploy');
 const read = (rel) => fs.readFileSync(path.join(DEPLOY, rel), 'utf8');
@@ -101,28 +105,40 @@ test('the CSP has no unsafe source, nonce, hash, wildcard or scheme-only source,
   }
 });
 
-// The client's off-origin calls are its build's: VITE_SA_RPC_URL (chain reads) and VITE_IPFS_GATEWAY (the disclosed
-// ciphertext on the check page). Everything else is /api on the same origin.
+// The client's off-origin calls are its build's: VITE_SA_RPC_URL (chain reads) and the gateways of VITE_IPFS_GATEWAY
+// (the disclosed ciphertext on the check page, a comma-separated list asked in order). Everything else is /api on the
+// same origin.
 const clientEnv = () => parseEnvFile(read(FILES.clientEnv));
+const gatewaysOf = (env) => env.get('VITE_IPFS_GATEWAY').split(',');
 
-test('client.env builds the client for Base Sepolia, with a public RPC endpoint and a gateway that carry no key', () => {
+test('client.env builds the client for Base Sepolia, with a public RPC endpoint and gateways that carry no key', () => {
   const env = clientEnv();
   const configJs = fs.readFileSync(path.join(APP_DIR, 'client', 'src', 'config.js'), 'utf8');
   const read = [...new Set([...configJs.matchAll(/env\.(VITE_[A-Z0-9_]+)/g)].map((m) => m[1]))].sort();
   assert.deepEqual([...env.keys()].sort(), read, 'client.env names exactly the variables client/src/config.js reads');
   assert.equal(env.get('VITE_SA_CHAIN_ID'), '84532');
   assert.equal(env.get('VITE_SA_CONTRACT'), '', 'per deployment: from the deployment JSON');
-  for (const name of ['VITE_SA_RPC_URL', 'VITE_IPFS_GATEWAY']) {
-    const u = new URL(env.get(name));
-    assert.equal(u.protocol, 'https:', name);
+  const urls = [['VITE_SA_RPC_URL', env.get('VITE_SA_RPC_URL')], ...gatewaysOf(env).map((g) => ['VITE_IPFS_GATEWAY', g])];
+  for (const [name, value] of urls) {
+    assert.equal(value, value.trim(), `${name}: ${value}, no spaces`);
+    const u = new URL(value);
+    assert.equal(u.protocol, 'https:', `${name}: ${value}`);
     assert.equal(`${u.username}${u.password}${u.search}${u.hash}`, '', `${name}: everything in the build is public, so no key in it`);
-    assert.ok(['', '/'].includes(u.pathname), `${name}: an origin (a key would sit in the path)`);
+    assert.ok(['', '/'].includes(u.pathname), `${name}: ${value}, an origin (a key would sit in the path)`);
   }
 });
 
-test('connect-src is exactly the site, the client\'s RPC endpoint and its gateway', () => {
+test('VITE_IPFS_GATEWAY is a list the client reads whole: every entry an origin it asks, each once, in the file\'s order', () => {
   const env = clientEnv();
-  assert.deepEqual(csp().get('connect-src'), ["'self'", origin(env.get('VITE_SA_RPC_URL')), origin(env.get('VITE_IPFS_GATEWAY'))]);
+  const listed = gatewaysOf(env);
+  assert.ok(listed.length >= 1, 'at least one gateway');
+  assert.deepEqual(parseGateways(env.get('VITE_IPFS_GATEWAY')), listed.map(origin), 'the client leaves none out and keeps the order');
+  assert.equal(new Set(listed.map(origin)).size, listed.length, 'no gateway twice');
+});
+
+test('connect-src is exactly the site, the client\'s RPC endpoint and each of its gateways, in client.env\'s order', () => {
+  const env = clientEnv();
+  assert.deepEqual(csp().get('connect-src'), ["'self'", origin(env.get('VITE_SA_RPC_URL')), ...gatewaysOf(env).map(origin)]);
 });
 
 // ---------------------------------------------------------------------------------------------- the site config
@@ -392,7 +408,7 @@ const runningSection = () => {
 const HOSTS = new Set([
   SITE,
   'sepolia.base.org', // Base's public RPC endpoint: the client's reads (client.env, the CSP)
-  'ipfs.io', // the public gateway the check page reads a disclosed ciphertext from (client.env, the CSP)
+  'gateway.pinata.cloud', 'ipfs.io', // the public gateways the check page reads a disclosed ciphertext from (client.env, the CSP)
   'api.github.com', // the workflow backend and the fork label (SA_GITHUB_API_URL's default)
   'github.com', 'gitlab.com', 'codeberg.org', 'bitbucket.org', // SA_CONTROL_GIT_HOSTS's default
   'ghcr.io', // where a listing's image is published (builder.json)
@@ -441,4 +457,51 @@ test('README "Running the site": the host, the launch order of owner decision Q5
     assert.ok(s.includes(zone), `the README names zone ${zone}`);
     assert.ok(s.includes(rate), `the README states ${zone}'s rate, ${rate}`);
   }
+});
+
+// What a fresh Ubuntu 24.04 host needed beyond the first version of these steps (node P24).
+// The shell blocks of a text: each command line with its continuations joined, comments dropped.
+const shellLines = (block) => block.replace(/\\\n\s*/g, ' ').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+const shellBlocks = (text) => [...text.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
+// every command, a chain's split at its &&
+const commandLines = (text) => shellBlocks(text).flatMap(shellLines).flatMap((l) => l.split(/\s+&&\s+/)).map((l) => l.trim());
+
+test('README "Running the site": root\'s containerd is stopped with root\'s Docker, and the README says why', () => {
+  const s = runningSection();
+  const disable = commandLines(s).filter((l) => l.startsWith('sudo systemctl disable --now'));
+  assert.equal(disable.length, 1, 'one line stops root\'s daemons');
+  const units = disable[0].replace(/#.*$/, '').trim().split(/\s+/).slice(4);
+  assert.deepEqual(units.sort(), ['containerd.service', 'docker.service', 'docker.socket']);
+  assert.match(s.replace(/\s+/g, ' '), /containerd\.service[^.]*\. [^.]*rootless daemon[^.]*containerd of its own/i, 'why: the rootless daemon runs its own');
+});
+
+test('README "Running the site": Docker\'s packages by name, and the AppArmor profile Ubuntu 24.04 needs', () => {
+  const s = runningSection();
+  const install = commandLines(s).filter((l) => /^sudo apt-get install\b/.test(l) && l.includes('docker-ce'));
+  assert.equal(install.length, 1, 'one install line for Docker');
+  const pkgs = install[0].replace(/#.*$/, '').trim().split(/\s+/).slice(3).filter((w) => !w.startsWith('-'));
+  assert.deepEqual(pkgs.sort(), ['containerd.io', 'dbus-user-session', 'docker-ce', 'docker-ce-cli', 'docker-ce-rootless-extras', 'uidmap']);
+  assert.match(s.replace(/\s+/g, ' '), /docker-ce-rootless-extras[^.]*AppArmor profile[^.]*rootlesskit/, 'the rootless extras bring rootlesskit\'s AppArmor profile');
+});
+
+test('README "Running the site": Node.js from the release tarball, its signature checked before its sum and both before it is unpacked', () => {
+  const s = runningSection();
+  const lines = commandLines(s);
+  const at = (re, what) => {
+    const i = lines.findIndex((l) => re.test(l));
+    assert.ok(i >= 0, what);
+    return i;
+  };
+  const keyring = at(/github\.com\/nodejs\/release-keys\/raw\/HEAD\/gpg\/pubring\.kbx/, 'the keyring of nodejs/release-keys');
+  const sig = at(/^gpgv --keyring=\S+ --output SHASUMS256\.txt < SHASUMS256\.txt\.asc\b/, 'gpgv writes the signed SHASUMS256.txt');
+  const sum = at(/SHASUMS256\.txt \| sha256sum --check -/, 'the tarball\'s sha256 against the signed sums');
+  const unpack = at(/^sudo tar -x\S* "?node-\$\{VERSION\}-\$\{DISTRO\}\.tar\.gz"? -C \/usr\/local\/lib\/nodejs\b/, 'unpacked under /usr/local/lib/nodejs');
+  const link = at(/^for b in node npm npx; do sudo ln -sf "\/usr\/local\/lib\/nodejs\/node-\$\{VERSION\}-\$\{DISTRO\}\/bin\/\$b" "\/usr\/bin\/\$b"; done$/, 'node, npm and npx linked into /usr/bin');
+  assert.ok(keyring < sig && sig < sum && sum < unpack && unpack < link, 'keyring, signature, sum, unpack, link: in that order');
+  // one && chain from the downloads to the links, so a failed check unpacks nothing
+  const nodeBlock = shellBlocks(s).find((b) => b.includes('SHASUMS256.txt.asc'));
+  const chained = shellLines(nodeBlock).filter((l) => !/^[A-Z_]+=\S+(\s+#.*)?$/.test(l));
+  assert.equal(chained.length, 1, `one command, chained with &&, after the variables: ${chained.join(' | ')}`);
+  assert.ok(chained[0].indexOf('gpgv') < chained[0].indexOf('sudo tar'), 'the signature first');
+  assert.match(s.replace(/\s+/g, ' '), /apt (?:does not|will not|won't) (?:patch|update)/, 'apt does not patch a tarball install');
 });

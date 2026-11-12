@@ -1,6 +1,6 @@
 {
  "recordedFrom": "verdikta-arbiter code-runner at the arbiter pin (e2e/arbiter.pin.json): a claim run through its own run engine and pack code (test/helpers/claimRun.js runClaim, over git objects test/helpers/gitStore.js writes, in its fake sandbox) by documents.record.cjs, on a listing whose stake.documents is the one below; the listed commit holds README.md, docs/spec.md and docs/diagram.bin (not text)",
- "arbiterCommit": "28f3cb9",
+ "arbiterCommit": "fbc2feb",
  "documents": [
   "README.md",
   "docs/**",

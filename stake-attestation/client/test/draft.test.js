@@ -185,3 +185,32 @@ test('list() is sent only with the maker\'s own key and terms: listMismatches na
   const cList = { ...list, knownIssueIds: [], params: { ...list.params, disclosureKey: disclosureKeyBytes32(cBody.spec.stake.disclosureKey), fixWindow: 30 * 86400, artifact: { kind: 1, repo: cBody.spec.repo, baseCommit: cBody.spec.baseCommit, chainId: '8453', addr: '0x5F2a00000000000000000000000000000000c0DE' } } };
   assert.deepEqual(listMismatches(cBody, cList, disclosureKeyBytes32), []);
 });
+
+// Node P20: the documents field. One glob per line becomes stake.documents, after the scope, as the maker typed it;
+// an empty field is no field at all, so a listing without documents is the request it was. A line common refuses
+// is the form's own issue, and the form sends nothing until it is fixed.
+test('the documents field: up to 16 globs, one per line, as stake.documents after the scope; none, no field', () => {
+  const form = filled();
+  const none = toListingRequest(form);
+  assert.equal(Object.hasOwn(none.spec.stake, 'documents'), false);
+  assert.equal(Object.hasOwn(initialForm(), 'documents'), true);
+  const blank = toListingRequest({ ...form, documents: '\n  \n' });
+  assert.deepEqual(blank, none);
+  assert.equal(JSON.stringify(blank), JSON.stringify(none), 'byte for byte');
+  const r = toListingRequest({ ...form, documents: 'README.md\n docs/** \n\n' });
+  assert.deepEqual(r.spec.stake.documents, ['README.md', 'docs/**']);
+  const keys = Object.keys(r.spec.stake);
+  assert.equal(keys.indexOf('documents'), keys.indexOf('scope') + 1);
+  const standIn = { ...r.spec, env: { from: 'foundry', image: IMAGE, platform: 'linux/amd64', unpackedBytes: 1 } };
+  assert.deepEqual(codeReview.validateCodeReviewSpec(standIn).issues, []);
+});
+
+test('a document line common refuses is the form\'s issue, by common\'s code, and blocks the request', () => {
+  assert.equal(formIssues(filled({ documents: 'README.md' })).documents, undefined);
+  const issues = formIssues(filled({ documents: 'README.md\n./docs/**\nREADME.md' }));
+  assert.deepEqual(issues.documents.map((i) => [i.index, i.line, i.code]), [[1, 2, 'STAKE_DOCUMENT_NOT_PLAIN'], [2, 3, 'STAKE_DOCUMENT_DUPLICATE']]);
+  // R1-F2: the line is the textarea's, blank lines counted
+  const spaced = formIssues(filled({ documents: 'README.md\n\n  \n/invalid' }));
+  assert.deepEqual(spaced.documents.map((i) => [i.index, i.line, i.code]), [[1, 4, 'STAKE_DOCUMENT_OUTSIDE_REPOSITORY']]);
+  assert.throws(() => toListingRequest(filled({ documents: '/etc/passwd' })), /documents/);
+});

@@ -255,3 +255,14 @@ test('a record with no integrity field (a server from before it): every duplicat
   assert.equal(v.history.integrityFailed, '0');
   assert.equal(v.later.integrityFailed, '0');
 });
+
+// Node P20: the record names each listing's document globs, as the server read them from its listing archive, so a
+// hunter sees where its requirements are said to be written. None named is an empty list.
+test('each stake names its documents: the globs from the server, none when it names none, unknown when the server does not say', () => {
+  const [unknown] = recordView(view()).listings;
+  assert.equal(unknown.documents, null);
+  assert.equal(recordView({ ...view(), documents: { 3: null } }).listings[0].documents, null);
+  assert.deepEqual(recordView({ ...view(), documents: { 3: [] } }).listings[0].documents, []);
+  const [named] = recordView({ ...view(), documents: { 3: ['README.md', 'docs/**'] } }).listings;
+  assert.deepEqual(named.documents, ['README.md', 'docs/**']);
+});

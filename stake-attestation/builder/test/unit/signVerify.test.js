@@ -17,7 +17,8 @@ import { createRegistryClient } from '../../src/registry.js';
 import { DIGEST, MANIFEST_DIGEST, REPOSITORY, writeAcceptedBuild } from '../helpers/build.js';
 import { fakeRegistry, registryImage } from '../helpers/fakes.js';
 import { MAKER, provenAnswer } from '../helpers/proof.js';
-import { contractDraft } from '../helpers/specs.js';
+import { contractDraft, draftSpec } from '../helpers/specs.js';
+import { fetchingFrom, repositoryOf } from '../helpers/gitTree.js';
 
 const BASE = codeReview.BASE_IMAGE_PINS.foundry;
 const BASE_DIFF_IDS = [`sha256:${'b1'.repeat(32)}`, `sha256:${'b2'.repeat(32)}`];
@@ -166,21 +167,81 @@ function sha256hex(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
 }
 
-// Node P21: the build refuses a draft naming stake.documents (test/unit/pipeline.test.js), and sign repeats it,
-// so a folder that names them is never signed, however it was made: nothing is signed with the documents unread.
-test('a code_review.json naming stake.documents, which the report vouches for, is not signed: documents are not offered yet', async () => {
-  const l = await listing();
-  l.edit('code_review.json', (s) => ({ ...s, stake: { ...s.stake, documents: ['README.md'] } }));
-  const spec = JSON.parse(fs.readFileSync(path.join(l.out, 'code_review.json'), 'utf8'));
-  assert.equal(codeReview.validateCodeReviewSpec(spec).ok, true, 'common takes the field');
+// Node P20: a listing that names documents is built with them (test/unit/pipeline.test.js), and sign repeats their
+// selection before it signs: it fetches the listed commit again, by id, runs common's selectDocuments over its own
+// entries, refuses DOCUMENTS_MATCH_TOO_COSTLY by that code, and signs only what the report records. A listing without
+// documents fetches nothing more and records no more checks (test/unit/noDocuments.test.js).
+const DOC_FILES = { 'README.md': '# Vault\n', 'docs/spec.md': 'spec\n', 'src/Vault.sol': 'contract Vault {}\n' };
+async function documentsListing(documents = ['README.md', 'docs/**'], files = DOC_FILES) {
+  const repo = repositoryOf(files);
+  const draft = draftSpec({ baseCommit: repo.commit, stake: { ...draftSpec().stake, documents } });
+  const l = await listing({ draft, deps: { fetchListedCommit: fetchingFrom(repo) } });
+  return { l, repo, draft };
+}
+
+test('a listing naming stake.documents is signed after sign repeats the selection over the listed commit, fetched again by id', async () => {
+  const { l, repo } = await documentsListing();
+  const fetches = [];
+  const { code, t, attested } = await sign(l, [], { fetchListedCommit: fetchingFrom(repo, fetches) });
+  assert.equal(code, 0, t.err);
+  assert.ok(attested);
+  assert.equal(fetches.length, 1, 'sign fetched the listed commit');
+  assert.equal(fetches[0].baseCommit, repo.commit);
+  const report = JSON.parse(fs.readFileSync(path.join(l.out, 'validation-report.json'), 'utf8'));
+  assert.deepEqual(report.signing.checks.slice(-4), ['BASE_PINNED', 'DOCUMENTS_SELECTED', 'PROJECT_PROOF_STANDS', 'LISTING_REQUEST_WITHIN_BOUND']);
+  assert.deepEqual(report.documents.read.map((d) => d.path), ['README.md', 'docs/spec.md']);
+  l.cleanup();
+  repo.cleanup();
+});
+
+test('sign repeats DOCUMENTS_MATCH_TOO_COSTLY: globs too costly to match are not signed, however the folder was made', async () => {
+  const deep = Array(14).fill('a'.repeat(200)).join('/');
+  const files = { ...DOC_FILES, ...Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`${deep}/a${i}b`, 'x\n'])) };
+  const { l, repo } = await documentsListing(['README.md'], files);
+  // the folder is edited to name costly globs, and its report to vouch for them
+  const costly = ['README.md', `a${'**a'.repeat(150)}**b`];
+  l.edit('code_review.json', (s) => ({ ...s, stake: { ...s.stake, documents: costly } }));
   const bytes = fs.readFileSync(path.join(l.out, 'code_review.json'));
-  l.edit('validation-report.json', (r) => ({ ...r, files: { ...r.files, 'code_review.json': sha256hex(bytes) } }));
-  const { code, t, attested } = await sign(l);
+  l.edit('validation-report.json', (r) => ({ ...r, files: { ...r.files, 'code_review.json': sha256hex(bytes) }, documents: { ...r.documents, globs: costly } }));
+  const { code, t, attested } = await sign(l, [], { fetchListedCommit: fetchingFrom(repo) });
   assert.equal(code, 1);
-  assert.match(t.err, /STAKE_DOCUMENTS_NOT_OFFERED/);
-  assert.match(t.err, /documents are not offered yet/i);
+  assert.match(t.err, /DOCUMENTS_MATCH_TOO_COSTLY/);
   assert.equal(attested, false);
   l.cleanup();
+  repo.cleanup();
+});
+
+test('sign refuses a documents record that is not what the selection gives, or a report without the documents step', async () => {
+  const cases = [
+    ['SIGNING_REPORT_MISMATCH', (r) => ({ ...r, documents: { ...r.documents, read: r.documents.read.slice(1) } })],
+    ['SIGNING_REPORT_MISMATCH', (r) => ({ ...r, documents: { ...r.documents, skipped: [{ path: 'README.md', reason: 'notText', bytes: 8 }] } })],
+    ['SIGNING_REPORT_MISMATCH', (r) => ({ ...r, documents: { ...r.documents, globs: ['README.md'] } })],
+    ['SIGNING_REPORT_MISMATCH', (r) => { const { documents, ...rest } = r; return rest; }],
+    ['STEPS_INCOMPLETE', (r) => ({ ...r, steps: r.steps.filter((s) => s.name !== 'documents') })],
+    ['STEPS_INCOMPLETE', (r) => ({ ...r, steps: r.steps.map((s) => (s.name === 'documents' ? { ...s, status: 'failed' } : s)) })],
+  ];
+  for (const [codeName, tamper] of cases) {
+    const { l, repo } = await documentsListing();
+    l.edit('validation-report.json', tamper);
+    const { code, t, attested } = await sign(l, [], { fetchListedCommit: fetchingFrom(repo) });
+    assert.equal(code, 1, codeName);
+    assert.match(t.err, new RegExp(codeName), t.err);
+    assert.equal(attested, false);
+    l.cleanup();
+    repo.cleanup();
+  }
+  // and a listing without documents whose report has a documents step or section is not one this builder made
+  for (const tamper of [
+    (r) => ({ ...r, steps: [...r.steps.slice(0, 3), { name: 'documents', status: 'ok', durationMs: 1 }, ...r.steps.slice(3)] }),
+    (r) => ({ ...r, documents: { globs: [], candidates: 0, read: [], pastCap: [], skipped: [], unmatched: [] } }),
+  ]) {
+    const l = await listing();
+    l.edit('validation-report.json', tamper);
+    const { code, attested } = await sign(l);
+    assert.equal(code, 1);
+    assert.equal(attested, false);
+    l.cleanup();
+  }
 });
 
 test('--expect-outputs: the folder must be the one the build job digested; any change in transit refuses', async () => {

@@ -16,15 +16,15 @@
 // disclosure key is decoded with common's parseDisclosureKey: a key no hunter can encrypt to is
 // refused before anything is built. What list() would refuse (the windows, the allowlist, the
 // number of known issues) and a claim query too long for a primary file are refused here too,
-// so a build is never spent on a listing that could not go on-chain. So is a draft naming
-// stake.documents, which common takes and this site does not offer yet (shared's
-// STAKE_DOCUMENTS_NOT_OFFERED, node P21).
+// so a build is never spent on a listing that could not go on-chain. The listing's documents
+// (stake.documents, owner decision Q61 (a); node P20) go through common's validator like the rest:
+// it checks each entry with documentGlobProblem and reports a bad one at its own path with its own
+// code (STAKE_DOCUMENT_*), which the site passes on as they are. The site holds no glob rule.
 import crypto from 'node:crypto';
 
 import { getAddress, isAddress } from 'ethers';
 import { DEFAULT_GIT_HOSTS, PROOF_REFUSALS, proofFieldProblem, repoUrlCheck } from '@verdikta/stake-attestation-shared/control-proof';
 import { serializeKnownIssues } from '@verdikta/stake-attestation-shared/site-request';
-import { stakeDocumentsIssue } from '@verdikta/stake-attestation-shared/stake-documents';
 
 import { codeReview } from '../common.js';
 import { canonicalAddress } from '../control/facts.js';
@@ -37,6 +37,8 @@ const TOP_KEYS = ['spec', 'knownIssues', 'allowlist', 'maker', 'deploymentProof'
 const BUILDER_NAMES = Object.freeze(['validation-report.json', 'dev-trust.json', 'scan-findings.json']);
 const PLACEHOLDER_IMAGE = `registry.invalid/verdikta-builder-draft@sha256:${'0'.repeat(64)}`;
 const ZERO = '0x0000000000000000000000000000000000000000';
+/** Where common's validator reports one stake.documents entry. */
+const DOCUMENT_ENTRY = /^\/stake\/documents\/[0-9]+$/;
 
 export class RequestError extends Error {
   constructor(issues) {
@@ -123,10 +125,11 @@ export function parseListingRequest(body, { gitHosts = DEFAULT_GIT_HOSTS } = {})
 
   const standIn = withStandIns(draft);
   const v = codeReview.validateCodeReviewSpec(standIn);
-  for (const i of v.issues) issues.push({ code: 'SPEC_INVALID', path: `/spec${i.path === '/' ? '' : i.path}`, detail: `${i.code}: ${i.detail}` });
-  // common takes stake.documents; this site does not offer it yet (node P20), and says so by its own code
-  const documents = stakeDocumentsIssue(draft);
-  if (documents) issues.push({ ...documents, path: `/spec${documents.path}` });
+  for (const i of v.issues) {
+    // a document glob's issue is common's, entry by entry: its own path and its own code
+    if (DOCUMENT_ENTRY.test(i.path)) issues.push({ code: i.code, path: `/spec${i.path}`, detail: i.detail });
+    else issues.push({ code: 'SPEC_INVALID', path: `/spec${i.path === '/' ? '' : i.path}`, detail: `${i.code}: ${i.detail}` });
+  }
 
   const names = [
     ['attestation', standIn.attestation],

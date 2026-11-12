@@ -51,6 +51,7 @@ import crypto from 'node:crypto';
 import { PROOF_REFUSALS, repositoryProofReason } from '@verdikta/stake-attestation-shared/control-proof';
 import { listingParts, listingRequestRefusal } from '@verdikta/stake-attestation-shared/listing-request-size';
 import { specChanges as changesFrom } from '@verdikta/stake-attestation-shared/site-request';
+import { documentGlobs, namesDocuments } from '@verdikta/stake-attestation-shared/stake-documents';
 
 import { codeReview } from '../common.js';
 import { CONTROL_REASONS, canonicalAddress, controlMessage, readAnswerFile } from '../control/facts.js';
@@ -111,6 +112,13 @@ export function reportProblem(draft, report, maker) {
     return `the report's verifiedSource step is ${steps.get('verifiedSource') ?? 'missing'}`;
   }
   if (report.listingCheck?.status !== 'accepted') return `the code-runner's listing check says ${report.listingCheck?.status ?? 'nothing'}`;
+  // node P20: a listing that names documents had them chosen, as the runner chooses them, before it was built
+  if (namesDocuments(draft)) {
+    if (steps.get('documents') !== 'ok') return `a listing that names documents: the report's documents step is ${steps.get('documents') ?? 'missing'}`;
+    if (JSON.stringify(report.documents?.globs) !== JSON.stringify(documentGlobs(draft))) return 'the report\'s documents are not the ones the draft names';
+  } else if (steps.has('documents') || report.documents !== undefined) {
+    return 'the report has a documents step for a listing that names none';
+  }
   if (!report.attestation) return 'the report records no signed attestation';
   return null;
 }

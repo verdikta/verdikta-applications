@@ -30,4 +30,4 @@ export {
   justificationCidsOf,
   readExecutionEvidence,
 } from './executionEvidence.js';
-export { STAKE_DOCUMENTS_DETAIL, STAKE_DOCUMENTS_NOT_OFFERED, STAKE_DOCUMENTS_PATH, stakeDocumentsIssue } from './stakeDocuments.js';
+export { STAKE_DOCUMENTS_NOTE, STAKE_DOCUMENTS_PATH, documentGlobs, namesDocuments } from './stakeDocuments.js';

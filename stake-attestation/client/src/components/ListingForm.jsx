@@ -1,3 +1,4 @@
+import { MAX_DOCUMENTS } from '../lib/documents.js';
 import { SEVERITY_CLASSES, setKind, setWindow } from '../lib/draft.js';
 import { knownIssueEntry } from '../lib/knownIssues.js';
 import { CONTROL_FILE_FORMAT, STRINGS, fill } from '../strings.js';
@@ -12,6 +13,14 @@ let rowKeys = 0;
 export function fieldLabel(key) {
   if (key.startsWith('awards.')) return fill(F.award, { class: key.slice('awards.'.length) });
   return F[key] ?? key;
+}
+
+/** Each line of the documents field common would refuse, by common's code (lib/documents.js). */
+function documentsText(issues) {
+  if (!Array.isArray(issues) || issues.length === 0) return null;
+  return issues.map((i) => (i.index === null
+    ? fill(L.documentCodes.tooMany, { max: MAX_DOCUMENTS })
+    : fill(L.documentIssue, { line: i.line, entry: JSON.stringify(i.entry), code: i.code, text: L.documentCodes[i.code] }))).join(' ');
 }
 
 /** The message under a field: the window bounds always, an amount only once something is typed. */
@@ -83,6 +92,11 @@ export function ListingForm({ form, setForm, issues, keyPanel, proofPanel = null
         <legend>{L.sections.scope}</legend>
         <TextField label={F.scopeInclude} value={form.scopeInclude} onChange={set('scopeInclude')} multiline rows={2} mono />
         <TextField label={F.scopeExclude} value={form.scopeExclude} onChange={set('scopeExclude')} multiline rows={2} mono />
+      </fieldset>
+
+      <fieldset>
+        <legend>{L.sections.documents}</legend>
+        <TextField label={F.documents} value={form.documents} onChange={set('documents')} multiline rows={3} mono hint={L.hints.documents} error={documentsText(issues.documents)} />
       </fieldset>
 
       <fieldset>

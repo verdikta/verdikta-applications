@@ -7,16 +7,27 @@
 // listing's image and scope only when it is that listing (src/control/counting.js, per listing, since
 // two listings may name one CID).
 //
+// Node P20: it also gives the listing's document globs (stake.documents), so a hunter sees where its requirements
+// are said to be written: none when it names none. An answer stored before they were read is read again, and kept
+// as it was while that read fails: its signature and terms were checked, and a gateway that fails says nothing
+// against them. Until then its documents are not known (null), never shown as none.
+//
 // Node P9: reading it also answers "did the builder sign this listing", with the check the hunter
 // tool reuses (shared/src/builderSignature.js), under the trust the arbiters apply here: production's
 // trusted-builder set, or under dev trust only the keys this site's own signing step made.
 import { readSignedListing } from '@verdikta/stake-attestation-shared/builder-signature';
+import { documentGlobs } from '@verdikta/stake-attestation-shared/stake-documents';
 
 import { DEFAULT_IPFS_GATEWAYS, codeReview } from '../common.js';
 import { disclosureKeyBytes32, signedTerms } from '../listing/listParams.js';
 import { isRawSha256Cid, rawCid } from '../pinning/cid.js';
 
 const quiet = { info() {}, warn() {}, error() {}, debug() {} };
+const isObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+/** JSON with every object's keys in order: what an answer says, whatever order it was stored in. */
+const canonical = (v) => JSON.stringify(v, (_k, x) => (isObject(x) ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, x[k]])) : x));
+/** An answer's facts but its documents and their read's backoff: what a read again for documents must leave as they were. */
+const factsOf = ({ documents: _d, documentsAttempts: _a, documentsRetryAt: _r, ...facts }) => canonical(facts);
 const RETRY_MAX_MS = 6 * 3600_000;
 const MAX_PER_SYNC = 8;
 
@@ -72,7 +83,7 @@ export function createGatewayFetcher({ gateways, timeoutMs, maxBytes }, logger =
  * @param {Buffer} bytes
  * @param {string} listingCid
  * @param {{ maxBytes?: number, devKeys?: object[] }} [o]
- * @returns {{ ok: true, repo: string, baseCommit: string, artifact: object, disclosureKey: string, image: string|null, platform: string|null, scope: object, terms: object, signed: object } | { ok: false, error: string }}
+ * @returns {{ ok: true, repo: string, baseCommit: string, artifact: object, disclosureKey: string, image: string|null, platform: string|null, scope: object, documents: string[], terms: object, signed: object } | { ok: false, error: string }}
  */
 export function readListingArchive(bytes, listingCid, { maxBytes = Infinity, devKeys = null } = {}) {
   if (bytes.length > maxBytes) return { ok: false, error: 'ARCHIVE_TOO_LARGE' };
@@ -98,6 +109,7 @@ export function readListingArchive(bytes, listingCid, { maxBytes = Infinity, dev
     image: spec.env?.image ?? null,
     platform: spec.env?.platform ?? null,
     scope,
+    documents: documentGlobs(spec).filter((g) => typeof g === 'string'),
     terms,
     signed: read.signed ? { ok: true, role: read.role, filesSha256: read.filesSha256, keyId: read.keyId, trust: read.trust, issuedAt: read.issuedAt } : { ok: false },
   };
@@ -121,20 +133,37 @@ export async function refreshArchives({ fetchArchive, store, listings, now, maxB
   const cids = [...new Set(listings.flatMap((l) => [l.listingCid, l.disputeCid]))];
   for (const cid of cids) {
     const known = store.state.archives[cid];
-    // an answer from before the builder's signature was read is read again
-    const answered = known && ((known.ok && known.signed) || (!known.ok && (known.error !== 'ARCHIVE_UNAVAILABLE' || known.retryAt > now())));
+    // an answer from before the builder's signature was read is read again, and one from before its documents were
+    // (node P20), so a listing that names them is never shown as naming none; that one with a backoff of its own
+    const refreshing = Boolean(known?.ok && known.signed && !Array.isArray(known.documents));
+    const answered = known && ((known.ok && known.signed && (Array.isArray(known.documents) || known.documentsRetryAt > now())) || (!known.ok && (known.error !== 'ARCHIVE_UNAVAILABLE' || known.retryAt > now())));
     if (answered) continue;
     if (tried >= MAX_PER_SYNC) break;
     tried += 1;
     let result;
+    // A read again for documents keeps the stored answer as it was unless it reads the same facts, with documents: a
+    // gateway that fails, or answers bytes that are not that archive (a CID that is not raw sha2-256 is not checked
+    // against them), says nothing against what was checked. The listing still counts, its documents stay unknown,
+    // and the read is tried again after a backoff of its own.
+    const keep = (why) => {
+      const attempts = (known.documentsAttempts ?? 0) + 1;
+      const delay = Math.min(RETRY_MAX_MS, retryMs * 2 ** (attempts - 1));
+      logger.warn(`feed: listing archive ${cid} could not be read again for its documents (${why}); kept as it was, retry in ${Math.round(delay / 1000)} s`);
+      return { ...known, documentsAttempts: attempts, documentsRetryAt: now() + delay };
+    };
     try {
       const bytes = Buffer.from(await fetchArchive(cid));
       result = readListingArchive(bytes, cid, { maxBytes, devKeys: devKeys() });
+      if (refreshing && !(result.ok && factsOf(result) === factsOf(known))) result = keep(result.ok ? 'the answer read other facts' : result.error);
     } catch (err) {
-      const attempts = (known?.attempts ?? 0) + 1;
-      const delay = Math.min(RETRY_MAX_MS, retryMs * 2 ** (attempts - 1));
-      result = { ok: false, error: 'ARCHIVE_UNAVAILABLE', attempts, retryAt: now() + delay };
-      logger.warn(`feed: listing archive ${cid} could not be fetched (${String(err?.message ?? err).slice(0, 200)}); retry in ${Math.round(delay / 1000)} s`);
+      if (refreshing) {
+        result = keep(String(err?.message ?? err).slice(0, 200));
+      } else {
+        const attempts = (known?.attempts ?? 0) + 1;
+        const delay = Math.min(RETRY_MAX_MS, retryMs * 2 ** (attempts - 1));
+        result = { ok: false, error: 'ARCHIVE_UNAVAILABLE', attempts, retryAt: now() + delay };
+        logger.warn(`feed: listing archive ${cid} could not be fetched (${String(err?.message ?? err).slice(0, 200)}); retry in ${Math.round(delay / 1000)} s`);
+      }
     }
     if (!store.locked) return; // the site closed while this fetch ran
     store.transact((s) => {
@@ -150,11 +179,12 @@ export async function refreshArchives({ fetchArchive, store, listings, now, maxB
  * @param {{ artifact: { repo: string, baseCommit: string }, disclosureKey: string }} listing - on-chain
  */
 export function archiveFields(known, listing) {
-  const none = (error) => ({ image: null, scope: null, archive: { ok: false, error } });
+  const none = (error) => ({ image: null, scope: null, documents: null, archive: { ok: false, error } });
   if (!known) return none('ARCHIVE_UNAVAILABLE');
   if (!known.ok) return none(known.error);
   if (known.repo !== listing.artifact.repo || known.baseCommit !== listing.artifact.baseCommit || known.disclosureKey !== listing.disclosureKey.toLowerCase()) {
     return none('ARCHIVE_MISMATCH');
   }
-  return { image: known.image, scope: known.scope, archive: { ok: true } };
+  // documents not yet read from an answer stored before they were: unknown, never none
+  return { image: known.image, scope: known.scope, documents: Array.isArray(known.documents) ? known.documents : null, archive: { ok: true } };
 }

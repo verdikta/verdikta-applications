@@ -19,11 +19,11 @@ import { createBridge, evaluateOver } from './bridge.js';
 import { readPages } from './browser.js';
 import { startChain } from './chain.js';
 import {
-  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, evidenceChecks, gateSettledChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, moneyChecks, pageChecks,
-  recordChecks, requestChecks, servedRoundChecks, settlementChecks,
+  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, documentsListingChecks, documentsPackChecks, evidenceChecks, gateSettledChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, moneyChecks, pageChecks,
+  noDocumentsTierChecks, recordChecks, requestChecks, servedRoundChecks, settlementChecks,
 } from './checks.js';
 import {
-  AWARDS_WEI, BOND_WEI, ESCROW_WEI, GIT_HOST, JURY_AVERAGE, JUROR_SCORES, JUSTIFIER, NARROW_AVERAGE, NARROW_SCORES, POC_MARKER, REPORT_MARKER, WINDOWS, claimFolder, draftSpec, makeRepository,
+  AWARDS_WEI, BOND_WEI, DOCUMENT_GLOBS, DOCUMENTS_EXPECTED, ESCROW_WEI, GIT_HOST, JURY_AVERAGE, JUROR_SCORES, JUSTIFIER, NARROW_AVERAGE, NARROW_SCORES, POC_MARKER, REPORT_MARKER, WINDOWS, claimFolder, draftSpec, makeRepository,
 } from './fixtures.js';
 import { RoundStopped, groupAlive, liveGroups, requestStop, sleep, stopProcessGroups, stopProcessesNaming, throwIfStopping, unlessStopped, waitUntil, within } from './proc.js';
 import {
@@ -548,6 +548,8 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       maxTokens: codeReview.CODE_CLASSES['code-standard'].envelope.jurorOutputTokens,
       report: { classPlatform: report.classPlatform, classPlatformName: CLASS_PLATFORM },
     }));
+    // Node P20: this listing names no documents, so its pack has no documents tier and every rank is what it was.
+    expect(noDocumentsTierChecks('valid', validAnswer?.contextPack));
     // A6a's own checks on what the EA sent the AI Node and on the report's gates, for every job.
     one('valid.report.everyGatePassed', h.gatesPassed(validAnswer?.report).ok, h.gatesPassed(validAnswer?.report).detail);
     validPath.aiCalls.forEach((call, i) => {
@@ -973,6 +975,30 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const narrowHistory = recordAfterNarrow.record.history;
     one('narrow.record.narrowInvalid', narrowHistory.narrowInvalid === '1' && narrowHistory.outcomes[0] === '3' && recordAfterNarrow.record.listings[0]?.narrowInvalidFloor === listingNow2.narrowInvalidFloor.toString() && !recordAfterNarrow.record.findings.some((f) => f.claimId === String(narrowId)), `narrow ${narrowHistory.narrowInvalid} within INVALID ${narrowHistory.outcomes[0]}, floor ${recordAfterNarrow.record.listings[0]?.narrowInvalidFloor}, not published`);
 
+    // ---------------------------------------------------------------- a listing that names its documents (node P20)
+    // The same repository at a commit that adds the maker's documents, listed through the site with stake.documents:
+    // the real builder chooses them as the runner does and reports it, and the hunter's check on that listing gets
+    // the pack the real runner at the pin builds, with the documents tier right after the source.
+    stage('documents: a listing that names them');
+    // The pull check below is of the first listing's image: after its push, the runs pulled it by digest. This listing
+    // pushes an image of its own, so what the registry was asked is read before it.
+    const firstListingManifests = await registry.manifestRequests();
+    const docsDraft = draftSpec({ repo: repository.url, baseCommit: repository.documentsCommit, disclosureKey: disclosure.recipient, documents: DOCUMENT_GLOBS });
+    const docsRes = await submit(maker, { spec: docsDraft, allowlist: [], maker: maker.address });
+    one('documents.listing.accepted', docsRes.status === 202, `HTTP ${docsRes.status}`);
+    const docsView = await follow((await docsRes.json()).id);
+    expect(documentsListingChecks('documents', docsView, DOCUMENTS_EXPECTED));
+    const docsKey = docsView.devTrust?.keys?.[0]?.publicKey;
+    const docsTool = docsKey === devKey ? tool : createTool({ chain, ipfs, runnerUrl: hunterRunner.url, runnerToken, devKey: docsKey, log });
+    const docsArchive = path.join(workDir, 'documents-listing.zip');
+    fs.writeFileSync(docsArchive, archive(docsView.list.listingCid));
+    const runsBeforeDocs = hunterRunner.post('/v1/runs').length;
+    const docsCheck = await docsTool('check', claimFolder(workDir, 'documents'), '--listing-archive', docsArchive);
+    const docsRun = hunterRunner.post('/v1/runs').slice(runsBeforeDocs)[0];
+    expect(documentsPackChecks('documents', { check: docsCheck, runnerAnswer: docsRun?.response, sent: docsRun?.request, globs: [...DOCUMENT_GLOBS], files: DOCUMENTS_EXPECTED.read, omitted: DOCUMENTS_EXPECTED.omitted }));
+    // as after the first listing: the image lives in the registry only
+    await removeRunImages(h, docker, instance);
+
     // ---------------------------------------------------------------- nothing live
     stage('nothing live');
     one('live.noHostApi', new URL(repository.url).host === GIT_HOST && finalView.fork?.status === 'unknown' && finalView.fork?.host === null, `the fork label: status ${finalView.fork?.status}, host ${finalView.fork?.host}: a host with no API (null is the checker's answer before any request), so it asked nobody`);
@@ -980,7 +1006,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const everyProviderCall = providerCalls();
     one('live.providerIsTheMock', everyProviderCall.length > 0 && everyProviderCall.every((c) => [...panel.map((p) => p.model), ...disputePanel.map((p) => p.model), JUSTIFIER.model].includes(c.model) && c.outcome === 'answered'), `${everyProviderCall.length} calls, every one logged by the mock provider`);
     const firstCheck = hunterRunner.post('/v1/runs')[0]?.response;
-    for (const c of h.pullChecks(firstCheck, await registry.manifestRequests(), validation.image.ref)) one(`live.${c.name}`, c.ok, c.detail);
+    for (const c of h.pullChecks(firstCheck, firstListingManifests, validation.image.ref)) one(`live.${c.name}`, c.ok, c.detail);
   };
 
   // The main flow never rejects: a stop waits on it, and what ends it is the report's.

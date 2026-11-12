@@ -279,3 +279,59 @@ export function pageChecks(prefix, pages, { artifactHash, claims, judged, releas
     check(`${prefix}.page.feed`, typeof pages?.feed === 'string' && pages.feed.length > 0, 'the listing is on the feed'),
   ];
 }
+
+// Node P20 (owner decision Q61 (a)): the round's listing that names stake.documents, and the pack the real runner at
+// the pin builds for a claim on it. The tier is the runner's; what is checked here is that it is there, in common's
+// place, with the files the listed commit holds, and that the tool shows that pack and nothing of its own.
+const DOCUMENT_LABEL = 'the maker\'s document at the listed commit (stake.documents): ';
+const tierNames = (pack) => (Array.isArray(pack?.tiers) ? pack.tiers.map((t) => t.name) : null);
+const documentPaths = (pack) => (pack?.files ?? []).filter((f) => f.tier === 'documents').map((f) => {
+  const head = String(f.text).split('\n')[0];
+  return head.startsWith(`# ${DOCUMENT_LABEL}`) ? head.slice(DOCUMENT_LABEL.length + 2) : null;
+});
+
+/**
+ * The documents listing's validation report: accepted and ready, its documents step right after the fetch, and its
+ * account of what the tier would read, what it skips and which glob matched nothing, with the warning for that glob.
+ */
+export function documentsListingChecks(prefix, view, { read, skipped, unmatched }) {
+  const report = view?.validationReport ?? {};
+  const steps = (report.steps ?? []).map((s) => `${s.name}:${s.status}`);
+  const d = report.documents ?? {};
+  const warned = (report.warnings ?? []).filter((w) => w.code === 'STAKE_DOCUMENT_MATCHES_NOTHING').map((w) => w.detail);
+  return [
+    check(`${prefix}.listing.ready`, view?.status === 'ready', JSON.stringify({ status: view?.status, refusals: report.refusals, error: view?.error ?? report.error }).slice(0, 400)),
+    check(`${prefix}.listing.documentsStep`, steps.indexOf('documents:ok') === steps.indexOf('fetch:ok') + 1 && steps.indexOf('fetch:ok') >= 0, steps.join(', ')),
+    check(`${prefix}.listing.read`, eq((d.read ?? []).map((f) => f.path), read), JSON.stringify(d.read ?? null)),
+    check(`${prefix}.listing.skipped`, eq((d.skipped ?? []).map((f) => [f.path, f.reason]), skipped), JSON.stringify(d.skipped ?? null)),
+    check(`${prefix}.listing.unmatchedWarned`, eq((d.unmatched ?? []).map((u) => u.glob), unmatched) && unmatched.every((g) => warned.some((w) => w.includes(JSON.stringify(g)))), JSON.stringify({ unmatched: d.unmatched, warned })),
+  ];
+}
+
+/**
+ * The hunter's check on the documents listing: it ran, the request the runner got carried the listing's documents,
+ * the pack the tool printed is the one the runner answered, and that pack has the documents tier at its place in
+ * common's order (right after the source) with the expected files, in order, and the expected ones left out.
+ */
+export function documentsPackChecks(prefix, { check: run, runnerAnswer, sent, globs, files, omitted }) {
+  const pack = run?.json?.pack ?? null;
+  const tier = (pack?.tiers ?? []).find((t) => t.name === 'documents');
+  const names = tierNames(pack) ?? [];
+  const f = run?.json?.forecast ?? {};
+  return [
+    check(`${prefix}.check.passes`, run?.code === 0 && f.verdict === 'pass', `exit ${run?.code}, ${f.verdict}`),
+    check(`${prefix}.request.documents`, eq(sent?.spec?.stake?.documents, globs), JSON.stringify(sent?.spec?.stake?.documents ?? null)),
+    check(`${prefix}.pack.isTheRunners`, pack !== null && eq(pack, runnerAnswer?.contextPack), 'the pack the tool printed is the runner\'s answer'),
+    check(`${prefix}.pack.documentsTier`, tier !== undefined && names.indexOf('documents') === names.indexOf('source') + 1 && tier.rank === names.indexOf('documents') + 1, names.join(', ')),
+    check(`${prefix}.pack.documentFiles`, eq(documentPaths(pack), files) && tier?.delivered === files.length && eq(tier?.omitted ?? null, omitted), JSON.stringify({ files: documentPaths(pack), tier })),
+    check(`${prefix}.forecast.documents`, eq(f.documents?.globs, globs) && tier !== undefined && eq(f.documents?.tier, { rank: tier.rank, status: tier.status, asked: tier.asked, delivered: tier.delivered, omitted: tier.omitted, cut: tier.cut }), JSON.stringify(f.documents ?? null)),
+  ];
+}
+
+/** A pack for a claim on a listing that names no documents: no documents tier, so its ranks are what they were. */
+export function noDocumentsTierChecks(prefix, pack) {
+  const names = tierNames(pack);
+  return [
+    check(`${prefix}.pack.noDocumentsTier`, names !== null && !names.includes('documents') && pack.tiers.every((t, i) => t.rank === i + 1) && !(pack.files ?? []).some((x) => x.tier === 'documents'), JSON.stringify(names)),
+  ];
+}

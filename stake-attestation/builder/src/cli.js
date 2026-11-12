@@ -14,7 +14,10 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { namesDocuments } from '@verdikta/stake-attestation-shared/stake-documents';
+
 import { loadConfig } from './config.js';
+import { recheckDocuments } from './documents.js';
 import { BuilderError, Refusal } from './errors.js';
 import { guarded } from './logSafe.js';
 import { DEV_TRUST_FILE, outputsDigest, readOutputs, writeOutputs } from './outputs.js';
@@ -114,9 +117,16 @@ async function sign({ dir, config, env, out, maker, expectOutputs = null, checkR
   if (extra.length) throw new BuilderError('OUTPUT_INVALID', `${dir} also holds ${extra.join(', ')}: sign takes a folder of the listing's files only, as build wrote it`);
   // Everything that can be checked without re-running the build, before any signature exists.
   const verified = await verifyForSigning({ files, report, dir, expectOutputs, checkRegistry, ...(deps.registryFor ? { registryFor: deps.registryFor } : {}) });
+  const spec = JSON.parse(files.codeReview.toString('utf8'));
+  // The listing's documents again, chosen over a fresh fetch of the listed commit (node P20): a selection
+  // common refuses (DOCUMENTS_MATCH_TOO_COSTLY) is refused here too, and the report must say what it gives.
+  if (namesDocuments(spec)) {
+    await recheckDocuments({ spec, report, config, deps });
+    verified.checks.push('DOCUMENTS_SELECTED');
+  }
   // The project's proof again, read from the host: nothing is signed without it.
   try {
-    await recheckForSigning({ spec: JSON.parse(files.codeReview.toString('utf8')), report, maker, config, deps });
+    await recheckForSigning({ spec, report, maker, config, deps });
   } catch (err) {
     if (err instanceof Refusal) throw new BuilderError(err.code, err.detail, { step: 'sign' });
     throw err;

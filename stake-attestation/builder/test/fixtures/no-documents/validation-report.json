@@ -1,0 +1,271 @@
+{
+  "version": 1,
+  "kind": "verdikta-listing-validation",
+  "builder": {
+    "version": "0.1.0"
+  },
+  "createdAt": "2026-11-11T00:00:00Z",
+  "status": "accepted",
+  "listing": {
+    "repo": "https://github.com/acme/vault",
+    "baseCommit": "7f3a9c0d1e2b3a4c5d6e7f8091a2b3c4d5e6f708",
+    "artifact": {
+      "kind": "repo"
+    }
+  },
+  "steps": [
+    {
+      "name": "spec",
+      "status": "ok",
+      "durationMs": 0
+    },
+    {
+      "name": "control",
+      "status": "ok",
+      "durationMs": 0
+    },
+    {
+      "name": "fetch",
+      "status": "ok",
+      "durationMs": 0
+    },
+    {
+      "name": "build",
+      "status": "ok",
+      "durationMs": 0
+    },
+    {
+      "name": "size",
+      "status": "ok",
+      "durationMs": 0
+    },
+    {
+      "name": "push",
+      "status": "ok",
+      "durationMs": 0
+    },
+    {
+      "name": "registry",
+      "status": "ok",
+      "durationMs": 0
+    },
+    {
+      "name": "verifiedSource",
+      "status": "skipped",
+      "durationMs": 0,
+      "detail": "not a contract listing"
+    },
+    {
+      "name": "listingCheck",
+      "status": "ok",
+      "durationMs": 0
+    },
+    {
+      "name": "finalSpec",
+      "status": "ok",
+      "durationMs": 0
+    }
+  ],
+  "commands": {
+    "checkedBy": "runner",
+    "canary": "COMMAND_NOT_ALLOWED",
+    "issues": []
+  },
+  "control": {
+    "maker": "0x5B38Da6a701c568545dCfcB03FcB875f56beddC4",
+    "repo": "https://github.com/acme/vault",
+    "commit": "7f3a9c0d1e2b3a4c5d6e7f8091a2b3c4d5e6f708",
+    "path": ".verdikta/stake-control.json",
+    "ref": "refs/heads/main",
+    "blob": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "deployment": null
+  },
+  "image": {
+    "ref": "ghcr.io/verdikta/stake-env@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "tag": "ghcr.io/verdikta/stake-env:7f3a9c0d1e2b3a4c5d6e7f8091a2b3c4d5e6f708-00000000",
+    "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "manifestDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "platform": "linux/amd64",
+    "platforms": [
+      "linux/amd64"
+    ],
+    "base": "ghcr.io/foundry-rs/foundry:v1.8.5@sha256:f00b023f65e3aab6b7f994dd13b9faff1441aba92df60a53850cb644a4b8b3b5",
+    "compressedBytes": 300000000,
+    "unpackedBytes": {
+      "builder": 800000000,
+      "runner": 812000000,
+      "attested": 812000000
+    },
+    "measuredOn": "linux/amd64",
+    "limits": {
+      "imageCompressedBytes": 2000000000,
+      "imageUnpackedBytes": 6000000000
+    }
+  },
+  "verifiedSource": null,
+  "listingCheck": {
+    "status": "accepted",
+    "checkId": "3f2a9c",
+    "runner": {
+      "version": "0.1.0",
+      "runtime": "runsc",
+      "platform": "linux/amd64"
+    },
+    "refusals": [],
+    "issues": [],
+    "warnings": [],
+    "abstain": null,
+    "timings": {
+      "prepareSeconds": 2.1,
+      "buildSeconds": 4.2,
+      "testSeconds": [
+        1.5,
+        1.4,
+        1.6
+      ]
+    },
+    "limits": {
+      "cpus": 2,
+      "memoryMb": 4096,
+      "buildSeconds": 13,
+      "testSeconds": 5,
+      "runSeconds": 34,
+      "maxPatchBytes": 2000000
+    },
+    "unpackedBytes": 812000000,
+    "suite": {
+      "tests": 2,
+      "stable": 2,
+      "unstable": 0,
+      "exitCodes": [
+        0,
+        0,
+        0
+      ],
+      "harnessErrors": [
+        [],
+        [],
+        []
+      ]
+    },
+    "harness": {
+      "path": "test/VerdiktaHarness.t.sol",
+      "probes": [
+        {
+          "name": "fails",
+          "variant": "forge-std",
+          "verdict": "not_run"
+        },
+        {
+          "name": "fails",
+          "variant": "plain",
+          "verdict": "assertion"
+        },
+        {
+          "name": "compileError",
+          "variant": null,
+          "verdict": "no_junit"
+        },
+        {
+          "name": "setUpError",
+          "variant": null,
+          "verdict": "harness_error"
+        }
+      ]
+    },
+    "checkout": {
+      "commit": "ffffffffffffffffffffffffffffffffffffffff",
+      "tree": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "paths": 6,
+      "corrected": 0,
+      "correctedPaths": []
+    },
+    "compilers": {
+      "platform": "linux/amd64",
+      "listAsOf": "2026-10-01",
+      "newest": "0.8.32",
+      "checked": [
+        {
+          "path": "/opt/verdikta/tools/share/svm/0.8.31/solc-0.8.31",
+          "release": "0.8.31"
+        }
+      ]
+    }
+  },
+  "baseline": {
+    "tests": 2,
+    "stable": 2,
+    "unstable": []
+  },
+  "listingRequest": {
+    "bytes": 2474,
+    "parts": {
+      "spec": 1036,
+      "attestation": 936,
+      "baseline": 500,
+      "knownIssues": 2
+    },
+    "maxBytes": 2097152
+  },
+  "limits": {
+    "cpus": 2,
+    "memoryMb": 4096,
+    "buildSeconds": 13,
+    "testSeconds": 5,
+    "runSeconds": 34,
+    "maxPatchBytes": 2000000
+  },
+  "files": {
+    "code_review.json": "44f8279097f6966e5b3c23cb41e609aa03f36c6d13d7d7cd7cdf798cc02d3d82",
+    "baseline.json": "0910a396ac923515780de5e3fbdabd08474ee98e8eb8e23c3a3587416f76a713"
+  },
+  "attestation": {
+    "trust": "dev",
+    "keyId": "KEY",
+    "issuedAt": "2026-11-11T00:00:00Z",
+    "file": "attestation.json",
+    "sha256": "SHA256"
+  },
+  "devOnly": [],
+  "refusals": [],
+  "warnings": [],
+  "error": null,
+  "signing": {
+    "checks": [
+      "REPORT_ACCEPTED",
+      "FILES_MATCH_REPORT",
+      "SPEC_VALID",
+      "BASELINE_VALID",
+      "LISTING_MATCHES_REPORT",
+      "STEPS_COMPLETE",
+      "COMMANDS_CHECKED",
+      "IMAGE_MATCHES_REPORT",
+      "SIZES_WITHIN_LIMITS",
+      "BASE_PINNED",
+      "PROJECT_PROOF_STANDS",
+      "LISTING_REQUEST_WITHIN_BOUND"
+    ],
+    "trusts": [
+      {
+        "code": "LISTING_CHECK_RESULTS",
+        "detail": "baseline.json, the timings, the default limits, the harness proof and what it said of the commands are the code-runner's answer as the build job recorded it, from the runner, runtime and platform the report names; repeating the check needs the image and a runner"
+      },
+      {
+        "code": "UNPACKED_SIZE",
+        "detail": "env.unpackedBytes is the build's and the runner's measurement of the unpacked image; measuring it again needs the image unpacked"
+      },
+      {
+        "code": "BUILD_JOB",
+        "detail": "the build job ran this builder unmodified, at the pinned ref, on a runner nothing else used; a maker's own CI is the maker's to vouch for, so a production key signs only in Verdikta's own workflow"
+      },
+      {
+        "code": "OUTPUTS_IN_TRANSIT",
+        "detail": "the folder is the one the build job wrote: no --expect-outputs digest was given to compare it with"
+      },
+      {
+        "code": "IMAGE_PUBLISHED",
+        "detail": "the image code_review.json names is published and readable by arbiters: --check-registry was not given"
+      }
+    ]
+  }
+}

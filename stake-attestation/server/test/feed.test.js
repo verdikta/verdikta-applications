@@ -35,6 +35,7 @@ describe('GET /api/feed', () => {
   let contract;
   let deployed;
   let successor;
+  let documented;
   const gone = {};
   let invalidClaim;
   let pendingClaim;
@@ -59,6 +60,8 @@ describe('GET /api/feed', () => {
     gone.rolled = await listing(ctx);
     successor = await listing(ctx);
     await (await ctx.sa.connect(ctx.maker).rollForward(gone.rolled.listingId, successor.listingId)).wait();
+    // node P20: a listing that names its documents
+    documented = await listing(ctx, { stake: { documents: ['README.md', 'docs/**'] } });
     gone.depleted = await listing(ctx);
     const big = await revealedClaim(ctx, ctx.hunters[2], gone.depleted.listingId);
     await judgeAndSettle(ctx, big, 'CRITICAL');
@@ -84,7 +87,7 @@ describe('GET /api/feed', () => {
     assert.equal(res.status, 200);
     const body = await res.json();
     const ids = body.listings.map((l) => l.listingId).sort();
-    assert.deepEqual(ids, [open, renewed, contract, successor].map((l) => String(l.listingId)).sort());
+    assert.deepEqual(ids, [open, renewed, contract, successor, documented].map((l) => String(l.listingId)).sort());
     for (const [why, l] of Object.entries(gone)) assert.equal(ids.includes(String(l.listingId)), false, `${why} is not in the feed`);
     for (const id of ids) assert.equal(await ctx.sa.acceptsCommits(id), true);
     assert.equal(body.block.number, site.store.state.cursor.number);
@@ -130,6 +133,16 @@ describe('GET /api/feed', () => {
     assert.equal(entry.listingCid, open.listingCid);
     assert.equal(entry.disputeCid, open.disputeCid);
     assert.equal(entry.disclosureKey, onchain.disclosureKey);
+  });
+
+  // Node P20: a hunter sees where a listing says its requirements are written, from its listing archive.
+  test('each entry names the listing\'s document globs, from its archive: none for a listing that names none', async () => {
+    const body = await (await api.get('/api/feed')).json();
+    const entry = (l) => body.listings.find((x) => x.listingId === String(l.listingId));
+    assert.deepEqual(entry(documented).documents, ['README.md', 'docs/**']);
+    assert.deepEqual(entry(documented).documents, documented.spec.stake.documents);
+    assert.deepEqual(entry(open).documents, []);
+    assert.equal(Object.hasOwn(open.spec.stake, 'documents'), false);
   });
 
   test('a contract listing carries its deployment', async () => {
@@ -303,6 +316,113 @@ describe('archive reads run beside the indexer', () => {
   });
 });
 
+// Node P20: an archive's answer stored before documents were read has no `documents`, and is read again, so a listing
+// that names them is never shown as naming none. One read since is kept, content addressed, as before.
+test('an archive answer stored before documents were read is read again; one read since is not', async () => {
+  const { refreshArchives } = await import('../src/site/archives.js');
+  const draft = draftSpec({ stake: { ...draftSpec().stake, documents: ['README.md'] } });
+  delete draft.stake.knownIssues;
+  const built = await fakeBuilder().build({ draft, knownIssues: null });
+  const bytes = buildListingArchives(built.files).listing.bytes;
+  const cid = rawCid(bytes);
+  const fresh = readListingArchive(bytes, cid);
+  assert.deepEqual(fresh.documents, ['README.md']);
+  const { documents: _none, ...before } = fresh;
+  const store = { locked: true, state: { archives: { [cid]: before } }, transact(fn) { fn(this.state); } };
+  let fetched = 0;
+  const fetchArchive = async () => { fetched += 1; return bytes; };
+  const quiet = { warn() {}, info() {}, debug() {} };
+  await refreshArchives({ fetchArchive, store, listings: [{ listingCid: cid, disputeCid: cid }], now: () => 0, maxBytes: 1 << 24, retryMs: 1000, logger: quiet });
+  assert.equal(fetched, 1);
+  assert.deepEqual(store.state.archives[cid].documents, ['README.md']);
+  await refreshArchives({ fetchArchive, store, listings: [{ listingCid: cid, disputeCid: cid }], now: () => 0, maxBytes: 1 << 24, retryMs: 1000, logger: quiet });
+  assert.equal(fetched, 1, 'read once');
+});
+
+// R1-F1: the read again can fail at a gateway. The answer stored before is kept as it was (it was the listing's, its
+// signature and terms checked), so the listing still counts; its documents stay unknown, never none, and the read
+// is tried again after a backoff of its own.
+test('an archive answer whose read again for documents fails is kept as it was, its documents unknown, and retried after a backoff', async () => {
+  const { refreshArchives, archiveFields } = await import('../src/site/archives.js');
+  const { notCountedReason } = await import('../src/control/counting.js');
+  const draft = draftSpec();
+  delete draft.stake.knownIssues;
+  const built = await fakeBuilder().build({ draft, knownIssues: null });
+  const archives = buildListingArchives(built.files);
+  const listingCid = rawCid(archives.listing.bytes);
+  const disputeCid = rawCid(archives.dispute.bytes);
+  const strip = ({ documents: _d, ...rest }) => rest;
+  const devKeys = built.devTrust.keys;
+  const known = strip(readListingArchive(archives.listing.bytes, listingCid, { devKeys }));
+  const dispute = strip(readListingArchive(archives.dispute.bytes, disputeCid, { devKeys }));
+  assert.equal(known.signed.ok, true);
+  const store = { locked: true, state: { archives: { [listingCid]: known, [disputeCid]: dispute } }, transact(fn) { fn(this.state); } };
+  let clock = 0;
+  let fail = true;
+  let fetched = 0;
+  const fetchArchive = async (cid) => {
+    fetched += 1;
+    if (fail) throw new Error('gateway timeout');
+    return cid === listingCid ? archives.listing.bytes : archives.dispute.bytes;
+  };
+  const quiet = { warn() {}, info() {}, debug() {} };
+  const refresh = () => refreshArchives({ fetchArchive, store, listings: [{ listingCid, disputeCid }], now: () => clock, maxBytes: 1 << 24, retryMs: 1000, logger: quiet, devKeys: () => devKeys });
+  await refresh();
+  assert.equal(fetched, 2);
+  const kept = store.state.archives[listingCid];
+  assert.equal(kept.ok, true, 'still the listing\'s answer');
+  assert.deepEqual({ ...kept, documentsAttempts: undefined, documentsRetryAt: undefined }, { ...known, documentsAttempts: undefined, documentsRetryAt: undefined });
+  assert.equal(kept.documentsRetryAt, 1000);
+  const artifact = { repo: known.repo, baseCommit: known.baseCommit };
+  const fields = archiveFields(kept, { artifact, disclosureKey: known.disclosureKey });
+  assert.deepEqual(fields.archive, { ok: true });
+  assert.equal(fields.documents, null, 'unknown, not none');
+  assert.equal(notCountedReason({ known: kept, dispute: store.state.archives[disputeCid], artifact: { ...artifact, kind: 'Repo' }, fact: { proof: 'yes' }, terms: { ok: true } }), null, 'it still counts');
+  // before the backoff, nothing is fetched; after it, the read succeeds and the documents are known
+  await refresh();
+  assert.equal(fetched, 2);
+  clock = 1001;
+  fail = false;
+  await refresh();
+  assert.equal(fetched, 4);
+  assert.deepEqual(store.state.archives[listingCid].documents, []);
+  assert.equal(store.state.archives[listingCid].documentsRetryAt, undefined);
+});
+
+// R1-F1, round 2: a CID that is not raw sha2-256 is not checked against the bytes a gateway answers, so a read again can
+// get bytes that are not that archive, with no error. The stored answer is kept then too: a read again for documents
+// replaces it only when it reads the same facts, with documents.
+test('a read again for documents that gets other bytes, or another listing\'s archive, keeps the stored answer as it was', async () => {
+  const { refreshArchives } = await import('../src/site/archives.js');
+  const make = async (over) => {
+    const draft = draftSpec(over);
+    delete draft.stake.knownIssues;
+    const built = await fakeBuilder().build({ draft, knownIssues: null });
+    return { built, bytes: buildListingArchives(built.files).listing.bytes };
+  };
+  const mine = await make();
+  const other = await make({ baseCommit: 'e'.repeat(40) });
+  const cid = 'QmNotARawCidSoNoHashCheckXXXXXXXXXXXXXXXXXXXXXX';
+  const devKeys = [...mine.built.devTrust.keys, ...other.built.devTrust.keys];
+  const { documents: _d, ...known } = readListingArchive(mine.bytes, cid, { devKeys });
+  assert.equal(known.ok, true);
+  const quiet = { warn() {}, info() {}, debug() {} };
+  for (const [what, answer] of [['bytes that are not an archive', Buffer.from('<html>not found</html>')], ['another listing\'s archive', other.bytes]]) {
+    const store = { locked: true, state: { archives: { [cid]: { ...known } } }, transact(fn) { fn(this.state); } };
+    await refreshArchives({ fetchArchive: async () => answer, store, listings: [{ listingCid: cid, disputeCid: cid }], now: () => 0, maxBytes: 1 << 24, retryMs: 1000, logger: quiet, devKeys: () => devKeys });
+    const kept = store.state.archives[cid];
+    assert.equal(kept.ok, true, what);
+    assert.equal(kept.baseCommit, known.baseCommit, what);
+    assert.equal(Object.hasOwn(kept, 'documents'), false, what);
+    assert.equal(kept.documentsRetryAt, 1000, what);
+  }
+  // and the stored facts in another key order are the same facts
+  const reordered = Object.fromEntries(Object.entries(known).reverse());
+  const store = { locked: true, state: { archives: { [cid]: reordered } }, transact(fn) { fn(this.state); } };
+  await refreshArchives({ fetchArchive: async () => mine.bytes, store, listings: [{ listingCid: cid, disputeCid: cid }], now: () => 0, maxBytes: 1 << 24, retryMs: 1000, logger: quiet, devKeys: () => devKeys });
+  assert.deepEqual(store.state.archives[cid].documents, []);
+});
+
 describe('reading a listing archive without extracting it', () => {
   let members;
   before(async () => {
@@ -315,7 +435,7 @@ describe('reading a listing archive without extracting it', () => {
 
   test('the archive the flow issues reads; the same members deflated, or under one folder, are not what it issues', () => {
     const r = readListingArchive(zipStored(members), 'QmNotARawCidSoNoHashCheckXXXXXXXXXXXXXXXXXXXXXX');
-    assert.deepEqual({ ok: r.ok, image: r.image, scope: r.scope }, { ok: true, image: IMAGE, scope: spec().stake.scope });
+    assert.deepEqual({ ok: r.ok, image: r.image, scope: r.scope, documents: r.documents }, { ok: true, image: IMAGE, scope: spec().stake.scope, documents: [] });
     assert.equal(r.baseCommit, spec().baseCommit);
     for (const bytes of [zipDeflated(members), zipDeflated(members.map((m) => ({ ...m, name: `listing/${m.name}` })))]) {
       assert.deepEqual(readListingArchive(bytes, 'QmNotARawCidSoNoHashCheckXXXXXXXXXXXXXXXXXXXXXX'), { ok: false, error: 'ARCHIVE_INVALID' });

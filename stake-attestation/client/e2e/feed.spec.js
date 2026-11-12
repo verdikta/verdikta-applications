@@ -47,6 +47,8 @@ test('the feed lists an open listing with its terms, labels and links', async ({
   await expect(f('value-at-risk')).toHaveText(fill(STRINGS.record.usd, { usd: '1,250,000' }));
   await expect(f('image')).toHaveText(entry.image);
   await expect(f('scope')).toHaveText(fill(F.scopeLine, { include: entry.scope.include.join(', '), exclude: entry.scope.exclude.join(', ') }));
+  // node P20: where the listing says its requirements are written; this one names none
+  await expect(f('documents')).toHaveText(F.documentsNone);
   await expect(page.getByTestId('feed-as-of')).toBeVisible();
   await expect(page.getByRole('heading', { name: STRINGS.diligence.title })).toBeVisible();
   expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);

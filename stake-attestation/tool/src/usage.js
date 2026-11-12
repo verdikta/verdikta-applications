@@ -31,6 +31,8 @@ ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`)
 
   check <claim-dir> (--listing <id> | --listing-archive <file>) [--no-pack] [--remote-runner]
                      --no-pack prints status and codes only: no pack, and nothing else that can quote the proof
+                     on a listing that names documents (stake.documents), check shows the documents tier the runner
+                     built: the maker's statement of what the code must do. Documents never widen the scope
   commit <claim-dir> --listing <id> [--yes] [--restart] [--accept-unread-pin]
   reveal <claim-dir> [--retrigger] [--yes]
                      --retrigger pays the top-up to send a failed round again; prints it, and sends only with --yes

@@ -1,12 +1,15 @@
 // A listing's build, end to end (design §8.2 steps 1-4; build plan A4):
 //
-//   spec            the draft against @verdikta/common's schema and what this builder hosts (not
-//                   stake.documents yet: STAKE_DOCUMENTS_NOT_OFFERED, node P21), and its
+//   spec            the draft against @verdikta/common's schema and what this builder hosts, and its
 //                   commands against the grammar arbiters hold claims to, which only the code-runner
 //                   has: it answers before anything is read or built (src/runner.js, checkCommands)
 //   control         the project's proof (src/listingProof.js; node P9): the file at the commit naming
 //                   the maker, the commit on the repository's own refs, a contract's signature
 //   fetch           the listed commit's objects, by id, from the repository (or its mirror)
+//   documents       only for a draft naming stake.documents (src/documents.js; node P20): common's
+//                   selectDocuments over the listed commit's own entries, as the runner chooses a
+//                   pack's documents; what the tier would read, past the cap and skipped, and a
+//                   warning per glob that matches nothing. DOCUMENTS_MATCH_TOO_COSTLY stops here
 //   build           the env image (src/dockerfile.js): the maker's setup with network, then a
 //                   final stage that runs nothing
 //   size            its unpacked size, as the code-runner measures it: over 6 GB stops here
@@ -28,9 +31,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { namesDocuments } from '@verdikta/stake-attestation-shared/stake-documents';
+
 import { codeReview } from './common.js';
 import { baseImageRefs, writeBuildContext as writeContextDefault } from './dockerfile.js';
 import { createDocker } from './docker.js';
+import { chooseDocuments } from './documents.js';
 import { BuilderError, Refusal } from './errors.js';
 import { createExplorer, explorerChain } from './explorer.js';
 import { fetchListedCommit as fetchDefault } from './git.js';
@@ -45,7 +51,7 @@ import { checkListingProof } from './listingProof.js';
 import { assertDraftFits, assertListingFits } from './requestSize.js';
 import { signingTrust } from './signing.js';
 import { checkVerifiedSource } from './sourceCheck.js';
-import { checkDraft, checkKnownIssues, draftRefusal, finalSpec, runnerSpec, serializeJson } from './spec.js';
+import { checkDraft, checkKnownIssues, finalSpec, runnerSpec, serializeJson } from './spec.js';
 import { BUILDER_VERSION } from './version.js';
 
 const CLASS_PLATFORM = codeReview.CLASS_HARD_LIMITS.platform;
@@ -122,6 +128,15 @@ export async function buildEnvImage({ draft, config, deps = {}, report, workDir 
   const refs = baseImageRefs(config.platforms);
 
   await step(report, 'fetch', () => fetchListedCommit({ repo: draft.repo, baseCommit: draft.baseCommit, mirror: config.mirrorFor(draft.repo), dir: gitDir, timeoutMs: FETCH_TIMEOUT_MS }));
+  // From the objects just fetched, before the maker's setup runs or anything is built: no step, and no
+  // section in the report, for a listing that names no documents.
+  if (namesDocuments(draft)) {
+    await step(report, 'documents', async () => {
+      const chosen = await chooseDocuments({ gitDir, spec: draft });
+      report.documents = chosen.record;
+      report.warnings.push(...chosen.warnings);
+    });
+  }
   await step(report, 'build', async () => {
     writeBuildContext({ dir: contextDir, gitDir, setup: draft.commands.setup, baseCommit: draft.baseCommit, platforms: config.platforms, builderVersion: BUILDER_VERSION });
     await buildImage({ docker, contextDir, tag, platforms, timeoutMs: config.docker.buildTimeoutMs });
@@ -196,10 +211,7 @@ export async function buildListing({ draft, knownIssues = null, maker = null, de
     const known = await step(report, 'spec', async () => {
       const v = checkDraft(draft);
       report.warnings.push(...v.warnings);
-      if (!v.ok) {
-        const refused = draftRefusal(v);
-        throw new Refusal(refused.code, refused.detail, { issues: v.issues });
-      }
+      if (!v.ok) throw new Refusal('SPEC_INVALID', `code_review.json does not validate: ${v.issues.map((i) => i.code).join(', ')}`, { issues: v.issues });
       const checked = checkKnownIssues(draft, knownIssues);
       assertDraftFits(draft, checked?.bytes ?? null);
       const commands = await checkCommands({ runner: runner(), draft });

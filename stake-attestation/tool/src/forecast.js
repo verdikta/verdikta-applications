@@ -2,6 +2,8 @@
 // arbiters' External Adapter applies (external-adapter/src/codeReview/settlement.js, design §9.5 and §12, owner
 // decision Q35). The rule is mirrored over facts.poc, which carries the same fields as the report: on
 // linux/arm64 there is no report, and the report's own form folds what each run did (node A3b).
+import { documentGlobs, namesDocuments } from '@verdikta/stake-attestation-shared/stake-documents';
+
 import { codeReview } from './common.js';
 import { fail } from './errors.js';
 import { isCidShaped } from './ipfs.js';
@@ -90,6 +92,33 @@ function stepOutput(steps, name) {
 
 const digestOf = (ref) => /@(sha256:[0-9a-f]{64})$/.exec(String(ref ?? ''))?.[1] ?? null;
 
+const TIER_STATUSES = Object.freeze(['full', 'truncated', 'dropped', 'empty']);
+const REASON = /^[A-Za-z][A-Za-z0-9]{0,31}$/;
+const count = (n) => (Number.isSafeInteger(n) && n >= 0 ? n : null);
+
+/**
+ * The runner's documents tier, as its pack states it, held to a shape: counts, a status and reason codes, nothing a
+ * file or the proof could put there. null when the run made no pack, or the pack has no such tier.
+ */
+function documentsTier(pack) {
+  const t = Array.isArray(pack?.tiers) ? pack.tiers.find((x) => x?.name === 'documents') : null;
+  if (!t) return null;
+  const omitted = {};
+  for (const [reason, n] of Object.entries(t.omitted && typeof t.omitted === 'object' ? t.omitted : {})) {
+    if (REASON.test(reason) && count(n) !== null) omitted[reason] = n;
+  }
+  return { rank: count(t.rank), status: TIER_STATUSES.includes(t.status) ? t.status : 'unknown', asked: count(t.asked), delivered: count(t.delivered), omitted, cut: count(t.cut) };
+}
+
+/**
+ * A listing that names stake.documents (node P20): its globs, and the documents tier the runner built for this run, from
+ * its answer. The tool works none of it out itself. Absent for a listing that names none, so its forecast is as before.
+ */
+function documentsOf(spec, answer) {
+  if (!namesDocuments(spec)) return {};
+  return { documents: { globs: documentGlobs(spec).filter((g) => typeof g === 'string'), tier: documentsTier(answer?.body?.contextPack) } };
+}
+
 /**
  * @param {object} o
  * @param {object[]} o.local - the gates decided here, before the runner
@@ -122,6 +151,7 @@ export function buildForecast({ local, answer, spec, pocPatch, lint, priorFindin
     fix: null,
     priorFindings,
     notes,
+    ...documentsOf(spec, answer),
   };
   const localSettles = () => {
     const s = local.find((g) => g.status === 'fail' && Object.hasOwn(LOCAL_REASONS, g.name));
@@ -209,5 +239,7 @@ export function withoutProofText(f) {
     fix: null,
     priorFindings: f.priorFindings ? { read: f.priorFindings.read, unread: (f.priorFindings.unread ?? []).filter(isCidShaped), total: f.priorFindings.total } : null,
     notes: [],
+    // the listing's own globs and the tier's counts: the maker's terms and numbers, nothing of the proof or a document
+    ...(f.documents ? { documents: { globs: [...f.documents.globs], tier: f.documents.tier ? documentsTier({ tiers: [{ ...f.documents.tier, name: 'documents' }] }) : null } } : {}),
   };
 }

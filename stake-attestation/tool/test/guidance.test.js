@@ -93,3 +93,12 @@ test('the help and the README say reveal --retrigger prints its cost and sends o
   assert.match(flat(HUNTER), /verdikta-attest reveal \.\/claim --retrigger --yes/);
   assert.match(flat(HUNTER), /`reveal --retrigger` .*prints what it costs.*sends nothing without `--yes`/);
 });
+
+// Node P20: a listing may name the documents its requirements are written in, and check shows the runner's
+// documents tier for it. The help says so, and that a "## Requirement" section may cite one of them.
+test('help: check shows the documents tier of a listing that names documents, which never widen the scope', () => {
+  const text = flat(USAGE);
+  assert.match(text, /names documents \(stake\.documents\), check shows the documents tier the runner built/);
+  assert.match(text, /Documents never widen the scope/);
+  assert.match(text, /a file and line, or a listing document/);
+});

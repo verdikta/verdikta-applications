@@ -64,7 +64,7 @@ describe('GET /api/records/:hash', () => {
     unpublished.apart = await commit(ctx, h3, l2.listingId);
 
     // a stake of its own: a flagged claim the maker released, judged INVALID; a flagged pending one
-    flagging = await listing(ctx, { stake: { fixWindowDays: 1, disclosureGraceHours: 24 } });
+    flagging = await listing(ctx, { stake: { fixWindowDays: 1, disclosureGraceHours: 24, documents: ['README.md', 'docs/spec/**'] } });
     flaggedClaim = await commit(ctx, h3, flagging.listingId);
     await disclose(ctx, h3, flaggedClaim);
     await (await ctx.sa.connect(ctx.maker).flagBadDisclosure(flaggedClaim)).wait();
@@ -129,6 +129,14 @@ describe('GET /api/records/:hash', () => {
     ]);
     assert.equal(flagged.history.released, '1');
     assert.equal(record.history.disputesOverturned, '1');
+  });
+
+  // Node P20: the record names each counted listing's document globs, from its listing archive, so a hunter sees where
+  // its requirements are said to be written. A listing that names none has an empty list; one that does not count
+  // is shown apart, without them.
+  test('each counted listing\'s document globs, from its archive', async () => {
+    assert.deepEqual((await get(flagging.artifactHash)).documents, { [String(flagging.listingId)]: ['README.md', 'docs/spec/**'] });
+    assert.deepEqual((await get(hash)).documents, { [String(l1.listingId)]: [] });
   });
 
   test('a long record is read in pages and assembled to the same answer', async () => {

@@ -6,9 +6,11 @@
 //
 // The form holds the windows to decision D8 (the contract's bounds): the fix window 0 to 90 days
 // (0 allowed), the dispute window 24 to 2160 hours, the reveal window 3 to 90 days (at least
-// 72 hours), the disclosure grace no longer than the fix window. Defaults are design §7.1's.
+// 72 hours), the disclosure grace no longer than the fix window. Defaults are design §7.1's. Its
+// documents field is checked with @verdikta/common's documentGlobProblem (lib/documents.js; node P20).
 import { parseEther } from 'ethers';
 
+import { documentIssues, documentLines, numberedLines } from './documents.js';
 import { knownIssueEntry } from './knownIssues.js';
 
 export const SEVERITY_CLASSES = Object.freeze(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
@@ -45,6 +47,7 @@ export function initialForm() {
     chainId: '8453',
     scopeInclude: 'src/**',
     scopeExclude: 'test/**\nscript/**',
+    documents: '',
     awards: { LOW: '0', MEDIUM: '', HIGH: '', CRITICAL: '' },
     lowestClassCounted: 'MEDIUM',
     bond: '',
@@ -121,18 +124,23 @@ export function formIssues(form) {
   if (form.valueAtRiskUsd.trim() !== '' && whole(form.valueAtRiskUsd.trim()) === null) out.valueAtRiskUsd = 'wholeNumber';
   for (const c of SEVERITY_CLASSES) if (!ETH.test(String(form.awards[c]).trim())) out[`awards.${c}`] = 'amount';
   if (!ETH.test(form.bond.trim())) out.bond = 'amount';
+  // each line common would refuse, at its index, by common's code, with the textarea line it is on
+  const lines = numberedLines(form.documents ?? '');
+  const documents = documentIssues(lines.map((x) => x.text)).map((i) => ({ ...i, line: i.index === null ? null : lines[i.index].line }));
+  if (documents.length) out.documents = documents;
   return out;
 }
 
 /** The body of POST /api/listings. Throws FormError while formIssues(form) has anything. */
 export function toListingRequest(form) {
   const issues = formIssues(form);
-  if (Object.keys(issues).length) throw new FormError(`the form has issues (${Object.entries(issues).map(([k, v]) => `${k}: ${v}`).join(', ')})`);
+  if (Object.keys(issues).length) throw new FormError(`the form has issues (${Object.entries(issues).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.map((i) => i.code).join(' ') : v}`).join(', ')})`);
 
   const commands = { framework: 'forge' };
   for (const [k, v] of Object.entries(form.commands)) if (v.trim()) commands[k] = v.trim();
   const protectedPaths = lines(form.protectedPaths);
   const exclude = lines(form.scopeExclude);
+  const documents = documentLines(form.documents ?? '');
   const knownIssues = form.knownIssues.map(knownIssueEntry);
   const value = form.valueAtRiskUsd.trim();
 
@@ -158,6 +166,8 @@ export function toListingRequest(form) {
       disclosureGraceHours: Number(form.disclosureGraceHours),
       revealWindowDays: Number(form.revealWindowDays),
       scope: { include: lines(form.scopeInclude), ...(exclude.length ? { exclude } : {}) },
+      // where the code's requirements are written; none named, no field, and the request is what it was
+      ...(documents.length ? { documents } : {}),
       ...(knownIssues.length ? { knownIssues: KNOWN_ISSUES_FILE } : {}),
       severityRubric: SEVERITY_RUBRIC,
       disclosureKey: form.disclosureKey,

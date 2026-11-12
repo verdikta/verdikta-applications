@@ -61,6 +61,51 @@ describe('POST /api/listings, then GET /api/listings/:id', () => {
     assert.equal(view.trust, 'dev');
   });
 
+  // Node P20: a draft naming stake.documents is taken: built with the field as the maker wrote it, its report has the
+  // builder's documents step, and the archive's code_review.json carries the field. A draft without it is sent as
+  // before, with no documents key anywhere.
+  test('a draft naming stake.documents is built with the field as written, and the listing archive carries it', async () => {
+    const builder = fakeBuilder();
+    const s = await api({ builder });
+    const body = listingRequest();
+    body.spec.stake.documents = ['README.md', 'docs/**'];
+    const { res, json } = await submit(s, body);
+    assert.equal(res.status, 202, JSON.stringify(json));
+    const view = await s.settle(json.id);
+    assert.equal(view.status, 'ready', JSON.stringify(view.error));
+    assert.deepEqual(builder.calls[0].draft, body.spec);
+    assert.deepEqual(builder.calls[0].draft.stake.documents, ['README.md', 'docs/**']);
+    assert.deepEqual(view.validationReport.steps.map((x) => x.name), ['spec', 'control', 'fetch', 'documents', 'build', 'size', 'push', 'registry', 'verifiedSource', 'listingCheck', 'finalSpec']);
+    assert.deepEqual(view.validationReport.documents.globs, ['README.md', 'docs/**']);
+    const { zipDirectory, readZipMember } = await import('../src/zipRead.js');
+    const bytes = s.pinner.pins[0].bytes;
+    const spec = JSON.parse(Buffer.from(readZipMember(bytes, zipDirectory(bytes).get('code_review.json'), 8 * 1024 * 1024)).toString('utf8'));
+    assert.deepEqual(spec.stake.documents, ['README.md', 'docs/**']);
+
+    const plain = fakeBuilder();
+    const s2 = await api({ builder: plain });
+    const { json: j2 } = await submit(s2, listingRequest());
+    await s2.settle(j2.id);
+    assert.equal(Object.hasOwn(plain.calls[0].draft.stake, 'documents'), false, 'no documents key for a listing without them');
+  });
+
+  test('a listing that names documents is issued only when its report records the builder\'s documents step', async () => {
+    for (const tamper of [
+      ({ report }) => { report.steps = report.steps.filter((x) => x.name !== 'documents'); },
+      ({ report }) => { report.steps.find((x) => x.name === 'documents').status = 'failed'; },
+      ({ report }) => { delete report.documents; },
+    ]) {
+      const s = await api({ builder: fakeBuilder({ tamper }) });
+      const body = listingRequest();
+      body.spec.stake.documents = ['README.md'];
+      const { json } = await submit(s, body);
+      const view = await s.settle(json.id);
+      assert.equal(view.status, 'error', JSON.stringify(view));
+      assert.equal(view.archives, null);
+      assert.equal(s.pinner.pins.length, 0, 'nothing is pinned');
+    }
+  });
+
   test('no archive is issued when the verified-source check fails: the report says why', async () => {
     const s = await api({ builder: fakeBuilder({ outcome: 'refused-source' }) });
     const { json } = await submit(s, listingRequest({ spec: contractDraft() }));
@@ -209,29 +254,44 @@ describe('requests refused before any build (400)', () => {
     });
   }
 
-  // Node P21: common takes stake.documents since 1.9.0-attest.4, and the site offers it only from node P20. A
-  // draft that names it, an empty list too, is refused by that one code alone (common has nothing against the
-  // field), never built with it or without it, and the refusal is counted by reason.
-  test('a draft naming stake.documents is refused: documents are not offered yet', async () => {
+  // Node P20: stake.documents is offered. common's validator checks each entry and reports a bad one at its own path
+  // with its own code (STAKE_DOCUMENT_*, documentGlobProblem's): the site passes each on as it is, holds no glob rule
+  // of its own, starts no build, and counts the refusal by those codes.
+  test('a document glob common refuses is refused at its own path, by common\'s own code, before any build', async () => {
     const builder = fakeBuilder();
     const s = await api({ builder });
-    let n = 0;
-    for (const documents of [['README.md'], ['docs/**', 'SPEC.md'], []]) {
-      const body = listingRequest();
-      body.spec.stake.documents = documents;
-      const { res, json } = await submit(s, body);
-      n += 1;
-      assert.equal(res.status, 400, JSON.stringify(json));
-      assert.equal(json.error, 'LISTING_REQUEST_INVALID');
-      assert.equal(json.issues.length, 1, JSON.stringify(json.issues));
-      const [issue] = json.issues;
-      assert.equal(issue.code, 'STAKE_DOCUMENTS_NOT_OFFERED');
-      assert.equal(issue.path, '/spec/stake/documents');
-      assert.match(issue.detail, /documents are not offered yet/i);
-      assert.equal(builder.calls.length, 0, 'no build was started');
-    }
+    const body = listingRequest();
+    body.spec.stake.documents = ['README.md', '/etc/passwd', 'docs/../x', './README.md', 'docs/ spec.md', 'README.md', 'docs/**'];
+    const { res, json } = await submit(s, body);
+    assert.equal(res.status, 400, JSON.stringify(json));
+    assert.equal(json.error, 'LISTING_REQUEST_INVALID');
+    const expected = [
+      ['/spec/stake/documents/1', 'STAKE_DOCUMENT_OUTSIDE_REPOSITORY'],
+      ['/spec/stake/documents/2', 'STAKE_DOCUMENT_OUTSIDE_REPOSITORY'],
+      ['/spec/stake/documents/3', 'STAKE_DOCUMENT_NOT_PLAIN'],
+      ['/spec/stake/documents/4', 'STAKE_DOCUMENT_GLOB_INVALID'],
+      ['/spec/stake/documents/5', 'STAKE_DOCUMENT_DUPLICATE'],
+    ];
+    assert.deepEqual(json.issues.map((i) => [i.path, i.code]), expected);
+    // common's own words, entry by entry: what its validator says of the draft
+    const common = codeReview.validateCodeReviewSpec(body.spec).issues.filter((i) => i.path.startsWith('/stake/documents/'));
+    assert.deepEqual(json.issues.map((i) => i.detail), common.map((i) => i.detail));
+    assert.equal(builder.calls.length, 0, 'no build was started');
     const refused = (await (await s.get('/api/status')).json()).listings.refused;
-    assert.equal(refused.byReason.STAKE_DOCUMENTS_NOT_OFFERED, n);
+    assert.equal(refused.byReason.STAKE_DOCUMENT_OUTSIDE_REPOSITORY, 1);
+    assert.equal(refused.byReason.STAKE_DOCUMENT_DUPLICATE, 1);
+  });
+
+  test('more than 16 document globs is common\'s schema issue at /spec/stake/documents', async () => {
+    const builder = fakeBuilder();
+    const s = await api({ builder });
+    const body = listingRequest();
+    body.spec.stake.documents = Array.from({ length: codeReview.STAKE_DOCUMENT_LIMITS.maxEntries + 1 }, (_, i) => `docs/${i}.md`);
+    const { res, json } = await submit(s, body);
+    assert.equal(res.status, 400, JSON.stringify(json));
+    assert.deepEqual(json.issues.map((i) => [i.path, i.code]), [['/spec/stake/documents', 'SPEC_INVALID']]);
+    assert.match(json.issues[0].detail, /^SCHEMA: /);
+    assert.equal(builder.calls.length, 0);
   });
 
   test('a body that is not JSON is 400, a body over the limit 413', async () => {

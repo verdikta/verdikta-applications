@@ -51,7 +51,7 @@ function integrityView(l, entry) {
   };
 }
 
-function listingView(l, label, blockTimestamp, control, integrity) {
+function listingView(l, label, blockTimestamp, control, integrity, documents) {
   const opened = Number(l.openedAt);
   // it took claims from the opening to its roll forward or close, whichever came first
   const ends = [time(l.rolledAt), time(l.closedAt)].filter((t) => t !== null);
@@ -63,6 +63,9 @@ function listingView(l, label, blockTimestamp, control, integrity) {
     labels: labelsOf(l, label),
     control: control ?? NOT_CHECKED,
     integrity: integrityView(l, integrity),
+    // node P20: the listing's document globs, as the server read them from its listing archive
+    // null: not known (a server from before them, or an archive not read again yet), never shown as none
+    documents: Array.isArray(documents) ? documents.filter((g) => typeof g === 'string') : null,
     awards: Object.fromEntries(CLASSES.map((c, i) => [c, String(l.awards[i])])),
     lowest: l.lowestClassCounted,
     bondWei: String(l.bondWei),
@@ -140,7 +143,7 @@ export function recordView(view) {
     fork: view.fork ?? null,
     listingCount: String(record.listingCount),
     active: record.active.map(String),
-    listings: record.listings.map((l) => listingView(l, labels.listings[String(l.listingId)], block.timestamp, view.control?.[String(l.listingId)], view.integrity?.listings?.[String(l.listingId)])),
+    listings: record.listings.map((l) => listingView(l, labels.listings[String(l.listingId)], block.timestamp, view.control?.[String(l.listingId)], view.integrity?.listings?.[String(l.listingId)], view.documents?.[String(l.listingId)])),
     history: {
       claims: String(h.claims),
       judged: String(h.outcomes.reduce((s, x) => s + BigInt(x), 0n)),

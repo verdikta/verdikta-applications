@@ -1,0 +1,437 @@
+{
+ "source": {
+  "repository": "verdikta-dispatcher",
+  "commit": "e7c41fca1e21a566715b84f3a22e154ea6449d52",
+  "file": "reputationBasedAggregator/contracts/AggregatorLib.sol"
+ },
+ "findBestCluster": [
+  {
+   "ll": [
+    [
+     0,
+     0,
+     0,
+     0,
+     700000,
+     300000
+    ],
+    [
+     0,
+     0,
+     0,
+     0,
+     700000,
+     300000
+    ],
+    [
+     0,
+     0,
+     0,
+     0,
+     700000,
+     300000
+    ]
+   ],
+   "sel": [
+    0,
+    1,
+    2
+   ],
+   "p": 2,
+   "flags": [
+    1,
+    1,
+    0
+   ]
+  },
+  {
+   "ll": [
+    [
+     0,
+     0,
+     0,
+     0,
+     1000000,
+     0
+    ],
+    [
+     0,
+     0,
+     0,
+     0,
+     700000,
+     300000
+    ],
+    [
+     0,
+     0,
+     0,
+     0,
+     700001,
+     299999
+    ]
+   ],
+   "sel": [
+    0,
+    1,
+    2
+   ],
+   "p": 2,
+   "flags": [
+    0,
+    1,
+    1
+   ]
+  },
+  {
+   "ll": [
+    [
+     1000000,
+     0
+    ],
+    [
+     0,
+     1000000
+    ],
+    [
+     1000000,
+     0
+    ]
+   ],
+   "sel": [
+    0,
+    1,
+    2
+   ],
+   "p": 2,
+   "flags": [
+    1,
+    0,
+    1
+   ]
+  },
+  {
+   "ll": [
+    [
+     1,
+     0
+    ],
+    [
+     3,
+     0
+    ],
+    [
+     5,
+     0
+    ]
+   ],
+   "sel": [
+    0,
+    1,
+    2
+   ],
+   "p": 2,
+   "flags": [
+    1,
+    1,
+    0
+   ]
+  },
+  {
+   "ll": [
+    [
+     1,
+     0
+    ],
+    [
+     2,
+     0
+    ],
+    [
+     50,
+     0
+    ],
+    [
+     60,
+     0
+    ]
+   ],
+   "sel": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "p": 3,
+   "flags": [
+    1,
+    1,
+    1,
+    0
+   ]
+  },
+  {
+   "ll": [
+    [
+     1,
+     0
+    ],
+    [
+     2,
+     0
+    ],
+    [
+     50,
+     0
+    ]
+   ],
+   "sel": [
+    0,
+    1,
+    2
+   ],
+   "p": 5,
+   "flags": [
+    1,
+    1,
+    1
+   ]
+  },
+  {
+   "ll": [
+    [
+     9,
+     9
+    ],
+    [
+     1,
+     0
+    ],
+    [
+     2,
+     0
+    ]
+   ],
+   "sel": [
+    1,
+    2
+   ],
+   "p": 2,
+   "flags": [
+    1,
+    1
+   ]
+  }
+ ],
+ "normalizeToModal": [
+  {
+   "input": [
+    [
+     1,
+     2,
+     3
+    ],
+    [
+     1,
+     2,
+     3
+    ],
+    [
+     1,
+     2
+    ]
+   ],
+   "normalized": [
+    [
+     1,
+     2,
+     3
+    ],
+    [
+     1,
+     2,
+     3
+    ],
+    [
+     1,
+     2,
+     0
+    ]
+   ],
+   "modalLen": 3
+  },
+  {
+   "input": [
+    [
+     1,
+     2
+    ],
+    [
+     1,
+     2,
+     3
+    ]
+   ],
+   "normalized": [
+    [
+     1,
+     2
+    ],
+    [
+     1,
+     2
+    ]
+   ],
+   "modalLen": 2
+  },
+  {
+   "input": [
+    [
+     1,
+     2,
+     3,
+     4
+    ],
+    [
+     1,
+     2
+    ],
+    [
+     1,
+     2,
+     3,
+     4
+    ],
+    [
+     1
+    ]
+   ],
+   "normalized": [
+    [
+     1,
+     2,
+     3,
+     4
+    ],
+    [
+     1,
+     2,
+     0,
+     0
+    ],
+    [
+     1,
+     2,
+     3,
+     4
+    ],
+    [
+     1,
+     0,
+     0,
+     0
+    ]
+   ],
+   "modalLen": 4
+  },
+  {
+   "input": [
+    [
+     5,
+     6
+    ]
+   ],
+   "normalized": [
+    [
+     5,
+     6
+    ]
+   ],
+   "modalLen": 2
+  }
+ ],
+ "isValidCidSalt": [
+  {
+   "packed": "QmUHWEaZBc4jFq4TTviSqmBZKUGZqZKgZjwvRzXXjCuDUH:be4cdf395cfcfd8b385f",
+   "ok": true,
+   "pos": 47
+  },
+  {
+   "packed": "bafkreiabc:BE4CDF395CFCFD8B385F",
+   "ok": true,
+   "pos": 11
+  },
+  {
+   "packed": "a:0123456789abcdef0123",
+   "ok": true,
+   "pos": 2
+  },
+  {
+   "packed": "QmX:be4cdf395cfcfd8b385",
+   "ok": false,
+   "pos": 0
+  },
+  {
+   "packed": "QmX:be4cdf395cfcfd8b385ff",
+   "ok": false,
+   "pos": 0
+  },
+  {
+   "packed": "QmX",
+   "ok": false,
+   "pos": 0
+  },
+  {
+   "packed": "QmX:be4cdf395cfcfd8b38:f",
+   "ok": false,
+   "pos": 0
+  },
+  {
+   "packed": "",
+   "ok": false,
+   "pos": 0
+  },
+  {
+   "packed": "a:b:0123456789abcdef0123",
+   "ok": true,
+   "pos": 4
+  },
+  {
+   "packed": ":0123456789abcdef0123",
+   "ok": false,
+   "pos": 0
+  },
+  {
+   "packed": "QmX:be4cdf395cfcfd8b385g",
+   "ok": false,
+   "pos": 0
+  },
+  {
+   "packed": "QmX:be4cdf395cfcfd8b38:?",
+   "ok": false,
+   "pos": 0
+  }
+ ],
+ "parseCidSalt": [
+  {
+   "packed": "QmUHWEaZBc4jFq4TTviSqmBZKUGZqZKgZjwvRzXXjCuDUH:be4cdf395cfcfd8b385f",
+   "cid": "QmUHWEaZBc4jFq4TTviSqmBZKUGZqZKgZjwvRzXXjCuDUH",
+   "salt": "898667669284620302235743"
+  },
+  {
+   "packed": "bafkreiabc:BE4CDF395CFCFD8B385F",
+   "cid": "bafkreiabc",
+   "salt": "898667669284620302235743"
+  },
+  {
+   "packed": "a:0123456789abcdef0123",
+   "cid": "a",
+   "salt": "5373003642731685151011"
+  },
+  {
+   "packed": "a:b:0123456789abcdef0123",
+   "cid": "a:b",
+   "salt": "5373003642731685151011"
+  }
+ ]
+}

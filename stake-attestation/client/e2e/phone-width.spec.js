@@ -12,14 +12,17 @@ test.use({ viewport: PHONE });
 
 /**
  * The document's width against the viewport, the root's and the body's overflow-x, and (for the
- * message) the outermost elements that reach past the viewport's right edge outside a scroller, widest first.
+ * message) the outermost boxes and the lines of text that reach past the viewport's right edge
+ * outside a scroller, widest first.
  */
 function measure(page) {
   return page.evaluate(() => {
     const scrolls = (el) => ['auto', 'scroll'].includes(getComputedStyle(el).overflowX);
-    const past = (el) => el.getBoundingClientRect().right > window.innerWidth + 0.5;
+    // in the document's coordinates: a click may have scrolled the page sideways
+    const rightOf = (rect) => rect.right + window.scrollX;
+    const past = (el) => rightOf(el.getBoundingClientRect()) > window.innerWidth + 0.5;
     const inScroller = (el) => {
-      for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) if (scrolls(p)) return true;
+      for (let p = el; p && p !== document.body; p = p.parentElement) if (scrolls(p)) return true;
       return false;
     };
     // the nearest ancestor with a box of its own (a fact's row is display: contents)
@@ -29,17 +32,27 @@ function measure(page) {
       return p && p !== document.body ? p : null;
     };
     const name = (el) => `${el.tagName.toLowerCase()}${el.getAttribute('class') ? `.${el.getAttribute('class').split(' ').join('.')}` : ''}${el.dataset?.testid ? `[${el.dataset.testid}]` : ''}`;
-    const wide = [...document.querySelectorAll('body *')]
-      .filter((el) => past(el) && !inScroller(el) && !(boxParent(el) && past(boxParent(el))))
-      .map((el) => ({ el, right: Math.round(el.getBoundingClientRect().right) }))
-      .sort((a, b) => b.right - a.right)
-      .slice(0, 8)
-      .map(({ el, right }) => `${name(el)} right ${right}`);
+    const found = [];
+    for (const el of document.querySelectorAll('body *')) {
+      if (past(el) && !(el.parentElement && inScroller(el.parentElement)) && !(boxParent(el) && past(boxParent(el)))) {
+        found.push({ at: rightOf(el.getBoundingClientRect()), what: name(el) });
+      }
+    }
+    // text that runs out of a box that fits
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+      const box = t.parentElement;
+      if (!t.textContent.trim() || inScroller(box) || past(box)) continue;
+      const range = document.createRange();
+      range.selectNodeContents(t);
+      const at = Math.max(0, ...[...range.getClientRects()].map(rightOf));
+      if (at > window.innerWidth + 0.5) found.push({ at, what: `text in ${name(box)} "${t.textContent.trim().slice(0, 40)}"` });
+    }
     return {
       scrollWidth: document.documentElement.scrollWidth,
       innerWidth: window.innerWidth,
       overflowX: [getComputedStyle(document.documentElement).overflowX, getComputedStyle(document.body).overflowX],
-      wide,
+      wide: found.sort((a, b) => b.at - a.at).slice(0, 8).map((f) => `${f.what} right ${Math.round(f.at)}`),
     };
   });
 }

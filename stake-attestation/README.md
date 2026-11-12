@@ -1190,6 +1190,13 @@ stand-in that also serves what the server pinned; and the production build. The 
 forwards to the local node's unlocked accounts. `SA_SCREENSHOTS=1` writes the screenshots under
 `client/test-results/screenshots/`, with every private-key field masked.
 
+**A phone** (node P22). Below 40rem each fact's label sits above its value, and a hash, an address, a
+key or a figure longer than the line wraps; a table and the badge keep their size and scroll sideways
+in their own row. Wider screens keep the layout they had. `e2e/phone-width.spec.js` measures
+`document.documentElement.scrollWidth` at 390 x 844 on the feed, a record and the listing form,
+before and after the wallet connects, and fails if any is wider than the viewport or if the root or
+the body clips what overflows.
+
 ## The local round
 
 `e2e/` (node P7) is the first time every piece runs together: one script, on one machine, with nothing live.

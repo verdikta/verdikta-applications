@@ -119,6 +119,44 @@ test.describe('decrypt-and-check', () => {
     await shot(page, 'check-grace-over');
   });
 
+  // The build's gateways, asked in order (src/lib/fetchCiphertext.js): the next only when one fails to deliver.
+  const gatewayRequests = (page, cid) => {
+    const asked = [];
+    page.on('request', (r) => { if (r.url().endsWith(`/ipfs/${cid}`)) asked.push(new URL(r.url()).origin); });
+    return asked;
+  };
+
+  test('a gateway that fails to deliver is passed over: the next one\'s copy is checked', async ({ page, stack, chain }) => {
+    test.skip(stack.gatewayUrls.length < 2, 'the build names one gateway');
+    const { claimId, cid } = await chain.claim({ listingId, archive: archiveBytes('first gateway down'), recipient: key.recipient, servedBy: [502, 'ciphertext'] });
+    await openCheck(page, stack, claimId);
+    const asked = gatewayRequests(page, cid);
+    await runCheck(page, key.identity);
+    await expect(page.getByTestId('check-verdict')).toHaveText(C.verdicts.match);
+    expect(asked).toEqual(stack.gatewayUrls.slice(0, 2).map((u) => new URL(u).origin));
+  });
+
+  test('wrong bytes from the first gateway are a bad disclosure: the next, which has the right copy, is not asked', async ({ page, stack, chain }) => {
+    test.skip(stack.gatewayUrls.length < 2, 'the build names one gateway');
+    const { claimId, cid } = await chain.claim({ listingId, archive: archiveBytes('first gateway wrong'), recipient: key.recipient, servedBy: [Buffer.from('not the ciphertext'), 'ciphertext'] });
+    await openCheck(page, stack, claimId);
+    const asked = gatewayRequests(page, cid);
+    await runCheck(page, key.identity);
+    await expect(step(page, 'fetch')).toHaveText(stepText('fetch', C.stepPassed));
+    await expect(step(page, 'ciphertext')).toHaveText(stepText('ciphertext', C.stepFailed));
+    await expect(page.getByRole('button', { name: C.flag })).toBeVisible();
+    expect(asked).toEqual([new URL(stack.gatewayUrls[0]).origin]);
+  });
+
+  test('when every gateway fails, the copy is unavailable and the page names the last failure', async ({ page, stack, chain }) => {
+    const { claimId } = await chain.claim({ listingId, archive: archiveBytes('every gateway down'), recipient: key.recipient, servedBy: stack.gatewayUrls.map((_, i) => (i === stack.gatewayUrls.length - 1 ? 503 : 502)) });
+    await openCheck(page, stack, claimId);
+    await runCheck(page, key.identity);
+    await expect(step(page, 'fetch')).toHaveText(stepText('fetch', C.stepFailed));
+    await expect(page.getByTestId('check-verdict')).toHaveText(fill(C.verdicts.unavailable, { reason: fill(C.reasons.http, { status: 503 }) }));
+    await expect(page.getByRole('button', { name: C.flag })).toBeVisible();
+  });
+
   test('a private key that is not the listing\'s is the maker\'s mistake: nothing to flag', async ({ page, stack, chain }) => {
     const { claimId } = await chain.claim({ listingId, archive: archiveBytes('wrong key'), recipient: key.recipient });
     await openCheck(page, stack, claimId);

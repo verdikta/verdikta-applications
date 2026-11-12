@@ -19,6 +19,7 @@ const HASH = /^0x[0-9a-fA-F]{64}$/;
 
 const eth = (wei) => fill(R.eth, { eth: formatEth(wei) });
 const when = (t) => (t === null ? R.none : formatTime(t));
+// the first of the build's gateways (VITE_IPFS_GATEWAY)
 const archiveLink = (cid) => (CONFIG.ipfsGateway
   ? <a className="mono" href={`${CONFIG.ipfsGateway}/ipfs/${cid}`} rel="noreferrer noopener" target="_blank">{cid}</a>
   : <span className="mono">{cid}</span>);

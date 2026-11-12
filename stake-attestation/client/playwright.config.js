@@ -3,7 +3,8 @@ import { defineConfig, devices } from '@playwright/test';
 // The tests run against the production build, served by `vite preview` on 5176, in front of a
 // local stack that e2e/support/stack.mjs starts as the web server: StakeAttestation on the
 // in-process Hardhat network behind a JSON-RPC server, the real API server with its builder
-// stubbed by the server's own fake builder CLI, and an IPFS gateway stand-in. One worker: the
+// stubbed by the server's own fake builder CLI, and an IPFS gateway stand-in for each gateway of
+// ../deploy/client.env (the build asks them in order). One worker: the
 // tests share one chain, and some move its clock.
 const PORT = 5176;
 

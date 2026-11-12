@@ -48,8 +48,8 @@ function ClaimLookup() {
  * Decrypt-and-check a disclosed claim (design §14, erratum E5). The maker's private key is typed
  * or loaded from the key file into this page's state, used by checkDisclosure (common's
  * decryptDisclosure) and nothing else: no request carries it and nothing stores it. The only
- * network calls are chain reads, the ciphertext's GET from the gateway, and the wallet's
- * flagBadDisclosure transaction.
+ * network calls are chain reads, the ciphertext's GET from the gateways (in order, until one
+ * delivers), and the wallet's flagBadDisclosure transaction.
  */
 export function CheckPage({ claimId }) {
   const w = useWalletContext();
@@ -119,13 +119,14 @@ export function CheckPage({ claimId }) {
     setOffer(null);
     setError(null);
     try {
-      if (!CONFIG.ipfsGateway) throw new Error(C.noGateway);
+      if (!CONFIG.ipfsGateways.length) throw new Error(C.noGateway);
       const r = await checkDisclosure({
         // a whole key file pasted in works too
         identity: identityFromKeyFile(identity) ?? identity,
         listingKey: listing.disclosureKey,
         claim: { archiveHash: claim.archiveHash, ciphertextSha256: claim.ciphertextSha256, ciphertextCid: claim.ciphertextCid },
-        fetchCiphertext: (cid) => fetchCiphertext(CONFIG.ipfsGateway, cid),
+        // the build's gateways in order, the next only when one fails to deliver (lib/fetchCiphertext.js)
+        fetchCiphertext: (cid) => fetchCiphertext(CONFIG.ipfsGateways, cid),
       });
       // the flag depends on the chain as it is now: its clock and whether the claim is flagged
       const provider = await chainReader();

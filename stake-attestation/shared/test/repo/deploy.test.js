@@ -413,6 +413,7 @@ const HOSTS = new Set([
   'github.com', 'gitlab.com', 'codeberg.org', 'bitbucket.org', // SA_CONTROL_GIT_HOSTS's default
   'ghcr.io', // where a listing's image is published (builder.json)
   'docker.io', // where the scan's pinned images come from
+  'containerd.io', // not a host: Docker's containerd package, in the README's apt line
   'api.pinata.cloud', // SA_PINATA_API_URL's default
   'nodejs.org', 'letsencrypt.org',
 ]);
@@ -472,7 +473,7 @@ test('README "Running the site": root\'s containerd is stopped with root\'s Dock
   assert.equal(disable.length, 1, 'one line stops root\'s daemons');
   const units = disable[0].replace(/#.*$/, '').trim().split(/\s+/).slice(4);
   assert.deepEqual(units.sort(), ['containerd.service', 'docker.service', 'docker.socket']);
-  assert.match(s.replace(/\s+/g, ' '), /containerd\.service[^.]*\. [^.]*rootless daemon[^.]*containerd of its own/i, 'why: the rootless daemon runs its own');
+  assert.match(s.replace(/\s+/g, ' '), /containerd\.service.{0,400}rootless daemon.{0,40}containerd of its own/i, 'why: the rootless daemon runs its own');
 });
 
 test('README "Running the site": Docker\'s packages by name, and the AppArmor profile Ubuntu 24.04 needs', () => {

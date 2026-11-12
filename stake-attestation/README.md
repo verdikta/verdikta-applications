@@ -74,7 +74,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 | `shared/` | Code shared by the packages (the banned-words helper, the rules of the project's proof, the warning every listing page carries, "did the builder sign this listing") and the app's repository checks. | `npm test` |
 | `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`; the baseline scan, for the maker only (P3b); `verdikta-control-check`, what git says about a listing's repository (P8); the listing's proof, refused before anything is built (P9). The reusable workflow that runs it is `.github/workflows/stake-attestation-builder.yml`. | `npm test`, `npm run test:docker` |
 | `e2e/` | The scripted local end-to-end round (P7): every piece together, with nothing live. See "The local round". | `npm test`, `npm run round` |
-| `deploy/` | The site's deploy kit (P23): the nginx site config and its headers file, the server's systemd unit and environment template, the client's build environment, the scan's builder config and its limits check. Files, not a package. See "Running the site". | `shared/test/repo/deploy.test.js`, `server/test/deployEnv.test.js`, `builder/test/unit/deployKit.test.js`, `npm run test:e2e:csp` in `client/`, `npm run smoke` in `onchain/` |
+| `deploy/` | The site's deploy kit (P23): the nginx site config and its headers file, the server's systemd unit and environment template, the client's build environment, the scan's builder config and its limits check. Files, not a package. See "Running the site". | `shared/test/repo/deploy.test.js`, `server/test/deployEnv.test.js`, `server/test/deployRoutes.test.js`, `builder/test/unit/deployKit.test.js`, `npm run test:e2e:csp` in `client/`, `npm run smoke` in `onchain/` |
 | `docs/` | `BUILD_PLAN.md`, `control-proof.md` (the project's proof: what a listing needs, every refusal, what counts). | |
 
 Ports 5009 and 5176 are the next free ones after the apps in the repository's
@@ -335,7 +335,8 @@ What the code needs:
   npm. Inbound, 80 and 443 only: 5009 stays on loopback.
 
 Rootless Docker without delegation drops a container's limits with a warning and runs it anyway, so check that the
-scan's hold once Docker is set up, and after any change to it:
+scan's hold once Docker is set up and the builder's dependencies are installed (launch step 3), and after any change to
+either:
 
 ```bash
 sudo -u verifiers DOCKER_HOST=unix:///run/user/$(id -u verifiers)/docker.sock \
@@ -385,7 +386,7 @@ set (`memory.max` 4294967296). By hand, for memory alone: `docker run --rm --mem
    Then fill in the empty settings of `server.env`; a comment above each says where it comes from: the address and
    block from step 1, a Base Sepolia RPC endpoint, the keeper's key (an account of its own with a little Base Sepolia
    ETH for gas), the caller repository and its Actions token (`docs/builder-kms-signing.md`, the owner's steps 4 and
-   6), the Pinata JWT, and `DOCKER_HOST` with the user's uid. Run `check-scan-limits.mjs` (above). The badge floor
+   6), the Pinata JWT, and `DOCKER_HOST` with the user's uid. The badge floor
    (`SA_BADGE_FLOOR_WEI=10000000000000000`, 0.01 ETH) and the under-staked share (`SA_UNDER_STAKED_RATIO_BPS=1000`, 10%)
    are filled in: testnet launch values (Q76), revisited before mainnet. `SA_ETH_USD_FEED` is Chainlink's ETH / USD
    on Base Sepolia, from Chainlink's data feeds documentation. `builder.json` names a code-runner the scan never calls:
@@ -395,6 +396,8 @@ set (`memory.max` 4294967296). By hand, for memory alone: `docker run --rm --mem
 
    ```bash
    (cd server && sudo npm ci --omit=dev --ignore-scripts) && (cd builder && sudo npm ci --omit=dev --ignore-scripts)
+   # the scan's limits under the user's Docker (above), now that the builder's dependencies are installed
+   sudo -u verifiers DOCKER_HOST=unix:///run/user/$(id -u verifiers)/docker.sock node deploy/check-scan-limits.mjs
    sudo cp deploy/client.env client/.env.production.local   # and fill VITE_SA_CONTRACT from step 1
    (cd client && sudo npm ci --ignore-scripts && sudo npm run build)
    sudo rsync -a --delete client/dist/ /var/www/verifiers.verdikta.org/
@@ -446,11 +449,11 @@ nginx's `limit_req`, per client address, on `/api` only, answering 429 past a bu
 |---|---|---|---|
 | `verifiers_api` | every request under `/api` | `5r/s`, 30 | The client's fastest call of its own is its poll of a listing being built: `GET /api/listings/:id` every 500 ms at first, backing off to every 5 s (`client/src/lib/api.js`). A page load makes 2 or 3 calls (a record and its badge, or the feed and a record), and the feed and records are read once a page, never polled. One tab never uses half the rate; the burst covers several opened at once. |
 | `verifiers_work` | every POST under `/api` | `12r/m`, 12 | Each POST starts work or takes a wallet sign-in challenge: the listing request's challenge and the request itself, a scan's or a dispute statement's challenge and its answer, a statement's pin, a contract's control proof (four at a time on the server), the deployment message. A maker's whole session is fewer than 12. |
-| `verifiers_build` | `POST /api/listings` | `2r/m`, 2 | A submission starts a build in Verdikta's signing workflow. The server's build budget still decides how many run (3 a wallet, 5 a repository owner, 20 in all a day); this keeps one address from filling the queue's 8 places. |
+| `verifiers_build` | `POST /api/listings`, in every spelling the server routes to it (Express matches any case and an optional trailing slash, so nginx keys the zone on a case-insensitive map of the method and path; `server/test/deployRoutes.test.js` holds the two together) | `2r/m`, 2 | A submission starts a build in Verdikta's signing workflow. The server's build budget still decides how many run (3 a wallet, 5 a repository owner, 20 in all a day); this keeps one address from filling the queue's 8 places. |
 
 The server sees every request from 127.0.0.1 and keys nothing on a client's address, so it needs no trusted-proxy
 setting. A CDN or another proxy in front of nginx would make every client one address: nginx would then need
-`set_real_ip_from` and `real_ip_header` for it. Bodies: 2 MB on the two listing routes (the server takes 1 MB and
+`set_real_ip_from` and `real_ip_header` for it. Bodies: 2 MB on the two listing routes, in any spelling (the server takes 1 MB and
 answers its own 413 between), 64 KB on the rest of `/api` (the largest other body is a dispute statement's 32 KB),
 16 KB elsewhere. Waits: 5 s to reach the server, 120 s for its answer (the slowest is a dispute statement, pinned with
 a 60 s timeout).

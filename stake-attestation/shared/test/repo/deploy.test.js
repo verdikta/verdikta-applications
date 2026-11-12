@@ -201,7 +201,7 @@ test('/api goes to the server on 127.0.0.1:5009, and nowhere else is proxied', (
   for (const p of passes) assert.equal(p, `http://${up[0].args[0]}`);
   const https = siteServer(443);
   const proxied = https.block.filter((d) => d.name === 'location' && d.block.some((x) => x.name === 'proxy_pass')).map((d) => d.args.join(' '));
-  for (const l of proxied) assert.match(l, /^(?:= )?\/api\//, `${l}: only /api is proxied`);
+  for (const l of proxied) assert.match(l, /^(?:= |~\*? \^)?\/api\//, `${l}: only /api is proxied`);
   assert.ok(proxied.includes('/api/'));
 });
 
@@ -225,14 +225,28 @@ const serverConst = (file, name) => {
   return m[1];
 };
 const bodyLimit = (loc) => bytesOf(one(loc.block, 'client_max_body_size').args[0]);
+// The listing routes' location: a case-insensitive regex, as Express routes them (server/test/deployEnv.test.js holds
+// it and the build zone's map to the server's own routing).
+const LISTING_LOCATION = '^/api/listings(?:/challenge)?/?$';
+const listingLocation = (server) => location(server, '~*', LISTING_LOCATION);
+const nginxRegex = (pattern) => {
+  const m = /^~(\*?)(.*)$/.exec(pattern);
+  assert.ok(m, `a regex: ${pattern}`);
+  return new RegExp(m[2], m[1] ? 'i' : '');
+};
+
+test('the listing routes\' location takes the submission and its challenge in each spelling the server routes, and nothing else', () => {
+  const re = nginxRegex(`~*${LISTING_LOCATION}`);
+  for (const p of ['/api/listings', '/api/listings/', '/api/LISTINGS', '/api/Listings/Challenge', '/api/listings/challenge/']) assert.ok(re.test(p), p);
+  for (const p of [`/api/listings/${'a'.repeat(32)}`, '/api/listings/x/scan', '/api/listingsx', '/api/listings/challenge/x']) assert.equal(re.test(p), false, p);
+});
 
 test('body limits: the listing routes take the server\'s 1 MB and more, every other /api route the largest of the rest, so the server answers its own 413', () => {
   const https = siteServer(443);
   const listing = expressBytes(serverConst('app.js', 'BODY_LIMIT'));
-  for (const l of [location(https, '=', '/api/listings'), location(https, '=', '/api/listings/challenge')]) {
-    assert.ok(bodyLimit(l) > listing, `${l.args.join(' ')}: above the server's ${listing}`);
-    assert.ok(bodyLimit(l) <= 4 * listing, `${l.args.join(' ')}: not far above it`);
-  }
+  const l = listingLocation(https);
+  assert.ok(bodyLimit(l) > listing, `${l.args.join(' ')}: above the server's ${listing}`);
+  assert.ok(bodyLimit(l) <= 4 * listing, `${l.args.join(' ')}: not far above it`);
   const others = Math.max(...[['app.js', 'AUTH_BODY_LIMIT'], ['app.js', 'PROOF_BODY_LIMIT'], ['dispute/statement.js', 'BODY_LIMIT']].map(([f, n]) => expressBytes(serverConst(f, n))));
   const api = bodyLimit(location(https, '/api/'));
   assert.ok(api > others && api < listing, `/api/: above ${others}, below ${listing}`);
@@ -269,42 +283,42 @@ const limits = (loc) => new Map(loc.block.filter((d) => d.name === 'limit_req').
   return [zone, burst];
 }));
 
-test('three zones per client address: every /api request, every POST under /api, and the listing submission that starts a build', () => {
+const maps = () => new Map(tree().filter((n) => n.name === 'map').map((n) => [n.args[1], { source: n.args[0], entries: n.block.map((d) => [d.name, ...d.args]) }]));
+
+test('three zones per client address: every /api request, every POST under /api, and a listing submission in any spelling', () => {
   const z = zones();
   assert.equal(z.size, 3);
-  const keys = [...z.values()].map((x) => x.key);
-  assert.ok(keys.includes('$binary_remote_addr'));
-  const maps = tree().filter((n) => n.name === 'map');
-  assert.equal(maps.length, 1);
-  assert.equal(maps[0].args[0], '$request_method');
-  const postKey = maps[0].args[1];
-  assert.deepEqual(maps[0].block.map((d) => [d.name, ...d.args]), [['POST', '$binary_remote_addr'], ['default', '']], 'only a POST is counted in the strict zones');
-  for (const k of keys) assert.ok([`$binary_remote_addr`, postKey].includes(k), k);
+  const m = maps();
+  assert.equal(m.size, 2);
+  const [postKey, post] = [...m].find(([, v]) => v.source === '$request_method');
+  assert.deepEqual(post.entries, [['POST', '$binary_remote_addr'], ['default', '']], 'only a POST is counted in the work zone');
+  const [buildKey, build] = [...m].find(([, v]) => v.source === '$request_method $uri');
+  assert.equal(build.entries.length, 2);
+  assert.deepEqual(build.entries[1], ['default', '']);
+  assert.equal(build.entries[0][1], '$binary_remote_addr');
+  const re = nginxRegex(build.entries[0][0]);
+  for (const r of ['POST /api/listings', 'POST /api/listings/', 'POST /api/LISTINGS', 'POST /api/Listings/']) assert.ok(re.test(r), r);
+  for (const r of ['GET /api/listings', 'POST /api/listings/challenge', `POST /api/listings/${'a'.repeat(32)}/scan`, 'POST /api/listingsx']) assert.equal(re.test(r), false, r);
+  assert.deepEqual([...z.values()].map((x) => x.key).sort(), ['$binary_remote_addr', buildKey, postKey].sort());
   assert.deepEqual(all(tree(), 'limit_req_status').map((d) => d.args), [['429']]);
 });
 
-test('every /api location takes the general zone and the POST zone; the listing submission also the build zone; each stricter than the last', () => {
+test('every proxied location takes all three zones with the same bursts, each zone stricter than the last', () => {
   const https = siteServer(443);
   const z = zones();
+  const m = maps();
+  const keyOf = (source) => [...m].find(([, v]) => v.source === source)[0];
+  const zoneOf = (key) => [...z].find(([, v]) => v.key === key)[0];
+  const [general, work, build] = [zoneOf('$binary_remote_addr'), zoneOf(keyOf('$request_method')), zoneOf(keyOf('$request_method $uri'))];
   const api = limits(location(https, '/api/'));
-  const submit = limits(location(https, '=', '/api/listings'));
-  const challenge = limits(location(https, '=', '/api/listings/challenge'));
-  const general = [...api.keys()].find((k) => z.get(k).key === '$binary_remote_addr');
-  const work = [...api.keys()].find((k) => k !== general);
-  assert.equal(api.size, 2);
-  assert.deepEqual([...challenge], [...api], 'the listing challenge: the same zones and bursts as the rest of /api');
-  assert.equal(submit.size, 3);
-  assert.equal(submit.get(general), api.get(general));
-  assert.equal(submit.get(work), api.get(work));
-  const build = [...submit.keys()].find((k) => k !== general && k !== work);
+  assert.deepEqual([...api.keys()].sort(), [build, general, work].sort());
+  // a proxied location without the zones would be unlimited, and nginx takes a regex location over /api/
+  const proxied = https.block.filter((d) => d.name === 'location' && d.block.some((x) => x.name === 'proxy_pass'));
+  assert.equal(proxied.length, 2);
+  for (const l of proxied) assert.deepEqual([...limits(l)], [...api], `${l.args.join(' ')}: the same zones and bursts`);
   assert.ok(perSecond(z.get(work).rate) < perSecond(z.get(general).rate));
   assert.ok(perSecond(z.get(build).rate) < perSecond(z.get(work).rate));
-  assert.ok(submit.get(build) < api.get(work));
-  // a proxied location without the zones would be unlimited
-  for (const l of https.block.filter((d) => d.name === 'location' && d.block.some((x) => x.name === 'proxy_pass'))) {
-    const has = limits(l);
-    assert.ok(has.has(general) && has.has(work), `${l.args.join(' ')}: both zones`);
-  }
+  assert.ok(api.get(build) < api.get(work));
 });
 
 test('the general zone leaves room for the client\'s own polling of GET /api/listings/:id, twice over', () => {

@@ -110,10 +110,12 @@ test('/api is proxied to 127.0.0.1:5009 as it was asked, with the site\'s host; 
   assert.equal(seen.length, 1);
 });
 
-test('the listing routes take a draft of more than the server\'s 1 MB, so the server answers its own 413', opts, async () => {
-  const r = await ask({ method: 'POST', pathname: '/api/listings/challenge', body: JSON.stringify({ spec: 'x'.repeat(1536 * 1024) }) });
-  assert.equal(r.status, 200);
-  assert.ok(JSON.parse(r.body).size > 1536 * 1024);
+test('the listing routes take a draft of more than the server\'s 1 MB, so the server answers its own 413, in any spelling it routes', opts, async () => {
+  for (const pathname of ['/api/listings/challenge', '/api/Listings/Challenge/']) {
+    const r = await ask({ method: 'POST', pathname, body: JSON.stringify({ spec: 'x'.repeat(1536 * 1024) }) });
+    assert.equal(r.status, 200, pathname);
+    assert.ok(JSON.parse(r.body).size > 1536 * 1024);
+  }
 });
 
 test('the client\'s own polling of a listing is never refused: every 500 ms for 10 s, with a page load\'s burst first', opts, async () => {
@@ -127,10 +129,13 @@ test('the client\'s own polling of a listing is never refused: every 500 ms for 
 });
 
 test('listing submissions: a few at once, then 429; and the other POSTs (challenges, proofs, pins) a few more, then 429', opts, async () => {
+  // the server routes these spellings to the submission (server/test/deployRoutes.test.js), and nginx reads // as one
+  // slash: one zone for all of them
+  const spellings = ['/api/listings', '/api/listings', '/api/listings', '/api/listings/', '/api/LISTINGS', '/api/Listings/', '/api//listings'];
   const submits = [];
-  for (let i = 0; i < 6; i++) submits.push((await ask({ method: 'POST', pathname: '/api/listings', body: '{}' })).status);
-  assert.ok(submits.includes(429), `submissions: ${submits}`);
-  assert.ok(submits.indexOf(429) >= 2, `at least two pass first: ${submits}`);
+  for (const pathname of spellings) submits.push((await ask({ method: 'POST', pathname, body: '{}' })).status);
+  assert.deepEqual(submits.slice(0, 2), [200, 200], `the burst passes first: ${submits}`);
+  assert.ok(submits.slice(3).every((s) => s === 429), `then every spelling is refused, the zone's: ${submits}`);
   const work = [];
   for (let i = 0; i < 20; i++) work.push((await ask({ method: 'POST', pathname: '/api/claims/1/dispute-statement/challenge', body: '{}' })).status);
   assert.ok(work.includes(429), `POSTs: ${work}`);
